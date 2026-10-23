@@ -17,7 +17,7 @@ import { readAloud } from '@renderer/lib/voice/services/read-aloud'
 import { VOICE_MODE_ENTERED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
 import { UploadError } from '@renderer/components/ui/upload-error'
 import { AgentRuntimeErrorView } from '@shared/lib/agent-runtime-errors/agent-runtime-error-view'
-import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/related-sessions'
+import { RelatedSessions, toSessionItem, type SortOrder } from '@renderer/components/sessions/related-sessions'
 import { SortPopover } from '@renderer/components/sessions/sort-popover'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useNavTransient } from '@renderer/context/nav-transient-context'
@@ -180,17 +180,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   }, [])
   const sessions = useMemo(() => {
     if (!Array.isArray(sessionsData)) return []
-    return sessionsData.map((s) => ({
-      id: s.id,
-      name: s.name,
-      createdAt: typeof s.createdAt === 'string' ? s.createdAt : new Date(s.createdAt).toISOString(),
-      lastActivityAt: typeof s.lastActivityAt === 'string'
-        ? s.lastActivityAt
-        : new Date(s.lastActivityAt).toISOString(),
-      isActive: s.isActive,
-      isAwaitingInput: s.isAwaitingInput,
-      hasUnreadNotifications: s.hasUnreadNotifications,
-    }))
+    return sessionsData.map(toSessionItem)
   }, [sessionsData])
 
   const { data: scheduledTasksData } = useScheduledTasks(agent.slug, 'pending')

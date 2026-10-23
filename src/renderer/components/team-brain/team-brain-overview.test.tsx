@@ -21,7 +21,67 @@ vi.mock('@renderer/hooks/use-agents', () => ({
   useDeleteAgent: () => ({ mutate: app.deleteAgent, isPending: false }),
 }))
 // The Team Brain agent's own drive, in Dropbox.
-vi.mock('@renderer/hooks/use-mounts', () => ({ useAgentMounts: () => ({ data: [{ id: 'm1', volumeId: 'vol1', name: 'Team Brain', type: 'dropbox' }] }) }))
+vi.mock('@renderer/hooks/use-mounts', () => ({ useAgentMounts: () => ({ data: [{ id: 'm1', volumeId: 'vol1', name: 'Team Brain', type: 'dropbox', hostPath: null, sourceLabel: 'Dropbox › Team Brain' }] }) }))
+// The drive as listed: a README and three sections, with the pages the tree is clicked through.
+const { drive } = vi.hoisted(() => {
+  const page = (id: string, name: string) => ({ id, name, kind: 'file' as const, sources: [] })
+  const folder = (id: string, name: string, children: unknown[]) => ({ id, name, kind: 'folder' as const, sources: [], children })
+  return {
+    drive: [
+      folder('customers', 'Customers', [page('customers/acme', 'Acme Corp.md'), page('customers/hooli', 'Hooli.md'), page('customers/northwind', 'Northwind.md')]),
+      folder('engineering', 'Engineering', [page('engineering/architecture', 'Architecture overview.md'), page('engineering/api', 'API.md')]),
+      folder('people', 'People', [page('people/handbook', 'Handbook.md')]),
+      page('readme', 'README.md'),
+    ],
+  }
+})
+// The task Team Brain syncs on, as its onboarding named it: daily, last run two hours ago.
+const { upkeep } = vi.hoisted(() => ({
+  upkeep: {
+    pause: vi.fn(),
+    resume: vi.fn(),
+    update: vi.fn(),
+    task: { id: 't1', name: 'Brain upkeep', status: 'pending', scheduleExpression: '0 0 * * *', nextExecutionAt: new Date(Date.now() + 3_600_000).toISOString(), lastExecutedAt: new Date(Date.now() - 7_200_000).toISOString() },
+  },
+}))
+vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
+  useScheduledTasks: () => ({ data: [upkeep.task] }),
+  usePauseScheduledTask: () => ({ mutate: upkeep.pause }),
+  useResumeScheduledTask: () => ({ mutate: upkeep.resume }),
+  useUpdateSchedule: () => ({ mutate: upkeep.update }),
+  useScheduledTaskSessions: () => ({ data: [] }),
+}))
+// Sources are the Team Brain agent's own connections; they open on its Connections page.
+const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }))
+vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate }))
+vi.mock('@renderer/hooks/use-connected-accounts', () => ({
+  useAgentConnectedAccounts: () => ({
+    data: { accounts: [{ id: 'a1', toolkitSlug: 'slack', displayName: 'Acme workspace', status: 'active', provider: { displayName: 'Slack' } }] },
+  }),
+}))
+vi.mock('@renderer/hooks/use-oauth-reconnect', () => ({ useOAuthReconnect: () => ({ reconnect: vi.fn(), pendingAccountId: null, canCancelPendingReconnect: false, cancelReconnect: vi.fn() }) }))
+// Writer has the Team Brain drive; Planner does not.
+const { access } = vi.hoisted(() => ({ access: { toggle: vi.fn(), setEveryAgent: vi.fn() } }))
+vi.mock('@renderer/hooks/use-team-brain-access', () => ({
+  useTeamBrainAccess: () => ({ everyAgent: false, canGoGlobal: true, isOn: (slug: string) => slug === 'writer', ...access }),
+}))
+// The latest sync the upkeep run wrote to _brain/syncs/, as parsed.
+vi.mock('@renderer/hooks/use-team-brain-syncs', () => ({
+  useTeamBrainSyncs: () => ({
+    data: [
+      {
+        id: '_brain/syncs/2026-10-23 0300.md', at: new Date(Date.now() - 7_200_000).toISOString(), session: 's-1', sources: ['slack', 'notion'], added: 3, updated: 9,
+        highlights: [{ title: 'Acme’s renewal moves to Q1', body: 'Acme asked to move it; [Acme Corp](../../Customers/Acme%20Corp.md) has the date.' }],
+        changes: ['Cycle 14 closed.'],
+        needsYou: { blocked: ['Reconnect Slack. #sales was not read this run.'], toDecide: [] },
+      },
+    ],
+  }),
+}))
+vi.mock('@renderer/hooks/use-sessions', () => ({ useSessions: () => ({ data: [] }) }))
+// Read and listed, unless a case says the drive could not be read.
+const { driveRead } = vi.hoisted(() => ({ driveRead: { ready: true, error: null as string | null } }))
+vi.mock('@renderer/hooks/use-team-brain-drive', () => ({ useTeamBrainDrive: () => ({ drive, ...driveRead }) }))
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
 vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl }))
 // Agent Home's composer needs the app's providers; here it only needs to be there, for the Team Brain agent.
@@ -47,7 +107,6 @@ vi.mock('@renderer/components/tray/tray-manager', async () => {
 
 import { TeamBrainOverview } from './team-brain-overview'
 import { resetTeamBrainState } from '@renderer/lib/team-brain/team-brain-store'
-import { resetTeamBrainLive } from '@renderer/lib/team-brain/team-brain-live'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 
 /** The Team Brain agent set-up made. */
@@ -57,7 +116,6 @@ const BRAIN: ApiAgent = {
 
 beforeEach(() => {
   resetTeamBrainState()
-  resetTeamBrainLive()
   screenSize.wide = true
   screenSize.listeners.clear()
   window.matchMedia = ((query: string) => ({
@@ -91,7 +149,7 @@ describe('TeamBrainOverview', () => {
     // Once open, it has settled on the whole tree (a touch before then would stop it where it is).
     await waitFor(() => expect(radial).not.toHaveAttribute('data-entering'), { timeout: 4000 })
     expect(within(radial).getByRole('img', { name: /radial tree of \d+ pages/ })).toBeInTheDocument()
-    expect(within(radial).queryByTestId('team-brain-radial-node-team-brain')).toBeNull()
+    expect(within(radial).queryByTestId('team-brain-radial-node-/')).toBeNull()
     await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers/acme'))
     expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('Acme Corp.md (own source)')
     // A page's name opens it as well as its dot.
@@ -142,29 +200,37 @@ describe('TeamBrainOverview', () => {
     expect(details.getByText('Storage location')).toBeInTheDocument()
     // Where it lives comes from the Team Brain agent's own drive.
     expect(details.getByText('Dropbox › Team Brain')).toBeInTheDocument()
-    // The storage location opens where it lives.
-    await userEvent.click(screen.getByRole('button', { name: 'Open Team Brain in Dropbox' }))
-    expect(openExternalUrl).toHaveBeenCalledWith('https://www.dropbox.com/home/Team%20Brain')
     expect(details.getByText('Next:')).toBeInTheDocument()
 
+    // Sync is the upkeep task: its last run in the status line, and the toggle pauses the task itself.
+    expect(screen.getByTestId('team-brain-status')).toHaveTextContent('Active · Synced 2 h ago')
     await userEvent.click(screen.getByRole('switch', { name: 'Pause syncing' }))
-    expect(screen.getByTestId('team-brain-status')).toHaveTextContent('Paused · Synced')
-    expect(details.getAllByText('Paused').length).toBeGreaterThan(0)
-    await userEvent.click(screen.getByRole('switch', { name: 'Resume syncing' }))
-    expect(screen.getByTestId('team-brain-status')).toHaveTextContent('Active · Synced')
+    expect(upkeep.pause).toHaveBeenCalledWith({ taskId: 't1', agentSlug: 'team-brain' })
 
     // The schedule is picked here too, from a row like Agent Home's default model, with what each choice costs.
     expect(screen.getByTestId('team-brain-schedule-trigger')).toHaveTextContent('Daily')
     await userEvent.click(screen.getByTestId('team-brain-schedule-trigger'))
     expect(screen.getByRole('option', { name: /^Daily/ })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('option', { name: /^Weekly/ })).toHaveTextContent(/Cheapest/)
+    // A pick changes the upkeep task's cron.
     await userEvent.click(screen.getByTestId('team-brain-schedule-option-weekly'))
-    expect(screen.getByRole('option', { name: /^Weekly/ })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByTestId('team-brain-schedule-trigger')).toHaveTextContent('Weekly')
+    expect(upkeep.update).toHaveBeenCalledWith({ taskId: 't1', scheduleExpression: '0 0 * * 1' })
     // Escape puts the picker away and leaves the drawer open.
     await userEvent.keyboard('{Escape}')
     expect(screen.queryByRole('listbox', { name: 'Schedule' })).toBeNull()
     expect(screen.getByTestId('team-brain-menu')).toHaveAttribute('aria-expanded', 'true')
+
+    // Sources are the agent's connections, managed on its Connections page.
+    await userEvent.click(within(screen.getByTestId('team-brain-sources')).getByRole('button', { name: /Sources/ }))
+    expect(within(screen.getByTestId('team-brain-sources')).getByText('Acme workspace')).toBeInTheDocument()
+    await userEvent.click(screen.getByTestId('team-brain-manage-sources'))
+    expect(navigate).toHaveBeenCalledWith({ to: '/agents/$slug/connections', params: { slug: 'team-brain' }, search: undefined })
+
+    // Agents are set-up's list, on the drive's attachments: a switch gives or takes Team Brain.
+    await userEvent.click(within(screen.getByTestId('team-brain-agents')).getByRole('button', { name: /Agents/ }))
+    expect(screen.getByTestId('team-brain-agent-writer')).toBeChecked()
+    await userEvent.click(screen.getByTestId('team-brain-agent-planner'))
+    expect(access.toggle).toHaveBeenCalledWith('planner', true)
 
     // A page opened from the tree takes the panel's place; the settings button brings it back and hides it again.
     await userEvent.click(screen.getByTestId('team-brain-radial-node-readme'))
@@ -192,7 +258,7 @@ describe('TeamBrainOverview', () => {
     setWide(true)
     // A click on the page behind the file drawer puts it away; one on a page swaps the file and keeps it open.
     await userEvent.click(screen.getByTestId('team-brain-radial-node-readme'))
-    await userEvent.click(screen.getByTestId('team-brain-sync-page-customers/acme'))
+    await userEvent.click(screen.getByTestId('team-brain-sync-page-Customers/Acme Corp.md'))
     expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'true')
     expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('Acme Corp.md (own source)')
     await userEvent.click(screen.getByRole('heading', { name: 'Sync summaries' }))
@@ -212,6 +278,14 @@ describe('TeamBrainOverview', () => {
     expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'false')
   })
 
+  it('says so where the tree would be when the drive cannot be read', () => {
+    Object.assign(driveRead, { ready: false, error: 'Drive not available' })
+    render(<TeamBrainOverview agent={BRAIN} />)
+    expect(screen.getByTestId('team-brain-drive-error')).toHaveTextContent("Couldn't read the Team Brain drive. Drive not available")
+    expect(screen.queryByTestId('team-brain-radial')).toBeNull()
+    Object.assign(driveRead, { ready: true, error: null })
+  })
+
   it('sums up each sync, and turns off by deleting the Team Brain agent', async () => {
     render(<TeamBrainOverview agent={BRAIN} />)
     expect(screen.getByTestId('team-brain-overview')).toBeInTheDocument()
@@ -227,10 +301,12 @@ describe('TeamBrainOverview', () => {
     expect(latest).toHaveTextContent('3 pages added, 9 updated')
     expect(latest).toHaveTextContent('Latest')
     expect(within(latest).getByRole('heading', { name: 'Acme’s renewal moves to Q1' })).toBeInTheDocument()
-    // What an agent told Team Brain is credited to a real agent that uses it.
-    expect(latest).toHaveTextContent('Writer told Team Brain what it learned about the pricing change; it is filed as 0009 Pricing change.')
-    // A page named in a summary opens in the drawer.
-    await userEvent.click(within(latest).getByTestId('team-brain-sync-page-customers/acme'))
+    // The latest says what needs a person, and its title opens the run's session.
+    expect(within(latest).getByTestId('team-brain-sync-needs-you')).toHaveTextContent('Reconnect Slack.')
+    await userEvent.click(within(latest).getByTestId('team-brain-sync-session-_brain/syncs/2026-10-23 0300.md'))
+    expect(navigate).toHaveBeenCalledWith({ to: '/agents/$slug/sessions/$sessionId', params: { slug: 'team-brain', sessionId: 's-1' } })
+    // A page named in a summary opens from the drive in the drawer.
+    await userEvent.click(within(latest).getByTestId('team-brain-sync-page-Customers/Acme Corp.md'))
     expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('Acme Corp.md (own source)')
 
     // The settings button opens the settings drawer, where turning off sits at the foot.

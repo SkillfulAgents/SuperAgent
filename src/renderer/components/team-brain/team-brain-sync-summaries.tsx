@@ -1,90 +1,52 @@
-import { Fragment, useMemo } from 'react'
+import { Fragment } from 'react'
 import { cn } from '@shared/lib/utils/cn'
-import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
-import type { ApiAgent } from '@renderer/hooks/use-agents'
-import type { TeamBrainSchedule } from '@renderer/lib/team-brain/team-brain-schema'
-import type { TeamBrainNode } from '@renderer/lib/team-brain/team-brain-structure'
-import { teamBrainSource } from '@renderer/lib/team-brain/team-brain-sources'
-import { TEAM_BRAIN_SYNCS, syncSummaryParts, type TeamBrainSync } from '@renderer/lib/team-brain/team-brain-syncs'
-import { formatSyncDay, formatSyncTime, syncTimes } from '@renderer/lib/team-brain/team-brain-format'
-import { TeamBrainSourceIcon } from './team-brain-source-icon'
+import { ServiceIcon } from '@renderer/components/ui/service-icon'
+import { syncSummaryParts, type TeamBrainSync } from '@renderer/lib/team-brain/team-brain-syncs'
+import { formatSyncDay, formatSyncTime, syncCountLabel } from '@renderer/lib/team-brain/team-brain-format'
+import { openExternalUrl } from '@renderer/lib/open-external'
 import type { OpenFile } from './team-brain-radial-parts'
 
-type Page = { node: TeamBrainNode; path: string; folder?: TeamBrainNode }
-
-/** Every page in the drive by the path a summary links it with: `Customers/Acme Corp`, no `.md`. */
-function pagesByPath(drive: readonly TeamBrainNode[]): Map<string, Page> {
-  const pages = new Map<string, Page>()
-  const walk = (list: readonly TeamBrainNode[], at: string, folder?: TeamBrainNode) => {
-    for (const node of list) {
-      const path = `${at}/${node.name}`
-      if (node.kind === 'file') pages.set(path.slice(1).replace(/\.md$/, ''), { node, path, folder })
-      else walk(node.children ?? [], path, node)
-    }
-  }
-  walk(drive, '')
-  return pages
-}
-
-const pageCount = (n: number) => `${n} page${n === 1 ? '' : 's'}`
-
-/** "3 pages added, 9 updated", the way a release has its number. */
-function countLabel({ added, updated }: TeamBrainSync): string {
-  if (added && updated) return `${pageCount(added)} added, ${updated} updated`
-  return added ? `${pageCount(added)} added` : `${pageCount(updated)} updated`
-}
 
 /**
  * What each sync filed, newest first, laid out like the Gamut changelog: the
  * day on the left, a rule down the middle with a dot per sync (the latest in
  * blue), and on the right what changed: a few sentences on what mattered, then
- * the rest a line each. A page named in one opens in the drawer; one left out
- * of the drive reads as plain text. A line an agent filed itself is credited
- * to an agent that can write to Team Brain, and left out when none can.
+ * the rest a line each. A page named in one opens from the drive in the
+ * drawer. The latest also lists what needs a person, since only the latest
+ * run says what is still open. Its title opens the run's session.
  */
 export function TeamBrainSyncSummaries({
-  drive,
-  schedule,
-  lastSyncAt,
-  writer,
+  syncs,
+  unreadable = false,
   onOpenFile,
+  onOpenSession,
 }: {
-  drive: readonly TeamBrainNode[]
-  schedule: TeamBrainSchedule
-  lastSyncAt: string | null
-  writer: ApiAgent | null
+  syncs: readonly TeamBrainSync[]
+  /** The summaries' folder couldn't be read, so none showing doesn't mean none ran. */
+  unreadable?: boolean
   onOpenFile: OpenFile
+  onOpenSession: (sessionId: string) => void
 }) {
-  const pages = useMemo(() => pagesByPath(drive), [drive])
-  const times = syncTimes(schedule, lastSyncAt, TEAM_BRAIN_SYNCS.length)
 
-  const prose = (text: string) =>
-    syncSummaryParts(text).map((part, i) => {
+  // A page opens from the drive in the drawer, a web link in the browser.
+  const prose = (text: string, summary: string) =>
+    syncSummaryParts(text, summary.slice(0, summary.lastIndexOf('/'))).map((part, i) => {
       if ('text' in part) return <Fragment key={i}>{part.text}</Fragment>
-      if ('agent' in part)
-        return (
-          writer && (
-            <span key={i} className="inline-flex items-baseline gap-1 text-foreground">
-              <span className="self-center">
-                <AgentAvatar agent={writer} size={14} />
-              </span>
-              {writer.name}
-            </span>
-          )
-        )
-      const name = part.page.split('/').pop()
-      const page = pages.get(part.page)
-      if (!page) return <span key={i} className="text-foreground">{name}</span>
+      const page = 'page' in part ? part.page : null
       return (
         <button
           key={i}
           type="button"
-          onClick={() => onOpenFile(page.node, { path: page.path, folder: page.folder })}
+          onClick={() =>
+            page
+              ? onOpenFile({ id: page, name: page.slice(page.lastIndexOf('/') + 1), kind: 'file', sources: [] }, { path: `/${page}` })
+              : 'url' in part && void openExternalUrl(part.url)
+          }
           className="rounded-[2px] text-foreground underline decoration-foreground/20 underline-offset-[3px] transition-colors hover:decoration-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          data-testid={`team-brain-sync-page-${page.node.id}`}
-          data-drawer-opener
+          data-testid={page ? `team-brain-sync-page-${page}` : undefined}
+          data-drawer-opener={page ? true : undefined}
         >
-          {name}
+          {part.label}
         </button>
       )
     })
@@ -95,14 +57,19 @@ export function TeamBrainSyncSummaries({
       <h2 id="team-brain-syncs-title" className="mb-6 text-base font-medium">
         Sync summaries
       </h2>
+      {syncs.length === 0 && (
+        <p className="text-sm text-muted-foreground">
+          {unreadable ? "Couldn't read the sync summaries. They show here once the drive can be read." : 'No syncs yet. Each upkeep run sums up what it filed here.'}
+        </p>
+      )}
       <ol>
-        {TEAM_BRAIN_SYNCS.map((sync, index) => {
-          const at = times[index]
+        {syncs.map((sync, index) => {
+          const at = new Date(sync.at)
           const day = formatSyncDay(at)
           const time = formatSyncTime(at)
-          const changes = sync.changes.filter((line) => writer || !line.includes('{agent}'))
-          const from = sync.sources.map((id) => teamBrainSource(id).name).join(', ')
-          const last = index === TEAM_BRAIN_SYNCS.length - 1
+          const { changes } = sync
+          const from = sync.sources.join(', ')
+          const last = index === syncs.length - 1
           return (
             <li key={sync.id} className="md:grid md:grid-cols-[8rem_1fr] md:gap-x-8" data-testid={`team-brain-sync-${sync.id}`}>
               <div className="md:sticky md:top-6 md:self-start">
@@ -120,7 +87,20 @@ export function TeamBrainSyncSummaries({
                   )}
                 />
                 <header className="flex flex-wrap items-center gap-2.5">
-                  <h3 className="text-base font-normal tracking-[-0.0075em]">{countLabel(sync)}</h3>
+                  <h3 className="text-base font-normal tracking-[-0.0075em]">
+                    {sync.session ? (
+                      <button
+                        type="button"
+                        onClick={() => sync.session && onOpenSession(sync.session)}
+                        className="rounded-[2px] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        data-testid={`team-brain-sync-session-${sync.id}`}
+                      >
+                        {syncCountLabel(sync)}
+                      </button>
+                    ) : (
+                      syncCountLabel(sync)
+                    )}
+                  </h3>
                   {index === 0 && (
                     <span className="rounded-[7px] bg-[#e5f4ff] px-1.5 py-0.5 text-xs font-medium text-[#006bb8] dark:bg-sky-500/15 dark:text-sky-300">
                       Latest
@@ -128,29 +108,53 @@ export function TeamBrainSyncSummaries({
                   )}
                   <span className="flex items-center gap-1" role="img" aria-label={`From ${from}`} title={`From ${from}`}>
                     {sync.sources.map((id) => (
-                      <TeamBrainSourceIcon key={id} id={id} className="size-3.5" />
+                      <ServiceIcon key={id} slug={id} className="size-3.5" />
                     ))}
                   </span>
                 </header>
                 <time dateTime={at.toISOString()} className="mt-0.5 block text-xs tabular-nums text-muted-foreground md:hidden">
                   {day} · {time}
                 </time>
-                <div className="mt-3 max-w-2xl">
-                  {sync.highlights.map((highlight) => (
-                    <Fragment key={highlight.title}>
+                {/* A long link or path breaks rather than running out of the column. */}
+                <div className="mt-3 max-w-2xl [overflow-wrap:anywhere]">
+                  {sync.highlights.map((highlight, i) => (
+                    <Fragment key={i}>
                       <h4 className="mb-1 mt-5 text-[15px] font-normal tracking-[-0.0075em] first:mt-0">{highlight.title}</h4>
-                      <p className="text-sm/6 text-muted-foreground">{prose(highlight.body)}</p>
+                      <p className="text-sm/6 text-muted-foreground">{prose(highlight.body, sync.id)}</p>
                     </Fragment>
                   ))}
                   {changes.length > 0 && (
                     <>
                       {sync.highlights.length > 0 && <h4 className="mb-1.5 mt-5 text-[15px] font-normal tracking-[-0.0075em]">Also filed</h4>}
                       <ul className="list-disc space-y-1 pl-5 text-sm/6 text-muted-foreground marker:text-muted-foreground/50">
-                        {changes.map((line) => (
-                          <li key={line}>{prose(line)}</li>
+                        {changes.map((line, i) => (
+                          <li key={i}>{prose(line, sync.id)}</li>
                         ))}
                       </ul>
                     </>
+                  )}
+                  {index === 0 && sync.needsYou.blocked.length + sync.needsYou.toDecide.length > 0 && (
+                    <div data-testid="team-brain-sync-needs-you">
+                      <h4 className="mb-1.5 mt-5 text-[15px] font-normal tracking-[-0.0075em]">Needs you</h4>
+                      {(
+                        [
+                          ['Blocked', sync.needsYou.blocked],
+                          ['To decide', sync.needsYou.toDecide],
+                        ] as const
+                      ).map(
+                        ([label, items]) =>
+                          items.length > 0 && (
+                            <Fragment key={label}>
+                              <p className="mt-3 text-xs font-medium text-muted-foreground first:mt-0">{label}</p>
+                              <ul className="mt-1 list-disc space-y-1 pl-5 text-sm/6 text-muted-foreground marker:text-muted-foreground/50">
+                                {items.map((line, i) => (
+                                  <li key={i}>{prose(line, sync.id)}</li>
+                                ))}
+                              </ul>
+                            </Fragment>
+                          ),
+                      )}
+                    </div>
                   )}
                 </div>
               </div>

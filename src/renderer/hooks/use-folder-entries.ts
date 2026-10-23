@@ -5,6 +5,8 @@ export interface FolderEntry {
   name: string
   path: string
   type: 'file' | 'directory'
+  /** When it last changed, where the source says. */
+  mtimeMs?: number
 }
 
 export interface FolderEntriesResponse {
@@ -21,6 +23,16 @@ export class FolderEntriesError extends Error {
   ) {
     super(message)
   }
+}
+
+/** One folder of a shared drive, as the drive's own file browser lists it. */
+export async function fetchVolumeFolder(volumeId: string, path: string, init?: RequestInit): Promise<FolderEntriesResponse> {
+  const response = await apiFetch(`/api/volume-definitions/${encodeURIComponent(volumeId)}/folders?${new URLSearchParams({ path })}`, init)
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { error?: string } | null
+    throw new FolderEntriesError(body?.error ?? 'Could not load this drive', response.status)
+  }
+  return response.json()
 }
 
 export function useFolderEntries(

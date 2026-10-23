@@ -869,6 +869,15 @@ html[data-keyboard-open] [data-composer-footer] {
   from { opacity: 0; filter: blur(4px); }
   to { opacity: 1; filter: blur(0); }
 }
+/* A section the page takes away plays the same motion backwards, from each
+   node's `--arrive-at` (pages first, the section last), and holds its last
+   frame, gone, until the page drops it. */
+.team-brain-radial-grow.team-brain-radial-out,
+.team-brain-radial-pop.team-brain-radial-out,
+.team-brain-radial-name.team-brain-radial-out {
+  animation-direction: reverse;
+  animation-fill-mode: forwards;
+}
 
 /* Boundary feather for the bloom's wrapper. The blob union owns the visible
    silhouette; this only guarantees the energy reaches zero BEFORE the

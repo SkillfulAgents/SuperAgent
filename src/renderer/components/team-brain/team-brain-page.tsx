@@ -14,11 +14,13 @@ export function TeamBrainPage() {
   const tb = useTeamBrain()
   const setup = useTeamBrainSetup()
   const { isAuthMode, isAdmin } = useUser()
-  const { data: agents } = useAgents()
+  const { data: agents, isPending } = useAgents()
   const brainAgent = setup.agentSlug && agents?.find((agent) => agent.slug === setup.agentSlug)
 
   // After Start chat the page stays blank under the "Setting up your agent..." card.
   if (tb.state.status === 'launching') return null
+  // Which page it is waits on the agents, or a reload would show the pitch for a moment before the home page.
+  if (isPending) return null
 
   if (brainAgent) return <TeamBrainOverview agent={brainAgent} />
 

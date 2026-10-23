@@ -19,26 +19,39 @@ import { useDeleteAgent, useListedAgents, type ApiAgent } from '@renderer/hooks/
 import { useAgentMounts } from '@renderer/hooks/use-mounts'
 import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { useMinuteClock } from '@renderer/hooks/use-minute-clock'
-import { usesTeamBrain, useTeamBrain } from '@renderer/lib/team-brain/team-brain-store'
-import { useTeamBrainLive } from '@renderer/lib/team-brain/team-brain-live'
-import { TEAM_BRAIN_LOCATION_IDS, TEAM_BRAIN_SCHEDULES, TEAM_BRAIN_SOURCE_IDS, type TeamBrainLocationId, type TeamBrainSourceId } from '@renderer/lib/team-brain/team-brain-schema'
-import { TEAM_BRAIN_SOURCES, teamBrainSource } from '@renderer/lib/team-brain/team-brain-sources'
-import { teamBrainDrive, type TeamBrainNode } from '@renderer/lib/team-brain/team-brain-structure'
-import { teamBrainFileMarkdown } from '@renderer/lib/team-brain/team-brain-files'
+import { TEAM_BRAIN_LOCATION_IDS, TEAM_BRAIN_SCHEDULES, type TeamBrainLocationId } from '@renderer/lib/team-brain/team-brain-schema'
+import type { TeamBrainNode } from '@renderer/lib/team-brain/team-brain-structure'
+import { useTeamBrainDrive } from '@renderer/hooks/use-team-brain-drive'
+import { splitFrontPages, TEAM_RECORD_FOLDER } from '@renderer/lib/team-brain/team-brain-drive'
+import { useTeamBrainSyncs } from '@renderer/hooks/use-team-brain-syncs'
+import type { TeamBrainSync } from '@renderer/lib/team-brain/team-brain-syncs'
+import { getApiBaseUrl } from '@renderer/lib/env'
 import { FilePreviewProvider, useFilePreview } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
 import { TrayManager } from '@renderer/components/tray/tray-manager'
 import { HomeCollapsible } from '@renderer/components/agents/agent-home/home-collapsible'
 import { IntegrationRow, RowHoverChevron } from '@renderer/components/connections/integration-row'
-import { openExternalUrl } from '@renderer/lib/open-external'
+import { useNavigate } from '@tanstack/react-router'
+import { formatDistanceToNow } from 'date-fns'
+import { useSessions } from '@renderer/hooks/use-sessions'
+import { RelatedSessions, toSessionItem } from '@renderer/components/sessions/related-sessions'
+import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { ServiceIcon } from '@renderer/components/ui/service-icon'
+import { AccountStatusBadge } from '@renderer/components/connections/account-status-badge'
+import { useAgentConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
+import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
+import { isForeignAgentConnectedAccount } from '@shared/lib/agent-connections/public'
 import { toast } from 'sonner'
-import { formatNextSync, formatSince, SCHEDULE_LABELS } from '@renderer/lib/team-brain/team-brain-format'
+import { formatSince, formatUntil, SCHEDULE_LABELS } from '@renderer/lib/team-brain/team-brain-format'
+import { isBrainUpkeep, scheduleOfCron, TEAM_BRAIN_CRON } from '@renderer/lib/team-brain/team-brain-setup-block'
+import { usePauseScheduledTask, useResumeScheduledTask, useScheduledTaskSessions, useScheduledTasks, useUpdateSchedule, type ApiScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { DetailCard } from '@renderer/components/triggers/detail-card'
 import { StatusToggle } from '@renderer/components/triggers/status-toggle'
 import { TeamBrainRadial } from './team-brain-radial'
 import { TeamBrainSyncSummaries } from './team-brain-sync-summaries'
 import { TeamBrainHomeComposer } from './team-brain-home-composer'
-import { TeamBrainSourceIcon } from './team-brain-source-icon'
+import { AgentAccessList, EveryAgentRow } from './team-brain-agent-access'
+import { useTeamBrainAccess } from '@renderer/hooks/use-team-brain-access'
 import { teamBrainLocation } from './team-brain-locations'
 
 /** The drawer's tabs are keyed by agent; Team Brain's pages are no agent's, so they get their own key. */
@@ -48,17 +61,32 @@ const PREVIEW_SLUG = 'team-brain'
  * Team Brain once it is set up: its home page, for its agent. The app's file
  * drawer sits beside it (set up as on Agent Home) so a page in the drive opens
  * like any other file, and its settings open as a second column; the file
- * drawer and the settings never show together. The agent and where its drive lives are real; the
- * drive's pages, the sync summaries and the sync status are mock for now (see
- * `team-brain-live.ts`).
+ * drawer and the settings never show together. Everything on it is the Team
+ * Brain agent's own: its drive, its upkeep task, its connections and the
+ * agents its drive is on.
  */
 export function TeamBrainOverview({ agent }: { agent: ApiAgent }) {
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // Shown from the settings drawer. Switched off, the record stays in the tree while it draws back in, then goes.
+  const [showRecord, setShowRecord] = useState(false)
+  const [recordLeaving, setRecordLeaving] = useState(false)
+  const switchRecord = (on: boolean) => {
+    setShowRecord(on)
+    setRecordLeaving(!on)
+  }
   return (
     <FilePreviewProvider sessionId="team-brain" commentsEnabled={false}>
       <WorkflowProvider sessionId="team-brain">
         <div className="file-preview-container relative flex min-h-0 min-w-0 flex-1" data-testid="file-preview-container">
-          <OverviewBody agent={agent} settingsOpen={settingsOpen} onSettingsOpenChange={setSettingsOpen} />
+          <OverviewBody
+            agent={agent}
+            settingsOpen={settingsOpen}
+            onSettingsOpenChange={setSettingsOpen}
+            showRecord={showRecord}
+            recordLeaving={recordLeaving}
+            onShowRecordChange={switchRecord}
+            onRecordLeft={() => setRecordLeaving(false)}
+          />
           <TrayManager agentSlug={PREVIEW_SLUG} sessionId="team-brain" browserActive={false} filePreviewWideLayout="overlay" />
         </div>
       </WorkflowProvider>
@@ -74,25 +102,66 @@ function useTeamBrainLocation(agentSlug: string) {
   return teamBrainLocation(id)
 }
 
+/** The task Team Brain syncs on: the one recurring task its onboarding names "Brain upkeep". None until its first chat. */
+function useBrainUpkeep(agentSlug: string): ApiScheduledTask | undefined {
+  const { data: tasks } = useScheduledTasks(agentSlug)
+  return tasks?.find((task) => isBrainUpkeep(task.name) && (task.status === 'pending' || task.status === 'paused'))
+}
+
+const isoOf = (at: Date | string | null) => (at ? new Date(at).toISOString() : null)
+
+/** How the sync is doing, in a line. Synced is from the latest summary, which a run writes once it is done, not from a run starting. */
+function syncLine(upkeep: ApiScheduledTask | undefined, lastSync: TeamBrainSync | undefined) {
+  if (!upkeep) return 'Not scheduled yet'
+  return `${upkeep.status === 'paused' ? 'Paused' : 'Active'} · ${lastSync ? `Synced ${formatSince(lastSync.at)}` : 'Not synced yet'}`
+}
+
 /**
  * How it is doing, the drive it keeps and what each sync filed into it. The levers
  * (sources, schedule, which agents share it) are a button away, in the
  * settings panel, which makes the page two columns.
  */
-function OverviewBody({ agent, settingsOpen, onSettingsOpenChange }: { agent: ApiAgent; settingsOpen: boolean; onSettingsOpenChange: (open: boolean) => void }) {
-  const { state } = useTeamBrain()
-  const { state: live } = useTeamBrainLive()
-  const { data: agents = [] } = useListedAgents()
+function OverviewBody({
+  agent,
+  settingsOpen,
+  onSettingsOpenChange,
+  showRecord,
+  recordLeaving,
+  onShowRecordChange,
+  onRecordLeft,
+}: {
+  agent: ApiAgent
+  settingsOpen: boolean
+  onSettingsOpenChange: (open: boolean) => void
+  showRecord: boolean
+  recordLeaving: boolean
+  onShowRecordChange: (on: boolean) => void
+  onRecordLeft: () => void
+}) {
+  const agentSlug = agent.slug
   useMinuteClock()
 
-  // A running Team Brain has built up a whole team's wiki, so the mock drive is all of it.
-  const drive = useMemo(() => teamBrainDrive(TEAM_BRAIN_SOURCE_IDS), [])
-  // A page opens in the file drawer, read from its own text rather than an agent's workspace.
+  // The Team Brain agent's drive, read as far as the tree shows and further as folders open.
+  const { data: mounts } = useAgentMounts(agentSlug)
+  const volumeId = mounts?.[0]?.volumeId
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
+  const { drive, ready, error } = useTeamBrainDrive(agentSlug, volumeId, expanded, showRecord || recordLeaving, recordLeaving)
+  const { front, index, rest } = useMemo(() => splitFrontPages(drive), [drive])
+  const upkeep = useBrainUpkeep(agentSlug)
+  const { data: syncs = [], isError: syncsUnreadable } = useTeamBrainSyncs(agentSlug, volumeId)
+  const navigate = useNavigate()
+  // A page opens in the file drawer from the drive, as the drive's own file browser opens it. A "+N more" past what
+  // even an opened folder shows opens as a list of the pages it stands for.
   const { openFile, close: closeFiles, isOpen: filesOpen } = useFilePreview()
   const openPage = (file: TeamBrainNode, { path, folder }: { path: string; folder?: TeamBrainNode }) => {
-    const url = `data:text/markdown;charset=utf-8,${encodeURIComponent(teamBrainFileMarkdown(file, folder))}`
+    if (!volumeId) return
     onSettingsOpenChange(false)
-    openFile(`/Team Brain${path}`, PREVIEW_SLUG, undefined, { inlineUrl: url, downloadUrl: url })
+    if (file.more) {
+      const list = `data:text/markdown;charset=utf-8,${encodeURIComponent(`# ${folder?.name ?? 'More pages'}\n\n${file.more.map((name) => `- ${name.replace(/\.md$/, '')}`).join('\n')}`)}`
+      return openFile(`/Team Brain${path}.md`, PREVIEW_SLUG, undefined, { inlineUrl: list, downloadUrl: list })
+    }
+    const url = `${getApiBaseUrl()}/api/volume-definitions/${encodeURIComponent(volumeId)}/file?${new URLSearchParams({ path: file.id })}`
+    openFile(`/Team Brain${path}`, PREVIEW_SLUG, undefined, { inlineUrl: `${url}&inline=true`, downloadUrl: url })
   }
   const toggleSettings = () => {
     if (!settingsOpen) closeFiles()
@@ -124,17 +193,36 @@ function OverviewBody({ agent, settingsOpen, onSettingsOpenChange }: { agent: Ap
   const showSettings = settingsOpen || settingsClosing
   const settingsClosed = useCallback(() => setSettingsClosing(false), [])
 
-  // What an agent told Team Brain between syncs is credited to a real agent that uses it.
-  const writer = agents.find((a) => usesTeamBrain(state, a.slug))
-
   return (
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- a pointer convenience; each drawer has its own close button
     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background" onClick={closeDrawersOnClickOff}>
       <SettingsPageContainer className={cn(PAGE_WIDTH, 'space-y-8')} scrollContainerRef={scrollRef}>
         {/* The centrepiece: what Team Brain knows, as a tree floating on the page with no frame around it. It fills the
-            view down to where the composer peeks in and stays where it is as the page scrolls, so what follows passes over it. */}
+            view down to where the composer peeks in and stays where it is as the page scrolls, so what follows passes over it.
+            Held back until its first view is listed, so the opening plays once over the whole of it. A drive it can't read
+            says so where the tree would be. */}
         <div ref={treeRef} className="sticky z-0" style={{ top: treeTop }} data-testid="team-brain-tree-layer">
-          <TeamBrainRadial drive={drive} onOpenFile={openPage} height={treeHeight} />
+          {mounts && !volumeId ? (
+            <TreeNote height={treeHeight}>Team Brain has no drive yet.</TreeNote>
+          ) : error && !ready ? (
+            <TreeNote height={treeHeight} alert testId="team-brain-drive-error">{`Couldn't read the Team Brain drive. ${error}`}</TreeNote>
+          ) : ready && drive.length === 0 ? (
+            <TreeNote height={treeHeight}>Nothing in the drive yet. Team Brain fills it as it builds the brain.</TreeNote>
+          ) : ready ? (
+            <TeamBrainRadial
+              drive={rest}
+              expanded={expanded}
+              onExpandedChange={setExpanded}
+              onOpenFile={openPage}
+              onOpenCentre={front && (() => openPage(front, { path: `/${front.name}` }))}
+              onOpenIndex={index && (() => openPage(index, { path: `/${index.name}` }))}
+              retracting={recordLeaving ? RECORD_SECTIONS : undefined}
+              onRetracted={onRecordLeft}
+              height={treeHeight}
+            />
+          ) : (
+            <div style={{ height: treeHeight }} aria-busy="true" data-testid="team-brain-radial-loading" />
+          )}
         </div>
 
         {/* The page's own column. With settings open it makes room for them on the right from xl, as Agent Home's two
@@ -154,6 +242,12 @@ function OverviewBody({ agent, settingsOpen, onSettingsOpenChange }: { agent: Ap
             data-stuck={docked || undefined}
             data-testid="team-brain-dock"
           >
+            {/* A folder that fails after the tree is up leaves the tree and says so here, above how Team Brain is doing. */}
+            {error && ready && (
+              <p className="text-center text-sm text-muted-foreground" role="alert" data-testid="team-brain-drive-error">
+                {`Couldn't read part of the Team Brain drive. ${error}`}
+              </p>
+            )}
             {/* No heading of its own: the nav bar names the page, so this is just how Team Brain is doing, riding above
                 the composer at its width. */}
             <header className="relative flex flex-wrap items-center justify-between gap-4" data-testid="team-brain-overview">
@@ -162,8 +256,8 @@ function OverviewBody({ agent, settingsOpen, onSettingsOpenChange }: { agent: Ap
                   strip of the tree. */}
               <div aria-hidden="true" className="team-brain-dock-cover pointer-events-none absolute -inset-x-6 -bottom-7 -z-10 bg-background" style={{ top: -treeTop }} />
               <p className="flex items-center gap-1.5 text-sm text-muted-foreground" data-testid="team-brain-status">
-                <span className={cn('inline-block h-1.5 w-1.5 rounded-full', live.syncPaused ? 'bg-muted-foreground' : 'bg-green-500')} aria-hidden="true" />
-                {live.syncPaused ? 'Paused' : 'Active'} · Synced {formatSince(live.lastSyncAt)}
+                <span className={cn('inline-block h-1.5 w-1.5 rounded-full', upkeep?.status === 'pending' ? 'bg-green-500' : 'bg-muted-foreground')} aria-hidden="true" />
+                {syncLine(upkeep, syncs[0])}
               </p>
               {/* Opens the settings panel: where it lives, the schedule, sources, agents, turning it off. */}
               <Button
@@ -188,7 +282,12 @@ function OverviewBody({ agent, settingsOpen, onSettingsOpenChange }: { agent: Ap
           {/* What each sync filed, read like a changelog, on a glass sheet like the composer's and as wide as it: the tree
               shows through it, blurred, as it passes over. */}
           <div className="relative z-10 mx-auto w-full max-w-[720px] rounded-3xl border border-border/60 bg-background/60 px-6 pb-8 pt-8 shadow-[0_0_24px_rgba(15,23,42,0.07),0_2px_10px_-4px_rgba(15,23,42,0.08)] backdrop-blur-xl supports-[backdrop-filter]:bg-background/40 dark:shadow-[0_0_26px_rgba(0,0,0,0.22),0_2px_12px_-4px_rgba(0,0,0,0.16)]">
-            <TeamBrainSyncSummaries drive={drive} schedule={state.schedule} lastSyncAt={live.lastSyncAt} writer={writer ?? null} onOpenFile={openPage} />
+            <TeamBrainSyncSummaries
+              syncs={syncs}
+              unreadable={syncsUnreadable}
+              onOpenFile={openPage}
+              onOpenSession={(sessionId) => void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId } })}
+            />
           </div>
 
           {showSettings && wide && (
@@ -201,6 +300,8 @@ function OverviewBody({ agent, settingsOpen, onSettingsOpenChange }: { agent: Ap
                 open={settingsOpen}
                 onClose={() => onSettingsOpenChange(false)}
                 onClosed={settingsClosed}
+                showRecord={showRecord}
+                onShowRecordChange={onShowRecordChange}
                 style={{ top: treeTop, maxHeight: Math.max(viewHeight - treeTop - 24, 320) }}
               />
             </div>
@@ -212,7 +313,15 @@ function OverviewBody({ agent, settingsOpen, onSettingsOpenChange }: { agent: Ap
         // put as the page scrolls and the tree shows through its glass.
         <div className="pointer-events-none absolute inset-0 z-30">
           <div className={cn('mx-auto flex h-full w-full justify-end px-6 pb-6 pt-10', PAGE_WIDTH)}>
-            <SettingsPanel agent={agent} placement="over" open={settingsOpen} onClose={() => onSettingsOpenChange(false)} onClosed={settingsClosed} />
+            <SettingsPanel
+              agent={agent}
+              placement="over"
+              open={settingsOpen}
+              onClose={() => onSettingsOpenChange(false)}
+              onClosed={settingsClosed}
+              showRecord={showRecord}
+              onShowRecordChange={onShowRecordChange}
+            />
           </div>
         </div>
       )}
@@ -239,6 +348,18 @@ function useMediaQuery(query: string): boolean {
 
 /** The page's width, the same with settings open or not, so the tree never moves. */
 const PAGE_WIDTH = 'max-w-[1040px]'
+
+/** What the tree's place says when there is no tree to draw. */
+function TreeNote({ height, alert = false, testId, children }: { height: number; alert?: boolean; testId?: string; children: ReactNode }) {
+  return (
+    <p style={{ height }} className="flex items-center justify-center text-sm text-muted-foreground" role={alert ? 'alert' : undefined} data-testid={testId}>
+      {children}
+    </p>
+  )
+}
+
+/** What draws back in when the team record is switched off. */
+const RECORD_SECTIONS = [TEAM_RECORD_FOLDER]
 
 /** How much shows at the foot of the view before scrolling (the status row and the composer's top), and the shortest the tree gets. */
 const COMPOSER_PEEK = 124
@@ -312,7 +433,7 @@ const PANEL_FADE_MS = 300
  * the status line toggles it, Escape closes it, and where it floats over the
  * page (narrower than xl) so does a click off it.
  */
-function SettingsPanel({ agent, placement, open, onClose, onClosed, style }: {
+function SettingsPanel({ agent, placement, open, onClose, onClosed, showRecord, onShowRecordChange, style }: {
   agent: ApiAgent
   /** Beside the page, in its column (sticky; `style` gives where it sticks and its tallest), or floating over it. */
   placement: 'beside' | 'over'
@@ -320,9 +441,10 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, style }: {
   onClose: () => void
   /** The panel has slid out and can go. */
   onClosed: () => void
+  showRecord: boolean
+  onShowRecordChange: (on: boolean) => void
   style?: CSSProperties
 }) {
-  const { state: live } = useTeamBrainLive()
   const { data: agents = [] } = useListedAgents()
   const deleteAgent = useDeleteAgent()
   const [confirmOff, setConfirmOff] = useState(false)
@@ -363,8 +485,17 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, style }: {
     >
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
         <TeamBrainDetails agentSlug={agent.slug} />
-        <SourcesSection sources={live.sources} lastSyncAt={live.lastSyncAt} />
-        <AgentsSection agents={agents} />
+        {/* What the tree shows: the agent's own record, off by default. */}
+        <div className="flex items-center gap-3 rounded-xl border bg-background px-4 py-3">
+          <label htmlFor="team-brain-show-record" className="min-w-0 flex-1">
+            <span className="block text-[13px] font-medium">Show team record</span>
+            <span className="block text-xs text-muted-foreground">{"Rules, sources, changelog, archive, sync summaries and the agents' index."}</span>
+          </label>
+          <Switch id="team-brain-show-record" checked={showRecord} onCheckedChange={onShowRecordChange} data-testid="team-brain-show-record" />
+        </div>
+        <SourcesSection agentSlug={agent.slug} />
+        <AgentsSection brainSlug={agent.slug} agents={agents} />
+        <SessionsSection agentSlug={agent.slug} />
       </div>
       {/* Pinned to the foot of the panel, below everything that scrolls; as wide as the cards, red only in its words until hovered. */}
       <div className="shrink-0 border-t border-border/40 p-4">
@@ -385,7 +516,7 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, style }: {
             <AlertDialogTitle>Turn off Team Brain?</AlertDialogTitle>
             <AlertDialogDescription>
               This deletes the Team Brain agent, so nothing syncs and agents can no longer message it. Its drive and files stay where they
-              are, and agents that have the drive keep it. You can set Team Brain up again any time.
+              are, but other agents lose it from their next start. You can set Team Brain up again any time.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -406,21 +537,28 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, style }: {
  * is already there), how often, and where it lives.
  */
 function TeamBrainDetails({ agentSlug }: { agentSlug: string }) {
-  const { state } = useTeamBrain()
-  const live = useTeamBrainLive()
+  const upkeep = useBrainUpkeep(agentSlug)
+  const pause = usePauseScheduledTask()
+  const resume = useResumeScheduledTask()
+  const paused = upkeep?.status === 'paused'
   const location = useTeamBrainLocation(agentSlug)
   const LocationIcon = location.Icon
+  // Where the drive is, and opening a folder on this computer, as Agent Home's drive rows show it.
+  const { data: mounts } = useAgentMounts(agentSlug)
+  const mount = mounts?.[0]
+  const hostPath = mount?.hostPath ?? null
+  const showInFolder = canUseHostFeatures() && hostPath !== null ? () => void window.electronAPI?.showInFolder(hostPath) : undefined
   return (
     <div className="space-y-4" data-testid="team-brain-details">
       <DetailCard
         label="Sync"
         headerActions={
           <StatusToggle
-            status={live.state.syncPaused ? 'paused' : 'active'}
-            isActive
-            isPaused={live.state.syncPaused}
-            canToggle
-            onToggle={(on) => live.setSyncPaused(!on)}
+            status={paused ? 'paused' : 'active'}
+            isActive={!!upkeep}
+            isPaused={paused}
+            canToggle={!!upkeep}
+            onToggle={(on) => upkeep && (on ? resume : pause).mutate({ taskId: upkeep.id, agentSlug })}
             ariaLabelResume="Resume syncing"
             ariaLabelPause="Pause syncing"
           />
@@ -429,18 +567,18 @@ function TeamBrainDetails({ agentSlug }: { agentSlug: string }) {
         <dl className="flex flex-wrap gap-x-6 gap-y-1 text-xs">
           <div className="flex gap-1">
             <dt className="text-muted-foreground">Next:</dt>
-            <dd>{live.state.syncPaused ? 'Paused' : formatNextSync(state.schedule, live.state.lastSyncAt)}</dd>
+            <dd>{!upkeep ? 'After the first chat' : paused ? 'Paused' : formatUntil(upkeep.nextExecutionAt)}</dd>
           </div>
           <div className="flex gap-1">
-            <dt className="text-muted-foreground">Last:</dt>
-            <dd>{formatSince(live.state.lastSyncAt)}</dd>
+            <dt className="text-muted-foreground">Last run:</dt>
+            <dd>{upkeep?.lastExecutedAt ? formatSince(isoOf(upkeep.lastExecutedAt)) : 'Not yet'}</dd>
           </div>
         </dl>
       </DetailCard>
 
       {/* How often it syncs, in the row and picker Agent Home uses for its default model and auto-delete. */}
       <div className="rounded-xl border bg-background">
-        <ScheduleRow />
+        <ScheduleRow agentSlug={agentSlug} />
       </div>
 
       {/* Where it lives, laid out as one of the Sources card's connector rows; it opens there when the place has a link. */}
@@ -450,13 +588,13 @@ function TeamBrainDetails({ agentSlug }: { agentSlug: string }) {
           <IntegrationRow
             icon={<LocationIcon className="h-4 w-4" />}
             name={location.name}
-            onActivate={location.url ? () => void openExternalUrl(location.url!) : undefined}
-            ariaLabel={location.url ? `Open Team Brain in ${location.name}` : undefined}
-            right={location.url ? <RowHoverChevron icon={<ArrowUpRight className="h-4 w-4 shrink-0 text-muted-foreground" />} /> : undefined}
+            onActivate={showInFolder}
+            ariaLabel={showInFolder ? `Open Team Brain in ${location.name}` : undefined}
+            right={showInFolder ? <RowHoverChevron icon={<ArrowUpRight className="h-4 w-4 shrink-0 text-muted-foreground" />} /> : undefined}
             data-testid="team-brain-storage"
             subtitle={
               <span className="min-w-0 truncate" data-testid="team-brain-location">
-                {location.target}
+                {mount?.sourceLabel ?? hostPath}
               </span>
             }
           />
@@ -471,10 +609,11 @@ function TeamBrainDetails({ agentSlug }: { agentSlug: string }) {
  * label, and an outlined trigger whose popover lists the choices with what
  * each trades away. A pick doesn't close it, as the model picker's don't.
  */
-function ScheduleRow() {
-  const tb = useTeamBrain()
-  const { schedule } = tb.state
-  const title = SCHEDULE_LABELS[schedule].title
+function ScheduleRow({ agentSlug }: { agentSlug: string }) {
+  const upkeep = useBrainUpkeep(agentSlug)
+  const update = useUpdateSchedule()
+  const schedule = upkeep ? scheduleOfCron(upkeep.scheduleExpression) : null
+  const title = !upkeep ? 'After the first chat' : schedule ? SCHEDULE_LABELS[schedule].title : 'Custom'
   return (
     <div className="flex items-center justify-between gap-2 px-4 py-2" data-testid="team-brain-schedule">
       <span className="text-sm font-medium text-muted-foreground">Schedule</span>
@@ -485,6 +624,7 @@ function ScheduleRow() {
             variant="outline"
             size="sm"
             className="h-[34px] justify-between gap-1.5 px-2 text-xs font-medium"
+            disabled={!upkeep}
             aria-label={`Schedule: ${title}. Click to change.`}
             data-testid="team-brain-schedule-trigger"
           >
@@ -502,7 +642,7 @@ function ScheduleRow() {
                   type="button"
                   role="option"
                   aria-selected={isSelected}
-                  onClick={() => tb.setSchedule(option)}
+                  onClick={() => upkeep && update.mutate({ taskId: upkeep.id, scheduleExpression: TEAM_BRAIN_CRON[option] })}
                   data-testid={`team-brain-schedule-option-${option}`}
                   className={cn(
                     'flex items-start justify-between gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent hover:text-accent-foreground',
@@ -536,108 +676,117 @@ function StackSummary({ marks, count }: { marks: ReactNode[]; count: number }) {
   )
 }
 
-/** The apps Team Brain reads, folded down to their logos, in Agent Home's own card and rows. Open it to see when each was read, or change them. */
-function SourcesSection({ sources, lastSyncAt }: { sources: readonly TeamBrainSourceId[]; lastSyncAt: string | null }) {
-  const marks = sources.map((id) => (
-    <span key={id} className="grid size-[18px] place-items-center rounded-full bg-background ring-2 ring-background">
-      <TeamBrainSourceIcon id={id} className="size-3" />
+/**
+ * The apps Team Brain reads: its agent's own connections, folded down to their logos, in Agent Home's card and rows.
+ * Each row, its reconnect and the footer open the agent's Connections page, as Agent Home's Connections card does.
+ */
+function SourcesSection({ agentSlug }: { agentSlug: string }) {
+  const navigate = useNavigate()
+  const { data } = useAgentConnectedAccounts(agentSlug)
+  const { reconnect, pendingAccountId, canCancelPendingReconnect, cancelReconnect } = useOAuthReconnect()
+  const accounts = (data?.accounts ?? []).flatMap((account) => (isForeignAgentConnectedAccount(account) ? [] : [account]))
+  const openConnections = (detail?: string) =>
+    void navigate({ to: '/agents/$slug/connections', params: { slug: agentSlug }, search: detail ? { detail, source: 'home' } : undefined })
+  const marks = accounts.map((account) => (
+    <span key={account.id} className="grid size-[18px] place-items-center rounded-full bg-background ring-2 ring-background">
+      <ServiceIcon slug={account.toolkitSlug} className="size-3" />
     </span>
   ))
   return (
-    <HomeCollapsible title="Sources" defaultOpen={false} summary={<StackSummary marks={marks} count={sources.length} />} testId="team-brain-sources">
+    <HomeCollapsible title="Sources" defaultOpen={false} summary={<StackSummary marks={marks} count={accounts.length} />} testId="team-brain-sources">
       <div className="mt-2 divide-y divide-border/50">
-        {sources.map((id) => (
+        {accounts.map((account) => (
           <IntegrationRow
-            key={id}
-            icon={<TeamBrainSourceIcon id={id} className="h-4 w-4" />}
-            name={teamBrainSource(id).name}
-            subtitle={<>Read {formatSince(lastSyncAt)}</>}
+            key={account.id}
+            iconSlug={account.toolkitSlug}
+            iconFallback="oauth"
+            name={account.provider?.displayName ?? account.toolkitSlug}
+            nameBadge={
+              <AccountStatusBadge
+                status={account.status}
+                onReconnect={account.status !== 'active' ? () => void reconnect(account.id, account.toolkitSlug) : undefined}
+                onCancelReconnect={pendingAccountId === account.id && canCancelPendingReconnect ? cancelReconnect : undefined}
+                loading={pendingAccountId === account.id}
+              />
+            }
+            subtitle={<span className="truncate">{account.displayName}</span>}
+            onActivate={() => openConnections(`account-${account.id}`)}
+            ariaLabel={`Open ${account.provider?.displayName ?? account.toolkitSlug} connection details`}
+            right={<RowHoverChevron />}
           />
         ))}
       </div>
       <div className="mt-3 flex items-center justify-end px-4 pb-1">
-        <ManageSources hasSources={sources.length > 0} />
+        <Button type="button" variant="ghost" size="sm" onClick={() => openConnections()} data-testid="team-brain-manage-sources">
+          {accounts.length > 0 ? <Settings2 /> : <Plus />}
+          {accounts.length > 0 ? 'Manage Sources' : 'Add Source'}
+        </Button>
       </div>
     </HomeCollapsible>
   )
 }
 
-/** Which agents share Team Brain, folded down to their avatars, in Agent Home's own card and rows. Open it to switch any of them off or on. */
-function AgentsSection({ agents }: { agents: readonly ApiAgent[] }) {
-  const tb = useTeamBrain()
-  const marks = agents.map((agent) => (
+/**
+ * Which agents use Team Brain, folded down to their avatars, in Agent Home's card. Open, it is set-up's own list:
+ * every agent at once, or each on its own, read from and written to the drive's attachments.
+ */
+function AgentsSection({ brainSlug, agents }: { brainSlug: string; agents: readonly ApiAgent[] }) {
+  const { data: mounts } = useAgentMounts(brainSlug)
+  const access = useTeamBrainAccess(brainSlug, mounts?.[0]?.volumeId)
+  const using = agents.filter((agent) => access.everyAgent || access.isOn(agent.slug))
+  const marks = using.map((agent) => (
     <span key={agent.slug} className="rounded-full ring-2 ring-background">
       <AgentAvatar agent={agent} size={18} />
     </span>
   ))
   return (
-    <HomeCollapsible title="Agents" defaultOpen={false} summary={<StackSummary marks={marks} count={agents.length} />} testId="team-brain-agents">
-      {agents.length === 0 ? (
-        <div className="mx-4 mt-3 rounded-lg border border-dashed p-4 text-muted-foreground">
-          <p className="text-xs font-medium text-foreground">No agents yet</p>
-          <p className="mt-1 text-xs">New agents get Team Brain automatically.</p>
-        </div>
+    <HomeCollapsible title="Agents" defaultOpen={false} summary={<StackSummary marks={marks} count={using.length} />} testId="team-brain-agents">
+      <EveryAgentRow
+        checked={access.everyAgent}
+        canGoGlobal={access.canGoGlobal}
+        onCheckedChange={(on) => access.setEveryAgent(on, agents.map((agent) => agent.slug))}
+        className="px-4 pb-3 pt-2"
+      />
+      {agents.length > 0 ? (
+        <AgentAccessList agents={agents} everyAgent={access.everyAgent} isOn={access.isOn} isChanging={access.isChanging} onToggle={access.toggle} className="border-y" rowClassName="px-4" />
       ) : (
-        <>
-          <div className="mt-2 divide-y divide-border/50">
-            {agents.map((agent) => {
-              const connected = usesTeamBrain(tb.state, agent.slug)
-              return (
-                <IntegrationRow
-                  key={agent.slug}
-                  icon={<AgentAvatar agent={agent} size={20} />}
-                  name={agent.name}
-                  subtitle={connected ? 'Uses Team Brain' : 'Off'}
-                  muted={!connected}
-                  right={
-                    <Switch
-                      checked={connected}
-                      onCheckedChange={(checked) => tb.setUsesTeamBrain(agent.slug, checked)}
-                      aria-label={`${connected ? 'Disconnect' : 'Connect'} ${agent.name}`}
-                      data-testid={`team-brain-agent-${agent.slug}`}
-                    />
-                  }
-                />
-              )
-            })}
-          </div>
-          <p className="mt-3 px-4 pb-1 text-xs text-muted-foreground">An agent that uses it reads the drive and can message Team Brain.</p>
-        </>
+        <p className="px-4 text-xs text-muted-foreground">No agents yet. Agents you make later can add the Team Brain drive from their Drives.</p>
+      )}
+      <p className="mt-3 px-4 pb-1 text-xs text-muted-foreground">An agent that uses it reads the drive and can message Team Brain.</p>
+    </HomeCollapsible>
+  )
+}
+
+/**
+ * Team Brain's own sessions, its chats and each upkeep run, in Agent Home's list. Its Agent Home stays out of reach.
+ * The agent's list leaves scheduled runs out, as Agent Home shows them under their task, so the upkeep's runs join it here.
+ */
+function SessionsSection({ agentSlug }: { agentSlug: string }) {
+  const { data: chats } = useSessions(agentSlug)
+  const { data: runs } = useScheduledTaskSessions(useBrainUpkeep(agentSlug)?.id ?? null)
+  const sessions = useMemo(() => [...(chats ?? []).map(toSessionItem), ...(runs ?? [])], [chats, runs])
+  return (
+    <HomeCollapsible
+      title="Sessions"
+      defaultOpen={false}
+      summary={<span className="text-xs tabular-nums text-muted-foreground">{sessions.length}</span>}
+      testId="team-brain-sessions"
+    >
+      {sessions.length > 0 ? (
+        <RelatedSessions
+          sessions={sessions}
+          agentSlug={agentSlug}
+          formatDate={formatSessionDate}
+          showIcon={false}
+          showHeader={false}
+          pageSize={10}
+          className="px-3 pt-2"
+        />
+      ) : (
+        <p className="px-4 pt-2 text-xs text-muted-foreground">No sessions yet.</p>
       )}
     </HomeCollapsible>
   )
 }
 
-/** Add or remove sources in place, from a footer button like Agent Home's Connections; the mock connects on the spot. */
-function ManageSources({ hasSources }: { hasSources: boolean }) {
-  const live = useTeamBrainLive()
-  return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button type="button" variant="ghost" size="sm" data-testid="team-brain-manage-sources">
-          {hasSources ? <Settings2 /> : <Plus />}
-          {hasSources ? 'Manage Sources' : 'Add Source'}
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="end" className="w-64 p-1">
-        {TEAM_BRAIN_SOURCES.map((source) => {
-          const connected = live.state.sources.includes(source.id)
-          return (
-            <button
-              key={source.id}
-              type="button"
-              role="menuitemcheckbox"
-              aria-checked={connected}
-              onClick={() => live.setSourceConnected(source.id, !connected)}
-              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
-            >
-              <TeamBrainSourceIcon id={source.id} className="h-3.5 w-3.5" />
-              <span className="flex-1">{source.name}</span>
-              {connected && <Check className="h-3.5 w-3.5" aria-hidden="true" />}
-            </button>
-          )
-        })}
-      </PopoverContent>
-    </Popover>
-  )
-}
+const formatSessionDate = (date: string) => formatDistanceToNow(new Date(date), { addSuffix: true })

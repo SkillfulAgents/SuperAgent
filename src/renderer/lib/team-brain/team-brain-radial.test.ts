@@ -1,11 +1,32 @@
 import { describe, expect, it } from 'vitest'
 import { polar, RADIAL_ROOT, radialTree } from './team-brain-radial'
-import { teamBrainDrive } from './team-brain-structure'
-import { TEAM_BRAIN_SOURCE_IDS } from './team-brain-schema'
+import type { TeamBrainNode } from './team-brain-structure'
 
-const drive = teamBrainDrive(TEAM_BRAIN_SOURCE_IDS)
+const page = (id: string, name: string): TeamBrainNode => ({ id, name: `${name}.md`, kind: 'file', sources: [] })
+const folder = (id: string, name: string, children: TeamBrainNode[]): TeamBrainNode => ({ id, name, kind: 'folder', sources: [], children })
+const slack = 'engineering/services/integrations/slack'
+const drive: TeamBrainNode[] = [
+  page('readme', 'README'),
+  folder('company', 'Company', [page('company/about', 'About us'), page('company/values', 'Values'), page('company/team', 'Team directory')]),
+  folder('customers', 'Customers', [page('customers/acme', 'Acme Corp'), page('customers/hooli', 'Hooli'), page('customers/globex', 'Globex'), page('customers/initech', 'Initech')]),
+  folder('brand', 'Brand', [page('brand/voice', 'Voice and tone')]),
+  folder('engineering', 'Engineering', [
+    folder('engineering/services', 'Services', [
+      folder('engineering/services/integrations', 'Integrations', [folder(slack, 'Slack', [page(`${slack}/events`, 'Events'), page(`${slack}/commands`, 'Commands')])]),
+    ]),
+    page('engineering/api', 'API'),
+    page('engineering/oncall', 'On-call'),
+  ]),
+  folder('meetings', 'Meetings', Array.from({ length: 40 }, (_, i) => page(`meetings/${i}`, `Meeting ${i + 1}`))),
+]
 
 describe('radialTree', () => {
+  it('keeps the middle its own whatever a page is called', () => {
+    const nodes = radialTree([page('team-brain', 'team-brain')])
+    expect(nodes.filter((n) => n.id === RADIAL_ROOT)).toHaveLength(1)
+    expect(nodes.find((n) => n.id === 'team-brain')).toMatchObject({ kind: 'file', parent: RADIAL_ROOT })
+  })
+
   it('puts Team Brain in the middle and everything else a ring out per level', () => {
     const nodes = radialTree(drive)
     const root = nodes.find((n) => n.id === RADIAL_ROOT)!
@@ -46,7 +67,7 @@ describe('radialTree', () => {
       'engineering/services/integrations',
       'engineering/services',
       'engineering',
-      'team-brain',
+      RADIAL_ROOT,
     ])
     // Each folder in the chain sits within its pages' span.
     const slack = byId.get('engineering/services/integrations/slack')!

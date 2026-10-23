@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { cn } from '@shared/lib/utils/cn'
 import { polar, radialTree, type RadialNode } from '@renderer/lib/team-brain/team-brain-radial'
 import type { TeamBrainNode } from '@renderer/lib/team-brain/team-brain-structure'
+import { revealDrive } from '@renderer/lib/team-brain/team-brain-budget'
 import { subscribeToFrames } from '@renderer/components/agents/agent-avatar/orb-ticker'
 import { CLICK_SLOP, prefersReducedMotion, useFrameWidth, type OpenFile } from './team-brain-radial-parts'
 
@@ -33,6 +34,13 @@ const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3)
  */
 const ENTRY = { sweepMs: 520, signalMs: 950, settleMs: 2400, fromTurn: -0.5, fromZoom: 0.82, nameMs: 600, nameAfterMs: 90 }
 /**
+ * When a section joins or leaves, the others glide round to their new places over this long: apart first to make room
+ * for one growing in, together after one has drawn back in.
+ */
+const GLIDE_MS = 550
+/** The short way round from one angle to another. */
+const shortest = (delta: number) => wrap(delta + Math.PI) - Math.PI
+/**
  * The sections' ring, close round the middle; their pills all start on it, so
  * sections are held at least `SECTION_GAP` round from each other, which is
  * room for a pill and a little air at the fitted zoom. Deeper folders spread
@@ -45,6 +53,8 @@ const FOLDER_RING = 0.72 * RING
  * Left alone, the tree drifts round, in radians a second, from this long after the last touch. It eases in gently over
  * `easeInMs`, and out over `easeOutMs` when the pointer comes onto it, quickly enough to read a name it has stopped on.
  */
+/** How far the drift turns, in radians, before the tree is redrawn there; names flip sides at most this late. */
+const DRIFT_REDRAW = 0.05
 const DRIFT = { speed: 0.03, afterMs: 1500, easeInMs: 900, easeOutMs: 250 }
 /**
  * While it drifts, a pulse every so often runs out from a section to one of its pages in the section's colour, as the
@@ -55,6 +65,8 @@ const PULSE = { everyMs: 1100, jitterMs: 700, signalMs: 1400, most: 3 }
 /** How far in a chosen branch may be zoomed, so a folder of one page doesn't fill the screen. */
 const BRANCH_ZOOM_MAX = 2.4
 const clampZoom = (k: number) => Math.min(Math.max(k, ZOOM.min), ZOOM.max)
+/** The zoom that fits the whole tree, names and all, in a frame. */
+const fitZoom = (width: number, height: number) => clampZoom((Math.min(width, height) / 2 - NAME_ROOM - EDGE_FADE) / RING)
 
 type View = { x: number; y: number; k: number }
 
@@ -76,27 +88,21 @@ function nameWidth(text: string, size: number, font: string): number {
 }
 /** Room around a folder's name inside its pill, in screen pixels. */
 const PILL = { x: 6, y: 3.5 }
+/** A page's dot, in the tree's own units, so it shrinks and grows with the zoom; a hovered one grows by half. */
+const PAGE_DOT = 4
+/** The middle's pill and the index under it: their heights, the gap between them, the index's name past its dot, and the room kept to the sections' pills, in screen pixels. */
+const MIDDLE = { front: 12 + PILL.y * 2, index: 12, gap: 4, nameGap: 5, clearance: 8 }
 
 /**
  * One colour per section, for its pages (and the signal racing out to them
  * as the tree opens), as the reference's file types are coloured. The README,
  * Team Brain's own page, is in the foreground colour. Drawn as `currentColor`.
  */
-const SECTION_COLOR: Record<string, string> = {
-  readme: 'text-foreground',
-  company: 'text-sky-500',
-  people: 'text-teal-500',
-  customers: 'text-orange-500',
-  sales: 'text-amber-500',
-  marketing: 'text-pink-500',
-  brand: 'text-rose-500',
-  product: 'text-violet-500',
-  engineering: 'text-blue-500',
-  meetings: 'text-emerald-500',
-}
-const sectionColor = (node: RadialNode) => SECTION_COLOR[node.section ?? ''] ?? 'text-muted-foreground'
+const SECTION_COLORS = ['text-sky-500', 'text-teal-500', 'text-orange-500', 'text-amber-500', 'text-pink-500', 'text-rose-500', 'text-violet-500', 'text-blue-500', 'text-emerald-500']
 
-type Drag = { x: number; y: number; from: { x: number; y: number; k: number }; target: RadialNode | null; moved: boolean }
+/** Where a node is drawn: its angle round the middle and its distance out. */
+type Placement = { angle: number; radius: number }
+type Drag = { x: number; y: number; from: { x: number; y: number; k: number }; target: RadialNode | null; moved: boolean; opens?: () => void }
 
 /** A curved branch from a folder out to a child, bending at the middle ring (d3's radial link). */
 function branch(parent: RadialNode, child: RadialNode, radius: (n: RadialNode) => number, angleOf: (n: RadialNode) => number): string {
@@ -125,18 +131,60 @@ function branch(parent: RadialNode, child: RadialNode, radius: (n: RadialNode) =
  * the sections ring it. It opens by growing out from the middle (see `ENTRY`), and left
  * alone it drifts slowly round (`DRIFT`), with pulses of colour running out to its pages (`PULSE`).
  */
-export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly TeamBrainNode[]; onOpenFile: OpenFile; height: number }) {
-  const nodes = useMemo(() => radialTree(drive, { sectionGap: SECTION_GAP }), [drive])
+export function TeamBrainRadial({
+  drive,
+  expanded,
+  onExpandedChange,
+  onOpenFile,
+  height,
+  onOpenCentre,
+  onOpenIndex,
+  retracting,
+  onRetracted,
+}: {
+  drive: readonly TeamBrainNode[]
+  /** Folders opened past what the tree shows on its own. */
+  expanded: ReadonlySet<string>
+  onExpandedChange: (expanded: ReadonlySet<string>) => void
+  onOpenFile: OpenFile
+  height: number
+  /** The front page the middle opens; with none, the middle is left unmarked. */
+  onOpenCentre?: () => void
+  /** The agents' index, a page's dot and name just under the middle. */
+  onOpenIndex?: () => void
+  /** Sections the page is taking away: they draw back into the middle, the index with them, then `onRetracted` lets the page drop them. */
+  retracting?: readonly string[]
+  onRetracted?: () => void
+}) {
+  /** A folded folder just opened: chosen once the tree is laid out again with its contents. */
+  const [opening, setOpening] = useState<string | null>(null)
+  const shown = useMemo(() => revealDrive(drive, expanded), [drive, expanded])
+  const nodes = useMemo(() => radialTree(shown, { sectionGap: SECTION_GAP }), [shown])
   const byId = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes])
+  const colors = useMemo(() => {
+    const sections = nodes.filter((n) => n.depth === 1)
+    let i = 0
+    return new Map(sections.map((n) => [n.id, n.kind === 'file' ? 'text-foreground' : SECTION_COLORS[i++ % SECTION_COLORS.length]]))
+  }, [nodes])
+  const sectionColor = (node: RadialNode) => colors.get(node.section ?? '') ?? 'text-muted-foreground'
   const depth = useMemo(() => Math.max(...nodes.map((n) => n.depth)), [nodes])
+  const frameRef = useRef<HTMLDivElement>(null)
+  const width = useFrameWidth(frameRef)
+  const [font, setFont] = useState('sans-serif')
+  // The sections ring the middle closely, but never so close that a tree drawn small runs their pills into the middle's.
+  // The middle's pill keeps one size on screen, so at the fitted zoom the ring sits at least that far out.
+  const centred = !!onOpenCentre || !!onOpenIndex
+  const sectionRing = useMemo(() => {
+    if (!centred || width === 0) return SECTION_RING
+    const clear = (nameWidth('Team Brain', 12, font) + PILL.x * 2) / 2 + MIDDLE.clearance
+    return Math.min(Math.max(SECTION_RING, clear / fitZoom(width, height)), 0.6 * RING)
+  }, [centred, width, height, font])
   // Sections ring the middle closely, their names running outwards; deeper folders spread out towards the pages.
   const radius = useCallback(
     (n: RadialNode) =>
-      n.kind === 'file' ? RING : n.depth === 0 ? 0 : SECTION_RING + ((FOLDER_RING - SECTION_RING) * (n.depth - 1)) / Math.max(depth - 2, 1),
-    [depth],
+      n.kind === 'file' || (n.hidden && n.depth > 1) ? RING : n.depth === 0 ? 0 : sectionRing + ((FOLDER_RING - sectionRing) * (n.depth - 1)) / Math.max(depth - 2, 1),
+    [depth, sectionRing],
   )
-  const frameRef = useRef<HTMLDivElement>(null)
-  const width = useFrameWidth(frameRef)
   const svgRef = useRef<SVGSVGElement>(null)
   const viewRef = useRef<SVGGElement>(null)
   const view = useRef({ x: 0, y: 0, k: 1 })
@@ -152,9 +200,7 @@ export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly
   const [dragging, setDragging] = useState(false)
   const fittedZoom = useRef(1)
   const [zoomedIn, setZoomedIn] = useState(false)
-  /** The zoom, for sizing folder pills to stay one size on screen. */
-  const [zoomK, setZoomK] = useState(1)
-  const [font, setFont] = useState('sans-serif')
+  const zoomedInRef = useRef(false)
   useEffect(() => {
     if (svgRef.current) setFont(getComputedStyle(svgRef.current).fontFamily || 'sans-serif')
   }, [])
@@ -162,6 +208,8 @@ export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly
   /** How far the whole tree is turned, so a chosen folder sits at three o'clock. */
   const [turn, setTurn] = useState(0)
   const turnRef = useRef(0)
+  /** The turn the tree is drawn at. While it turns, the rest is a rotation of the whole tree, so frames don't re-render it. */
+  const drawnTurn = useRef(0)
   const turning = useRef(0)
   useEffect(() => () => cancelAnimationFrame(turning.current), [])
   /** What holds the drift: the last touch, the pointer over the tree, a chosen folder, a turn under way. */
@@ -176,7 +224,7 @@ export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly
 
   /** When the opening signal reaches each node, in ms from the page opening. Parents come before their children in `nodes`. */
   const arrivals = useMemo(() => {
-    const speed = (RING - SECTION_RING) / ENTRY.signalMs
+    const speed = (RING - sectionRing) / ENTRY.signalMs
     const at = new Map<string, number>()
     for (const node of nodes) {
       const parent = node.parent ? byId.get(node.parent) : undefined
@@ -186,12 +234,12 @@ export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly
       at.set(
         node.id,
         parent.kind === 'root'
-          ? ENTRY.sweepMs * (node.angle / TAU) + (radius(node) - SECTION_RING) / speed
+          ? ENTRY.sweepMs * (node.angle / TAU) + (radius(node) - sectionRing) / speed
           : at.get(parent.id)! + (radius(node) - radius(parent)) / speed,
       )
     }
     return at
-  }, [nodes, byId, radius])
+  }, [nodes, byId, radius, sectionRing])
   const [entering, setEntering] = useState(() => !prefersReducedMotion())
   /** The opening's turn and zoom into place, which runs off the animation frames rather than the clock. A touch ends it early. */
   const [settling, setSettling] = useState(entering)
@@ -201,8 +249,66 @@ export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly
     const done = setTimeout(() => setEntering(false), entryMs)
     return () => clearTimeout(done)
   }, [entering, entryMs])
-  /** Where a node's opening animations start, for the CSS in `globals.css`. */
-  const arriveAt = (id: string) => ({ '--arrive-at': `${Math.round(arrivals.get(id) ?? 0)}ms` }) as CSSProperties
+
+  /**
+   * After the opening, a section that joins the tree grows out from the middle on the opening's own timings, counted from
+   * the section, and one being taken away (`retracting`) plays them backwards, pages first. Joining is noticed while
+   * rendering, so the new nodes paint with their animation from their first frame. So is the index's coming and going.
+   * Either way the others glide from where they were drawn (`placed`) to their new places, and a new section grows once
+   * they have made room.
+   */
+  const sectionIds = nodes.filter((n) => n.depth === 1).map((n) => n.id)
+  const sectionKey = sectionIds.join('\n')
+  const [seen, setSeen] = useState({ sections: sectionKey, index: !!onOpenIndex })
+  const [grown, setGrown] = useState<{ sections: ReadonlySet<string>; index: boolean } | null>(null)
+  const placed = useRef<ReadonlyMap<string, Placement>>(new Map())
+  const [glide, setGlide] = useState<{ from: ReadonlyMap<string, Placement> } | null>(null)
+  if (seen.sections !== sectionKey || seen.index !== !!onOpenIndex) {
+    const before = new Set(seen.sections.split('\n'))
+    const added = sectionIds.filter((id) => !before.has(id))
+    const index = !seen.index && !!onOpenIndex
+    setSeen({ sections: sectionKey, index: !!onOpenIndex })
+    if (!entering && !prefersReducedMotion()) {
+      if (seen.sections !== sectionKey) setGlide({ from: placed.current })
+      if (added.length > 0 || index) setGrown({ sections: new Set(added), index })
+    }
+  }
+  const fromSection = (node: RadialNode) => (arrivals.get(node.id) ?? 0) - (arrivals.get(node.section ?? '') ?? 0)
+  const leaving = useMemo(() => new Set(retracting), [retracting])
+  /** How long a growing or retracting section's signal takes to reach its last page. */
+  const reach = useCallback(
+    (sections: ReadonlySet<string>) =>
+      Math.max(0, ...nodes.flatMap((n) => (n.section && sections.has(n.section) ? [(arrivals.get(n.id) ?? 0) - (arrivals.get(n.section) ?? 0)] : []))),
+    [nodes, arrivals],
+  )
+  const outReach = useMemo(() => reach(leaving), [reach, leaving])
+  const restMs = ENTRY.nameAfterMs + ENTRY.nameMs
+  useEffect(() => {
+    if (!grown) return
+    const done = setTimeout(() => setGrown(null), GLIDE_MS + reach(grown.sections) + restMs)
+    return () => clearTimeout(done)
+  }, [grown, reach, restMs])
+  const retracted = useRef(onRetracted)
+  retracted.current = onRetracted
+  useEffect(() => {
+    if (!retracting) return
+    const done = setTimeout(() => retracted.current?.(), prefersReducedMotion() ? 0 : outReach + restMs)
+    return () => clearTimeout(done)
+  }, [retracting, outReach, restMs])
+
+  /** How a node is animating, if it is: in with the opening or its section's growth, or out with its section, and from when. */
+  const motionOf = (node: RadialNode): { out: boolean; at: number } | null => {
+    if (entering) return { out: false, at: arrivals.get(node.id) ?? 0 }
+    if (node.section && grown?.sections.has(node.section)) return { out: false, at: GLIDE_MS + fromSection(node) }
+    if (node.section && leaving.has(node.section)) return { out: true, at: outReach - fromSection(node) }
+    return null
+  }
+  /** The index comes in as its section does, and goes with the sections being taken away, last, as they reach the middle. */
+  const indexMotion = entering ? null : grown?.index ? { out: false, at: GLIDE_MS } : retracting ? { out: true, at: outReach } : null
+  /** Where a node's animations start, for the CSS in `globals.css`. */
+  const startAt = (motion: { at: number }) => ({ '--arrive-at': `${Math.round(motion.at)}ms` }) as CSSProperties
+  /** A motion's classes: the opening's, played backwards on the way out. */
+  const play = (motion: { out: boolean } | null, name: string) => motion && cn(name, motion.out && 'team-brain-radial-out')
 
   /** Each page's way out from its section, section first: where a pulse runs. Pages straight off the middle have none. */
   const routes = useMemo(() => {
@@ -246,16 +352,77 @@ export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly
 
   const applyView = useCallback(() => {
     const { x, y, k } = view.current
-    viewRef.current?.setAttribute('transform', `translate(${x} ${y}) scale(${k})`)
-    // Names divide by this so they stay one size on screen at any zoom.
+    const spin = ((turnRef.current - drawnTurn.current) * 180) / Math.PI
+    viewRef.current?.setAttribute('transform', `translate(${x} ${y}) scale(${k}) rotate(${spin})`)
+    // Names, pills and pulses divide by this so they stay one size on screen at any zoom.
     svgRef.current?.style.setProperty('--graph-k', String(k))
-    setZoomedIn(k >= fittedZoom.current * NAME_DEEP_AT)
-    setZoomK(k)
+    // The middle's name turns back by this, so it stays level while the tree turns round it.
+    svgRef.current?.style.setProperty('--graph-spin', `${spin}deg`)
+    const deep = k >= fittedZoom.current * NAME_DEEP_AT
+    if (deep !== zoomedInRef.current) setZoomedIn((zoomedInRef.current = deep))
   }, [])
+  // Once the tree is drawn at the new turn, the rotation standing in for it goes.
+  useLayoutEffect(() => {
+    drawnTurn.current = turn
+    applyView()
+  }, [turn, applyView])
+
+  useEffect(() => {
+    placed.current = new Map(nodes.map((n) => [n.id, { angle: n.angle, radius: radius(n) }]))
+  }, [nodes, radius])
+  const drawn = useRef({ nodes, byId, radius })
+  drawn.current = { nodes, byId, radius }
+  // The glide runs off the animation frames: React draws the new layout once, and each frame moves its nodes, names
+  // and branches from where they were along the short way round, as the drift turns the whole tree. Names keep the
+  // side they end on. It starts before the first paint, so the new layout never shows before the glide.
+  useLayoutEffect(() => {
+    const svg = svgRef.current
+    if (!glide || !svg) return
+    const tagged = (attr: string) => new Map([...svg.querySelectorAll(`[${attr}]`)].map((el) => [el.getAttribute(attr) ?? '', el]))
+    const nodeEls = tagged('data-node')
+    const branchEls = tagged('data-branch')
+    const spokeEls = tagged('data-spoke')
+    const { nodes: laid, byId: laidById, radius: ring } = drawn.current
+    const place = (e: number) => {
+      const at = new Map<string, Placement>()
+      for (const n of laid) {
+        const from = glide.from.get(n.id)
+        const to = { angle: n.angle, radius: ring(n) }
+        at.set(n.id, from && e < 1 ? { angle: from.angle + shortest(to.angle - from.angle) * e, radius: from.radius + (to.radius - from.radius) * e } : to)
+      }
+      const angleAt = (n: RadialNode) => (at.get(n.id) ?? n).angle + drawnTurn.current
+      const radiusAt = (n: RadialNode) => at.get(n.id)?.radius ?? ring(n)
+      for (const n of laid) {
+        if (n.kind === 'root') continue
+        const p = polar(angleAt(n), radiusAt(n))
+        nodeEls.get(n.id)?.setAttribute('transform', `translate(${p.x.toFixed(1)} ${p.y.toFixed(1)})`)
+        const spoke = spokeEls.get(n.id)
+        if (spoke) {
+          const degrees = (angleAt(n) * 180) / Math.PI - 90
+          const offset = spoke.getAttribute('data-offset')
+          spoke.setAttribute('transform', `rotate(${spoke.hasAttribute('data-flip') ? degrees + 180 : degrees})${offset ? ` ${offset}` : ''}`)
+        }
+        const parent = n.parent ? laidById.get(n.parent) : undefined
+        const lines = branchEls.get(n.id)
+        if (parent && lines) for (const line of lines.querySelectorAll('path')) line.setAttribute('d', branch(parent, n, radiusAt, angleAt))
+      }
+    }
+    const started = performance.now()
+    let frame = 0
+    const step = (now: number) => {
+      const t = Math.min((now - started) / GLIDE_MS, 1)
+      place(easeInOut(t))
+      if (t < 1) frame = requestAnimationFrame(step)
+      else setGlide(null)
+    }
+    place(0)
+    frame = requestAnimationFrame(step)
+    return () => cancelAnimationFrame(frame)
+  }, [glide])
 
   /** The whole tree, centred, with room for the page names around it and clear of the faded edges. */
   const fittedView = useCallback((): View => {
-    const k = clampZoom((Math.min(width, height) / 2 - NAME_ROOM - EDGE_FADE) / RING)
+    const k = fitZoom(width, height)
     fittedZoom.current = k
     return { k, x: width / 2, y: height / 2 }
   }, [width, height])
@@ -303,7 +470,6 @@ export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly
       const from = { ...view.current }
       const set = (t: number) => {
         turnRef.current = fromTurn + (toTurn - fromTurn) * t
-        setTurn(turnRef.current)
         view.current = { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t, k: from.k + (to.k - from.k) * t }
         applyView()
       }
@@ -316,7 +482,10 @@ export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly
         const t = Math.min((now - startedAt) / ms, 1)
         set(ease(t))
         if (t < 1) turning.current = requestAnimationFrame(step)
-        else onDone?.()
+        else {
+          setTurn(turnRef.current)
+          onDone?.()
+        }
       }
       turning.current = requestAnimationFrame(step)
     },
@@ -366,6 +535,7 @@ export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly
       if (!event.ctrlKey) return
       event.preventDefault()
       cancelAnimationFrame(turning.current)
+      setTurn(turnRef.current)
       setSettling(false)
       lastTouch.current = performance.now()
       const rect = svg.getBoundingClientRect()
@@ -392,7 +562,8 @@ export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly
       velocity += ((idle ? DRIFT.speed : 0) - velocity) * Math.min((dt * 1000) / (idle ? DRIFT.easeInMs : DRIFT.easeOutMs), 1)
       if (velocity < 1e-4) return
       turnRef.current += velocity * dt
-      setTurn(turnRef.current)
+      if (Math.abs(turnRef.current - drawnTurn.current) > DRIFT_REDRAW) setTurn(turnRef.current)
+      else applyView()
       // Pulses only while it is properly drifting, not while it eases to a stop under the pointer.
       if (!idle || velocity < DRIFT.speed / 2 || now < nextPulseAt || live >= PULSE.most) return
       const targets = pulseTargets.current
@@ -409,17 +580,18 @@ export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly
       }, PULSE.signalMs + 1100)
       pulseTimers.current.add(done)
     })
-  }, [])
+  }, [applyView])
 
-  const start = (event: ReactPointerEvent, target: RadialNode | null) => {
+  const start = (event: ReactPointerEvent, target: RadialNode | null, opens?: () => void) => {
     if (event.button !== 0) return
     event.stopPropagation()
     // Taking hold stops any turn or zoom in progress, right where it is.
     cancelAnimationFrame(turning.current)
+    setTurn(turnRef.current)
     setSettling(false)
     lastTouch.current = performance.now()
     moveEndsAt.current = 0
-    drag.current = { x: event.clientX, y: event.clientY, from: { ...view.current }, target, moved: false }
+    drag.current = { x: event.clientX, y: event.clientY, from: { ...view.current }, target, moved: false, opens }
     svgRef.current?.setPointerCapture?.(event.pointerId)
   }
 
@@ -441,19 +613,39 @@ export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly
     const d = drag.current
     drag.current = null
     setDragging(false)
-    swallowClick.current = !!d && (d.moved || !!d.target?.file)
+    swallowClick.current = !!d && (d.moved || !!d.target?.file || !!d.opens)
     if (!d || d.moved) return
+    if (d.opens) return d.opens()
     const target = d.target
+    if (target?.file?.node.expands) {
+      onExpandedChange(new Set(expanded).add(target.file.node.expands))
+      return setOpening(target.file.node.expands)
+    }
     if (target?.file) return onOpenFile(target.file.node, { path: target.file.path, folder: target.file.folder })
+    if (target?.kind === 'folder' && target.folded) {
+      onExpandedChange(new Set(expanded).add(target.id))
+      return setOpening(target.id)
+    }
     if (target?.kind === 'folder') {
       setSelected(target.id)
       const turned = THREE_OCLOCK - target.angle
       return moveTo(turned, branchView(target, turned))
     }
-    // Clicking out: back to the whole tree, centred and turned back.
+    // Clicking out: back to the whole tree, centred and turned back, with opened folders folded again.
     setSelected(null)
+    onExpandedChange(new Set())
     moveTo(0, fittedView())
   }
+
+  useEffect(() => {
+    const target = opening ? byId.get(opening) : undefined
+    // Turned to once its contents are listed and laid out.
+    if (!target || !nodes.some((n) => n.parent === target.id)) return
+    setOpening(null)
+    setSelected(target.id)
+    const turned = THREE_OCLOCK - target.angle
+    moveTo(turned, branchView(target, turned))
+  }, [opening, byId, nodes, moveTo, branchView])
 
   const pages = nodes.filter((n) => n.kind === 'file').length
   const dim = (id: string) => focus !== null && !focus.has(id)
@@ -493,27 +685,29 @@ export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly
               // While the tree opens, each branch is drawn out from its folder as the signal runs along it, and a short
               // head in its section's colour runs at the front. Measured along the branch (`pathLength`), so the stroke
               // scales with the view for now instead of staying one pixel: dashes and non-scaling strokes disagree on length.
-              const grow = entering
+              const motion = motionOf(node)
+              const parentMotion = motionOf(parent)
+              const grow = motion
                 ? {
                     pathLength: 1,
                     style: {
-                      '--grow-at': `${Math.round(arrivals.get(parent.id) ?? 0)}ms`,
-                      '--grow-ms': `${Math.round((arrivals.get(node.id) ?? 0) - (arrivals.get(parent.id) ?? 0))}ms`,
+                      '--grow-at': `${Math.round(Math.min(motion.at, parentMotion?.at ?? 0))}ms`,
+                      '--grow-ms': `${Math.round(Math.abs(motion.at - (parentMotion?.at ?? 0)))}ms`,
                       '--head': Math.min(0.4, 16 / Math.max(Math.hypot(...Object.values(polar(0, radius(node) - radius(parent)))), 1)),
                     } as CSSProperties,
                   }
                 : null
               return (
-                <g key={node.id}>
+                <g key={node.id} data-branch={node.id}>
                   <path
                     d={d}
                     vectorEffect={grow ? undefined : 'non-scaling-stroke'}
                     strokeWidth={(lit ? 1.25 : 1) / (grow ? fittedZoom.current : 1)}
                     strokeOpacity={lit ? 0.4 : focus ? 0.03 : 0.1}
-                    className={cn('pointer-events-none stroke-foreground transition-[stroke-opacity]', grow && 'team-brain-radial-grow')}
+                    className={cn('pointer-events-none stroke-foreground transition-[stroke-opacity]', play(motion, 'team-brain-radial-grow'))}
                     {...grow}
                   />
-                  {grow && (
+                  {grow && !motion?.out && (
                     <path
                       d={d}
                       strokeWidth={1.75 / fittedZoom.current}
@@ -547,7 +741,7 @@ export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly
             {pulses.map((pulse) => {
               const route = routes.get(pulse.page)
               if (!route) return null
-              const speed = (RING - SECTION_RING) / PULSE.signalMs
+              const speed = (RING - sectionRing) / PULSE.signalMs
               const page = route[route.length - 1]
               const end = polar(angleOf(page), radius(page))
               return (
@@ -560,14 +754,14 @@ export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly
                         key={child.id}
                         d={branch(parent, child, radius, angleOf)}
                         pathLength={1}
-                        strokeWidth={1.75 / zoomK}
                         strokeLinecap="round"
                         className="team-brain-radial-impulse stroke-current"
                         style={
                           {
-                            '--grow-at': `${Math.round((radius(parent) - SECTION_RING) / speed)}ms`,
+                            '--grow-at': `${Math.round((radius(parent) - sectionRing) / speed)}ms`,
                             '--grow-ms': `${Math.round(length / speed)}ms`,
                             '--head': Math.min(0.4, 16 / Math.max(length, 1)),
+                            strokeWidth: 'calc(1.75px / var(--graph-k, 1))',
                           } as CSSProperties
                         }
                       />
@@ -586,11 +780,66 @@ export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly
           </g>
 
           {nodes.map((node) => {
-            if (node.kind === 'root') return null
+            if (node.kind === 'root') {
+              if (!onOpenCentre && !onOpenIndex) return null
+              // The middle is Team Brain itself: its front pages as pills like the sections', the people's, and with the
+              // team record shown the agents' just under it. Level and one size on screen however the tree turns or zooms.
+              const frontWidth = nameWidth('Team Brain', 12, font) + PILL.x * 2
+              // The index is a page's dot and name, in grey, hover and all. The dot keeps the tree's units as a page's does, so it is
+              // sized through the zoom inside this screen-sized group (Tailwind needs those sizes written out); the pair is centred under the pill.
+              const dot = (size: number) => `calc(${size}px * var(--graph-k, 1))`
+              const indexName = nameWidth('INDEX', 9.5, font)
+              const below = onOpenCentre ? MIDDLE.front / 2 + MIDDLE.gap + MIDDLE.index / 2 : 0
+              return (
+                <g key={node.id} style={entering ? startAt({ at: 0 }) : undefined} className={cn(entering && 'team-brain-radial-pop')} data-testid="team-brain-radial-centre">
+                  <g style={{ transform: 'rotate(calc(-1 * var(--graph-spin, 0deg))) scale(calc(1 / var(--graph-k, 1)))' }}>
+                    {onOpenCentre && (
+                      <g onPointerDown={(event) => start(event, node, onOpenCentre)} className="group cursor-pointer" data-testid="team-brain-radial-front">
+                        <rect
+                          x={-frontWidth / 2}
+                          y={-MIDDLE.front / 2}
+                          width={frontWidth}
+                          height={MIDDLE.front}
+                          rx={MIDDLE.front / 2}
+                          vectorEffect="non-scaling-stroke"
+                          className="fill-background stroke-border transition-colors group-hover:stroke-foreground/40"
+                        />
+                        <text textAnchor="middle" dominantBaseline="central" className="fill-foreground" style={{ fontSize: '12px' }}>
+                          Team Brain
+                        </text>
+                      </g>
+                    )}
+                    {onOpenIndex && (
+                      <g
+                        style={{ transform: `translate(calc(${-(MIDDLE.nameGap + indexName) / 2}px - ${dot(PAGE_DOT)}), ${below}px)` }}
+                        onPointerDown={(event) => start(event, node, onOpenIndex)}
+                        className="group cursor-pointer"
+                        data-testid="team-brain-radial-index"
+                      >
+                        <g style={indexMotion ? startAt(indexMotion) : undefined} className={cn(play(indexMotion, 'team-brain-radial-pop'))}>
+                          <circle className="fill-muted-foreground/50 transition-[r] [r:calc(4px*var(--graph-k,1))] group-hover:[r:calc(6px*var(--graph-k,1))]" />
+                          <text
+                            dominantBaseline="central"
+                            className={cn(
+                              'fill-muted-foreground/70 text-[9.5px] transition-[font-size] duration-150 ease-out group-hover:fill-foreground group-hover:font-medium group-hover:text-[11.5px]',
+                              '[transform:translateX(calc(4px*var(--graph-k,1)+5px))] group-hover:[transform:translateX(calc(6px*var(--graph-k,1)+5px))]',
+                            )}
+                          >
+                            INDEX
+                          </text>
+                        </g>
+                      </g>
+                    )}
+                  </g>
+                </g>
+              )
+            }
             const angle = angleOf(node)
             const p = polar(angle, radius(node))
-            const page = node.kind === 'file'
-            const r = page ? 4 : node.depth === 1 ? 3.5 : 2.5
+            const motion = motionOf(node)
+            // A folded folder below the sections stands on the pages' ring, named as a page is, with what it holds.
+            const page = node.kind === 'file' || (!!node.hidden && node.depth > 1)
+            const r = page ? PAGE_DOT : node.depth === 1 ? 3.5 : 2.5
             const isHovered = hovered === node.id
             const isSelected = selected === node.id
             const faded = dim(node.id)
@@ -603,6 +852,7 @@ export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly
               <g
                 key={node.id}
                 transform={`translate(${p.x.toFixed(1)} ${p.y.toFixed(1)})`}
+                data-node={node.id}
                 onPointerDown={(event) => start(event, node)}
                 onPointerEnter={() => !drag.current && setHovered(node.id)}
                 onPointerLeave={() => !drag.current && setHovered(null)}
@@ -614,41 +864,48 @@ export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly
                 {page ? (
                   <>
                     {/* As the signal reaches it, a page lights: a soft bloom of its colour, the dot, then its name. */}
-                    {entering && <circle r={r} style={arriveAt(node.id)} className={cn('team-brain-radial-bloom pointer-events-none fill-current', sectionColor(node))} />}
+                    {motion && !motion.out && <circle r={r} style={startAt(motion)} className={cn('team-brain-radial-bloom pointer-events-none fill-current', sectionColor(node))} />}
                     <circle
                       r={isHovered ? r * 1.5 : r}
-                      style={entering ? arriveAt(node.id) : undefined}
-                      className={cn('fill-current transition-[r]', sectionColor(node), entering && 'team-brain-radial-pop')}
+                      style={motion ? startAt(motion) : undefined}
+                      className={cn('fill-current transition-[r]', sectionColor(node), play(motion, 'team-brain-radial-pop'))}
                     />
                     {/* A hovered page's name grows a little, clear of its grown dot. Name and dot both take the click. */}
-                    <text
-                      transform={`rotate(${flip ? degrees + 180 : degrees})`}
-                      x={(flip ? -1 : 1) * ((isHovered ? r * 1.5 : r) + 5)}
-                      textAnchor={flip ? 'end' : 'start'}
-                      dominantBaseline="central"
-                      className={cn(
-                        'transition-[font-size] duration-150 ease-out',
-                        isHovered ? 'fill-foreground font-medium' : focus?.has(node.id) ? 'fill-foreground/80' : 'fill-muted-foreground/70',
-                        entering && 'team-brain-radial-name',
-                      )}
-                      style={{ fontSize: `calc(${isHovered ? 11.5 : 9.5}px / var(--graph-k, 1))`, ...(entering ? arriveAt(node.id) : null) }}
+                    {/* Sized by a scale round where the name starts, not by font size, so a zoom re-lays out no text. */}
+                    <g
+                      transform={`rotate(${flip ? degrees + 180 : degrees}) translate(${(flip ? -1 : 1) * ((isHovered ? r * 1.5 : r) + 5)} 0)`}
+                      data-spoke={node.id}
+                      data-flip={flip || undefined}
+                      data-offset={`translate(${(flip ? -1 : 1) * ((isHovered ? r * 1.5 : r) + 5)} 0)`}
                     >
-                      {node.label}
-                    </text>
+                      <text
+                        textAnchor={flip ? 'end' : 'start'}
+                        dominantBaseline="central"
+                        className={cn(
+                          'transition-[font-size] duration-150 ease-out',
+                          isHovered ? 'fill-foreground font-medium' : focus?.has(node.id) ? 'fill-foreground/80' : 'fill-muted-foreground/70',
+                          play(motion, 'team-brain-radial-name'),
+                        )}
+                        style={{ fontSize: `${isHovered ? 11.5 : 9.5}px`, transform: 'scale(calc(1 / var(--graph-k, 1)))', ...(motion ? startAt(motion) : null) }}
+                      >
+                        {node.label}
+                      </text>
+                    </g>
                   </>
                 ) : !pill ? (
                   // Not drawn: the branches just meet here. Still a target, a little wider than a dot, to hover or choose it.
-                  <circle r={6 / zoomK} className="fill-transparent" data-testid={`team-brain-radial-junction-${node.id}`} />
+                  <circle style={{ r: 'calc(6px / var(--graph-k, 1))' }} className="fill-transparent" data-testid={`team-brain-radial-junction-${node.id}`} />
                 ) : (
                   // A named folder is a pill with its name inside, lying along its spoke and reaching
                   // outwards from where the folder sits, so the pills fan out from the middle.
                   (() => {
                     const size = node.depth === 1 ? 11 : 10
-                    const w = (nameWidth(node.label, size, font) + PILL.x * 2) / zoomK
-                    const h = (size + PILL.y * 2) / zoomK
+                    const w = nameWidth(node.label, size, font) + PILL.x * 2
+                    const h = size + PILL.y * 2
                     return (
-                      <g style={entering ? arriveAt(node.id) : undefined} className={cn(entering && 'team-brain-radial-pop')}>
-                      <g transform={`rotate(${flip ? degrees + 180 : degrees})`} data-testid={`team-brain-radial-pill-${node.id}`}>
+                      <g style={motion ? startAt(motion) : undefined} className={cn(play(motion, 'team-brain-radial-pop'))}>
+                      <g transform={`rotate(${flip ? degrees + 180 : degrees})`} data-spoke={node.id} data-flip={flip || undefined} data-testid={`team-brain-radial-pill-${node.id}`}>
+                      <g style={{ transform: 'scale(calc(1 / var(--graph-k, 1)))' }}>
                         <rect
                           x={flip ? -w : 0}
                           y={-h / 2}
@@ -678,10 +935,11 @@ export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly
                                     ? 'fill-foreground/75'
                                     : 'fill-muted-foreground',
                           )}
-                          style={{ fontSize: `calc(${size}px / var(--graph-k, 1))` }}
+                          style={{ fontSize: `${size}px` }}
                         >
                           {node.label}
                         </text>
+                      </g>
                       </g>
                       </g>
                     )

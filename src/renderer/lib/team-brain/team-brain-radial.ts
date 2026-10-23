@@ -18,12 +18,17 @@ export interface RadialNode {
   section: string | null
   depth: number
   angle: number
+  /** A folded folder: how many items it holds. */
+  hidden?: number
+  /** A folder whose contents aren't drawn yet, folded or not listed: choosing it opens it. */
+  folded?: boolean
   parent: string | null
   /** For a file: the page, where it sits in the drive, and its folder. */
   file?: { node: TeamBrainNode; path: string; folder?: TeamBrainNode }
 }
 
-export const RADIAL_ROOT = 'team-brain'
+/** The middle's id: a drive path never starts with `/`, so no page or folder can take it. */
+export const RADIAL_ROOT = '/'
 
 /** Turn a ring position into a point, with the middle at the origin. */
 export function polar(angle: number, radius: number) {
@@ -42,7 +47,9 @@ export function radialTree(drive: readonly TeamBrainNode[], { sectionGap = 0 }: 
       const at = `${path}/${node.name}`
       const radial: RadialNode = {
         id: node.id,
-        label: node.name.replace(/\.md$/, ''),
+        label: node.hidden ? `${node.name} · ${node.hidden}` : node.name.replace(/\.md$/, ''),
+        hidden: node.hidden,
+        folded: node.kind === 'folder' && (!!node.hidden || node.children === undefined),
         kind: node.kind,
         section: section ?? node.id,
         depth: parent.depth + 1,

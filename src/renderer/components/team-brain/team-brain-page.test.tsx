@@ -17,14 +17,14 @@ const { app, user } = vi.hoisted(() => {
   return {
     app: {
       calls,
+      agentsPending: false,
       agents: [] as Array<{ slug: string; displaySlug: string; name: string; status: string; avatar: null; teamBrain?: true }>,
       instructions: '',
       install: record('install', { slug: 'team-brain', onboardingFirstPrompt: 'Set up our team brain' }),
-      addMount: vi.fn(async ({ agentSlug }: { agentSlug: string }) => {
-        calls.push(`mount ${agentSlug}`)
+      addMount: vi.fn(async ({ agentSlug, readOnly }: { agentSlug: string; readOnly?: boolean }) => {
+        calls.push(`mount ${agentSlug}${readOnly ? ' read-only' : ''}`)
         return { id: `m-${agentSlug}`, volumeId: 'vol1', name: 'Team Brain' }
       }),
-      setReadOnly: vi.fn(async ({ agentSlug }: { agentSlug: string }) => { calls.push(`read-only ${agentSlug}`) }),
       startAgent: vi.fn(() => { calls.push('warm-start') }),
       deleteAgent: vi.fn(async (slug: string) => { calls.push(`delete agent ${slug}`) }),
       deleteVolume: vi.fn(async (id: string) => { calls.push(`delete drive ${id}`) }),
@@ -45,14 +45,13 @@ vi.mock('@renderer/hooks/use-agent-templates', async () => {
   }
 })
 vi.mock('@renderer/hooks/use-agents', () => ({
-  useAgents: () => ({ data: app.agents }),
+  useAgents: () => ({ data: app.agentsPending ? undefined : app.agents, isPending: app.agentsPending }),
   useDeleteAgent: () => ({ mutateAsync: app.deleteAgent }),
   useStartAgent: () => ({ mutate: app.startAgent }),
   useUpdateAgent: () => ({ mutateAsync: app.updateAgent }),
 }))
 vi.mock('@renderer/hooks/use-mounts', () => ({
   useAddMount: () => ({ mutateAsync: app.addMount }),
-  useSetMountReadOnly: () => ({ mutateAsync: app.setReadOnly }),
 }))
 vi.mock('@renderer/hooks/use-volume-definitions', () => ({
   useDeleteVolumeDefinition: () => ({ mutateAsync: app.deleteVolume }),
@@ -110,6 +109,13 @@ async function saveDrive(clicker: ReturnType<typeof userEvent.setup>) {
 }
 
 describe('TeamBrainPage', () => {
+  it('shows nothing while the agents load, so a reload never flashes the pitch before the home page', () => {
+    app.agentsPending = true
+    const { container } = render(<TeamBrainPage />)
+    expect(container).toBeEmptyDOMElement()
+    app.agentsPending = false
+  })
+
   it('opens on the pitch, and Set up opens the modal at where it lives with nothing chosen', async () => {
     render(<TeamBrainPage />)
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('One source of truth for every agent.')
@@ -150,7 +156,7 @@ describe('TeamBrainPage', () => {
 
     const launch = app.calls.slice(3)
     expect(launch.slice(0, 3)).toEqual(['instructions', 'record', 'refresh agents'])
-    expect(launch).toEqual(expect.arrayContaining(['mount writer', 'read-only writer', 'grant writer', 'session']))
+    expect(launch).toEqual(expect.arrayContaining(['mount writer read-only', 'grant writer', 'session']))
     expect(launch.some((call) => call.endsWith('planner'))).toBe(false)
     expect(app.instructions).toBe('Brain: `/mounts/Team Brain`. Schedule: weekly, Mondays at midnight (cron `0 0 * * 1`).')
 

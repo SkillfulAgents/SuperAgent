@@ -1,7 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { Brain, Folder, Loader2, X } from 'lucide-react'
 import { useAgents } from '@renderer/hooks/use-agents'
-import { Switch } from '@renderer/components/ui/switch'
 import { useUser } from '@renderer/context/user-context'
 import { volumeSetupRegistry } from '@renderer/components/volumes/volume-setup-registry'
 import { parseVolumeSource, type VolumeSetupDefinition } from '@renderer/components/volumes/volume-setup'
@@ -20,11 +19,11 @@ import {
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@renderer/components/ui/dialog'
-import { useTeamBrain, type TeamBrainStore } from '@renderer/lib/team-brain/team-brain-store'
+import { usesTeamBrain, useTeamBrain, type TeamBrainStore } from '@renderer/lib/team-brain/team-brain-store'
 import { TEAM_BRAIN_STEPS, type TeamBrainLocationId, type TeamBrainSourceId, type TeamBrainStep } from '@renderer/lib/team-brain/team-brain-schema'
 import { TeamBrainSourceIcon } from './team-brain-source-icon'
 import { LocationChoices, ScheduleChoices } from './team-brain-choices'
-import { AgentAccessList } from './team-brain-agent-access'
+import { AgentAccessList, EveryAgentRow } from './team-brain-agent-access'
 
 /** The rail's names for each step. */
 const STEP_LABELS: Record<TeamBrainStep, string> = {
@@ -334,23 +333,15 @@ function AgentsStep({ tb, nav }: { tb: TeamBrainStore; nav: StepNav }) {
       back={nav.back}
       next={{ label: nav.nextLabel, onClick: nav.next }}
     >
-      <div className="flex items-center gap-3 pb-3" data-testid="team-brain-every-agent">
-        <span className="min-w-0 flex-1">
-          <span className="block text-[13px] font-medium">Every agent</span>
-          <span className="block text-[12px] text-muted-foreground">
-            {canGoGlobal ? 'Includes agents you make later.' : 'Only a drive everyone can add can go to every agent.'}
-          </span>
-        </span>
-        <Switch
-          checked={tb.state.everyAgent}
-          disabled={!canGoGlobal}
-          onCheckedChange={tb.setEveryAgent}
-          aria-label="Every agent"
-          data-testid="team-brain-every-agent-switch"
-        />
-      </div>
+      <EveryAgentRow checked={tb.state.everyAgent} canGoGlobal={canGoGlobal} onCheckedChange={tb.setEveryAgent} className="pb-3" />
       {agents.length > 0 ? (
-        <AgentAccessList agents={agents} everyAgent={tb.state.everyAgent} className="border-y" />
+        <AgentAccessList
+          agents={agents}
+          everyAgent={tb.state.everyAgent}
+          isOn={(slug) => usesTeamBrain(tb.state, slug)}
+          onToggle={tb.setUsesTeamBrain}
+          className="border-y"
+        />
       ) : (
         <p className="text-[13px] text-muted-foreground">No agents yet. Agents you make later can add the Team Brain drive from their Drives.</p>
       )}

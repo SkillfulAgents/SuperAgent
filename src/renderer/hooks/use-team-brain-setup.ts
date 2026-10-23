@@ -14,7 +14,8 @@ import { mountPathOf } from '@shared/lib/volumes/base-mountable-volume'
 import type { VolumeSource } from '@shared/lib/volumes/volume-config-schema'
 import { useDiscoverableAgents, useInstallAgentFromSkillset } from './use-agent-templates'
 import { useAgents, useDeleteAgent, useStartAgent, useUpdateAgent } from './use-agents'
-import { useAddMount, useSetMountReadOnly } from './use-mounts'
+import { useAddMount } from './use-mounts'
+import { useGiveTeamBrain } from './use-team-brain-access'
 import { useStartOnboardingSession } from './use-start-onboarding-session'
 import { useUpdateSettings } from './use-settings'
 import { useDeleteVolumeDefinition, useSaveVolumeDefinition } from './use-volume-definitions'
@@ -35,7 +36,7 @@ export function useTeamBrainSetup() {
   const { data: agents } = useAgents()
   const install = useInstallAgentFromSkillset()
   const addMount = useAddMount()
-  const setMountReadOnly = useSetMountReadOnly()
+  const giveTeamBrain = useGiveTeamBrain()
   const startAgent = useStartAgent()
   const deleteAgent = useDeleteAgent()
   const deleteVolume = useDeleteVolumeDefinition()
@@ -115,16 +116,7 @@ export function useTeamBrainSetup() {
     await queryClient.invalidateQueries({ queryKey: ['agents'] })
 
     // Running agents pick the drive up on their next start.
-    const attached = Promise.allSettled(chosen.map(async (slug) => {
-      if (!everyAgent) {
-        const mount = await addMount.mutateAsync({ agentSlug: slug, volumeId: prepared.volumeId })
-        await setMountReadOnly.mutateAsync({ agentSlug: slug, mountId: mount.id, readOnly: true })
-      }
-      const grant = await apiFetch(`/api/agents/${slug}/x-agent-policies/invoke/${prepared.agentSlug}`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'allow' }),
-      })
-      if (!grant.ok) throw new Error('Could not let it message Team Brain')
-    }))
+    const attached = Promise.allSettled(chosen.map((slug) => giveTeamBrain(slug, { volumeId: prepared.volumeId, brainSlug: prepared.agentSlug, mount: !everyAgent })))
     await startOnboardingSession(prepared.agentSlug, prepared.firstPrompt)
     const failed = (await attached).filter((result) => result.status === 'rejected').length
     if (failed > 0) {
