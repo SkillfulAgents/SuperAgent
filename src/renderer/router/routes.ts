@@ -183,6 +183,12 @@ export const agentHomeRoute = createRoute({
   // sibling route, so this leaf is just AgentHome.
   getParentRoute: () => agentLayoutRoute,
   path: '/',
+  // The Team Brain agent has no Agent Home: every way in lands on its own page. A failed read is left to the layout's
+  // loader, which owns turning it into not-found or an error.
+  loader: async ({ context, params }) => {
+    const agent = await context.queryClient.ensureQueryData(agentQuery(params.slug)).catch(() => null)
+    if (agent?.teamBrain) throw redirect({ to: '/team-brain', replace: true })
+  },
   component: AgentHomeRoute,
 })
 

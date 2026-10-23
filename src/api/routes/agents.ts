@@ -151,7 +151,7 @@ import {
 } from '@shared/lib/utils/chunked-upload'
 import { getMountsWithHealth, addMount, attachMount, removeMount, setMountReadOnly, volumeSummary } from '@shared/lib/services/mount-service'
 import { addMountSchema, updateMountSchema } from '@shared/lib/services/mount-schema'
-import { VolumeError } from '@shared/lib/services/volume-service'
+import { releaseVolume, VolumeError } from '@shared/lib/services/volume-service'
 import { volumeViewer } from '../lib/volume-access'
 import { readAgentHooks, removeAgentHook } from '@shared/lib/services/agent-hooks-service'
 import { removeAgentHookSchema } from '@shared/lib/services/agent-hooks-schema'
@@ -1531,6 +1531,11 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
 
     // Clean up x-agent invoke policies referencing this agent (caller or target).
     await deletePoliciesForAgent(slug)
+
+    // Turning Team Brain off: no other agent keeps reading a brain that no longer syncs. The drive and its files stay.
+    const teamBrain = getTeamBrain()
+    // Running agents drop it on their next start.
+    if (teamBrain?.agentSlug === slug) for (const agent of await releaseVolume(teamBrain.volumeId, slug)) await afterMountChange(agent)
 
     // Clean up all peripheral data (triggers, integrations, tasks, ACLs, etc.).
     // This runs BEFORE the irreversible workspace removal: if any peripheral

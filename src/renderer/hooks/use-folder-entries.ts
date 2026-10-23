@@ -27,8 +27,8 @@ export class FolderEntriesError extends Error {
 }
 
 /** One folder of a shared drive, as the drive's own file browser lists it. */
-export async function fetchVolumeFolder(volumeId: string, path: string): Promise<FolderEntriesResponse> {
-  const response = await apiFetch(`/api/volume-definitions/${encodeURIComponent(volumeId)}/folders?${new URLSearchParams({ path })}`)
+export async function fetchVolumeFolder(volumeId: string, path: string, init?: RequestInit): Promise<FolderEntriesResponse> {
+  const response = await apiFetch(`/api/volume-definitions/${encodeURIComponent(volumeId)}/folders?${new URLSearchParams({ path })}`, init)
   if (!response.ok) {
     const body: unknown = await response.json().catch(() => null)
     throw new FolderEntriesError(z.object({ error: z.string() }).safeParse(body).data?.error ?? 'Could not load this drive', response.status)

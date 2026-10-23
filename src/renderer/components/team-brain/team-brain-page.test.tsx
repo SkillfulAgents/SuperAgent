@@ -17,15 +17,15 @@ const { app, user } = vi.hoisted(() => {
   return {
     app: {
       calls,
+      agentsPending: false,
       agents: [] as Array<{ slug: string; displaySlug: string; name: string; status: string; avatar: null; teamBrain?: { volumeId: string } }>,
       instructions: '',
       record: undefined as { agentSlug: string; volumeId: string } | undefined,
       install: record('install', { slug: 'team-brain', onboardingFirstPrompt: 'Set up our team brain' }),
-      addMount: vi.fn(async ({ agentSlug }: { agentSlug: string }) => {
-        calls.push(`mount ${agentSlug}`)
+      addMount: vi.fn(async ({ agentSlug, readOnly }: { agentSlug: string; readOnly?: boolean }) => {
+        calls.push(`mount ${agentSlug}${readOnly ? ' read-only' : ''}`)
         return { id: `m-${agentSlug}`, volumeId: 'vol1', name: 'Team Brain' }
       }),
-      setReadOnly: vi.fn(async ({ agentSlug }: { agentSlug: string }) => { calls.push(`read-only ${agentSlug}`) }),
       startAgent: vi.fn(() => { calls.push('warm-start') }),
       deleteAgent: vi.fn(async (slug: string) => { calls.push(`delete agent ${slug}`) }),
       deleteVolume: vi.fn(async (id: string) => { calls.push(`delete drive ${id}`) }),
@@ -46,14 +46,13 @@ vi.mock('@renderer/hooks/use-agent-templates', async () => {
   }
 })
 vi.mock('@renderer/hooks/use-agents', () => ({
-  useAgents: () => ({ data: app.agents }),
+  useAgents: () => ({ data: app.agentsPending ? undefined : app.agents, isPending: app.agentsPending }),
   useDeleteAgent: () => ({ mutateAsync: app.deleteAgent }),
   useStartAgent: () => ({ mutate: app.startAgent }),
   useUpdateAgent: () => ({ mutateAsync: app.updateAgent }),
 }))
 vi.mock('@renderer/hooks/use-mounts', () => ({
   useAddMount: () => ({ mutateAsync: app.addMount }),
-  useSetMountReadOnly: () => ({ mutateAsync: app.setReadOnly }),
 }))
 vi.mock('@renderer/hooks/use-volume-definitions', () => ({
   useDeleteVolumeDefinition: () => ({ mutateAsync: app.deleteVolume }),
@@ -64,6 +63,7 @@ vi.mock('@renderer/hooks/use-settings', () => ({
   useUpdateSettings: () => ({ mutateAsync: app.updateSettings }),
 }))
 vi.mock('@renderer/hooks/use-start-onboarding-session', () => ({ useStartOnboardingSession: () => app.session }))
+vi.mock('@renderer/hooks/use-connected-accounts', () => ({ useConnectedAccounts: () => ({ data: undefined }) }))
 vi.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({ invalidateQueries: app.invalidate }) }))
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: vi.fn(async (url: string, init?: { method?: string }) => {
@@ -74,8 +74,9 @@ vi.mock('@renderer/lib/api', () => ({
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => user }))
 vi.mock('@renderer/context/onboarding-context', () => ({ useOnboarding: () => ({ setOnboarding: vi.fn() }) }))
 vi.mock('@renderer/components/ui/app-link', () => ({ AppLink: ({ children }: { children: unknown }) => <span>{children as string}</span> }))
-const { toast } = vi.hoisted(() => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), info: vi.fn() }) }))
-vi.mock('sonner', () => ({ toast }))
+vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), info: vi.fn() }) }))
+// The home page has its own tests; here it only needs to show up, for the right agent.
+vi.mock('./team-brain-overview', () => ({ TeamBrainOverview: ({ agent }: { agent: { slug: string } }) => <div data-testid="team-brain-home">{agent.slug}</div> }))
 // The drive's own set-up, reduced to its save.
 vi.mock('@renderer/components/volumes/volume-setup-registry', async (importOriginal) => {
   const { volumeSetupRegistry } = await importOriginal<typeof import('@renderer/components/volumes/volume-setup-registry')>()
@@ -110,21 +111,33 @@ afterEach(() => {
 
 async function saveDrive(clicker: ReturnType<typeof userEvent.setup>) {
   await clicker.click(screen.getByTestId('team-brain-start'))
+  // Choosing a home only selects it; Next opens its set-up.
   await clicker.click(screen.getByTestId('team-brain-location-googledrive'))
+  expect(screen.queryByTestId('drive-save')).toBeNull()
+  expect(screen.getByTestId('team-brain-next')).toHaveTextContent('Next: Set up Google Drive')
+  await clicker.click(screen.getByTestId('team-brain-next'))
   await clicker.click(screen.getByTestId('drive-save'))
 }
 
 describe('TeamBrainPage', () => {
+  it('shows nothing while the agents load, so a reload never flashes the pitch before the home page', () => {
+    app.agentsPending = true
+    const { container } = render(<TeamBrainPage />)
+    expect(container).toBeEmptyDOMElement()
+    app.agentsPending = false
+  })
+
   it('opens on the pitch, and Set up opens the modal at where it lives with nothing chosen', async () => {
     render(<TeamBrainPage />)
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('One source of truth for every agent.')
 
     await userEvent.click(screen.getByTestId('team-brain-start'))
     expect(screen.getByTestId('team-brain-onboarding-step')).toHaveAttribute('data-step', 'location')
-    // Every drive type the app has, and nothing else: the drives' own registry is the list.
-    const offered = screen.getAllByRole('radio').map((choice) => choice.dataset.testid?.replace('team-brain-location-', ''))
-    expect(offered).toEqual(Object.values(volumeSetupRegistry).map((drive) => drive.type))
-    for (const id of offered) expect(screen.getByTestId(`team-brain-location-${id}`)).toHaveAttribute('aria-checked', 'false')
+    // Every drive type the drives offer, Google Drive and Dropbox first, then the rest in the drives' own order.
+    const homes = screen.getAllByTestId(/^team-brain-location-/)
+    const rest = Object.values(volumeSetupRegistry).map((drive) => drive.type).filter((id) => id !== 'googledrive' && id !== 'dropbox')
+    expect(homes.map((home) => home.dataset.testid)).toEqual(['googledrive', 'dropbox', ...rest].map((id) => `team-brain-location-${id}`))
+    for (const home of homes) expect(home).toHaveAttribute('aria-checked', 'false')
     expect(screen.getByTestId('team-brain-next')).toBeDisabled()
   })
 
@@ -156,7 +169,7 @@ describe('TeamBrainPage', () => {
 
     const launch = app.calls.slice(3)
     expect(launch.slice(0, 3)).toEqual(['instructions', 'record', 'refresh agents'])
-    expect(launch).toEqual(expect.arrayContaining(['mount writer', 'read-only writer', 'grant writer', 'session']))
+    expect(launch).toEqual(expect.arrayContaining(['mount writer read-only', 'grant writer', 'session']))
     expect(launch.some((call) => call.endsWith('planner'))).toBe(false)
     expect(app.instructions).toBe('Brain: `/mounts/Team Brain`. Schedule: weekly, Mondays at midnight (cron `0 0 * * 1`).')
 
@@ -281,10 +294,10 @@ describe('TeamBrainPage', () => {
     expect(getTeamBrainState()).toMatchObject({ status: 'off', prepared: null, installing: null })
   })
 
-  it('shows the way to the Team Brain agent once set up', () => {
+  it('shows Team Brain’s home page once set up, for its agent', () => {
     app.agents = [{ ...agent('team-brain'), teamBrain: { volumeId: 'vol-1' } }]
     render(<TeamBrainPage />)
-    expect(screen.getByTestId('team-brain-ready')).toHaveTextContent('Open Team Brain')
+    expect(screen.getByTestId('team-brain-home')).toHaveTextContent('team-brain')
   })
 
   it('puts a drive set-up\u2019s buttons in the modal\u2019s own bar', async () => {
@@ -292,13 +305,14 @@ describe('TeamBrainPage', () => {
     render(<TeamBrainPage />)
     await clicker.click(screen.getByTestId('team-brain-start'))
     await clicker.click(screen.getByTestId('team-brain-location-s3'))
+    await clicker.click(screen.getByTestId('team-brain-next'))
     const footer = await screen.findByTestId('team-brain-drive-footer')
     expect(within(footer).getByTestId('team-brain-back')).toBeInTheDocument()
     expect(within(footer).getByTestId('team-brain-drive-submit')).toHaveTextContent('Test connection')
     expect(within(screen.getByTestId('team-brain-drive-setup')).queryByRole('button', { name: 'Cancel' })).toBeNull()
     // Back returns to the homes.
     await clicker.click(within(footer).getByTestId('team-brain-back'))
-    expect(screen.getByTestId('team-brain-location-s3')).toBeInTheDocument()
+    expect(screen.getByTestId('team-brain-location-s3')).toHaveAttribute('aria-checked', 'true')
   })
 
   it('leaves set-up to admins in a team workspace', () => {

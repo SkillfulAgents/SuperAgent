@@ -733,6 +733,175 @@ html[data-keyboard-open] [data-composer-footer] {
   mask-image: linear-gradient(to bottom, #000 0%, #000 55%, transparent 92%);
 }
 
+/* Team Brain's radial tree floats on the page with no frame: whatever pans or
+   zooms past its box dissolves over the last 40px of each side instead of
+   stopping on a hard line. Two feathers, one per axis, intersected so the
+   corners fade on both. */
+.team-brain-radial-fade {
+  -webkit-mask-image:
+    linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent),
+    linear-gradient(to bottom, transparent, #000 40px, #000 calc(100% - 40px), transparent);
+  mask-image:
+    linear-gradient(to right, transparent, #000 40px, #000 calc(100% - 40px), transparent),
+    linear-gradient(to bottom, transparent, #000 40px, #000 calc(100% - 40px), transparent);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+}
+
+/* Team Brain's tree while its drive is first listed (TeamBrainRadialLoading in
+   team-brain-radial.tsx): it fades in after a beat, so a quick listing never
+   flashes it, and a light runs round each ring at its own pace. */
+@keyframes team-brain-radial-wait-in {
+  from { opacity: 0; }
+}
+.team-brain-radial-wait-in {
+  animation: team-brain-radial-wait-in 500ms ease-out 250ms backwards;
+}
+@keyframes team-brain-radial-wait {
+  to { transform: rotate(360deg); }
+}
+.team-brain-radial-wait {
+  transform-box: view-box;
+  animation: team-brain-radial-wait 9s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .team-brain-radial-wait-in, .team-brain-radial-wait { animation: none; }
+}
+
+/* Team Brain's settings panel (team-brain-overview.tsx) slides in from the
+   page's right edge and eases to a stop, an ease-out with a long tail, and
+   slides back out accelerating away. The page's column makes room for it on
+   the same curves, so the two move as one. */
+/* Transform only, no opacity: an ancestor whose opacity animates becomes the
+   backdrop root of the glass cards inside, which then blur nothing behind the
+   panel. */
+@keyframes team-brain-settings-in {
+  from { transform: translateX(calc(100% + 24px)); }
+  to { transform: translateX(0); }
+}
+.team-brain-settings-in {
+  animation: team-brain-settings-in 450ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+/* Out by an animation too, not a transition: going from the in-animation's
+   held frame to a transition snaps instead of sliding. */
+@keyframes team-brain-settings-out {
+  from { transform: translateX(0); }
+  to { transform: translateX(calc(100% + 24px)); }
+}
+.team-brain-settings-out {
+  pointer-events: none;
+  animation: team-brain-settings-out 300ms cubic-bezier(0.55, 0, 1, 0.45) both;
+}
+/* Beside the page it comes out from behind the page's column instead, and
+   goes back under it, on the same curves. */
+@keyframes team-brain-settings-from-column {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+@keyframes team-brain-settings-into-column {
+  from { transform: translateX(0); }
+  to { transform: translateX(-100%); }
+}
+.team-brain-settings-in[data-placement="beside"] { animation-name: team-brain-settings-from-column; }
+.team-brain-settings-out[data-placement="beside"] { animation-name: team-brain-settings-into-column; }
+.team-brain-column {
+  transition: padding 300ms cubic-bezier(0.55, 0, 1, 0.45);
+}
+.team-brain-column[data-settings="open"] {
+  transition-duration: 450ms;
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* The page behind Team Brain's docked status row, shown once the dock sticks at
+   the top: solid down to the composer, then gone over the composer's rounded
+   top, so summaries going under it don't show at its corners. */
+.team-brain-dock-cover {
+  opacity: 0;
+  transition: opacity 150ms ease-out;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+}
+[data-stuck] .team-brain-dock-cover { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .team-brain-settings-in, .team-brain-settings-out { animation: none; }
+  .team-brain-column, .team-brain-dock-cover { transition: none; }
+}
+
+/* Team Brain's radial tree opening (`ENTRY` in team-brain-radial.tsx): every
+   timing is per element, as `--arrive-at` (when the signal reaches a node) or
+   `--grow-at` / `--grow-ms` (when it leaves along a branch and how long it
+   takes), so the classes only carry the motion. The component drops them once
+   the opening is over, so nothing here holds a final frame: `backwards` fills
+   keep elements hidden until their turn, then let go. */
+.team-brain-radial-grow {
+  stroke-dasharray: 1 1;
+  animation: team-brain-radial-grow var(--grow-ms) cubic-bezier(0.45, 0, 0.55, 1) var(--grow-at) backwards;
+}
+@keyframes team-brain-radial-grow {
+  from { stroke-dashoffset: 1; }
+  to { stroke-dashoffset: 0; }
+}
+/* The signal's head: a short dash in the section's colour at the tip of the
+   growing branch (same timing), fading as it lands. `--head` is its length
+   as a fraction of the branch, given a unit so both ends of the run are
+   lengths: a bare number at one end and a calc at the other won't
+   interpolate, and the head would jump to the rim halfway. */
+.team-brain-radial-impulse {
+  fill: none;
+  opacity: 0;
+  stroke-dasharray: calc(var(--head) * 1px) 2px;
+  animation:
+    team-brain-radial-impulse var(--grow-ms) cubic-bezier(0.45, 0, 0.55, 1) var(--grow-at),
+    team-brain-radial-impulse-fade var(--grow-ms) linear var(--grow-at);
+}
+@keyframes team-brain-radial-impulse {
+  from { stroke-dashoffset: calc(var(--head) * 1px); }
+  to { stroke-dashoffset: calc((var(--head) - 1) * 1px); }
+}
+@keyframes team-brain-radial-impulse-fade {
+  0% { opacity: 0; }
+  15%, 75% { opacity: 0.9; }
+  100% { opacity: 0; }
+}
+/* A node lights as the signal reaches it: in from nothing, a touch past full
+   size, then back. */
+.team-brain-radial-pop {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: team-brain-radial-pop 460ms cubic-bezier(0.34, 1.56, 0.64, 1) var(--arrive-at) backwards;
+}
+@keyframes team-brain-radial-pop {
+  from { opacity: 0; transform: scale(0); }
+  to { opacity: 1; transform: scale(1); }
+}
+/* With it, a soft bloom of the page's colour that spreads and is gone. */
+.team-brain-radial-bloom {
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: team-brain-radial-bloom 1000ms cubic-bezier(0.2, 0.7, 0.3, 1) var(--arrive-at);
+}
+@keyframes team-brain-radial-bloom {
+  from { opacity: 0.4; transform: scale(1); }
+  to { opacity: 0; transform: scale(3.6); }
+}
+/* Then the page's name resolves from a soft blur, as streamed words do. */
+.team-brain-radial-name {
+  animation: team-brain-radial-name 600ms cubic-bezier(0.2, 0.7, 0.3, 1) calc(var(--arrive-at) + 90ms) backwards;
+}
+@keyframes team-brain-radial-name {
+  from { opacity: 0; filter: blur(4px); }
+  to { opacity: 1; filter: blur(0); }
+}
+/* A section the page takes away plays the same motion backwards, from each
+   node's `--arrive-at` (pages first, the section last), and holds its last
+   frame, gone, until the page drops it. */
+.team-brain-radial-grow.team-brain-radial-out,
+.team-brain-radial-pop.team-brain-radial-out,
+.team-brain-radial-name.team-brain-radial-out {
+  animation-direction: reverse;
+  animation-fill-mode: forwards;
+}
+
 /* Boundary feather for the bloom's wrapper. The blob union owns the visible
    silhouette; this only guarantees the energy reaches zero BEFORE the
    overflow clip does — the blur bleeds past the stage, and wherever it still
