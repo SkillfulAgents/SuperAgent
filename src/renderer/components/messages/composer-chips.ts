@@ -196,19 +196,30 @@ export async function checkBeforeSend(text: string, send: ChipSend): Promise<Chi
 /**
  * The draft as the agent receives it: each backed chip's marker replaced by its
  * agent text, and the people and agents it names listed after it. `silent`
- * tells the agent the message only notified the teammates it tags.
+ * tells the agent the message only notified the teammates it tags. Two mentions
+ * that share a name (two chats titled alike) get `(2)`, `(3)` added, because
+ * the sent bubble and `draftFromAgentText` find a mention by its name.
  */
 export function chipsToAgentText(text: string, context: ChipContext, { silent = false } = {}): string {
   const mentions = new Map<string, Mention>()
   const body = text.replace(CHIP_MARKER, (marker: string, kind: string, referent: string, label: string) => {
-    const chip = registeredChip([marker, kind, referent, label])
-    if (!chip || !isChipBacked(chip, context)) return marker
-    const chipKind = getChipKind(chip)
+    const found = registeredChip([marker, kind, referent, label])
+    if (!found || !isChipBacked(found, context)) return marker
+    const chipKind = getChipKind(found)
+    const key = `${found.kind}:${found.referent}`
+    const chip = chipKind?.mention ? { ...found, label: mentions.get(key)?.name ?? uniqueName(found.label, mentions) } : found
     const mention = chipKind?.mention?.(chip, context)
-    if (mention) mentions.set(`${chip.kind}:${chip.referent}`, mention)
+    if (mention) mentions.set(key, mention)
     return chipKind?.toAgentText?.(chip) ?? marker
   })
   return appendMentions(body, [...mentions.values()], { silent })
+}
+
+function uniqueName(label: string, mentions: ReadonlyMap<string, Mention>): string {
+  const taken = new Set([...mentions.values()].map((mention) => mention.name))
+  let name = label
+  for (let n = 2; taken.has(name); n++) name = `${label} (${n})`
+  return name
 }
 
 export const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

@@ -93,6 +93,19 @@ describe('composer chips', () => {
       expect(draftFromAgentText('no mentions here', agentId)).toBe('no mentions here')
     })
 
+    it('numbers two chats with the same title, so each keeps its own chat', () => {
+      const monday = formatChipMarker({ kind: 'chat', referent: 'run-monday', label: 'Daily sales report' })
+      const tuesday = formatChipMarker({ kind: 'chat', referent: 'run-tuesday', label: 'Daily sales report' })
+      const sent = chipsToAgentText(`compare ${monday} with ${tuesday}, mostly ${monday}`, context)
+      expect(sent).toBe(
+        'compare @Daily sales report with @Daily sales report (2), mostly @Daily sales report\n\n[Mentioned:]\n'
+        + '- @Daily sales report: chat in this agent, session id run-monday (read it with: python3 /opt/gamut/bin/read-session.py run-monday)\n'
+        + '- @Daily sales report (2): chat in this agent, session id run-tuesday (read it with: python3 /opt/gamut/bin/read-session.py run-tuesday)',
+      )
+      const tuesdayNumbered = formatChipMarker({ kind: 'chat', referent: 'run-tuesday', label: 'Daily sales report (2)' })
+      expect(draftFromAgentText(sent, (slug) => slug)).toBe(`compare ${monday} with ${tuesdayNumbered}, mostly ${monday}`)
+    })
+
     it('reads the longer of two names that share a start', () => {
       const ann = formatChipMarker({ kind: 'user', referent: 'ann-id', label: 'Ann' })
       const annLee = formatChipMarker({ kind: 'user', referent: 'ann-lee-id', label: 'Ann Lee' })
