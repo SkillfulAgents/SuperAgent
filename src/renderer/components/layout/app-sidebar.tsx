@@ -430,11 +430,19 @@ function SessionsSkeleton() {
 }
 
 // Only this label subscribes to the clock; the expensive agent row stays memoized.
-function AgentLastRun({ date }: { date: ApiAgent['lastActivityAt'] }) {
+// The row's second line: when the agent last ran, or "zZzz" while its avatar
+// shows it asleep (agentAvatarState), so the text and the faceless avatar
+// always agree. Screen readers hear "Sleeping" instead of the letters.
+function AgentLastRun({ date, sleeping }: { date: ApiAgent['lastActivityAt']; sleeping: boolean }) {
   useMinuteClock()
   return (
     <span className="block truncate text-[11px] leading-tight text-muted-foreground/60">
-      {formatLastRun(date) ?? 'Last run never'}
+      {sleeping ? (
+        <>
+          <span aria-hidden>zZzz</span>
+          <span className="sr-only">Sleeping</span>
+        </>
+      ) : formatLastRun(date) ?? 'Last run never'}
     </span>
   )
 }
@@ -630,7 +638,7 @@ const AgentMenuItemInner = React.forwardRef<
                 className="min-w-0 outline-none after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
               >
                 <span className="block truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
-                <AgentLastRun date={agent.lastActivityAt} />
+                <AgentLastRun date={agent.lastActivityAt} sleeping={avatarState === 'sleeping'} />
               </AppLink>
               {isShared && <SidebarMemberIndicator agentSlug={agent.slug} agentName={agent.name} memberCount={memberCount} selected={isSelected} />}
               {/* The trailing slot holds the new-session control: hovering the

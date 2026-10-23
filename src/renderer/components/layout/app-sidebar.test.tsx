@@ -690,6 +690,23 @@ describe('AppSidebar — agent rows', () => {
     }
   })
 
+  it('shows zZzz (read as Sleeping) instead of the last run while the agent sleeps', () => {
+    mockUseAgents.mockReturnValue({
+      data: [
+        makeAgent({ status: 'stopped', lastActivityAt: new Date('2026-10-09T09:00:00Z') }),
+        // Stopped but with something unread: the avatar shows it, not sleep.
+        makeAgent({ slug: 'unread-agent', displaySlug: 'unread-agent', name: 'Unread Agent', status: 'stopped', hasUnreadNotifications: true, lastActivityAt: null }),
+      ],
+      isLoading: false,
+      error: null,
+    })
+    renderWithProviders(<AppSidebar />)
+    const sleeping = screen.getByTestId('agent-item-test-agent')
+    expect(within(sleeping).getByText('zZzz')).toHaveAttribute('aria-hidden', 'true')
+    expect(within(sleeping).getByText('Sleeping')).toHaveClass('sr-only')
+    expect(screen.getByTestId('agent-item-unread-agent')).toHaveTextContent('Last run never')
+  })
+
   it('ages last-run labels without rerendering rows and immediately accepts new activity', () => {
     vi.useFakeTimers({
       now: new Date('2026-10-09T12:00:00Z'),
