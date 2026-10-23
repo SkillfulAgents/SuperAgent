@@ -9,6 +9,7 @@ import agentMembers, { agentMembersBatch } from './agent-members'
 import { notifySessionMentions, readSessionMentions } from './session-mentions'
 import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
 import { parseMentions } from '@shared/lib/utils/mentions'
+import { parseDictationNote } from '@shared/lib/utils/dictation-note'
 import { notifyAgentMembersChanged, changeMemberRole, removeMember, countMembersWithMinRole } from '@shared/lib/services/agent-members-service'
 import { formatSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
@@ -81,6 +82,15 @@ import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { isSystemMessageText } from '@shared/lib/utils/system-message'
 import { credentialBroker } from '../credentials/credential-broker'
 import { CredentialBrokerError } from '../credentials/types'
+import {
+  completeLoginBodySchema,
+  fillLoginBodySchema,
+  fillLoginCredentialBodySchema,
+  loginContextSchema,
+  loginFillResultSchema,
+  type LoginContext,
+  type LoginFillResult,
+} from '@shared/lib/tools/request-login/login-request'
 import type {
   UserInputRequestKind,
   UserInputRequestScope,
@@ -124,6 +134,7 @@ import { scheduledTasks, webhookTriggers, chatIntegrations, connectedAccounts, a
 import { eq, and, inArray, isNotNull, desc, count } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
+import { isOwnOrigin } from '@shared/lib/auth/own-origin'
 import { getViewerUserId, ownerScope } from '@shared/lib/auth/ownership'
 import { normalizeMcpRequestLog, normalizeProxyRequestLog } from '@shared/lib/types/request-log'
 import { withRuleNames } from '@shared/lib/proxy/rules/log-names'
@@ -1271,8 +1282,8 @@ async function generateAndUpdateSessionNameAsync(
   firstMessage: string,
   agentName: string
 ): Promise<void> {
-  // Named from what the person wrote, without the block that tells the agent who it tags.
-  const message = parseMentions(firstMessage).cleanText
+  // Named from what the person wrote, without the notes that tell the agent who it tags and that it was dictated.
+  const message = parseMentions(parseDictationNote(firstMessage).cleanText).cleanText
   let sessionName: string | null = null
   // The E2E mock avoids all real provider calls — but this host-direct SDK
   // call bypassed it, so every test session made a doomed HTTPS round trip
@@ -3796,21 +3807,44 @@ async function refreshBrowserInputUrl(
   return url
 }
 
+/**
+ * The open request a password-manager lookup belongs to: a browser hand-off,
+ * or a sign-in form (request_login), whose fields' frame is the page.
+ */
+async function gateCredentialRequest(c: Context, toolUseId: string): Promise<Response | 'browser_input' | 'login'> {
+  const open = await agentRegistry.get(getAgentId(c)).inputs.get(toolUseId)
+  const kind = open?.kind === 'login' ? 'login' : 'browser_input'
+  return (await gateOpenRequestAccess(c, toolUseId, kind)) ?? kind
+}
+
+/** The sign-in form's context when it can be read now; null while it cannot. */
+async function loginRequestContext(agentSlug: string, toolUseId: string): Promise<LoginContext | null> {
+  const read = await readLoginContext(agentSlug, toolUseId)
+  return read.ok ? read.context : null
+}
+
 // GET /api/agents/:id/sessions/:sessionId/browser-credentials - Metadata-only suggestions
 agents.get('/:id/sessions/:sessionId/browser-credentials', IsAdmin(), async (c) => {
   const toolUseId = c.req.query('toolUseId')
   if (!toolUseId) return c.json({ error: 'toolUseId is required' }, 400)
-  const gated = await gateOpenRequestAccess(c, toolUseId, 'browser_input')
-  if (gated) return gated
+  const kind = await gateCredentialRequest(c, toolUseId)
+  if (kind instanceof Response) return kind
 
   const agentSlug = getAgentId(c)
   const sessionId = c.req.param('sessionId')
   try {
-    // New requests carry a harness-probed URL. Explicit refreshes and stale or
-    // recovered requests re-probe the live browser and replace that context.
-    const forceRefresh = c.req.query('refresh') === 'true'
-    const url = (!forceRefresh && await capturedBrowserInputUrl(agentSlug, toolUseId)) ||
-      await refreshBrowserInputUrl(agentSlug, sessionId, toolUseId)
+    let url: string
+    if (kind === 'login') {
+      const context = await loginRequestContext(agentSlug, toolUseId)
+      if (!context) return c.json({ error: 'The sign-in form is not ready yet' }, 409)
+      url = context.url
+    } else {
+      // New requests carry a harness-probed URL. Explicit refreshes and stale or
+      // recovered requests re-probe the live browser and replace that context.
+      const forceRefresh = c.req.query('refresh') === 'true'
+      url = (!forceRefresh && await capturedBrowserInputUrl(agentSlug, toolUseId)) ||
+        await refreshBrowserInputUrl(agentSlug, sessionId, toolUseId)
+    }
     const result = await credentialBroker.suggest(
       { agentSlug, sessionId, toolUseId },
       url,
@@ -3830,8 +3864,8 @@ agents.post(
   async (c) => {
   try {
     const body = c.req.valid('json')
-    const gated = await gateOpenRequestAccess(c, body.toolUseId, 'browser_input')
-    if (gated) return gated
+    const gated = await gateCredentialRequest(c, body.toolUseId)
+    if (gated instanceof Response) return gated
     if (!passwordManagerIsConfigured(body.provider)) {
       return c.json({ error: 'Configure this password manager in Browser Use settings' }, 409)
     }
@@ -3863,8 +3897,8 @@ agents.post(
   async (c) => {
   try {
     const body = c.req.valid('json')
-    const gated = await gateOpenRequestAccess(c, body.toolUseId, 'browser_input')
-    if (gated) return gated
+    const gated = await gateCredentialRequest(c, body.toolUseId)
+    if (gated instanceof Response) return gated
     if (!passwordManagerIsConfigured(body.provider)) {
       return c.json({ error: 'Configure this password manager in Browser Use settings' }, 409)
     }
@@ -3976,6 +4010,263 @@ agents.post(
   }
   },
 )
+
+// ── Sign-in requests (request_login) ────────────────────────────────────────
+// The agent maps a page's sign-in fields; the user types the values into the
+// app's form, and they go to the container's page writer. Values are never
+// logged, echoed, or stored: they cross this route once, in the body.
+
+const loginContextErrorSchema = z.object({
+  error: z.string().optional(),
+  problems: z.array(z.string()).optional(),
+})
+const containerErrorSchema = z.object({ error: z.string() })
+
+type LoginContextRead =
+  | { ok: true; context: LoginContext }
+  | { ok: false; status: 404 | 409 | 502; error: string; problems: string[] }
+
+/**
+ * The sign-in form's context as the browser reported it when it located the
+ * fields: kept on the request once read, and read from the container again
+ * when the request does not hold it (a request recovered after a restart).
+ * 404 means still locating — the app tries again; 409 means the fields the
+ * agent picked could not be used.
+ */
+async function readLoginContext(agentSlug: string, toolUseId: string): Promise<LoginContextRead> {
+  const actor = agentRegistry.get(agentSlug)
+  const request = await actor.inputs.get(toolUseId)
+  const cached = loginContextSchema.safeParse(request?.kind === 'login' ? request.payload.login : undefined)
+  if (cached.success) return { ok: true, context: cached.data }
+  try {
+    // The container answers once the agent's tool has located the fields.
+    const response = await actor.container.fetch(`/browser/login/context?toolUseId=${encodeURIComponent(toolUseId)}`)
+    const data: unknown = await response.json().catch(() => null)
+    if (!response.ok) {
+      const failure = loginContextErrorSchema.safeParse(data)
+      const problems = failure.success ? failure.data.problems ?? [] : []
+      return response.status === 404
+        ? { ok: false, status: 404, error: 'The sign-in form is still being located', problems }
+        : { ok: false, status: 409, error: 'The browser could not locate the sign-in fields', problems }
+    }
+    const context = loginContextSchema.safeParse(data)
+    if (!context.success) return { ok: false, status: 502, error: 'The browser returned an unreadable sign-in form', problems: [] }
+    await actor.inputs.enrich(toolUseId, 'login', { login: context.data })
+    return { ok: true, context: context.data }
+  } catch (error) {
+    console.error('[login-request] Reading the sign-in form failed:', error instanceof Error ? error.message : error)
+    return { ok: false, status: 502, error: 'The browser is unavailable', problems: [] }
+  }
+}
+
+/**
+ * A form for this app itself, at any of its addresses (see isOwnOrigin):
+ * signing the agent's browser in there would hand it the user's session here.
+ */
+function signsInToThisApp(c: Context, origin: string): boolean {
+  return isOwnOrigin(origin, [c.req.header('origin'), c.req.url])
+}
+
+function thisAppProblem(origin: string) {
+  return {
+    error: 'This sign-in form is for this app itself',
+    // The form offers no way around it: not even signing in on the page by hand.
+    reason: 'this_app' as const,
+    problems: [`The fields are on ${origin}, this app's own address: the agent's browser is not signed in to it.`],
+  }
+}
+
+/**
+ * Hand the values to the container, which writes them into the page (re-
+ * checking the origin in the page) and answers the agent's parked call.
+ * On success the request is settled here too; on failure it stays open.
+ */
+async function fillLoginInContainer(
+  agentSlug: string,
+  sessionId: string,
+  toolUseId: string,
+  context: LoginContext,
+  values: string[],
+): Promise<{ ok: true; result: LoginFillResult } | { ok: false; status: 409 | 502; error: string }> {
+  const actor = agentRegistry.get(agentSlug)
+  const response = await actor.container.fetch('/browser/login/fill', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, toolUseId, expectedOrigin: context.origin, values }),
+  })
+  const data: unknown = await response.json().catch(() => null)
+  if (!response.ok) {
+    const failure = containerErrorSchema.safeParse(data)
+    return { ok: false, status: response.status === 409 ? 409 : 502, error: failure.success ? failure.data.error : 'The sign-in form could not be filled' }
+  }
+  const result = loginFillResultSchema.safeParse(data)
+  if (!result.success) return { ok: false, status: 502, error: 'The browser returned an unreadable result' }
+  await actor.inputs.complete(sessionId, toolUseId, 'answered')
+  return { ok: true, result: result.data }
+}
+
+// GET /api/agents/:id/sessions/:sessionId/login-request - Where the fields are
+agents.get('/:id/sessions/:sessionId/login-request', AgentUser(), async (c) => {
+  const toolUseId = c.req.query('toolUseId')
+  if (!toolUseId) return c.json({ error: 'toolUseId is required' }, 400)
+  const gated = await gateOpenRequestAccess(c, toolUseId, 'login')
+  if (gated) return gated
+
+  const read = await readLoginContext(getAgentId(c), toolUseId)
+  if (!read.ok) return c.json({ error: read.error, problems: read.problems }, read.status)
+  if (signsInToThisApp(c, read.context.origin)) return c.json(thisAppProblem(read.context.origin), 409)
+  return c.json(read.context)
+})
+
+// POST /api/agents/:id/sessions/:sessionId/fill-login - Write the user's values into the page
+agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
+  let claimed: { id: string; token: string } | null = null
+  c.header('Cache-Control', 'no-store')
+  try {
+    // Parsed by hand: a validator's error response could quote the values.
+    const parsed = fillLoginBodySchema.safeParse(await c.req.json().catch(() => null))
+    if (!parsed.success) return c.json({ error: 'Invalid sign-in request' }, 400)
+    const body = parsed.data
+    const gated = await gateRequestDecision(c, body.toolUseId, 'login')
+    if (gated) return gated
+
+    const agentSlug = getAgentId(c)
+    const sessionId = c.req.param('sessionId')
+    const actor = agentRegistry.get(agentSlug)
+    // The values go only to the origin the browser reported and the form
+    // showed — never to one the client names.
+    const read = await readLoginContext(agentSlug, body.toolUseId)
+    if (!read.ok || read.context.origin !== body.origin) {
+      return c.json({ error: 'The sign-in form changed. Reload it and try again.' }, 409)
+    }
+    const context = read.context
+    if (signsInToThisApp(c, context.origin)) return c.json({ error: thisAppProblem(context.origin).error }, 409)
+    if (body.values.length !== context.fields.length) {
+      return c.json({ error: 'One value per field is required' }, 400)
+    }
+    const claim = await actor.inputs.claim(body.toolUseId)
+    if (!claim) return c.json({ error: 'This sign-in request is already being handled' }, 409)
+    claimed = { id: body.toolUseId, token: claim.token }
+
+    const filled = await fillLoginInContainer(agentSlug, sessionId, body.toolUseId, context, body.values)
+    // Still open on failure: the user can try again or sign in on the page.
+    if (!filled.ok) return c.json({ error: filled.error }, filled.status)
+    claimed = null
+    trackServerEvent('login_request_filled', {
+      submitted: filled.result.submitted,
+      filled: filled.result.filled,
+      failed: filled.result.failed,
+      source: 'form',
+    })
+    return c.json(filled.result)
+  } catch (error) {
+    console.error('[fill-login] Failed:', error instanceof Error ? error.message : 'Unknown error')
+    return c.json({ error: 'The sign-in form could not be filled' }, 500)
+  } finally {
+    if (claimed) await agentRegistry.get(getAgentId(c)).inputs.releaseClaim(claimed.id, claimed.token)
+  }
+})
+
+// POST /api/agents/:id/sessions/:sessionId/fill-login-credential - A saved login from the
+// host's password manager, straight into the page: the secret never reaches the renderer.
+agents.post(
+  '/:id/sessions/:sessionId/fill-login-credential',
+  IsAdmin(),
+  zValidator('json', fillLoginCredentialBodySchema),
+  async (c) => {
+  let claimed: { id: string; token: string } | null = null
+  c.header('Cache-Control', 'no-store')
+  try {
+    const body = c.req.valid('json')
+    const gated = await gateRequestDecision(c, body.toolUseId, 'login')
+    if (gated) return gated
+
+    const agentSlug = getAgentId(c)
+    const sessionId = c.req.param('sessionId')
+    const context = await loginRequestContext(agentSlug, body.toolUseId)
+    if (!context) return c.json({ error: 'The sign-in form is not ready yet' }, 409)
+    if (signsInToThisApp(c, context.origin)) return c.json({ error: thisAppProblem(context.origin).error }, 409)
+    // A saved login holds an identifier and a password, nothing else.
+    if (!context.fields.every((field) => field.kind === 'username' || field.kind === 'password')) {
+      return c.json({ error: 'This form asks for more than a saved login holds' }, 409)
+    }
+    const claim = await agentRegistry.get(agentSlug).inputs.claim(body.toolUseId)
+    if (!claim) return c.json({ error: 'This sign-in request is already being handled' }, 409)
+    claimed = { id: body.toolUseId, token: claim.token }
+
+    const { credential, expectedOrigin } = await credentialBroker.retrieve(
+      { agentSlug, sessionId, toolUseId: body.toolUseId },
+      body.credentialId,
+      context.url,
+    )
+    if (expectedOrigin !== context.origin) {
+      return c.json({ error: 'The saved login is for a different site than the sign-in form' }, 409)
+    }
+    const values = context.fields.map((field) => (field.kind === 'username' ? credential.username : credential.password))
+    const filled = await fillLoginInContainer(agentSlug, sessionId, body.toolUseId, context, values)
+    if (!filled.ok) return c.json({ error: filled.error }, filled.status)
+    claimed = null
+    trackServerEvent('login_request_filled', {
+      submitted: filled.result.submitted,
+      filled: filled.result.filled,
+      failed: filled.result.failed,
+      source: 'password_manager',
+    })
+    return c.json(filled.result)
+  } catch (error) {
+    return credentialBrokerErrorResponse(c, error)
+  } finally {
+    if (claimed) await agentRegistry.get(getAgentId(c)).inputs.releaseClaim(claimed.id, claimed.token)
+  }
+  },
+)
+
+// POST /api/agents/:id/sessions/:sessionId/complete-login - Signed in on the page instead, or declined
+agents.post('/:id/sessions/:sessionId/complete-login', AgentUser(), zValidator('json', completeLoginBodySchema), async (c) => {
+  let claimed: { id: string; token: string } | null = null
+  try {
+    const body = c.req.valid('json')
+    const gated = await gateRequestDecision(c, body.toolUseId, 'login')
+    if (gated) return gated
+
+    const agentSlug = getAgentId(c)
+    const sessionId = c.req.param('sessionId')
+    const actor = agentRegistry.get(agentSlug)
+    const claim = await actor.inputs.claim(body.toolUseId)
+    if (!claim) return c.json({ error: 'This sign-in request is already being handled' }, 409)
+    claimed = { id: body.toolUseId, token: claim.token }
+
+    const response = body.action === 'manual'
+      ? await actor.container.fetch(`/inputs/${encodeURIComponent(body.toolUseId)}/resolve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ value: JSON.stringify({ type: 'manual' }) }),
+        })
+      : await actor.container.fetch(`/inputs/${encodeURIComponent(body.toolUseId)}/reject`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason: body.reason || 'The user declined to sign in' }),
+        })
+    if (!response.ok) {
+      console.error(`[complete-login] The container did not accept the ${body.action} answer (HTTP ${response.status})`)
+      return c.json({ error: 'Failed to answer the sign-in request' }, 500)
+    }
+
+    await actor.inputs.complete(sessionId, body.toolUseId, body.action === 'manual' ? 'answered' : 'declined')
+    claimed = null
+    if (body.action === 'decline') {
+      // As with a browser hand-off: stop the turn so the user can talk to the agent.
+      await actor.messages.stop(sessionId, { scope: 'turn' })
+      trackServerEvent('request_declined', { type: 'login', withReason: !!body.reason })
+    }
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('[complete-login] Failed:', error instanceof Error ? error.message : 'Unknown error')
+    return c.json({ error: 'Failed to answer the sign-in request' }, 500)
+  } finally {
+    if (claimed) await agentRegistry.get(getAgentId(c)).inputs.releaseClaim(claimed.id, claimed.token)
+  }
+})
 
 // POST /api/agents/:id/sessions/:sessionId/complete-browser-input - Complete or cancel a browser input request
 agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), async (c) => {

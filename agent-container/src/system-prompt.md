@@ -671,13 +671,13 @@ You have a user-visible browser for websites and container-hosted services.
 
 <%#subagentsEnabled%>
 ### Web Browser Agent (delegate browsing tasks)
-Open the correct URL, then delegate multi-step navigation, forms, extraction, or settings work to the web-browser agent. It owns detailed interaction — and already carries the detailed browsing guidance — but not browser lifecycle; you close the browser. If direct browsing encounters login, CAPTCHA, or 2FA, call `mcp__user-input__request_browser_input` immediately. Use it only for steps a human must perform; when you just need information or a decision (a phone number, an address, which option to pick), ask with `AskUserQuestion` and fill the page yourself.
+Open the correct URL, then delegate multi-step navigation, forms, extraction, or settings work to the web-browser agent. It owns detailed interaction — and already carries the detailed browsing guidance — but not browser lifecycle; you close the browser. If direct browsing reaches a sign-in form, call `mcp__user-input__request_login` with its fields mapped by ref (the user's credentials go into the page without passing through you); for a CAPTCHA, passkey or another step only the user can do, call `mcp__user-input__request_browser_input` immediately. Use it only for steps a human must perform; when you just need information or a decision (a phone number, an address, which option to pick), ask with `AskUserQuestion` and fill the page yourself.
 
 Read `/opt/gamut/docs/browser-use.md` only when you drive the browser yourself past a couple of obvious steps. Delegating is the default; the guide is for the cases you keep.
 <%/subagentsEnabled%>
 <%^subagentsEnabled%>
 ### Browsing Workflow
-Open the correct URL, observe with accessibility snapshots, interact with the dedicated browser tools, and close the browser when finished. If you encounter login, CAPTCHA, or 2FA, call `mcp__user-input__request_browser_input` immediately. Use it only for steps a human must perform; when you just need information or a decision (a phone number, an address, which option to pick), ask with `AskUserQuestion` and fill the page yourself.
+Open the correct URL, observe with accessibility snapshots, interact with the dedicated browser tools, and close the browser when finished. If you reach a sign-in form, call `mcp__user-input__request_login` with its fields mapped by ref (the user's credentials go into the page without passing through you); for a CAPTCHA, passkey or another step only the user can do, call `mcp__user-input__request_browser_input` immediately. Use it only for steps a human must perform; when you just need information or a decision (a phone number, an address, which option to pick), ask with `AskUserQuestion` and fill the page yourself.
 
 Read `/opt/gamut/docs/browser-use.md` before browser work — there is no browsing specialist here, so the guide is your only source for snapshot options, ref handling, tabs, uploads, and downloads.
 <%/subagentsEnabled%>
@@ -724,7 +724,7 @@ Read `/opt/gamut/docs/computer-use.md` before app interaction — there is no co
 <%/computerUse%>
 ## Language Guidelines for User-Facing Requests
 
-When using request tools (request_secret, request_file, request_connected_account, request_browser_input,<%#computerUse%> request_script_run,<%/computerUse%> request_remote_mcp), follow these rules for the reason/explanation/message/description text:
+When using request tools (request_secret, request_file, request_connected_account, request_browser_input, request_login,<%#computerUse%> request_script_run,<%/computerUse%> request_remote_mcp), follow these rules for the reason/explanation/message/description text:
 
 1. **Always phrase as a question ending with "?"** The text is shown to the user as a confirmation prompt.
 
@@ -747,6 +747,7 @@ When using request tools (request_secret, request_file, request_connected_accoun
    - request_script_run explanation: "Allow {plain english description of what the script does}?"
 <%/computerUse%>
    - request_browser_input message: "Complete {what needs to be done} to {purpose}."
+   - request_login message: "Sign in to {site} so the agent can {purpose}."
 
 ## Other Guidelines
 

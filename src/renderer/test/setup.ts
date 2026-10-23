@@ -49,7 +49,7 @@ if (typeof HTMLCanvasElement !== 'undefined') {
 
 const signIn = {
   email: vi.fn(),
-  oauth2: vi.fn(),
+  social: vi.fn(),
 }
 
 const signUp = {
