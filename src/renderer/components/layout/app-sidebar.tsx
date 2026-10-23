@@ -1,5 +1,5 @@
 
-import { Bell, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, ListTodo, SquareMousePointer, LogOut, Compass, MoonStar, SquarePen } from 'lucide-react'
+import { AtSign, Bell, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, ListTodo, SquareMousePointer, LogOut, Compass, MoonStar, SquarePen } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
@@ -60,7 +60,6 @@ import { useTodos } from '@renderer/hooks/use-todos'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
-import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { SidebarMemberIndicator } from '@renderer/components/agents/sidebar-member-indicator'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
 import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
@@ -431,49 +430,73 @@ function SessionsSkeleton() {
 }
 
 // Only this label subscribes to the clock; the expensive agent row stays memoized.
-function AgentLastRun({ date }: { date: ApiAgent['lastActivityAt'] }) {
+// The row's second line: when the agent last ran, or "zZzz" while its avatar
+// shows it asleep (agentAvatarState), so the text and the faceless avatar
+// always agree. Screen readers hear "Sleeping" instead of the letters.
+function AgentLastRun({ date, sleeping }: { date: ApiAgent['lastActivityAt']; sleeping: boolean }) {
   useMinuteClock()
   return (
     <span className="block truncate text-[11px] leading-tight text-muted-foreground/60">
-      {formatLastRun(date) ?? 'Last run never'}
+      {sleeping ? (
+        <>
+          <span aria-hidden>zZzz</span>
+          <span className="sr-only">Sleeping</span>
+        </>
+      ) : formatLastRun(date) ?? 'Last run never'}
     </span>
   )
 }
 
-// Right-side indicator on the agent row.
-// Awaiting / working aggregate across sessions regardless of expansion, with
-// the same formula as the agent header's AgentStatus (fresh sessions data
-// when loaded, agent-level flags as fallback) — the sidebar and the top nav
-// render on the same screen and must never disagree about whether an agent
-// is working. The unread dot IS still suppressed when expanded: it's a
-// sidebar-only navigation aid with no header counterpart, and the session
-// rows already point at the unread session.
-// Priority: awaiting > working > unread > sleeping/idle.
-function AgentRowIndicator({
+// The agent row's notification dot, pinned to the avatar's top-right like the
+// iOS agent list: orange while a session waits on the user, otherwise blue for
+// unread, or a small violet @ on white (near-black in dark) when it mentions
+// you. Awaiting aggregates across sessions with the same formula as the agent
+// header's AgentStatus (fresh sessions data when loaded, agent-level flags as
+// fallback), so the sidebar and the top nav never disagree. Unread is
+// suppressed when expanded: the session rows already point at the unread
+// session.
+function AgentAvatarBadge({
   agent,
   sessions,
   isOpen,
+  className,
 }: {
   agent: ApiAgent
   sessions: ApiSession[] | undefined
   isOpen: boolean
+  className?: string
 }) {
-  const { isAwaiting, isWorking } = agentActivity(agent, sessions)
-  const isUnread = !isOpen && !isAwaiting && !isWorking && (agent.hasUnreadNotifications ?? false)
-  if (isUnread) {
-    return (
-      <span className="flex items-center w-4 justify-center">
-        <UnreadDot mention={agent.hasUnreadMention} />
-      </span>
-    )
-  }
+  const { isAwaiting } = agentActivity(agent, sessions)
+  const isUnread = !isOpen && (agent.hasUnreadNotifications ?? false)
+  if (!isAwaiting && !isUnread) return null
+  const isMention = !isAwaiting && (agent.hasUnreadMention ?? false)
+  const label = isAwaiting ? 'needs input' : isMention ? 'mentioned you' : 'unread notifications'
   return (
-    <AgentStatus
-      status={agent.status}
-      hasActiveSessions={isWorking}
-      hasSessionsAwaitingInput={isAwaiting}
-      iconOnly
-    />
+    <span
+      role="img"
+      aria-label={label}
+      title={label}
+      data-testid={`agent-avatar-badge-${agent.slug}`}
+      className={cn(
+        'pointer-events-none absolute rounded-full',
+        isMention
+          // A ring in the sidebar colour would show only where it overlaps the
+          // avatar, leaving the light area lopsided around the @. The badge
+          // carries its own hairline border instead, so the whole disc reads
+          // (a box-shadow hairline rendered as a smudge at this size).
+          ? 'right-0 top-0 flex h-3.5 w-3.5 items-center justify-center border border-black/10 bg-white text-violet-600 dark:border-white/10 dark:bg-neutral-900 dark:text-purple-400'
+          // The dots sit in a ring of the sidebar colour, legible on any orb
+          // colour; it follows the row's hover/selected fill.
+          : cn(
+              'right-0.5 top-0.5 h-1.5 w-1.5 ring-2 ring-sidebar',
+              'group-hover/agent-row:ring-sidebar-accent group-data-[active=true]/agent-row:ring-sidebar-accent',
+              isAwaiting ? 'bg-orange-500' : 'bg-blue-500',
+            ),
+        className,
+      )}
+    >
+      {isMention && <AtSign className="h-[11px] w-[11px]" strokeWidth={3} aria-hidden />}
+    </span>
   )
 }
 
@@ -608,7 +631,7 @@ const AgentMenuItemInner = React.forwardRef<
           <SidebarMenuButton
             asChild
             isActive={isSelected}
-            className={cn('group/agent-row relative h-10 gap-1.5 overflow-visible pl-[42px]', SIDEBAR_FILE_DROP_CUE)}
+            className={cn('group/agent-row relative h-11 gap-1.5 overflow-visible pl-[50px]', SIDEBAR_FILE_DROP_CUE)}
           >
             <div {...dragHandlers}>
               {/* Stretch the native link across the row; the roster and
@@ -622,15 +645,17 @@ const AgentMenuItemInner = React.forwardRef<
                 className="min-w-0 outline-none after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
               >
                 <span className="block truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
-                <AgentLastRun date={agent.lastActivityAt} />
+                <AgentLastRun date={agent.lastActivityAt} sleeping={avatarState === 'sleeping'} />
               </AppLink>
               {isShared && <SidebarMemberIndicator agentSlug={agent.slug} agentName={agent.name} memberCount={memberCount} selected={isSelected} />}
-              {/* The status slot doubles as the new-session control: hovering
-                  the row (or focusing the button) swaps the status for a pen
-                  opening the session view with an empty composer. */}
+              {/* The trailing slot holds the new-session control: hovering the
+                  row (or focusing the button) shows a pen opening the session
+                  view with an empty composer. Status lives on the avatar (its
+                  motion and AgentAvatarBadge), so the slot is otherwise empty
+                  but for the ⌘-number hint. */}
               <span className="group/status-slot relative z-10 ml-auto flex shrink-0 items-center">
-                {/* Expose the status title above the stretched link while keeping
-                    clicks (including modifier clicks) native agent navigation. */}
+                {/* Sits above the stretched link while keeping clicks
+                    (including modifier clicks) native agent navigation. */}
                 <AppLink
                   to="/agents/$slug"
                   params={{ slug: agent.displaySlug }}
@@ -641,11 +666,7 @@ const AgentMenuItemInner = React.forwardRef<
                     canStartSession && 'group-hover/agent-row:opacity-0 group-focus-within/status-slot:opacity-0'
                   )}
                 >
-                  {hint !== null ? (
-                    <CmdHintBadge hint={hint} />
-                  ) : (
-                    <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
-                  )}
+                  {hint !== null ? <CmdHintBadge hint={hint} /> : <span className="w-4" />}
                 </AppLink>
                 {canStartSession && (
                   <TooltipProvider delayDuration={200}>
@@ -676,7 +697,7 @@ const AgentMenuItemInner = React.forwardRef<
                   onClick={handleChevronClick}
                   aria-label={isOpen ? 'Collapse' : 'Expand'}
                   aria-expanded={isOpen}
-                  className="group/avatar absolute left-1 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+                  className="group/avatar absolute left-2 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
                 >
                   <AgentAvatar
                     agent={agent}
@@ -684,6 +705,12 @@ const AgentMenuItemInner = React.forwardRef<
                     size={AGENT_AVATAR_SIZE}
                     followPointer={SIDEBAR_FOLLOW_REGION}
                     className="transition-opacity group-hover/avatar:opacity-0 group-focus-visible/avatar:opacity-0"
+                  />
+                  <AgentAvatarBadge
+                    agent={agent}
+                    sessions={sessions}
+                    isOpen={isOpen}
+                    className={cn(agent.avatar && 'transition-opacity group-hover/avatar:opacity-0 group-focus-visible/avatar:opacity-0')}
                   />
                   <ChevronRight
                     className={cn(
@@ -694,8 +721,9 @@ const AgentMenuItemInner = React.forwardRef<
                   />
                 </button>
               ) : (
-                <span className="pointer-events-none absolute left-1 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center">
+                <span className="pointer-events-none absolute left-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center">
                   <AgentAvatar agent={agent} state={avatarState} size={AGENT_AVATAR_SIZE} followPointer={SIDEBAR_FOLLOW_REGION} />
+                  <AgentAvatarBadge agent={agent} sessions={sessions} isOpen={isOpen} />
                 </span>
               )}
             </div>
@@ -704,7 +732,7 @@ const AgentMenuItemInner = React.forwardRef<
         {hasExpandableContent ? (
           <>
             <CollapsibleContent>
-              <SidebarMenuSub className={cn('pb-2 pl-[25px]', SIDEBAR_TREE_CONNECTORS)}>
+              <SidebarMenuSub className={cn('pb-2 pl-[29px]', SIDEBAR_TREE_CONNECTORS)}>
                 {isOpen && sessionsLoading && showSkeleton ? (
                   <SessionsSkeleton />
                 ) : (

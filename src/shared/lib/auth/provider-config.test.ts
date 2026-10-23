@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mockCaptureException = vi.fn()
+let mockAppBaseUrl = 'https://deployment.example.com'
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: (...args: unknown[]) => mockCaptureException(...args),
+}))
+vi.mock('./config', () => ({
+  getAppBaseUrl: () => mockAppBaseUrl,
 }))
 
 import { getGenericOAuthProviderConfigs, getPublicAuthProviders } from './provider-config'
@@ -17,6 +21,7 @@ function makeOrgToken(orgId: string): string {
 describe('getPublicAuthProviders', () => {
   beforeEach(() => {
     vi.resetAllMocks()
+    mockAppBaseUrl = 'https://deployment.example.com'
     delete process.env.AUTH_PROVIDERS_JSON
     delete process.env.PLATFORM_TOKEN
   })
@@ -179,18 +184,68 @@ describe('getPublicAuthProviders', () => {
     expect(getGenericOAuthProviderConfigs()).toEqual([
       {
         providerId: 'company-sso',
-        discoveryUrl: undefined,
-        issuer: 'https://auth.env.example.com',
+        discoveryUrl: 'https://auth.env.example.com/.well-known/openid-configuration',
+        redirectURI: 'https://deployment.example.com/api/auth/oauth2/callback/company-sso',
         clientId: 'env-client',
         clientSecret: 'env-secret',
         scopes: ['openid', 'profile', 'email', 'offline_access'],
         pkce: true,
         accessType: 'offline',
-        requireIssuerValidation: true,
+        requireIdTokenVerification: true,
+        disableProviderLogout: true,
         overrideUserInfo: true,
+        accountSubject: expect.any(Function),
         mapProfileToUser: expect.any(Function),
       },
     ])
+  })
+
+  it('prefers explicit discovery and keeps issuer-only settings compatible with OIDC discovery', () => {
+    process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
+      {
+        id: 'explicit', type: 'oidc', issuer: 'https://auth.example.com/tenant',
+        discoveryUrl: 'https://discovery.example.com/oidc.json', clientId: 'client',
+      },
+      { id: 'derived', type: 'oidc', issuer: 'https://auth.example.com/tenant/', clientId: 'client' },
+    ])
+
+    const [explicit, derived] = getGenericOAuthProviderConfigs()
+    expect(explicit.discoveryUrl).toBe('https://discovery.example.com/oidc.json')
+    expect(derived.discoveryUrl).toBe('https://auth.example.com/tenant/.well-known/openid-configuration')
+    expect(explicit).not.toHaveProperty('issuer')
+    expect(explicit).not.toHaveProperty('requireIssuerValidation')
+  })
+
+  it('encodes provider ids within the registered callback path', () => {
+    process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
+      { id: 'company/sso?next=other', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'client' },
+    ])
+    const [config] = getGenericOAuthProviderConfigs()
+    expect(config.redirectURI).toBe(
+      'https://deployment.example.com/api/auth/oauth2/callback/company%2Fsso%3Fnext%3Dother',
+    )
+  })
+
+  it.each(['/', '///'])('preserves the registered callback when the app base URL ends in %s', (suffix) => {
+    mockAppBaseUrl += suffix
+    process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
+      { id: 'company-sso', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'client' },
+    ])
+
+    expect(getGenericOAuthProviderConfigs()[0].redirectURI).toBe(
+      'https://deployment.example.com/api/auth/oauth2/callback/company-sso',
+    )
+  })
+
+  it('derives account identity only from the OIDC subject', () => {
+    process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
+      { id: 'platform', type: 'oidc', issuer: 'https://auth.example.com', clientId: 'client' },
+    ])
+    const [config] = getGenericOAuthProviderConfigs()
+    expect(config.accountSubject({ profile: { sub: 'member-123', id: 'mutable-user-id' } })).toBe('member-123')
+    for (const sub of [undefined, null, '', 123]) {
+      expect(() => config.accountSubject({ profile: { sub, id: 'fallback-id' } })).toThrow(/missing its subject/)
+    }
   })
 
   it('mapProfileToUser never overrides id, so account.accountId stays the OIDC sub', () => {
