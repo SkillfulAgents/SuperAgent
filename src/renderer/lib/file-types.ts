@@ -109,7 +109,7 @@ const FILE_TYPES: readonly FileTypeGroup[] = [
   { category: 'audio', preview: 'audio', exts: ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'oga', 'opus', 'flac', 'weba'] },
   { category: 'audio', exts: ['aif', 'aiff', 'mid', 'midi', 'wma'] },
 
-  { category: 'archive', preview: 'archive', exts: ['zip'] },
+  { category: 'archive', preview: 'archive', exts: ['zip', 'agent', 'skill'] },
   {
     category: 'archive',
     exts: [
@@ -201,7 +201,8 @@ const BINARY_EXTS = new Set([
   ...[...IMAGE_EXTS].filter(ext => ext !== 'svg'),
   ...extensionsFor('video'),
   ...extensionsFor('audio'),
-  'pdf', 'zip', 'tar', 'gz', 'tgz', 'bz2', 'xz', '7z', 'rar',
+  ...extensionsFor('archive'),
+  'pdf', 'tar', 'gz', 'tgz', 'bz2', 'xz', '7z', 'rar',
   'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
   'exe', 'dll', 'so', 'dylib', 'bin', 'wasm', 'class', 'jar',
   'db', 'sqlite', 'sqlite3',

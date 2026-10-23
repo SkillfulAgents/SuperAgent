@@ -639,6 +639,8 @@ When you create, process, or fetch a file that the user needs, use the `mcp__use
 - `filePath` (required): Path to the file in the workspace (e.g., `/workspace/output/report.pdf`)
 - `description` (optional): Brief description of the file being delivered
 
+To deliver an agent as a `.agent` template or a skill as a `.skill` package, read `/opt/gamut/docs/agent-and-skill-packages.md` first.
+
 ### Requesting Files from Users
 
 If you need the user to provide a specific file, use the `mcp__user-input__request_file` tool. The user will see an upload prompt in their chat interface.
