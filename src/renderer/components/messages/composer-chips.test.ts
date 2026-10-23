@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { formatChipMarker } from '@renderer/lib/chip-marker'
 import { chipAt, chipsToAgentText, draftFromAgentText, silentOpener, type ChipContext } from './composer-chips'
 import { secretMarker } from './secret-chip'
+import { appendDictationNote } from '@shared/lib/utils/dictation-note'
 
 const saved = (...envVars: string[]) => ({ secretEnvVars: new Set(envVars) })
 
@@ -91,6 +92,8 @@ describe('composer chips', () => {
       expect(draftFromAgentText(chipsToAgentText(draft, context), agentId)).toBe(draft)
       expect(draftFromAgentText(chipsToAgentText(`${mike} look`, context, { silent: true }), agentId)).toBe(`${mike} look`)
       expect(draftFromAgentText('no mentions here', agentId)).toBe('no mentions here')
+      expect(draftFromAgentText(appendDictationNote(chipsToAgentText(draft, context)), agentId)).toBe(draft)
+      expect(draftFromAgentText(appendDictationNote('no mentions here'), agentId)).toBe('no mentions here')
     })
 
     it('reads the longer of two names that share a start', () => {

@@ -945,6 +945,41 @@ export class ToolUseScenario implements MockScenario {
   }
 }
 
+/** The sign-in form the mock browser "located" for request_login. */
+const MOCK_LOGIN_CONTEXT = {
+  origin: 'https://example.com',
+  url: 'https://example.com/login',
+  topOrigin: 'https://example.com',
+  submit: true,
+  fields: [
+    { kind: 'username', label: 'Email address', inputType: 'email', inputMode: '', autocomplete: 'username', maxLength: -1 },
+    { kind: 'password', label: 'Password', inputType: 'password', inputMode: '', autocomplete: 'current-password', maxLength: -1 },
+  ],
+}
+
+/**
+ * Steps at their offsets from now, run strictly in the order they were added.
+ * One setTimeout per step is not enough: when the event loop lags, Node runs
+ * every expired timer of one duration before those of the next, so a 40 ms
+ * content_block_stop can overtake its 20 ms content_block_start, and the host,
+ * which never saw the block start, drops the tool call.
+ */
+export function stepsInOrder(): (delayMs: number, step: () => void) => void {
+  const start = Date.now()
+  let tail = Promise.resolve()
+  return (delayMs, step) => {
+    tail = tail.then(() => new Promise<void>((resolve) => {
+      setTimeout(() => {
+        try {
+          step()
+        } finally {
+          resolve()
+        }
+      }, Math.max(0, start + delayMs - Date.now()))
+    }))
+  }
+}
+
 /**
  * User input request scenario - simulates the agent emitting tool calls that
  * request user input (secrets, questions, etc.). The session stays active until
@@ -965,6 +1000,7 @@ export class UserInputRequestScenario implements MockScenario {
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
     let delay = 10
+    const at = stepsInOrder()
     const tools = this.tools.map((tool) => ({
       name: tool.name,
       input: typeof tool.input === 'function' ? tool.input(userMessage) : tool.input,
@@ -994,12 +1030,12 @@ export class UserInputRequestScenario implements MockScenario {
     })
 
     // Start assistant message
-    setTimeout(() => {
+    at(delay, () => {
       client.emitStreamMessage(sessionId, {
         type: 'stream_event',
         content: { type: 'stream_event', event: { type: 'message_start' } },
       })
-    }, delay)
+    })
     delay += 10
 
     // Emit each tool use block
@@ -1007,7 +1043,7 @@ export class UserInputRequestScenario implements MockScenario {
       const tool = tools[toolIndex]
       const capturedToolId = toolIds[toolIndex]
       const capturedTool = tool
-      setTimeout(() => {
+      at(delay, () => {
         client.emitStreamMessage(sessionId, {
           type: 'stream_event',
           content: {
@@ -1022,11 +1058,11 @@ export class UserInputRequestScenario implements MockScenario {
             },
           },
         })
-      }, delay)
+      })
       delay += 10
 
       // content_block_delta (input_json_delta)
-      setTimeout(() => {
+      at(delay, () => {
         client.emitStreamMessage(sessionId, {
           type: 'stream_event',
           content: {
@@ -1040,26 +1076,26 @@ export class UserInputRequestScenario implements MockScenario {
             },
           },
         })
-      }, delay)
+      })
       delay += 10
 
       // content_block_stop — triggers the live session to detect user input tools
-      setTimeout(() => {
+      at(delay, () => {
         client.emitStreamMessage(sessionId, {
           type: 'stream_event',
           content: { type: 'stream_event', event: { type: 'content_block_stop' } },
         })
-      }, delay)
+      })
       delay += 50
     }
 
     // message_stop
-    setTimeout(() => {
+    at(delay, () => {
       client.emitStreamMessage(sessionId, {
         type: 'stream_event',
         content: { type: 'stream_event', event: { type: 'message_stop' } },
       })
-    }, delay)
+    })
     delay += 10
 
     // Write assistant JSONL entry after streaming completes (user message was
@@ -1067,7 +1103,7 @@ export class UserInputRequestScenario implements MockScenario {
     const capturedToolIds = [...toolIds]
     const capturedTools = [...tools]
     const finalDelay = delay
-    setTimeout(() => {
+    at(finalDelay, () => {
       const assistantContent = capturedTools.map((tool, i) => ({
         type: 'tool_use',
         id: capturedToolIds[i],
@@ -1089,7 +1125,7 @@ export class UserInputRequestScenario implements MockScenario {
         type: 'assistant',
         content: { type: 'assistant', message: { content: assistantContent } },
       })
-    }, finalDelay)
+    })
   }
 }
 
@@ -2127,6 +2163,19 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       'The quick brown fox jumps over the lazy dog while the transcript keeps growing line after line without pause. '.repeat(70),
     )],
     // Register user input request scenarios for E2E testing
+    ['ask login', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_login',
+        input: {
+          message: 'Sign in to Example so the agent can check the order status.',
+          fields: [
+            { ref: '@e4', kind: 'username', label: 'Email address' },
+            { ref: '@e5', kind: 'password', label: 'Password' },
+          ],
+          submit: '@e6',
+        },
+      },
+    ])],
     ['ask secret', new UserInputRequestScenario([
       {
         name: 'mcp__user-input__request_secret',
@@ -2848,6 +2897,9 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     return {}
   }
 
+  /** request_login fills in progress, refused a second time like the real container does. */
+  private readonly loginFillsInFlight = new Set<string>()
+
   async fetch(fetchPath: string, init?: RequestInit): Promise<Response> {
     // Mock fetch - return appropriate empty responses based on path
     if (fetchPath === '/env' && init?.method === 'POST') {
@@ -3084,6 +3136,51 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         status: 200,
         headers: { 'Content-Type': 'text/html; charset=utf-8' },
       })
+    }
+
+    // request_login: the real container locates the mapped fields in the page
+    // and writes the user's values over CDP. The mock serves one fixed form and
+    // records each fill, so specs can check exactly what crossed the boundary.
+    const loginContextMatch = fetchPath.match(/^\/browser\/login\/context\?toolUseId=(.+)$/)
+    if (loginContextMatch) {
+      let loginToolUseId = loginContextMatch[1]
+      try {
+        loginToolUseId = decodeURIComponent(loginToolUseId)
+      } catch {
+        // Malformed escape: mock tool ids are alphanumeric anyway.
+      }
+      const pending = this.pendingInputs.get(loginToolUseId)
+      if (pending?.inputType !== 'mcp__user-input__request_login') {
+        return new Response(JSON.stringify({ error: 'No sign-in request is being prepared under this id' }), { status: 404, headers: { 'Content-Type': 'application/json' } })
+      }
+      return new Response(JSON.stringify(MOCK_LOGIN_CONTEXT), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    if (fetchPath === '/browser/login/fill' && init?.method === 'POST') {
+      let body: { sessionId: string; toolUseId: string; expectedOrigin: string; values: string[] }
+      try {
+        body = JSON.parse(String(init.body))
+      } catch {
+        return new Response(JSON.stringify({ error: 'Invalid sign-in fill request' }), { status: 400, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (!this.pendingInputs.has(body.toolUseId)) {
+        return new Response(JSON.stringify({ error: 'This sign-in request is no longer open' }), { status: 409, headers: { 'Content-Type': 'application/json' } })
+      }
+      // The real container's checks, in its order.
+      if (body.expectedOrigin !== MOCK_LOGIN_CONTEXT.origin) {
+        return new Response(JSON.stringify({ error: 'This sign-in request is for a different site' }), { status: 409, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (body.values.length !== MOCK_LOGIN_CONTEXT.fields.length || !body.values.some(Boolean)) {
+        return new Response(JSON.stringify({ error: 'One value per field is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (this.loginFillsInFlight.has(body.toolUseId)) {
+        return new Response(JSON.stringify({ error: 'This sign-in request is already being filled' }), { status: 409, headers: { 'Content-Type': 'application/json' } })
+      }
+      this.loginFillsInFlight.add(body.toolUseId)
+      this.writeMockRecord({ type: 'loginFill', agentSlug: this.config.agentId, toolUseId: body.toolUseId, origin: body.expectedOrigin, values: body.values })
+      await this.fetch(`/inputs/${encodeURIComponent(body.toolUseId)}/resolve`, { method: 'POST', body: '{}' })
+      this.loginFillsInFlight.delete(body.toolUseId)
+      const filled = body.values.filter(Boolean).length
+      return new Response(JSON.stringify({ success: true, filled, failed: 0, submitted: true, problems: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
 
     if (fetchPath === '/inputs/pending') {

@@ -178,8 +178,8 @@ if (isAuthMode()) {
 // Mount Better Auth handler (only when AUTH_MODE is enabled)
 if (isAuthMode()) {
   app.on(['POST', 'GET'], '/api/auth/*', async (c) => {
-    const { getAuth } = await import('@shared/lib/auth/index')
-    return getAuth().handler(c.req.raw)
+    const { handleAuthRequest } = await import('@shared/lib/auth/handler')
+    return handleAuthRequest(c.req.raw)
   })
 }
 

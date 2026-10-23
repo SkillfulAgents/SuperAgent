@@ -4,6 +4,7 @@ import devServer from '@hono/vite-dev-server'
 import { VitePWA } from 'vite-plugin-pwa'
 import path from 'path'
 import { readFileSync } from 'fs'
+import { monacoAliases, monacoOptimizerPlugin } from './scripts/lib/monaco-vite'
 
 const pkg = JSON.parse(readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8'))
 const analyticsConfig = JSON.parse(readFileSync(path.resolve(__dirname, 'src/shared/lib/analytics/config.json'), 'utf-8'))
@@ -117,12 +118,14 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
+      ...monacoAliases,
       '@': path.resolve(__dirname, './src'),
       '@shared': path.resolve(__dirname, './src/shared'),
       '@renderer': path.resolve(__dirname, './src/renderer'),
     },
   },
   root: './src/renderer',
+  optimizeDeps: { esbuildOptions: { plugins: [monacoOptimizerPlugin] } },
   // outDir sits OUTSIDE the Vite root, so Vite does not clean it by default —
   // consecutive builds would accumulate old hashed chunks, and the SW precache
   // manifest globs the output dir, so stale generations would be precached as

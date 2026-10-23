@@ -32,6 +32,8 @@ import type { RequestFileInput } from '@shared/lib/tools/request-file/definition
 import type { RequestConnectedAccountInput } from '@shared/lib/tools/request-connected-account/definition'
 import type { RequestRemoteMcpInput } from '@shared/lib/tools/request-remote-mcp/definition'
 import type { RequestBrowserInputInput } from '@shared/lib/tools/request-browser-input/definition'
+import type { RequestLoginInput } from '@shared/lib/tools/request-login/definition'
+import { summarizeLoginFields } from '@shared/lib/tools/request-login/login-request'
 import type { RequestScriptRunInput } from '@shared/lib/tools/request-script-run/definition'
 import { VALID_SCRIPT_TYPES, getAgentCapabilitySettings } from '@shared/lib/config/settings'
 import { sessionCapabilityGrantsResponseSchema } from '@shared/lib/config/capability-policy-schema'
@@ -113,6 +115,17 @@ const USER_INPUT_REQUESTS: Record<
     payload: (input) => {
       const { url, name, reason, authHint, clientId, clientName } = input as RequestRemoteMcpInput
       return url ? { url, name, reason, authHint, clientId, clientName } : 'missing url'
+    },
+  },
+  login: {
+    label: 'sign-in request',
+    payload: (input) => {
+      const { message, fields } = input as RequestLoginInput
+      // The card draws the model's field list only until the container's
+      // context arrives; refs never leave the container's side of the tool.
+      return typeof message === 'string' && message.trim() && Array.isArray(fields)
+        ? { message, fields: summarizeLoginFields(fields) }
+        : 'missing message or fields'
     },
   },
   browser_input: {
