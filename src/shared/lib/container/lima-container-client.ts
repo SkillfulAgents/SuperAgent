@@ -963,6 +963,7 @@ async function forceStopLimaVm(timeoutMs: number): Promise<void> {
     })
     return
   }
+  dropStaleDriverPidFile()
   try {
     await Promise.race([
       execLimactl(`stop --force ${LIMA_VM_NAME}`),
@@ -973,6 +974,44 @@ async function forceStopLimaVm(timeoutMs: number): Promise<void> {
   } catch {
     console.error('Lima VM force-stop failed or timed out')
   }
+}
+
+/**
+ * `limactl stop --force` SIGKILLs the pid in vz.pid. A host agent that died
+ * without cleaning up (crash, OS kill) leaves that file behind, and by now
+ * its pid may belong to an unrelated process of this user. vz.pid holds the
+ * host agent's own pid (the VZ driver runs inside it), so a live owner that
+ * isn't limactl means the file is stale: drop it. When ps can't tell (the
+ * sandbox denies it), leave it.
+ */
+function dropStaleDriverPidFile(): void {
+  if (isHostAgentAlive()) return
+  const file = path.join(getLimaHome(), LIMA_VM_NAME, 'vz.pid')
+  let pid: number
+  try {
+    pid = parseInt(fs.readFileSync(file, 'utf-8').trim(), 10)
+  } catch {
+    return
+  }
+  // Lima drops a pid file whose process is gone by itself.
+  if (!Number.isInteger(pid) || pid <= 0 || !isProcessAlive(pid)) return
+  let command: string
+  try {
+    command = execSync(`ps -o comm= -p ${pid}`, { encoding: 'utf-8', timeout: 3000 }).trim()
+  } catch {
+    return
+  }
+  if (!command || path.basename(command) === 'limactl') return
+  try {
+    fs.unlinkSync(file)
+  } catch {
+    return
+  }
+  captureMessage('Dropped a stale Lima vz.pid that pointed at an unrelated process', {
+    level: 'warning',
+    tags: { component: 'lima', operation: 'stale-driver-pid' },
+    extra: { process: path.basename(command) },
+  })
 }
 
 /**

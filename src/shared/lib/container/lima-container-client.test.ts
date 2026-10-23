@@ -68,6 +68,7 @@ vi.mock('os', async () => {
 })
 
 import * as fs from 'fs'
+import { execSync } from 'child_process'
 import { execWithPath } from './base-container-client'
 import { getSettings } from '@shared/lib/config/settings'
 import { captureMessage } from '@shared/lib/error-reporting'
@@ -1107,5 +1108,74 @@ describe('stopping the VM', () => {
     await expect(ensureLimaReady()).rejects.toThrow('disk full')
 
     expect(deletes()).toHaveLength(1)
+  })
+})
+
+// ============================================================================
+// `limactl stop --force` SIGKILLs the pid in vz.pid. A host agent that died
+// without cleaning up leaves that file, and its pid may since belong to an
+// unrelated process: drop the file first unless the owner is limactl.
+// ============================================================================
+
+describe('force-stop with a leftover vz.pid', () => {
+  const VZ_PID = '/Users/testuser/.superagent/lima/superagent/vz.pid'
+  let killSpy: any
+
+  /** No host agent (ha.pid gone); vz.pid holds 777, which is `owner` (or dead). */
+  function leftover(owner: string | 'dead') {
+    mockedFs.readFileSync.mockImplementation(((p: any) => {
+      if (String(p) === VZ_PID) return '777\n'
+      const e: any = new Error('ENOENT'); e.code = 'ENOENT'; throw e
+    }) as any)
+    mockedFs.existsSync.mockReturnValue(false)
+    killSpy = vi.spyOn(process, 'kill').mockImplementation((() => {
+      if (owner === 'dead') { const e: any = new Error(); e.code = 'ESRCH'; throw e }
+      return true
+    }) as any)
+    vi.mocked(execSync).mockImplementation(((cmd: string) => {
+      if (cmd === 'ps -o comm= -p 777') return `${owner}\n`
+      throw new Error('unexpected execSync')
+    }) as any)
+    mockedExecWithPath.mockResolvedValue({ stdout: '', stderr: '' })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    setResourcesPath(undefined)
+  })
+
+  afterEach(() => {
+    killSpy?.mockRestore()
+    vi.mocked(execSync).mockReset()
+  })
+
+  it('drops a vz.pid that points at an unrelated live process before force-stopping', async () => {
+    leftover('/usr/bin/vim')
+
+    await stopLimaVm()
+
+    expect(mockedFs.unlinkSync).toHaveBeenCalledWith(VZ_PID)
+    expect(execCmds().some((c) => c.includes('stop --force'))).toBe(true)
+    expect(vi.mocked(captureMessage)).toHaveBeenCalledWith(
+      expect.stringContaining('stale Lima vz.pid'),
+      expect.objectContaining({ extra: { process: 'vim' } })
+    )
+  })
+
+  it('keeps a vz.pid whose live owner is limactl (the host agent itself)', async () => {
+    leftover('/Applications/Gamut.app/Contents/Resources/lima/bin/limactl')
+
+    await stopLimaVm()
+
+    expect(mockedFs.unlinkSync).not.toHaveBeenCalled()
+  })
+
+  it('leaves a vz.pid whose process is gone to Lima', async () => {
+    leftover('dead')
+
+    await stopLimaVm()
+
+    expect(mockedFs.unlinkSync).not.toHaveBeenCalled()
+    expect(vi.mocked(execSync)).not.toHaveBeenCalled()
   })
 })
