@@ -171,7 +171,7 @@ and would make the exchange look anomalous. All paths land in the one
 
 | Field | Value |
 | --- | --- |
-| `method` | `password` (`/sign-in/email`, `/sign-up/email`), `oidc` (`/callback/:id`, `/oauth2/callback/:providerId`), `impersonation`, `token-exchange`, or `unknown` |
+| `method` | `password` (`/sign-in/email`, `/sign-up/email`), `oidc` (`/callback/:id`, `/oauth2/callback/:providerId`, direct ID-token `/sign-in/social`), `impersonation`, `token-exchange`, or `unknown` |
 | `orgId` | Only for `token-exchange` — the grant's `org_id`. Omitted otherwise |
 | `targetUserId` | Only for `impersonation` — the impersonated user (see below) |
 
@@ -220,6 +220,47 @@ For the exchange to work, this value must equal the canonical
 `invalid_grant`.
 
 ## Testing
+
+### Better Auth 1.7 compatibility
+
+The browser client and `/auth/platform/start` use the standard social sign-in
+API. The externally registered OIDC callback stays
+`/api/auth/oauth2/callback/:id`: provider configuration pins that redirect URI
+for both authorization and code exchange, and `auth/handler.ts` dispatches its
+GET/form-POST requests internally to the 1.7 core callback. Existing platform
+controller registrations therefore need no coordinated change. The normal
+auth middleware still applies before dispatch.
+
+Discovery must publish a usable issuer and JWKS. When returned, ID tokens are
+verified with the configured client ID and the login's nonce; configured OIDC accounts keep
+the provider's `sub` as their stable identity. Sign-out remains local to this
+deployment. The platform grant exchange uses the 1.7 account-ownership lookup
+before considering email, including when recovering from concurrent inserts.
+The issuer-policy plugin preserves the operator's explicit issuer pin and
+requires the successful callback's `iss` parameter, including after a failed
+discovery recovers. It runs after discovery's retry hook and before code
+exchange or account provisioning.
+
+No account schema migration is required from 1.6. An OAuth login already in
+flight at cutover must be restarted: 1.7 namespaces stored state identifiers,
+and the old state also has no nonce. Do not relax state or nonce validation to
+make those transient logins succeed. An already-open 1.6 login page needs a
+reload before starting SSO through the new social API. Completed
+browser/bearer sessions and mobile refresh credentials are exercised across
+upgrade, rollback, and upgrade again by
+[`e2e/live/auth-upgrade`](../e2e/live/auth-upgrade/README.md).
+
+The native iOS app uses `/api/auth-config`, mobile pairing/redeem/renew/device
+routes, and bearer `/api/auth/get-session`, with cookies disabled and no Origin
+header. It does not call the old generic OAuth sign-in endpoint. Platform
+dashboard links use `/auth/platform/start`; desktop cloud clients use platform
+discovery, deployment grants, and `/api/auth/token/exchange`.
+
+The real HTTP OIDC suite (`auth/oidc.integration.test.ts`) tests the registered
+callback, PKCE, signed JWKS tokens, account linking, claim rejection, discovery
+recovery, and local logout. It and `auth/password-session.integration.test.ts`
+run on both SQLite and libsql. The latter also injects failures around password
+writes and session revocation to exercise retained-write hooks.
 
 - Integration suite: `src/shared/lib/auth/token-exchange.integration.test.ts`
   (real Better Auth + real SQLite: contract, replay/concurrency, provisioning,

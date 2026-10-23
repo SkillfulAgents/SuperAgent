@@ -267,6 +267,7 @@ export const PlatformAccountInfoSchema = z.object({
     .transform((v) => v ?? null),
   deniedModels: z
     .unknown()
+    .optional()
     .transform((v) => (v == null ? null : normalizeDeniedModels(v))),
 })
 export type ParsedPlatformAccountInfo = z.infer<typeof PlatformAccountInfoSchema>
@@ -316,7 +317,7 @@ export const PlatformBillingInfoSchema = z.object({
     .object({
       id: z.string(),
       name: z.string(),
-      deniedModels: z.unknown().transform(normalizeDeniedModels),
+      deniedModels: z.unknown().optional().transform(normalizeDeniedModels),
     })
     .nullish()
     .catch(null)
@@ -325,6 +326,7 @@ export const PlatformBillingInfoSchema = z.object({
   // workspace gets the free tier's list). Null from a proxy that predates it.
   deniedModels: z
     .unknown()
+    .optional()
     .transform((v) => (v == null ? null : normalizeDeniedModels(v))),
   // A plan switch scheduled for a later date (a downgrade applies at renewal).
   pendingPlanChange: z

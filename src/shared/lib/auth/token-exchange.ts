@@ -209,8 +209,25 @@ async function resolveUser(ctx: AuthContext, claims: DeploymentGrantClaims) {
   const email = claims.email.trim().toLowerCase()
 
   type FoundUser = NonNullable<
-    Awaited<ReturnType<AuthContext['internalAdapter']['findOAuthUser']>>
+    Awaited<ReturnType<AuthContext['internalAdapter']['findUserByEmail']>>
   >['user']
+
+  // Better Auth 1.7 separates stable account ownership from email lookup.
+  // Consult the subject first even if the verified email now belongs to a
+  // different local user. An orphaned mapping must never fall through to
+  // email linking and silently reassign an existing platform identity.
+  const findExistingUser = async () => {
+    const owner = await ctx.internalAdapter.findAccountOwnerByKey({
+      providerId,
+      accountId: claims.sub,
+    })
+    if (owner?.kind === 'orphaned') {
+      throw new TokenExchangeError('invalid_grant')
+    }
+    if (owner) return { user: owner.user, linkedAccount: true }
+    const found = await ctx.internalAdapter.findUserByEmail(email)
+    return found ? { user: found.user, linkedAccount: false } : null
+  }
 
   // Link the platform identity to an existing user, honoring the app's
   // account-linking policy.
@@ -245,7 +262,7 @@ async function resolveUser(ctx: AuthContext, claims: DeploymentGrantClaims) {
   }
 
   const attempt = async () => {
-    const found = await ctx.internalAdapter.findOAuthUser(email, claims.sub, providerId)
+    const found = await findExistingUser()
     if (found?.linkedAccount) {
       return refreshImage(found.user)
     }
@@ -287,7 +304,7 @@ async function resolveUser(ctx: AuthContext, claims: DeploymentGrantClaims) {
     //    this subject's mapping does not exist yet.
     // Either way, reload and make sure THIS subject's mapping is persisted
     // before any session is minted for it.
-    const winner = await ctx.internalAdapter.findOAuthUser(email, claims.sub, providerId)
+    const winner = await findExistingUser()
     if (!winner) {
       throw new TokenExchangeError('invalid_grant')
     }
@@ -301,7 +318,7 @@ async function resolveUser(ctx: AuthContext, claims: DeploymentGrantClaims) {
       if (linkError instanceof TokenExchangeError) throw linkError
       if (!isUniqueConstraintError(linkError)) throw linkError
     }
-    const final = await ctx.internalAdapter.findOAuthUser(email, claims.sub, providerId)
+    const final = await findExistingUser()
     if (!final?.linkedAccount) {
       throw new TokenExchangeError('invalid_grant')
     }
