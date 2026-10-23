@@ -422,7 +422,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   }
 
   /**
-   * Runs once per start(), right before the container is run. Subclasses
+   * Runs right before every attempt to run the container in start(). Subclasses
    * throw here to refuse a run that would not work, e.g. one whose workspace
    * the runtime can't see.
    */
@@ -783,8 +783,6 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       const workspaceDir = getAgentWorkspaceDir(this.config.agentId)
       fs.mkdirSync(workspaceDir, { recursive: true })
 
-      await this.beforeRun()
-
       // Find an available port
       let port = await this.findAvailablePort()
 
@@ -828,6 +826,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       let stdout: string
       try {
         for (;;) {
+          // Before every attempt: a recovery below may have restarted the runtime.
+          await this.beforeRun()
           await execWithPathSilent(`${runner} rm -f ${containerName}`)
 
           try {

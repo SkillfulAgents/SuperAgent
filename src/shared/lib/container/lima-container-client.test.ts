@@ -910,7 +910,7 @@ describe('verifyDataDirVisibleInVm', () => {
     expect(catCmds()).toHaveLength(2)
   })
 
-  it('a Lima container start runs the check before the container', async () => {
+  it("is Lima's beforeRun hook (start() runs it before every run attempt; see the sup212 start() tests)", async () => {
     guest('nothing')
     const client = new LimaContainerClient({ agentId: 'test-agent' } as any) as any
 
