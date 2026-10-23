@@ -261,8 +261,10 @@ function LocationStep({
   if (setup) {
     const Setup = setup.definition.Setup
     return (
-      // The set-up's form fills the panel, so its buttons can sit in the ruled bar at the foot (`DriveSetupFooter`).
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-11 sm:px-[52px] [&>form]:flex [&>form]:flex-1 [&>form]:flex-col" data-testid="team-brain-drive-setup">
+      // The set-up's form fills the panel, so its buttons can sit in the ruled bar at the foot (`DriveSetupFooter`);
+      // its header sits as far above the form as the other steps' subtitles sit above theirs, and goes without its
+      // supporting line: the drive's name and title say enough here.
+      <div className="flex min-h-0 flex-1 flex-col gap-7 overflow-y-auto px-6 pt-11 sm:px-[52px] [&>form]:flex [&>form]:flex-1 [&>form]:flex-col [&_[data-volume-setup-description]]:hidden" data-testid="team-brain-drive-setup">
         <VolumeSetupFooterContext.Provider value={DriveSetupFooter}>
           <Setup
             initialConfig={setup.config}
@@ -300,17 +302,21 @@ function LocationStep({
  */
 function DriveSetupFooter({ onBack, isSaving, disabled, submitLabel }: VolumeSetupFooterProps) {
   return (
-    <footer className="sticky bottom-0 -mx-6 !mt-auto flex h-[60px] shrink-0 items-center justify-end gap-2 border-t bg-background px-[18px] sm:-mx-[52px]" data-testid="team-brain-drive-footer">
-      {onBack && (
-        <button type="button" className={SECONDARY} onClick={onBack} disabled={isSaving} data-testid="team-brain-back">
-          Back
+    <>
+      {/* Takes up the slack, so a short form leaves the bar at the foot and a long one still keeps room above it. */}
+      <div className="min-h-6 flex-1" aria-hidden="true" />
+      <footer className="sticky bottom-0 -mx-6 flex h-[60px] shrink-0 items-center justify-end gap-2 border-t bg-background px-[18px] sm:-mx-[52px]" data-testid="team-brain-drive-footer">
+        {onBack && (
+          <button type="button" className={SECONDARY} onClick={onBack} disabled={isSaving} data-testid="team-brain-back">
+            Back
+          </button>
+        )}
+        <button type="submit" className={PRIMARY} disabled={disabled || isSaving} data-testid="team-brain-drive-submit">
+          {isSaving && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
+          {submitLabel}
         </button>
-      )}
-      <button type="submit" className={PRIMARY} disabled={disabled || isSaving} data-testid="team-brain-drive-submit">
-        {isSaving && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
-        {submitLabel}
-      </button>
-    </footer>
+      </footer>
+    </>
   )
 }
 
