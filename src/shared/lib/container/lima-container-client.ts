@@ -1123,78 +1123,97 @@ function restageBundledPackagesFor(instanceConfig: string): void {
   if (!bundled) return
   try {
     if (!fs.readFileSync(instanceConfig, 'utf-8').includes(getStagedPackagesDir())) return
-  } catch {
-    return
+    stageBundledPackages(bundled)
+  } catch (error) {
+    // Only a first boot that never finished needs the copy; never block a start on it.
+    addErrorBreadcrumb({ category: 'lima', message: 'Could not restage bundled packages', level: 'warning', data: { error: String(error) } })
   }
-  stageBundledPackages(bundled)
 }
 
 /**
- * First-boot provisioning: install containerd + nerdctl, then start
- * containerd. With bundled packages, apk installs from the staged copy only
- * (no network, no other repositories), checking Alpine's index signature and
- * each package against it. Without them (dev), from Alpine's CDN.
+ * First-boot provisioning, then containerd enabled and started on every boot.
+ *
+ * With bundled packages, apk installs from the staged copy only (no network,
+ * no other repositories), checking Alpine's index signature and each package
+ * against it. It runs as a dependency script, which Lima runs inside its own
+ * package step and before it: Lima then finds rsync present instead of
+ * installing it from Alpine's CDN. Without bundled packages (dev), from the CDN.
  */
 function provisionScript(stagedPackages: string | null): string[] {
   const packages = limaPackages.packages.join(' ')
-  const install = stagedPackages
-    ? [
-        '        echo "Installing containerd + nerdctl from the packages bundled with the app..."',
-        // apk misreads a repository path with a space (the data folder has one), so use a link.
-        `        ln -sfn ${shellEscape(stagedPackages)} ${STAGED_PACKAGES_IN_GUEST}`,
-        `        apk add --no-network --no-cache --repositories-file /dev/null --repository ${STAGED_PACKAGES_IN_GUEST}/main --repository ${STAGED_PACKAGES_IN_GUEST}/community ${packages}`,
-      ]
-    : [
-        '        echo "Installing containerd + nerdctl..."',
-        '        apk update',
-        `        apk add --no-cache ${packages}`,
-      ]
+  if (!stagedPackages) {
+    return [
+      'provision:',
+      '  - mode: system',
+      '    script: |',
+      '      #!/bin/sh',
+      '      set -e',
+      '      if ! command -v nerdctl >/dev/null 2>&1; then',
+      '        echo "Installing containerd + nerdctl..."',
+      '        apk update',
+      `        apk add --no-cache ${packages}`,
+      '        rc-update add containerd default',
+      '      fi',
+      '      service containerd start || true',
+    ]
+  }
   return [
     'provision:',
+    '  - mode: dependency',
+    '    script: |',
+    '      #!/bin/sh',
+    '      set -e',
+    '      command -v nerdctl >/dev/null 2>&1 && command -v rsync >/dev/null 2>&1 && exit 0',
+    '      echo "Installing containerd + nerdctl from the packages bundled with the app..."',
+    // apk misreads a repository path with a space (the data folder has one), so use a link.
+    `      ln -sfn ${shellEscape(stagedPackages)} ${STAGED_PACKAGES_IN_GUEST}`,
+    `      apk add --no-network --no-cache --repositories-file /dev/null --repository ${STAGED_PACKAGES_IN_GUEST}/main --repository ${STAGED_PACKAGES_IN_GUEST}/community ${packages}`,
     '  - mode: system',
     '    script: |',
     '      #!/bin/sh',
     '      set -e',
-    '      if ! command -v nerdctl >/dev/null 2>&1; then',
-    ...install,
-    '        rc-update add containerd default',
-    '      fi',
+    '      rc-update show default | grep -q containerd || rc-update add containerd default',
     '      service containerd start || true',
   ]
 }
 
-/** Is nerdctl installed in the guest? null when the guest didn't answer. */
-async function guestHasNerdctl(): Promise<boolean | null> {
+/**
+ * containerd in the guest: answering, installed but not answering, or not
+ * installed at all. null when the guest didn't answer.
+ */
+async function guestContainerd(): Promise<'running' | 'not running' | 'not installed' | null> {
+  const probe = 'if sudo nerdctl info >/dev/null 2>&1; then echo running; elif command -v nerdctl >/dev/null 2>&1; then echo "not running"; else echo "not installed"; fi'
   try {
-    const { stdout } = await execLimactl(
-      `shell --workdir / ${LIMA_VM_NAME} -- sh -c ${shellEscape('command -v nerdctl >/dev/null && echo present || echo missing')}`,
-      { timeoutMs: GUEST_PROBE_TIMEOUT_MS }
-    )
-    return stdout.trim() === 'present'
+    const { stdout } = await execLimactl(`shell --workdir / ${LIMA_VM_NAME} -- sh -c ${shellEscape(probe)}`, { timeoutMs: GUEST_PROBE_TIMEOUT_MS })
+    const state = stdout.trim()
+    return state === 'running' || state === 'not running' || state === 'not installed' ? state : null
   } catch {
     return null
   }
 }
 
-/** containerd is still missing after re-running the VM's provisioning. */
+/** containerd still isn't installed after re-running the VM's provisioning. */
 class ContainerdMissingError extends Error {
   constructor(readonly provisionOutput: string) {
-    super("Built-in runtime couldn't install its container engine. Quit and reopen the app to try again.")
+    super("Built-in runtime couldn't set up its container engine. Quit and reopen the app to try again.")
   }
 }
 
 /**
  * Lima only logs a warning when a provision script fails and reports the VM
- * ready anyway, without containerd: every pull then fails with "nerdctl:
- * command not found". After a start, re-run the VM's own provision scripts
- * once if nerdctl is missing; throws ContainerdMissingError if that fails too.
+ * ready anyway, without containerd installed or running: every pull then
+ * fails. After a start, re-run the VM's own provision scripts once if
+ * containerd doesn't answer. Still not installed: ContainerdMissingError (the
+ * VM holds no images or containers, so it can be rebuilt). Installed but not
+ * answering: a plain error, since that VM may hold images and containers.
  */
 async function ensureContainerdProvisioned(): Promise<void> {
-  if ((await guestHasNerdctl()) !== false) return
+  const before = await guestContainerd()
+  if (before === 'running' || before === null) return
 
   let output = ''
   try {
-    const rerun = 'for f in /mnt/lima-cidata/provision.system/*; do sh "$f" || exit 1; done'
+    const rerun = 'for f in /mnt/lima-cidata/provision.dependency/* /mnt/lima-cidata/provision.system/*; do [ -e "$f" ] || continue; sh "$f" || exit 1; done'
     ;({ stdout: output } = await execLimactl(
       `shell --workdir / ${LIMA_VM_NAME} -- sudo sh -c ${shellEscape(rerun)}`,
       { timeoutMs: 300_000 }
@@ -1203,11 +1222,28 @@ async function ensureContainerdProvisioned(): Promise<void> {
     output = String(error?.message ?? error)
   }
 
-  if ((await guestHasNerdctl()) === false) throw new ContainerdMissingError(output)
-  captureMessage('Lima VM came up without containerd; re-running its provisioning installed it', {
+  const after = await guestContainerd()
+  if (after === 'not installed') throw new ContainerdMissingError(output)
+  if (after === null) {
+    addErrorBreadcrumb({ category: 'lima', message: 'Re-ran Lima provisioning; the guest did not answer the check after it', level: 'warning' })
+    return
+  }
+  const extra = { before, output: output.slice(-2000), packagesAreBundled: getBundledPackagesDir() !== null }
+  if (after === 'not running') {
+    captureMessage('Lima VM has containerd installed but not answering, even after re-running its provisioning', {
+      level: 'error',
+      tags: { component: 'lima', operation: 'provision-check' },
+      extra: { ...extra, ...collectLimaDiagnostics() },
+    })
+    throw Object.assign(
+      new Error("Built-in runtime's container engine isn't running. Quit and reopen the app to try again."),
+      { sentryCaptured: true }
+    )
+  }
+  captureMessage('Lima VM came up without a working containerd; re-running its provisioning fixed it', {
     level: 'warning',
     tags: { component: 'lima', operation: 'provision-check' },
-    extra: { output: output.slice(-2000), packagesAreBundled: getBundledPackagesDir() !== null },
+    extra,
   })
 }
 

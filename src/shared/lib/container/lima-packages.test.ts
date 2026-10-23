@@ -66,8 +66,50 @@ describe('parseApkIndex', () => {
       size: 10580783,
       depends: ['ca-certificates', 'containerd', 'so:libc.musl-aarch64.so.1'],
       provides: ['cmd:nerdctl'],
+      installIf: [],
       repo: 'community',
     })
+  })
+})
+
+describe('resolvePackages install_if', () => {
+  // apk adds an install_if package by itself once everything it names is
+  // installed; the bundle must carry the ones this install triggers.
+  const withInstallIf = [
+    ...index,
+    ...parseApkIndex([
+      'P:openrc\nV:0.63-r1\nS:1\n',
+      'P:alpine-base\nV:3.23.3-r0\nS:1\nD:openrc busybox-binsh\n',
+      'P:containerd-openrc-ext\nV:1-r0\nS:1\ni:openrc containerd=2.2.0-r8\n',
+      'P:containerd-doc\nV:2.2.0-r8\nS:1\ni:docs containerd=2.2.0-r8\n',
+      'P:acpid-openrc\nV:2.0.34-r7\nS:1\ni:openrc acpid\n',
+      'P:openrc-base-extra\nV:1-r0\nS:1\ni:openrc alpine-base\n',
+      'P:containerd-openrc-ext-chained\nV:1-r0\nS:1\ni:containerd-openrc-ext\n',
+    ].join('\n'), 'main'),
+  ]
+  const resolved = () => resolvePackages(withInstallIf, ['containerd~=2.2'], ['alpine-base']).map((e) => e.name)
+
+  it('brings an install_if package whose conditions are met by the base image plus this install', () => {
+    // i:openrc containerd — openrc from alpine-base, containerd from the bundle.
+    expect(resolved()).toContain('containerd-openrc-ext')
+  })
+
+  it('and one triggered by such a package in turn', () => {
+    expect(resolved()).toContain('containerd-openrc-ext-chained')
+  })
+
+  it('leaves out one with a condition nothing installs (docs) or this install does not touch (acpid)', () => {
+    expect(resolved()).not.toContain('containerd-doc')
+    expect(resolved()).not.toContain('acpid-openrc')
+  })
+
+  it('leaves out one the base image alone triggers: it is already there', () => {
+    expect(resolved()).not.toContain('openrc-base-extra')
+  })
+
+  it('does not bundle the base image itself', () => {
+    expect(resolved()).not.toContain('alpine-base')
+    expect(resolved()).not.toContain('openrc')
   })
 })
 

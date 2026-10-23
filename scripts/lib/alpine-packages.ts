@@ -13,6 +13,8 @@ export interface ApkIndexEntry {
   depends: string[]
   /** p: provided tokens, without their =version */
   provides: string[]
+  /** i: install_if tokens: apk adds the package once all of these are installed */
+  installIf: string[]
   /** Which repository's index listed it (main, community). */
   repo: string
 }
@@ -35,6 +37,7 @@ export function parseApkIndex(text: string, repo: string): ApkIndexEntry[] {
       size: Number(fields.get('S') ?? NaN),
       depends: (fields.get('D') ?? '').split(' ').filter(Boolean),
       provides: (fields.get('p') ?? '').split(' ').filter(Boolean).map(tokenName),
+      installIf: (fields.get('i') ?? '').split(' ').filter(Boolean),
       repo,
     })
   }
@@ -65,10 +68,16 @@ export function satisfiesSpec(spec: string, version: string): boolean {
  * install time. Packages the base image already has come along too; apk
  * leaves them alone if the installed version satisfies the dependency.
  *
+ * Also the install_if packages apk adds by itself during that install: those
+ * whose conditions are all installed afterwards, at least one by this install
+ * (e.g. buildkit-openrc, `i:openrc buildkit`). Without their files apk fails
+ * with "package mentioned in index not found". `base` names what the VM
+ * already has, resolved with its dependencies (alpine-base brings openrc).
+ *
  * Throws when a requested package is missing or has the wrong version, or a
  * dependency has no provider, so the build fails instead of the VM's first boot.
  */
-export function resolvePackages(entries: ApkIndexEntry[], specs: string[]): ApkIndexEntry[] {
+export function resolvePackages(entries: ApkIndexEntry[], specs: string[], base: string[] = []): ApkIndexEntry[] {
   const byName = new Map<string, ApkIndexEntry>()
   const providers = new Map<string, ApkIndexEntry[]>()
   for (const entry of entries) {
@@ -80,31 +89,53 @@ export function resolvePackages(entries: ApkIndexEntry[], specs: string[]): ApkI
     }
   }
 
-  const selected = new Map<string, ApkIndexEntry>()
-  const queue: ApkIndexEntry[] = []
-  const select = (entry: ApkIndexEntry) => {
-    if (selected.has(entry.name)) return
-    selected.set(entry.name, entry)
-    queue.push(entry)
-  }
-
-  for (const spec of specs) {
+  const requested = (spec: string) => {
     const name = tokenName(spec)
     const entry = byName.get(name)
     if (!entry) throw new Error(`Package "${name}" is not in the Alpine index`)
     if (!satisfiesSpec(spec, entry.version)) {
       throw new Error(`Package "${name}" is ${entry.version} in the Alpine index, which does not satisfy "${spec}"`)
     }
-    select(entry)
+    return entry
   }
 
-  while (queue.length > 0) {
-    const entry = queue.shift()!
-    for (const dep of entry.depends) {
-      if (dep.startsWith('!')) continue // a conflict, not a dependency
-      const candidates = providers.get(tokenName(dep))
-      if (!candidates?.length) throw new Error(`Nothing in the Alpine index provides "${dep}" (needed by ${entry.name})`)
-      candidates.forEach(select)
+  /** `start` plus everything it depends on, transitively, added to `into`. */
+  const withDependencies = (start: ApkIndexEntry[], into: Map<string, ApkIndexEntry>) => {
+    const queue = start.filter((entry) => !into.has(entry.name))
+    queue.forEach((entry) => into.set(entry.name, entry))
+    while (queue.length > 0) {
+      const entry = queue.shift()!
+      for (const dep of entry.depends) {
+        if (dep.startsWith('!')) continue // a conflict, not a dependency
+        const candidates = providers.get(tokenName(dep))
+        if (!candidates?.length) throw new Error(`Nothing in the Alpine index provides "${dep}" (needed by ${entry.name})`)
+        for (const candidate of candidates) {
+          if (into.has(candidate.name)) continue
+          into.set(candidate.name, candidate)
+          queue.push(candidate)
+        }
+      }
+    }
+  }
+
+  const preinstalled = new Map<string, ApkIndexEntry>()
+  withDependencies(base.map(requested), preinstalled)
+  const selected = new Map<string, ApkIndexEntry>()
+  withDependencies(specs.map(requested), selected)
+
+  // install_if: added once every condition is installed, if this install
+  // installs at least one of them; repeat, since those can trigger more.
+  const namesOf = (packages: Iterable<ApkIndexEntry>) => new Set([...packages].flatMap((e) => [e.name, ...e.provides]))
+  for (let added = true; added; ) {
+    added = false
+    const installed = namesOf([...preinstalled.values(), ...selected.values()])
+    const ours = namesOf([...selected.values()].filter((e) => !preinstalled.has(e.name)))
+    for (const entry of entries) {
+      if (entry.installIf.length === 0 || selected.has(entry.name) || preinstalled.has(entry.name)) continue
+      const conditions = entry.installIf.map(tokenName)
+      if (!conditions.every((c) => installed.has(c)) || !conditions.some((c) => ours.has(c))) continue
+      withDependencies([entry], selected)
+      added = true
     }
   }
 

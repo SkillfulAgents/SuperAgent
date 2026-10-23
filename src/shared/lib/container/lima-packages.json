@@ -1,3 +1,4 @@
 {
-  "packages": ["containerd~=2.2", "containerd-openrc", "nerdctl~=2.1", "buildkit~=0.25", "cni-plugins"]
+  "packages": ["containerd~=2.2", "containerd-openrc", "nerdctl~=2.1", "buildkit~=0.25", "cni-plugins", "rsync"],
+  "preinstalled": ["alpine-base", "sudo"]
 }

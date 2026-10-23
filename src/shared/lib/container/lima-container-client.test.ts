@@ -116,7 +116,7 @@ function mockExec(opts: { list?: any[]; guestReachable?: boolean; startError?: E
   const listJson = (opts.list ?? []).map((v) => JSON.stringify(v)).join('\n')
   mockedExecWithPath.mockImplementation(((cmd: string) => {
     if (cmd.includes('list --json')) return Promise.resolve({ stdout: listJson, stderr: '' })
-    if (cmd.includes('command -v nerdctl')) return Promise.resolve({ stdout: 'present\n', stderr: '' })
+    if (cmd.includes('nerdctl info')) return Promise.resolve({ stdout: 'running\n', stderr: '' })
     if (cmd.includes('-- true')) {
       return (opts.guestReachable ?? true)
         ? Promise.resolve({ stdout: '', stderr: '' })
@@ -390,7 +390,7 @@ describe('ensureLimaReady', () => {
     let callCount = 0
 
     mockedExecWithPath.mockImplementation(((cmd: string) => {
-      if (cmd.includes('command -v nerdctl')) return Promise.resolve({ stdout: 'present\n', stderr: '' })
+      if (cmd.includes('nerdctl info')) return Promise.resolve({ stdout: 'running\n', stderr: '' })
       callCount++
       if (callCount === 1) {
         // First list call — slow
@@ -977,7 +977,7 @@ describe('stopping the VM', () => {
         return Promise.resolve({ stdout: '', stderr: '' })
       }
       if (cmd.includes('list --json')) return Promise.resolve({ stdout: listJson, stderr: '' })
-      if (cmd.includes('command -v nerdctl')) return Promise.resolve({ stdout: 'present\n', stderr: '' })
+      if (cmd.includes('nerdctl info')) return Promise.resolve({ stdout: 'running\n', stderr: '' })
       if (cmd.includes(' start ')) return opts.startError ? Promise.reject(opts.startError) : Promise.resolve({ stdout: '', stderr: '' })
       return Promise.resolve({ stdout: '', stderr: '' })
     }) as any)
@@ -1242,13 +1242,27 @@ describe('first-boot packages', () => {
     await ensureLimaReady()
 
     const config = createdConfig()
-    // apk misreads a repository path with a space, and the real data folder has one.
-    expect(config).toContain(`ln -sfn '${STAGED}' /run/superagent-lima-packages`)
-    expect(config).toContain(
-      'apk add --no-network --no-cache --repositories-file /dev/null --repository /run/superagent-lima-packages/main --repository /run/superagent-lima-packages/community containerd~=2.2 containerd-openrc nerdctl~=2.1 buildkit~=0.25 cni-plugins'
-    )
+    // A dependency script runs inside Lima's own package step, before it: Lima
+    // then finds rsync and installs nothing from Alpine's CDN itself. apk
+    // misreads a repository path with a space (the data folder has one): a link.
+    expect(config).toContain([
+      'provision:',
+      '  - mode: dependency',
+      '    script: |',
+      '      #!/bin/sh',
+      '      set -e',
+      '      command -v nerdctl >/dev/null 2>&1 && command -v rsync >/dev/null 2>&1 && exit 0',
+      '      echo "Installing containerd + nerdctl from the packages bundled with the app..."',
+      `      ln -sfn '${STAGED}' /run/superagent-lima-packages`,
+      '      apk add --no-network --no-cache --repositories-file /dev/null --repository /run/superagent-lima-packages/main --repository /run/superagent-lima-packages/community containerd~=2.2 containerd-openrc nerdctl~=2.1 buildkit~=0.25 cni-plugins rsync',
+      '  - mode: system',
+      '    script: |',
+      '      #!/bin/sh',
+      '      set -e',
+      '      rc-update show default | grep -q containerd || rc-update add containerd default',
+      '      service containerd start || true',
+    ].join('\n'))
     expect(config).not.toContain('apk update')
-    expect(config).toContain('      set -e')
     expect(mockedFs.cpSync).toHaveBeenCalledWith(BUNDLED, `${STAGED}.partial-${process.pid}`, expect.objectContaining({ recursive: true, mode: 2 }))
     expect(mockedFs.renameSync).toHaveBeenCalledWith(`${STAGED}.partial-${process.pid}`, STAGED)
   })
@@ -1276,16 +1290,30 @@ describe('first-boot packages', () => {
     expect(createdConfig()).toContain(`ln -sfn '${STAGED}' /run/superagent-lima-packages`)
   })
 
+  // What createLimaVm writes into a bundled build's VM.
+  const bundledInstanceYaml = `provision:\n  - mode: dependency\n    script: |\n      ln -sfn '${STAGED}' /run/superagent-lima-packages\n`
+
   it('restages them before starting a VM whose first boot reads them, so a cut-short first boot can provision again', async () => {
-    files({ bundle: 'containerd-2.2.0-r8\n', instanceYaml: `provision:\n  apk add --repository '${STAGED}/main'` })
+    files({ bundle: 'containerd-2.2.0-r8\n', instanceYaml: bundledInstanceYaml })
     mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Stopped', memory: 4 * 1024 ** 3 }] })
 
     await ensureLimaReady()
 
     expect(mockedFs.cpSync).toHaveBeenCalledWith(BUNDLED, `${STAGED}.partial-${process.pid}`, expect.anything())
-    const cmds = execCmds()
-    expect(cmds.some((c) => c.includes(' start '))).toBe(true)
-    expect(cmds.some((c) => c.includes('create'))).toBe(false)
+    const startCall = execCmds().findIndex((c) => c.includes(' start '))
+    expect(startCall).toBeGreaterThanOrEqual(0)
+    expect(mockedFs.cpSync.mock.invocationCallOrder[0]).toBeLessThan(mockedExecWithPath.mock.invocationCallOrder[startCall])
+    expect(execCmds().some((c) => c.includes('create'))).toBe(false)
+  })
+
+  it('still starts the VM when restaging fails (only an unfinished first boot needs the copy)', async () => {
+    files({ bundle: 'containerd-2.2.0-r8\n', instanceYaml: bundledInstanceYaml })
+    mockedFs.cpSync.mockImplementationOnce(() => { throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' }) })
+    mockExec({ list: [{ name: LIMA_VM_NAME, status: 'Stopped', memory: 4 * 1024 ** 3 }] })
+
+    await ensureLimaReady()
+
+    expect(execCmds().some((c) => c.includes(' start '))).toBe(true)
   })
 
   it('leaves a VM an older app provisioned from the network alone', async () => {
@@ -1304,32 +1332,33 @@ describe('first-boot packages', () => {
 // ============================================================================
 
 describe('containerd after a start', () => {
-  /** The guest's answers: is nerdctl there before, after the provisioning re-run, and after a rebuild? */
-  function guest(opts: { before: boolean | 'no answer'; afterRerun?: boolean; afterRebuild?: boolean }) {
-    let installed = opts.before === true
+  type State = 'running' | 'not running' | 'not installed'
+  /** containerd's state in the guest before, after the provisioning re-run, and after a rebuild. */
+  function guest(opts: { before: State | 'no answer'; afterRerun?: State | 'no answer'; afterRebuild?: State }) {
+    let state: State | 'no answer' = opts.before
     mockedExecWithPath.mockImplementation(((cmd: string) => {
       if (cmd.includes('list --json')) {
         return Promise.resolve({ stdout: JSON.stringify({ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 ** 3 }), stderr: '' })
       }
       if (cmd.includes(`create --name ${LIMA_VM_NAME}`)) {
-        installed = !!opts.afterRebuild
+        state = opts.afterRebuild ?? 'running'
         return Promise.resolve({ stdout: '', stderr: '' })
       }
       if (cmd.includes('-- true')) return Promise.resolve({ stdout: '', stderr: '' })
-      if (cmd.includes('command -v nerdctl')) {
-        if (opts.before === 'no answer') return Promise.reject(Object.assign(new Error('ssh failed'), { code: 255 }))
-        return Promise.resolve({ stdout: installed ? 'present\n' : 'missing\n', stderr: '' })
+      if (cmd.includes('nerdctl info')) {
+        if (state === 'no answer') return Promise.reject(Object.assign(new Error('ssh failed'), { code: 255 }))
+        return Promise.resolve({ stdout: `${state}\n`, stderr: '' })
       }
-      if (cmd.includes('/mnt/lima-cidata/provision.system/')) {
-        installed = !!opts.afterRerun
-        return installed
+      if (cmd.includes('/mnt/lima-cidata/provision.')) {
+        state = opts.afterRerun ?? 'running'
+        return state === 'running'
           ? Promise.resolve({ stdout: 'Installing containerd + nerdctl...', stderr: '' })
           : Promise.reject(Object.assign(new Error('ERROR: unable to select packages: containerd (no such package)'), { code: 1 }))
       }
       return Promise.resolve({ stdout: '', stderr: '' })
     }) as any)
   }
-  const reruns = () => execCmds().filter((c) => c.includes('/mnt/lima-cidata/provision.system/'))
+  const reruns = () => execCmds().filter((c) => c.includes('/mnt/lima-cidata/provision.'))
 
   let killSpy: any
   beforeEach(() => {
@@ -1346,35 +1375,40 @@ describe('containerd after a start', () => {
     killSpy.mockRestore()
   })
 
-  it('does nothing more when nerdctl is installed', async () => {
-    guest({ before: true })
+  it('does nothing more when containerd answers', async () => {
+    guest({ before: 'running' })
 
     await ensureLimaReady()
 
     expect(reruns()).toHaveLength(0)
   })
 
-  it("re-runs the VM's own provision scripts when nerdctl is missing, and reports it", async () => {
-    guest({ before: false, afterRerun: true })
+  it.each(['not installed', 'not running'] as const)(
+    "re-runs the VM's own dependency and system provision scripts when containerd is %s, and reports the fix",
+    async (before) => {
+      guest({ before, afterRerun: 'running' })
 
-    await ensureLimaReady()
+      await ensureLimaReady()
 
-    expect(reruns()).toHaveLength(1)
-    expect(reruns()[0]).toContain(`shell --workdir / ${LIMA_VM_NAME} -- sudo sh -c 'for f in /mnt/lima-cidata/provision.system/*; do sh "$f" || exit 1; done'`)
-    expect(vi.mocked(captureMessage)).toHaveBeenCalledWith(
-      expect.stringContaining('re-running its provisioning installed it'),
-      expect.objectContaining({ level: 'warning', tags: { component: 'lima', operation: 'provision-check' } })
-    )
-  })
+      expect(reruns()).toHaveLength(1)
+      expect(reruns()[0]).toContain(
+        `shell --workdir / ${LIMA_VM_NAME} -- sudo sh -c 'for f in /mnt/lima-cidata/provision.dependency/* /mnt/lima-cidata/provision.system/*; do [ -e "$f" ] || continue; sh "$f" || exit 1; done'`
+      )
+      expect(vi.mocked(captureMessage)).toHaveBeenCalledWith(
+        expect.stringContaining('re-running its provisioning fixed it'),
+        expect.objectContaining({ level: 'warning', tags: { component: 'lima', operation: 'provision-check' }, extra: expect.objectContaining({ before }) })
+      )
+    }
+  )
 
-  it('rebuilds a VM the re-run cannot fix: without containerd it holds nothing to lose', async () => {
-    guest({ before: false, afterRerun: false, afterRebuild: true })
+  it('rebuilds a VM the re-run cannot fix when containerd was never installed: it holds nothing to lose', async () => {
+    guest({ before: 'not installed', afterRerun: 'not installed', afterRebuild: 'running' })
 
     await ensureLimaReady()
 
     const cmds = execCmds()
     const deleteAt = cmds.findIndex((c) => c.includes(`delete ${LIMA_VM_NAME} --force`))
-    expect(deleteAt).toBeGreaterThan(cmds.findIndex((c) => c.includes('/mnt/lima-cidata/provision.system/')))
+    expect(deleteAt).toBeGreaterThan(cmds.findIndex((c) => c.includes('/mnt/lima-cidata/provision.')))
     expect(cmds.findIndex((c) => c.includes(`create --name ${LIMA_VM_NAME}`))).toBeGreaterThan(deleteAt)
     expect(vi.mocked(captureMessage)).toHaveBeenCalledWith(
       expect.stringContaining('rebuilding it'),
@@ -1386,11 +1420,11 @@ describe('containerd after a start', () => {
   })
 
   it('refuses with a clear error when the rebuilt VM has no containerd either', async () => {
-    guest({ before: false, afterRerun: false, afterRebuild: false })
+    guest({ before: 'not installed', afterRerun: 'not installed', afterRebuild: 'not installed' })
 
     const error = await ensureLimaReady().then(() => null, (e) => e)
 
-    expect(error?.message).toMatch(/couldn't install its container engine/)
+    expect(error?.message).toMatch(/couldn't set up its container engine/)
     expect(error?.sentryCaptured).toBe(true)
     expect(execCmds().filter((c) => c.includes(`create --name ${LIMA_VM_NAME}`))).toHaveLength(1)
     expect(vi.mocked(captureMessage)).toHaveBeenCalledWith(
@@ -1399,11 +1433,30 @@ describe('containerd after a start', () => {
     )
   })
 
+  it('never rebuilds a VM whose containerd is installed but not answering (it may hold images and containers)', async () => {
+    guest({ before: 'not running', afterRerun: 'not running' })
+
+    const error = await ensureLimaReady().then(() => null, (e) => e)
+
+    expect(error?.message).toMatch(/container engine isn't running/)
+    expect(error?.sentryCaptured).toBe(true)
+    expect(execCmds().some((c) => c.includes('delete'))).toBe(false)
+    expect(execCmds().some((c) => c.includes(`create --name ${LIMA_VM_NAME}`))).toBe(false)
+  })
+
   it('leaves a guest that does not answer to the usual recovery', async () => {
     guest({ before: 'no answer' })
 
     await ensureLimaReady()
 
     expect(reruns()).toHaveLength(0)
+  })
+
+  it('does not report a repair when the guest stops answering after the re-run', async () => {
+    guest({ before: 'not running', afterRerun: 'no answer' })
+
+    await ensureLimaReady()
+
+    expect(vi.mocked(captureMessage)).not.toHaveBeenCalledWith(expect.stringContaining('fixed it'), expect.anything())
   })
 })

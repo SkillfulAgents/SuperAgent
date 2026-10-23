@@ -65,7 +65,9 @@ async function main(): Promise<void> {
     indexes.set(repo, tarGz)
     entries.push(...parseApkIndex(readIndexText(tarGz), repo))
   }
-  const selected = resolvePackages(entries, limaPackages.packages)
+  // `preinstalled`: what the VM has before provisioning runs (the image's
+  // alpine-base, and sudo, which Lima's own boot installs), for install_if.
+  const selected = resolvePackages(entries, limaPackages.packages, limaPackages.preinstalled)
 
   fs.rmSync(outDir, { recursive: true, force: true })
   for (const repo of REPOS) {
