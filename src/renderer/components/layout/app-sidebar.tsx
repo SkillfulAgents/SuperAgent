@@ -857,8 +857,9 @@ function findTeamBrainAgent(agents: ApiAgent[]): ApiAgent | undefined {
 }
 
 /**
- * Team Brain (the `team-brain` experiment): its set-up page, or once set up
- * its agent. The row carries Explore's "New" badge until opened or set up.
+ * Team Brain (the `team-brain` experiment): its page, the pitch and set-up or,
+ * once set up, its home page; lit there and in its agent's sessions. The row
+ * carries Explore's "New" badge until opened or set up.
  */
 function TeamBrainMenuButton() {
   const pathname = useRouterState({ select: (s) => s.location.pathname })
@@ -891,11 +892,7 @@ function TeamBrainMenuButton() {
   )
   return (
     <SidebarMenuButton asChild data-testid="team-brain-button" isActive={visited}>
-      {brainAgent ? (
-        <AppLink to="/agents/$slug" params={{ slug: brainAgent.displaySlug }}>{label}</AppLink>
-      ) : (
-        <AppLink to="/team-brain">{label}</AppLink>
-      )}
+      <AppLink to="/team-brain">{label}</AppLink>
     </SidebarMenuButton>
   )
 }

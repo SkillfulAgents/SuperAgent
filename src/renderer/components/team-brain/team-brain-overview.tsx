@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import { ArrowUpRight, Check, ChevronDown, PanelRightClose, Plus, Settings2 } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
@@ -38,6 +38,7 @@ import { DetailCard } from '@renderer/components/triggers/detail-card'
 import { StatusToggle } from '@renderer/components/triggers/status-toggle'
 import { TeamBrainRadial } from './team-brain-radial'
 import { TeamBrainSyncSummaries } from './team-brain-sync-summaries'
+import { TeamBrainHomeComposer } from './team-brain-home-composer'
 import { TeamBrainSourceIcon } from './team-brain-source-icon'
 import { teamBrainLocation } from './team-brain-locations'
 
@@ -58,7 +59,7 @@ export function TeamBrainOverview({ agent }: { agent: ApiAgent }) {
     <FilePreviewProvider sessionId="team-brain" commentsEnabled={false}>
       <WorkflowProvider sessionId="team-brain">
         <div className="file-preview-container relative flex min-h-0 min-w-0 flex-1" data-testid="file-preview-container">
-          <OverviewBody settingsOpen={settingsOpen} onSettingsOpenChange={setSettingsOpen} />
+          <OverviewBody agent={agent} settingsOpen={settingsOpen} onSettingsOpenChange={setSettingsOpen} />
           <TrayManager agentSlug={PREVIEW_SLUG} sessionId="team-brain" browserActive={false} filePreviewWideLayout="overlay" />
           <SettingsDrawer agent={agent} open={settingsOpen} onClose={() => setSettingsOpen(false)} />
         </div>
@@ -80,7 +81,7 @@ function useTeamBrainLocation(agentSlug: string) {
  * (sources, schedule, which agents share it) are a button away, in the
  * settings drawer.
  */
-function OverviewBody({ settingsOpen, onSettingsOpenChange }: { settingsOpen: boolean; onSettingsOpenChange: (open: boolean) => void }) {
+function OverviewBody({ agent, settingsOpen, onSettingsOpenChange }: { agent: ApiAgent; settingsOpen: boolean; onSettingsOpenChange: (open: boolean) => void }) {
   const { state } = useTeamBrain()
   const { state: live } = useTeamBrainLive()
   const { data: agents = [] } = useListedAgents()
@@ -109,47 +110,94 @@ function OverviewBody({ settingsOpen, onSettingsOpenChange }: { settingsOpen: bo
     onSettingsOpenChange(false)
   }
 
+  const { scrollRef, treeRef, treeTop, treeHeight } = useStickyTree()
+
   // What an agent told Team Brain between syncs is credited to a real agent that uses it.
   const writer = agents.find((a) => usesTeamBrain(state, a.slug))
 
   return (
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- a pointer convenience; each drawer has its own close button
     <div className="flex min-h-0 flex-1 flex-col bg-background" onClick={closeDrawersOnClickOff}>
-      <SettingsPageContainer className="max-w-[1040px] space-y-8">
-        {/* No heading of its own: the nav bar names the page, so the header is just how Team Brain is doing. */}
-        <header className="flex flex-wrap items-center justify-between gap-4" data-testid="team-brain-overview">
-          <p className="flex items-center gap-1.5 text-sm text-muted-foreground" data-testid="team-brain-status">
-            <span className={cn('inline-block h-1.5 w-1.5 rounded-full', live.syncPaused ? 'bg-muted-foreground' : 'bg-green-500')} aria-hidden="true" />
-            {live.syncPaused ? 'Paused' : 'Active'} · Synced {formatSince(live.lastSyncAt)}
-          </p>
-          {/* Opens the settings drawer: where it lives, the schedule, sources, agents, turning it off. */}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            onClick={toggleSettings}
-            aria-label="Team Brain settings"
-            aria-expanded={settingsOpen}
-            aria-controls="team-brain-settings"
-            data-testid="team-brain-menu"
-            data-drawer-opener
-          >
-            <Settings2 />
-          </Button>
-        </header>
+      <SettingsPageContainer className="max-w-[1040px] space-y-8" scrollContainerRef={scrollRef}>
+        {/* The centrepiece: what Team Brain knows, as a tree floating on the page with no frame around it. It fills the
+            view down to where the composer peeks in and stays where it is as the page scrolls, so what follows passes over it. */}
+        <div ref={treeRef} className="sticky z-0" style={{ top: treeTop }} data-testid="team-brain-tree-layer">
+          <TeamBrainRadial drive={drive} onOpenFile={openPage} height={treeHeight} />
+        </div>
 
-        {/* The centrepiece: what Team Brain knows, as a tree floating on the page with no frame around it. */}
-        <TeamBrainRadial drive={drive} onOpenFile={openPage} height={DRIVE_HEIGHT} />
+        <div className="relative z-10 mx-auto w-full max-w-[720px] space-y-3">
+          {/* No heading of its own: the nav bar names the page, so this is just how Team Brain is doing, riding above
+              the composer at its width. */}
+          <header className="flex flex-wrap items-center justify-between gap-4" data-testid="team-brain-overview">
+            <p className="flex items-center gap-1.5 text-sm text-muted-foreground" data-testid="team-brain-status">
+              <span className={cn('inline-block h-1.5 w-1.5 rounded-full', live.syncPaused ? 'bg-muted-foreground' : 'bg-green-500')} aria-hidden="true" />
+              {live.syncPaused ? 'Paused' : 'Active'} · Synced {formatSince(live.lastSyncAt)}
+            </p>
+            {/* Opens the settings drawer: where it lives, the schedule, sources, agents, turning it off. */}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={toggleSettings}
+              aria-label="Team Brain settings"
+              aria-expanded={settingsOpen}
+              aria-controls="team-brain-settings"
+              data-testid="team-brain-menu"
+              data-drawer-opener
+            >
+              <Settings2 />
+            </Button>
+          </header>
+          {/* Talk to it, as on Agent Home: a message starts a session with the Team Brain agent. Glass, as the session's
+              composer is, so the tree shows through it as it passes over. */}
+          <TeamBrainHomeComposer agent={agent} />
+        </div>
 
-        {/* What each sync filed, read like a changelog. */}
-        <TeamBrainSyncSummaries drive={drive} schedule={state.schedule} lastSyncAt={live.lastSyncAt} writer={writer ?? null} onOpenFile={openPage} />
+        {/* What each sync filed, read like a changelog, on a glass sheet like the composer's and as wide as it: the tree
+            shows through it, blurred, as it passes over. */}
+        <div className="relative z-10 mx-auto w-full max-w-[720px] rounded-3xl border border-border/60 bg-background/60 px-6 pb-8 pt-8 shadow-[0_0_24px_rgba(15,23,42,0.07),0_2px_10px_-4px_rgba(15,23,42,0.08)] backdrop-blur-xl supports-[backdrop-filter]:bg-background/40 dark:shadow-[0_0_26px_rgba(0,0,0,0.22),0_2px_12px_-4px_rgba(0,0,0,0.16)]">
+          <TeamBrainSyncSummaries drive={drive} schedule={state.schedule} lastSyncAt={live.lastSyncAt} writer={writer ?? null} onOpenFile={openPage} />
+        </div>
       </SettingsPageContainer>
     </div>
   )
 }
 
-/** The tree's height: tall enough to lead the page. */
-const DRIVE_HEIGHT = 680
+/** How much shows at the foot of the view before scrolling (the status row and the composer's top), and the shortest the tree gets. */
+const COMPOSER_PEEK = 124
+const MIN_TREE_HEIGHT = 520
+
+/**
+ * The tree fills the view from the top down to where the status row and composer peek in, and sticks there, so
+ * everything after it passes over the tree.
+ */
+function useStickyTree() {
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const treeRef = useRef<HTMLDivElement>(null)
+  const [treeTop, setTreeTop] = useState(0)
+  const [treeHeight, setTreeHeight] = useState(680)
+
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current
+    const tree = treeRef.current
+    if (!scroller || !tree) return
+    const measure = () => {
+      // Where the tree starts in the page: it comes first, so at the page's top padding. Read off the padding, since a
+      // stuck tree's own offset is where it is stuck, not where it starts.
+      const top = Math.round(parseFloat(getComputedStyle(tree.parentElement ?? tree).paddingTop) || 0)
+      setTreeTop(top)
+      // The page's 32px gap sits between the tree and the composer.
+      setTreeHeight(Math.max(MIN_TREE_HEIGHT, Math.round(scroller.clientHeight - top - 32 - COMPOSER_PEEK)))
+    }
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measure)
+    observer.observe(scroller)
+    return () => observer.disconnect()
+  }, [])
+
+  return { scrollRef, treeRef, treeTop, treeHeight }
+}
 
 /**
  * Where Team Brain lives, how it syncs, what it reads and which agents share

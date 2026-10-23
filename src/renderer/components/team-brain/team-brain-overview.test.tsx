@@ -22,6 +22,8 @@ vi.mock('@renderer/hooks/use-agents', () => ({
 vi.mock('@renderer/hooks/use-mounts', () => ({ useAgentMounts: () => ({ data: [{ id: 'm1', volumeId: 'vol1', name: 'Team Brain', type: 'dropbox' }] }) }))
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
 vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl }))
+// Agent Home's composer needs the app's providers; here it only needs to be there, for the Team Brain agent.
+vi.mock('./team-brain-home-composer', () => ({ TeamBrainHomeComposer: ({ agent }: { agent: { slug: string } }) => <div data-testid="team-brain-composer">{agent.slug}</div> }))
 // The page mounts the app's file drawer, which reads the route; this page has no session.
 vi.mock('@renderer/router/use-route-location', () => ({ useRouteLocation: () => ({ view: { kind: 'none' } }) }))
 // The drawer itself needs the app shell; a probe lists the pages opened in it instead.
@@ -185,6 +187,8 @@ describe('TeamBrainOverview', () => {
   it('sums up each sync, and turns off by deleting the Team Brain agent', async () => {
     render(<TeamBrainOverview agent={BRAIN} />)
     expect(screen.getByTestId('team-brain-overview')).toBeInTheDocument()
+    // A composer to talk to it, for its agent.
+    expect(screen.getByTestId('team-brain-composer')).toHaveTextContent('team-brain')
     // A page in the drive opens in the file drawer, from its own text.
     await userEvent.click(screen.getByTestId('team-brain-radial-node-readme'))
     expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('README.md (own source)')

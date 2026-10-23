@@ -583,7 +583,7 @@ export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly
             const isHovered = hovered === node.id
             const isSelected = selected === node.id
             const faded = dim(node.id)
-            // Below the sections, a folder is a small dot until a zoom or a hover names it; named, it is a pill.
+            // Below the sections, a folder is unmarked (where its branches meet) until a zoom or a hover names it; named, it is a pill.
             const pill = !page && (node.depth <= NAMED_DEPTH || zoomedIn || (focus?.has(node.id) ?? false))
             // Names run outwards along their spoke, flipped on the left half so they read left to right.
             const degrees = (angle * 180) / Math.PI - 90
@@ -626,7 +626,8 @@ export function TeamBrainRadial({ drive, onOpenFile, height }: { drive: readonly
                     </text>
                   </>
                 ) : !pill ? (
-                  <circle r={r} style={entering ? arriveAt(node.id) : undefined} className={cn('fill-muted-foreground', entering && 'team-brain-radial-pop')} />
+                  // Not drawn: the branches just meet here. Still a target, a little wider than a dot, to hover or choose it.
+                  <circle r={6 / zoomK} className="fill-transparent" data-testid={`team-brain-radial-junction-${node.id}`} />
                 ) : (
                   // A named folder is a pill with its name inside, lying along its spoke and reaching
                   // outwards from where the folder sits, so the pills fan out from the middle.
