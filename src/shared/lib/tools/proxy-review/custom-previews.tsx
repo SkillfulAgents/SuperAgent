@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { gmailSendCustomPreview } from './gmail-send'
+import { gmailDraftCreateCustomPreview, gmailDraftUpdateCustomPreview, gmailSendCustomPreview } from './gmail-send'
 
 /** Draws one call from the request body the card already has, the way its service shows it. */
 export interface CustomPreview {
@@ -12,7 +12,7 @@ export interface CustomPreview {
   read: (requestBody: string) => Promise<ReactNode | undefined>
 }
 
-export const CUSTOM_PREVIEWS: readonly CustomPreview[] = [gmailSendCustomPreview]
+export const CUSTOM_PREVIEWS: readonly CustomPreview[] = [gmailSendCustomPreview, gmailDraftCreateCustomPreview, gmailDraftUpdateCustomPreview]
 
 export function customPreviewFor(toolkit: string, method: string, targetPath: string): CustomPreview | undefined {
   return CUSTOM_PREVIEWS.find((preview) => preview.toolkit === toolkit && preview.method === method.toUpperCase() && preview.path.test(targetPath))
