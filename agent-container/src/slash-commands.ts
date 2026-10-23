@@ -12,13 +12,9 @@ export interface SlashCommandDetails {
  * bypasses the model picker) is hidden from the menu and sent as plain text.
  * Skills and custom commands are not built-ins and are never affected.
  */
-const SUPPORTED_BUILTIN_COMMANDS: ReadonlySet<string> = new Set([
-  'compact',
-  'context',
-  'recap',
-  'reload-skills',
-  'security-review',
-]);
+// Only built-ins whose result the app renders belong here. /context, /recap and
+// /reload-skills run, but their output never reaches the chat.
+const SUPPORTED_BUILTIN_COMMANDS: ReadonlySet<string> = new Set(['compact']);
 
 /** Names and aliases of the CLI built-ins that Gamut does not support. */
 export function unsupportedBuiltinCommands(commands: readonly SlashCommand[]): Set<string> {

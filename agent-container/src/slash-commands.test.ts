@@ -17,18 +17,18 @@ const CLI_COMMANDS = [
 
 describe('unsupportedBuiltinCommands', () => {
   it('lists unsupported built-ins with their aliases, and leaves skills, custom commands and supported built-ins out', () => {
-    expect([...unsupportedBuiltinCommands(CLI_COMMANDS)].sort()).toEqual(['clear', 'model', 'new', 'reset']);
+    expect([...unsupportedBuiltinCommands(CLI_COMMANDS)].sort()).toEqual(['clear', 'context', 'model', 'new', 'reset']);
   });
 });
 
 describe('makeUnsupportedCommandInert', () => {
   const unsupported = unsupportedBuiltinCommands(CLI_COMMANDS);
 
-  it.each(['/clear', '/clear my notes', '/new', '/reset', '/model opus'])('turns %j into plain text', (text) => {
+  it.each(['/clear', '/clear my notes', '/new', '/reset', '/model opus', '/context'])('turns %j into plain text', (text) => {
     expect(makeUnsupportedCommandInert(text, unsupported)).toBe(` ${text}`);
   });
 
-  it.each(['/compact', '/context', '/order-canvas-print', '/weekly-report', '/Clear', 'please /clear', 'hello'])(
+  it.each(['/compact', '/order-canvas-print', '/weekly-report', '/Clear', 'please /clear', 'hello'])(
     'leaves %j unchanged',
     (text) => {
       expect(makeUnsupportedCommandInert(text, unsupported)).toBe(text);
