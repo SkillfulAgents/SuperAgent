@@ -228,8 +228,8 @@ describe('AgentFolderBlock', () => {
     expect(empty).toHaveTextContent('Drag in or click + to add')
     expect(empty.className).not.toContain('border')
     // An agent row's height and avatar inset, so it lines up with real rows.
-    expect(empty.className).toContain('h-11')
-    expect(empty.className).toContain('pl-[50px]')
+    expect(empty.className).toContain('h-10')
+    expect(empty.className).toContain('pl-[42px]')
     // A ghost avatar sits in the avatar slot, decorative and dimmed.
     const ghost = screen.getByTestId('section-ghost-f1')
     expect(empty).toContainElement(ghost)

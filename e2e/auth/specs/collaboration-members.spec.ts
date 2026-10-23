@@ -27,17 +27,19 @@ test('members share one live roster while invitation and revocation follow permi
     await expect(ownerStack).toHaveCount(0)
     await expect(page.getByTestId(`sidebar-members-${agent.slug}`)).toHaveCount(0)
 
-    // The stretched name link must not cover the trailing slot; for a member
-    // who can start sessions, the new-session pen is what a pointer hits there.
+    // The stretched name link must not cover the status slot; for a member who
+    // can start sessions, the new-session pen sits on top of the status icon.
     const agentLink = page.getByTestId(`agent-item-${agent.slug}`)
     const agentRow = page.locator('[data-sidebar="menu-button"]').filter({ has: agentLink })
+    const status = agentRow.getByTestId('agent-status')
     const newSession = agentRow.getByTestId(`agent-new-session-${agent.slug}`)
     await newSession.hover()
-    const bounds = (await newSession.boundingBox())!
+    const bounds = (await status.boundingBox())!
     expect(await newSession.evaluate((pen, point) => pen.contains(document.elementFromPoint(point.x, point.y)), {
       x: bounds.x + bounds.width / 2,
       y: bounds.y + bounds.height / 2,
     })).toBe(true)
+    await expect(status).toHaveAttribute('title', 'sleeping')
 
     // Private agents retain Share; the same pane stays open when the first invite makes it shared.
     await page.getByTestId('agent-share-button').click()

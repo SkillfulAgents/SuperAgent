@@ -8,6 +8,7 @@ import { orbShape, shapePath, type OrbShapeName } from './orb-shapes'
 
 const layer = (name: string) => document.querySelector(`[data-orb-layer="${name}"]`) as HTMLElement
 const body = () => layer('glow').parentElement as HTMLElement
+const lid = () => layer('face').firstElementChild as HTMLElement
 // The face's translate(x, y): where it sits relative to the centre.
 const faceOffset = () => layer('face').style.transform.match(/translate\((-?[\d.e-]+)px, (-?[\d.e-]+)px\)/)!.slice(1).map(Number)
 const dotsShown = () => [...document.querySelectorAll<HTMLElement>('[data-orb-layer="dot"]')].filter(dot => dot.style.display !== 'none').length
@@ -79,9 +80,9 @@ describe('OrbAvatar follow within a region', () => {
     advance(500)
     act(() => move(screen.getByTestId('region'), 400, 100)) // far to the right
     advance(500)
-    // Still centred, not turned toward the cursor.
+    // Still centred and low, not turned toward the cursor.
     expect(Math.abs(faceOffset()[0])).toBeLessThan(0.01)
-    expect(Math.abs(faceOffset()[1])).toBeLessThan(0.01)
+    expect(faceOffset()[1]).toBeGreaterThan(3)
   })
 
   it('measures only after pointer or layout changes', () => {
@@ -126,7 +127,8 @@ describe('OrbAvatar states', () => {
     const { rerender } = render(orb('idle', 'circle'))
     rerender(orb('sleeping', 'circle'))
     rerender(orb('sleeping', 'triangle'))
-    expect(layer('face').style.opacity).toBe('0')
+    expect(faceOffset()[1]).toBeGreaterThan(0)
+    expect(lid().style.transform).toBe('scaleY(0.25)')
     expect(raf).not.toHaveBeenCalled()
   })
 
@@ -155,12 +157,14 @@ describe('OrbAvatar states', () => {
     expect(dotsShown()).toBe(0)
   })
 
-  it('sleeps upright: hides its face, mutes its colour and breathes', () => {
+  it('sleeps upright: shuts its face to a slit, centred and low, mutes its colour and breathes', () => {
     render(orb('sleeping'))
     advance(1000)
-    // No face: a shut eye read as a mouth.
-    expect(layer('face').style.opacity).toBe('0')
+    expect(Math.abs(faceOffset()[0])).toBeLessThan(0.01)
+    expect(faceOffset()[1]).toBeGreaterThan(3) // below the centre
     // Upright: the body has no rotation at all.
+    expect(body().style.transform).not.toMatch(/rotate/)
+    expect(lid().style.transform).toBe('scaleY(0.25)')
     expect(body().style.filter).toBe('saturate(0.85)')
     const glowA = Number(layer('glow').style.opacity)
     advance(2000)
@@ -192,10 +196,10 @@ describe('OrbAvatar states', () => {
     advance(200)
     rerender(orb('sleeping'))
     advance(200)
-    // Halfway into sleep: the face is fading, not yet gone.
-    const faceOpacity = Number(layer('face').style.opacity)
-    expect(faceOpacity).toBeGreaterThan(0.05)
-    expect(faceOpacity).toBeLessThan(0.95)
+    // Halfway into sleep: the lid is closing, not yet at sleeping's 0.25.
+    const lidScale = Number(lid().style.transform.match(/scaleY\(([\d.]+)\)/)![1])
+    expect(lidScale).toBeGreaterThan(0.3)
+    expect(lidScale).toBeLessThan(0.95)
   })
 })
 
@@ -253,7 +257,7 @@ describe('OrbAvatar visibility', () => {
     visibility.set(true)
     advance(2500)
     expect(dotsShown()).toBe(0)
-    expect(layer('face').style.opacity).toBe('0')
+    expect(lid().style.transform).toBe('scaleY(0.25)')
   })
 
   it('stops all frame work when the document is hidden', () => {
