@@ -115,10 +115,11 @@ export class SessionPage {
   }
 
   /**
-   * Get the activity indicator
+   * Get the activity indicator while a turn is live. Between turns the drawer
+   * stays up at rest (`data-idle`), so "not visible" here means the turn ended.
    */
   getActivityIndicator() {
-    return this.page.locator('[data-testid="activity-indicator"]')
+    return this.page.locator('[data-testid="activity-indicator"]:not([data-idle])')
   }
 
   /**
