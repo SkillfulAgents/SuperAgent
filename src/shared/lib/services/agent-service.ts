@@ -26,6 +26,7 @@ import {
 import type { ApiAgent } from '@shared/lib/types/api'
 import { agentAvatarSchema, type AgentAvatar } from '@shared/lib/types/agent-avatar'
 import { workspaceAgentDescriptionSchema, workspaceAgentNameSchema } from './agent-identity-schema'
+import { getTeamBrain } from '@shared/lib/config/settings'
 import {
   CONFIG_DOCS,
   agentCatalog,
@@ -65,6 +66,7 @@ function newAgentResponse(record: AgentRecord, instructions?: string): ApiAgent 
     slug: record.slug,
     displaySlug: displaySlug(record.name, record.slug),
     name: record.name,
+    ...(getTeamBrain()?.agentSlug === record.slug ? { teamBrain: true as const } : {}),
     avatar: record.avatar,
     description: record.description,
     ...(instructions === undefined ? {} : { instructions }),

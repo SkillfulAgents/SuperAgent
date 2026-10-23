@@ -26,6 +26,10 @@ const TodoRoute = lazyRouteComponent(
   () => import('@renderer/components/layout/todo-route'),
   'TodoRoute',
 )
+const TeamBrainRoute = lazyRouteComponent(
+  () => import('@renderer/components/layout/team-brain-route'),
+  'TeamBrainRoute',
+)
 const ExploreRoute = lazyRouteComponent(
   () => import('@renderer/components/layout/explore-route'),
   'ExploreRoute',
@@ -112,6 +116,15 @@ export const todoRoute = createRoute({
   getParentRoute: () => appShellRoute,
   path: 'todo',
   component: TodoRoute,
+})
+
+// Team Brain (the `team-brain` experiment): the workspace's shared wiki. For
+// now the page before set-up and its set-up modal. Like Todo, the route points
+// at Settings → Experiments when the experiment is off.
+export const teamBrainRoute = createRoute({
+  getParentRoute: () => appShellRoute,
+  path: 'team-brain',
+  component: TeamBrainRoute,
 })
 
 export const exploreRoute = createRoute({
@@ -316,6 +329,7 @@ export const routeTree = rootRoute.addChildren([
     notificationsRoute,
     notificationDetailRoute,
     todoRoute,
+    teamBrainRoute,
     exploreRoute,
     exploreCategoryRoute,
     exploreTemplateRoute,
