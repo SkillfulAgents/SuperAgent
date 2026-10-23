@@ -92,17 +92,17 @@ export function idleFrame(t: number, restPhi: number): OrbFrame {
 }
 
 /**
- * Sleeping: the face fades away — a shut eye, however it was drawn, read as a
- * mouth. The light breathes on a 4s breath. The body stays upright — the
- * design's lean and its face dropped to one side are left out. Loops.
+ * Sleeping: the face closes to a slit, centred and low in the body (gaze
+ * straight down); the light breathes on a 4s breath. The body stays upright —
+ * the design's lean and its face dropped to one side are left out. Loops.
  */
 export function sleepingFrame(t: number): OrbFrame {
   const breath = Math.sin((2 * Math.PI * t) / 4)
   const light = 0.5 + 0.5 * breath
   return {
     ...restFrame(90),
-    distance: 0,
-    faceOpacity: 0,
+    distance: 0.7,
+    blink: 0.25,
     scaleY: 1 + 0.035 * breath,
     scaleX: 1 - 0.02 * breath,
     glowOpacity: 0.25 + 0.6 * light,

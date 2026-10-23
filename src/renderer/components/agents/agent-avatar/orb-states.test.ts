@@ -10,12 +10,12 @@ describe('orb states', () => {
     expect(idleFrame(3.1, -90).blink).toBeCloseTo(0.1)
   })
 
-  it('sleeps upright with its face hidden, light breathing over 4s', () => {
+  it('sleeps upright with its face shut to a slit, centred and low, light breathing over 4s', () => {
     const inBreath = sleepingFrame(1)
     const outBreath = sleepingFrame(3)
     expect(inBreath.phi).toBe(90) // straight down
-    // No face: a shut eye read as a mouth.
-    expect(inBreath.faceOpacity).toBe(0)
+    expect(inBreath.distance).toBe(0.7)
+    expect(inBreath.blink).toBe(0.25)
     expect(inBreath.saturation).toBe(0.85)
     expect(inBreath.glowOpacity).toBeCloseTo(0.85)
     expect(outBreath.glowOpacity).toBeCloseTo(0.25)
