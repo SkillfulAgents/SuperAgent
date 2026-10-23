@@ -1,6 +1,7 @@
 import { createContext, useContext, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSession, signOut as authSignOut } from '@renderer/lib/auth-client'
+import { forgetLoginValues } from '@shared/lib/tools/request-login/login-request-store'
 import { apiFetch, clearRedirectStash, markDeliberateSignOut, clearDeliberateSignOut } from '@renderer/lib/api'
 import { isAuthMode } from '@renderer/lib/auth-mode'
 import { onCloudSessionRejected } from '@renderer/lib/cloud-session'
@@ -133,6 +134,8 @@ export function UserProvider({ children }: { children: ReactNode }) {
     } else if (wasAuthenticatedRef.current) {
       wasAuthenticatedRef.current = false
       queryClient.clear()
+      // The sign-in form remembers a typed username for a retry: not for the next user.
+      forgetLoginValues()
     }
   }, [isAuthenticated, queryClient])
 
@@ -223,6 +226,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
     clearRedirectStash()
     await authSignOut()
     queryClient.clear()
+    forgetLoginValues()
   }, [queryClient])
 
   const value = useMemo<UserContextValue>(

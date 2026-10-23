@@ -35,6 +35,7 @@ import { requestFileDef } from './request-file/definition'
 import { requestRemoteMcpDef } from './request-remote-mcp/definition'
 import { requestScriptRunDef } from './request-script-run/definition'
 import { requestBrowserInputDef } from './request-browser-input/definition'
+import { requestLoginDef } from './request-login/definition'
 import {
   browserOpenDef,
   browserCloseDef,
@@ -120,6 +121,7 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__user-input__request_remote_mcp': requestRemoteMcpDef,
   'mcp__user-input__request_script_run': requestScriptRunDef,
   'mcp__user-input__request_browser_input': requestBrowserInputDef,
+  'mcp__user-input__request_login': requestLoginDef,
 
   // MCP tools - browser
   'mcp__browser__browser_open': browserOpenDef,

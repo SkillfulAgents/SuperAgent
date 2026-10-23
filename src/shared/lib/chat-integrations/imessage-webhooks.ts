@@ -109,7 +109,7 @@ const gatewayDeliverySchema = z.object({
   seq: z.number().optional(),
   createdAt: z.string().optional(),
   phoneNumber: z.string(),
-  data: z.unknown(),
+  data: z.unknown().optional(),
 }).loose()
 export type GatewayDelivery = z.infer<typeof gatewayDeliverySchema>
 

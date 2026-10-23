@@ -531,6 +531,11 @@ jobs:
       - name: Build the desktop app
         run: npx electron-vite build
 
+      - name: Validate packaged PDF rendering and local worker
+        run: |
+          set -o pipefail
+          xvfb-run --auto-servernum npx tsx e2e/live/pdf-preview/run.ts 2>&1 | tee /tmp/electron-pdf-results.txt
+
       - name: Run the cloud-workspace app suite
         run: xvfb-run --auto-servernum node e2e/live/cloud-electron/ci.mjs
 
