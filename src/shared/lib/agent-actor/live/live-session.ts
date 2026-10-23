@@ -1026,9 +1026,9 @@ export class LiveSession {
       this.lastApiErrorCode = content.error
       const provider = this.ctx.modelRuntime()?.provider
       if (provider && typeof content.uuid === 'string' && content.uuid) {
-        recordErrorProvider(this.ctx.store, this.ctx.sessionId, content.uuid, provider).catch((error) => {
+        background(recordErrorProvider(this.ctx.store, this.ctx.sessionId, content.uuid, provider).catch((error) => {
           console.error('[LiveSession] Failed to record error provider:', error)
-        })
+        }), { name: 'live-session.record-error-provider' })
       }
       // Style what already streamed as a provider error at once, without
       // waiting for the transcript refetch: the code alone if text streamed,

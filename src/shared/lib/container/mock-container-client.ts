@@ -958,6 +958,29 @@ const MOCK_LOGIN_CONTEXT = {
 }
 
 /**
+ * Steps at their offsets from now, run strictly in the order they were added.
+ * One setTimeout per step is not enough: when the event loop lags, Node runs
+ * every expired timer of one duration before those of the next, so a 40 ms
+ * content_block_stop can overtake its 20 ms content_block_start, and the host,
+ * which never saw the block start, drops the tool call.
+ */
+export function stepsInOrder(): (delayMs: number, step: () => void) => void {
+  const start = Date.now()
+  let tail = Promise.resolve()
+  return (delayMs, step) => {
+    tail = tail.then(() => new Promise<void>((resolve) => {
+      setTimeout(() => {
+        try {
+          step()
+        } finally {
+          resolve()
+        }
+      }, Math.max(0, start + delayMs - Date.now()))
+    }))
+  }
+}
+
+/**
  * User input request scenario - simulates the agent emitting tool calls that
  * request user input (secrets, questions, etc.). The session stays active until
  * all inputs are resolved/rejected via fetch().
@@ -977,6 +1000,7 @@ export class UserInputRequestScenario implements MockScenario {
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
     let delay = 10
+    const at = stepsInOrder()
     const tools = this.tools.map((tool) => ({
       name: tool.name,
       input: typeof tool.input === 'function' ? tool.input(userMessage) : tool.input,
@@ -1006,12 +1030,12 @@ export class UserInputRequestScenario implements MockScenario {
     })
 
     // Start assistant message
-    setTimeout(() => {
+    at(delay, () => {
       client.emitStreamMessage(sessionId, {
         type: 'stream_event',
         content: { type: 'stream_event', event: { type: 'message_start' } },
       })
-    }, delay)
+    })
     delay += 10
 
     // Emit each tool use block
@@ -1019,7 +1043,7 @@ export class UserInputRequestScenario implements MockScenario {
       const tool = tools[toolIndex]
       const capturedToolId = toolIds[toolIndex]
       const capturedTool = tool
-      setTimeout(() => {
+      at(delay, () => {
         client.emitStreamMessage(sessionId, {
           type: 'stream_event',
           content: {
@@ -1034,11 +1058,11 @@ export class UserInputRequestScenario implements MockScenario {
             },
           },
         })
-      }, delay)
+      })
       delay += 10
 
       // content_block_delta (input_json_delta)
-      setTimeout(() => {
+      at(delay, () => {
         client.emitStreamMessage(sessionId, {
           type: 'stream_event',
           content: {
@@ -1052,26 +1076,26 @@ export class UserInputRequestScenario implements MockScenario {
             },
           },
         })
-      }, delay)
+      })
       delay += 10
 
       // content_block_stop — triggers the live session to detect user input tools
-      setTimeout(() => {
+      at(delay, () => {
         client.emitStreamMessage(sessionId, {
           type: 'stream_event',
           content: { type: 'stream_event', event: { type: 'content_block_stop' } },
         })
-      }, delay)
+      })
       delay += 50
     }
 
     // message_stop
-    setTimeout(() => {
+    at(delay, () => {
       client.emitStreamMessage(sessionId, {
         type: 'stream_event',
         content: { type: 'stream_event', event: { type: 'message_stop' } },
       })
-    }, delay)
+    })
     delay += 10
 
     // Write assistant JSONL entry after streaming completes (user message was
@@ -1079,7 +1103,7 @@ export class UserInputRequestScenario implements MockScenario {
     const capturedToolIds = [...toolIds]
     const capturedTools = [...tools]
     const finalDelay = delay
-    setTimeout(() => {
+    at(finalDelay, () => {
       const assistantContent = capturedTools.map((tool, i) => ({
         type: 'tool_use',
         id: capturedToolIds[i],
@@ -1101,7 +1125,7 @@ export class UserInputRequestScenario implements MockScenario {
         type: 'assistant',
         content: { type: 'assistant', message: { content: assistantContent } },
       })
-    }, finalDelay)
+    })
   }
 }
 
