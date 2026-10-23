@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { resolveConfig } from 'vite'
+import { normalizePath, resolveConfig } from 'vite'
 import { build } from 'esbuild'
 import webConfig from '../../../vite.config'
 import electronConfig from '../../../electron.vite.config'
@@ -22,7 +22,7 @@ describe('Monaco sanitizer resolution', () => {
 
     // Monaco imports a vendored file; an npm override alone cannot replace it.
     expect(await resolveImport('./dompurify/dompurify.js', importer)).toBe(
-      path.resolve('node_modules/dompurify/dist/purify.es.mjs'),
+      normalizePath(path.resolve('node_modules/dompurify/dist/purify.es.mjs')),
     )
   })
 
