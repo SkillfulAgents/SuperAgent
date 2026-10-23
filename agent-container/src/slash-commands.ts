@@ -1,7 +1,43 @@
+import type { SlashCommand } from '@anthropic-ai/claude-agent-sdk';
+
 export interface SlashCommandDetails {
   name: string;
   description: string;
   argumentHint: string;
+}
+
+/**
+ * CLI built-ins that fit a Gamut session. Every other built-in (for example
+ * /clear, which starts a new CLI session the host never sees, or /model, which
+ * bypasses the model picker) is hidden from the menu and sent as plain text.
+ * Skills and custom commands are not built-ins and are never affected.
+ */
+const SUPPORTED_BUILTIN_COMMANDS: ReadonlySet<string> = new Set([
+  'compact',
+  'context',
+  'recap',
+  'reload-skills',
+  'security-review',
+]);
+
+/** Names and aliases of the CLI built-ins that Gamut does not support. */
+export function unsupportedBuiltinCommands(commands: readonly SlashCommand[]): Set<string> {
+  const names = new Set<string>();
+  for (const command of commands) {
+    if (!command.builtin || SUPPORTED_BUILTIN_COMMANDS.has(command.name)) continue;
+    names.add(command.name);
+    for (const alias of command.aliases ?? []) names.add(alias);
+  }
+  return names;
+}
+
+/**
+ * The CLI runs a slash command only when the text starts with it, so a leading
+ * space makes an unsupported built-in reach the model as a plain message.
+ */
+export function makeUnsupportedCommandInert(text: string, unsupported: ReadonlySet<string>): string {
+  const name = /^\/(\S+)/.exec(text)?.[1];
+  return name !== undefined && unsupported.has(name) ? ` ${text}` : text;
 }
 
 function commandIdentity(name: string): string {

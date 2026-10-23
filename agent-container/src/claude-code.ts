@@ -79,7 +79,11 @@ import {
   type ModelContextWindows,
   type SubagentModelDefinition,
 } from './subagent-model-catalog';
-import { mergeCanonicalSlashCommands } from './slash-commands';
+import {
+  makeUnsupportedCommandInert,
+  mergeCanonicalSlashCommands,
+  unsupportedBuiltinCommands,
+} from './slash-commands';
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/shared/lib/utils/system-message.ts
@@ -692,6 +696,8 @@ export class ClaudeCodeProcess extends EventEmitter {
   // the process rather than in a detached pool.
   private warmHandle: WarmQuery | null = null;
   public slashCommands: { name: string; description: string; argumentHint: string }[] = [];
+  // The CLI binary, and so its built-in list, is fixed for this process.
+  private unsupportedCommands?: ReadonlySet<string>;
 
   constructor(options: ClaudeCodeProcessOptions) {
     super();
@@ -1700,12 +1706,14 @@ export class ClaudeCodeProcess extends EventEmitter {
           );
           // The init list owns the executable names. supportedCommands adds
           // descriptions/hints, but skill entries may use display titles there.
-          const canonicalCommandNames = Array.isArray(message.slash_commands)
+          const unsupported = await this.unsupportedBuiltinCommands();
+          const canonicalCommandNames = (Array.isArray(message.slash_commands)
             ? message.slash_commands.filter((name): name is string => typeof name === 'string')
-            : [];
+            : []).filter((name) => !unsupported.has(name));
           this.slashCommands = mergeCanonicalSlashCommands(canonicalCommandNames, []);
           try {
-            const cmds = await this.queryInstance!.supportedCommands();
+            const cmds = (await this.queryInstance!.supportedCommands())
+              .filter((command) => !unsupported.has(command.name));
             this.slashCommands = mergeCanonicalSlashCommands(canonicalCommandNames, cmds);
           } catch (err) {
             console.error(`[Session ${this.sessionId}] Failed to fetch slash commands:`, err);
@@ -1791,6 +1799,20 @@ export class ClaudeCodeProcess extends EventEmitter {
       }
       this.emit('exit', 0);
     }
+  }
+
+  // Read from the initialize response, which the CLI answers before its first
+  // prompt: system/init comes too late to guard a cold session's first send.
+  private async unsupportedBuiltinCommands(): Promise<ReadonlySet<string>> {
+    if (!this.unsupportedCommands && this.queryInstance) {
+      try {
+        const { commands } = await this.queryInstance.initializationResult();
+        this.unsupportedCommands = unsupportedBuiltinCommands(commands);
+      } catch (err) {
+        console.error(`[Session ${this.sessionId}] Failed to read built-in commands:`, err);
+      }
+    }
+    return this.unsupportedCommands ?? new Set();
   }
 
   async sendMessage(content: string, uuid?: UUID, options?: SendOptions): Promise<void> {
@@ -1982,6 +2004,10 @@ export class ClaudeCodeProcess extends EventEmitter {
       await this.waitForRemoteMcpsReady();
     }
 
+    const text = content.startsWith('/')
+      ? makeUnsupportedCommandInert(content, await this.unsupportedBuiltinCommands())
+      : content;
+
     // Create SDK user message format
     const shouldQuery = options?.shouldQuery;
     const message: SDKUserMessage = {
@@ -1992,7 +2018,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         content: [
           {
             type: 'text',
-            text: content,
+            text,
           },
         ],
       },
