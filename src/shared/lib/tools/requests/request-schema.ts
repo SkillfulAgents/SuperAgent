@@ -16,6 +16,7 @@ export const USER_INPUT_REQUEST_KINDS = [
   'file',
   'remote_mcp',
   'browser_input',
+  'login',
   'script_run',
   'capability_review',
   'computer_use',
@@ -107,6 +108,18 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
         url: z.string(),
         capturedAt: z.number(),
       }).optional().catch(undefined),
+    }),
+  }),
+  baseRequest.extend({
+    kind: z.literal('login'),
+    payload: z.looseObject({
+      message: lenientString,
+      // Model input: each mapped field's kind and label (refs stay in the
+      // container). Normalized by the card, which never trusts its shape.
+      fields: z.unknown().optional(),
+      // Host context, read from the container once it located the fields:
+      // the frame origin the values may go to. Never model input.
+      login: z.unknown().optional(),
     }),
   }),
   baseRequest.extend({

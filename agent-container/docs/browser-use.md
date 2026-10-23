@@ -134,10 +134,22 @@ possible.
 
 ## Authentication and Sensitive Interaction
 
-When a page requires login, CAPTCHA, 2FA, a passkey, or another step the user
-must complete, immediately call
-`mcp__user-input__request_browser_input`. Describe exactly what is visible and
-what the user must do. After completion, snapshot the updated state.
+When a page asks for credentials — a username or email, a password, a one-time
+code — call `mcp__user-input__request_login` with the sign-in fields mapped by
+ref from your latest snapshot: each field's ref, kind (`username`, `password`,
+`otp`, `text`) and label, plus the submit button's ref. The user types the
+values into a secure form in the app; they are written into the page and the
+form is submitted, and they never pass through you. The result reports what the
+page did next, like a click result. When it reports that nothing was clicked or
+pressed (the page submitted the form, navigated or sent the code by itself),
+snapshot before submitting anything yourself. A sign-in split over steps
+(email first, then password) takes one call per step.
+
+When a step needs the user's own hands — a CAPTCHA, a passkey or security key,
+approving the sign-in on their phone, picking an account in a "Sign in with
+Google" window — immediately call `mcp__user-input__request_browser_input`.
+Describe exactly what is visible and what the user must do. After completion,
+snapshot the updated state.
 
 Use it only for steps a human must perform. When a form just needs information
 or a decision from the user (a phone number, an address, which option to pick),
