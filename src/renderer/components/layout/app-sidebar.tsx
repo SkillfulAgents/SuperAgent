@@ -477,14 +477,21 @@ function AgentAvatarBadge({
       aria-label={label}
       title={label}
       data-testid={`agent-avatar-badge-${agent.slug}`}
-      // The background-coloured ring keeps the dot legible on any orb colour;
-      // it follows the row's hover/selected fill.
       className={cn(
-        'pointer-events-none absolute rounded-full ring-2 ring-sidebar',
-        'group-hover/agent-row:ring-sidebar-accent group-data-[active=true]/agent-row:ring-sidebar-accent',
+        'pointer-events-none absolute rounded-full',
         isMention
-          ? 'right-0 top-0 flex h-3 w-3 items-center justify-center bg-white text-violet-600 dark:bg-neutral-900 dark:text-purple-400'
-          : cn('right-0.5 top-0.5 h-1.5 w-1.5', isAwaiting ? 'bg-orange-500' : 'bg-blue-500'),
+          // A ring in the sidebar colour would show only where it overlaps the
+          // avatar, leaving the light area lopsided around the @. The badge
+          // carries its own hairline border instead, so the whole disc reads
+          // (a box-shadow hairline rendered as a smudge at this size).
+          ? 'right-0 top-0 flex h-3.5 w-3.5 items-center justify-center border border-black/10 bg-white text-violet-600 dark:border-white/10 dark:bg-neutral-900 dark:text-purple-400'
+          // The dots sit in a ring of the sidebar colour, legible on any orb
+          // colour; it follows the row's hover/selected fill.
+          : cn(
+              'right-0.5 top-0.5 h-1.5 w-1.5 ring-2 ring-sidebar',
+              'group-hover/agent-row:ring-sidebar-accent group-data-[active=true]/agent-row:ring-sidebar-accent',
+              isAwaiting ? 'bg-orange-500' : 'bg-blue-500',
+            ),
         className,
       )}
     >
