@@ -1,11 +1,12 @@
-import { lazy, Suspense } from 'react'
+import { Suspense } from 'react'
 import type { OnMount } from '@monaco-editor/react'
 
 import { useIsDark } from '@renderer/hooks/use-theme'
+import { lazyWithReload } from '@renderer/lib/lazy-with-reload'
 
 // Load the locally configured editor only when a file is opened. The default
 // Monaco loader fetches a CDN build with its own, unpatched DOMPurify copy.
-const Editor = lazy(() => import('./local-monaco-editor'))
+const Editor = lazyWithReload(() => import('./local-monaco-editor'))
 
 interface CodeEditorProps {
   value: string
