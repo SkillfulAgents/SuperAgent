@@ -271,6 +271,7 @@ describe('generateSystemPrompt rendering', () => {
     expect(guide).toContain('Do not use Exa to bypass a denied permission')
     expect(guide).toContain('Never print either environment variable')
     expect(guide).toContain('`costDollars.total`')
+    expect(guide).toContain('| `lite` |')
   })
 
   it('references every image-owned capability guide and keeps its source file present', () => {
