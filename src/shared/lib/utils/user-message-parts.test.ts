@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { appendDictationNote } from './dictation-note'
 import { parseUserMessageParts } from './user-message-parts'
 
 describe('parseUserMessageParts', () => {
@@ -90,6 +91,27 @@ describe('parseUserMessageParts', () => {
       attachedFiles: ['/workspace/uploads/file.md'],
       mountedFolders: [],
       text: '@Mike Smith look at this',
+    })
+  })
+
+  it('drops the dictation note the agent reads after the mentions block', () => {
+    const raw = appendDictationNote([
+      '\\[Dana]: @Mike Smith meet at to',
+      '',
+      '[Attached files:]',
+      '- /workspace/uploads/file.md',
+      '',
+      '[Mentioned:]',
+      '- @Mike Smith: teammate (user id u_mike1)',
+    ].join('\n'))
+
+    expect(parseUserMessageParts(raw)).toEqual({
+      sender: 'Dana',
+      mentions: [{ kind: 'user', id: 'u_mike1', name: 'Mike Smith' }],
+      silent: false,
+      attachedFiles: ['/workspace/uploads/file.md'],
+      mountedFolders: [],
+      text: '@Mike Smith meet at to',
     })
   })
 })

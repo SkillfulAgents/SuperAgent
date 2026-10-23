@@ -83,8 +83,9 @@ function arrange(adapter: FakeAdapter) {
     cleanup: vi.fn(),
   })
   const onTranscriptUpdate = vi.fn()
-  const hook = renderHook(() => useVoiceInput({ onTranscriptUpdate }))
-  return { hook, onTranscriptUpdate }
+  const onDictated = vi.fn()
+  const hook = renderHook(() => useVoiceInput({ onTranscriptUpdate, onDictated }))
+  return { hook, onTranscriptUpdate, onDictated }
 }
 
 /**
@@ -245,5 +246,32 @@ describe('useVoiceInput error reports', () => {
     expect(hook.result.current.isRecording).toBe(false)
     expect(reporting.captureRendererException).not.toHaveBeenCalled()
     expect(reporting.addRendererBreadcrumb).toHaveBeenCalledWith('dictation', 'microphone permission refused', { stage: 'capture' })
+  })
+})
+
+describe('useVoiceInput onDictated', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('fires once a recording ends with words', async () => {
+    const adapter = new FakeAdapter()
+    const { hook, onTranscriptUpdate, onDictated } = arrange(adapter)
+    await startRecording(hook)
+    act(() => { adapter.transcriptCb?.({ type: 'interim', text: 'hello' }) })
+    expect(onDictated).not.toHaveBeenCalled()
+    await stop(hook)
+
+    expect(onTranscriptUpdate).toHaveBeenLastCalledWith('hello')
+    expect(onDictated).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not fire for a recording that heard nothing', async () => {
+    const adapter = new FakeAdapter()
+    const { hook, onDictated } = arrange(adapter)
+    await startRecording(hook)
+    await stop(hook)
+
+    expect(onDictated).not.toHaveBeenCalled()
   })
 })
