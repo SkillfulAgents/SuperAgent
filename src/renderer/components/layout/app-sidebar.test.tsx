@@ -722,10 +722,10 @@ describe('AppSidebar — agent rows', () => {
     }
   })
 
-  it('shows a status indicator for each agent (collapsed)', () => {
+  it('leaves status to the avatar — no trailing status icon on agent rows', () => {
     renderWithProviders(<AppSidebar />)
-    expect(screen.getByTestId('agent-status-running')).toBeInTheDocument()
-    expect(screen.getByTestId('agent-status-stopped')).toBeInTheDocument()
+    expect(screen.queryByTestId('agent-status-running')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('agent-status-stopped')).not.toBeInTheDocument()
   })
 
   it('renders an unread dot at the agent level when collapsed and hasUnreadNotifications', () => {
@@ -995,14 +995,14 @@ describe('AppSidebar — notifications', () => {
 })
 
 // ============================================================================
-// AgentRowIndicator: priority + collapse-vs-expand behavior
+// Agent row: avatar badge + right-side status
 // ----------------------------------------------------------------------------
-// The right-side indicator on the agent row aggregates awaiting / working
-// across sessions with the same formula as the top-nav AgentStatus — the two
-// render on the same screen and must agree. Only the unread dot is collapsed
-// away when the agent is expanded (the session sub-rows surface it). Priority
-// is awaiting > working > unread > sleeping/idle. Sleeping/idle (which
-// describe the container itself) always render via <AgentStatus iconOnly>.
+// The notification dot sits on the avatar (like the iOS agent list): orange
+// while a session awaits input, blue for unread. Awaiting aggregates across
+// sessions with the same formula as the top-nav AgentStatus — the two render
+// on the same screen and must agree. Only unread is collapsed away when the
+// agent is expanded (the session sub-rows surface it). Working and sleeping
+// show in the avatar's motion; the trailing slot carries no status.
 // ============================================================================
 describe('AppSidebar — agent row indicator', () => {
   it('falls back to agent-level flags when sessions data is not yet loaded', () => {
@@ -1015,8 +1015,7 @@ describe('AppSidebar — agent row indicator', () => {
     mockUseSessions.mockReturnValue({ data: undefined, isLoading: false })
 
     renderWithProviders(<AppSidebar />)
-    const status = screen.getByTestId('agent-status-running')
-    expect(status).toHaveAttribute('data-awaiting', 'true')
+    expect(screen.getByTestId('agent-avatar-badge-test-agent')).toHaveAccessibleName('needs input')
   })
 
   it('does not render the agent-level unread dot when expanded — sessions surface it', () => {
@@ -1032,14 +1031,10 @@ describe('AppSidebar — agent row indicator', () => {
     // Sessions data has no unread, so no session-row dot either. Net: zero
     // accessible "unread notifications" labels.
     expect(screen.queryByLabelText('unread notifications')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('agent-avatar-badge-test-agent')).not.toBeInTheDocument()
   })
 
-  // Regression: the selected agent auto-expands, and the expanded agent row
-  // used to zero out its working/awaiting state — while the top-nav
-  // AgentStatus (agent-header) kept aggregating session activity. Same
-  // screen, two answers: header said "working", sidebar row said idle. The
-  // agent row must keep reporting working/awaiting when expanded.
-  it('shows working on the expanded agent row when a session is active (top-nav parity)', () => {
+  it('shows no dot while working — the avatar\'s motion shows it', () => {
     mockUseAgents.mockReturnValue({
       data: [makeAgent({ hasActiveSessions: true })],
       isLoading: false,
@@ -1052,12 +1047,9 @@ describe('AppSidebar — agent row indicator', () => {
     mockRouteParams = { slug: 'test-agent' }
 
     renderWithProviders(<AppSidebar />)
-    // The agent is expanded — its session sub-row is visible and working…
-    expect(screen.getByTestId('session-item-session-1')).toBeInTheDocument()
-    expect(screen.getByTestId('session-item-session-1')).toHaveAttribute('data-is-active', 'true')
-    // …and the agent row itself still reports working, like the top nav.
-    const status = screen.getByTestId('agent-status-running')
-    expect(status).toHaveAttribute('data-active', 'true')
+    const agentRow = screen.getByTestId('agent-item-test-agent').closest('li')!
+    expect(within(agentRow).queryByTestId('agent-status-running')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('agent-avatar-badge-test-agent')).not.toBeInTheDocument()
   })
 
   it('shows awaiting on the expanded agent row when a session awaits input (top-nav parity)', () => {
@@ -1073,24 +1065,32 @@ describe('AppSidebar — agent row indicator', () => {
     mockRouteParams = { slug: 'test-agent' }
 
     renderWithProviders(<AppSidebar />)
-    const status = screen.getByTestId('agent-status-running')
-    expect(status).toHaveAttribute('data-awaiting', 'true')
+    expect(screen.getByTestId('agent-avatar-badge-test-agent')).toHaveAccessibleName('needs input')
   })
 
-  it('prioritizes awaiting > working > unread when collapsed', () => {
-    // Both awaiting AND unread set on agent flags. Agent is NOT expanded.
+  it('prioritizes awaiting over unread when collapsed', () => {
     mockUseAgents.mockReturnValue({
       data: [makeAgent({ hasSessionsAwaitingInput: true, hasUnreadNotifications: true })],
       isLoading: false,
       error: null,
     })
     renderWithProviders(<AppSidebar />)
-    // Awaiting wins → agent-status indicator is awaiting; the unread dot is
-    // not rendered (it would be rendered alongside, but the priority code path
-    // returns the AgentStatus indicator for awaiting).
-    const status = screen.getByTestId('agent-status-running')
-    expect(status).toHaveAttribute('data-awaiting', 'true')
+    const badge = screen.getByTestId('agent-avatar-badge-test-agent')
+    expect(badge).toHaveAccessibleName('needs input')
+    expect(badge).toHaveClass('bg-orange-500')
     expect(screen.queryByLabelText('unread notifications')).not.toBeInTheDocument()
+  })
+
+  it('keeps the unread dot on the avatar while the agent is working', () => {
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ hasActiveSessions: true, hasUnreadNotifications: true })],
+      isLoading: false,
+      error: null,
+    })
+    renderWithProviders(<AppSidebar />)
+    const badge = screen.getByTestId('agent-avatar-badge-test-agent')
+    expect(badge).toHaveAccessibleName('unread notifications')
+    expect(badge).toHaveClass('bg-blue-500')
   })
 })
 
