@@ -428,22 +428,10 @@ html[data-keyboard-open] [data-composer-footer] {
   background: transparent !important;
 }
 
-/* The desktop sidebar reads as #f7f7f7 in light mode. Re-pointing the token
-   (rather than hard-coding the tint) keeps everything drawn in the sidebar's
-   colour, like the avatar badges' rings, matched to it. */
-.electron-vibrancy:not(.dark) {
-  --sidebar-background: 0 0% 97%;
-}
-
-/* Inset sidebar variant adds bg-sidebar to the SidebarProvider wrapper. Over the
-   vibrancy layer it is a mostly opaque sheet of the sidebar colour, so the sidebar
-   and gutters read as that colour with only a hint of the blur behind. Raise the
-   alpha for less glass, lower it for more. */
-.electron-vibrancy {
-  --sidebar-glass-alpha: 0.9;
-}
+/* Inset sidebar variant adds bg-sidebar to the SidebarProvider wrapper, which would
+   mask the vibrancy layer — force it transparent so blur shows through the gutters. */
 .electron-vibrancy .group\/sidebar-wrapper {
-  background: hsl(var(--sidebar-background) / var(--sidebar-glass-alpha)) !important;
+  background: transparent !important;
 }
 
 /* The pre-app screens (session check, boot) cover the whole window, so an opaque
