@@ -1,6 +1,7 @@
 import type { XAgentReview } from '@shared/lib/proxy/x-agent-review'
 import type { ReviewRuleOutcomeView, RuleProposalReview } from '@shared/lib/proxy/rules/proposal-schema'
 import type { ProxyReviewType } from '@shared/lib/proxy/review-display'
+import type { LoginFieldSummary } from '../request-login/login-request'
 
 export type Question = {
   question: string
@@ -16,6 +17,7 @@ export type PendingRequestDescriptor =
   | { kind: 'question'; key: string; toolUseId: string; questions: Question[]; onComplete: () => void }
   | { kind: 'file'; key: string; toolUseId: string; description: string; fileTypes?: string; onComplete: () => void }
   | { kind: 'browser_input'; key: string; toolUseId: string; message: string; requirements: string[]; onComplete: () => void }
+  | { kind: 'login'; key: string; toolUseId: string; message: string; fields: LoginFieldSummary[]; onComplete: () => void }
   | { kind: 'script_run'; key: string; toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell'; onComplete: () => void }
   | { kind: 'computer_use'; key: string; toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; onComplete: () => void }
   | { kind: 'capability_review'; key: string; toolUseId: string; capability: 'subagents' | 'workflows'; toolName: string; input: Record<string, unknown>; onComplete: () => void }
