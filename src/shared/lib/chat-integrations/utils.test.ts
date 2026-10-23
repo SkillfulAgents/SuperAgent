@@ -31,6 +31,12 @@ describe('isUnsupportedInChat / describeUnsupportedRequest', () => {
     expect(describeUnsupportedRequest(event, desktopContext)).toContain('desktop')
   })
 
+  it('flags login_request as unsupported: credentials never go through chat', () => {
+    const event = { type: 'login_request', toolUseId: 't', message: 'Sign in to GitHub.', fields: [] } as const
+    expect(isUnsupportedInChat(event)).toBe(true)
+    expect(describeUnsupportedRequest(event)).toBe("The agent needs you to sign in to a website, which isn't safe to do in chat. Open Gamut on your desktop to continue.")
+  })
+
   it('flags file_request as unsupported and mentions uploading', () => {
     const event: UserRequestEvent = { type: 'file_request', toolUseId: 't5', description: 'a CSV export' }
     expect(isUnsupportedInChat(event)).toBe(true)

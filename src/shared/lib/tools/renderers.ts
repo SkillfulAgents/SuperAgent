@@ -19,6 +19,7 @@ import { requestFileRenderer } from './request-file/renderer'
 import { requestRemoteMcpRenderer } from './request-remote-mcp/renderer'
 import { requestScriptRunRenderer } from './request-script-run/renderer'
 import { requestBrowserInputRenderer } from './request-browser-input/renderer'
+import { requestLoginRenderer } from './request-login/renderer'
 import { taskRenderer } from './task/renderer'
 import {
   browserOpenRenderer,
@@ -95,6 +96,7 @@ const toolRenderers = new Map([
   requestRemoteMcpRenderer,
   requestScriptRunRenderer,
   requestBrowserInputRenderer,
+  requestLoginRenderer,
   browserOpenRenderer,
   browserCloseRenderer,
   browserSnapshotRenderer,

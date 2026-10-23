@@ -383,8 +383,8 @@ export function AuthPage({ onPendingApproval }: { onPendingApproval?: (pending?:
     setProviderLoadingId(providerId)
 
     try {
-      const res = await signIn.oauth2({
-        providerId,
+      const res = await signIn.social({
+        provider: providerId,
         // Carry the post-401 destination through the OAuth round-trip.
         callbackURL: peekRedirectStash(),
         errorCallbackURL: '/',

@@ -123,6 +123,8 @@ function reportNoTranscript(session: DictationSession): void {
 
 interface UseVoiceInputOptions {
   onTranscriptUpdate: (text: string) => void
+  /** Fires when a recording ends having transcribed some words, after its final text is applied. */
+  onDictated?: () => void
 }
 
 type SttCredentials = VoiceTokenResponse
@@ -202,7 +204,7 @@ export function useVoiceConversationEngine(): VoiceConversationEngine | null {
   return status.conversationEngine ?? (status.configured && status.supportsTts ? 'chained' : null)
 }
 
-export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
+export function useVoiceInput({ onTranscriptUpdate, onDictated }: UseVoiceInputOptions) {
   const [state, setState] = useState<VoiceInputState>('idle')
   const [error, setError] = useState<string | null>(null)
   const { track } = useAnalyticsTracking()
@@ -291,11 +293,12 @@ export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
     onTranscriptUpdate(finalText)
     if (transcribed) {
       track('dictation_used', { length: transcribed.length })
+      onDictated?.()
     }
     setState('idle')
     stoppingRef.current = false
     return finalText
-  }, [onTranscriptUpdate, track])
+  }, [onTranscriptUpdate, onDictated, track])
 
   const startRecording = useCallback(async (existingText: string) => {
     if (stateRef.current !== 'idle') return

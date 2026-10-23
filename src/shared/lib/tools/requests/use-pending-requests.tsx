@@ -13,6 +13,7 @@ import { isTurnStartingUserMessage, type PendingMessage } from '@renderer/compon
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp } from '@shared/lib/computer-use/types'
 import { askUserQuestionDef } from '../ask-user-question/definition'
 import type { PendingUserInputRequest } from './request-schema'
+import { summarizeLoginFields, type LoginFieldSummary } from '../request-login/login-request'
 
 interface UsePendingRequestsArgs {
   sessionId: string | null
@@ -27,6 +28,7 @@ type PendingRequestBuckets = {
   fileRequests: { toolUseId: string; description: string; fileTypes?: string }[]
   remoteMcpRequests: { toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer'; clientId?: string; clientName?: string }[]
   browserInputRequests: { toolUseId: string; message: string; requirements: string[] }[]
+  loginRequests: { toolUseId: string; message: string; fields: LoginFieldSummary[] }[]
   scriptRunRequests: { toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell' }[]
   computerUseRequests: { toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string }[]
 }
@@ -51,6 +53,7 @@ function createPendingRequestBuckets(): PendingRequestBuckets {
     fileRequests: [],
     remoteMcpRequests: [],
     browserInputRequests: [],
+    loginRequests: [],
     scriptRunRequests: [],
     computerUseRequests: [],
   }
@@ -161,6 +164,15 @@ function addPendingRequestFromToolCall(buckets: PendingRequestBuckets, toolCall:
         // so downstream `.map()` can't crash the request card. `|| []`
         // would let a non-empty string through.
         requirements: Array.isArray(input.requirements) ? input.requirements : [],
+      })
+    }
+  } else if (kind === 'login') {
+    // The same rule as the server's request registry: no card without a reason.
+    if (typeof input.message === 'string' && input.message.trim() && Array.isArray(input.fields)) {
+      buckets.loginRequests.push({
+        toolUseId: toolCall.id,
+        message: input.message,
+        fields: summarizeLoginFields(input.fields),
       })
     }
   } else if (kind === 'script_run') {
@@ -446,6 +458,15 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
             toolUseId: request.id,
             message: payload.message,
             requirements: Array.isArray(payload.requirements) ? payload.requirements : [],
+          })
+        }
+        break
+      case 'login':
+        if (typeof payload.message === 'string') {
+          buckets.loginRequests.push({
+            toolUseId: request.id,
+            message: payload.message,
+            fields: summarizeLoginFields(payload.fields),
           })
         }
         break
@@ -736,6 +757,7 @@ export function usePendingRequests({
       merged.questionRequests,
       merged.fileRequests,
       merged.browserInputRequests,
+      merged.loginRequests,
       merged.scriptRunRequests,
       merged.computerUseRequests,
       pendingCapabilityReviewRequests,
@@ -748,7 +770,7 @@ export function usePendingRequests({
     return ids
   }, [
     merged.secretRequests, merged.connectedAccountRequests, merged.remoteMcpRequests,
-    merged.questionRequests, merged.fileRequests, merged.browserInputRequests,
+    merged.questionRequests, merged.fileRequests, merged.browserInputRequests, merged.loginRequests,
     merged.scriptRunRequests, merged.computerUseRequests, pendingCapabilityReviewRequests, pendingProxyReviews,
     pendingAccountReauthRequests,
     pendingMcpReauthRequests,
@@ -848,6 +870,16 @@ export function usePendingRequests({
         onComplete: () => handleRequestComplete(r.toolUseId),
       })
     }
+    for (const r of merged.loginRequests) {
+      all.push({
+        kind: 'login',
+        key: r.toolUseId,
+        toolUseId: r.toolUseId,
+        message: r.message,
+        fields: r.fields,
+        onComplete: () => handleRequestComplete(r.toolUseId),
+      })
+    }
     for (const r of merged.scriptRunRequests) {
       all.push({
         kind: 'script_run',
@@ -937,7 +969,7 @@ export function usePendingRequests({
     return all.sort((a, b) => getArrivalOrder(a.key) - getArrivalOrder(b.key))
   }, [
     merged.secretRequests, merged.connectedAccountRequests, merged.remoteMcpRequests,
-    merged.questionRequests, merged.fileRequests, merged.browserInputRequests,
+    merged.questionRequests, merged.fileRequests, merged.browserInputRequests, merged.loginRequests,
     merged.scriptRunRequests, merged.computerUseRequests, pendingCapabilityReviewRequests, pendingProxyReviews,
     pendingAccountReauthRequests,
     pendingMcpReauthRequests,
