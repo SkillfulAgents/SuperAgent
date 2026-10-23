@@ -157,6 +157,11 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
       targetPath: lenientString,
       matchedScopes: z.array(z.string()).optional().catch(undefined),
       scopeDescriptions: z.record(z.string(), z.string()).optional().catch(undefined),
+      scopeMetadata: z.array(z.object({
+        scope: z.string(),
+        description: z.string(),
+        label: z.enum(['read', 'write', 'destructive', 'other']),
+      })).optional().catch(undefined),
       endpointDescription: lenientString,
       endpointAmbiguous: z.boolean().optional().catch(undefined),
       requestBody: lenientString,
