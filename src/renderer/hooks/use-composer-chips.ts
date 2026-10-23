@@ -10,7 +10,7 @@ import { useAgentSecrets } from './use-secrets'
  * (saved secrets, the people and agents a mention can name), and the kinds'
  * checks before a send, with the dialog one of them shows.
  */
-export function useComposerChips(agentSlug: string): {
+export function useComposerChips(agentSlug: string, sessionId?: string | null): {
   context: ChipContext
   /** The context to send with, or null when the person backed out. */
   check: (text: string, options: { silent: boolean }) => Promise<ChipContext | null>
@@ -21,8 +21,8 @@ export function useComposerChips(agentSlug: string): {
   const { data: savedSecrets } = useAgentSecrets(agentSlug)
   const directory = useMentionDirectory(agentSlug)
   const context = useMemo<ChipContext>(
-    () => ({ agentSlug, secretEnvVars: savedSecrets && new Set(savedSecrets.map((secret) => secret.envVar)), ...directory }),
-    [agentSlug, savedSecrets, directory]
+    () => ({ agentSlug, sessionId: sessionId ?? undefined, secretEnvVars: savedSecrets && new Set(savedSecrets.map((secret) => secret.envVar)), ...directory }),
+    [agentSlug, sessionId, savedSecrets, directory]
   )
   const manages = !isAuthMode || isAdmin || canAdminAgent(agentSlug)
   const [dialog, setDialog] = useState<ReactNode>(null)

@@ -9,6 +9,11 @@ export type Mention =
   | { kind: 'user'; id: string; name: string; email?: string }
   /** `slug` is the one the agents tools take: list_agents prints the display slug. */
   | { kind: 'agent'; slug: string; name: string }
+  /**
+   * A chat: `id` is its session id. With `agentSlug` it is another agent's chat,
+   * read with the agents tools; without, one of this agent's, read from its history.
+   */
+  | { kind: 'chat'; id: string; name: string; agentSlug?: string }
 
 const MARKER = '[Mentioned:]'
 /** The agent can call a tagged agent directly, without searching for it first. */
@@ -16,6 +21,8 @@ const AGENT_HINT = '(call it by this slug with the agents tools, no need to list
 const SILENT_NOTE = '(This message only notifies the teammates it tags. It is not a request to you, so do not act on it.)'
 const USER_LINE = /^- @(.+): teammate(?:, ([^\s()]+))? \(user id ([A-Za-z0-9_-]+)\)$/
 const AGENT_LINE = /^- @(.+): agent, slug ([a-z0-9-]+)(?: \(.*\))?$/
+const CHAT_LINE = /^- @(.+): chat in this agent, session id ([A-Za-z0-9_-]+)(?: \(.*\))?$/
+const OTHER_CHAT_LINE = /^- @(.+): chat in agent ([a-z0-9-]+), session id ([A-Za-z0-9_-]+)(?: \(.*\))?$/
 
 /** A name on one line: a line break would end its entry early. */
 export function mentionName(name: string): string {
@@ -25,6 +32,8 @@ export function mentionName(name: string): string {
 function formatLine(mention: Mention): string {
   const name = mentionName(mention.name)
   if (mention.kind === 'agent') return `- @${name}: agent, slug ${mention.slug} ${AGENT_HINT}`
+  if (mention.kind === 'chat' && mention.agentSlug) return `- @${name}: chat in agent ${mention.agentSlug}, session id ${mention.id} (read it with get_agent_session_transcript)`
+  if (mention.kind === 'chat') return `- @${name}: chat in this agent, session id ${mention.id} (read it with: python3 /opt/gamut/bin/read-session.py ${mention.id})`
   const email = mention.email && /^[^\s()]+$/.test(mention.email) ? `, ${mention.email}` : ''
   return `- @${name}: teammate${email} (user id ${mention.id})`
 }
@@ -72,8 +81,12 @@ export function parseMentions(text: string): ParsedMentions {
   for (const line of lines) {
     const user = USER_LINE.exec(line)
     const agent = !user && AGENT_LINE.exec(line)
+    const chat = !user && !agent && CHAT_LINE.exec(line)
+    const otherChat = !user && !agent && !chat && OTHER_CHAT_LINE.exec(line)
     if (user) mentions.push({ kind: 'user', id: user[3], name: user[1], ...(user[2] ? { email: user[2] } : {}) })
     else if (agent) mentions.push({ kind: 'agent', slug: agent[2], name: agent[1] })
+    else if (chat) mentions.push({ kind: 'chat', id: chat[2], name: chat[1] })
+    else if (otherChat) mentions.push({ kind: 'chat', id: otherChat[3], name: otherChat[1], agentSlug: otherChat[2] })
     else if (line === SILENT_NOTE && mentions.length > 0) silent = true
     else break
     end++

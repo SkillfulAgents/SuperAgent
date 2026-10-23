@@ -312,6 +312,67 @@ describe('useMessageComposer', () => {
     })
   })
 
+  describe('dropping a chat from the sidebar', () => {
+    const q3 = { agentSlug: 'test-agent', sessionId: 'q3-chat', name: 'Q3 revenue numbers' }
+    const dropOf = (chat: object) => ({
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+      dataTransfer: {
+        types: ['application/x-gamut-chat'],
+        getData: (type: string) => (type === 'application/x-gamut-chat' ? JSON.stringify(chat) : ''),
+      },
+    }) as any
+
+    it('adds the chat as a chip and sends the agent where to read it', async () => {
+      const opts = defaultOptions()
+      const { result } = renderHook(() => useMessageComposer({ ...opts, sessionId: 'open-chat' }), { wrapper: createWrapper() })
+      act(() => result.current.setMessage('Use the numbers from'))
+      act(() => result.current.dragHandlers.onDrop(dropOf(q3)))
+
+      expect(mockAttachments.dragHandlers.onDrop).toHaveBeenCalledTimes(1)
+      expect(result.current.message).toBe(
+        `Use the numbers from ${formatChipMarker({ kind: 'chat', referent: 'q3-chat', label: 'Q3 revenue numbers' })} `,
+      )
+      await act(async () => {
+        await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+      })
+      const sent = opts.onSubmit.mock.calls[0][0] as string
+      expect(sent).toContain('Use the numbers from @Q3 revenue numbers')
+      expect(sent).toContain(
+        '- @Q3 revenue numbers: chat in this agent, session id q3-chat (read it with: python3 /opt/gamut/bin/read-session.py q3-chat)',
+      )
+    })
+
+    it('leaves the draft alone for the open chat', () => {
+      const opts = defaultOptions()
+      const { result } = renderHook(() => useMessageComposer({ ...opts, sessionId: 'open-chat' }), { wrapper: createWrapper() })
+      act(() => result.current.setMessage('hello'))
+      act(() => result.current.dragHandlers.onDrop(dropOf({ ...q3, sessionId: 'open-chat' })))
+
+      expect(result.current.message).toBe('hello')
+    })
+
+    it("names another agent's chat by its agent and sends where the agents tools read it", async () => {
+      mockChips.directory = {
+        agents: new Map([['k3j4h5g6f7', { slug: 'k3j4h5g6f7', displaySlug: 'billing-agent-k3j4h5g6f7', name: 'Billing Agent' }]]),
+      }
+      const opts = defaultOptions()
+      const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+      act(() => result.current.dragHandlers.onDrop(dropOf({ agentSlug: 'k3j4h5g6f7', sessionId: 'refund-chat', name: 'Stripe refund cleanup' })))
+
+      expect(result.current.message).toBe(
+        `${formatChipMarker({ kind: 'chat', referent: 'k3j4h5g6f7/refund-chat', label: 'Stripe refund cleanup · Billing Agent' })} `,
+      )
+      await act(async () => {
+        await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+      })
+      expect(opts.onSubmit.mock.calls[0][0]).toContain(
+        '- @Stripe refund cleanup · Billing Agent: chat in agent billing-agent-k3j4h5g6f7, session id refund-chat (read it with get_agent_session_transcript)',
+      )
+      mockChips.directory = {}
+    })
+  })
+
   it('does not rewrite a pasted secret marker the agent does not have', async () => {
     const opts = defaultOptions()
     const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
@@ -818,7 +879,8 @@ describe('useMessageComposer', () => {
     expect(result.current.removeAttachment).toBe(mockQueue.remove)
     expect(result.current.handleFileSelect).toBe(mockAttachments.handleFileSelect)
     expect(result.current.handleFolderSelect).toBe(mockAttachments.handleFolderSelect)
-    expect(result.current.dragHandlers).toBe(mockAttachments.dragHandlers)
+    expect(result.current.dragHandlers.onDragOver).toBe(mockAttachments.dragHandlers.onDragOver)
+    expect(result.current.dragHandlers.onDragLeave).toBe(mockAttachments.dragHandlers.onDragLeave)
   })
 
   // --- Draft persistence via DraftsContext ---

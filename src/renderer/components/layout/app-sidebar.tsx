@@ -146,6 +146,7 @@ import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
 import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import { useRememberedFlag } from '@renderer/hooks/use-remembered-flag'
 import { useSidebarFileDrop } from './use-sidebar-file-drop'
+import { setChatDragData } from '@renderer/lib/chat-drag'
 
 /** Set once Explore has been opened, which retires its "New" badge. */
 const EXPLORE_SEEN_KEY = 'explore.seen'
@@ -195,6 +196,9 @@ type ActiveDrag = { type: 'agent' | 'folder'; label: string; folderId?: string }
 /** Where a dragged folder is currently set to land. */
 type FolderDropCue = { folderId: string; edge: 'above' | 'below' }
 
+// Dragging a chat into the composer mentions it; a finger's long-press opens the context menu instead.
+const CAN_DRAG_CHATS = typeof window === 'undefined' || !window.matchMedia?.('(hover: none) and (pointer: coarse)').matches
+
 // Session sub-item that tracks its streaming state
 function SessionSubItem({
   session,
@@ -231,6 +235,10 @@ function SessionSubItem({
   return (
     <SidebarMenuSubItem
       {...dragHandlers}
+      data-chat-row=""
+      // The row, not its link: the context menu turns link dragging off for touch long-press.
+      draggable={CAN_DRAG_CHATS}
+      onDragStart={(event) => setChatDragData(event.dataTransfer, { agentSlug, sessionId: session.id, name: session.name })}
       className={cn('rounded-md', SIDEBAR_FILE_DROP_CUE)}
     >
       <SessionContextMenu
@@ -597,8 +605,10 @@ const AgentMenuItemInner = React.forwardRef<
         {...rest}
         onMouseEnter={handleMouseEnter}
         // Portaled menus bubble through React, but are outside the draggable row.
+        // A chat row drags the chat (to mention it), not its agent.
         onPointerDown={event => {
-          if (event.currentTarget.contains(event.target as Node)) rest.onPointerDown?.(event)
+          const target = event.target as Element
+          if (event.currentTarget.contains(target) && !target.closest('[data-chat-row]')) rest.onPointerDown?.(event)
         }}
         onKeyDown={event => {
           if (event.currentTarget.contains(event.target as Node)) rest.onKeyDown?.(event)
