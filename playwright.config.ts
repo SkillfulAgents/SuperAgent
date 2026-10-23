@@ -41,6 +41,10 @@ const webTestIgnore = [
   // Section drags also need a stable list; sibling specs create/delete agents
   // mid-gesture. Run on a fresh server through test:e2e:sidebar.
   '**/agent-folders.spec.ts',
+  // Layer/focus and touch gestures need stable lists and their own settings.
+  // Runs across desktop/touch engines via playwright.radix.config.ts.
+  '**/radix-interactions.spec.ts',
+  '**/radix-touch.spec.ts',
 ]
 
 if (process.env.E2E_INCLUDE_A11Y !== 'true') {

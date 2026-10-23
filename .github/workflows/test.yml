@@ -351,6 +351,7 @@ jobs:
       # Section drag targets must stay still while the pointer crosses them.
       # Other specs creating agents used to move those targets mid-gesture.
       - name: Run sidebar E2E suite
+        id: sidebar_e2e
         if: ${{ !cancelled() && (success() || steps.wizard_e2e.outcome == 'failure' || steps.graph_e2e.outcome == 'failure') }}
         env:
           PORT: '3000'
@@ -360,6 +361,18 @@ jobs:
         run: |
           set -o pipefail
           npm run test:e2e:sidebar 2>&1 | tee /tmp/sidebar-e2e-results.txt
+
+      - name: Run Radix Chromium interaction and touch suites
+        if: ${{ !cancelled() && (success() || steps.wizard_e2e.outcome == 'failure' || steps.graph_e2e.outcome == 'failure' || steps.sidebar_e2e.outcome == 'failure') }}
+        env:
+          E2E_PORT: '3000'
+          SUPERAGENT_DATA_DIR: .e2e-data/radix-chromium
+          PLAYWRIGHT_OUTPUT_DIR: test-results/radix-chromium
+          PLAYWRIGHT_HTML_REPORT: playwright-report/radix-chromium
+        run: |
+          set -o pipefail
+          mkdir -p test-results
+          E2E_MOCK=true npx playwright test --config=playwright.radix.config.ts --project=radix-chromium --project=radix-chromium-touch --retries=0 2>&1 | tee test-results/radix-chromium.log
 
       - name: Upload Playwright artifacts
         if: always()
@@ -414,6 +427,7 @@ jobs:
         run: npx playwright install webkit
 
       - name: Run WebKit regression suite
+        id: webkit_e2e
         env:
           PORT: '3000'
           SUPERAGENT_DATA_DIR: .e2e-data/webkit
@@ -423,6 +437,21 @@ jobs:
           # each other.
           PLAYWRIGHT_WORKERS: '1'
         run: E2E_MOCK=true npx playwright test --project=web-webkit --retries=0
+
+      # Exercise the same real app controls on Apple's WebKit, including the
+      # touch project. These deterministic interaction tests need one pass;
+      # the compositor regression suite above keeps its three independent runs.
+      - name: Run Radix WebKit interaction and touch suites
+        if: ${{ matrix.repeat == 1 && !cancelled() && (success() || steps.webkit_e2e.outcome == 'failure') }}
+        env:
+          E2E_PORT: '3000'
+          SUPERAGENT_DATA_DIR: .e2e-data/radix-webkit
+          PLAYWRIGHT_OUTPUT_DIR: test-results/radix-webkit
+          PLAYWRIGHT_HTML_REPORT: playwright-report/radix-webkit
+        run: |
+          set -o pipefail
+          mkdir -p test-results
+          E2E_MOCK=true npx playwright test --config=playwright.radix.config.ts --project=radix-webkit --project=radix-webkit-touch --retries=0 2>&1 | tee test-results/radix-webkit.log
 
       - name: Upload Playwright artifacts
         if: always()
@@ -536,8 +565,25 @@ jobs:
           set -o pipefail
           xvfb-run --auto-servernum npx tsx e2e/live/pdf-preview/run.ts 2>&1 | tee /tmp/electron-pdf-results.txt
 
+      - name: Validate built Electron Radix interactions
+        run: |
+          set -o pipefail
+          mkdir -p test-results
+          E2E_MOCK=true xvfb-run --auto-servernum npx tsx e2e/live/radix/run.ts 2>&1 | tee test-results/electron-radix.log
+
       - name: Run the cloud-workspace app suite
         run: xvfb-run --auto-servernum node e2e/live/cloud-electron/ci.mjs
+
+      - name: Upload Electron interaction artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-electron-radix-artifacts
+          path: |
+            test-results/electron-radix/
+            test-results/electron-radix.log
+          if-no-files-found: ignore
+          retention-days: 7
 
   e2e-a11y-audit:
     runs-on: ubuntu-24.04

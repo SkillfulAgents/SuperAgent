@@ -693,7 +693,7 @@ describe('AppSidebar — agent rows', () => {
   it('ages last-run labels without rerendering rows and immediately accepts new activity', () => {
     vi.useFakeTimers({
       now: new Date('2026-10-09T12:00:00Z'),
-      toFake: ['Date', 'setInterval', 'clearInterval'],
+      toFake: ['Date', 'setInterval', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame'],
     })
     try {
       mockUseAgents.mockReturnValue({
@@ -701,6 +701,9 @@ describe('AppSidebar — agent rows', () => {
         isLoading: false, error: null,
       })
       const { rerender, unmount } = renderWithProviders(<AppSidebar />)
+      // AppSidebar defers its fullscreen state to an animation frame. Settle
+      // that mount update before counting renders caused by the minute clock.
+      act(() => vi.advanceTimersToNextFrame())
       const renders = mockUseAgents.mock.calls.length
       act(() => vi.advanceTimersByTime(60 * 60 * 1000))
       expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last run about 4 hours ago')
