@@ -267,7 +267,10 @@ function readHostAgentPid(): number | null {
  */
 function isHostAgentAlive(): boolean {
   const pid = readHostAgentPid()
-  if (pid === null) return false
+  return pid !== null && isProcessAlive(pid)
+}
+
+function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
     return true
@@ -660,16 +663,7 @@ export class LimaContainerClient extends BaseContainerClient {
    */
   protected async forceStop(): Promise<void> {
     console.warn('Force-stopping Lima VM (killing QEMU process)')
-    try {
-      await Promise.race([
-        execLimactl(`stop --force ${LIMA_VM_NAME}`),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Lima force-stop timed out')), 10000)
-        ),
-      ])
-    } catch {
-      console.error('Lima VM force-stop failed')
-    }
+    await forceStopLimaVm(10000)
   }
 
   /**
@@ -824,9 +818,8 @@ async function ensureLimaReadyImpl(): Promise<void> {
   }
 
   if (vmExists && needsRecreate) {
-    try {
-      await execLimactl(`stop ${LIMA_VM_NAME} --force`)
-    } catch { /* may not be running */ }
+    await stopLimaVm()
+    refuseToDeleteLiveVm('recreate')
     await execLimactl(`delete ${LIMA_VM_NAME} --force`)
     vmExists = false
   }
@@ -884,7 +877,7 @@ async function ensureLimaReadyImpl(): Promise<void> {
         extra: { limaHome, vmExists, explicitMemory, health: health.state, ...collectLimaDiagnostics() },
       })
       // If start fails on a freshly created VM, delete it to avoid a zombie
-      if (!vmExists) {
+      if (!vmExists && canSignalHostAgent()) {
         console.error('Lima VM start failed after creation, cleaning up zombie VM...')
         try {
           await execLimactl(`delete ${LIMA_VM_NAME} --force`)
@@ -912,16 +905,64 @@ async function ensureLimaReadyImpl(): Promise<void> {
 }
 
 /**
- * Stop the Lima VM gracefully with a timeout.
- * Used during app shutdown — must not hang indefinitely.
- * If the graceful stop times out (e.g., VM CPU is pegged), escalates to
- * force-stop which kills the QEMU process directly.
+ * Stop the Lima VM, bounded so app shutdown never hangs.
+ *
+ * Powers the guest off over SSH first. That shuts it down cleanly (containerd
+ * stops, the disk syncs) and needs no signals, so it also stops a VM an
+ * earlier launch started; a sandboxed build may only signal its own launch's
+ * processes. The host agent exits by itself once the guest is down, in about
+ * 4-5s. Lima's own graceful `limactl stop` takes 20-25s (lima-vm/lima#254),
+ * which is why this path used to force-stop every time.
+ *
+ * Falls back to a force-stop when the guest doesn't power off within
+ * timeoutMs, and then only for a host agent this process can signal.
  */
 export async function stopLimaVm(timeoutMs = 10000): Promise<void> {
-  // Always use force-stop: graceful `limactl stop` takes 20-25s due to Lima's
-  // hostagent cleanup and VZ driver shutdown sequence (lima-vm/lima#254).
-  // Force-stop is safe here because all containers are already stopped before
-  // this is called, and the VM filesystem is journaled.
+  if (isHostAgentAlive() && await powerOffGuest(timeoutMs)) return
+  await forceStopLimaVm(timeoutMs)
+}
+
+/** `sudo poweroff` in the guest; true once the host agent has exited. */
+async function powerOffGuest(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  const hostAgent = readHostAgentPid()
+  try {
+    await execLimactl(`shell --workdir / ${LIMA_VM_NAME} -- sudo poweroff`, { timeoutMs: Math.min(timeoutMs, 5000) })
+  } catch {
+    // poweroff drops the SSH session, so a non-zero exit is expected
+  }
+  while (Date.now() < deadline) {
+    const exited = hostAgent === null ? !fs.existsSync(getHostAgentPidPath()) : !isProcessAlive(hostAgent)
+    if (exited) {
+      // After a guest poweroff, Lima's host agent exits through a fatal error
+      // ("vz: CanRequestStop is not supported") and leaves vz.pid behind. Lima
+      // drops a pid file whose process is gone whenever it lists the instance;
+      // do that now, while the pid is certainly dead. At the next start a
+      // reused pid would make the VM look Broken, which gets it rebuilt.
+      try {
+        await execLimactl('list --json', { timeoutMs: Math.max(deadline - Date.now(), 1000) })
+      } catch { /* the next start lists it again */ }
+      return true
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  return false
+}
+
+/**
+ * `limactl stop --force`, but only for a host agent this process can signal.
+ * Lima treats EPERM from kill() as "already stopped" and deletes ha.pid,
+ * ha.sock and ssh.sock, which orphans the running VM; every later start then
+ * fails with "The EFI variable store is already in use" until a reboot.
+ */
+async function forceStopLimaVm(timeoutMs: number): Promise<void> {
+  if (!canSignalHostAgent()) {
+    captureMessage('Lima host agent belongs to another launch and the guest did not power off; leaving the VM running', {
+      level: 'warning',
+      tags: { component: 'lima', operation: 'stop-unsignalable' },
+    })
+    return
+  }
   try {
     await Promise.race([
       execLimactl(`stop --force ${LIMA_VM_NAME}`),
@@ -931,6 +972,33 @@ export async function stopLimaVm(timeoutMs = 10000): Promise<void> {
     ])
   } catch {
     console.error('Lima VM force-stop failed or timed out')
+  }
+}
+
+/**
+ * `limactl delete --force` on a VM whose host agent is still alive deletes its
+ * files out from under it, orphaning it just like a force-stop that can't
+ * signal, so refuse instead.
+ */
+function refuseToDeleteLiveVm(operation: string): void {
+  if (!isHostAgentAlive()) return
+  captureMessage('Lima VM is still running after a stop; not deleting it', {
+    level: 'warning',
+    tags: { component: 'lima', operation: `${operation}-refused` },
+    extra: collectLimaDiagnostics(),
+  })
+  throw new Error('Built-in runtime could not be stopped to rebuild it. Quit and reopen the app, then try again.')
+}
+
+/** True when there is no live host agent, or this process may signal it. */
+function canSignalHostAgent(): boolean {
+  const pid = readHostAgentPid()
+  if (pid === null) return true
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e: any) {
+    return e?.code !== 'EPERM'
   }
 }
 
