@@ -120,8 +120,10 @@ vi.mock('@shared/lib/error-reporting', () => ({
 // ============================================================================
 
 import {
+  buildImage,
   checkAllRunnersAvailability,
   classifyImageCheckOutput,
+  getCliCommand,
   clearRunnerAvailabilityCache,
   IMAGE_CHECK_MARKER,
   IMAGE_CHECK_TIMEOUT_MS,
@@ -134,6 +136,7 @@ import {
   startRunner,
 } from './client-factory'
 import { AppleContainerClient } from './apple-container-client'
+import { getNerdctlWrapperPath } from './lima-container-client'
 
 // ============================================================================
 // Tests
@@ -773,5 +776,52 @@ describe('pullImage integrity check', () => {
 
     await expect(pullImage('docker', IMAGE)).rejects.toThrow(/Image pull failed/)
     expect(argsOf(spawned)).toEqual(['pull'])
+  })
+})
+
+// The Lima runner's CLI is a wrapper inside the app bundle, so its path has a
+// space whenever the app's does (e.g. "Gamut 2.app"). Shell strings need it
+// quoted; spawn() needs it raw, or it looks for a file named with the quotes.
+describe('runner CLI path with a space', () => {
+  const WRAPPER = '/Applications/Gamut 2.app/Contents/Resources/lima/bin/lima-nerdctl'
+
+  class ClosingProc extends EventEmitter {
+    stdout = new EventEmitter()
+    stderr = new EventEmitter()
+    kill = vi.fn()
+    constructor(args: string[]) {
+      super()
+      queueMicrotask(() => {
+        if (args[0] === 'run') this.stdout.emit('data', Buffer.from(`${IMAGE_CHECK_MARKER} 1 package.json files checked, 0 damaged\n`))
+        this.emit('close', 0)
+      })
+    }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(getNerdctlWrapperPath).mockReturnValue(WRAPPER)
+    mockSpawnWithPath.mockImplementation((_cli: string, args: string[]) => new ClosingProc(args))
+  })
+
+  afterEach(() => {
+    vi.mocked(getNerdctlWrapperPath).mockReturnValue('/mock/nerdctl')
+  })
+
+  it('quotes it for shell command strings', () => {
+    expect(getCliCommand('lima')).toBe(`"${WRAPPER}"`)
+  })
+
+  it('spawns the pull and the integrity check with the raw path', async () => {
+    await pullImage('lima', 'ghcr.io/acme/agent:1')
+
+    expect(mockSpawnWithPath.mock.calls.map((c) => (c[1] as string[])[0])).toEqual(['pull', 'run'])
+    expect(mockSpawnWithPath.mock.calls.map((c) => c[0])).toEqual([WRAPPER, WRAPPER])
+  })
+
+  it('spawns a build with the raw path', async () => {
+    await buildImage('lima', 'superagent/agent:dev')
+
+    expect(mockSpawnWithPath.mock.calls[0][0]).toBe(WRAPPER)
   })
 })

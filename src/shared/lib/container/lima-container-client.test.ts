@@ -4,6 +4,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // Mocks — must be set up before importing the module under test
 // ============================================================================
 
+// LIMA_HOME as it was before the module under test loaded.
+const limaHomeBeforeImport = vi.hoisted(() => process.env.LIMA_HOME)
+
 vi.mock('child_process', () => ({
   execSync: vi.fn(),
 }))
@@ -69,6 +72,7 @@ import {
   ensureLimaReady,
   stopLimaVm,
   LimaContainerClient,
+  limactlCommand,
 } from './lima-container-client'
 
 const mockedFs = vi.mocked(fs)
@@ -112,8 +116,9 @@ function mockExec(opts: { list?: any[]; guestReachable?: boolean; startError?: E
  * @param opts.version      contents of `lima-version` (undefined → file missing)
  * @param opts.haSockExists is `ha.sock` present?
  * @param opts.haPid        contents of `ha.pid` (undefined → file missing)
+ * @param opts.bundled      does the app bundle at /app/resources ship lima/ (limactl, wrapper, image)?
  */
-function mockFsState(opts: { version?: string; haSockExists?: boolean; haPid?: string } = {}) {
+function mockFsState(opts: { version?: string; haSockExists?: boolean; haPid?: string; bundled?: boolean } = {}) {
   mockedFs.readFileSync.mockImplementation(((p: any) => {
     const s = String(p)
     if (s.endsWith('ha.pid')) {
@@ -130,6 +135,7 @@ function mockFsState(opts: { version?: string; haSockExists?: boolean; haPid?: s
     const s = String(p)
     if (s.endsWith('ha.sock')) return !!opts.haSockExists
     if (s.endsWith('ha.pid')) return opts.haPid !== undefined
+    if (s.startsWith('/app/resources/lima/')) return !!opts.bundled
     return false
   }) as any)
 }
@@ -157,22 +163,75 @@ function execCmds(): string[] {
 // We'll test the parsing logic through the public APIs that use it.
 // ============================================================================
 
+/** Point process.resourcesPath at a fake app bundle (or none). */
+function setResourcesPath(value: string | undefined) {
+  Object.defineProperty(process, 'resourcesPath', { value, writable: true, configurable: true })
+}
+
 describe('getNerdctlWrapperPath', () => {
   const originalHome = process.env.HOME
+  const originalResourcesPath = process.resourcesPath
 
   afterEach(() => {
     process.env.HOME = originalHome
+    setResourcesPath(originalResourcesPath)
+    mockedFs.existsSync.mockReset()
   })
 
-  it('returns path under HOME/.superagent/bin', () => {
+  it('prefers the wrapper shipped next to the bundled limactl', () => {
+    setResourcesPath('/Applications/Gamut 2.app/Contents/Resources')
+    mockedFs.existsSync.mockImplementation(((p: any) => String(p) === '/Applications/Gamut 2.app/Contents/Resources/lima/bin/lima-nerdctl') as any)
+
+    expect(getNerdctlWrapperPath()).toBe('/Applications/Gamut 2.app/Contents/Resources/lima/bin/lima-nerdctl')
+  })
+
+  it('returns path under HOME/.superagent/bin when the bundle has no wrapper (dev)', () => {
+    setResourcesPath('/app/resources')
+    mockedFs.existsSync.mockReturnValue(false)
     process.env.HOME = '/Users/testuser'
     const result = getNerdctlWrapperPath()
     expect(result).toBe('/Users/testuser/.superagent/bin/lima-nerdctl')
   })
 
   it('throws when HOME is not set', () => {
+    setResourcesPath(undefined)
     delete process.env.HOME
     expect(() => getNerdctlWrapperPath()).toThrow('HOME environment variable is not set')
+  })
+})
+
+describe('bundled wrapper environment', () => {
+  it('exports the Lima home and VM name the bundled wrapper reads', () => {
+    expect(process.env.SUPERAGENT_LIMA_HOME).toBe('/Users/testuser/.superagent/lima')
+    expect(process.env.SUPERAGENT_LIMA_VM).toBe(LIMA_VM_NAME)
+  })
+
+  it('leaves LIMA_HOME alone, so a limactl the user runs keeps its own VMs', () => {
+    expect(process.env.LIMA_HOME).toBe(limaHomeBeforeImport)
+  })
+})
+
+describe('limactlCommand', () => {
+  const originalResourcesPath = process.resourcesPath
+
+  afterEach(() => {
+    setResourcesPath(originalResourcesPath)
+    mockedFs.existsSync.mockReset()
+  })
+
+  it('runs the bundled limactl with a system-only PATH, so it never picks up Homebrew tools', () => {
+    setResourcesPath('/app/resources')
+    mockedFs.existsSync.mockReturnValue(true)
+
+    expect(limactlCommand('list --json')).toBe(
+      'PATH=/usr/bin:/bin:/usr/sbin:/sbin LIMA_HOME="/Users/testuser/.superagent/lima" "/app/resources/lima/bin/limactl" list --json'
+    )
+  })
+
+  it('keeps the caller PATH for a limactl found on PATH (dev)', () => {
+    setResourcesPath(undefined)
+
+    expect(limactlCommand('list --json')).toBe('LIMA_HOME="/Users/testuser/.superagent/lima" "limactl" list --json')
   })
 })
 
@@ -267,6 +326,31 @@ describe('ensureLimaReady', () => {
 
     expect(execCmds().some((c) => c.includes('create'))).toBe(true)
     expect(execCmds().some((c) => c.includes(' start '))).toBe(true)
+  })
+
+  it('runs every limactl call with the system PATH and writes no wrapper when the bundle ships one', async () => {
+    setResourcesPath('/app/resources')
+    mockExec({ list: [] })
+    mockFsState({ bundled: true })
+
+    await ensureLimaReady()
+
+    expect(execCmds().some((c) => c.includes('create'))).toBe(true)
+    for (const cmd of execCmds()) {
+      expect(cmd.startsWith('PATH=/usr/bin:/bin:/usr/sbin:/sbin LIMA_HOME="/Users/testuser/.superagent/lima" "/app/resources/lima/bin/limactl" ')).toBe(true)
+    }
+    const written = mockedFs.writeFileSync.mock.calls.map((c) => String(c[0]))
+    expect(written.some((p) => p.endsWith('lima-nerdctl'))).toBe(false)
+  })
+
+  it('generates the wrapper under HOME when the bundle ships none (dev)', async () => {
+    mockExec({ list: [] })
+    mockFsState({})
+
+    await ensureLimaReady()
+
+    const written = mockedFs.writeFileSync.mock.calls.map((c) => String(c[0]))
+    expect(written).toContain('/Users/testuser/.superagent/bin/lima-nerdctl')
   })
 
   it('skips creation and start when VM exists and is healthy', async () => {

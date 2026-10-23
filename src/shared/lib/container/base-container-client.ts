@@ -206,9 +206,12 @@ export function execSyncWithPath(command: string, options?: { stdio?: 'pipe' | '
 }
 
 /**
- * Spawn a process with enhanced PATH.
+ * Spawn a process with enhanced PATH. `command` is an unquoted path: only the
+ * Windows shell needs it quoted, and quotes would make spawn() look for a file
+ * whose name includes them.
  */
 export function spawnWithPath(command: string, args: string[], options?: { cwd?: string; stdio?: any }): ReturnType<typeof spawn> {
+  if (isWindows && command.includes(' ') && !command.startsWith('"')) command = `"${command}"`
   return spawn(command, args, {
     ...options,
     env: { ...process.env, PATH: getEnhancedPath() },
