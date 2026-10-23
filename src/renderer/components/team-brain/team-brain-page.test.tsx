@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { VolumeSetupProps } from '@renderer/components/volumes/volume-setup'
 
@@ -245,6 +245,20 @@ describe('TeamBrainPage', () => {
     app.agents = [{ ...agent('team-brain'), teamBrain: { volumeId: 'vol-1' } }]
     render(<TeamBrainPage />)
     expect(screen.getByTestId('team-brain-ready')).toHaveTextContent('Open Team Brain')
+  })
+
+  it('puts a drive set-up\u2019s buttons in the modal\u2019s own bar', async () => {
+    const clicker = userEvent.setup()
+    render(<TeamBrainPage />)
+    await clicker.click(screen.getByTestId('team-brain-start'))
+    await clicker.click(screen.getByTestId('team-brain-location-s3'))
+    const footer = await screen.findByTestId('team-brain-drive-footer')
+    expect(within(footer).getByTestId('team-brain-back')).toBeInTheDocument()
+    expect(within(footer).getByTestId('team-brain-drive-submit')).toHaveTextContent('Test connection')
+    expect(within(screen.getByTestId('team-brain-drive-setup')).queryByRole('button', { name: 'Cancel' })).toBeNull()
+    // Back returns to the homes.
+    await clicker.click(within(footer).getByTestId('team-brain-back'))
+    expect(screen.getByTestId('team-brain-location-s3')).toBeInTheDocument()
   })
 
   it('leaves set-up to admins in a team workspace', () => {
