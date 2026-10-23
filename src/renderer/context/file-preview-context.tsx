@@ -4,8 +4,19 @@ import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useFilePreviewTabs, nextFileVersion, type PreviewFileTab, type PreviewFolderTab } from '@renderer/hooks/use-file-preview-tabs'
 import type { CommentAnchor } from '@renderer/components/file-preview/comments/kinds'
 
+/**
+ * Where a file's bytes come from when it is not in the agent's workspace: a
+ * shared drive's file, say, served from somewhere other than the agent files
+ * API. Without one, the drawer reads `agentSlug`'s copy of the path.
+ */
+export interface PreviewSource {
+  inlineUrl: string
+  downloadUrl?: string | null
+}
+
 export interface FileTab extends PreviewFileTab {
   agentSlug: string
+  source?: PreviewSource
 }
 
 export interface FolderTab extends PreviewFolderTab {
@@ -62,7 +73,7 @@ interface FilePreviewContextType {
   isOpen: boolean
   commentsEnabled: boolean
 
-  openFile: (filePath: string, agentSlug: string, description?: string) => void
+  openFile: (filePath: string, agentSlug: string, description?: string, source?: PreviewSource) => void
   openFolder: (folderPath: string, agentSlug: string) => void
   toggleFolder: (rootPath: string, agentSlug: string, folderPath: string) => void
   setFolderQuery: (rootPath: string, agentSlug: string, query: string) => void
@@ -139,12 +150,12 @@ export function FilePreviewProvider({
     setIsOpen(false)
   }, [sessionId, setOpenTabs, setActiveTabIndex])
 
-  const openFile = useCallback((filePath: string, agentSlug: string, description?: string) => {
+  const openFile = useCallback((filePath: string, agentSlug: string, description?: string, source?: PreviewSource) => {
     const version = nextFileVersion()
     openTab({
       kind: 'file', filePath, agentSlug, displayName: getDisplayName(filePath),
-      description, version, pdfPage: 1,
-    }, existing => ({ ...existing, version }))
+      description, version, pdfPage: 1, source,
+    }, existing => ({ ...existing, version, source }))
     setIsOpen(true)
   }, [openTab])
 

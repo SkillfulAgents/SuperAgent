@@ -16,8 +16,11 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
   const { openTabs, activeTabIndex, setActiveTab, setPdfPage, closeTab, commentsFor } = useFilePreview()
   const activeTab = openTabs[activeTabIndex]
   const activeFile = activeTab?.kind === 'file' ? activeTab : null
+  // A tab with its own source (a file outside the agent's workspace) is shown from there.
   const file = activeFile
-    ? describeWorkspaceFile(activeFile.filePath, activeFile.agentSlug, { version: activeFile.version })
+    ? activeFile.source
+      ? { path: activeFile.filePath, agentSlug: activeFile.agentSlug, apiPath: null, ...activeFile.source }
+      : describeWorkspaceFile(activeFile.filePath, activeFile.agentSlug, { version: activeFile.version })
     : null
   const { data: fileSize } = useFileSize(file?.apiPath ?? null, activeFile?.version ?? 0)
   if (!activeTab) return null

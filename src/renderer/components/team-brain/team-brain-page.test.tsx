@@ -71,6 +71,8 @@ vi.mock('@renderer/context/user-context', () => ({ useUser: () => user }))
 vi.mock('@renderer/context/onboarding-context', () => ({ useOnboarding: () => ({ setOnboarding: vi.fn() }) }))
 vi.mock('@renderer/components/ui/app-link', () => ({ AppLink: ({ children }: { children: unknown }) => <span>{children as string}</span> }))
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
+// The home page has its own tests; here it only needs to show up, for the right agent.
+vi.mock('./team-brain-overview', () => ({ TeamBrainOverview: ({ agent }: { agent: { slug: string } }) => <div data-testid="team-brain-home">{agent.slug}</div> }))
 // The drive's own set-up, reduced to its save.
 vi.mock('@renderer/components/volumes/volume-setup-registry', async (importOriginal) => {
   const { volumeSetupRegistry } = await importOriginal<typeof import('@renderer/components/volumes/volume-setup-registry')>()
@@ -217,10 +219,10 @@ describe('TeamBrainPage', () => {
     expect(app.calls.some((call) => call.startsWith('delete'))).toBe(false)
   })
 
-  it('shows the way to the Team Brain agent once set up', () => {
+  it('shows Team Brain’s home page once set up, for its agent', () => {
     app.agents = [{ ...agent('team-brain'), teamBrain: true }]
     render(<TeamBrainPage />)
-    expect(screen.getByTestId('team-brain-ready')).toHaveTextContent('Open Team Brain')
+    expect(screen.getByTestId('team-brain-home')).toHaveTextContent('team-brain')
   })
 
   it('leaves set-up to admins in a team workspace', () => {

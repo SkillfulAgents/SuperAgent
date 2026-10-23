@@ -19,6 +19,8 @@ export interface TeamBrainLocation {
   description: string
   /** Where it would be created, shown once chosen. Mock values. */
   target: string
+  /** Where it opens in its own app, once created. Mock values; none when Gamut hosts it or it is a folder on this computer. */
+  url?: string
   group: 'hosted' | 'storage'
   /** Asks for an account or keys before it can be used. The mock takes a beat. */
   connects: boolean
@@ -58,7 +60,7 @@ function GitHubMark({ className }: { className?: string }) {
 
 function fromDrive(
   type: VolumeType,
-  copy: Pick<TeamBrainLocation, 'target' | 'connects' | 'createLine'> & { description?: string },
+  copy: Pick<TeamBrainLocation, 'target' | 'url' | 'connects' | 'createLine'> & { description?: string },
 ): TeamBrainLocation {
   const drive = volumeSetupRegistry[type]
   return {
@@ -88,12 +90,14 @@ export const TEAM_BRAIN_LOCATIONS: readonly TeamBrainLocation[] = [
   fromDrive('googledrive', {
     description: 'A Team Brain folder in My Drive or a shared drive.',
     target: 'My Drive › Team Brain',
+    url: 'https://drive.google.com/drive/my-drive',
     connects: true,
     createLine: 'Creating the Team Brain folder in Google Drive',
   }),
   fromDrive('dropbox', {
     description: 'A Team Brain folder in your Dropbox.',
     target: 'Dropbox › Team Brain',
+    url: 'https://www.dropbox.com/home/Team%20Brain',
     connects: true,
     createLine: 'Creating the Team Brain folder in Dropbox',
   }),
@@ -102,6 +106,7 @@ export const TEAM_BRAIN_LOCATIONS: readonly TeamBrainLocation[] = [
     name: 'GitHub',
     description: 'A private repository. Every change is a commit you can review.',
     target: 'your-org/team-brain · private',
+    url: 'https://github.com/your-org/team-brain',
     group: 'storage',
     connects: true,
     createLine: 'Creating the team-brain repository on GitHub',
@@ -113,6 +118,7 @@ export const TEAM_BRAIN_LOCATIONS: readonly TeamBrainLocation[] = [
     name: 'Obsidian',
     description: 'A vault on this computer that you can open in Obsidian.',
     target: '~/Documents/Team Brain',
+    url: 'obsidian://open?vault=Team%20Brain',
     group: 'storage',
     connects: false,
     createLine: 'Creating the Team Brain vault',
@@ -122,6 +128,7 @@ export const TEAM_BRAIN_LOCATIONS: readonly TeamBrainLocation[] = [
   },
   fromDrive('s3', {
     target: 's3://team-brain',
+    url: 'https://s3.console.aws.amazon.com/s3/buckets/team-brain',
     connects: true,
     createLine: 'Creating the Team Brain prefix in your bucket',
   }),

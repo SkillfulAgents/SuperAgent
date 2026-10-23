@@ -115,6 +115,24 @@ describe('FilePreviewTrayContent', () => {
     expect(screen.getByTestId('file-preview-copy')).toBeInTheDocument()
   })
 
+  it('reads a tab that brings its own source from there, not from an agent’s workspace', () => {
+    const url = 'data:text/markdown;charset=utf-8,%23%20Team%20Brain'
+    mocks.openTabs = [{
+      kind: 'file',
+      filePath: '/Team Brain/README.md',
+      agentSlug: 'team-brain',
+      displayName: 'README.md',
+      version: 0,
+      pdfPage: 1,
+      source: { inlineUrl: url, downloadUrl: url },
+    }]
+    renderTray()
+
+    expect(screen.getByTestId('file-preview-title')).toHaveTextContent('README.md')
+    expect(screen.getByTestId('file-renderer')).toBeInTheDocument()
+    expect(screen.getByLabelText('Download file').closest('a')).toHaveAttribute('href', url)
+  })
+
   it('hides copy for a file whose bytes could not be text', () => {
     mocks.openTabs = [{
       kind: 'file',
