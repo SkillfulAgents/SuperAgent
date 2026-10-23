@@ -426,6 +426,15 @@ jobs:
       - name: Install Playwright WebKit
         run: npx playwright install webkit
 
+      - name: Enable keyboard navigation for Playwright WebKit
+        # macOS otherwise skips buttons on plain Tab. Enable Keyboard Navigation
+        # for this test app only, preserving native Tab and Radix's focus-loop
+        # assertions (FocusScope deliberately ignores Option+Tab).
+        # https://github.com/microsoft/playwright/issues/41808
+        run: |
+          defaults write org.webkit.Playwright AppleKeyboardUIMode -int 2
+          defaults read org.webkit.Playwright AppleKeyboardUIMode
+
       - name: Run WebKit regression suite
         id: webkit_e2e
         env:

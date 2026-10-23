@@ -26,6 +26,13 @@ async function openSidebar(page: Page) {
  * WebKit hold checks as physical-device gesture or iOS magnifier coverage.
  */
 async function finger(page: Page, target: Locator, browserName: string) {
+  // CDP input bypasses Playwright's actionability waits. An open drawer loses
+  // `inert` before its 300 ms slide ends, so wait for its actual final geometry
+  // before capturing coordinates for a native hold.
+  const sidebar = target.locator('xpath=ancestor::*[@data-mobile="true"]')
+  if (await sidebar.count()) {
+    await expect(sidebar).toHaveCSS('transform', 'matrix(1, 0, 0, 1, 0, 0)')
+  }
   await target.scrollIntoViewIfNeeded()
   const box = await target.boundingBox()
   expect(box).not.toBeNull()
@@ -105,6 +112,7 @@ test.describe('Radix mobile interaction boundaries', () => {
       const second = await finger(page, link, browserName)
       try {
         await second.down()
+        await expect(trigger).toHaveAttribute('data-pressing', '')
         await expect(page.getByTestId('agent-context-menu')).toBeVisible()
         await second.up()
         await expect(page.getByTestId('move-agent-to-folder-menu')).not.toBeVisible()

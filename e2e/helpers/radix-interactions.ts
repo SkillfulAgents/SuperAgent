@@ -181,6 +181,9 @@ export async function checkNestedDriveDialogs(context: RadixInteractionContext) 
   expect(state.created).toEqual([])
   await addDrive.click()
   await expect(outer.getByRole('button', { name: 'Dropbox', exact: true })).toBeVisible()
+  // Raw coordinates do not wait for actionability. Let the opening animation
+  // finish before testing the modal's asynchronously installed outside listener.
+  await outer.evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)))
   // A real outside pointer closes the fresh top-level modal.
   await page.mouse.click(5, 5)
   await expect(outer).not.toBeVisible()
@@ -272,10 +275,67 @@ export async function checkConnectionControlEvents(context: RadixInteractionCont
   }
 }
 
+export async function checkComposerLinkCards(context: RadixInteractionContext) {
+  const { page, request, apiBaseUrl, navigate } = context
+  const agent = await createAgent(context, 'Radix composer')
+  try {
+    await navigate(`/agents/${agent.slug}`)
+    await new AppPage(page).waitForAgentsLoaded()
+    const editor = page.getByTestId('home-message-input')
+    const firstUrl = 'https://example.com/radix-docs'
+    const secondUrl = 'https://example.com/radix-guide'
+    await editor.click()
+    await editor.pressSequentially(`Read [docs](${firstUrl}) and [guide](${secondUrl}) first`)
+    const firstLink = editor.locator(`a[href="${firstUrl}"]`)
+    const secondLink = editor.locator(`a[href="${secondUrl}"]`)
+    await expect(firstLink).toHaveText('docs')
+    await expect(secondLink).toHaveText('guide')
+    const firstCard = page.getByRole('button', { name: firstUrl, exact: true })
+    const secondCard = page.getByRole('button', { name: secondUrl, exact: true })
+    const settleCard = async (card: Locator) => {
+      await expect(card).toBeVisible()
+      await card.evaluate(async element => {
+        await Promise.all(element.closest('[role="dialog"]')?.getAnimations().map(animation => animation.finished) ?? [])
+      })
+      await expect(card).toBeVisible()
+    }
+
+    await firstLink.click()
+    await settleCard(firstCard)
+    await expect(editor).toBeFocused()
+    // Ordinary outside clicks still dismiss. Reopen immediately after the
+    // card's text disappears, while its closing portal may still be mounted.
+    await editor.click({ position: { x: 4, y: 8 } })
+    await expect(firstCard).toBeHidden()
+    await firstLink.click()
+    await settleCard(firstCard)
+
+    // Clicking another editor link retargets this virtual-anchor popover.
+    // Its deferred outside-click callback must not close the fresh card.
+    await secondLink.click()
+    await expect(firstCard).toBeHidden()
+    await settleCard(secondCard)
+    await expect(editor).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(secondCard).toBeHidden()
+    await expect(editor).toBeFocused()
+
+    await firstLink.click()
+    await settleCard(firstCard)
+    await page.keyboard.type('s')
+    await expect(firstCard).toBeHidden()
+    await expect(editor).toBeFocused()
+    await expectPointersReleased(page)
+  } finally {
+    await request.delete(`${apiBaseUrl}/api/agents/${agent.slug}`)
+  }
+}
+
 export const radixInteractionChecks = [
   ['nested schedule picker focus, scrolling and dismissal', checkNestedSchedulePicker],
   ['nested drive dialogs and disabled selection', checkNestedDriveDialogs],
   ['connection tabs, select events and persisted keyboard switch changes', checkConnectionControlEvents],
+  ['composer link-card reopening, retargeting and dismissal', checkComposerLinkCards],
 ] as const
 
 export async function runRadixInteractionChecks(context: RadixInteractionContext) {
