@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import { FilePreviewProvider, getPreviewTabKey, getWorkspaceFileKey, useFilePreview, type FileTab } from './file-preview-context'
+import { RELOADING_EVENT } from '@renderer/lib/lazy-with-reload'
 
 // Mock the route-derived location — FilePreviewProvider reads useRouteLocation and
 // watches view.kind/view.id for session changes.
@@ -482,5 +483,62 @@ describe('FilePreviewContext', () => {
 
   it('throws when used outside provider', () => {
     expect(() => renderHook(() => useFilePreview())).toThrow(/FilePreviewProvider/)
+  })
+})
+
+describe('reopening a file after a stale tab reloads itself', () => {
+  beforeEach(() => sessionStorage.clear())
+
+  it('opens the file again after the reload', () => {
+    const before = renderHook(() => useFilePreview(), { wrapper })
+    act(() => before.result.current.openFile('/workspace/report.pdf', 'agent-1'))
+    act(() => { window.dispatchEvent(new Event(RELOADING_EVENT)) })
+    before.unmount()
+
+    const after = renderHook(() => useFilePreview(), { wrapper })
+    expect(after.result.current.isOpen).toBe(true)
+    expect(after.result.current.openTabs).toHaveLength(1)
+    expect(after.result.current.openTabs[0]).toMatchObject({ kind: 'file', filePath: '/workspace/report.pdf', agentSlug: 'agent-1' })
+    after.unmount()
+
+    const { result } = renderHook(() => useFilePreview(), { wrapper })
+    expect(result.current.isOpen).toBe(false)
+  })
+
+  it('discards the file when a different preview mounts first', () => {
+    const before = renderHook(() => useFilePreview(), { wrapper })
+    act(() => before.result.current.openFile('/workspace/report.pdf', 'agent-1'))
+    act(() => { window.dispatchEvent(new Event(RELOADING_EVENT)) })
+    before.unmount()
+
+    mockView = { kind: 'session', id: 'session-2' }
+    const other = renderHook(() => useFilePreview(), { wrapper })
+    expect(other.result.current.isOpen).toBe(false)
+    other.unmount()
+
+    mockView = { kind: 'session', id: 'session-1' }
+    const { result } = renderHook(() => useFilePreview(), { wrapper })
+    expect(result.current.isOpen).toBe(false)
+  })
+
+  it('does not reopen a preview that was closed before the reload', () => {
+    const before = renderHook(() => useFilePreview(), { wrapper })
+    act(() => before.result.current.openFile('/workspace/report.pdf', 'agent-1'))
+    act(() => before.result.current.close())
+    act(() => { window.dispatchEvent(new Event(RELOADING_EVENT)) })
+    before.unmount()
+
+    const { result } = renderHook(() => useFilePreview(), { wrapper })
+    expect(result.current.isOpen).toBe(false)
+  })
+
+  it('does not reopen anything after an ordinary remount', () => {
+    const before = renderHook(() => useFilePreview(), { wrapper })
+    act(() => before.result.current.openFile('/workspace/report.pdf', 'agent-1'))
+    before.unmount()
+
+    const { result } = renderHook(() => useFilePreview(), { wrapper })
+    expect(result.current.isOpen).toBe(false)
+    expect(result.current.openTabs).toHaveLength(0)
   })
 })
