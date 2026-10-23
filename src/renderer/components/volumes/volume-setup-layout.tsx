@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ComponentType, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useRef, type ComponentType, type ReactNode } from 'react'
 import { ArrowLeft, ChevronRight, Loader2 } from 'lucide-react'
 import { useUser } from '@renderer/context/user-context'
 import { Button } from '@renderer/components/ui/button'
@@ -48,9 +48,21 @@ export function VolumeDetailsFields({ value, onChange, disabled, inUse = false, 
   </>
 }
 
-export function VolumeSetupFooter({ onBack, onCancel, isSaving, disabled, submitLabel }: {
+export interface VolumeSetupFooterProps {
   onBack?: () => void; onCancel: () => void; isSaving: boolean; disabled: boolean; submitLabel: string
-}) {
+}
+
+/**
+ * A host with its own button bar (Team Brain's set-up modal) supplies a footer here,
+ * and every drive set-up's Back, Cancel and submit render as that instead of the
+ * dialog's footer. It stays inside the set-up's form, so its submit still submits.
+ */
+export const VolumeSetupFooterContext = createContext<ComponentType<VolumeSetupFooterProps> | null>(null)
+
+export function VolumeSetupFooter(props: VolumeSetupFooterProps) {
+  const HostFooter = useContext(VolumeSetupFooterContext)
+  if (HostFooter) return <HostFooter {...props} />
+  const { onBack, onCancel, isSaving, disabled, submitLabel } = props
   return <DialogFooter className="gap-2 pt-2 sm:space-x-0">
     {onBack && <Button type="button" variant="ghost" className="sm:mr-auto" onClick={onBack} disabled={isSaving}><ArrowLeft className="h-4 w-4" />Back</Button>}
     <Button type="button" variant="outline" onClick={onCancel} disabled={isSaving}>Cancel</Button>
