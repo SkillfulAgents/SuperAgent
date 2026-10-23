@@ -1,23 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent successfully opens a browser, navigates to https://example.com, retrieves the page title \"Example Domain\", and returns the correct result in the response.",
+  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the correct response.",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 - Page loaded successfully showing Gamut interface with agent list",
-    "Step 2: Found and clicked on \"QA-20261023-002620-ana9\" agent in the sidebar - Successfully navigated to the agent page with chat interface",
-    "Step 3: Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message was successfully submitted and a new session \"Browser Page Title Check\" was created",
-    "Step 4: Waited for agent response - Agent completed work in 9 seconds with 3 tool calls and 155,780 tokens used",
-    "Step 5: Verified response mentions \"Example Domain\" - Agent response clearly states: \"The page title is 'Example Domain'. The page at https://example.com loaded normally (HTTP 200), and I've closed the browser.\""
+    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage showing the agent dashboard with the sidebar displaying available agents.",
+    "Found and clicked the \"QA-20261023-174347-t99t\" agent in the sidebar — Successfully opened the agent page, showing the agent configuration panel and message input area.",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message successfully filled into the textbox.",
+    "Clicked the \"Send message\" button — Message successfully sent, triggering a new session titled \"Check Example.com Page Title\" with status showing \"Working...\"",
+    "Waited for response (polling up to 3 minutes) — Agent completed processing within approximately 10 seconds, with status changing from \"Working...\" to \"idle\".",
+    "Verified response content and took screenshot — Response received and displayed correctly. The agent's response states: \"The page title is 'Example Domain'. The page at https://example.com loaded normally, and I've closed the browser.\" The response clearly mentions \"Example Domain\" as required. Screenshot captured showing the full conversation with the agent's response visible."
   ],
   "bugs": [],
-  "durationMs": 82721,
-  "sessionId": "6ffac980-616f-4aec-986a-509a7e797a77",
+  "durationMs": 62908,
+  "sessionId": "26bc4a25-195d-4ce8-89c1-1221479faaec",
   "cost": {
-    "inputTokens": 376,
-    "outputTokens": 11926,
-    "cacheCreationTokens": 74826,
-    "cacheReadTokens": 1157049,
+    "inputTokens": 336,
+    "outputTokens": 8889,
+    "cacheCreationTokens": 71211,
+    "cacheReadTokens": 920442,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.269243
+    "totalCostUsd": 0.225839
   }
 }
