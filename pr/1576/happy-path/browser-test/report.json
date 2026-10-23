@@ -1,24 +1,26 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the QA-20261023-180825-js4a agent can successfully open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and report it back in the response.",
+  "reason": "Browser use feature successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and closed the browser",
   "steps": [
-    "Navigate to http://localhost:47891 — Successfully loaded the Gamut homepage showing the agent list in the sidebar.",
-    "Find and click the \"QA-20261023-180825-js4a\" agent in the sidebar — Successfully clicked the agent button and opened the agent page with an empty chat interface.",
-    "Type the message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Successfully typed the complete message into the message input field.",
-    "Click the send button to submit the message — Successfully sent the message, which created a new session titled \"Browser Page Title Check\" and transitioned to the session view showing the agent is working.",
-    "Monitor the browser preview and wait for the agent response — The agent successfully opened a browser and navigated to https://example.com. A live browser preview was displayed on the right side showing the Example Domain website. The agent completed processing in 12 seconds using 3 tool calls and 155,530 tokens.",
-    "Verify the response mentions \"Example Domain\" — The agent's final response states: \"The page title is \"Example Domain\". I've closed the browser.\" This clearly confirms that the page title was correctly retrieved and matches the expected value from the example.com website."
+    "Navigated to http://localhost:47891 - Application loaded showing \"Your Agents\" home page with sidebar containing agents",
+    "Found and clicked the \"QA-20261023-234451-ls6x\" agent in the sidebar - Agent page opened with chat interface and model selector showing \"Opus 5.5 · Medium\"",
+    "Clicked on the chat input field - Input field became focused and ready for text entry",
+    "Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message appeared in the input field",
+    "Sent the message using Ctrl+Enter - New session was created and agent status changed to \"working\"",
+    "Waited for agent response - Agent completed processing in 6 seconds",
+    "Verified response content - Agent response clearly stated \"The page title is \"Example Domain\". The page at https://example.com loaded normally, and I closed the browser afterward.\"",
+    "Expanded tool calls to verify browser operations - Three tool calls visible and marked successful: ToolSearch, Open Browser (→ https://example.com), and Close Browser, all with green checkmarks"
   ],
   "bugs": [],
-  "durationMs": 105379,
-  "sessionId": "a8c65069-568b-408e-a4aa-89409b404823",
+  "durationMs": 105683,
+  "sessionId": "eb2ab502-2f52-4239-ac10-0a32204e06bd",
   "cost": {
-    "inputTokens": 488,
-    "outputTokens": 14771,
-    "cacheCreationTokens": 101147,
-    "cacheReadTokens": 1602603,
+    "inputTokens": 578,
+    "outputTokens": 18149,
+    "cacheCreationTokens": 93556,
+    "cacheReadTokens": 1936424,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.361037
+    "totalCostUsd": 0.40191
   }
 }
