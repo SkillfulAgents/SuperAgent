@@ -659,7 +659,8 @@ export class ContainerRuntime {
     const workspaces = this.host.agentWorkspaces
     if (workspaces) {
       // Seed the built-in container browser from the selected Chrome profile.
-      // A failure fails the start, as a failed copy always did.
+      // A profile this app may not read is skipped; any other failure fails
+      // the start, as a failed copy always did.
       await seedBrowserProfileFromChrome(slug, workspaces.files(slug))
       // The display name is attribution only; a start without it is still a start.
       try {
