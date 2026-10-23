@@ -12,6 +12,7 @@ build/lima/
 build/wsl2/
 build/mediaremote-adapter/
 build/spotlight-bridge/
+build/notification-bridge/
 
 # Test coverage
 coverage/

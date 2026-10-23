@@ -260,6 +260,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  // True when the user turned off notifications for the app in macOS System Settings.
+  getOsNotificationsBlocked: (): Promise<boolean> => {
+    return ipcRenderer.invoke('get-os-notifications-blocked')
+  },
+
   // Pull events queued while the window was closed (main-process fallback
   // notifications). Renderer calls this once on mount so click/action
   // events captured before any IPC listener existed still get dispatched.
@@ -542,6 +547,7 @@ declare global {
       onNotificationEvent: (
         callback: (event: { type: 'click' | 'action'; actionIndex?: number; context?: unknown }) => void,
       ) => () => void
+      getOsNotificationsBlocked: () => Promise<boolean>
       flushPendingNotificationEvents: () => Promise<{
         events: Array<{ type: 'click' | 'action'; actionIndex?: number; context?: unknown }>
         navigations: Array<{ agentSlug: string; sessionId: string | null }>

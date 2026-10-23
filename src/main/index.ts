@@ -69,6 +69,7 @@ import { classifyImportPackage } from './import-packages'
 import { isImportPackagePath } from '@shared/lib/utils/package-extensions'
 import { safeOpenExternalFromApp } from './safe-open-external'
 import { osNotificationOptions, reviewIdOf, reviewNotificationId } from './os-notification-options'
+import { areOsNotificationsBlocked } from './notification-authorization'
 import { probeNowPlaying, pauseNowPlaying, resumeNowPlaying, releaseAllNowPlaying, watchNowPlayingHolder } from './music-control'
 import { APPLE_PASSWORDS_CHROME_EXTENSION_URL } from '@shared/lib/credentials/apple-passwords-links'
 
@@ -685,6 +686,8 @@ ipcMain.handle('show-notification', (
   trackLiveNotification(notification, reviewIdOf(context))
   notification.show()
 })
+
+ipcMain.handle('get-os-notifications-blocked', () => areOsNotificationsBlocked())
 
 // Renderer pulls queued click/action events that were captured while the
 // window was closed (notifications shown by the main-process SSE fallback).

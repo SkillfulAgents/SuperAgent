@@ -299,6 +299,10 @@
         {
           "from": "build/spotlight-bridge",
           "to": "spotlight-bridge"
+        },
+        {
+          "from": "build/notification-bridge",
+          "to": "notification-bridge"
         }
       ],
       "artifactName": "Gamut-${version}-${arch}.${ext}",
