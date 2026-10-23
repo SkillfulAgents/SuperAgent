@@ -690,7 +690,7 @@ describe('AppSidebar — agent rows', () => {
     }
   })
 
-  it('shows zZzz (read as Sleeping) instead of the last run while the agent sleeps', () => {
+  it('says Sleeping instead of the last run while the agent sleeps', () => {
     mockUseAgents.mockReturnValue({
       data: [
         makeAgent({ status: 'stopped', lastActivityAt: new Date('2026-10-09T09:00:00Z') }),
@@ -701,9 +701,7 @@ describe('AppSidebar — agent rows', () => {
       error: null,
     })
     renderWithProviders(<AppSidebar />)
-    const sleeping = screen.getByTestId('agent-item-test-agent')
-    expect(within(sleeping).getByText('zZzz')).toHaveAttribute('aria-hidden', 'true')
-    expect(within(sleeping).getByText('Sleeping')).toHaveClass('sr-only')
+    expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Sleeping')
     expect(screen.getByTestId('agent-item-unread-agent')).toHaveTextContent('Last run never')
   })
 

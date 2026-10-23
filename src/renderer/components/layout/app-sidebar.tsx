@@ -430,19 +430,14 @@ function SessionsSkeleton() {
 }
 
 // Only this label subscribes to the clock; the expensive agent row stays memoized.
-// The row's second line: when the agent last ran, or "zZzz" while its avatar
-// shows it asleep (agentAvatarState), so the text and the faceless avatar
-// always agree. Screen readers hear "Sleeping" instead of the letters.
+// The row's second line: when the agent last ran, or "Sleeping" while its
+// avatar shows it asleep (agentAvatarState), so the text and the faceless
+// avatar always agree.
 function AgentLastRun({ date, sleeping }: { date: ApiAgent['lastActivityAt']; sleeping: boolean }) {
   useMinuteClock()
   return (
     <span className="block truncate text-[11px] leading-tight text-muted-foreground/60">
-      {sleeping ? (
-        <>
-          <span aria-hidden>zZzz</span>
-          <span className="sr-only">Sleeping</span>
-        </>
-      ) : formatLastRun(date) ?? 'Last run never'}
+      {sleeping ? 'Sleeping' : formatLastRun(date) ?? 'Last run never'}
     </span>
   )
 }
