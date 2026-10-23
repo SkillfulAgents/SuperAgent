@@ -421,6 +421,13 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return ''
   }
 
+  /**
+   * Runs once per start(), right before the container is run. Subclasses
+   * throw here to refuse a run that would not work, e.g. one whose workspace
+   * the runtime can't see.
+   */
+  protected async beforeRun(): Promise<void> {}
+
   public volumeRunFlags(): string | null {
     return FUSE_RUN_FLAGS
   }
@@ -775,6 +782,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       // Ensure workspace directory exists for persistent storage
       const workspaceDir = getAgentWorkspaceDir(this.config.agentId)
       fs.mkdirSync(workspaceDir, { recursive: true })
+
+      await this.beforeRun()
 
       // Find an available port
       let port = await this.findAvailablePort()

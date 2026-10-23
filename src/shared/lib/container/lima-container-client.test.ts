@@ -35,7 +35,18 @@ vi.mock('./base-container-client', () => ({
   },
   checkCommandAvailable: vi.fn(),
   execWithPath: vi.fn(),
+  shellEscape: (value: string) => `'${value.replace(/'/g, `'\\''`)}'`,
   writeEnvFile: vi.fn(),
+}))
+
+vi.mock('@shared/lib/config/data-dir', () => ({
+  getDataDir: () => '/Users/testuser/Library/Application Support/Superagent',
+}))
+
+vi.mock('@shared/lib/error-reporting', () => ({
+  captureException: vi.fn(),
+  captureMessage: vi.fn(),
+  addErrorBreadcrumb: vi.fn(),
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
@@ -59,6 +70,7 @@ vi.mock('os', async () => {
 import * as fs from 'fs'
 import { execWithPath } from './base-container-client'
 import { getSettings } from '@shared/lib/config/settings'
+import { captureMessage } from '@shared/lib/error-reporting'
 
 // ============================================================================
 // Import module under test — AFTER mocks
@@ -73,6 +85,7 @@ import {
   stopLimaVm,
   LimaContainerClient,
   limactlCommand,
+  verifyDataDirVisibleInVm,
 } from './lima-container-client'
 
 const mockedFs = vi.mocked(fs)
@@ -775,5 +788,132 @@ describe('LimaContainerClient.handleRunError', () => {
     expect(recovered).toBe(false)
     expect(execCmds().some((c) => c.includes('delete'))).toBe(false)
     expect(execCmds().some((c) => c.includes(' start '))).toBe(false)
+  })
+})
+
+// ============================================================================
+// verifyDataDirVisibleInVm — nerdctl creates a missing bind-mount source on the
+// VM's own disk and runs anyway, so a run whose workspace the VM can't see must
+// be refused before it starts.
+// ============================================================================
+
+describe('verifyDataDirVisibleInVm', () => {
+  const DATA_DIR = '/Users/testuser/Library/Application Support/Superagent'
+  // The check is cached per VM boot (host-agent pid), so each test boots anew.
+  let bootPid = 5000
+
+  /** Marker files the check wrote, by path → contents. */
+  const markers = () => new Map(mockedFs.writeFileSync.mock.calls.map((c) => [String(c[0]), String(c[1])]))
+  const catCmds = () => execCmds().filter((c) => c.includes('.lima-mount-check-'))
+  const markerIn = (cmd: string) => /' sh '([^']+)'$/.exec(cmd)?.[1] ?? ''
+
+  /** What the guest sees when it reads the marker (the guest command always exits 0). */
+  function guest(sees: 'the marker' | 'nothing' | 'other content' | 'no answer' | 'a stopped VM') {
+    mockedExecWithPath.mockImplementation(((cmd: string) => {
+      if (!cmd.includes('.lima-mount-check-')) return Promise.resolve({ stdout: '', stderr: '' })
+      if (sees === 'the marker') return Promise.resolve({ stdout: `${markers().get(markerIn(cmd))}\n`, stderr: '' })
+      if (sees === 'other content') return Promise.resolve({ stdout: 'something else\n', stderr: '' })
+      if (sees === 'nothing') return Promise.resolve({ stdout: 'superagent-mount-marker-missing\n', stderr: '' })
+      // limactl's own exit 1 is the same code cat uses for a missing file.
+      if (sees === 'a stopped VM') return Promise.reject(Object.assign(new Error('level=fatal msg="instance `superagent` is stopped"'), { code: 1 }))
+      return Promise.reject(Object.assign(new Error('ssh: connect to host 127.0.0.1 port 60022: Connection refused'), { code: 255 }))
+    }) as any)
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    setResourcesPath(undefined)
+    bootPid++
+    const pid = String(bootPid)
+    mockedFs.readFileSync.mockImplementation(((p: any) => {
+      if (String(p).endsWith('ha.pid')) return pid
+      const e: any = new Error('ENOENT'); e.code = 'ENOENT'; throw e
+    }) as any)
+  })
+
+  it('passes when the guest reads back the nonce written into the data folder, then removes the marker', async () => {
+    guest('the marker')
+
+    await verifyDataDirVisibleInVm()
+
+    expect(catCmds()).toHaveLength(1)
+    const marker = markerIn(catCmds()[0])
+    expect(marker.startsWith(`${DATA_DIR}/.lima-mount-check-`)).toBe(true)
+    expect(markers().get(marker)).toMatch(/^[0-9a-f]{32}$/)
+    expect(catCmds()[0]).toContain(
+      `shell --workdir / ${LIMA_VM_NAME} -- sh -c 'cat "$1" 2>/dev/null || echo superagent-mount-marker-missing' sh '${marker}'`
+    )
+    expect(mockedFs.unlinkSync).toHaveBeenCalledWith(marker)
+  })
+
+  it('checks once per VM boot', async () => {
+    guest('the marker')
+
+    await verifyDataDirVisibleInVm()
+    await verifyDataDirVisibleInVm()
+    expect(catCmds()).toHaveLength(1)
+
+    // The VM restarted: a new host agent, so check again.
+    mockedFs.readFileSync.mockImplementation(((p: any) => {
+      if (String(p).endsWith('ha.pid')) return String(bootPid + 1000)
+      const e: any = new Error('ENOENT'); e.code = 'ENOENT'; throw e
+    }) as any)
+    await verifyDataDirVisibleInVm()
+    expect(catCmds()).toHaveLength(2)
+  })
+
+  it('uses a new marker name for every check, so a cached failed lookup in the guest cannot answer', async () => {
+    guest('no answer')
+    await verifyDataDirVisibleInVm()
+    guest('the marker')
+    await verifyDataDirVisibleInVm()
+
+    const [first, second] = catCmds().map(markerIn)
+    expect(first).not.toBe(second)
+  })
+
+  it('shares one check between concurrent container starts', async () => {
+    guest('the marker')
+
+    await Promise.all([verifyDataDirVisibleInVm(), verifyDataDirVisibleInVm(), verifyDataDirVisibleInVm()])
+
+    expect(catCmds()).toHaveLength(1)
+  })
+
+  it('refuses the run, reports it, and still removes the marker when the guest cannot see the data folder', async () => {
+    guest('nothing')
+
+    const error = await verifyDataDirVisibleInVm().then(() => null, (e) => e)
+
+    expect(error?.message).toContain(`can't see the app's data folder (${DATA_DIR})`)
+    expect(error?.sentryCaptured).toBe(true)
+    expect(vi.mocked(captureMessage)).toHaveBeenCalledWith(
+      expect.stringContaining('cannot see the app data folder'),
+      expect.objectContaining({ tags: { component: 'lima', operation: 'mount-check' } })
+    )
+    expect(mockedFs.unlinkSync).toHaveBeenCalledWith(markerIn(catCmds()[0]))
+  })
+
+  it('refuses the run when the guest reads something other than the nonce', async () => {
+    guest('other content')
+
+    await expect(verifyDataDirVisibleInVm()).rejects.toThrow(/can't see the app's data folder/)
+  })
+
+  it.each(['no answer', 'a stopped VM'] as const)('does not block the run when the guest gives %s, and checks again next time', async (sees) => {
+    guest(sees)
+
+    await expect(verifyDataDirVisibleInVm()).resolves.toBeUndefined()
+    expect(vi.mocked(captureMessage)).not.toHaveBeenCalled()
+
+    await verifyDataDirVisibleInVm()
+    expect(catCmds()).toHaveLength(2)
+  })
+
+  it('a Lima container start runs the check before the container', async () => {
+    guest('nothing')
+    const client = new LimaContainerClient({ agentId: 'test-agent' } as any) as any
+
+    await expect(client.beforeRun()).rejects.toThrow(/can't see the app's data folder/)
   })
 })

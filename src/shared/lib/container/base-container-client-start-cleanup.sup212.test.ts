@@ -252,3 +252,22 @@ describe('start() run flags for volumes', () => {
     }
   })
 })
+
+describe('start() beforeRun', () => {
+  class RefusingClient extends TestContainerClient {
+    protected async beforeRun(): Promise<void> {
+      throw new Error('the runtime cannot see the workspace')
+    }
+  }
+
+  beforeEach(() => {
+    execCommands.length = 0
+  })
+
+  it('refuses the start before any container is run', async () => {
+    const client = new RefusingClient({ agentId: 'abc123' } as ContainerConfig)
+
+    await expect(client.start()).rejects.toThrow('the runtime cannot see the workspace')
+    expect(execCommands.some((c) => /run\s+-d/.test(c))).toBe(false)
+  })
+})
