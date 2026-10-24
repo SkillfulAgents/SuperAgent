@@ -1,5 +1,5 @@
 /** Every source a volume can come from. A new source adds its id here. */
-export const VOLUME_TYPES = ['local', 'dropbox', 'googledrive', 's3'] as const
+export const VOLUME_TYPES = ['local', 'dropbox', 'googledrive', 's3', 'github'] as const
 export type VolumeType = (typeof VOLUME_TYPES)[number]
 
 /** A volume as stored: `type` picks its implementation, and only that type's schema reads `config`. */
@@ -13,11 +13,12 @@ export interface StoredVolume {
 /** A volume as the API returns it: no config, only the host folder the card shows. */
 export interface VolumeSummary extends Omit<StoredVolume, 'config'> {
   sourceLabel?: string // display-only description for remote sources
+  sourceReadOnly?: boolean // the source itself refuses writes, whatever the attachment says
   hostPath: string | null // the volume's folder on the machine that runs the agent, if it has one
 }
 
 export interface VolumeSummaryWithHealth extends VolumeSummary {
-  health: 'ok' | 'missing'
+  health: 'ok' | 'preparing' | 'missing'
 }
 
 export type GlobalAccess = 'read' | 'write'
@@ -68,6 +69,8 @@ export interface ContainerVolume {
 
 /** Why a volume is not in the container. */
 export type NotMountedReason =
+  | 'preparing'
+  | `preparing: ${string}`
   | 'not found'
   | 'not accessible'
   | 'unreadable'

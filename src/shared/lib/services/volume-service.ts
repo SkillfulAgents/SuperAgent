@@ -5,9 +5,9 @@ import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
 import { agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
 import { VOLUME_TYPES, type StoredVolume, type VolumeDefinitionSummary } from '@shared/lib/types/mount'
-import { instantiateVolume, prepareVolume } from '@shared/lib/volumes/volume-factory'
+import { instantiateVolume, prepareVolume, removeVolume } from '@shared/lib/volumes/volume-factory'
 import { volumeConfigSchema } from '@shared/lib/volumes/volume-config-schema'
-import { volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
+import { volumeHealth, volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
 import { VolumeError } from '@shared/lib/volumes/volume-error'
 import { createVolumeSchema, updateVolumeSchema, volumeNameSchema } from './mount-schema'
 
@@ -83,7 +83,7 @@ export async function listVolumeDefinitions(viewer: VolumeViewer): Promise<Volum
     if (!stored) return null
     return {
       ...volumeSummary(stored),
-      health: await volumeProblem(stored) === null ? 'ok' as const : 'missing' as const,
+      health: volumeHealth(await volumeProblem(stored)),
       userId: volume.userId,
       canManage: volume.userId === null ? viewer.admin : volume.userId === viewer.userId,
       attachmentCount,
@@ -117,10 +117,13 @@ export async function updateVolumeDefinition(id: string, raw: unknown, viewer: V
 
 export async function deleteVolumeDefinition(id: string, viewer: VolumeViewer): Promise<void> {
   const ownership = and(eq(volumeDefinitions.id, id), manageableVolumes(viewer))
-  const result = await db.delete(volumeDefinitions).where(and(ownership,
+  const rows = await db.delete(volumeDefinitions).where(and(ownership,
     notExists(db.select({ id: agentVolumes.id }).from(agentVolumes).where(eq(agentVolumes.volumeId, id))),
-  )).run()
-  if (changesOf(result) > 0) return
+  )).returning({ type: volumeDefinitions.type }).all()
+  if (rows.length > 0) {
+    await removeVolume(rows[0].type, id)
+    return
+  }
   if (await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(ownership).get()) {
     throw new VolumeError('Remove this drive from all agents before deleting it', 409)
   }

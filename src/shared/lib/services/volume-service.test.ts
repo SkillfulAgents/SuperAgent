@@ -3,7 +3,8 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
-import { agents, user } from '@shared/lib/db/schema'
+import { agents, user, volumeDefinitions } from '@shared/lib/db/schema'
+import { removeGithubSync } from '@shared/lib/volumes/github-sync'
 import { attachMount, removeMount } from './mount-service'
 import { createVolumeDefinition, deleteVolumeDefinition, listVolumeDefinitions, updateVolumeDefinition } from './volume-service'
 
@@ -16,13 +17,17 @@ const local = { userId: null, admin: true }
 vi.mock('@shared/lib/db', () => ({ get db() { return handle.db } }))
 beforeEach(async () => {
   folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'volume-access-')))
+  vi.stubEnv('SUPERAGENT_DATA_DIR', folder)
   handle = await createTestDatabase()
   await handle.db.insert(user).values(['alice', 'bob', 'admin'].map(id => ({ id, name: id, email: `${id}@example.com` }))).run()
   await handle.db.insert(agents).values({ slug: 'agent', name: 'Agent', createdAt: new Date() }).run()
 })
 afterEach(async () => {
+  vi.restoreAllMocks()
+  await removeGithubSync('github-volume')
   await handle.close()
   fs.rmSync(folder, { recursive: true, force: true })
+  vi.unstubAllEnvs()
 })
 const input = () => ({ type: 'local', config: { path: folder }, name: 'Notes' })
 
@@ -83,6 +88,19 @@ describe('volume ownership', () => {
     await deleteVolumeDefinition(id, admin)
     expect(await listVolumeDefinitions(admin)).toEqual([])
     expect(fs.existsSync(folder)).toBe(true)
+  })
+  it('deletes a GitHub copy by id even when its stored config is invalid', async () => {
+    vi.stubEnv('SUPERAGENT_DATA_DIR', folder)
+    const copy = path.join(folder, 'volumes', 'github-volume', 'copy')
+    fs.mkdirSync(copy, { recursive: true })
+    await handle.db.insert(volumeDefinitions).values({
+      id: 'github-volume', name: 'Broken', type: 'github', config: '{}', userId: null,
+      createdAt: new Date(), updatedAt: new Date(),
+    }).run()
+    await deleteVolumeDefinition('github-volume', local)
+    expect(await handle.db.select().from(volumeDefinitions).all()).toEqual([])
+    expect(fs.existsSync(copy)).toBe(false)
+    await expect(deleteVolumeDefinition('github-volume', local)).rejects.toMatchObject({ status: 404 })
   })
   it('uses public definitions in single-user mode and rejects ownerless private definitions', async () => {
     const id = await createVolumeDefinition(input(), local)

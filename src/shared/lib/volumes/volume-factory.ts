@@ -1,4 +1,7 @@
 import { z } from 'zod'
+import { GithubMountableVolume, prepareGithubVolume } from './github-mountable-volume'
+import { githubVolumeConfigSchema } from './github-schema'
+import { removeGithubSync } from './github-sync'
 import { S3MountableVolume } from './s3-mountable-volume'
 import { s3VolumeConfigSchema, s3StoredConfigSchema } from './s3-schema'
 import { prepareS3Volume, validateS3Volume } from './s3-validation'
@@ -21,6 +24,7 @@ interface PreparedVolume {
 }
 
 interface VolumeTypeEntry {
+  remove?: (id: string) => Promise<void>
   instantiate(row: StoredVolume, agentSlug?: string): BaseMountableVolume<unknown> | null
   prepare(config: unknown, creator?: { userId: string | null }): Promise<{ name: string; config: unknown }>
   browseFolders?: VolumeFolderBrowser
@@ -51,6 +55,11 @@ function volumeType<C>(
 }
 
 const volumeTypes: Record<VolumeType, VolumeTypeEntry> = {
+  github: {
+    ...volumeType(githubVolumeConfigSchema, (row, config) => new GithubMountableVolume(row.id, row.name, config,
+      'volumeId' in row && typeof row.volumeId === 'string' ? row.volumeId : row.id), prepareGithubVolume, GithubMountableVolume.browseFolders),
+    remove: removeGithubSync,
+  },
   s3: {
     ...volumeType(s3VolumeConfigSchema, (row, config, agentSlug) => new S3MountableVolume(row.id, row.name, config, agentSlug), prepareS3Volume),
     instantiate(row, agentSlug) {
@@ -94,4 +103,8 @@ export async function validateVolumeSource(type: string, config: unknown, viewer
   const validate = volumeTypes[type].validate
   if (!validate) throw new VolumeError('This source does not support a connection check', 400)
   return validate(config, viewer)
+}
+
+export async function removeVolume(type: string, id: string): Promise<void> {
+  if (isVolumeType(type)) await volumeTypes[type].remove?.(id)
 }
