@@ -1,7 +1,9 @@
 import { execSync } from 'child_process'
+import { randomBytes } from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
-import { BaseContainerClient, checkCommandAvailable, execWithPath, writeEnvFile } from './base-container-client'
+import { BaseContainerClient, checkCommandAvailable, execWithPath, shellEscape, writeEnvFile } from './base-container-client'
+import { getDataDir } from '@shared/lib/config/data-dir'
 import { getSettings } from '@shared/lib/config/settings'
 import { DEFAULT_LIMA_VM_MEMORY } from './types'
 import type { ContainerConfig } from './types'
@@ -240,6 +242,17 @@ function getHostAgentPidPath(): string {
   return path.join(getLimaHome(), LIMA_VM_NAME, 'ha.pid')
 }
 
+/** The pid recorded in `ha.pid`, or null when it is missing or unparseable. */
+function readHostAgentPid(): number | null {
+  let pid: number
+  try {
+    pid = parseInt(fs.readFileSync(getHostAgentPidPath(), 'utf-8').trim(), 10)
+  } catch {
+    return null
+  }
+  return Number.isInteger(pid) && pid > 0 ? pid : null
+}
+
 /**
  * Is the Lima host-agent process recorded in `ha.pid` still alive?
  *
@@ -253,13 +266,8 @@ function getHostAgentPidPath(): string {
  * alive). A surviving process (kill(pid, 0) succeeds, or fails EPERM) is alive.
  */
 function isHostAgentAlive(): boolean {
-  let pid: number
-  try {
-    pid = parseInt(fs.readFileSync(getHostAgentPidPath(), 'utf-8').trim(), 10)
-  } catch {
-    return false
-  }
-  if (!Number.isInteger(pid) || pid <= 0) return false
+  const pid = readHostAgentPid()
+  if (pid === null) return false
   try {
     process.kill(pid, 0)
     return true
@@ -372,6 +380,72 @@ async function probeGuestReachable(timeoutMs = GUEST_PROBE_TIMEOUT_MS): Promise<
   return false
 }
 
+/** Host-agent pid of the VM boot whose data-folder mount was last verified. */
+let mountVerifiedForHostAgent: number | null = null
+let mountCheckInFlight: Promise<void> | null = null
+/** What the guest prints when it can't read the marker. */
+const MOUNT_MARKER_MISSING = 'superagent-mount-marker-missing'
+
+/**
+ * Refuse to run a container while the VM can't see the app's data folder,
+ * which holds every agent workspace. nerdctl creates a missing bind-mount
+ * source on the VM's own disk and runs anyway, so without the Lima mount the
+ * agent's files silently never reach the host. Lima drops a mount it can't
+ * share (e.g. a path with a space) without an error.
+ *
+ * Writes a uniquely named marker holding a random nonce into the data folder
+ * and reads it back from the guest; passes once per VM boot. A guest that
+ * can't be reached says nothing about the mount, so that case is left to the
+ * run's own failure handling and checked again next time.
+ */
+export function verifyDataDirVisibleInVm(): Promise<void> {
+  mountCheckInFlight ??= verifyDataDirVisibleInVmOnce().finally(() => { mountCheckInFlight = null })
+  return mountCheckInFlight
+}
+
+async function verifyDataDirVisibleInVmOnce(): Promise<void> {
+  const boot = readHostAgentPid()
+  if (boot !== null && boot === mountVerifiedForHostAgent) return
+
+  const dataDir = getDataDir()
+  const nonce = randomBytes(16).toString('hex')
+  const marker = path.join(dataDir, `.lima-mount-check-${nonce}`)
+  fs.writeFileSync(marker, nonce)
+  try {
+    let seen: string
+    try {
+      // The guest command always exits 0, so a failure here means the guest
+      // didn't answer: limactl exits 1 for a stopped VM, ssh 255, or a timeout.
+      const readMarker = `cat "$1" 2>/dev/null || echo ${MOUNT_MARKER_MISSING}`
+      ;({ stdout: seen } = await execLimactl(
+        `shell --workdir / ${LIMA_VM_NAME} -- sh -c ${shellEscape(readMarker)} sh ${shellEscape(marker)}`,
+        { timeoutMs: GUEST_PROBE_TIMEOUT_MS }
+      ))
+    } catch (error: any) {
+      addErrorBreadcrumb({ category: 'lima', message: 'Data folder mount check skipped: guest did not answer', level: 'warning', data: { error: String(error?.message ?? error).slice(0, 300) } })
+      return
+    }
+    if (seen.trim() === nonce) {
+      mountVerifiedForHostAgent = boot
+      return
+    }
+    captureMessage('Lima VM cannot see the app data folder; refusing to run a container', {
+      level: 'error',
+      tags: { component: 'lima', operation: 'mount-check' },
+      extra: { dataDir, markerSeen: seen.trim() === MOUNT_MARKER_MISSING ? 'missing' : 'other content', ...collectLimaDiagnostics() },
+    })
+    throw Object.assign(
+      new Error(
+        `Built-in runtime can't see the app's data folder (${dataDir}), so the agent's files would never reach this Mac. ` +
+        'Quit and reopen the app to restart the runtime.'
+      ),
+      { sentryCaptured: true }
+    )
+  } finally {
+    try { fs.unlinkSync(marker) } catch { /* best-effort */ }
+  }
+}
+
 /**
  * Lima + nerdctl implementation of ContainerClient.
  * Uses a Lima VM with Apple's Virtualization.framework to run containers
@@ -436,6 +510,11 @@ export class LimaContainerClient extends BaseContainerClient {
       return `--add-host host.docker.internal:${ip}`
     }
     return ''
+  }
+
+  /** Refuse the run while the VM can't see the agent's workspace (see verifyDataDirVisibleInVm). */
+  protected async beforeRun(): Promise<void> {
+    await verifyDataDirVisibleInVm()
   }
 
   /**

@@ -426,6 +426,13 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     return ''
   }
 
+  /**
+   * Runs right before every attempt to run the container in start(). Subclasses
+   * throw here to refuse a run that would not work, e.g. one whose workspace
+   * the runtime can't see.
+   */
+  protected async beforeRun(): Promise<void> {}
+
   public volumeRunFlags(): string | null {
     return FUSE_RUN_FLAGS
   }
@@ -824,6 +831,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       let stdout: string
       try {
         for (;;) {
+          // Before every attempt: a recovery below may have restarted the runtime.
+          await this.beforeRun()
           await execWithPathSilent(`${runner} rm -f ${containerName}`)
 
           try {
