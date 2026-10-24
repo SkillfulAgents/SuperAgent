@@ -1,0 +1,137 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications" [ref=e28] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+          - listitem [ref=e175]:
+            - link "Discover New Agents New" [ref=e176] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e177]
+              - generic [ref=e180]: Discover New Agents
+              - generic [ref=e181]: New
+          - listitem [ref=e33]:
+            - button "New Agent" [ref=e34] [cursor=pointer]:
+              - img [ref=e35]
+              - generic [ref=e36]: New Agent
+        - list [ref=e39]:
+          - listitem [ref=e40]:
+            - button "Your Agents" [ref=e41] [cursor=pointer]:
+              - button "Your Agents" [expanded] [ref=e42]:
+                - generic [ref=e43]: Your Agents
+                - img [ref=e45]
+            - button "New agent in Your Agents" [ref=e47] [cursor=pointer]:
+              - img [ref=e48]
+            - list [ref=e50]:
+              - button "QA-20261023-234854-r3pv Last run never Open QA-20261023-234854-r3pv New session with QA-20261023-234854-r3pv" [ref=e51] [cursor=pointer]:
+                - generic [ref=e52]:
+                  - link "QA-20261023-234854-r3pv Last run never" [ref=e53]:
+                    - /url: /agents/qa-20261023-234854-r3pv-6fi6qp2oft
+                    - generic [ref=e54]: QA-20261023-234854-r3pv
+                    - generic [ref=e55]: Last run never
+                  - generic [ref=e56]:
+                    - link "Open QA-20261023-234854-r3pv" [ref=e57]:
+                      - /url: /agents/qa-20261023-234854-r3pv-6fi6qp2oft
+                      - img "idle" [ref=e58]:
+                        - img [ref=e59]
+                    - link "New session with QA-20261023-234854-r3pv" [ref=e68]:
+                      - /url: /agents/qa-20261023-234854-r3pv-6fi6qp2oft/sessions/new
+                      - img [ref=e69]
+              - button "QA-20261023-234853-9tqc Last run less than a minute ago Open QA-20261023-234853-9tqc New session with QA-20261023-234853-9tqc Collapse Basic Arithmetic Question" [ref=e501] [cursor=pointer]:
+                - generic [ref=e73]:
+                  - link "QA-20261023-234853-9tqc Last run less than a minute ago" [ref=e398]:
+                    - /url: /agents/qa-20261023-234853-9tqc-tq8je5mpmu
+                    - generic [ref=e75]: QA-20261023-234853-9tqc
+                    - generic [ref=e76]: Last run less than a minute ago
+                  - generic [ref=e77]:
+                    - link "Open QA-20261023-234853-9tqc" [ref=e78]:
+                      - /url: /agents/qa-20261023-234853-9tqc-tq8je5mpmu
+                      - img "idle" [ref=e502]:
+                        - img [ref=e503]
+                    - link "New session with QA-20261023-234853-9tqc" [ref=e89]:
+                      - /url: /agents/qa-20261023-234853-9tqc-tq8je5mpmu/sessions/new
+                      - img [ref=e90]
+                  - button "Collapse" [expanded] [ref=e404]:
+                    - img [ref=e418]
+                - list [ref=e421]:
+                  - listitem [ref=e422]:
+                    - link "Basic Arithmetic Question" [ref=e512]:
+                      - /url: /agents/tq8je5mpmu/sessions/fee98f05-ff88-4648-9dfc-03d54432786d
+                      - generic [ref=e425]: Basic Arithmetic Question
+          - status [ref=e93]
+          - listitem [ref=e94]:
+            - button "Add section" [ref=e95] [cursor=pointer]:
+              - img [ref=e97]
+              - generic [ref=e98]: Add section
+      - generic [ref=e100]:
+        - button "Settings" [ref=e101] [cursor=pointer]:
+          - img [ref=e102]
+          - generic [ref=e105]: Settings
+        - button "0.5.49-rc.2" [ref=e106] [cursor=pointer]:
+          - generic [ref=e107]: 0.5.49-rc.2
+      - button "Toggle Sidebar" [ref=e108]
+    - main [ref=e109]:
+      - generic [ref=e186]:
+        - generic [ref=e187]:
+          - button "Toggle Sidebar" [ref=e188] [cursor=pointer]:
+            - img
+            - generic [ref=e189]: Toggle Sidebar
+          - generic [ref=e192]:
+            - link "QA-20261023-234853-9tqc" [ref=e445]:
+              - /url: /agents/qa-20261023-234853-9tqc-tq8je5mpmu
+            - text: /Basic Arithmetic Question
+          - generic [ref=e193]:
+            - generic [ref=e194]:
+              - img [ref=e513]
+              - generic [ref=e204]: idle
+            - button "Stop Agent" [ref=e206] [cursor=pointer]:
+              - img
+        - generic [ref=e452]:
+          - region "Messages" [ref=e454]:
+            - log [ref=e456]:
+              - time [ref=e458]: Today at 11:49 PM
+              - paragraph [ref=e463]: Hello! What is 2+2?
+              - paragraph [ref=e526]: 2 + 2 = 4.
+          - generic [ref=e475]:
+            - generic [ref=e479]:
+              - textbox "Type a message..." [ref=e527]:
+                - text: Type a message...
+                - paragraph [ref=e483]
+              - generic [ref=e484]:
+                - generic [ref=e485]:
+                  - button "Add files" [ref=e486] [cursor=pointer]:
+                    - img
+                  - 'button "Model and effort: Opus 5.5 · Medium. Click to change." [ref=e487] [cursor=pointer]':
+                    - generic [ref=e488]:
+                      - text: Opus 5.5
+                      - generic [ref=e489]: · Medium
+                    - img
+                - generic [ref=e490]:
+                  - button "Set up voice input" [ref=e491] [cursor=pointer]:
+                    - img
+                  - button "Send message" [disabled]:
+                    - img
+            - generic [ref=e494]:
+              - generic [ref=e528]:
+                - generic [ref=e529]: Context Usage
+                - img [ref=e531]
+              - generic [ref=e495]:
+                - generic [ref=e496]: ↵
+                - generic [ref=e497]: Send
+                - generic [ref=e498]: ·
+                - generic [ref=e499]: ⇧↵
+                - generic [ref=e500]: New line
+  - region "Notifications alt+T"

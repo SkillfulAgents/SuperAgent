@@ -1,27 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back in the response.",
+  "reason": "Browser use feature test - Agent successfully opened browser, navigated to example.com, retrieved page title, and reported \"Example Domain\" back to user.",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Gamut interface with the home page displaying \"Your Agents\" section.",
-    "Found and clicked on \"QA-20261023-205216-qa9m\" agent in the sidebar — Successfully navigated to the agent configuration page showing the agent's settings and configuration options.",
-    "Clicked \"New session with QA-20261023-205216-qa9m\" link in the sidebar — Successfully opened a new chat session titled \"New Session — QA-20261023-205216-qa9m\" with a message input field ready for input.",
-    "Clicked on the message input textbox — Successfully focused the input field for typing.",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message was successfully entered into the textbox.",
-    "Clicked the \"Send message\" button — Message was successfully sent to the agent, session was renamed to \"Browser Page Title Check\", and the agent status changed to \"working\".",
-    "Waited for agent response — Agent completed the task in 6 seconds, made 3 tool calls, and used 155,538 tokens.",
-    "Verified response mentions \"Example Domain\" — Response successfully displays: \"The page title is \"Example Domain\". The page loaded normally and I've closed the browser.\" confirming the agent retrieved the correct page title from https://example.com.",
-    "Took final screenshot — Screenshot captured showing the complete conversation with the agent's response clearly visible on the screen displaying \"Example Domain\"."
+    "Step 1: Navigated to http://localhost:47891 - Page loaded successfully showing Gamut interface with agent list in sidebar, including the target agent \"QA-20261023-234854-r3pv\"",
+    "Step 2: Found and clicked the \"QA-20261023-234854-r3pv\" agent in the sidebar - Agent page opened showing the agent configuration interface with message input field ready for use",
+    "Step 3: Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" - Message sent successfully, session created with title \"Check Example.com Page Title\", agent status changed to \"working\"",
+    "Step 4: Waited up to 3 minutes for agent response - Agent completed execution in 7 seconds, showing status transitioned from \"working\" to \"idle\"",
+    "Step 5: Verified response mentions \"Example Domain\" - Response correctly stated: \"The page title is 'Example Domain'. The page loaded normally at https://example.com/, and I've closed the browser.\" The response explicitly mentions \"Example Domain\" as required"
   ],
   "bugs": [],
-  "durationMs": 138035,
-  "sessionId": "d0e0829f-875c-4a32-986f-f508e271908e",
+  "durationMs": 72564,
+  "sessionId": "c2c6c8dc-8906-432e-a22d-243b10a9b301",
   "cost": {
-    "inputTokens": 502,
-    "outputTokens": 12725,
-    "cacheCreationTokens": 75492,
-    "cacheReadTokens": 1536554,
+    "inputTokens": 410,
+    "outputTokens": 13412,
+    "cacheCreationTokens": 88980,
+    "cacheReadTokens": 1253184,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.312147
+    "totalCostUsd": 0.304013
   }
 }
