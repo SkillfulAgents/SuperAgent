@@ -130,13 +130,18 @@ export function getRunnerDisplayName(runner: ContainerRunner): string {
  * E.g., 'apple-container' -> 'container', 'docker' -> 'docker'
  */
 export function getCliCommand(runner: ContainerRunner): string {
-  const entry = ALL_RUNNERS.find((r) => r.name === runner)
-  if (!entry) return runner
-  const cmd = typeof entry.cliCommand === 'function' ? entry.cliCommand() : entry.cliCommand
-  // Quote paths that contain spaces (e.g. Windows users with spaces in their username).
-  // Both execWithPath (shell string) and spawnWithPath (shell: true) need quoting.
+  const cmd = getCliPath(runner)
+  // Quote paths that contain spaces (e.g. Windows users with spaces in their
+  // username, or an app bundle in a folder with a space) for shell strings.
   if (cmd.includes(' ') && !cmd.startsWith('"')) return `"${cmd}"`
   return cmd
+}
+
+/** The runner's CLI unquoted, for spawnWithPath (which quotes it where a shell is involved). */
+function getCliPath(runner: ContainerRunner): string {
+  const entry = ALL_RUNNERS.find((r) => r.name === runner)
+  if (!entry) return runner
+  return typeof entry.cliCommand === 'function' ? entry.cliCommand() : entry.cliCommand
 }
 
 /** Cache for runner availability to avoid spawning docker commands repeatedly */
@@ -557,7 +562,7 @@ export function classifyImageCheckOutput(output: string): ImageCheckVerdict {
  */
 export function checkImageIntegrity(runner: ContainerRunner, image: string): Promise<{ verdict: ImageCheckVerdict; output: string }> {
   return new Promise((resolve) => {
-    const cli = getCliCommand(runner)
+    const cli = getCliPath(runner)
     const encoded = Buffer.from(IMAGE_CHECK_SCRIPT, 'utf8').toString('base64')
     const decodeAndRun = "eval(Buffer.from(process.env.IMAGE_CHECK,'base64').toString())"
     // spawnWithPath hands args to a shell only on Windows (to reach .cmd
@@ -590,7 +595,7 @@ export function checkImageIntegrity(runner: ContainerRunner, image: string): Pro
 /** Best-effort image removal; a failure here just leaves the next pull to overwrite. */
 function removeImage(runner: ContainerRunner, image: string): Promise<void> {
   return new Promise((resolve) => {
-    const cli = getCliCommand(runner)
+    const cli = getCliPath(runner)
     // Apple's CLI has no rmi; see AppleContainerClient.removeCorruptImage.
     const args = runner === 'apple-container' ? ['image', 'delete', '--force', image] : ['rmi', '-f', image]
     const proc = spawnWithPath(cli, args)
@@ -661,7 +666,7 @@ function doPullImage(
   onProgress?: (progress: ImagePullProgress) => void
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    const cli = getCliCommand(runner)
+    const cli = getCliPath(runner)
     // Apple's container CLI uses `container image pull`, not `container pull`
     const args = runner === 'apple-container'
       ? ['image', 'pull', image]
@@ -851,7 +856,7 @@ export function buildImage(
   onProgress?: (progress: ImagePullProgress) => void
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    const cli = getCliCommand(runner)
+    const cli = getCliPath(runner)
     const proc = spawnWithPath(cli, ['build', '-t', image, AGENT_CONTAINER_PATH])
 
     let stepCount = 0

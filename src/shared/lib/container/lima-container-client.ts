@@ -31,12 +31,12 @@ function collectLimaDiagnostics(): Record<string, unknown> {
 
     // limactl version
     try {
-      diag.limactl_version = execSync(`LIMA_HOME="${limaHome}" "${limactlPath}" --version 2>&1`, { encoding: 'utf-8', timeout: 5000 }).toString().trim()
+      diag.limactl_version = execSync(`${limactlCommand('--version')} 2>&1`, { encoding: 'utf-8', timeout: 5000 }).toString().trim()
     } catch { diag.limactl_version = 'check_failed' }
 
     // VM state from limactl list
     try {
-      const raw = execSync(`LIMA_HOME="${limaHome}" "${limactlPath}" list --json 2>&1`, { encoding: 'utf-8', timeout: 10000 }).trim()
+      const raw = execSync(`${limactlCommand('list --json')} 2>&1`, { encoding: 'utf-8', timeout: 10000 }).trim()
       const vms = raw.split('\n').filter(Boolean).map((l: string) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
       const vm = vms.find((v: any) => v.name === LIMA_VM_NAME)
       if (vm) {
@@ -70,6 +70,7 @@ function collectLimaDiagnostics(): Record<string, unknown> {
     // Nerdctl wrapper script state
     try {
       const wrapperPath = getNerdctlWrapperPath()
+      diag.nerdctl_wrapper_is_bundled = wrapperPath === getBundledNerdctlWrapperPath()
       diag.nerdctl_wrapper_exists = fs.existsSync(wrapperPath)
       if (diag.nerdctl_wrapper_exists) {
         diag.nerdctl_wrapper_content = fs.readFileSync(wrapperPath, 'utf-8')
@@ -147,15 +148,32 @@ export function getLimaHome(): string {
   return path.join(os.homedir(), '.superagent', 'lima')
 }
 
+// The bundled nerdctl wrapper (scripts/lima-nerdctl) reads these. Every spawn
+// of it inherits process.env, so it always targets this app's VM. Namespaced
+// so they never redirect a limactl the user runs themselves.
+process.env.SUPERAGENT_LIMA_HOME = getLimaHome()
+process.env.SUPERAGENT_LIMA_VM = LIMA_VM_NAME
+
+/** The nerdctl wrapper shipped next to the bundled limactl, if present. */
+function getBundledNerdctlWrapperPath(): string | null {
+  if (typeof process !== 'undefined' && process.resourcesPath) {
+    const bundled = path.join(process.resourcesPath, 'lima', 'bin', 'lima-nerdctl')
+    if (fs.existsSync(bundled)) return bundled
+  }
+  return null
+}
+
 /**
  * Get the path to the nerdctl wrapper script.
  * This shell script delegates to `limactl shell <vm> -- nerdctl`
  * and works as both an exec command string and a spawn binary.
+ *
+ * Packaged builds use the copy in the app bundle. Without one (dev), the
+ * wrapper is generated under ~/.superagent/bin by createNerdctlWrapper().
  */
 export function getNerdctlWrapperPath(): string {
-  // Use a path without spaces — the wrapper path is interpolated into shell
-  // command strings by BaseContainerClient, so spaces would break parsing.
-  // Also used as a spawn() binary, so must be a valid unquoted path.
+  const bundled = getBundledNerdctlWrapperPath()
+  if (bundled) return bundled
   const home = process.env.HOME
   if (!home) {
     throw new Error('HOME environment variable is not set — cannot determine Lima nerdctl wrapper path')
@@ -178,13 +196,28 @@ export function getLimactlPath(): string {
 }
 
 /**
- * Run a limactl command with LIMA_HOME set.
- * Uses shell env var prefix so it works with execWithPath.
+ * PATH for the bundled limactl and the tools it launches (ssh, ssh-keygen,
+ * qemu-img). The app's enhanced PATH puts Homebrew first, so Lima would run
+ * whatever Homebrew qemu-img or ssh a user happens to have instead of the
+ * system tools and its own disk-image converter.
  */
-function execLimactl(args: string, opts?: { timeoutMs?: number }): Promise<{ stdout: string; stderr: string }> {
-  const limaHome = getLimaHome()
+const LIMACTL_SYSTEM_PATH = '/usr/bin:/bin:/usr/sbin:/sbin'
+
+/**
+ * Shell command string that runs limactl against our Lima home. Every limactl
+ * call goes through here. The bundled limactl gets the system-only PATH; a
+ * limactl found on the user's PATH (dev) keeps the caller's PATH, so it finds
+ * the tools it was installed with.
+ */
+export function limactlCommand(args: string): string {
   const limactl = getLimactlPath()
-  return execWithPath(`LIMA_HOME="${limaHome}" "${limactl}" ${args}`, opts)
+  const pathPrefix = path.isAbsolute(limactl) ? `PATH=${LIMACTL_SYSTEM_PATH} ` : ''
+  return `${pathPrefix}LIMA_HOME="${getLimaHome()}" "${limactl}" ${args}`
+}
+
+/** Run a limactl command (see limactlCommand) through execWithPath. */
+function execLimactl(args: string, opts?: { timeoutMs?: number }): Promise<{ stdout: string; stderr: string }> {
+  return execWithPath(limactlCommand(args), opts)
 }
 
 /**
@@ -379,10 +412,8 @@ export class LimaContainerClient extends BaseContainerClient {
    */
   getHostBridgeIp(): string | null {
     try {
-      const limaHome = getLimaHome()
-      const limactl = getLimactlPath()
       const output = execSync(
-        `LIMA_HOME="${limaHome}" "${limactl}" shell ${LIMA_VM_NAME} -- ip route show default`,
+        limactlCommand(`shell ${LIMA_VM_NAME} -- ip route show default`),
         { timeout: 10000 }
       ).toString().trim()
       // Output: "default via 192.168.64.1 dev enp0s1 ..."
@@ -587,8 +618,8 @@ export class LimaContainerClient extends BaseContainerClient {
     try {
       const { state } = await probeLimaHealth()
       if (state === 'healthy') {
-        // Ensure the nerdctl wrapper points to the current limactl binary.
-        // The wrapper hardcodes the limactl path, which goes stale on app updates.
+        // A generated (dev) wrapper hardcodes the limactl path, which goes
+        // stale when limactl moves, so keep it current.
         createNerdctlWrapper()
         return true
       }
@@ -903,14 +934,16 @@ async function createLimaVm(): Promise<void> {
 }
 
 /**
- * Create/update the nerdctl wrapper shell script.
- * The script sets LIMA_HOME and delegates to limactl shell → nerdctl.
- * This works as both a command string (for exec) and a binary (for spawn).
+ * Create/update the nerdctl wrapper shell script when the app bundle doesn't
+ * ship one (dev). The script sets LIMA_HOME and delegates to limactl shell →
+ * nerdctl. This works as both a command string (for exec) and a binary (for
+ * spawn).
  *
- * Called from isRunning() (to keep the wrapper current across app updates)
+ * Called from isRunning() (to keep the wrapper current when limactl moves)
  * and from ensureLimaReady() (after VM provisioning).
  */
 function createNerdctlWrapper(): void {
+  if (getBundledNerdctlWrapperPath()) return
   const wrapperPath = getNerdctlWrapperPath()
   fs.mkdirSync(path.dirname(wrapperPath), { recursive: true })
 

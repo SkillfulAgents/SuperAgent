@@ -9,6 +9,7 @@
 #
 # Output:
 #   build/lima/bin/limactl                              - Lima CLI binary
+#   build/lima/bin/lima-nerdctl                         - nerdctl wrapper (scripts/lima-nerdctl)
 #   build/lima/share/lima/lima-guestagent.Linux-*.gz     - Guest agent for the VM
 #   build/lima/alpine.qcow2                             - Fresh Alpine cloud image
 #
@@ -86,6 +87,10 @@ else
   echo "ERROR: guest agent not found at $GUEST_AGENT"
   exit 1
 fi
+
+# The nerdctl wrapper ships next to limactl, which it finds through its own path.
+install -m 755 "$(dirname "$0")/lima-nerdctl" "${BIN_DIR}/lima-nerdctl"
+echo "  lima-nerdctl: installed"
 
 # ── 2. Download fresh Alpine cloud image ──────────────────────────────────────
 

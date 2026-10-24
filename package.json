@@ -275,6 +275,7 @@
         "to": "lima",
         "filter": [
           "bin/limactl",
+          "bin/lima-nerdctl",
           "share/lima/lima-guestagent*",
           "alpine.qcow2"
         ]
