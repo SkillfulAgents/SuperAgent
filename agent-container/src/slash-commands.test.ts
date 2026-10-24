@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  makeUnsupportedCommandInert,
+  isUnsupportedCommand,
   mergeCanonicalSlashCommands,
   unsupportedBuiltinCommands,
 } from './slash-commands';
@@ -24,21 +24,40 @@ describe('unsupportedBuiltinCommands', () => {
     const commands = [...CLI_COMMANDS, { name: 'reset', description: 'Reset the weekly board (project)', argumentHint: '' }];
     const unsupported = unsupportedBuiltinCommands(commands);
     expect([...unsupported].sort()).toEqual(['clear', 'context', 'model', 'new']);
-    expect(makeUnsupportedCommandInert('/reset weekly', unsupported)).toBe('/reset weekly');
+    expect(isUnsupportedCommand('/reset weekly', unsupported)).toBe(false);
+  });
+
+  it('reads a skill listed under its display title from the names system/init runs', () => {
+    // CLI 2.1.303 lists .claude/skills/reset (name: Reset Board) as "Reset Board"
+    // with no aliases; only system/init shows the "reset" that /reset runs.
+    const commands = [...CLI_COMMANDS, { name: 'Reset Board', description: 'Reset the weekly board (project)', argumentHint: '' }];
+    const runnable = ['order-canvas-print', 'weekly-report', 'reset', 'clear', 'compact', 'model', 'context'];
+    expect([...unsupportedBuiltinCommands(commands, runnable)].sort()).toEqual(['clear', 'context', 'model', 'new']);
+  });
+
+  it('blocks an alias again once system/init stops listing the skill that took it', () => {
+    const commands = [...CLI_COMMANDS, { name: 'reset', description: 'Reset the weekly board (project)', argumentHint: '' }];
+    const runnable = ['order-canvas-print', 'weekly-report', 'clear', 'compact', 'model', 'context'];
+    expect(unsupportedBuiltinCommands(commands, runnable).has('reset')).toBe(true);
+  });
+
+  it('still blocks /clear and its aliases when the command list could not be read', () => {
+    expect([...unsupportedBuiltinCommands(undefined)].sort()).toEqual(['clear', 'new', 'reset']);
+    expect([...unsupportedBuiltinCommands(undefined, ['reset'])].sort()).toEqual(['clear', 'new']);
   });
 });
 
-describe('makeUnsupportedCommandInert', () => {
+describe('isUnsupportedCommand', () => {
   const unsupported = unsupportedBuiltinCommands(CLI_COMMANDS);
 
-  it.each(['/clear', '/clear my notes', '/new', '/reset', '/model opus', '/context'])('turns %j into plain text', (text) => {
-    expect(makeUnsupportedCommandInert(text, unsupported)).toBe(` ${text}`);
+  it.each(['/clear', '/clear my notes', '/new', '/reset', '/model opus', '/context'])('matches %j', (text) => {
+    expect(isUnsupportedCommand(text, unsupported)).toBe(true);
   });
 
-  it.each(['/compact', '/order-canvas-print', '/weekly-report', '/Clear', 'please /clear', 'hello'])(
-    'leaves %j unchanged',
+  it.each(['/compact', '/order-canvas-print', '/weekly-report', '/Clear', ' /clear', 'please /clear', 'hello'])(
+    'does not match %j',
     (text) => {
-      expect(makeUnsupportedCommandInert(text, unsupported)).toBe(text);
+      expect(isUnsupportedCommand(text, unsupported)).toBe(false);
     },
   );
 });

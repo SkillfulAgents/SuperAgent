@@ -11,6 +11,7 @@ import {
   SDKUserMessage,
   McpServerConfig,
   McpSetServersResult,
+  SlashCommand,
 } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { UUID } from 'crypto';
@@ -80,7 +81,7 @@ import {
   type SubagentModelDefinition,
 } from './subagent-model-catalog';
 import {
-  makeUnsupportedCommandInert,
+  isUnsupportedCommand,
   mergeCanonicalSlashCommands,
   unsupportedBuiltinCommands,
 } from './slash-commands';
@@ -696,8 +697,10 @@ export class ClaudeCodeProcess extends EventEmitter {
   // the process rather than in a detached pool.
   private warmHandle: WarmQuery | null = null;
   public slashCommands: { name: string; description: string; argumentHint: string }[] = [];
-  // The CLI binary, and so its built-in list, is fixed for this process.
-  private unsupportedCommands?: ReadonlySet<string>;
+  // The CLI's command list and the names system/init last listed, kept so a
+  // send can spot an unsupported built-in without waiting on the CLI.
+  private cliCommands?: readonly SlashCommand[];
+  private runnableCommandNames?: readonly string[];
 
   constructor(options: ClaudeCodeProcessOptions) {
     super();
@@ -1706,18 +1709,15 @@ export class ClaudeCodeProcess extends EventEmitter {
           );
           // The init list owns the executable names. supportedCommands adds
           // descriptions/hints, but skill entries may use display titles there.
-          const unsupported = await this.unsupportedBuiltinCommands();
-          const canonicalCommandNames = (Array.isArray(message.slash_commands)
+          this.runnableCommandNames = Array.isArray(message.slash_commands)
             ? message.slash_commands.filter((name): name is string => typeof name === 'string')
-            : []).filter((name) => !unsupported.has(name));
-          this.slashCommands = mergeCanonicalSlashCommands(canonicalCommandNames, []);
-          try {
-            const cmds = (await this.queryInstance!.supportedCommands())
-              .filter((command) => !unsupported.has(command.name));
-            this.slashCommands = mergeCanonicalSlashCommands(canonicalCommandNames, cmds);
-          } catch (err) {
-            console.error(`[Session ${this.sessionId}] Failed to fetch slash commands:`, err);
-          }
+            : [];
+          await this.loadCliCommands();
+          const unsupported = unsupportedBuiltinCommands(this.cliCommands, this.runnableCommandNames);
+          this.slashCommands = mergeCanonicalSlashCommands(
+            this.runnableCommandNames.filter((name) => !unsupported.has(name)),
+            (this.cliCommands ?? []).filter((command) => !unsupported.has(command.name)),
+          );
           this.emit('init-complete');
         }
 
@@ -1801,18 +1801,14 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
   }
 
-  // Read from the initialize response, which the CLI answers before its first
-  // prompt: system/init comes too late to guard a cold session's first send.
-  private async unsupportedBuiltinCommands(): Promise<ReadonlySet<string>> {
-    if (!this.unsupportedCommands && this.queryInstance) {
-      try {
-        const { commands } = await this.queryInstance.initializationResult();
-        this.unsupportedCommands = unsupportedBuiltinCommands(commands);
-      } catch (err) {
-        console.error(`[Session ${this.sessionId}] Failed to read built-in commands:`, err);
-      }
+  // supportedCommands() answers from the initialize response, which the CLI
+  // sends before its first prompt, and follows later commands_changed pushes.
+  private async loadCliCommands(): Promise<void> {
+    try {
+      this.cliCommands = await this.queryInstance?.supportedCommands() ?? this.cliCommands;
+    } catch (err) {
+      console.error(`[Session ${this.sessionId}] Failed to fetch slash commands:`, err);
     }
-    return this.unsupportedCommands ?? new Set();
   }
 
   async sendMessage(content: string, uuid?: UUID, options?: SendOptions): Promise<void> {
@@ -1980,6 +1976,21 @@ export class ClaudeCodeProcess extends EventEmitter {
       }
     }
 
+    // The command list comes with system/init, which the CLI sends only after
+    // the first message, so the first slash command of a process waits for it.
+    if (content.startsWith('/') && !this.cliCommands) {
+      await this.loadCliCommands();
+      // A stop that landed while the CLI started: wait it out and restart, as
+      // for a cold session above.
+      if (this.isCold()) {
+        if (this.currentStop) {
+          await this.currentStop.catch(() => undefined);
+        }
+        await this.restart();
+        queryRebuilt = true;
+      }
+    }
+
     if (remoteMcpsChanged && !queryRebuilt) {
       // Agent Settings assigned or removed a remote MCP while the query is
       // live: swap the server set in place. setMcpServers() returns once the
@@ -2004,9 +2015,12 @@ export class ClaudeCodeProcess extends EventEmitter {
       await this.waitForRemoteMcpsReady();
     }
 
-    const text = content.startsWith('/')
-      ? makeUnsupportedCommandInert(content, await this.unsupportedBuiltinCommands())
-      : content;
+    // An unsupported built-in reaches the model as the user typed it: the CLI
+    // runs no slash command in a client-composed turn. Such a turn also skips
+    // the CLI's turn-start context (nested CLAUDE.md, skill listing), which
+    // arrives after the turn's first tool call instead.
+    const clientComposed = content.startsWith('/') &&
+      isUnsupportedCommand(content, unsupportedBuiltinCommands(this.cliCommands, this.runnableCommandNames));
 
     // Create SDK user message format
     const shouldQuery = options?.shouldQuery;
@@ -2018,13 +2032,14 @@ export class ClaudeCodeProcess extends EventEmitter {
         content: [
           {
             type: 'text',
-            text,
+            text: content,
           },
         ],
       },
       parent_tool_use_id: null,
       ...(uuid ? { uuid } : {}),
       ...(shouldQuery !== undefined ? { shouldQuery } : {}),
+      ...(clientComposed ? { client_composed: true as const } : {}),
     };
 
     if (!content.startsWith(SYSTEM_MESSAGE_PREFIX)) {

@@ -13,31 +13,49 @@ export interface SlashCommandDetails {
  * Skills and custom commands are not built-ins and are never affected.
  */
 // Only built-ins whose result the app renders belong here. /context, /recap and
-// /reload-skills run, but their output never reaches the chat.
+// /reload-skills run, but their output never reaches the chat. /goal keeps the
+// agent working past the turn end the host waits for. /security-review,
+// /insights and /team-onboarding are Claude Code developer workflows, which is
+// also why createQuery turns off the CLI's bundled skills.
 const SUPPORTED_BUILTIN_COMMANDS: ReadonlySet<string> = new Set(['compact']);
 
-/** Names and aliases of the CLI built-ins that Gamut does not support. */
-export function unsupportedBuiltinCommands(commands: readonly SlashCommand[]): Set<string> {
-  // The CLI runs a command named like an alias instead of the alias's built-in.
-  const commandNames = new Set(commands.map((command) => command.name));
+// Stands in for the CLI's list when it cannot be read, so the built-in that
+// breaks the host's session stays blocked.
+const SESSION_BREAKING_BUILTINS: readonly SlashCommand[] = [
+  { name: 'clear', description: '', argumentHint: '', aliases: ['reset', 'new'], builtin: true },
+];
+
+/**
+ * Names and aliases of the CLI built-ins that Gamut does not support.
+ *
+ * `runnableNames` are system/init's `slash_commands`, the names the CLI runs as
+ * typed. A skill named like a built-in's alias is listed there, and the CLI
+ * runs it instead of the built-in. The command list cannot show that: it lists
+ * a skill under its display title ("Reset Board" for /reset). Before the first
+ * system/init, the list's own non-built-in names stand in.
+ */
+export function unsupportedBuiltinCommands(
+  commands: readonly SlashCommand[] | undefined,
+  runnableNames?: readonly string[],
+): Set<string> {
+  const builtins = commands ?? SESSION_BREAKING_BUILTINS;
+  const taken = new Set(runnableNames ?? builtins.filter((command) => !command.builtin).map((command) => command.name));
   const names = new Set<string>();
-  for (const command of commands) {
+  for (const command of builtins) {
     if (!command.builtin || SUPPORTED_BUILTIN_COMMANDS.has(command.name)) continue;
     names.add(command.name);
     for (const alias of command.aliases ?? []) {
-      if (!commandNames.has(alias)) names.add(alias);
+      if (!taken.has(alias)) names.add(alias);
     }
   }
   return names;
 }
 
-/**
- * The CLI runs a slash command only when the text starts with it, so a leading
- * space makes an unsupported built-in reach the model as a plain message.
- */
-export function makeUnsupportedCommandInert(text: string, unsupported: ReadonlySet<string>): string {
+/** Whether the CLI would run `text` as one of the `unsupported` built-ins. */
+export function isUnsupportedCommand(text: string, unsupported: ReadonlySet<string>): boolean {
+  // The CLI runs a slash command only when the text starts with it.
   const name = /^\/(\S+)/.exec(text)?.[1];
-  return name !== undefined && unsupported.has(name) ? ` ${text}` : text;
+  return name !== undefined && unsupported.has(name);
 }
 
 function commandIdentity(name: string): string {
