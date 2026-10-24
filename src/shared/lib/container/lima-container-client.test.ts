@@ -1351,10 +1351,13 @@ describe('first-boot packages', () => {
       '    script: |',
       '      #!/bin/sh',
       '      set -e',
-      '      command -v nerdctl >/dev/null 2>&1 && command -v rsync >/dev/null 2>&1 && exit 0',
+      '      installed() { command -v containerd && command -v nerdctl && command -v rsync; } >/dev/null 2>&1',
+      '      installed && exit 0',
       '      echo "Installing containerd + nerdctl from the packages bundled with the app..."',
       `      ln -sfn '${STAGED}' /run/superagent-lima-packages`,
       '      apk add --no-network --no-cache --repositories-file /dev/null --repository /run/superagent-lima-packages/main --repository /run/superagent-lima-packages/community containerd~=2.2 containerd-openrc nerdctl~=2.1 buildkit~=0.25 cni-plugins rsync',
+      // apk add skips a package it lists as installed even with its files gone: reinstall.
+      '      installed || apk fix --no-network --no-cache --repositories-file /dev/null --repository /run/superagent-lima-packages/main --repository /run/superagent-lima-packages/community containerd containerd-openrc nerdctl buildkit cni-plugins rsync',
       '  - mode: system',
       '    script: |',
       '      #!/bin/sh',
@@ -1432,7 +1435,7 @@ describe('first-boot packages', () => {
 // ============================================================================
 
 describe('containerd after a start', () => {
-  type State = 'running' | 'not running' | 'not installed'
+  type State = 'running' | 'not running' | 'never ran'
   /** containerd's state in the guest before, after the provisioning re-run, and after a rebuild. */
   function guest(opts: { before: State | 'no answer'; afterRerun?: State | 'no answer'; afterRebuild?: State }) {
     let state: State | 'no answer' = opts.before
@@ -1483,8 +1486,8 @@ describe('containerd after a start', () => {
     expect(reruns()).toHaveLength(0)
   })
 
-  it.each(['not installed', 'not running'] as const)(
-    "re-runs the VM's own dependency and system provision scripts when containerd is %s, and reports the fix",
+  it.each(['never ran', 'not running'] as const)(
+    "re-runs the VM's own dependency and system provision scripts when the check says %s, and reports the fix",
     async (before) => {
       guest({ before, afterRerun: 'running' })
 
@@ -1501,8 +1504,8 @@ describe('containerd after a start', () => {
     }
   )
 
-  it('rebuilds a VM the re-run cannot fix when containerd was never installed: it holds nothing to lose', async () => {
-    guest({ before: 'not installed', afterRerun: 'not installed', afterRebuild: 'running' })
+  it('rebuilds a VM the re-run cannot fix when containerd never ran in it: it holds nothing to lose', async () => {
+    guest({ before: 'never ran', afterRerun: 'never ran', afterRebuild: 'running' })
 
     await ensureLimaReady()
 
@@ -1520,7 +1523,7 @@ describe('containerd after a start', () => {
   })
 
   it('refuses with a clear error when the rebuilt VM has no containerd either', async () => {
-    guest({ before: 'not installed', afterRerun: 'not installed', afterRebuild: 'not installed' })
+    guest({ before: 'never ran', afterRerun: 'never ran', afterRebuild: 'never ran' })
 
     const error = await ensureLimaReady().then(() => null, (e) => e)
 
@@ -1528,17 +1531,17 @@ describe('containerd after a start', () => {
     expect(error?.sentryCaptured).toBe(true)
     expect(execCmds().filter((c) => c.includes(`create --name ${LIMA_VM_NAME}`))).toHaveLength(1)
     expect(vi.mocked(captureMessage)).toHaveBeenCalledWith(
-      expect.stringContaining('still has no containerd after a rebuild'),
+      expect.stringContaining('still never ran after a rebuild'),
       expect.objectContaining({ level: 'error', tags: { component: 'lima', operation: 'provision-check' } })
     )
   })
 
-  it('never rebuilds a VM whose containerd is installed but not answering (it may hold images and containers)', async () => {
+  it('never rebuilds a VM whose containerd has run there but does not answer, whatever is missing (it may hold images and containers)', async () => {
     guest({ before: 'not running', afterRerun: 'not running' })
 
     const error = await ensureLimaReady().then(() => null, (e) => e)
 
-    expect(error?.message).toMatch(/container engine isn't running/)
+    expect(error?.message).toMatch(/container engine isn't working/)
     expect(error?.sentryCaptured).toBe(true)
     expect(execCmds().some((c) => c.includes('delete'))).toBe(false)
     expect(execCmds().some((c) => c.includes(`create --name ${LIMA_VM_NAME}`))).toBe(false)
@@ -1558,5 +1561,76 @@ describe('containerd after a start', () => {
     await ensureLimaReady()
 
     expect(vi.mocked(captureMessage)).not.toHaveBeenCalledWith(expect.stringContaining('fixed it'), expect.anything())
+  })
+
+  // The guest check itself, run by a real sh with stand-ins for sudo, nerdctl and find.
+  describe('the guest check', () => {
+    let bin: string
+    let realFs: typeof import('fs')
+    let realExecFileSync: typeof import('child_process').execFileSync
+
+    /** The `sh -c '…'` ensureLimaReady() hands the guest to ask about containerd. */
+    async function probeCommand(): Promise<string> {
+      guest({ before: 'running' })
+      await ensureLimaReady()
+      const cmd = execCmds().find((c) => c.includes('nerdctl info'))!
+      return cmd.slice(cmd.indexOf(' -- ') + 4)
+    }
+
+    /** What the check prints in a guest like this, or 'failed' when it exits non-zero. */
+    async function check(guestState: { nerdctlInfoWorks?: boolean; nerdctlGone?: boolean; stateFile?: string; sudoFails?: boolean }): Promise<string> {
+      const command = await probeCommand()
+      if (guestState.nerdctlGone) realFs.rmSync(`${bin}/nerdctl`)
+      try {
+        return realExecFileSync('/bin/sh', ['-c', command], {
+          encoding: 'utf-8',
+          env: {
+            PATH: `${bin}:/usr/bin:/bin`,
+            NERDCTL_INFO_WORKS: guestState.nerdctlInfoWorks ? '1' : '',
+            STATE_FILE: guestState.stateFile ?? '',
+            SUDO_FAILS: guestState.sudoFails ? '1' : '',
+          },
+        }).trim()
+      } catch {
+        return 'failed'
+      }
+    }
+
+    beforeEach(async () => {
+      realFs = await vi.importActual<typeof import('fs')>('fs')
+      realExecFileSync = (await vi.importActual<typeof import('child_process')>('child_process')).execFileSync
+      const os = await vi.importActual<typeof import('os')>('os')
+      bin = realFs.mkdtempSync(`${os.tmpdir()}/lima-guest-check-`)
+      const stub = (name: string, body: string) => realFs.writeFileSync(`${bin}/${name}`, `#!/bin/sh\n${body}\n`, { mode: 0o755 })
+      stub('sudo', '[ "$1" = -n ] && shift\n[ -n "$SUDO_FAILS" ] && exit 1\nexec "$@"')
+      // containerd doesn't answer, unless told otherwise.
+      stub('nerdctl', '[ -n "$NERDCTL_INFO_WORKS" ]')
+      stub('find', '[ -n "$STATE_FILE" ] && echo "$STATE_FILE"\nexit 0')
+    })
+
+    afterEach(() => {
+      realFs.rmSync(bin, { recursive: true, force: true })
+    })
+
+    it('answers running when nerdctl info works', async () => {
+      expect(await check({ nerdctlInfoWorks: true })).toBe('running')
+    })
+
+    it('answers "not running" when containerd has left files, even with nerdctl gone', async () => {
+      expect(await check({ nerdctlGone: true, stateFile: '/var/lib/containerd/io.containerd.metadata.v1.bolt/meta.db' })).toBe('not running')
+    })
+
+    it('answers "not running" when containerd has left files and nerdctl is there', async () => {
+      expect(await check({ stateFile: '/var/lib/nerdctl/1935db59/volumes/default/data/_data/file' })).toBe('not running')
+    })
+
+    it('answers "never ran" only when it looked and found no files', async () => {
+      expect(await check({})).toBe('never ran')
+      expect(await check({ nerdctlGone: true })).toBe('never ran')
+    })
+
+    it('fails, rather than answer "never ran", when it cannot look', async () => {
+      expect(await check({ sudoFails: true })).toBe('failed')
+    })
   })
 })
