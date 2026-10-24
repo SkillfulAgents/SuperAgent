@@ -1,24 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "The agent successfully executed the browser navigation task, opened https://example.com, and returned the correct page title \"Example Domain\" as expected.",
+  "reason": "Browser use feature test: agent successfully opens browser, navigates to example.com, and returns correct page title \"Example Domain\"",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 — Page loaded successfully showing the Gamut application with the sidebar containing available agents.",
-    "Step 2: Clicked on the \"QA-20261023-235743-1zy2\" agent in the sidebar — Agent page opened successfully, displaying the chat interface and agent configuration options.",
-    "Step 3: Typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" in the chat input field — Message was successfully entered and visible in the input box.",
-    "Step 4: Clicked the \"Send message\" button — Message was sent, a new session was created (ID: 52766b67-e628-49ea-980b-12cc7892025c), and the agent status changed to \"working\".",
-    "Step 5: Waited up to 3 minutes for the agent's response — Agent completed the task within 6 seconds, successfully opening the browser, navigating to https://example.com, and returning the page title.",
-    "Step 6: Verified the response mentions \"Example Domain\" and took a screenshot — The agent's response clearly states: \"The page title is \"Example Domain\". The page at https://example.com loaded normally, and I've closed the browser.\" The screenshot confirms the successful completion of the task."
+    "Step 1 - Navigated to http://localhost:47891 — Successfully loaded the Gamut homepage showing the agent \"QA-20261024-015235-05t5\" in the sidebar",
+    "Step 2 - Clicked on \"QA-20261024-015235-05t5\" agent in sidebar — Successfully opened the agent configuration page at /agents/qa-20261024-015235-05t5-qktpaieq79 with message input field visible",
+    "Step 3 - Typed and sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully submitted, creating a new session at /agents/qa-20261024-015235-05t5-qktpaieq79/sessions/f403e855-33d6-46cc-8c13-ca767a4a7479, and agent status changed to \"working\"",
+    "Step 4 - Waited for agent response — Agent completed work in 5 seconds with 2 tool calls and 116,698 tokens. Response received successfully.",
+    "Step 5 - Verified response mentions \"Example Domain\" — Response text clearly states: \"The page title is \"Example Domain\"\". Live browser preview on the right side displays the Example Domain webpage with URL https://example.com/. Browser agent actions confirm \"Open Browser https://example.com\" action was completed."
   ],
   "bugs": [],
-  "durationMs": 65480,
-  "sessionId": "778aa5b4-43f9-4664-98b7-01647fd98528",
+  "durationMs": 127591,
+  "sessionId": "b26dce6f-5b42-48b5-9724-307d05b3d24f",
   "cost": {
-    "inputTokens": 314,
-    "outputTokens": 11358,
-    "cacheCreationTokens": 67308,
-    "cacheReadTokens": 867922,
+    "inputTokens": 344,
+    "outputTokens": 12503,
+    "cacheCreationTokens": 64312,
+    "cacheReadTokens": 901154,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.228031
+    "totalCostUsd": 0.233364
   }
 }
