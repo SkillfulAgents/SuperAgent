@@ -191,12 +191,25 @@ export function redactInjectedSecretsDeep<T>(value: T): T {
 
 type ToolContent = { type: string; text?: string; [key: string]: unknown }
 
-/** A tool result with every text block redacted; images and other blocks pass unchanged. */
-export function redactToolResult<T extends { content: ToolContent[] }>(result: T): T {
+/**
+ * A tool result with every text block redacted; images and other blocks pass
+ * unchanged. `keep`: strings that go through whole, though a value redacted
+ * elsewhere may be part of them — an account's username the host names, which
+ * the agent passes back exactly (jane@acme.com, after the user typed "acme"
+ * into a workspace field).
+ */
+export function redactToolResult<T extends { content: ToolContent[] }>(result: T, keep: readonly string[] = []): T {
   if (patterns.length === 0 && digitRuns.length === 0) return result
+  // Longest first, so one kept string inside another stays whole.
+  const kept = [...new Set(keep.filter(Boolean))].sort((a, b) => b.length - a.length)
+  const marker = (index: number) => `\u0000${index}\u0000`
+  const redact = (text: string) => {
+    const marked = kept.reduce((out, value, index) => out.split(value).join(marker(index)), text)
+    return kept.reduce((out, value, index) => out.split(marker(index)).join(value), redactInjectedSecrets(marked))
+  }
   return {
     ...result,
     content: result.content.map((block) =>
-      block.type === 'text' && typeof block.text === 'string' ? { ...block, text: redactInjectedSecrets(block.text) } : block),
+      block.type === 'text' && typeof block.text === 'string' ? { ...block, text: redact(block.text) } : block),
   }
 }

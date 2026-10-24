@@ -3,7 +3,7 @@ import { KeyRound } from 'lucide-react'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
 import { RequestItemShell } from '../requests/request-item-shell'
-import type { LoginFieldSummary } from './login-request'
+import type { LoginFieldSummary, LoginVaultPayload } from './login-request'
 import { siteLabel } from './login-request'
 import { LoginForm } from './login-form'
 import { loginRequestKey, useLoginRequestState } from './login-request-store'
@@ -13,6 +13,7 @@ interface LoginRequestItemProps {
   toolUseId: string
   message: string
   fields: LoginFieldSummary[]
+  vault?: LoginVaultPayload
   sessionId: string
   agentSlug: string
   readOnly?: boolean
@@ -21,6 +22,7 @@ interface LoginRequestItemProps {
 
 const STATUS_LABELS = {
   filled: 'Sent to the page',
+  via: 'Signs in with another account',
   manual: 'Signed in on the page',
   declined: 'Declined',
   settled: 'Already answered',
@@ -30,6 +32,7 @@ export function LoginRequestItem({
   toolUseId,
   message,
   fields,
+  vault,
   sessionId,
   agentSlug,
   readOnly,
@@ -39,7 +42,7 @@ export function LoginRequestItem({
   // Viewers who cannot answer do not read the form's context (they may not).
   const context = useLoginContext(agentSlug, sessionId, toolUseId, !readOnly)
   const origin = context.data?.origin ?? null
-  const done = state.status === 'filled' || state.status === 'manual' || state.status === 'declined' || state.status === 'settled'
+  const done = state.status === 'filled' || state.status === 'via' || state.status === 'manual' || state.status === 'declined' || state.status === 'settled'
   // Here, not in the form: the shell swaps the form for its completed row in
   // the same render that settles the request, so the form never sees it.
   const onCompleteRef = useRef(onComplete)
@@ -52,6 +55,7 @@ export function LoginRequestItem({
   const result = state.status === 'filled' ? state.result : null
   useEffect(() => {
     if (!result) return
+    if (result.saveError) toast.error('The account was not saved', { description: result.saveError })
     if (result.filled === 0 || result.problems.length > 0) {
       toast.warning(result.filled === 0 ? 'Nothing was filled on the page' : 'Not everything went into the page', {
         description: result.problems.join(' ') || 'The agent has been told what the page showed.',
@@ -93,6 +97,7 @@ export function LoginRequestItem({
           sessionId={sessionId}
           toolUseId={toolUseId}
           fields={fields}
+          vault={vault}
           autoFocus
         />
       )}

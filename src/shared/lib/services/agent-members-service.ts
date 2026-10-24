@@ -1,4 +1,4 @@
-import { and, asc, count, eq, gt, inArray, ne, or } from 'drizzle-orm'
+import { and, asc, count, eq, gt, inArray, isNull, ne, or } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
 import { agentAcl, user } from '@shared/lib/db/schema'
@@ -36,6 +36,24 @@ export async function countMembersWithMinRole(agentSlug: string, minRole: AgentR
   const roles = agentAcl.role.enumValues.filter(role => hasMinRole(role, minRole))
   const row = await db.select({ n: count() }).from(agentAcl)
     .where(and(eq(agentAcl.agentSlug, agentSlug), inArray(agentAcl.role, roles))).get()
+  return row?.n ?? 0
+}
+
+/**
+ * How many people besides `userId` can have the agent act for them: its
+ * members who may message it (user and owner, not viewers), and every admin,
+ * who may drive any agent. Banned accounts sign in to nothing. All of them
+ * for null (non-auth mode's one person).
+ */
+export async function countOtherMembers(agentSlug: string, userId: string | null): Promise<number> {
+  const roles = agentAcl.role.enumValues.filter(role => hasMinRole(role, 'user'))
+  const members = db.select({ id: agentAcl.userId }).from(agentAcl)
+    .where(and(eq(agentAcl.agentSlug, agentSlug), inArray(agentAcl.role, roles)))
+  const row = await db.select({ n: count() }).from(user).where(and(
+    or(eq(user.role, 'admin'), inArray(user.id, members)),
+    or(eq(user.banned, false), isNull(user.banned)),
+    userId === null ? undefined : ne(user.id, userId),
+  )).get()
   return row?.n ?? 0
 }
 

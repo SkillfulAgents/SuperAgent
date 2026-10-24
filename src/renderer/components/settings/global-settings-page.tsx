@@ -1,5 +1,5 @@
 import { Suspense, type ReactNode } from 'react'
-import { Bolt, Cuboid, Bell, FlaskConical, Layers, BarChart3, Blocks, Users, Shield, Route, Mic, Activity, Mouse, BadgeCheck, Logs, MousePointer2, ScrollText, Search, Smartphone, Sparkle, Workflow, FolderOpen } from 'lucide-react'
+import { Bolt, Cuboid, Bell, FlaskConical, Layers, BarChart3, Blocks, Users, Shield, Route, Mic, Activity, Mouse, BadgeCheck, Logs, MousePointer2, ScrollText, Search, Smartphone, Sparkle, Workflow, FolderOpen, KeyRound } from 'lucide-react'
 import { SettingsPage, type SettingsPageSection, type SettingsPageSectionGroup } from '@renderer/components/settings/settings-page'
 import { lazyRouteComponent, type LinkProps } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
@@ -37,6 +37,7 @@ const GlobalInstructionsTab = lazyRouteComponent(() => import('./global-instruct
 const AuditLogTab = lazyRouteComponent(() => import('./audit-log-tab'), 'AuditLogTab')
 const ExperimentsTab = lazyRouteComponent(() => import('./experiments-tab'), 'ExperimentsTab')
 const VolumesTab = lazyRouteComponent(() => import('./volumes-tab'), 'VolumesTab')
+const LoginsTab = lazyRouteComponent(() => import('./logins-tab'), 'LoginsTab')
 
 function deferredTab(content: ReactNode): ReactNode {
   return (
@@ -132,6 +133,8 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
       headerActions: <Suspense fallback={null}><NewIntegrationButton /></Suspense>,
     },
     { id: 'volumes', label: 'Drives', icon: <FolderOpen className="h-4 w-4" />, render: () => deferredTab(<VolumesTab />) },
+    // Everyone: each user's vault is their own.
+    { id: 'logins', label: 'Logins', icon: <KeyRound className="h-4 w-4" />, render: () => deferredTab(<LoginsTab />) },
     ...(showAdminSettings
       ? [
           { id: 'skillsets', label: 'Skillsets', icon: <Layers className="h-4 w-4" />, render: () => deferredTab(<SkillsetsTab />) },

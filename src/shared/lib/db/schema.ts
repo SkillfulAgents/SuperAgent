@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { sqliteTable, text, integer, real, uniqueIndex, index, check, primaryKey } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, real, uniqueIndex, index, check, primaryKey, type AnySQLiteColumn } from 'drizzle-orm/sqlite-core'
 import { AGENT_INTEGRATION_PROVIDERS } from '@shared/lib/agent-integrations/provider-types'
 
 // =============================================================================
@@ -216,6 +216,67 @@ export const agentConnectedAccounts = sqliteTable(
     ),
   })
 )
+
+// Browser Vault - accounts the owner signs in to websites with, saved from the
+// sign-in form (request_login). An account is a site and a username; each
+// sign-in step can add parts. See src/shared/lib/browser-vault/.
+export const browserAccounts = sqliteTable('browser_accounts', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }), // Owner in auth mode, null in non-auth mode
+  site: text('site').notNull(), // Host of the frame holding the fields, without a leading www, e.g. 'github.com', 'acme.okta.com'
+  username: text('username').notNull(), // The identifier the site knows the account by, as entered
+  usernameKey: text('username_key').notNull(), // `username` trimmed and lowercased: what makes two saves one account
+  label: text('label'), // The owner's name for it; null shows the username
+  origin: text('origin').notNull(), // Where its password was last typed (else where it was first saved), e.g. 'https://acme.okta.com'
+  // The account it signs in with on another site ("Continue with Google"):
+  // this site's row points at the provider's.
+  viaAccountId: text('via_account_id').references((): AnySQLiteColumn => browserAccounts.id, { onDelete: 'set null' }),
+  secrets: text('secrets'), // Sealed JSON (vault-crypto, accountSecretsSchema); null until a secret part is saved
+  parts: text('parts').notNull().default('[]'), // JSON list of the part keys `secrets` holds ('password', 'text:…'), never values
+  revision: integer('revision').notNull().default(1), // Bumped on every write: the compare-and-set guard for `secrets`
+  // An agent said the site rejected what the vault filled: the user is asked
+  // until they enter its password again. Null while it signs in fine.
+  rejectedAt: integer('rejected_at', { mode: 'timestamp_ms' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  lastUsedAt: integer('last_used_at', { mode: 'timestamp_ms' }),
+}, (table) => ({
+  // coalesce: non-auth mode's NULL owner counts as one owner.
+  ownerSiteUsernameUnique: uniqueIndex('browser_accounts_owner_site_username_unique')
+    .on(sql`coalesce(user_id, '')`, table.site, table.usernameKey),
+  userSiteIdx: index('browser_accounts_user_site_idx').on(table.userId, table.site),
+  viaIdx: index('browser_accounts_via_idx').on(table.viaAccountId),
+}))
+
+// Browser Vault grants - which agents may sign in with an account.
+export const agentBrowserAccounts = sqliteTable('agent_browser_accounts', {
+  agentSlug: text('agent_slug').notNull().references(() => agents.slug, { onDelete: 'cascade' }),
+  accountId: text('account_id').notNull().references(() => browserAccounts.id, { onDelete: 'cascade' }),
+  grantedBy: text('granted_by').references(() => user.id, { onDelete: 'set null' }), // Who granted it (auth mode)
+  // Part 3: the version of the account's saved session this agent's browser holds.
+  appliedSessionVersion: integer('applied_session_version'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  lastUsedAt: integer('last_used_at', { mode: 'timestamp_ms' }),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.agentSlug, table.accountId] }),
+  accountIdx: index('agent_browser_accounts_account_idx').on(table.accountId),
+}))
+
+// Browser Vault saved sessions (part 3) - an account's cookies and web
+// storage, captured after a sign-in. They restore only into the browser type
+// they came from.
+export const browserAccountSessions = sqliteTable('browser_account_sessions', {
+  id: text('id').primaryKey(),
+  accountId: text('account_id').notNull().references(() => browserAccounts.id, { onDelete: 'cascade' }),
+  browserType: text('browser_type', { enum: ['container', 'chrome', 'browserbase', 'platform'] }).notNull(),
+  bundle: text('bundle').notNull(), // Sealed JSON (vault-crypto, sessionBundleSchema)
+  version: integer('version').notNull().default(1), // Bumped on every capture
+  capturedAt: integer('captured_at', { mode: 'timestamp_ms' }).notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  accountTypeUnique: uniqueIndex('browser_account_sessions_account_type_unique').on(table.accountId, table.browserType),
+}))
 
 // Scheduled tasks - tasks scheduled by agents for future execution
 export const scheduledTasks = sqliteTable('scheduled_tasks', {
@@ -990,6 +1051,10 @@ export type ConnectedAccount = typeof connectedAccounts.$inferSelect
 export type NewConnectedAccount = typeof connectedAccounts.$inferInsert
 export type AgentConnectedAccount = typeof agentConnectedAccounts.$inferSelect
 export type NewAgentConnectedAccount = typeof agentConnectedAccounts.$inferInsert
+export type BrowserAccount = typeof browserAccounts.$inferSelect
+export type NewBrowserAccount = typeof browserAccounts.$inferInsert
+export type AgentBrowserAccount = typeof agentBrowserAccounts.$inferSelect
+export type BrowserAccountSession = typeof browserAccountSessions.$inferSelect
 export type ScheduledTask = typeof scheduledTasks.$inferSelect
 export type NewScheduledTask = typeof scheduledTasks.$inferInsert
 export type Notification = typeof notifications.$inferSelect

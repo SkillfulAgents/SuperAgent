@@ -101,6 +101,46 @@ test.describe('Sign-in requests', () => {
     expect(recorder.read().some((r) => r.type === 'loginFill' && r.agentSlug === agentSlug)).toBe(false)
   })
 
+  test('saves the account, then signs the agent in from the vault without a card, and manages it in settings', async ({ page }, testInfo) => {
+    const username = `vault-${testInfo.workerIndex}-${Date.now()}@example.com`
+    const password = `pw-${testInfo.workerIndex}-${Date.now()}-vault`
+    await sessionPage.sendMessage('ask login')
+    const card = page.getByTestId('login-request')
+    await expect(card.getByTestId('login-field-0')).toBeEnabled({ timeout: 15000 })
+    // On by default for an agent no one else uses.
+    await expect(card.getByTestId('login-save')).toHaveAttribute('data-state', 'checked')
+    await card.getByTestId('login-field-0').fill(username)
+    await card.getByTestId('login-field-1').fill(password)
+    await card.getByTestId('login-submit').click()
+    await expect(page.getByTestId('login-request')).toHaveCount(0, { timeout: 10000 })
+    await sessionPage.waitForInputEnabled(15000)
+
+    // The agent asks again: its saved account answers, and no card asks the user.
+    await sessionPage.sendMessage('ask login')
+    await sessionPage.waitForInputEnabled(15000)
+    await expect(page.getByTestId('login-request')).toHaveCount(0)
+
+    // Settings → Logins lists it, with this agent allowed to sign in with it.
+    await page.goto('/settings/logins')
+    const row = page.locator('[data-testid^="login-row-"]', { hasText: username }).first()
+    await expect(row).toBeVisible({ timeout: 10000 })
+    await expect(row).toContainText('example.com')
+    await expect(row).toContainText('Password')
+    await row.click()
+    // The one agent with access: its switch reads "Stop … signing in as …".
+    const toggle = page.getByRole('switch', { name: new RegExp(`^Stop .* signing in as ${username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} on example\\.com$`) })
+    await expect(toggle).toHaveCount(1)
+    await expect(toggle).toBeChecked()
+    // Nothing on the page holds the password.
+    expect(await page.evaluate((secret) => document.body.innerText.includes(secret), password)).toBe(false)
+
+    // Deleted: the next sign-in asks the user again.
+    await page.getByTestId('login-detail-delete').click()
+    await page.getByTestId('login-delete-confirm').click()
+    await expect(page.getByTestId('logins-settings')).toBeVisible({ timeout: 10000 })
+    await expect(page.locator('[data-testid^="login-row-"]', { hasText: username })).toHaveCount(0)
+  })
+
   test('declines', async ({ page }) => {
     await sessionPage.sendMessage('ask login')
     const card = page.getByTestId('login-request')
