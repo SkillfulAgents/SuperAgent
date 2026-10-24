@@ -111,6 +111,20 @@ export default defineConfig({
         })
       },
     },
+    {
+      // The dev server's half of src/web/web-build.ts: the HTML entry carries
+      // the server's facts. Dev only, so a build never bakes in the facts of
+      // the machine that built it; production inlines them as it serves.
+      name: 'server-facts',
+      apply: 'serve',
+      async transformIndexHtml(html, ctx) {
+        if (!ctx.server) return html
+        const { getServerFacts, withServerFacts } = await ctx.server.ssrLoadModule(
+          path.resolve(__dirname, 'src/shared/lib/facts/server-facts.ts'),
+        )
+        return withServerFacts(html, getServerFacts())
+      },
+    },
     devServer({
       entry: 'src/api/index.ts',
       exclude: [/^(?!\/api).*/], // Only handle /api/* routes

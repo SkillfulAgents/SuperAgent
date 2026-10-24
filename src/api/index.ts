@@ -44,6 +44,7 @@ import llmRouter from './routes/llm'
 import llmRuntimeRouter from './routes/llm-runtime'
 import llmConnectionsRouter from './routes/llm-connections'
 import faviconRouter from './routes/favicon'
+import serverFactsRouter from './routes/server-facts'
 import { getPolyfillJs } from './speech-recognition-polyfill'
 import { getLlmPolyfillJs } from './llm-polyfill'
 import adminUsersRouter from './routes/admin-users'
@@ -298,6 +299,7 @@ app.route('/api/llm', llmRouter)
 app.route('/api/llm-runtime', llmRuntimeRouter)
 app.route('/api/llm-connections', llmConnectionsRouter)
 app.route('/api/favicon', faviconRouter)
+app.route('/api/server-facts', serverFactsRouter)
 app.route('/api/debug', debugRouter)
 
 // Desktop → cloud-workspace forwarding. Mounted outside `/api` on purpose: it

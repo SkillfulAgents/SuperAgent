@@ -1,12 +1,22 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { getRequestListener } from '@hono/node-server'
-import { serveStatic } from '@hono/node-server/serve-static'
 import { Hono } from 'hono'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { serverFactsSchema } from '@shared/lib/facts/facts-schema'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
+import { mountWebBuild } from './web-build'
+
+const INDEX_HTML = '<!doctype html><html><head><title>App</title></head><body></body></html>'
+
+/** The facts a page reads from its HTML, the way the renderer finds them. */
+function inlinedFacts(html: string): unknown {
+  const match = html.match(/<script type="application\/json" id="server-facts">(.*?)<\/script>/)
+  return match ? serverFactsSchema.parse(JSON.parse(match[1])) : null
+}
 
 // Exercise the web server's static middleware and SPA fallback through real
 // sockets: app.request() cannot catch adapter body/framing regressions.
@@ -22,11 +32,10 @@ describe('static files over the Node HTTP adapter', () => {
       writeFile(join(root, 'sample.bin'), bytes),
       writeFile(join(root, 'empty.bin'), ''),
       writeFile(join(root, 'encoded%20name.txt'), 'literal-percent filename'),
-      writeFile(join(root, 'index.html'), '<!doctype html><title>App</title>'),
+      writeFile(join(root, 'index.html'), INDEX_HTML),
     ])
     const app = new Hono()
-    app.use('/*', serveStatic({ root }))
-    app.get('*', serveStatic({ path: join(root, 'index.html') }))
+    mountWebBuild(app, root)
     server = createServer(getRequestListener(app.fetch))
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
     baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
@@ -89,8 +98,22 @@ describe('static files over the Node HTTP adapter', () => {
     const res = await fetch(`${baseUrl}/agents/example/chat`)
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toContain('text/html')
-    expect(await res.text()).toBe('<!doctype html><title>App</title>')
+    expect(await res.text()).toContain('<title>App</title>')
   })
+
+  // `/` and `/index.html` would otherwise be served by the static middleware as
+  // built, and the service worker precaches `/index.html` with a revision query.
+  it.each(['/', '/index.html', '/index.html?__WB_REVISION__=abc123', '/agents/example/chat'])(
+    'inlines the server facts into the HTML entry at %s, uncached',
+    async (route) => {
+      const res = await fetch(`${baseUrl}${route}`)
+      expect(res.status).toBe(200)
+      expect(res.headers.get('cache-control')).toBe('no-cache')
+      const html = await res.text()
+      expect(inlinedFacts(html)).toEqual(getServerFacts())
+      expect(html).toContain('<title>App</title>')
+    },
+  )
 
   it('does not serve a static file or the SPA fallback for POST', async () => {
     const res = await fetch(`${baseUrl}/sample.bin`, { method: 'POST', body: 'ignored' })
@@ -105,6 +128,6 @@ describe('static files over the Node HTTP adapter', () => {
     const res = await fetch(`${baseUrl}/encoded%2520name.txt`)
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toContain('text/html')
-    expect(await res.text()).toBe('<!doctype html><title>App</title>')
+    expect(await res.text()).toContain('<title>App</title>')
   })
 })

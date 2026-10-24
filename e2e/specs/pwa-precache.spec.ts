@@ -141,6 +141,10 @@ test.describe('PWA precaching service worker', () => {
     await expect(page).toHaveTitle('Gamut')
     // The boot JS executed from the precache — React mounted into #root.
     await page.waitForFunction(() => (document.getElementById('root')?.childElementCount ?? 0) > 0)
+    // The precached copy is the one the server served, facts inlined, not the
+    // file as built: offline, it is the only source of them.
+    const facts = await page.evaluate(() => document.getElementById('server-facts')?.textContent ?? null)
+    expect(facts && JSON.parse(facts)).toMatchObject({ distribution: 'deployment' })
 
     await context.setOffline(false)
   })

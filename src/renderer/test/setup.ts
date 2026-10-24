@@ -2,6 +2,7 @@ import '@testing-library/jest-dom/vitest'
 import { beforeEach, vi } from 'vitest'
 import { createElement } from 'react'
 import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
+import { _setFactsForTest } from '@renderer/lib/facts'
 
 // Auth mode is now derived from the resolved API target, and reading it before
 // boot settles that target throws by design (a wrong guess routes cloud traffic
@@ -9,9 +10,17 @@ import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-targe
 // local target here so everything that renders UserProvider behaves exactly as
 // it did when auth mode was a build-time constant. A test that needs the cloud
 // target resets and re-sets it in its own `beforeEach`, which runs after this.
+//
+// The facts are settled alongside it, and also throw if read before boot. Tests
+// have no `window.electronAPI`, so the default is a browser driving a web
+// deployment; a test that needs other facts sets them in its own `beforeEach`.
 beforeEach(() => {
   _resetApiTargetForTest()
   setActiveTarget('local', null)
+  _setFactsForTest({
+    client: { shell: 'browser', os: null, distribution: null },
+    server: { os: 'linux', distribution: 'deployment' },
+  })
 })
 
 // jsdom has no matchMedia; components read it via useIsMobile() and

@@ -78,6 +78,17 @@
       "rules": {
         "local-rules/no-floating-work": "off"
       }
+    },
+    {
+      "files": ["src/**/*.ts", "src/**/*.tsx"],
+      "excludedFiles": ["src/shared/lib/facts/server-facts.ts", "**/*.test.ts", "**/*.test.tsx"],
+      "rules": {
+        "no-restricted-properties": [
+          "error",
+          { "object": "process", "property": "mas", "message": "Ask a capability instead (docs/facts.md). Only src/shared/lib/facts/server-facts.ts reads how the app was distributed." },
+          { "object": "process", "property": "windowsStore", "message": "Ask a capability instead (docs/facts.md). Only src/shared/lib/facts/server-facts.ts reads how the app was distributed." }
+        ]
+      }
     }
   ],
   "settings": {
