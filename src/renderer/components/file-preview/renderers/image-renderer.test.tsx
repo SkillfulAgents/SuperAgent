@@ -24,6 +24,15 @@ describe('ImageRenderer', () => {
     expect(screen.getByText('At position (25%, 25%)')).toBeVisible()
   })
 
+  it('replaces a failed image and its spinner with an unavailable message', () => {
+    const { container } = render(<ImageRenderer url="/broken.heic" filePath="/workspace/broken.heic" agentSlug="test-agent" />)
+
+    fireEvent.error(screen.getByRole('img'))
+
+    expect(screen.getByText('Image preview unavailable')).toBeVisible()
+    expect(container.querySelector('.animate-spin')).toBeNull()
+  })
+
   it('closes an open box on Escape pressed outside it', () => {
     render(<ImageRenderer url="/shot.png" filePath="/workspace/shot.png" agentSlug="test-agent" />)
     fireEvent.click(screen.getByRole('img'))

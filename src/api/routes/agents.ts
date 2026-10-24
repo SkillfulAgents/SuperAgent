@@ -18,7 +18,8 @@ import { bodyLimit } from 'hono/body-limit'
 import { streamSSE } from 'hono/streaming'
 import { getConnInfo } from '@hono/node-server/conninfo'
 import type Anthropic from '@anthropic-ai/sdk'
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
+import { Worker } from 'node:worker_threads'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
@@ -77,6 +78,7 @@ import { isBlockingUserInputToolName } from '@shared/lib/tools/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
+import { HEIC_PREVIEW_MAX_SOURCE_BYTES } from '@shared/lib/utils/heic-preview'
 import { servedRange } from '@shared/lib/utils/http-range'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { isSystemMessageText } from '@shared/lib/utils/system-message'
@@ -6517,6 +6519,145 @@ agents.post('/:id/folders/reveal-path', AgentAdmin(), async (c) => {
   }
 })
 
+const HEIC_EXTENSIONS = new Set(['.heic', '.heif'])
+const HEIC_PREVIEW_CACHE_BYTES = 64 * 1024 * 1024
+const HEIC_PREVIEW_MAX_PIXELS = 50_000_000
+const HEIC_PREVIEW_TIMEOUT_MS = 30_000
+const heicPreviewCache = new Map<string, Uint8Array>()
+let heicPreviewCacheBytes = 0
+let heicPreviewQueue: Promise<void> = Promise.resolve()
+
+function cachedHeicPreview(key: string): Uint8Array | undefined {
+  const preview = heicPreviewCache.get(key)
+  if (!preview) return undefined
+  heicPreviewCache.delete(key)
+  heicPreviewCache.set(key, preview)
+  return preview
+}
+
+function cacheHeicPreview(key: string, preview: Uint8Array) {
+  if (preview.byteLength > HEIC_PREVIEW_CACHE_BYTES) return
+  const existing = heicPreviewCache.get(key)
+  if (existing) {
+    heicPreviewCache.delete(key)
+    heicPreviewCacheBytes -= existing.byteLength
+  }
+  while (heicPreviewCacheBytes + preview.byteLength > HEIC_PREVIEW_CACHE_BYTES) {
+    const oldest = heicPreviewCache.entries().next().value as [string, Uint8Array] | undefined
+    if (!oldest) break
+    heicPreviewCache.delete(oldest[0])
+    heicPreviewCacheBytes -= oldest[1].byteLength
+  }
+  heicPreviewCache.set(key, preview)
+  heicPreviewCacheBytes += preview.byteLength
+}
+
+function heicPreviewWorkerUrl(): URL {
+  try {
+    return new URL('./heic-preview-worker.mjs', import.meta.url)
+  } catch (error) {
+    throw new Error('Failed to resolve HEIC preview worker', { cause: error })
+  }
+}
+
+function runHeicPreviewWorker(input: Uint8Array): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const inputBuffer = input.buffer as ArrayBuffer
+    const worker = new Worker(heicPreviewWorkerUrl(), {
+      workerData: {
+        input: inputBuffer,
+        maxPixels: HEIC_PREVIEW_MAX_PIXELS,
+        quality: 85,
+      },
+      transferList: [inputBuffer],
+      resourceLimits: {
+        maxOldGenerationSizeMb: 384,
+        maxYoungGenerationSizeMb: 64,
+        stackSizeMb: 4,
+      },
+    })
+    let settled = false
+    let timedOut = false
+    let workerError: Error | undefined
+    let result: { output?: ArrayBuffer; error?: string } | undefined
+    const timeout = setTimeout(() => {
+      if (settled) return
+      timedOut = true
+      background(worker.terminate().catch((error) => {
+        if (settled) return
+        settled = true
+        reject(error)
+      }), { name: 'heic-preview.terminate-worker' })
+    }, HEIC_PREVIEW_TIMEOUT_MS)
+
+    worker.once('message', (message: { output?: ArrayBuffer; error?: string }) => {
+      result = message
+    })
+    worker.once('error', (error) => {
+      workerError = error
+    })
+    worker.once('exit', (code) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      if (timedOut) reject(new Error('HEIC preview conversion timed out'))
+      else if (workerError) reject(workerError)
+      else if (code !== 0) reject(new Error(`HEIC preview worker exited with code ${code}`))
+      else if (result?.error) reject(new Error(result.error))
+      else if (result?.output) resolve(new Uint8Array(result.output))
+      else reject(new Error('HEIC preview worker returned no image'))
+    })
+  })
+}
+
+function queueHeicPreview<T>(task: () => Promise<T>): Promise<T> {
+  const queued = heicPreviewQueue.then(task)
+  heicPreviewQueue = queued.then(() => undefined, () => undefined)
+  return queued
+}
+
+async function renderHeicPreview(actor: AgentActor, resolvedPath: string, stat: FileStat): Promise<Uint8Array> {
+  if (stat.size > HEIC_PREVIEW_MAX_SOURCE_BYTES) {
+    throw new Error('HEIC file exceeds the preview size limit')
+  }
+
+  return queueHeicPreview(async () => {
+    const reader = (await actor.files.read(resolvedPath)).getReader()
+    const chunks: Uint8Array[] = []
+    let size = 0
+    let done = false
+    while (!done) {
+      const read = await reader.read()
+      if (read.done) {
+        done = true
+        continue
+      }
+      const value = read.value
+      size += value.byteLength
+      if (size > HEIC_PREVIEW_MAX_SOURCE_BYTES) {
+        await reader.cancel()
+        throw new Error('HEIC file exceeds the preview size limit')
+      }
+      chunks.push(value)
+    }
+
+    const input = new Uint8Array(size)
+    let offset = 0
+    for (const chunk of chunks) {
+      input.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    const digest = createHash('sha256').update(input).digest('base64url')
+    const key = `${actor.slug}\0${resolvedPath}\0${digest}`
+    const cached = cachedHeicPreview(key)
+    if (cached) return cached
+
+    const preview = await runHeicPreviewWorker(input)
+    cacheHeicPreview(key, preview)
+    return preview
+  })
+}
+
 // GET /api/agents/:id/files/* - Download a file from the agent workspace
 agents.get('/:id/files/*', AgentRead(), async (c) => {
   try {
@@ -6551,9 +6692,10 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
     const filename = path.basename(filePath)
     const encodedFilename = encodeURIComponent(filename)
     const inline = new URL(c.req.url).searchParams.get('inline') === 'true'
+    const heicPreview = inline && HEIC_EXTENSIONS.has(path.extname(filename).toLowerCase())
     if (inline) {
       c.header('Content-Disposition', `inline; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`)
-      c.header('Content-Type', guessMimeType(filename))
+      c.header('Content-Type', heicPreview ? 'image/jpeg' : guessMimeType(filename))
     } else {
       c.header('Content-Disposition', `attachment; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`)
       c.header('Content-Type', 'application/octet-stream')
@@ -6573,6 +6715,22 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
     // validator — an mtime/size ETag plus If-None-Match → 304 — which is worth
     // doing, but not as an unvalidated rider on a leak fix.
     c.header('Cache-Control', 'private, no-store, max-age=0')
+
+    if (heicPreview) {
+      if (c.req.method === 'HEAD') return c.body(null)
+      try {
+        const preview = await renderHeicPreview(actor, resolved, stat)
+        c.header('Content-Length', String(preview.byteLength))
+        return c.body(new Uint8Array(preview))
+      } catch (error) {
+        console.error('Failed to render HEIC preview:', error)
+        captureException(error, {
+          tags: { component: 'agents', operation: 'render-heic-preview' },
+          extra: { agentSlug, filePath },
+        })
+        return c.json({ error: 'Failed to preview image' }, 422)
+      }
+    }
 
     const served = servedRange(c.req.header('range'), stat.size)
 
