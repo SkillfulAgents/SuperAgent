@@ -242,15 +242,20 @@ function getHostAgentPidPath(): string {
   return path.join(getLimaHome(), LIMA_VM_NAME, 'ha.pid')
 }
 
-/** The pid recorded in `ha.pid`, or null when it is missing or unparseable. */
-function readHostAgentPid(): number | null {
+/** The pid recorded in one of our VM's pid files, or null when it is missing or unparseable. */
+function readPidFile(name: 'ha.pid' | 'vz.pid'): number | null {
   let pid: number
   try {
-    pid = parseInt(fs.readFileSync(getHostAgentPidPath(), 'utf-8').trim(), 10)
+    pid = parseInt(fs.readFileSync(path.join(getLimaHome(), LIMA_VM_NAME, name), 'utf-8').trim(), 10)
   } catch {
     return null
   }
   return Number.isInteger(pid) && pid > 0 ? pid : null
+}
+
+/** The pid recorded in `ha.pid`, or null when it is missing or unparseable. */
+function readHostAgentPid(): number | null {
+  return readPidFile('ha.pid')
 }
 
 /**
@@ -263,11 +268,33 @@ function readHostAgentPid(): number | null {
  * them would orphan a live VM.
  *
  * Returns false when `ha.pid` is missing or unparseable (nothing known to be
- * alive). A surviving process (kill(pid, 0) succeeds, or fails EPERM) is alive.
+ * alive). A surviving process (kill(pid, 0) succeeds, or fails EPERM) is alive,
+ * unless ps shows it isn't limactl: the host agent died and its pid was reused.
  */
 function isHostAgentAlive(): boolean {
   const pid = readHostAgentPid()
-  return pid !== null && isProcessAlive(pid)
+  return pid !== null && isProcessAlive(pid) && !isUnrelatedProcess(pid)
+}
+
+/**
+ * Is this live pid something other than limactl? A host agent that died
+ * without cleaning up (crash, power loss) leaves ha.pid and vz.pid behind, and
+ * by now either pid may belong to an unrelated process of this user. vz.pid
+ * holds the host agent's own pid (the VZ driver runs inside it), so a live
+ * owner of either file that isn't limactl means the file is stale. False when
+ * ps can't tell (a sandbox may deny it).
+ *
+ * Only the executable is checked, not which VM the host agent serves: getting
+ * that wrong would orphan our own running VM on every stop.
+ */
+function isUnrelatedProcess(pid: number): boolean {
+  let executable: string
+  try {
+    executable = execSync(`ps -o comm= -p ${pid}`, { encoding: 'utf-8', timeout: 3000 }).trim()
+  } catch {
+    return false
+  }
+  return !!executable && path.basename(executable) !== 'limactl'
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -774,6 +801,8 @@ async function ensureLimaReadyImpl(): Promise<void> {
   let vmExists = false
   let vmMemory: string | null = null
   let vmBroken = false
+  // Before any limactl command below reads the pid files.
+  dropStalePidFiles()
   try {
     const { stdout } = await execLimactl('list --json')
     const vms = parseLimaList(stdout)
@@ -956,6 +985,7 @@ async function powerOffGuest(timeoutMs: number): Promise<boolean> {
  * fails with "The EFI variable store is already in use" until a reboot.
  */
 async function forceStopLimaVm(timeoutMs: number): Promise<void> {
+  dropStalePidFiles()
   if (!canSignalHostAgent()) {
     captureMessage('Lima host agent belongs to another launch and the guest did not power off; leaving the VM running', {
       level: 'warning',
@@ -963,7 +993,6 @@ async function forceStopLimaVm(timeoutMs: number): Promise<void> {
     })
     return
   }
-  dropStaleDriverPidFile()
   try {
     await Promise.race([
       execLimactl(`stop --force ${LIMA_VM_NAME}`),
@@ -977,41 +1006,27 @@ async function forceStopLimaVm(timeoutMs: number): Promise<void> {
 }
 
 /**
- * `limactl stop --force` SIGKILLs the pid in vz.pid. A host agent that died
- * without cleaning up (crash, OS kill) leaves that file behind, and by now
- * its pid may belong to an unrelated process of this user. vz.pid holds the
- * host agent's own pid (the VZ driver runs inside it), so a live owner that
- * isn't limactl means the file is stale: drop it. When ps can't tell (the
- * sandbox denies it), leave it.
+ * `limactl stop --force` and `delete --force` SIGKILL the pids in ha.pid and
+ * vz.pid, and `limactl list` calls a VM with a live pid in either file Running
+ * or Broken (which gets it rebuilt). Lima drops a pid file whose process is
+ * gone by itself, but not one whose pid was reused: drop each file whose live
+ * owner is an unrelated process (isUnrelatedProcess).
  */
-function dropStaleDriverPidFile(): void {
-  if (isHostAgentAlive()) return
-  const file = path.join(getLimaHome(), LIMA_VM_NAME, 'vz.pid')
-  let pid: number
-  try {
-    pid = parseInt(fs.readFileSync(file, 'utf-8').trim(), 10)
-  } catch {
-    return
+function dropStalePidFiles(): void {
+  for (const name of ['ha.pid', 'vz.pid'] as const) {
+    const pid = readPidFile(name)
+    if (pid === null || !isProcessAlive(pid) || !isUnrelatedProcess(pid)) continue
+    try {
+      fs.unlinkSync(path.join(getLimaHome(), LIMA_VM_NAME, name))
+    } catch {
+      continue
+    }
+    captureMessage(`Dropped a stale Lima ${name} that pointed at an unrelated process`, {
+      level: 'warning',
+      tags: { component: 'lima', operation: 'stale-pid-file' },
+      extra: { file: name },
+    })
   }
-  // Lima drops a pid file whose process is gone by itself.
-  if (!Number.isInteger(pid) || pid <= 0 || !isProcessAlive(pid)) return
-  let command: string
-  try {
-    command = execSync(`ps -o comm= -p ${pid}`, { encoding: 'utf-8', timeout: 3000 }).trim()
-  } catch {
-    return
-  }
-  if (!command || path.basename(command) === 'limactl') return
-  try {
-    fs.unlinkSync(file)
-  } catch {
-    return
-  }
-  captureMessage('Dropped a stale Lima vz.pid that pointed at an unrelated process', {
-    level: 'warning',
-    tags: { component: 'lima', operation: 'stale-driver-pid' },
-    extra: { process: path.basename(command) },
-  })
 }
 
 /**
