@@ -464,7 +464,7 @@ regression — so the distinction is worth holding precisely.
 | --- | --- | --- |
 | `isElectron()` (`renderer/lib/env.ts`) | native window + preload bridge present | Is there a *window* of ours here? |
 | `targetIsRemote()` (`renderer/lib/api-target.ts`) | the settled target is `cloud` | Is the API a machine other than this one? |
-| `canUseHostFeatures()` (`renderer/lib/host-features.ts`) | `isElectron() && !targetIsRemote()` | May this window act on *this* computer on the agents' behalf? |
+| `canUseHostFeatures()` (`renderer/lib/capabilities.ts`) | `isElectron() && !targetIsRemote()` | May this window act on *this* computer on the agents' behalf? |
 
 Only three configurations are reachable. A browser never has a cloud target:
 `initApiBaseUrl()` settles every web renderer to `local`, because there is no
@@ -669,7 +669,7 @@ These are injected at build time as `__PLATFORM_*__` globals (see `vite.config.t
 | `renderer/lib/cloud-session.ts` | Carries a cloud 401 into the session store, since signing out is not an option |
 | `renderer/hooks/use-target-switch.ts` | Which target, whether the other is reachable, and how to move |
 | `renderer/components/layout/target-switcher.tsx` | The segmented Local/Cloud control |
-| `renderer/lib/host-features.ts` | Whether this window may act on the computer it runs on |
+| `renderer/lib/capabilities.ts` | What this window may offer; `canUseHostFeatures()` is whether it may act on the computer it runs on |
 | `api/polyfill-api-prefix.ts` | Keeps dashboard-shim API calls on whichever API served the document |
 | `services/platform-service.ts` | Boot/connect refresh + the background maintenance poll |
 | `services/platform-auth-service.ts` | Clears the record on disconnect / identity change |

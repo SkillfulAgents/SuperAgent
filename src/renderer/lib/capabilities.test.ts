@@ -4,7 +4,7 @@ const { mockIsElectron } = vi.hoisted(() => ({ mockIsElectron: vi.fn(() => true)
 vi.mock('./env', () => ({ isElectron: mockIsElectron }))
 
 import { _resetApiTargetForTest, setActiveTarget } from './api-target'
-import { canUseHostFeatures } from './host-features'
+import { canUseHostFeatures } from './capabilities'
 
 beforeEach(() => {
   mockIsElectron.mockReturnValue(true)
