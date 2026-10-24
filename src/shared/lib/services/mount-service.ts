@@ -72,20 +72,22 @@ export async function addMount(
 
 /** An existing source is referenced, never copied. Visibility is checked in the
  * INSERT itself, so a concurrent access change cannot be bypassed. */
-export async function attachMount(slug: string, volumeId: string, viewer: VolumeViewer): Promise<MountedVolume> {
+export async function attachMount(slug: string, volumeId: string, viewer: VolumeViewer, { readOnly = false } = {}): Promise<MountedVolume> {
   const selection = and(eq(volumeDefinitions.id, volumeId), selectableVolumes(viewer))
   const source = await db.select().from(volumeDefinitions).where(selection).get()
   if (!source) throw new VolumeError('Drive not found', 404)
   const stored = storedDefinition(source)
   if (!stored || !instantiateVolume(stored)) throw new VolumeError('Drive configuration is unavailable', 400)
   const result = await insertWhere(agentVolumes, {
-    id: randomUUID(), agentSlug: slug, volumeId, name: availableMountName(slug, source.name), createdAt: new Date(),
+    id: randomUUID(), agentSlug: slug, volumeId, name: availableMountName(slug, source.name), readOnly, createdAt: new Date(),
   }, exists(db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(selection)))
     .onConflictDoNothing({ target: [agentVolumes.agentSlug, agentVolumes.volumeId] }).run()
   // Idempotent attachment still requires current visibility.
   if (changesOf(result) === 0 && !await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(selection).get()) {
     throw new VolumeError('Drive not found', 404)
   }
+  // Asked for read-only, an attachment the agent already had becomes read-only too.
+  if (readOnly) await db.update(agentVolumes).set({ readOnly: true }).where(and(eq(agentVolumes.agentSlug, slug), eq(agentVolumes.volumeId, volumeId))).run()
   const mount = (await getMounts(slug)).find(m => m.volumeId === volumeId)
   if (!mount) throw new VolumeError('Drive could not be loaded', 404)
   return mount

@@ -16,6 +16,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { sortSessionsByActivity, type SessionSortOrder } from '@shared/lib/session-ordering'
 import { UnreadDot } from '@renderer/components/agents/status-indicators'
+import type { ApiSession } from '@shared/lib/types/api'
 
 interface SessionItem {
   id: string
@@ -27,6 +28,21 @@ interface SessionItem {
   hasUnreadNotifications?: boolean
   hasUnreadMention?: boolean
   pendingWakeAt?: string
+}
+
+/** A session from the API as a row. Its dates arrive as JSON strings, though typed as `Date`. */
+export function toSessionItem(s: ApiSession): SessionItem {
+  return {
+    id: s.id,
+    name: s.name,
+    createdAt: typeof s.createdAt === 'string' ? s.createdAt : new Date(s.createdAt).toISOString(),
+    lastActivityAt: typeof s.lastActivityAt === 'string'
+      ? s.lastActivityAt
+      : new Date(s.lastActivityAt).toISOString(),
+    isActive: s.isActive,
+    isAwaitingInput: s.isAwaitingInput,
+    hasUnreadNotifications: s.hasUnreadNotifications,
+  }
 }
 
 interface RelatedSessionsProps {

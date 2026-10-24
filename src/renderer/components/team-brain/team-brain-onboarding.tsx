@@ -1,10 +1,10 @@
 import { useState, type ReactNode } from 'react'
-import { Brain, Folder, X } from 'lucide-react'
+import { Brain, Folder, Loader2, X } from 'lucide-react'
 import { useAgents } from '@renderer/hooks/use-agents'
-import { Switch } from '@renderer/components/ui/switch'
 import { useUser } from '@renderer/context/user-context'
 import { volumeSetupRegistry } from '@renderer/components/volumes/volume-setup-registry'
 import { parseVolumeSource, type VolumeSetupDefinition } from '@renderer/components/volumes/volume-setup'
+import { VolumeSetupFooterContext, type VolumeSetupFooterProps } from '@renderer/components/volumes/volume-setup-layout'
 import { volumeDetailsSchema, type VolumeDetails } from '@renderer/components/volumes/volume-details-schema'
 import type { VolumeSource } from '@shared/lib/volumes/volume-config-schema'
 import { cn } from '@shared/lib/utils/cn'
@@ -19,11 +19,11 @@ import {
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@renderer/components/ui/dialog'
-import { useTeamBrain, type TeamBrainStore } from '@renderer/lib/team-brain/team-brain-store'
+import { usesTeamBrain, useTeamBrain, type TeamBrainStore } from '@renderer/lib/team-brain/team-brain-store'
 import { TEAM_BRAIN_STEPS, type TeamBrainLocationId, type TeamBrainSourceId, type TeamBrainStep } from '@renderer/lib/team-brain/team-brain-schema'
 import { TeamBrainSourceIcon } from './team-brain-source-icon'
 import { LocationChoices, ScheduleChoices } from './team-brain-choices'
-import { AgentAccessList } from './team-brain-agent-access'
+import { AgentAccessList, EveryAgentRow } from './team-brain-agent-access'
 
 /** The rail's names for each step. */
 const STEP_LABELS: Record<TeamBrainStep, string> = {
@@ -260,19 +260,24 @@ function LocationStep({
   if (setup) {
     const Setup = setup.definition.Setup
     return (
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pb-6 pt-11 sm:px-[52px]" data-testid="team-brain-drive-setup">
-        <Setup
-          initialConfig={setup.config}
-          // Only a drive everyone can add can go to every agent.
-          initialDetails={{ name: 'Team Brain', visibility: isAuthMode && !isAdmin ? 'private' : 'public' }}
-          onSubmit={save}
-          onBack={() => { setSetup(null); setError(null) }}
-          onCancel={() => { setSetup(null); setError(null) }}
-          isSaving={isSaving}
-          error={error}
-          clearError={() => setError(null)}
-          attachToAgent
-        />
+      // The set-up's form fills the panel, so its buttons can sit in the ruled bar at the foot (`DriveSetupFooter`);
+      // its header sits as far above the form as the other steps' subtitles sit above theirs, and goes without its
+      // supporting line: the drive's name and title say enough here.
+      <div className="flex min-h-0 flex-1 flex-col gap-7 overflow-y-auto px-6 pt-11 sm:px-[52px] [&>form]:flex [&>form]:flex-1 [&>form]:flex-col [&_[data-volume-setup-description]]:hidden" data-testid="team-brain-drive-setup">
+        <VolumeSetupFooterContext.Provider value={DriveSetupFooter}>
+          <Setup
+            initialConfig={setup.config}
+            // Only a drive everyone can add can go to every agent.
+            initialDetails={{ name: 'Team Brain', visibility: isAuthMode && !isAdmin ? 'private' : 'public' }}
+            onSubmit={save}
+            onBack={() => { setSetup(null); setError(null) }}
+            onCancel={() => { setSetup(null); setError(null) }}
+            isSaving={isSaving}
+            error={error}
+            clearError={() => setError(null)}
+            attachToAgent
+          />
+        </VolumeSetupFooterContext.Provider>
       </div>
     )
   }
@@ -286,6 +291,31 @@ function LocationStep({
       <LocationChoices value={tb.state.location} onChoose={(id) => void choose(id)} only={LOCATIONS} />
       {error && <p role="alert" className="mt-4 text-[13px] text-destructive">{error}</p>}
     </StepPanel>
+  )
+}
+
+/**
+ * A drive set-up's buttons in the modal's own ruled bar, as every other step has them: pinned to the foot of the
+ * panel however long the set-up runs. Back and the set-up's own next step only; Back at its first screen already
+ * returns to the homes, which is all its Cancel did here.
+ */
+function DriveSetupFooter({ onBack, isSaving, disabled, submitLabel }: VolumeSetupFooterProps) {
+  return (
+    <>
+      {/* Takes up the slack, so a short form leaves the bar at the foot and a long one still keeps room above it. */}
+      <div className="min-h-6 flex-1" aria-hidden="true" />
+      <footer className="sticky bottom-0 -mx-6 flex h-[60px] shrink-0 items-center justify-end gap-2 border-t bg-background px-[18px] sm:-mx-[52px]" data-testid="team-brain-drive-footer">
+        {onBack && (
+          <button type="button" className={SECONDARY} onClick={onBack} disabled={isSaving} data-testid="team-brain-back">
+            Back
+          </button>
+        )}
+        <button type="submit" className={PRIMARY} disabled={disabled || isSaving} data-testid="team-brain-drive-submit">
+          {isSaving && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
+          {submitLabel}
+        </button>
+      </footer>
+    </>
   )
 }
 
@@ -303,23 +333,15 @@ function AgentsStep({ tb, nav }: { tb: TeamBrainStore; nav: StepNav }) {
       back={nav.back}
       next={{ label: nav.nextLabel, onClick: nav.next }}
     >
-      <div className="flex items-center gap-3 pb-3" data-testid="team-brain-every-agent">
-        <span className="min-w-0 flex-1">
-          <span className="block text-[13px] font-medium">Every agent</span>
-          <span className="block text-[12px] text-muted-foreground">
-            {canGoGlobal ? 'Includes agents you make later.' : 'Only a drive everyone can add can go to every agent.'}
-          </span>
-        </span>
-        <Switch
-          checked={tb.state.everyAgent}
-          disabled={!canGoGlobal}
-          onCheckedChange={tb.setEveryAgent}
-          aria-label="Every agent"
-          data-testid="team-brain-every-agent-switch"
-        />
-      </div>
+      <EveryAgentRow checked={tb.state.everyAgent} canGoGlobal={canGoGlobal} onCheckedChange={tb.setEveryAgent} className="pb-3" />
       {agents.length > 0 ? (
-        <AgentAccessList agents={agents} everyAgent={tb.state.everyAgent} className="border-y" />
+        <AgentAccessList
+          agents={agents}
+          everyAgent={tb.state.everyAgent}
+          isOn={(slug) => usesTeamBrain(tb.state, slug)}
+          onToggle={tb.setUsesTeamBrain}
+          className="border-y"
+        />
       ) : (
         <p className="text-[13px] text-muted-foreground">No agents yet. Agents you make later can add the Team Brain drive from their Drives.</p>
       )}

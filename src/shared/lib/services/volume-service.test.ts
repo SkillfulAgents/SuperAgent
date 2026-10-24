@@ -5,7 +5,7 @@ import * as path from 'node:path'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { agents, user } from '@shared/lib/db/schema'
 import { attachMount, removeMount } from './mount-service'
-import { createVolumeDefinition, deleteVolumeDefinition, listVolumeDefinitions, updateVolumeDefinition } from './volume-service'
+import { createVolumeDefinition, deleteVolumeDefinition, listVolumeDefinitions, releaseVolume, updateVolumeDefinition } from './volume-service'
 
 let handle: TestDatabase
 let folder: string
@@ -63,6 +63,19 @@ describe('volume ownership', () => {
     await updateVolumeDefinition(id, { global: null }, admin)
     await updateVolumeDefinition(id, { visibility: 'private' }, admin)
     expect(await listVolumeDefinitions(admin)).toMatchObject([{ id, userId: 'admin', globalAccess: null }])
+  })
+  it('releases a drive from every agent but one and from global, whoever owns it', async () => {
+    await handle.db.insert(agents).values([{ slug: 'brain', name: 'Brain', createdAt: new Date() }, { slug: 'reader', name: 'Reader', createdAt: new Date() }]).run()
+    const id = await createVolumeDefinition(input(), alice)
+    await attachMount('brain', id, alice)
+    await attachMount('agent', id, alice)
+    await attachMount('reader', id, alice)
+    expect((await releaseVolume(id, 'brain')).sort()).toEqual(['agent', 'reader'])
+    expect(await listVolumeDefinitions(alice)).toMatchObject([{ id, attachmentCount: 1, globalAccess: null }])
+    const shared = await createVolumeDefinition({ ...input(), visibility: 'public' }, admin)
+    await updateVolumeDefinition(shared, { global: 'read' }, admin)
+    expect(await releaseVolume(shared, 'brain')).toEqual([])
+    expect((await listVolumeDefinitions(admin)).find((d) => d.id === shared)).toMatchObject({ globalAccess: null })
   })
   it('deletes a global drive that no agent has as its own', async () => {
     const id = await createVolumeDefinition({ ...input(), visibility: 'public' }, admin)

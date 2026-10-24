@@ -23,6 +23,15 @@ vi.mock('@renderer/context/file-preview-context', () => ({
 }))
 
 describe('MarkdownRenderer', () => {
+  it('folds the frontmatter into a closed Properties row and draws only what follows', () => {
+    text = '---\ntitle: Overview\n---\n# Overview'
+    render(<MarkdownRenderer url="/doc.md" filePath="/doc.md" agentSlug="test-agent" />)
+    expect(screen.getByTestId('markdown-frontmatter')).not.toHaveAttribute('open')
+    expect(screen.getByText('title: Overview')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Overview' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: /title:/ })).toBeNull()
+  })
+
   it('draws mermaid and math fences, keeps other fences as copyable code, and resolves workspace images', async () => {
     text = FENCES
     const { container } = render(<MarkdownRenderer url="/doc.md" filePath="/doc.md" agentSlug="test-agent" />)
