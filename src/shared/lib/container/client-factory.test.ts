@@ -107,6 +107,11 @@ vi.mock('os', () => ({
   platform: vi.fn(() => 'darwin'),
 }))
 
+const serverFacts = vi.hoisted(() => ({ distribution: 'direct' as 'direct' | 'mac-app-store' }))
+vi.mock('@shared/lib/facts/server-facts', () => ({
+  getServerFacts: () => ({ os: 'darwin', distribution: serverFacts.distribution }),
+}))
+
 const mockCaptureException = vi.fn()
 const mockCaptureMessage = vi.fn()
 vi.mock('@shared/lib/error-reporting', () => ({
@@ -131,6 +136,7 @@ import {
   PULL_STALL_TIMEOUT_MS,
   KILL_STALLED_PULL_TIMEOUT_MS,
   reconcileRunnerState,
+  refreshRunnerAvailability,
   restartRunner,
   shutdownActiveRunner,
   startRunner,
@@ -141,6 +147,24 @@ import { getNerdctlWrapperPath } from './lima-container-client'
 // ============================================================================
 // Tests
 // ============================================================================
+
+describe('the runtimes this server offers', () => {
+  afterEach(async () => {
+    serverFacts.distribution = 'direct'
+    await refreshRunnerAvailability()
+  })
+
+  it('in the App Sandbox are only the bundled Lima, even with others eligible', async () => {
+    serverFacts.distribution = 'mac-app-store'
+    const availability = await refreshRunnerAvailability()
+    expect(availability.map((r) => r.runner)).toEqual(['lima'])
+  })
+
+  it('elsewhere are every eligible one', async () => {
+    const availability = await refreshRunnerAvailability()
+    expect(availability.map((r) => r.runner)).toEqual(expect.arrayContaining(['lima', 'docker', 'podman', 'apple-container']))
+  })
+})
 
 describe('shutdownActiveRunner', () => {
   beforeEach(() => {

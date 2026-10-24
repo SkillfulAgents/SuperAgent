@@ -1,5 +1,5 @@
 import type { ApiTarget } from '@shared/lib/api-target'
-import { serverFactsSchema, type Facts, type ServerFacts } from '@shared/lib/facts/facts-schema'
+import { serverFactsSchema, type ClientFacts, type Facts, type ServerFacts } from '@shared/lib/facts/facts-schema'
 import { currentOs, desktopDistribution, getServerFacts } from '@shared/lib/facts/server-facts'
 import type { CloudEndpoint } from './api-target'
 
@@ -24,8 +24,13 @@ const CLOUD_FACTS_TIMEOUT_MS = 3_000
  */
 const cloudFacts = new Map<string, Promise<ServerFacts | null>>()
 
+/** This install as a client: what main asks for its own desktop features, such as updates. */
+export function desktopClientFacts(): ClientFacts {
+  return { shell: 'electron', os: currentOs(), distribution: desktopDistribution() }
+}
+
 export async function factsForRenderer(target: ApiTarget, cloud: CloudEndpoint | null): Promise<Facts> {
-  const client = { shell: 'electron', os: currentOs(), distribution: desktopDistribution() } as const
+  const client = desktopClientFacts()
   if (target === 'local') return { client, server: getServerFacts() }
   return { client, server: cloud ? await cloudServerFacts(cloud) : null }
 }

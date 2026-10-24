@@ -57,6 +57,8 @@ import {
 } from '@shared/lib/web-provider'
 import { containerHost } from '@shared/lib/agent-actor'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, getContainerClientClass, getRunnerDisplayName, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
+import { offersRuntime } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { detectAllProviders } from '../../main/host-browser'
 import { revokePlatformToken } from '@shared/lib/services/platform-auth-service'
 import { resetApplicationTables } from '@shared/lib/db/reset'
@@ -434,6 +436,7 @@ settings.put(
           hostTotalMemoryBytes: os.totalmem(),
           supportsCustomAgentImage: (runner: ContainerRunner) =>
             getContainerClientClass(runner).supportsCustomAgentImage,
+          offersRuntime: (runner: ContainerRunner) => offersRuntime(getServerFacts(), runner),
         },
       })[0]
 

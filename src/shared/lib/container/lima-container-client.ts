@@ -10,6 +10,8 @@ import type { ContainerConfig } from './types'
 import limaPackages from './lima-packages.json'
 import os from 'os'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { mayDownloadCode, runsInAppSandbox } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 
 /**
  * Collect diagnostic data about the Lima environment at the moment of failure.
@@ -113,7 +115,9 @@ function collectLimaDiagnostics(): Record<string, unknown> {
   return diag
 }
 
-export const LIMA_VM_NAME = 'superagent'
+// Short in the App Sandbox, where Lima's sockets live under the container's long
+// home and must fit UNIX_PATH_MAX (see getLimaHome()).
+export const LIMA_VM_NAME = runsInAppSandbox(getServerFacts()) ? 'sa' : 'superagent'
 
 // Minimum Lima version that includes host-to-guest time sync (lima-vm/lima#4527).
 // VMs created with older versions have a guest agent that lacks the SyncTime gRPC
@@ -147,8 +151,15 @@ function getMacOSMajorVersion(): number | null {
  * Lima creates Unix domain sockets under LIMA_HOME which are subject to
  * UNIX_PATH_MAX (104 on macOS). The longer Application Support path can
  * exceed this limit for users with long usernames.
+ *
+ * In the App Sandbox the home is the container, `~/Library/Containers/<bundle
+ * id>/Data`. There this layout's longest socket, OpenSSH's temporary
+ * `ssh.sock.<16 chars>`, would be 98 characters plus the username with the
+ * Store bundle id `so.gamut.app`: too long for almost everyone. `~/l` with VM
+ * `sa` fits usernames up to 28 characters.
  */
 export function getLimaHome(): string {
+  if (runsInAppSandbox(getServerFacts())) return path.join(os.homedir(), 'l')
   return path.join(os.homedir(), '.superagent', 'lima')
 }
 
@@ -1297,12 +1308,21 @@ async function createLimaVm(): Promise<void> {
   const stagedPackages = bundledPackages ? stageBundledPackages(bundledPackages) : null
   console.log(stagedPackages ? `Using bundled packages: ${stagedPackages}` : 'Bundled packages not found, first boot will download them from Alpine CDN')
 
+  // Refused rather than downloaded where the build must ship all the code it runs.
+  if (!mayDownloadCode(getServerFacts()) && (!bundledImage || !stagedPackages)) {
+    const missing = bundledImage ? 'Linux packages are' : 'VM image is'
+    throw new Error(`Built-in runtime can't be set up: the app's ${missing} missing. Reinstall the app to fix this.`)
+  }
+
   const lines = [
     '# Lima VM for Superagent container runtime',
     'vmType: vz',
     'mountType: virtiofs',
     'mounts:',
-    '  - location: "~"',
+    // Virtualization.framework refuses to share an App Sandbox container's root,
+    // so there the VM gets the data dir only: every workspace and env file the
+    // agent containers mount is under it.
+    `  - location: "${runsInAppSandbox(getServerFacts()) ? getDataDir() : '~'}"`,
     '    writable: true',
     'cpus: 4',
     `memory: ${vmMemory}`,

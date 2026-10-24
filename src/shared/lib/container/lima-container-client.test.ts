@@ -47,6 +47,14 @@ vi.mock('@shared/lib/config/data-dir', () => ({
   getDataDir: () => '/Users/testuser/Library/Application Support/Superagent',
 }))
 
+// The regular desktop build unless a test says otherwise. LIMA_VM_NAME is fixed
+// when the module loads, so the sandboxed name is checked in
+// lima-container-client.sandbox.test.ts.
+const serverFacts = vi.hoisted(() => ({ distribution: 'direct' as 'direct' | 'mac-app-store' }))
+vi.mock('@shared/lib/facts/server-facts', () => ({
+  getServerFacts: () => ({ os: 'darwin', distribution: serverFacts.distribution }),
+}))
+
 vi.mock('@shared/lib/error-reporting', () => ({
   captureException: vi.fn(),
   captureMessage: vi.fn(),
@@ -1299,7 +1307,7 @@ describe('first-boot packages', () => {
   const INSTANCE_YAML = '/Users/testuser/.superagent/lima/superagent/lima.yaml'
 
   /** A filesystem with an optional bundle, staged copy and existing VM. */
-  function files(opts: { bundle?: string; staged?: string; instanceYaml?: string }) {
+  function files(opts: { bundle?: string; staged?: string; instanceYaml?: string; noImage?: boolean }) {
     const enoent = () => { const e: any = new Error('ENOENT'); e.code = 'ENOENT'; throw e }
     mockedFs.readFileSync.mockImplementation(((p: any) => {
       const s = String(p)
@@ -1312,7 +1320,8 @@ describe('first-boot packages', () => {
     mockedFs.existsSync.mockImplementation(((p: any) => {
       const s = String(p)
       if (s === `${BUNDLED}/packages.txt`) return opts.bundle !== undefined
-      if (s.startsWith('/app/resources/lima/')) return true // limactl, wrapper, image
+      if (s === '/app/resources/lima/alpine.qcow2') return !opts.noImage
+      if (s.startsWith('/app/resources/lima/')) return true // limactl, wrapper
       return false
     }) as any)
   }
@@ -1381,6 +1390,42 @@ describe('first-boot packages', () => {
     expect(config).toContain('apk add --no-cache containerd~=2.2 containerd-openrc nerdctl~=2.1 buildkit~=0.25 cni-plugins')
     expect(config).not.toContain('--no-network')
     expect(mockedFs.cpSync).not.toHaveBeenCalled()
+  })
+
+  describe('in the App Sandbox', () => {
+    beforeEach(() => {
+      serverFacts.distribution = 'mac-app-store'
+    })
+    afterEach(() => {
+      serverFacts.distribution = 'direct'
+    })
+
+    it('a new VM mounts only the data dir, since Virtualization.framework won’t share the container root', async () => {
+      files({ bundle: 'containerd-2.2.0-r8\n' })
+      mockExec({ list: [] })
+
+      await ensureLimaReady()
+
+      const config = createdConfig()
+      expect(config).toContain('mounts:\n  - location: "/Users/testuser/Library/Application Support/Superagent"\n    writable: true')
+      expect(config).not.toContain('location: "~"')
+    })
+
+    it.each([
+      ['Linux packages', { noImage: false }, "Built-in runtime can't be set up: the app's Linux packages are missing."],
+      ['VM image', { bundle: 'containerd-2.2.0-r8\n', noImage: true }, "Built-in runtime can't be set up: the app's VM image is missing."],
+    ])('refuses to create a VM without the bundled %s rather than download it', async (_, opts, message) => {
+      files(opts)
+      mockExec({ list: [] })
+
+      await expect(ensureLimaReady()).rejects.toThrow(message)
+      expect(createdConfig()).toBe('')
+      expect(mockedExecWithPath.mock.calls.some(([cmd]) => String(cmd).includes(' create '))).toBe(false)
+    })
+
+    it('keeps Lima’s home short enough for its sockets under the container’s home', () => {
+      expect(getLimaHome()).toBe('/Users/testuser/l')
+    })
   })
 
   it('does not copy again when the staged copy already matches the bundle', async () => {
