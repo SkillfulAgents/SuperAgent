@@ -68,6 +68,7 @@ vi.mock('os', async () => {
 })
 
 import * as fs from 'fs'
+import { execSync } from 'child_process'
 import { execWithPath } from './base-container-client'
 import { getSettings } from '@shared/lib/config/settings'
 import { captureMessage } from '@shared/lib/error-reporting'
@@ -915,5 +916,366 @@ describe('verifyDataDirVisibleInVm', () => {
     const client = new LimaContainerClient({ agentId: 'test-agent' } as any) as any
 
     await expect(client.beforeRun()).rejects.toThrow(/can't see the app's data folder/)
+  })
+})
+
+// ============================================================================
+// Stopping the VM — power the guest off over SSH first; force-stop only a host
+// agent this process can signal. A force-stop of a host agent from another
+// launch (EPERM) deletes its pid/socket files without killing it, orphaning
+// the VM until a reboot ("EFI variable store is already in use").
+// ============================================================================
+
+describe('stopping the VM', () => {
+  let killSpy: any
+
+  /**
+   * A VM whose host agent is `owner` (ours / another launch / none), and
+   * whose guest does or doesn't power off when asked.
+   */
+  function vm(opts: {
+    owner: 'ours' | 'another launch' | 'none'
+    poweroffWorks: boolean
+    list?: any[]
+    startError?: Error
+    memorySetting?: string
+  }) {
+    const state = { pid: opts.owner === 'none' ? undefined : '4321' }
+    const enoent = () => { const e: any = new Error('ENOENT'); e.code = 'ENOENT'; throw e }
+    mockedFs.readFileSync.mockImplementation(((p: any) => {
+      const s = String(p)
+      if (s.endsWith('ha.pid')) return state.pid ?? enoent()
+      if (s.endsWith('lima-version')) return 'v99.0.0'
+      return ''
+    }) as any)
+    mockedFs.existsSync.mockImplementation(((p: any) => {
+      const s = String(p)
+      if (s.endsWith('ha.pid') || s.endsWith('ha.sock')) return state.pid !== undefined
+      return false
+    }) as any)
+    killSpy = vi.spyOn(process, 'kill').mockImplementation((() => {
+      const e: any = new Error()
+      if (state.pid === undefined) { e.code = 'ESRCH'; throw e }
+      if (opts.owner === 'another launch') { e.code = 'EPERM'; throw e }
+      return true
+    }) as any)
+    // ps names the host agent's executable.
+    vi.mocked(execSync).mockImplementation((() => '/Applications/Gamut.app/Contents/Resources/lima/bin/limactl\n') as any)
+    const listJson = (opts.list ?? []).map((v) => JSON.stringify(v)).join('\n')
+    mockedExecWithPath.mockImplementation(((cmd: string) => {
+      if (cmd.includes('sudo poweroff')) {
+        if (opts.poweroffWorks) state.pid = undefined
+        return Promise.reject(new Error('Connection to 127.0.0.1 closed by remote host.'))
+      }
+      if (cmd.includes('stop --force') || cmd.includes('delete')) {
+        // Lima deletes ha.pid either way; it only kills a host agent it may signal.
+        state.pid = undefined
+        return Promise.resolve({ stdout: '', stderr: '' })
+      }
+      if (cmd.includes('list --json')) return Promise.resolve({ stdout: listJson, stderr: '' })
+      if (cmd.includes(' start ')) return opts.startError ? Promise.reject(opts.startError) : Promise.resolve({ stdout: '', stderr: '' })
+      return Promise.resolve({ stdout: '', stderr: '' })
+    }) as any)
+    mockedGetSettings.mockReturnValue({
+      container: { runtimeSettings: opts.memorySetting ? { lima: { vmMemory: opts.memorySetting } } : {} },
+    } as any)
+    return state
+  }
+
+  const poweroffs = () => execCmds().filter((c) => c.includes(`shell --workdir / ${LIMA_VM_NAME} -- sudo poweroff`))
+  const forceStops = () => execCmds().filter((c) => c.includes('stop --force'))
+  const deletes = () => execCmds().filter((c) => c.includes(`delete ${LIMA_VM_NAME} --force`))
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useFakeTimers()
+    setResourcesPath(undefined)
+    process.env.HOME = '/Users/testuser'
+    mockedFs.readdirSync.mockReturnValue([] as any)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    killSpy?.mockRestore()
+    vi.mocked(execSync).mockReset()
+  })
+
+  it('powers the guest off and does not force-stop once the host agent exits', async () => {
+    vm({ owner: 'ours', poweroffWorks: true })
+
+    await stopLimaVm()
+
+    expect(poweroffs()).toHaveLength(1)
+    expect(forceStops()).toHaveLength(0)
+  })
+
+  it('lists the instance once the host agent has exited, so Lima drops the vz.pid it leaves behind', async () => {
+    vm({ owner: 'ours', poweroffWorks: true })
+
+    await stopLimaVm()
+
+    const cmds = execCmds()
+    const poweroffAt = cmds.findIndex((c) => c.includes('sudo poweroff'))
+    expect(cmds.findIndex((c) => c.includes('list --json'))).toBeGreaterThan(poweroffAt)
+  })
+
+  it('stops a VM another launch started by powering its guest off (no signal needed)', async () => {
+    vm({ owner: 'another launch', poweroffWorks: true })
+
+    await stopLimaVm()
+
+    expect(poweroffs()).toHaveLength(1)
+    expect(forceStops()).toHaveLength(0)
+  })
+
+  it('force-stops its own host agent when the guest does not power off in time', async () => {
+    vm({ owner: 'ours', poweroffWorks: false })
+
+    const stopped = stopLimaVm(1000)
+    await vi.advanceTimersByTimeAsync(1500)
+    await stopped
+
+    expect(poweroffs()).toHaveLength(1)
+    expect(forceStops()).toHaveLength(1)
+  })
+
+  it('never force-stops a host agent it cannot signal, and reports leaving the VM running', async () => {
+    vm({ owner: 'another launch', poweroffWorks: false })
+
+    const stopped = stopLimaVm(1000)
+    await vi.advanceTimersByTimeAsync(1500)
+    await stopped
+
+    expect(forceStops()).toHaveLength(0)
+    expect(vi.mocked(captureMessage)).toHaveBeenCalledWith(
+      expect.stringContaining('another launch'),
+      expect.objectContaining({ tags: { component: 'lima', operation: 'stop-unsignalable' } })
+    )
+  })
+
+  it('skips the poweroff when no host agent is running', async () => {
+    vm({ owner: 'none', poweroffWorks: false })
+
+    await stopLimaVm()
+
+    expect(poweroffs()).toHaveLength(0)
+    expect(forceStops()).toHaveLength(1)
+  })
+
+  it('a container force-stop never force-stops a host agent it cannot signal', async () => {
+    vm({ owner: 'another launch', poweroffWorks: false })
+
+    await (new LimaContainerClient({ agentId: 'test-agent' } as any) as any).forceStop()
+
+    expect(forceStops()).toHaveLength(0)
+  })
+
+  it('recreate powers the running VM off before deleting it', async () => {
+    vm({ owner: 'ours', poweroffWorks: true, memorySetting: '8GiB', list: [{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 ** 3 }] })
+
+    await ensureLimaReady()
+
+    const cmds = execCmds()
+    const poweroffAt = cmds.findIndex((c) => c.includes('sudo poweroff'))
+    const deleteAt = cmds.findIndex((c) => c.includes(`delete ${LIMA_VM_NAME} --force`))
+    expect(poweroffAt).toBeGreaterThanOrEqual(0)
+    expect(deleteAt).toBeGreaterThan(poweroffAt)
+    expect(forceStops()).toHaveLength(0)
+    expect(cmds.some((c) => c.includes('create'))).toBe(true)
+  })
+
+  it('recreate refuses to delete a VM whose host agent it can neither power off nor signal', async () => {
+    vm({ owner: 'another launch', poweroffWorks: false, memorySetting: '8GiB', list: [{ name: LIMA_VM_NAME, status: 'Running', memory: 4 * 1024 ** 3 }] })
+
+    const ready = ensureLimaReady().then(() => null, (e) => e)
+    await vi.advanceTimersByTimeAsync(20000)
+    const error = await ready
+
+    expect(error?.message).toMatch(/could not be stopped to rebuild it/)
+    expect(deletes()).toHaveLength(0)
+    expect(forceStops()).toHaveLength(0)
+    expect(execCmds().some((c) => c.includes('create'))).toBe(false)
+  })
+
+  it('zombie cleanup after a failed first start leaves a host agent it cannot signal alone', async () => {
+    vm({ owner: 'another launch', poweroffWorks: false, list: [], startError: new Error('EFI variable store is already in use') })
+
+    await expect(ensureLimaReady()).rejects.toThrow('EFI variable store is already in use')
+
+    expect(deletes()).toHaveLength(0)
+  })
+
+  it('zombie cleanup still deletes a failed first start this process owns', async () => {
+    vm({ owner: 'ours', poweroffWorks: false, list: [], startError: new Error('disk full') })
+
+    await expect(ensureLimaReady()).rejects.toThrow('disk full')
+
+    expect(deletes()).toHaveLength(1)
+  })
+})
+
+// ============================================================================
+// `limactl stop --force` and `delete --force` SIGKILL the pids in ha.pid and
+// vz.pid. A host agent that died without cleaning up leaves both, and their
+// pids may since belong to an unrelated process: drop a file whose live owner
+// isn't limactl before Lima reads it.
+// ============================================================================
+
+describe('leftover pid files', () => {
+  const VM_DIR = '/Users/testuser/.superagent/lima/superagent'
+  const LIMACTL = '/Applications/Gamut 2.app/Contents/Resources/lima/bin/limactl'
+  let killSpy: any
+
+  /**
+   * ha.pid and vz.pid hold the pids given (absent when undefined); `owners`
+   * maps a pid to the executable ps reports (missing → dead process,
+   * 'ps fails' → ps errors out). `list` gives `limactl list` from the files
+   * still present.
+   */
+  function leftover(opts: { haPid?: number; vzPid?: number; owners: Record<number, string>; list?: (files: Set<string>) => any[] }) {
+    const files = new Map<string, string>()
+    if (opts.haPid !== undefined) files.set(`${VM_DIR}/ha.pid`, `${opts.haPid}\n`)
+    if (opts.vzPid !== undefined) files.set(`${VM_DIR}/vz.pid`, `${opts.vzPid}\n`)
+    if (opts.list) files.set(`${VM_DIR}/lima-version`, 'v99.0.0')
+    mockedFs.readFileSync.mockImplementation(((p: any) => {
+      const contents = files.get(String(p))
+      if (contents === undefined) { const e: any = new Error('ENOENT'); e.code = 'ENOENT'; throw e }
+      return contents
+    }) as any)
+    mockedFs.existsSync.mockImplementation(((p: any) => files.has(String(p))) as any)
+    mockedFs.unlinkSync.mockImplementation(((p: any) => { files.delete(String(p)) }) as any)
+    killSpy = vi.spyOn(process, 'kill').mockImplementation(((pid: number) => {
+      if (opts.owners[pid] === undefined) { const e: any = new Error(); e.code = 'ESRCH'; throw e }
+      return true
+    }) as any)
+    vi.mocked(execSync).mockImplementation(((cmd: string) => {
+      const pid = Number(/^ps -o comm= -p (\d+)$/.exec(cmd)?.[1])
+      if (!pid || opts.owners[pid] === 'ps fails') throw new Error('ps: not permitted')
+      return `${opts.owners[pid]}\n`
+    }) as any)
+    mockedExecWithPath.mockImplementation(((cmd: string) => {
+      if (cmd.includes('list --json')) {
+        const names = new Set([...files.keys()].map((f) => f.slice(VM_DIR.length + 1)))
+        return Promise.resolve({ stdout: (opts.list?.(names) ?? []).map((v) => JSON.stringify(v)).join('\n'), stderr: '' })
+      }
+      return Promise.resolve({ stdout: '', stderr: '' })
+    }) as any)
+    return files
+  }
+
+  /** Whether every pid-file unlink came before the first limactl command containing `match`. */
+  function droppedBefore(match: string): boolean {
+    const at = mockedExecWithPath.mock.calls.findIndex((c) => String(c[0]).includes(match))
+    if (at < 0) return false
+    const commandOrder = mockedExecWithPath.mock.invocationCallOrder[at]
+    const unlinks = mockedFs.unlinkSync.mock.calls
+      .map((c, i) => ({ file: String(c[0]), order: mockedFs.unlinkSync.mock.invocationCallOrder[i] }))
+      .filter((u) => u.file.endsWith('.pid'))
+    return unlinks.length > 0 && unlinks.every((u) => u.order < commandOrder)
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useFakeTimers()
+    setResourcesPath(undefined)
+    process.env.HOME = '/Users/testuser'
+    mockedFs.readdirSync.mockReturnValue([] as any)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    killSpy?.mockRestore()
+    vi.mocked(execSync).mockReset()
+    mockedFs.unlinkSync.mockReset()
+  })
+
+  it('drops both pid files when a crash left them and their pids were reused, before force-stopping', async () => {
+    const files = leftover({ haPid: 777, vzPid: 778, owners: { 777: '/bin/sleep', 778: '/usr/bin/vim' } })
+
+    await stopLimaVm()
+
+    expect(files.has(`${VM_DIR}/ha.pid`)).toBe(false)
+    expect(files.has(`${VM_DIR}/vz.pid`)).toBe(false)
+    expect(droppedBefore('stop --force')).toBe(true)
+    // An unrelated process is no host agent: no poweroff, no waiting for it to exit.
+    expect(execCmds().some((c) => c.includes('sudo poweroff'))).toBe(false)
+    expect(vi.mocked(captureMessage)).toHaveBeenCalledWith(
+      expect.stringContaining('stale Lima ha.pid'),
+      expect.objectContaining({ tags: { component: 'lima', operation: 'stale-pid-file' } })
+    )
+  })
+
+  it('drops a reused ha.pid on its own (Lima SIGKILLs the host agent pid too)', async () => {
+    const files = leftover({ haPid: 777, owners: { 777: '/bin/sleep' } })
+
+    await stopLimaVm()
+
+    expect(files.has(`${VM_DIR}/ha.pid`)).toBe(false)
+    expect(droppedBefore('stop --force')).toBe(true)
+  })
+
+  it('drops a reused vz.pid when ha.pid is gone', async () => {
+    const files = leftover({ vzPid: 777, owners: { 777: '/usr/bin/vim' } })
+
+    await stopLimaVm()
+
+    expect(files.has(`${VM_DIR}/vz.pid`)).toBe(false)
+    expect(droppedBefore('stop --force')).toBe(true)
+  })
+
+  it('keeps pid files whose live owner is limactl, and powers that VM off', async () => {
+    const files = leftover({ haPid: 4321, vzPid: 4321, owners: { 4321: LIMACTL } })
+
+    const stopped = stopLimaVm(1000)
+    await vi.advanceTimersByTimeAsync(1500)
+    await stopped
+
+    expect(mockedFs.unlinkSync).not.toHaveBeenCalled()
+    expect(files.has(`${VM_DIR}/ha.pid`)).toBe(true)
+    expect(execCmds().some((c) => c.includes('sudo poweroff'))).toBe(true)
+  })
+
+  it('keeps pid files when ps cannot tell who owns them', async () => {
+    leftover({ haPid: 777, vzPid: 777, owners: { 777: 'ps fails' } })
+
+    const stopped = stopLimaVm(1000)
+    await vi.advanceTimersByTimeAsync(1500)
+    await stopped
+
+    expect(mockedFs.unlinkSync).not.toHaveBeenCalled()
+  })
+
+  it('leaves pid files whose process is gone to Lima', async () => {
+    leftover({ haPid: 777, vzPid: 778, owners: {} })
+
+    await stopLimaVm()
+
+    expect(mockedFs.unlinkSync).not.toHaveBeenCalled()
+    expect(vi.mocked(execSync)).not.toHaveBeenCalled()
+  })
+
+  it('drops a reused ha.pid before Lima lists the VM, so it starts the VM instead of rebuilding it as Broken', async () => {
+    // Lima calls a VM with one live pid file Broken, and with none Stopped.
+    leftover({
+      haPid: 777,
+      owners: { 777: '/bin/sleep' },
+      list: (names) => [{ name: LIMA_VM_NAME, status: names.has('ha.pid') ? 'Broken' : 'Stopped', memory: 4 * 1024 ** 3 }],
+    })
+
+    await ensureLimaReady()
+
+    expect(droppedBefore('list --json')).toBe(true)
+    expect(execCmds().some((c) => c.includes(`start ${LIMA_VM_NAME}`))).toBe(true)
+    expect(execCmds().some((c) => c.includes('delete'))).toBe(false)
+  })
+
+  it('drops reused pid files before deleting the VM to recreate it', async () => {
+    const files = leftover({ haPid: 777, vzPid: 778, owners: { 777: '/bin/sleep', 778: '/bin/sleep' }, list: () => [{ name: LIMA_VM_NAME, status: 'Stopped', memory: 4 * 1024 ** 3 }] })
+    mockedGetSettings.mockReturnValue({ container: { runtimeSettings: { lima: { vmMemory: '8GiB' } } } } as any)
+
+    await ensureLimaReady()
+
+    expect(files.has(`${VM_DIR}/ha.pid`) || files.has(`${VM_DIR}/vz.pid`)).toBe(false)
+    expect(droppedBefore(`delete ${LIMA_VM_NAME} --force`)).toBe(true)
   })
 })
