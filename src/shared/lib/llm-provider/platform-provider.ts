@@ -15,7 +15,7 @@ import { parseModelNotInPlan, platformModelAvailability } from './platform-plan-
 import { actingPlanPolicy } from './platform-plan-account'
 import { platformPlanCache } from './platform-plan-cache'
 import { getPlatformContainerToken } from '@shared/lib/platform-attribution/container-token'
-import { getPlatformAccessToken, getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
+import { getPlatformAccessToken, getPlatformAppKey, getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
 import { getPlatformBaseUrl, getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import type { ApiKeyStatus } from '../config/settings'
 
@@ -56,7 +56,7 @@ export class PlatformLlmProvider extends BaseLlmProvider {
   }
 
   override getEffectiveApiKey(): string | undefined {
-    return getPlatformAccessToken() ?? process.env[this.envVarName] ?? undefined
+    return getPlatformAppKey()
   }
 
   override readonly supportsUsage = true
@@ -120,7 +120,7 @@ export class PlatformLlmProvider extends BaseLlmProvider {
     const proxyUrl = getPlatformProxyBaseUrl()
     const containerUrl = rewriteLoopbackForContainer(proxyUrl)
 
-    const authToken = await getPlatformContainerToken(agent?.id) ?? this.getEffectiveApiKey()
+    const authToken = await getPlatformContainerToken(agent?.id)
 
     // Agent identity rides into the container as plain env vars; the container
     // folds them into ANTHROPIC_CUSTOM_HEADERS itself (see agent-container/src/

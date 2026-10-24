@@ -24,6 +24,7 @@ import {
   DEFAULT_AGENT_INSTRUCTIONS,
 } from '@shared/lib/types/agent'
 import type { ApiAgent } from '@shared/lib/types/api'
+import { revokePlatformAgentKey } from '@shared/lib/platform-attribution/container-token'
 import { agentAvatarSchema, type AgentAvatar } from '@shared/lib/types/agent-avatar'
 import { workspaceAgentDescriptionSchema, workspaceAgentNameSchema } from './agent-identity-schema'
 import {
@@ -451,6 +452,13 @@ export async function deleteAgent(slug: string): Promise<boolean> {
   // forget the handle and runtime the stop above created for it.
   await agentCatalog.remove(slug)
   await agentRegistry.evict(slug)
+
+  // After the catalog removal, so the agent cannot mint again.
+  try {
+    await revokePlatformAgentKey(slug)
+  } catch (error) {
+    console.error('Failed to revoke platform agent key:', error)
+  }
 
   return true
 }
