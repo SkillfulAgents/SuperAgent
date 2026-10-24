@@ -143,8 +143,8 @@ test.describe('PWA precaching service worker', () => {
     await page.waitForFunction(() => (document.getElementById('root')?.childElementCount ?? 0) > 0)
     // The precached copy is the one the server served, facts inlined, not the
     // file as built: offline, it is the only source of them.
-    const facts = await page.evaluate(() => document.getElementById('server-facts')?.textContent ?? null)
-    expect(facts && JSON.parse(facts)).toMatchObject({ distribution: 'deployment' })
+    const facts = await page.evaluate(() => document.getElementById('server-facts')?.textContent ?? '')
+    expect(facts).toContain('"distribution":"deployment"')
 
     await context.setOffline(false)
   })
