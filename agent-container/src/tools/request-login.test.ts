@@ -80,18 +80,20 @@ describe('request_login tool', () => {
     const tool = createRequestLoginTool(() => 'session-1') as unknown as { inputSchema: Record<string, { safeParse: (v: unknown) => { success: boolean } }> }
     expect(tool.inputSchema.message.safeParse('  ').success).toBe(false)
     expect(tool.inputSchema.message.safeParse('Sign in to GitHub.').success).toBe(true)
+    expect(tool.inputSchema.providers.safeParse(['google', 'apple']).success).toBe(true)
+    expect(tool.inputSchema.providers.safeParse(['passkey']).success).toBe(false)
   })
 
   it('locates the fields for its own session, parks on the user, and reports the fill', async () => {
     const fetchMock = respond(200, prepared)
     vi.stubGlobal('fetch', fetchMock)
     inputManager.setCurrentToolUseId('login-ok')
-    const done = handlerFor('session-7')(args)
+    const done = handlerFor('session-7')({ ...args, providers: ['google', 'apple'] } as typeof args)
 
     await vi.waitFor(() => expect(inputManager.hasPending('login-ok')).toBe(true))
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toMatch(/\/browser\/login\/prepare$/)
-    expect(JSON.parse(String(init.body))).toEqual({ sessionId: 'session-7', toolUseId: 'login-ok', fields: args.fields, submitRef: '@e7' })
+    expect(JSON.parse(String(init.body))).toEqual({ sessionId: 'session-7', toolUseId: 'login-ok', fields: args.fields, submitRef: '@e7', providers: ['google', 'apple'] })
     const parked = inputManager.getAllPending().find((p) => p.toolUseId === 'login-ok')
     expect(parked).toMatchObject({ inputType: 'login', metadata: { origin: 'https://github.com', message: args.message } })
 
@@ -131,6 +133,22 @@ describe('request_login tool', () => {
     const text = (await done).content[0].text
     expect(text).not.toContain('hunter2-pass')
     expect(text).toContain('password=[redacted]')
+  })
+
+  it('names a saved account whole though a value typed into another field is part of its username', async () => {
+    vi.stubGlobal('fetch', respond(200, prepared))
+    inputManager.setCurrentToolUseId('login-names')
+    const done = handlerFor()(args)
+    await vi.waitFor(() => expect(inputManager.hasPending('login-names')).toBe(true))
+    // The user typed workspace "acme" on an earlier step.
+    rememberInjectedSecret('acme')
+    inputManager.resolve('login-names', JSON.stringify({
+      type: 'accounts',
+      site: 'github.com',
+      accounts: [{ username: 'jane@acme.com', label: null, parts: ['password'], via: null }],
+    }))
+    const text = (await done).content[0].text
+    expect(text).toContain('- jane@acme.com: holds a password')
   })
 
   it('refuses to park when the browser closed while the fields were located', async () => {
@@ -174,6 +192,88 @@ describe('request_login tool', () => {
     inputManager.rejectByType('login', 'The browser was closed before the user completed this request')
     const result = await done
     expect(result.content[0].text).toBe('Sign-in request cancelled: The browser was closed before the user completed this request.')
+  })
+})
+
+describe('formatLoginResolution for the vault', () => {
+  it('lists the saved accounts the agent may use, what each holds, and how to use one', () => {
+    const { content, isError } = formatLoginResolution({
+      type: 'accounts',
+      site: 'github.com',
+      accounts: [
+        { username: 'octocat', label: 'Work', parts: ['password', 'text:workspace'], via: null },
+        { username: 'me@gmail.com', label: null, parts: [], via: { site: 'google.com', username: 'me@gmail.com', name: 'Google' } },
+        { username: 'hubot', label: null, parts: [], via: null },
+        { username: 'old@example.com', label: null, parts: ['password'], via: null, rejected: true },
+      ],
+    })
+    expect(isError).toBeUndefined()
+    expect(content[0].text).toBe([
+      'Nothing was filled. Saved accounts on github.com you may use:',
+      '- octocat ("Work"): holds a password and "workspace"',
+      '- me@gmail.com: signs in with the Google account me@gmail.com (google.com)',
+      '- hubot: no saved password or other value yet',
+      '- old@example.com: holds a password (the site rejected its saved password, as reported earlier: using it asks the user)',
+      'To sign in with one, call request_login again with username set to it. To ask the user for another account, call it with ask_user: true.',
+    ].join('\n'))
+  })
+
+  it('names the provider account to pick, and only that one', () => {
+    const text = formatLoginResolution({
+      type: 'via',
+      site: 'medium.com',
+      username: 'me@gmail.com',
+      provider: { site: 'google.com', username: 'me@gmail.com', name: 'Google' },
+      saved: true,
+    }).content[0].text
+    expect(text).toContain('The user signs in to medium.com with the Google account me@gmail.com, saved to their vault for this site.')
+    expect(text).toContain('pick me@gmail.com and no other account')
+    expect(text).toContain('call request_login on its page with username "me@gmail.com"')
+  })
+
+  it('says the agent named an account but mapped no field, without repeating the call it made', () => {
+    const text = formatLoginResolution({
+      type: 'accounts',
+      site: 'github.com',
+      named: true,
+      accounts: [{ username: 'octocat', label: null, parts: ['password'], via: null }],
+    }).content[0].text
+    expect(text).toBe([
+      'Nothing was filled: this call mapped no field.',
+      '- octocat: holds a password',
+      "To sign in with it, call request_login with username set to it and the page's sign-in fields mapped by ref.",
+    ].join('\n'))
+  })
+
+  it('reports a fill and a held field whose account the host does not know', () => {
+    const text = formatLoginResolution({
+      type: 'filled',
+      origin: 'https://github.com',
+      outcomes: [{ ref: '@e3', kind: 'otp', label: 'Code', status: 'filled' }],
+      lost: [],
+      submitted: { via: 'click', ref: '@e7' },
+      account: { site: 'github.com', source: 'user', saved: false, held: ['Password'] },
+    }).content[0].text
+    expect(text).toContain("Filled 1 of 1 field on https://github.com with the user's input")
+    expect(text).toContain('The user also entered "Password" for a later step; the host holds it. When the page asks for it, call request_login and map that field.')
+    expect(text).not.toContain('undefined')
+  })
+
+  it('says a fill came from a saved account, or was saved, and what is held for the next step', () => {
+    const base = {
+      type: 'filled' as const,
+      origin: 'https://github.com',
+      outcomes: [{ ref: '@e3', kind: 'username' as const, label: 'Email', status: 'filled' as const }],
+      lost: [],
+      submitted: { via: 'click' as const, ref: '@e7' },
+    }
+    const vault = formatLoginResolution({ ...base, account: { username: 'octocat', site: 'github.com', source: 'vault', saved: false, held: [] } }).content[0].text
+    expect(vault).toContain('Filled 1 of 1 field on https://github.com from the saved account octocat: @e3 "Email" (username).')
+
+    const saved = formatLoginResolution({ ...base, account: { username: 'octocat', site: 'github.com', source: 'user', saved: true, held: ['Password'] } }).content[0].text
+    expect(saved).toContain("with the user's input")
+    expect(saved).toContain('The user saved this to their vault as account octocat on github.com.')
+    expect(saved).toContain('The user also entered "Password" for a later step; the host holds it for account octocat. When the page asks for it, call request_login with username "octocat" and map that field.')
   })
 })
 

@@ -15,7 +15,7 @@ vi.mock('../db', () => ({
 }))
 vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => false }))
 
-import { changeMemberRole, countMembersWithMinRole, removeMember } from './agent-members-service'
+import { changeMemberRole, countMembersWithMinRole, countOtherMembers, removeMember } from './agent-members-service'
 
 const { agentAcl, user } = schema
 const AGENT = 'shared-agent'
@@ -55,6 +55,22 @@ describe('countMembersWithMinRole', () => {
     testDb.insert(agentAcl).values({ id: 'acl-elsewhere', userId: 'bob', agentSlug: 'other-agent', role: 'owner', createdAt: new Date() }).run()
     expect(await countMembersWithMinRole(AGENT, 'user')).toBe(2)
     expect(await countMembersWithMinRole(AGENT, 'owner')).toBe(1)
+  })
+})
+
+describe('countOtherMembers', () => {
+  it('counts who can have the agent act for them besides the caller: members who may message it, and every admin', async () => {
+    seed([{ id: 'ann', role: 'owner' }, { id: 'bob', role: 'viewer' }, { id: 'cy', role: 'user' }])
+    testDb.insert(user).values({ id: 'admin', name: 'admin', email: 'admin@example.test', role: 'admin' }).run()
+    testDb.insert(user).values({ id: 'gone', name: 'gone', email: 'gone@example.test', role: 'admin', banned: true }).run()
+    testDb.insert(user).values({ id: 'dee', name: 'dee', email: 'dee@example.test' }).run()
+    // cy and the admin; bob only views it, and dee is not on it.
+    expect(await countOtherMembers(AGENT, 'ann')).toBe(2)
+    expect(await countOtherMembers(AGENT, 'admin')).toBe(2)
+    expect(await countOtherMembers(AGENT, null)).toBe(3)
+    // An agent with no members of its own: the admin can still drive it.
+    expect(await countOtherMembers('other-agent', 'ann')).toBe(1)
+    expect(await countOtherMembers('other-agent', 'admin')).toBe(0)
   })
 })
 

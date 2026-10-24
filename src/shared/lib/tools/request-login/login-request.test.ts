@@ -30,10 +30,20 @@ describe('login request helpers', () => {
     }
   })
 
-  it('rejects a fill body with anything beyond the origin and the values', () => {
-    expect(fillLoginBodySchema.safeParse({ toolUseId: 't', origin: 'https://a.com', values: ['x'] }).success).toBe(true)
-    expect(fillLoginBodySchema.safeParse({ toolUseId: 't', origin: 'https://a.com', values: ['x'], refs: ['@e1'] }).success).toBe(false)
-    expect(fillLoginBodySchema.safeParse({ toolUseId: 't', origin: 'https://a.com', values: [] }).success).toBe(false)
+  it('takes the values and the vault options in a fill body, and nothing else', () => {
+    const base = { toolUseId: 't', origin: 'https://a.com', values: ['x'] }
+    expect(fillLoginBodySchema.safeParse(base).success).toBe(true)
+    expect(fillLoginBodySchema.safeParse({
+      ...base,
+      heldValues: ['next'],
+      save: true,
+      username: 'me@a.com',
+      accountId: 'acc-1',
+      sharedAgentAcknowledged: true,
+    }).success).toBe(true)
+    expect(fillLoginBodySchema.safeParse({ ...base, refs: ['@e1'] }).success).toBe(false)
+    expect(fillLoginBodySchema.safeParse({ ...base, origin: undefined }).success).toBe(false)
+    expect(fillLoginBodySchema.safeParse({ ...base, values: Array.from({ length: 7 }, () => 'x') }).success).toBe(false)
   })
 
   it('names the site by its host, keeping a port that is not the default', () => {

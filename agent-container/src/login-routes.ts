@@ -20,6 +20,9 @@ import {
   pageActivityNow,
   PageWatch,
   prepareLogin,
+  preparePage,
+  type HeldLoginField,
+  type LoginFieldRequest,
   type LoginFillDeps,
   type PageActivity,
   type WrittenField,
@@ -103,6 +106,8 @@ export interface LoginRouteDeps {
   notifyBrowserAction(): void
   /** How long the host's context read waits for the tool to finish locating fields. */
   contextWaitMs?: number
+  /** How long a fill waits for the tool to open its request once the fields are located. */
+  pendingWaitMs?: number
   /** How long to watch the page after the writes for it to submit the form itself. */
   pageSubmitWaitMs?: number
   /** The same after a one-time code, which a page may verify on its last digit, after a debounce. */
@@ -120,6 +125,22 @@ const LOST_PROBLEMS: Record<LoginFillReport['lost'][number]['state'], string> = 
 function recordActivity(report: LoginFillReport, activity: PageActivity): void {
   if (activity.kind === 'submit') report.submitted = { via: 'page' }
   else report.pageActivity = activity
+}
+
+/** Kinds a field may be mapped without a ref for: a value entered now, for a later step. */
+const HOLDABLE_KINDS = new Set<HeldLoginField['kind']>(['password', 'text'])
+
+/**
+ * The tool opens its request right after the fields are located; the host
+ * can ask for a fill (from a saved account) in between. Wait out that gap.
+ */
+async function pendingLoginOpened(toolUseId: string, waitMs: number): Promise<boolean> {
+  const deadline = Date.now() + waitMs
+  while (!inputManager.hasPendingOfType(toolUseId, 'login')) {
+    if (Date.now() >= deadline || !getPreparedLogin(toolUseId)) return false
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  return true
 }
 
 export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
@@ -143,15 +164,25 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
     const sessionError = deps.validateSession(body.sessionId)
     if (sessionError) return fail(409, [sessionError])
     if (!deps.browserActive()) return fail(409, ['no browser is open'])
+    const located = body.fields.filter((field): field is LoginFieldRequest => field.ref !== undefined)
+    const held: HeldLoginField[] = body.fields.filter((field) => field.ref === undefined).map(({ kind, label }) => ({ kind, label }))
+    const unholdable = held.find((field) => !HOLDABLE_KINDS.has(field.kind))
+    if (unholdable) {
+      return fail(422, [`"${unholdable.label}" (${unholdable.kind}) has no ref: only a password or text field can be asked for ahead of its step`])
+    }
+    if (held.length > 0 && located.length === 0) {
+      return fail(422, ['every field is mapped without a ref: a field without one is asked together with the fields on the page now'])
+    }
+    if (body.submitRef && located.length === 0) return fail(422, ['a submit ref needs at least one field mapped by ref'])
     try {
       const fillDeps = deps.fillDeps()
       if (body.submitRef) {
-        if (body.fields.some((field) => field.ref === body.submitRef)) {
+        if (located.some((field) => field.ref === body.submitRef)) {
           return fail(422, [`${body.submitRef} is mapped as a field and as the submit button`])
         }
         if (!(await fillDeps.boxOfRef(body.submitRef))) return fail(422, [`the box of the submit ref ${body.submitRef} could not be read`])
       }
-      const result = await prepareLogin(fillDeps, body.fields)
+      const result = located.length ? await prepareLogin(fillDeps, located) : await preparePage(fillDeps)
       if (!result.ok) return fail(422, result.problems)
       putPreparedLogin({
         toolUseId: body.toolUseId,
@@ -160,10 +191,12 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
         url: result.url,
         topOrigin: result.topOrigin,
         fields: result.fields,
+        held,
+        providers: [...new Set(body.providers)],
         submitRef: body.submitRef,
         preparedAt: Date.now(),
       })
-      return c.json({ origin: result.origin, url: result.url, topOrigin: result.topOrigin, fields: result.fields })
+      return c.json({ origin: result.origin, url: result.url, topOrigin: result.topOrigin, fields: result.fields, held })
     } catch (error) {
       console.error('[Browser] Sign-in preparation failed:', error instanceof Error ? error.message : 'Unknown error')
       return fail(500, [`the page could not be read: ${error instanceof Error ? error.message : 'unknown error'}`])
@@ -196,6 +229,8 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
         autocomplete: field.autocomplete,
         maxLength: field.maxLength,
       })),
+      held: prepared.held,
+      providers: prepared.providers,
     })
   })
 
@@ -208,7 +243,7 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
     if (!parsed.success) return c.json({ error: 'Invalid sign-in fill request' }, 400)
     const body = parsed.data
     const prepared = getPreparedLogin(body.toolUseId)
-    if (!prepared || !inputManager.hasPendingOfType(body.toolUseId, 'login')) {
+    if (!prepared || !(await pendingLoginOpened(body.toolUseId, deps.pendingWaitMs ?? 3000))) {
       return c.json({ error: 'This sign-in request is no longer open' }, 409)
     }
     // The origin the host showed must be the one the browser located: the
@@ -250,7 +285,7 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
           await pageWatch.cover(element.sessionId)
         })
         for (const value of pageValues) rememberInjectedSecret(value)
-        report = { type: 'filled', origin: prepared.origin, outcomes, lost: [], submitted: null }
+        report = { type: 'filled', origin: prepared.origin, outcomes, lost: [], submitted: null, ...(body.account ? { account: body.account } : {}) }
         const refOf = (field: WrittenField) => prepared.fields[field.index].ref
 
         const failed = outcomes.some((outcome) => outcome.status === 'failed')

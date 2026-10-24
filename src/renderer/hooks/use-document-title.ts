@@ -56,6 +56,7 @@ const SETTINGS_TAB_TITLES = {
   platform: 'Account',
   connections: 'Connections',
   volumes: 'Drives',
+  logins: 'Logins',
   usage: 'Usage',
   llm: 'Model Provider',
   runtime: 'Container Runtime',

@@ -315,6 +315,8 @@ export class LiveSession {
       rejectInput: (toolUseId, reason) => this.answerInput(toolUseId, 'reject', { reason }),
       // A tool call's lookups can outlive this attachment.
       syncAwaiting: () => this.ctx.resyncAwaiting(),
+      // The map is carried across a reattach, like the lookups.
+      settled: (toolUseId, outcome) => this.settledInputRequests.set(toolUseId, outcome),
       capabilityGranted: (capability) => this.ctx.capabilityGranted(capability),
       grantCapability: (capability) => this.ctx.grantCapability(capability),
       trackSubagentLaunch: (toolUseId, input) => this.subagents.trackLaunch(toolUseId, input),

@@ -95,6 +95,14 @@ describe('injected secret redaction', () => {
     expect(result).toEqual({ content: [{ type: 'text', text: `value: ${REDACTED}` }, image], isError: false })
   })
 
+  it('keeps the strings it is told to whole, and redacts the value everywhere else', () => {
+    rememberInjectedSecret('acme')
+    const result = redactToolResult({ content: [{ type: 'text', text: 'account jane@acme.com; workspace acme; acme.com' }] }, ['jane@acme.com', 'acme.com'])
+    expect(result.content[0].text).toBe(`account jane@acme.com; workspace ${REDACTED}; acme.com`)
+    // Nothing to keep: as before.
+    expect(redactToolResult({ content: [{ type: 'text', text: 'jane@acme.com' }] }).content[0].text).toBe(`jane@${REDACTED}.com`)
+  })
+
   it('redacts every occurrence, and the longest match first', () => {
     rememberInjectedSecret('abcd')
     rememberInjectedSecret('abcdefgh')

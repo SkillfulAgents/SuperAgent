@@ -12,6 +12,7 @@ import volumeDefinitions from './routes/volume-definitions'
 import volumeTypes from './routes/volume-types'
 import webFetch from './routes/web-fetch'
 import connectedAccounts from './routes/connected-accounts'
+import browserAccounts from './routes/browser-accounts'
 import settings from './routes/settings'
 import providers from './routes/providers'
 import scheduledTasks from './routes/scheduled-tasks'
@@ -248,6 +249,7 @@ app.route('/api/x-agent/rules', xAgentRules)
 app.route('/api/web-search', webSearch)
 app.route('/api/web-fetch', webFetch)
 app.route('/api/connected-accounts', connectedAccounts)
+app.route('/api/browser-accounts', browserAccounts)
 app.route('/api/settings', settings)
 app.route('/api/providers', providers)
 app.route('/api/scheduled-tasks', scheduledTasks)

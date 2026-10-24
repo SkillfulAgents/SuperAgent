@@ -47,6 +47,8 @@ const CONTEXT: LoginContext = {
     { kind: 'password', label: 'Password', inputType: 'password', inputMode: '', autocomplete: 'current-password', maxLength: -1 },
     { kind: 'otp', label: 'Authentication code', inputType: 'text', inputMode: 'numeric', autocomplete: 'one-time-code', maxLength: 1 },
   ],
+  held: [],
+  providers: [],
 }
 
 const json = (status: number, body: unknown) => ({ ok: status < 400, status, json: () => Promise.resolve(body) })

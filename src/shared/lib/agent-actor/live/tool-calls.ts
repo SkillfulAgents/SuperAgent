@@ -27,6 +27,7 @@ import type { AgentInputRequests } from '@shared/lib/tools/requests/agent-input-
 import {
   isReplayableUserInputRequest,
   type StreamRequestKind,
+  type UserInputRequestOutcome,
 } from '@shared/lib/tools/requests/request-schema'
 import type { AskUserQuestionInput } from '@shared/lib/tools/ask-user-question/definition'
 import type { RequestSecretInput } from '@shared/lib/tools/request-secret/definition'
@@ -43,7 +44,7 @@ import type { AgentComputerUse } from '@shared/lib/computer-use/agent-permission
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp } from '@shared/lib/computer-use/types'
 import { unwrapComputerRun } from '@shared/lib/computer-use/computer-run'
 import { background } from '@shared/lib/background'
-import { hostToolNameOf, type HostPort, type HostToolName, type HostToolResult } from '../host-port'
+import { hostToolNameOf, type HostPort, type HostToolName, type HostToolResult, type LoginDecision } from '../host-port'
 import { runAutoApproved, type HostRunActor } from '../host-runs'
 import type { SessionEvent } from './session-channel'
 
@@ -73,6 +74,12 @@ export interface ToolCallContext {
   rejectInput(toolUseId: string, reason: string): Promise<void>
   /** Recompute whether the session is waiting on the user (on its live state, after any reattach). */
   syncAwaiting(): void
+  /**
+   * A request decided without a card (the vault answered a sign-in): its
+   * transcript result may still be held back by parallel siblings, and must
+   * not be parked again as an ask meanwhile.
+   */
+  settled(toolUseId: string, outcome: UserInputRequestOutcome): void
   capabilityGranted(capability: Capability): boolean
   grantCapability(capability: Capability): void
   /** A Task/Agent call: the subagent gets an entry. */
@@ -122,11 +129,12 @@ const USER_INPUT_REQUESTS: Record<
   login: {
     label: 'sign-in request',
     payload: (input) => {
-      const { message, fields } = input as RequestLoginInput
+      const { message, fields, username } = input as RequestLoginInput
       // The card draws the model's field list only until the container's
       // context arrives; refs never leave the container's side of the tool.
-      return typeof message === 'string' && message.trim() && Array.isArray(fields)
-        ? { message, fields: summarizeLoginFields(fields) }
+      // No fields is a page that offers only "Continue with Google".
+      return typeof message === 'string' && message.trim() && (fields === undefined || Array.isArray(fields))
+        ? { message, fields: summarizeLoginFields(fields), ...(typeof username === 'string' && username.trim() ? { username: username.trim() } : {}) }
         : 'missing message or fields'
     },
   },
@@ -163,10 +171,17 @@ export class ToolCalls {
    * suppresses its own stale card.
    */
   private readonly cancelledReviews: Set<string>
+  /**
+   * request_login calls the host is deciding: answered from the vault, or a
+   * card for the user. A result arriving meanwhile removes the id, so the
+   * decision does not raise a card for a call that already ended.
+   */
+  private readonly loginDecisions: Set<string>
 
   /** `prior`: the tool calls of the attachment this one replaces. */
   constructor(private readonly ctx: ToolCallContext, prior?: ToolCalls) {
     this.cancelledReviews = prior?.cancelledReviews ?? new Set()
+    this.loginDecisions = prior?.loginDecisions ?? new Set()
   }
 
   /** A tool call on the main agent's stream. */
@@ -216,6 +231,7 @@ export class ToolCalls {
     const blocks = Array.isArray(content.message?.content) ? content.message.content : []
     for (const block of blocks as Array<{ type: string; tool_use_id?: string; content?: unknown; is_error?: boolean }>) {
       if (block.type !== 'tool_result' || !block.tool_use_id) continue
+      this.loginDecisions.delete(block.tool_use_id)
       // Its result is in: replaying it to a client that connects later would
       // resurrect a decided card.
       this.ctx.requests.resolveIfInStore(block.tool_use_id, 'stream', block.is_error ? 'declined' : 'answered')
@@ -246,6 +262,7 @@ export class ToolCalls {
     if (!Array.isArray(blocks)) return
     for (const block of blocks as Array<{ type: string; tool_use_id?: string; content?: unknown; is_error?: boolean }>) {
       if (block.type !== 'tool_result' || !block.tool_use_id) continue
+      this.loginDecisions.delete(block.tool_use_id)
       if (!this.ctx.requests.resolveIfInStore(block.tool_use_id, 'stream', block.is_error ? 'declined' : 'answered')) continue
       // Every other tab drops the card off this (the resolving tab already did).
       this.ctx.emit({ type: 'tool_result', toolUseId: block.tool_use_id, result: block.content, isError: block.is_error || false })
@@ -271,6 +288,8 @@ export class ToolCalls {
     for (const { toolUseId, toolName } of unresolved) {
       const kind = getBlockingUserInputRequestKind(toolName)
       if (!kind || this.ctx.requests.getOpenRequest(toolUseId)) continue
+      // The host is deciding it: the vault may answer it, and a card is raised only if not.
+      if (this.loginDecisions.has(toolUseId)) continue
       this.register(kind, toolUseId, { recovered: true })
     }
   }
@@ -318,6 +337,8 @@ export class ToolCalls {
       const card = payload(input ?? {})
       if (typeof card === 'string') {
         console.error(`[LiveSession] ${label}: ${card}`)
+      } else if (kind === 'login') {
+        this.decideLogin(toolUse, card, parentToolUseId)
       } else {
         this.register(kind, toolUse.id, card, { parentToolUseId })
         if (kind === 'browser_input') this.captureBrowserContext(toolUse.id)
@@ -327,6 +348,41 @@ export class ToolCalls {
       console.error(`[LiveSession] Error handling ${label}:`, error)
     }
     this.ctx.syncAwaiting()
+  }
+
+  /**
+   * A sign-in request: the host answers it from the user's vault when it can
+   * (filling a saved account, or listing the agent's accounts on the site),
+   * and only otherwise does a card open for the user. Until it decides, the
+   * session is not waiting on anyone, so nothing notifies the user of a
+   * sign-in that needs nobody.
+   */
+  private decideLogin(toolUse: ToolUse, card: Record<string, unknown>, parentToolUseId?: string): void {
+    // The stream and the complete message both carry the call.
+    if (this.loginDecisions.has(toolUse.id)) return
+    this.loginDecisions.add(toolUse.id)
+    background(async () => {
+      let decision: LoginDecision
+      try {
+        decision = await this.ctx.host.call('loginRequest', {
+          agentSlug: this.ctx.agentSlug,
+          sessionId: this.ctx.sessionId,
+          toolUseId: toolUse.id,
+          input: toolUse.input,
+        })
+      } catch (error) {
+        console.error('[LiveSession] Deciding a sign-in request failed:', error instanceof Error ? error.message : error)
+        decision = { action: 'ask', vault: { mode: 'new' } }
+      }
+      // Removed by the call's result: it ended while the host decided.
+      if (!this.loginDecisions.delete(toolUse.id)) return
+      if (decision.action !== 'ask') {
+        this.ctx.settled(toolUse.id, decision.action === 'settled' ? 'answered' : 'cancelled')
+        return
+      }
+      this.register('login', toolUse.id, { ...card, vault: decision.vault, ...(decision.login ? { login: decision.login } : {}) }, { parentToolUseId })
+      this.ctx.syncAwaiting()
+    }, { name: 'tool-calls.decide-login' })
   }
 
   /**
