@@ -2,8 +2,9 @@
 # Downloads Lima (limactl) binary, guest agent, and a fresh Alpine cloud image
 # for bundling into the Electron app.
 #
-# Packages (containerd, nerdctl, etc.) are installed on first VM boot via
-# Lima's provision script — no pre-baking needed.
+# The packages a new VM installs on first boot (containerd, nerdctl, etc.;
+# src/shared/lib/container/lima-packages.json) are bundled as a local apk
+# repository, fetched over plain HTTPS: no VM needed, so this runs in CI.
 #
 # Usage: ./scripts/download-lima.sh [arm64|x86_64]
 #
@@ -12,6 +13,7 @@
 #   build/lima/bin/lima-nerdctl                         - nerdctl wrapper (scripts/lima-nerdctl)
 #   build/lima/share/lima/lima-guestagent.Linux-*.gz     - Guest agent for the VM
 #   build/lima/alpine.qcow2                             - Fresh Alpine cloud image
+#   build/lima/packages/                                - First-boot packages (local apk repository)
 #
 # electron-builder picks these up via the extraResources config in package.json.
 
@@ -103,6 +105,12 @@ echo "Downloading Alpine ${ALPINE_VERSION} cloud image..."
 curl -fSL "$ALPINE_URL" -o "$VM_IMAGE"
 
 echo "  alpine-image: $(du -h "$VM_IMAGE" | cut -f1)"
+
+# ── 3. Bundle the packages a new VM installs on first boot ────────────────────
+
+echo ""
+echo "Fetching first-boot packages for Alpine v${ALPINE_VERSION%.*} (${GUEST_ARCH})..."
+npx --no-install tsx "$(dirname "$0")/fetch-lima-packages.ts" "v${ALPINE_VERSION%.*}" "$GUEST_ARCH" "${OUTPUT_DIR}/packages"
 
 echo ""
 echo "Total bundle size: $(du -sh "$OUTPUT_DIR" | cut -f1)"

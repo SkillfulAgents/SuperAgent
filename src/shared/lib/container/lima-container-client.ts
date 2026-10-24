@@ -7,6 +7,7 @@ import { getDataDir } from '@shared/lib/config/data-dir'
 import { getSettings } from '@shared/lib/config/settings'
 import { DEFAULT_LIMA_VM_MEMORY } from './types'
 import type { ContainerConfig } from './types'
+import limaPackages from './lima-packages.json'
 import os from 'os'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 
@@ -73,6 +74,7 @@ function collectLimaDiagnostics(): Record<string, unknown> {
     try {
       const wrapperPath = getNerdctlWrapperPath()
       diag.nerdctl_wrapper_is_bundled = wrapperPath === getBundledNerdctlWrapperPath()
+      diag.packages_are_bundled = getBundledPackagesDir() !== null
       diag.nerdctl_wrapper_exists = fs.existsSync(wrapperPath)
       if (diag.nerdctl_wrapper_exists) {
         diag.nerdctl_wrapper_content = fs.readFileSync(wrapperPath, 'utf-8')
@@ -780,7 +782,24 @@ export async function ensureLimaReady(): Promise<void> {
   if (limaReadyPromise) {
     return limaReadyPromise
   }
-  limaReadyPromise = ensureLimaReadyImpl()
+  limaReadyPromise = ensureLimaReadyImpl().catch(async (error) => {
+    if (!(error instanceof ContainerdNeverRanError)) throw error
+    // containerd never ran in this VM, so it holds no images or containers:
+    // rebuilding it with this app's provisioning loses nothing.
+    const report = (message: string, level: 'warning' | 'error', provisionOutput: string) => captureMessage(message, {
+      level,
+      tags: { component: 'lima', operation: 'provision-check' },
+      extra: { output: provisionOutput.slice(-2000), packagesAreBundled: getBundledPackagesDir() !== null, ...collectLimaDiagnostics() },
+    })
+    report("Lima VM's containerd never ran, even after re-running its provisioning; rebuilding it", 'warning', error.provisionOutput)
+    try {
+      await ensureLimaReadyImpl({ rebuild: true })
+    } catch (retryError) {
+      if (!(retryError instanceof ContainerdNeverRanError)) throw retryError
+      report("Lima VM's containerd still never ran after a rebuild", 'error', retryError.provisionOutput)
+      throw Object.assign(retryError, { sentryCaptured: true })
+    }
+  })
   try {
     await limaReadyPromise
   } finally {
@@ -788,7 +807,7 @@ export async function ensureLimaReady(): Promise<void> {
   }
 }
 
-async function ensureLimaReadyImpl(): Promise<void> {
+async function ensureLimaReadyImpl(opts: { rebuild?: boolean } = {}): Promise<void> {
   const limaHome = getLimaHome()
   fs.mkdirSync(limaHome, { recursive: true })
 
@@ -817,8 +836,8 @@ async function ensureLimaReadyImpl(): Promise<void> {
   }
 
   // Check if existing VM was created with an older Lima that lacks time sync support
-  let needsRecreate = false
-  if (vmExists) {
+  let needsRecreate = vmExists && !!opts.rebuild
+  if (vmExists && !needsRecreate) {
     try {
       const versionFile = path.join(limaHome, LIMA_VM_NAME, 'lima-version')
       const vmVersion = fs.readFileSync(versionFile, 'utf-8').trim()
@@ -895,6 +914,7 @@ async function ensureLimaReadyImpl(): Promise<void> {
     // so `limactl start` succeeds instead of erroring on a missing ha.sock
     // forever (ELECTRON-4S). No-ops on a clean dir or a live VM (guardrail).
     cleanStaleHostAgentArtifacts()
+    restageBundledPackagesFor(path.join(limaHome, LIMA_VM_NAME, 'lima.yaml'))
 
     console.log('Starting Lima VM...')
     addErrorBreadcrumb({ category: 'lima', message: 'Starting Lima VM', data: { health: health.state } })
@@ -927,6 +947,8 @@ async function ensureLimaReadyImpl(): Promise<void> {
       })
     }
   }
+
+  await ensureContainerdProvisioned()
 
   // Create/update the nerdctl wrapper script
   createNerdctlWrapper()
@@ -1070,6 +1092,190 @@ function getBundledVmImagePath(): string | null {
   return null
 }
 
+/** The apk repository scripts/fetch-lima-packages.ts bundles next to limactl, if present. */
+function getBundledPackagesDir(): string | null {
+  if (typeof process !== 'undefined' && process.resourcesPath) {
+    const bundled = path.join(process.resourcesPath, 'lima', 'packages')
+    if (fs.existsSync(path.join(bundled, 'packages.txt'))) return bundled
+  }
+  return null
+}
+
+/** Where the guest links the staged packages from, for apk. */
+const STAGED_PACKAGES_IN_GUEST = '/run/superagent-lima-packages'
+
+/** Copy of the bundled packages inside the data folder, which the VM mounts; the app bundle usually isn't. */
+function getStagedPackagesDir(): string {
+  return path.join(getDataDir(), 'lima-packages')
+}
+
+/**
+ * Make the staged copy match the bundle (an APFS clone, so no extra disk on
+ * the same volume). Copied under a temporary name and renamed into place, so
+ * an interrupted copy never looks complete.
+ */
+function stageBundledPackages(bundled: string): string {
+  const staged = getStagedPackagesDir()
+  const manifest = (dir: string) => {
+    try { return fs.readFileSync(path.join(dir, 'packages.txt'), 'utf-8') } catch { return null }
+  }
+  if (manifest(staged) === manifest(bundled)) return staged
+  const partial = `${staged}.partial-${process.pid}`
+  fs.rmSync(partial, { recursive: true, force: true })
+  fs.cpSync(bundled, partial, { recursive: true, mode: fs.constants.COPYFILE_FICLONE })
+  fs.rmSync(staged, { recursive: true, force: true })
+  fs.renameSync(partial, staged)
+  return staged
+}
+
+/**
+ * Before starting a VM whose first-boot provisioning reads the staged
+ * packages, make sure they are there: a first boot cut short (e.g. the app
+ * quit mid-install) provisions again on the next start.
+ */
+function restageBundledPackagesFor(instanceConfig: string): void {
+  const bundled = getBundledPackagesDir()
+  if (!bundled) return
+  try {
+    if (!fs.readFileSync(instanceConfig, 'utf-8').includes(getStagedPackagesDir())) return
+    stageBundledPackages(bundled)
+  } catch (error) {
+    // Only a first boot that never finished needs the copy; never block a start on it.
+    addErrorBreadcrumb({ category: 'lima', message: 'Could not restage bundled packages', level: 'warning', data: { error: String(error) } })
+  }
+}
+
+/**
+ * First-boot provisioning, then containerd enabled and started on every boot.
+ *
+ * With bundled packages, apk installs from the staged copy only (no network,
+ * no other repositories), checking Alpine's index signature and each package
+ * against it. It runs as a dependency script, which Lima runs inside its own
+ * package step and before it: Lima then finds rsync present instead of
+ * installing it from Alpine's CDN. Without bundled packages (dev), from the CDN.
+ */
+function provisionScript(stagedPackages: string | null): string[] {
+  const packages = limaPackages.packages.join(' ')
+  if (!stagedPackages) {
+    return [
+      'provision:',
+      '  - mode: system',
+      '    script: |',
+      '      #!/bin/sh',
+      '      set -e',
+      '      if ! command -v nerdctl >/dev/null 2>&1; then',
+      '        echo "Installing containerd + nerdctl..."',
+      '        apk update',
+      `        apk add --no-cache ${packages}`,
+      '        rc-update add containerd default',
+      '      fi',
+      '      service containerd start || true',
+    ]
+  }
+  const fromStaged = `--no-network --no-cache --repositories-file /dev/null --repository ${STAGED_PACKAGES_IN_GUEST}/main --repository ${STAGED_PACKAGES_IN_GUEST}/community`
+  const names = limaPackages.packages.map((spec) => spec.split('~')[0]).join(' ')
+  return [
+    'provision:',
+    '  - mode: dependency',
+    '    script: |',
+    '      #!/bin/sh',
+    '      set -e',
+    '      installed() { command -v containerd && command -v nerdctl && command -v rsync; } >/dev/null 2>&1',
+    '      installed && exit 0',
+    '      echo "Installing containerd + nerdctl from the packages bundled with the app..."',
+    // apk misreads a repository path with a space (the data folder has one), so use a link.
+    `      ln -sfn ${shellEscape(stagedPackages)} ${STAGED_PACKAGES_IN_GUEST}`,
+    `      apk add ${fromStaged} ${packages}`,
+    // apk add skips a package it lists as installed, even when its files are gone.
+    `      installed || apk fix ${fromStaged} ${names}`,
+    '  - mode: system',
+    '    script: |',
+    '      #!/bin/sh',
+    '      set -e',
+    '      rc-update show default | grep -q containerd || rc-update add containerd default',
+    '      service containerd start || true',
+  ]
+}
+
+/**
+ * containerd in the guest: answering; not answering, after it has run there
+ * (files under its state folders, so the VM may hold images and containers);
+ * or not answering, and it never ran there (no files), so the VM holds none.
+ * null when the guest didn't answer or couldn't look.
+ */
+async function guestContainerd(): Promise<'running' | 'not running' | 'never ran' | null> {
+  const probe = [
+    'if sudo nerdctl info >/dev/null 2>&1; then echo running',
+    // "No files" must come from a look that worked.
+    'elif ! sudo -n true; then exit 1',
+    'elif sudo -n find /var/lib/containerd /var/lib/nerdctl -type f 2>/dev/null | grep -q .; then echo "not running"',
+    'else echo "never ran"; fi',
+  ].join('; ')
+  try {
+    const { stdout } = await execLimactl(`shell --workdir / ${LIMA_VM_NAME} -- sh -c ${shellEscape(probe)}`, { timeoutMs: GUEST_PROBE_TIMEOUT_MS })
+    const state = stdout.trim()
+    return state === 'running' || state === 'not running' || state === 'never ran' ? state : null
+  } catch {
+    return null
+  }
+}
+
+/** containerd still doesn't answer after re-running the VM's provisioning, and it never ran there. */
+class ContainerdNeverRanError extends Error {
+  constructor(readonly provisionOutput: string) {
+    super("Built-in runtime couldn't set up its container engine. Quit and reopen the app to try again.")
+  }
+}
+
+/**
+ * Lima only logs a warning when a provision script fails and reports the VM
+ * ready anyway, without containerd installed or running: every pull then
+ * fails. After a start, re-run the VM's own provision scripts once if
+ * containerd doesn't answer. Still not answering and it never ran there:
+ * ContainerdNeverRanError (the VM holds no images or containers, so it can be
+ * rebuilt). Still not answering after it has run there, whatever is missing:
+ * a plain error, since that VM may hold images and containers.
+ */
+async function ensureContainerdProvisioned(): Promise<void> {
+  const before = await guestContainerd()
+  if (before === 'running' || before === null) return
+
+  let output = ''
+  try {
+    const rerun = 'for f in /mnt/lima-cidata/provision.dependency/* /mnt/lima-cidata/provision.system/*; do [ -e "$f" ] || continue; sh "$f" || exit 1; done'
+    ;({ stdout: output } = await execLimactl(
+      `shell --workdir / ${LIMA_VM_NAME} -- sudo sh -c ${shellEscape(rerun)}`,
+      { timeoutMs: 300_000 }
+    ))
+  } catch (error: any) {
+    output = String(error?.message ?? error)
+  }
+
+  const after = await guestContainerd()
+  if (after === 'never ran') throw new ContainerdNeverRanError(output)
+  if (after === null) {
+    addErrorBreadcrumb({ category: 'lima', message: 'Re-ran Lima provisioning; the guest did not answer the check after it', level: 'warning' })
+    return
+  }
+  const extra = { before, output: output.slice(-2000), packagesAreBundled: getBundledPackagesDir() !== null }
+  if (after === 'not running') {
+    captureMessage("Lima VM's containerd isn't answering, even after re-running its provisioning; it has run there, so not rebuilding the VM", {
+      level: 'error',
+      tags: { component: 'lima', operation: 'provision-check' },
+      extra: { ...extra, ...collectLimaDiagnostics() },
+    })
+    throw Object.assign(
+      new Error("Built-in runtime's container engine isn't working. Quit and reopen the app to try again."),
+      { sentryCaptured: true }
+    )
+  }
+  captureMessage('Lima VM came up without a working containerd; re-running its provisioning fixed it', {
+    level: 'warning',
+    tags: { component: 'lima', operation: 'provision-check' },
+    extra,
+  })
+}
+
 async function createLimaVm(): Promise<void> {
   const settings = getSettings()
   const vmMemory = settings.container.runtimeSettings?.lima?.vmMemory || DEFAULT_LIMA_VM_MEMORY
@@ -1086,6 +1292,10 @@ async function createLimaVm(): Promise<void> {
   } else {
     console.log(`Bundled image not found, will download from Alpine CDN`)
   }
+
+  const bundledPackages = getBundledPackagesDir()
+  const stagedPackages = bundledPackages ? stageBundledPackages(bundledPackages) : null
+  console.log(stagedPackages ? `Using bundled packages: ${stagedPackages}` : 'Bundled packages not found, first boot will download them from Alpine CDN')
 
   const lines = [
     '# Lima VM for Superagent container runtime',
@@ -1107,18 +1317,7 @@ async function createLimaVm(): Promise<void> {
     '  system: false',
     '  user: false',
     '',
-    '# Install containerd + nerdctl on first boot, then start containerd',
-    'provision:',
-    '  - mode: system',
-    '    script: |',
-    '      #!/bin/sh',
-    '      if ! command -v nerdctl >/dev/null 2>&1; then',
-    '        echo "Installing containerd + nerdctl..."',
-    '        apk update',
-    '        apk add --no-cache containerd~=2.2 containerd-openrc nerdctl~=2.1 buildkit~=0.25 cni-plugins',
-    '        rc-update add containerd default',
-    '      fi',
-    '      service containerd start || true',
+    ...provisionScript(stagedPackages),
   ]
 
   lines.push('')

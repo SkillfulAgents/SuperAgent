@@ -277,7 +277,8 @@
           "bin/limactl",
           "bin/lima-nerdctl",
           "share/lima/lima-guestagent*",
-          "alpine.qcow2"
+          "alpine.qcow2",
+          "packages/**"
         ]
       },
       {
