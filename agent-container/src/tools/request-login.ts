@@ -10,20 +10,35 @@ import { LOGIN_FIELD_KINDS } from '../login-form-script'
 import { withoutQuery } from '../login-fill'
 import { forgetPreparedLogin } from '../login-requests'
 import { redactToolResult } from '../injected-secrets'
-import { loginResolutionSchema, MAX_LOGIN_FIELDS, type LoginFillReport, type LoginResolution } from '../login-schema'
+import {
+  loginResolutionSchema,
+  MAX_LOGIN_FIELDS,
+  SIGN_IN_PROVIDER_IDS,
+  type LoginFillAccount,
+  type LoginFillReport,
+  type LoginResolution,
+  type SignInProviderId,
+  type VaultAccountView,
+} from '../login-schema'
 
 const CONTAINER_URL = `http://localhost:${process.env.PORT || '3000'}`
 
-const DESCRIPTION = `Ask the user to sign in through a secure form. Map the page's sign-in fields by ref; the user types their credentials into a form in the app, and the host writes them straight into the page and submits it. Passwords and codes never pass through you.
+const DESCRIPTION = `Sign the browser in to the site on the page. Map the page's sign-in fields by ref; the host fills them from the user's saved accounts, or from a form the user fills in the app, and submits. Passwords and codes never pass through you.
 
-Use this when the page asks for credentials: a username or email, a password, a one-time code (from SMS, email or an authenticator app), or several of these together. Map the fields shown on the page now. When a sign-in is split over steps (email first, then password), map this step's fields, and call again on the next step.
+Use this when the page asks for credentials: a username or email, a password, a one-time code (from SMS, email or an authenticator app), or several of these together. Each call is one step of a sign-in:
+1. Call it without username first. When the user has saved accounts on this site that you may use, the result lists them and nothing is filled. Otherwise the user gets the form.
+2. To sign in with a listed account, call again with username set to it. The host fills the mapped fields from it and submits. When the account lacks a value the page asks for (a code, a new field), the user is asked for just that.
+3. A sign-in split over steps (email first, then password) takes one call per step. Pass the username you used on the earlier step. When a page asks for the email or username alone, also map the password without a ref: the user enters both at once, and the host fills the password when a later call maps that field.
+4. When the site rejects the sign-in (a wrong or changed password), call again with that username, ask_user: true, and reason set to what the page said. The user enters it again; until they do, the vault fills that account's password only with them. For another account, call with ask_user: true and no username.
 
-Hand the browser over with request_browser_input instead for what only the user can do on the page: a CAPTCHA, a passkey or security key, approving the sign-in on their phone, choosing an account in a "Sign in with Google" window, or a consent screen.
+Sign-in through another account ("Continue with Google", GitHub, Microsoft): which account to use is the user's to say. On a page with such buttons, list them in providers on every call: the user's form offers exactly those. Before you click one, call request_login on the site (without fields when the page shows none). The result names the account the user signs in with ("signs in with the Google account x@gmail.com"), or the user picks it in the form. Then click the button yourself and pick exactly that account in the provider's account chooser, never another; if the provider asks to sign in, call request_login there with that username.
 
-The result says which fields were filled on which site, whether the form was submitted, and what the page did next (like a click result). It never contains the values. When the site rejects the credentials, the page says so; call request_login again to let the user correct them.`
+Hand the browser over with request_browser_input instead for what only the user can do on the page: a CAPTCHA, a passkey or security key, approving the sign-in on their phone, or a consent screen.
+
+The result says which account was used, which fields were filled on which site, whether the form was submitted, and what the page did next (like a click result). It never contains the values. When the site rejects the credentials, the page says so.`
 
 const fieldSchema = z.object({
-  ref: z.string().describe('The field\'s ref from your latest snapshot (e.g. "@e12")'),
+  ref: z.string().optional().describe('The field\'s ref from your latest snapshot (e.g. "@e12"). Omit it only for a password or text field of a later step, asked now (see step 3).'),
   kind: z.enum(LOGIN_FIELD_KINDS).describe(
     'username: the account identifier (username, email or phone number). password: the account password (a password input only). otp: a one-time code; for a code split across one-character boxes, map the first box. text: another field the step asks for that is not secret, such as a company or workspace name.'
   ),
@@ -38,19 +53,38 @@ export function createRequestLoginTool(getSessionId: () => string | null) {
       message: z.string().trim().min(1).describe(
         "Why the agent needs the user signed in, as one sentence ending with a period. Never use first person. Example: 'Sign in to GitHub so the agent can update the repository settings.'"
       ),
-      fields: z.array(fieldSchema).min(1).max(MAX_LOGIN_FIELDS).describe('The sign-in fields on the page now, in the order a person fills them'),
+      fields: z.array(fieldSchema).max(MAX_LOGIN_FIELDS).optional().describe('The sign-in fields on the page now, in the order a person fills them. Omit them on a page that offers only buttons like "Continue with Google".'),
       submit: z.string().optional().describe('Ref of the button that submits the form. Omit it to press Enter in the last field instead.'),
+      username: z.string().trim().min(1).max(320).optional().describe('Sign in with this saved account: its username exactly as an earlier request_login result gave it. Omit it to see the saved accounts you may use on this site.'),
+      ask_user: z.boolean().optional().describe('Show the user the form even when saved accounts exist: for another account, or after the site rejected a saved one (with username, the form is for that account and what the user enters updates it).'),
+      reason: z.string().trim().min(1).max(500).optional().describe('With ask_user: why you ask the user, quoting what the page said when it rejected the sign-in (e.g. \'The page says "Incorrect password."\'). Shown to the user.'),
+      providers: z.array(z.enum(SIGN_IN_PROVIDER_IDS)).max(SIGN_IN_PROVIDER_IDS.length).optional().describe('The services the page shows buttons for signing in with ("Sign in with Google", "Continue with Apple"), in the page\'s order. Omit services the page does not show, and passkeys.'),
     },
     // Every answer is redacted: problems can quote the CLI, and the page's URL
-    // after the submit can carry a value (a GET form).
-    async (args) => redactToolResult(await requestLogin(args, getSessionId)),
+    // after the submit can carry a value (a GET form). The usernames the host
+    // names stay whole: the agent passes them back exactly.
+    async (args) => {
+      const { keep, ...result } = await requestLogin(args, getSessionId)
+      return redactToolResult(result, keep)
+    },
   )
 }
 
+interface RequestLoginArgs {
+  message: string
+  fields?: Array<{ ref?: string; kind: (typeof LOGIN_FIELD_KINDS)[number]; label: string }>
+  submit?: string
+  username?: string
+  ask_user?: boolean
+  reason?: string
+  providers?: SignInProviderId[]
+}
+
 async function requestLogin(
-  args: { message: string; fields: Array<{ ref: string; kind: (typeof LOGIN_FIELD_KINDS)[number]; label: string }>; submit?: string },
+  args: RequestLoginArgs,
   getSessionId: () => string | null,
-): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean; keep?: string[] }> {
+  const fields = args.fields ?? []
   const toolUseId = inputManager.consumeCurrentToolUseId()
   if (!toolUseId) {
     console.error('[request_login] No toolUseId available')
@@ -62,13 +96,13 @@ async function requestLogin(
   const sessionId = getSessionId()
   if (!sessionId) return errorResult('Unable to process the sign-in request - no session ID available.')
 
-  console.log(`[request_login] Locating ${args.fields.length} sign-in field(s) for ${toolUseId}`)
+  console.log(`[request_login] Locating ${fields.length} sign-in field(s) for ${toolUseId}`)
   let prepared: { origin: string; fields: Array<{ ref: string; kind: string; label: string }> }
   try {
     const response = await fetch(`${CONTAINER_URL}/browser/login/prepare`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...hostAuthHeaders() },
-      body: JSON.stringify({ sessionId, toolUseId, fields: args.fields, submitRef: args.submit ?? null }),
+      body: JSON.stringify({ sessionId, toolUseId, fields, submitRef: args.submit ?? null, providers: args.providers ?? [] }),
     })
     const data = await response.json() as { error?: string; problems?: string[]; origin?: string; fields?: typeof prepared.fields }
     if (!response.ok || !data.origin || !data.fields) {
@@ -91,14 +125,17 @@ async function requestLogin(
     return errorResult('Sign-in request cancelled: the browser was closed.')
   }
   try {
+    // Answered by the host: from a saved account, with the list of them, or
+    // with what the user entered in the form.
     const value = await inputManager.createPendingWithType<string>(toolUseId, 'login', {
       message: args.message,
       origin: prepared.origin,
       fields: prepared.fields.map(({ ref, kind, label }) => ({ ref, kind, label })),
+      ...(args.username ? { username: args.username } : {}),
     })
     const parsed = loginResolutionSchema.safeParse(parseJson(value))
     if (!parsed.success) return errorResult('The sign-in request ended with an unreadable result.')
-    return formatLoginResolution(parsed.data)
+    return { ...formatLoginResolution(parsed.data), keep: namesIn(parsed.data) }
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error'
     console.log(`[request_login] Request ended without a fill: ${message}`)
@@ -141,19 +178,81 @@ function describePageActivity(activity: NonNullable<LoginFillReport['pageActivit
   }
 }
 
+/** The usernames a result names: the agent passes them back exactly, so none is redacted. */
+function namesIn(resolution: LoginResolution): string[] {
+  switch (resolution.type) {
+    case 'accounts': return resolution.accounts.flatMap((account) => [account.username, ...(account.via ? [account.via.username] : [])])
+    case 'via': return [resolution.username, resolution.provider.username]
+    case 'filled': return resolution.account?.username ? [resolution.account.username] : []
+    default: return []
+  }
+}
+
+/** What a saved account holds, as the agent may know it: part names, never values. */
+function describeAccount(account: VaultAccountView): string {
+  const name = `${account.username}${account.label ? ` ("${account.label}")` : ''}`
+  if (account.via) return `${name}: signs in with the ${account.via.name} account ${account.via.username} (${account.via.site})`
+  const parts = account.parts.map((part) => (part === 'password' ? 'a password' : `"${part.replace(/^text:/, '')}"`))
+  if (parts.length === 0) return `${name}: no saved password or other value yet`
+  const list = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0]
+  const rejected = account.rejected ? ' (the site rejected its saved password, as reported earlier: using it asks the user)' : ''
+  return `${name}: holds ${list}${rejected}`
+}
+
+function formatAccounts(resolution: Extract<LoginResolution, { type: 'accounts' }>): string {
+  if (resolution.named) {
+    return [
+      'Nothing was filled: this call mapped no field.',
+      `- ${describeAccount(resolution.accounts[0])}`,
+      'To sign in with it, call request_login with username set to it and the page\'s sign-in fields mapped by ref.',
+    ].join('\n')
+  }
+  return [
+    `Nothing was filled. Saved accounts on ${resolution.site} you may use:`,
+    ...resolution.accounts.map((account) => `- ${describeAccount(account)}`),
+    'To sign in with one, call request_login again with username set to it. To ask the user for another account, call it with ask_user: true.',
+  ].join('\n')
+}
+
+function formatVia(resolution: Extract<LoginResolution, { type: 'via' }>): string {
+  const { provider } = resolution
+  return [
+    `Nothing was filled. The user signs in to ${resolution.site} with the ${provider.name} account ${provider.username}${resolution.saved ? ', saved to their vault for this site' : ''}.`,
+    `Click the site's ${provider.name} sign-in button yourself. If ${provider.name} shows an account chooser, pick ${provider.username} and no other account; if it asks to sign in, call request_login on its page with username "${provider.username}". Back on ${resolution.site}, check which account the page shows.`,
+  ].join('\n')
+}
+
+/** Where the values came from and what was kept for later, by account. */
+function accountLines(account: LoginFillAccount | undefined): string[] {
+  if (!account) return []
+  const lines: string[] = []
+  if (account.source === 'user' && account.saved && account.username) lines.push(`The user saved this to their vault as account ${account.username} on ${account.site}.`)
+  if (account.held.length) {
+    const labels = account.held.map((label) => `"${label}"`).join(', ')
+    lines.push(account.username
+      ? `The user also entered ${labels} for a later step; the host holds it for account ${account.username}. When the page asks for it, call request_login with username "${account.username}" and map that field.`
+      : `The user also entered ${labels} for a later step; the host holds it. When the page asks for it, call request_login and map that field.`)
+  }
+  return lines
+}
+
 /** The tool result for how the request ended: observations, never values. */
 export function formatLoginResolution(resolution: LoginResolution): { content: Array<{ type: 'text'; text: string }>; isError?: boolean } {
   if (resolution.type === 'manual') {
     return { content: [{ type: 'text', text: 'The user signed in on the page themselves and is done. Take a browser snapshot to see the current state.' }] }
   }
+  if (resolution.type === 'accounts') return { content: [{ type: 'text', text: formatAccounts(resolution) }] }
+  if (resolution.type === 'via') return { content: [{ type: 'text', text: formatVia(resolution) }] }
 
-  const { origin, outcomes, lost, submitted, submitError, observation, changedSecrets, pageActivity } = resolution
+  const { origin, outcomes, lost, submitted, submitError, observation, changedSecrets, pageActivity, account } = resolution
   const filled = outcomes.filter((outcome) => outcome.status === 'filled' || outcome.status === 'changed')
   const name = (outcome: (typeof outcomes)[number]) => `${outcome.ref} "${outcome.label}" (${outcome.kind})`
+  const from = account?.source === 'vault' ? `from the saved account${account.username ? ` ${account.username}` : ''}` : "with the user's input"
   const lines: string[] = [
     filled.length
-      ? `Filled ${filled.length} of ${outcomes.length} field${outcomes.length === 1 ? '' : 's'} on ${origin} with the user's input: ${filled.map(name).join(', ')}.`
+      ? `Filled ${filled.length} of ${outcomes.length} field${outcomes.length === 1 ? '' : 's'} on ${origin} ${from}: ${filled.map(name).join(', ')}.`
       : `No field was filled on ${origin}.`,
+    ...accountLines(account),
   ]
   for (const outcome of outcomes) {
     if (outcome.status === 'changed') lines.push(`${outcome.ref} read back different from what the user entered (the page changed it as it was written).`)

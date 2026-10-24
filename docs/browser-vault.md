@@ -1,0 +1,132 @@
+# Browser Vault
+
+Agents sign in to websites without credentials passing through the model.
+Part 1 (request_login) gave the agent a tool that maps a page's sign-in fields
+by ref while the user types the values into a form in the app; the container
+writes them into the page over CDP. Part 2 adds the vault: accounts the user
+saved, filled by the host on the agent's request, step by step, only for the
+agents the user granted them to.
+
+Code: `src/shared/lib/browser-vault/` (host), `agent-container/src/login-*.ts`
+and `agent-container/src/tools/request-login.ts` (container),
+`src/shared/lib/tools/request-login/` (the card), Settings → Logins
+(`src/renderer/components/settings/logins-tab.tsx`).
+
+## Accounts
+
+An account is an owner's identity on a site: `(owner, site, username)` is
+unique (`browser_accounts`). The site is the exact host of the frame holding
+the fields, port included, without a leading `www.` (`siteOfOrigin`):
+accounts match on it as browsers fill saved passwords. A registrable domain
+would make tenants of a shared host one site — `acme.okta.com` and
+`evil.okta.com`, `*.slack.com`, `*.zendesk.com`, none of them on the Public
+Suffix List — and fill one tenant's password into another's page. The
+registrable domain (`registrableDomain`) only tells which sign-in provider a
+site belongs to (`providerOf`: accounts.google.com is Google's). Usernames
+compare without case or surrounding space.
+
+Each sign-in step adds parts to the same account: `password`, or
+`text:<label>` for another field the site asks for (a workspace). Parts are
+sealed together in `secrets` (AES-256-GCM, bound to the row's id, site and
+purpose); `parts` lists their names in plain text for the UI and the agent. A
+one-time code is never a part. The key is derived from the deployment's auth
+secret (HKDF, as the S3 volume credentials are): restoring the database with
+that secret opens the vault. An account sealed under another secret fills
+nothing (the user is asked), and is saved over only with every part it lists,
+never by dropping the rest.
+
+An account that signs in through another one ("Continue with Google") points
+at the provider's account with `via_account_id`. Granting the site's account
+does not grant the provider's: that one opens far more than the site. Picking
+a provider for an account that had a password drops the password
+(`switchAccountToVia`): the vault would otherwise keep filling it. A provider
+account named in the card ("me@gmail.com at Google") is saved on the
+provider's domain with no value; its password, once typed on the provider's
+sign-in site, lands in that same account (`providerStub`).
+
+Grants (`agent_browser_accounts`) decide which agents may use an account; they
+go with the agent (foreign key) and with the account. Every use is in the
+audit log (`browser_account` / `used`), never the values.
+
+## A request_login call
+
+The host decides each call before any card shows (`decideLoginRequest`,
+reached from the actor's tool-call handling through the host port), so a
+sign-in the vault can do never notifies anyone:
+
+1. Without `username`: the agent's accounts on the site are listed and nothing
+   is filled. With none, the card opens (`vault.mode = 'new'`).
+2. With `username`: that account's parts fill the mapped fields through the
+   container's fill endpoint, and the page is submitted. What the account
+   lacks (a code, a new field) opens the card for just that
+   (`mode: 'complete'`, `covered` = the fields the vault fills).
+3. `ask_user: true` (or a `reason`), or an account the agent may not use: the
+   card (`mode: 'ask'`, with the username prefilled). With a username, the
+   agent says the site rejected that account: it is marked (`rejected_at`,
+   audit `rejected`), and the card shows the agent's `reason`.
+4. An account with a `via`: the result names the provider account to pick;
+   nothing is filled, unless the step asks only for its other parts (a
+   workspace).
+
+A saved password goes in without the user only while it signs in fine: not
+for an account marked rejected (until the user enters its password again, in
+any session), and not twice for one account within 30 minutes of a session
+(`held-values.ts`): a second sign-in so soon is most often the site turning
+it down, and each unattended retry spends an attempt toward a lockout. Both
+open the card (`rejectedAt`, `filledAt`).
+
+The tool result says which account was used and what was saved or held,
+never a value. A password last typed on an https page is not filled into a
+plain-HTTP one without the user (`vaultFillsInto`, against the account's
+`origin`: where its password was last entered).
+
+### Steps
+
+A field mapped without a ref is a later step's: on an email-first page the
+agent maps the email and the password without a ref, the user enters both,
+and once the email went into the page the host holds the password in memory
+(`held-values.ts`, 30 minutes, per agent, session and site). A later call on
+the same site that maps a password field gets it filled without the user —
+only where a saved account's password could go (no https-typed value into a
+plain-HTTP page) — and only then is it added to the account, if the user
+asked to save it and the account is still theirs and still granted (the next
+step is not always a password). Declining, or signing in on the page by
+hand, drops it. The host also remembers the username the last step went in
+with, so a step without a username field still knows whose account it is.
+
+### The card
+
+"Save for later" is on by default (off, with a notice, on an agent others can
+use — its user and owner members, and every admin, who may drive any agent
+(`countOtherMembers`): they could have it sign in as the user). It saves the account
+and grants it to the agent. The card also offers the user's saved accounts for
+the site (one click fills one and grants it) and "Or sign in with" a provider.
+The buttons are the page's own: the agent lists the "Sign in with Google"
+buttons it sees in request_login's `providers` (known provider ids only), the
+container passes them through in the login context, and the card shows those,
+never the site itself. The other providers and the user's saved accounts on
+other sites (a company's own sign-in) sit under More, or under "Other ways to
+sign in" when the page lists none. Picking one asks which account there (a
+saved one, or an email), saves a `via` account and tells the agent which
+provider account to use.
+
+A fill the vault cannot complete as the card left it is refused with a
+`reason` the card acts on: `fields_needed` (what it was to fill is gone — a
+held value expired, a part was deleted: those fields are shown) or
+`account_unavailable` (the account the host chose was deleted or revoked: the
+card asks for every field rather than granting it again).
+
+## Settings → Logins
+
+Each user's saved accounts, the agents allowed to sign in with each (the same
+switches as Connections and Drives), rename and delete. Granting to an agent
+others can use asks first. Deleting an account does not sign agents'
+browsers out of the site; saved sessions (part 3) will.
+
+## Parts 3 and 4
+
+The tables are in place: `browser_account_sessions` holds an account's sealed
+cookies and web storage per browser type (`sessionBundleSchema`, after
+#1210's capture/restore primitives), and each grant records which session
+version its agent's browser holds (`applied_session_version`). The sealed
+`secrets` schema has room for a TOTP seed and passkeys (part 4).

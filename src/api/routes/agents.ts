@@ -10,7 +10,7 @@ import { notifySessionMentions, readSessionMentions } from './session-mentions'
 import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
 import { parseMentions } from '@shared/lib/utils/mentions'
 import { parseDictationNote } from '@shared/lib/utils/dictation-note'
-import { notifyAgentMembersChanged, changeMemberRole, removeMember, countMembersWithMinRole } from '@shared/lib/services/agent-members-service'
+import { notifyAgentMembersChanged, changeMemberRole, removeMember, countMembersWithMinRole, countOtherMembers } from '@shared/lib/services/agent-members-service'
 import { formatSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
 import { Hono, type Context } from 'hono'
@@ -26,6 +26,7 @@ import { getPolyfillJs } from '../speech-recognition-polyfill'
 import accountReauth from './account-reauth'
 import mcpReauth from './mcp-reauth'
 import { agentMemoryRoutes } from './agent-memories'
+import { agentBrowserAccountRoutes, sharedAgentRefusal } from './browser-accounts'
 import { getLlmPolyfillJs } from '../llm-polyfill'
 import {
   dashboardMountPath,
@@ -37,7 +38,7 @@ import { MESSAGES_PAGE_MAX_LIMIT, capMessagesPageLimit, clampMessagesPageBytes }
 import { streamJsonArrayResponse } from '../stream-json-array'
 import { readLimitedJsonBody } from '../lib/read-limited-json-body'
 import { waitForClientGone } from '../lib/wait-for-client-gone'
-import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole, getRequestDeviceId } from '../middleware/auth'
+import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole, getMeetingParticipant, getRequestDeviceId } from '../middleware/auth'
 import {
   listAgentsWithStatus,
   createAgent,
@@ -87,10 +88,51 @@ import {
   fillLoginBodySchema,
   fillLoginCredentialBodySchema,
   loginContextSchema,
-  loginFillResultSchema,
+  loginVaultPayloadSchema,
+  loginViaBodySchema,
   type LoginContext,
-  type LoginFillResult,
 } from '@shared/lib/tools/request-login/login-request'
+import {
+  accountView,
+  answerLoginRequest,
+  fillLoginInContainer,
+  noteUsername,
+  partsFrom,
+  readLoginContext,
+  settleHeldParts,
+  usableHeld,
+  valuesFor,
+} from '@shared/lib/browser-vault/login-host'
+import {
+  forgetHeldLogin,
+  heldLoginFor,
+  holdLoginValues,
+  recentSignInIdentity,
+  releaseHeldValues,
+  rememberPasswordFill,
+  rememberSignInIdentity,
+} from '@shared/lib/browser-vault/held-values'
+import { providerName, providerOf, SIGN_IN_PROVIDERS } from '@shared/lib/browser-vault/providers'
+import { registrableDomain, siteOfOrigin, usernameKey, vaultFillsInto } from '@shared/lib/browser-vault/site'
+import { partKeyOf } from '@shared/lib/browser-vault/vault-schemas'
+import {
+  clearAccountRejected,
+  findOwnedProviderAccount,
+  getAccount,
+  getOwnedAccount,
+  grantAccount,
+  isAccountGranted,
+  listGrantedAccountIds,
+  listOwnedAccountsElsewhere,
+  listOwnedAccountsOnSite,
+  readAccountValues,
+  recordAccountUse,
+  saveAccount,
+  switchAccountToVia,
+  MAX_USERNAME,
+  VaultConflictError,
+  type VaultAccount,
+} from '@shared/lib/browser-vault/vault-service'
 import type {
   UserInputRequestKind,
   UserInputRequestScope,
@@ -4012,52 +4054,10 @@ agents.post(
 )
 
 // ── Sign-in requests (request_login) ────────────────────────────────────────
-// The agent maps a page's sign-in fields; the user types the values into the
-// app's form, and they go to the container's page writer. Values are never
-// logged, echoed, or stored: they cross this route once, in the body.
-
-const loginContextErrorSchema = z.object({
-  error: z.string().optional(),
-  problems: z.array(z.string()).optional(),
-})
-const containerErrorSchema = z.object({ error: z.string() })
-
-type LoginContextRead =
-  | { ok: true; context: LoginContext }
-  | { ok: false; status: 404 | 409 | 502; error: string; problems: string[] }
-
-/**
- * The sign-in form's context as the browser reported it when it located the
- * fields: kept on the request once read, and read from the container again
- * when the request does not hold it (a request recovered after a restart).
- * 404 means still locating — the app tries again; 409 means the fields the
- * agent picked could not be used.
- */
-async function readLoginContext(agentSlug: string, toolUseId: string): Promise<LoginContextRead> {
-  const actor = agentRegistry.get(agentSlug)
-  const request = await actor.inputs.get(toolUseId)
-  const cached = loginContextSchema.safeParse(request?.kind === 'login' ? request.payload.login : undefined)
-  if (cached.success) return { ok: true, context: cached.data }
-  try {
-    // The container answers once the agent's tool has located the fields.
-    const response = await actor.container.fetch(`/browser/login/context?toolUseId=${encodeURIComponent(toolUseId)}`)
-    const data: unknown = await response.json().catch(() => null)
-    if (!response.ok) {
-      const failure = loginContextErrorSchema.safeParse(data)
-      const problems = failure.success ? failure.data.problems ?? [] : []
-      return response.status === 404
-        ? { ok: false, status: 404, error: 'The sign-in form is still being located', problems }
-        : { ok: false, status: 409, error: 'The browser could not locate the sign-in fields', problems }
-    }
-    const context = loginContextSchema.safeParse(data)
-    if (!context.success) return { ok: false, status: 502, error: 'The browser returned an unreadable sign-in form', problems: [] }
-    await actor.inputs.enrich(toolUseId, 'login', { login: context.data })
-    return { ok: true, context: context.data }
-  } catch (error) {
-    console.error('[login-request] Reading the sign-in form failed:', error instanceof Error ? error.message : error)
-    return { ok: false, status: 502, error: 'The browser is unavailable', problems: [] }
-  }
-}
+// The agent maps a page's sign-in fields; the host answers from the user's
+// vault when it can (browser-vault/login-host), and otherwise the user types
+// the values into the app's form. Values only go to the container's page
+// writer: never logged, echoed, or stored except, sealed, in the vault.
 
 /**
  * A form for this app itself, at any of its addresses (see isOwnOrigin):
@@ -4076,35 +4076,6 @@ function thisAppProblem(origin: string) {
   }
 }
 
-/**
- * Hand the values to the container, which writes them into the page (re-
- * checking the origin in the page) and answers the agent's parked call.
- * On success the request is settled here too; on failure it stays open.
- */
-async function fillLoginInContainer(
-  agentSlug: string,
-  sessionId: string,
-  toolUseId: string,
-  context: LoginContext,
-  values: string[],
-): Promise<{ ok: true; result: LoginFillResult } | { ok: false; status: 409 | 502; error: string }> {
-  const actor = agentRegistry.get(agentSlug)
-  const response = await actor.container.fetch('/browser/login/fill', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId, toolUseId, expectedOrigin: context.origin, values }),
-  })
-  const data: unknown = await response.json().catch(() => null)
-  if (!response.ok) {
-    const failure = containerErrorSchema.safeParse(data)
-    return { ok: false, status: response.status === 409 ? 409 : 502, error: failure.success ? failure.data.error : 'The sign-in form could not be filled' }
-  }
-  const result = loginFillResultSchema.safeParse(data)
-  if (!result.success) return { ok: false, status: 502, error: 'The browser returned an unreadable result' }
-  await actor.inputs.complete(sessionId, toolUseId, 'answered')
-  return { ok: true, result: result.data }
-}
-
 // GET /api/agents/:id/sessions/:sessionId/login-request - Where the fields are
 agents.get('/:id/sessions/:sessionId/login-request', AgentUser(), async (c) => {
   const toolUseId = c.req.query('toolUseId')
@@ -4116,6 +4087,57 @@ agents.get('/:id/sessions/:sessionId/login-request', AgentUser(), async (c) => {
   if (!read.ok) return c.json({ error: read.error, problems: read.problems }, read.status)
   if (signsInToThisApp(c, read.context.origin)) return c.json(thisAppProblem(read.context.origin), 409)
   return c.json(read.context)
+})
+
+// GET /api/agents/:id/sessions/:sessionId/login-request/vault - The viewer's saved accounts for the request's site
+agents.get('/:id/sessions/:sessionId/login-request/vault', AgentUser(), async (c) => {
+  c.header('Cache-Control', 'no-store')
+  const toolUseId = c.req.query('toolUseId')
+  if (!toolUseId) return c.json({ error: 'toolUseId is required' }, 400)
+  const gated = await gateOpenRequestAccess(c, toolUseId, 'login')
+  if (gated) return gated
+
+  // The vault is the person's own: a meeting page's credential never reads it.
+  if (getMeetingParticipant(c)) return c.json({ error: 'Forbidden' }, 403)
+
+  const agentSlug = getAgentId(c)
+  const read = await readLoginContext(agentSlug, toolUseId)
+  if (!read.ok) return c.json({ error: read.error }, read.status)
+  const pageOrigin = read.context.origin
+  const site = siteOfOrigin(pageOrigin)
+  if (!site || signsInToThisApp(c, pageOrigin)) return c.json({ error: 'This sign-in form has no site to save accounts for' }, 409)
+  const viewer = getViewerUserId(c)
+  const [accounts, providerAccounts, otherMembers] = await Promise.all([
+    listOwnedAccountsOnSite(viewer, site),
+    listOwnedAccountsElsewhere(viewer, site),
+    isAuthMode() ? countOtherMembers(agentSlug, viewer) : Promise.resolve(0),
+  ])
+  const granted = new Set(await listGrantedAccountIds(agentSlug, [...accounts, ...providerAccounts].map((account) => account.id)))
+  const offer = (account: VaultAccount) => {
+    const view = accountView(account)
+    return {
+      ...view,
+      id: account.id,
+      via: view.via && account.via ? { ...view.via, id: account.via.id } : null,
+      granted: granted.has(account.id),
+      // Its saved parts go into this page (none saved on https go to plain HTTP).
+      fillsHere: vaultFillsInto(account.origin, pageOrigin),
+    }
+  }
+  return c.json({
+    site,
+    otherMembers,
+    identity: recentSignInIdentity(agentSlug, c.req.param('sessionId'), site),
+    accounts: accounts.map(offer),
+    providerAccounts: providerAccounts.map((account) => ({
+      ...offer(account),
+      site: account.site,
+      providerName: providerName(account.site),
+      providerId: providerOf(account.site)?.id ?? null,
+    })),
+    // Never the site's own: not GitHub on github.com's sign-in page.
+    providers: SIGN_IN_PROVIDERS.filter((provider) => provider.site !== registrableDomain(site)),
+  })
 })
 
 // POST /api/agents/:id/sessions/:sessionId/fill-login - Write the user's values into the page
@@ -4141,27 +4163,227 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     }
     const context = read.context
     if (signsInToThisApp(c, context.origin)) return c.json({ error: thisAppProblem(context.origin).error }, 409)
-    if (body.values.length !== context.fields.length) {
+    const site = siteOfOrigin(context.origin)
+    if (!site || context.fields.length === 0) return c.json({ error: 'This sign-in request has no field to fill' }, 409)
+    const heldValues = body.heldValues ?? []
+    if (body.values.length !== context.fields.length || heldValues.length > context.held.length) {
       return c.json({ error: 'One value per field is required' }, 400)
     }
+    const viewer = getViewerUserId(c)
+    const request = await actor.inputs.get(body.toolUseId)
+    const vault = loginVaultPayloadSchema.safeParse(request?.payload.vault)
+
+    // A saved account fills what the user left empty: the one the host left
+    // the request for (for the parts it lacks), one this agent may use, or
+    // one of the user's own, which using here grants. The host's one may have
+    // been deleted or revoked since: the form then asks for every field.
+    const hostsAccount = vault.success && vault.data.mode === 'complete' && vault.data.accountId === body.accountId
+    let account: VaultAccount | null = null
+    let grantsAccount = false
+    if (body.accountId) {
+      account = (await isAccountGranted(agentSlug, body.accountId)) ? await getAccount(body.accountId) : null
+      if (!account && !hostsAccount) {
+        account = await getOwnedAccount(viewer, body.accountId)
+        grantsAccount = account !== null
+      }
+      if (!account || account.site !== site) {
+        return c.json({ error: 'That saved account is no longer available here. Enter the details instead.', reason: 'account_unavailable' }, 409)
+      }
+    }
+    const typedUsername = context.fields.findIndex((field) => field.kind === 'username')
+    const identity = (typedUsername >= 0 ? body.values[typedUsername]?.trim() : '') ||
+      account?.username ||
+      body.username ||
+      (vault.success ? vault.data.username : undefined) ||
+      recentSignInIdentity(agentSlug, sessionId, site) ||
+      null
+    if (body.save && !identity) return c.json({ error: 'Enter the username of this account to save it' }, 400)
+    if (body.save && identity && identity.length > MAX_USERNAME) return c.json({ error: 'That username is too long to save' }, 400)
+    const held = usableHeld(heldLoginFor(agentSlug, sessionId, site, identity ?? undefined), context.origin)
+    const saved = account && vaultFillsInto(account.origin, context.origin) ? await readAccountValues(account.id) : {}
+    const fallback = valuesFor(context.fields, identity, { ...saved, ...(held?.values ?? {}) })
+    const values = body.values.map((value, index) => value || fallback[index])
+    // A field the form left to the vault that it cannot fill now (what was
+    // held for this step expired, the account no longer holds it): the user
+    // is asked for it, rather than the page getting it empty.
+    const needed = values.flatMap((value, index) => (value ? [] : [index]))
+    if (needed.length > 0) return c.json({ error: 'Enter what the saved account could not fill.', reason: 'fields_needed', fields: needed }, 409)
+    // Held parts this fill uses (the fields the user left for them), and the
+    // ones the user typed over: theirs is newer, so the held one goes.
+    const heldPart = (index: number) => {
+      const part = partKeyOf(context.fields[index])
+      return part && held?.values[part] ? part : null
+    }
+    const fromHeld = context.fields.flatMap((_, index) => (!body.values[index] && heldPart(index) ? [heldPart(index)!] : []))
+    const typedOverHeld = context.fields.flatMap((_, index) => (body.values[index] && heldPart(index) ? [heldPart(index)!] : []))
+    // The user picked a saved account the site had turned down, as it is.
+    const usesSavedPassword = context.fields.some((field, index) => field.kind === 'password' && !body.values[index] && !held?.values.password && Boolean(saved.password))
+    if (body.save || grantsAccount) {
+      const refused = await sharedAgentRefusal(c, agentSlug, body.sharedAgentAcknowledged)
+      if (refused) return refused
+    }
+
     const claim = await actor.inputs.claim(body.toolUseId)
     if (!claim) return c.json({ error: 'This sign-in request is already being handled' }, 409)
     claimed = { id: body.toolUseId, token: claim.token }
 
-    const filled = await fillLoginInContainer(agentSlug, sessionId, body.toolUseId, context, body.values)
+    const heldParts = partsFrom(context.held, heldValues)
+    const heldLabels = context.held.filter((field, index) => heldValues[index] && heldParts[partKeyOf(field) ?? '']).map((field) => field.label)
+    const saving = Boolean(body.save && identity)
+
+    const shown = noteUsername(identity)
+    const filled = await fillLoginInContainer(agentSlug, sessionId, body.toolUseId, context, values, {
+      ...(shown ? { username: shown } : {}),
+      site,
+      source: 'user',
+      saved: saving,
+      held: heldLabels,
+    })
     // Still open on failure: the user can try again or sign in on the page.
+    // Nothing is saved, granted or held for a step that never went in.
     if (!filled.ok) return c.json({ error: filled.error }, filled.status)
     claimed = null
+
+    let savedAccount: VaultAccount | null = null
+    let saveError: string | undefined
+    if (saving && identity) {
+      try {
+        // What the user typed here, by part: the username is the account itself.
+        const result = await saveAccount({ owner: viewer, site, origin: context.origin, username: identity, values: partsFrom(context.fields, body.values) })
+        savedAccount = result.account
+        await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: savedAccount.id, action: result.created ? 'created' : 'updated', details: { site } })
+        if (await grantAccount({ accountId: savedAccount.id, agentSlug, grantedBy: viewer })) {
+          await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: savedAccount.id, action: 'assigned', details: { agentSlug } })
+        }
+      } catch (error) {
+        // The page has the values either way; the user is told it was not saved.
+        console.error('[fill-login] Saving the account failed:', error instanceof Error ? error.message : 'Unknown error')
+        saveError = error instanceof VaultConflictError ? error.message : 'The account could not be saved'
+      }
+    }
+    if (grantsAccount && account && await grantAccount({ accountId: account.id, agentSlug, grantedBy: viewer })) {
+      await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: account.id, action: 'assigned', details: { agentSlug } })
+    }
+    // The step that was held is done before the next one is held.
+    if (held) await settleHeldParts({ agentSlug, sessionId, site, held, used: fromHeld, username: identity })
+    if (typedOverHeld.length) releaseHeldValues(agentSlug, sessionId, site, typedOverHeld)
+    // A password went in for an account: another unattended fill of it so soon is the user's to decide.
+    const passwordAccount = savedAccount ?? account
+    if (passwordAccount && context.fields.some((field, index) => field.kind === 'password' && values[index])) {
+      rememberPasswordFill(agentSlug, sessionId, passwordAccount.id)
+    }
+    if (account?.rejectedAt && usesSavedPassword && !hostsAccount) await clearAccountRejected(account.id)
+    if (heldLabels.length) {
+      holdLoginValues(agentSlug, sessionId, site, {
+        username: identity,
+        values: heldParts,
+        origin: context.origin,
+        save: body.save ? { owner: viewer, origin: context.origin } : null,
+      })
+    }
+    if (identity) rememberSignInIdentity(agentSlug, sessionId, site, identity)
+    if (account) await recordAccountUse({ agentSlug, accountId: account.id, sessionId, userId: viewer })
     trackServerEvent('login_request_filled', {
       submitted: filled.result.submitted,
       filled: filled.result.filled,
       failed: filled.result.failed,
-      source: 'form',
+      source: account ? 'form_with_vault' : 'form',
+      saved: savedAccount !== null,
+      held: heldLabels.length,
     })
-    return c.json(filled.result)
+    return c.json({
+      ...filled.result,
+      ...(savedAccount ? { saved: { username: savedAccount.username, site } } : {}),
+      ...(saveError ? { saveError } : {}),
+    })
   } catch (error) {
+    if (error instanceof VaultConflictError) return c.json({ error: error.message }, 409)
     console.error('[fill-login] Failed:', error instanceof Error ? error.message : 'Unknown error')
     return c.json({ error: 'The sign-in form could not be filled' }, 500)
+  } finally {
+    if (claimed) await agentRegistry.get(getAgentId(c)).inputs.releaseClaim(claimed.id, claimed.token)
+  }
+})
+
+// POST /api/agents/:id/sessions/:sessionId/login-via - "Or sign in with Google, …"
+agents.post('/:id/sessions/:sessionId/login-via', AgentUser(), zValidator('json', loginViaBodySchema), async (c) => {
+  let claimed: { id: string; token: string } | null = null
+  try {
+    const body = c.req.valid('json')
+    const gated = await gateRequestDecision(c, body.toolUseId, 'login')
+    if (gated) return gated
+
+    const agentSlug = getAgentId(c)
+    const sessionId = c.req.param('sessionId')
+    const actor = agentRegistry.get(agentSlug)
+    const read = await readLoginContext(agentSlug, body.toolUseId)
+    if (!read.ok || read.context.origin !== body.origin) {
+      return c.json({ error: 'The sign-in form changed. Reload it and try again.' }, 409)
+    }
+    const context = read.context
+    if (signsInToThisApp(c, context.origin)) return c.json({ error: thisAppProblem(context.origin).error }, 409)
+    const site = siteOfOrigin(context.origin)
+    if (!site) return c.json({ error: 'This sign-in form has no site to save accounts for' }, 409)
+    const viewer = getViewerUserId(c)
+
+    // The provider account: one of the user's saved accounts, or a known provider and a username.
+    let provider: VaultAccount | null = null
+    let known: (typeof SIGN_IN_PROVIDERS)[number] | undefined
+    if ('accountId' in body.provider) {
+      provider = await getOwnedAccount(viewer, body.provider.accountId)
+      if (!provider) return c.json({ error: 'That saved account was not found' }, 404)
+    } else {
+      known = SIGN_IN_PROVIDERS.find((candidate) => candidate.id === (body.provider as { providerId: string }).providerId)
+      if (!known) return c.json({ error: 'Unknown sign-in provider' }, 400)
+    }
+    const providerSite = provider?.site ?? known!.site
+    const providerUsername = provider?.username ?? (body.provider as { username: string }).username
+    if (registrableDomain(providerSite) === registrableDomain(site)) return c.json({ error: 'An account cannot sign in through its own site' }, 400)
+    if (providerUsername.length > MAX_USERNAME) return c.json({ error: 'That username is too long to save' }, 400)
+    // Granting needs the user to have seen who else can use the agent — not
+    // when this agent may already use the site account.
+    const existing = (await listOwnedAccountsOnSite(viewer, site)).find((account) => usernameKey(account.username) === usernameKey(providerUsername))
+    if (!existing || !(await isAccountGranted(agentSlug, existing.id))) {
+      const refused = await sharedAgentRefusal(c, agentSlug, body.sharedAgentAcknowledged)
+      if (refused) return refused
+    }
+    // The provider account by name: the one saved on its sign-in site, or a
+    // new one with no value yet (its password is saved where its form is).
+    provider ??= await findOwnedProviderAccount(viewer, providerSite, providerUsername)
+    if (!provider) {
+      provider = (await saveAccount({ owner: viewer, site: providerSite, origin: `https://${providerSite}`, username: providerUsername })).account
+      await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: provider.id, action: 'created', details: { site: providerSite } })
+    }
+
+    const claim = await actor.inputs.claim(body.toolUseId)
+    if (!claim) return c.json({ error: 'This sign-in request is already being handled' }, 409)
+    claimed = { id: body.toolUseId, token: claim.token }
+
+    // An account that had a password signs in through the provider from now
+    // on: the password goes, or the vault would keep filling it.
+    const { account, created } = existing
+      ? { account: await switchAccountToVia({ owner: viewer, accountId: existing.id, viaAccountId: provider.id }), created: false }
+      : await saveAccount({ owner: viewer, site, origin: context.origin, username: provider.username, viaAccountId: provider.id })
+    await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: account.id, action: created ? 'created' : 'updated', details: { site, via: provider.site } })
+    if (await grantAccount({ accountId: account.id, agentSlug, grantedBy: viewer })) {
+      await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: account.id, action: 'assigned', details: { agentSlug } })
+    }
+    const answered = await answerLoginRequest(agentSlug, body.toolUseId, {
+      type: 'via',
+      site,
+      username: account.username,
+      provider: { site: provider.site, username: provider.username, name: providerName(provider.site) },
+      saved: true,
+    })
+    if (!answered) return c.json({ error: 'The agent could not be told. Try again.' }, 502)
+    await actor.inputs.complete(sessionId, body.toolUseId, 'answered')
+    claimed = null
+    trackServerEvent('login_request_via', { provider: providerOf(provider.site)?.id ?? 'other' })
+    return c.json({ success: true, account: { username: account.username, site }, provider: { site: provider.site, username: provider.username } })
+  } catch (error) {
+    if (error instanceof VaultConflictError) return c.json({ error: error.message }, 409)
+    console.error('[login-via] Failed:', error instanceof Error ? error.message : 'Unknown error')
+    return c.json({ error: 'The account could not be saved' }, 500)
   } finally {
     if (claimed) await agentRegistry.get(getAgentId(c)).inputs.releaseClaim(claimed.id, claimed.token)
   }
@@ -4252,8 +4474,13 @@ agents.post('/:id/sessions/:sessionId/complete-login', AgentUser(), zValidator('
       return c.json({ error: 'Failed to answer the sign-in request' }, 500)
     }
 
+    // Declined, or signed in by hand: what the user typed for a later step
+    // goes. The site is on the request's located context, read before it settles.
+    const located = loginContextSchema.safeParse(claim.request.payload.login)
     await actor.inputs.complete(sessionId, body.toolUseId, body.action === 'manual' ? 'answered' : 'declined')
     claimed = null
+    const site = located.success ? siteOfOrigin(located.data.origin) : null
+    if (site) forgetHeldLogin(agentSlug, sessionId, site)
     if (body.action === 'decline') {
       // As with a browser hand-off: stop the turn so the user can talk to the agent.
       await actor.messages.stop(sessionId, { scope: 'turn' })
@@ -7345,6 +7572,7 @@ const MAX_DISMISS_REASON_LENGTH = 500
 agents.route('/', accountReauth)
 agents.route('/', mcpReauth)
 agents.route('/', agentMemoryRoutes)
+agents.route('/', agentBrowserAccountRoutes)
 
 // POST /api/agents/:id/reauth-request/:requestId/dismiss - Give up on a parked
 // re-authentication card.

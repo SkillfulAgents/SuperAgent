@@ -67,6 +67,7 @@ function harness(options: { route?: Route; client?: false; answers?: HostCallAns
     },
   } as unknown as ContainerClient
   let resolveFails = false
+  const settled = new Map<string, string>()
 
   const ctx: ToolCallContext = {
     agentSlug: SLUG,
@@ -86,6 +87,9 @@ function harness(options: { route?: Route; client?: false; answers?: HostCallAns
     },
     syncAwaiting: () => {
       awaitingSyncs += 1
+    },
+    settled: (toolUseId, outcome) => {
+      settled.set(toolUseId, outcome)
     },
     capabilityGranted: (capability) => capabilityGrants.has(capability),
     grantCapability: (capability) => {
@@ -113,6 +117,7 @@ function harness(options: { route?: Route; client?: false; answers?: HostCallAns
       resolveFails = true
     },
     awaitingSyncs: () => awaitingSyncs,
+    settled,
     open: (id: string) => requests.getOpenRequest(id),
   }
 }
@@ -186,8 +191,8 @@ describe('ToolCalls', () => {
       ])
     })
 
-    it('parks a sign-in request with the fields its form draws, and no refs', () => {
-      const h = harness({ client: false })
+    it('parks a sign-in request once the host leaves it to the user, with the fields its form draws and no refs', async () => {
+      const h = harness({ client: false, answers: { loginRequest: { action: 'ask', vault: { mode: 'new' } } } })
 
       h.calls.mainToolUse(use('t_login', 'mcp__user-input__request_login', {
         message: 'Sign in to GitHub.',
@@ -198,23 +203,105 @@ describe('ToolCalls', () => {
         ],
         submit: '@e6',
       }))
+      // No card while the host decides: the vault may sign in without the user.
+      expect(h.open('t_login')).toBeNull()
+      await settle()
 
+      expect(h.host.calls).toEqual([['loginRequest', {
+        agentSlug: SLUG,
+        sessionId: SESSION,
+        toolUseId: 't_login',
+        input: expect.stringContaining('Sign in to GitHub.'),
+      }]])
       expect(h.open('t_login')).toMatchObject({
         kind: 'login',
-        payload: { message: 'Sign in to GitHub.', fields: [{ kind: 'username', label: 'Email' }, { kind: 'password', label: 'Password' }] },
+        payload: { message: 'Sign in to GitHub.', fields: [{ kind: 'username', label: 'Email' }, { kind: 'password', label: 'Password' }], vault: { mode: 'new' } },
       })
       expect(JSON.stringify(h.open('t_login')?.payload)).not.toContain('@e')
-      // Its context comes from the container when the form asks, not at parking.
+      // Its context comes from the container through the host, not at parking.
       expect(h.fetches).toEqual([])
       expect(h.host.sent('analytics').map((e) => e.event)).toEqual(['agent_request_login'])
     })
 
-    it('parks no sign-in request without fields to draw, or without a reason', () => {
-      const h = harness({ client: false })
-      h.calls.mainToolUse(use('t_login', 'mcp__user-input__request_login', { message: 'Sign in.' }))
+    it('raises no card for a sign-in request the host answered from the vault', async () => {
+      const h = harness({ client: false, answers: { loginRequest: { action: 'settled' } } })
+
+      h.calls.mainToolUse(use('t_login', 'mcp__user-input__request_login', { message: 'Sign in to GitHub.', fields: [], username: 'octocat' }))
+      await settle()
+
       expect(h.open('t_login')).toBeNull()
+      expect(h.requests.getOpenRequests()).toEqual([])
+      // Settled for the transcript too: a sibling can hold its result back,
+      // and an unanswered-looking call must not be parked again meanwhile.
+      expect(h.settled.get('t_login')).toBe('answered')
+    })
+
+    it('settles a sign-in request whose call the host found already ended, without a card', async () => {
+      const h = harness({ client: false, answers: { loginRequest: { action: 'none' } } })
+
+      h.calls.mainToolUse(use('t_login', 'mcp__user-input__request_login', { message: 'Sign in to GitHub.', fields: [] }))
+      await settle()
+
+      expect(h.open('t_login')).toBeNull()
+      expect(h.settled.get('t_login')).toBe('cancelled')
+    })
+
+    it('raises no card for a sign-in request whose call ended while the host decided', async () => {
+      let decide: (decision: { action: 'ask'; vault: Record<string, unknown> }) => void = () => {}
+      const h = harness({ client: false, answers: { loginRequest: () => new Promise((resolve) => { decide = resolve }) } })
+
+      h.calls.mainToolUse(use('t_login', 'mcp__user-input__request_login', { message: 'Sign in to GitHub.', fields: [] }))
+      await settle()
+      h.calls.mainToolResults({ message: { content: [{ type: 'tool_result', tool_use_id: 't_login', content: 'cancelled', is_error: true }] } })
+      decide({ action: 'ask', vault: { mode: 'new' } })
+      await settle()
+
+      expect(h.open('t_login')).toBeNull()
+    })
+
+    it('raises no recovered card for a sign-in request the host is still deciding', async () => {
+      let decide: (decision: { action: 'settled' }) => void = () => {}
+      const h = harness({ client: false, answers: { loginRequest: () => new Promise((resolve) => { decide = resolve }) } })
+
+      h.calls.mainToolUse(use('t_login', 'mcp__user-input__request_login', { message: 'Sign in to GitHub.', fields: [] }))
+      // A reattach reads the transcript: the call has no result yet.
+      h.calls.recoverParked([{ toolUseId: 't_login', toolName: 'mcp__user-input__request_login' }])
+      expect(h.open('t_login')).toBeNull()
+
+      decide({ action: 'settled' })
+      await settle()
+      expect(h.open('t_login')).toBeNull()
+    })
+
+    it('asks the host once for a sign-in request the stream and the message both carry', async () => {
+      const h = harness({ client: false, answers: { loginRequest: { action: 'ask', vault: { mode: 'new' } } } })
+      const call = use('t_login', 'mcp__user-input__request_login', { message: 'Sign in to GitHub.', fields: [] })
+
+      h.calls.mainToolUse(call)
+      h.calls.mainToolUse(call)
+      await settle()
+
+      expect(h.host.calls).toHaveLength(1)
+      expect(h.open('t_login')).not.toBeNull()
+    })
+
+    it('leaves a sign-in request to the user when the host cannot decide it', async () => {
+      const h = harness({ client: false, answers: { loginRequest: async () => { throw new Error('host gone') } } })
+
+      h.calls.mainToolUse(use('t_login', 'mcp__user-input__request_login', { message: 'Sign in to GitHub.', fields: [] }))
+      await settle()
+
+      expect(h.open('t_login')).toMatchObject({ kind: 'login', payload: { vault: { mode: 'new' } } })
+    })
+
+    it('parks no sign-in request without a reason, and none with fields that are not a list', async () => {
+      const h = harness({ client: false, answers: { loginRequest: { action: 'ask', vault: { mode: 'new' } } } })
       h.calls.mainToolUse(use('t_blank', 'mcp__user-input__request_login', { message: '   ', fields: [] }))
+      h.calls.mainToolUse(use('t_bad', 'mcp__user-input__request_login', { message: 'Sign in.', fields: 'username' }))
+      await settle()
       expect(h.open('t_blank')).toBeNull()
+      expect(h.open('t_bad')).toBeNull()
+      expect(h.host.calls).toEqual([])
     })
 
     it('parks nothing for an ask missing its required field, but still recomputes the wait', () => {
