@@ -556,6 +556,12 @@ function isOpenableUrl(url: string): boolean {
   }
 }
 
+function clickedEditorLink(view: EditorView | null, event: MouseEvent): HTMLAnchorElement | null {
+  const link = view?.editable && event.button === 0 && event.target instanceof Element
+    ? event.target.closest('a') : null
+  return link && view?.dom.contains(link) && isOpenableUrl(link.getAttribute('href') ?? '') ? link : null
+}
+
 /** Pasting a single URL over selected text links it, unless the result could hide or lose anything. */
 function linkPastedUrl(state: EditorState, text: string): Transaction | null {
   // Select-all over a draft that is a single text block is still a selection inside one block.
@@ -1060,9 +1066,8 @@ export function MarkdownComposerEditor({
         if (markdown !== latestRef.current.value) latestRef.current.onChange(markdown)
       },
       handleClick: (editorView, pos, event) => {
-        const link = editorView.editable && event.button === 0 && event.target instanceof Element ? event.target.closest('a') : null
-        const href = link?.getAttribute('href') ?? ''
-        if (link && isOpenableUrl(href)) setLinkCard({ href, anchor: { current: link } })
+        const link = clickedEditorLink(editorView, event)
+        if (link) setLinkCard({ href: link.getAttribute('href')!, anchor: { current: link } })
         return false
       },
       handlePaste: (editorView, event) => {
@@ -1210,6 +1215,11 @@ export function MarkdownComposerEditor({
           align="start"
           className="w-auto max-w-80 px-2 py-1.5 text-xs"
           onOpenAutoFocus={(event) => event.preventDefault()}
+          onPointerDownOutside={(event) => {
+            // Editor links open or retarget this virtual-anchor popover. Its
+            // deferred outside-click dismissal must not undo that same click.
+            if (clickedEditorLink(viewRef.current, event.detail.originalEvent)) event.preventDefault()
+          }}
         >
           <button
             type="button"

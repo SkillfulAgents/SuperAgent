@@ -141,7 +141,14 @@ test.describe('read-aloud at the live edge', () => {
     // view, and that programmatic jump (rightly) releases following before
     // the press under test.
     const reply = page.getByTestId('message-assistant').last()
-    const box = await reply.boundingBox()
+    // Stopping the turn can precede the streaming-to-persisted row handoff.
+    // Wait for actual reply geometry without scrolling or focusing the row,
+    // which would change the live-edge state this regression exercises.
+    let box = await reply.boundingBox()
+    await expect.poll(async () => {
+      box = await reply.boundingBox()
+      return box !== null
+    }).toBe(true)
     if (!box) throw new Error('the reply has no box')
     await reply.click({ button: 'right', position: { x: 24, y: box.height - 12 } })
     const readAloudItem = page.getByRole('menuitem', { name: 'Read aloud' })

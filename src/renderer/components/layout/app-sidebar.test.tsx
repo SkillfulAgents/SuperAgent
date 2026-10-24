@@ -701,6 +701,10 @@ describe('AppSidebar — agent rows', () => {
         isLoading: false, error: null,
       })
       const { rerender, unmount } = renderWithProviders(<AppSidebar />)
+      // AppSidebar defers its fullscreen state to an animation frame. Settle
+      // jsdom's 60Hz mount frame before counting minute-clock renders. Keep
+      // rAF itself real: faking it makes an hour traverse 225,000 frame slots.
+      act(() => vi.advanceTimersByTime(20))
       const renders = mockUseAgents.mock.calls.length
       act(() => vi.advanceTimersByTime(60 * 60 * 1000))
       expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last run about 4 hours ago')
