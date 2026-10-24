@@ -96,8 +96,9 @@ export const createAgentRenderer = defineToolRenderer(createAgentDef, {
 
 // ── invoke_agent ──────────────────────────────────────────────
 
-function InvokeAgentExpandedView({ input, result, isError }: ToolRendererProps) {
+function InvokeAgentExpandedView({ input, result, isError, agentSlug }: ToolRendererProps) {
   const { slug, prompt, session_id, sync, attachments } = invokeAgentDef.parseInput(input)
+  const target = slug ?? agentSlug
   // Parse sessionId + status from result (format: 'session_id: X\nstatus: Y\n...')
   const resultText = typeof result === 'string' ? result : ''
   const sessionIdMatch = resultText.match(/session_id:\s*([^\s]+)/)
@@ -108,11 +109,11 @@ function InvokeAgentExpandedView({ input, result, isError }: ToolRendererProps) 
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className="text-muted-foreground">Target:</span>
-        {slug ? <AgentLink slug={slug} /> : <span>—</span>}
-        {resolvedSessionId && slug && (
+        {target ? <AgentLink slug={target} label={slug ? undefined : 'This agent'} /> : <span>—</span>}
+        {resolvedSessionId && target && (
           <>
             <span className="text-muted-foreground">·</span>
-            <SessionLink slug={slug} sessionId={resolvedSessionId} />
+            <SessionLink slug={target} sessionId={resolvedSessionId} />
           </>
         )}
         {sync && (

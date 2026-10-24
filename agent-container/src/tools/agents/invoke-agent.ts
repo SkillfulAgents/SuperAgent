@@ -6,17 +6,17 @@ import { invokeResultSchema } from './host-response-schemas'
 export function makeInvokeAgentTool(getCallerSessionId: () => string) {
   return tool(
     'invoke_agent',
-    `Send a message to another agent in this workspace.
+    `Send a message to an agent in this workspace, including your own. Omit slug to target your own agent, for example to start a worker session or continue one of your own sessions.
 
 If session_id is omitted, a new session is started on the target agent. If session_id is provided, the message is appended to that existing session. If that session is in the middle of a turn, the message joins the turn, the way a user's follow-up does.
 
 If sync=true, the tool waits up to ~2 minutes for the target agent's turn to finish and returns its last message. If the target is still working after that, the call returns status 'running' with the session_id — the invocation was delivered and is in progress; do NOT re-invoke (that would start a duplicate run), poll get_agent_session_transcript instead. If sync=false (default), the tool returns immediately with status 'running' and you can later read the transcript with get_agent_session_transcript.
 
-Use list_agents first to discover available slugs.
+Use list_agents first to discover other agents' slugs. For your own sessions, read progress with /opt/gamut/bin/read-session.py <session_id> instead of get_agent_session_transcript, and rerun it to see new output.
 
-Note: sessions started by another agent cannot themselves invoke other agents — invocation is one hop deep.`,
+Note: sessions started by invoke_agent cannot themselves invoke agents — invocation is one hop deep.`,
     {
-      slug: z.string().describe('Slug of the target agent (from list_agents)'),
+      slug: z.string().optional().describe('Slug of the target agent (from list_agents). Omit to target your own agent.'),
       prompt: z.string().min(1).describe('Message to send to the target agent'),
       session_id: z.string().optional().describe('Optional existing session ID to continue. Omit to start a new session.'),
       sync: z.boolean().optional().describe('If true, wait for the target agent to finish its turn and return its final message. Default false.'),
