@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "QA agent successfully opened browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the correct response within the 3-minute timeout.",
+  "reason": "All 5 steps executed successfully. The agent opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the result within the 3-minute timeout.",
   "steps": [
-    "Step 1: Navigated to http://localhost:47891 — Successfully loaded the Gamut dashboard with sidebar showing available agents including \"QA-20261024-205054-t8nl\".",
-    "Step 2: Clicked on \"QA-20261024-205054-t8nl\" agent in the sidebar — Successfully navigated to the agent page with message input field visible.",
-    "Step 3: Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into the input field — Message successfully entered and visible in the input box.",
-    "Step 4: Clicked \"Send message\" button — Message sent successfully, new session created with title \"Check Example.com Page Title\", agent status changed to \"working\".",
-    "Step 5: Waited up to 3 minutes for response — Agent completed work in 6 seconds using 3 tool calls and 155,980 tokens. Agent successfully returned response: \"The page title at https://example.com is \"Example Domain\". I've closed the browser.\""
+    "Step 1 - Navigated to http://localhost:47891 — Successfully loaded the Gamut application homepage showing the agent list.",
+    "Step 2 - Found \"QA-20261025-014521-l6ib\" agent in sidebar and clicked it — Successfully opened the agent's configuration page and created a new session titled \"Browser Page Title Check\".",
+    "Step 3 - Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully typed into the input field and sent using Cmd+Enter.",
+    "Step 4 - Waited up to 3 minutes for response — Agent completed processing within approximately 5 seconds as indicated by \"Worked for 5s · 3 tool calls · 155,990 tokens\".",
+    "Step 5 - Verified response mentions \"Example Domain\" and took screenshot — Response received successfully states: \"The page title is \"Example Domain\". The browser opened https://example.com, got a 200 response, and is now closed.\" This confirms the agent performed all requested actions correctly and returned the expected page title."
   ],
   "bugs": [],
-  "durationMs": 92206,
-  "sessionId": "a9627cff-1c43-4fb0-9d61-df1d1eec08ab",
+  "durationMs": 247469,
+  "sessionId": "07b3ee06-9fd0-40da-be85-dc88ffe2d11a",
   "cost": {
-    "inputTokens": 364,
-    "outputTokens": 9663,
-    "cacheCreationTokens": 66192,
-    "cacheReadTokens": 1003050,
+    "inputTokens": 380,
+    "outputTokens": 10742,
+    "cacheCreationTokens": 67747,
+    "cacheReadTokens": 1071068,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.231724
+    "totalCostUsd": 0.245881
   }
 }
