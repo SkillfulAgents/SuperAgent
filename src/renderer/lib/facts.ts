@@ -18,7 +18,8 @@ import type { ApiTarget } from '@shared/lib/api-target'
  * of its own:
  * - **Web:** the server inlines its facts into the HTML it serves.
  * - **Electron:** main hands them over with the target. For the local API, main
- *   *is* the server; for a cloud workspace, main asked the deployment.
+ *   *is* the server; for a cloud workspace, main answers from what it last
+ *   heard from the deployment, without asking at boot.
  *
  * Frozen for the renderer's lifetime, like the target they belong to: switching
  * targets reloads the window.
