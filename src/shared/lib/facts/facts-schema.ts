@@ -90,3 +90,9 @@ export interface Facts {
 
 /** Id of the `<script type="application/json">` block that carries a web server's facts in its HTML. */
 export const SERVER_FACTS_ELEMENT_ID = 'server-facts'
+
+/**
+ * Left by the build in the service worker's revision of the HTML entry, for the
+ * web server to replace with its facts (`withServerFactsRevision()`).
+ */
+export const SERVER_FACTS_REVISION_PLACEHOLDER = '__SERVER_FACTS__'

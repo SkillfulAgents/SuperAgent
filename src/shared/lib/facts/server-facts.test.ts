@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { serverFactsSchema, type ServerFacts } from './facts-schema'
-import { currentOs, desktopDistribution, getServerFacts, withServerFacts } from './server-facts'
+import { SERVER_FACTS_REVISION_PLACEHOLDER, serverFactsSchema, type ServerFacts } from './facts-schema'
+import { currentOs, desktopDistribution, getServerFacts, withServerFacts, withServerFactsRevision } from './server-facts'
 
 /** Pretend to be a given process, the way Electron sets these. */
 function stubProcess(props: { platform?: string; type?: string; mas?: boolean; windowsStore?: boolean }) {
@@ -89,5 +89,29 @@ describe('withServerFacts', () => {
 
   it('refuses HTML with no head rather than serving a page without facts', () => {
     expect(() => withServerFacts('<!doctype html><title>App</title>', FACTS)).toThrow('no </head>')
+  })
+})
+
+describe('withServerFactsRevision', () => {
+  const FACTS: ServerFacts = { os: 'linux', distribution: 'deployment' }
+  const SW = `precacheAndRoute([{url:"index.html",revision:"abc-${SERVER_FACTS_REVISION_PLACEHOLDER}"}])`
+
+  function revision(sw: string): string {
+    const match = sw.match(/revision:"([^"]*)"/)
+    if (!match) throw new Error('no revision')
+    return match[1]
+  }
+
+  // The worker refetches its precached HTML, and so its facts, only when this changes.
+  it('gives the HTML entry a revision that changes with the facts, and only with them', () => {
+    const linux = revision(withServerFactsRevision(SW, FACTS))
+    expect(linux).toMatch(/^abc-[0-9a-f]{12}$/)
+    expect(revision(withServerFactsRevision(SW, { ...FACTS }))).toBe(linux)
+    expect(revision(withServerFactsRevision(SW, { ...FACTS, os: 'win32' }))).not.toBe(linux)
+  })
+
+  it('leaves a worker built without the placeholder as it is', () => {
+    const sw = 'precacheAndRoute([{url:"index.html",revision:"abc"}])'
+    expect(withServerFactsRevision(sw, FACTS)).toBe(sw)
   })
 })

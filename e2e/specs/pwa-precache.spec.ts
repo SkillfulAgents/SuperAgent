@@ -62,6 +62,18 @@ test.describe('PWA precaching service worker', () => {
 
     // The app shell itself is precached (what navigateFallback serves offline).
     expect(precached).toContain('/index.html')
+    // Under a revision the server completed with its facts, so a deploy that
+    // changes only those still makes the worker fetch the shell again.
+    const indexRevision = await page.evaluate(async () => {
+      for (const name of await caches.keys()) {
+        for (const req of await (await caches.open(name)).keys()) {
+          const match = req.url.match(/\/index\.html\?__WB_REVISION__=([^&]+)/)
+          if (match) return match[1]
+        }
+      }
+      return null
+    })
+    expect(indexRevision).toMatch(/^[0-9a-f]{32}-[0-9a-f]{12}$/)
 
     // Every hashed asset the page loaded at boot is in the precache…
     const bootAssets = await page.evaluate(() =>

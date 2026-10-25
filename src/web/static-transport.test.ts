@@ -6,11 +6,12 @@ import type { AddressInfo } from 'node:net'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { serverFactsSchema } from '@shared/lib/facts/facts-schema'
-import { getServerFacts } from '@shared/lib/facts/server-facts'
+import { SERVER_FACTS_REVISION_PLACEHOLDER, serverFactsSchema } from '@shared/lib/facts/facts-schema'
+import { getServerFacts, withServerFactsRevision } from '@shared/lib/facts/server-facts'
 import { mountWebBuild } from './web-build'
 
 const INDEX_HTML = '<!doctype html><html><head><title>App</title></head><body></body></html>'
+const SERVICE_WORKER = `precacheAndRoute([{url:"index.html",revision:"abc-${SERVER_FACTS_REVISION_PLACEHOLDER}"}])`
 
 /** The facts a page reads from its HTML, the way the renderer finds them. */
 function inlinedFacts(html: string): unknown {
@@ -33,6 +34,7 @@ describe('static files over the Node HTTP adapter', () => {
       writeFile(join(root, 'empty.bin'), ''),
       writeFile(join(root, 'encoded%20name.txt'), 'literal-percent filename'),
       writeFile(join(root, 'index.html'), INDEX_HTML),
+      writeFile(join(root, 'sw.js'), SERVICE_WORKER),
     ])
     const app = new Hono()
     mountWebBuild(app, root)
@@ -114,6 +116,18 @@ describe('static files over the Node HTTP adapter', () => {
       expect(html).toContain('<title>App</title>')
     },
   )
+
+  // Its precached copy of the HTML is what every navigation gets, so a change
+  // in the facts has to change the worker.
+  it('serves the service worker with the facts in its revision of the HTML entry, uncached', async () => {
+    const res = await fetch(`${baseUrl}/sw.js`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('cache-control')).toBe('no-cache')
+    expect(res.headers.get('content-type')).toContain('text/javascript')
+    const sw = await res.text()
+    expect(sw).toBe(withServerFactsRevision(SERVICE_WORKER, getServerFacts()))
+    expect(sw).not.toContain(SERVER_FACTS_REVISION_PLACEHOLDER)
+  })
 
   it('does not serve a static file or the SPA fallback for POST', async () => {
     const res = await fetch(`${baseUrl}/sample.bin`, { method: 'POST', body: 'ignored' })

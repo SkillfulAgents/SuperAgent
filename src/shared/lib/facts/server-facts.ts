@@ -1,5 +1,7 @@
+import { createHash } from 'node:crypto'
 import {
   SERVER_FACTS_ELEMENT_ID,
+  SERVER_FACTS_REVISION_PLACEHOLDER,
   osOf,
   type DesktopDistribution,
   type Os,
@@ -50,4 +52,20 @@ export function withServerFacts(html: string, facts: ServerFacts): string {
     throw new Error('Cannot inline server facts: the HTML has no </head>')
   }
   return html.replace('</head>', `${block}\n</head>`)
+}
+
+/**
+ * The web build's service worker, with this server's facts in its revision of
+ * the HTML entry.
+ *
+ * The worker serves its precached copy of that HTML, facts included, to every
+ * navigation, and fetches it again only when its revision changes. The build
+ * sets the revision from the HTML's bytes and leaves a placeholder for the
+ * facts, which it can't know. Filling it in means a deploy that changes the
+ * facts changes the worker, and browsers pick that up on the update check they
+ * already make, with no request of their own.
+ */
+export function withServerFactsRevision(serviceWorker: string, facts: ServerFacts): string {
+  const revision = createHash('sha256').update(JSON.stringify(facts)).digest('hex').slice(0, 12)
+  return serviceWorker.replaceAll(SERVER_FACTS_REVISION_PLACEHOLDER, revision)
 }

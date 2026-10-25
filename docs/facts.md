@@ -66,10 +66,13 @@ the first fetch after connecting).
   `no-restricted-properties`).
 - **Only facts safe for an anonymous visitor** go in `ServerFacts`: the login
   page is the same HTML, and the endpoint is public.
-- **Only facts that can't change without a new build or deploy.** The web build's
-  service worker precaches `index.html` and serves it for every later
-  navigation, so a page may hold the facts from when the worker was installed.
-  Anything that can change at runtime stays an API read.
+- **Only facts that can't change while the server runs,** since a page can hold
+  them for a while after a deploy changes them. The web build's service worker
+  serves its precached `index.html` to every navigation and refetches it on its
+  next update check, because the facts are part of its revision of that file
+  (`withServerFactsRevision()`). The desktop app reads what the workspace's last
+  maintenance cycle heard, at most half an hour old. Anything that can change at
+  runtime, or must be current the moment it changes, stays an API read.
 
 ## Adding a fact
 
