@@ -21,6 +21,7 @@ import {
   DEPLOYED_STATUS,
   type DeploymentDiscoveryEntry,
 } from '@shared/lib/platform-auth/cloud-workspace-schema'
+import { refreshCloudServerFacts } from '@shared/lib/services/cloud-server-facts'
 import {
   isLocalhostHost,
   validateMcpDiscoveryUrl,
@@ -436,10 +437,14 @@ export async function getCloudWorkspace(
 /**
  * Boot/connect hook: run the discover → ensure-token cycle so the deployment
  * token is maintained even when the Account tab is never opened. Never throws.
+ *
+ * The deployment's server facts ride along, so a renderer driving it reads them
+ * at boot rather than waiting on a request of its own (`cloud-server-facts.ts`).
  */
 export async function refreshCloudWorkspace(): Promise<void> {
   try {
-    await getCloudWorkspace()
+    const status = await getCloudWorkspace()
+    if (status.hasValidToken && status.deploymentUrl) await refreshCloudServerFacts(status.deploymentUrl)
   } catch (error) {
     reportFailureOnce('refresh', error)
   }

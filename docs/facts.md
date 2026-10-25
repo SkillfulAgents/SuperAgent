@@ -39,12 +39,18 @@ of its own (`src/renderer/lib/facts.ts`):
 - **Web, dev:** the `server-facts` plugin in `vite.config.ts` does the same.
 - **Electron:** main answers `get-facts` for the target the renderer settled
   (`src/main/facts.ts`). For the local API main *is* the server. For a cloud
-  workspace main asks the deployment's `GET /api/server-facts` through the cloud
-  proxy, once per deployment per process, with a 3 s limit.
+  workspace main answers from the deployment's facts as it last heard them
+  (`src/shared/lib/services/cloud-server-facts.ts`): the workspace's maintenance
+  cycle asks `GET /api/server-facts` in the background, on start, on connect and
+  every half hour, and keeps the answer in settings.
+
+Boot never waits on a request for facts. The web server and main already hold
+them, and a cloud renderer's boot waits on the deployment enough as it is.
 
 `clientFacts()` and `serverFacts()` throw if read before boot settles them.
 `serverFacts()` is null when the server didn't say: a cloud workspace older than
-the endpoint, or one unreachable at boot.
+the endpoint, or one the desktop app hasn't heard from yet (a boot that beats
+the first fetch after connecting).
 
 ## Rules
 

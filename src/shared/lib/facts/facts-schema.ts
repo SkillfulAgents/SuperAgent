@@ -56,6 +56,17 @@ export const serverFactsSchema = z.object({
 })
 export type ServerFacts = z.infer<typeof serverFactsSchema>
 
+/**
+ * A cloud workspace's facts as the desktop app last heard them, kept in
+ * settings so a renderer driving it has them at boot without a request
+ * (`cloud-server-facts.ts`).
+ */
+export const cloudServerFactsRecordSchema = z.object({
+  deploymentUrl: z.string(),
+  facts: serverFactsSchema,
+})
+export type CloudServerFactsRecord = z.infer<typeof cloudServerFactsRecordSchema>
+
 export interface ClientFacts {
   shell: 'electron' | 'browser'
   /**
@@ -69,8 +80,8 @@ export interface ClientFacts {
 
 /**
  * Both halves, as a renderer holds them. `server` is null when the server
- * didn't say: a cloud workspace older than `GET /api/server-facts`, or one that
- * couldn't be reached at boot.
+ * didn't say: a cloud workspace older than `GET /api/server-facts`, or one the
+ * desktop app hasn't heard from yet.
  */
 export interface Facts {
   client: ClientFacts

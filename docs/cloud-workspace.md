@@ -109,6 +109,11 @@ is deliberately **fully defensive — it never throws**; any failure degrades to
 - Maintenance runs on boot, on connect, on Account-tab view, **and** on a
   low-frequency background poll in `PlatformService`, so a long-lived app stays
   valid without an Account visit.
+- **The deployment's server facts ride along.** `refreshCloudWorkspace()` (boot,
+  connect, the poll) asks the deployment's `GET /api/server-facts` once a token
+  is held and keeps the answer in settings (`cloud-server-facts.ts`), so a
+  renderer driving the workspace reads them at boot without a request of its
+  own. See [docs/facts.md](facts.md).
 - **Failures are reported once per process, from the service only.** Because
   maintenance re-runs every 30 minutes and the things that break it are usually
   persistent (offline, a token that isn't member-bound, a deployment too old to
