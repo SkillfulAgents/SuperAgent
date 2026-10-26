@@ -23,6 +23,7 @@ import { usesTeamBrain, useTeamBrain, type TeamBrainStore } from '@renderer/lib/
 import { TEAM_BRAIN_STEPS, type TeamBrainLocationId, type TeamBrainSourceId, type TeamBrainStep } from '@renderer/lib/team-brain/team-brain-schema'
 import { TeamBrainSourceIcon } from './team-brain-source-icon'
 import { LocationChoices, ScheduleChoices } from './team-brain-choices'
+import { teamBrainLocation } from './team-brain-locations'
 import { AgentAccessList, EveryAgentRow } from './team-brain-agent-access'
 
 /** The rail's names for each step. */
@@ -42,7 +43,7 @@ const NEXT_LABELS: Record<TeamBrainStep, string> = {
 }
 
 /** The homes set-up offers, in this order. */
-const LOCATIONS: readonly TeamBrainLocationId[] = ['local', 's3', 'dropbox', 'googledrive']
+const LOCATIONS: readonly TeamBrainLocationId[] = ['googledrive', 'dropbox', 'local', 's3']
 
 // The look of Figma's Dev Mode welcome modal (UI Inspo, node 57:3), in this
 // app's tokens: brand blue where Figma uses its green.
@@ -178,14 +179,12 @@ function StepPanel({
   children,
   back,
   next,
-  hint,
 }: {
   title: string
   subtitle: ReactNode
   children: ReactNode
   back?: () => void
   next?: { label: string; onClick: () => void; disabled?: boolean; testId?: string }
-  hint?: ReactNode
 }) {
   return (
     <>
@@ -196,7 +195,6 @@ function StepPanel({
         <div className="my-auto pt-7">{children}</div>
       </div>
       <footer className="flex h-[60px] shrink-0 items-center justify-end gap-2 border-t px-[18px]">
-        {hint && <span className="mr-auto min-w-0 text-[13px] text-muted-foreground">{hint}</span>}
         {back && (
           <button type="button" className={SECONDARY} onClick={back} data-testid="team-brain-back">
             Back
@@ -214,7 +212,10 @@ function StepPanel({
 
 // ── 01 Where it lives ────────────────────────────────────────────────────────
 
-/** Choosing a home opens that drive's own set-up in place of the cards; saving it prepares Team Brain there. */
+/**
+ * Choosing a home only selects it; Next opens that drive's own set-up in place of the cards, and saving it prepares
+ * Team Brain there. Back on this step with the prepared home still chosen, Next goes straight on.
+ */
 function LocationStep({
   tb,
   nav,
@@ -225,6 +226,7 @@ function LocationStep({
   onPrepare: (source: VolumeSource, details: VolumeDetails) => Promise<void>
 }) {
   const { isAuthMode, isAdmin } = useUser()
+  const [picked, setPicked] = useState<TeamBrainLocationId | null>(tb.state.location)
   const [setup, setSetup] = useState<{ definition: VolumeSetupDefinition; config: unknown } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
@@ -282,13 +284,18 @@ function LocationStep({
     )
   }
 
+  const ready = !!tb.state.prepared && picked === tb.state.location
   return (
     <StepPanel
       title="Choose where Team Brain knowledge is stored"
       subtitle="Every agent you connect to Team Brain will read and add to the knowledge in this storage. It is possible to migrate later if needed."
-      next={{ label: nav.nextLabel, disabled: !tb.state.prepared, onClick: nav.next }}
+      next={{
+        label: ready || !picked ? nav.nextLabel : `Next: Set up ${teamBrainLocation(picked).name}`,
+        disabled: !picked,
+        onClick: () => { if (ready) nav.next(); else if (picked) void choose(picked) },
+      }}
     >
-      <LocationChoices value={tb.state.location} onChoose={(id) => void choose(id)} only={LOCATIONS} />
+      <LocationChoices value={picked} onChoose={(id) => { setPicked(id); setError(null) }} only={LOCATIONS} />
       {error && <p role="alert" className="mt-4 text-[13px] text-destructive">{error}</p>}
     </StepPanel>
   )
@@ -357,10 +364,10 @@ function SyncStep({ tb, nav }: { tb: TeamBrainStore; nav: StepNav }) {
       title="Set how often it syncs"
       subtitle="Each sync reads what changed in your sources, which costs tokens. Syncing more often keeps your agents’ context fresher; less often costs less."
       back={nav.back}
-      hint="You can change this any time."
       next={{ label: nav.nextLabel, onClick: nav.next }}
     >
       <ScheduleChoices value={tb.state.schedule} onChoose={tb.setSchedule} />
+      <p className="mt-4 text-[13px] text-muted-foreground">You can change this any time.</p>
     </StepPanel>
   )
 }

@@ -104,7 +104,11 @@ afterEach(() => {
 
 async function saveDrive(clicker: ReturnType<typeof userEvent.setup>) {
   await clicker.click(screen.getByTestId('team-brain-start'))
+  // Choosing a home only selects it; Next opens its set-up.
   await clicker.click(screen.getByTestId('team-brain-location-googledrive'))
+  expect(screen.queryByTestId('drive-save')).toBeNull()
+  expect(screen.getByTestId('team-brain-next')).toHaveTextContent('Next: Set up Google Drive')
+  await clicker.click(screen.getByTestId('team-brain-next'))
   await clicker.click(screen.getByTestId('drive-save'))
 }
 
@@ -122,9 +126,10 @@ describe('TeamBrainPage', () => {
 
     await userEvent.click(screen.getByTestId('team-brain-start'))
     expect(screen.getByTestId('team-brain-onboarding-step')).toHaveAttribute('data-step', 'location')
-    for (const id of ['local', 's3', 'dropbox', 'googledrive']) {
-      expect(screen.getByTestId(`team-brain-location-${id}`)).toHaveAttribute('aria-checked', 'false')
-    }
+    // Google Drive and Dropbox first, then a local folder and S3.
+    const homes = screen.getAllByTestId(/^team-brain-location-/)
+    expect(homes.map((home) => home.dataset.testid)).toEqual(['googledrive', 'dropbox', 'local', 's3'].map((id) => `team-brain-location-${id}`))
+    for (const home of homes) expect(home).toHaveAttribute('aria-checked', 'false')
     expect(screen.getByTestId('team-brain-next')).toBeDisabled()
   })
 
@@ -236,13 +241,14 @@ describe('TeamBrainPage', () => {
     render(<TeamBrainPage />)
     await clicker.click(screen.getByTestId('team-brain-start'))
     await clicker.click(screen.getByTestId('team-brain-location-s3'))
+    await clicker.click(screen.getByTestId('team-brain-next'))
     const footer = await screen.findByTestId('team-brain-drive-footer')
     expect(within(footer).getByTestId('team-brain-back')).toBeInTheDocument()
     expect(within(footer).getByTestId('team-brain-drive-submit')).toHaveTextContent('Test connection')
     expect(within(screen.getByTestId('team-brain-drive-setup')).queryByRole('button', { name: 'Cancel' })).toBeNull()
     // Back returns to the homes.
     await clicker.click(within(footer).getByTestId('team-brain-back'))
-    expect(screen.getByTestId('team-brain-location-s3')).toBeInTheDocument()
+    expect(screen.getByTestId('team-brain-location-s3')).toHaveAttribute('aria-checked', 'true')
   })
 
   it('leaves set-up to admins in a team workspace', () => {
