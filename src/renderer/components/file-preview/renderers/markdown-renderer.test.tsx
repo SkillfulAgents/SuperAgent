@@ -23,6 +23,16 @@ vi.mock('@renderer/context/file-preview-context', () => ({
 }))
 
 describe('MarkdownRenderer', () => {
+  it('folds the frontmatter into a closed Properties row and draws only what follows', () => {
+    text = '---\ntitle: Overview\n---\n# Overview'
+    render(<MarkdownRenderer url="/doc.md" filePath="/doc.md" agentSlug="test-agent" />)
+    expect(screen.getByTestId('markdown-frontmatter')).not.toHaveAttribute('open')
+    expect(screen.getByText('title: Overview')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Overview' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: /title:/ })).toBeNull()
+    expect(screen.getByRole('heading', { name: 'Overview' })).toHaveAttribute('data-comment-lines', '4-4')
+  })
+
   it('draws mermaid and math fences, keeps other fences as copyable code, and resolves workspace images', async () => {
     text = FENCES
     const { container } = render(<MarkdownRenderer url="/doc.md" filePath="/doc.md" agentSlug="test-agent" />)
@@ -40,6 +50,7 @@ describe('MarkdownRenderer', () => {
     render(<MarkdownRenderer url="/doc.md" filePath="/workspace/doc.md" agentSlug="test-agent" />)
     await screen.findByTestId('mermaid-diagram')
 
+    expect(screen.queryByTestId('markdown-frontmatter')).toBeNull()
     const marked = [...screen.getByTestId('markdown-renderer').querySelectorAll('[data-comment-lines]')]
     expect(marked.map(el => `${el.tagName.toLowerCase()} ${el.getAttribute('data-comment-lines')}`)).toEqual([
       'h1 1-1', 'p 3-3', 'li 5-5', 'th 7-7', 'th 7-7', 'td 9-9', 'td 9-9', 'div 11-13', 'div 15-18',
