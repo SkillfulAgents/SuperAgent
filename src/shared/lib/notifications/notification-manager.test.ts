@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
     },
   })),
   publishGlobal: vi.fn(),
+  webPushDeliver: vi.fn(),
   promoteAutomated: vi.fn(async (_agentSlug: string, _sessionId: string) => null),
   isAuthMode: vi.fn(() => false),
   captureException: vi.fn(),
@@ -77,7 +78,7 @@ vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
 vi.mock('./channels/web-push-channel', () => ({
   WebPushChannel: class {
     id = 'web_push'
-    async deliver() {}
+    async deliver(event: unknown) { mocks.webPushDeliver(event) }
   },
 }))
 
@@ -578,6 +579,25 @@ describe('triggerSessionMention', () => {
       notificationType: 'session_mention',
       recipientUserId: 'user-b',
     }))
+  })
+
+  it('points every channel at the tagged message', async () => {
+    await notificationManager.triggerSessionMention({
+      sessionId: 'sess 1',
+      agentSlug: 'agent-x',
+      messageUuid: 'msg-1',
+      recipientUserId: 'user-b',
+      senderName: 'Dana Lee',
+      text: 'look at this',
+    })
+    expect(mocks.webPushDeliver).toHaveBeenCalledWith(expect.objectContaining({
+      navigatePath: '/agents/agent-x/sessions/sess%201?mention=msg-1',
+      messageUuid: 'msg-1',
+    }))
+    expect(mockPublishGlobal).toHaveBeenCalledWith(expect.objectContaining({ messageUuid: 'msg-1' }))
+    // Main keeps only actionContext for a click with the window closed. A
+    // mention has none, so that click lands on home and marks nothing read.
+    expect(mockPublishGlobal.mock.calls[0][0]).not.toHaveProperty('actionContext')
   })
 
   it('cuts a long message to a preview', async () => {

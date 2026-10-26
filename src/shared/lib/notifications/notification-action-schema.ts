@@ -54,6 +54,7 @@ export const NotificationMetadataSchema = z
     notificationId: z.string().min(1).optional(),
     agentSlug: z.string().min(1).optional(),
     sessionId: z.string().min(1).optional(),
+    messageUuid: z.string().min(1).optional(),
   })
   .passthrough()
 

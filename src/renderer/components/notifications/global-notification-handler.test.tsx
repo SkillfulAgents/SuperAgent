@@ -30,9 +30,10 @@ class MockEventSource extends EventTarget {
 
 vi.stubGlobal('EventSource', MockEventSource)
 
+const env = vi.hoisted(() => ({ electron: false }))
 vi.mock('@renderer/lib/env', () => ({
   getApiBaseUrl: () => 'http://localhost:3000',
-  isElectron: () => false,
+  isElectron: () => env.electron,
 }))
 
 vi.mock('@renderer/lib/os-notifications', () => ({
@@ -789,6 +790,44 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       to: '/notifications/$id',
       params: { id: platformNotificationId },
     })
+  })
+
+  it('a mention pop-up click lands on its message', async () => {
+    const { showOSNotification } = await import('@renderer/lib/os-notifications')
+    vi.mocked(showOSNotification).mockClear()
+    mockNavigate.mockClear()
+    let dispatch: ((event: unknown) => void) | undefined
+    env.electron = true
+    window.electronAPI = { onNotificationEvent: (callback: (event: unknown) => void) => { dispatch = callback; return () => {} } } as unknown as typeof window.electronAPI
+    try {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <GlobalNotificationHandler />
+        </QueryClientProvider>
+      )
+      simulateSSEMessage(getLatestEventSource(), {
+        type: 'os_notification',
+        notificationType: 'session_mention',
+        notificationId: 'notif-1',
+        sessionId: 'sess-1',
+        agentSlug: 'my-agent',
+        title: 'Dana mentioned you',
+        body: 'look at this',
+        messageUuid: 'msg-1',
+      })
+      // Main hands the pop-up's context back on click.
+      const [, , , options] = vi.mocked(showOSNotification).mock.calls[0]
+      dispatch!({ type: 'click', context: options?.context })
+      expect(mockNavigate).toHaveBeenCalledWith({
+        to: '/agents/$slug/sessions/$sessionId',
+        params: { slug: 'my-agent', sessionId: 'sess-1' },
+        search: { mention: 'msg-1' },
+        replace: true,
+      })
+    } finally {
+      env.electron = false
+      window.electronAPI = undefined as unknown as typeof window.electronAPI
+    }
   })
 
   it('platform_notification popup respects the settings toggle', async () => {

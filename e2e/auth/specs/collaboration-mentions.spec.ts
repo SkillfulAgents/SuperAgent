@@ -82,6 +82,12 @@ test('tagging a teammate shares the agent first, notifies only them, and leaves 
     expect(await mentionsFor(mike.context.request)).toEqual([])
     expect(await mentionsFor(page.request)).toEqual([])
 
+    // Later turns push the note off screen, as a working session does.
+    for (let turn = 1; turn <= 6; turn++) {
+      expect((await page.request.post(`${endpoint}/sessions/${sessionId}/messages`, { data: { content: `Next step ${turn}` } })).ok()).toBeTruthy()
+      await expect(page.getByTestId('message-assistant')).toHaveCount(assistantReplies + turn, { timeout: 30_000 })
+    }
+
     // Sara finds it in her inbox and opens the chat it points at.
     // Until she looks, the bell and the agent's row carry a purple @ rather than a dot.
     const saraPage = await sara.context.newPage()
@@ -91,7 +97,11 @@ test('tagging a teammate shares the agent first, notifies only them, and leaves 
     const saraAgentRow = saraPage.locator('[data-sidebar="menu-button"]').filter({ has: saraPage.getByTestId(`agent-item-${agent.slug}`) })
     await expect(saraAgentRow.getByLabel('mentioned you')).toBeVisible()
     await saraPage.getByText(`${owner.name} mentioned you`).click()
-    await expect(saraPage).toHaveURL(new RegExp(`/sessions/${sessionId}`))
+    // She lands on the message, it rings, and the link that named it goes.
+    const note = saraPage.getByTestId('message-user').filter({ hasText: 'look at this plan' })
+    await expect(note).toBeInViewport()
+    expect(await note.locator('[data-message-bubble]').evaluate((bubble) => bubble.getAnimations().length)).toBeGreaterThan(0)
+    await expect(saraPage).toHaveURL(new RegExp(`/sessions/${sessionId}$`))
     await expect(saraPage.getByTestId('message-user').filter({ hasText: 'look at this plan' }).getByTestId('mention-notified')).toBeVisible()
     await expect.poll(async () => (await (await sara.context.request.get('/api/notifications/unread-count')).json())).toEqual({ count: 0, mentions: 0 })
     await expect(bellMention).toHaveCount(0, { timeout: 15_000 })
@@ -109,8 +119,8 @@ test('tagging a teammate shares the agent first, notifies only them, and leaves 
     const loud = page.getByTestId('message-user').filter({ hasText: 'when the plan is ready' })
     await expect(loud.getByTestId('user-mention')).toContainText(`@${mike.name}`)
     await expect(loud.getByTestId('mention-notified')).toHaveCount(0)
-    // One reply in all since the note: the note itself ran no turn.
-    await expect(page.getByTestId('message-assistant')).toHaveCount(assistantReplies + 1, { timeout: 30_000 })
+    // One reply per turn since the note: the note itself ran no turn.
+    await expect(page.getByTestId('message-assistant')).toHaveCount(assistantReplies + 7, { timeout: 30_000 })
     await expect.poll(async () => (await mentionsFor(mike.context.request)).length).toBe(1)
 
     const { messages } = await (await page.request.get(`${endpoint}/sessions/${sessionId}/messages?limit=50`)).json() as { messages: Array<{ content: { text: string } }> }

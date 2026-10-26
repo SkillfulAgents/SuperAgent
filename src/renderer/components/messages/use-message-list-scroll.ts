@@ -157,6 +157,19 @@ function nestedScrollableConsumesWheel(el: HTMLElement, deltaY: number): boolean
 const prefersReducedMotion = () =>
   window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
+/** A landed message's bubble rings for 2 s. Web Animations, so the classes React owns are untouched. */
+function ringMessage(row: HTMLElement) {
+  const bubble = row.querySelector<HTMLElement>('[data-message-bubble]')
+  // Tailwind violet-500, the mention @ icon's color.
+  const ring = { boxShadow: '0 0 0 2px rgb(139 92 246)' }
+  bubble?.animate(
+    prefersReducedMotion()
+      ? [ring, ring]
+      : [ring, { ...ring, offset: 0.5 }, { boxShadow: '0 0 0 2px rgb(139 92 246 / 0)' }],
+    { duration: 2000 },
+  )
+}
+
 const liveEdgeTarget = (el: HTMLElement) =>
   Math.max(0, el.scrollHeight - LIVE_EDGE_ALLOWANCE_PX - el.clientHeight)
 
@@ -194,6 +207,12 @@ interface MessageListScrollOptions<T> {
   isCompacting: unknown
   pendingRequestCount: unknown
   activeSubagents: unknown
+  /** A message to land on once (a mention), its index in visibleMessages (-1 while not loaded), and the call when the jump settles. */
+  jumpToMessageId?: string
+  jumpIndex?: number
+  onJumpSettled?: () => void
+  /** When the latest page last answered, with data or an error (epoch ms). */
+  latestAnsweredAt?: number
 }
 
 /**
@@ -226,6 +245,10 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     isCompacting,
     pendingRequestCount,
     activeSubagents,
+    jumpToMessageId,
+    jumpIndex = -1,
+    onJumpSettled,
+    latestAnsweredAt = 0,
   } = options
 
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -246,6 +269,14 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
   // observers read it without stale-closure risk); the state mirror only
   // drives the scroll-to-bottom affordance's rendering.
   const followingRef = useRef(true)
+  // The open mention jump (see the jump effect below), and who hears it settle.
+  const jumpRef = useRef<{ id: string; since: number; fetching: boolean; done: boolean } | null>(null)
+  const onJumpSettledRef = useRef(onJumpSettled)
+  onJumpSettledRef.current = onJumpSettled
+  const settleJump = useCallback((jump: { done: boolean }) => {
+    jump.done = true
+    onJumpSettledRef.current?.()
+  }, [])
   const [isAtBottom, setIsAtBottom] = useState(true)
   // The last known geometry, updated by every scroll event AND by every write
   // the engine makes. A scroll event is classified against it: same
@@ -628,6 +659,20 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
     rememberPosition()
   })
 
+  // Before an older page prepends: keep the rows the reader is on in place.
+  const keepReaderOnPrepend = useCallback(() => {
+    // Back at the bottom mid-fetch: the trailing window doesn't move on
+    // prepend, so skip the capture — a lingering guard would block the
+    // next scroll-up gesture. Derived from geometry at capture time.
+    const viewport = scrollRef.current
+    if (
+      viewport &&
+      viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 100
+    ) {
+      prevScrollHeightRef.current = viewport.scrollHeight
+    }
+  }, [])
+
   const handleScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
     const el = event.currentTarget
     const baseline = baselineRef.current
@@ -687,6 +732,9 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
       const rollback = !inputBacked && (engineActive || onTrail)
       if (!rollback) {
         lastUserScrollUpAtRef.current = now
+        // The reader took the viewport: an open mention jump stops here.
+        const jump = jumpRef.current
+        if (jump && !jump.done) settleJump(jump)
         // Blank reserve is one-way. When the reader moves upward, consume the
         // same number of pixels from the spacer. The new scroll position
         // becomes the reserve's live edge, so that discarded blank area cannot
@@ -748,25 +796,14 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
         prevScrollHeightRef.current = el.scrollHeight
         setWindowSize((n) => n + LOAD_STEP)
       } else if (hasOlder && !isFetchingOlder && fetchOlder) {
-        void fetchOlder(() => {
-          // Back at the bottom mid-fetch: the trailing window doesn't move on
-          // prepend, so skip the capture — a lingering guard would block the
-          // next scroll-up gesture. Derived from geometry at capture time.
-          const viewport = scrollRef.current
-          if (
-            viewport &&
-            viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 100
-          ) {
-            prevScrollHeightRef.current = viewport.scrollHeight
-          }
-        })
+        void fetchOlder(keepReaderOnPrepend)
       }
     }
 
     // Re-read rather than reuse the entry sample: reserve eating above may
     // have changed the spacer (and with it scrollHeight) inside this handler.
     rememberPosition()
-  }, [hiddenCount, hasOlder, isFetchingOlder, fetchOlder, setBottomSpacerHeight, releaseFollow, engageFollow, rememberPosition])
+  }, [hiddenCount, hasOlder, isFetchingOlder, fetchOlder, keepReaderOnPrepend, settleJump, setBottomSpacerHeight, releaseFollow, engageFollow, rememberPosition])
 
   // After a scroll-up expansion adds older messages above the viewport, restore the
   // scroll position so the content the user was reading stays put (no jump).
@@ -782,6 +819,62 @@ export function useMessageListScroll<T>(options: MessageListScrollOptions<T>) {
       rememberPosition()
     }
   }, [windowSize, rememberPosition])
+
+  // Land once on a message named from outside (a mention). Older pages load
+  // until it is in the history; a page fetched before the click cannot call it
+  // missing. Every stop settles: landed, no more history, a failed page.
+  const [jumpPass, setJumpPass] = useState(0)
+  useLayoutEffect(() => {
+    if (!jumpToMessageId) {
+      jumpRef.current = null
+      return
+    }
+    if (jumpRef.current?.id !== jumpToMessageId) {
+      jumpRef.current = { id: jumpToMessageId, since: Date.now(), fetching: false, done: false }
+    }
+    const jump = jumpRef.current
+    if (jump.done || isLoading) return
+    const settle = () => settleJump(jump)
+    if (jumpIndex >= 0) {
+      const needed = visibleMessages.length - jumpIndex
+      if (needed > windowSize) {
+        setWindowSize(needed)
+        return
+      }
+      const el = scrollRef.current
+      const row = contentBodyRef.current?.querySelector<HTMLElement>(
+        `[data-turn-anchor-id="${CSS.escape(jumpToMessageId)}"]`,
+      )
+      if (el && row) {
+        releaseFollow()
+        const rowTop = row.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop
+        writeScrollTop(el, Math.max(0, rowTop - TURN_ANCHOR_TOP))
+        rememberPosition()
+        ringMessage(row)
+      }
+      return settle()
+    }
+    if (jump.fetching || latestAnsweredAt < jump.since) return
+    if (error || !hasOlder || !fetchOlder) return settle()
+  }, [jumpToMessageId, jumpIndex, jumpPass, visibleMessages.length, windowSize, hasOlder, fetchOlder, isLoading, error, latestAnsweredAt, settleJump, releaseFollow, writeScrollTop, rememberPosition])
+
+  // Older pages load after paint: on mount, the transcript hook's own reset
+  // (a passive effect) would abort a page requested from a layout effect.
+  useEffect(() => {
+    const jump = jumpRef.current
+    if (!jump || jump.done || jump.fetching || isLoading || jumpIndex >= 0 || latestAnsweredAt < jump.since || !hasOlder || !fetchOlder || isFetchingOlder) return
+    jump.fetching = true
+    void fetchOlder(keepReaderOnPrepend).then((added) => {
+      jump.fetching = false
+      if (jumpRef.current !== jump || jump.done) return
+      if (added) setJumpPass((n) => n + 1)
+      else settleJump(jump)
+    })
+  }, [jumpToMessageId, jumpIndex, jumpPass, hasOlder, isFetchingOlder, fetchOlder, keepReaderOnPrepend, settleJump, isLoading, latestAnsweredAt])
+
+  // An unmounted list settles nothing: a late page would navigate to a session
+  // already left. A remount (StrictMode) rebuilds the jump from the URL.
+  useEffect(() => () => { jumpRef.current = null }, [])
 
   const scrollToBottom = useCallback(() => {
     // Drop the turn reserve first so the trip's target is the true live edge,

@@ -63,6 +63,7 @@ export function buildApnsAlertPush(
       sessionId: event.sessionId,
       agentSlug: event.agentSlug,
       navigatePath: event.navigatePath,
+      messageUuid: event.messageUuid,
       workspaceId: device.workspaceTag ?? undefined,
     },
     collapseId: collapseIdForSession(event.sessionId),

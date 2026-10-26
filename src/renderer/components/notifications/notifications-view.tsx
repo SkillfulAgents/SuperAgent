@@ -151,6 +151,7 @@ function NotificationRow({
     <AppLink
       to="/agents/$slug/sessions/$sessionId"
       params={{ slug: notification.agentSlug, sessionId }}
+      search={{ mention: notification.type === 'session_mention' ? notification.messageUuid ?? undefined : undefined }}
       onClick={handleClick}
       className={ROW_CLASS_NAME}
     >

@@ -21,6 +21,11 @@ export const chatSearchSchema = z.object({
   newchat: z.string().optional(),
 })
 
+// The message a mention notification points at: the session view lands on it.
+export const sessionSearchSchema = z.object({
+  mention: z.string().min(1).optional().catch(undefined),
+})
+
 // A connection-detail overlay key: `account-${id}` / `mcp-${id}` (see
 // connections/unified-rows.ts). ONE definition shared by the agent connections
 // route and the global settings connections tab, so the two can't drift.
