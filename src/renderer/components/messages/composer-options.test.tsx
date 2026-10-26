@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
-import { useComposerOptions, type UseComposerOptionsArgs } from './composer-options'
+import { renderHook, act, render as renderUi, screen } from '@testing-library/react'
+import { useComposerOptions, type ComposerOptionsState, type UseComposerOptionsArgs } from './composer-options'
+import { ComposerOptionsPopover } from './composer-options-popover'
 
 // No provider locks a model here (model locks have their own tests).
 vi.mock('@renderer/hooks/use-model-lock', () => ({ useModelLock: () => undefined }))
@@ -370,5 +371,39 @@ describe('connection/model selection', () => {
     act(() => result.current.setConnection?.('personal'))
     rerender({ initialLlmProviderId: 'global', initialModel: 'global-default' })
     expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'personal', model: 'same' })
+  })
+})
+
+describe('effort the selected model cannot run', () => {
+  // No Medium: the popover's clamp would snap the built-in medium start to Low.
+  const flash = { id: 'deepseek-flash', label: 'DeepSeek Flash', family: 'deepseek', isLatest: true, icon: 'deepseek', supportedEfforts: ['low', 'high', 'max'] }
+  const settingsWith = (agentEffort?: string) => ({
+    llmProvider: 'anthropic',
+    models: { agentModel: 'deepseek-flash', ...(agentEffort ? { agentEffort } : {}) },
+    llmProviderStatus: [{ id: 'anthropic', catalog: [flash], defaultModels: { agent: 'deepseek-flash' } }],
+  })
+
+  // The real popover as a child, so its clamp effect runs before the hook's
+  // adoption effect, as in the app.
+  function Composer({ onState }: { onState: (s: ComposerOptionsState) => void }) {
+    const composer = useComposerOptions({ agentKey: 'a', followDefaults: true, agentDefaultsReady: true })
+    onState(composer)
+    return <ComposerOptionsPopover state={composer} />
+  }
+
+  it('adopts the default effort instead of locking in the clamped Low', () => {
+    state.settings = settingsWith('max')
+    let composer: ComposerOptionsState | undefined
+    renderUi(<Composer onState={(s) => { composer = s }} />)
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('DeepSeek Flash · Max')
+    expect(composer?.toRuntimeOptions()).not.toHaveProperty('effort')
+  })
+
+  it('shows an unsupported default clamped but leaves it off the wire', () => {
+    state.settings = settingsWith()
+    let composer: ComposerOptionsState | undefined
+    renderUi(<Composer onState={(s) => { composer = s }} />)
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('DeepSeek Flash · Low')
+    expect(composer?.toRuntimeOptions()).not.toHaveProperty('effort')
   })
 })
