@@ -102,13 +102,10 @@ which asks). A code then goes through request_login like any step, and is
 never saved. After a prompt to the phone the agent waits for the page to
 move on, and hands the browser over (`request_browser_input`) only if it has
 not within about two minutes. This lives in the container, not the host: the
-agent's prompts and tool descriptions, and a guard in
-`request_browser_input`, since prompts alone left the agent handing over a
-passkey prompt about half the time. On a page that shows "Try another way"
-(or a control so named), the first hand-over is refused with the reason,
-unless the user answered a question in that session in the last 10 minutes.
-A second call on the same page goes through, so a way the user picked in
-chat still can.
+agent's prompts and tool descriptions, and a hint (`sign-in-verify-way`, see
+`agent-container/src/hints/builtin/`) shown when a request_login call
+returns, which is when that step comes up. Nothing enforces it: a missed
+choice costs the user a hand-over, not the sign-in.
 
 ### The card
 

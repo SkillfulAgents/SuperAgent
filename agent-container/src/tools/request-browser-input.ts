@@ -2,67 +2,6 @@ import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { inputManager } from '../input-manager'
 import { getBrowserState } from '../browser-state'
-import { hostAuthHeaders } from '../host-auth'
-
-const CONTAINER_URL = `http://localhost:${process.env.PORT || '3000'}`
-
-/** A question answered this recently means the user was just asked: the hand-over goes ahead. */
-const QUESTION_FRESH_MS = 10 * 60 * 1000
-const PAGE_READ_TIMEOUT_MS = 3_000
-
-/** The name of a control that lists other ways to verify a sign-in ("Try another way"). */
-export const ANOTHER_WAY_PATTERN = /\btry another way\b|\b(?:sign|log) ?in (?:another|a different) way\b|\b(?:other|more) ways to (?:sign ?in|log ?in|verify)\b|\b(?:use|choose|try) (?:another|a different) (?:verification |sign-in )?(?:method|option)\b|\bverify with something else\b/i
-
-/** In the page: the first visible control so named, and the page (origin and path) it is on. */
-const ANOTHER_WAY_SCRIPT = `(() => {
-  const pattern = new RegExp(${JSON.stringify(ANOTHER_WAY_PATTERN.source)}, 'i');
-  for (const el of document.querySelectorAll('button, a, [role="button"], [role="link"], input[type="submit"], input[type="button"]')) {
-    const name = (el.getAttribute('aria-label') || el.innerText || el.value || '').replace(/\\s+/g, ' ').trim();
-    const box = el.getBoundingClientRect();
-    if (name && name.length <= 80 && pattern.test(name) && box.width > 0 && box.height > 0 && getComputedStyle(el).visibility !== 'hidden') {
-      return JSON.stringify({ name, page: location.origin + location.pathname });
-    }
-  }
-  return '';
-})()`
-
-const anotherWaySchema = z.object({ name: z.string().min(1).max(200), page: z.string().min(1).max(2048) })
-
-/** The script's result from the eval route's output, which the CLI may JSON-quote once more. */
-export function parseAnotherWay(output: unknown): z.infer<typeof anotherWaySchema> | null {
-  if (typeof output !== 'string' || !output.trim()) return null
-  try {
-    let parsed: unknown = JSON.parse(output.trim())
-    if (typeof parsed === 'string') parsed = parsed ? JSON.parse(parsed) : null
-    const result = anotherWaySchema.safeParse(parsed)
-    return result.success ? result.data : null
-  } catch {
-    return null
-  }
-}
-
-/** Whether the open page offers other ways to verify a sign-in. Any failure reads as no. */
-async function anotherWayOnPage(): Promise<z.infer<typeof anotherWaySchema> | null> {
-  const { active, sessionId } = getBrowserState()
-  if (!active || !sessionId) return null
-  try {
-    const response = await fetch(`${CONTAINER_URL}/browser/eval`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...hostAuthHeaders() },
-      body: JSON.stringify({ sessionId, script: ANOTHER_WAY_SCRIPT }),
-      signal: AbortSignal.timeout(PAGE_READ_TIMEOUT_MS),
-    })
-    if (!response.ok) return null
-    const data = await response.json() as { output?: unknown }
-    return parseAnotherWay(data.output)
-  } catch {
-    return null
-  }
-}
-
-/** Verification pages refused once, per session (session, origin and path): a second call there is handed over. */
-const refusedPages = new Set<string>()
-const REFUSED_PAGES_CAP = 200
 
 export const requestBrowserInputTool = tool(
   'request_browser_input',
@@ -94,28 +33,6 @@ Example:
       console.error('[request_browser_input] No toolUseId available')
       return {
         content: [{ type: 'text' as const, text: 'Unable to process browser input request - no tool use ID available.' }],
-        isError: true,
-      }
-    }
-
-    // A sign-in's verification page with "Try another way": which way is the
-    // user's to choose. Refused once per page and session, unless the user was
-    // just asked a question in this session. Read here, before the
-    // synchronous check below, which must stay right before the registration.
-    const sessionId = inputManager.sessionOf(toolUseId)
-    const asked = inputManager.questionAnsweredWithin(QUESTION_FRESH_MS, sessionId)
-    const another = asked ? null : await anotherWayOnPage()
-    const refusal = another ? `${sessionId ?? ''} ${another.page}` : null
-    if (another && refusal && !refusedPages.has(refusal)) {
-      refusedPages.add(refusal)
-      const oldest = refusedPages.size > REFUSED_PAGES_CAP ? refusedPages.values().next().value : undefined
-      if (oldest !== undefined) refusedPages.delete(oldest)
-      console.log(`[request_browser_input] Not handed over: the page shows "${another.name}"`)
-      return {
-        content: [{
-          type: 'text' as const,
-          text: `Not handed over: the page shows "${another.name}", so it offers other ways to verify the sign-in, and which way is the user's to choose. Open that list and have the user pick one: AskUserQuestion, one option per way (a browser subagent reports the ways to its parent agent instead). A code then goes in with request_login. Hand over with this tool only a way the user picked; if they already picked this one, call it again.`,
-        }],
         isError: true,
       }
     }
