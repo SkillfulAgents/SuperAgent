@@ -415,3 +415,10 @@ describe('Dropbox replacement renames', () => {
     expect(request.mock.calls.some(call => call[1] === 'delete_v2')).toBe(false)
   })
 })
+
+describe('Dropbox web link', () => {
+  it('opens the chosen folder on dropbox.com, or the home of a Dropbox chosen whole', () => {
+    expect(new DropboxMountableVolume('v', 'Team', { accountId: 'a', path: '/Team docs/Reports' }).webUrl).toBe('https://www.dropbox.com/home/Team%20docs/Reports')
+    expect(new DropboxMountableVolume('v', 'Dropbox', { accountId: 'a', path: '' }).webUrl).toBe('https://www.dropbox.com/home')
+  })
+})

@@ -57,6 +57,11 @@ export class DropboxMountableVolume extends BaseMountableVolume<DropboxVolumeCon
     return `Dropbox · ${this.config.path || '/'}`
   }
 
+  /** The chosen folder on dropbox.com; the whole Dropbox is its home. */
+  get webUrl(): string {
+    return `https://www.dropbox.com/home${this.config.path.split('/').map(encodeURIComponent).join('/')}`
+  }
+
   private remotePath(relative: string): string {
     if (relative && relative.split('/').some(part => !part || part === '.' || part === '..' || /[\\\0]/.test(part))) {
       throw new WorkspaceFileError('invalid-path')

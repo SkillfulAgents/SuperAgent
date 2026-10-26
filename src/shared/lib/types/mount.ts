@@ -13,6 +13,7 @@ export interface StoredVolume {
 /** A volume as the API returns it: no config, only the host folder the card shows. */
 export interface VolumeSummary extends Omit<StoredVolume, 'config'> {
   sourceLabel?: string // display-only description for remote sources
+  webUrl?: string // where the source's folder opens in its provider's web app, for remote sources that have one
   hostPath: string | null // the volume's folder on the machine that runs the agent, if it has one
 }
 

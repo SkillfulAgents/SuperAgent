@@ -7,6 +7,7 @@ export function volumeSummary(row: StoredVolume): VolumeSummary {
   return {
     id: row.id, name: row.name, type: row.type, hostPath: volume?.hostPath ?? null,
     ...(volume?.sourceLabel ? { sourceLabel: volume.sourceLabel } : {}),
+    ...(volume?.webUrl ? { webUrl: volume.webUrl } : {}),
   }
 }
 

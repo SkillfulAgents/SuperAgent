@@ -517,3 +517,9 @@ describe('Google Drive filesystem', () => {
     await expect(prepareGoogleDriveVolume(config, { userId: 'alice' })).rejects.toMatchObject({ code: 'not-a-directory' })
   })
 })
+
+describe('Google Drive web link', () => {
+  it('opens the chosen folder in Google Drive', () => {
+    expect(volume().webUrl).toBe('https://drive.google.com/drive/folders/root1')
+  })
+})

@@ -160,6 +160,11 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
     return `Google Drive · ${this.config.driveName} / ${this.config.folderName}`
   }
 
+  /** The chosen folder in Google Drive; a drive chosen whole is its root folder, which opens the same way. */
+  get webUrl(): string {
+    return `https://drive.google.com/drive/folders/${encodeURIComponent(this.config.folderId)}`
+  }
+
   private request(request: DriveRequest) {
     return driveRequest(this.config.accountId, request, { agentSlug: this.agentSlug })
   }

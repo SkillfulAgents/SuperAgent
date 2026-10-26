@@ -60,6 +60,11 @@ export abstract class BaseMountableVolume<C> {
     return null
   }
 
+  /** Where the volume's folder opens in its provider's own web app, or null for a source with none. */
+  get webUrl(): string | null {
+    return null
+  }
+
   abstract list(path: string): Promise<VolumeEntry[]>
   abstract stat(path: string): Promise<VolumeEntry>
   /** Advisory root health for settings and mount status. Remote drivers may cache it. */
