@@ -22,12 +22,8 @@ export const TEAM_BRAIN_SOURCE_IDS = [
 ] as const
 export type TeamBrainSourceId = (typeof TEAM_BRAIN_SOURCE_IDS)[number]
 
-/**
- * Where the Team Brain's files can live. Every drive type the app supports
- * today (Google Drive, Dropbox, S3, a local folder) plus three it would add:
- * hosted by Gamut, a GitHub repository, and an Obsidian vault.
- */
-export const TEAM_BRAIN_LOCATION_IDS = ['gamut', 'github', 'obsidian', ...VOLUME_TYPES] as const
+/** Where the Team Brain's files can live: any drive type the app supports. */
+export const TEAM_BRAIN_LOCATION_IDS = VOLUME_TYPES
 export type TeamBrainLocationId = (typeof TEAM_BRAIN_LOCATION_IDS)[number]
 
 export const TEAM_BRAIN_SCHEDULES = ['hourly', 'daily', 'weekly'] as const

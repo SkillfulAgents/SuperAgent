@@ -42,9 +42,6 @@ const NEXT_LABELS: Record<TeamBrainStep, string> = {
   intake: 'Context ingestion',
 }
 
-/** The homes set-up offers, in this order. */
-const LOCATIONS: readonly TeamBrainLocationId[] = ['local', 's3', 'dropbox', 'googledrive']
-
 // The look of Figma's Dev Mode welcome modal (UI Inspo, node 57:3), in this
 // app's tokens: brand blue where Figma uses its green.
 const BUTTON_BASE =
@@ -290,7 +287,7 @@ function LocationStep({
       subtitle="Every agent you connect to Team Brain will read and add to the knowledge in this storage. It is possible to migrate later if needed."
       next={{ label: nav.nextLabel, disabled: !tb.state.prepared, onClick: nav.next }}
     >
-      <LocationChoices value={tb.state.location} onChoose={(id) => void choose(id)} only={LOCATIONS} />
+      <LocationChoices value={tb.state.location} onChoose={(id) => void choose(id)} />
       {error && <p role="alert" className="mt-4 text-[13px] text-destructive">{error}</p>}
     </StepPanel>
   )

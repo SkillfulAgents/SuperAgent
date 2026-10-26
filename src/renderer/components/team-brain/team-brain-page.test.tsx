@@ -88,6 +88,7 @@ vi.mock('@renderer/components/volumes/volume-setup-registry', async (importOrigi
 })
 
 import { TeamBrainPage } from './team-brain-page'
+import { volumeSetupRegistry } from '@renderer/components/volumes/volume-setup-registry'
 import { getTeamBrainState, resetTeamBrainState } from '@renderer/lib/team-brain/team-brain-store'
 import { TEAM_BRAIN_INITIAL_STATE } from '@renderer/lib/team-brain/team-brain-schema'
 
@@ -119,9 +120,10 @@ describe('TeamBrainPage', () => {
 
     await userEvent.click(screen.getByTestId('team-brain-start'))
     expect(screen.getByTestId('team-brain-onboarding-step')).toHaveAttribute('data-step', 'location')
-    for (const id of ['local', 's3', 'dropbox', 'googledrive']) {
-      expect(screen.getByTestId(`team-brain-location-${id}`)).toHaveAttribute('aria-checked', 'false')
-    }
+    // Every drive type the app has, and nothing else: the drives' own registry is the list.
+    const offered = screen.getAllByRole('radio').map((choice) => choice.dataset.testid?.replace('team-brain-location-', ''))
+    expect(offered).toEqual(Object.values(volumeSetupRegistry).map((drive) => drive.type))
+    for (const id of offered) expect(screen.getByTestId(`team-brain-location-${id}`)).toHaveAttribute('aria-checked', 'false')
     expect(screen.getByTestId('team-brain-next')).toBeDisabled()
   })
 

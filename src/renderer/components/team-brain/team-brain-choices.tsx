@@ -2,7 +2,7 @@ import { CalendarDays, Clock, Sunrise, type LucideIcon } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { TEAM_BRAIN_SCHEDULES, type TeamBrainLocationId, type TeamBrainSchedule } from '@renderer/lib/team-brain/team-brain-schema'
 import { SCHEDULE_LABELS } from '@renderer/lib/team-brain/team-brain-format'
-import { TEAM_BRAIN_LOCATIONS, teamBrainLocation, type TeamBrainLocation } from './team-brain-locations'
+import { TEAM_BRAIN_LOCATIONS, type TeamBrainLocation } from './team-brain-locations'
 
 /**
  * The two rigid set-up questions, where Team Brain lives and how often it
@@ -62,68 +62,30 @@ export function Recommended() {
   return <span className="shrink-0 rounded-[5px] bg-brand/10 px-1.5 py-0.5 text-[11px] font-medium text-brand">Recommended</span>
 }
 
-/**
- * Where Team Brain lives: Gamut-hosted on top, then the storage it can use,
- * or just the homes in `only`, in that order.
- */
+/** Where Team Brain lives: every drive type it can use. */
 export function LocationChoices({
   value,
   onChoose,
   disabled,
-  only,
 }: {
   value: TeamBrainLocationId | null
   onChoose: (id: TeamBrainLocationId) => void
   disabled?: boolean
-  only?: readonly TeamBrainLocationId[]
 }) {
   const choose = (location: TeamBrainLocation) => {
     if (disabled || !location.isAvailable()) return
     onChoose(location.id)
   }
 
-  const hosted = only ? [] : TEAM_BRAIN_LOCATIONS.filter((l) => l.group === 'hosted')
-  const storage = only ? only.map(teamBrainLocation) : TEAM_BRAIN_LOCATIONS.filter((l) => l.group === 'storage')
 
   return (
     <>
-      {hosted.length > 0 && <p className={SECTION_LABEL}>Hosted</p>}
-      <div role="radiogroup" aria-label="Hosted" className="mt-2">
-        {hosted.map((location) => {
-          const Icon = location.Icon
-          const on = value === location.id
-          return (
-            <button
-              key={location.id}
-              type="button"
-              role="radio"
-              aria-checked={on}
-              disabled={disabled && !on}
-              onClick={() => choose(location)}
-              data-testid={`team-brain-location-${location.id}`}
-              className={cn(CHOICE, on ? CHOICE_ON : CHOICE_OFF, 'flex min-h-[48px] w-full items-center gap-3 px-4 py-3')}
-            >
-              <Icon className="size-6 shrink-0" />
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-2 text-[14px] font-medium">
-                  {location.name}
-                  <Recommended />
-                </span>
-                <span className="mt-0.5 block text-[13px] text-muted-foreground">{location.description}</span>
-              </span>
-              <RadioDot checked={on} />
-            </button>
-          )
-        })}
-      </div>
-
-      {hosted.length > 0 && <p className={cn(SECTION_LABEL, 'mt-7')}>Your storage</p>}
       <div
         role="radiogroup"
-        aria-label={hosted.length > 0 ? 'Your storage' : 'Where it lives'}
-        className={cn('grid grid-cols-2 gap-3', hosted.length > 0 && 'mt-2 sm:grid-cols-3')}
+        aria-label="Where it lives"
+        className="grid grid-cols-2 gap-3"
       >
-        {storage.map((location) => {
+        {TEAM_BRAIN_LOCATIONS.map((location) => {
           const Icon = location.Icon
           const on = value === location.id
           const available = location.isAvailable()
