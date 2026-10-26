@@ -11,15 +11,17 @@ function DropboxLogo({ className }: { className?: string }) {
   return <ServiceIcon slug="dropbox" className={className} />
 }
 
-/** The picker walks Dropbox paths; '' is the account root, which can be mounted. */
+/** The picker walks Dropbox paths from the account root (''), which can be chosen too, for the whole Dropbox. */
 const dropboxFolders: VolumeFolderSource<string> = {
   type: 'dropbox', label: 'Dropbox',
-  title: 'Select a Dropbox folder', description: 'Choose a folder, or select the root to add your entire Dropbox.',
+  title: 'Choose a Dropbox folder', description: 'Select the folder to use, or open one to look inside it.',
   query: (accountId, path) => ({ accountId, path }),
   folders: data => data.folders.map(folder => ({ id: folder.id, name: folder.name, cursor: folder.id })),
-  location: path => path || 'Dropbox',
-  parent: path => path ? path.slice(0, path.lastIndexOf('/')) : null,
-  selectLabel: path => path ? 'Use this folder' : 'Use Dropbox root',
+  crumbs: path => {
+    const names = path.split('/').filter(Boolean)
+    return [{ name: 'Dropbox', cursor: '' }, ...names.map((name, index) => ({ name, cursor: `/${names.slice(0, index + 1).join('/')}` }))]
+  },
+  confirmLabel: path => path ? `Use “${path.split('/').at(-1)}”` : 'Use all of Dropbox',
 }
 
 function DropboxVolumeSetup({ initialDetails, onSubmit, onBack, onCancel, isSaving, error, clearError, attachToAgent }: VolumeSetupProps) {

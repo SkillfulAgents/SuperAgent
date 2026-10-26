@@ -11,23 +11,28 @@ function GoogleDriveLogo({ className }: { className?: string }) {
   return <ServiceIcon slug="googledrive" className={className} />
 }
 
-/** The picker walks folder IDs from the top, where My Drive and each shared drive sit. Only a folder can be chosen. */
+/** The picker walks folder IDs from the top, where My Drive and each shared drive sit, and opens in My Drive. Any folder or drive
+ * can be chosen; the top itself can't. */
 type DriveCursor = { id: string; name: string }[]
 const googleDriveFolders: VolumeFolderSource<DriveCursor> = {
   type: 'googledrive', label: 'Google Drive',
-  title: 'Select a Google Drive folder', description: 'Open My Drive or a shared drive, then choose a folder.',
+  title: 'Choose a Google Drive folder', description: 'Select the folder to use, or open one to look inside it. Shared drives are under Google Drive.',
   query: (accountId, cursor): Record<string, string> => { const current = cursor.at(-1); return current ? { accountId, folderId: current.id } : { accountId } },
   folders: (data, cursor) => data.folders.map(folder => ({ id: folder.id, name: folder.name, cursor: [...cursor, folder] })),
-  location: cursor => cursor.map(folder => folder.name).join(' / ') || 'Google Drive',
-  parent: cursor => cursor.length ? cursor.slice(0, -1) : null,
-  selectLabel: cursor => cursor.length ? 'Use this folder' : null,
+  crumbs: cursor => [{ name: 'Google Drive', cursor: [] }, ...cursor.map((folder, index) => ({ name: folder.name, cursor: cursor.slice(0, index + 1) }))],
+  confirmLabel: cursor => { const current = cursor.at(-1); return current ? `Use “${current.name}”` : null },
+  opensInFirst: true,
 }
+
+/** Where a chosen folder is, from its drive down: "My Drive / Projects / Team". */
+const drivePath = (cursor: DriveCursor) => cursor.map(folder => folder.name).join(' / ')
 
 function GoogleDriveVolumeSetup({ initialDetails, onSubmit, onBack, onCancel, isSaving, error, clearError, attachToAgent }: VolumeSetupProps) {
   const accounts = useConnectedAccountsByToolkit('googledrive')
   const [step, setStep] = useState<'account' | 'details'>('account')
   const [accountId, setAccountId] = useState('')
   const [config, setConfig] = useState<GoogleDriveVolumeConfig | null>(null)
+  const [folderPath, setFolderPath] = useState<string | null>(null)
   const [details, setDetails] = useState(initialDetails)
   const account = accounts.data?.accounts.find(item => item.id === accountId)
   const active = account?.status === 'active' && !accounts.error
@@ -38,6 +43,7 @@ function GoogleDriveVolumeSetup({ initialDetails, onSubmit, onBack, onCancel, is
     if (config && details.name === config.folderName) setDetails({ ...details, name: '' })
     setAccountId(id)
     setConfig(null)
+    setFolderPath(null)
     clearError()
   }
 
@@ -51,11 +57,12 @@ function GoogleDriveVolumeSetup({ initialDetails, onSubmit, onBack, onCancel, is
       onDetailsChange={value => { setDetails(value); clearError() }} isSaving={isSaving} error={error} canSave={!!config} attachToAgent={attachToAgent}
       onSave={() => { if (config) void onSubmit(config, details) }} onBack={() => { clearError(); setStep('account') }} onCancel={onCancel}>
       <VolumeFolderPicker key={accountId} source={googleDriveFolders} accountId={accountId} initial={[]}
-          selected={config ? `${config.driveName} / ${config.folderName}` : null} disabled={isSaving || !active} onChange={cursor => {
+          selected={config ? folderPath : null} disabled={isSaving || !active} onChange={cursor => {
             const folder = cursor.at(-1)
             if (!folder) return
             const previousName = config?.folderName
             setConfig({ accountId, folderId: folder.id, folderName: folder.name, driveName: cursor[0].name })
+            setFolderPath(drivePath(cursor))
             setDetails(current => !current.name || current.name === previousName ? { ...current, name: folder.name } : current)
             clearError()
           }} />

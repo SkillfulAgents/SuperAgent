@@ -32,7 +32,7 @@ describe('S3 volume setup', () => {
     fetch.mockResolvedValue(Response.json(good))
     await userEvent.click(screen.getByRole('button', { name: 'Test connection' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Continue' }))
-    expect(screen.getByLabelText('Name', { exact: true })).toHaveValue('example-bucket')
+    expect(screen.getByLabelText('Set folder name', { exact: true })).toHaveValue('example-bucket')
     await userEvent.click(screen.getByRole('button', { name: 'Create drive' }))
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ name: 'example-bucket', visibility: 'private', source: expect.objectContaining({ type: 's3' }) }))
     expect(fetch).toHaveBeenCalledWith('/api/volume-types/s3/validate', expect.objectContaining({ method: 'POST' }))

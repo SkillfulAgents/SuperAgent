@@ -33,7 +33,7 @@ export function VolumeDetailsFields({ value, onChange, disabled, inUse = false, 
   const { isAuthMode, isAdmin } = useUser()
   return <>
     {showName && <div className="space-y-2">
-      <Label htmlFor="volume-name">Name</Label>
+      <Label htmlFor="volume-name">Set folder name</Label>
       <Input id="volume-name" value={value.name} onChange={event => onChange({ ...value, name: event.target.value })} maxLength={255} disabled={disabled} required />
     </div>}
     {children}
