@@ -5,7 +5,11 @@ on:
     branches: [main]
 
 jobs:
+  lima-image:
+    uses: ./.github/workflows/lima-image.yml
+
   build-mac:
+    needs: lima-image
     runs-on: blacksmith-6vcpu-macos-26
     steps:
       - name: Checkout
@@ -25,6 +29,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Download the Lima VM image
+        uses: actions/download-artifact@v4
+        with:
+          name: lima-image-arm64
+          path: build/lima-image
+
       - name: Decode Apple API Key
         env:
           APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY }}
@@ -43,6 +53,7 @@ jobs:
           PLATFORM_BASE_URL: ${{ secrets.PLATFORM_BASE_URL }}
           PLATFORM_PROXY_URL: ${{ secrets.PLATFORM_PROXY_URL }}
           PLATFORM_AUTH_ISSUER_URL: ${{ secrets.PLATFORM_AUTH_ISSUER_URL }}
+          LIMA_IMAGE_DIR: build/lima-image
         run: npm run dist:mac
 
       - name: Enforce release artifact size limit
@@ -51,14 +62,16 @@ jobs:
           # A size budget, not a platform limit: the R2 feed upload is multipart
           # and GitHub release assets go to 2 GiB. It catches an installer that
           # balloons unnoticed (the Windows one carries both x64 and arm64).
-          limit=$((400 * 1024 * 1024))
+          # The macOS one gets 450: the built-in runtime's VM image has its
+          # packages installed, and the app also ships them to repair it.
+          limit=$((450 * 1024 * 1024))
           bad=0
           for f in release/*.exe release/*.dmg release/*.zip; do
             [ -e "$f" ] || continue
             size=$(wc -c < "$f")
             printf '%6d MiB  %s\n' "$((size / 1048576))" "$(basename "$f")"
             if [ "$size" -gt "$limit" ]; then
-              echo "::error file=$f::$(basename "$f") is $((size / 1048576)) MiB, over the 400 MiB release-artifact size budget"
+              echo "::error file=$f::$(basename "$f") is $((size / 1048576)) MiB, over the $((limit / 1048576)) MiB release-artifact size budget"
               bad=1
             fi
           done
