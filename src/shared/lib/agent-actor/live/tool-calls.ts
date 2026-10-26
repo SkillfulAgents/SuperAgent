@@ -172,16 +172,25 @@ export class ToolCalls {
    */
   private readonly cancelledReviews: Set<string>
   /**
-   * request_login calls the host is deciding: answered from the vault, or a
-   * card for the user. A result arriving meanwhile removes the id, so the
-   * decision does not raise a card for a call that already ended.
+   * request_login calls the host is deciding (answered from the vault, or a
+   * card for the user), by the subagent call that made them, if any. A
+   * result arriving meanwhile removes the id, and so do the session going
+   * away and that subagent ending: the decision then raises no card for a
+   * call nobody can answer.
    */
-  private readonly loginDecisions: Set<string>
+  private readonly loginDecisions: Map<string, string | undefined>
 
   /** `prior`: the tool calls of the attachment this one replaces. */
   constructor(private readonly ctx: ToolCallContext, prior?: ToolCalls) {
     this.cancelledReviews = prior?.cancelledReviews ?? new Set()
-    this.loginDecisions = prior?.loginDecisions ?? new Set()
+    this.loginDecisions = prior?.loginDecisions ?? new Map()
+  }
+
+  /** Stop waiting on the host's sign-in decisions: all of them, or those of the subagent call `parentToolId`. */
+  dropLoginDecisions(parentToolId?: string): void {
+    for (const [toolUseId, parent] of this.loginDecisions) {
+      if (parentToolId === undefined || parent === parentToolId) this.loginDecisions.delete(toolUseId)
+    }
   }
 
   /** A tool call on the main agent's stream. */
@@ -360,7 +369,7 @@ export class ToolCalls {
   private decideLogin(toolUse: ToolUse, card: Record<string, unknown>, parentToolUseId?: string): void {
     // The stream and the complete message both carry the call.
     if (this.loginDecisions.has(toolUse.id)) return
-    this.loginDecisions.add(toolUse.id)
+    this.loginDecisions.set(toolUse.id, parentToolUseId)
     background(async () => {
       let decision: LoginDecision
       try {

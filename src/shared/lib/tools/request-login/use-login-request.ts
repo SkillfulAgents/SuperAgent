@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import { appendToSessionDraft, useDraftsStore } from '@renderer/context/drafts-context'
 import {
+  loginBrowserClosedSchema,
   loginContextSchema,
   loginFillResultSchema,
   loginVaultInfoSchema,
@@ -71,6 +72,12 @@ export function useLoginContext(agentSlug: string, sessionId: string, toolUseId:
  * sign-in providers, and whether other members share the agent. Per viewer:
  * in auth mode the vault is each user's own.
  */
+/** A fill the browser closed before: what was kept for the agent's next try, if anything. Null for any other answer. */
+export function browserClosedState(data: unknown): LoginRequestState | null {
+  const closed = loginBrowserClosedSchema.safeParse(data)
+  return closed.success ? { status: 'browser_closed', kept: closed.data.kept ?? null } : null
+}
+
 export function useLoginVaultInfo(agentSlug: string, sessionId: string, toolUseId: string, enabled: boolean) {
   return useQuery<LoginVaultInfo, Error>({
     queryKey: ['login-request-vault', agentSlug, sessionId, toolUseId],
@@ -144,11 +151,8 @@ export function useLoginRequestActions({ agentSlug, sessionId, toolUseId }: UseL
       const data = await postJson(`${base}/fill-login`, { toolUseId, origin: context.origin, values, ...options })
       // Answered elsewhere (another window): nothing was sent.
       if (data.alreadySettled) return { status: 'settled' }
-      // The browser had closed: kept in the vault for the agent's next try, or not at all.
-      if (data.browserClosed === true) {
-        const saved = data.saved as { username?: unknown } | undefined
-        return { status: 'browser_closed', saved: typeof saved?.username === 'string' ? saved.username : null }
-      }
+      const closed = browserClosedState(data)
+      if (closed) return closed
       const result = loginFillResultSchema.parse(data)
       rememberLoginValues(agentSlug, sessionId, context.origin, context.fields, values)
       return { status: 'filled', result }

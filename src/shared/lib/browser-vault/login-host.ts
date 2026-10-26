@@ -311,7 +311,9 @@ export async function decideLoginRequest(call: LoginRequestCall): Promise<LoginD
   if (!site || isOwnOrigin(context.origin, [])) return ask({ mode: 'new' }, context)
   if (askUser) {
     const turnedDown = username ? await findGrantedAccount(agentSlug, site, username) : null
-    if (turnedDown?.parts.includes('password')) await markAccountRejected({ agentSlug, accountId: turnedDown.id, sessionId })
+    // Only a step that asks for the password can have turned it down: not a wrong code.
+    const asksPassword = context.fields.some((field) => field.kind === 'password')
+    if (asksPassword && turnedDown?.parts.includes('password')) await markAccountRejected({ agentSlug, accountId: turnedDown.id, sessionId })
     return ask({ mode: 'ask', ...(username ? { username: turnedDown?.username ?? username } : {}), ...(reason ? { reason } : {}) }, context)
   }
 
@@ -332,9 +334,11 @@ export async function decideLoginRequest(call: LoginRequestCall): Promise<LoginD
 
   // An account that signs in through another one: the user has nothing to
   // type here, even where the page also shows a password form, unless the
-  // step asks only for what it holds besides (a workspace). The agent is told
-  // which provider account to use.
-  if (account?.via && !fillsWithoutPassword(account, context.fields)) {
+  // step asks only for what it holds besides (a workspace), or for a code:
+  // the site's own check after the provider's, which the user answers. The
+  // agent is told which provider account to use.
+  const asksCode = context.fields.some((field) => field.kind === 'otp')
+  if (account?.via && !asksCode && !fillsWithoutPassword(account, context.fields)) {
     const via = { site: account.via.site, username: account.via.username, name: providerName(account.via.site) }
     if (await answerLoginRequest(agentSlug, toolUseId, { type: 'via', site, username: account.username, provider: via, saved: true })) {
       await recordAccountUse({ agentSlug, accountId: account.id, sessionId })
@@ -376,6 +380,12 @@ export async function decideLoginRequest(call: LoginRequestCall): Promise<LoginD
     saved: false,
     held: [],
   })
+  // The browser closed first: there is nothing for the user to answer. The
+  // account, or what was held, signs the agent in once it opens the page again.
+  if (!filled.ok && filled.browserClosed) {
+    const kept = account ? { how: 'vault' as const, username: account.username } : { how: 'held' as const, ...(shown ? { username: shown } : {}) }
+    if (await answerLoginRequest(agentSlug, toolUseId, { type: 'browser_closed', site, kept })) return { action: 'settled' }
+  }
   // The page or the browser refused: the user can still answer the form.
   if (!filled.ok) return ask({ mode: 'complete', ...(identity ? { username: identity } : {}), ...(account ? { accountId: account.id } : {}), covered }, context)
 

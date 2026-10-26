@@ -259,6 +259,34 @@ describe('ToolCalls', () => {
       expect(h.open('t_login')).toBeNull()
     })
 
+    it('raises no card for a sign-in request the host decided after its session went away, or its subagent ended', async () => {
+      const decisions: Array<(decision: { action: 'ask'; vault: Record<string, unknown> }) => void> = []
+      const h = harness({ client: false, answers: { loginRequest: () => new Promise((resolve) => { decisions.push(resolve) }) } })
+
+      h.calls.mainToolUse(use('t_main', 'mcp__user-input__request_login', { message: 'Sign in to GitHub.', fields: [] }))
+      h.calls.subagentStreamedToolUse(use('t_sub', 'mcp__user-input__request_login', { message: 'Sign in to GitHub.', fields: [] }), 't_task')
+      h.calls.subagentStreamedToolUse(use('t_other', 'mcp__user-input__request_login', { message: 'Sign in to GitLab.', fields: [] }), 't_task_2')
+      await settle()
+      expect(decisions).toHaveLength(3)
+
+      // The subagent t_task ended: only its own call is dropped.
+      h.calls.dropLoginDecisions('t_task')
+      for (const decide of decisions) decide({ action: 'ask', vault: { mode: 'new' } })
+      await settle()
+      expect(h.open('t_sub')).toBeNull()
+      expect(h.open('t_main')).not.toBeNull()
+      expect(h.open('t_other')).not.toBeNull()
+
+      // The session went away: every decision still pending is dropped.
+      const later = harness({ client: false, answers: { loginRequest: () => new Promise((resolve) => { decisions.push(resolve) }) } })
+      later.calls.mainToolUse(use('t_late', 'mcp__user-input__request_login', { message: 'Sign in to GitHub.', fields: [] }))
+      await settle()
+      later.calls.dropLoginDecisions()
+      decisions.at(-1)!({ action: 'ask', vault: { mode: 'new' } })
+      await settle()
+      expect(later.open('t_late')).toBeNull()
+    })
+
     it('raises no recovered card for a sign-in request the host is still deciding', async () => {
       let decide: (decision: { action: 'settled' }) => void = () => {}
       const h = harness({ client: false, answers: { loginRequest: () => new Promise((resolve) => { decide = resolve }) } })

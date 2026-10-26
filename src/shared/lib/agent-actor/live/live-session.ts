@@ -770,6 +770,8 @@ export class LiveSession {
   /** The attachment is being dropped: nothing it scheduled may fire. */
   dispose(): void {
     this.cancelSettleAfterStop()
+    // The session is gone: a sign-in the host is still deciding raises no card.
+    this.toolCalls.dropLoginDecisions()
   }
 
   // ===========================================================================
@@ -867,6 +869,8 @@ export class LiveSession {
    * it, and fail the container's pending input so a late click lands nowhere.
    */
   private invalidateSubagentRequests(parentToolId: string): void {
+    // Nor does a sign-in it asked for that the host is still deciding.
+    this.toolCalls.dropLoginDecisions(parentToolId)
     const orphaned = this.ctx.requests.resolveRequestsByParent(parentToolId, 'invalidated')
     if (orphaned.length === 0) return
     for (const request of orphaned) {

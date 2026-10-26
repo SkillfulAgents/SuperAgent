@@ -17,6 +17,8 @@ const container = vi.hoisted(() => ({
   context: null as unknown,
   contextStatus: [] as number[],
   fillStatus: 200,
+  /** The `reason` a refused fill gives (`browser_closed`), if any. */
+  fillReason: null as string | null,
   /** Per-field outcomes the fill answers with; null answers the counts only. */
   fillOutcomes: null as string[] | null,
   calls: [] as Array<{ path: string; body?: unknown }>,
@@ -42,7 +44,9 @@ vi.mock('@shared/lib/agent-actor', () => ({
             return new Response(JSON.stringify(container.context), { status: 200 })
           }
           if (url === '/browser/login/fill') {
-            if (container.fillStatus !== 200) return new Response(JSON.stringify({ error: 'This sign-in request is no longer open' }), { status: container.fillStatus })
+            if (container.fillStatus !== 200) {
+              return new Response(JSON.stringify({ error: 'This sign-in request is no longer open', ...(container.fillReason ? { reason: container.fillReason } : {}) }), { status: container.fillStatus })
+            }
             if (container.fillOutcomes) {
               const outcomes = container.fillOutcomes
               const count = (status: string) => outcomes.filter((outcome) => outcome === status).length
@@ -98,6 +102,7 @@ beforeEach(async () => {
   container.context = GITHUB
   container.contextStatus = []
   container.fillStatus = 200
+  container.fillReason = null
   container.fillOutcomes = null
   container.calls = []
   resetHeldLogins()
@@ -325,6 +330,38 @@ describe('decideLoginRequest', () => {
     expect((await getOwnedAccount(null, account.id))?.lastUsedAt).toBeInstanceOf(Date)
   })
 
+  it('asks the user for the site\'s own code after an account signs in through Google', async () => {
+    const google = await saveAccount({ owner: null, site: 'google.com', origin: 'https://accounts.google.com', username: 'me@gmail.com' })
+    const { account } = await saveAccount({ owner: null, site: 'github.com', origin: 'https://github.com', username: 'me@gmail.com', viaAccountId: google.account.id })
+    await grantAccount({ accountId: account.id, agentSlug: 'agent-a', grantedBy: null })
+    container.context = { ...GITHUB, fields: [field('otp', 'Enter the code we emailed you')] }
+    expect(await decide({ username: 'me@gmail.com' })).toEqual({
+      action: 'ask',
+      vault: { mode: 'complete', username: 'me@gmail.com', accountId: account.id, covered: [] },
+      login: container.context,
+    })
+    expect(answers()).toEqual([])
+  })
+
+  it('opens no card when the browser closed before the vault\'s fill: the next try uses the same account', async () => {
+    await grantedAccount('octocat', { password: 'pw' })
+    container.fillStatus = 409
+    container.fillReason = 'browser_closed'
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(answers()[0].value).toEqual({ type: 'browser_closed', site: 'github.com', kept: { how: 'vault', username: 'octocat' } })
+  })
+
+  it('keeps what was held when the browser closed before it went in', async () => {
+    holdLoginValues('agent-a', 's-1', 'github.com', { username: 'octocat', values: { password: 'held-pw' }, origin: 'https://github.com', save: null })
+    container.context = { ...GITHUB, fields: [field('password', 'Password', 'password')] }
+    container.fillStatus = 409
+    container.fillReason = 'browser_closed'
+    expect(await decide({})).toEqual({ action: 'settled' })
+    expect(answers()[0].value).toEqual({ type: 'browser_closed', site: 'github.com', kept: { how: 'held', username: 'octocat' } })
+    expect(JSON.stringify(answers())).not.toContain('held-pw')
+    expect(heldLoginFor('agent-a', 's-1', 'github.com')?.values).toEqual({ password: 'held-pw' })
+  })
+
   it('leaves the request to the user when the page refuses the saved account\'s fill', async () => {
     const account = await grantedAccount('octocat', { password: 'pw' })
     container.fillStatus = 409
@@ -397,6 +434,16 @@ describe('decideLoginRequest', () => {
     await saveAccount({ owner: null, site: 'github.com', origin: 'https://github.com', username: 'octocat', values: { password: 'new' } })
     expect(await decide({ username: 'octocat' }, 's-3')).toEqual({ action: 'settled' })
     expect(fills()[0].body).toMatchObject({ values: ['octocat', 'new'] })
+  })
+
+  it('marks nothing rejected when the step the agent says failed asks for a code, not the password', async () => {
+    const account = await grantedAccount('octocat', { password: 'pw' })
+    container.context = { ...GITHUB, fields: [field('otp', 'Authentication code')] }
+    expect(await decide({ username: 'octocat', ask_user: true, reason: 'The page says "Incorrect code."' })).toMatchObject({
+      action: 'ask',
+      vault: { mode: 'ask', username: 'octocat', reason: 'The page says "Incorrect code."' },
+    })
+    expect((await getOwnedAccount(null, account.id))?.rejectedAt).toBeNull()
   })
 
   it('fills a saved password once in a while per session: the next sign-in with it goes to the user', async () => {

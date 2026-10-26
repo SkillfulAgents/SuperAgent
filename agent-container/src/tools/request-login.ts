@@ -222,20 +222,27 @@ function formatVia(resolution: Extract<LoginResolution, { type: 'via' }>, named:
 }
 
 function formatBrowserClosed(resolution: Extract<LoginResolution, { type: 'browser_closed' }>, named: Name): { content: Array<{ type: 'text'; text: string }>; isError?: boolean } {
-  const closed = 'The browser was closed before the user answered, so nothing went into a page.'
-  if (!resolution.saved) {
+  const { site, kept } = resolution
+  const closed = 'The browser was closed before anything went into the page.'
+  if (!kept) {
     return {
-      content: [{ type: 'text', text: `${closed} The user saved nothing. To sign in to ${resolution.site}, open its sign-in page again and call request_login: the user is asked again.` }],
+      content: [{ type: 'text', text: `${closed} Nothing the user entered is kept. To sign in to ${site}, open its sign-in page again and call request_login: the user is asked again.` }],
       isError: true,
     }
   }
-  const account = named(resolution.saved.username)
-  return {
-    content: [{ type: 'text', text: [
-      `${closed} The user saved the account ${account} on ${resolution.site} to their vault, for you to use.`,
-      `Open its sign-in page again and call request_login with username "${account}": the host signs in with it.`,
-    ].join('\n') }],
-  }
+  const account = kept.username ? named(kept.username) : null
+  const which = account ? ` ${account}` : ''
+  const what = {
+    saved: `The user saved the account${which} on ${site} to their vault, for you to use.`,
+    picked: `The user picked their saved account${which} on ${site}, for you to use.`,
+    vault: null,
+    held: `The host holds what the user entered${account ? ` for the account ${account}` : ''} on ${site} for 30 minutes.`,
+  }[kept.how]
+  const call = `call request_login${account ? ` with username "${account}"` : ''}`
+  const next = kept.how === 'held'
+    ? `Open its sign-in page again within that time and ${call}: the host fills it in without asking the user again.`
+    : `Open its sign-in page again and ${call}: the host signs in with it.`
+  return { content: [{ type: 'text', text: [what ? `${closed} ${what}` : closed, next].join('\n') }] }
 }
 
 /** Where the values came from and what was kept for later, by account. */
@@ -268,7 +275,9 @@ export function formatLoginResolution(resolution: LoginResolution, named: Name =
   const filled = outcomes.filter((outcome) => outcome.status === 'filled' || outcome.status === 'changed')
   const unconfirmed = outcomes.some((outcome) => outcome.status === 'unconfirmed')
   const name = (outcome: (typeof outcomes)[number]) => `${outcome.ref} "${outcome.label}" (${outcome.kind})`
-  const from = account?.source === 'vault' ? `from the saved account${account.username ? ` ${named(account.username)}` : ''}` : "with the user's input"
+  // The account by name either way: a later step names it to fill as that account.
+  const whose = account?.username ? ` ${named(account.username)}` : ''
+  const from = account?.source === 'vault' ? `from the saved account${whose}` : `with the user's input${whose ? ` for the account${whose}` : ''}`
   const lines: string[] = [
     filled.length
       ? `Filled ${filled.length} of ${outcomes.length} field${outcomes.length === 1 ? '' : 's'} on ${origin} ${from}: ${filled.map(name).join(', ')}.`

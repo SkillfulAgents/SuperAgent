@@ -21,7 +21,7 @@ import {
 } from './login-request'
 import { loginRequestKey, recallLoginValues, setLoginRequestState } from './login-request-store'
 import { AccountChooser, OtherWaysToSignIn, providerChoices, SaveForLater, SignInViaPanel, SignInWithProviders } from './login-vault-sections'
-import { LoginContextUnavailable, useLoginContext, useLoginRequestActions, useLoginVaultInfo } from './use-login-request'
+import { browserClosedState, LoginContextUnavailable, useLoginContext, useLoginRequestActions, useLoginVaultInfo } from './use-login-request'
 
 interface LoginFormProps {
   agentSlug: string
@@ -512,6 +512,12 @@ export function LoginForm({
             // Answered in another window first: nothing was filled from here.
             if ((body as { alreadySettled?: unknown } | null)?.alreadySettled === true) {
               setLoginRequestState(key, { status: 'settled' })
+              return
+            }
+            // The browser had closed: the login is held for the agent's next try.
+            const closed = browserClosedState(body)
+            if (closed) {
+              setLoginRequestState(key, closed)
               return
             }
             const parsed = loginFillResultSchema.safeParse(body)

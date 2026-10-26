@@ -6,7 +6,7 @@ import { RequestItemShell } from '../requests/request-item-shell'
 import type { LoginFieldSummary, LoginVaultPayload } from './login-request'
 import { siteLabel } from './login-request'
 import { LoginForm } from './login-form'
-import { loginRequestKey, useLoginRequestState } from './login-request-store'
+import { loginRequestKey, useLoginRequestState, type LoginKept } from './login-request-store'
 import { useLoginContext } from './use-login-request'
 
 interface LoginRequestItemProps {
@@ -29,8 +29,9 @@ const STATUS_LABELS = {
 } as const
 
 /** The browser had closed before the user answered. */
-function browserClosedLabel(saved: string | null): string {
-  return saved ? 'Saved for the agent' : 'The browser had closed'
+function browserClosedLabel(kept: LoginKept | null): string {
+  if (!kept) return 'The browser had closed'
+  return kept.how === 'saved' ? 'Saved for the agent' : 'Kept for the agent'
 }
 
 export function LoginRequestItem({
@@ -67,12 +68,19 @@ export function LoginRequestItem({
       })
     }
   }, [result])
-  const closedSaved = state.status === 'browser_closed' ? state.saved : undefined
+  const closedKept = state.status === 'browser_closed' ? state.kept : undefined
   useEffect(() => {
-    if (closedSaved === undefined) return
-    if (closedSaved) toast.success(`${closedSaved} is saved`, { description: 'The browser had closed, so nothing went into the page. The agent opens it again and signs in with this.' })
-    else toast.warning('The browser had closed', { description: 'Nothing went into the page, and nothing was saved. The agent opens it again and asks you.' })
-  }, [closedSaved])
+    if (closedKept === undefined) return
+    if (!closedKept) {
+      toast.warning('The browser had closed', { description: 'Nothing went into the page, and nothing was kept. The agent opens it again and asks you.' })
+      return
+    }
+    const closed = 'The browser had closed, so nothing went into the page.'
+    const who = closedKept.username ?? 'Your sign-in'
+    if (closedKept.how === 'saved') toast.success(`${who} is saved`, { description: `${closed} The agent opens it again and signs in with this.` })
+    else if (closedKept.how === 'held') toast.success(`${who} is kept for the agent`, { description: `${closed} The agent opens it again and, within 30 minutes, signs in with what you entered.` })
+    else toast.success(`The agent can sign in as ${who}`, { description: `${closed} The agent opens it again and signs in with this account.` })
+  }, [closedKept])
 
   return (
     <RequestItemShell
@@ -93,8 +101,8 @@ export function LoginRequestItem({
                 />
               ),
               label: <span className="text-sm">{origin ? siteLabel(origin) : 'Sign in'}</span>,
-              statusLabel: state.status === 'browser_closed' ? browserClosedLabel(state.saved) : STATUS_LABELS[state.status],
-              isSuccess: state.status === 'browser_closed' ? state.saved !== null : state.status !== 'declined',
+              statusLabel: state.status === 'browser_closed' ? browserClosedLabel(state.kept) : STATUS_LABELS[state.status],
+              isSuccess: state.status === 'browser_closed' ? state.kept !== null : state.status !== 'declined',
             }
           : null
       }

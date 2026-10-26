@@ -84,6 +84,12 @@ export const loginFillResultSchema = z.object({
 })
 export type LoginFillResult = z.infer<typeof loginFillResultSchema>
 
+/** The answer to a fill when the browser had closed: what the agent's next try signs in with, if anything. */
+export const loginBrowserClosedSchema = z.object({
+  browserClosed: z.literal(true),
+  kept: z.object({ how: z.enum(['saved', 'picked', 'vault', 'held']), username: z.string().nullable() }).optional(),
+})
+
 const loginValue = z.string().max(4096)
 
 /**

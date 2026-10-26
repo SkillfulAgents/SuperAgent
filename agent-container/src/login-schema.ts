@@ -149,14 +149,20 @@ export const loginViaReportSchema = z.object({
 })
 
 /**
- * The browser closed before the user answered: nothing went into a page.
- * What they saved signs the agent in once it opens the page again.
+ * The browser closed before anything went into a page. What the user did is
+ * kept for the agent's next try, which then needs no one: an account they
+ * saved to their vault or picked from it (granted to this agent), the
+ * account the host was signing in with, or what they entered, held by the
+ * host a while. Absent when nothing could be kept (a one-time code).
  */
 export const loginBrowserClosedReportSchema = z.object({
   type: z.literal('browser_closed'),
   site: z.string(),
-  /** The account the user saved to their vault, granted to this agent; absent when they saved nothing. */
-  saved: z.object({ username: z.string() }).optional(),
+  kept: z.object({
+    how: z.enum(['saved', 'picked', 'vault', 'held']),
+    /** Absent only for values held without one: a step that showed no username. */
+    username: z.string().optional(),
+  }).optional(),
 })
 
 export const loginResolutionSchema = z.discriminatedUnion('type', [

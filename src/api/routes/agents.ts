@@ -135,6 +135,7 @@ import {
   MAX_USERNAME,
   VaultConflictError,
   type VaultAccount,
+  type VaultOwner,
 } from '@shared/lib/browser-vault/vault-service'
 import type {
   UserInputRequestKind,
@@ -4143,6 +4144,25 @@ agents.get('/:id/sessions/:sessionId/login-request/vault', AgentUser(), async (c
   })
 })
 
+/** Let the agent sign in with the account, logged when it is new. */
+async function grantToAgent(viewer: VaultOwner, agentSlug: string, accountId: string): Promise<void> {
+  if (await grantAccount({ accountId, agentSlug, grantedBy: viewer })) {
+    await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: accountId, action: 'assigned', details: { agentSlug } })
+  }
+}
+
+/** What the user entered, saved to their account on the site (made, or its parts added), for the agent to use. */
+async function saveAndGrant(
+  viewer: VaultOwner,
+  agentSlug: string,
+  input: { site: string; origin: string; username: string; values: Record<string, string> },
+): Promise<VaultAccount> {
+  const result = await saveAccount({ owner: viewer, ...input })
+  await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: result.account.id, action: result.created ? 'created' : 'updated', details: { site: input.site } })
+  await grantToAgent(viewer, agentSlug, result.account.id)
+  return result.account
+}
+
 // POST /api/agents/:id/sessions/:sessionId/fill-login - Write the user's values into the page
 agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
   let claimed: { id: string; token: string } | null = null
@@ -4238,32 +4258,53 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     const filled = await fillLoginInContainer(agentSlug, sessionId, body.toolUseId, context, values, {
       ...(shown ? { username: shown } : {}),
       site,
-      source: 'user',
+      // A saved account the user picked, as it is: the agent is told it by name.
+      source: account && !body.values.some(Boolean) ? 'vault' : 'user',
       saved: saving,
       held: heldLabels,
     })
     // The browser that showed the form closed while the user was away (a
     // Browserbase session ends long before they come back): nothing can go
-    // into a page now. What they save is saved and granted, and the agent is
-    // told to open the page again and sign in with it; unsaved, it asks again.
+    // into a page now, and the user is not asked twice. The agent is told
+    // to open the page again, and its next try signs in with what the user
+    // did here: the account they picked, now granted; what they entered,
+    // saved to their vault when they chose to, else held here a while.
     if (!filled.ok && filled.browserClosed) {
-      let kept: VaultAccount | null = null
+      if (grantsAccount && account) await grantToAgent(viewer, agentSlug, account.id)
+      // This step's values and the next step's go by this step's choice;
+      // what earlier steps held, by theirs.
+      const entered = { ...partsFrom(context.fields, body.values), ...heldParts }
+      const earlier = held?.values ?? {}
+      let kept: { how: 'saved' | 'picked' | 'vault' | 'held'; username?: string } | null = null
       if (saving && identity) {
-        // What they typed, this step's and the next's: the vault fills both once the page is back.
-        const result = await saveAccount({ owner: viewer, site, origin: context.origin, username: identity, values: { ...partsFrom(context.fields, body.values), ...heldParts } })
-        kept = result.account
-        await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: kept.id, action: result.created ? 'created' : 'updated', details: { site } })
-        if (await grantAccount({ accountId: kept.id, agentSlug, grantedBy: viewer })) {
-          await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: kept.id, action: 'assigned', details: { agentSlug } })
+        try {
+          const savedNow = await saveAndGrant(viewer, agentSlug, { site, origin: context.origin, username: identity, values: { ...(held?.save ? earlier : {}), ...entered } })
+          kept = { how: 'saved', username: savedNow.username }
+          if (held?.save) forgetHeldLogin(agentSlug, sessionId, site)
+        } catch (error) {
+          // Held instead, below: the agent's next try still needs no one.
+          console.error('[fill-login] Saving the account failed:', error instanceof Error ? error.message : 'Unknown error')
         }
       }
-      const answered = await answerLoginRequest(agentSlug, body.toolUseId, { type: 'browser_closed', site, ...(kept ? { saved: { username: kept.username } } : {}) })
+      if (!kept && Object.keys({ ...earlier, ...entered }).length > 0) {
+        holdLoginValues(agentSlug, sessionId, site, {
+          username: identity,
+          values: { ...earlier, ...entered },
+          origin: held && Object.keys(entered).length === 0 ? held.origin : context.origin,
+          // Nothing typed now: the earlier step's choice stands. Typed now without saving: nothing is saved.
+          save: Object.keys(entered).length === 0 ? held?.save ?? null : null,
+        })
+        kept = { how: 'held', ...(shown ? { username: shown } : {}) }
+      }
+      // The account itself: one the user picked, or the one the host was signing in with.
+      if (!kept && account) kept = { how: hostsAccount ? 'vault' : 'picked', username: account.username }
+      const answered = await answerLoginRequest(agentSlug, body.toolUseId, { type: 'browser_closed', site, ...(kept ? { kept } : {}) })
       if (!answered) return c.json({ error: 'The agent could not be told. Try again.' }, 502)
       await actor.inputs.complete(sessionId, body.toolUseId, 'answered')
       claimed = null
-      forgetHeldLogin(agentSlug, sessionId, site)
-      trackServerEvent('login_request_browser_closed', { saved: kept !== null })
-      return c.json({ success: true, browserClosed: true, ...(kept ? { saved: { username: kept.username, site } } : {}) })
+      if (identity) rememberSignInIdentity(agentSlug, sessionId, site, identity)
+      trackServerEvent('login_request_browser_closed', { kept: kept?.how ?? 'nothing' })
+      return c.json({ success: true, browserClosed: true, ...(kept ? { kept: { how: kept.how, username: kept.username ?? null } } : {}) })
     }
     // Still open on failure: the user can try again or sign in on the page.
     // Nothing is saved, granted or held for a step that never went in.
@@ -4275,21 +4316,14 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     if (saving && identity) {
       try {
         // What the user typed here, by part: the username is the account itself.
-        const result = await saveAccount({ owner: viewer, site, origin: context.origin, username: identity, values: partsFrom(context.fields, body.values) })
-        savedAccount = result.account
-        await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: savedAccount.id, action: result.created ? 'created' : 'updated', details: { site } })
-        if (await grantAccount({ accountId: savedAccount.id, agentSlug, grantedBy: viewer })) {
-          await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: savedAccount.id, action: 'assigned', details: { agentSlug } })
-        }
+        savedAccount = await saveAndGrant(viewer, agentSlug, { site, origin: context.origin, username: identity, values: partsFrom(context.fields, body.values) })
       } catch (error) {
         // The page has the values either way; the user is told it was not saved.
         console.error('[fill-login] Saving the account failed:', error instanceof Error ? error.message : 'Unknown error')
         saveError = error instanceof VaultConflictError ? error.message : 'The account could not be saved'
       }
     }
-    if (grantsAccount && account && await grantAccount({ accountId: account.id, agentSlug, grantedBy: viewer })) {
-      await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: account.id, action: 'assigned', details: { agentSlug } })
-    }
+    if (grantsAccount && account) await grantToAgent(viewer, agentSlug, account.id)
     // Only what went into the page counts: the browser may have written none of it.
     const wentIn = fieldsWentIn(filled.result, context.fields.length)
     const passwordWentIn = context.fields.some((field, index) => field.kind === 'password' && wentIn[index])
@@ -4454,6 +4488,24 @@ agents.post(
     }
     const values = context.fields.map((field) => (field.kind === 'username' ? credential.username : credential.password))
     const filled = await fillLoginInContainer(agentSlug, sessionId, body.toolUseId, context, values)
+    // The browser closed while the user was away: the login they picked is
+    // held a while (not saved: it lives in their password manager), and the
+    // agent's next try signs in with it without asking again.
+    if (!filled.ok && filled.browserClosed) {
+      const site = siteOfOrigin(context.origin)
+      const username = credential.username || null
+      const holds = site !== null && context.fields.some((field) => field.kind === 'password') && credential.password.length > 0
+      if (holds) holdLoginValues(agentSlug, sessionId, site, { username, values: { password: credential.password }, origin: context.origin, save: null })
+      const shown = noteUsername(username)
+      const kept = holds ? { how: 'held' as const, ...(shown ? { username: shown } : {}) } : null
+      const answered = await answerLoginRequest(agentSlug, body.toolUseId, { type: 'browser_closed', site: site ?? context.origin, ...(kept ? { kept } : {}) })
+      if (!answered) return c.json({ error: 'The agent could not be told. Try again.' }, 502)
+      await agentRegistry.get(agentSlug).inputs.complete(sessionId, body.toolUseId, 'answered')
+      claimed = null
+      if (site && username) rememberSignInIdentity(agentSlug, sessionId, site, username)
+      trackServerEvent('login_request_browser_closed', { kept: kept?.how ?? 'nothing' })
+      return c.json({ success: true, browserClosed: true, ...(kept ? { kept: { how: kept.how, username: kept.username ?? null } } : {}) })
+    }
     if (!filled.ok) return c.json({ error: filled.error }, filled.status)
     claimed = null
     trackServerEvent('login_request_filled', {

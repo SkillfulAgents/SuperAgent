@@ -271,7 +271,7 @@ describe('LoginRequestItem', () => {
   it('says what was kept when the browser had closed before the user answered', async () => {
     const user = userEvent.setup()
     const onComplete = vi.fn()
-    routes[`${BASE}/fill-login`] = () => json(200, { success: true, browserClosed: true, saved: { username: '+1 555 0100', site: 'github.com' } })
+    routes[`${BASE}/fill-login`] = () => json(200, { success: true, browserClosed: true, kept: { how: 'saved', username: '+1 555 0100' } })
     render(<LoginRequestItem {...props({ onComplete })} />)
     const username = await ready()
     await user.type(username, '+1 555 0100')
@@ -283,6 +283,30 @@ describe('LoginRequestItem', () => {
     expect(screen.getByTestId('login-request-completed')).toHaveAttribute('data-status', 'browser_closed')
     expect(screen.getByTestId('login-request-completed')).toHaveTextContent('Saved for the agent')
     expect(mockToast.success).toHaveBeenCalledWith('+1 555 0100 is saved', expect.objectContaining({ description: expect.stringContaining('signs in with this') }))
+  })
+
+  it('says what is kept for the agent when the user did not save it, and when nothing could be', async () => {
+    const user = userEvent.setup()
+    routes[`${BASE}/fill-login`] = () => json(200, { success: true, browserClosed: true, kept: { how: 'held', username: 'octocat' } })
+    const first = render(<LoginRequestItem {...props()} />)
+    const username = await ready()
+    await user.type(username, 'octocat')
+    await user.type(screen.getByLabelText('Password'), 'hunter2-hunter2')
+    await user.type(screen.getByLabelText('Authentication code'), '482913')
+    await user.click(screen.getByTestId('login-submit'))
+    await waitFor(() => expect(screen.getByTestId('login-request-completed')).toHaveTextContent('Kept for the agent'))
+    expect(mockToast.success).toHaveBeenCalledWith('octocat is kept for the agent', expect.objectContaining({ description: expect.stringContaining('within 30 minutes') }))
+    first.unmount()
+
+    resetLoginRequestStore()
+    routes[`${BASE}/fill-login`] = () => json(200, { success: true, browserClosed: true })
+    render(<LoginRequestItem {...props()} />)
+    await user.type(await ready(), 'octocat')
+    await user.type(screen.getByLabelText('Password'), 'hunter2-hunter2')
+    await user.type(screen.getByLabelText('Authentication code'), '482913')
+    await user.click(screen.getByTestId('login-submit'))
+    await waitFor(() => expect(screen.getByTestId('login-request-completed')).toHaveTextContent('The browser had closed'))
+    expect(mockToast.warning).toHaveBeenCalledWith('The browser had closed', expect.objectContaining({ description: expect.stringContaining('asks you') }))
   })
 
   it('keeps every digit of a code pasted with separators, applying the page\'s limit to the code', async () => {

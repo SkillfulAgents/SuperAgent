@@ -19,6 +19,13 @@ export type LoginAction = 'fill' | 'via' | 'manual' | 'decline'
  */
 export type LoginRecovery = { reason: 'fields_needed'; fields: number[] } | { reason: 'account_unavailable' }
 
+/**
+ * What a sign-in answered after its browser closed is kept as: the account
+ * saved to the vault, a saved account picked (or the one the host was
+ * signing in with), or what was entered, held by the host a while.
+ */
+export type LoginKept = { how: 'saved' | 'picked' | 'vault' | 'held'; username: string | null }
+
 export class LoginActionError extends Error {
   constructor(message: string, readonly recovery?: LoginRecovery) {
     super(message)
@@ -31,8 +38,8 @@ export type LoginRequestState =
   | { status: 'filled'; result: LoginFillResult }
   /** The user signs in through another account: `provider` is that account's username. */
   | { status: 'via'; provider: string }
-  /** The browser had closed: nothing went into a page. `saved`: the account kept for the agent's next try. */
-  | { status: 'browser_closed'; saved: string | null }
+  /** The browser had closed: nothing went into a page. `kept`: what the agent's next try signs in with. */
+  | { status: 'browser_closed'; kept: LoginKept | null }
   | { status: 'manual' }
   | { status: 'declined' }
   /** Answered elsewhere (another window, or it ended) before this one acted. */

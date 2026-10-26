@@ -223,11 +223,11 @@ describe('request_login tool', () => {
     inputManager.setCurrentToolUseId('login-closed')
     const done = handlerFor()(args)
     await vi.waitFor(() => expect(inputManager.hasPending('login-closed')).toBe(true))
-    inputManager.resolve('login-closed', JSON.stringify({ type: 'browser_closed', site: 'github.com', saved: { username: 'octocat' } }))
+    inputManager.resolve('login-closed', JSON.stringify({ type: 'browser_closed', site: 'github.com', kept: { how: 'saved', username: 'octocat' } }))
     const result = await done
     expect(result.isError).toBeUndefined()
     expect(result.content[0].text).toBe([
-      'The browser was closed before the user answered, so nothing went into a page. The user saved the account octocat on github.com to their vault, for you to use.',
+      'The browser was closed before anything went into the page. The user saved the account octocat on github.com to their vault, for you to use.',
       'Open its sign-in page again and call request_login with username "octocat": the host signs in with it.',
     ].join('\n'))
 
@@ -235,7 +235,29 @@ describe('request_login tool', () => {
     const again = handlerFor()(args)
     await vi.waitFor(() => expect(inputManager.hasPending('login-closed-2')).toBe(true))
     inputManager.resolve('login-closed-2', JSON.stringify({ type: 'browser_closed', site: 'github.com' }))
-    expect(await again).toMatchObject({ isError: true, content: [{ text: expect.stringContaining('The user saved nothing.') }] })
+    expect(await again).toMatchObject({ isError: true, content: [{ text: expect.stringContaining('Nothing the user entered is kept.') }] })
+  })
+})
+
+describe('formatLoginResolution when the browser closed first', () => {
+  const closed = (kept?: { how: 'saved' | 'picked' | 'vault' | 'held'; username?: string }) =>
+    formatLoginResolution({ type: 'browser_closed', site: 'github.com', ...(kept ? { kept } : {}) }).content[0].text
+
+  it('names what the next try signs in with: an account picked, the one the host used, or what is held', () => {
+    expect(closed({ how: 'picked', username: 'octocat' })).toBe([
+      'The browser was closed before anything went into the page. The user picked their saved account octocat on github.com, for you to use.',
+      'Open its sign-in page again and call request_login with username "octocat": the host signs in with it.',
+    ].join('\n'))
+    expect(closed({ how: 'vault', username: 'octocat' })).toBe([
+      'The browser was closed before anything went into the page.',
+      'Open its sign-in page again and call request_login with username "octocat": the host signs in with it.',
+    ].join('\n'))
+    expect(closed({ how: 'held', username: 'octocat' })).toBe([
+      'The browser was closed before anything went into the page. The host holds what the user entered for the account octocat on github.com for 30 minutes.',
+      'Open its sign-in page again within that time and call request_login with username "octocat": the host fills it in without asking the user again.',
+    ].join('\n'))
+    // Held from a step that showed no username: the call names none.
+    expect(closed({ how: 'held' })).toContain('call request_login: the host fills it in')
   })
 })
 
@@ -315,9 +337,21 @@ describe('formatLoginResolution for the vault', () => {
     expect(vault).toContain('Filled 1 of 1 field on https://github.com from the saved account octocat: @e3 "Email" (username).')
 
     const saved = formatLoginResolution({ ...base, account: { username: 'octocat', site: 'github.com', source: 'user', saved: true, held: ['Password'] } }).content[0].text
-    expect(saved).toContain("with the user's input")
+    expect(saved).toContain("with the user's input for the account octocat")
     expect(saved).toContain('The user saved this to their vault as account octocat on github.com.')
     expect(saved).toContain('The user also entered "Password" for a later step; the host holds it for account octocat. When the page asks for it, call request_login with username "octocat" and map that field.')
+  })
+
+  it('names the account the user typed in, saved or not, so the next step can name it', () => {
+    const typed = formatLoginResolution({
+      type: 'filled',
+      origin: 'https://github.com',
+      outcomes: [{ ref: '@e3', kind: 'username', label: 'Email', status: 'filled' }],
+      lost: [],
+      submitted: { via: 'click', ref: '@e7' },
+      account: { username: 'octocat', site: 'github.com', source: 'user', saved: false, held: [] },
+    }).content[0].text
+    expect(typed).toContain('Filled 1 of 1 field on https://github.com with the user\'s input for the account octocat: @e3 "Email" (username).')
   })
 })
 

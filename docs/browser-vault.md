@@ -61,12 +61,14 @@ sign-in the vault can do never notifies anyone:
    lacks (a code, a new field) opens the card for just that
    (`mode: 'complete'`, `covered` = the fields the vault fills).
 3. `ask_user: true` (or a `reason`), or an account the agent may not use: the
-   card (`mode: 'ask'`, with the username prefilled). With a username, the
-   agent says the site rejected that account: it is marked (`rejected_at`,
-   audit `rejected`), and the card shows the agent's `reason`.
+   card (`mode: 'ask'`, with the username prefilled). With a username on a
+   step that asks for the password, the agent says the site rejected that
+   account's password: it is marked (`rejected_at`, audit `rejected`), and
+   the card shows the agent's `reason`. A wrong code marks nothing.
 4. An account with a `via`: the result names the provider account to pick;
    nothing is filled, unless the step asks only for its other parts (a
-   workspace).
+   workspace). A step that asks for a code (the site's own check after the
+   provider's) opens the card for the code, as that account.
 
 A saved password goes in without the user only while it signs in fine: not
 for an account marked rejected (until the user enters its password again, in
@@ -75,8 +77,9 @@ any session), and not twice for one account within 30 minutes of a session
 it down, and each unattended retry spends an attempt toward a lockout. Both
 open the card (`rejectedAt`, `filledAt`).
 
-The tool result says which account was used and what was saved or held,
-never a value. A password last typed on an https page is not filled into a
+The tool result names the account the values were for (a saved one, one the
+user picked in the card, or the username they typed), so the agent names it
+on the next step, and says what was saved or held, never a value. A password last typed on an https page is not filled into a
 plain-HTTP one without the user (`vaultFillsInto`, against the account's
 `origin`: where its password was last entered).
 
@@ -135,14 +138,23 @@ A card outlives its browser. Closing the browser, or Browserbase ending its
 session while the user is away, does not cancel a sign-in: the agent keeps
 waiting, and the card stays (up to the 24-hour limit on any request). Nothing
 can go into a page once the browser is gone (the container answers the fill
-with `browser_closed`), so:
+with `browser_closed`), and the user answers once: what they did is kept for
+the agent's next try, which then needs no one. The agent is told to open the
+sign-in page again and call request_login with the account's username
+(`kept` in the result):
 
-- With "Save for later", what the user entered (this step's fields and the
-  next step's) is saved and granted, and the agent is told to open the
-  sign-in page again and call request_login with that username: the vault
-  signs in, and the user typed it once.
-- Without it, nothing is kept, not even in memory: the agent is told to open
-  the page again and ask, and the user types it again.
+- A saved account the user picked is granted (`picked`).
+- With "Save for later", what they entered (this step's fields, the next
+  step's, and what an earlier step held to save) is saved and granted
+  (`saved`).
+- Without it, or when the save fails, what they entered is held in memory
+  as a later step's would be (`held`, 30 minutes, this session).
+- A login picked from the password manager is held the same way, never
+  saved: it lives in the password manager.
+- An unattended fill the browser closed first opens no card: the agent is
+  told to try again with the same account (`vault`).
+
+Only a one-time code is not kept: the user is asked again.
 
 ## Settings → Logins
 

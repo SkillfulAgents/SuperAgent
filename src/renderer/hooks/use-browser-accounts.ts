@@ -54,6 +54,9 @@ export function useBrowserAccounts() {
 function useAccountMutation<T>(run: (input: T) => Promise<void>) {
   const queryClient = useQueryClient()
   return useMutation({
+    // Every caller says what went wrong where it happened (and `shared_agent`
+    // is a confirmation step, not a failure).
+    meta: { skipGlobalErrorToast: true },
     mutationFn: run,
     onSettled: () => queryClient.invalidateQueries({ queryKey: BROWSER_ACCOUNTS_KEY }),
   })
