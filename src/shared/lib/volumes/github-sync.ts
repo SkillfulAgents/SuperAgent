@@ -34,8 +34,9 @@ const BLOB_BYTES = 8_000_000
 const PUSH_DELAY = 15_000
 /** A drive written to without pause still pushes this long after its first unpushed write. */
 const PUSH_MAX_DELAY = 120_000
-const CONFLICTS = new Set(['conflict markers to resolve', 'edited on GitHub, deleted here', 'deleted on GitHub, edited here', 'changed on GitHub too'])
-const emptyEdits = (): GithubEdits => ({ version: 1, unpushed: {}, held: {}, stopped: null, ignores: [], links: [] })
+const ADDED = 'added on GitHub too'
+const CONFLICTS = new Set(['conflict markers to resolve', 'edited on GitHub, deleted here', 'deleted on GitHub, edited here', 'changed on GitHub too', ADDED])
+const emptyEdits = (): GithubEdits => ({ version: 1, unpushed: {}, held: {}, stopped: null, ignores: [], links: [], blocked: {} })
 /** A record's own entry: paths like `constructor` must not read through the prototype. */
 const own = <T>(record: Record<string, T>, key: string): T | undefined => Object.hasOwn(record, key) ? record[key] : undefined
 const missing = (error: unknown) => ['ENOENT', 'ENOTDIR', 'EISDIR'].includes(errnoCode(error) ?? '')
@@ -92,9 +93,10 @@ export class GithubSync {
   get attention(): VolumeAttention | null {
     const held = new Map([...[...this.policyHeld].filter(([name]) => own(this.edits.unpushed, name)),
       ...Object.entries(this.edits.held).map(([name, hold]) => [name, hold.reason] as const)])
+    const unsynced = new Set([...Object.keys(this.edits.unpushed), ...held.keys()]).size
+    for (const [name, reason] of Object.entries(this.edits.blocked)) if (!held.has(name)) held.set(name, reason)
     const conflicts = [...held.keys()].filter(name => CONFLICTS.has(held.get(name)!))
     const notSynced = [...held.keys()].filter(name => !CONFLICTS.has(held.get(name)!))
-    const unsynced = new Set([...Object.keys(this.edits.unpushed), ...held.keys()]).size
     const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
     const badge = this.edits.stopped ? { label: 'Sync stopped', tone: 'error' as const }
       : this.prepared && this.failure ? { label: 'Sync paused', tone: 'warning' as const }
@@ -321,7 +323,7 @@ export class GithubSync {
   /** Throws while a `.gitignore` above a subfolder drive is unread, so nothing it excludes can push. */
   private async ignored(name: string): Promise<boolean> {
     if (name.split('/').some(part => part.toLowerCase() === '.git')) return true
-    if (own(this.state.files, name)) return false
+    if (own(this.state.files, name) || own(this.edits.held, name) || own(this.edits.blocked, name)) return false
     const sources = this.edits.ignores.map(({ dir, sha }) => {
       const text = this.rules.get(sha)
       if (text === undefined) throw new VolumeError('The repository’s .gitignore could not be read.', 503)
@@ -653,8 +655,27 @@ export class GithubSync {
     }
   }
 
+  /** Whether a path GitHub could not place might fit now: what stood in its way is gone, or the agent edited it. */
+  private async unblocked(): Promise<boolean> {
+    for (const name of Object.keys(this.edits.blocked)) {
+      if (Object.hasOwn(this.edits.unpushed, name) || !await this.obstructed(name)) return true
+    }
+    return false
+  }
+
+  /** Whether something on the drive stands where a file GitHub has would go: an entry at its path, or a file at a folder above it. */
+  private async obstructed(name: string): Promise<boolean> {
+    const parts = name.split('/')
+    for (let i = 1; i <= parts.length; i++) {
+      const entry = await fs.lstat(this.target(parts.slice(0, i).join('/'))).catch(() => null)
+      if (!entry) return false
+      if (i === parts.length || !entry.isDirectory()) return true
+    }
+    return false
+  }
+
   private async pull(head: string): Promise<void> {
-    if (head === this.state.base) return
+    if (head === this.state.base && !await this.unblocked()) return
     const files = await this.snapshot(head)
     const changed = [...new Set([...Object.keys(this.state.files), ...Object.keys(files)])]
       .filter(name => own(this.state.files, name)?.sha !== own(files, name)?.sha || own(this.state.files, name)?.mode !== own(files, name)?.mode)
@@ -668,15 +689,18 @@ export class GithubSync {
       for (const name of changed) {
         if (Object.hasOwn(this.edits.unpushed, name) && !own(this.edits.held, name)) bases.set(name, await this.blob(own(this.state.files, name)?.sha))
       }
-      for (const name of Object.keys(incoming)) {
-        if (own(this.state.files, name) || own(this.edits.held, name) || Object.hasOwn(this.edits.unpushed, name)) continue
-        const local = await fileBlobSha(this.target(name)).catch(error => { if (missing(error)) return null; throw error })
-        if (local && local !== incoming[name].sha) throw new VolumeError(`GitHub added a file the drive already has: ${name}`, 409)
-      }
       if (this.removed) return
       await serialize([this.key], async () => {
         const next = { ...files }
         const removed: string[] = []
+        // A path the drive uses otherwise waits, while the rest of the pull goes on: a local file GitHub has just added
+        // too, or a folder where GitHub now has a file, or the reverse. It is tried again once that changes.
+        const blocked: Record<string, string> = {}
+        for (const name of Object.keys(incoming)) {
+          if (own(this.state.files, name) || own(this.edits.held, name) || Object.hasOwn(this.edits.unpushed, name)) continue
+          const local = await fileBlobSha(this.target(name)).catch(error => { if (missing(error)) return null; throw error })
+          if (local && local !== incoming[name].sha) blocked[name] = ADDED
+        }
         for (const [name, hold] of Object.entries(this.edits.held)) {
           hold.behind = own(files, name)?.sha ?? null
           const tracked = own(this.state.files, name)
@@ -686,7 +710,7 @@ export class GithubSync {
         const held = new Set(Object.keys(this.edits.held))
         try {
           for (const name of changed) {
-            if (held.has(name)) continue
+            if (held.has(name) || own(blocked, name)) continue
             if (Object.hasOwn(this.edits.unpushed, name)) {
               const local = await this.bytes(name)
               if (local) await this.remember(local)
@@ -716,16 +740,22 @@ export class GithubSync {
             })
           }
           for (const name of Object.keys(incoming)) {
-            if (own(this.edits.held, name) || Object.hasOwn(this.edits.unpushed, name)) continue
+            if (own(this.edits.held, name) || Object.hasOwn(this.edits.unpushed, name) || own(blocked, name)) continue
             this.checkRemoved()
-            // A local folder where GitHub now has a file, or the reverse, pauses the sync until one side moves.
-            await fs.mkdir(path.dirname(this.target(name)), { recursive: true })
+            const reason = await fs.mkdir(path.dirname(this.target(name)), { recursive: true })
               .then(() => { this.checkRemoved(); return fs.rename(path.join(stage, name), this.target(name)) })
-              .catch(error => {
+              .then(() => null, async error => {
                 if (!['EISDIR', 'ENOTDIR', 'ENOTEMPTY', 'EEXIST'].includes(errnoCode(error) ?? '')) throw error
-                throw new VolumeError(`GitHub has a file where the drive has a folder, or the reverse: ${name}`, 409)
+                return (await fs.lstat(this.target(name)).catch(() => null))?.isDirectory() ? 'a folder here, a file on GitHub' : 'a file here, a folder on GitHub'
               })
+            if (reason) blocked[name] = reason
           }
+          for (const name of Object.keys(blocked)) {
+            const tracked = own(this.state.files, name)
+            if (tracked) next[name] = tracked
+            else delete next[name]
+          }
+          this.edits.blocked = blocked
           await this.save({ ...this.state, base: head, files: next })
         } finally { if (!this.removed) await this.saveEdits() }
       })
@@ -748,8 +778,10 @@ export class GithubSync {
       const settled: typeof entries = []
       for (const entry of entries) {
         const change = { path: this.repositoryPath(entry.name), contents: null, mode: own(this.state.files, entry.name)?.mode ?? '100644', group: entry.group }
+        const blocker = Object.keys(this.edits.blocked).find(path => entry.name === path || entry.name.startsWith(`${path}/`) || path.startsWith(`${entry.name}/`))
         const hold = own(this.edits.held, entry.name)?.reason ?? (entry.group && heldGroups.has(entry.group) ? 'moved with a held file'
-          : this.edits.links.includes(entry.name) ? 'a link or submodule on GitHub' : this.writing.has(entry.name) ? 'still uploading' : undefined)
+          : this.edits.links.includes(entry.name) ? 'a link or submodule on GitHub' : this.writing.has(entry.name) ? 'still uploading'
+          : blocker ? this.edits.blocked[blocker] : undefined)
         if (hold) { changes.push({ ...change, held: hold }); continue }
         if (await this.ignored(entry.name)) { settled.push(entry); continue }
         if (((await fs.lstat(this.target(entry.name)).catch(() => null))?.size ?? 0) > GITHUB_PUSH_BYTES) {

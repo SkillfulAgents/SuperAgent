@@ -58,5 +58,7 @@ export const githubEditsSchema = z.object({
   stopped: z.string().nullable(),
   ignores: z.array(z.object({ dir: z.string(), sha: githubOidSchema })),
   links: z.array(z.string()).default([]),
+  /** Paths GitHub has that the pull could not place, and why: something on the drive stands where they go. */
+  blocked: z.record(z.string(), z.string()).default({}),
 })
 export type GithubEdits = z.infer<typeof githubEditsSchema>

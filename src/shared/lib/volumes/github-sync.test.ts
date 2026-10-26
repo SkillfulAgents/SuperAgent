@@ -524,13 +524,53 @@ it('drops an upload whose client went away', async () => {
   expect([await text('notes.txt'), sync.unpushed]).toEqual(['kept', 0])
 })
 
-it('pauses a pull that would overwrite a local file GitHub just added', async () => {
-  const { sync, write, text } = await setup({ 'notes.txt': 'kept', '.gitignore': 'secret.txt\n' })
+it("holds a local file GitHub just added too, syncs the rest, and places GitHub's once the local one goes", async () => {
+  const { sync, volume, write, text } = await setup({ 'notes.txt': 'kept', '.gitignore': 'secret.txt\n' })
   await write('secret.txt', 'mine')
-  teammate({ 'secret.txt': 'theirs' })
+  teammate({ 'secret.txt': 'theirs', 'notes.txt': 'pulled' })
   await sync.run()
-  expect(await text('secret.txt')).toBe('mine')
-  expect(sync.attention?.detail).toContain('GitHub added a file the drive already has: secret.txt')
+  expect([await text('secret.txt'), await text('notes.txt')]).toEqual(['mine', 'pulled'])
+  expect(sync.attention).toEqual({ badge: { label: '1 conflict', tone: 'warning' }, detail: 'secret.txt (added on GitHub too)', unsynced: 0 })
+  await write('other.txt', 'pushed')
+  await sync.run(true)
+  expect([remote['other.txt']?.toString(), remote['secret.txt'].toString()]).toEqual(['pushed', 'theirs'])
+  await volume.delete('secret.txt')
+  await sync.run(true)
+  expect(await text('secret.txt')).toBe('theirs')
+  expect([sync.attention, commits.length]).toEqual([null, 1])
+})
+
+it('merges an edit of a local file GitHub just added too, now that GitHub tracks it', async () => {
+  const { sync, write, text } = await setup({ 'notes.txt': 'kept', '.gitignore': 'secret.txt\n' })
+  await write('secret.txt', 'mine\n')
+  teammate({ 'secret.txt': 'theirs\n' })
+  await sync.run()
+  await write('secret.txt', 'mine, edited\n')
+  await sync.run(true)
+  expect(await text('secret.txt')).toContain('>>>>>>> GitHub')
+  expect(sync.attention?.detail).toBe('secret.txt (conflict markers to resolve)')
+  expect(remote['secret.txt'].toString()).toBe('theirs\n')
+})
+
+it('holds edits in a folder where GitHub now has a file, or at a file where it has a folder, and places them once the way is clear', async () => {
+  const { sync, volume, write, text } = await setup({ 'notes.txt': 'kept' })
+  await volume.mkdir('docs')
+  await write('docs/new.md', 'draft')
+  await write('plan', 'mine')
+  teammate({ docs: 'a file now', 'plan/step': 'theirs', 'notes.txt': 'pulled' })
+  await sync.run(true)
+  expect([await text('notes.txt'), await text('docs/new.md'), await text('plan')]).toEqual(['pulled', 'draft', 'mine'])
+  expect(Object.keys(remote).sort()).toEqual(['docs', 'notes.txt', 'plan/step'])
+  expect(sync.attention?.detail?.split('\n').sort()).toEqual([
+    'docs (a folder here, a file on GitHub)', 'docs/new.md (a folder here, a file on GitHub)',
+    'plan (a file here, a folder on GitHub)', 'plan/step (a file here, a folder on GitHub)',
+  ])
+  await volume.delete('docs/new.md')
+  await volume.delete('docs')
+  await volume.delete('plan')
+  await sync.run(true)
+  expect([await text('docs'), await text('plan/step')]).toEqual(['a file now', 'theirs'])
+  expect([sync.attention, commits]).toEqual([null, []])
 })
 
 it('holds a write onto a path GitHub tracks as a link', async () => {
