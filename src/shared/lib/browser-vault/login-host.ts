@@ -11,7 +11,7 @@ import {
   type LoginVaultPayload,
 } from '@shared/lib/tools/request-login/login-request'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
-import { heldLoginFor, recentPasswordFill, releaseHeldValues, rememberPasswordFill, rememberSignInIdentity, type HeldLogin } from './held-values'
+import { heldLoginFor, releaseHeldValues, rememberSignInIdentity, type HeldLogin } from './held-values'
 import { providerName } from './providers'
 import { siteOfOrigin, usernameKey, vaultFillsInto } from './site'
 import {
@@ -19,6 +19,7 @@ import {
   listGrantedAccounts,
   markAccountRejected,
   readAccountValues,
+  recentPasswordFills,
   recordAccountUse,
   saveAccount,
   type VaultAccount,
@@ -235,14 +236,28 @@ const toolInputSchema = z.object({
   reason: z.string().trim().min(1).max(500).optional().catch(undefined),
 }).loose()
 
+const HALF_HOUR_MS = 30 * 60 * 1000
+const DAY_MS = 24 * 60 * 60 * 1000
+/** How often the vault fills an account's password without the user within half an hour: one retry after a hiccup. */
+const FILLS_PER_HALF_HOUR = 2
+/** And within a day: past that, most likely a password the site turns down. */
+const FILLS_PER_DAY = 5
+
 /**
- * When the account's saved password last went into a page in this session,
- * if lately (held-values keeps it a while): another fill so soon is the
- * user's to decide.
+ * When the vault last filled the account's password without the user, if it
+ * did so too often for another try without them: every attempt with a
+ * password the site turns down counts toward its lockout. Counted since the
+ * user last signed in with the account themselves (what they entered or
+ * picked then is what goes in now), from the audit log: across sessions and
+ * agents, and over a restart.
  */
-function filledLately(agentSlug: string, sessionId: string, account: VaultAccount): string | null {
-  const at = recentPasswordFill(agentSlug, sessionId, account.id)
-  return at === null ? null : new Date(at).toISOString()
+async function filledTooOften(account: VaultAccount, now = Date.now()): Promise<string | null> {
+  const fills = await recentPasswordFills(account.id, DAY_MS, now)
+  const userSince = fills.findIndex((fill) => !fill.unattended)
+  const unattended = userSince < 0 ? fills : fills.slice(0, userSince)
+  const lately = unattended.filter((fill) => now - fill.at.getTime() <= HALF_HOUR_MS)
+  if (lately.length < FILLS_PER_HALF_HOUR && unattended.length < FILLS_PER_DAY) return null
+  return unattended[0].at.toISOString()
 }
 
 /** Whether every located field is one this account fills without its password: a step asking only for a workspace. */
@@ -341,7 +356,7 @@ export async function decideLoginRequest(call: LoginRequestCall): Promise<LoginD
   if (account?.via && !asksCode && !fillsWithoutPassword(account, context.fields)) {
     const via = { site: account.via.site, username: account.via.username, name: providerName(account.via.site) }
     if (await answerLoginRequest(agentSlug, toolUseId, { type: 'via', site, username: account.username, provider: via, saved: true })) {
-      await recordAccountUse({ agentSlug, accountId: account.id, sessionId })
+      await recordAccountUse({ agentSlug, accountId: account.id, sessionId, password: false, by: 'vault' })
       return { action: 'settled' }
     }
     return ask({ mode: 'ask', username: account.username }, context)
@@ -358,7 +373,7 @@ export async function decideLoginRequest(call: LoginRequestCall): Promise<LoginD
     context.fields.some((field) => field.kind === 'password')
   if (account && savedPassword) {
     if (account.rejectedAt) return ask({ mode: 'ask', username: account.username, rejectedAt: account.rejectedAt.toISOString() }, context)
-    const filledAt = filledLately(agentSlug, sessionId, account)
+    const filledAt = await filledTooOften(account)
     if (filledAt) return ask({ mode: 'ask', username: account.username, filledAt }, context)
   }
 
@@ -392,11 +407,14 @@ export async function decideLoginRequest(call: LoginRequestCall): Promise<LoginD
   if (identity) rememberSignInIdentity(agentSlug, sessionId, site, identity)
   // Only what went into the page counts: the browser may have written none of it.
   const wentIn = fieldsWentIn(filled.result, context.fields.length)
-  // Saved or held for this step: either way the account's password was tried.
-  if (account && context.fields.some((field, index) => field.kind === 'password' && wentIn[index])) rememberPasswordFill(agentSlug, sessionId, account.id)
   // Saved once filled: the step it was for did come.
   const usedHeld = fromHeld.filter((part) => context.fields.some((field, index) => partKeyOf(field) === part && wentIn[index]))
   if (held) await settleHeldParts({ agentSlug, sessionId, site, held, used: usedHeld, username: identity })
-  if (account && wentIn.some(Boolean)) await recordAccountUse({ agentSlug, accountId: account.id, sessionId })
+  // Saved or held for this step: either way the account's password was tried
+  // (filledTooOften counts it); held, the user had just entered it.
+  if (account && wentIn.some(Boolean)) {
+    const password = context.fields.some((field, index) => field.kind === 'password' && wentIn[index])
+    await recordAccountUse({ agentSlug, accountId: account.id, sessionId, password, by: fromHeld.includes('password') ? 'user' : 'vault' })
+  }
   return { action: 'settled' }
 }

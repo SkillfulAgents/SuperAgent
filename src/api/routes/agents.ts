@@ -112,7 +112,6 @@ import {
   holdLoginValues,
   recentSignInIdentity,
   releaseHeldValues,
-  rememberPasswordFill,
   rememberSignInIdentity,
 } from '@shared/lib/browser-vault/held-values'
 import { providerName, providerOf, SIGN_IN_PROVIDERS } from '@shared/lib/browser-vault/providers'
@@ -4331,9 +4330,6 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     const usedHeld = fromHeld.filter((part) => context.fields.some((field, index) => partKeyOf(field) === part && wentIn[index]))
     if (held) await settleHeldParts({ agentSlug, sessionId, site, held, used: usedHeld, username: identity })
     if (typedOverHeld.length) releaseHeldValues(agentSlug, sessionId, site, typedOverHeld)
-    // A password went in for an account: another unattended fill of it so soon is the user's to decide.
-    const passwordAccount = savedAccount ?? account
-    if (passwordAccount && passwordWentIn) rememberPasswordFill(agentSlug, sessionId, passwordAccount.id)
     if (account?.rejectedAt && usesSavedPassword && passwordWentIn && !hostsAccount) await clearAccountRejected(account.id)
     if (heldLabels.length) {
       holdLoginValues(agentSlug, sessionId, site, {
@@ -4344,7 +4340,12 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
       })
     }
     if (identity) rememberSignInIdentity(agentSlug, sessionId, site, identity)
-    if (account && wentIn.some(Boolean)) await recordAccountUse({ agentSlug, accountId: account.id, sessionId, userId: viewer })
+    // The account the values were for, and whether its password went in: a
+    // password tried counts toward how often the vault fills it without the user.
+    const usedAccount = savedAccount ?? account
+    if (usedAccount && wentIn.some(Boolean)) {
+      await recordAccountUse({ agentSlug, accountId: usedAccount.id, sessionId, userId: viewer, password: passwordWentIn, by: 'user' })
+    }
     trackServerEvent('login_request_filled', {
       submitted: filled.result.submitted,
       filled: filled.result.filled,

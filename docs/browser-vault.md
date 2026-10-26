@@ -72,10 +72,15 @@ sign-in the vault can do never notifies anyone:
 
 A saved password goes in without the user only while it signs in fine: not
 for an account marked rejected (until the user enters its password again, in
-any session), and not twice for one account within 30 minutes of a session
-(`held-values.ts`): a second sign-in so soon is most often the site turning
-it down, and each unattended retry spends an attempt toward a lockout. Both
-open the card (`rejectedAt`, `filledAt`).
+any session), and not more often than a lockout allows: the vault fills it
+by itself at most twice within 30 minutes (one retry after a hiccup) and
+five times a day, counted since the user last signed in with the account
+themselves (`filledTooOften`). Signing in that often is most often the site
+turning the password down, and each attempt counts toward its lockout. The
+count comes from the account's `used` audit rows, which say whether a
+password went in and whether the vault or the user filled it, so it holds
+across sessions, agents and restarts. Both open the card (`rejectedAt`,
+`filledAt`).
 
 The tool result names the account the values were for (a saved one, one the
 user picked in the card, or the username they typed), so the agent names it

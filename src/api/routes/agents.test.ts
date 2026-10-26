@@ -11923,7 +11923,7 @@ describe('sign-in requests with the vault (request_login)', () => {
     expect(res.status).toBe(200)
     // Picked as it is: the agent is told the saved account by name.
     expect(containerCalls()[0].body).toMatchObject({ values: ['octocat', 'saved-pw'], account: { username: 'octocat', source: 'vault', saved: false } })
-    expect(vault.recordAccountUse).toHaveBeenCalledWith({ agentSlug: 'test-agent', accountId: 'acc-1', sessionId: 'sess-1', userId: null })
+    expect(vault.recordAccountUse).toHaveBeenCalledWith({ agentSlug: 'test-agent', accountId: 'acc-1', sessionId: 'sess-1', userId: null, password: true, by: 'user' })
     expect(vault.grantAccount).not.toHaveBeenCalled()
   })
 
@@ -11975,33 +11975,32 @@ describe('sign-in requests with the vault (request_login)', () => {
   it('spends no attempt and keeps what was held when the browser could not write the password', async () => {
     const login = { ...CONTEXT, fields: [field('username', 'Email'), field('password', 'Password')], held: [] }
     parkLogin({ login, vault: { mode: 'ask', username: 'octocat' } })
-    const { recentPasswordFill } = await import('@shared/lib/browser-vault/held-values')
     vault.saveAccount.mockResolvedValueOnce({ account: account(), created: false })
     mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({
       success: true, filled: 1, failed: 1, outcomes: ['filled', 'failed'], submitted: false, problems: ['Password: the field is disabled'],
     }), { status: 200 }))
     const res = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'https://github.com', values: ['octocat', 'pw'], save: true })
     expect(res.status).toBe(200)
-    expect(recentPasswordFill('test-agent', 'sess-1', 'acc-1')).toBeNull()
+    // Used, but no password went in: it counts toward no limit.
+    expect(vault.recordAccountUse).toHaveBeenCalledWith({ agentSlug: 'test-agent', accountId: 'acc-1', sessionId: 'sess-1', userId: null, password: false, by: 'user' })
   })
 
   it('counts a password write sent without an answer as an attempt', async () => {
     const login = { ...CONTEXT, fields: [field('username', 'Email'), field('password', 'Password')], held: [] }
     parkLogin({ login, vault: { mode: 'ask', username: 'octocat' } })
-    const { recentPasswordFill } = await import('@shared/lib/browser-vault/held-values')
     vault.saveAccount.mockResolvedValueOnce({ account: account(), created: false })
     mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({
       success: true, filled: 1, failed: 1, outcomes: ['filled', 'unconfirmed'], submitted: false, problems: ['Password: the write was sent and returned no answer'],
     }), { status: 200 }))
     const res = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'https://github.com', values: ['octocat', 'pw'], save: true })
     expect(res.status).toBe(200)
-    expect(recentPasswordFill('test-agent', 'sess-1', 'acc-1')).not.toBeNull()
+    expect(vault.recordAccountUse).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'acc-1', password: true, by: 'user' }))
   })
 
   it('drops a held value the user typed over, and remembers that a password went in', async () => {
     const login = { ...CONTEXT, fields: [field('password', 'Password')], held: [] }
     parkLogin({ login, vault: { mode: 'ask', username: 'octocat' } })
-    const { heldLoginFor, holdLoginValues, recentPasswordFill } = await import('@shared/lib/browser-vault/held-values')
+    const { heldLoginFor, holdLoginValues } = await import('@shared/lib/browser-vault/held-values')
     holdLoginValues('test-agent', 'sess-1', 'github.com', { username: 'octocat', values: { password: 'older' }, origin: 'https://github.com', save: null })
     vault.saveAccount.mockResolvedValueOnce({ account: account(), created: false })
     mockContainerFetch.mockResolvedValueOnce(filled())
@@ -12009,7 +12008,7 @@ describe('sign-in requests with the vault (request_login)', () => {
     expect(res.status).toBe(200)
     expect(containerCalls()[0].body.values).toEqual(['newer'])
     expect(heldLoginFor('test-agent', 'sess-1', 'github.com', 'octocat')).toBeNull()
-    expect(recentPasswordFill('test-agent', 'sess-1', 'acc-1')).not.toBeNull()
+    expect(vault.recordAccountUse).toHaveBeenCalledWith(expect.objectContaining({ accountId: 'acc-1', password: true, by: 'user' }))
   })
 
   it('saves to an agent other members use only once the user saw that', async () => {

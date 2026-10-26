@@ -1,9 +1,10 @@
 import crypto from 'crypto'
-import { and, asc, desc, eq, inArray, isNull, sql, type SQL } from 'drizzle-orm'
+import { and, asc, desc, eq, gte, inArray, isNull, sql, type SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/sqlite-core'
+import { z } from 'zod'
 import { db } from '@shared/lib/db'
-import { changesOf } from '@shared/lib/db/batch'
-import { agentBrowserAccounts, agents, browserAccounts, type BrowserAccount } from '@shared/lib/db/schema'
+import { batch, changesOf } from '@shared/lib/db/batch'
+import { agentBrowserAccounts, agents, auditLog, browserAccounts, type BrowserAccount } from '@shared/lib/db/schema'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { providerOf } from './providers'
 import { registrableDomain, usernameKey } from './site'
@@ -169,20 +170,62 @@ export async function isAccountGranted(agentSlug: string, accountId: string): Pr
   return !!row
 }
 
-/** An agent used an account: when, on both rows, and in the audit log. Never the values. */
-export async function recordAccountUse(input: { agentSlug: string; accountId: string; sessionId: string; userId?: string | null }): Promise<void> {
+/**
+ * An agent used an account: when, on both rows, and in the audit log, with
+ * whether its password went into the page and who filled it (the vault by
+ * itself, or the user's form). Never the values.
+ */
+export async function recordAccountUse(input: {
+  agentSlug: string
+  accountId: string
+  sessionId: string
+  userId?: string | null
+  password: boolean
+  by: 'vault' | 'user'
+}): Promise<void> {
   const now = new Date()
-  await db.update(browserAccounts).set({ lastUsedAt: now }).where(eq(browserAccounts.id, input.accountId)).run()
-  await db.update(agentBrowserAccounts)
-    .set({ lastUsedAt: now })
-    .where(and(eq(agentBrowserAccounts.agentSlug, input.agentSlug), eq(agentBrowserAccounts.accountId, input.accountId)))
-    .run()
+  await batch([
+    db.update(browserAccounts).set({ lastUsedAt: now }).where(eq(browserAccounts.id, input.accountId)),
+    db.update(agentBrowserAccounts)
+      .set({ lastUsedAt: now })
+      .where(and(eq(agentBrowserAccounts.agentSlug, input.agentSlug), eq(agentBrowserAccounts.accountId, input.accountId))),
+  ])
   await logAuditEvent({
     userId: input.userId ?? null,
     object: 'browser_account',
     objectId: input.accountId,
     action: 'used',
-    details: { agentSlug: input.agentSlug, sessionId: input.sessionId },
+    details: { agentSlug: input.agentSlug, sessionId: input.sessionId, password: input.password, by: input.by },
+  })
+}
+
+const usedDetailsSchema = z.object({ password: z.boolean().optional(), by: z.enum(['vault', 'user']).optional() }).loose()
+
+/**
+ * When the account's password went into a page within the last `withinMs`,
+ * newest first, by any agent in any session (the audit log), and whether
+ * the vault filled it without the user.
+ */
+export async function recentPasswordFills(accountId: string, withinMs: number, now = Date.now()): Promise<Array<{ at: Date; unattended: boolean }>> {
+  const rows = await db.select({ createdAt: auditLog.createdAt, details: auditLog.details })
+    .from(auditLog)
+    .where(and(
+      eq(auditLog.object, 'browser_account'),
+      eq(auditLog.objectId, accountId),
+      eq(auditLog.action, 'used'),
+      gte(auditLog.createdAt, new Date(now - withinMs)),
+    ))
+    .orderBy(desc(auditLog.createdAt))
+    .all()
+  return rows.flatMap((row) => {
+    let parsed: unknown = null
+    try {
+      parsed = row.details ? JSON.parse(row.details) : null
+    } catch {
+      return []
+    }
+    const details = usedDetailsSchema.safeParse(parsed)
+    return details.success && details.data.password ? [{ at: row.createdAt, unattended: details.data.by === 'vault' }] : []
   })
 }
 

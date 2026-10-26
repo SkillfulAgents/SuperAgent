@@ -13,10 +13,9 @@ import type { VaultOwner } from './vault-service'
  *   hand, or after a while.
  * - The identity: the username the last step on the site went in with, so a
  *   step that shows no username field still knows whose account it is.
- * - Saved passwords filled: an account whose saved password already went in
- *   during this session is not filled again without the user for a while. A
- *   second sign-in so soon is most often the site turning it down, and every
- *   unattended retry spends an attempt toward a lockout.
+ *
+ * How often a saved password went in is not kept here but in the audit log
+ * (login-host's filledTooOften): it has to outlast a session and a restart.
  */
 
 const HOLD_MS = 30 * 60 * 1000
@@ -38,7 +37,6 @@ interface Entry<T> {
 
 const held = new Map<string, Entry<HeldLogin>>()
 const identities = new Map<string, Entry<string>>()
-const passwordFills = new Map<string, Entry<number>>()
 
 function keyOf(agentSlug: string, sessionId: string, site: string): string {
   return `${agentSlug}\u0000${sessionId}\u0000${site}`
@@ -91,19 +89,9 @@ export function recentSignInIdentity(agentSlug: string, sessionId: string, site:
   return identities.get(keyOf(agentSlug, sessionId, site))?.value ?? null
 }
 
-/** A saved account's password went into the page in this session. */
-export function rememberPasswordFill(agentSlug: string, sessionId: string, accountId: string): void {
-  put(passwordFills, keyOf(agentSlug, sessionId, accountId), Date.now())
-}
-
-/** When the account's saved password last went in during this session, if lately. */
-export function recentPasswordFill(agentSlug: string, sessionId: string, accountId: string): number | null {
-  return passwordFills.get(keyOf(agentSlug, sessionId, accountId))?.value ?? null
-}
-
 /** Test seam. */
 export function resetHeldLogins(): void {
-  for (const map of [held, identities, passwordFills] as Array<Map<string, Entry<unknown>>>) {
+  for (const map of [held, identities] as Array<Map<string, Entry<unknown>>>) {
     for (const entry of map.values()) clearTimeout(entry.timer)
     map.clear()
   }

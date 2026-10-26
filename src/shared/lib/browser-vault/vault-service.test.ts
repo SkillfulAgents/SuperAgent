@@ -26,6 +26,7 @@ const {
   listOwnedAccountsElsewhere,
   markAccountRejected,
   readAccountValues,
+  recentPasswordFills,
   recordAccountUse,
   renameAccount,
   revokeAccount,
@@ -323,7 +324,7 @@ describe('grants', () => {
   it('records a use on the account and the grant, and in the audit log without values', async () => {
     const { account } = await saveAccount({ ...github, username: 'octocat', values: { password: 'hunter2' } })
     await grantAccount({ accountId: account.id, agentSlug: 'agent-a', grantedBy: null })
-    await recordAccountUse({ agentSlug: 'agent-a', accountId: account.id, sessionId: 's-1' })
+    await recordAccountUse({ agentSlug: 'agent-a', accountId: account.id, sessionId: 's-1', password: true, by: 'vault' })
 
     expect((await getOwnedAccount(null, account.id))?.lastUsedAt).toBeInstanceOf(Date)
     const grant = await testDb.select().from(agentBrowserAccounts).get()
@@ -331,7 +332,37 @@ describe('grants', () => {
     const audit = await testDb.select().from(auditLog).all()
     expect(audit).toMatchObject([{ object: 'browser_account', objectId: account.id, action: 'used' }])
     expect(JSON.stringify(audit)).not.toContain('hunter2')
-    expect(JSON.parse(audit[0].details!)).toEqual({ agentSlug: 'agent-a', sessionId: 's-1' })
+    expect(JSON.parse(audit[0].details!)).toEqual({ agentSlug: 'agent-a', sessionId: 's-1', password: true, by: 'vault' })
+  })
+
+  it('reads back when the password went in, newest first, from any session, within the window', async () => {
+    const { account } = await saveAccount({ ...github, username: 'octocat', values: { password: 'hunter2' } })
+    const { account: other } = await saveAccount({ ...github, username: 'hubot', values: { password: 'pw' } })
+    const used = (objectId: string, at: number, details: Record<string, unknown> | string) => ({
+      id: `audit-${objectId}-${at}`,
+      createdAt: new Date(at),
+      userId: null,
+      object: 'browser_account',
+      objectId,
+      action: 'used',
+      details: typeof details === 'string' ? details : JSON.stringify(details),
+    })
+    const now = Date.now()
+    await testDb.insert(auditLog).values([
+      used(account.id, now - 5 * 60_000, { sessionId: 's-2', password: true, by: 'vault' }),
+      used(account.id, now - 10 * 60_000, { sessionId: 's-1', password: true, by: 'user' }),
+      // No password went in, a row from before the details said so, one past the window, another account's, unreadable.
+      used(account.id, now - 15 * 60_000, { sessionId: 's-1', password: false, by: 'vault' }),
+      used(account.id, now - 20 * 60_000, { agentSlug: 'agent-a', sessionId: 's-0' }),
+      used(account.id, now - 2 * 60 * 60_000, { sessionId: 's-0', password: true, by: 'vault' }),
+      used(other.id, now - 60_000, { sessionId: 's-3', password: true, by: 'vault' }),
+      used(account.id, now - 25 * 60_000, 'not json'),
+    ]).run()
+
+    expect(await recentPasswordFills(account.id, 60 * 60_000, now)).toEqual([
+      { at: new Date(now - 5 * 60_000), unattended: true },
+      { at: new Date(now - 10 * 60_000), unattended: false },
+    ])
   })
 })
 

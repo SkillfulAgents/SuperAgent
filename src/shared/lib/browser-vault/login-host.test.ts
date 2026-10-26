@@ -63,7 +63,7 @@ vi.mock('@shared/lib/agent-actor', () => ({
 }))
 
 const { decideLoginRequest } = await import('./login-host')
-const { grantAccount, getOwnedAccount, readAccountValues, saveAccount, listAccountAgentSlugs } = await import('./vault-service')
+const { grantAccount, getOwnedAccount, readAccountValues, recordAccountUse, saveAccount, listAccountAgentSlugs } = await import('./vault-service')
 const { holdLoginValues, heldLoginFor, resetHeldLogins, recentSignInIdentity } = await import('./held-values')
 
 const field = (kind: LoginContext['fields'][number]['kind'], label: string, inputType = 'text') =>
@@ -223,9 +223,9 @@ describe('decideLoginRequest', () => {
     expect(await readAccountValues(account.id)).toEqual({ password: 'held-pw' })
     expect(heldLoginFor('agent-a', 's-1', 'github.com')).toBeNull()
     expect(await listAccountAgentSlugs(account.id)).toEqual(['agent-a'])
-    // The site may have turned the held password down: now saved, it is not refilled without the user.
-    expect(await decide({ username: 'octocat' })).toMatchObject({ action: 'ask', vault: { mode: 'ask', filledAt: expect.any(String) } })
-    expect(fills()).toHaveLength(1)
+    // Now saved, the vault fills it by itself.
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(fills()).toHaveLength(2)
   })
 
   it('saves a held value only into an account that is still there and still granted', async () => {
@@ -392,8 +392,8 @@ describe('decideLoginRequest', () => {
     expect(await readAccountValues(account.id)).toEqual({ password: 'held-pw' })
   })
 
-  it('counts a write sent without an answer as tried: the page may hold the password, so no silent retry', async () => {
-    await grantedAccount('octocat')
+  it('counts a write sent without an answer as tried: the page may hold the password', async () => {
+    const account = await grantedAccount('octocat')
     holdLoginValues('agent-a', 's-1', 'github.com', {
       username: 'octocat',
       values: { password: 'held-pw' },
@@ -403,9 +403,19 @@ describe('decideLoginRequest', () => {
     container.context = { ...GITHUB, fields: [field('password', 'Password', 'password')] }
     container.fillOutcomes = ['unconfirmed']
     expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    // Went in as far as anyone knows: used, and saved to the account.
     expect(heldLoginFor('agent-a', 's-1', 'github.com', 'octocat')).toBeNull()
+    expect(await readAccountValues(account.id)).toEqual({ password: 'held-pw' })
+  })
+
+  it('counts a saved password the vault wrote without an answer toward how often it fills it', async () => {
+    await grantedAccount('octocat', { password: 'pw' })
+    container.context = { ...GITHUB, fields: [field('password', 'Password', 'password')] }
+    container.fillOutcomes = ['unconfirmed']
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
     expect(await decide({ username: 'octocat' })).toMatchObject({ action: 'ask', vault: { mode: 'ask', filledAt: expect.any(String) } })
-    expect(fills()).toHaveLength(1)
+    expect(fills()).toHaveLength(2)
   })
 
   it('opens the form when the container cannot be read: only its own word means the call is over', async () => {
@@ -446,18 +456,51 @@ describe('decideLoginRequest', () => {
     expect((await getOwnedAccount(null, account.id))?.rejectedAt).toBeNull()
   })
 
-  it('fills a saved password once in a while per session: the next sign-in with it goes to the user', async () => {
+  it('fills a saved password at most twice in half an hour, in any session: the next sign-in with it goes to the user', async () => {
     await grantedAccount('octocat', { password: 'pw' })
     expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
-    // The site may well have turned it down: no second unattended attempt.
-    expect(await decide({ username: 'octocat' })).toMatchObject({ action: 'ask', vault: { mode: 'ask', username: 'octocat', filledAt: expect.any(String) } })
-    // A code step after it asks for no password: the vault goes on.
-    container.context = { ...GITHUB, fields: [field('username', 'Username or email')] }
-    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
-    // Another session starts afresh.
-    container.context = GITHUB
+    // One retry after a hiccup, from this session or another.
     expect(await decide({ username: 'octocat' }, 's-2')).toEqual({ action: 'settled' })
+    // The site may well have turned it down: no third attempt without the user.
+    expect(await decide({ username: 'octocat' }, 's-3')).toMatchObject({ action: 'ask', vault: { mode: 'ask', username: 'octocat', filledAt: expect.any(String) } })
+    // A step that asks for no password: the vault goes on.
+    container.context = { ...GITHUB, fields: [field('username', 'Username or email')] }
+    expect(await decide({ username: 'octocat' }, 's-3')).toEqual({ action: 'settled' })
     expect(fills()).toHaveLength(3)
+  })
+
+  it('fills a saved password without the user at most five times a day, counted since they last signed in with it', async () => {
+    const account = await grantedAccount('octocat', { password: 'pw' })
+    const now = Date.now()
+    const used = (hoursAgo: number, by: 'vault' | 'user') => ({
+      id: `used-${hoursAgo}-${by}`,
+      createdAt: new Date(now - hoursAgo * 60 * 60_000),
+      userId: null,
+      object: 'browser_account',
+      objectId: account.id,
+      action: 'used',
+      details: JSON.stringify({ agentSlug: 'agent-a', sessionId: `run-${hoursAgo}`, password: true, by }),
+    })
+    // Four scheduled runs today since the user signed in with it themselves, and more before.
+    await testDb.insert(auditLog).values([used(1, 'vault'), used(3, 'vault'), used(5, 'vault'), used(8, 'vault'), used(10, 'user'), used(11, 'vault'), used(12, 'vault')]).run()
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    // The fifth went in: the sixth is the user's to decide.
+    expect(await decide({ username: 'octocat' }, 's-2')).toMatchObject({ action: 'ask', vault: { mode: 'ask', username: 'octocat', filledAt: expect.any(String) } })
+    // The user signs in with it themselves: the vault may again.
+    await testDb.insert(auditLog).values(used(0, 'user')).run()
+    expect(await decide({ username: 'octocat' }, 's-3')).toEqual({ action: 'settled' })
+  })
+
+  it('fills again without the user once they entered the password themselves, however recent the failures', async () => {
+    const account = await grantedAccount('octocat', { password: 'old' })
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(await decide({ username: 'octocat' })).toMatchObject({ action: 'ask', vault: { filledAt: expect.any(String) } })
+    // What the card does when the user enters the current password.
+    await saveAccount({ owner: null, site: 'github.com', origin: 'https://github.com', username: 'octocat', values: { password: 'new' } })
+    await recordAccountUse({ agentSlug: 'agent-a', accountId: account.id, sessionId: 's-1', password: true, by: 'user' })
+    expect(await decide({ username: 'octocat' }, 's-2')).toEqual({ action: 'settled' })
+    expect(fills().at(-1)?.body).toMatchObject({ values: ['octocat', 'new'] })
   })
 
   it('fills the workspace of an account that signs in through Google, but never its old password', async () => {
