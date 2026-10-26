@@ -75,6 +75,9 @@ export function useLoginVaultInfo(agentSlug: string, sessionId: string, toolUseI
   return useQuery<LoginVaultInfo, Error>({
     queryKey: ['login-request-vault', agentSlug, sessionId, toolUseId],
     enabled,
+    // Like the context: this app's own API, reachable with the network down.
+    // The card waits for this answer, so a paused query would hold it forever.
+    networkMode: 'always',
     staleTime: 30_000,
     retry: 1,
     queryFn: async () => {

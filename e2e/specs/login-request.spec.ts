@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect, type Locator, type Page } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
@@ -20,6 +20,19 @@ interface LoginFillRecord {
 }
 
 const recorder = mockRecorder<LoginFillRecord>()
+
+/**
+ * On to the card's fields. Every test signs in to example.com on one shared
+ * server, so another test's saved account may be there: the card then opens
+ * on the saved accounts, and "Use a different account" leads to the fields.
+ */
+async function toFields(card: Locator): Promise<void> {
+  const different = card.getByTestId('login-different-account')
+  const field = card.getByTestId('login-field-0')
+  await expect(different.or(field)).toBeVisible({ timeout: 15000 })
+  if (await different.isVisible()) await different.click()
+  await expect(field).toBeEnabled({ timeout: 10000 })
+}
 
 function sessionFromUrl(page: Page): { agentSlug: string; sessionId: string } {
   const match = page.url().match(/\/agents\/([^/?#]+)\/sessions\/([^/?#]+)/)
@@ -53,7 +66,7 @@ test.describe('Sign-in requests', () => {
 
     const email = card.getByTestId('login-field-0')
     const secret = card.getByTestId('login-field-1')
-    await expect(email).toBeEnabled({ timeout: 10000 })
+    await toFields(card)
     // Kept out of the browser's password manager: another site's credentials,
     // typed on this app's origin.
     await expect(email).toHaveAttribute('autocomplete', 'off')
@@ -88,7 +101,7 @@ test.describe('Sign-in requests', () => {
     await sessionPage.sendMessage('ask login')
     const card = page.getByTestId('login-request')
     await expect(card).toBeVisible({ timeout: 15000 })
-    await expect(card.getByTestId('login-field-0')).toBeEnabled({ timeout: 10000 })
+    await toFields(card)
 
     await card.getByTestId('login-take-over').click()
     await expect(card.getByTestId('login-manual')).toContainText('Sign in directly in the browser view on example.com')
@@ -106,7 +119,7 @@ test.describe('Sign-in requests', () => {
     const password = `pw-${testInfo.workerIndex}-${Date.now()}-vault`
     await sessionPage.sendMessage('ask login')
     const card = page.getByTestId('login-request')
-    await expect(card.getByTestId('login-field-0')).toBeEnabled({ timeout: 15000 })
+    await toFields(card)
     // On by default for an agent no one else uses.
     await expect(card.getByTestId('login-save')).toHaveAttribute('data-state', 'checked')
     await card.getByTestId('login-field-0').fill(username)

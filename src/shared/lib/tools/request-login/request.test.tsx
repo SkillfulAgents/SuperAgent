@@ -99,6 +99,8 @@ describe('LoginRequestItem', () => {
     pickerAnswer.body = { success: true, filled: 2, failed: 0, submitted: true, problems: [] }
     routes = {
       [`${BASE}/login-request?toolUseId=tu-1`]: () => json(200, CONTEXT),
+      // No saved accounts: the form opens on the fields.
+      [`${BASE}/login-request/vault?toolUseId=tu-1`]: () => json(200, { site: 'github.com', otherMembers: 0, identity: null, accounts: [], providerAccounts: [], providers: [] }),
       [`${BASE}/fill-login`]: () => json(200, { success: true, filled: 3, failed: 0, submitted: true, problems: [] }),
       [`${BASE}/complete-login`]: () => json(200, { success: true }),
       [`${BASE}/messages`]: () => json(200, {}),
@@ -142,17 +144,27 @@ describe('LoginRequestItem', () => {
     expect(screen.getByTestId('login-insecure')).toHaveTextContent('Not encrypted (http)')
   })
 
-  it('draws the agent\'s fields disabled until the browser has located them', async () => {
+  it('shows no fields until the browser has located them and the saved accounts are known', async () => {
     let release!: () => void
     contextIs(() => new Promise((resolve) => { release = () => resolve(json(200, CONTEXT)) }))
     render(<LoginRequestItem {...props()} />)
     expect(await screen.findByText('Locating the sign-in form on the page…')).toBeInTheDocument()
-    expect(screen.getByLabelText('Password')).toBeDisabled()
-    expect(screen.getByTestId('login-submit')).toBeDisabled()
+    expect(screen.getByTestId('login-loading')).toBeInTheDocument()
+    expect(screen.queryByTestId('login-form')).toBeNull()
+    expect(screen.queryByTestId('login-submit')).toBeNull()
+    expect(screen.getByTestId('login-decline')).not.toBeDisabled()
     release()
     await waitFor(() => expect(screen.getByLabelText('Password')).not.toBeDisabled())
-    // Focused once usable, not on mount.
+    expect(screen.queryByTestId('login-loading')).toBeNull()
+    // Focused once usable.
     expect(screen.getByTestId('login-field-0')).toHaveFocus()
+  })
+
+  it('opens on the fields when the saved accounts cannot be loaded', async () => {
+    routes[`${BASE}/login-request/vault?toolUseId=tu-1`] = () => json(500, { error: 'Saved accounts could not be loaded' })
+    render(<LoginRequestItem {...props()} />)
+    await waitFor(() => expect(screen.getByTestId('login-field-0')).not.toBeDisabled(), { timeout: 4000 })
+    expect(screen.queryByTestId('login-vault-accounts')).toBeNull()
   })
 
   it('tries again while the browser is still locating the fields', async () => {
@@ -249,6 +261,8 @@ describe('LoginRequestItem', () => {
       toolUseId: 'tu-1',
       origin: 'https://github.com',
       values: ['+1 555 0100', 'hunter2-hunter2', '482913'],
+      // "Save for later" is on by default.
+      save: true,
     }])
     expect(screen.getByTestId('login-request-completed')).toHaveAttribute('data-status', 'filled')
     expect(mockToast.warning).not.toHaveBeenCalled()
@@ -318,6 +332,8 @@ describe('LoginRequestItem', () => {
     const user = userEvent.setup()
     routes[`${BASE}/fill-login`] = () => json(502, { error: 'The browser is unavailable' })
     contextIs({ fields: [CONTEXT.fields[1]] })
+    // Whose password it is was entered on the previous step: nothing more to ask to save it.
+    routes[`${BASE}/login-request/vault?toolUseId=tu-1`] = () => json(200, { site: 'github.com', otherMembers: 0, identity: 'octocat', accounts: [], providerAccounts: [], providers: [] })
     const onComplete = vi.fn()
     render(<LoginRequestItem {...props({ onComplete, fields: [{ kind: 'password', label: 'Password' }] })} />)
     const password = await ready()

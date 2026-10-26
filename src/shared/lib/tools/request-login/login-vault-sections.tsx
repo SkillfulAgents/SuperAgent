@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronDown, KeyRound, Users } from 'lucide-react'
+import { ChevronDown, ChevronRight, KeyRound, Loader2, UserPlus, Users } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Checkbox } from '@renderer/components/ui/checkbox'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@renderer/components/ui/dropdown-menu'
@@ -10,10 +10,10 @@ import type { LoginVaultInfo, VaultOffer } from './login-request'
 import type { LoginViaProvider } from './use-login-request'
 
 /**
- * The sign-in form's vault parts: the user's saved accounts for the site,
- * "Save for later", and "Or sign in with Google, …". Metadata only: a saved
- * value never reaches the renderer, it goes from the vault into the page on
- * the host.
+ * The sign-in form's vault parts: the choice among the user's saved accounts
+ * for the site, "Save for later", and "Or sign in with Google, …". Metadata
+ * only: a saved value never reaches the renderer, it goes from the vault into
+ * the page on the host.
  */
 
 /** Said wherever saving or using an account here shares it with the others who can use the agent (its members and admins). */
@@ -39,45 +39,62 @@ export function describeOffer(offer: Pick<VaultOffer, 'parts' | 'via' | 'rejecte
   return offer.rejected ? `${saved} · the site turned it down` : saved
 }
 
-/** The user's saved accounts for the site: one click uses one here (and lets this agent use it from now on). */
-export function SavedAccountOffers({
+/**
+ * The form's first step when the user has saved accounts for the site: one
+ * click uses one (and lets this agent use it from now on); "Use a different
+ * account" goes on to the fields.
+ */
+export function AccountChooser({
   offers,
   site,
   otherMembers,
   disabled,
+  pendingId,
   onUse,
+  onDifferent,
 }: {
   offers: VaultOffer[]
   site: string
   otherMembers: number
   disabled: boolean
+  /** The account being signed in with, while that runs. */
+  pendingId: string | null
   onUse: (offer: VaultOffer) => void
+  onDifferent: () => void
 }) {
-  if (offers.length === 0) return null
+  const row = 'flex w-full items-center gap-3 px-2.5 py-2 text-left hover:bg-muted disabled:opacity-50'
   return (
     <div className="space-y-1.5" data-testid="login-vault-accounts">
-      <div className="text-xs font-medium text-foreground">Your saved accounts for {site}</div>
       {offers.some((offer) => !offer.granted) && <SharedNotice otherMembers={otherMembers} site={site} />}
-      {offers.map((offer) => (
-        <button
-          key={offer.id}
-          type="button"
-          onClick={() => onUse(offer)}
-          disabled={disabled}
-          className="flex w-full items-center gap-3 rounded-md border border-border bg-background px-2.5 py-2 text-left hover:bg-muted disabled:opacity-50"
-          data-testid={`login-vault-account-${offer.id}`}
-        >
-          <KeyRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-xs font-medium text-foreground">{offer.label || offer.username}</span>
-            <span className="block truncate text-2xs text-muted-foreground">
-              {offer.label ? `${offer.username} · ` : ''}
-              {describeOffer(offer)}
+      <div className="divide-y divide-border overflow-hidden rounded-md border border-border bg-background">
+        {offers.map((offer) => (
+          <button
+            key={offer.id}
+            type="button"
+            onClick={() => onUse(offer)}
+            disabled={disabled}
+            className={row}
+            data-testid={`login-vault-account-${offer.id}`}
+          >
+            <KeyRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-xs font-medium text-foreground">{offer.label || offer.username}</span>
+              <span className="block truncate text-2xs text-muted-foreground">
+                {offer.label ? `${offer.username} · ` : ''}
+                {describeOffer(offer)}
+              </span>
             </span>
-          </span>
-          <span className="shrink-0 text-2xs font-medium text-blue-600 dark:text-blue-400">Use</span>
+            {pendingId === offer.id
+              ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" aria-label="Signing in" />
+              : <span className="shrink-0 text-2xs font-medium text-blue-600 dark:text-blue-400">Use</span>}
+          </button>
+        ))}
+        <button type="button" onClick={onDifferent} disabled={disabled} className={row} data-testid="login-different-account">
+          <UserPlus className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 text-xs text-foreground">Use a different account</span>
+          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         </button>
-      ))}
+      </div>
     </div>
   )
 }

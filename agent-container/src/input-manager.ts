@@ -85,22 +85,6 @@ class InputManager {
   private sessionIdByToolUse: Map<string, string> = new Map()
   private static readonly SESSION_TAG_CAP = 200
 
-  // When the user last answered a question (AskUserQuestion), per session ('':
-  // unknown): whether the user was just asked something (request_browser_input's
-  // verification guard). Bounded like the session tags.
-  private questionAnsweredAt: Map<string, number> = new Map()
-
-  /** Whether the user answered a question in this session within the last `ms`. */
-  questionAnsweredWithin(ms: number, sessionId: string | undefined, nowMs: number = Date.now()): boolean {
-    const at = this.questionAnsweredAt.get(sessionId ?? '')
-    return at !== undefined && nowMs - at <= ms
-  }
-
-  /** The session recorded for a toolUseId at hook time, left in place for its createPending*. */
-  sessionOf(toolUseId: string): string | undefined {
-    return this.sessionIdByToolUse.get(toolUseId)
-  }
-
   /**
    * Set the current tool use ID (called by PreToolUse hook / canUseTool).
    * Pass the owning sessionId when known so the eventual pending entry can be
@@ -273,13 +257,6 @@ class InputManager {
       `[InputManager] Resolving ${pending.inputType} request ${toolUseId}`
     )
     this.pending.delete(toolUseId)
-    if (pending.inputType === 'question') {
-      const session = pending.sessionId ?? ''
-      this.questionAnsweredAt.delete(session)
-      this.questionAnsweredAt.set(session, Date.now())
-      const oldest = this.questionAnsweredAt.size > InputManager.SESSION_TAG_CAP ? this.questionAnsweredAt.keys().next().value : undefined
-      if (oldest !== undefined) this.questionAnsweredAt.delete(oldest)
-    }
     pending.resolve(value)
     return true
   }

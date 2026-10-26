@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useId, useRef, useState, type ComponentProps } from 'react'
-import { Eye, EyeOff, KeyRound, Lock, LockOpen, MousePointerClick } from 'lucide-react'
+import { ChevronLeft, Eye, EyeOff, KeyRound, Lock, LockOpen, MousePointerClick } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { isElectron } from '@renderer/lib/env'
@@ -20,7 +20,7 @@ import {
   type VaultOffer,
 } from './login-request'
 import { loginRequestKey, recallLoginValues, setLoginRequestState } from './login-request-store'
-import { OtherWaysToSignIn, providerChoices, SaveForLater, SavedAccountOffers, SignInViaPanel, SignInWithProviders } from './login-vault-sections'
+import { AccountChooser, OtherWaysToSignIn, providerChoices, SaveForLater, SignInViaPanel, SignInWithProviders } from './login-vault-sections'
 import { LoginContextUnavailable, useLoginContext, useLoginRequestActions, useLoginVaultInfo } from './use-login-request'
 
 interface LoginFormProps {
@@ -200,6 +200,12 @@ export function LoginForm({
   const [values, setValues] = useState<string[]>([])
   const [heldValues, setHeldValues] = useState<string[]>([])
   const [picked, setPicked] = useState<(VaultOffer & { covered: Set<number> }) | null>(null)
+  // Two steps when the user has saved accounts here: choose one, or go on to
+  // the fields for another. The agent asking for the form (a retry, an
+  // account it named, another account) opens on the fields.
+  const [differentAccount, setDifferentAccount] = useState(() => vault?.mode === 'ask')
+  // The saved account a click is signing in with, while it runs.
+  const [usingOffer, setUsingOffer] = useState<(VaultOffer & { covered: Set<number> }) | null>(null)
   const [saveChoice, setSaveChoice] = useState<boolean | null>(null)
   const [saveUsername, setSaveUsername] = useState('')
   // What the server said the saved account could not fill after all: those
@@ -233,26 +239,26 @@ export function LoginForm({
       return vault?.username ? located.fields.map((field, index) => (field.kind === 'username' ? vault.username ?? '' : recalled[index])) : recalled
     })
   }, [agentSlug, sessionId, located, vault?.username])
-  // Focus once the fields are usable: they mount disabled, and autoFocus only
-  // applies on mount. The browser can take a while to locate them, so only
-  // when focus is nowhere else — never pull it from the composer mid-sentence.
-  useEffect(() => {
-    if (!autoFocus || !located) return
-    const active = document.activeElement
-    if (!active || active === document.body || rootRef.current?.contains(active)) firstFieldRef.current?.focus()
-  }, [autoFocus, located])
 
   const busy = state.status === 'submitting'
   const running = state.status === 'submitting' ? state.action : null
   const error = state.status === 'idle' ? state.error : undefined
   const recovery = state.status === 'idle' ? state.recovery : undefined
+  const refetchVault = vaultInfo.refetch
   useEffect(() => {
-    if (recovery?.reason === 'fields_needed') setNeeded((current) => new Set([...current, ...recovery.fields]))
+    if (recovery?.reason === 'fields_needed') {
+      setNeeded((current) => new Set([...current, ...recovery.fields]))
+      // An account used in one click lacked them after all: just those are asked for, as that account.
+      setPicked((current) => current ?? usingOffer)
+    }
     if (recovery?.reason === 'account_unavailable') {
       setAccountGone(true)
       setPicked(null)
+      // Gone, or no longer the user's: the fields, and the saved accounts as they are now.
+      setDifferentAccount(true)
+      void refetchVault()
     }
-  }, [recovery])
+  }, [recovery, usingOffer, refetchVault])
   const fields: Array<LoginFieldSummary & Partial<LoginContextField>> = located?.fields ?? summaryFields
   const held = located?.held ?? []
   const account: FormAccount | null = picked
@@ -280,7 +286,30 @@ export function LoginForm({
   // is all the page asks for. It goes straight into the page, never the form.
   const savedLoginFits = located !== undefined && located.fields.length > 0 && !account &&
     located.fields.every((field) => field.kind === 'username' || field.kind === 'password')
-  const offers = !account && vault?.mode !== 'complete' ? info?.accounts ?? [] : []
+  // The saved accounts that do something on this step: fill a field, or sign
+  // in through a provider (not on a code step). Not one that fills nothing.
+  const codeStep = located !== undefined && located.fields.length > 0 && located.fields.every((field) => field.kind === 'otp')
+  const offers = located && !account && vault?.mode !== 'complete'
+    ? (info?.accounts ?? []).filter((offer) => coveredBy(offer, located.fields).size > 0 || (Boolean(offer.via?.id) && !codeStep))
+    : []
+  // The step on screen. Nothing until the browser has located the fields and
+  // the user's saved accounts are known, since one of those may be the
+  // answer; then the choice among them, when there are any; else the fields.
+  const loading = !unavailable && (!located || !(vaultInfo.isSuccess || vaultInfo.isError))
+  const choosing = !loading && offers.length > 0 && !differentAccount
+  const fieldsStep = !loading && !choosing
+
+  // Focus the first field once the fields are on screen: after the wait
+  // above, and after the user went on from the saved accounts. The browser
+  // can take a while, so only when focus is nowhere else — never pull it from
+  // the composer mid-sentence.
+  const focusFields = useRef(false)
+  useEffect(() => {
+    if (!fieldsStep || (!autoFocus && !focusFields.current)) return
+    focusFields.current = false
+    const active = document.activeElement
+    if (!active || active === document.body || rootRef.current?.contains(active)) firstFieldRef.current?.focus()
+  }, [autoFocus, fieldsStep])
 
   const fillOptions = (accountId?: string, granting = false) => ({
     ...(held.length && heldValues.some(Boolean) ? { heldValues: held.map((_, index) => heldValues[index] ?? '') } : {}),
@@ -300,21 +329,26 @@ export function LoginForm({
   /** One click: an account that fills every field goes straight in; another is picked, and the rest is typed. */
   const useOffer = (offer: VaultOffer) => {
     if (!located || busy) return
+    // What the server said another account could not fill says nothing about this one.
+    setNeeded(new Set())
     const covered = coveredBy(offer, located.fields)
     // It signs in through another account: there is nothing to type here
     // (unless the step asks only for what it holds besides, a workspace);
     // the agent is told which provider account to pick.
     if (offer.via?.id && (located.fields.length === 0 || covered.size < located.fields.length)) {
+      setUsingOffer({ ...offer, covered })
       void signInVia(located, { accountId: offer.via.id }, otherMembers > 0)
       return
     }
     if (covered.size === located.fields.length) {
+      setUsingOffer({ ...offer, covered })
       void fill(located, located.fields.map(() => ''), {
         accountId: offer.id,
         ...(otherMembers > 0 && !offer.granted ? { sharedAgentAcknowledged: true } : {}),
       })
       return
     }
+    focusFields.current = true
     setPicked({ ...offer, covered })
     setValues(located.fields.map((field, index) => (field.kind === 'username' ? offer.username : covered.has(index) ? '' : values[index] ?? '')))
   }
@@ -365,16 +399,77 @@ export function LoginForm({
     )
   }
 
+  const retryBlock = retry && (
+    <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-xs text-foreground" data-testid="login-retry-note">
+      {retry.text}
+      {retry.agentSays && <span className="mt-0.5 block break-words italic text-muted-foreground">{retry.agentSays}</span>}
+    </p>
+  )
+  const declineButton = (
+    <DeclineButton
+      onDecline={(reason) => void decline(reason)}
+      disabled={busy}
+      label="Decline"
+      showIcon={false}
+      size="xs"
+      className="border-border text-foreground hover:bg-muted"
+      data-testid="login-decline"
+    />
+  )
+
+  // Waiting for the browser and the vault, or the choice among the user's saved accounts.
+  if (!fieldsStep) {
+    return (
+      <div ref={rootRef} className="space-y-3 pt-4">
+        <LoginSiteHeading context={located ?? null} />
+        {retryBlock}
+        {loading ? (
+          <div className="h-[4.5rem] animate-pulse rounded-md bg-muted/50" data-testid="login-loading" />
+        ) : (
+          <AccountChooser
+            offers={offers}
+            site={site}
+            otherMembers={otherMembers}
+            disabled={busy}
+            pendingId={running === 'fill' || running === 'via' ? usingOffer?.id ?? null : null}
+            onUse={useOffer}
+            onDifferent={() => {
+              focusFields.current = true
+              setDifferentAccount(true)
+            }}
+          />
+        )}
+        {stillLocating && (
+          <p className="text-xs text-muted-foreground" data-testid="login-still-locating">
+            Still waiting for the browser to locate the form…
+            {' '}
+            <button type="button" className="underline" onClick={() => void context.refetch()}>Try again</button>
+          </p>
+        )}
+        {error && <p className="text-xs text-destructive" role="alert" data-testid="login-error">{error}</p>}
+        <div className="flex justify-end">{declineButton}</div>
+      </div>
+    )
+  }
+
   return (
     <div ref={rootRef} className="space-y-3 pt-4">
       <LoginSiteHeading context={located ?? null} />
 
-      {retry && (
-        <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-xs text-foreground" data-testid="login-retry-note">
-          {retry.text}
-          {retry.agentSays && <span className="mt-0.5 block break-words italic text-muted-foreground">{retry.agentSays}</span>}
-        </p>
+      {differentAccount && offers.length > 0 && (
+        <button
+          type="button"
+          onClick={() => setDifferentAccount(false)}
+          disabled={busy}
+          className="-mt-1 flex items-center gap-0.5 text-2xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+          data-testid="login-back-to-accounts"
+        >
+          <ChevronLeft className="h-3 w-3" />
+          Saved accounts
+        </button>
       )}
+
+      {retryBlock}
 
       {account?.username && (
         <div className="flex items-start gap-2 rounded-md border border-border bg-muted/30 px-2.5 py-2 text-xs text-foreground" data-testid="login-vault-account">
@@ -386,15 +481,20 @@ export function LoginForm({
             )}
           </span>
           {picked && (
-            <button type="button" className="shrink-0 text-2xs text-muted-foreground underline" onClick={() => setPicked(null)} disabled={busy} data-testid="login-vault-account-clear">
+            <button
+              type="button"
+              className="shrink-0 text-2xs text-muted-foreground underline"
+              onClick={() => {
+                setPicked(null)
+                setNeeded(new Set())
+              }}
+              disabled={busy}
+              data-testid="login-vault-account-clear"
+            >
               Use another
             </button>
           )}
         </div>
-      )}
-
-      {offers.length > 0 && located && (
-        <SavedAccountOffers offers={offers} site={site} otherMembers={otherMembers} disabled={busy} onUse={useOffer} />
       )}
 
       {/* Only the fields sit inside the <form>: the picker and Decline render
@@ -519,14 +619,6 @@ export function LoginForm({
           </div>
         )}
 
-        {stillLocating && (
-          <p className="text-xs text-muted-foreground" data-testid="login-still-locating">
-            Still waiting for the browser to locate the form…
-            {' '}
-            <button type="button" className="underline" onClick={() => void context.refetch()}>Try again</button>
-          </p>
-        )}
-
         {error && <p id={errorId} className="text-xs text-destructive" role="alert" data-testid="login-error">{error}</p>}
 
         {located && !unavailable && located.fields.length > 0 && (
@@ -579,15 +671,7 @@ export function LoginForm({
           </div>
         )}
         <div className="flex items-center gap-2">
-          <DeclineButton
-            onDecline={(reason) => void decline(reason)}
-            disabled={busy}
-            label="Decline"
-            showIcon={false}
-            size="xs"
-            className="border-border text-foreground hover:bg-muted"
-            data-testid="login-decline"
-          />
+          {declineButton}
           {(!located || located.fields.length > 0) && (
             <Button
               type="submit"
