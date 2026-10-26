@@ -6,6 +6,7 @@ import { agentRegistry } from '@shared/lib/agent-actor'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { IsAgent } from '../middleware/auth'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { hostBrowserRequestSchema, browserLaunchErrorReportSchema } from './browser-schema'
 
 const browser = new Hono()
@@ -135,7 +136,7 @@ browser.post('/debug-info', IsAgent(), async (c) => {
 // When a host browser instance closes externally (e.g. user closed Chrome),
 // notify that agent's container so it can clean up its internal state, and
 // broadcast to frontend SSE clients so the preview disappears.
-setOnExternalClose(async (instanceId: string) => {
+setOnExternalClose((instanceId: string) => background(async () => {
   console.log(`[Browser] Host browser for instance ${instanceId} closed externally`)
 
   // Broadcast to all frontend SSE clients with the agentSlug so UI can scope it
@@ -147,6 +148,6 @@ setOnExternalClose(async (instanceId: string) => {
   } catch {
     // Non-critical — frontend is already notified
   }
-})
+}, { name: 'browser-route.notify-external-close' }))
 
 export default browser

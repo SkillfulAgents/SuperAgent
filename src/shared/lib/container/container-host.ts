@@ -37,6 +37,7 @@ import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import path from 'path'
 import { getAgentWorkspaceDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
 const STATUS_SYNC_INTERVAL_MS = parseInt(
@@ -280,9 +281,9 @@ export class ContainerHost {
 
     // Set up periodic sync (initial sync is done by initializeAgents)
     this.syncIntervalId = setInterval(() => {
-      this.syncAllStatuses().catch((error) => {
+      background(this.syncAllStatuses().catch((error) => {
         console.error('[ContainerHost] Periodic sync failed:', error)
-      })
+      }), { name: 'container-host.sync-statuses' })
     }, STATUS_SYNC_INTERVAL_MS)
   }
 
@@ -308,9 +309,9 @@ export class ContainerHost {
     console.log(`[ContainerHost] Starting health monitor (interval: ${HEALTH_CHECK_INTERVAL_MS / 1000}s)`)
 
     this.healthCheckIntervalId = setInterval(() => {
-      this.runHealthChecks().catch((error) => {
+      background(this.runHealthChecks().catch((error) => {
         console.error('[ContainerHost] Health check failed:', error)
-      })
+      }), { name: 'container-host.run-health-checks' })
     }, HEALTH_CHECK_INTERVAL_MS)
   }
 
@@ -405,9 +406,9 @@ export class ContainerHost {
 
     clearRunnerAvailabilityCache()
 
-    this.ensureImageReady().catch((err) => {
+    background(this.ensureImageReady().catch((err) => {
       console.error('[ContainerHost] Failed to re-check readiness after force stop:', err)
-    })
+    }), { name: 'container-host.ensure-image-ready' })
   }
 
   /** Get the current runtime readiness state. */
@@ -728,9 +729,9 @@ export class ContainerHost {
           const registry = image.substring(0, lastColon)
           const currentTag = image.substring(lastColon + 1)
           const ClientClass = getContainerClientClass(effectiveRunner)
-          ClientClass.removeOldImages(getCliCommand(effectiveRunner), registry, currentTag).catch((error: unknown) => {
+          background(ClientClass.removeOldImages(getCliCommand(effectiveRunner), registry, currentTag).catch((error: unknown) => {
             console.warn('[ContainerHost] Image cleanup failed:', error)
-          })
+          }), { name: 'container-host.remove-old-images' })
         }
         return
       } catch (error) {

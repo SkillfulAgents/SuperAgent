@@ -24,6 +24,7 @@ import {
   streamLines,
 } from '@shared/lib/agent-actor/jsonl-files'
 import { MESSAGES_PAGE_MAX_BYTES } from '@shared/lib/messages-page'
+import type { LlmProviderId } from '@shared/lib/llm-provider/provider-types'
 import { ConfigDocError, type ConfigDoc } from '@shared/lib/agent-actor/config-schema'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { parseJsonl, parseJsonlLine } from '@shared/lib/utils/file-storage'
@@ -35,6 +36,7 @@ import {
 } from '@shared/lib/utils/message-transform'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
 import { findDeltaWindowStart } from '@shared/lib/messages-delta'
+import { background } from '@shared/lib/background'
 import {
   sortSessionsByActivity,
   type SessionActivityFields,
@@ -231,6 +233,19 @@ export async function updateSessionMetadata(
     }
   })
   return previous
+}
+
+export async function recordErrorProvider(
+  store: SessionStore,
+  sessionId: string,
+  messageId: string,
+  provider: LlmProviderId,
+): Promise<void> {
+  await mutateSessionMetadata(store, (metadata) => {
+    const previous = metadata[sessionId]
+    if (previous?.errorProviders?.[messageId] === provider) return false
+    metadata[sessionId] = { ...previous, errorProviders: { ...previous?.errorProviders, [messageId]: provider } }
+  })
 }
 
 export type AutomationStatusResult = 'updated' | 'not-automation' | 'already-final'
@@ -455,7 +470,7 @@ function metadataOnlySession(
  */
 function pruneOrphanedMetadata(store: SessionStore, sessionIds: string[]): void {
   if (sessionIds.length === 0) return
-  void store.config
+  background(store.config
     .update('sessionMetadata', async (current) => {
       const metadata = { ...(current ?? {}) } as SessionMetadataMap
       const now = Date.now()
@@ -473,7 +488,7 @@ function pruneOrphanedMetadata(store: SessionStore, sessionIds: string[]): void 
     .catch((error) => {
       console.warn(`Could not prune orphaned session metadata for agent ${store.slug}:`, error)
       captureException(error, { tags: { area: 'session-metadata', op: 'prune-orphans' }, extra: { agentSlug: store.slug } })
-    })
+    }), { name: 'session-service.prune-orphaned-metadata' })
 }
 
 // Prefer metadata createdAt; birthtime is unsupported (epoch 0) on network

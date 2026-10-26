@@ -15,6 +15,7 @@ import type { HostPort, HostScriptOutput, ComputerUsePermissionStatus } from './
 import type { ComputerUseOps, ContainerOps, InputOps, MessageOps } from './types'
 import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
 import { resolveTargetApp, type ComputerUsePermissionLevel, type PermissionGrantType } from '@shared/lib/computer-use/types'
+import { background } from '@shared/lib/background'
 
 /** The parts of the agent's actor a run uses. */
 export interface HostRunActor {
@@ -85,9 +86,9 @@ export async function runComputerUse(actor: HostRunActor, host: HostPort, run: C
         await computerUse.setGrabbedApp(targetApp)
         // The name now; the icon when the host has found it.
         await actor.messages.broadcastEvent(sessionId, { type: 'computer_use_grab_changed', app: targetApp })
-        host.call('computerUseAppIcon', { app: targetApp }).then(async (icon) => {
+        background(host.call('computerUseAppIcon', { app: targetApp }).then(async (icon) => {
           if (icon) await actor.messages.broadcastEvent(sessionId, { type: 'computer_use_grab_changed', app: targetApp, appIcon: icon })
-        }).catch(() => {})
+        }).catch(() => {}), { name: 'host-runs.broadcast-app-icon' })
       }
     } else if (method === 'ungrab' || method === 'quit') {
       await computerUse.clearGrabbedApp()

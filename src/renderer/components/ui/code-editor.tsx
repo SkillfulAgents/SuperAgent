@@ -1,6 +1,12 @@
-import Editor, { type OnMount } from '@monaco-editor/react'
+import { Suspense } from 'react'
+import type { OnMount } from '@monaco-editor/react'
 
 import { useIsDark } from '@renderer/hooks/use-theme'
+import { lazyWithReload } from '@renderer/lib/lazy-with-reload'
+
+// Load the locally configured editor only when a file is opened. The default
+// Monaco loader fetches a CDN build with its own, unpatched DOMPurify copy.
+const Editor = lazyWithReload(() => import('./local-monaco-editor'))
 
 interface CodeEditorProps {
   value: string
@@ -12,6 +18,11 @@ interface CodeEditorProps {
 
 export function CodeEditor({ value, onChange, language, readOnly, className }: CodeEditorProps) {
   const isDark = useIsDark()
+  const loading = (
+    <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
+      Loading editor...
+    </div>
+  )
 
   const handleMount: OnMount = (editor) => {
     editor.updateOptions({
@@ -27,18 +38,16 @@ export function CodeEditor({ value, onChange, language, readOnly, className }: C
 
   return (
     <div className={className}>
-      <Editor
-        value={value}
-        onChange={(val) => onChange?.(val ?? '')}
-        language={language}
-        theme={isDark ? 'vs-dark' : 'vs'}
-        onMount={handleMount}
-        loading={
-          <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
-            Loading editor...
-          </div>
-        }
-      />
+      <Suspense fallback={loading}>
+        <Editor
+          value={value}
+          onChange={(val) => onChange?.(val ?? '')}
+          language={language}
+          theme={isDark ? 'vs-dark' : 'vs'}
+          onMount={handleMount}
+          loading={loading}
+        />
+      </Suspense>
     </div>
   )
 }

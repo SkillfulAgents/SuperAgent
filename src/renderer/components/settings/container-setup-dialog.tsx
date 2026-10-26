@@ -9,7 +9,7 @@ import {
 } from '@renderer/components/ui/dialog'
 import { Button } from '@renderer/components/ui/button'
 import { useSettings, useStartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
-import { getPlatform } from '@renderer/lib/env'
+import { serverFacts } from '@renderer/lib/facts'
 import { Wsl2InstallGuide } from '@renderer/components/wizard/wsl2-install-guide'
 import { RunnerSetupErrorPanel, getRunnerSetupPayload } from '@renderer/components/settings/runner-setup-error-panel'
 import { RuntimeProvisionProgress } from '@renderer/components/runtime/runtime-provision-progress'
@@ -66,8 +66,8 @@ export function ContainerSetupDialog({ open, onOpenChange }: ContainerSetupDialo
     }))
   }, [settings?.runnerAvailability])
 
-  // On Windows, check if WSL2 needs to be installed
-  const isWindows = getPlatform() === 'win32'
+  // When the machine running the API is Windows, check if WSL2 needs to be installed
+  const isWindows = serverFacts()?.os === 'win32'
   const wsl2Runtime = runtimeStatuses.find((r) => r.runner === 'wsl2')
   const showWsl2Guide = isWindows && wsl2Runtime && !wsl2Runtime.installed
 

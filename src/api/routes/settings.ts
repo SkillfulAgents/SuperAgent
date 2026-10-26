@@ -1,4 +1,5 @@
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { resolveGlobalSelection } from '@shared/lib/llm-provider/connections'
 import { resolveSelection } from '@shared/lib/llm-provider/connection-schema'
 import { mergeCatalog } from '@shared/lib/llm-provider/catalog-merge'
@@ -56,6 +57,8 @@ import {
 } from '@shared/lib/web-provider'
 import { containerHost } from '@shared/lib/agent-actor'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, getContainerClientClass, getRunnerDisplayName, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
+import { offersRuntime } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { detectAllProviders } from '../../main/host-browser'
 import { revokePlatformToken } from '@shared/lib/services/platform-auth-service'
 import { resetApplicationTables } from '@shared/lib/db/reset'
@@ -433,6 +436,7 @@ settings.put(
           hostTotalMemoryBytes: os.totalmem(),
           supportsCustomAgentImage: (runner: ContainerRunner) =>
             getContainerClientClass(runner).supportsCustomAgentImage,
+          offersRuntime: (runner: ContainerRunner) => offersRuntime(getServerFacts(), runner),
         },
       })[0]
 
@@ -493,7 +497,7 @@ settings.put(
 
       // If auth settings changed, reset the Better Auth singleton so it picks up new config
       if (body.auth !== undefined && isAuthMode()) {
-        import('@shared/lib/auth/index').then(({ resetAuth }) => resetAuth()).catch(() => {})
+        background(import('@shared/lib/auth/index').then(({ resetAuth }) => resetAuth()).catch(() => {}), { name: 'settings-route.reset-auth' })
       }
 
       // If container runner changed, forget the runtimes so the next client is
@@ -508,9 +512,9 @@ settings.put(
         newSettings.container.agentImage !== currentSettings.container.agentImage ||
         newSettings.container.containerRunner !== currentSettings.container.containerRunner
       ) {
-        containerHost.ensureImageReady().catch((error) => {
+        background(containerHost.ensureImageReady().catch((error) => {
           console.error('Failed to re-check image readiness:', error)
-        })
+        }), { name: 'settings-route.ensure-image-ready' })
       }
 
       const runnerAvailability = await checkAllRunnersAvailability()
@@ -563,9 +567,9 @@ settings.post('/start-runner', async (c) => {
       const runnerAvailability = await refreshRunnerAvailability()
 
       // Re-check image readiness now that a runner is available
-      containerHost.ensureImageReady().catch((error) => {
+      background(containerHost.ensureImageReady().catch((error) => {
         console.error('Failed to check image after starting runner:', error)
-      })
+      }), { name: 'settings-route.ensure-image-ready' })
 
       return c.json({
         ...result,
@@ -611,9 +615,9 @@ settings.post('/restart-runner', async (c) => {
       await new Promise((resolve) => setTimeout(resolve, 2000))
       const runnerAvailability = await refreshRunnerAvailability()
 
-      containerHost.ensureImageReady().catch((error) => {
+      background(containerHost.ensureImageReady().catch((error) => {
         console.error('Failed to check image after restarting runner:', error)
-      })
+      }), { name: 'settings-route.ensure-image-ready' })
 
       return c.json({ ...result, runnerAvailability })
     }
@@ -630,9 +634,9 @@ settings.post('/refresh-availability', async (c) => {
   try {
     const runnerAvailability = await refreshRunnerAvailability()
     // Also re-check image readiness since runner state may have changed
-    containerHost.ensureImageReady().catch((error) => {
+    background(containerHost.ensureImageReady().catch((error) => {
       console.error('Failed to re-check image readiness:', error)
-    })
+    }), { name: 'settings-route.ensure-image-ready' })
     return c.json({ runnerAvailability })
   } catch (error) {
     console.error('Failed to refresh runner availability:', error)

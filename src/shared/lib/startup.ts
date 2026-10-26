@@ -8,6 +8,7 @@ import { platformNotificationsManager } from './scheduler/platform-notifications
 import { getWebhookRelay } from './webhook-relay'
 import { agentIntegrationManager } from './agent-integrations/agent-integration-manager'
 import { captureException } from './error-reporting'
+import { background } from './background'
 import { registerAllAccountProviders } from './account-providers/register'
 import { sessionAutoDeleteMonitor } from './scheduler/session-auto-delete-monitor'
 import { apiLogAutoDeleteMonitor } from './scheduler/api-log-auto-delete-monitor'
@@ -207,64 +208,64 @@ async function initializeServicesInner() {
   // Supabase Realtime INSERTs). The manager self-gates on auth mode and
   // platform connectivity; connect/disconnect after launch is handled by the
   // platform auth-changed notifier.
-  scheduleStartupIo(
+  background(scheduleStartupIo(
     () => platformNotificationsManager.start(),
     () => platformNotificationsManager.stop(),
   ).catch((error) => {
     console.error('Failed to start platform notifications manager:', error)
-  })
+  }), { name: 'startup.start-platform-notifications' })
 
   // Start agent integration manager
-  scheduleStartupIo(
+  background(scheduleStartupIo(
     () => agentIntegrationManager.start(),
     () => agentIntegrationManager.stop(),
   ).catch((error) => {
     console.error('Failed to start agent integration manager:', error)
     // TODO add exception capturing for all other services that start in this file
     captureException(error, { tags: { component: 'chat-integration', operation: 'startup' } })
-  })
+  }), { name: 'startup.start-integration-manager' })
 
   // Check/pull container image (non-blocking, bounded with other startup I/O)
-  scheduleStartupIo(() => containerHost.ensureImageReady()).catch((error) => {
+  background(scheduleStartupIo(() => containerHost.ensureImageReady()).catch((error) => {
     console.error('Failed to ensure image ready:', error)
-  })
+  }), { name: 'startup.ensure-image-ready' })
 
   // Start container status sync and health monitor
   containerHost.startStatusSync()
   containerHost.startHealthMonitor()
 
   // Start task scheduler
-  scheduleStartupIo(
+  background(scheduleStartupIo(
     () => taskScheduler.start(),
     () => taskScheduler.stop(),
   ).catch((error) => {
     console.error('Failed to start task scheduler:', error)
-  })
+  }), { name: 'startup.start-task-scheduler' })
 
   // Register webhook triggers with the relay. Unconditional: the relay only
   // claims while the platform is connected, and a connection made after
   // launch re-syncs the registrations. A personal Composio key must not
   // disable delivery either, since events are claimed with the platform token.
-  scheduleStartupIo(
+  background(scheduleStartupIo(
     () => triggerManager.start(),
     () => triggerManager.stop(),
   ).catch((error) => {
     console.error('Failed to start trigger manager:', error)
-  })
+  }), { name: 'startup.start-trigger-manager' })
 
   // Start session auto-delete monitor (deferred — waits before first check)
-  sessionAutoDeleteMonitor.start().catch((error) => {
+  background(sessionAutoDeleteMonitor.start().catch((error) => {
     console.error('Failed to start session auto-delete monitor:', error)
-  })
+  }), { name: 'startup.start-session-auto-delete-monitor' })
 
-  apiLogAutoDeleteMonitor.start().catch((error) => {
+  background(apiLogAutoDeleteMonitor.start().catch((error) => {
     console.error('Failed to start API log auto-delete monitor:', error)
-  })
+  }), { name: 'startup.start-api-log-auto-delete-monitor' })
 
   // Start account sync service (deferred — syncs OAuth account status with remote providers)
-  accountSyncService.start().catch((error) => {
+  background(accountSyncService.start().catch((error) => {
     console.error('Failed to start account sync service:', error)
-  })
+  }), { name: 'startup.start-account-sync' })
 
   // Refreshes platform account + billing info when connected (no-op otherwise).
   platformService.start()

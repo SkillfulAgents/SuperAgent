@@ -25,6 +25,7 @@ import { getNextCronTime } from '@shared/lib/services/schedule-parser'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { deliverSessionWake } from './wake-delivery'
 
 /**
@@ -72,10 +73,10 @@ class TaskScheduler {
     // in getDueTasks — SUP-224) can no longer prevent polling from running, so
     // the scheduler self-heals on the next tick instead of wedging.
     this.intervalId = setInterval(() => {
-      this.executeOverdueTasks().catch((error) => {
+      background(this.executeOverdueTasks().catch((error) => {
         console.error('[TaskScheduler] Error in polling cycle:', error)
         captureException(error, { tags: { component: 'task-scheduler', phase: 'poll' } })
-      })
+      }), { name: 'task-scheduler.run-overdue' })
     }, this.pollIntervalMs)
 
     console.log(
@@ -285,14 +286,14 @@ class TaskScheduler {
     )
 
     // Trigger scheduled session started notification
-    notificationManager.triggerScheduledSessionStarted(
+    background(notificationManager.triggerScheduledSessionStarted(
       sessionId,
       task.agentSlug,
       task.id,
       task.name || undefined
     ).catch((err) => {
       console.error('[TaskScheduler] Failed to trigger scheduled notification:', err)
-    })
+    }), { name: 'task-scheduler.notify-session-started' })
 
     await this.recordTaskExecution(task, sessionId)
   }

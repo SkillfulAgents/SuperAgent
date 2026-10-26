@@ -18,6 +18,7 @@ import { ShortcutsSection } from './shortcuts-section'
 import { AutoDeleteSelect } from './auto-delete-select'
 import { ApiLogAutoDeleteSelect } from './api-log-auto-delete-select'
 import { applyWebFavicon, getWebFaviconHref } from '@renderer/lib/favicon'
+import { appUpdatesItself } from '@renderer/lib/capabilities'
 import {
   Wand2,
   TriangleAlert,
@@ -212,7 +213,7 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
 
   return (
     <div className="space-y-6">
-      {isElectronApp && (
+      {appUpdatesItself() && (
         <div className="space-y-2">
           <h3 className={SECTION_HEADING}>Updates</h3>
           <UpdatesCard />

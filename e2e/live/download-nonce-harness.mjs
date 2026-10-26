@@ -32,7 +32,6 @@
  *   - Platform web dev server on http://localhost:3000.
  *   - App built for electron:  npm run build:electron
  *     (with PLATFORM_BASE_URL/PLATFORM_PROXY_URL pointing at the local stack)
- *   - Native modules rebuilt for Electron:  npx electron-rebuild -f
  *
  * Note: the platform's nonce endpoints share a 30/min/IP rate limiter across
  * mint/resolve/redeem — rapid back-to-back runs can surface as 429s; wait a
