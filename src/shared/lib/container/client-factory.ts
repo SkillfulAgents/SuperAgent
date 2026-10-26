@@ -16,6 +16,7 @@ import { getSettings } from '@shared/lib/config/settings'
 import { offersRuntime } from '@shared/lib/facts/capabilities'
 import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { BaseContainerClient, execWithPath, spawnWithPath, AGENT_CONTAINER_PATH } from './base-container-client'
+import { findBundledAgentImage, type BundledAgentImageArchive } from './bundled-agent-image'
 import { platform, homedir } from 'os'
 import * as fs from 'fs'
 import { statfs } from 'fs/promises'
@@ -87,11 +88,18 @@ const ALL_RUNNERS: {
    * Invoked by the stall watchdog before killing the local process.
    */
   killStalledPull?: () => Promise<void>
+  /**
+   * Whether the CLI's `load` reads an OCI image archive from stdin, so the
+   * agent image bundled with the app can be loaded instead of pulled
+   * (bundled-agent-image.ts). Through limactl shell for Lima, whose VM can't
+   * see the app bundle.
+   */
+  loadsImageArchive?: boolean
 }[] = [
   { name: 'apple-container', cliCommand: 'container', isEligible: () => AppleContainerClient.isEligible(), isAvailable: () => AppleContainerClient.isAvailable(), isRunning: () => AppleContainerClient.isRunning(), shutdownRuntime: () => stopAppleContainerRuntime() },
   { name: 'docker', cliCommand: 'docker', isEligible: () => DockerContainerClient.isEligible(), isAvailable: () => DockerContainerClient.isAvailable(), isRunning: () => DockerContainerClient.isRunning() },
   { name: 'podman', cliCommand: 'podman', isEligible: () => PodmanContainerClient.isEligible(), isAvailable: () => PodmanContainerClient.isAvailable(), isRunning: () => PodmanContainerClient.isRunning() },
-  { name: 'lima', cliCommand: () => getNerdctlWrapperPath(), isEligible: () => LimaContainerClient.isEligible(), isAvailable: () => LimaContainerClient.isAvailable(), reconcileRuntimeState: () => LimaContainerClient.reconcileRuntimeState(), isRunning: () => LimaContainerClient.isRunning(), shutdownRuntime: () => stopLimaVm() },
+  { name: 'lima', cliCommand: () => getNerdctlWrapperPath(), isEligible: () => LimaContainerClient.isEligible(), isAvailable: () => LimaContainerClient.isAvailable(), reconcileRuntimeState: () => LimaContainerClient.reconcileRuntimeState(), isRunning: () => LimaContainerClient.isRunning(), shutdownRuntime: () => stopLimaVm(), loadsImageArchive: true },
   { name: 'wsl2', cliCommand: () => getWSL2NerdctlWrapperPath(), isEligible: () => WSL2ContainerClient.isEligible(), isAvailable: () => WSL2ContainerClient.isAvailable(), isRunning: () => WSL2ContainerClient.isRunning(), shutdownRuntime: () => stopWSL2Distro(), pullStallTimeoutMs: PULL_STALL_TIMEOUT_MS, killStalledPull: () => killWSL2PullProcesses() },
   { name: 'kubernetes', cliCommand: 'kubernetes', isEligible: () => PlatformK8sRuntimeClient.isEligible(), isAvailable: () => PlatformK8sRuntimeClient.isAvailable(), isRunning: () => PlatformK8sRuntimeClient.isRunning() },
   { name: 'lambda-microvm', cliCommand: 'lambda-microvm', isEligible: () => LambdaMicroVmRuntimeClient.isEligible(), isAvailable: () => LambdaMicroVmRuntimeClient.isAvailable(), isRunning: () => LambdaMicroVmRuntimeClient.isRunning() },
@@ -441,10 +449,10 @@ export async function getAvailableDiskSpace(): Promise<number> {
 /**
  * Check if a container image exists locally.
  */
-export async function checkImageExists(runner: ContainerRunner, image: string): Promise<boolean> {
+export async function checkImageExists(runner: ContainerRunner, image: string, opts?: { timeoutMs?: number }): Promise<boolean> {
   try {
     const cli = getCliCommand(runner)
-    await execWithPath(`${cli} image inspect ${image}`)
+    await execWithPath(`${cli} image inspect ${image}`, opts)
     return true
   } catch {
     return false
@@ -486,7 +494,7 @@ export function pullImage(
     addErrorBreadcrumb({ category: 'container', message: 'Awaiting already in-flight pull of the same image', data: { image, runner } })
     return existing
   }
-  const pull = doPullImage(runner, image, onProgress)
+  const pull = loadOrPullImage(runner, image, onProgress)
     .then(() => verifyPulledImage(runner, image, onProgress))
     .finally(() => inflightPulls.delete(key))
   inflightPulls.set(key, pull)
@@ -599,15 +607,29 @@ export function checkImageIntegrity(runner: ContainerRunner, image: string): Pro
   })
 }
 
-/** Best-effort image removal; a failure here just leaves the next pull to overwrite. */
-function removeImage(runner: ContainerRunner, image: string): Promise<void> {
+/** Wall-clock cap for a quick image command (inspect, remove); a runtime that takes longer has stopped answering. */
+export const IMAGE_COMMAND_TIMEOUT_MS = 60 * 1000
+
+/**
+ * Best-effort image removal; a failure here just leaves the next pull to
+ * overwrite. Resolves false only when the runtime didn't answer in time.
+ */
+function removeImage(runner: ContainerRunner, image: string): Promise<boolean> {
   return new Promise((resolve) => {
     const cli = getCliPath(runner)
     // Apple's CLI has no rmi; see AppleContainerClient.removeCorruptImage.
     const args = runner === 'apple-container' ? ['image', 'delete', '--force', image] : ['rmi', '-f', image]
     const proc = spawnWithPath(cli, args)
-    proc.on('close', () => resolve())
-    proc.on('error', () => resolve())
+    const timer = setTimeout(() => {
+      try { proc.kill('SIGKILL') } catch { /* already gone */ }
+      resolve(false)
+    }, IMAGE_COMMAND_TIMEOUT_MS)
+    const finish = () => {
+      clearTimeout(timer)
+      resolve(true)
+    }
+    proc.on('close', finish)
+    proc.on('error', finish)
   })
 }
 
@@ -665,6 +687,105 @@ async function verifyPulledImage(
     extra: { image, runner, firstOutput: first.output.slice(-2000), secondOutput: second.output.slice(-2000) },
   })
   throw error
+}
+
+/** Wall-clock cap for loading the bundled archive; past it the load is abandoned for a pull. */
+export const IMAGE_LOAD_TIMEOUT_MS = 10 * 60 * 1000
+
+/**
+ * Load the agent image the app shipped with, if it shipped one for `image`
+ * and this runner can load it; otherwise, or if the load fails for any
+ * reason, pull it as before. A load that went wrong costs only the pull.
+ */
+async function loadOrPullImage(
+  runner: ContainerRunner,
+  image: string,
+  onProgress?: (progress: ImagePullProgress) => void
+): Promise<void> {
+  const bundled = ALL_RUNNERS.find((r) => r.name === runner)?.loadsImageArchive ? findBundledAgentImage(image) : null
+  if (bundled) {
+    const startedAt = Date.now()
+    try {
+      await loadImageArchive(runner, bundled, onProgress)
+      // The archive names the image; make sure the runtime now has it by that name.
+      if (!(await checkImageExists(runner, image, { timeoutMs: IMAGE_COMMAND_TIMEOUT_MS }))) throw new Error(`the archive loaded, but ${image} isn't there`)
+      addErrorBreadcrumb({ category: 'container', message: 'Loaded the bundled agent image', data: { image, runner, ms: Date.now() - startedAt } })
+      console.log(`[Container] Loaded the bundled agent image ${image} in ${Date.now() - startedAt} ms`)
+      return
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      console.warn(`[Container] Loading the bundled agent image failed, pulling it instead: ${detail}`)
+      captureMessage('Loading the bundled agent image failed; pulling it instead', {
+        level: 'warning',
+        tags: { component: 'container', operation: 'image-load' },
+        extra: { image, runner, error: detail.slice(-2000) },
+      })
+      // A load that fails while unpacking still leaves the image's name
+      // behind. If the pull fails too, a caller's "did the image appear?"
+      // re-check must not take that for a working image.
+      if (!(await removeImage(runner, image))) {
+        // The runtime answers neither the load nor the removal, so a pull
+        // would hang the same way. "Image pull stalled" is what startup
+        // retries after recovering the VM (container-host.ts).
+        throw new Error(`Image pull stalled: ${runner} stopped answering while loading the bundled agent image (${detail.slice(-300)}), and removing what the load left timed out after ${IMAGE_COMMAND_TIMEOUT_MS / 1000}s`)
+      }
+    }
+  }
+  await doPullImage(runner, image, onProgress)
+}
+
+/** Stream the archive into the runner's `load`: no copy on disk, and the Lima VM needs no mount of the bundle. */
+function loadImageArchive(
+  runner: ContainerRunner,
+  bundled: BundledAgentImageArchive,
+  onProgress?: (progress: ImagePullProgress) => void
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawnWithPath(getCliPath(runner), ['load'])
+    const input = fs.createReadStream(bundled.path)
+    const output: string[] = []
+    const total = bundled.description.archiveBytes
+    let sent = 0
+    let lastPercent = -1
+    let settled = false
+    const finish = (error?: Error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      input.destroy()
+      if (error) reject(error)
+      else resolve()
+    }
+    const timer = setTimeout(() => {
+      try { proc.kill('SIGKILL') } catch { /* already gone */ }
+      finish(new Error(`Image load timed out after ${IMAGE_LOAD_TIMEOUT_MS / 1000}s`))
+    }, IMAGE_LOAD_TIMEOUT_MS)
+
+    input.on('data', (chunk) => {
+      sent += chunk.length
+      const percent = Math.floor((sent / total) * 100)
+      if (percent === lastPercent) return
+      lastPercent = percent
+      onProgress?.({ status: 'Copying the agent image bundled with the app', percent, completedLayers: 0, totalLayers: 0 })
+    })
+    // The runtime unpacks after it has read the whole archive.
+    input.on('end', () => onProgress?.({ status: 'Unpacking the agent image', percent: null, completedLayers: 0, totalLayers: 0 }))
+    input.on('error', (err) => {
+      try { proc.kill('SIGKILL') } catch { /* already gone */ }
+      finish(err)
+    })
+    // EPIPE when the CLI exits early; its exit code and output say why.
+    proc.stdin?.on('error', () => {})
+    if (proc.stdin) input.pipe(proc.stdin)
+
+    proc.stdout?.on('data', (data: Buffer) => output.push(data.toString()))
+    proc.stderr?.on('data', (data: Buffer) => output.push(data.toString()))
+    proc.on('close', (code) => {
+      if (code === 0) finish()
+      else finish(new Error(`Image load failed with exit code ${code}: ${output.join('').trim().slice(-500)}`))
+    })
+    proc.on('error', (err) => finish(err))
+  })
 }
 
 function doPullImage(

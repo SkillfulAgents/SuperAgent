@@ -111,10 +111,11 @@ jobs:
         run: |
           # A size budget, not a platform limit: the R2 feed upload is multipart
           # and GitHub release assets go to 2 GiB. It catches an installer that
-          # balloons unnoticed (the Windows one carries both x64 and arm64).
-          # The macOS one gets 450: the built-in runtime's VM image has its
-          # packages installed, and the app also ships them to repair it.
-          limit=$((450 * 1024 * 1024))
+          # balloons unnoticed. The macOS app carries the agent image
+          # (scripts/fetch-agent-image.ts, ~730 MiB) and the built-in runtime's
+          # VM image with its packages installed, which it also ships to repair
+          # it: a DMG of ~1165 MiB.
+          limit=$((1300 * 1024 * 1024))
           bad=0
           for f in release/*.exe release/*.dmg release/*.zip; do
             [ -e "$f" ] || continue
