@@ -13,6 +13,11 @@ on:
         required: false
         type: string
         default: ''
+      save-cache:
+        description: 'Keep a newly built image for later builds (only for trusted commits: main and releases)'
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -43,10 +48,24 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
+      # Two builds of the image differ byte for byte, and the app's
+      # auto-update downloads every file that changed: reuse the last image
+      # while its inputs are unchanged (build-lima-image.sh checks).
+      - name: Restore the last VM image
+        id: restore
+        uses: actions/cache/restore@v4
+        with:
+          path: .lima-image-cache
+          key: lima-image-arm64-latest
+          restore-keys: lima-image-arm64-
+
       # An older commit (an on-demand PR build of a branch from before this
       # workflow) has no build script, and its download-lima.sh downloads the
       # stock image itself: hand it an artifact with nothing in it to use.
       - name: Build the VM image
+        id: build
+        env:
+          LIMA_IMAGE_CACHE_DIR: .lima-image-cache
         run: |
           if [ ! -f scripts/build-lima-image.sh ]; then
             mkdir -p build/lima-image
@@ -54,6 +73,14 @@ jobs:
             exit 0
           fi
           bash scripts/build-lima-image.sh arm64 build/lima-image
+          echo "inputs=$(cat build/lima-image/inputs.sha256)" >> "$GITHUB_OUTPUT"
+
+      - name: Save the VM image for later builds
+        if: inputs.save-cache && steps.build.outputs.inputs != '' && steps.restore.outputs.cache-matched-key != format('lima-image-arm64-{0}', steps.build.outputs.inputs)
+        uses: actions/cache/save@v4
+        with:
+          path: .lima-image-cache
+          key: lima-image-arm64-${{ steps.build.outputs.inputs }}
 
       - name: Upload the VM image
         uses: actions/upload-artifact@v4
