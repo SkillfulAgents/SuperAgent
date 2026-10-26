@@ -23,20 +23,24 @@ export function useTeamBrainSyncs(brainSlug: string, volumeId: string | undefine
         throw error
       })
       if (!listing) return []
+      const files = latestSummaryFiles(listing.entries, SHOWN)
       const read = await Promise.allSettled(
-        latestSummaryFiles(listing.entries, SHOWN).map(async (file) => {
+        files.map(async (file) => {
           const res = await apiFetch(`/api/volume-definitions/${encodeURIComponent(volumeId!)}/file?${new URLSearchParams({ path: file.path, inline: 'true' })}`, {
             headers: { Range: `bytes=0-${MOST_BYTES - 1}` },
           })
-          return res.ok ? parseSyncSummary(file.path, await res.text()) : null
+          if (!res.ok) throw new Error('Could not read a sync summary')
+          return parseSyncSummary(file.path, await res.text())
         }),
       )
-      // One file it can't read leaves the others.
       // A summary dated past now (a wrong clock, a typo) can't be the latest run, so it is left out.
       const now = Date.now()
-      return read
+      const syncs = read
         .flatMap((r) => (r.status === 'fulfilled' && r.value && Date.parse(r.value.at) <= now ? [r.value] : []))
         .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))
+      // One file it can't read leaves the others; with none left, a read that failed means unreadable, not no syncs.
+      if (syncs.length === 0 && read.some((r) => r.status === 'rejected')) throw new Error('Could not read the sync summaries')
+      return syncs
     },
   })
 }

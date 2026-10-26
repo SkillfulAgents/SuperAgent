@@ -30,4 +30,30 @@ describe('useTeamBrainSyncs', () => {
     expect(result.current.data?.map((sync) => sync.id)).toEqual(['_brain/syncs/b.md'])
     expect(new Headers(apiFetch.mock.calls.find(([url]) => url.includes('b.md'))?.[1]?.headers).get('Range')).toBe('bytes=0-262143')
   })
+
+  it('reads as unreadable when the only file it could read is not a summary', async () => {
+    apiFetch.mockImplementation(async (url: string) => {
+      if (url.includes('/folders')) {
+        return new Response(JSON.stringify({ entries: [
+          { name: 'a.md', path: '_brain/syncs/a.md', type: 'file', mtimeMs: 2 },
+          { name: 'notes.md', path: '_brain/syncs/notes.md', type: 'file', mtimeMs: 1 },
+        ] }))
+      }
+      return url.includes('a.md') ? new Response('busy', { status: 503 }) : new Response('# Notes, not a sync')
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
+    const { result } = renderHook(() => useTeamBrainSyncs('brain', 'vol'), { wrapper })
+    await waitFor(() => expect(result.current.isError).toBe(true))
+  })
+
+  it('reads as unreadable, not as no syncs, when no summary file can be read', async () => {
+    apiFetch.mockImplementation(async (url: string) => (url.includes('/folders')
+      ? new Response(JSON.stringify({ entries: [{ name: 'a.md', path: '_brain/syncs/a.md', type: 'file', mtimeMs: 2 }] }))
+      : new Response('busy', { status: 503 })))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
+    const { result } = renderHook(() => useTeamBrainSyncs('brain', 'vol'), { wrapper })
+    await waitFor(() => expect(result.current.isError).toBe(true))
+  })
 })

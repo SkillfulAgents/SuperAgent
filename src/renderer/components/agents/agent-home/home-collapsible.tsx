@@ -6,21 +6,16 @@ import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@renderer/c
 interface HomeCollapsibleProps {
   title: string
   defaultOpen?: boolean
-  /** Beside the chevron, so a folded card still says what is in it (a few logos and a count, say). */
-  summary?: ReactNode
   children: ReactNode
   className?: string
-  /** On the card; its header gets `${testId}-toggle`. */
-  testId?: string
 }
 
-export function HomeCollapsible({ title, defaultOpen = true, summary, children, className, testId }: HomeCollapsibleProps) {
+export function HomeCollapsible({ title, defaultOpen = true, children, className }: HomeCollapsibleProps) {
   return (
     <Collapsible defaultOpen={defaultOpen}>
-      <div className={cn("rounded-xl border bg-background py-4", className)} data-testid={testId}>
-        <CollapsibleTrigger className="flex w-full items-center justify-between px-4" data-testid={testId && `${testId}-toggle`}>
+      <div className={cn("rounded-xl border bg-background py-4", className)}>
+        <CollapsibleTrigger className="flex w-full items-center justify-between px-4">
           <span className="text-sm font-medium text-muted-foreground">{title}</span>
-          {summary !== undefined && <span className="ml-auto mr-2 flex items-center gap-2">{summary}</span>}
           <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform [[data-state=closed]>&]:rotate-[-90deg]" />
         </CollapsibleTrigger>
         <CollapsibleContent>

@@ -38,6 +38,7 @@ export function AgentAccessList({
   everyAgent = false,
   isOn,
   isChanging,
+  disabled = false,
   onToggle,
   className,
   rowClassName,
@@ -47,6 +48,8 @@ export function AgentAccessList({
   isOn: (slug: string) => boolean
   /** A switch whose change is still under way, held until it lands. */
   isChanging?: (slug: string) => boolean
+  /** Shown but not changeable, for someone who may not change it. */
+  disabled?: boolean
   onToggle: (slug: string, on: boolean) => void
   className?: string
   rowClassName?: string
@@ -61,7 +64,7 @@ export function AgentAccessList({
             <span className={cn('min-w-0 flex-1 truncate text-[13px] font-medium', !on && 'text-muted-foreground')}>{agent.name}</span>
             <Switch
               checked={on}
-              disabled={everyAgent || !!isChanging?.(agent.slug)}
+              disabled={disabled || everyAgent || !!isChanging?.(agent.slug)}
               onCheckedChange={(next) => onToggle(agent.slug, next)}
               aria-label={`${agent.name} uses Team Brain`}
               data-testid={`team-brain-agent-${agent.slug}`}

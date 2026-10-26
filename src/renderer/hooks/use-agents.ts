@@ -194,6 +194,10 @@ export function useDeleteAgent() {
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
       // Todo items given to it let go of it on the server.
       queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
+      // Deleting the Team Brain agent takes its drive off every other agent and off global.
+      queryClient.invalidateQueries({ queryKey: ['mounts'] })
+      queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
+      queryClient.invalidateQueries({ queryKey: ['volume-agents'] })
     },
   })
 }

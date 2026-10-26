@@ -1,17 +1,22 @@
 import { useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
 import { useAddMount, useRemoveMount } from '@renderer/hooks/use-mounts'
 import { useSaveVolumeDefinition, useVolumeAgents, useVolumeDefinitions } from '@renderer/hooks/use-volume-definitions'
 
 /** Let `slug` message the Team Brain agent, or stop it. */
-async function setMessaging(slug: string, brainSlug: string, allowed: boolean) {
+async function setMessaging(queryClient: QueryClient, slug: string, brainSlug: string, allowed: boolean) {
   const res = await apiFetch(
     `/api/agents/${slug}/x-agent-policies/invoke/${brainSlug}`,
     allowed ? { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'allow' }) } : { method: 'DELETE' },
   )
   if (!res.ok) throw new Error(allowed ? 'Could not let it message Team Brain' : 'Could not stop it messaging Team Brain')
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: ['x-agent-policies', slug] }),
+    queryClient.invalidateQueries({ queryKey: ['inbound-x-agent', brainSlug] }),
+    queryClient.invalidateQueries({ queryKey: ['home-graph'] }),
+  ])
 }
 
 /**
@@ -20,9 +25,10 @@ async function setMessaging(slug: string, brainSlug: string, allowed: boolean) {
  */
 export function useGiveTeamBrain() {
   const addMount = useAddMount()
+  const queryClient = useQueryClient()
   return async (slug: string, { volumeId, brainSlug, mount = true }: { volumeId: string; brainSlug: string; mount?: boolean }) => {
     if (mount) await addMount.mutateAsync({ agentSlug: slug, volumeId, readOnly: true })
-    await setMessaging(slug, brainSlug, true)
+    await setMessaging(queryClient, slug, brainSlug, true)
   }
 }
 
@@ -47,7 +53,7 @@ export function useTeamBrainAccess(brainSlug: string, volumeId: string | undefin
     setChanging((prev) => new Map(prev).set(slug, on))
     const change = on
       ? give(slug, { volumeId, brainSlug })
-      : Promise.all([mountId && removeMount.mutateAsync({ agentSlug: slug, mountId }), setMessaging(slug, brainSlug, false)])
+      : Promise.all([mountId && removeMount.mutateAsync({ agentSlug: slug, mountId }), setMessaging(queryClient, slug, brainSlug, false)])
     void change
       .catch(failed)
       .then(() => queryClient.invalidateQueries({ queryKey: ['volume-agents', volumeId] }))
@@ -63,7 +69,7 @@ export function useTeamBrainAccess(brainSlug: string, volumeId: string | undefin
     const others = slugs.filter((slug) => !mountOf(slug))
     void saveVolume
       .mutateAsync({ id: volumeId, global: on ? 'read' : null })
-      .then(() => Promise.all(others.map((slug) => setMessaging(slug, brainSlug, on))))
+      .then(() => Promise.all(others.map((slug) => setMessaging(queryClient, slug, brainSlug, on))))
       .catch(failed)
   }
   return {

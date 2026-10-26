@@ -39,7 +39,7 @@ export function IntegrationList({ children, className, variant = 'list' }: Integ
  * last in the row's `right` slot. Decorative only: the row itself carries the
  * accessible name.
  */
-export function RowHoverChevron({ className, icon }: { className?: string; /** Another mark in its place, e.g. an arrow for a row that opens outside the app. */ icon?: ReactNode }) {
+export function RowHoverChevron({ className }: { className?: string }) {
   return (
     <span
       aria-hidden="true"
@@ -49,7 +49,7 @@ export function RowHoverChevron({ className, icon }: { className?: string; /** A
         className,
       )}
     >
-      {icon ?? <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}
+      <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
     </span>
   )
 }

@@ -5,7 +5,7 @@ import { useOnboarding } from '@renderer/context/onboarding-context'
 import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
 import { captureRendererException } from '@renderer/lib/error-reporting'
-import { fillTeamBrainSetupBlock } from '@renderer/lib/team-brain/team-brain-setup-block'
+import { fillTeamBrainSetupBlock, TEAM_BRAIN_CRON } from '@renderer/lib/team-brain/team-brain-setup-block'
 import type { TeamBrainPrepared } from '@renderer/lib/team-brain/team-brain-schema'
 import { getTeamBrainState, usesTeamBrain, useTeamBrain } from '@renderer/lib/team-brain/team-brain-store'
 import type { VolumeDetails } from '@renderer/components/volumes/volume-details-schema'
@@ -143,6 +143,15 @@ export function useTeamBrainSetup() {
     }
     // Published once the record is this set-up's. Team Brain's own read-write attachment wins over the global read-only one.
     if (everyAgent) await saveVolume.mutateAsync({ id: prepared.volumeId, global: 'read' })
+<<<<<<< HEAD
+=======
+    await updateSettings.mutateAsync({ teamBrain: { agentSlug: prepared.agentSlug, volumeId: prepared.volumeId } })
+    const upkeep = await apiFetch(`/api/agents/${prepared.agentSlug}/team-brain/upkeep`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scheduleExpression: TEAM_BRAIN_CRON[schedule] }),
+    }).catch(() => null)
+    // Past the record Team Brain exists, so a failure here is reported, never thrown back into a set-up that would delete it.
+    if (!upkeep?.ok) toast.error('Could not schedule Brain upkeep', { description: 'Team Brain is set up but will not sync on its own yet.' })
+>>>>>>> 73d66829d (feat(team-brain): schedule Brain upkeep at set-up, and the home page follows its record)
     // The record marks the agent; the list must carry the mark before set-up stops hiding it.
     await queryClient.invalidateQueries({ queryKey: ['agents'] })
 

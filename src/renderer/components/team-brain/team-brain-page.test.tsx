@@ -21,6 +21,7 @@ const { app, user } = vi.hoisted(() => {
       agents: [] as Array<{ slug: string; displaySlug: string; name: string; status: string; avatar: null; teamBrain?: { volumeId: string } }>,
       instructions: '',
       record: undefined as { agentSlug: string; volumeId: string } | undefined,
+      upkeepFails: false as boolean | 'rejects',
       install: record('install', { slug: 'team-brain', onboardingFirstPrompt: 'Set up our team brain' }),
       addMount: vi.fn(async ({ agentSlug, readOnly }: { agentSlug: string; readOnly?: boolean }) => {
         calls.push(`mount ${agentSlug}${readOnly ? ' read-only' : ''}`)
@@ -66,8 +67,13 @@ vi.mock('@renderer/hooks/use-start-onboarding-session', () => ({ useStartOnboard
 vi.mock('@renderer/hooks/use-connected-accounts', () => ({ useConnectedAccounts: () => ({ data: undefined }) }))
 vi.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({ invalidateQueries: app.invalidate }) }))
 vi.mock('@renderer/lib/api', () => ({
-  apiFetch: vi.fn(async (url: string, init?: { method?: string }) => {
+  apiFetch: vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
     if (init?.method === 'PUT') app.calls.push(`grant ${url.split('/')[3]}`)
+    if (url.endsWith('/team-brain/upkeep')) {
+      app.calls.push(`upkeep ${JSON.parse(init?.body ?? '{}').scheduleExpression}`)
+      if (app.upkeepFails === 'rejects') throw new Error('Network down')
+      if (app.upkeepFails) return { ok: false, json: async () => ({}) }
+    }
     return { ok: true, json: async () => ({ instructions: 'Brain: `{{brain_path}}`. Schedule: `{{schedule}}`.' }) }
   }),
 }))
@@ -89,6 +95,7 @@ vi.mock('@renderer/components/volumes/volume-setup-registry', async (importOrigi
   return { volumeSetupRegistry: { ...volumeSetupRegistry, googledrive: { ...volumeSetupRegistry.googledrive, Setup } } }
 })
 
+import { toast } from 'sonner'
 import { TeamBrainPage } from './team-brain-page'
 import { volumeSetupRegistry } from '@renderer/components/volumes/volume-setup-registry'
 import { getTeamBrainState, resetTeamBrainState } from '@renderer/lib/team-brain/team-brain-store'
@@ -101,6 +108,7 @@ beforeEach(() => {
   app.calls.length = 0
   app.agents = [agent('writer'), agent('planner')]
   app.record = undefined
+  app.upkeepFails = false
   Object.assign(user, { isAuthMode: false, isAdmin: false })
 })
 afterEach(() => {
@@ -141,7 +149,7 @@ describe('TeamBrainPage', () => {
     expect(screen.getByTestId('team-brain-next')).toBeDisabled()
   })
 
-  it('prepares on the saved drive, and launches in order: instructions, record, agent list, session, then the chosen agents', async () => {
+  it('prepares on the saved drive, and launches in order: instructions, record, upkeep, agent list, session, then the chosen agents', async () => {
     const clicker = userEvent.setup()
     // The record marks the agent once the agent list refreshes.
     app.invalidate.mockImplementationOnce(async () => {
@@ -168,15 +176,15 @@ describe('TeamBrainPage', () => {
     await waitFor(() => expect(app.calls).toContain('session'))
 
     const launch = app.calls.slice(3)
-    expect(launch.slice(0, 3)).toEqual(['instructions', 'record', 'refresh agents'])
+    expect(launch.slice(0, 4)).toEqual(['instructions', 'record', 'upkeep 0 0 * * 1', 'refresh agents'])
     expect(launch).toEqual(expect.arrayContaining(['mount writer read-only', 'grant writer', 'session']))
     expect(launch.some((call) => call.endsWith('planner'))).toBe(false)
     expect(app.instructions).toBe('Brain: `/mounts/Team Brain`. Schedule: weekly, Mondays at midnight (cron `0 0 * * 1`).')
 
-    // Set-up is over once launched: with no session to replace it, the page shows the way to Team Brain.
+    // Set-up is over once launched: with no session to replace it, the page shows Team Brain's home page.
     expect(getTeamBrainState()).toEqual(TEAM_BRAIN_INITIAL_STATE)
     page.rerender(<TeamBrainPage />)
-    expect(screen.getByTestId('team-brain-ready')).toBeInTheDocument()
+    expect(screen.getByTestId('team-brain-home')).toBeInTheDocument()
   })
 
   it('makes the drive global for every agent once the record is accepted, and still lets each one message Team Brain', async () => {
@@ -271,6 +279,21 @@ describe('TeamBrainPage', () => {
     await clicker.click(screen.getByTestId('team-brain-next'))
     await clicker.click(screen.getByTestId('team-brain-start-chat'))
     await waitFor(() => expect(app.calls).toContain('session'))
+    expect(app.calls.some((call) => call.startsWith('delete'))).toBe(false)
+  })
+
+  it.each([true, 'rejects'] as const)('keeps a recorded Team Brain when its upkeep cannot be scheduled (%s), and says so', async (fails) => {
+    app.upkeepFails = fails
+    const clicker = userEvent.setup()
+    const page = render(<TeamBrainPage />)
+    await saveDrive(clicker)
+    await waitFor(() => expect(getTeamBrainState().prepared).not.toBeNull())
+    await clicker.click(screen.getByTestId('team-brain-next'))
+    await clicker.click(screen.getByTestId('team-brain-next'))
+    await clicker.click(screen.getByTestId('team-brain-start-chat'))
+    await waitFor(() => expect(app.calls).toContain('session'))
+    expect(vi.mocked(toast.error)).toHaveBeenCalledWith('Could not schedule Brain upkeep', expect.anything())
+    page.unmount()
     expect(app.calls.some((call) => call.startsWith('delete'))).toBe(false)
   })
 

@@ -170,7 +170,7 @@ describe('agentLayoutRoute loader (access-control collapse + rethrow + cache war
   })
 
   it('the Team Brain agent → its home redirects to /team-brain, replacing the entry', async () => {
-    agentQueryFn.mockResolvedValue({ slug: 'brain', name: 'Team Brain', teamBrain: true })
+    agentQueryFn.mockResolvedValue({ slug: 'brain', name: 'Team Brain', teamBrain: { volumeId: 'v1' } })
     const router = buildRouter('/agents/brain')
     render(<RouterProvider router={router} />)
 

@@ -305,7 +305,7 @@ export function TeamBrainRadial({
   }
   /** The index comes in as its section does, and goes with the sections being taken away, last, as they reach the middle. */
   const indexMotion = entering ? null : grown?.index ? { out: false, at: GLIDE_MS } : retracting ? { out: true, at: outReach } : null
-  /** Where a node's animations start, for the CSS in `globals.css`. */
+  /** Where a node's animations start, for the CSS in `team-brain.css`. */
   const startAt = (motion: { at: number }) => ({ '--arrive-at': `${Math.round(motion.at)}ms` }) as CSSProperties
   /** A motion's classes: the opening's, played backwards on the way out. */
   const play = (motion: { out: boolean } | null, name: string) => motion && cn(name, motion.out && 'team-brain-radial-out')

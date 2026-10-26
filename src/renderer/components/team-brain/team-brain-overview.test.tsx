@@ -100,6 +100,8 @@ vi.mock('@renderer/hooks/use-team-brain-drive', () => ({
   },
 }))
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
+const { user } = vi.hoisted(() => ({ user: { isAuthMode: false, isAdmin: false } }))
+vi.mock('@renderer/context/user-context', () => ({ useUser: () => user }))
 vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl }))
 // Agent Home's composer needs the app's providers; here it only needs to be there, for the Team Brain agent.
 vi.mock('./team-brain-home-composer', () => ({ TeamBrainHomeComposer: ({ agent }: { agent: { slug: string } }) => <div data-testid="team-brain-composer">{agent.slug}</div> }))
@@ -128,7 +130,7 @@ import type { ApiAgent } from '@renderer/hooks/use-agents'
 
 /** The Team Brain agent set-up made. */
 const BRAIN: ApiAgent = {
-  slug: 'team-brain', displaySlug: 'team-brain', name: 'Team Brain', status: 'running', avatar: null, teamBrain: true, createdAt: new Date(), containerPort: null,
+  slug: 'team-brain', displaySlug: 'team-brain', name: 'Team Brain', status: 'running', avatar: null, teamBrain: { volumeId: 'vol1' }, createdAt: new Date(), containerPort: null,
 }
 
 beforeEach(() => {
@@ -152,6 +154,7 @@ function setWide(wide: boolean) {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  Object.assign(user, { isAuthMode: false, isAdmin: false })
 })
 
 describe('TeamBrainOverview', () => {
@@ -374,5 +377,15 @@ describe('TeamBrainOverview', () => {
     await userEvent.click(await screen.findByTestId('team-brain-turn-off'))
     await userEvent.click(await screen.findByTestId('team-brain-turn-off-confirm'))
     expect(app.deleteAgent).toHaveBeenCalledWith('team-brain', expect.anything())
+  })
+
+  it('leaves turning it off and who uses it to admins in a team workspace', async () => {
+    Object.assign(user, { isAuthMode: true, isAdmin: false })
+    render(<TeamBrainOverview agent={BRAIN} />)
+    await userEvent.click(screen.getByTestId('team-brain-menu'))
+    expect(await screen.findByTestId('team-brain-details')).toBeInTheDocument()
+    expect(screen.queryByTestId('team-brain-turn-off')).toBeNull()
+    await userEvent.click(screen.getByTestId('team-brain-agents-toggle'))
+    expect(screen.getByTestId('team-brain-agent-writer')).toBeDisabled()
   })
 })

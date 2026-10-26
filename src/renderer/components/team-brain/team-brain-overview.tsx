@@ -16,6 +16,8 @@ import {
 import { SettingsPageContainer } from '@renderer/components/layout/settings-page'
 import { openExternalUrl } from '@renderer/lib/open-external'
 import { useDeleteAgent, useListedAgents, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useUser } from '@renderer/context/user-context'
+import './team-brain.css'
 import { useAgentMounts } from '@renderer/hooks/use-mounts'
 import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { useMinuteClock } from '@renderer/hooks/use-minute-clock'
@@ -99,15 +101,20 @@ export function TeamBrainOverview({ agent }: { agent: ApiAgent }) {
   )
 }
 
+/** The Team Brain agent's attachment of the drive its record names. */
+function useBrainMount(agent: ApiAgent) {
+  const { data: mounts } = useAgentMounts(agent.slug)
+  return mounts?.find((mount) => mount.volumeId === agent.teamBrain?.volumeId)
+}
+
 /** Where the Team Brain agent's drive lives, from the drive itself; Gamut-hosted when it has none yet. */
-function useTeamBrainLocation(agentSlug: string) {
-  const { data: mounts } = useAgentMounts(agentSlug)
-  const type = mounts?.[0]?.type
+function useTeamBrainLocation(agent: ApiAgent) {
+  const type = useBrainMount(agent)?.type
   const id: TeamBrainLocationId = type && (TEAM_BRAIN_LOCATION_IDS as readonly string[]).includes(type) ? type : 'gamut'
   return teamBrainLocation(id)
 }
 
-/** The task Team Brain syncs on: the one recurring task its onboarding names "Brain upkeep". None until its first chat. */
+/** The task Team Brain syncs on: the one recurring task set-up names "Brain upkeep". */
 function useBrainUpkeep(agentSlug: string): ApiScheduledTask | undefined {
   const { data: tasks } = useScheduledTasks(agentSlug)
   const live = tasks?.find((task) => isBrainUpkeep(task.name) && (task.status === 'pending' || task.status === 'paused'))
@@ -153,15 +160,15 @@ function OverviewBody({
   useMinuteClock()
 
   // The Team Brain agent's drive, read as far as the tree shows and further as folders open.
+  const volumeId = agent.teamBrain?.volumeId
   const { data: mounts } = useAgentMounts(agentSlug)
-  const volumeId = mounts?.[0]?.volumeId
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
   // Dev builds can stand a state in for the drive and the summaries (team-brain-dev-states.tsx); live otherwise.
   const dev = useTeamBrainDevStates()
   const read = useTeamBrainDrive(agentSlug, volumeId, expanded, record, recordLeaving)
   const { drive, ready, error } = devDrive(dev.drive, read)
   const recordParts = read.recordParts
-  const noDrive = dev.drive === 'none' || (!!mounts && !volumeId)
+  const noDrive = dev.drive === 'none' || (!!mounts && !mounts.some((mount) => mount.volumeId === volumeId))
   const { front, index, rest } = useMemo(() => splitFrontPages(drive), [drive])
   const upkeep = useBrainUpkeep(agentSlug)
   const liveSyncs = useTeamBrainSyncs(agentSlug, volumeId)
@@ -251,7 +258,7 @@ function OverviewBody({
         {/* The page's own column. With settings open it makes room for them on the right from xl, as Agent Home's two
             columns do, while the tree behind stays exactly where it is. */}
         <div
-          // Makes room on the panel's own curves (globals.css), so the two move as one.
+          // Makes room on the panel's own curves (team-brain.css), so the two move as one.
           className={cn('team-brain-column relative space-y-8', settingsOpen && 'xl:pr-[392px]')}
           style={showSettings && wide && panelHeight ? { minHeight: panelHeight - 2 * PANEL_INSET } : undefined}
           data-settings={settingsOpen ? 'open' : 'closed'}
@@ -491,6 +498,9 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
   onHeightChange?: (height: number) => void
   style?: CSSProperties
 }) {
+  // Turning it off and changing who uses it are an admin's, as setting it up is.
+  const { isAuthMode, isAdmin } = useUser()
+  const canManage = !isAuthMode || isAdmin
   const panelRef = useRef<HTMLElement>(null)
   useLayoutEffect(() => {
     const panel = panelRef.current
@@ -536,7 +546,7 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
         // No surface of its own, as Agent Home's side panel has none: its glass cards float on the page. Only a column
         // that scrolls when it is taller than the view.
         'pointer-events-auto -m-8 flex flex-col overflow-hidden',
-        // The slide's curves are in globals.css, beside the page column's.
+        // The slide's curves are in team-brain.css, beside the page column's.
         open ? 'team-brain-settings-in' : 'team-brain-settings-out',
       )}
       data-testid="team-brain-settings"
@@ -547,14 +557,14 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-8" data-testid="team-brain-details">
         <SyncCard agentSlug={agent.slug} />
         <div className={SECTIONS_CARD_CLASS}>
-          <StorageSection agentSlug={agent.slug} />
+          <StorageSection agent={agent} />
           <SourcesSection agentSlug={agent.slug} />
-          <AgentsSection brainSlug={agent.slug} agents={agents} />
+          <AgentsSection brainSlug={agent.slug} volumeId={agent.teamBrain?.volumeId} agents={agents} canManage={canManage} />
           <SessionsSection agentSlug={agent.slug} />
         </div>
         <ViewsCard parts={recordParts} views={views} onViewChange={onViewChange} />
         {/* Last, on a glass row of its own: red only in its words until hovered. */}
-        <Button
+        {canManage && <Button
           variant="ghost"
           className={cn('h-12 w-full rounded-2xl text-destructive hover:bg-destructive/10 hover:text-destructive', GLASS_SURFACE)}
           onClick={() => setConfirmOff(true)}
@@ -562,7 +572,7 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
           data-testid="team-brain-turn-off"
         >
           Turn off Team Brain
-        </Button>
+        </Button>}
       </div>
       <AlertDialog open={confirmOff} onOpenChange={setConfirmOff}>
         <AlertDialogContent>
@@ -613,12 +623,11 @@ function SyncCard({ agentSlug }: { agentSlug: string }) {
 
 /** Where Team Brain lives, folded down to its home's mark and name, as the other sections are; open, a connector row that
  * opens the folder: on this computer for a folder here, else in its provider's own web app (Google Drive, Dropbox). */
-function StorageSection({ agentSlug }: { agentSlug: string }) {
-  const location = useTeamBrainLocation(agentSlug)
+function StorageSection({ agent }: { agent: ApiAgent }) {
+  const location = useTeamBrainLocation(agent)
   const LocationIcon = location.Icon
   // Where the drive is, and opening a folder on this computer, as Agent Home's drive rows show it.
-  const { data: mounts } = useAgentMounts(agentSlug)
-  const mount = mounts?.[0]
+  const mount = useBrainMount(agent)
   const hostPath = mount?.hostPath ?? null
   const showInFolder = canUseHostFeatures() && hostPath !== null ? () => void window.electronAPI?.showInFolder(hostPath) : undefined
   const webUrl = mount?.webUrl
@@ -690,8 +699,8 @@ function PanelSection({ title, summary, testId, children }: { title: string; sum
 
 /**
  * How Team Brain keeps up, in one row: when it next syncs and when it last ran, and on the right how often. It opens
- * the upkeep task's own page, where its schedule is changed and it is paused or resumed. Until the first chat
- * schedules that task there is nothing to open, only when it starts.
+ * the upkeep task's own page, where its schedule is changed and it is paused or resumed. Without that task there is
+ * nothing to open.
  */
 function SyncRow({ agentSlug }: { agentSlug: string }) {
   const navigate = useNavigate()
@@ -699,7 +708,7 @@ function SyncRow({ agentSlug }: { agentSlug: string }) {
   const paused = upkeep?.status === 'paused'
   const schedule = upkeep ? scheduleOfCron(upkeep.scheduleExpression) : null
   const lastRun = upkeep?.lastExecutedAt ? `last ran ${formatSince(isoOf(upkeep.lastExecutedAt))}` : 'not run yet'
-  const note = !upkeep ? 'Starts after the first chat' : `${paused ? 'Paused' : `Syncs ${formatUntil(upkeep.nextExecutionAt)}`} · ${lastRun}`
+  const note = !upkeep ? 'Not scheduled' : `${paused ? 'Paused' : `Syncs ${formatUntil(upkeep.nextExecutionAt)}`} · ${lastRun}`
   const summary = (
     <span className="min-w-0">
       <span className={cn('block', PANEL_LABEL_CLASS)}>Sync schedule</span>
@@ -798,9 +807,8 @@ function SourcesSection({ agentSlug }: { agentSlug: string }) {
  * Which agents use Team Brain, folded down to their avatars, in Agent Home's card. Open, it is set-up's own list:
  * every agent at once, or each on its own, read from and written to the drive's attachments.
  */
-function AgentsSection({ brainSlug, agents }: { brainSlug: string; agents: readonly ApiAgent[] }) {
-  const { data: mounts } = useAgentMounts(brainSlug)
-  const access = useTeamBrainAccess(brainSlug, mounts?.[0]?.volumeId)
+function AgentsSection({ brainSlug, volumeId, agents, canManage }: { brainSlug: string; volumeId: string | undefined; agents: readonly ApiAgent[]; canManage: boolean }) {
+  const access = useTeamBrainAccess(brainSlug, volumeId)
   const using = agents.filter((agent) => access.everyAgent || access.isOn(agent.slug))
   const marks = using.map((agent) => (
     <span key={agent.slug} className="rounded-full ring-2 ring-background">
@@ -816,7 +824,7 @@ function AgentsSection({ brainSlug, agents }: { brainSlug: string; agents: reado
         className="px-4 pb-3 pt-2"
       />
       {agents.length > 0 ? (
-        <AgentAccessList agents={agents} everyAgent={access.everyAgent} isOn={access.isOn} isChanging={access.isChanging} onToggle={access.toggle} className="border-y border-border/50" rowClassName="px-4" />
+        <AgentAccessList agents={agents} everyAgent={access.everyAgent} isOn={access.isOn} isChanging={access.isChanging} disabled={!canManage} onToggle={access.toggle} className="border-y border-border/50" rowClassName="px-4" />
       ) : (
         <p className="px-4 text-xs text-muted-foreground">No agents yet. Agents you make later can add the Team Brain drive from their Drives.</p>
       )}
