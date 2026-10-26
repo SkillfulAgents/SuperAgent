@@ -13,6 +13,8 @@ import type { TeamBrainNode } from './team-brain-structure'
 export interface RadialNode {
   id: string
   label: string
+  /** The label without a folded folder's count. */
+  name: string
   kind: 'root' | 'folder' | 'file'
   /** The top-level section it belongs to; the root has none. */
   section: string | null
@@ -37,7 +39,7 @@ export function polar(angle: number, radius: number) {
 
 export function radialTree(drive: readonly TeamBrainNode[], { sectionGap = 0 }: { sectionGap?: number } = {}): RadialNode[] {
   const out: RadialNode[] = [
-    { id: RADIAL_ROOT, label: 'Team Brain', kind: 'root', section: null, depth: 0, angle: 0, parent: null },
+    { id: RADIAL_ROOT, label: 'Team Brain', name: 'Team Brain', kind: 'root', section: null, depth: 0, angle: 0, parent: null },
   ]
   const leaves: RadialNode[] = []
   const children = new Map<string, RadialNode[]>()
@@ -45,9 +47,11 @@ export function radialTree(drive: readonly TeamBrainNode[], { sectionGap = 0 }: 
   const walk = (list: readonly TeamBrainNode[], parent: RadialNode, section: string | null, folder: TeamBrainNode | undefined, path: string) => {
     for (const node of list) {
       const at = `${path}/${node.name}`
+      const name = node.name.replace(/\.md$/, '')
       const radial: RadialNode = {
         id: node.id,
-        label: node.hidden ? `${node.name} · ${node.hidden}` : node.name.replace(/\.md$/, ''),
+        label: node.hidden ? `${node.name} · ${node.hidden}` : name,
+        name,
         hidden: node.hidden,
         folded: node.kind === 'folder' && (!!node.hidden || node.children === undefined),
         kind: node.kind,
