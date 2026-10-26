@@ -517,6 +517,19 @@ it('pushes edits waiting from before a restart on the first touch after it', asy
   }
 })
 
+it('writes into the spelling GitHub or the copy already has, on a disk that ignores case', async () => {
+  const stat = fs.stat
+  vi.spyOn(fs, 'stat').mockImplementation((name, options) => stat(String(name).replace(/(case-[\w-]+-)A$/, '$1a'), options))
+  const { sync, volume, write, text } = await setup({ 'Docs/a.md': 'a' })
+  await write('docs/new.md', 'new')
+  await write('DOCS/A.MD', 'changed')
+  await volume.mkdir('Drafts')
+  await write('drafts/x.md', 'x')
+  await sync.run(true)
+  expect(Object.keys(remote).sort()).toEqual(['Docs/a.md', 'Docs/new.md', 'Drafts/x.md'])
+  expect([remote['Docs/a.md'].toString(), await text('Docs/new.md')]).toEqual(['changed', 'new'])
+})
+
 it('treats a move onto itself as nothing', async () => {
   const { volume, sync, text } = await setup()
   await volume.move('notes.txt', 'notes.txt')

@@ -68,6 +68,8 @@ export class GithubSync {
   /** Versions in `versions/` that GitHub lacks and a served or sent record names: a later upload may merge against one. */
   private kept = new Set<string>()
   private githubShas = new WeakMap<SyncState, Set<string>>()
+  /** Every tracked file and folder by its case-folded path, on a disk that ignores case. */
+  private spellings = new WeakMap<SyncState, Map<string, string>>()
   /** Paths whose large upload is still streaming: a push must neither send nor clear them. */
   private writing = new Set<string>()
 
@@ -308,10 +310,31 @@ export class GithubSync {
     this.sentBy(mount).delete(name)
   }
 
-  canonical(name: string): string {
+  /** On a disk that ignores case, each part of the path as GitHub or the copy already spells it, so a push never adds a second spelling. */
+  async canonical(name: string): Promise<string> {
     if (!this.caseInsensitive || own(this.state.files, name)) return name
-    const key = name.normalize('NFC').toLowerCase()
-    return Object.keys(this.state.files).find(tracked => tracked.normalize('NFC').toLowerCase() === key) ?? name
+    const fold = (value: string) => value.normalize('NFC').toLowerCase()
+    let tracked = this.spellings.get(this.state)
+    if (!tracked) {
+      tracked = new Map()
+      for (const file of Object.keys(this.state.files)) {
+        const parts = file.split('/')
+        for (let i = 1; i <= parts.length; i++) tracked.set(fold(parts.slice(0, i).join('/')), parts.slice(0, i).join('/'))
+      }
+      this.spellings.set(this.state, tracked)
+    }
+    let resolved = ''
+    for (const part of name.split('/')) {
+      const candidate = resolved ? `${resolved}/${part}` : part
+      let spelled = tracked.get(fold(candidate))
+      if (!spelled) {
+        // A folder or file only the copy has: the disk answers to any case, so ask it how it spells the name.
+        const found = (await fs.readdir(this.target(resolved)).catch(() => [] as string[])).find(entry => fold(entry) === fold(part))
+        spelled = found === undefined ? candidate : resolved ? `${resolved}/${found}` : found
+      }
+      resolved = spelled
+    }
+    return resolved
   }
 
   private async loadRules(): Promise<void> {
@@ -368,7 +391,7 @@ export class GithubSync {
 
   async read(mount: string, requested: string): Promise<VolumeFile> {
     await this.ready()
-    const name = this.canonical(requested)
+    const name = await this.canonical(requested)
     return serialize([this.key], async () => {
       const versions = this.seen(mount).get(name) ?? []
       const sha = this.current(name)
@@ -386,7 +409,7 @@ export class GithubSync {
 
   async write(mount: string, agent: string, requested: string, body: globalThis.ReadableStream<Uint8Array>, signal?: AbortSignal, group?: string): Promise<void> {
     await this.ready()
-    const name = this.canonical(requested)
+    const name = await this.canonical(requested)
     await this.loadRules().catch(() => {})
     if (await this.ignored(name).catch(() => false)) return this.local.write(name, body)
     const chunks = uploadChunks(body, GITHUB_PUSH_BYTES + 1, signal)
@@ -490,7 +513,7 @@ export class GithubSync {
 
   async delete(mount: string, agent: string, requested: string, group?: string, expected?: string): Promise<void> {
     await this.ready()
-    const name = this.canonical(requested)
+    const name = await this.canonical(requested)
     const hold = own(this.edits.held, name)
     const keep = hold ? (hold.behind !== undefined ? hold.behind : own(this.state.files, name)?.sha ?? null) : null
     const kept = await this.blob(keep)
@@ -531,13 +554,14 @@ export class GithubSync {
 
   async mkdir(name: string): Promise<void> {
     await this.ready()
-    await serialize([this.key], () => this.local.mkdir(this.canonical(name)))
+    const folder = await this.canonical(name)
+    await serialize([this.key], () => this.local.mkdir(folder))
   }
 
   async move(mount: string, agent: string, requestedFrom: string, requestedTo: string): Promise<void> {
     await this.ready()
-    const from = this.canonical(requestedFrom)
-    const to = this.canonical(requestedTo)
+    const from = await this.canonical(requestedFrom)
+    const to = await this.canonical(requestedTo)
     if (from === to) return
     const held = [from, to].find(name => own(this.edits.held, name))
     if (held) throw new WorkspaceFileError('not-accessible', `${held} has a conflict with GitHub. Resolve it before moving it.`)
