@@ -5,6 +5,7 @@ import { VitePWA } from 'vite-plugin-pwa'
 import path from 'path'
 import { readFileSync } from 'fs'
 import { monacoAliases, monacoOptimizerPlugin } from './scripts/lib/monaco-vite'
+import { SERVER_FACTS_REVISION_PLACEHOLDER } from './src/shared/lib/facts/facts-schema'
 
 const pkg = JSON.parse(readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8'))
 const analyticsConfig = JSON.parse(readFileSync(path.resolve(__dirname, 'src/shared/lib/analytics/config.json'), 'utf-8'))
@@ -56,6 +57,19 @@ export default defineConfig({
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         inlineWorkboxRuntime: true, // single sw.js file, nothing extra at the dist root
         sourcemap: false,
+        // The HTML entry carries the server's facts, which the build can't
+        // know, so its revision leaves room for the server to add them
+        // (src/web/web-build.ts). Otherwise a deploy that changes only the
+        // facts would leave every installed worker serving the old ones.
+        manifestTransforms: [
+          (entries) => ({
+            manifest: entries.map((entry) =>
+              entry.url === 'index.html'
+                ? { ...entry, revision: `${entry.revision}-${SERVER_FACTS_REVISION_PLACEHOLDER}` }
+                : entry,
+            ),
+          }),
+        ],
       },
     }),
     {
@@ -109,6 +123,20 @@ export default defineConfig({
           await shutdownServices()
           console.log('All services stopped.')
         })
+      },
+    },
+    {
+      // The dev server's half of src/web/web-build.ts: the HTML entry carries
+      // the server's facts. Dev only, so a build never bakes in the facts of
+      // the machine that built it; production inlines them as it serves.
+      name: 'server-facts',
+      apply: 'serve',
+      async transformIndexHtml(html, ctx) {
+        if (!ctx.server) return html
+        const { getServerFacts, withServerFacts } = await ctx.server.ssrLoadModule(
+          path.resolve(__dirname, 'src/shared/lib/facts/server-facts.ts'),
+        )
+        return withServerFacts(html, getServerFacts())
       },
     },
     devServer({

@@ -1,5 +1,15 @@
+import { supportsComputerUse } from '@shared/lib/facts/capabilities'
 import { targetIsRemote } from './api-target'
 import { isElectron } from './env'
+import { serverFacts } from './facts'
+
+/**
+ * What this window may offer, asked by name. Each answer is about one side:
+ * this window's app and computer (client facts), the machine running the API it
+ * drives (server facts), or whether those are the same machine (the target).
+ * Gate on these rather than combining facts at the call site. See
+ * `docs/facts.md`.
+ */
 
 /**
  * Whether this window may offer features that act on the computer it is running
@@ -38,4 +48,13 @@ import { isElectron } from './env'
  */
 export function canUseHostFeatures(): boolean {
   return isElectron() && !targetIsRemote()
+}
+
+/**
+ * Whether the agents' machine can run computer use: the same rule the server
+ * applies before it runs a computer-use tool. Unknown server facts read as no.
+ */
+export function computerUseSupported(): boolean {
+  const server = serverFacts()
+  return server !== null && supportsComputerUse(server)
 }

@@ -9,7 +9,7 @@ import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/att
 import { appendDictationNote } from '@shared/lib/utils/dictation-note'
 import { mountPathOf } from '@shared/lib/volumes/base-mountable-volume'
 import { filesFromClipboard, folderChoice, type FolderGroup } from '@renderer/lib/file-utils'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { attachmentStatus, type Attachment, type MountAttachment } from '@renderer/components/messages/attachment-preview'
 import type { UploadProgress } from '@renderer/lib/upload'
 import { usePendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'

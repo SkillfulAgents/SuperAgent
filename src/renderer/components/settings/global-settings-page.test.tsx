@@ -14,7 +14,7 @@ vi.mock('@renderer/hooks/use-platform-auth', () => ({
   usePlatformAuthStatus: () => platformAuthMock(),
 }))
 
-vi.mock('@renderer/lib/host-features', () => ({
+vi.mock('@renderer/lib/capabilities', () => ({
   canUseHostFeatures: () => false,
 }))
 

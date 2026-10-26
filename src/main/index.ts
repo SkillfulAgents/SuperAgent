@@ -117,8 +117,9 @@ import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-pro
 import { getCloudProxyKey } from '@shared/lib/services/cloud-proxy-key'
 import { resolveCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target'
 import { readPreferredApiTarget } from '@shared/lib/services/api-target-preference'
-import { resolveApiTarget } from '@shared/lib/api-target'
+import { coerceApiTarget, resolveApiTarget } from '@shared/lib/api-target'
 import { applyPreferredApiTarget, resolveApiTargetForRenderer, type CloudEndpoint } from './api-target'
+import { factsForRenderer } from './facts'
 import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
 import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
 import { isAllowedRendererPermission } from './renderer-permissions'
@@ -506,6 +507,11 @@ function openDashboard(agentSlug: string, dashboardSlug: string) {
 // rather than assembling one, because half of the cloud prefix is the per-boot
 // proxy key, a secret owned by main (see cloud-proxy-key.ts).
 ipcMain.handle('get-api-target', () => activeApiTarget())
+
+// The facts a renderer gates on, for the target it settled. It passes that
+// target back rather than main re-resolving it, so a preference written in
+// between can't hand it the other Superagent's facts. See facts.ts.
+ipcMain.handle('get-facts', (_event, target: unknown) => factsForRenderer(coerceApiTarget(target), cloudEndpoint()))
 
 ipcMain.handle('set-preferred-api-target', (_event, target: unknown) => {
   applyPreferredApiTarget(target)

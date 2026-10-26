@@ -1,4 +1,4 @@
-import { canUseHostFeatures } from './host-features'
+import { canUseHostFeatures } from './capabilities'
 
 /**
  * A dropped or picked file's absolute path on this computer, or null when that
