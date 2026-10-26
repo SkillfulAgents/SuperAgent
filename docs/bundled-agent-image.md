@@ -25,8 +25,9 @@ If the tag isn't published, the script warns and bundles nothing; the app then
 pulls the image as it always did. A release sets `AGENT_IMAGE_REQUIRED=true`, so
 there the missing tag is an error. `release.yml`'s `build-mac` job therefore
 waits for `build-agent-container`, about 35 s when the layers are cached from
-main. In CI the download itself takes about 8 s. Notarizing the bigger app took
-16 min instead of about 6 in the first PR build.
+main. In CI the download itself takes about 8 s. Signing and notarizing the
+bigger app took 13 and 16 min in two PR builds, instead of about 6, so the
+macOS job runs about 21–24 min instead of 13.
 
 Windows ships no archive: its installer carries both x64 and arm64, so the
 images would add about 1.5 GiB.
@@ -60,7 +61,7 @@ runtime pull as before.
 | | Pulled (before) | Bundled |
 | --- | --- | --- |
 | DMG / ZIP | 363 / 353 MiB | 1090 / 1079 MiB (the CI size budget is 1200) |
-| Agent image | 730 MiB from ghcr.io, after install | in the DMG |
+| Agent image | 730 MiB from ghcr.io, after install | in the DMG and the ZIP |
 | First image create, same VM, empty store | 32.9 s (a fast connection) | 16.2 s, no network |
 | VM disk | 730 MiB content + 1.8 GiB unpacked | the same |
 | Host disk | — | +730 MiB in the app bundle, and +730 MiB in the updater's cached `update.zip` once it has updated the app |
@@ -73,8 +74,8 @@ data folder.
 
 Every release tags a new agent image. Before, an update downloaded the app's
 differential ZIP and then pulled the image's new layers. The new layers between
-stable releases were 745, 394, 370 and 703 MiB (0.5.44 → 0.5.48), and 0 between
-release candidates. Now the image travels in the ZIP. electron-updater's
+stable releases were 745, 394, 370 and 703 MiB (0.5.44 → 0.5.48), and under
+1 MiB from 0.5.48 through 0.5.49's release candidates to 0.5.49. Now the image travels in the ZIP. electron-updater's
 blockmap differential reuses unchanged layers: the archive's bytes are
 deterministic, and the zip's deflate stream is per file.
 
