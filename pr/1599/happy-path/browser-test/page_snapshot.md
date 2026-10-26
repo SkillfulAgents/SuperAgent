@@ -1,0 +1,100 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e6]:
+      - generic [ref=e8]:
+        - generic [ref=e9]: Gamut
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+      - generic [ref=e15]:
+        - list [ref=e18]:
+          - listitem [ref=e19]:
+            - link "Home" [ref=e20] [cursor=pointer]:
+              - /url: /
+              - img [ref=e21]
+              - generic [ref=e26]: Home
+          - listitem [ref=e27]:
+            - link "Notifications" [ref=e28] [cursor=pointer]:
+              - /url: /notifications
+              - img [ref=e29]
+              - generic [ref=e32]: Notifications
+          - listitem [ref=e33]:
+            - link "Discover New Agents New" [ref=e34] [cursor=pointer]:
+              - /url: /explore
+              - img [ref=e35]
+              - generic [ref=e38]: Discover New Agents
+              - generic [ref=e39]: New
+          - listitem [ref=e40]:
+            - button "New Agent" [ref=e41] [cursor=pointer]:
+              - img [ref=e42]
+              - generic [ref=e43]: New Agent
+        - list [ref=e46]:
+          - listitem [ref=e47]:
+            - button "Your Agents" [ref=e48] [cursor=pointer]:
+              - button "Your Agents" [expanded] [ref=e49]:
+                - generic [ref=e50]: Your Agents
+                - img [ref=e52]
+            - button "New agent in Your Agents" [ref=e54] [cursor=pointer]:
+              - img [ref=e55]
+            - list [ref=e57]:
+              - button "QA-20261026-025159-v6q6 Last run never Open QA-20261026-025159-v6q6 New session with QA-20261026-025159-v6q6" [ref=e58] [cursor=pointer]:
+                - generic [ref=e59]:
+                  - link "QA-20261026-025159-v6q6 Last run never" [ref=e60]:
+                    - /url: /agents/qa-20261026-025159-v6q6-oo5z8y8spz
+                    - generic [ref=e61]: QA-20261026-025159-v6q6
+                    - generic [ref=e62]: Last run never
+                  - generic [ref=e63]:
+                    - link "Open QA-20261026-025159-v6q6" [ref=e64]:
+                      - /url: /agents/qa-20261026-025159-v6q6-oo5z8y8spz
+                      - img "idle" [ref=e65]:
+                        - img [ref=e66]
+                    - link "New session with QA-20261026-025159-v6q6" [ref=e75]:
+                      - /url: /agents/qa-20261026-025159-v6q6-oo5z8y8spz/sessions/new
+                      - img [ref=e76]
+          - status [ref=e79]
+          - listitem [ref=e80]:
+            - button "Add section" [ref=e81] [cursor=pointer]:
+              - img [ref=e83]
+              - generic [ref=e84]: Add section
+      - generic [ref=e86]:
+        - button "Settings" [ref=e87] [cursor=pointer]:
+          - img [ref=e88]
+          - generic [ref=e91]: Settings
+        - button "0.5.49" [ref=e92] [cursor=pointer]:
+          - generic [ref=e93]: 0.5.49
+      - button "Toggle Sidebar" [ref=e94]
+    - main [ref=e95]:
+      - generic [ref=e96]:
+        - generic [ref=e97]:
+          - button "Toggle Sidebar" [ref=e98] [cursor=pointer]:
+            - img
+            - generic [ref=e99]: Toggle Sidebar
+          - button "Search agents and sessions... Ctrl+K" [ref=e101] [cursor=pointer]:
+            - img [ref=e102]
+            - generic [ref=e105]: Search agents and sessions...
+            - generic [ref=e106]: Ctrl+K
+          - generic [ref=e107]:
+            - button "Card view" [pressed] [ref=e108] [cursor=pointer]:
+              - img [ref=e109]
+            - button "Graph view" [ref=e114] [cursor=pointer]:
+              - img [ref=e115]
+        - generic [ref=e124]:
+          - generic [ref=e125]:
+            - heading "Your Agents" [level=2] [ref=e126]
+            - generic [ref=e127]:
+              - button "New Agent" [ref=e128] [cursor=pointer]:
+                - img
+                - text: New Agent
+              - button "Home options" [ref=e129] [cursor=pointer]:
+                - img [ref=e130]
+          - generic [ref=e137]:
+            - link "Open QA-20261026-025159-v6q6" [ref=e138] [cursor=pointer]:
+              - /url: /agents/qa-20261026-025159-v6q6-oo5z8y8spz
+            - generic [ref=e140]:
+              - generic [ref=e141]: Idle
+              - button "Stop agent" [ref=e142] [cursor=pointer]:
+                - img [ref=e143]
+            - generic:
+              - generic:
+                - generic: QA-20261026-025159-v6q6
+                - generic: Last run never
+  - region "Notifications alt+T"
