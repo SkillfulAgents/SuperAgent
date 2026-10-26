@@ -68,7 +68,7 @@ const fieldOutcomeSchema = z.object({
   ref: z.string(),
   kind: z.enum(LOGIN_FIELD_KINDS),
   label: z.string(),
-  status: z.enum(['filled', 'changed', 'skipped', 'failed']),
+  status: z.enum(['filled', 'changed', 'skipped', 'failed', 'unconfirmed']),
   problem: z.string().optional(),
   boxes: z.number().optional(),
 })

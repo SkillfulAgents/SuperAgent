@@ -14,6 +14,8 @@
  * shell runs as the same user and can reach the browser directly.
  */
 
+import { randomBytes } from 'crypto'
+
 export const REDACTED = '[redacted]'
 
 /** Shorter values would redact ordinary page text (a four-digit code is the floor). */
@@ -192,20 +194,31 @@ export function redactInjectedSecretsDeep<T>(value: T): T {
 type ToolContent = { type: string; text?: string; [key: string]: unknown }
 
 /**
- * A tool result with every text block redacted; images and other blocks pass
- * unchanged. `keep`: strings that go through whole, though a value redacted
- * elsewhere may be part of them — an account's username the host names, which
- * the agent passes back exactly (jane@acme.com, after the user typed "acme"
- * into a workspace field).
+ * Marks for what a tool result names on purpose and the agent must get back
+ * whole: an account's username the host names, which a value typed into
+ * another field can be part of (jane@acme.com, after "acme" went into a
+ * workspace field). Only the wrapped text goes through; the same characters
+ * anywhere else — the page's URL or text — are redacted as usual. The nonce
+ * keeps page text from forging a mark.
  */
-export function redactToolResult<T extends { content: ToolContent[] }>(result: T, keep: readonly string[] = []): T {
-  if (patterns.length === 0 && digitRuns.length === 0) return result
-  // Longest first, so one kept string inside another stays whole.
-  const kept = [...new Set(keep.filter(Boolean))].sort((a, b) => b.length - a.length)
-  const marker = (index: number) => `\u0000${index}\u0000`
+export function keptSpans() {
+  const nonce = randomBytes(8).toString('hex')
+  const open = `\u0002${nonce}\u0003`
+  const close = `\u0003${nonce}\u0002`
+  return { open, close, wrap: (value: string) => `${open}${value}${close}` }
+}
+
+/** A tool result with every text block redacted (but `kept` spans); images and other blocks pass unchanged. */
+export function redactToolResult<T extends { content: ToolContent[] }>(result: T, kept?: Pick<ReturnType<typeof keptSpans>, 'open' | 'close'>): T {
+  if (!kept && patterns.length === 0 && digitRuns.length === 0) return result
   const redact = (text: string) => {
-    const marked = kept.reduce((out, value, index) => out.split(value).join(marker(index)), text)
-    return kept.reduce((out, value, index) => out.split(marker(index)).join(value), redactInjectedSecrets(marked))
+    if (!kept) return redactInjectedSecrets(text)
+    return text.split(kept.open).map((piece, index) => {
+      const end = index === 0 ? -1 : piece.indexOf(kept.close)
+      // Before the first mark, or an open mark never closed: not ours.
+      if (end < 0) return redactInjectedSecrets(piece)
+      return piece.slice(0, end) + redactInjectedSecrets(piece.slice(end + kept.close.length))
+    }).join('')
   }
   return {
     ...result,

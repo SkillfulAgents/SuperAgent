@@ -77,7 +77,12 @@ export interface LoginFillDeps {
   remeasureMs?: number
 }
 
-export type FieldStatus = 'filled' | 'changed' | 'skipped' | 'failed'
+/**
+ * failed: nothing was sent to the page (the field could not be found or
+ * written, checked before the write). unconfirmed: the write was sent and no
+ * answer came back, so the page may hold the value — and may have acted on it.
+ */
+export type FieldStatus = 'filled' | 'changed' | 'skipped' | 'failed' | 'unconfirmed'
 
 export interface FieldOutcome {
   ref: string
@@ -447,8 +452,9 @@ export async function fillLogin(
         fillId,
       ])
     } catch (error) {
-      // The call can fail after the page ran it (a timeout): say what failed, not what the page did.
-      outcomes.push({ ...base, status: 'failed', problem: `the write into ${field.ref} returned no answer (${cdpErrorText(error)})` })
+      // The call can fail after the page ran it (a timeout): say what was
+      // seen, not what the page did. The value may be in the page.
+      outcomes.push({ ...base, status: 'unconfirmed', problem: `the write into ${field.ref} was sent and returned no answer (${cdpErrorText(error)})` })
       continue
     }
     if (!result?.ok) {

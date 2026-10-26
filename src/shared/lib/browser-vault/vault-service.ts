@@ -322,7 +322,8 @@ async function providerStub(owner: VaultOwner, key: string, site: string): Promi
  * A sign-in split over steps lands in one account: each step's parts are
  * merged into what is there. Written with a compare-and-set on `revision`,
  * so two saves at once both land. Saving the password again is the user's
- * correction: the account fills without them again (`rejectedAt`).
+ * correction: the account fills without them again (`rejectedAt`), and with
+ * its password rather than through a provider (`via`).
  */
 export async function saveAccount(input: SaveAccountInput): Promise<{ account: VaultAccount; created: boolean }> {
   const username = input.username.trim()
@@ -344,13 +345,18 @@ export async function saveAccount(input: SaveAccountInput): Promise<{ account: V
       .where(and(exactOwner(input.owner), eq(browserAccounts.site, input.site), eq(browserAccounts.usernameKey, key)))
       .get()
     if (!existing) {
-      const stub = changedValues ? await providerStub(input.owner, key, input.site) : null
+      // Even the email step alone (no value yet): the password lands in the same account.
+      const stub = input.viaAccountId ? null : await providerStub(input.owner, key, input.site)
       if (stub) {
         const claimed = await db.update(browserAccounts).set({
           site: input.site,
           origin: input.origin,
-          secrets: sealJson({ values }, { purpose: 'account-secrets', id: stub.id, site: input.site }, accountSecretsSchema),
-          parts: partsColumn(Object.keys(values).sort()),
+          ...(changedValues
+            ? {
+                secrets: sealJson({ values }, { purpose: 'account-secrets', id: stub.id, site: input.site }, accountSecretsSchema),
+                parts: partsColumn(Object.keys(values).sort()),
+              }
+            : {}),
           revision: stub.revision + 1,
           updatedAt: now,
         }).where(and(eq(browserAccounts.id, stub.id), eq(browserAccounts.revision, stub.revision))).run()
@@ -392,9 +398,12 @@ export async function saveAccount(input: SaveAccountInput): Promise<{ account: V
     // too (vaultFillsInto). Other parts leave it as it is.
     const passwordFrom = 'password' in values && existing.origin !== input.origin ? input.origin : null
     const corrected = 'password' in values || (changedValues && !partsOf(existing).includes('password'))
+    // A password the user saves is how the account signs in from now on, not
+    // through a provider any more (as picking one drops the password).
+    const via = input.viaAccountId ? { viaAccountId: input.viaAccountId } : 'password' in values ? { viaAccountId: null } : {}
     const updated = await db.update(browserAccounts).set({
       ...(sealed ?? {}),
-      ...(input.viaAccountId ? { viaAccountId: input.viaAccountId } : {}),
+      ...via,
       ...(passwordFrom ? { origin: passwordFrom } : {}),
       ...(corrected ? { rejectedAt: null } : {}),
       revision: existing.revision + 1,

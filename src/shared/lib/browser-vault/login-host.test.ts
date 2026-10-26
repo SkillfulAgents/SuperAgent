@@ -17,6 +17,8 @@ const container = vi.hoisted(() => ({
   context: null as unknown,
   contextStatus: [] as number[],
   fillStatus: 200,
+  /** Per-field outcomes the fill answers with; null answers the counts only. */
+  fillOutcomes: null as string[] | null,
   calls: [] as Array<{ path: string; body?: unknown }>,
 }))
 
@@ -41,6 +43,11 @@ vi.mock('@shared/lib/agent-actor', () => ({
           }
           if (url === '/browser/login/fill') {
             if (container.fillStatus !== 200) return new Response(JSON.stringify({ error: 'This sign-in request is no longer open' }), { status: container.fillStatus })
+            if (container.fillOutcomes) {
+              const outcomes = container.fillOutcomes
+              const count = (status: string) => outcomes.filter((outcome) => outcome === status).length
+              return new Response(JSON.stringify({ success: true, filled: count('filled'), failed: count('failed'), outcomes, submitted: false, problems: [] }), { status: 200 })
+            }
             return new Response(JSON.stringify({ success: true, filled: body.values.filter(Boolean).length, failed: 0, submitted: true, problems: [] }), { status: 200 })
           }
           if (url.startsWith('/inputs/')) return new Response('{}', { status: 200 })
@@ -91,6 +98,7 @@ beforeEach(async () => {
   container.context = GITHUB
   container.contextStatus = []
   container.fillStatus = 200
+  container.fillOutcomes = null
   container.calls = []
   resetHeldLogins()
 })
@@ -322,6 +330,45 @@ describe('decideLoginRequest', () => {
     container.fillStatus = 409
     expect(await decide({ username: 'octocat' })).toMatchObject({ action: 'ask', vault: { mode: 'complete', accountId: account.id, covered: [0, 1] } })
     expect((await getOwnedAccount(null, account.id))?.lastUsedAt).toBeNull()
+  })
+
+  it('counts only what the browser wrote: a field it could not write keeps its held value, and spends no attempt', async () => {
+    const account = await grantedAccount('octocat', { password: 'saved-pw' })
+    holdLoginValues('agent-a', 's-1', 'github.com', {
+      username: 'octocat',
+      values: { password: 'held-pw' },
+      origin: 'https://github.com',
+      save: { owner: null, origin: 'https://github.com' },
+    })
+    container.context = { ...GITHUB, fields: [field('password', 'Password', 'password')] }
+    // A stale ref: the container answers, but the field took nothing.
+    container.fillOutcomes = ['failed']
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(heldLoginFor('agent-a', 's-1', 'github.com', 'octocat')?.values).toEqual({ password: 'held-pw' })
+    expect(await readAccountValues(account.id)).toEqual({ password: 'saved-pw' })
+    expect((await getOwnedAccount(null, account.id))?.lastUsedAt).toBeNull()
+
+    // The agent maps the field again: the held password goes in this time, with no card.
+    container.fillOutcomes = ['filled']
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(fills().map((call) => (call.body as { values: string[] }).values)).toEqual([['held-pw'], ['held-pw']])
+    expect(await readAccountValues(account.id)).toEqual({ password: 'held-pw' })
+  })
+
+  it('counts a write sent without an answer as tried: the page may hold the password, so no silent retry', async () => {
+    await grantedAccount('octocat')
+    holdLoginValues('agent-a', 's-1', 'github.com', {
+      username: 'octocat',
+      values: { password: 'held-pw' },
+      origin: 'https://github.com',
+      save: { owner: null, origin: 'https://github.com' },
+    })
+    container.context = { ...GITHUB, fields: [field('password', 'Password', 'password')] }
+    container.fillOutcomes = ['unconfirmed']
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(heldLoginFor('agent-a', 's-1', 'github.com', 'octocat')).toBeNull()
+    expect(await decide({ username: 'octocat' })).toMatchObject({ action: 'ask', vault: { mode: 'ask', filledAt: expect.any(String) } })
+    expect(fills()).toHaveLength(1)
   })
 
   it('opens the form when the container cannot be read: only its own word means the call is over', async () => {

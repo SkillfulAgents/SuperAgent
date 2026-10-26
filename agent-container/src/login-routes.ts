@@ -288,7 +288,8 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
         report = { type: 'filled', origin: prepared.origin, outcomes, lost: [], submitted: null, ...(body.account ? { account: body.account } : {}) }
         const refOf = (field: WrittenField) => prepared.fields[field.index].ref
 
-        const failed = outcomes.some((outcome) => outcome.status === 'failed')
+        // Nothing is pressed after a write that failed or was never confirmed.
+        const failed = outcomes.some((outcome) => outcome.status === 'failed' || outcome.status === 'unconfirmed')
         if (!failed && written.length > 0) {
           const waitMs = written[written.length - 1].kind === 'otp'
             ? deps.codeSubmitWaitMs ?? 1000
@@ -362,7 +363,9 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
       return c.json({
         success: true,
         filled: count('filled') + count('changed'),
-        failed: count('failed'),
+        failed: count('failed') + count('unconfirmed'),
+        // Per field, for the host: only a value that went in was tried or is used up.
+        outcomes: report.outcomes.map((outcome) => outcome.status),
         submitted: report.submitted !== null,
         problems: [
           ...report.outcomes.filter((outcome) => outcome.problem).map((outcome) => `${outcome.label}: ${outcome.problem}`),

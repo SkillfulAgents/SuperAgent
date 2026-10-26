@@ -11946,6 +11946,32 @@ describe('sign-in requests with the vault (request_login)', () => {
     expect(mockContainerFetch).not.toHaveBeenCalled()
   })
 
+  it('spends no attempt and keeps what was held when the browser could not write the password', async () => {
+    const login = { ...CONTEXT, fields: [field('username', 'Email'), field('password', 'Password')], held: [] }
+    parkLogin({ login, vault: { mode: 'ask', username: 'octocat' } })
+    const { recentPasswordFill } = await import('@shared/lib/browser-vault/held-values')
+    vault.saveAccount.mockResolvedValueOnce({ account: account(), created: false })
+    mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+      success: true, filled: 1, failed: 1, outcomes: ['filled', 'failed'], submitted: false, problems: ['Password: the field is disabled'],
+    }), { status: 200 }))
+    const res = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'https://github.com', values: ['octocat', 'pw'], save: true })
+    expect(res.status).toBe(200)
+    expect(recentPasswordFill('test-agent', 'sess-1', 'acc-1')).toBeNull()
+  })
+
+  it('counts a password write sent without an answer as an attempt', async () => {
+    const login = { ...CONTEXT, fields: [field('username', 'Email'), field('password', 'Password')], held: [] }
+    parkLogin({ login, vault: { mode: 'ask', username: 'octocat' } })
+    const { recentPasswordFill } = await import('@shared/lib/browser-vault/held-values')
+    vault.saveAccount.mockResolvedValueOnce({ account: account(), created: false })
+    mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+      success: true, filled: 1, failed: 1, outcomes: ['filled', 'unconfirmed'], submitted: false, problems: ['Password: the write was sent and returned no answer'],
+    }), { status: 200 }))
+    const res = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'https://github.com', values: ['octocat', 'pw'], save: true })
+    expect(res.status).toBe(200)
+    expect(recentPasswordFill('test-agent', 'sess-1', 'acc-1')).not.toBeNull()
+  })
+
   it('drops a held value the user typed over, and remembers that a password went in', async () => {
     const login = { ...CONTEXT, fields: [field('password', 'Password')], held: [] }
     parkLogin({ login, vault: { mode: 'ask', username: 'octocat' } })

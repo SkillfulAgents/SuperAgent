@@ -151,6 +151,30 @@ describe('request_login tool', () => {
     expect(text).toContain('- jane@acme.com: holds a password')
   })
 
+  it('redacts a password the page shows that begins with the username, naming the account whole', async () => {
+    vi.stubGlobal('fetch', respond(200, prepared))
+    inputManager.setCurrentToolUseId('login-alice')
+    const done = handlerFor()(args)
+    await vi.waitFor(() => expect(inputManager.hasPending('login-alice')).toBe(true))
+    rememberInjectedSecret('alice-secret')
+    inputManager.resolve('login-alice', JSON.stringify({
+      type: 'filled',
+      origin: 'https://github.com',
+      outcomes: [
+        { ref: '@e3', kind: 'username', label: 'Username or email address', status: 'filled' },
+        { ref: '@e6', kind: 'password', label: 'Password', status: 'filled' },
+      ],
+      lost: [],
+      submitted: { via: 'click', ref: '@e7' },
+      account: { username: 'alice', site: 'github.com', source: 'vault', saved: false, held: [] },
+      observation: { digest: { url: 'https://github.com/session?login=alice&password=alice-secret', navigated: true } },
+    }))
+    const text = (await done).content[0].text
+    expect(text).not.toContain('alice-secret')
+    expect(text).toContain('from the saved account alice:')
+    expect(text).toContain('password=[redacted]')
+  })
+
   it('refuses to park when the browser closed while the fields were located', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => {
       resetBrowserState()
@@ -297,6 +321,19 @@ describe('formatLoginResolution', () => {
     expect(result.content[0].text).toBe([
       'No field was filled on https://example.com.',
       '@e6 "Password" (password) was not filled: the frame holding the fields is now on https://evil.example, not https://example.com.',
+      'Nothing was clicked or pressed.',
+    ].join('\n'))
+  })
+
+  it('says a write was sent and returned no answer, not that nothing was filled', () => {
+    const result = formatLoginResolution({
+      ...base,
+      outcomes: [field('@e6', 'unconfirmed', { problem: 'the write into @e6 was sent and returned no answer (timed out)' })],
+    })
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toBe([
+      'No write on https://example.com was confirmed.',
+      '@e6 "Password" (password): the write into @e6 was sent and returned no answer (timed out).',
       'Nothing was clicked or pressed.',
     ].join('\n'))
   })

@@ -313,7 +313,7 @@ describe('POST /browser/login/fill', () => {
   it('fills, submits, and answers the agent with a report that holds no value', async () => {
     const res = await post('/browser/login/fill', fillBody())
     expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ success: true, filled: 2, failed: 0, submitted: true, problems: [] })
+    expect(await res.json()).toEqual({ success: true, filled: 2, failed: 0, outcomes: ['filled', 'filled'], submitted: true, problems: [] })
     const answer = await parked.get('tu-1')!
     expect(answer).not.toContain('hunter2')
     expect(JSON.parse(answer)).toMatchObject({ type: 'filled', origin: 'https://github.com', submitted: { via: 'click', ref: '@e7' } })
@@ -348,6 +348,20 @@ describe('POST /browser/login/fill', () => {
     expect(await res.json()).toMatchObject({ submitted: false, failed: 1, problems: ['Password: @e6 is not visible'] })
     expect(deps.submit).not.toHaveBeenCalled()
     expect((await report()).submitted).toBeNull()
+  })
+
+  it('presses nothing after a write that returned no answer, and tells the host it may have gone in', async () => {
+    vi.mocked(fill.fillLogin).mockResolvedValueOnce({
+      outcomes: [
+        { ref: '@e3', kind: 'username', label: 'Email', status: 'filled' },
+        { ref: '@e6', kind: 'password', label: 'Password', status: 'unconfirmed', problem: 'the write into @e6 was sent and returned no answer (timed out)' },
+      ],
+      written: [written(0, 'username')],
+      pageValues: [],
+    })
+    const res = await post('/browser/login/fill', fillBody())
+    expect(await res.json()).toMatchObject({ submitted: false, failed: 1, outcomes: ['filled', 'unconfirmed'] })
+    expect(deps.submit).not.toHaveBeenCalled()
   })
 
   it('does not submit a password the page rewrote as it was written and still holds rewritten', async () => {

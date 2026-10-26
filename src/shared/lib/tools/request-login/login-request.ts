@@ -73,6 +73,8 @@ export const loginFillResultSchema = z.object({
   success: z.literal(true),
   filled: z.number().int(),
   failed: z.number().int(),
+  /** Each located field's outcome, in order: whether its value went into the page. */
+  outcomes: z.array(z.enum(['filled', 'changed', 'skipped', 'failed', 'unconfirmed'])).max(MAX_LOGIN_FIELDS).optional(),
   submitted: z.boolean(),
   problems: z.array(z.string()),
   /** The account the form saved to the user's vault. */

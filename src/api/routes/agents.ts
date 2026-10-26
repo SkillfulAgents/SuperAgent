@@ -99,6 +99,7 @@ import {
   answerLoginRequest,
   fillLoginInContainer,
   noteUsername,
+  fieldsWentIn,
   partsFrom,
   readLoginContext,
   settleHeldParts,
@@ -4266,15 +4267,17 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     if (grantsAccount && account && await grantAccount({ accountId: account.id, agentSlug, grantedBy: viewer })) {
       await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: account.id, action: 'assigned', details: { agentSlug } })
     }
+    // Only what went into the page counts: the browser may have written none of it.
+    const wentIn = fieldsWentIn(filled.result, context.fields.length)
+    const passwordWentIn = context.fields.some((field, index) => field.kind === 'password' && wentIn[index])
     // The step that was held is done before the next one is held.
-    if (held) await settleHeldParts({ agentSlug, sessionId, site, held, used: fromHeld, username: identity })
+    const usedHeld = fromHeld.filter((part) => context.fields.some((field, index) => partKeyOf(field) === part && wentIn[index]))
+    if (held) await settleHeldParts({ agentSlug, sessionId, site, held, used: usedHeld, username: identity })
     if (typedOverHeld.length) releaseHeldValues(agentSlug, sessionId, site, typedOverHeld)
     // A password went in for an account: another unattended fill of it so soon is the user's to decide.
     const passwordAccount = savedAccount ?? account
-    if (passwordAccount && context.fields.some((field, index) => field.kind === 'password' && values[index])) {
-      rememberPasswordFill(agentSlug, sessionId, passwordAccount.id)
-    }
-    if (account?.rejectedAt && usesSavedPassword && !hostsAccount) await clearAccountRejected(account.id)
+    if (passwordAccount && passwordWentIn) rememberPasswordFill(agentSlug, sessionId, passwordAccount.id)
+    if (account?.rejectedAt && usesSavedPassword && passwordWentIn && !hostsAccount) await clearAccountRejected(account.id)
     if (heldLabels.length) {
       holdLoginValues(agentSlug, sessionId, site, {
         username: identity,
@@ -4284,7 +4287,7 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
       })
     }
     if (identity) rememberSignInIdentity(agentSlug, sessionId, site, identity)
-    if (account) await recordAccountUse({ agentSlug, accountId: account.id, sessionId, userId: viewer })
+    if (account && wentIn.some(Boolean)) await recordAccountUse({ agentSlug, accountId: account.id, sessionId, userId: viewer })
     trackServerEvent('login_request_filled', {
       submitted: filled.result.submitted,
       filled: filled.result.filled,

@@ -9,7 +9,7 @@ import { formatActionEffect, type ActionEffect, type EffectTreeDiff } from '../a
 import { LOGIN_FIELD_KINDS } from '../login-form-script'
 import { withoutQuery } from '../login-fill'
 import { forgetPreparedLogin } from '../login-requests'
-import { redactToolResult } from '../injected-secrets'
+import { keptSpans, redactToolResult } from '../injected-secrets'
 import {
   loginResolutionSchema,
   MAX_LOGIN_FIELDS,
@@ -61,11 +61,12 @@ export function createRequestLoginTool(getSessionId: () => string | null) {
       providers: z.array(z.enum(SIGN_IN_PROVIDER_IDS)).max(SIGN_IN_PROVIDER_IDS.length).optional().describe('The services the page shows buttons for signing in with ("Sign in with Google", "Continue with Apple"), in the page\'s order. Omit services the page does not show, and passkeys.'),
     },
     // Every answer is redacted: problems can quote the CLI, and the page's URL
-    // after the submit can carry a value (a GET form). The usernames the host
-    // names stay whole: the agent passes them back exactly.
+    // after the submit can carry a value (a GET form). Only the usernames the
+    // host names stay whole, where the result names them: the agent passes
+    // them back exactly.
     async (args) => {
-      const { keep, ...result } = await requestLogin(args, getSessionId)
-      return redactToolResult(result, keep)
+      const kept = keptSpans()
+      return redactToolResult(await requestLogin(args, getSessionId, kept.wrap), kept)
     },
   )
 }
@@ -83,7 +84,8 @@ interface RequestLoginArgs {
 async function requestLogin(
   args: RequestLoginArgs,
   getSessionId: () => string | null,
-): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean; keep?: string[] }> {
+  name: (username: string) => string,
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   const fields = args.fields ?? []
   const toolUseId = inputManager.consumeCurrentToolUseId()
   if (!toolUseId) {
@@ -135,7 +137,7 @@ async function requestLogin(
     })
     const parsed = loginResolutionSchema.safeParse(parseJson(value))
     if (!parsed.success) return errorResult('The sign-in request ended with an unreadable result.')
-    return { ...formatLoginResolution(parsed.data), keep: namesIn(parsed.data) }
+    return formatLoginResolution(parsed.data, name)
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error'
     console.log(`[request_login] Request ended without a fill: ${message}`)
@@ -178,20 +180,14 @@ function describePageActivity(activity: NonNullable<LoginFillReport['pageActivit
   }
 }
 
-/** The usernames a result names: the agent passes them back exactly, so none is redacted. */
-function namesIn(resolution: LoginResolution): string[] {
-  switch (resolution.type) {
-    case 'accounts': return resolution.accounts.flatMap((account) => [account.username, ...(account.via ? [account.via.username] : [])])
-    case 'via': return [resolution.username, resolution.provider.username]
-    case 'filled': return resolution.account?.username ? [resolution.account.username] : []
-    default: return []
-  }
-}
+/** A username as the result names it: kept whole by the redaction (see keptSpans). */
+type Name = (username: string) => string
+const plain: Name = (username) => username
 
 /** What a saved account holds, as the agent may know it: part names, never values. */
-function describeAccount(account: VaultAccountView): string {
-  const name = `${account.username}${account.label ? ` ("${account.label}")` : ''}`
-  if (account.via) return `${name}: signs in with the ${account.via.name} account ${account.via.username} (${account.via.site})`
+function describeAccount(account: VaultAccountView, named: Name): string {
+  const name = `${named(account.username)}${account.label ? ` ("${account.label}")` : ''}`
+  if (account.via) return `${name}: signs in with the ${account.via.name} account ${named(account.via.username)} (${account.via.site})`
   const parts = account.parts.map((part) => (part === 'password' ? 'a password' : `"${part.replace(/^text:/, '')}"`))
   if (parts.length === 0) return `${name}: no saved password or other value yet`
   const list = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0]
@@ -199,66 +195,72 @@ function describeAccount(account: VaultAccountView): string {
   return `${name}: holds ${list}${rejected}`
 }
 
-function formatAccounts(resolution: Extract<LoginResolution, { type: 'accounts' }>): string {
+function formatAccounts(resolution: Extract<LoginResolution, { type: 'accounts' }>, named: Name): string {
   if (resolution.named) {
     return [
       'Nothing was filled: this call mapped no field.',
-      `- ${describeAccount(resolution.accounts[0])}`,
+      `- ${describeAccount(resolution.accounts[0], named)}`,
       'To sign in with it, call request_login with username set to it and the page\'s sign-in fields mapped by ref.',
     ].join('\n')
   }
   return [
     `Nothing was filled. Saved accounts on ${resolution.site} you may use:`,
-    ...resolution.accounts.map((account) => `- ${describeAccount(account)}`),
+    ...resolution.accounts.map((account) => `- ${describeAccount(account, named)}`),
     'To sign in with one, call request_login again with username set to it. To ask the user for another account, call it with ask_user: true.',
   ].join('\n')
 }
 
-function formatVia(resolution: Extract<LoginResolution, { type: 'via' }>): string {
+function formatVia(resolution: Extract<LoginResolution, { type: 'via' }>, named: Name): string {
   const { provider } = resolution
+  const account = named(provider.username)
   return [
-    `Nothing was filled. The user signs in to ${resolution.site} with the ${provider.name} account ${provider.username}${resolution.saved ? ', saved to their vault for this site' : ''}.`,
-    `Click the site's ${provider.name} sign-in button yourself. If ${provider.name} shows an account chooser, pick ${provider.username} and no other account; if it asks to sign in, call request_login on its page with username "${provider.username}". Back on ${resolution.site}, check which account the page shows.`,
+    `Nothing was filled. The user signs in to ${resolution.site} with the ${provider.name} account ${account}${resolution.saved ? ', saved to their vault for this site' : ''}.`,
+    `Click the site's ${provider.name} sign-in button yourself. If ${provider.name} shows an account chooser, pick ${account} and no other account; if it asks to sign in, call request_login on its page with username "${account}". Back on ${resolution.site}, check which account the page shows.`,
   ].join('\n')
 }
 
 /** Where the values came from and what was kept for later, by account. */
-function accountLines(account: LoginFillAccount | undefined): string[] {
+function accountLines(account: LoginFillAccount | undefined, named: Name): string[] {
   if (!account) return []
   const lines: string[] = []
-  if (account.source === 'user' && account.saved && account.username) lines.push(`The user saved this to their vault as account ${account.username} on ${account.site}.`)
+  if (account.source === 'user' && account.saved && account.username) lines.push(`The user saved this to their vault as account ${named(account.username)} on ${account.site}.`)
   if (account.held.length) {
     const labels = account.held.map((label) => `"${label}"`).join(', ')
     lines.push(account.username
-      ? `The user also entered ${labels} for a later step; the host holds it for account ${account.username}. When the page asks for it, call request_login with username "${account.username}" and map that field.`
+      ? `The user also entered ${labels} for a later step; the host holds it for account ${named(account.username)}. When the page asks for it, call request_login with username "${named(account.username)}" and map that field.`
       : `The user also entered ${labels} for a later step; the host holds it. When the page asks for it, call request_login and map that field.`)
   }
   return lines
 }
 
-/** The tool result for how the request ended: observations, never values. */
-export function formatLoginResolution(resolution: LoginResolution): { content: Array<{ type: 'text'; text: string }>; isError?: boolean } {
+/**
+ * The tool result for how the request ended: observations, never values.
+ * `named` wraps each username the host names (see keptSpans).
+ */
+export function formatLoginResolution(resolution: LoginResolution, named: Name = plain): { content: Array<{ type: 'text'; text: string }>; isError?: boolean } {
   if (resolution.type === 'manual') {
     return { content: [{ type: 'text', text: 'The user signed in on the page themselves and is done. Take a browser snapshot to see the current state.' }] }
   }
-  if (resolution.type === 'accounts') return { content: [{ type: 'text', text: formatAccounts(resolution) }] }
-  if (resolution.type === 'via') return { content: [{ type: 'text', text: formatVia(resolution) }] }
+  if (resolution.type === 'accounts') return { content: [{ type: 'text', text: formatAccounts(resolution, named) }] }
+  if (resolution.type === 'via') return { content: [{ type: 'text', text: formatVia(resolution, named) }] }
 
   const { origin, outcomes, lost, submitted, submitError, observation, changedSecrets, pageActivity, account } = resolution
   const filled = outcomes.filter((outcome) => outcome.status === 'filled' || outcome.status === 'changed')
+  const unconfirmed = outcomes.some((outcome) => outcome.status === 'unconfirmed')
   const name = (outcome: (typeof outcomes)[number]) => `${outcome.ref} "${outcome.label}" (${outcome.kind})`
-  const from = account?.source === 'vault' ? `from the saved account${account.username ? ` ${account.username}` : ''}` : "with the user's input"
+  const from = account?.source === 'vault' ? `from the saved account${account.username ? ` ${named(account.username)}` : ''}` : "with the user's input"
   const lines: string[] = [
     filled.length
       ? `Filled ${filled.length} of ${outcomes.length} field${outcomes.length === 1 ? '' : 's'} on ${origin} ${from}: ${filled.map(name).join(', ')}.`
-      : `No field was filled on ${origin}.`,
-    ...accountLines(account),
+      : unconfirmed ? `No write on ${origin} was confirmed.` : `No field was filled on ${origin}.`,
+    ...accountLines(account, named),
   ]
   for (const outcome of outcomes) {
     if (outcome.status === 'changed') lines.push(`${outcome.ref} read back different from what the user entered (the page changed it as it was written).`)
     if (outcome.boxes) lines.push(`${outcome.ref}: the code went into ${outcome.boxes} one-character boxes.`)
     if (outcome.status === 'skipped') lines.push(`${name(outcome)} was left empty by the user.`)
     if (outcome.status === 'failed') lines.push(`${name(outcome)} was not filled: ${outcome.problem ?? 'the write failed'}.`)
+    if (outcome.status === 'unconfirmed') lines.push(`${name(outcome)}: ${outcome.problem ?? 'the write was sent and returned no answer'}.`)
   }
   for (const lostField of lost) {
     if (lostField.state === 'detached') lines.push(`Just before the submit, ${lostField.ref} was no longer in its document.`)

@@ -3258,7 +3258,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       await this.fetch(`/inputs/${encodeURIComponent(body.toolUseId)}/resolve`, { method: 'POST', body: '{}' })
       this.loginFillsInFlight.delete(body.toolUseId)
       const filled = body.values.filter(Boolean).length
-      return new Response(JSON.stringify({ success: true, filled, failed: 0, submitted: true, problems: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      const outcomes = body.values.map((value: string) => (value ? 'filled' : 'skipped'))
+      return new Response(JSON.stringify({ success: true, filled, failed: 0, outcomes, submitted: true, problems: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
 
     if (fetchPath === '/inputs/pending') {

@@ -215,6 +215,29 @@ describe('saveAccount', () => {
     expect((await getOwnedAccount(null, account.id))?.rejectedAt).toBeNull()
   })
 
+  it('signs in with its password again once the user saves one, no longer through the provider', async () => {
+    const google = await saveAccount({ owner: null, site: 'accounts.google.com', origin: 'https://accounts.google.com', username: 'me@gmail.com' })
+    const { account } = await saveAccount({ owner: null, site: 'medium.com', origin: 'https://medium.com', username: 'me@gmail.com', viaAccountId: google.account.id })
+    // Another part keeps the provider sign-in; a password ends it.
+    expect((await saveAccount({ owner: null, site: 'medium.com', origin: 'https://medium.com', username: 'me@gmail.com', values: { 'text:workspace': 'acme' } })).account.via?.id).toBe(google.account.id)
+    const saved = await saveAccount({ owner: null, site: 'medium.com', origin: 'https://medium.com', username: 'me@gmail.com', values: { password: 'pw' } })
+    expect(saved.account).toMatchObject({ id: account.id, via: null, parts: ['password', 'text:workspace'] })
+  })
+
+  it('keeps a provider account named in the card one account through an email-first sign-in', async () => {
+    const named = await saveAccount({ owner: null, site: 'google.com', origin: 'https://google.com', username: 'me@gmail.com' })
+    const medium = await saveAccount({ owner: null, site: 'medium.com', origin: 'https://medium.com', username: 'me@gmail.com', viaAccountId: named.account.id })
+    await grantAccount({ accountId: named.account.id, agentSlug: 'agent-a', grantedBy: null })
+    // The email step saves the username alone; the password step comes after.
+    const email = await saveAccount({ owner: null, site: 'accounts.google.com', origin: 'https://accounts.google.com', username: 'me@gmail.com' })
+    expect(email).toMatchObject({ created: false, account: { id: named.account.id, site: 'accounts.google.com', parts: [] } })
+    const password = await saveAccount({ owner: null, site: 'accounts.google.com', origin: 'https://accounts.google.com', username: 'me@gmail.com', values: { password: 'pw' } })
+    expect(password.account).toMatchObject({ id: named.account.id, parts: ['password'] })
+    expect(await listOwnedAccounts(null)).toHaveLength(2)
+    expect((await getOwnedAccount(null, medium.account.id))?.via?.id).toBe(named.account.id)
+    expect(await listAccountAgentSlugs(named.account.id)).toEqual(['agent-a'])
+  })
+
   it('switches an account to sign in through a provider: its password goes, other parts stay', async () => {
     const google = await saveAccount({ owner: null, site: 'accounts.google.com', origin: 'https://accounts.google.com', username: 'me@gmail.com' })
     const { account } = await saveAccount({ owner: null, site: 'app.slack.com', origin: 'https://app.slack.com', username: 'me@gmail.com', values: { password: 'pw', 'text:workspace': 'acme' } })

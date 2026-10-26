@@ -120,6 +120,19 @@ export async function fillLoginInContainer(
   return { ok: true, result: result.data }
 }
 
+/**
+ * Which located fields may hold their value after a fill: written, written and
+ * changed by the page, or sent without an answer (the page may have taken it,
+ * and submitted). Only a field the browser could not write at all (a stale
+ * ref, a disabled input) is known not to: nothing was tried with it, and what
+ * was held for it is still there for the agent's next try. Without outcomes,
+ * every field counts.
+ */
+export function fieldsWentIn(result: LoginFillResult, count: number): boolean[] {
+  const { outcomes } = result
+  return Array.from({ length: count }, (_, index) => !outcomes || (outcomes[index] !== 'failed' && outcomes[index] !== 'skipped'))
+}
+
 /** Answer the agent's parked call with a result that fills nothing (its accounts, or a provider account to use). */
 export async function answerLoginRequest(agentSlug: string, toolUseId: string, resolution: Record<string, unknown>): Promise<boolean> {
   const response = await agentRegistry.get(agentSlug).container.fetch(`/inputs/${encodeURIComponent(toolUseId)}/resolve`, {
@@ -361,10 +374,13 @@ export async function decideLoginRequest(call: LoginRequestCall): Promise<LoginD
   if (!filled.ok) return ask({ mode: 'complete', ...(identity ? { username: identity } : {}), ...(account ? { accountId: account.id } : {}), covered }, context)
 
   if (identity) rememberSignInIdentity(agentSlug, sessionId, site, identity)
-  // Saved or held for this step: either way the account's password went in.
-  if (account && context.fields.some((field, index) => field.kind === 'password' && values[index])) rememberPasswordFill(agentSlug, sessionId, account.id)
+  // Only what went into the page counts: the browser may have written none of it.
+  const wentIn = fieldsWentIn(filled.result, context.fields.length)
+  // Saved or held for this step: either way the account's password was tried.
+  if (account && context.fields.some((field, index) => field.kind === 'password' && wentIn[index])) rememberPasswordFill(agentSlug, sessionId, account.id)
   // Saved once filled: the step it was for did come.
-  if (held) await settleHeldParts({ agentSlug, sessionId, site, held, used: fromHeld, username: identity })
-  if (account) await recordAccountUse({ agentSlug, accountId: account.id, sessionId })
+  const usedHeld = fromHeld.filter((part) => context.fields.some((field, index) => partKeyOf(field) === part && wentIn[index]))
+  if (held) await settleHeldParts({ agentSlug, sessionId, site, held, used: usedHeld, username: identity })
+  if (account && wentIn.some(Boolean)) await recordAccountUse({ agentSlug, accountId: account.id, sessionId })
   return { action: 'settled' }
 }
