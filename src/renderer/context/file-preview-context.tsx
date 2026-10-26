@@ -112,7 +112,7 @@ const EMPTY_COMMENTS: FileComment[] = []
 export function FilePreviewProvider({
   children,
   sessionId: sessionIdProp,
-  commentsEnabled = true,
+  commentsEnabled = false,
 }: {
   children: ReactNode
   sessionId?: string | null

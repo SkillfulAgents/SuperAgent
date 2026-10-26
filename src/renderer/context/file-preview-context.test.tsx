@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { createElement, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { FilePreviewProvider, getPreviewTabKey, getWorkspaceFileKey, useFilePreview, type FileTab } from './file-preview-context'
 
 // Mock the route-derived location — FilePreviewProvider reads useRouteLocation and
@@ -12,7 +12,7 @@ vi.mock('@renderer/router/use-route-location', () => ({
 }))
 
 function wrapper({ children }: { children: ReactNode }) {
-  return createElement(FilePreviewProvider, null, children)
+  return <FilePreviewProvider commentsEnabled>{children}</FilePreviewProvider>
 }
 
 function readOnlyWrapper({ children }: { children: ReactNode }) {
@@ -427,6 +427,13 @@ describe('FilePreviewContext', () => {
       expect(result.current.commentsFor('/workspace/a.md', 'agent-1')).toEqual([])
       expect(result.current.commentsFor('/workspace/a.md', 'agent-2')[0])
         .toMatchObject({ agentSlug: 'agent-2', text: 'theirs', anchor: { kind: 'file' } })
+    })
+
+    it('keeps comments off unless the view turns them on', () => {
+      const { result } = renderHook(() => useFilePreview(), {
+        wrapper: ({ children }: { children: ReactNode }) => <FilePreviewProvider>{children}</FilePreviewProvider>,
+      })
+      expect(result.current.commentsEnabled).toBe(false)
     })
 
     it('ignores comments when the preview is read-only', () => {
