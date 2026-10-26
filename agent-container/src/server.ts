@@ -2860,11 +2860,18 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
   // it never observed (idle eviction + --resume, container restart — the live
   // process_restarted broadcast fires before any subscriber exists) would
   // otherwise keep bookkeeping for tasks that died with the old process.
+  // turn_in_flight and background_tasks: what the session is doing now, for
+  // a client that holds none of it (a host that restarted mid-turn and has
+  // no live state). Without them a turn parked on the user sends nothing
+  // more, and the host reads the session as idle until the turn ends.
+  const backgroundTasks = sessionManager.getBackgroundTasksSnapshot(sessionId);
   ws.send(JSON.stringify({
     type: 'system',
     subtype: 'capabilities',
     session_state_events: true,
     process_instance: sessionManager.getProcessInstanceId(sessionId),
+    turn_in_flight: sessionManager.isTurnInFlight(sessionId),
+    ...(backgroundTasks ? { background_tasks: backgroundTasks } : {}),
     timestamp: new Date(),
   }));
 

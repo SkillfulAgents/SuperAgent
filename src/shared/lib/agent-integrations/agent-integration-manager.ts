@@ -12,7 +12,8 @@ import { syncRemoteMcpAgents } from '../services/connection-sync-service'
  */
 
 import { onIntegrationAuthorizationLost, type IntegrationAuthorizationLost } from './lifecycle'
-import { containerPendingInputsSchema, integrationRequestEventSchema } from './runtime-schema'
+import { integrationRequestEventSchema } from './runtime-schema'
+import { containerPendingInputsSchema } from '@shared/lib/tools/requests/container-pending-inputs'
 import type { AgentIntegration } from './agent-integration'
 import type { AgentIntegrationRecord, IntegrationStatus, IntegrationInputEvent, IntegrationInputResult, IntegrationRoute, IntegrationSessionContext, IntegrationOutput, IntegrationResponseEvent, PreparedIntegrationInput } from './types'
 import { agentIntegrationRegistry, type AgentIntegrationRegistry } from './registry'

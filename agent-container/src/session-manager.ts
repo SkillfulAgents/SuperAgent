@@ -1090,6 +1090,12 @@ export class SessionManager extends EventEmitter {
     return this.sessions.get(sessionId)?.settlement.getState().runtime === 'busy';
   }
 
+  // The background tasks the session's process still runs, as its last
+  // background_tasks_changed listed them; null when it never sent one.
+  getBackgroundTasksSnapshot(sessionId: string): { tasks: Array<{ task_id: string }> } | null {
+    return this.sessions.get(sessionId)?.settlement.getBackgroundTasksSnapshot() ?? null;
+  }
+
   // Broadcast an arbitrary message to all subscribers of a session
   broadcast(sessionId: string, message: unknown): void {
     const sessionData = this.sessions.get(sessionId);

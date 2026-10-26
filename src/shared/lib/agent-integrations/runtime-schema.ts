@@ -9,10 +9,3 @@ export const integrationRequestEventSchema = z.discriminatedUnion('type', [
     scope: z.object({ agentSlug: z.string().optional(), sessionId: z.string().optional() }),
   }),
 ])
-
-/** The container's `GET /inputs/pending`: the requests its tools are parked on. */
-export const containerPendingInputsSchema = z.array(z.object({
-  toolUseId: z.string().min(1),
-  inputType: z.string(),
-  sessionId: z.string().optional(),
-}))

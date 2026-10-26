@@ -132,6 +132,8 @@ export class SessionSettlementTracker {
   // session forever (the snapshot self-heal clears it).
   private edgeTaskIds = new Set<string>();
   private snapshotTaskIds: Set<string> | null = null;
+  // The latest snapshot's entries, for a client that attaches later (see getBackgroundTasksSnapshot).
+  private snapshotTasks: BackgroundTasksSnapshot['tasks'] | null = null;
   private awaitingWakeSince: number | null = null;
   private readonly wakeGraceMs: number;
 
@@ -155,6 +157,7 @@ export class SessionSettlementTracker {
   resetBackgroundTasks(): void {
     this.edgeTaskIds.clear();
     this.snapshotTaskIds = null;
+    this.snapshotTasks = null;
     this.awaitingWakeSince = null;
   }
 
@@ -239,6 +242,7 @@ export class SessionSettlementTracker {
           if (!snapshot) return;
           const hadOpenWork = this.openBackgroundTaskCount > 0;
           this.snapshotTaskIds = snapshot.taskIds;
+          this.snapshotTasks = snapshot.tasks;
           // Self-heal: an edge-tracked task the SDK no longer lists has
           // finished — its terminal signal normally follows within a frame
           // and no-ops, but if that signal is missed the task would pin the
@@ -303,6 +307,18 @@ export class SessionSettlementTracker {
       return false;
     }
     return true;
+  }
+
+  /**
+   * The SDK's latest background task list, less the tasks that ended since,
+   * in the frame's own shape: what a client attaching now needs to know is
+   * still running when it holds none of this itself (a host that restarted).
+   * Null until the process has sent a list.
+   */
+  getBackgroundTasksSnapshot(): { tasks: BackgroundTasksSnapshot['tasks'] } | null {
+    const live = this.snapshotTaskIds;
+    if (!live || !this.snapshotTasks) return null;
+    return { tasks: this.snapshotTasks.filter((task) => live.has(task.task_id)) };
   }
 
   /** Introspection for logging and tests. */

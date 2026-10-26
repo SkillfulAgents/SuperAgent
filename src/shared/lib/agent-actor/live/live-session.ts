@@ -26,6 +26,8 @@ import type { AgentComputerUse } from '@shared/lib/computer-use/agent-permission
 import { classifyResult } from '@shared/lib/container/result-classification'
 import { inferOomSigkillFatal } from '@shared/lib/container/runtime-death'
 import { parseBackgroundTasksChanged } from '@shared/lib/container/background-tasks-changed'
+import { containerPendingInputsSchema } from '@shared/lib/tools/requests/container-pending-inputs'
+import { getBlockingUserInputRequestKindForInputType } from '@shared/lib/tools/user-input-tools'
 import { parseCommandLifecycle } from '@shared/lib/container/command-lifecycle'
 import { mergeCanonicalSlashCommands } from '@shared/lib/container/slash-commands'
 import { credentialSource } from '@shared/lib/llm-provider/connection-runtime'
@@ -1175,6 +1177,7 @@ export class LiveSession {
         // It names the process too: the path that catches a replacement we
         // never saw (a cold resume announces it before anyone subscribes).
         this.background.adoptProcessInstance(content.process_instance)
+        this.adoptContainerState(content)
         return
       case 'session_state_changed':
         this.runtimeStateChanged(content.state)
@@ -1218,11 +1221,16 @@ export class LiveSession {
     this.waitingBackground = false
     // The wake a stopped task was waiting for: the runtime settles it now.
     this.cancelSettleAfterStop()
-    if (this.isActive) return
     // A turn we didn't start (a queued message picked up after an
     // out-of-order idle): heal. The prior result guard stays: some runtimes
     // emit a stray running → idle pair with no new result, and clearing it
     // would leave the session active until disconnect.
+    this.adoptRunningTurn()
+  }
+
+  /** A turn runs that this state never saw start: mark it active, as a send would have. */
+  private adoptRunningTurn(): void {
+    if (this.isActive) return
     this.isActive = true
     this.response.newTurn()
     this.response.beginStreamedText()
@@ -1231,6 +1239,54 @@ export class LiveSession {
     this.publish({ type: 'session_active', isActive: true })
     // As in markActive: only waits that survive a new turn.
     this.syncAwaiting()
+  }
+
+  /**
+   * What the container's handshake says the session is doing now. A host
+   * that restarted (a Durable Object reset on deploy) holds no live state,
+   * and a turn parked on the user sends nothing more: without this it reads
+   * as idle until the turn ends, with no card to answer. The list of
+   * background tasks replaces the bookkeeping the restart lost.
+   *
+   * Only ever raises: a handshake that says no turn runs leaves a session the
+   * host marked active alone (a send marks it before the container's turn
+   * starts). A session left with background work only is not marked waiting:
+   * nothing here saw the turn's result, which the settle that ends the wait
+   * needs.
+   */
+  private adoptContainerState(content: FrameContent): void {
+    const levelSet = content.background_tasks === undefined ? null : parseBackgroundTasksChanged(content.background_tasks)
+    if (levelSet) this.subagents.markBackground(this.background.applyLevelSet(levelSet))
+    if (content.turn_in_flight !== true) return
+    this.adoptRunningTurn()
+    this.recoverParkedInputs()
+  }
+
+  /**
+   * Re-register the asks the container reports parked for this session (its
+   * `GET /inputs/pending`): the one-shot request events went to a host that
+   * is gone. The container is the authority on what it waits for. Marked
+   * `recovered`, as transcript recovery marks its own.
+   */
+  private recoverParkedInputs(): void {
+    background(
+      (async () => {
+        const response = await this.ctx.runs.container.fetch('/inputs/pending')
+        if (!response.ok) return
+        const parked = containerPendingInputsSchema.parse(await response.json())
+        if (!this.ctx.isCurrent() || !this.isActive) return
+        const mine = parked.flatMap(({ toolUseId, inputType, sessionId }) => {
+          const kind = sessionId === this.ctx.sessionId ? getBlockingUserInputRequestKindForInputType(inputType) : undefined
+          return kind ? [{ toolUseId, kind }] : []
+        })
+        if (mine.length === 0) return
+        this.toolCalls.recoverParkedRequests(mine)
+        this.syncAwaiting()
+      })().catch((error: unknown) => {
+        console.warn(`[LiveSession] Could not read the container's parked inputs for ${this.ctx.sessionId}:`, error)
+      }),
+      { name: 'live-session.recover-parked-inputs' },
+    )
   }
 
   private resultFrame(content: FrameContent): void {

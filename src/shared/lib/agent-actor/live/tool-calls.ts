@@ -268,9 +268,18 @@ export class ToolCalls {
    * carry no payload, so clients render them from the transcript.
    */
   recoverParked(unresolved: Array<{ toolUseId: string; toolName: string }>): void {
-    for (const { toolUseId, toolName } of unresolved) {
-      const kind = getBlockingUserInputRequestKind(toolName)
-      if (!kind || this.ctx.requests.getOpenRequest(toolUseId)) continue
+    this.recoverParkedRequests(
+      unresolved.flatMap(({ toolUseId, toolName }) => {
+        const kind = getBlockingUserInputRequestKind(toolName)
+        return kind ? [{ toolUseId, kind }] : []
+      }),
+    )
+  }
+
+  /** Re-register parked asks by kind (the container's own list names them so), as `recoverParked` does. */
+  recoverParkedRequests(parked: Array<{ toolUseId: string; kind: StreamRequestKind }>): void {
+    for (const { toolUseId, kind } of parked) {
+      if (this.ctx.requests.getOpenRequest(toolUseId)) continue
       this.register(kind, toolUseId, { recovered: true })
     }
   }

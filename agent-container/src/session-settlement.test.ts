@@ -334,6 +334,38 @@ describe('SessionSettlementTracker — completion-wake grace', () => {
   });
 });
 
+describe('SessionSettlementTracker — the background task list for a late attach', () => {
+  it('is null until the process sends a list', () => {
+    const tracker = settledTracker({ wakeGraceMs: 0 });
+    tracker.handleMessage(taskStarted('t1'), T0);
+    expect(tracker.getBackgroundTasksSnapshot()).toBeNull();
+  });
+
+  it('is the latest list, in the frame shape, less the tasks that ended since', () => {
+    const tracker = settledTracker({ wakeGraceMs: 0 });
+    tracker.handleMessage({
+      type: 'system',
+      subtype: 'background_tasks_changed',
+      tasks: [
+        { task_id: 't1', task_type: 'local_bash', description: 'Build' },
+        { task_id: 't2', task_type: 'local_agent', description: 'Research' },
+      ],
+    }, T0);
+    tracker.handleMessage(taskUpdated('t2', 'failed'), T0);
+
+    expect(tracker.getBackgroundTasksSnapshot()).toEqual({
+      tasks: [{ task_id: 't1', task_type: 'local_bash', description: 'Build' }],
+    });
+  });
+
+  it('a replaced process has no list: its tasks died with the old one', () => {
+    const tracker = settledTracker({ wakeGraceMs: 0 });
+    tracker.handleMessage(snapshot(['t1']), T0);
+    tracker.resetBackgroundTasks();
+    expect(tracker.getBackgroundTasksSnapshot()).toBeNull();
+  });
+});
+
 describe('parseBackgroundTasksChanged', () => {
   it('parses a valid snapshot', () => {
     const parsed = parseBackgroundTasksChanged({
