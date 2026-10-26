@@ -36,17 +36,16 @@ async function setup(save = vi.fn()) {
   expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
   await userEvent.click(screen.getByRole('button', { name: 'Dropbox' }))
   expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
-  expect(screen.queryByLabelText('Name')).not.toBeInTheDocument()
-  expect(screen.queryByRole('button', { name: 'Select folder' })).not.toBeInTheDocument()
+  expect(screen.queryByLabelText('Set folder name')).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /^Select folder location/ })).not.toBeInTheDocument()
   return save
 }
 async function chooseRoot(account = 'Work Dropbox') {
-  await userEvent.click(screen.getByLabelText('Dropbox account', { exact: true }))
-  await userEvent.click(screen.getByRole('option', { name: account }))
+  await userEvent.click(screen.getByRole('radio', { name: account }))
   await userEvent.click(screen.getByRole('button', { name: 'Next' }))
-  await userEvent.click(screen.getByRole('button', { name: 'Select folder' }))
-  await screen.findByText('No subfolders')
-  await userEvent.click(screen.getByRole('button', { name: 'Use Dropbox root' }))
+  await userEvent.click(screen.getByRole('button', { name: /^Select folder location/ }))
+  await screen.findByText('No folders in Dropbox')
+  await userEvent.click(screen.getByRole('button', { name: 'Use all of Dropbox' }))
 }
 
 describe('Dropbox volume creation', () => {
@@ -57,11 +56,11 @@ describe('Dropbox volume creation', () => {
     </QueryClientProvider>)
     await userEvent.click(screen.getByRole('button', { name: 'Dropbox' }))
     // Nothing to choose from, so no account list.
-    expect(screen.queryByLabelText('Dropbox account', { exact: true })).not.toBeInTheDocument()
+    expect(screen.queryByRole('radiogroup', { name: 'Dropbox account' })).not.toBeInTheDocument()
     expect(screen.getByText('Sign in to Dropbox, then choose a folder to add.')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Connect Dropbox' }))
     expect(await screen.findByTestId('selected-volume-account')).toHaveTextContent('New Dropbox')
-    expect(screen.getByRole('button', { name: 'Select folder' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Select folder location/ })).toBeInTheDocument()
   })
 
   it('chooses a lone account for you', async () => {
@@ -70,7 +69,7 @@ describe('Dropbox volume creation', () => {
       <VolumeSettingsDialog onSave={vi.fn()} onClose={vi.fn()} />
     </QueryClientProvider>)
     await userEvent.click(screen.getByRole('button', { name: 'Dropbox' }))
-    expect(screen.getByLabelText('Dropbox account', { exact: true })).toHaveTextContent('Work Dropbox')
+    expect(screen.getByRole('radio', { name: 'Work Dropbox' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Connect another Dropbox account' })).toBeInTheDocument()
   })
@@ -80,11 +79,11 @@ describe('Dropbox volume creation', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Connect another Dropbox account' }))
     expect(state.connects).toEqual(['dropbox'])
     // With accounts to choose from, the new one is chosen but the step waits for Next.
-    await waitFor(() => expect(screen.getByLabelText('Dropbox account', { exact: true })).toHaveTextContent('New Dropbox'))
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'New Dropbox' })).toHaveAttribute('aria-checked', 'true'))
     await userEvent.click(screen.getByRole('button', { name: 'Next' }))
-    await userEvent.click(screen.getByRole('button', { name: 'Select folder' }))
-    await screen.findByText('No subfolders')
-    await userEvent.click(screen.getByRole('button', { name: 'Use Dropbox root' }))
+    await userEvent.click(screen.getByRole('button', { name: /^Select folder location/ }))
+    await screen.findByText('No folders in Dropbox')
+    await userEvent.click(screen.getByRole('button', { name: 'Use all of Dropbox' }))
     await userEvent.click(screen.getByRole('button', { name: 'Create drive' }))
     expect(save).toHaveBeenCalledWith({ name: 'Dropbox', source: { type: 'dropbox', config: { accountId: 'new', path: '' } }, visibility: 'private' })
   })
@@ -94,8 +93,7 @@ describe('Dropbox volume creation', () => {
     await chooseRoot()
     expect(screen.getByRole('button', { name: 'Create drive' })).toBeEnabled()
     await userEvent.click(screen.getByRole('button', { name: 'Back' }))
-    await userEvent.click(screen.getByLabelText('Dropbox account', { exact: true }))
-    await userEvent.click(screen.getByRole('option', { name: 'Personal Dropbox' }))
+    await userEvent.click(screen.getByRole('radio', { name: 'Personal Dropbox' }))
     await userEvent.click(screen.getByRole('button', { name: 'Next' }))
     expect(screen.queryByTestId('selected-volume-folder')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Create drive' })).toBeDisabled()
@@ -104,16 +102,16 @@ describe('Dropbox volume creation', () => {
   it('retains a selected folder on cancellation and preserves it when saving fails', async () => {
     const save = await setup(vi.fn().mockRejectedValue(new Error('Connection expired')))
     await chooseRoot()
-    await userEvent.clear(screen.getByLabelText('Name', { exact: true }))
-    await userEvent.type(screen.getByLabelText('Name', { exact: true }), 'My shared files')
+    await userEvent.clear(screen.getByLabelText('Set folder name', { exact: true }))
+    await userEvent.type(screen.getByLabelText('Set folder name', { exact: true }), 'My shared files')
     await userEvent.click(screen.getByRole('button', { name: 'Back' }))
     await userEvent.click(screen.getByRole('button', { name: 'Next' }))
-    await userEvent.click(screen.getByRole('button', { name: 'Change folder' }))
+    await userEvent.click(screen.getByRole('button', { name: /^Select folder location/ }))
     await userEvent.click(within(screen.getByTestId('dropbox-folder-picker')).getByRole('button', { name: 'Cancel' }))
     expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent('Entire Dropbox')
     await userEvent.click(screen.getByRole('button', { name: 'Create drive' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Connection expired')
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ name: 'My shared files', source: { type: 'dropbox', config: { accountId: 'first', path: '' } } }))
-    expect(screen.getByLabelText('Name', { exact: true })).toHaveValue('My shared files')
+    expect(screen.getByLabelText('Set folder name', { exact: true })).toHaveValue('My shared files')
   })
 })

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -40,22 +40,20 @@ async function setup(save = vi.fn()) {
   </QueryClientProvider>)
   await userEvent.click(screen.getByRole('button', { name: 'Google Drive' }))
   expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
-  expect(screen.queryByLabelText('Name')).not.toBeInTheDocument()
+  expect(screen.queryByLabelText('Set folder name')).not.toBeInTheDocument()
   return save
 }
 async function chooseAccount(account = 'Work Drive') {
-  await userEvent.click(screen.getByLabelText('Google Drive account', { exact: true }))
-  await userEvent.click(screen.getByRole('option', { name: account }))
+  await userEvent.click(screen.getByRole('radio', { name: account }))
   await userEvent.click(screen.getByRole('button', { name: 'Next' }))
 }
+// The picker opens in My Drive; Team is opened, and the folder you are in is the one used.
 async function chooseTeam() {
-  await userEvent.click(screen.getByRole('button', { name: 'Select folder' }))
-  await screen.findByText('Shared drive')
-  expect(screen.getByRole('button', { name: 'Use this folder' })).toBeDisabled()
-  await userEvent.click(screen.getByRole('button', { name: 'My Drive' }))
-  await userEvent.click(await screen.findByRole('button', { name: 'Team' }))
-  await screen.findByText('No subfolders')
-  await userEvent.click(screen.getByRole('button', { name: 'Use this folder' }))
+  await userEvent.click(screen.getByRole('button', { name: /^Select folder location/ }))
+  await userEvent.click(await screen.findByRole('button', { name: 'Open Team' }))
+  await screen.findByText('No folders in Team')
+  expect(within(screen.getByRole('navigation', { name: 'Folder path' })).getByText('Team')).toHaveAttribute('aria-current', 'location')
+  await userEvent.click(screen.getByRole('button', { name: 'Use “Team”' }))
 }
 
 describe('Google Drive volume creation', () => {
@@ -66,7 +64,7 @@ describe('Google Drive volume creation', () => {
     expect(screen.getByRole('button', { name: 'Create drive' })).toBeDisabled()
     await chooseTeam()
     expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent('My Drive / Team')
-    expect(screen.getByLabelText('Name', { exact: true })).toHaveValue('Team')
+    expect(screen.getByLabelText('Set folder name', { exact: true })).toHaveValue('Team')
     await userEvent.click(screen.getByRole('button', { name: 'Create drive' }))
     expect(save).toHaveBeenCalledWith({ name: 'Team', source: { type: 'googledrive', config: { accountId: 'first', folderId: 'team', folderName: 'Team', driveName: 'My Drive' } }, visibility: 'private' })
   })
@@ -79,23 +77,39 @@ describe('Google Drive volume creation', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Back' }))
     await chooseAccount('Personal Drive')
     expect(screen.queryByTestId('selected-volume-folder')).not.toBeInTheDocument()
-    expect(screen.getByLabelText('Name', { exact: true })).toHaveValue('')
+    expect(screen.getByLabelText('Set folder name', { exact: true })).toHaveValue('')
     expect(screen.getByRole('button', { name: 'Create drive' })).toBeDisabled()
+  })
+
+  it('lists accounts as radios, and picks a selected folder without opening it', async () => {
+    await setup()
+    const accounts = screen.getByRole('radiogroup', { name: 'Google Drive account' })
+    expect(within(accounts).getAllByRole('radio').map(radio => radio.textContent)).toEqual(['Work Drive', 'Personal Drive'])
+    await chooseAccount()
+    await userEvent.click(screen.getByRole('button', { name: /^Select folder location/ }))
+    // My Drive itself can be used, or a folder in it selected and used without opening it.
+    expect(await screen.findByRole('button', { name: 'Use “My Drive”' })).toBeEnabled()
+    await userEvent.click(screen.getByRole('button', { name: 'Team' }))
+    expect(screen.getByRole('button', { name: 'Team' })).toHaveAttribute('aria-pressed', 'true')
+    await userEvent.click(screen.getByRole('button', { name: 'Use “Team”' }))
+    expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent('My Drive / Team')
   })
 
   it('continues with a newly connected account and steps back up through the picker', async () => {
     await setup()
     await userEvent.click(screen.getByRole('button', { name: 'Connect another Google Drive account' }))
     expect(state.connects).toEqual(['googledrive'])
-    await waitFor(() => expect(screen.getByLabelText('Google Drive account', { exact: true })).toHaveTextContent('New Drive'))
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'New Drive' })).toHaveAttribute('aria-checked', 'true'))
     await userEvent.click(screen.getByRole('button', { name: 'Next' }))
-    await userEvent.click(screen.getByRole('button', { name: 'Select folder' }))
-    expect(screen.getByRole('button', { name: 'Parent folder' })).toBeDisabled()
-    await userEvent.click(await screen.findByRole('button', { name: 'My Drive' }))
+    await userEvent.click(screen.getByRole('button', { name: /^Select folder location/ }))
     await screen.findByRole('button', { name: 'Team' })
-    expect(screen.getByRole('button', { name: 'Use this folder' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Use “My Drive”' })).toBeEnabled()
+    // Up to the top, where My Drive and the shared drives are: a drive is chosen there, the top itself can't be.
     await userEvent.click(screen.getByRole('button', { name: 'Parent folder' }))
     await screen.findByText('Shared drive')
-    expect(screen.getByRole('button', { name: 'Use this folder' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Parent folder' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Select a folder' })).toBeDisabled()
+    await userEvent.click(screen.getByRole('button', { name: 'Shared drive' }))
+    expect(screen.getByRole('button', { name: 'Use “Shared drive”' })).toBeEnabled()
   })
 })

@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Plus } from 'lucide-react'
+import { format } from 'date-fns'
+import { cn } from '@shared/lib/utils/cn'
 import type { useConnectedAccountsByToolkit } from '@renderer/hooks/use-connected-accounts'
 import { useConnectAccount, type NewApiConnection } from '@renderer/hooks/use-connect-account'
 import { Button } from '@renderer/components/ui/button'
-import { Label } from '@renderer/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select'
 import { LoginButton } from '@renderer/components/connections/login-button'
 import { LoginWindowCancel } from '@renderer/components/connections/login-window-cancel'
 import { VolumeDetailsFields, VolumeSetupFooter } from './volume-setup-layout'
@@ -48,6 +48,8 @@ export function VolumeAccountStep({ toolkit, label, accounts, accountId, active,
   }, [advanceTo, accountId, active, onNext])
 
   const lone = loaded && list.length === 1 && list[0].status === 'active' ? list[0].id : null
+  // Two connections can carry the same name (one account connected twice); their time tells them apart.
+  const shared = new Set(list.map(item => item.displayName).filter((name, index, names) => names.indexOf(name) !== index))
   useEffect(() => {
     if (lone && !accountId) onSelect(lone)
   }, [lone, accountId, onSelect])
@@ -56,15 +58,13 @@ export function VolumeAccountStep({ toolkit, label, accounts, accountId, active,
     {accounts.isLoading && <p role="status" className="text-sm text-muted-foreground">Loading {label} accounts…</p>}
     {accounts.error && <div><p role="alert" className="text-sm text-destructive">Could not load {label} accounts.</p><Button type="button" variant="ghost" size="sm" onClick={() => { void accounts.refetch() }}>Try again</Button></div>}
     {hasAccounts && <div className="space-y-2">
-      <Label htmlFor={`volume-${toolkit}-account`}>{label} account</Label>
-      <Select value={accountId} onValueChange={onSelect}>
-        <SelectTrigger id={`volume-${toolkit}-account`}><SelectValue placeholder="Select an account" /></SelectTrigger>
-        <SelectContent>
-          {list.map(item => <SelectItem key={item.id} value={item.id} disabled={item.status !== 'active'}>
-            {item.displayName}{item.status !== 'active' ? ' (reconnect in Connections)' : ''}
-          </SelectItem>)}
-        </SelectContent>
-      </Select>
+      <p id={`volume-${toolkit}-account`} className="text-sm font-medium">{label} account</p>
+      {/* Every account in view at once, as Settings' provider choices are, rather than behind a dropdown. */}
+      <div role="radiogroup" aria-labelledby={`volume-${toolkit}-account`} className="space-y-2">
+        {list.map(item => <AccountOption key={item.id} name={item.displayName} selected={item.id === accountId} disabled={item.status !== 'active'}
+          detail={item.status !== 'active' ? 'Reconnect it in Connections to use it' : connectedOn(item.createdAt, shared.has(item.displayName))}
+          onSelect={() => onSelect(item.id)} />)}
+      </div>
     </div>}
     <div className="space-y-1">
       <LoginButton type="button" variant={hasAccounts ? 'outline' : 'default'} className="w-full" icon={<Plus className="h-4 w-4" />}
@@ -78,6 +78,32 @@ export function VolumeAccountStep({ toolkit, label, accounts, accountId, active,
     </div>
     <VolumeSetupFooter onBack={onBack} onCancel={onCancel} isSaving={false} disabled={!active} submitLabel="Next" />
   </form>
+}
+
+/** When an account was connected, to the minute where two share a name; nothing when the date is missing. */
+function connectedOn(createdAt: string | undefined, withTime: boolean): string | null {
+  const at = createdAt ? new Date(createdAt) : null
+  return at && !Number.isNaN(at.getTime()) ? `Connected ${format(at, withTime ? 'MMM d, yyyy, h:mm a' : 'MMM d, yyyy')}` : null
+}
+
+/** One connected account in the account step's list: a radio card in Team Brain set-up's choice style (brand border and dot when chosen). */
+function AccountOption({ name, detail, selected, disabled, onSelect }: {
+  name: string; detail: string | null; selected: boolean; disabled: boolean; onSelect: () => void
+}) {
+  const id = useId()
+  // Named by the account alone; when it was connected is its description.
+  return <button type="button" role="radio" aria-checked={selected} disabled={disabled} onClick={onSelect}
+    aria-labelledby={`${id}-name`} aria-describedby={detail ? `${id}-detail` : undefined}
+    className={cn('flex w-full items-start gap-3 rounded-lg border bg-background px-4 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+      selected ? 'border-brand ring-1 ring-brand' : disabled ? 'cursor-not-allowed opacity-60' : 'hover:border-foreground/25')}>
+    <span aria-hidden className={cn('grid size-[18px] shrink-0 place-items-center rounded-full border-[1.5px] bg-background', selected ? 'border-brand' : 'border-foreground/30')}>
+      {selected && <span className="size-2.5 rounded-full bg-brand" />}
+    </span>
+    <span className="min-w-0 flex-1">
+      <span id={`${id}-name`} className="block truncate text-sm font-medium">{name}</span>
+      {detail && <span id={`${id}-detail`} className="mt-0.5 block text-[11px] text-muted-foreground">{detail}</span>}
+    </span>
+  </button>
 }
 
 /** The details step of a remote source's setup: the chosen account, the name and access

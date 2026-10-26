@@ -37,7 +37,7 @@ test('S3 setup explains missing privileges, rechecks edits, and creates a valida
   await expect(page.getByTestId('s3-validation-result')).toHaveCount(0)
   await page.getByRole('button', { name: 'Test connection', exact: true }).click()
   await page.getByRole('button', { name: 'Continue', exact: true }).click()
-  await expect(page.getByLabel('Name', { exact: true })).toHaveValue('shared')
+  await expect(page.getByLabel('Set folder name', { exact: true })).toHaveValue('shared')
   await page.getByRole('button', { name: 'Create drive', exact: true }).click()
   await expect(page.getByTestId('volume-settings-dialog')).toHaveCount(0)
   expect(bodies).toEqual([expect.objectContaining({ name: 'shared', type: 's3', config: expect.objectContaining({ bucket: 'example-bucket', prefix: 'shared', region: 'auto' }) })])
