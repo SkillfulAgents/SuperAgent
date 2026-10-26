@@ -120,6 +120,11 @@ async function judgeVolumes(slug: string) {
   return Promise.all((await getMounts(slug)).map(async row => ({ row, reason: await volumeProblem(row, slug) })))
 }
 
+/** The agent's container just started, so each of its drives is mounted with an empty cache. */
+export async function remounted(slug: string): Promise<void> {
+  for (const row of await getMounts(slug)) instantiateVolume(row, slug)?.remounted()
+}
+
 /** Settles once each of the agent's drives that is copied first has a copy, or has stopped trying for now. */
 export async function firstCopies(slug: string): Promise<void> {
   await Promise.all((await getMounts(slug)).map(row => instantiateVolume(row, slug)?.whenReady()))

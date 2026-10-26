@@ -12,7 +12,7 @@ import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { errnoCode } from '@shared/lib/agent-actor/local-file-ops'
 import { readJsonFileStrict, writeJsonFileAtomic } from '@shared/lib/utils/file-storage'
 import { LocalMountableVolume } from './local-mountable-volume'
-import type { VolumeFile } from './base-mountable-volume'
+import type { VolumeEntry, VolumeFile } from './base-mountable-volume'
 import type { VolumeAttention } from '@shared/lib/types/mount'
 import { VolumeError, VolumePreparingError } from './volume-error'
 import { serialize } from './remote-listing-cache'
@@ -34,6 +34,8 @@ const BLOB_BYTES = 8_000_000
 const PUSH_DELAY = 15_000
 /** A drive written to without pause still pushes this long after its first unpushed write. */
 const PUSH_MAX_DELAY = 120_000
+/** rclone keeps a written file's bytes until an hour after last use (its default --vfs-cache-max-age). */
+const SENT_BYTES_KEPT_MS = 60 * 60_000
 const ADDED = 'added on GitHub too'
 const CONFLICTS = new Set(['conflict markers to resolve', 'edited on GitHub, deleted here', 'deleted on GitHub, edited here', 'changed on GitHub too', ADDED])
 const emptyEdits = (): GithubEdits => ({ version: 1, unpushed: {}, held: {}, stopped: null, ignores: [], links: [], blocked: {}, markers: {} })
@@ -63,6 +65,8 @@ export class GithubSync {
   private served = new Map<string, Map<string, (string | null)[]>>()
   /** Per mount and path, what it last uploaded: its base until it reads again, since it still holds those bytes. */
   private sent = new Map<string, Map<string, string>>()
+  /** Per mount and path, the size of an upload stored as other bytes (merged or marked): rclone holds it until it downloads the file. */
+  private altered = new Map<string, Map<string, { size: number; until: number }>>()
   private policyHeld = new Map<string, string>()
   private rules = new Map<string, string>()
   /** Versions in `versions/` that GitHub lacks and a served or sent record names: a later upload may merge against one. */
@@ -320,6 +324,56 @@ export class GithubSync {
   private unsee(mount: string, name: string): void {
     this.seen(mount).delete(name)
     this.sentBy(mount).delete(name)
+    this.altered.get(mount)?.delete(name)
+  }
+
+  /** Records that the bytes kept for `mount`'s upload of `name` are not the `sent` bytes, or that they are. */
+  private storedAs(mount: string, name: string, sent: Buffer, stored: Buffer | null): void {
+    if (stored?.equals(sent)) this.altered.get(mount)?.delete(name)
+    else this.holds(mount, name, sent.length)
+  }
+
+  /** Records that `mount`'s rclone holds `size` bytes of its own for `name`, other than the copy's. */
+  private holds(mount: string, name: string, size: number): void {
+    let map = this.altered.get(mount)
+    if (!map) { map = new Map(); this.altered.set(mount, map) }
+    map.set(name, { size, until: Date.now() + SENT_BYTES_KEPT_MS })
+  }
+
+  /** The size of the bytes of its own `mount`'s rclone may still hold for `name`. */
+  private heldBy(mount: string, name: string): number | undefined {
+    const held = this.altered.get(mount)?.get(name)
+    return held && held.until >= Date.now() ? held.size : undefined
+  }
+
+  /** A mount just made by a container start holds none of the bytes earlier mounts held. */
+  remounted(mount: string): void {
+    this.altered.delete(mount)
+  }
+
+  /**
+   * The copy's entry, except for a mount whose upload of it was stored as other bytes and that has not read it since.
+   * rclone takes the entry it reads back after an upload or a rename as describing the bytes it holds, and calls any
+   * other size corruption: it deletes the file and sends its own bytes again, undoing the merge. So that mount sees
+   * the size it sent, dated a second earlier. Its listings show the stored file, so its next open finds the file
+   * changed and downloads it, and that read ends this.
+   */
+  async stat(mount: string, requested: string): Promise<VolumeEntry> {
+    await this.ready()
+    if (!this.altered.get(mount)?.size) return this.local.stat(requested)
+    const name = await this.canonical(requested)
+    const size = this.heldBy(mount, name)
+    if (size === undefined) {
+      this.altered.get(mount)?.delete(name)
+      return this.local.stat(requested)
+    }
+    const entry = await this.local.stat(requested).catch(error => {
+      if (error instanceof WorkspaceFileError && error.code === 'not-found') return null
+      throw error
+    })
+    if (entry?.kind === 'directory') return entry
+    const second = Math.floor((entry?.mtimeMs ?? Date.now()) / 1000) * 1000
+    return { name: path.posix.basename(requested), kind: 'file', size, mtimeMs: second - 1000 }
   }
 
   /** On a disk that ignores case, each part of the path as GitHub or the copy already spells it, so a push never adds a second spelling. */
@@ -410,6 +464,7 @@ export class GithubSync {
       await this.keepServed(name, sha)
       if (versions.at(-1) !== sha) this.seen(mount).set(name, versions.length ? [versions[0], sha] : [sha])
       this.sentBy(mount).delete(name)
+      this.altered.get(mount)?.delete(name)
       return this.local.read(requested)
     })
   }
@@ -465,7 +520,10 @@ export class GithubSync {
     await serialize([this.key], async () => {
       throwIfUploadAborted(signal)
       // The same bytes again, with no read since: a replayed upload, already applied.
-      if (!this.seen(mount).has(name) && this.sentBy(mount).get(name) === sha) return
+      if (!this.seen(mount).has(name) && this.sentBy(mount).get(name) === sha) {
+        this.storedAs(mount, name, upload, await this.bytes(name))
+        return
+      }
       const hold = own(this.edits.held, name)
       let out: Buffer = upload
       let conflict: string | undefined
@@ -480,7 +538,12 @@ export class GithubSync {
       } else if (needsMerge()) {
         const merged = mergePath(await bytesOf(base), upload, await this.bytes(name), this.state.base!)
         // GitHub deleted the file and the agent wrote back what it read: the delete stands.
-        if (!merged.content) { this.seen(mount).delete(name); this.sentBy(mount).set(name, await this.remember(upload)); return }
+        if (!merged.content) {
+          this.seen(mount).delete(name)
+          this.sentBy(mount).set(name, await this.remember(upload))
+          this.storedAs(mount, name, upload, null)
+          return
+        }
         out = merged.content
         conflict = merged.conflict
         label = merged.label
@@ -495,6 +558,7 @@ export class GithubSync {
       this.label(name, out, label)
       this.seen(mount).delete(name)
       this.sentBy(mount).set(name, await this.remember(upload))
+      this.storedAs(mount, name, upload, out)
       await this.saveEdits()
     })
     this.schedulePush()
@@ -525,7 +589,13 @@ export class GithubSync {
     const keep = hold ? (hold.behind !== undefined ? hold.behind : own(this.state.files, name)?.sha ?? null) : null
     const kept = await this.blob(keep)
     const marked = await serialize([this.key], async () => {
-      if ((await this.local.stat(name)).kind === 'directory') { await this.local.delete(name); return false }
+      const found = await this.local.stat(name).catch(error => {
+        // The drive dropped what this mount still holds, as when GitHub deleted a file it wrote back: already gone.
+        if (this.heldBy(mount, name) !== undefined && error instanceof WorkspaceFileError && error.code === 'not-found') return null
+        throw error
+      })
+      if (!found) { this.altered.get(mount)?.delete(name); return false }
+      if (found.kind === 'directory') { await this.local.delete(name); return false }
       // A move deletes its source only if no other write replaced it after the move read it.
       if (expected && (this.writing.has(name) || await fileBlobSha(this.target(name)) !== expected)) return false
       if (own(this.edits.held, name)) {
@@ -585,7 +655,10 @@ export class GithubSync {
       const group = randomUUID()
       const labels = own(this.edits.markers, from)
       if (labels) await serialize([this.key], async () => { this.edits.markers[to] = [...new Set([...own(this.edits.markers, to) ?? [], ...labels])] })
+      const held = this.heldBy(mount, from)
       await this.write(mount, agent, to, new Blob([new Uint8Array(bytes)]).stream(), undefined, group)
+      // rclone moves the bytes it holds for the source, which may be its own rather than the copy's.
+      if (held !== undefined) this.holds(mount, to, held)
       return this.delete(mount, agent, from, group, blobSha(bytes))
     }
     const marked = await serialize([this.key], async () => {
@@ -609,9 +682,11 @@ export class GithubSync {
         const labels = own(this.edits.markers, source)
         delete this.edits.markers[source]
         if (labels) this.edits.markers[destination] = labels
-        const versions = seen.get(source), sent = this.sentBy(mount).get(source)
+        const versions = seen.get(source), sent = this.sentBy(mount).get(source), held = this.heldBy(mount, source)
         this.unsee(mount, source)
         this.unsee(mount, destination)
+        // rclone renames the bytes it holds and takes the destination's entry as theirs.
+        if (held !== undefined) this.holds(mount, destination, held)
         if (versions) seen.set(destination, versions)
         else if (sent) this.sentBy(mount).set(destination, sent)
         else {

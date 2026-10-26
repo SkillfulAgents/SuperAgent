@@ -66,6 +66,10 @@ A refusal at an unmoved head (a protected branch, a revoked account) stops pushe
 A write merges three ways against the first version that mount was served since its last write, or what it last sent, so a teammate's change pulled meanwhile survives.
 The same holds when a pull meets a path with unpushed changes.
 Overlapping lines become conflict markers labelled with how to resolve them, and the agent gets a hint when it reads or edits the file.
+rclone reads each upload's entry back and treats any other size as corruption: it would delete the file and send its own bytes again, undoing the merge.
+So once a write is stored merged or marked, that mount's stat of the file shows the size it sent, dated a second earlier, until it reads the file again or its container restarts (at most an hour, as long as rclone keeps a written file's bytes); a rename carries this to the new path.
+That matches the bytes rclone holds; its listings show the stored file, so its next open finds the file changed and downloads it.
+A rename over an existing file arrives from rclone as a delete and then a move, so it replaces the file rather than merging.
 The drive records each label it writes in `edits.json`, and a push holds a file only while one of those labels is still in it: the same text in any other file pushes.
 An edit against a delete on either side, and a binary file changed on both sides, are held without markers.
 Deleting a conflicted file keeps GitHub's version.

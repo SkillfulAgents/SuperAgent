@@ -797,6 +797,78 @@ it('merges two mounts of one drive, and takes a replayed upload as already appli
   expect(commits).toHaveLength(1)
 })
 
+/** A write by `volume` of a file another mount changed since it read it, so the drive stores a merge of another size. */
+async function mergedWrite() {
+  const drive = await setup({ 'notes.txt': 'a\n1\nb\n2\nc\n' })
+  const other = new GithubMountableVolume('mount-2', drive.row.name, drive.row.config, drive.row.id, 'other')
+  const read = async (mount: GithubMountableVolume, name = 'notes.txt') => new Response(await (await mount.read(name)).stream()).text()
+  for (const mount of [drive.volume, other]) await read(mount)
+  await other.write('notes.txt', new Blob(['a longer first line\n1\nb\n2\nc\n']).stream())
+  const sent = 'a\n1\nb\n2\nC\n'
+  await drive.volume.write('notes.txt', new Blob([sent]).stream())
+  return { ...drive, other, read, sent, merged: 'a longer first line\n1\nb\n2\nC\n' }
+}
+const heldEntry = (name: string, size: number, stored: { mtimeMs: number }) => ({ name, kind: 'file', size, mtimeMs: Math.floor(stored.mtimeMs / 1000) * 1000 - 1000 })
+
+it('shows a mount the size it sent, a second earlier, until it reads the file its upload was merged into, across a rename', async () => {
+  const { volume, other, read, sent, merged } = await mergedWrite()
+  const stored = await other.stat('notes.txt')
+  expect(stored.size).toBe(merged.length)
+  expect(await volume.stat('notes.txt')).toEqual(heldEntry('notes.txt', sent.length, stored))
+  // rclone renames the bytes it holds, and reads the destination's entry back.
+  await volume.move('notes.txt', 'moved.txt')
+  const moved = await other.stat('moved.txt')
+  expect(await volume.stat('moved.txt')).toEqual(heldEntry('moved.txt', sent.length, moved))
+  // Its next read gets the stored file, and from then on so does its stat.
+  expect(await read(volume, 'moved.txt')).toBe(merged)
+  expect(await volume.stat('moved.txt')).toEqual(moved)
+  // An upload stored as sent shows as stored.
+  await volume.write('moved.txt', new Blob(['unmerged\n']).stream())
+  expect(await volume.stat('moved.txt')).toMatchObject({ size: 'unmerged\n'.length })
+})
+
+it('shows a mount the size it sent again when it replays an upload the drive merged, after rclone would have let it go', async () => {
+  const { sync, volume, other, read, sent, merged } = await mergedWrite()
+  const now = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 2 * 3_600_000)
+  try {
+    const stored = await other.stat('notes.txt')
+    expect(await volume.stat('notes.txt')).toEqual(stored)
+    await volume.write('notes.txt', new Blob([sent]).stream())
+    expect(await volume.stat('notes.txt')).toEqual(heldEntry('notes.txt', sent.length, stored))
+    expect(await read(other)).toBe(merged)
+  } finally { now.mockRestore(); await sync.run(true) }
+})
+
+it('forgets what a mount held once its container mounts it again, or an hour on, even across a rename', async () => {
+  const first = await mergedWrite()
+  first.volume.remounted()
+  expect(await first.volume.stat('notes.txt')).toEqual(await first.other.stat('notes.txt'))
+  await first.sync.run(true)
+  await removeGithubSync('volume')
+
+  const { sync, volume, other } = await mergedWrite()
+  const now = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 2 * 3_600_000)
+  try {
+    await volume.move('notes.txt', 'moved.txt')
+    expect(await volume.stat('moved.txt')).toEqual(await other.stat('moved.txt'))
+  } finally { now.mockRestore(); await sync.run(true) }
+})
+
+it('shows a mount a file GitHub deleted while it wrote back what it read, until that mount deletes it too', async () => {
+  const { sync, volume, row, text } = await setup({ 'notes.txt': 'kept', 'gone.txt': 'old' })
+  const other = new GithubMountableVolume('mount-2', row.name, row.config, row.id, 'other')
+  await text('gone.txt')
+  teammate({ 'gone.txt': null })
+  await sync.run()
+  await volume.write('gone.txt', new Blob(['old']).stream())
+  expect(await volume.stat('gone.txt')).toMatchObject({ name: 'gone.txt', kind: 'file', size: 3 })
+  await expect(other.stat('gone.txt')).rejects.toMatchObject({ code: 'not-found' })
+  // rclone deletes a file it believes is there before renaming another onto it.
+  await volume.delete('gone.txt')
+  await expect(volume.stat('gone.txt')).rejects.toMatchObject({ code: 'not-found' })
+  await expect(volume.delete('gone.txt')).rejects.toMatchObject({ code: 'not-found' })
+})
+
 it('keeps a conflict held when the upload that made it is replayed', async () => {
   const { sync, write, text } = await setup({ 'notes.txt': 'one\ntwo\n' })
   await text('notes.txt')

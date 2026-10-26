@@ -72,6 +72,8 @@ export abstract class BaseMountableVolume<C> {
   health(): Promise<VolumeEntry> { return this.stat('') }
   /** Settles once the volume can be mounted, or once its attempt to get there ends. Only a source copied first waits. */
   whenReady(): Promise<void> { return Promise.resolve() }
+  /** The agent's container just mounted this volume afresh, holding nothing from its earlier mounts. */
+  remounted(): void {}
   abstract read(path: string): Promise<VolumeFile>
   /** Replace a whole file. `signal` aborts when the client stops waiting for the write. */
   abstract write(path: string, body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<void>

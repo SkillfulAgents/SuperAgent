@@ -41,15 +41,15 @@ export class GithubMountableVolume extends BaseMountableVolume<GithubVolumeConfi
   }
 
   override whenReady(): Promise<void> { return this.sync.firstCopy() }
+  override remounted(): void { this.sync.remounted(this.id) }
 
   override health(): Promise<VolumeEntry> {
     if (!this.sync.isReady || this.sync.unpushed) this.sync.keepFresh()
     return this.stat('')
   }
 
-  async stat(name: string): Promise<VolumeEntry> {
-    await this.sync.ready()
-    return this.sync.local.stat(name)
+  stat(name: string): Promise<VolumeEntry> {
+    return this.sync.stat(this.id, name)
   }
 
   async read(name: string): Promise<VolumeFile> {

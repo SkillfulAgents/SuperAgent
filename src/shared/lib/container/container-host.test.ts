@@ -191,9 +191,11 @@ vi.mock('@shared/lib/services/timezone-resolver', () => ({
 
 const mockListVolumes = vi.fn()
 const mockFirstCopies = vi.fn()
+const mockRemounted = vi.fn()
 vi.mock('@shared/lib/services/mount-service', () => ({
   listVolumes: (...args: unknown[]) => mockListVolumes(...args),
   firstCopies: (...args: unknown[]) => mockFirstCopies(...args),
+  remounted: (...args: unknown[]) => mockRemounted(...args),
 }))
 
 import { containerHost } from './container-host'
@@ -545,6 +547,8 @@ describe('ContainerRuntime.ensureRunning — mount volumes', () => {
     expect(mockHealth).toHaveBeenCalledWith(8080)
     expect(mountWarnings()).toEqual([[{ name: 'gone', reason: 'not found' }, { name: 'stuck', reason: 'failed in the agent' }]])
     expect(mockCaptureMessage).toHaveBeenCalledWith('Agent container could not mount folders', expect.objectContaining({ extra: { agentId: 'test-agent', count: 1 } }))
+    // Its drives start with empty caches, so they forget what earlier mounts held.
+    expect(mockRemounted).toHaveBeenCalledExactlyOnceWith('test-agent')
   })
 
   it.each(['preparing', 'preparing: GitHub is busy'])('marks the agent stale once a drive that missed its start (%s) can mount', async (reason) => {
@@ -694,6 +698,7 @@ describe('ContainerRuntime.ensureRunning — mount volumes', () => {
 
     expect(mockHealth).not.toHaveBeenCalled()
     expect(mountWarnings()).toEqual([])
+    expect(mockRemounted).not.toHaveBeenCalled()
   })
 
   it('leaves every volume out when the runtime refused the flags', async () => {
