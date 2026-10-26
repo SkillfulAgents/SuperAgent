@@ -13,7 +13,6 @@ import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-
 import type { ContainerSession, SendMessageOptions, SendMessageResult } from '@shared/lib/container/types'
 import { getSettings } from '@shared/lib/config/settings'
 import { sessionMetadataHolds } from '@shared/lib/services/session-metadata-holds'
-import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import type { SessionMetadata } from '@shared/lib/types/agent'
 import { DeliveryError, StartError, type DeliveryErrorCode } from './delivery-errors'
 import type { LiveSessions } from './live/live-sessions'
@@ -243,10 +242,7 @@ export function createSessionDelivery(
     const sessionId = session.id
 
     const commands = session.slashCommands?.length ? session.slashCommands : undefined
-    // Not stored for automations: every run would repeat the agent's whole
-    // list in the one metadata document each later read parses.
-    const stored = commands && !isHiddenAutomatedSession(request.metadata) ? { slashCommands: commands } : {}
-    const metadata: Partial<SessionMetadata> = { ...request.metadata, ...stored }
+    const metadata: Partial<SessionMetadata> = { ...request.metadata }
     // Create started the turn. Marked first, so a result replayed during the
     // attach lands on an active session instead of reading as settled.
     live.markActive(sessionId)
@@ -277,7 +273,14 @@ export function createSessionDelivery(
       }
       throw new StartError('attach-failed', true, errorMessage(error), { cause: error })
     }
-    if (commands) live.setSlashCommands(sessionId, commands)
+    if (commands) {
+      live.setSlashCommands(sessionId, commands)
+      try {
+        await deps.sessionService.storeAgentSlashCommands(store, commands)
+      } catch (error) {
+        console.error(`[SessionDelivery] Failed to store the slash commands of session ${sessionId}:`, error)
+      }
+    }
     return session
   }
 

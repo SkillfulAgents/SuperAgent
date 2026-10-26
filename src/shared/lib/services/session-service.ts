@@ -44,6 +44,7 @@ import {
 import { replaceInlineMediaWithRefs } from './session-media'
 import { sessionMetadataHolds } from './session-metadata-holds'
 import { isHiddenAutomatedSession } from './session-visibility'
+import type { SlashCommandInfo } from '@shared/lib/container/types'
 import {
   SessionInfo,
   SessionMetadata,
@@ -199,27 +200,48 @@ async function mutateSessionMetadata(
   store: SessionStore,
   mutator: (metadata: SessionMetadataMap) => boolean | void
 ): Promise<void> {
-  await store.config.update('sessionMetadata', (current) => {
+  await store.config.update('sessionMetadata', async (current) => {
     // A copy: the mutator edits in place, and handing the document it was
     // given back to `update` means "nothing changed".
     const metadata = { ...(current ?? {}) } as SessionMetadataMap
     const changed = mutator(metadata)
-    const dropped = dropAutomationSlashCommands(metadata)
-    return changed === false && !dropped ? null : (metadata as ConfigDoc<'sessionMetadata'>)
+    const newest = dropStoredSlashCommands(metadata)
+    if (newest) await seedAgentSlashCommands(store, newest)
+    return changed === false && !newest ? null : (metadata as ConfigDoc<'sessionMetadata'>)
   })
 }
 
-/** Earlier builds copied the agent's whole slash-command list into every automation run's entry. */
-function dropAutomationSlashCommands(metadata: SessionMetadataMap): boolean {
-  let dropped = false
+/** Earlier builds copied the agent's whole slash-command list into every session's entry; returns the newest copy dropped. */
+function dropStoredSlashCommands(metadata: SessionMetadataMap): SlashCommandInfo[] | null {
+  let newest: { createdAt: string; commands: SlashCommandInfo[] } | null = null
   for (const [sessionId, entry] of Object.entries(metadata)) {
-    if (!entry.slashCommands || !isHiddenAutomatedSession(entry)) continue
+    if (!entry.slashCommands) continue
+    const createdAt = entry.createdAt ?? ''
+    if (!newest || createdAt > newest.createdAt) newest = { createdAt, commands: entry.slashCommands }
     const rest = { ...entry }
     delete rest.slashCommands
     metadata[sessionId] = rest
-    dropped = true
   }
-  return dropped
+  return newest?.commands ?? null
+}
+
+/** A dropped copy becomes the agent's when it has none yet, so a cold session's composer keeps its commands. */
+async function seedAgentSlashCommands(store: SessionStore, commands: SlashCommandInfo[]): Promise<void> {
+  try {
+    await store.config.update('slashCommands', (current) => (current === null ? (commands as ConfigDoc<'slashCommands'>) : null))
+  } catch (error) {
+    console.error(`[SessionService] Failed to keep slash commands for agent ${store.slug}:`, error)
+  }
+}
+
+/** The slash commands the agent's container last listed, shared by every session. */
+export async function readAgentSlashCommands(store: SessionStore): Promise<SlashCommandInfo[]> {
+  return ((await store.config.get('slashCommands')) ?? []) as SlashCommandInfo[]
+}
+
+export async function storeAgentSlashCommands(store: SessionStore, commands: SlashCommandInfo[]): Promise<void> {
+  await store.config.update('slashCommands', (current) =>
+    current !== null && JSON.stringify(current) === JSON.stringify(commands) ? null : (commands as ConfigDoc<'slashCommands'>))
 }
 
 /**

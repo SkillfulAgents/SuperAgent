@@ -26,7 +26,12 @@ import {
   type UserInputRequestOutcome,
 } from '@shared/lib/tools/requests/request-schema'
 import type { AgentComputerUse } from '@shared/lib/computer-use/agent-permissions'
-import { getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+import {
+  getSessionMetadata,
+  readAgentSlashCommands,
+  storeAgentSlashCommands,
+  updateSessionMetadata,
+} from '@shared/lib/services/session-service'
 import { isAgentIntegrationSession, isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
@@ -320,14 +325,15 @@ export class LiveSessions {
     )
   }
 
-  /** The commands the session's metadata kept (after a container restart, say), repaired once. */
+  /** The commands the agent kept (after a container restart, say), else an older session entry's copy, repaired once. */
   private async storedSlashCommands(sessionId: string): Promise<SlashCommandInfo[]> {
-    const meta = await getSessionMetadata(this.deps.store, sessionId)
-    if (!meta?.slashCommands || meta.slashCommands.length === 0) return []
-    const repaired = repairLegacySlashCommands(meta.slashCommands)
+    let commands = await readAgentSlashCommands(this.deps.store)
+    if (commands.length === 0) commands = (await getSessionMetadata(this.deps.store, sessionId))?.slashCommands ?? []
+    if (commands.length === 0) return []
+    const repaired = repairLegacySlashCommands(commands)
     this.setSlashCommands(sessionId, repaired.commands)
     if (repaired.changed) {
-      background(updateSessionMetadata(this.deps.store, sessionId, { slashCommands: repaired.commands }).catch(console.error), {
+      background(storeAgentSlashCommands(this.deps.store, repaired.commands).catch(console.error), {
         name: 'live-sessions.persist-repaired-slash-commands',
       })
     }

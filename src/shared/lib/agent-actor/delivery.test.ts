@@ -350,7 +350,7 @@ describe('start', () => {
     } as never)
   })
 
-  it('creates, marks, registers, then attaches; an automation keeps its commands live only', async () => {
+  it('creates, marks, registers, then attaches; the commands go to the agent, not the session entry', async () => {
     const order: string[] = []
     const register = vi.spyOn(service, 'registerSession').mockImplementation(async (...args) => {
       order.push(`register (active ${sessions().isActive('new-session')})`)
@@ -366,14 +366,24 @@ describe('start', () => {
     expect(order).toEqual(['register (active true)', 'attach new-session'])
     expect(register).toHaveBeenCalledWith(store(), 'new-session', 'Scheduled run', request.metadata)
     expect((await sessionService.getSessionMetadata(store(), 'new-session'))?.slashCommands).toBeUndefined()
+    expect(await sessionService.readAgentSlashCommands(store())).toEqual([{ name: 'deploy', description: 'Ship it', argumentHint: '' }])
     expect(sessions().slashCommands('new-session')).toEqual([{ name: 'deploy', description: 'Ship it', argumentHint: '' }])
   })
 
-  it('stores the listed commands for a session a user starts', async () => {
+  it('stores a session a user starts without its own copy of the commands', async () => {
     await delivery().start({ create: { initialMessage: 'go' }, name: 'Chat', metadata: { createdByUserId: 'user-a' } })
 
-    expect((await sessionService.getSessionMetadata(store(), 'new-session'))?.slashCommands)
-      .toEqual([{ name: 'deploy', description: 'Ship it', argumentHint: '' }])
+    expect((await sessionService.getSessionMetadata(store(), 'new-session'))?.slashCommands).toBeUndefined()
+    expect(await sessionService.readAgentSlashCommands(store())).toEqual([{ name: 'deploy', description: 'Ship it', argumentHint: '' }])
+  })
+
+  it('still starts the session when the agent copy cannot be stored', async () => {
+    vi.spyOn(service, 'storeAgentSlashCommands').mockRejectedValueOnce(new Error('disk full'))
+
+    const session = await delivery().start(request)
+
+    expect(session.id).toBe('new-session')
+    expect(sessions().slashCommands('new-session')).toEqual([{ name: 'deploy', description: 'Ship it', argumentHint: '' }])
   })
 
   it('listens at once, and holds the first turn\'s frames until the session is registered', async () => {

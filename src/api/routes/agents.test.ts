@@ -10547,13 +10547,13 @@ describe('POST /api/agents/:id/sessions/:sessionId/fork', () => {
     expect(registerSession).not.toHaveBeenCalled()
   })
 
-  it('registers the fork with the source runtime choices, slash commands and lineage, and answers the create projection', async () => {
+  it('registers the fork with the source runtime choices and lineage, and answers the create projection', async () => {
     const res = await fork()
     expect(res.status).toBe(201)
     expect(registerSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'fork-1', 'Pricing (fork)', expect.objectContaining({
       model: 'claude-sonnet-5', effort: 'high', speed: 'fast', forkedFromSessionId: 'src-1',
-      slashCommands: [{ name: 'review', description: 'Review', argumentHint: '' }],
     }))
+    expect(vi.mocked(registerSession).mock.calls[0][3]).not.toHaveProperty('slashCommands')
     const body = await res.json()
     expect(body).toMatchObject({ id: 'fork-1', name: 'Pricing (fork)', isActive: false, model: 'claude-sonnet-5', forkedFromSessionId: 'src-1', forkedFromSessionName: 'Pricing' })
     expect(body.initialMessageUuid).toBeUndefined()

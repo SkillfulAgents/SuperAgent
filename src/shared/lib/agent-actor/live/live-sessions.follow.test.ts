@@ -12,6 +12,8 @@ vi.mock('@shared/lib/services/session-service', () => ({
   updateSessionMetadata: vi.fn(() => Promise.resolve()),
   getSessionMetadata: vi.fn(() => Promise.resolve(null)),
   finalizeAutomationStatus: vi.fn(() => Promise.resolve('updated')),
+  readAgentSlashCommands: vi.fn(() => Promise.resolve([])),
+  storeAgentSlashCommands: vi.fn(() => Promise.resolve()),
 }))
 vi.mock('@shared/lib/services/session-summary-cache', () => ({
   recordSessionActivity: vi.fn(),
@@ -24,7 +26,12 @@ vi.mock('@shared/lib/config/settings', () => ({
   getModelCatalogSettings: () => ({}),
 }))
 
-import { getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
+import {
+  getSessionMetadata,
+  readAgentSlashCommands,
+  storeAgentSlashCommands,
+  updateSessionMetadata,
+} from '@shared/lib/services/session-service'
 import type { SessionMetadata } from '@shared/lib/types/agent'
 import { attachLiveSessionsHarness, createStreamClient, type StreamClient } from '../testing/live-sessions-harness'
 import type { SessionEvent, WireFrame } from './session-channel'
@@ -66,6 +73,8 @@ afterEach(() => {
   live.reset()
   vi.mocked(getSessionMetadata).mockReset().mockResolvedValue(null)
   vi.mocked(updateSessionMetadata).mockClear()
+  vi.mocked(readAgentSlashCommands).mockClear()
+  vi.mocked(storeAgentSlashCommands).mockClear()
 })
 
 describe('LiveSessions.follow', () => {
@@ -110,7 +119,17 @@ describe('LiveSessions.follow', () => {
       expect(getSessionMetadata).not.toHaveBeenCalled()
     })
 
-    it('falls back to the commands the metadata kept, repaired and written back once', async () => {
+    it('falls back to the commands the agent kept, without reading the session entry', async () => {
+      vi.mocked(readAgentSlashCommands).mockResolvedValueOnce([{ name: 'review', description: 'Review it', argumentHint: '' }])
+      const v = viewer()
+      await sessions().follow(SESSION, undefined, v.onFrame)
+
+      expect(v.events()[0].slashCommands).toEqual([{ name: 'review', description: 'Review it', argumentHint: '' }])
+      expect(getSessionMetadata).not.toHaveBeenCalled()
+      expect(storeAgentSlashCommands).not.toHaveBeenCalled()
+    })
+
+    it('falls back to a session entry\'s older copy, repaired and kept for the agent once', async () => {
       vi.mocked(getSessionMetadata).mockResolvedValue({
         slashCommands: [{ name: 'Code Review', description: 'Review it', argumentHint: '' }],
       } as SessionMetadata)
@@ -118,9 +137,9 @@ describe('LiveSessions.follow', () => {
       await sessions().follow(SESSION, undefined, v.onFrame)
 
       expect(v.events()[0].slashCommands).toEqual([{ name: 'code-review', description: 'Review it', argumentHint: '' }])
-      expect(updateSessionMetadata).toHaveBeenCalledWith(expect.anything(), SESSION, {
-        slashCommands: [{ name: 'code-review', description: 'Review it', argumentHint: '' }],
-      })
+      expect(storeAgentSlashCommands).toHaveBeenCalledWith(expect.anything(), [
+        { name: 'code-review', description: 'Review it', argumentHint: '' },
+      ])
       // The live state has them now: the next viewer reads nothing.
       vi.mocked(getSessionMetadata).mockClear()
       await sessions().follow(SESSION, undefined, viewer().onFrame)

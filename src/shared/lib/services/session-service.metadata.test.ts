@@ -332,34 +332,47 @@ describe('finalizeAutomationStatus guards', () => {
   })
 })
 
-describe('slash commands stored by automation runs', () => {
-  const commands = [{ name: 'deploy', description: 'Ship it', argumentHint: '' }]
+describe('slash commands stored in session entries by earlier builds', () => {
+  const older = [{ name: 'deploy', description: 'Ship it', argumentHint: '' }]
+  const newer = [{ name: 'deploy', description: 'Ship it', argumentHint: '' }, { name: 'review', description: 'Review it', argumentHint: '' }]
+  const agentCopyPath = () => path.join(workspaceDir('agent'), '.slash-commands.json')
 
-  it('drops them on the next write and keeps them for user sessions and promoted runs', async () => {
-    const { registerSession, readSessionMetadata } = await importService()
+  it('drops every copy on the next write and keeps the newest as the agent copy', async () => {
+    const { registerSession, readSessionMetadata, readAgentSlashCommands } = await importService()
     makeAgent('agent')
     fs.writeFileSync(metadataPath('agent'), JSON.stringify({
-      'webhook-run': { name: 'Webhook run', isWebhookExecution: true, slashCommands: commands },
-      'scheduled-run': { name: 'Scheduled run', isScheduledExecution: true, slashCommands: commands },
-      'promoted-run': { name: 'Promoted run', isWebhookExecution: true, promotedToInteractive: true, slashCommands: commands },
-      'user-chat': { name: 'User chat', slashCommands: commands },
+      'webhook-run': { name: 'Webhook run', createdAt: '2026-10-01T00:00:00Z', isWebhookExecution: true, slashCommands: older },
+      'user-chat': { name: 'User chat', createdAt: '2026-10-20T00:00:00Z', slashCommands: newer },
+      'promoted-run': { name: 'Promoted run', createdAt: '2026-10-10T00:00:00Z', isWebhookExecution: true, promotedToInteractive: true, slashCommands: older },
     }, null, 2))
 
     await registerSession(createLocalSessionStore('agent'), 'new-chat', 'New chat')
 
     const meta = await readSessionMetadata(createLocalSessionStore('agent'))
-    expect(meta['webhook-run']).toEqual({ name: 'Webhook run', isWebhookExecution: true })
-    expect(meta['scheduled-run']).toEqual({ name: 'Scheduled run', isScheduledExecution: true })
-    expect(meta['promoted-run'].slashCommands).toEqual(commands)
-    expect(meta['user-chat'].slashCommands).toEqual(commands)
+    expect(Object.values(meta).some((entry) => entry.slashCommands)).toBe(false)
+    expect(meta['user-chat']).toEqual({ name: 'User chat', createdAt: '2026-10-20T00:00:00Z' })
     expect(meta['new-chat'].name).toBe('New chat')
+    expect(await readAgentSlashCommands(createLocalSessionStore('agent'))).toEqual(newer)
+  })
+
+  it('keeps an agent copy that already exists', async () => {
+    const { updateSessionMetadata, storeAgentSlashCommands, readAgentSlashCommands } = await importService()
+    makeAgent('agent')
+    await storeAgentSlashCommands(createLocalSessionStore('agent'), newer)
+    fs.writeFileSync(metadataPath('agent'), JSON.stringify({
+      'user-chat': { name: 'User chat', createdAt: '2026-10-20T00:00:00Z', slashCommands: older },
+    }, null, 2))
+
+    await updateSessionMetadata(createLocalSessionStore('agent'), 'user-chat', { starred: true })
+
+    expect(await readAgentSlashCommands(createLocalSessionStore('agent'))).toEqual(newer)
   })
 
   it('writes a no-op update when it has copies to drop, and skips it once there are none', async () => {
     const { updateSessionMetadata } = await importService()
     makeAgent('agent')
     fs.writeFileSync(metadataPath('agent'), JSON.stringify({
-      'webhook-run': { name: 'Webhook run', isWebhookExecution: true, slashCommands: commands },
+      'webhook-run': { name: 'Webhook run', isWebhookExecution: true, slashCommands: older },
     }, null, 2))
 
     await updateSessionMetadata(createLocalSessionStore('agent'), 'webhook-run', { name: 'Webhook run' })
@@ -370,5 +383,18 @@ describe('slash commands stored by automation runs', () => {
     await updateSessionMetadata(createLocalSessionStore('agent'), 'webhook-run', { name: 'Webhook run' })
     expect(fs.statSync(metadataPath('agent')).mtimeMs).toBe(mtime)
     expect(fs.readFileSync(metadataPath('agent'), 'utf-8')).toBe(cleaned)
+  })
+
+  it('rewrites the agent copy only when the list changes', async () => {
+    const { storeAgentSlashCommands } = await importService()
+    makeAgent('agent')
+    await storeAgentSlashCommands(createLocalSessionStore('agent'), older)
+    const mtime = fs.statSync(agentCopyPath()).mtimeMs
+
+    await storeAgentSlashCommands(createLocalSessionStore('agent'), older)
+    expect(fs.statSync(agentCopyPath()).mtimeMs).toBe(mtime)
+
+    await storeAgentSlashCommands(createLocalSessionStore('agent'), newer)
+    expect(JSON.parse(fs.readFileSync(agentCopyPath(), 'utf-8'))).toEqual(newer)
   })
 })
