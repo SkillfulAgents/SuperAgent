@@ -3,11 +3,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ComputerUseTab } from './computer-use-tab'
+import { _setFactsForTest } from '@renderer/lib/facts'
+import type { Os } from '@shared/lib/facts/facts-schema'
 
 const useSettingsMock = vi.fn()
 const useAgentsMock = vi.fn()
 const mutateMock = vi.fn()
-const getPlatformMock = vi.fn()
+
+/** The agents' machine, which is what computer use drives. */
+function setServerOs(os: Os) {
+  _setFactsForTest({
+    client: { shell: 'electron', os: 'darwin', distribution: 'direct' },
+    server: { os, distribution: 'direct' },
+  })
+}
 
 vi.mock('@renderer/hooks/use-settings', () => ({
   useSettings: () => useSettingsMock(),
@@ -16,10 +25,6 @@ vi.mock('@renderer/hooks/use-settings', () => ({
 
 vi.mock('@renderer/hooks/use-agents', () => ({
   useAgents: () => useAgentsMock(),
-}))
-
-vi.mock('@renderer/lib/env', () => ({
-  getPlatform: () => getPlatformMock(),
 }))
 
 const grants = {
@@ -49,7 +54,7 @@ function setSettings(agentPermissions: typeof grants | Record<string, never> = {
 describe('ComputerUseTab', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    getPlatformMock.mockReturnValue('darwin')
+    setServerOs('darwin')
     useAgentsMock.mockReturnValue({
       data: [{ slug: 'designer-agent', name: 'Design Agent' }],
     })
@@ -126,10 +131,27 @@ describe('ComputerUseTab', () => {
   })
 
   it('keeps the unsupported-platform notice', () => {
-    getPlatformMock.mockReturnValue('linux')
+    setServerOs('linux')
     render(<ComputerUseTab />)
 
     expect(screen.getByText('Not Available')).toBeInTheDocument()
     expect(screen.queryByText('Persistent Permissions')).not.toBeInTheDocument()
+  })
+
+  it('asks the agents’ machine, not this window’s', () => {
+    _setFactsForTest({
+      client: { shell: 'electron', os: 'linux', distribution: 'direct' },
+      server: { os: 'win32', distribution: 'deployment' },
+    })
+    render(<ComputerUseTab />)
+
+    expect(screen.queryByText('Not Available')).not.toBeInTheDocument()
+  })
+
+  it('reads a server that didn’t say as unsupported', () => {
+    _setFactsForTest({ client: { shell: 'electron', os: 'darwin', distribution: 'direct' }, server: null })
+    render(<ComputerUseTab />)
+
+    expect(screen.getByText('Not Available')).toBeInTheDocument()
   })
 })

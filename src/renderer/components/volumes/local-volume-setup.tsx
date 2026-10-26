@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Folder, FolderOpen } from 'lucide-react'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { Button } from '@renderer/components/ui/button'
 import { localVolumeConfigSchema } from '@shared/lib/volumes/volume-config-schema'
 import { VolumeDetailsFields, VolumeSetupFooter, VolumeSetupHeader } from './volume-setup-layout'

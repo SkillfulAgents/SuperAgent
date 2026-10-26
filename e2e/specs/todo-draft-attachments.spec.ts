@@ -1,6 +1,7 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
+import { uniqueName } from '../helpers/agents'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
@@ -24,7 +25,8 @@ test.describe('Todo draft attachments', () => {
   })
 
   async function openSavedDraft(page: Page, request: APIRequestContext) {
-    const title = `Attachment recovery ${Date.now()}`
+    // Every worker's todos share one board: a bare timestamp collides across them.
+    const title = uniqueName(test.info(), 'Attachment recovery')
     const agentResponse = await request.post('/api/agents', { data: { name: title } })
     expect(agentResponse.ok()).toBeTruthy()
     const agent = await agentResponse.json()
@@ -146,7 +148,7 @@ test.describe('Todo draft attachments', () => {
 
   test('holds a file, reopens it, and sends it when the draft starts', async ({ page }) => {
     test.setTimeout(90_000)
-    const agentName = `Todo Attach ${Date.now()}`
+    const agentName = uniqueName(test.info(), 'Todo Attach')
     const agentPage = new AgentPage(page)
     await page.goto('/')
     await agentPage.createAgent(agentName, { waitForSidebarName: false })
@@ -157,9 +159,10 @@ test.describe('Todo draft attachments', () => {
     const dialog = page.getByTestId('todo-draft-dialog')
     await expect(dialog).toBeVisible()
 
+    const todoTitle = uniqueName(test.info(), 'Q3 report')
     const filePath = path.join(tmpDir, 'Q3 report.txt')
     fs.writeFileSync(filePath, 'quarterly numbers')
-    await dialog.getByTestId('todo-draft-title').fill('Q3 report')
+    await dialog.getByTestId('todo-draft-title').fill(todoTitle)
     await page.getByTestId('todo-assign-agent').click()
     await page.getByRole('option', { name: agentName }).click()
     await dialog.locator('input[type="file"]:not([webkitdirectory])').setInputFiles(filePath)
@@ -169,7 +172,7 @@ test.describe('Todo draft attachments', () => {
     await page.getByTestId('todo-draft-close').click()
     await expect(dialog).toBeHidden()
 
-    await page.getByTestId('todo-card').filter({ hasText: 'Q3 report' }).click()
+    await page.getByTestId('todo-card').filter({ hasText: todoTitle }).click()
     await expect(page.getByTestId('todo-draft-dialog').getByTestId('attachment-preview').filter({ hasText: 'Q3 report.txt' })).toBeVisible()
     await expect(page.getByTestId('todo-assign-agent')).toBeDisabled()
     await page.getByTestId('todo-draft-dialog').getByTestId('todo-agent-locked').hover()
@@ -178,23 +181,24 @@ test.describe('Todo draft attachments', () => {
     await page.getByTestId('todo-draft-start').click()
     await expect(page.getByTestId('todo-draft-dialog')).toBeHidden({ timeout: 20000 })
 
-    await page.getByTestId('todo-card').filter({ hasText: 'Q3 report' }).click()
+    await page.getByTestId('todo-card').filter({ hasText: todoTitle }).click()
     await expect(page.getByTestId('file-pill').filter({ hasText: /Q3_report-\d+\.txt/ }).first()).toBeVisible({ timeout: 20000 })
   })
 
   test('asks for the agent when a file is dropped, then attaches it', async ({ page }) => {
-    const agentName = `Todo Drop ${Date.now()}`
+    const agentName = uniqueName(test.info(), 'Todo Drop')
     await page.goto('/')
     await new AgentPage(page).createAgent(agentName, { waitForSidebarName: false })
     await page.goto('/todo')
     await page.getByTestId('todo-new-draft').click()
     const dialog = page.getByTestId('todo-draft-dialog')
 
-    const dataTransfer = await page.evaluateHandle(() => {
+    const fileName = `${uniqueName(test.info(), 'note')}.txt`
+    const dataTransfer = await page.evaluateHandle((name) => {
       const transfer = new DataTransfer()
-      transfer.items.add(new File(['x'], 'note.txt', { type: 'text/plain' }))
+      transfer.items.add(new File(['x'], name, { type: 'text/plain' }))
       return transfer
-    })
+    }, fileName)
     const title = dialog.getByTestId('todo-draft-title')
     await title.dispatchEvent('dragover', { dataTransfer })
     await title.dispatchEvent('drop', { dataTransfer })
@@ -204,20 +208,21 @@ test.describe('Todo draft attachments', () => {
     await page.getByRole('option', { name: agentName }).click()
     await expect(ask).toBeHidden()
     await expect(page.getByTestId('todo-assign-agent')).toContainText(agentName)
-    await expect(dialog.getByTestId('attachment-preview').filter({ hasText: 'note.txt' })).toBeVisible({ timeout: 15000 })
+    await expect(dialog.getByTestId('attachment-preview').filter({ hasText: fileName })).toBeVisible({ timeout: 15000 })
     // A blank draft is saved under the file's name.
     await page.getByTestId('todo-draft-close').click()
-    await expect(page.getByTestId('todo-card').filter({ hasText: 'note.txt' })).toBeVisible()
+    await expect(page.getByTestId('todo-card').filter({ hasText: fileName })).toBeVisible()
   })
 
   test('a file removed while it uploads is not kept on the draft', async ({ page }) => {
-    const agentName = `Todo Remove ${Date.now()}`
+    const agentName = uniqueName(test.info(), 'Todo Remove')
     await page.goto('/')
     await new AgentPage(page).createAgent(agentName, { waitForSidebarName: false })
     await page.goto('/todo')
     await page.getByTestId('todo-new-draft').click()
     const dialog = page.getByTestId('todo-draft-dialog')
-    await dialog.getByTestId('todo-draft-title').fill('Keep me')
+    const todoTitle = uniqueName(test.info(), 'Keep me')
+    await dialog.getByTestId('todo-draft-title').fill(todoTitle)
     await page.getByTestId('todo-assign-agent').click()
     await page.getByRole('option', { name: agentName }).click()
 
@@ -244,14 +249,14 @@ test.describe('Todo draft attachments', () => {
 
     await page.getByTestId('todo-draft-close').click()
     await expect(dialog).toBeHidden()
-    await page.getByTestId('todo-card').filter({ hasText: 'Keep me' }).click()
+    await page.getByTestId('todo-card').filter({ hasText: todoTitle }).click()
     await expect(page.getByTestId('todo-draft-dialog')).toBeVisible()
     await expect(page.getByTestId('todo-draft-dialog').getByTestId('attachment-preview')).toHaveCount(0)
     await expect(page.getByTestId('todo-assign-agent')).toBeEnabled()
   })
 
   test('says it is finishing uploads when closed mid-upload', async ({ page }) => {
-    const agentName = `Todo Close ${Date.now()}`
+    const agentName = uniqueName(test.info(), 'Todo Close')
     await page.goto('/')
     await new AgentPage(page).createAgent(agentName, { waitForSidebarName: false })
     await page.goto('/todo')
@@ -284,7 +289,7 @@ test.describe('Todo draft attachments', () => {
   })
 
   test('asks for the agent from the paperclip, then opens the attach menu', async ({ page }) => {
-    const agentName = `Todo Clip ${Date.now()}`
+    const agentName = uniqueName(test.info(), 'Todo Clip')
     await page.goto('/')
     await new AgentPage(page).createAgent(agentName, { waitForSidebarName: false })
     await page.goto('/todo')
@@ -302,7 +307,7 @@ test.describe('Todo draft attachments', () => {
   })
 
   test('offers a folder attach', async ({ page }) => {
-    const agentName = `Todo Folder ${Date.now()}`
+    const agentName = uniqueName(test.info(), 'Todo Folder')
     const agentPage = new AgentPage(page)
     await page.goto('/')
     await agentPage.createAgent(agentName, { waitForSidebarName: false })

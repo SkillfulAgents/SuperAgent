@@ -7,6 +7,7 @@ import { getToolDefinition, getToolPresentation } from '@shared/lib/tools/regist
 import { formatToolName } from '@shared/lib/tools/types'
 import { requestCardFromRegistry } from './request-card'
 import { captureException } from '../error-reporting'
+import { background } from '@shared/lib/background'
 const reportError = (err: unknown, operation: string, extra?: Record<string, unknown>, level?: 'error' | 'warning') =>
   captureException(err, { tags: { component: 'chat-integration', operation }, extra, level })
 
@@ -103,7 +104,7 @@ export const BUSY_ACTIVITIES: ReadonlySet<SessionActivity> = new Set([
 export function reconcileIndicator(managed: ManagedConnector, activity: SessionActivity): void {
   if (BUSY_ACTIVITIES.has(activity)) {
     managed.indicatorShown = true
-    managed.connector.startWorking(managed.chatId, activity).catch(() => {})
+    background(managed.connector.startWorking(managed.chatId, activity).catch(() => {}), { name: 'chat-delivery.start-working' })
   } else {
     clearIndicator(managed)
   }
@@ -119,7 +120,7 @@ export function clearIndicator(managed: ManagedConnector): void {
   managed.indicatorReadsOvertaken = managed.indicatorReads
   if (!managed.indicatorShown) return
   managed.indicatorShown = false
-  managed.connector.stopWorking(managed.chatId).catch(() => {})
+  background(managed.connector.stopWorking(managed.chatId).catch(() => {}), { name: 'chat-delivery.stop-working' })
 }
 
 /** Pull cadence for the indicator tick. At/under Telegram's draft expiry so drafts stay alive. */
@@ -153,7 +154,7 @@ export function startIndicatorTick(managed: ManagedConnector, sessionId: string)
   const tick = setInterval(() => {
     const read = (managed.indicatorReads ?? 0) + 1
     managed.indicatorReads = read
-    void sessionActivity(managed, sessionId).then((activity) => {
+    background(sessionActivity(managed, sessionId).then((activity) => {
       // Stopped while it read: the read belongs to no tick.
       if (managed.indicatorTickTimer !== tick) return
       // Overtaken while it read: what it read is not the latest.
@@ -165,7 +166,7 @@ export function startIndicatorTick(managed: ManagedConnector, sessionId: string)
       // so calling it every non-busy tick never pushes the deadline back.
       if (BUSY_ACTIVITIES.has(activity)) cancelIndicatorSleep(managed)
       else scheduleIndicatorSleep(managed)
-    }, () => { /* a failed read changes nothing; the next tick reads again */ })
+    }, () => { /* a failed read changes nothing; the next tick reads again */ }), { name: 'chat-delivery.indicator-tick' })
   }, INDICATOR_TICK_MS)
   managed.indicatorTickTimer = tick
   return true
@@ -227,7 +228,7 @@ export function scheduleIndicatorSleep(managed: ManagedConnector): void {
   const sessionId = managed.sessionId
   if (!sessionId) return
   const sleep = setTimeout(() => {
-    void sessionActivity(managed, sessionId).then((activity) => {
+    background(sessionActivity(managed, sessionId).then((activity) => {
       // Cancelled while it read (a busy tick, a stop): the sleep is off.
       if (managed.sleepTimer !== sleep) return
       managed.sleepTimer = null
@@ -240,7 +241,7 @@ export function scheduleIndicatorSleep(managed: ManagedConnector): void {
     }, () => {
       // Unread, the sleep is skipped: the tick arms it again on its next non-busy read.
       if (managed.sleepTimer === sleep) managed.sleepTimer = null
-    })
+    }), { name: 'chat-delivery.indicator-sleep' })
   }, INDICATOR_SLEEP_MS)
   managed.sleepTimer = sleep
 }

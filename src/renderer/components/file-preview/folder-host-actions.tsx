@@ -4,7 +4,7 @@ import type { FolderTab } from '@renderer/context/file-preview-context'
 import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
 import { copyLazyTextToClipboard } from '@renderer/lib/clipboard'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { canUseHostFeatures } from '@renderer/lib/capabilities'
 
 interface FolderHostActionsProps {
   folder: FolderTab

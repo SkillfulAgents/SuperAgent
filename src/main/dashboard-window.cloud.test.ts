@@ -359,6 +359,26 @@ describe('popout identity', () => {
     expect(createdWindows).toHaveLength(1)
     expect(createdWindows[0].focus).toHaveBeenCalled()
   })
+
+  it('names each popout so its size and position survive a restart', () => {
+    openDashboardWindow('sales', 'weekly', LOCAL)
+    openDashboardWindow('sales', 'weekly', CLOUD, true)
+
+    const [local, cloud] = createdWindows.map((win) => win.options)
+    expect(local.windowStatePersistence).toBe(true)
+    expect(cloud.windowStatePersistence).toBe(true)
+    // Electron throws on a name already in use, and both are open at once.
+    expect(local.name).not.toBe(cloud.name)
+  })
+
+  it('keeps a local popout\'s name when the local API moves to another port', () => {
+    openDashboardWindow('sales', 'weekly', LOCAL)
+    const first = createdWindows[0].options.name
+    closeAllDashboardWindows()
+    openDashboardWindow('sales', 'weekly', 'http://localhost:3839')
+
+    expect(createdWindows[1].options.name).toBe(first)
+  })
 })
 
 describe('marking a cloud popout', () => {

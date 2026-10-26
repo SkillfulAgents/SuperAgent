@@ -13,31 +13,40 @@ export function appendAttachedFiles(message: string, filePaths: string[]): strin
   return message ? `${message}\n\n${block}` : block
 }
 
+/** Where the last `marker` line starts, after a blank line or at the start, or -1. */
+function blockStart(text: string, marker: string): number {
+  const at = text.lastIndexOf(`\n\n${marker}\n`)
+  if (at !== -1) return at + 2
+  return text.startsWith(`${marker}\n`) ? 0 : -1
+}
+
+/**
+ * Lift a block off the end of message text. The app writes each block last, so
+ * a marker with anything but entries after it (one quoted in a comment, say) is
+ * part of the message.
+ */
+function parseTrailingBlock<T>(text: string, marker: string, entry: (line: string) => T | null): { cleanText: string; entries: T[] } {
+  const none = { cleanText: text, entries: [] }
+  const start = blockStart(text, marker)
+  if (start === -1) return none
+  const entries: T[] = []
+  for (const line of text.slice(start + marker.length + 1).split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed === '') continue
+    const parsed = entry(trimmed)
+    if (parsed === null) return none
+    entries.push(parsed)
+  }
+  return entries.length > 0 ? { cleanText: text.slice(0, start).trimEnd(), entries } : none
+}
+
 /**
  * Parse an "[Attached files:]" section from message text.
  * Returns the message text without the attached files block, and the list of file paths.
  */
 export function parseAttachedFiles(text: string): { cleanText: string; attachedFiles: string[] } {
-  const markerIndex = text.indexOf(MARKER)
-  if (markerIndex === -1) return { cleanText: text, attachedFiles: [] }
-
-  const before = text.slice(0, markerIndex).trimEnd()
-  const after = text.slice(markerIndex + MARKER.length)
-
-  const files: string[] = []
-  const lines = after.split('\n')
-  for (const line of lines) {
-    const trimmed = line.trim()
-    if (trimmed === '') continue
-    const match = trimmed.match(/^-\s+(.+)$/)
-    if (match) {
-      files.push(match[1])
-    } else {
-      break
-    }
-  }
-
-  return { cleanText: before, attachedFiles: files }
+  const { cleanText, entries } = parseTrailingBlock(text, MARKER, (line) => line.match(/^-\s+(.+)$/)?.[1] ?? null)
+  return { cleanText, attachedFiles: entries }
 }
 
 /**
@@ -59,25 +68,12 @@ export function parseMountedFolders(text: string): {
   cleanText: string
   mountedFolders: { containerPath: string; hostPath: string }[]
 } {
-  const marker = text.includes(MOUNT_MARKER) ? MOUNT_MARKER : OLD_MOUNT_MARKER
-  const markerIndex = text.indexOf(marker)
-  if (markerIndex === -1) return { cleanText: text, mountedFolders: [] }
+  const current = parseTrailingBlock(text, MOUNT_MARKER, mountEntry)
+  const { cleanText, entries } = current.entries.length > 0 ? current : parseTrailingBlock(text, OLD_MOUNT_MARKER, mountEntry)
+  return { cleanText, mountedFolders: entries }
+}
 
-  const before = text.slice(0, markerIndex).trimEnd()
-  const after = text.slice(markerIndex + marker.length)
-
-  const mounts: { containerPath: string; hostPath: string }[] = []
-  const lines = after.split('\n')
-  for (const line of lines) {
-    const trimmed = line.trim()
-    if (trimmed === '') continue
-    const match = trimmed.match(/^-\s+(\S+)\s+\(from\s+(.+)\)$/)
-    if (match) {
-      mounts.push({ containerPath: match[1], hostPath: match[2] })
-    } else {
-      break
-    }
-  }
-
-  return { cleanText: before, mountedFolders: mounts }
+function mountEntry(line: string): { containerPath: string; hostPath: string } | null {
+  const match = line.match(/^-\s+(\S+)\s+\(from\s+(.+)\)$/)
+  return match ? { containerPath: match[1], hostPath: match[2] } : null
 }

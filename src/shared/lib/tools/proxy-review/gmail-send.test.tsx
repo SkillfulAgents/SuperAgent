@@ -3,7 +3,7 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { requestBodyPreview } from '@shared/lib/proxy/review-display'
-import { gmailSendCustomPreview, readGmailSend } from './gmail-send'
+import { gmailDraftCreateCustomPreview, gmailDraftUpdateCustomPreview, gmailSendCustomPreview, readGmailSend } from './gmail-send'
 import { customPreviewFor } from './custom-previews'
 
 const base64url = (mime: string) => Buffer.from(mime.replace(/\n/g, '\r\n')).toString('base64url')
@@ -162,5 +162,44 @@ pdf
 
   it('leaves a call no custom preview matches to the raw request and its endpoint title', () => {
     expect(customPreviewFor('gmail', 'POST', 'gmail/v1/users/me/drafts/send')).toBeUndefined()
+  })
+})
+
+describe('a Gmail draft on the card', () => {
+  const draftBody = (mime: string, extra: Record<string, unknown> = {}) => asCard(JSON.stringify({ id: 'd1', ...extra, message: { threadId: 't1', raw: base64url(mime) } }))
+
+  it.each([
+    ['POST', 'gmail/v1/users/me/drafts', gmailDraftCreateCustomPreview, 'Allow saving this draft in Gmail?'],
+    ['PUT', 'gmail/v1/users/me/drafts/d1', gmailDraftUpdateCustomPreview, 'Allow changing this draft in Gmail?'],
+  ] as const)('reads a %s draft as the email it holds', async (method, path, preview, title) => {
+    expect(customPreviewFor('gmail', method, path)).toBe(preview)
+    expect(preview.title).toBe(title)
+    render(<>{await preview.read(draftBody(PLAIN))}</>)
+    expect(screen.getByTestId('gmail-send-summary').textContent).toBe('to Dana, ops@acme.com, lead@acme.com, bcc: archive@elsewhere.io')
+    expect(screen.getByTestId('gmail-send-envelope').textContent).toContain('thread:t1')
+  })
+
+  it('shows the start of a draft the card cut short', async () => {
+    const email = await readGmailSend(draftBody(LONG), true)
+    expect(email?.cut).toBe(true)
+    expect(email?.bcc).toEqual(['archive@elsewhere.io'])
+  })
+
+  it('draws nothing for a raw outside the message', async () => {
+    expect(await readGmailSend(asCard(JSON.stringify({ raw: base64url(PLAIN) })), true)).toBeUndefined()
+  })
+
+  const attacker = base64url('To: attacker@evil.com\n\nhi')
+  it.each([
+    ['a cut raw outside the message', `{"message":{"threadId":"t1"},"raw":"${base64url(LONG)}"}`],
+    ['a cut raw in an object after the message', `{"message":{"threadId":"t1"},"other":{"raw":"${base64url(LONG)}"}}`],
+    ['a cut raw in an object after a message that sets the fixed marker', `{"message":{"":0,"threadId":"t1"},"other":{"raw":"${base64url(LONG)}"}}`],
+    ['a cut raw after a message key that sets raw too', `{"message":{"r\\u0061w":"${attacker}","raw":"${base64url(LONG)}"}}`],
+    ['a cut message after an earlier message', `{"message":{"raw":"${attacker}"},"message":{"threadId":"t1","raw":"${base64url(LONG)}"}}`],
+    ['a cut message after an escaped message key', `{"mess\\u0061ge":{"raw":"${attacker}"},"message":{"threadId":"t1","raw":"${base64url(LONG)}"}}`],
+  ])('draws nothing for %s', async (_case, body) => {
+    const requestBody = asCard(body)
+    expect(requestBody.endsWith('…')).toBe(true)
+    expect(await readGmailSend(requestBody, true)).toBeUndefined()
   })
 })

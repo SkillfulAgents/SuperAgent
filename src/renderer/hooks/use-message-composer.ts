@@ -6,9 +6,10 @@ import { useVoiceInput } from './use-voice-input'
 import { useAddMount } from './use-mounts'
 import { useDraft } from '@renderer/context/drafts-context'
 import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/attached-files'
+import { appendDictationNote } from '@shared/lib/utils/dictation-note'
 import { mountPathOf } from '@shared/lib/volumes/base-mountable-volume'
 import { filesFromClipboard, folderChoice, type FolderGroup } from '@renderer/lib/file-utils'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { attachmentStatus, type Attachment, type MountAttachment } from '@renderer/components/messages/attachment-preview'
 import type { UploadProgress } from '@renderer/lib/upload'
 import { usePendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
@@ -191,12 +192,19 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   // `options` instead would rebuild this every render — callers pass an inline
   // object literal, so its identity is never stable.
   const { onVoiceTranscript } = options
+  // Some of the draft came from the mic, so the agent is told to allow for
+  // transcription slips. Cleared once the draft is sent or emptied.
+  const dictatedRef = useRef(false)
   const voiceInput = useVoiceInput({
     onTranscriptUpdate: useCallback((text: string) => {
       onVoiceTranscript?.()
       setMessage(text)
     }, [onVoiceTranscript]),
+    onDictated: useCallback(() => { dictatedRef.current = true }, []),
   })
+  useEffect(() => {
+    if (!message.trim()) dictatedRef.current = false
+  }, [message])
 
   const handleMountChoice = useCallback((choice: 'upload' | 'mount' | 'cancel') => {
     setShowMountDialog(false)
@@ -311,7 +319,9 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
 
     const editableContent = content
-    const submittedContent = chipsToAgentText(content, sendContext, { silent })
+    const dictated = dictatedRef.current
+    const agentText = chipsToAgentText(content, sendContext, { silent })
+    const submittedContent = dictated ? appendDictationNote(agentText) : agentText
 
     try {
       await onSubmit(submittedContent, { silent })
@@ -320,10 +330,12 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       if (!keepMessageUntilComplete) {
         // Restore message so the user doesn't lose their text
         setMessage(editableContent)
+        dictatedRef.current = dictated
       }
       return false
     }
 
+    dictatedRef.current = false
     if (keepMessageUntilComplete) {
       setMessage('')
       setDraft(undefined)
