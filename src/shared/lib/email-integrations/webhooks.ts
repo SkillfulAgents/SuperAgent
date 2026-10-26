@@ -66,7 +66,7 @@ const minting = new Map<string, Promise<unknown>>()
 function oneAtATime<T>(key: string, run: () => Promise<T>): Promise<T> {
   const next = (minting.get(key) ?? Promise.resolve()).catch(() => {}).then(run)
   minting.set(key, next)
-  void next.catch(() => {}).finally(() => { if (minting.get(key) === next) minting.delete(key) })
+  next.catch(() => {}).finally(() => { if (minting.get(key) === next) minting.delete(key) })
   return next
 }
 

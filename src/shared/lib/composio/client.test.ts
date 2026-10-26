@@ -32,6 +32,7 @@ import {
   ComposioApiError,
   ComposioRedactedTokenError,
 } from './client'
+import { envelopeToResponse } from '../proxy/composio-envelope'
 
 function makeComposioResponse(
   state: { authScheme: string; val: Record<string, unknown> },
@@ -395,12 +396,12 @@ describe('proxyExecute', () => {
     expect(sent2.body).toBeUndefined()
   })
 
-  it('returns parsed binaryData when envelope includes binary_data', async () => {
+  it.each([null, undefined])('streams binary_data when JSON data is %s', async (data) => {
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({
         status: 200,
-        data: null,
+        ...(data === undefined ? {} : { data }),
         headers: {},
         binary_data: {
           url: 'https://cdn.example/x',
@@ -423,6 +424,20 @@ describe('proxyExecute', () => {
       size: 100,
       expires_at: '2099-01-01T00:00:00Z',
     })
+    const bytes = new Uint8Array([0, 255, 128, 1])
+    const download = vi.fn<typeof fetch>().mockResolvedValue(new Response(bytes))
+    const response = await envelopeToResponse(result, download)
+    expect(download).toHaveBeenCalledWith('https://cdn.example/x')
+    expect(response.headers.get('content-type')).toBe('application/pdf')
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes)
+  })
+
+  it.each([200, 204])('accepts an empty upstream %s envelope without JSON data', async (status) => {
+    mockFetch.mockResolvedValue({
+      ok: true, json: async () => ({ status, headers: { 'x-request-id': 'empty-response' } }),
+    })
+    const result = await proxyExecute({ endpoint: '/resource', method: 'DELETE', connectedAccountId: 'ca_abc' })
+    expect(result).toEqual({ status, data: undefined, headers: { 'x-request-id': 'empty-response' }, binaryData: undefined })
   })
 
   it('throws ComposioApiError on non-ok response from Composio', async () => {

@@ -6,6 +6,7 @@ import { useUploadQueue, type UploadQueueOptions } from './use-upload-queue'
 import type { Attachment, FileAttachment, FolderAttachment } from '@renderer/components/messages/attachment-preview'
 import { zipFolderFiles } from '@renderer/lib/file-utils'
 import { HttpError } from '@renderer/lib/http-error'
+import { HEIC_PREVIEW_MAX_SOURCE_BYTES } from '@shared/lib/utils/heic-preview'
 
 vi.mock('@renderer/lib/error-reporting', () => ({ captureRendererException: vi.fn() }))
 vi.mock('@renderer/lib/file-utils', () => ({
@@ -78,6 +79,34 @@ describe('useUploadQueue', () => {
     expect(uploadFile).toHaveBeenCalledTimes(2)
     await act(async () => { d2.resolve({ path: '/b' }) })
     expect(uploadOf(result.current.attachments[1])?.status).toBe('done')
+  })
+
+  it('uses the uploaded inline URL to preview a HEIC attachment', async () => {
+    const attachment: FileAttachment = {
+      type: 'file',
+      id: 'photo',
+      file: new File(['heic'], 'photo.heic', { type: 'image/heic' }),
+    }
+    const uploadFile = vi.fn().mockResolvedValue({ path: '/workspace/uploads/photo-1.heic' })
+    const { result } = renderHook(() => useHarness(uploadFile, [attachment]))
+
+    await act(async () => { result.current.queue.enqueue(attachment) })
+
+    expect(result.current.attachments[0]).toMatchObject({
+      preview: expect.stringContaining('/api/agents/agent-a/files/uploads/photo-1.heic?inline=true'),
+    })
+  })
+
+  it('keeps an oversized HEIC attachment as a file chip after upload', async () => {
+    const file = new File(['heic'], 'photo.heic', { type: 'image/heic' })
+    Object.defineProperty(file, 'size', { value: HEIC_PREVIEW_MAX_SOURCE_BYTES + 1 })
+    const attachment: FileAttachment = { type: 'file', id: 'photo', file }
+    const uploadFile = vi.fn().mockResolvedValue({ path: '/workspace/uploads/photo-1.heic' })
+    const { result } = renderHook(() => useHarness(uploadFile, [attachment]))
+
+    await act(async () => { result.current.queue.enqueue(attachment) })
+
+    expect(result.current.attachments[0]).toHaveProperty('preview', undefined)
   })
 
   it('a rejection sets error, clears upload, and the next chip still starts', async () => {

@@ -31,7 +31,7 @@ import {
 import { HomeCollapsible } from './home-collapsible'
 import { useVolumesManager } from '@renderer/hooks/use-mounts'
 import { openableProps } from '@renderer/lib/openable'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { VolumeSettingsDialog } from '@renderer/components/volumes/volume-settings-dialog'
 import { InlineEditableTitle, type InlineEditableTitleHandle } from '@renderer/components/ui/inline-editable-title'
 import { useSaveVolumeDefinition } from '@renderer/hooks/use-volume-definitions'

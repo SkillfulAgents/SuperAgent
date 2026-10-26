@@ -20,6 +20,21 @@ function mapSeverity(level: SeverityLevel): Sentry.SeverityLevel {
 }
 
 /**
+ * Routes whose request bodies carry credentials: a sign-in form's values,
+ * a secret, a password manager's verification code. The HTTP integration
+ * buffers incoming bodies and attaches them to any event captured while the
+ * request is handled; these never go along.
+ */
+export const CREDENTIAL_BODY_ROUTE = /\/sessions\/[^/?#]+\/(fill-login|fill-login-credential|provide-secret|browser-credentials\/verify)(?:[?#]|$)/
+
+/** Drop a captured request body from an event raised while handling a credential route. */
+export function scrubCredentialRequestBody<T extends { request?: { url?: string; data?: unknown } }>(event: T): T {
+  const url = event.request?.url
+  if (url && CREDENTIAL_BODY_ROUTE.test(url) && event.request) delete event.request.data
+  return event
+}
+
+/**
  * Create and initialize the server-side error reporting provider.
  *
  * Handles SDK init, tenant identification, and environment fingerprinting.
@@ -31,6 +46,12 @@ export function createServerProvider(options: ErrorReportingInitOptions): ErrorR
     environment: options.environment,
     release: APP_VERSION,
     tracesSampleRate: 0,
+    integrations: (defaults) => [
+      ...defaults.filter((integration) => integration.name !== 'Http'),
+      Sentry.httpIntegration({
+        ignoreIncomingRequestBody: (url) => CREDENTIAL_BODY_ROUTE.test(url),
+      }),
+    ],
     beforeSend(event) {
       try {
         const settings = getSettings()
@@ -40,7 +61,7 @@ export function createServerProvider(options: ErrorReportingInitOptions): ErrorR
       } catch {
         // If we can't load settings, allow the event (fail-open for crash reports)
       }
-      return event
+      return scrubCredentialRequestBody(event)
     },
   })
 

@@ -29,6 +29,7 @@ import type { AgentComputerUse } from '@shared/lib/computer-use/agent-permission
 import { getSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { isAgentIntegrationSession, isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import type { LlmProviderId } from '@shared/lib/llm-provider/provider-types'
 import { z } from 'zod'
 import { sessionFilePath, type SessionStore } from '../session-store'
@@ -292,7 +293,7 @@ export class LiveSessions {
   /** An event for a session's listeners. */
   emit(sessionId: string, event: SessionEvent): void {
     const tagged = this.provisionalSessions.has(sessionId) ? { ...event, provisional: true } : event
-    void this.deps.capture?.recordOutput(sessionId, tagged)
+    if (this.deps.capture) background(this.deps.capture.recordOutput(sessionId, tagged), { name: 'live-sessions.capture-output' })
     this.channels.emit(sessionId, tagged)
   }
 
@@ -326,7 +327,9 @@ export class LiveSessions {
     const repaired = repairLegacySlashCommands(meta.slashCommands)
     this.setSlashCommands(sessionId, repaired.commands)
     if (repaired.changed) {
-      updateSessionMetadata(this.deps.store, sessionId, { slashCommands: repaired.commands }).catch(console.error)
+      background(updateSessionMetadata(this.deps.store, sessionId, { slashCommands: repaired.commands }).catch(console.error), {
+        name: 'live-sessions.persist-repaired-slash-commands',
+      })
     }
     return repaired.commands
   }
@@ -418,11 +421,11 @@ export class LiveSessions {
     const frame = (message: StreamMessage) => this.states.get(sessionId)?.frame(message)
     let held: StreamMessage[] | null = holdFramesUntil ? [] : null
     if (holdFramesUntil) {
-      void holdFramesUntil.then(() => undefined, () => undefined).then(() => {
+      background(holdFramesUntil.then(() => undefined, () => undefined).then(() => {
         const waiting = held ?? []
         held = null
         for (const message of waiting) frame(message)
-      })
+      }), { name: 'live-sessions.release-held-frames' })
     }
     const { unsubscribe, ready } = client.subscribeToStream(containerSessionId, (message) => {
       if (held) held.push(message)
@@ -454,9 +457,9 @@ export class LiveSessions {
     this.subscriptions.set(sessionId, unsubscribe)
     // A failed reattach comes back through the stream as a synthesized
     // connection_closed; this only keeps the rejection from going unhandled.
-    this.trackConnecting(sessionId, ready).catch((error) => {
+    background(this.trackConnecting(sessionId, ready).catch((error) => {
       console.error(`[LiveSessions] Re-subscribe failed for session ${sessionId}:`, error)
-    })
+    }), { name: 'live-sessions.reattach-stream' })
   }
 
   /**
@@ -465,23 +468,26 @@ export class LiveSessions {
    * the stream rather than guess.
    */
   private resolveStreamPolicy(sessionId: string, state: LiveSession, known?: SessionMetadata | null): void {
-    void (known !== undefined ? Promise.resolve(known) : getSessionMetadata(this.deps.store, sessionId))
-      .then((meta) => {
-        // A reattach replaced the state and resolves its own policy.
-        if (this.states.get(sessionId) !== state) return
-        state.applyStreamPolicy({
-          releaseStreamWhenIdle: isHiddenAutomatedSession(meta),
-          retainStateOnStreamRelease: isAgentIntegrationSession(meta),
+    background(
+      (known !== undefined ? Promise.resolve(known) : getSessionMetadata(this.deps.store, sessionId))
+        .then((meta) => {
+          // A reattach replaced the state and resolves its own policy.
+          if (this.states.get(sessionId) !== state) return
+          state.applyStreamPolicy({
+            releaseStreamWhenIdle: isHiddenAutomatedSession(meta),
+            retainStateOnStreamRelease: isAgentIntegrationSession(meta),
+          })
+          this.releaseIfIdle(sessionId)
         })
-        this.releaseIfIdle(sessionId)
-      })
-      .catch((error) => {
-        console.warn('[LiveSessions] Failed to resolve automation stream policy:', error)
-        captureException(error, {
-          tags: { area: 'container', op: 'resolveStreamReleasePolicy' },
-          extra: { sessionId, agentSlug: this.deps.slug },
-        })
-      })
+        .catch((error) => {
+          console.warn('[LiveSessions] Failed to resolve automation stream policy:', error)
+          captureException(error, {
+            tags: { area: 'container', op: 'resolveStreamReleasePolicy' },
+            extra: { sessionId, agentSlug: this.deps.slug },
+          })
+        }),
+      { name: 'live-sessions.resolve-stream-policy' },
+    )
   }
 
   /**
@@ -920,8 +926,13 @@ export class LiveSessions {
     const capture = this.deps.capture
     if (capture) {
       const { store } = this.deps
-      capture.snapshotSubagentsDir(sessionId, store.files, sessionFilePath(store, sessionId, 'subagents'), 'state-created').catch(() => {})
-      capture.recordNote(sessionId, 'state_created', { agentSlug: this.deps.slug }).catch(() => {})
+      background(
+        capture.snapshotSubagentsDir(sessionId, store.files, sessionFilePath(store, sessionId, 'subagents'), 'state-created').catch(() => {}),
+        { name: 'live-sessions.capture-subagents-snapshot' },
+      )
+      background(capture.recordNote(sessionId, 'state_created', { agentSlug: this.deps.slug }).catch(() => {}), {
+        name: 'live-sessions.capture-note',
+      })
     }
     return state
   }
@@ -951,9 +962,9 @@ export class LiveSessions {
       resyncAwaiting: () => this.states.get(sessionId)?.syncAwaiting(),
       completions: () => this.completionsOf(sessionId),
       promote: () => {
-        this.promoteAutomated(sessionId).catch((error) => {
+        background(this.promoteAutomated(sessionId).catch((error) => {
           console.error('[LiveSessions] Failed to promote automated session:', error)
-        })
+        }), { name: 'live-sessions.promote-automated' })
       },
       workflows: this.workflowsOf(sessionId),
     }

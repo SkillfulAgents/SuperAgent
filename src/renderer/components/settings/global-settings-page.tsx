@@ -4,7 +4,7 @@ import { SettingsPage, type SettingsPageSection, type SettingsPageSectionGroup }
 import { lazyRouteComponent, type LinkProps } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { canUseHostFeatures } from '@renderer/lib/capabilities'
 
 // Each settings pane is a separate on-demand boundary. The navigation shell is
 // immediately usable, while only the active pane (and its dependency graph) is

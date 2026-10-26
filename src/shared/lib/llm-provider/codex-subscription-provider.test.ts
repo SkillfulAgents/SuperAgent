@@ -25,7 +25,7 @@ describe('Codex subscription provider', () => {
     const models = provider.getBuiltinCatalog()
     expect(models.find(model => model.family === 'gpt-sol' && model.isLatest)?.id).toBe('gpt-6.1-sol')
     expect(models.some(model => model.id === 'gpt-5.5')).toBe(false)
-    expect(models.every(model => model.contextWindow === 272000)).toBe(true)
+    expect(models.every(model => model.contextWindow === 872000)).toBe(true)
     for (const model of models) expect(model.supportedSpeeds).toEqual(['normal', 'fast'])
     expect(models.some(model => model.id === 'codex-auto-review')).toBe(false)
   })
@@ -43,6 +43,18 @@ describe('Codex subscription provider', () => {
       expect(models.map(model => [model.id, model.supportedSpeeds])).toEqual([
         ['fast-model', ['normal', 'fast']], ['priority-model', ['normal', 'fast']], ['standard-model', undefined],
       ])
+    } finally { fetchSpy.mockRestore() }
+  })
+  it('uses the discovered max context window when the subscription lists one', async () => {
+    const credential = { accessToken: 'access', accountId: 'account', expiresAt: Date.now() + 100000, generation: 1 }
+    const provider = new CodexSubscriptionLlmProvider({ apiKeys: {}, env: {}, resolveCredential: vi.fn().mockResolvedValue(credential) })
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ models: [
+      { slug: 'long-model', visibility: 'list', context_window: 272000, max_context_window: 872000 },
+      { slug: 'default-model', visibility: 'list', context_window: 272000 },
+    ] })))
+    try {
+      const models = await provider.searchModels('')
+      expect(models.map(model => [model.id, model.contextWindow])).toEqual([['long-model', 872000], ['default-model', 272000]])
     } finally { fetchSpy.mockRestore() }
   })
   it('distinguishes authentication, entitlement and rate limits without matching token budgets', () => {

@@ -12,7 +12,7 @@ import {
 } from '@renderer/components/ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import { cn } from '@shared/lib/utils/cn'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { PERMISSION_LEVEL_LABELS } from '@shared/lib/computer-use/types'
 import { DeclineButton } from '../requests/decline-button'
 import { RequestItemShell } from '../requests/request-item-shell'

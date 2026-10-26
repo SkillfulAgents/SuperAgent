@@ -6,6 +6,7 @@ import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { listSessionIdsWithPendingWakes } from '@shared/lib/services/scheduled-task-service'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { getSettings } from '@shared/lib/config/settings'
+import { background } from '@shared/lib/background'
 import { db } from '@shared/lib/db'
 import { messageAuthor } from '@shared/lib/db/schema'
 import { inArray } from 'drizzle-orm'
@@ -29,14 +30,14 @@ class SessionAutoDeleteMonitor {
 
     this.startupTimeoutId = setTimeout(() => {
       this.startupTimeoutId = null
-      this.cleanupAllAgents().catch((error) => {
+      background(this.cleanupAllAgents().catch((error) => {
         console.error('[SessionAutoDeleteMonitor] Error in initial cleanup:', error)
-      })
+      }), { name: 'session-auto-delete-monitor.cleanup-all-agents' })
 
       this.intervalId = setInterval(() => {
-        this.cleanupAllAgents().catch((error) => {
+        background(this.cleanupAllAgents().catch((error) => {
           console.error('[SessionAutoDeleteMonitor] Error in cleanup cycle:', error)
-        })
+        }), { name: 'session-auto-delete-monitor.cleanup-all-agents' })
       }, this.pollIntervalMs)
     }, this.startupDelayMs)
 

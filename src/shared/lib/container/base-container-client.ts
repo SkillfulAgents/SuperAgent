@@ -41,6 +41,7 @@ import { getActiveLlmProvider } from '@shared/lib/llm-provider'
 import type { AgentIdentity } from '@shared/lib/llm-provider/base-llm-provider'
 import { getActiveWebProvider } from '../web-provider'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { getOrCreateHostToken } from './host-token-store'
 import { getPlatformContainerToken } from '../platform-attribution/container-token'
 import { getPlatformProxyBaseUrl } from '../platform-auth/config'
@@ -74,11 +75,16 @@ const COMMON_BINARY_PATHS: Record<string, string[]> = {
     '/usr/bin',
     '/opt/podman/bin',
     '/Applications/Docker.app/Contents/Resources/bin',
+    // Per-user installs: Docker Desktop's "User" mode, OrbStack, Rancher Desktop.
+    path.join(os.homedir(), '.docker', 'bin'),
+    path.join(os.homedir(), '.orbstack', 'bin'),
+    path.join(os.homedir(), '.rd', 'bin'),
   ],
   linux: [
     '/usr/local/bin',
     '/usr/bin',
     '/opt/podman/bin',
+    path.join(os.homedir(), '.rd', 'bin'),
   ],
   win32: [
     'C:\\Program Files\\Docker\\Docker\\resources\\bin',
@@ -205,9 +211,12 @@ export function execSyncWithPath(command: string, options?: { stdio?: 'pipe' | '
 }
 
 /**
- * Spawn a process with enhanced PATH.
+ * Spawn a process with enhanced PATH. `command` is an unquoted path: only the
+ * Windows shell needs it quoted, and quotes would make spawn() look for a file
+ * whose name includes them.
  */
 export function spawnWithPath(command: string, args: string[], options?: { cwd?: string; stdio?: any }): ReturnType<typeof spawn> {
+  if (isWindows && command.includes(' ') && !command.startsWith('"')) command = `"${command}"`
   return spawn(command, args, {
     ...options,
     env: { ...process.env, PATH: getEnhancedPath() },
@@ -416,6 +425,13 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   protected getAdditionalRunFlags(): string {
     return ''
   }
+
+  /**
+   * Runs right before every attempt to run the container in start(). Subclasses
+   * throw here to refuse a run that would not work, e.g. one whose workspace
+   * the runtime can't see.
+   */
+  protected async beforeRun(): Promise<void> {}
 
   public volumeRunFlags(): string | null {
     return FUSE_RUN_FLAGS
@@ -815,6 +831,8 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       let stdout: string
       try {
         for (;;) {
+          // Before every attempt: a recovery below may have restarted the runtime.
+          await this.beforeRun()
           await execWithPathSilent(`${runner} rm -f ${containerName}`)
 
           try {
@@ -1837,7 +1855,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       this.wsConnections.set(sessionId, ws)
     }
 
-    setupWebSocket().catch((error) => {
+    background(setupWebSocket().catch((error) => {
       if (cancelled) return
       console.error('Failed to set up WebSocket:', error)
       this.safeEmitError(error)
@@ -1853,7 +1871,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       }
       callback(closeMessage)
       rejectReady(error instanceof Error ? error : new Error(String(error)))
-    })
+    }), { name: 'container-client.open-session-stream' })
 
     const unsubscribe = () => {
       cancelled = true
@@ -1959,7 +1977,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     // VM has no buildkit, so a build there fails unconditionally ("buildctl
     // not found in $PATH") — otherwise pull from the registry. Lazy import
     // avoids a base-client ↔ client-factory module cycle.
-    const { canBuildImage, buildImage, pullImage, checkImageExists, getAvailableDiskSpace, MIN_IMAGE_DISK_SPACE_BYTES } = await import('./client-factory')
+    const { canBuildImage, buildImage, pullImage, checkImageExists, getAvailableDiskSpace, MIN_IMAGE_DISK_SPACE_BYTES, IMAGE_COMMAND_TIMEOUT_MS } = await import('./client-factory')
     const runner = settings.container.containerRunner as import('./client-factory').ContainerRunner
 
     // Same pre-flight ensureImageReady() runs at startup: creating the image
@@ -2000,8 +2018,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     } catch (createError) {
       // A concurrent create (e.g. startup's ensureImageReady racing this
       // start path) may have produced the image even though our attempt
-      // failed — re-check before propagating.
-      if (await checkImageExists(runner, image)) {
+      // failed — re-check before propagating. Bounded: a create that failed
+      // because the runtime stopped answering must still reach recovery.
+      if (await checkImageExists(runner, image, { timeoutMs: IMAGE_COMMAND_TIMEOUT_MS })) {
         console.log(`Container image ${image} appeared concurrently`)
         return
       }

@@ -1,3 +1,4 @@
+import { background } from '@shared/lib/background'
 import type { GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
 
 /**
@@ -87,11 +88,11 @@ export function createAgentAccessGate(options: {
       reloadRequested = true
       return
     }
-    void load()
+    background(load(), { name: 'agent-access-gate.load-accessible-agents' })
   }
 
   // The first load starts with the gate: an event pushed before it lands waits for it.
-  void load()
+  background(load(), { name: 'agent-access-gate.load-accessible-agents' })
   const recheck = setInterval(refresh, options.recheckEveryMs ?? ACCESS_RECHECK_MS)
   recheck.unref?.()
 
