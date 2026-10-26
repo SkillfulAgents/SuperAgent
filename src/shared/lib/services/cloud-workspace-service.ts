@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 
+import { background } from '@shared/lib/background'
 import { captureException } from '@shared/lib/error-reporting'
 import {
   getPlatformAccessToken,
@@ -440,11 +441,14 @@ export async function getCloudWorkspace(
  *
  * The deployment's server facts ride along, so a renderer driving it reads them
  * at boot rather than waiting on a request of its own (`cloud-server-facts.ts`).
+ * In the background: the cycle takes as long as it did without them.
  */
 export async function refreshCloudWorkspace(): Promise<void> {
   try {
     const status = await getCloudWorkspace()
-    if (status.hasValidToken && status.deploymentUrl) await refreshCloudServerFacts(status.deploymentUrl)
+    if (status.hasValidToken && status.deploymentUrl) {
+      background(refreshCloudServerFacts(status.deploymentUrl), { name: 'cloud-workspace.refresh-server-facts' })
+    }
   } catch (error) {
     reportFailureOnce('refresh', error)
   }

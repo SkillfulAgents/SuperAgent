@@ -648,6 +648,13 @@ describe('refreshCloudWorkspace', () => {
     expect(mockRefreshFacts).toHaveBeenCalledWith(DEPLOYED.deployment_url)
   })
 
+  // The cycle holds PlatformService's refresh, which skips others while it runs.
+  it('doesn’t wait for them', async () => {
+    mockReadRecord.mockReturnValue(storedRecord())
+    mockRefreshFacts.mockReturnValueOnce(new Promise(() => {}))
+    await expect(refreshCloudWorkspace()).resolves.toBeUndefined()
+  })
+
   it('leaves them alone for a workspace this app can’t drive', async () => {
     mockReadRecord.mockReturnValue(null)
     mockRequestGrant.mockRejectedValue(new Error('grant refused'))
