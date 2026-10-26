@@ -165,9 +165,21 @@ reports that nothing was clicked or pressed (the page submitted the form,
 navigated or sent the code by itself), snapshot before submitting anything
 yourself.
 
-When a step needs the user's own hands — a CAPTCHA, a passkey or security key,
-approving the sign-in on their phone, a consent screen — immediately call
-`mcp__user-input__request_browser_input`.
+When a sign-in asks to verify it's you, the way is the user's to choose
+whenever the page offers more than one: a list of ways (a code by text or
+email, a prompt on the phone, a passkey or security key), or one way (a
+passkey or phone prompt) with "Try another way". Never hand the browser over
+on such a page before the user picked: open that list, ask with
+`AskUserQuestion` (one option per way, in the page's words) and click the one
+picked. A code then goes in with `request_login` (kind `otp`). After a prompt
+to the user's phone, wait for the page to move on by itself: `browser_wait`
+with 15000 reports where the page is after each wait; repeat it for up to
+about two minutes.
+
+When a step needs the user's own hands — a CAPTCHA, a consent screen, a
+passkey or security key the user picked or the page's only way (a page that
+shows "Try another way" is not that), a phone prompt still pending after that
+wait — immediately call `mcp__user-input__request_browser_input`.
 Describe exactly what is visible and what the user must do. After completion,
 snapshot the updated state.
 

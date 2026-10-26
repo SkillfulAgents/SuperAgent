@@ -94,6 +94,22 @@ step is not always a password). Declining, or signing in on the page by
 hand, drops it. The host also remembers the username the last step went in
 with, so a step without a username field still knows whose account it is.
 
+A second step that offers several ways (a code by text, a prompt on the
+phone, a passkey) is the user's to choose, also when the page opens on one
+of them with "Try another way": the agent opens the list and asks which with
+`AskUserQuestion` before it clicks one (the web-browser subagent reports the ways to the main agent,
+which asks). A code then goes through request_login like any step, and is
+never saved. After a prompt to the phone the agent waits for the page to
+move on, and hands the browser over (`request_browser_input`) only if it has
+not within about two minutes. This lives in the container, not the host: the
+agent's prompts and tool descriptions, and a guard in
+`request_browser_input`, since prompts alone left the agent handing over a
+passkey prompt about half the time. On a page that shows "Try another way"
+(or a control so named), the first hand-over is refused with the reason,
+unless the user answered a question in that session in the last 10 minutes.
+A second call on the same page goes through, so a way the user picked in
+chat still can.
+
 ### The card
 
 "Save for later" is on by default (off, with a notice, on an agent others can

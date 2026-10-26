@@ -33,7 +33,9 @@ Use this when the page asks for credentials: a username or email, a password, a 
 
 Sign-in through another account ("Continue with Google", GitHub, Microsoft): which account to use is the user's to say. On a page with such buttons, list them in providers on every call: the user's form offers exactly those. Before you click one, call request_login on the site (without fields when the page shows none). The result names the account the user signs in with ("signs in with the Google account x@gmail.com"), or the user picks it in the form. Then click the button yourself and pick exactly that account in the provider's account chooser, never another; if the provider asks to sign in, call request_login there with that username.
 
-Hand the browser over with request_browser_input instead for what only the user can do on the page: a CAPTCHA, a passkey or security key, approving the sign-in on their phone, or a consent screen.
+When the sign-in asks to verify it's you, the way is the user's to choose whenever the page offers more than one: a list of ways (a code by text or email, a prompt on the phone, a passkey), or one way (a passkey or phone prompt) with "Try another way". Open that list and have the user pick one before you click it; never hand the browser over on such a page before they picked. A code then goes in with this tool; after a prompt to their phone, wait for the page to move on by itself (up to about two minutes).
+
+Hand the browser over with request_browser_input instead for what only the user can do on the page: a CAPTCHA, a consent screen, a passkey or security key the user picked or the page's only way, or a phone prompt still pending after that wait.
 
 The result says which account was used, which fields were filled on which site, whether the form was submitted, and what the page did next (like a click result). It never contains the values. When the site rejects the credentials, the page says so.`
 
