@@ -293,6 +293,12 @@ function notifyPlatformServiceAuthChanged(connected: boolean): void {
     .catch((error) =>
       captureException(error, { tags: { area: 'platform-auth', op: 'notify-notifications' } }),
     ), { name: 'platform-auth.notify-platform-notifications' })
+  // Gamut drive keys were issued to the previous member.
+  background(import('../volumes/platform-mountable-volume')
+    .then((mod) => mod.dropPlatformVolumeKeys())
+    .catch((error) =>
+      captureException(error, { tags: { area: 'platform-auth', op: 'notify-volume-keys' } }),
+    ), { name: 'platform-auth.drop-volume-keys' })
   // The webhook relay goes (un)available with the connection, and starts over
   // when the token changes.
   background(import('../webhook-relay')
