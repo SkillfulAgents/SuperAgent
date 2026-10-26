@@ -115,6 +115,8 @@ export class AgentReviews {
   private settlers: Map<string, ReviewSettler> = new Map()
   /** Outcomes that ended a review while its caller was rechecking: the caller's next resume takes them. */
   private readonly held = new Map<string, ReviewOutcome>()
+  /** What the person typed with a deny, until the waiting call takes it. */
+  private readonly denyReasons = new Map<string, string>()
 
   constructor(
     readonly slug: AgentSlug,
@@ -277,6 +279,7 @@ export class AgentReviews {
    */
   withdraw(id: string): void {
     this.held.delete(id)
+    this.denyReasons.delete(id)
     const entry = this.inputs.getOpenRequest(id)
     if (entry && isReviewEntry(entry) && this.settlers.has(id)) {
       this.settleReview(entry, 'cancelled', 'withdrawn')
@@ -326,7 +329,7 @@ export class AgentReviews {
    * not found here: only this agent's review entries are consulted, so a
    * decision route can never settle a wait out from under its own flow.
    */
-  submit(id: string, decision: ReviewDecision): boolean {
+  submit(id: string, decision: ReviewDecision, reason?: string): boolean {
     const entry = this.inputs.getOpenRequest(id)
     // The kind guard is load-bearing: the decision routes accept a
     // caller-supplied id, and resolving whatever the store holds under it
@@ -334,10 +337,18 @@ export class AgentReviews {
     // wait out from under its own decision flow.
     if (!entry || !isReviewEntry(entry)) return false
 
+    if (decision === 'deny' && reason && this.settlers.has(id)) this.denyReasons.set(id, reason)
     this.settleDecided(entry, decision)
     this.shadowSettlerCheck('submitDecision')
     this.syncAwaiting()
     return true
+  }
+
+  /** What the person typed with the deny that ended this review, handed over once. */
+  takeDenyReason(id: string): Promise<string | undefined> {
+    const reason = this.denyReasons.get(id)
+    this.denyReasons.delete(id)
+    return Promise.resolve(reason)
   }
 
   resolveMatching(scope: string, decision: ReviewDecision): void {

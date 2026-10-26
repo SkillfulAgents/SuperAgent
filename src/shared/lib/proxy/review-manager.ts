@@ -2,7 +2,7 @@ import type { XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
 import { AttachedStores, type AgentStoreDirectory } from '@shared/lib/agent-actor/store-directory'
 import type { AgentReviews, ReviewDecision, ReviewOutcome, ReviewRequest, ReviewRequestOptions, XAgentOperation } from './agent-reviews'
 import type { ReviewDetails } from './review-display'
-import { awaitReview, type ReviewReevaluator } from './review-request'
+import { awaitReview, type ReviewReevaluator, type ReviewResult } from './review-request'
 import type { ScopeLabel } from './scope-metadata'
 
 export { generateReviewDisplayText, humanizeActionName, type ReviewDetails } from './review-display'
@@ -23,7 +23,7 @@ export class ReviewManager {
   }
 
   /** Raise a review for the agent a call came from and wait for its decision (see `awaitReview`). */
-  requestReview(details: ReviewDetails, signal?: AbortSignal, options?: { reevaluate?: ReviewReevaluator }): Promise<ReviewDecision> {
+  requestReview(details: ReviewDetails, signal?: AbortSignal, options?: { reevaluate?: ReviewReevaluator }): Promise<ReviewResult> {
     const reviews = this.agents.get(details.agentSlug)
     return awaitReview(reviews, (raise) => reviews.request(details, raise), { signal, ...options })
   }
@@ -51,8 +51,12 @@ export class ReviewManager {
    * to A's URL finds nothing — the same `false` as "review not found", so
    * nothing leaks to an unauthorized caller.
    */
-  submitDecision(agentSlug: string, id: string, decision: ReviewDecision): boolean {
-    return this.agents.peek(agentSlug)?.submit(id, decision) ?? false
+  submitDecision(agentSlug: string, id: string, decision: ReviewDecision, reason?: string): boolean {
+    return this.agents.peek(agentSlug)?.submit(id, decision, reason) ?? false
+  }
+
+  takeDenyReason(agentSlug: string, id: string): Promise<string | undefined> {
+    return this.agents.peek(agentSlug)?.takeDenyReason(id) ?? Promise.resolve(undefined)
   }
 
   resolveMatchingPending(agentSlug: string, scope: string, decision: ReviewDecision): void {
@@ -80,7 +84,7 @@ export class ReviewManager {
     preview?: string,
     fileTransfer?: XAgentFileTransfer,
     signal?: AbortSignal,
-  ): Promise<ReviewDecision> {
+  ): Promise<ReviewResult> {
     const reviews = this.agents.get(callerAgentSlug)
     return awaitReview(reviews, (raise) => reviews.requestXAgent({ targetAgentSlug, targetAgentName, operation, preview, fileTransfer }, raise), { signal })
   }

@@ -175,7 +175,7 @@ xAgentRules.post('/delete', zValidator('json', z.object({ ruleId: z.string().min
     let decision: 'allow' | 'deny'
     try {
       const reviews = agentRegistry.get(callerSlug).inputs.reviews
-      decision = await awaitReview(reviews, (raise) => reviews.request({
+      decision = (await awaitReview(reviews, (raise) => reviews.request({
         accountId: target.targetId,
         reviewType: target.kind,
         toolkit: context.toolkit ?? context.name,
@@ -185,7 +185,7 @@ xAgentRules.post('/delete', zValidator('json', z.object({ ruleId: z.string().min
         scopeDescriptions: {},
         endpointDescription: `Delete rule "${rule.name}" on ${context.name}?`,
         ruleProposal: proposal,
-      }, raise), { signal })
+      }, raise), { signal })).decision
     } catch {
       await auditRuleDecision({ proposal, approved: false, agentSlug: callerSlug, via: 'timeout' })
       return { status: 408, body: { error: 'review_timeout', message: 'Deleting the rule needed approval but the request timed out. It was not deleted.' } }
@@ -284,7 +284,7 @@ async function proposeRule({ callerSlug, body, target, context, replaces, signal
   let decision: 'allow' | 'deny'
   try {
     const reviews = agentRegistry.get(callerSlug).inputs.reviews
-    decision = await awaitReview(reviews, (raise) => reviews.request({
+    decision = (await awaitReview(reviews, (raise) => reviews.request({
       accountId: body.targetId,
       reviewType: body.kind,
       toolkit: context.toolkit ?? context.name,
@@ -296,7 +296,7 @@ async function proposeRule({ callerSlug, body, target, context, replaces, signal
         ? `Update rule "${prepared.name}" on ${context.name}?`
         : `Add rule "${prepared.name}" on ${context.name}?`,
       ruleProposal: proposal,
-    }, raise), { signal })
+    }, raise), { signal })).decision
   } catch {
     await auditRuleDecision({ proposal, approved: false, agentSlug: callerSlug, via: 'timeout' })
     return { status: 408, body: { error: 'review_timeout', message: 'The rule needed approval but the request timed out. It was not saved.' } }

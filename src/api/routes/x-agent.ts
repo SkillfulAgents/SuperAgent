@@ -232,7 +232,7 @@ async function checkAgentPolicy(
 
   try {
     const reviews = agentRegistry.get(callerSlug).inputs.reviews
-    const userDecision = await awaitReview(reviews, (raise) => reviews.requestXAgent(
+    const { decision: userDecision } = await awaitReview(reviews, (raise) => reviews.requestXAgent(
       { targetAgentSlug: targetSlug ?? '', targetAgentName: targetName, operation, preview, fileTransfer },
       raise,
     ))
