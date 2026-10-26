@@ -28,12 +28,22 @@ export function runsInAppSandbox(facts: { distribution: ServerDistribution | Des
 }
 
 /**
- * Whether the server offers a container runtime. In the App Sandbox, only the
- * bundled Lima: the sandbox can't run the docker, podman or container CLIs
- * the other runtimes drive.
+ * Whether the server offers a container runtime. A sandboxed build can't run
+ * the docker, podman or container CLIs the other runtimes drive, so it offers
+ * only the runtime it bundles. Each distribution is listed, so a new one (a
+ * sandboxed Windows Store build, say) has to say which runtimes it offers.
  */
 export function offersRuntime(server: ServerFacts, runner: string): boolean {
-  return !runsInAppSandbox(server) || runner === 'lima'
+  switch (server.distribution) {
+    // The App Sandbox: only the Lima the bundle ships.
+    case 'mac-app-store':
+      return runner === 'lima'
+    // Today's Windows Store build is a full-trust package, not sandboxed.
+    case 'windows-store':
+    case 'direct':
+    case 'deployment':
+      return true
+  }
 }
 
 /**

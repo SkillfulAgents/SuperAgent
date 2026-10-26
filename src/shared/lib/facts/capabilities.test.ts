@@ -29,7 +29,8 @@ describe('the Mac App Store build', () => {
   })
 })
 
-describe.each(['direct', 'deployment'] as const)('a %s server', (distribution) => {
+// The Windows Store build is a full-trust package, so it behaves like a direct install.
+describe.each(['direct', 'windows-store', 'deployment'] as const)('a %s server', (distribution) => {
   it('is not sandboxed, offers every runtime and may download code', () => {
     expect(runsInAppSandbox(server(distribution))).toBe(false)
     expect(offersRuntime(server(distribution), 'docker')).toBe(true)
