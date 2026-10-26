@@ -11,7 +11,7 @@
 # runners have neither, so CI builds it in a Linux job and hands it to the
 # macOS build (download-lima.sh's LIMA_IMAGE_DIR).
 #
-# Usage: [LIMA_IMAGE_CACHE_DIR=dir] ./scripts/build-lima-image.sh [arm64|x86_64] [out-dir]
+# Usage: [LIMA_IMAGE_CACHE_DIR=dir] ./scripts/build-lima-image.sh [arm64|x86_64] [out-dir] [packages|image]
 #
 # Output:
 #   <out-dir>/alpine.qcow2   - Alpine cloud image with the packages installed
@@ -23,6 +23,11 @@
 # built from the same inputs (the selected package versions, the stock image,
 # these scripts) is reused from there instead, and a new one replaces it.
 #
+# The last argument runs one half, for CI: `packages` fetches the packages and
+# writes inputs.sha256, then `image` reuses or builds the image. In between,
+# CI restores its cache by exactly those inputs (.github/workflows/lima-image.yml).
+# Without it the script runs both.
+#
 # Without a working Docker outside CI it ships the stock cloud image instead,
 # whose first boot downloads sudo from Alpine's CDN and installs the packages
 # from the local repository.
@@ -32,6 +37,7 @@ set -euo pipefail
 ALPINE_VERSION="3.23.3"
 ARCH="${1:-$(uname -m)}"
 OUTPUT_DIR="${2:-build/lima-image}"
+STEP="${3:-all}"
 SCRIPTS="$(cd "$(dirname "$0")" && pwd)"
 PACKAGE_LIST="${SCRIPTS}/../src/shared/lib/container/lima-packages.json"
 
@@ -44,22 +50,41 @@ case "$ARCH" in
     ;;
 esac
 
+case "$STEP" in
+  all|packages|image) ;;
+  *)
+    echo "Unknown step: $STEP (packages, image, or none for both)"
+    exit 1
+    ;;
+esac
+
 mkdir -p "$OUTPUT_DIR"
 OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 STOCK_IMAGE="${OUTPUT_DIR}/alpine-stock.qcow2"
 VM_IMAGE="${OUTPUT_DIR}/alpine.qcow2"
-rm -rf "$VM_IMAGE" "$STOCK_IMAGE" "${OUTPUT_DIR}/packages" "${OUTPUT_DIR}/inputs.sha256"
+rm -rf "$VM_IMAGE" "$STOCK_IMAGE"
 
 ALPINE_IMAGE_NAME="nocloud_alpine-${ALPINE_VERSION}-${GUEST_ARCH}-uefi-cloudinit-r0.qcow2"
 ALPINE_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION%.*}/releases/cloud/${ALPINE_IMAGE_NAME}"
 
 # ── 1. Bundle the packages a new VM needs ─────────────────────────────────────
 
-echo "Fetching first-boot packages for Alpine v${ALPINE_VERSION%.*} (${GUEST_ARCH})..."
-npx --no-install tsx "${SCRIPTS}/fetch-lima-packages.ts" "v${ALPINE_VERSION%.*}" "$GUEST_ARCH" "${OUTPUT_DIR}/packages"
+if [ "$STEP" != "image" ]; then
+  rm -rf "${OUTPUT_DIR}/packages" "${OUTPUT_DIR}/inputs.sha256"
+  echo "Fetching first-boot packages for Alpine v${ALPINE_VERSION%.*} (${GUEST_ARCH})..."
+  npx --no-install tsx "${SCRIPTS}/fetch-lima-packages.ts" "v${ALPINE_VERSION%.*}" "$GUEST_ARCH" "${OUTPUT_DIR}/packages"
 
-INPUTS=$( { echo "$ALPINE_IMAGE_NAME"; cat "${OUTPUT_DIR}/packages/packages.txt" "$PACKAGE_LIST" "${SCRIPTS}/bake-lima-image.sh"; } | shasum -a 256 | cut -d' ' -f1)
-echo "$INPUTS" > "${OUTPUT_DIR}/inputs.sha256"
+  INPUTS=$( { echo "$ALPINE_IMAGE_NAME"; cat "${OUTPUT_DIR}/packages/packages.txt" "$PACKAGE_LIST" "${SCRIPTS}/bake-lima-image.sh"; } | shasum -a 256 | cut -d' ' -f1)
+  echo "$INPUTS" > "${OUTPUT_DIR}/inputs.sha256"
+  if [ "$STEP" = "packages" ]; then
+    echo "  inputs: ${INPUTS}"
+    exit 0
+  fi
+elif [ ! -f "${OUTPUT_DIR}/inputs.sha256" ] || [ ! -f "${OUTPUT_DIR}/packages/packages.txt" ]; then
+  echo "ERROR: ${OUTPUT_DIR} has no packages or inputs.sha256: run the packages step first"
+  exit 1
+fi
+INPUTS=$(cat "${OUTPUT_DIR}/inputs.sha256")
 
 if [ -n "${LIMA_IMAGE_CACHE_DIR:-}" ] && [ -f "${LIMA_IMAGE_CACHE_DIR}/${INPUTS}.qcow2" ]; then
   cp "${LIMA_IMAGE_CACHE_DIR}/${INPUTS}.qcow2" "$VM_IMAGE"

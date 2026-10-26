@@ -48,16 +48,28 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
+      # The image's inputs: the selected package versions (which need the
+      # packages fetched), the stock image and the bake script.
+      - name: Fetch the packages
+        id: inputs
+        run: |
+          if [ ! -f scripts/build-lima-image.sh ]; then exit 0; fi
+          bash scripts/build-lima-image.sh arm64 build/lima-image packages
+          echo "inputs=$(cat build/lima-image/inputs.sha256)" >> "$GITHUB_OUTPUT"
+
       # Two builds of the image differ byte for byte, and the app's
-      # auto-update downloads every file that changed: reuse the last image
-      # while its inputs are unchanged (build-lima-image.sh checks).
-      - name: Restore the last VM image
+      # auto-update downloads every file that changed: reuse the image built
+      # from exactly these inputs. Only the exact key: a prefix match hands
+      # back the newest image whatever its inputs, and a saved key can't be
+      # replaced, so inputs that change and change back (A → B → A) would
+      # rebuild on every build until the cache is evicted.
+      - name: Restore the VM image built from these inputs
         id: restore
+        if: steps.inputs.outputs.inputs != ''
         uses: actions/cache/restore@v4
         with:
           path: .lima-image-cache
-          key: lima-image-arm64-latest
-          restore-keys: lima-image-arm64-
+          key: lima-image-arm64-${{ steps.inputs.outputs.inputs }}
 
       # An older commit (an on-demand PR build of a branch from before this
       # workflow) has no build script, and its download-lima.sh downloads the
@@ -72,11 +84,11 @@ jobs:
             echo "No VM image: this commit predates scripts/build-lima-image.sh" > build/lima-image/README.txt
             exit 0
           fi
-          bash scripts/build-lima-image.sh arm64 build/lima-image
+          bash scripts/build-lima-image.sh arm64 build/lima-image image
           echo "inputs=$(cat build/lima-image/inputs.sha256)" >> "$GITHUB_OUTPUT"
 
       - name: Save the VM image for later builds
-        if: inputs.save-cache && steps.build.outputs.inputs != '' && steps.restore.outputs.cache-matched-key != format('lima-image-arm64-{0}', steps.build.outputs.inputs)
+        if: inputs.save-cache && steps.build.outputs.inputs != '' && steps.restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: .lima-image-cache
