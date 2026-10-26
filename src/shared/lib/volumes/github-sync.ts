@@ -64,7 +64,9 @@ export class GithubSync {
   private sent = new Map<string, Map<string, string>>()
   private policyHeld = new Map<string, string>()
   private rules = new Map<string, string>()
-  private written = new Map<string, Buffer>()
+  /** Versions in `versions/` that GitHub lacks and a served or sent record names: a later upload may merge against one. */
+  private kept = new Set<string>()
+  private githubShas = new WeakMap<SyncState, Set<string>>()
   /** Paths whose large upload is still streaming: a push must neither send nor clear them. */
   private writing = new Set<string>()
 
@@ -112,6 +114,8 @@ export class GithubSync {
   private async load(): Promise<void> {
     this.checkRemoved()
     await fs.rm(path.join(this.folder, 'pull'), { recursive: true, force: true })
+    // The records naming kept versions do not outlive the process.
+    await fs.rm(path.join(this.folder, 'versions'), { recursive: true, force: true })
     this.state = await loadSyncState(this.folder)
     this.edits = await readJsonFileStrict(path.join(this.folder, 'edits.json'), githubEditsSchema, emptyEdits())
     const copy = path.join(this.folder, 'copy')
@@ -247,17 +251,28 @@ export class GithubSync {
     return entry ? entry.sha : own(this.state.files, name)?.sha ?? null
   }
 
-  /** Versions an agent wrote live in memory, like the served records that point at them. */
-  private remember(bytes: Buffer): string {
+  /** Keeps a version an agent sent or was served on disk until it is no longer named. GitHub's own versions come from GitHub. */
+  private async remember(bytes: Buffer): Promise<string> {
     const sha = blobSha(bytes)
-    this.written.set(sha, bytes)
+    if (this.kept.has(sha) || this.onGithub(sha)) return sha
+    await fs.mkdir(path.join(this.folder, 'versions'), { recursive: true })
+    await fs.writeFile(this.version(sha), bytes)
+    this.kept.add(sha)
     return sha
+  }
+
+  private version(sha: string): string { return path.join(this.folder, 'versions', sha) }
+
+  private onGithub(sha: string): boolean {
+    let shas = this.githubShas.get(this.state)
+    if (!shas) { shas = new Set(Object.values(this.state.files).map(file => file.sha)); this.githubShas.set(this.state, shas) }
+    return shas.has(sha)
   }
 
   private async blob(sha: string | null | undefined): Promise<Buffer | null> {
     if (!sha) return null
-    const written = this.written.get(sha)
-    if (written) return written
+    const kept = this.kept.has(sha) ? await fs.readFile(this.version(sha)).catch(error => { if (missing(error)) return null; throw error }) : null
+    if (kept) return kept
     const fetched = await githubBlob(this.volume.config, sha)
     if (blobSha(fetched) !== sha) throw new VolumeError('GitHub blob content did not match its SHA.', 503)
     return fetched
@@ -355,9 +370,11 @@ export class GithubSync {
     return serialize([this.key], async () => {
       const versions = this.seen(mount).get(name) ?? []
       const sha = this.current(name)
-      if (sha && !this.written.has(sha) && own(this.edits.unpushed, name)?.sha === sha) {
-        const bytes = await this.bytes(name)
-        if (bytes && bytes.length <= GITHUB_PUSH_BYTES && blobSha(bytes) === sha) this.remember(bytes)
+      if (sha && !this.kept.has(sha) && !this.onGithub(sha) && own(this.edits.unpushed, name)?.sha === sha) {
+        // Only a file small enough to push can be merged, so a larger one is never read here.
+        const entry = await fs.lstat(this.target(name)).catch(() => null)
+        const bytes = entry?.isFile() && entry.size <= GITHUB_PUSH_BYTES ? await this.bytes(name) : null
+        if (bytes && blobSha(bytes) === sha) await this.remember(bytes)
       }
       if (versions.at(-1) !== sha) this.seen(mount).set(name, versions.length ? [versions[0], sha] : [sha])
       this.sentBy(mount).delete(name)
@@ -429,20 +446,19 @@ export class GithubSync {
       } else if (needsMerge()) {
         const merged = mergePath(await bytesOf(base), upload, await this.bytes(name), this.state.base!)
         // GitHub deleted the file and the agent wrote back what it read: the delete stands.
-        if (!merged.content) { this.seen(mount).delete(name); this.sentBy(mount).set(name, this.remember(upload)); return }
+        if (!merged.content) { this.seen(mount).delete(name); this.sentBy(mount).set(name, await this.remember(upload)); return }
         out = merged.content
         conflict = merged.conflict
       }
       await this.mark([name], agent, () => group)
       await this.local.write(name, new Blob([new Uint8Array(out)]).stream())
       if (resolving) await this.resolve(name)
-      const written = this.remember(out)
       const entry = own(this.edits.unpushed, name)
-      if (entry) entry.sha = written
+      if (entry) entry.sha = blobSha(out)
       if (conflict) this.edits.held[name] = { reason: conflict }
       else delete this.edits.held[name]
       this.seen(mount).delete(name)
-      this.sentBy(mount).set(name, this.remember(upload))
+      this.sentBy(mount).set(name, await this.remember(upload))
       await this.saveEdits()
     })
     this.schedulePush()
@@ -673,7 +689,7 @@ export class GithubSync {
             if (held.has(name)) continue
             if (Object.hasOwn(this.edits.unpushed, name)) {
               const local = await this.bytes(name)
-              if (local) this.remember(local)
+              if (local) await this.remember(local)
               const remote = own(files, name) ? await fs.readFile(path.join(stage, name)) : null
               const base = bases.has(name) ? bases.get(name)! : await this.blob(own(this.state.files, name)?.sha)
               const merged = mergePath(base, local, remote, head)
@@ -684,7 +700,7 @@ export class GithubSync {
                 await fs.mkdir(path.dirname(this.target(name)), { recursive: true })
                 await this.local.write(name, new Blob([new Uint8Array(merged.content)]).stream())
               }
-              const sha = merged.content ? this.remember(merged.content) : null
+              const sha = merged.content ? blobSha(merged.content) : null
               if (sha === (own(files, name)?.sha ?? null) && !merged.conflict && !this.writing.has(name)) delete this.edits.unpushed[name]
               else this.edits.unpushed[name].sha = sha
             } else if (own(this.state.files, name)?.mode !== own(files, name)?.mode) {
@@ -797,10 +813,18 @@ export class GithubSync {
     this.schedulePush()
   }
 
+  /** Drops kept versions nothing names any more, and those GitHub now has. */
   private forget(): void {
-    const keep = new Set([...this.served.values()].flatMap(paths => [...paths.values()].flat())
-      .concat([...this.sent.values()].flatMap(paths => [...paths.values()]), Object.values(this.edits.unpushed).map(entry => entry.sha)))
-    for (const sha of this.written.keys()) if (!keep.has(sha)) this.written.delete(sha)
+    if (!this.kept.size) return
+    background(serialize([this.key], async () => {
+      const named = new Set([...this.served.values()].flatMap(paths => [...paths.values()].flat())
+        .concat([...this.sent.values()].flatMap(paths => [...paths.values()]), Object.values(this.edits.unpushed).map(entry => entry.sha)))
+      for (const sha of [...this.kept]) {
+        if (named.has(sha) && !this.onGithub(sha)) continue
+        this.kept.delete(sha)
+        await fs.rm(this.version(sha), { force: true })
+      }
+    }), { name: 'github-sync.forget' })
   }
 
   remove(): void {

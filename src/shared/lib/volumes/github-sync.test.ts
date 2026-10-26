@@ -4,6 +4,7 @@ import path from 'node:path'
 import * as tar from 'tar'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
+import { backgroundSettled } from '@shared/lib/background'
 import { removeGithubSync } from './github-sync'
 import { GithubMountableVolume } from './github-mountable-volume'
 import { blobSha, loadSyncState } from './github-sync-state'
@@ -599,6 +600,29 @@ it('refuses to move a file with a conflict until it is resolved', async () => {
   await expect(volume.move('notes.txt', 'moved.txt')).rejects.toMatchObject({ code: 'not-accessible', message: 'notes.txt has a conflict with GitHub. Resolve it before moving it.' })
   await write('notes.txt', marked.replace(/<<<<<<< Agent's version\n|=======\n|>>>>>>> .*\n/g, ''))
   await volume.move('notes.txt', 'moved.txt')
+})
+
+it('keeps a version a merge may need on disk, not in memory, and drops it once GitHub has it', async () => {
+  const { sync, write } = await setup({ 'notes.txt': 'one\n' })
+  await write('notes.txt', 'two\n')
+  const versions = path.join(sync.folder, 'versions')
+  expect(await fs.readdir(versions)).toEqual([blobSha(Buffer.from('two\n'))])
+  await sync.run(true)
+  await backgroundSettled()
+  expect(await fs.readdir(versions)).toEqual([])
+  expect(Object.values(sync).some(value => value instanceof Map && [...value.values()].some(item => Buffer.isBuffer(item)))).toBe(false)
+})
+
+it('serves an unsynced file too large to push without reading it whole', async () => {
+  const { volume, write } = await setup()
+  await write('big.bin', 'x'.repeat(800_000))
+  const readFile = vi.spyOn(fs, 'readFile')
+  for (let i = 0; i < 3; i++) {
+    const file = await volume.read('big.bin')
+    expect(await new Response(await file.stream({ start: 0, end: 4 })).text()).toBe('xxxxx')
+    await file.close?.()
+  }
+  expect(readFile.mock.calls.filter(([target]) => String(target).endsWith('big.bin'))).toEqual([])
 })
 
 it('keeps an upload too large to push local, and says so', async () => {
