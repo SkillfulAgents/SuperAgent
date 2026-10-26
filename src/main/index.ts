@@ -80,6 +80,14 @@ process.env.SUPERAGENT_IS_PACKAGED = app.isPackaged ? '1' : '0'
 // Dev is unaffected: app.name is set to 'Superagent-Dev' above (pre-resolution), so the
 // fallback below resolves dev data to `…/Superagent-Dev`. A pre-existing SUPERAGENT_DATA_DIR
 // (custom dev/CI dir) is always honored verbatim via `??=`.
+//
+// The App Sandbox build has no legacy data to keep, and its Lima VM mounts the data dir,
+// which there can't contain a space (Lima drops such a mount silently, and the VM then
+// writes into its own disk) and can't be the container root (Virtualization.framework
+// won't share it). So it uses `<container>/.superagent`, getDataDir()'s own default.
+if (runsInAppSandbox(getServerFacts())) {
+  process.env.SUPERAGENT_DATA_DIR ??= path.join(app.getPath('home'), '.superagent')
+}
 if (app.isPackaged) {
   process.env.SUPERAGENT_DATA_DIR ??= path.join(app.getPath('appData'), 'Superagent')
 }
@@ -119,7 +127,10 @@ import { resolveCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target
 import { readPreferredApiTarget } from '@shared/lib/services/api-target-preference'
 import { coerceApiTarget, resolveApiTarget } from '@shared/lib/api-target'
 import { applyPreferredApiTarget, resolveApiTargetForRenderer, type CloudEndpoint } from './api-target'
-import { factsForRenderer } from './facts'
+import { desktopClientFacts, factsForRenderer } from './facts'
+import { clearStaleProcessSingleton } from './process-singleton'
+import { runsInAppSandbox, updatesItself } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
 import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
 import { isAllowedRendererPermission } from './renderer-permissions'
@@ -407,8 +418,12 @@ function createWindow() {
   updateAutoUpdaterWindow(mainWindow)
 
   // Initialize the actual updater in production builds, or in dev when the
-  // SUPERAGENT_TEST_UPDATES=1 escape hatch is set (see auto-updater.ts).
-  if (!process.env.ELECTRON_RENDERER_URL || process.env.SUPERAGENT_TEST_UPDATES === '1') {
+  // SUPERAGENT_TEST_UPDATES=1 escape hatch is set (see auto-updater.ts). Never in
+  // a Store build, whose updates the Store delivers.
+  if (
+    updatesItself(desktopClientFacts()) &&
+    (!process.env.ELECTRON_RENDERER_URL || process.env.SUPERAGENT_TEST_UPDATES === '1')
+  ) {
     initAutoUpdater(mainWindow)
   }
 
@@ -1819,6 +1834,12 @@ app.on('open-file', (event, filePath) => {
 // ('SuperAgent', shared with installed builds), so a dev instance silently
 // dies whenever the installed app is running. Harnesses that use their own
 // SUPERAGENT_DATA_DIR can opt out; packaged builds never can.
+//
+// In the App Sandbox a killed launch's singleton files would otherwise refuse
+// the next launch the lock (see process-singleton.ts).
+if (runsInAppSandbox(desktopClientFacts()) && clearStaleProcessSingleton(app.getPath('userData'))) {
+  console.log('Cleared the process-singleton files of a launch that is no longer running')
+}
 const gotTheLock =
   !app.isPackaged && process.env.SUPERAGENT_DISABLE_SINGLE_INSTANCE === '1'
     ? true

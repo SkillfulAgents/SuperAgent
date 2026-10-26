@@ -1,7 +1,7 @@
-import { supportsComputerUse } from '@shared/lib/facts/capabilities'
+import { supportsComputerUse, updatesItself } from '@shared/lib/facts/capabilities'
 import { targetIsRemote } from './api-target'
 import { isElectron } from './env'
-import { serverFacts } from './facts'
+import { clientFacts, serverFacts } from './facts'
 
 /**
  * What this window may offer, asked by name. Each answer is about one side:
@@ -57,4 +57,13 @@ export function canUseHostFeatures(): boolean {
 export function computerUseSupported(): boolean {
   const server = serverFacts()
   return server !== null && supportsComputerUse(server)
+}
+
+/**
+ * Whether this window's app updates itself, so offers its own update checks. A
+ * question about the client: a Store build connected to a cloud workspace still
+ * gets its updates from the Store.
+ */
+export function appUpdatesItself(): boolean {
+  return updatesItself(clientFacts())
 }

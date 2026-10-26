@@ -13,6 +13,8 @@ import { LambdaMicroVmRuntimeClient } from './lambda-microvm-runtime'
 import { RunnerSetupError, type RunnerSetupRemediation } from './wsl2-setup-errors'
 import { MockContainerClient } from './mock-container-client'
 import { getSettings } from '@shared/lib/config/settings'
+import { offersRuntime } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { BaseContainerClient, execWithPath, spawnWithPath, AGENT_CONTAINER_PATH } from './base-container-client'
 import { platform, homedir } from 'os'
 import * as fs from 'fs'
@@ -96,16 +98,21 @@ const ALL_RUNNERS: {
 ]
 
 /**
- * Supported container runners on this platform, filtered by eligibility.
+ * Supported container runners on this platform, filtered by eligibility and by
+ * what this server offers (`offersRuntime()`).
  * Order reflects preference (apple-container first on macOS 26+, then docker, then podman).
  * Recomputed on refresh so a transient sw_vers failure does not hide Apple forever.
  */
 export let SUPPORTED_RUNNERS: ContainerRunner[] = ALL_RUNNERS
-  .filter((r) => r.isEligible())
+  .filter(isOffered)
   .map((r) => r.name)
 
 function recomputeSupportedRunners(): void {
-  SUPPORTED_RUNNERS = ALL_RUNNERS.filter((r) => r.isEligible()).map((r) => r.name)
+  SUPPORTED_RUNNERS = ALL_RUNNERS.filter(isOffered).map((r) => r.name)
+}
+
+function isOffered(r: (typeof ALL_RUNNERS)[number]): boolean {
+  return r.isEligible() && offersRuntime(getServerFacts(), r.name)
 }
 
 /**

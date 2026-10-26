@@ -4,7 +4,7 @@ const { mockIsElectron } = vi.hoisted(() => ({ mockIsElectron: vi.fn(() => true)
 vi.mock('./env', () => ({ isElectron: mockIsElectron }))
 
 import { _resetApiTargetForTest, setActiveTarget } from './api-target'
-import { canUseHostFeatures, computerUseSupported } from './capabilities'
+import { appUpdatesItself, canUseHostFeatures, computerUseSupported } from './capabilities'
 import { _setFactsForTest } from './facts'
 import type { ServerFacts } from '@shared/lib/facts/facts-schema'
 
@@ -58,5 +58,22 @@ describe('computerUseSupported', () => {
   it('is false when the server didn’t say', () => {
     withServer(null)
     expect(computerUseSupported()).toBe(false)
+  })
+})
+
+describe('appUpdatesItself', () => {
+  it('asks this window’s app: a Store build driving a deployment still gets updates from the Store', () => {
+    _setFactsForTest({
+      client: { shell: 'electron', os: 'darwin', distribution: 'mac-app-store' },
+      server: { os: 'linux', distribution: 'deployment' },
+    })
+    expect(appUpdatesItself()).toBe(false)
+  })
+
+  it('is true for a desktop app distributed directly, false in a browser', () => {
+    _setFactsForTest({ client: { shell: 'electron', os: 'darwin', distribution: 'direct' }, server: null })
+    expect(appUpdatesItself()).toBe(true)
+    _setFactsForTest({ client: { shell: 'browser', os: null, distribution: null }, server: { os: 'linux', distribution: 'deployment' } })
+    expect(appUpdatesItself()).toBe(false)
   })
 })

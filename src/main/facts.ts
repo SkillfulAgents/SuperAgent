@@ -1,5 +1,5 @@
 import type { ApiTarget } from '@shared/lib/api-target'
-import type { Facts } from '@shared/lib/facts/facts-schema'
+import type { ClientFacts, Facts } from '@shared/lib/facts/facts-schema'
 import { currentOs, desktopDistribution, getServerFacts } from '@shared/lib/facts/server-facts'
 import { readCloudServerFacts } from '@shared/lib/services/cloud-server-facts'
 import type { CloudEndpoint } from './api-target'
@@ -14,8 +14,14 @@ import type { CloudEndpoint } from './api-target'
  * workspace's maintenance cycle fetches the deployment's facts in the
  * background, and this reads what it kept (`cloud-server-facts.ts`).
  */
+
+/** This install as a client: what main asks for its own desktop features, such as updates. */
+export function desktopClientFacts(): ClientFacts {
+  return { shell: 'electron', os: currentOs(), distribution: desktopDistribution() }
+}
+
 export function factsForRenderer(target: ApiTarget, cloud: CloudEndpoint | null): Facts {
-  const client = { shell: 'electron', os: currentOs(), distribution: desktopDistribution() } as const
+  const client = desktopClientFacts()
   if (target === 'local') return { client, server: getServerFacts() }
   return { client, server: cloud ? readCloudServerFacts(cloud.deploymentUrl) : null }
 }
