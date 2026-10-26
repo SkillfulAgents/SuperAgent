@@ -141,6 +141,7 @@ import {
   IMAGE_CHECK_MARKER,
   IMAGE_CHECK_TIMEOUT_MS,
   IMAGE_LOAD_TIMEOUT_MS,
+  IMAGE_REMOVE_TIMEOUT_MS,
   pullImage,
   PULL_STALL_TIMEOUT_MS,
   KILL_STALLED_PULL_TIMEOUT_MS,
@@ -836,11 +837,14 @@ describe('pullImage with the agent image bundled with the app', () => {
   let spawned: FakeProc[]
   // How the `load` process ends: exit code, or never (the timeout settles it).
   let loadOutcome: number | 'hang'
+  // Whether `rmi` answers, or never does (a runtime that stopped answering).
+  let removeOutcome: 'ok' | 'hang'
 
   beforeEach(() => {
     vi.clearAllMocks()
     spawned = []
     loadOutcome = 0
+    removeOutcome = 'ok'
     mockFindBundledAgentImage.mockReturnValue(BUNDLED)
     mockCreateReadStream.mockImplementation(() => Readable.from([ARCHIVE_BYTES.subarray(0, 1024), ARCHIVE_BYTES.subarray(1024)]))
     mockExecWithPath.mockResolvedValue({ stdout: '[]', stderr: '' })
@@ -854,6 +858,8 @@ describe('pullImage with the agent image bundled with the app', () => {
           if (loadOutcome !== 0) proc.stderr.emit('data', Buffer.from('unpacking failed: no space left on device\n'))
           proc.emit('close', loadOutcome)
         })
+      } else if (args[0] === 'rmi' && removeOutcome === 'hang') {
+        // Never closes: the removal timeout has to settle it.
       } else {
         queueMicrotask(() => {
           if (args[0] === 'run') proc.stdout.emit('data', Buffer.from(OK_LINE))
@@ -881,7 +887,7 @@ describe('pullImage with the agent image bundled with the app', () => {
     expect(argsOf()).toEqual(['load', 'run'])
     expect(Buffer.concat(spawned[0].received).equals(ARCHIVE_BYTES)).toBe(true)
     // Loaded by the name the settings ask for, checked before the pull path is skipped.
-    expect(mockExecWithPath).toHaveBeenCalledWith(`/mock/nerdctl image inspect ${IMAGE}`)
+    expect(mockExecWithPath).toHaveBeenCalledWith(`/mock/nerdctl image inspect ${IMAGE}`, { timeoutMs: IMAGE_REMOVE_TIMEOUT_MS })
     expect(progress.map((p) => p.percent)).toEqual(expect.arrayContaining([33, 100, null]))
     expect(progress.find((p) => p.percent === 100)?.status).toBe('Copying the agent image bundled with the app')
     expect(mockCaptureMessage).not.toHaveBeenCalled()
@@ -940,6 +946,29 @@ describe('pullImage with the agent image bundled with the app', () => {
 
     expect(spawned[0].kill).toHaveBeenCalledWith('SIGKILL')
     expect(argsOf()).toEqual(['load', 'rmi', 'pull', 'run'])
+  })
+
+  it('fails as a stalled pull, without pulling, when the runtime answers neither the load nor the removal', async () => {
+    vi.useFakeTimers()
+    loadOutcome = 'hang'
+    removeOutcome = 'hang'
+
+    const failure = pullImage('lima', IMAGE).then(
+      () => { throw new Error('expected the pull to fail') },
+      (err: Error) => err
+    )
+    await vi.advanceTimersByTimeAsync(IMAGE_LOAD_TIMEOUT_MS + IMAGE_REMOVE_TIMEOUT_MS + 1)
+
+    // Startup retries "Image pull stalled" after recovering the VM.
+    expect((await failure).message).toMatch(/^Image pull stalled: lima stopped answering while loading the bundled agent image/)
+    expect(argsOf()).toEqual(['load', 'rmi'])
+    expect(spawned[1].kill).toHaveBeenCalledWith('SIGKILL')
+  })
+
+  it('bounds the check that the loaded image is there by its name', async () => {
+    await pullImage('lima', IMAGE)
+
+    expect(mockExecWithPath).toHaveBeenCalledWith(`/mock/nerdctl image inspect ${IMAGE}`, { timeoutMs: IMAGE_REMOVE_TIMEOUT_MS })
   })
 
   it('pulls when nothing is bundled for the image', async () => {

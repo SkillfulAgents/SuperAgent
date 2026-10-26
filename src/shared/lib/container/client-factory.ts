@@ -449,10 +449,10 @@ export async function getAvailableDiskSpace(): Promise<number> {
 /**
  * Check if a container image exists locally.
  */
-export async function checkImageExists(runner: ContainerRunner, image: string): Promise<boolean> {
+export async function checkImageExists(runner: ContainerRunner, image: string, opts?: { timeoutMs?: number }): Promise<boolean> {
   try {
     const cli = getCliCommand(runner)
-    await execWithPath(`${cli} image inspect ${image}`)
+    await execWithPath(`${cli} image inspect ${image}`, opts)
     return true
   } catch {
     return false
@@ -607,15 +607,29 @@ export function checkImageIntegrity(runner: ContainerRunner, image: string): Pro
   })
 }
 
-/** Best-effort image removal; a failure here just leaves the next pull to overwrite. */
-function removeImage(runner: ContainerRunner, image: string): Promise<void> {
+/** Wall-clock cap for removing an image; a runtime that takes longer has stopped answering. */
+export const IMAGE_REMOVE_TIMEOUT_MS = 60 * 1000
+
+/**
+ * Best-effort image removal; a failure here just leaves the next pull to
+ * overwrite. Resolves false only when the runtime didn't answer in time.
+ */
+function removeImage(runner: ContainerRunner, image: string): Promise<boolean> {
   return new Promise((resolve) => {
     const cli = getCliPath(runner)
     // Apple's CLI has no rmi; see AppleContainerClient.removeCorruptImage.
     const args = runner === 'apple-container' ? ['image', 'delete', '--force', image] : ['rmi', '-f', image]
     const proc = spawnWithPath(cli, args)
-    proc.on('close', () => resolve())
-    proc.on('error', () => resolve())
+    const timer = setTimeout(() => {
+      try { proc.kill('SIGKILL') } catch { /* already gone */ }
+      resolve(false)
+    }, IMAGE_REMOVE_TIMEOUT_MS)
+    const finish = () => {
+      clearTimeout(timer)
+      resolve(true)
+    }
+    proc.on('close', finish)
+    proc.on('error', finish)
   })
 }
 
@@ -694,7 +708,7 @@ async function loadOrPullImage(
     try {
       await loadImageArchive(runner, bundled, onProgress)
       // The archive names the image; make sure the runtime now has it by that name.
-      if (!(await checkImageExists(runner, image))) throw new Error(`the archive loaded, but ${image} isn't there`)
+      if (!(await checkImageExists(runner, image, { timeoutMs: IMAGE_REMOVE_TIMEOUT_MS }))) throw new Error(`the archive loaded, but ${image} isn't there`)
       addErrorBreadcrumb({ category: 'container', message: 'Loaded the bundled agent image', data: { image, runner, ms: Date.now() - startedAt } })
       console.log(`[Container] Loaded the bundled agent image ${image} in ${Date.now() - startedAt} ms`)
       return
@@ -709,7 +723,12 @@ async function loadOrPullImage(
       // A load that fails while unpacking still leaves the image's name
       // behind. If the pull fails too, a caller's "did the image appear?"
       // re-check must not take that for a working image.
-      await removeImage(runner, image)
+      if (!(await removeImage(runner, image))) {
+        // The runtime answers neither the load nor the removal, so a pull
+        // would hang the same way. "Image pull stalled" is what startup
+        // retries after recovering the VM (container-host.ts).
+        throw new Error(`Image pull stalled: ${runner} stopped answering while loading the bundled agent image (${detail.slice(-300)}), and removing what the load left timed out after ${IMAGE_REMOVE_TIMEOUT_MS / 1000}s`)
+      }
     }
   }
   await doPullImage(runner, image, onProgress)
