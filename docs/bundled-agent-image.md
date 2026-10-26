@@ -70,6 +70,24 @@ Loading from a copy in the home mount instead of stdin took 16.7 s, so stdin
 stays: it needs no copy and works in the Store build, whose VM mounts only the
 data folder.
 
+### The updater's two copies of the ZIP
+
+electron-updater keeps two copies of each update ZIP, in
+`~/Library/Caches/superagent-updater`:
+
+- `pending/<file>.zip`, the download. It is read only to install it, and
+  electron-updater empties `pending/` when the next download starts.
+- `update.zip`, the base the next update's differential download compares
+  against.
+
+Bundled, each copy is 1.1 GiB, not 353 MiB. Once the update is installed, the
+pending copy is dead weight, so on macOS the app removes it at launch
+(`src/main/update-download-cache.ts`), before the updater takes any check or
+download. It removes the copy when the running app is that version or newer,
+keeps `update.zip`, and keeps a downloaded update that isn't installed yet.
+That frees 1.1 GiB, or 353 MiB on a build without the bundle. The table's host
+disk row is what remains.
+
 ### Updates
 
 Every release tags a new agent image. Before, an update downloaded the app's
