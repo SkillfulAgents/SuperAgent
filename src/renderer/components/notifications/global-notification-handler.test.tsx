@@ -993,6 +993,17 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(queryClient.getQueryState(['agents', 'agent-a'])?.isInvalidated).toBe(true)
   })
 
+  it("volume_attention_changed refreshes every agent's drives and the drive list, so a status pill follows sync", () => {
+    queryClient.setQueryData(['mounts', 'agent-a'], [])
+    queryClient.setQueryData(['mounts', 'agent-b'], [])
+    queryClient.setQueryData(['volume-definitions'], [])
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    simulateSSEMessage(getLatestEventSource(), { type: 'volume_attention_changed' })
+    for (const key of [['mounts', 'agent-a'], ['mounts', 'agent-b'], ['volume-definitions']]) {
+      expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true)
+    }
+  })
+
   it('agent_created invalidates visible agents and personal roles together', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 

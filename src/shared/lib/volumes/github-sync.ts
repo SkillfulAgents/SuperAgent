@@ -8,6 +8,7 @@ import * as tar from 'tar'
 import pLimit from 'p-limit'
 import ignore from 'ignore'
 import { background } from '@shared/lib/background'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { errnoCode } from '@shared/lib/agent-actor/local-file-ops'
 import { readJsonFileStrict, writeJsonFileAtomic } from '@shared/lib/utils/file-storage'
@@ -36,6 +37,8 @@ const PUSH_DELAY = 15_000
 const PUSH_MAX_DELAY = 120_000
 /** rclone keeps a written file's bytes until an hour after last use (its default --vfs-cache-max-age). */
 const SENT_BYTES_KEPT_MS = 60 * 60_000
+/** Open pages hear of a change to a drive's sync state at most this often, however many files a burst of writes touches. */
+const ANNOUNCE_MS = 1_000
 const ADDED = 'added on GitHub too'
 const CONFLICTS = new Set(['conflict markers to resolve', 'edited on GitHub, deleted here', 'deleted on GitHub, edited here', 'changed on GitHub too', ADDED])
 const emptyEdits = (): GithubEdits => ({ version: 1, unpushed: {}, held: {}, stopped: null, ignores: [], links: [], blocked: {}, markers: {} })
@@ -76,6 +79,9 @@ export class GithubSync {
   private spellings = new WeakMap<SyncState, Map<string, string>>()
   /** Paths whose large upload is still streaming: a push must neither send nor clear them. */
   private writing = new Set<string>()
+  /** The status pill open pages last heard of, and the pending announcement of a change to it. */
+  private announced = JSON.stringify([null, null])
+  private announcing: ReturnType<typeof setTimeout> | null = null
 
   constructor(readonly volume: GithubVolume) {
     this.folder = volumeFolder(volume.id)
@@ -211,8 +217,15 @@ export class GithubSync {
         else {
           const head = await this.checkBranch()
           await this.pull(head)
-          // A stopped push retries on the drive's next use.
+          // A stopped push retries on the drive's next use. With nothing to push, reading the branch again was all a stop needed.
           this.pushWanted ||= this.edits.stopped !== null && this.unpushed > 0
+          if (this.edits.stopped !== null && !this.unpushed) {
+            await serialize([this.key], async () => {
+              if (this.unpushed) return
+              this.edits.stopped = null
+              await this.saveEdits()
+            })
+          }
           if (this.pushWanted) { this.pushWanted = false; await this.push() }
         }
         this.failure = null
@@ -223,6 +236,7 @@ export class GithubSync {
         console.warn(`[volumes] GitHub sync ${this.volume.id}: ${this.failure}`)
       } finally {
         if (this.removed) await removeCopy(this.volume.id)
+        else this.announce()
       }
     })().finally(() => { this.syncing = null })
     await this.syncing
@@ -300,7 +314,23 @@ export class GithubSync {
 
   private saveEdits(): Promise<void> {
     this.checkRemoved()
+    this.announce()
     return writeJsonFileAtomic(path.join(this.folder, 'edits.json'), githubEditsSchema.parse(this.edits))
+  }
+
+  /** Tells open pages when the drive's status pill changed: a conflict, a stop, or their end. Edits waiting to push change no pill. */
+  private announce(): void {
+    if (this.announcing || this.removed) return
+    this.announcing = setTimeout(() => {
+      this.announcing = null
+      if (this.removed) return
+      const attention = this.attention
+      const pill = JSON.stringify([attention?.badge ?? null, attention?.detail ?? null])
+      if (pill === this.announced) return
+      this.announced = pill
+      globalFeed.publish({ type: 'volume_attention_changed' })
+    }, ANNOUNCE_MS)
+    this.announcing.unref?.()
   }
 
   private async save(state: SyncState): Promise<void> {
@@ -346,9 +376,12 @@ export class GithubSync {
     return held && held.until >= Date.now() ? held.size : undefined
   }
 
-  /** A mount just made by a container start holds none of the bytes earlier mounts held. */
+  /** A mount just made by a container start holds none of the bytes earlier mounts read or sent, so none is a base for its writes. */
   remounted(mount: string): void {
+    this.served.delete(mount)
+    this.sent.delete(mount)
     this.altered.delete(mount)
+    this.forget()
   }
 
   /**
@@ -585,9 +618,13 @@ export class GithubSync {
   async delete(mount: string, agent: string, requested: string, group?: string, expected?: string): Promise<void> {
     await this.ready()
     const name = await this.canonical(requested)
-    const hold = own(this.edits.held, name)
-    const keep = hold ? (hold.behind !== undefined ? hold.behind : own(this.state.files, name)?.sha ?? null) : null
-    const kept = await this.blob(keep)
+    /** GitHub's version of a conflicted file, which deleting it restores. */
+    const keeping = () => {
+      const hold = own(this.edits.held, name)
+      return hold ? (hold.behind !== undefined ? hold.behind : own(this.state.files, name)?.sha ?? null) : null
+    }
+    let keep = keeping()
+    let kept = await this.blob(keep)
     const marked = await serialize([this.key], async () => {
       const found = await this.local.stat(name).catch(error => {
         // The drive dropped what this mount still holds, as when GitHub deleted a file it wrote back: already gone.
@@ -599,7 +636,11 @@ export class GithubSync {
       // A move deletes its source only if no other write replaced it after the move read it.
       if (expected && (this.writing.has(name) || await fileBlobSha(this.target(name)) !== expected)) return false
       if (own(this.edits.held, name)) {
-        // Deleting a conflicted file keeps GitHub's version and pushes nothing.
+        // Deleting a conflicted file keeps GitHub's version and pushes nothing. A pull while it downloaded moves it on.
+        if (keeping() !== keep) {
+          keep = keeping()
+          kept = await this.blob(keep)
+        }
         const files = { ...this.state.files }
         if (kept) {
           await this.local.write(name, new Blob([new Uint8Array(kept)]).stream())
@@ -942,6 +983,8 @@ export class GithubSync {
       this.policyHeld = new Map([...plan.held].map(([repositoryPath, reason]) => [this.relative(repositoryPath), reason]))
       await serialize([this.key], async () => {
         for (const entry of settled) if (own(this.edits.unpushed, entry.name)?.n === entry.n) delete this.edits.unpushed[entry.name]
+        // Nothing GitHub could refuse is left to push, as when every change waits on a conflict or the size limit.
+        if (!plan.batches.length) this.edits.stopped = null
         await this.saveEdits()
       })
       const counters = new Map(entries.map(entry => [entry.name, entry.n]))
@@ -1009,6 +1052,7 @@ export class GithubSync {
   remove(): void {
     this.removed = true
     if (this.timer) clearTimeout(this.timer)
+    if (this.announcing) clearTimeout(this.announcing)
   }
 }
 

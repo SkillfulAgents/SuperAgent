@@ -623,6 +623,12 @@ export function GlobalNotificationHandler() {
             queryClient.invalidateQueries({ queryKey: ['agents'] })
             break
 
+          case 'volume_attention_changed':
+            // A drive's sync state changed: a conflict, a stopped push, or the end of one. Its status pills follow.
+            queryClient.invalidateQueries({ queryKey: ['mounts'] })
+            queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
+            break
+
           case 'agent_created':
             // Agent-created child creation lands outside the human create mutation,
             // so refresh both caches the direct-create path invalidates together.

@@ -62,8 +62,10 @@ The commit message names the agents whose changes it carries, and each of them g
 When the branch moved, the drive pulls, merges, and tries again, up to three times.
 A lost reply is told from a refusal by reading the head again.
 A refusal at an unmoved head (a protected branch, a revoked account) stops pushes and shows `Sync stopped`; the next use of the drive retries it.
+A branch that cannot be read shows `Sync stopped` too; it clears once the branch reads again and nothing is left that GitHub could refuse.
 
 A write merges three ways against the first version that mount was served since its last write, or what it last sent, so a teammate's change pulled meanwhile survives.
+A container start begins that record afresh, since the new mount holds nothing the old one read.
 The same holds when a pull meets a path with unpushed changes.
 Overlapping lines become conflict markers labelled with how to resolve them, and the agent gets a hint when it reads or edits the file.
 rclone reads each upload's entry back and treats any other size as corruption: it would delete the file and send its own bytes again, undoing the merge.
@@ -72,7 +74,7 @@ That matches the bytes rclone holds; its listings show the stored file, so its n
 A rename over an existing file arrives from rclone as a delete and then a move, so it replaces the file rather than merging.
 The drive records each label it writes in `edits.json`, and a push holds a file only while one of those labels is still in it: the same text in any other file pushes.
 An edit against a delete on either side, and a binary file changed on both sides, are held without markers.
-Deleting a conflicted file keeps GitHub's version.
+Deleting a conflicted file keeps GitHub's version, as of the moment it is restored.
 
 Paths a `.gitignore` matches (including those above a subfolder drive) and `.git` folders stay local and are never recorded as changes.
 Changes under `.github/workflows/`, files over 700 KB, and paths GitHub tracks as links or submodules stay local and show as not synced.
@@ -87,6 +89,7 @@ None is held in memory, and the folder is cleared on load.
 On a disk that ignores case, each part of a written path takes the spelling GitHub tracks or the copy already has, so a push never adds a second spelling of a folder.
 
 The drive card's status pill replaces OK with `N conflicts`, `N not synced`, `Sync paused` or `Sync stopped`, and its tooltip lists the files and why.
+A change to the pill or its tooltip reaches open pages as a `volume_attention_changed` event, at most once a second; edits waiting to push change neither.
 Deleting a drive with changes GitHub does not have says how many files will be lost.
 
 ## Access and lifecycle

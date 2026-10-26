@@ -11,6 +11,7 @@ import { blobSha, loadSyncState } from './github-sync-state'
 import { VolumeError } from './volume-error'
 import { githubTreeSchema, type GithubVolumeConfig } from './github-schema'
 import { markerLabel } from './github-merge'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import type { GithubTrees } from './github-client'
 
 const client = vi.hoisted(() => ({ githubHead: vi.fn(), githubTree: vi.fn(), githubTarball: vi.fn(), githubBlob: vi.fn(), githubRepo: vi.fn(), githubCommit: vi.fn() }))
@@ -233,6 +234,23 @@ it("keeps GitHub's version when the agent deletes a conflicted file", async () =
   expect(sync.attention).toBeNull()
   await sync.run(true)
   expect(commits).toEqual([])
+})
+
+it("restores GitHub's newest version when a pull lands while deleting a conflicted file fetches the one before", async () => {
+  const { volume, sync, text, write, state } = await conflicted()
+  let release = () => {}
+  const fetched = client.githubBlob.getMockImplementation()!
+  client.githubBlob.mockClear().mockImplementationOnce(async (...args) => { await new Promise<void>(resolve => { release = resolve }); return fetched(...args) })
+  const deleted = volume.delete('notes.txt')
+  await vi.waitFor(() => expect(client.githubBlob).toHaveBeenCalledOnce())
+  teammate({ 'notes.txt': 'NEWER\ntwo\n' })
+  await sync.run()
+  release()
+  await deleted
+  expect([await text('notes.txt'), (await state()).files['notes.txt'].sha, sync.attention]).toEqual(['NEWER\ntwo\n', blobSha(Buffer.from('NEWER\ntwo\n')), null])
+  await write('notes.txt', 'NEWER\ntwo\nmore\n')
+  await sync.run(true)
+  expect(remote['notes.txt'].toString()).toBe('NEWER\ntwo\nmore\n')
 })
 
 it('leaves a conflicted file alone on pull, and merges what GitHub changed meanwhile into its rewrite', async () => {
@@ -852,6 +870,51 @@ it('forgets what a mount held once its container mounts it again, or an hour on,
     await volume.move('notes.txt', 'moved.txt')
     expect(await volume.stat('moved.txt')).toEqual(await other.stat('moved.txt'))
   } finally { now.mockRestore(); await sync.run(true) }
+})
+
+it('merges a write after a container restart against what the new mount read, not what the old one did', async () => {
+  const { sync, volume, write, text } = await setup({ 'notes.txt': 'one\ntwo\nthree\n' })
+  await text('notes.txt')
+  teammate({ 'notes.txt': 'one\nTWO\nthree\n' })
+  await sync.run()
+  volume.remounted()
+  await text('notes.txt')
+  await write('notes.txt', 'one\nTWO\nTHREE\n')
+  expect([await text('notes.txt'), sync.attention?.badge]).toEqual(['one\nTWO\nTHREE\n', undefined])
+})
+
+it('tells open pages when the status pill changes, and not when it stays the same while edits wait to push', async () => {
+  const publish = vi.spyOn(globalFeed, 'publish')
+  const { sync, write } = await conflicted()
+  // The last announcement of the setup's changes lands within a second of them.
+  await new Promise(resolve => setTimeout(resolve, 1_200))
+  expect(publish).toHaveBeenCalledWith({ type: 'volume_attention_changed' })
+  publish.mockClear()
+  await sync.run()
+  await new Promise(resolve => setTimeout(resolve, 1_200))
+  expect(publish).not.toHaveBeenCalled()
+  for (let i = 0; i < 30; i++) await write(`burst-${i}.txt`, String(i))
+  await new Promise(resolve => setTimeout(resolve, 1_200))
+  expect(publish).not.toHaveBeenCalled()
+  await write('notes.txt', 'BOTH\ntwo\n')
+  await vi.waitFor(() => expect(publish).toHaveBeenCalledExactlyOnceWith({ type: 'volume_attention_changed' }), { timeout: 3_000 })
+  expect(sync.attention?.badge).toBeUndefined()
+})
+
+it('clears a stop once the branch reads again with nothing to push, or with only changes that wait', async () => {
+  const { sync, write } = await setup({ 'notes.txt': 'kept' })
+  const unavailable = () => client.githubHead.mockRejectedValueOnce(new WorkspaceFileError('not-found', 'The GitHub repository or branch is unavailable.'))
+  unavailable()
+  await sync.run()
+  expect(sync.attention?.badge).toEqual({ label: 'Sync stopped', tone: 'error' })
+  await sync.run()
+  expect(sync.attention).toBeNull()
+  await write('big.bin', 'x'.repeat(800_000))
+  unavailable()
+  await sync.run()
+  expect(sync.attention?.badge?.label).toBe('Sync stopped')
+  await sync.run()
+  expect(sync.attention?.badge).toEqual({ label: '1 not synced', tone: 'warning' })
 })
 
 it('shows a mount a file GitHub deleted while it wrote back what it read, until that mount deletes it too', async () => {
