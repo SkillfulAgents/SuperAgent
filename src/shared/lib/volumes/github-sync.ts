@@ -773,10 +773,11 @@ export class GithubSync {
       for (const batch of batches) {
         const base = this.state.base!
         const paths = batch.map(change => this.relative(change.path))
-        const by = [...new Set(paths.flatMap(name => agents.get(name) ?? []))].map(slug => names.get(slug) ?? slug).join(', ') || 'an agent'
+        const slugs = [...new Set(paths.flatMap(name => agents.get(name) ?? []))]
+        const by = slugs.map(slug => names.get(slug) ?? slug).join(', ') || 'an agent'
         let oid: string
         try {
-          oid = await githubCommit(this.volume.config, base, batch, `Update ${paths.length === 1 ? paths[0] : `${paths.length} files`} from ${by}`)
+          oid = await githubCommit(this.volume.config, base, batch, `Update ${paths.length === 1 ? paths[0] : `${paths.length} files`} from ${by}`, slugs)
         } catch (error) {
           const head = await githubHead(this.volume.config)
           if (head !== base || !(error instanceof WorkspaceFileError)) {

@@ -46,6 +46,26 @@ describe('GitHub responses', () => {
     forward.mockResolvedValueOnce(new Response('busy', { status: 502 }))
     await expect(githubCommit(config, sha, [], 'x')).rejects.toMatchObject({ status: 503 })
     expect(forward).toHaveBeenCalledTimes(3)
+    expect(audit).not.toHaveBeenCalled()
+  })
+
+  it('audits a commit once for each agent whose changes it carries, with the refusal when there is one', async () => {
+    forward.mockResolvedValueOnce(Response.json({ data: { createCommitOnBranch: { commit: { oid: childSha } } } }))
+    await githubCommit(config, sha, [{ path: 'a.txt', contents: Buffer.from('a') }], 'Update a.txt from Writer, Reviewer', ['writer', 'reviewer'])
+    const row = { accountId: config.accountId, toolkit: 'github', targetHost: 'api.github.com', targetPath: 'graphql', method: 'POST', policyDecision: 'allow' }
+    expect(audit.mock.calls).toEqual([
+      [expect.objectContaining({ ...row, agentSlug: 'writer', statusCode: 200 }), { analytics: false }],
+      [expect.objectContaining({ ...row, agentSlug: 'reviewer', statusCode: 200 }), { analytics: false }],
+    ])
+    expect(audit.mock.calls[0][0]).not.toHaveProperty('errorMessage')
+    audit.mockClear()
+    forward.mockResolvedValueOnce(Response.json({ data: { createCommitOnBranch: null }, errors: [{ message: 'Changes must be made through a pull request.' }] }))
+    await expect(githubCommit(config, sha, [], 'x', ['writer'])).rejects.toMatchObject({ code: 'not-accessible' })
+    expect(audit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ ...row, agentSlug: 'writer', statusCode: 200, errorMessage: 'GitHub refused the push: Changes must be made through a pull request.' }), { analytics: false })
+    audit.mockClear()
+    forward.mockResolvedValueOnce(Response.json({ message: 'Must have admin rights' }, { status: 403 }))
+    await expect(githubCommit(config, sha, [], 'x', ['writer'])).rejects.toMatchObject({ code: 'not-accessible' })
+    expect(audit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ agentSlug: 'writer', statusCode: 403, errorMessage: expect.stringContaining('GitHub refused access') }), { analytics: false })
   })
 
   it.each(['reset', 'retry-after'])('retries a rate-limited 403 with %s but refuses an ordinary 403', async header => {
