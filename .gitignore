@@ -10,6 +10,7 @@ release/
 agent-container/dist/
 build/lima/
 build/wsl2/
+build/agent-image/
 build/mediaremote-adapter/
 build/spotlight-bridge/
 build/notification-bridge/

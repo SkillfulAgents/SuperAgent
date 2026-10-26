@@ -96,15 +96,16 @@ jobs:
         run: |
           # A size budget, not a platform limit: the R2 feed upload is multipart
           # and GitHub release assets go to 2 GiB. It catches an installer that
-          # balloons unnoticed (the Windows one carries both x64 and arm64).
-          limit=$((400 * 1024 * 1024))
+          # balloons unnoticed. The macOS app carries the agent image (~730 MiB,
+          # scripts/fetch-agent-image.ts), so its budget is the Windows one plus that.
+          limit=$((1200 * 1024 * 1024))
           bad=0
           for f in release/*.exe release/*.dmg release/*.zip; do
             [ -e "$f" ] || continue
             size=$(wc -c < "$f")
             printf '%6d MiB  %s\n' "$((size / 1048576))" "$(basename "$f")"
             if [ "$size" -gt "$limit" ]; then
-              echo "::error file=$f::$(basename "$f") is $((size / 1048576)) MiB, over the 400 MiB release-artifact size budget"
+              echo "::error file=$f::$(basename "$f") is $((size / 1048576)) MiB, over the $((limit / 1048576)) MiB release-artifact size budget"
               bad=1
             fi
           done

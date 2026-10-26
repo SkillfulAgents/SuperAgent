@@ -22,9 +22,10 @@
     "preview": "npm run build && node dist/web/server.mjs",
     "download:lima": "bash scripts/download-lima.sh",
     "download:wsl-rootfs": "bash scripts/download-wsl-rootfs.sh",
+    "download:agent-image": "tsx scripts/fetch-agent-image.ts build/agent-image",
     "build:mediaremote-adapter": "bash scripts/build-mediaremote-adapter.sh",
     "build:spotlight-bridge": "bash scripts/build-spotlight-bridge.sh",
-    "dist:mac": "PLATFORM_PROXY_URL=${PLATFORM_PROXY_URL:-https://platformproxy.gamutagents.com} npm run download:lima && npm run build:mediaremote-adapter && npm run build:spotlight-bridge && npm run build:electron && electron-builder --mac --publish never",
+    "dist:mac": "PLATFORM_PROXY_URL=${PLATFORM_PROXY_URL:-https://platformproxy.gamutagents.com} npm run download:lima && npm run download:agent-image && npm run build:mediaremote-adapter && npm run build:spotlight-bridge && npm run build:electron && electron-builder --mac --publish never",
     "dist:win": "npm run download:wsl-rootfs && npm run build:electron && electron-builder --win --publish never",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src e2e perf --ext .ts,.tsx",
@@ -307,6 +308,14 @@
         {
           "from": "build/notification-bridge",
           "to": "notification-bridge"
+        },
+        {
+          "from": "build/agent-image",
+          "to": "agent-image",
+          "filter": [
+            "agent-image.tar",
+            "agent-image.json"
+          ]
         }
       ],
       "artifactName": "Gamut-${version}-${arch}.${ext}",
