@@ -25,7 +25,7 @@ export default defineConfig({
           'heic-preview-worker': path.resolve(__dirname, 'src/api/routes/heic-preview-worker.mjs'),
         },
         output: {
-          entryFileNames: chunk => chunk.name === 'heic-preview-worker' ? '[name].mjs' : '[name].js',
+          entryFileNames: chunk => chunk.name === 'heic-preview-worker' ? '[name].cjs' : '[name].js',
         },
       },
     },

@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo } from 'react'
+import { useState, useRef, useMemo, useEffect } from 'react'
 import { Loader2 } from 'lucide-react'
 import { useCommentBox } from '../comments/use-comment-box'
 
@@ -15,6 +15,11 @@ export function ImageRenderer({ url, filePath, agentSlug }: ImageRendererProps) 
   const imageRef = useRef<HTMLDivElement>(null)
   const surface = useMemo(() => ({ point: imageRef }), [])
   const { box, enabled } = useCommentBox(containerRef, surface, filePath, agentSlug)
+
+  useEffect(() => {
+    setLoaded(false)
+    setFailed(false)
+  }, [url])
 
   return (
     <div ref={containerRef} className="relative flex items-center justify-center p-4 min-h-[200px]">

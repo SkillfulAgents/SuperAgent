@@ -6554,7 +6554,9 @@ function cacheHeicPreview(key: string, preview: Uint8Array) {
 
 function heicPreviewWorkerUrl(): URL {
   try {
-    return new URL('./heic-preview-worker.mjs', import.meta.url)
+    // Electron emits CommonJS; the web build and unbundled source use ESM.
+    const filename = process.versions.electron ? './heic-preview-worker.cjs' : './heic-preview-worker.mjs'
+    return new URL(filename, import.meta.url)
   } catch (error) {
     throw new Error('Failed to resolve HEIC preview worker', { cause: error })
   }
