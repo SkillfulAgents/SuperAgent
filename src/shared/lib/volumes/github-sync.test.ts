@@ -228,7 +228,31 @@ it('pulls a small change file by file, and many files or large ones from the arc
   expect(await read('big')).toEqual(remote.big)
 })
 
-it('keeps the folder listings of a walk for the next one, and drops them once one listing suffices', async () => {
+it('lets every blob fetch of a failed pull end before the next pull stages', async () => {
+  sized = true
+  const { sync, read } = await setup({ a: 'a1', b: 'b1' })
+  const original = client.githubBlob.getMockImplementation()!
+  let release = () => {}
+  const held = new Promise<void>(resolve => { release = resolve })
+  remote = { a: Buffer.from('a2'), b: Buffer.from('b2') }; head = 'b'.repeat(40)
+  client.githubBlob.mockImplementation(async (config, sha) => {
+    if (sha === blobSha(Buffer.from('a2'))) { await held; return original(config, sha) }
+    if (sha === blobSha(Buffer.from('b2'))) throw new VolumeError('GitHub is temporarily unavailable. Please try again.', 503)
+    return original(config, sha)
+  })
+  let ended = false
+  const failing = sync.run().then(() => { ended = true })
+  await new Promise(resolve => setTimeout(resolve, 20))
+  expect(ended).toBe(false)
+  release()
+  await failing
+  client.githubBlob.mockImplementation(original)
+  remote.a = Buffer.from('a3'); head = 'c'.repeat(40)
+  await sync.run()
+  expect([(await read('a')).toString(), (await read('b')).toString()]).toEqual(['a3', 'b2'])
+})
+
+it('keeps the folder listings of a walk for the next one, and drops them when the listing keeps none', async () => {
   const listing = client.githubTree.getMockImplementation()!
   const folder = 'e'.repeat(40)
   const knownAtCall: string[][] = []

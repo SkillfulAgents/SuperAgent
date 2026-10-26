@@ -771,7 +771,8 @@ export class ContainerRuntime {
       })
     }
     showNotMounted(slug, [...notMounted, ...failed])
-    const preparing = notMounted.filter((volume) => volume.reason === 'preparing').map((volume) => volume.name)
+    // A retry of a failed first copy still reports the old failure, so any preparing reason counts.
+    const preparing = notMounted.filter((volume) => volume.reason.startsWith('preparing')).map((volume) => volume.name)
     if (preparing.length > 0) background(this.staleOnceCopied(lifecycle, preparing), { name: 'container-runtime.stale-after-first-copy' })
 
     return client

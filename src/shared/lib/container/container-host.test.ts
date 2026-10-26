@@ -547,15 +547,15 @@ describe('ContainerRuntime.ensureRunning — mount volumes', () => {
     expect(mockCaptureMessage).toHaveBeenCalledWith('Agent container could not mount folders', expect.objectContaining({ extra: { agentId: 'test-agent', count: 1 } }))
   })
 
-  it('marks the agent stale once a drive that missed its start making its first copy can mount', async () => {
+  it.each(['preparing', 'preparing: GitHub is busy'])('marks the agent stale once a drive that missed its start (%s) can mount', async (reason) => {
     let copied!: () => void
     mockFirstCopies.mockReturnValueOnce(new Promise<void>((resolve) => { copied = resolve }))
-    mockListVolumes.mockResolvedValueOnce({ volumes: [], notMounted: [{ name: 'repo', reason: 'preparing' }] })
+    mockListVolumes.mockResolvedValueOnce({ volumes: [], notMounted: [{ name: 'repo', reason }] })
       .mockResolvedValueOnce({ volumes: [{ volumeId: 'm1', name: 'repo' }], notMounted: [] })
     const runtime = containerHost.runtime('test-agent')
 
     await runtime.ensureRunning()
-    expect(mountWarnings()).toEqual([[{ name: 'repo', reason: 'preparing' }]])
+    expect(mountWarnings()).toEqual([[{ name: 'repo', reason }]])
     expect(runtime.isStale()).toBe(false)
     copied()
 

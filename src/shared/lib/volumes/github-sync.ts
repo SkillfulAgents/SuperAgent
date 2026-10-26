@@ -179,8 +179,11 @@ export class GithubSync {
       await pipeline(Readable.fromWeb(response.body), extractor)
     }
     // What the archive left out or rewrote (export-ignore, export-subst), or every file of a small change, comes by blob SHA.
+    // Every fetch that started ends before this returns, so none writes into a folder a later attempt has staged.
     const limit = pLimit(8)
-    await Promise.all(names.map(name => limit(async () => {
+    let failed = false
+    const fetched = await Promise.allSettled(names.map(name => limit(async () => {
+      if (failed) return
       const file = files[name]
       const target = path.join(destination, name)
       const sha = await fileBlobSha(target).catch(error => {
@@ -188,13 +191,16 @@ export class GithubSync {
         throw error
       })
       if (sha === file.sha) return
-      const original = await githubBlob(this.volume.config, file.sha)
-      if (blobSha(original) !== file.sha) throw new VolumeError('GitHub blob content did not match its SHA.', 503)
+      const original = await githubBlob(this.volume.config, file.sha).catch(error => { failed = true; throw error })
+      if (blobSha(original) !== file.sha) { failed = true; throw new VolumeError('GitHub blob content did not match its SHA.', 503) }
+      if (failed) return
       this.checkRemoved()
       await fs.mkdir(path.dirname(target), { recursive: true })
       this.checkRemoved()
       await fs.writeFile(target, original, { mode: parseInt(file.mode, 8) })
-    }))).finally(() => limit.clearQueue())
+    })))
+    const failure = fetched.find(result => result.status === 'rejected')
+    if (failure) throw failure.reason
   }
 
   private async save(state: SyncState): Promise<void> {
