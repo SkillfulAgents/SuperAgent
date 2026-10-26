@@ -9,6 +9,7 @@ import { renderWithProviders } from '@renderer/test/test-utils'
 const state = vi.hoisted(() => ({
   bootstrap: { ok: true, status: 200, body: { meeting: { id: 'm1', botName: 'Ada (Gamut)', platform: 'zoom' }, agentSlug: 'research', agentName: 'Ada', sessionId: 's1' } as unknown },
   voice: { ready: true, phase: 'listening', assistantSpeaking: false, userSpeaking: false, working: false, error: null as string | null, transcript: [] as Array<{ role: string; text: string }> },
+  voiceProblem: null as string | null,
   browserActive: false,
   messages: [] as unknown[],
   instruct: vi.fn(),
@@ -28,6 +29,7 @@ vi.mock('@renderer/hooks/use-message-stream', () => ({ useMessageStream: () => (
 vi.mock('@renderer/hooks/use-voice-mode', () => ({
   useVoiceMode: (args: unknown) => { state.voiceArgs.push(args); return { ...state.voice, instruct: state.instruct, setOutputMuted: state.setOutputMuted, getAnalyser: () => null, getOutputAnalyser: () => null } },
 }))
+vi.mock('@renderer/hooks/use-voice-input', () => ({ useVoiceConversationProblem: () => state.voiceProblem }))
 vi.mock('@renderer/components/messages/voice-orb', () => ({ VoiceOrb: ({ size, state: orbState }: { size: number; state: string }) => <div data-testid="orb" data-size={size} data-state={orbState} /> }))
 vi.mock('./meeting-browser-card', () => ({ MeetingBrowserCard: ({ width }: { width: number }) => <div data-testid="meeting-browser" data-width={width} /> }))
 vi.mock('@renderer/lib/workspace-file', () => ({
@@ -53,6 +55,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   state.sources.length = 0
   state.voiceArgs.length = 0
+  state.voiceProblem = null
   state.browserActive = false
   state.messages = []
   state.voice = { ready: true, phase: 'listening', assistantSpeaking: false, userSpeaking: false, working: false, error: null, transcript: [] }
@@ -145,5 +148,13 @@ describe('MeetingParticipantPage', () => {
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Voice mapping failed. Please try again.'))
     expect(screen.getByTestId('orb')).toHaveAttribute('data-state', 'boot')
     expect(screen.getByText('Ada (Gamut) · Connecting…')).toBeInTheDocument()
+  })
+
+  it('names why the voice engine cannot start instead of connecting for the whole call', async () => {
+    state.voice.ready = false
+    state.voiceProblem = 'Voice settings could not be loaded (401).'
+    renderWithProviders(<MeetingParticipantPage meetingId="m1" token="t" />)
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Voice settings could not be loaded (401).'))
+    expect(screen.getByText('Ada (Gamut) · Voice unavailable')).toBeInTheDocument()
   })
 })

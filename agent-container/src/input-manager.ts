@@ -299,6 +299,11 @@ class InputManager {
     return this.pending.has(toolUseId)
   }
 
+  /** Whether a request of this input type is pending under this id. */
+  hasPendingOfType(toolUseId: string, inputType: string): boolean {
+    return this.pending.get(toolUseId)?.inputType === inputType
+  }
+
   /**
    * Get all pending requests (useful for debugging).
    */

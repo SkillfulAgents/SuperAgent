@@ -16,6 +16,7 @@ import { persistedSettingsSchema } from './settings-schema'
 import { globalInstructionsSchema } from './global-instructions-schema'
 import { teamBrainRecordSchema, type TeamBrainRecord } from './team-brain-schema'
 import { coerceApiTarget, type ApiTarget } from '@shared/lib/api-target'
+import type { CloudServerFactsRecord } from '@shared/lib/facts/facts-schema'
 import { DEFAULT_GLOBAL_DISPATCH_SHORTCUT } from './shortcuts'
 import { DEFAULT_API_LOG_AUTO_DELETE_DAYS } from './api-log-auto-delete'
 import type { SkillsetConfig, SkillsetCredential } from '@shared/lib/types/skillset'
@@ -310,6 +311,12 @@ export interface AppSettings {
    * grant exchange succeeds. Cleared on platform disconnect / org change.
    */
   cloudWorkspace?: CloudWorkspaceSettings
+  /**
+   * Desktop-only: the cloud workspace's server facts as last heard, so a
+   * renderer driving it has them at boot without a request. Validated on read
+   * (`cloud-server-facts.ts`).
+   */
+  cloudServerFacts?: CloudServerFactsRecord
   /**
    * Desktop platform-notifications state: the OS-notification dedup watermark
    * (newest created_at already OS-notified). Content is never mirrored locally
@@ -625,6 +632,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     shareErrorReports: loaded.shareErrorReports,
     platformAuth: loaded.platformAuth,
     cloudWorkspace: loaded.cloudWorkspace,
+    cloudServerFacts: loaded.cloudServerFacts,
     push: loaded.push,
     // Narrowed on read: an unrecognized value (hand-edited file, a future
     // version's target) must resolve to local rather than to something that

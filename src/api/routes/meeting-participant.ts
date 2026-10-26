@@ -14,6 +14,7 @@ import { Hono, type Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
 import { agentCatalog } from '@shared/lib/agent-actor'
+import { background } from '@shared/lib/background'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { getIntegrationSession } from '@shared/lib/agent-integrations/store'
 import { getAgentIntegration } from '@shared/lib/services/agent-integration-service'
@@ -75,11 +76,11 @@ router.get('/:meetingId/stream', async (c) => {
     // Once the client is gone the stream is aborted, whichever way it was heard.
     const finished = waitForClientGone(clientSignal, stream)
     const send = (roster: ReturnType<typeof meetingRoster.get>) => {
-      if (!stream.aborted) void stream.writeSSE({ event: 'roster', data: JSON.stringify(roster) })
+      if (!stream.aborted) background(stream.writeSSE({ event: 'roster', data: JSON.stringify(roster) }), { name: 'meeting-participant-route.write-roster' })
     }
     const unsubscribe = meetingRoster.subscribe(meetingId, send)
     send(meetingRoster.get(meetingId))
-    const ping = setInterval(() => { if (!stream.aborted) void stream.writeSSE({ event: 'ping', data: '' }) }, ROSTER_PING_MS)
+    const ping = setInterval(() => { if (!stream.aborted) background(stream.writeSSE({ event: 'ping', data: '' }), { name: 'meeting-participant-route.write-ping' }) }, ROSTER_PING_MS)
     try { await finished } finally { clearInterval(ping); unsubscribe() }
   })
 })

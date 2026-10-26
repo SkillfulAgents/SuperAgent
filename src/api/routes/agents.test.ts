@@ -24,6 +24,8 @@ import { underActorTransport } from '@shared/lib/agent-actor/testing/via-test-tr
 import type { LiveSessionsAnswers } from '@shared/lib/agent-actor/testing/live-sessions-double'
 import type { WireFrame } from '@shared/lib/agent-actor'
 
+const TINY_HEIC = Buffer.from('AAAAHGZ0eXBoZWljAAAAAG1pZjFoZWljbWlhZgAAAXxtZXRhAAAAAAAAACFoZGxyAAAAAAAAAABwaWN0AAAAAAAAAAAAAAAAAAAAACJpbG9jAAAAAERAAAEAAQAAAAABoAABAAAAAAAAADYAAAAjaWluZgAAAAAAAQAAABVpbmZlAgAAAAABAABodmMxAAAAAA5waXRtAAAAAAABAAAA/GlwcnAAAADcaXBjbwAAAHVodmNDAQNwAAAAkAAAAAAAHvAA/P34+AAADwNgAAEAGEABDAH//wNwAAADAJAAAAMAAAMAHroCQGEAAQApQgEBA3AAAAMAkAAAAwAAAwAeoCCBBZbqrprm4CGgwIAAAAyAAAADAIRiAAEABkQBwXPBiQAAABNjb2xybmNseAABAA0ABoAAAAAUaXNwZQAAAAAAAABAAAAAQAAAAChjbGFwAAAAEAAAAAEAAAAQAAAAAf///9AAAAAC////0AAAAAIAAAAQcGl4aQAAAAADCAgIAAAAGGlwbWEAAAAAAAAAAQABBYECAwWEAAAAPm1kYXQAAAAyKAGvBPIWhzRxZNLf/Jd///8rTey/kupBJtUI7P1SxGAmv3XroGTEzROpbNAoK6inXqY=', 'base64')
+
 // ============================================================================
 // Mocks — must be declared before import
 // ============================================================================
@@ -2790,6 +2792,45 @@ describe('path traversal security — GET /:id/files/*', () => {
     expect(res.status).not.toBe(400)
   })
 
+  it.each(['heic', 'heif'])('serves real %s files as browser-displayable JPEGs for inline previews', async (extension) => {
+    mockFsStat.mockResolvedValue(fileStat(TINY_HEIC.byteLength))
+    mockCreateReadStream.mockImplementation(() => Readable.from([TINY_HEIC]))
+    const url = `/api/agents/test-agent/files/uploads/photo.${extension}?inline=true`
+
+    const res = await getReq(app, url)
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('image/jpeg')
+    const jpeg = new Uint8Array(await res.arrayBuffer())
+    expect(jpeg.slice(0, 3)).toEqual(new Uint8Array([0xff, 0xd8, 0xff]))
+    expect(jpeg.slice(-2)).toEqual(new Uint8Array([0xff, 0xd9]))
+
+    const cached = await getReq(app, url)
+    expect(new Uint8Array(await cached.arrayBuffer())).toEqual(jpeg)
+    expect(mockCreateReadStream).toHaveBeenCalledTimes(2)
+  })
+
+  it('rejects an oversized HEIC preview before opening the file', async () => {
+    mockFsStat.mockResolvedValue(fileStat(25 * 1024 * 1024 + 1))
+
+    const res = await getReq(app, '/api/agents/test-agent/files/uploads/huge.heic?inline=true')
+
+    expect(res.status).toBe(422)
+    expect(await res.json()).toEqual({ error: 'Failed to preview image' })
+    expect(mockCreateReadStream).not.toHaveBeenCalled()
+  })
+
+  it('keeps the original HEIC bytes for downloads', async () => {
+    mockFsStat.mockResolvedValue(fileStat(TINY_HEIC.byteLength))
+    mockCreateReadStream.mockReturnValueOnce(Readable.from([TINY_HEIC]))
+
+    const res = await getReq(app, '/api/agents/test-agent/files/uploads/photo.heic')
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('application/octet-stream')
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array(TINY_HEIC))
+  })
+
   it('marks workspace files uncacheable so a CDN cannot serve a stale or cross-user body', async () => {
     mockFsStat.mockResolvedValue(fileStat(100))
     mockCreateReadStream.mockReturnValueOnce({ pipe: vi.fn() })
@@ -4134,6 +4175,44 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     )
   })
 
+  it.each([true, false])('parses multipart uploads over HTTP with overrideGlobalObjects=%s', async (overrideGlobalObjects) => {
+    // Exercise the root adapter with optimized and native globals. Both must
+    // parse an adapter-owned multipart request, not just the native Request
+    // constructed by app.request().
+    const originalGlobals = { Request: globalThis.Request, Response: globalThis.Response }
+    const server = createServer(getRequestListener(app.fetch, { overrideGlobalObjects }))
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const content = Buffer.from(Array.from({ length: 256 * 1024 }, (_, i) => i % 251))
+      const formData = new FormData()
+      formData.append('file', new File([content], 'report.bin', { type: 'application/octet-stream' }))
+      formData.append('relativePath', 'nested/report.bin')
+      const port = (server.address() as AddressInfo).port
+
+      const response = await fetch(`http://127.0.0.1:${port}/api/agents/test-agent/upload-file`, {
+        method: 'POST',
+        body: formData,
+      })
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toMatchObject({
+        success: true,
+        path: '/workspace/uploads/nested/report.bin',
+        filename: 'report.bin',
+        size: content.byteLength,
+      })
+      const sink = mockCreateWriteStream.mock.results[0]!.value as MemoryWriteStream
+      expect(Buffer.concat(sink.chunks)).toEqual(content)
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close(error => error ? reject(error) : resolve())
+        server.closeAllConnections()
+      })
+      globalThis.Request = originalGlobals.Request
+      globalThis.Response = originalGlobals.Response
+    }
+  })
+
   it('uploads an empty file', async () => {
     const formData = new FormData()
     formData.append('file', new File([], 'empty.txt', { type: 'text/plain' }))
@@ -4881,6 +4960,31 @@ describe('message author attribution — GET /:id/sessions/:sessionId/messages',
       expect(lookup).toHaveBeenCalledExactlyOnceWith('subscription-account')
     } finally {
       lookup.mockRestore()
+    }
+  })
+
+  it('keeps the copy of the provider that produced an error after the session switches provider', async () => {
+    const connections = await import('@shared/lib/llm-provider/connections')
+    const { getLlmProvider } = await import('@shared/lib/llm-provider')
+    const lookup = vi.spyOn(connections, 'getConnection').mockResolvedValue(null)
+    const current = vi.spyOn(connections, 'resolveGlobalSelection').mockResolvedValue({
+      provider: getLlmProvider('codex-subscription'),
+    } as never)
+    try {
+      mockIsAuthMode.mockReturnValue(false)
+      vi.mocked(getSessionMetadata).mockResolvedValueOnce({ errorProviders: { 'error-1': 'claude-subscription' } } as never)
+      mockTransformMessages.mockReturnValue([
+        { id: 'error-1', type: 'assistant', content: { text: 'Invalid credential' }, apiError: 'authentication_failed', toolCalls: [] },
+        { id: 'error-2', type: 'assistant', content: { text: 'Invalid credential' }, apiError: 'authentication_failed', toolCalls: [] },
+      ])
+      const res = await getReq(app, URL)
+      expect(res.status).toBe(200)
+      const [recorded, unrecorded] = await res.json()
+      expect(recorded.errorPresentation.message).toContain('claude setup-token')
+      expect(unrecorded.errorPresentation.message).toContain('Codex sign-in expired')
+    } finally {
+      lookup.mockRestore()
+      current.mockRestore()
     }
   })
 
@@ -5851,7 +5955,7 @@ describe('browser credential broker routes', () => {
       'https://new.example/login',
       ['apple-passwords'],
     )
-    expect(userInputRequestManager.getOpenRequest('tool-credential')?.payload)
+    expect(userInputRequestManager.getOpenRequest('test-agent', 'tool-credential')?.payload)
       .toMatchObject({ browserContext: { url: 'https://new.example/login' } })
   })
 
@@ -6034,9 +6138,9 @@ describe('browser credential broker routes', () => {
         password: 'host-only-secret',
       },
     })
-    const reclaimed = userInputRequestManager.claimRequest('tool-credential')
+    const reclaimed = userInputRequestManager.claimRequest('test-agent', 'tool-credential')
     expect(reclaimed?.request.id).toBe('tool-credential')
-    userInputRequestManager.releaseClaim('tool-credential', reclaimed!.token)
+    userInputRequestManager.releaseClaim('test-agent', 'tool-credential', reclaimed!.token)
   })
 
   it('does not disclose credentials when the page origin changes', async () => {
@@ -6216,8 +6320,8 @@ describe('decision routes settle their request immediately', () => {
     parkOpen('tool-dec-11', 'browser_input')
     // The gate saw it open; the other decision lands before this one claims.
     vi.spyOn(agentRegistry.get('test-agent').inputs, 'claim').mockImplementationOnce(async (id) => {
-      userInputRequestManager.resolve(id, 'answered', 'test-agent')
-      return userInputRequestManager.claimRequest(id, 'test-agent')
+      userInputRequestManager.resolve('test-agent', id, 'answered')
+      return userInputRequestManager.claimRequest('test-agent', id)
     })
 
     const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/complete-browser-input', { toolUseId: 'tool-dec-11' })
@@ -6369,7 +6473,7 @@ describe('decision routes refuse to re-run side effects — the already-settled 
 
   it('echoes the settled outcome when the resolution is still on record', async () => {
     parkOpen('tool-gate-out', 'secret')
-    userInputRequestManager.resolve('tool-gate-out', 'declined')
+    userInputRequestManager.resolve('test-agent', 'tool-gate-out', 'declined')
     const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
       toolUseId: 'tool-gate-out',
       secretName: 'K',
@@ -6419,7 +6523,7 @@ describe('decision routes refuse to re-run side effects — the already-settled 
     })
     expect(res.status).toBe(404)
     expect(mockContainerFetch).not.toHaveBeenCalled()
-    expect(userInputRequestManager.getOpenRequest('tool-gate-auto')).not.toBeNull()
+    expect(userInputRequestManager.getOpenRequest('test-agent', 'tool-gate-auto')).not.toBeNull()
   })
 
   it.each(GATE_CASES)(
@@ -6441,7 +6545,7 @@ describe('decision routes refuse to re-run side effects — the already-settled 
       expect(mockContainerFetch).not.toHaveBeenCalled()
       expect(mockLiveSessions.completeRequest).not.toHaveBeenCalled()
       // Still open — a rejected probe must not settle what it could not decide.
-      expect(userInputRequestManager.getOpenRequest(body.toolUseId as string)).not.toBeNull()
+      expect(userInputRequestManager.getOpenRequest('victim-agent', body.toolUseId as string)).not.toBeNull()
     },
   )
 
@@ -6454,7 +6558,7 @@ describe('decision routes refuse to re-run side effects — the already-settled 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ success: true, alreadySettled: true })
     expect(mockContainerFetch).not.toHaveBeenCalled()
-    expect(userInputRequestManager.getOpenRequest('tool-gate-auto-x')).not.toBeNull()
+    expect(userInputRequestManager.getOpenRequest('victim-agent', 'tool-gate-auto-x')).not.toBeNull()
   })
 
   it('a request with no agent in scope is unattributable: refused at registration, decidable by nobody', async () => {
@@ -6468,7 +6572,7 @@ describe('decision routes refuse to re-run side effects — the already-settled 
     } finally {
       consoleError.mockRestore()
     }
-    expect(userInputRequestManager.getOpenRequest('tool-gate-noagent')).toBeNull()
+    expect(userInputRequestManager.getOpenRequest('test-agent', 'tool-gate-noagent')).toBeNull()
     const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
       toolUseId: 'tool-gate-noagent',
       secretName: 'K',
@@ -6483,7 +6587,7 @@ describe('decision routes refuse to re-run side effects — the already-settled 
     // Settling must not widen who may read the record: another agent's route
     // gets the same outcome-less shape an unknown id gets, never the outcome.
     parkOpen('tool-gate-settled-agent', 'secret', 'sess-1', {}, 'victim-agent')
-    userInputRequestManager.resolve('tool-gate-settled-agent', 'answered')
+    userInputRequestManager.resolve('victim-agent', 'tool-gate-settled-agent', 'answered')
     const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
       toolUseId: 'tool-gate-settled-agent',
       secretName: 'K',
@@ -6496,7 +6600,7 @@ describe('decision routes refuse to re-run side effects — the already-settled 
 
   it('does not disclose a settled outcome through a route of another kind', async () => {
     parkOpen('tool-gate-settled-kind', 'secret')
-    userInputRequestManager.resolve('tool-gate-settled-kind', 'answered')
+    userInputRequestManager.resolve('test-agent', 'tool-gate-settled-kind', 'answered')
     const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/answer-question', {
       toolUseId: 'tool-gate-settled-kind',
       answers: { Q: 'A' },
@@ -6508,7 +6612,7 @@ describe('decision routes refuse to re-run side effects — the already-settled 
 
   it("does not disclose a settled outcome through another session's route", async () => {
     parkOpen('tool-gate-settled-sess', 'secret', 'sess-2')
-    userInputRequestManager.resolve('tool-gate-settled-sess', 'declined')
+    userInputRequestManager.resolve('test-agent', 'tool-gate-settled-sess', 'declined')
     const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/provide-secret', {
       toolUseId: 'tool-gate-settled-sess',
       secretName: 'K',
@@ -11315,5 +11419,335 @@ describe('drive changes on a running agent', () => {
     vi.mocked(removeMount).mockResolvedValueOnce(false)
     expect((await changes[2][1](createApp(), 'drives-global')).status).toBe(404)
     expect((await agentRegistry.get('drives-global').live()).container.stale).toBe(false)
+  })
+})
+
+describe('sign-in request routes (request_login)', () => {
+  let app: ReturnType<typeof createApp>
+  const BASE = '/api/agents/test-agent/sessions/sess-1'
+  const CONTEXT = {
+    origin: 'https://github.com',
+    url: 'https://github.com/login',
+    topOrigin: 'https://github.com',
+    submit: true,
+    fields: [
+      { kind: 'username', label: 'Email', inputType: 'email', inputMode: '', autocomplete: 'username', maxLength: -1 },
+      { kind: 'password', label: 'Password', inputType: 'password', inputMode: '', autocomplete: 'current-password', maxLength: -1 },
+    ],
+  }
+
+  function parkLogin(id: string, payload: Record<string, unknown> = { message: 'Sign in to GitHub.', fields: [] }) {
+    userInputRequestManager.register({
+      id,
+      kind: 'login',
+      scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+      blocking: true,
+      autoApproved: false,
+      payload,
+    })
+  }
+
+  const containerCalls = () => mockContainerFetch.mock.calls.map(([path, init]) => ({
+    path: path as string,
+    body: (init as RequestInit | undefined)?.body ? JSON.parse(String((init as RequestInit).body)) : undefined,
+  }))
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockContainerFetch.mockReset()
+    app = createApp()
+    mockIsAuthMode.mockReturnValue(false)
+    userInputRequestManager.reset()
+  })
+
+  afterEach(() => {
+    userInputRequestManager.reset()
+    mockContainerFetch.mockReset()
+  })
+
+  describe('GET login-request', () => {
+    it('reads where the fields are from the container once, then serves it from the request', async () => {
+      parkLogin('tool-login')
+      mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify(CONTEXT), { status: 200 }))
+      const first = await getReq(app, `${BASE}/login-request?toolUseId=tool-login`)
+      expect(first.status).toBe(200)
+      expect(await first.json()).toEqual(CONTEXT)
+      expect(containerCalls()).toEqual([{ path: '/browser/login/context?toolUseId=tool-login', body: undefined }])
+      expect(userInputRequestManager.getOpenRequest('test-agent', 'tool-login')?.payload.login).toEqual(CONTEXT)
+
+      const second = await getReq(app, `${BASE}/login-request?toolUseId=tool-login`)
+      expect(await second.json()).toEqual(CONTEXT)
+      expect(mockContainerFetch).toHaveBeenCalledTimes(1)
+    })
+
+    it('passes on why the browser could not use the agent\'s fields', async () => {
+      parkLogin('tool-login')
+      mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+        error: 'The sign-in request could not be prepared', problems: ['@e6 is not visible'],
+      }), { status: 409 }))
+      const res = await getReq(app, `${BASE}/login-request?toolUseId=tool-login`)
+      expect(res.status).toBe(409)
+      expect(await res.json()).toEqual({ error: 'The browser could not locate the sign-in fields', problems: ['@e6 is not visible'] })
+    })
+
+    it('passes on that the browser is still locating the fields, for the app to try again', async () => {
+      parkLogin('tool-login')
+      mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'The sign-in form is still being located' }), { status: 404 }))
+      const res = await getReq(app, `${BASE}/login-request?toolUseId=tool-login`)
+      expect(res.status).toBe(404)
+    })
+
+    it('refuses a form for this app itself: the agent\'s browser is not signed in to it', async () => {
+      parkLogin('tool-login', { message: 'Sign in.', fields: [], login: { ...CONTEXT, origin: 'http://localhost', topOrigin: 'http://localhost', url: 'http://localhost/login' } })
+      const res = await getReq(app, `${BASE}/login-request?toolUseId=tool-login`)
+      expect(res.status).toBe(409)
+      expect(await res.json()).toMatchObject({ error: 'This sign-in form is for this app itself', reason: 'this_app' })
+    })
+
+    it('knows this app at its configured public address too, however the agent spells it', async () => {
+      const previous = process.env.TRUSTED_ORIGINS
+      process.env.TRUSTED_ORIGINS = 'https://app.example.com'
+      try {
+        const origin = 'https://app.example.com.'
+        parkLogin('tool-login', { message: 'Sign in.', fields: [], login: { ...CONTEXT, origin, topOrigin: origin, url: `${origin}/login` } })
+        expect((await getReq(app, `${BASE}/login-request?toolUseId=tool-login`)).status).toBe(409)
+        const fill = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin, values: ['octocat', 'hunter2-hunter2'] })
+        expect(fill.status).toBe(409)
+        expect(mockContainerFetch).not.toHaveBeenCalled()
+      } finally {
+        if (previous === undefined) delete process.env.TRUSTED_ORIGINS
+        else process.env.TRUSTED_ORIGINS = previous
+      }
+    })
+
+    it('refuses a context whose site is not a web origin', async () => {
+      parkLogin('tool-login')
+      mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ ...CONTEXT, origin: 'null' }), { status: 200 }))
+      const res = await getReq(app, `${BASE}/login-request?toolUseId=tool-login`)
+      expect(res.status).toBe(502)
+      const open = userInputRequestManager.getOpenRequest('test-agent', 'tool-login')
+      expect(open).not.toBeNull()
+      expect(open?.payload.login).toBeUndefined()
+    })
+
+    it('answers 404 for a request of another kind, never reading the browser', async () => {
+      userInputRequestManager.register({
+        id: 'tool-secret', kind: 'secret', scope: { agentSlug: 'test-agent', sessionId: 'sess-1' },
+        blocking: true, autoApproved: false, payload: { secretName: 'K' },
+      })
+      const res = await getReq(app, `${BASE}/login-request?toolUseId=tool-secret`)
+      expect(res.status).toBe(404)
+      expect(mockContainerFetch).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('POST fill-login', () => {
+    it('sends the values to the origin the browser reported, then settles the request', async () => {
+      parkLogin('tool-login', { message: 'Sign in.', fields: [], login: CONTEXT })
+      mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+        success: true, filled: 2, failed: 0, submitted: true, problems: [],
+      }), { status: 200 }))
+
+      const res = await postJson(app, `${BASE}/fill-login`, {
+        toolUseId: 'tool-login', origin: 'https://github.com', values: ['octocat', 'hunter2-hunter2'],
+      })
+      expect(res.status).toBe(200)
+      expect(res.headers.get('Cache-Control')).toBe('no-store')
+      const body = await res.json()
+      expect(body).toEqual({ success: true, filled: 2, failed: 0, submitted: true, problems: [] })
+      expect(JSON.stringify(body)).not.toContain('hunter2')
+      expect(containerCalls()).toEqual([{
+        path: '/browser/login/fill',
+        body: { sessionId: 'sess-1', toolUseId: 'tool-login', expectedOrigin: 'https://github.com', values: ['octocat', 'hunter2-hunter2'] },
+      }])
+      expect(mockLiveSessions.completeRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'tool-login', 'answered')
+    })
+
+    it('refuses values aimed at another origin than the browser reported', async () => {
+      parkLogin('tool-login', { message: 'Sign in.', fields: [], login: CONTEXT })
+      const res = await postJson(app, `${BASE}/fill-login`, {
+        toolUseId: 'tool-login', origin: 'https://evil.example', values: ['octocat', 'hunter2-hunter2'],
+      })
+      expect(res.status).toBe(409)
+      expect(mockContainerFetch).not.toHaveBeenCalled()
+    })
+
+    it('refuses a fill while the browser has not located the fields', async () => {
+      parkLogin('tool-login')
+      mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'The sign-in form is still being located' }), { status: 404 }))
+      const res = await postJson(app, `${BASE}/fill-login`, {
+        toolUseId: 'tool-login', origin: 'https://github.com', values: ['octocat', 'hunter2-hunter2'],
+      })
+      expect(res.status).toBe(409)
+      expect(containerCalls().map((call) => call.path)).toEqual(['/browser/login/context?toolUseId=tool-login'])
+    })
+
+    it('reads the form from the container again when the request lost it (recovered after a restart)', async () => {
+      parkLogin('tool-login', { recovered: true })
+      mockContainerFetch
+        .mockResolvedValueOnce(new Response(JSON.stringify(CONTEXT), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, filled: 2, failed: 0, submitted: true, problems: [] }), { status: 200 }))
+      const res = await postJson(app, `${BASE}/fill-login`, {
+        toolUseId: 'tool-login', origin: 'https://github.com', values: ['octocat', 'hunter2-hunter2'],
+      })
+      expect(res.status).toBe(200)
+      expect(containerCalls().map((call) => call.path)).toEqual(['/browser/login/context?toolUseId=tool-login', '/browser/login/fill'])
+    })
+
+    it('never fills a form for this app itself', async () => {
+      parkLogin('tool-login', { message: 'Sign in.', fields: [], login: { ...CONTEXT, origin: 'http://localhost', topOrigin: 'http://localhost', url: 'http://localhost/login' } })
+      const res = await postJson(app, `${BASE}/fill-login`, {
+        toolUseId: 'tool-login', origin: 'http://localhost', values: ['octocat', 'hunter2-hunter2'],
+      })
+      expect(res.status).toBe(409)
+      expect(mockContainerFetch).not.toHaveBeenCalled()
+    })
+
+    it('refuses a body with the wrong number of values, without echoing it', async () => {
+      parkLogin('tool-login', { message: 'Sign in.', fields: [], login: CONTEXT })
+      const wrongCount = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'https://github.com', values: ['hunter2-hunter2'] })
+      expect(wrongCount.status).toBe(400)
+      const malformed = await postJson(app, `${BASE}/fill-login`, { toolUseId: 'tool-login', origin: 'https://github.com', values: ['hunter2-hunter2'], extra: 1 })
+      expect(malformed.status).toBe(400)
+      expect(JSON.stringify(await malformed.json())).not.toContain('hunter2')
+      expect(mockContainerFetch).not.toHaveBeenCalled()
+    })
+
+    it('keeps the request open when the container could not fill, so the user can retry', async () => {
+      parkLogin('tool-login', { message: 'Sign in.', fields: [], login: CONTEXT })
+      mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'The sign-in form could not be filled' }), { status: 500 }))
+      const res = await postJson(app, `${BASE}/fill-login`, {
+        toolUseId: 'tool-login', origin: 'https://github.com', values: ['octocat', 'hunter2-hunter2'],
+      })
+      expect(res.status).toBe(502)
+      expect(mockLiveSessions.completeRequest).not.toHaveBeenCalled()
+      expect(userInputRequestManager.getOpenRequest('test-agent', 'tool-login')).not.toBeNull()
+      // The claim was released: a retry can go through.
+      mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+        success: true, filled: 2, failed: 0, submitted: true, problems: [],
+      }), { status: 200 }))
+      const retry = await postJson(app, `${BASE}/fill-login`, {
+        toolUseId: 'tool-login', origin: 'https://github.com', values: ['octocat', 'hunter2-hunter2'],
+      })
+      expect(retry.status).toBe(200)
+    })
+
+    it('reports an already-settled request instead of filling it', async () => {
+      const res = await postJson(app, `${BASE}/fill-login`, {
+        toolUseId: 'tool-gone', origin: 'https://github.com', values: ['octocat', 'hunter2-hunter2'],
+      })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toMatchObject({ success: true, alreadySettled: true })
+      expect(mockContainerFetch).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('POST complete-login', () => {
+    it('answers the agent that the user signed in on the page', async () => {
+      parkLogin('tool-login')
+      mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }))
+      const res = await postJson(app, `${BASE}/complete-login`, { toolUseId: 'tool-login', action: 'manual' })
+      expect(res.status).toBe(200)
+      expect(containerCalls()).toEqual([{ path: '/inputs/tool-login/resolve', body: { value: JSON.stringify({ type: 'manual' }) } }])
+      expect(mockLiveSessions.completeRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'tool-login', 'answered')
+    })
+
+    it('declines: rejects the call and stops the turn so the user can talk to the agent', async () => {
+      parkLogin('tool-login')
+      mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }))
+      mockInterruptSession.mockResolvedValueOnce({ interrupted: true, processKept: true })
+      const res = await postJson(app, `${BASE}/complete-login`, { toolUseId: 'tool-login', action: 'decline' })
+      expect(res.status).toBe(200)
+      expect(mockInterruptSession).toHaveBeenCalledWith('sess-1', { scope: 'turn' })
+      expect(containerCalls()).toEqual([{ path: '/inputs/tool-login/reject', body: { reason: 'The user declined to sign in' } }])
+      expect(mockLiveSessions.completeRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'tool-login', 'declined')
+    })
+
+    it('leaves the request open when the container refuses the answer', async () => {
+      parkLogin('tool-login')
+      mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'nope' }), { status: 404 }))
+      const res = await postJson(app, `${BASE}/complete-login`, { toolUseId: 'tool-login', action: 'manual' })
+      expect(res.status).toBe(500)
+      expect(mockLiveSessions.completeRequest).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('saved logins from the password manager', () => {
+    it('looks up saved logins for the frame the browser located', async () => {
+      parkLogin('tool-login', { message: 'Sign in.', fields: [], login: CONTEXT })
+      mockCredentialSuggest.mockResolvedValueOnce({
+        provider: 'apple-passwords', providerLabel: 'Apple Passwords', status: 'ready',
+        origin: 'https://github.com', suggestions: [{ id: 'opaque', username: 'octocat', domain: 'github.com' }],
+      })
+      const res = await getReq(app, `${BASE}/browser-credentials?toolUseId=tool-login`)
+      expect(res.status).toBe(200)
+      expect(mockCredentialSuggest).toHaveBeenCalledWith(
+        { agentSlug: 'test-agent', sessionId: 'sess-1', toolUseId: 'tool-login' },
+        'https://github.com/login',
+        ['apple-passwords'],
+      )
+      expect(mockContainerFetch).not.toHaveBeenCalled()
+    })
+
+    it('waits for the browser to locate the fields before looking anything up', async () => {
+      parkLogin('tool-login')
+      const res = await getReq(app, `${BASE}/browser-credentials?toolUseId=tool-login`)
+      expect(res.status).toBe(409)
+      expect(mockCredentialSuggest).not.toHaveBeenCalled()
+    })
+
+    it('fills the saved login into the mapped fields, in their order, and settles the request', async () => {
+      const reversed = { ...CONTEXT, fields: [CONTEXT.fields[1], CONTEXT.fields[0]] }
+      parkLogin('tool-login', { message: 'Sign in.', fields: [], login: reversed })
+      mockCredentialRetrieve.mockResolvedValueOnce({
+        credential: { username: 'octocat', password: 'saved-secret' },
+        expectedOrigin: 'https://github.com',
+      })
+      mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+        success: true, filled: 2, failed: 0, submitted: true, problems: [],
+      }), { status: 200 }))
+
+      const res = await postJson(app, `${BASE}/fill-login-credential`, { toolUseId: 'tool-login', credentialId: 'opaque' })
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(JSON.stringify(body)).not.toContain('saved-secret')
+      expect(mockCredentialRetrieve).toHaveBeenCalledWith(
+        { agentSlug: 'test-agent', sessionId: 'sess-1', toolUseId: 'tool-login' }, 'opaque', 'https://github.com/login',
+      )
+      expect(containerCalls()).toEqual([{
+        path: '/browser/login/fill',
+        body: { sessionId: 'sess-1', toolUseId: 'tool-login', expectedOrigin: 'https://github.com', values: ['saved-secret', 'octocat'] },
+      }])
+      expect(mockLiveSessions.completeRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'tool-login', 'answered')
+    })
+
+    it('refuses a saved login for another origin than the form', async () => {
+      parkLogin('tool-login', { message: 'Sign in.', fields: [], login: CONTEXT })
+      mockCredentialRetrieve.mockResolvedValueOnce({
+        credential: { username: 'octocat', password: 'saved-secret' },
+        expectedOrigin: 'https://gist.github.com',
+      })
+      const res = await postJson(app, `${BASE}/fill-login-credential`, { toolUseId: 'tool-login', credentialId: 'opaque' })
+      expect(res.status).toBe(409)
+      expect(mockContainerFetch).not.toHaveBeenCalled()
+    })
+
+    it('refuses a form that asks for more than a saved login holds', async () => {
+      const withCode = { ...CONTEXT, fields: [...CONTEXT.fields, { kind: 'otp', label: 'Code', inputType: 'text', inputMode: 'numeric', autocomplete: 'one-time-code', maxLength: 6 }] }
+      parkLogin('tool-login', { message: 'Sign in.', fields: [], login: withCode })
+      const res = await postJson(app, `${BASE}/fill-login-credential`, { toolUseId: 'tool-login', credentialId: 'opaque' })
+      expect(res.status).toBe(409)
+      expect(mockCredentialRetrieve).not.toHaveBeenCalled()
+    })
+
+    it('requires a global admin in auth mode: the password manager is the host\'s', async () => {
+      mockIsAuthMode.mockReturnValue(true)
+      mockGlobalAdmin.allowed = false
+      parkLogin('tool-login', { message: 'Sign in.', fields: [], login: CONTEXT })
+      const res = await postJson(app, `${BASE}/fill-login-credential`, { toolUseId: 'tool-login', credentialId: 'opaque' })
+      expect(res.status).toBe(403)
+      expect(mockCredentialRetrieve).not.toHaveBeenCalled()
+      mockGlobalAdmin.allowed = true
+    })
   })
 })

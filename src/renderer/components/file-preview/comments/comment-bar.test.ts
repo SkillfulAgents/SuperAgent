@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { formatComments } from './comment-bar'
 import type { FileComment } from '@renderer/context/file-preview-context'
+import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
+import { parseUserMessageParts } from '@shared/lib/utils/user-message-parts'
 
 describe('formatComments', () => {
   it('formats text selection comments with quoted context', () => {
@@ -163,5 +165,16 @@ describe('formatComments', () => {
       { id: '1', filePath: '/workspace/deep/nested/file.pdf', agentSlug: 'test-agent', text: 'test', anchor: { kind: 'file' } },
     ])
     expect(result).toContain('`file.pdf`')
+  })
+
+  it('keeps feedback that quotes the attached-files marker whole in the sent bubble', () => {
+    const comments: FileComment[] = [
+      { id: '1', filePath: '/workspace/readme.md', agentSlug: 'test-agent', text: 'reword this', anchor: { kind: 'text', quote: 'Messages end with [Attached files:] and a list' } },
+      { id: '2', filePath: '/workspace/readme.md', agentSlug: 'test-agent', text: 'second comment', anchor: { kind: 'text', quote: 'plain' } },
+    ]
+    const feedback = formatComments('/workspace/readme.md', comments)
+    const parts = parseUserMessageParts(appendAttachedFiles(feedback, ['/workspace/uploads/a.png']))
+    expect(parts.text).toBe(feedback)
+    expect(parts.attachedFiles).toEqual(['/workspace/uploads/a.png'])
   })
 })

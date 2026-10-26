@@ -1,6 +1,6 @@
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
 import { useAgents } from '@renderer/hooks/use-agents'
-import { getPlatform } from '@renderer/lib/env'
+import { computerUseSupported } from '@renderer/lib/capabilities'
 import { Alert, AlertDescription, AlertTitle } from '@renderer/components/ui/alert'
 import { Button } from '@renderer/components/ui/button'
 import { TriangleAlert } from 'lucide-react'
@@ -13,10 +13,8 @@ export function ComputerUseTab() {
   const { data: settings } = useSettings()
   const { data: agents } = useAgents()
   const updateSettings = useUpdateSettings()
-  const platform = getPlatform()
-  const supported = platform === 'darwin' || platform === 'win32'
 
-  if (!supported) {
+  if (!computerUseSupported()) {
     return (
       <Alert>
         <TriangleAlert className="h-4 w-4" />

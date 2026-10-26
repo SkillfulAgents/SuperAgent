@@ -4,7 +4,7 @@ import { containerHost } from '@shared/lib/agent-actor'
 import { checkAllRunnersAvailability, type ContainerRunner } from '@shared/lib/container/client-factory'
 import { getSettings } from '@shared/lib/config/settings'
 import { execWithPath } from '@shared/lib/container/base-container-client'
-import { getLimaHome, getLimactlPath } from '@shared/lib/container/lima-container-client'
+import { getLimaHome, getLimactlPath, limactlCommand, LIMA_VM_NAME } from '@shared/lib/container/lima-container-client'
 import { platform } from 'os'
 
 const debug = new Hono()
@@ -24,7 +24,7 @@ debug.get('/runtime', async (c) => {
       const limaHome = getLimaHome()
       const limactl = getLimactlPath()
       const { stdout } = await execWithPath(
-        `LIMA_HOME="${limaHome}" "${limactl}" list --json`
+        limactlCommand('list --json')
       )
       const vms = stdout.trim().split('\n')
         .filter(Boolean)
@@ -35,7 +35,7 @@ debug.get('/runtime', async (c) => {
       // Also check containerd status inside the VM
       try {
         const { stdout: containerdOut } = await execWithPath(
-          `LIMA_HOME="${limaHome}" "${limactl}" shell superagent -- rc-service containerd status`
+          limactlCommand(`shell ${LIMA_VM_NAME} -- rc-service containerd status`)
         )
         ;(vmStatus as any).containerdStatus = containerdOut.trim()
       } catch (e: any) {
@@ -45,7 +45,7 @@ debug.get('/runtime', async (c) => {
       // Check disk usage
       try {
         const { stdout: dfOut } = await execWithPath(
-          `LIMA_HOME="${limaHome}" "${limactl}" shell superagent -- df -h /`
+          limactlCommand(`shell ${LIMA_VM_NAME} -- df -h /`)
         )
         ;(vmStatus as any).diskUsage = dfOut.trim()
       } catch { /* ignore */ }
@@ -99,9 +99,7 @@ debug.get('/containers', async (c) => {
 
   let runnerCmd: string
   if (runner === 'lima') {
-    const limaHome = getLimaHome()
-    const limactl = getLimactlPath()
-    runnerCmd = `LIMA_HOME="${limaHome}" "${limactl}" shell superagent -- sudo nerdctl`
+    runnerCmd = limactlCommand(`shell ${LIMA_VM_NAME} -- sudo nerdctl`)
   } else if (runner === 'wsl2') {
     runnerCmd = `wsl -d superagent -- sudo nerdctl`
   } else {
@@ -135,9 +133,7 @@ debug.get('/containers/:name/logs', async (c) => {
 
   let runnerCmd: string
   if (runner === 'lima') {
-    const limaHome = getLimaHome()
-    const limactl = getLimactlPath()
-    runnerCmd = `LIMA_HOME="${limaHome}" "${limactl}" shell superagent -- sudo nerdctl`
+    runnerCmd = limactlCommand(`shell ${LIMA_VM_NAME} -- sudo nerdctl`)
   } else if (runner === 'wsl2') {
     runnerCmd = `wsl -d superagent -- sudo nerdctl`
   } else {

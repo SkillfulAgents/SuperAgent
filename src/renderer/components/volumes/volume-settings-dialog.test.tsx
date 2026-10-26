@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-vi.mock('@renderer/lib/host-features', () => ({ canUseHostFeatures: () => true }))
+vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: () => true }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: false, isAdmin: true }) }))
 import { VolumeSettingsDialog } from './volume-settings-dialog'
 

@@ -3,7 +3,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { writeEnvFile, parseMemoryValue, shellQuote, isConnectionError, getEnhancedPath, BaseContainerClient, refusedVolumeFlags, execWithPath, shellEscape } from './base-container-client'
+import { writeEnvFile, parseMemoryValue, shellQuote, isConnectionError, getEnhancedPath, BaseContainerClient, refusedVolumeFlags, execWithPath, shellEscape, spawnWithPath } from './base-container-client'
 import type { ContainerInfo, ContainerConfig, StreamMessage } from './types'
 
 const enableToolSearch = vi.fn((): boolean | undefined => true)
@@ -528,6 +528,47 @@ describe('shellEscape', () => {
   it.skipIf(process.platform === 'win32')('keeps a path with shell syntax literal through a real shell', async () => {
     const { stdout } = await execWithPath(`printf %s ${shellEscape("/tmp/a$(echo pwned) b'c")}`)
     expect(stdout).toBe("/tmp/a$(echo pwned) b'c")
+  })
+})
+
+describe('spawnWithPath', () => {
+  it.skipIf(process.platform === 'win32')('spawns an unquoted path that contains a space', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'spawn path '))
+    const bin = path.join(dir, 'print args')
+    fs.writeFileSync(bin, '#!/bin/sh\nfor a in "$@"; do echo "$a"; done\n', { mode: 0o755 })
+    try {
+      const proc = spawnWithPath(bin, ['a b', 'c'])
+      const out = await new Promise<string>((resolve, reject) => {
+        let s = ''
+        proc.stdout!.on('data', (d) => { s += d })
+        proc.on('error', reject)
+        proc.on('close', () => resolve(s))
+      })
+      expect(out).toBe('a b\nc\n')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('quotes a path with a space on Windows, where spawn goes through a shell', async () => {
+    const spawn = vi.fn(() => ({}))
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+    vi.resetModules()
+    vi.doMock('child_process', async (importOriginal) => ({ ...(await importOriginal<typeof import('child_process')>()), spawn }))
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    try {
+      const { spawnWithPath: spawnOnWindows } = await import('./base-container-client')
+      spawnOnWindows('C:\\Users\\John Doe\\.superagent\\bin\\wsl-nerdctl.cmd', ['ps'])
+      expect(spawn).toHaveBeenCalledWith(
+        '"C:\\Users\\John Doe\\.superagent\\bin\\wsl-nerdctl.cmd"',
+        ['ps'],
+        expect.objectContaining({ shell: true }),
+      )
+    } finally {
+      Object.defineProperty(process, 'platform', platform)
+      vi.doUnmock('child_process')
+      vi.resetModules()
+    }
   })
 })
 

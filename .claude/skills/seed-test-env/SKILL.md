@@ -91,7 +91,7 @@ Migrations auto-run on first launch via `migrate()` in `src/shared/lib/db/index.
 
 - Use Bash + Write tools directly, don't print the commands and stop. Actually create the files.
 - Never echo full secret values back to the user — show key names only.
-- The `dev:electron` command is `electron-rebuild -f && electron-vite dev`. The `dev` (web) command is `npm rebuild better-sqlite3 && vite`. Both honor `SUPERAGENT_DATA_DIR` via `getDataDir()` in `src/shared/lib/config/data-dir.ts`.
+- The `dev:electron` command is `install-electron && electron-vite dev` (the first part fetches the Electron binary if missing). The `dev` (web) command is `vite`. Both honor `SUPERAGENT_DATA_DIR` via `getDataDir()` in `src/shared/lib/config/data-dir.ts`.
 - Don't modify the real prod data dir under any circumstances. All writes go to `~/Downloads/<dir-name>/` only.
 
 ## When NOT to use

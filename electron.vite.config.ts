@@ -2,6 +2,7 @@ import { defineConfig } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 import { readFileSync } from 'fs'
+import { monacoAliases, monacoOptimizerPlugin } from './scripts/lib/monaco-vite'
 
 const pkg = JSON.parse(readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8'))
 const analyticsConfig = JSON.parse(readFileSync(path.resolve(__dirname, 'src/shared/lib/analytics/config.json'), 'utf-8'))
@@ -17,7 +18,16 @@ export default defineConfig({
     build: {
       outDir: 'dist/main',
       externalizeDeps: { exclude: ['better-auth'] },
-      rollupOptions: { external: ['better-sqlite3', 'ws', 'electron-updater'] },
+      rollupOptions: {
+        external: ['better-sqlite3', 'ws', 'electron-updater'],
+        input: {
+          index: path.resolve(__dirname, 'src/main/index.ts'),
+          'heic-preview-worker': path.resolve(__dirname, 'src/api/routes/heic-preview-worker.mjs'),
+        },
+        output: {
+          entryFileNames: chunk => chunk.name === 'heic-preview-worker' ? '[name].cjs' : '[name].js',
+        },
+      },
     },
     resolve: {
       alias: {
@@ -39,6 +49,7 @@ export default defineConfig({
   },
   renderer: {
     plugins: [react()],
+    optimizeDeps: { esbuildOptions: { plugins: [monacoOptimizerPlugin] } },
     // Relative base so packaged file:// + hash history resolve ./assets/* and the
     // pinned index.html. Explicit so a future electron-vite default change fails
     // loudly instead of silently shipping absolute asset URLs.
@@ -68,6 +79,7 @@ export default defineConfig({
     },
     resolve: {
       alias: {
+        ...monacoAliases,
         '@': path.resolve(__dirname, './src'),
         '@shared': path.resolve(__dirname, './src/shared'),
         '@renderer': path.resolve(__dirname, './src/renderer'),

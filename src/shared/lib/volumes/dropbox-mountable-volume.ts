@@ -11,7 +11,7 @@ import { DropboxUnavailableError } from './dropbox-error'
 import { volumeFolderBrowser } from './volume-folder-browser'
 import { serialize } from './remote-listing-cache'
 import { uploadChunks, throwIfUploadAborted } from './remote-transfer'
-import { volumeUploads } from './volume-upload-guard'
+import { guardDelete, guardedUpload } from './guarded-upload'
 import { rangedVolumeFile } from './remote-file'
 
 // Platform's Composio route accepts at most 1,000,000 bytes of JSON. Binary
@@ -167,7 +167,7 @@ export class DropboxMountableVolume extends BaseMountableVolume<DropboxVolumeCon
   }
 
   async write(relative: string, body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<void> {
-    return volumeUploads.write(this.uploadKey(relative), body, signal, async () => {
+    return guardedUpload(this.agentSlug, this.uploadKey(relative), body, signal, async () => {
       const target = this.writablePath(relative)
       await withDropboxAccount(this.config.accountId, async () => {
         const previous = await this.existingFile(relative)
@@ -235,7 +235,7 @@ export class DropboxMountableVolume extends BaseMountableVolume<DropboxVolumeCon
 
   async delete(relative: string): Promise<void> {
     const target = this.writablePath(relative)
-    volumeUploads.beforeDelete(this.uploadKey(relative))
+    await guardDelete(this.agentSlug, this.uploadKey(relative))
     await this.change([target], settle => withDropboxAccount(this.config.accountId, async () => {
       const metadata = await this.metadata(relative)
       // Dropbox delete is recursive. Never intentionally send it a full folder.

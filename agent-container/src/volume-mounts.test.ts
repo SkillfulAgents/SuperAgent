@@ -166,24 +166,63 @@ describe('untilMountAnswers', () => {
 })
 
 describe('volumeAnswers', () => {
-  it('asks the app for the volume root alone, with the mount token, and fails on any other answer', async () => {
+  // Each request takes the next answer: a status, 'drop' to cut the connection, or 'hang' to never answer.
+  async function withHost(answers: (number | 'drop' | 'hang')[], run: (hostApiUrl: string, requests: { method?: string; url?: string; headers: http.IncomingHttpHeaders }[]) => Promise<void>) {
     const requests: { method?: string; url?: string; headers: http.IncomingHttpHeaders }[] = []
-    let status = 207
     const server = http.createServer((req, res) => {
       requests.push({ method: req.method, url: req.url, headers: req.headers })
-      res.writeHead(status).end('<d:multistatus xmlns:d="DAV:"/>')
+      const answer = answers.shift() ?? 207
+      if (answer === 'drop') req.socket.destroy()
+      else if (answer !== 'hang') res.writeHead(answer).end('<d:multistatus xmlns:d="DAV:"/>')
     })
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
     const address = server.address()
-    const hostApiUrl = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}/api`
     try {
-      await expect(volumeAnswers(hostApiUrl, 'v_17', 'secret')).resolves.toBeUndefined()
-      expect(requests).toEqual([expect.objectContaining({ method: 'PROPFIND', url: '/api/volumes/v_17', headers: expect.objectContaining({ authorization: 'Bearer secret', depth: '0' }) })])
-      status = 403
-      await expect(volumeAnswers(hostApiUrl, 'v_17', 'secret')).rejects.toThrow('volume answered 403')
+      await run(`http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}/api`, requests)
     } finally {
+      server.closeAllConnections()
       await new Promise((resolve) => server.close(resolve))
     }
+  }
+  const waiting = () => new AbortController().signal
+
+  it('asks the app for the volume root alone, with the mount token, and fails at once on a rejection', async () => {
+    await withHost([207, 403], async (hostApiUrl, requests) => {
+      await expect(volumeAnswers(hostApiUrl, 'v_17', 'secret', waiting())).resolves.toBeUndefined()
+      expect(requests).toEqual([expect.objectContaining({ method: 'PROPFIND', url: '/api/volumes/v_17', headers: expect.objectContaining({ authorization: 'Bearer secret', depth: '0' }) })])
+      await expect(volumeAnswers(hostApiUrl, 'v_17', 'secret', waiting())).rejects.toThrow('volume answered 403')
+      expect(requests).toHaveLength(2)
+    })
+  })
+
+  it('fails at once on a rejection whose body already broke', async () => {
+    const broken = new ReadableStream({ start(controller) { controller.error(new Error('body cut')) } })
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(broken, { status: 403 }))
+    try {
+      await expect(volumeAnswers('http://host/api', 'v_17', 'secret', waiting())).rejects.toThrow('volume answered 403')
+      expect(fetch).toHaveBeenCalledTimes(1)
+    } finally {
+      fetch.mockRestore()
+    }
+  })
+
+  // A rate-limited source answers 429 for a few seconds at start.
+  it.each([429, 'drop'] as const)('asks again after a %s, and succeeds on the next 207', async (answer) => {
+    await withHost([answer], async (hostApiUrl, requests) => {
+      await expect(volumeAnswers(hostApiUrl, 'v_17', 'secret', waiting())).resolves.toBeUndefined()
+      expect(requests).toHaveLength(2)
+    })
+  })
+
+  it('cancels a check in flight when the mount stops waiting', async () => {
+    await withHost(['hang'], async (hostApiUrl, requests) => {
+      const stop = new AbortController()
+      const answering = volumeAnswers(hostApiUrl, 'v_17', 'secret', stop.signal)
+      await vi.waitFor(() => expect(requests).toHaveLength(1))
+      stop.abort()
+      await expect(answering).rejects.toBe(stop.signal.reason)
+      expect(requests).toHaveLength(1)
+    })
   })
 })
 

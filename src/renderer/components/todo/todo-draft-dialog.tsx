@@ -8,7 +8,7 @@ import { AttachmentPreview, attachmentStatus, type Attachment, type FileAttachme
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { uploadFileChunked } from '@renderer/lib/upload'
 import { HttpError, isRetryableRequestError } from '@renderer/lib/http-error'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { filesFromClipboard, folderChoice, getItemsFromDataTransfer, type DataTransferResult, type FolderGroup } from '@renderer/lib/file-utils'
 import { MarkdownComposerEditor } from '@renderer/components/messages/markdown-composer-editor'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'

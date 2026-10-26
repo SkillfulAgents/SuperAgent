@@ -9,27 +9,6 @@ const ShowInFolderPath = z.string().min(1)
 
 // todo huge file - need to break up into multiple modules (tray, menu, auto-updater, host-browser provider, etc.)
 
-// Fix PATH for packaged Electron apps on macOS.
-// Without this, the app only sees /usr/bin:/bin:/usr/sbin:/sbin and can't find
-// tools like `gh` or `git` installed via Homebrew.
-if (process.platform !== 'win32') {
-  try {
-    const shellPath = execFileSync(process.env.SHELL || '/bin/zsh', ['-ilc', 'echo -n "$PATH"'], {
-      encoding: 'utf8',
-      timeout: 5000,
-      env: { ...process.env, DISABLE_AUTO_UPDATE: 'true' },
-    }).trim()
-    if (shellPath) {
-      process.env.PATH = shellPath
-    }
-  } catch {
-    // Fall back to adding common paths
-    const common = ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin']
-    const current = process.env.PATH || ''
-    process.env.PATH = [...common.filter((p) => !current.includes(p)), current].join(':')
-  }
-}
-
 import { EventSource } from 'eventsource'
 import { createTray, destroyTray, updateTrayWindow, setTrayVisible } from './tray'
 import { createAppMenu, updateAppMenuWindow, destroyAppMenu, flushPendingMenuCommands, sendMenuCommand } from './app-menu'
@@ -68,6 +47,8 @@ import { planMcpOAuthCallback, parseMcpOAuthCompletionResponse } from './mcp-oau
 import { classifyImportPackage } from './import-packages'
 import { isImportPackagePath } from '@shared/lib/utils/package-extensions'
 import { safeOpenExternalFromApp } from './safe-open-external'
+import { osNotificationOptions, reviewIdOf, reviewNotificationId } from './os-notification-options'
+import { areOsNotificationsBlocked } from './notification-authorization'
 import { probeNowPlaying, pauseNowPlaying, resumeNowPlaying, releaseAllNowPlaying, watchNowPlayingHolder } from './music-control'
 import { APPLE_PASSWORDS_CHROME_EXTENSION_URL } from '@shared/lib/credentials/apple-passwords-links'
 
@@ -99,6 +80,14 @@ process.env.SUPERAGENT_IS_PACKAGED = app.isPackaged ? '1' : '0'
 // Dev is unaffected: app.name is set to 'Superagent-Dev' above (pre-resolution), so the
 // fallback below resolves dev data to `…/Superagent-Dev`. A pre-existing SUPERAGENT_DATA_DIR
 // (custom dev/CI dir) is always honored verbatim via `??=`.
+//
+// The App Sandbox build has no legacy data to keep, and its Lima VM mounts the data dir,
+// which there can't contain a space (Lima drops such a mount silently, and the VM then
+// writes into its own disk) and can't be the container root (Virtualization.framework
+// won't share it). So it uses `<container>/.superagent`, getDataDir()'s own default.
+if (runsInAppSandbox(getServerFacts())) {
+  process.env.SUPERAGENT_DATA_DIR ??= path.join(app.getPath('home'), '.superagent')
+}
 if (app.isPackaged) {
   process.env.SUPERAGENT_DATA_DIR ??= path.join(app.getPath('appData'), 'Superagent')
 }
@@ -136,8 +125,12 @@ import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-pro
 import { getCloudProxyKey } from '@shared/lib/services/cloud-proxy-key'
 import { resolveCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target'
 import { readPreferredApiTarget } from '@shared/lib/services/api-target-preference'
-import { resolveApiTarget } from '@shared/lib/api-target'
+import { coerceApiTarget, resolveApiTarget } from '@shared/lib/api-target'
 import { applyPreferredApiTarget, resolveApiTargetForRenderer, type CloudEndpoint } from './api-target'
+import { desktopClientFacts, factsForRenderer } from './facts'
+import { clearStaleProcessSingleton } from './process-singleton'
+import { runsInAppSandbox, updatesItself } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
 import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
 import { isAllowedRendererPermission } from './renderer-permissions'
@@ -202,8 +195,8 @@ function pushPendingNavigation(nav: { agentSlug: string; sessionId: string | nul
 // Strong references to Notification objects so the JS GC doesn't reap them
 // while macOS is still showing them (e.g. user opens the action dropdown
 // after the banner has been on screen for a couple of seconds). When the
-// JS object is collected, the underlying NSUserNotification listeners
-// detach and macOS routes the action click into the void.
+// JS object is collected, its click/action listeners detach and the click
+// lands nowhere (the notification itself stays in Notification Center).
 //
 // macOS doesn't always fire `close` (notifications migrate silently into
 // Notification Center), so we ALSO TTL each entry. We pick a value slightly
@@ -233,6 +226,9 @@ function dismissReviewNotification(reviewId: string): void {
     reviewNotifications.delete(reviewId)
     liveNotifications.delete(n)
   }
+  // macOS posts a review under its own id (see osNotificationOptions), so it
+  // also comes down once its object has aged out of the maps above.
+  if (process.platform === 'darwin') Notification.remove(reviewNotificationId(reviewId))
 }
 
 /**
@@ -326,6 +322,12 @@ function createWindow() {
   }
 
   mainWindow = new BrowserWindow({
+    // Electron saves this window's bounds and maximized/fullscreen state under
+    // its name and restores them here, so the size below is only the first
+    // launch's. The name is free again once the window is destroyed, which is
+    // before `closed` clears `mainWindow` and lets this run again.
+    name: 'main',
+    windowStatePersistence: true,
     width: 1280,
     height: 800,
     minWidth: 800,
@@ -416,8 +418,12 @@ function createWindow() {
   updateAutoUpdaterWindow(mainWindow)
 
   // Initialize the actual updater in production builds, or in dev when the
-  // SUPERAGENT_TEST_UPDATES=1 escape hatch is set (see auto-updater.ts).
-  if (!process.env.ELECTRON_RENDERER_URL || process.env.SUPERAGENT_TEST_UPDATES === '1') {
+  // SUPERAGENT_TEST_UPDATES=1 escape hatch is set (see auto-updater.ts). Never in
+  // a Store build, whose updates the Store delivers.
+  if (
+    updatesItself(desktopClientFacts()) &&
+    (!process.env.ELECTRON_RENDERER_URL || process.env.SUPERAGENT_TEST_UPDATES === '1')
+  ) {
     initAutoUpdater(mainWindow)
   }
 
@@ -516,6 +522,11 @@ function openDashboard(agentSlug: string, dashboardSlug: string) {
 // rather than assembling one, because half of the cloud prefix is the per-boot
 // proxy key, a secret owned by main (see cloud-proxy-key.ts).
 ipcMain.handle('get-api-target', () => activeApiTarget())
+
+// The facts a renderer gates on, for the target it settled. It passes that
+// target back rather than main re-resolving it, so a preference written in
+// between can't hand it the other Superagent's facts. See facts.ts.
+ipcMain.handle('get-facts', (_event, target: unknown) => factsForRenderer(coerceApiTarget(target), cloudEndpoint()))
 
 ipcMain.handle('set-preferred-api-target', (_event, target: unknown) => {
   applyPreferredApiTarget(target)
@@ -649,13 +660,7 @@ ipcMain.handle('show-notification', (
   },
 ) => {
   if (!Notification.isSupported()) return
-  const notification = new Notification({
-    title,
-    body,
-    ...(actions && actions.length > 0
-      ? { actions: actions.map((a) => ({ type: 'button' as const, text: a.text })) }
-      : {}),
-  })
+  const notification = new Notification(osNotificationOptions({ title, body, actions, context }))
   notification.on('click', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show()
@@ -678,14 +683,11 @@ ipcMain.handle('show-notification', (
   })
   // Track by reviewId if this is a proxy-review notification, so the SSE
   // 'user_request_resolved' handler can dismiss it later.
-  const ctxForTrack = context as { kind?: string; reviewId?: string } | undefined
-  const reviewId =
-    ctxForTrack?.kind === 'proxy_review' && typeof ctxForTrack.reviewId === 'string'
-      ? ctxForTrack.reviewId
-      : undefined
-  trackLiveNotification(notification, reviewId)
+  trackLiveNotification(notification, reviewIdOf(context))
   notification.show()
 })
+
+ipcMain.handle('get-os-notifications-blocked', () => areOsNotificationsBlocked())
 
 // Renderer pulls queued click/action events that were captured while the
 // window was closed (notifications shown by the main-process SSE fallback).
@@ -781,11 +783,20 @@ ipcMain.handle('detect-host-browser', () => {
   return { providers: detectAllProviders() }
 })
 
-// IPC handler for opening a native directory picker
+// IPC handler for opening a native directory picker.
+// Without a defaultPath Electron opens the dialog in Downloads, and the OS no
+// longer remembers where the user last was. Start beside the last folder picked
+// this run, else in home: what gets mounted here is a project, not a download.
+let lastPickedDirectoryParent: string | null = null
 ipcMain.handle('open-directory', async () => {
-  // createDirectory: macOS shows New Folder only when asked (Windows always does).
-  const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
-  return result.canceled ? null : result.filePaths[0]
+  const result = await dialog.showOpenDialog({
+    // createDirectory: macOS shows New Folder only when asked (Windows always does).
+    properties: ['openDirectory', 'createDirectory'],
+    defaultPath: lastPickedDirectoryParent ?? app.getPath('home'),
+  })
+  if (result.canceled) return null
+  lastPickedDirectoryParent = path.dirname(result.filePaths[0])
+  return result.filePaths[0]
 })
 
 // IPC handler for revealing a path in the OS file manager.
@@ -1432,18 +1443,9 @@ function startNotificationListener(): void {
           const context = data.actionContext as
             | { agentSlug?: string; sessionId?: string | null; kind?: string; reviewId?: string }
             | undefined
-          const notification = new Notification({
-            title: data.title,
-            body: data.body,
-            ...(actions && actions.length > 0
-              ? {
-                  actions: actions.map((a) => ({
-                    type: 'button' as const,
-                    text: a.text,
-                  })),
-                }
-              : {}),
-          })
+          const notification = new Notification(
+            osNotificationOptions({ title: data.title, body: data.body, actions, context }),
+          )
           notification.on('click', () => {
             // Queue navigation so the renderer routes the user to the
             // right session on mount. Also queue the click event itself
@@ -1476,11 +1478,7 @@ function startNotificationListener(): void {
           notification.on('close', () => {
             liveNotifications.delete(notification)
           })
-          const reviewId =
-            context?.kind === 'proxy_review' && typeof context.reviewId === 'string'
-              ? context.reviewId
-              : undefined
-          trackLiveNotification(notification, reviewId)
+          trackLiveNotification(notification, reviewIdOf(context))
           notification.show()
         }
       }
@@ -1837,6 +1835,12 @@ app.on('open-file', (event, filePath) => {
 // ('SuperAgent', shared with installed builds), so a dev instance silently
 // dies whenever the installed app is running. Harnesses that use their own
 // SUPERAGENT_DATA_DIR can opt out; packaged builds never can.
+//
+// In the App Sandbox a killed launch's singleton files would otherwise refuse
+// the next launch the lock (see process-singleton.ts).
+if (runsInAppSandbox(desktopClientFacts()) && clearStaleProcessSingleton(app.getPath('userData'))) {
+  console.log('Cleared the process-singleton files of a launch that is no longer running')
+}
 const gotTheLock =
   !app.isPackaged && process.env.SUPERAGENT_DISABLE_SINGLE_INSTANCE === '1'
     ? true

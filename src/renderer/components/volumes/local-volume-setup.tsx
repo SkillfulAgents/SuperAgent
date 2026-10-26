@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Folder } from 'lucide-react'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { localVolumeConfigSchema } from '@shared/lib/volumes/volume-config-schema'
 import { VolumeDetailsFields, VolumeSetupFooter, VolumeSetupHeader } from './volume-setup-layout'
 import { FolderLocationField } from './volume-folder-picker'

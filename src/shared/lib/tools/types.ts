@@ -106,6 +106,13 @@ export type UserRequestEvent =
       agentSlug?: string
     }
   | {
+      type: 'login_request'
+      toolUseId: string
+      message: string
+      fields: unknown
+      agentSlug?: string
+    }
+  | {
       type: 'script_run_request'
       toolUseId: string
       script: string
