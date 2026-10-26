@@ -65,7 +65,7 @@ export async function prepareLocalVolume({ path: folder, bookmark }: LocalVolume
   // bookmark of the person's pick, which must open now and on every later launch.
   if (!readsHostFolders(getServerFacts())) {
     if (!bookmark) throw new VolumeError('Choose the folder in the app’s folder picker to make it a drive', 400)
-    if (!openLocalFolder(bookmark)) throw new VolumeError(PICK_FOLDER_AGAIN, 400)
+    if (!openLocalFolder(bookmark, folder)) throw new VolumeError(PICK_FOLDER_AGAIN, 400)
   }
   if (!path.isAbsolute(folder)) {
     throw new Error('The folder path must be an absolute path')
@@ -102,7 +102,7 @@ export class LocalMountableVolume extends BaseMountableVolume<LocalVolumeConfig>
 
   /** Whether this process can read the folder: always, outside the sandbox; through its bookmark inside it. */
   opens(): boolean {
-    return openLocalFolder(this.config.bookmark)
+    return openLocalFolder(this.config.bookmark, this.config.path)
   }
 
   /** The entry itself, under a parent checked to lead where its name says. Delete and move act on a link as a link. */
