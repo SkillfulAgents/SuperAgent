@@ -127,7 +127,7 @@ export function useTeamBrainSetup() {
     const { instructions = '' }: ApiAgent = await res.json()
     await updateAgent.mutateAsync({
       slug: prepared.agentSlug,
-      instructions: fillTeamBrainSetupBlock(instructions, { agentSlug: prepared.agentSlug, brainPath: prepared.brainPath, schedule, owner: user, accounts: connected?.accounts }),
+      instructions: fillTeamBrainSetupBlock(instructions, { agentSlug: prepared.agentSlug, brainPath: prepared.brainPath, schedule, setUpBy: user, accounts: connected?.accounts }),
     })
     // Only a refusal says the record is not this set-up's: after any other failure it may have been saved.
     onRecordWrite()
@@ -143,15 +143,11 @@ export function useTeamBrainSetup() {
     }
     // Published once the record is this set-up's. Team Brain's own read-write attachment wins over the global read-only one.
     if (everyAgent) await saveVolume.mutateAsync({ id: prepared.volumeId, global: 'read' })
-<<<<<<< HEAD
-=======
-    await updateSettings.mutateAsync({ teamBrain: { agentSlug: prepared.agentSlug, volumeId: prepared.volumeId } })
     const upkeep = await apiFetch(`/api/agents/${prepared.agentSlug}/team-brain/upkeep`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scheduleExpression: TEAM_BRAIN_CRON[schedule] }),
     }).catch(() => null)
     // Past the record Team Brain exists, so a failure here is reported, never thrown back into a set-up that would delete it.
     if (!upkeep?.ok) toast.error('Could not schedule Brain upkeep', { description: 'Team Brain is set up but will not sync on its own yet.' })
->>>>>>> 73d66829d (feat(team-brain): schedule Brain upkeep at set-up, and the home page follows its record)
     // The record marks the agent; the list must carry the mark before set-up stops hiding it.
     await queryClient.invalidateQueries({ queryKey: ['agents'] })
 

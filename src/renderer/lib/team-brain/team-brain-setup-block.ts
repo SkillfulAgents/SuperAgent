@@ -23,8 +23,8 @@ const SCHEDULE_TEXT: Record<TeamBrainSchedule, string> = {
 /** Fill the Team Brain template's setup block; placeholders the modal does not settle stay for the agent. */
 export function fillTeamBrainSetupBlock(
   instructions: string,
-  { agentSlug, brainPath, schedule, owner, accounts }: {
-    agentSlug: string; brainPath: string; schedule: TeamBrainSchedule; owner: { name: string; email: string } | null
+  { agentSlug, brainPath, schedule, setUpBy, accounts }: {
+    agentSlug: string; brainPath: string; schedule: TeamBrainSchedule; setUpBy: { name: string; email: string } | null
     accounts: { toolkitSlug: string; status: string }[] | undefined
   },
 ): string {
@@ -32,7 +32,7 @@ export function fillTeamBrainSetupBlock(
     .replace('`{{brain_path}}`', () => `\`${brainPath}\``)
     .replace('`{{agent_slug}}`', () => `\`${agentSlug}\``)
     .replace('`{{schedule}}`', SCHEDULE_TEXT[schedule])
-  if (owner) filled = filled.replace('`{{owner}}`', () => `\`${ownerText(owner)}\``)
+  if (setUpBy) filled = filled.replace('`{{set_up_by}}`', () => `\`${setUpByText(setUpBy)}\``)
   if (accounts) filled = filled.replace('`{{connected_accounts}}`', () => `\`${connectedText(accounts)}\``)
   return filled
 }
@@ -42,4 +42,4 @@ const connectedText = (accounts: { toolkitSlug: string; status: string }[]) =>
   [...new Set(accounts.filter((a) => a.status === 'active').map((a) => a.toolkitSlug))].sort().join(', ') || 'none'
 
 // The agent's opening research starts from this name and email.
-const ownerText = ({ name, email }: { name: string; email: string }) => (name.trim() ? `${name.trim()} (${email})` : email)
+const setUpByText = ({ name, email }: { name: string; email: string }) => (name.trim() ? `${name.trim()} (${email})` : email)

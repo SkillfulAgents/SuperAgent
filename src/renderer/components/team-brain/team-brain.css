@@ -166,3 +166,18 @@
   animation-direction: reverse;
   animation-fill-mode: forwards;
 }
+
+/* While the drive is listed, the tree's middle waits where the tree will grow
+   from, breathing (`TeamBrainRadialLoading` in team-brain-radial.tsx). */
+.team-brain-radial-breathe {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: team-brain-radial-breathe 1800ms ease-in-out infinite;
+}
+@keyframes team-brain-radial-breathe {
+  0%, 100% { opacity: 0.55; transform: scale(0.96); }
+  50% { opacity: 1; transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .team-brain-radial-breathe { animation: none; }
+}

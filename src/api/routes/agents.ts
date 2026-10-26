@@ -4896,7 +4896,7 @@ agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (
 })
 
 const BRAIN_UPKEEP_NAME = 'Brain upkeep'
-const BRAIN_UPKEEP_PROMPT = 'Run the maintain-brain skill (scheduled upkeep). Follow your system prompt. If no brain location is set up yet, end quietly without a message.'
+const BRAIN_UPKEEP_PROMPT = 'Run the maintain-brain skill (scheduled upkeep). Follow your system prompt. If no brain location is set up yet, end quietly without a message or a sync summary.'
 
 const brainUpkeepBodySchema = z.object({ scheduleExpression: z.string().trim().min(1, 'scheduleExpression is required') })
 

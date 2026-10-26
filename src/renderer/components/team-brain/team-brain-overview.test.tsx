@@ -21,7 +21,7 @@ vi.mock('@renderer/hooks/use-agents', () => ({
   useDeleteAgent: () => ({ mutate: app.deleteAgent, isPending: false }),
 }))
 // The Team Brain agent's own drive, in Dropbox.
-vi.mock('@renderer/hooks/use-mounts', () => ({ useAgentMounts: () => ({ data: [{ id: 'm1', volumeId: 'vol1', name: 'Team Brain', type: 'dropbox', hostPath: null, sourceLabel: 'Dropbox › Team Brain', webUrl: 'https://www.dropbox.com/home/Team%20Brain' }] }) }))
+vi.mock('@renderer/hooks/use-mounts', () => ({ useAgentMounts: () => ({ data: [{ id: 'm1', volumeId: 'vol1', name: 'Team Brain', volumeName: 'Team Brain', type: 'dropbox', hostPath: null, sourceLabel: 'Dropbox › Team Brain' }] }) }))
 // The drive as listed: a README and three sections, with the pages the tree is clicked through.
 const { drive } = vi.hoisted(() => {
   const page = (id: string, name: string) => ({ id, name, kind: 'file' as const, sources: [] })
@@ -224,9 +224,10 @@ describe('TeamBrainOverview', () => {
     await userEvent.click(screen.getByTestId('team-brain-storage-section-toggle'))
     expect(details.getByText('Dropbox › Team Brain')).toBeInTheDocument()
     // The whole row opens it in Dropbox.
-    await userEvent.click(screen.getByRole('button', { name: 'Open Team Brain in Dropbox' }))
-    expect(openExternalUrl).toHaveBeenCalledWith('https://www.dropbox.com/home/Team%20Brain')
+    await userEvent.click(screen.getByRole('button', { name: 'Open Team Brain drive settings' }))
+    expect(navigate).toHaveBeenCalledWith({ to: '/settings/$tab', params: { tab: 'volumes' }, search: { volume: 'vol1', source: 'home', from: '/agents/team-brain' } })
     expect(screen.getByTestId('team-brain-sync-note')).toHaveTextContent(/^Syncs in (60 min|1 h) · last ran 2 h ago$/)
+    expect(screen.getByTestId('team-brain-schedule-runs')).toHaveTextContent(/^Runs [a-z].* · \S/)
 
     // Sync is the upkeep task: its last run in the status line, and one row for when it runs and how often, which opens
     // the task's own page to change the schedule or pause it.
@@ -292,6 +293,29 @@ describe('TeamBrainOverview', () => {
     fireEvent.pointerUp(tree, { button: 0, pointerId: 1 })
     fireEvent.click(tree)
     expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'false')
+  })
+
+  it('waits on the tree\'s middle while the drive lists, says what it is reading from, and lets that go before the tree', () => {
+    vi.useFakeTimers()
+    try {
+      Object.assign(driveRead, { ready: false, error: null })
+      const page = render(<TeamBrainOverview agent={BRAIN} />)
+      const loading = screen.getByTestId('team-brain-radial-loading')
+      expect(screen.queryByTestId('team-brain-radial-loading-line')).toBeNull()
+      act(() => void vi.advanceTimersByTime(2000))
+      expect(loading).toHaveTextContent('Reading Team Brain from Dropbox…')
+      // The drive is in: the line plays back out first, and the tree only follows once it has gone.
+      Object.assign(driveRead, { ready: true, error: null })
+      page.rerender(<TeamBrainOverview agent={BRAIN} />)
+      expect(screen.getByTestId('team-brain-radial-loading-line')).toHaveClass('team-brain-radial-out')
+      expect(screen.queryByTestId('team-brain-radial')).toBeNull()
+      act(() => void vi.advanceTimersByTime(600))
+      expect(screen.getByTestId('team-brain-radial')).toBeInTheDocument()
+      expect(screen.queryByTestId('team-brain-radial-loading')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+      Object.assign(driveRead, { ready: true, error: null })
+    }
   })
 
   it('says so at the top of the page when the drive cannot be read, whole or in part', () => {

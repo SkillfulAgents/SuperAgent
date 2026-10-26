@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
-import { AlertCircle, AlertTriangle, ArrowUpRight, ChevronDown, ChevronRight, Plus, Settings2 } from 'lucide-react'
+import { AlertCircle, AlertTriangle, ChevronDown, ChevronRight, Plus, Settings2 } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
 import { Switch } from '@renderer/components/ui/switch'
@@ -14,14 +14,12 @@ import {
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
 import { SettingsPageContainer } from '@renderer/components/layout/settings-page'
-import { openExternalUrl } from '@renderer/lib/open-external'
 import { useDeleteAgent, useListedAgents, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useUser } from '@renderer/context/user-context'
 import './team-brain.css'
 import { useAgentMounts } from '@renderer/hooks/use-mounts'
 import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { useMinuteClock } from '@renderer/hooks/use-minute-clock'
-import { TEAM_BRAIN_LOCATION_IDS, type TeamBrainLocationId } from '@renderer/lib/team-brain/team-brain-schema'
 import type { TeamBrainNode } from '@renderer/lib/team-brain/team-brain-structure'
 import { useTeamBrainDrive } from '@renderer/hooks/use-team-brain-drive'
 import { splitFrontPages, TEAM_RECORD_FOLDER, teamRecordView } from '@renderer/lib/team-brain/team-brain-drive'
@@ -33,12 +31,12 @@ import { FilePreviewProvider, useFilePreview } from '@renderer/context/file-prev
 import { WorkflowProvider } from '@renderer/context/workflow-context'
 import { TrayManager } from '@renderer/components/tray/tray-manager'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@renderer/components/ui/collapsible'
-import { IntegrationRow } from '@renderer/components/connections/integration-row'
+import { IntegrationRow, RowHoverChevron } from '@renderer/components/connections/integration-row'
+import { useHumanizedCron } from '@renderer/hooks/use-humanized-cron'
 import { useNavigate } from '@tanstack/react-router'
 import { formatDistanceToNow } from 'date-fns'
 import { useSessions } from '@renderer/hooks/use-sessions'
 import { RelatedSessions, toSessionItem } from '@renderer/components/sessions/related-sessions'
-import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { AccountStatusBadge } from '@renderer/components/connections/account-status-badge'
 import { useAgentConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
@@ -107,11 +105,10 @@ function useBrainMount(agent: ApiAgent) {
   return mounts?.find((mount) => mount.volumeId === agent.teamBrain?.volumeId)
 }
 
-/** Where the Team Brain agent's drive lives, from the drive itself; Gamut-hosted when it has none yet. */
+/** Where the Team Brain agent's drive lives, from the drive itself; none while it has no drive. */
 function useTeamBrainLocation(agent: ApiAgent) {
   const type = useBrainMount(agent)?.type
-  const id: TeamBrainLocationId = type && (TEAM_BRAIN_LOCATION_IDS as readonly string[]).includes(type) ? type : 'gamut'
-  return teamBrainLocation(id)
+  return type ? teamBrainLocation(type) : null
 }
 
 /** The task Team Brain syncs on: the one recurring task set-up names "Brain upkeep". */
@@ -167,6 +164,12 @@ function OverviewBody({
   const dev = useTeamBrainDevStates()
   const read = useTeamBrainDrive(agentSlug, volumeId, expanded, record, recordLeaving)
   const { drive, ready, error } = devDrive(dev.drive, read)
+  // Opened on the loading middle: the tree then grows from it rather than popping its middle in again.
+  const [openedLoading] = useState(() => !ready)
+  // The loading middle stays until its line has gone back out, so the tree starts after it rather than over it.
+  const [loadingDone, setLoadingDone] = useState(() => ready)
+  const finishLoading = useCallback(() => setLoadingDone(true), [])
+  const location = useTeamBrainLocation(agent)
   const recordParts = read.recordParts
   const noDrive = dev.drive === 'none' || (!!mounts && !mounts.some((mount) => mount.volumeId === volumeId))
   const { front, index, rest } = useMemo(() => splitFrontPages(drive), [drive])
@@ -236,9 +239,9 @@ function OverviewBody({
           ) : error && !ready ? (
             // What went wrong is in the banner at the top.
             <TreeNote height={treeHeight}>The tree shows once the drive can be read.</TreeNote>
-          ) : ready && drive.length === 0 ? (
+          ) : ready && loadingDone && drive.length === 0 ? (
             <TreeNote height={treeHeight}>Nothing in the drive yet. Team Brain fills it as it builds the brain.</TreeNote>
-          ) : ready ? (
+          ) : ready && loadingDone ? (
             <TeamBrainRadial
               drive={rest}
               expanded={expanded}
@@ -249,9 +252,10 @@ function OverviewBody({
               retracting={recordLeaving ? RECORD_SECTIONS : undefined}
               onRetracted={onRecordLeft}
               height={treeHeight}
+              centreShown={openedLoading}
             />
           ) : (
-            <TeamBrainRadialLoading height={treeHeight} />
+            <TeamBrainRadialLoading height={treeHeight} from={location?.name ?? 'its drive'} leaving={ready} onLeft={finishLoading} />
           )}
         </div>
 
@@ -622,16 +626,18 @@ function SyncCard({ agentSlug }: { agentSlug: string }) {
 }
 
 /** Where Team Brain lives, folded down to its home's mark and name, as the other sections are; open, a connector row that
- * opens the folder: on this computer for a folder here, else in its provider's own web app (Google Drive, Dropbox). */
+ * opens the drive's settings, as Agent Home's Drives card does. */
 function StorageSection({ agent }: { agent: ApiAgent }) {
   const location = useTeamBrainLocation(agent)
-  const LocationIcon = location.Icon
-  // Where the drive is, and opening a folder on this computer, as Agent Home's drive rows show it.
+  const navigate = useNavigate()
   const mount = useBrainMount(agent)
   const hostPath = mount?.hostPath ?? null
-  const showInFolder = canUseHostFeatures() && hostPath !== null ? () => void window.electronAPI?.showInFolder(hostPath) : undefined
-  const webUrl = mount?.webUrl
-  const openIt = showInFolder ?? (webUrl ? () => void openExternalUrl(webUrl) : undefined)
+  // Back from the drive's page returns to the agent's own page, which for Team Brain is this one.
+  const openSettings = mount
+    ? () => void navigate({ to: '/settings/$tab', params: { tab: 'volumes' }, search: { volume: mount.volumeId, source: 'home', from: `/agents/${encodeURIComponent(agent.slug)}` } })
+    : undefined
+  if (!location) return null
+  const LocationIcon = location.Icon
   return (
     <PanelSection
       title="Storage location"
@@ -648,11 +654,10 @@ function StorageSection({ agent }: { agent: ApiAgent }) {
         <IntegrationRow
           icon={<LocationIcon className="h-4 w-4" />}
           name={location.name}
-          // The whole row opens it; the ↗ says it leaves the app.
-          onActivate={openIt}
-          ariaLabel={openIt ? `Open Team Brain in ${location.name}` : undefined}
-          right={openIt ? <ArrowUpRight className="h-4 w-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" aria-hidden="true" /> : undefined}
-          // Hovered, the row fills (the card clips it to its corners) and its ↗ darkens, as it is a way out of the app.
+          onActivate={openSettings}
+          ariaLabel={mount ? `Open ${mount.volumeName} drive settings` : undefined}
+          right={openSettings ? <RowHoverChevron /> : undefined}
+          // Hovered, the row fills; the card clips it to its corners.
           className="py-2"
           data-testid="team-brain-storage"
           subtitle={
@@ -709,10 +714,17 @@ function SyncRow({ agentSlug }: { agentSlug: string }) {
   const schedule = upkeep ? scheduleOfCron(upkeep.scheduleExpression) : null
   const lastRun = upkeep?.lastExecutedAt ? `last ran ${formatSince(isoOf(upkeep.lastExecutedAt))}` : 'not run yet'
   const note = !upkeep ? 'Not scheduled' : `${paused ? 'Paused' : `Syncs ${formatUntil(upkeep.nextExecutionAt)}`} · ${lastRun}`
+  // As the task's own page says it (scheduled-task-view.tsx).
+  const runs = useHumanizedCron(upkeep?.scheduleExpression)
   const summary = (
     <span className="min-w-0">
       <span className={cn('block', PANEL_LABEL_CLASS)}>Sync schedule</span>
       <span className="block truncate text-[11px] text-muted-foreground" data-testid="team-brain-sync-note">{note}</span>
+      {upkeep && runs && (
+        <span className="block truncate text-[11px] text-muted-foreground" data-testid="team-brain-schedule-runs">
+          {`Runs ${runs.charAt(0).toLowerCase() + runs.slice(1)} · ${upkeep.timezone?.replace(/_/g, ' ') || 'UTC'}`}
+        </span>
+      )}
     </span>
   )
   if (!upkeep) {

@@ -161,6 +161,7 @@ export function TeamBrainRadial({
   onOpenIndex,
   retracting,
   onRetracted,
+  centreShown = false,
 }: {
   drive: readonly TeamBrainNode[]
   /** Folders opened past what the tree shows on its own. */
@@ -175,6 +176,8 @@ export function TeamBrainRadial({
   /** Sections the page is taking away: they draw back into the middle, the index with them, then `onRetracted` lets the page drop them. */
   retracting?: readonly string[]
   onRetracted?: () => void
+  /** The middle is on screen already (the page's loading state), so the opening grows from it instead of popping it in. */
+  centreShown?: boolean
 }) {
   /** A folded folder just opened: chosen once the tree is laid out again with its contents. */
   const [opening, setOpening] = useState<string | null>(null)
@@ -905,7 +908,7 @@ export function TeamBrainRadial({
               const indexName = nameWidth('INDEX', 9.5, font)
               const below = onOpenCentre ? MIDDLE.front / 2 + MIDDLE.gap + MIDDLE.index / 2 : 0
               return (
-                <g key={node.id} style={entering ? startAt({ at: 0 }) : undefined} className={cn(entering && 'team-brain-radial-pop')} data-testid="team-brain-radial-centre">
+                <g key={node.id} style={entering ? startAt({ at: 0 }) : undefined} className={cn(entering && !centreShown && 'team-brain-radial-pop')} data-testid="team-brain-radial-centre">
                   <g style={{ transform: 'rotate(calc(-1 * var(--graph-spin, 0deg))) scale(calc(1 / var(--graph-k, 1)))' }}>
                     {onOpenCentre && (
                       <g onPointerDown={(event) => start(event, node, onOpenCentre)} className="group cursor-pointer" data-testid="team-brain-radial-front">
@@ -1073,13 +1076,38 @@ export function TeamBrainRadial({
 /** How long a light takes to run once round each ring, innermost first, while the drive is read. */
 const WAIT_LAPS_MS = [7000, 11000, 15000]
 
+/** How long the drive may take to list before the loading middle says what it is waiting on. */
+const SLOW_LOAD_MS = 2000
+/** How long the loading line takes to resolve back out: the name motion's length (`.team-brain-radial-name` in team-brain.css). */
+const LINE_OUT_MS = 600
+
 /**
- * What stands in for the tree while the drive is first listed: the tree's own frame and fitted size, the middle's
- * "Team Brain" pill where the tree will grow from, and its three rings drawn faint, a light running slowly round each
- * (alternating ways) so the wait reads as the drive being read rather than an empty page. It fades in only after a
- * moment, so a quick listing never flashes it, and holds still under reduced motion.
+ * What stands in for the tree while the drive is first listed: the tree's own frame and fitted size, its three rings
+ * drawn faint with a light running round each, and the middle's "Team Brain" pill, breathing, where the tree will grow
+ * from. Past a moment a line says where it is reading from; once the drive is in, that line plays back out and
+ * `onLeft` hands over to the tree. It fades in only after a beat, so a quick listing never flashes it, and holds still
+ * under reduced motion.
  */
-export function TeamBrainRadialLoading({ height }: { height: number }) {
+export function TeamBrainRadialLoading({ height, from, leaving = false, onLeft }: {
+  height: number
+  /** Where the drive lives, for the line that says what it is waiting on. */
+  from: string
+  /** The drive is in: the line resolves back out as it came in, then `onLeft` hands over to the tree. */
+  leaving?: boolean
+  onLeft?: () => void
+}) {
+  const [slow, setSlow] = useState(false)
+  useEffect(() => {
+    if (leaving) return
+    const timer = setTimeout(() => setSlow(true), SLOW_LOAD_MS)
+    return () => clearTimeout(timer)
+  }, [leaving])
+  // A timer, not animationend, as the opening's own hand-offs are; with no line showing or no motion, nothing to wait for.
+  useEffect(() => {
+    if (!leaving || !onLeft) return
+    const done = setTimeout(onLeft, slow && !prefersReducedMotion() ? LINE_OUT_MS : 0)
+    return () => clearTimeout(done)
+  }, [leaving, slow, onLeft])
   const frameRef = useRef<HTMLDivElement>(null)
   const width = useFrameWidth(frameRef)
   const [font, setFont] = useState('sans-serif')
@@ -1127,6 +1155,7 @@ export function TeamBrainRadialLoading({ height }: { height: number }) {
             )
           })}
           <g transform={`translate(${cx} ${cy})`}>
+            <g className="team-brain-radial-breathe">
             <rect
               x={-frontWidth / 2}
               y={-MIDDLE.front / 2}
@@ -1138,11 +1167,24 @@ export function TeamBrainRadialLoading({ height }: { height: number }) {
             <text textAnchor="middle" dominantBaseline="central" className="fill-foreground" style={{ fontSize: '12px' }}>
               Team Brain
             </text>
-            <text y={MIDDLE.front / 2 + 16} textAnchor="middle" dominantBaseline="central" className="fill-muted-foreground" style={{ fontSize: '11px' }}>
-              Reading the drive…
-            </text>
+            </g>
           </g>
         </svg>
+      )}
+      {slow && (
+        <p
+          // A fresh element on the way out, so the motion starts over backwards rather than flipping a finished one.
+          key={leaving ? 'out' : 'in'}
+          className={cn(
+            'team-brain-radial-name pointer-events-none absolute left-1/2 top-1/2 mt-5 -translate-x-1/2 whitespace-nowrap text-[11px] text-muted-foreground',
+            leaving && 'team-brain-radial-out',
+          )}
+          // The name's motion waits 90ms after its arrival; going out, that wait is taken off.
+          style={{ '--arrive-at': leaving ? '-90ms' : '0ms' } as CSSProperties}
+          data-testid="team-brain-radial-loading-line"
+        >
+          Reading Team Brain from {from}…
+        </p>
       )}
     </div>
   )

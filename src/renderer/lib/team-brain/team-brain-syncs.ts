@@ -17,7 +17,7 @@ export interface TeamBrainSync {
   changes: string[]
   /**
    * What needs a person, each line with what to do. Blocked: what kept the run from covering part of the brain, and
-   * what it skipped. To decide: the owner's calls, each with what it filed meanwhile. Lines under no heading are to decide.
+   * what it skipped. To decide: calls left to a person, each with what it filed meanwhile. Lines under no heading are to decide.
    */
   needsYou: { blocked: string[]; toDecide: string[] }
 }
