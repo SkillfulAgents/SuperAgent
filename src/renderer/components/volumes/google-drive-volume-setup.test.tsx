@@ -89,7 +89,8 @@ describe('Google Drive volume creation', () => {
     await chooseAccount()
     await userEvent.click(screen.getByRole('button', { name: /^Select folder location/ }))
     // My Drive itself can be used, or a folder in it selected and used without opening it.
-    expect(await screen.findByRole('button', { name: 'Use “My Drive”' })).toBeEnabled()
+    await screen.findByRole('button', { name: 'Team' })
+    expect(screen.getByRole('button', { name: 'Use “My Drive”' })).toBeEnabled()
     await userEvent.click(screen.getByRole('button', { name: 'Team' }))
     expect(screen.getByRole('button', { name: 'Team' })).toHaveAttribute('aria-pressed', 'true')
     await userEvent.click(screen.getByRole('button', { name: 'Use “Team”' }))
