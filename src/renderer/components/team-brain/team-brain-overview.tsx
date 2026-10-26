@@ -31,7 +31,7 @@ import { FilePreviewProvider, useFilePreview } from '@renderer/context/file-prev
 import { WorkflowProvider } from '@renderer/context/workflow-context'
 import { TrayManager } from '@renderer/components/tray/tray-manager'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@renderer/components/ui/collapsible'
-import { IntegrationRow, RowHoverChevron } from '@renderer/components/connections/integration-row'
+import { IntegrationRow } from '@renderer/components/connections/integration-row'
 import { useNavigate } from '@tanstack/react-router'
 import { formatDistanceToNow } from 'date-fns'
 import { useSessions } from '@renderer/hooks/use-sessions'
