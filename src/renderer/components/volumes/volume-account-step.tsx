@@ -1,13 +1,14 @@
-import { lazy, Suspense, useState, type ReactNode } from 'react'
+import { Suspense, useState, type ReactNode } from 'react'
 import { Plus } from 'lucide-react'
 import type { useConnectedAccountsByToolkit } from '@renderer/hooks/use-connected-accounts'
 import { Button } from '@renderer/components/ui/button'
 import { Label } from '@renderer/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select'
+import { lazyWithReload } from '@renderer/lib/lazy-with-reload'
 import { VolumeDetailsFields, VolumeSetupFooter } from './volume-setup-layout'
 import type { VolumeDetails } from './volume-details-schema'
 
-const IntegrationDirectoryDialog = lazy(async () => {
+const IntegrationDirectoryDialog = lazyWithReload(async () => {
   const module = await import('@renderer/components/connections/integration-directory-dialog')
   return { default: module.IntegrationDirectoryDialog }
 })
