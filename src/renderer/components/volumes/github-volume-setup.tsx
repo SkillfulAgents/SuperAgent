@@ -65,7 +65,7 @@ function GithubVolumeSetup({ initialDetails, onSubmit, onBack, onCancel, isSavin
           setDetails(current => !current.name || current.name === previousName ? { ...current, name: path.split('/').at(-1) || repo } : current)
           clearError()
         }} />
-      <p className="text-xs text-muted-foreground">This drive is read-only. GitHub changes appear after the drive checks the branch in the background.</p>
+      <p className="text-xs text-muted-foreground">Agents commit their changes straight to this branch, and changes on GitHub appear within 30 seconds. To keep an agent from writing, set the drive to read only on its card.</p>
     </VolumeRemoteDetailsStep>}
   </>
 }
