@@ -13,8 +13,8 @@
 //   build); otherwise it warns and bundles nothing, and the app pulls as before.
 //
 // Output: <out-dir>/agent-image.tar and <out-dir>/agent-image.json
-// (src/shared/lib/container/bundled-agent-image-schema.ts). A rerun whose
-// image digest hasn't changed keeps the archive it already has.
+// (src/shared/lib/container/bundled-agent-image-schema.ts). Like
+// download-lima.sh, every run downloads afresh, so a damaged leftover never ships.
 import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
@@ -140,16 +140,6 @@ async function writeEntry(out: fs.WriteStream, name: string, size: number, body:
   await write(tarPadding(size))
 }
 
-function readExisting(outDir: string): BundledAgentImage | null {
-  try {
-    const existing = bundledAgentImageSchema.parse(JSON.parse(fs.readFileSync(path.join(outDir, BUNDLED_AGENT_IMAGE_MANIFEST), 'utf8')))
-    const archive = path.join(outDir, BUNDLED_AGENT_IMAGE_ARCHIVE)
-    return fs.statSync(archive).size === existing.archiveBytes ? existing : null
-  } catch {
-    return null
-  }
-}
-
 async function main(): Promise<void> {
   const [outDir, archArg, imageArg] = process.argv.slice(2)
   if (!outDir) {
@@ -175,12 +165,6 @@ async function main(): Promise<void> {
       return
     }
     throw error
-  }
-
-  const existing = readExisting(outDir)
-  if (existing?.image === image && existing.architecture === arch && existing.manifestDigest === platformManifest.digest) {
-    console.log(`  agent-image: ${image} (${arch}) already bundled, ${(existing.archiveBytes / 1048576).toFixed(1)} MiB`)
-    return
   }
 
   fs.rmSync(outDir, { recursive: true, force: true })

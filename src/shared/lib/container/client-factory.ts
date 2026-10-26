@@ -706,6 +706,10 @@ async function loadOrPullImage(
         tags: { component: 'container', operation: 'image-load' },
         extra: { image, runner, error: detail.slice(-2000) },
       })
+      // A load that fails while unpacking still leaves the image's name
+      // behind. If the pull fails too, a caller's "did the image appear?"
+      // re-check must not take that for a working image.
+      await removeImage(runner, image)
     }
   }
   await doPullImage(runner, image, onProgress)

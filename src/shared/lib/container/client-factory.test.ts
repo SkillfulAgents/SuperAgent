@@ -887,12 +887,15 @@ describe('pullImage with the agent image bundled with the app', () => {
     expect(mockCaptureMessage).not.toHaveBeenCalled()
   })
 
-  it('pulls when the load fails, and reports why', async () => {
+  it('removes what a failed load left and pulls, and reports why', async () => {
     loadOutcome = 1
 
     await pullImage('lima', IMAGE)
 
-    expect(argsOf()).toEqual(['load', 'pull', 'run'])
+    // nerdctl keeps the image's name when unpacking fails; a later "did it
+    // appear?" re-check must not find it if the pull fails too.
+    expect(argsOf()).toEqual(['load', 'rmi', 'pull', 'run'])
+    expect(spawned[1].args).toEqual(['rmi', '-f', IMAGE])
     expect(mockCaptureMessage).toHaveBeenCalledWith(
       'Loading the bundled agent image failed; pulling it instead',
       expect.objectContaining({
@@ -907,7 +910,7 @@ describe('pullImage with the agent image bundled with the app', () => {
 
     await pullImage('lima', IMAGE)
 
-    expect(argsOf()).toEqual(['load', 'pull', 'run'])
+    expect(argsOf()).toEqual(['load', 'rmi', 'pull', 'run'])
     expect(mockCaptureMessage).toHaveBeenCalledWith(
       'Loading the bundled agent image failed; pulling it instead',
       expect.objectContaining({ extra: expect.objectContaining({ error: expect.stringContaining(`${IMAGE} isn't there`) }) })
@@ -923,7 +926,7 @@ describe('pullImage with the agent image bundled with the app', () => {
 
     await pullImage('lima', IMAGE)
 
-    expect(argsOf()).toEqual(['load', 'pull', 'run'])
+    expect(argsOf()).toEqual(['load', 'rmi', 'pull', 'run'])
     expect(spawned[0].kill).toHaveBeenCalledWith('SIGKILL')
   })
 
@@ -936,7 +939,7 @@ describe('pullImage with the agent image bundled with the app', () => {
     await promise
 
     expect(spawned[0].kill).toHaveBeenCalledWith('SIGKILL')
-    expect(argsOf()).toEqual(['load', 'pull', 'run'])
+    expect(argsOf()).toEqual(['load', 'rmi', 'pull', 'run'])
   })
 
   it('pulls when nothing is bundled for the image', async () => {
