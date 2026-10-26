@@ -29,7 +29,7 @@ import { getApiBaseUrl } from '@renderer/lib/env'
 import { FilePreviewProvider, useFilePreview } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
 import { TrayManager } from '@renderer/components/tray/tray-manager'
-import { HomeCollapsible } from '@renderer/components/agents/agent-home/home-collapsible'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@renderer/components/ui/collapsible'
 import { IntegrationRow, RowHoverChevron } from '@renderer/components/connections/integration-row'
 import { useNavigate } from '@tanstack/react-router'
 import { formatDistanceToNow } from 'date-fns'
@@ -45,7 +45,6 @@ import { toast } from 'sonner'
 import { formatSince, formatUntil, SCHEDULE_LABELS } from '@renderer/lib/team-brain/team-brain-format'
 import { isBrainUpkeep, scheduleOfCron, TEAM_BRAIN_CRON } from '@renderer/lib/team-brain/team-brain-setup-block'
 import { usePauseScheduledTask, useResumeScheduledTask, useScheduledTaskSessions, useScheduledTasks, useUpdateSchedule, type ApiScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
-import { DetailCard } from '@renderer/components/triggers/detail-card'
 import { StatusToggle } from '@renderer/components/triggers/status-toggle'
 import { TeamBrainRadial } from './team-brain-radial'
 import { TeamBrainSyncSummaries } from './team-brain-sync-summaries'
@@ -477,28 +476,25 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, showRecord, 
       data-placement={placement}
       className={cn(
         placement === 'beside' ? 'sticky w-full' : 'max-h-full w-[360px] max-w-full self-start',
-        'pointer-events-auto flex flex-col overflow-hidden rounded-2xl border border-border/60 bg-background/70 shadow-[0_8px_40px_rgba(15,23,42,0.12),0_2px_10px_-4px_rgba(15,23,42,0.1)] backdrop-blur-xl supports-[backdrop-filter]:bg-background/55 dark:shadow-[0_8px_40px_rgba(0,0,0,0.4),0_2px_12px_-4px_rgba(0,0,0,0.3)]',
+        // Concentric with the cards inside it: their 16px radius plus the panel's 12px inset.
+        'pointer-events-auto flex flex-col overflow-hidden rounded-[28px] border border-border/60 bg-background/70 shadow-[0_8px_40px_rgba(15,23,42,0.12),0_2px_10px_-4px_rgba(15,23,42,0.1)] backdrop-blur-xl supports-[backdrop-filter]:bg-background/55 dark:shadow-[0_8px_40px_rgba(0,0,0,0.4),0_2px_12px_-4px_rgba(0,0,0,0.3)]',
         // The slide's curves are in globals.css, beside the page column's.
         open ? 'team-brain-settings-in' : 'team-brain-settings-out',
       )}
       data-testid="team-brain-settings"
     >
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
-        <TeamBrainDetails agentSlug={agent.slug} />
-        {/* What the tree shows: the agent's own record, off by default. */}
-        <div className="flex items-center gap-3 rounded-xl border bg-background px-4 py-3">
-          <label htmlFor="team-brain-show-record" className="min-w-0 flex-1">
-            <span className="block text-[13px] font-medium">Show team record</span>
-            <span className="block text-xs text-muted-foreground">{"Rules, sources, changelog, archive, sync summaries and the agents' index."}</span>
-          </label>
-          <Switch id="team-brain-show-record" checked={showRecord} onCheckedChange={onShowRecordChange} data-testid="team-brain-show-record" />
+      {/* Laid out as Agent Home's side panel: the pickers in one card, the sections as rows of another. */}
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3" data-testid="team-brain-details">
+        <SyncCard agentSlug={agent.slug} showRecord={showRecord} onShowRecordChange={onShowRecordChange} />
+        <div className={SECTIONS_CARD_CLASS}>
+          <StorageSection agentSlug={agent.slug} />
+          <SourcesSection agentSlug={agent.slug} />
+          <AgentsSection brainSlug={agent.slug} agents={agents} />
+          <SessionsSection agentSlug={agent.slug} />
         </div>
-        <SourcesSection agentSlug={agent.slug} />
-        <AgentsSection brainSlug={agent.slug} agents={agents} />
-        <SessionsSection agentSlug={agent.slug} />
       </div>
       {/* Pinned to the foot of the panel, below everything that scrolls; as wide as the cards, red only in its words until hovered. */}
-      <div className="shrink-0 border-t border-border/40 p-4">
+      <div className="shrink-0 border-t border-border/40 p-3">
         <Button
           variant="ghost"
           size="sm"
@@ -531,16 +527,67 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, showRecord, 
   )
 }
 
+/** The card the panel's sections share, as Agent Home's side panel has it: each section a row, divided from the next, clipped to the card's corners. */
+const SECTIONS_CARD_CLASS = 'overflow-hidden rounded-2xl border border-border/60 bg-background shadow-sm divide-y divide-border/50'
+/** A section's header row, as tall as the pickers' rows. The focus ring is inset because the card clips its rows. */
+const SECTION_HEADER_CLASS = 'flex min-h-12 w-full items-center justify-between gap-2 px-4 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring'
+/** Every label in the panel: a section's title, a picker row's name. */
+const PANEL_LABEL_CLASS = 'text-[12px]/5 text-muted-foreground'
+/** How many a folded section holds, in Agent Home's style for a section's count. */
+const SECTION_COUNT_CLASS = 'text-[12px]/5 tabular-nums text-muted-foreground/50'
+
 /**
- * Where Team Brain lives and how it keeps up, a card each in the cron page's
- * style: whether it is syncing (its toggle pauses that; agents still read what
- * is already there), how often, and where it lives.
+ * How Team Brain keeps up and what the tree shows, in a card of picker rows
+ * like Agent Home's default model and auto-delete: whether it is syncing (its
+ * toggle pauses that; agents still read what is already there), when it last
+ * ran and next will, how often, and whether the tree shows the team record.
  */
-function TeamBrainDetails({ agentSlug }: { agentSlug: string }) {
+function SyncCard({ agentSlug, showRecord, onShowRecordChange }: { agentSlug: string; showRecord: boolean; onShowRecordChange: (on: boolean) => void }) {
   const upkeep = useBrainUpkeep(agentSlug)
   const pause = usePauseScheduledTask()
   const resume = useResumeScheduledTask()
   const paused = upkeep?.status === 'paused'
+  return (
+    <div className="divide-y divide-border/50 rounded-2xl border bg-background">
+      <div className="flex items-center justify-between gap-2 px-4 py-2" data-testid="team-brain-sync">
+        <div className="min-w-0">
+          <span className={cn('block', PANEL_LABEL_CLASS)}>Sync</span>
+          <dl className="flex flex-wrap gap-x-3 text-[11px]">
+            <div className="flex gap-1">
+              <dt className="text-muted-foreground">Next:</dt>
+              <dd>{!upkeep ? 'After the first chat' : paused ? 'Paused' : formatUntil(upkeep.nextExecutionAt)}</dd>
+            </div>
+            <div className="flex gap-1">
+              <dt className="text-muted-foreground">Last run:</dt>
+              <dd>{upkeep?.lastExecutedAt ? formatSince(isoOf(upkeep.lastExecutedAt)) : 'Not yet'}</dd>
+            </div>
+          </dl>
+        </div>
+        <StatusToggle
+          status={paused ? 'paused' : 'active'}
+          isActive={!!upkeep}
+          isPaused={paused}
+          canToggle={!!upkeep}
+          onToggle={(on) => upkeep && (on ? resume : pause).mutate({ taskId: upkeep.id, agentSlug })}
+          ariaLabelResume="Resume syncing"
+          ariaLabelPause="Pause syncing"
+        />
+      </div>
+      <ScheduleRow agentSlug={agentSlug} />
+      {/* What the tree shows: the agent's own record, off by default. */}
+      <div className="flex items-center gap-3 px-4 py-2">
+        <label htmlFor="team-brain-show-record" className="min-w-0 flex-1">
+          <span className={cn('block', PANEL_LABEL_CLASS)}>Show team record</span>
+          <span className="block text-[11px] text-muted-foreground/70">{"Rules, sources, changelog, archive, sync summaries and the agents' index."}</span>
+        </label>
+        <Switch id="team-brain-show-record" checked={showRecord} onCheckedChange={onShowRecordChange} data-testid="team-brain-show-record" />
+      </div>
+    </div>
+  )
+}
+
+/** Where Team Brain lives, as a connector row under its section label; it opens the folder on this computer when it can. */
+function StorageSection({ agentSlug }: { agentSlug: string }) {
   const location = useTeamBrainLocation(agentSlug)
   const LocationIcon = location.Icon
   // Where the drive is, and opening a folder on this computer, as Agent Home's drive rows show it.
@@ -549,58 +596,44 @@ function TeamBrainDetails({ agentSlug }: { agentSlug: string }) {
   const hostPath = mount?.hostPath ?? null
   const showInFolder = canUseHostFeatures() && hostPath !== null ? () => void window.electronAPI?.showInFolder(hostPath) : undefined
   return (
-    <div className="space-y-4" data-testid="team-brain-details">
-      <DetailCard
-        label="Sync"
-        headerActions={
-          <StatusToggle
-            status={paused ? 'paused' : 'active'}
-            isActive={!!upkeep}
-            isPaused={paused}
-            canToggle={!!upkeep}
-            onToggle={(on) => upkeep && (on ? resume : pause).mutate({ taskId: upkeep.id, agentSlug })}
-            ariaLabelResume="Resume syncing"
-            ariaLabelPause="Pause syncing"
-          />
+    <section className="pb-3">
+      <h3 className={cn('flex min-h-12 items-center px-4', PANEL_LABEL_CLASS)}>Storage location</h3>
+      <IntegrationRow
+        icon={<LocationIcon className="h-4 w-4" />}
+        name={location.name}
+        onActivate={showInFolder}
+        ariaLabel={showInFolder ? `Open Team Brain in ${location.name}` : undefined}
+        right={showInFolder ? <RowHoverChevron icon={<ArrowUpRight className="h-4 w-4 shrink-0 text-muted-foreground" />} /> : undefined}
+        // No fill on hover, as rows in Agent Home's side panel have none: the ↗ says it opens.
+        className="hover:bg-transparent"
+        data-testid="team-brain-storage"
+        subtitle={
+          <span className="min-w-0 truncate" data-testid="team-brain-location">
+            {mount?.sourceLabel ?? hostPath}
+          </span>
         }
-      >
-        <dl className="flex flex-wrap gap-x-6 gap-y-1 text-xs">
-          <div className="flex gap-1">
-            <dt className="text-muted-foreground">Next:</dt>
-            <dd>{!upkeep ? 'After the first chat' : paused ? 'Paused' : formatUntil(upkeep.nextExecutionAt)}</dd>
-          </div>
-          <div className="flex gap-1">
-            <dt className="text-muted-foreground">Last run:</dt>
-            <dd>{upkeep?.lastExecutedAt ? formatSince(isoOf(upkeep.lastExecutedAt)) : 'Not yet'}</dd>
-          </div>
-        </dl>
-      </DetailCard>
+      />
+    </section>
+  )
+}
 
-      {/* How often it syncs, in the row and picker Agent Home uses for its default model and auto-delete. */}
-      <div className="rounded-xl border bg-background">
-        <ScheduleRow agentSlug={agentSlug} />
-      </div>
-
-      {/* Where it lives, laid out as one of the Sources card's connector rows; it opens there when the place has a link. */}
-      <section className="rounded-xl border bg-background py-4">
-        <h3 className="px-4 text-sm font-medium text-muted-foreground">Storage location</h3>
-        <div className="mt-2">
-          <IntegrationRow
-            icon={<LocationIcon className="h-4 w-4" />}
-            name={location.name}
-            onActivate={showInFolder}
-            ariaLabel={showInFolder ? `Open Team Brain in ${location.name}` : undefined}
-            right={showInFolder ? <RowHoverChevron icon={<ArrowUpRight className="h-4 w-4 shrink-0 text-muted-foreground" />} /> : undefined}
-            data-testid="team-brain-storage"
-            subtitle={
-              <span className="min-w-0 truncate" data-testid="team-brain-location">
-                {mount?.sourceLabel ?? hostPath}
-              </span>
-            }
-          />
-        </div>
-      </section>
-    </div>
+/**
+ * A folded section row in the sections card, as Agent Home's side panel has
+ * them: the title, what is in it while folded (`summary`), and a chevron; it
+ * opens to its rows below. The card is `testId`, its header `${testId}-toggle`.
+ */
+function PanelSection({ title, summary, testId, children }: { title: string; summary: ReactNode; testId: string; children: ReactNode }) {
+  return (
+    <Collapsible data-testid={testId}>
+      <CollapsibleTrigger className={SECTION_HEADER_CLASS} data-testid={`${testId}-toggle`}>
+        <span className={PANEL_LABEL_CLASS}>{title}</span>
+        <span className="flex items-center gap-2">
+          <span className="flex items-center gap-2 [[data-state=open]>*>&]:hidden">{summary}</span>
+          <ChevronDown className="h-4 w-4 text-muted-foreground/50 transition-transform [[data-state=closed]>*>&]:rotate-[-90deg]" aria-hidden="true" />
+        </span>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="pb-3">{children}</CollapsibleContent>
+    </Collapsible>
   )
 }
 
@@ -616,7 +649,7 @@ function ScheduleRow({ agentSlug }: { agentSlug: string }) {
   const title = !upkeep ? 'After the first chat' : schedule ? SCHEDULE_LABELS[schedule].title : 'Custom'
   return (
     <div className="flex items-center justify-between gap-2 px-4 py-2" data-testid="team-brain-schedule">
-      <span className="text-sm font-medium text-muted-foreground">Schedule</span>
+      <span className={PANEL_LABEL_CLASS}>Schedule</span>
       <Popover>
         <PopoverTrigger asChild>
           <Button
@@ -664,14 +697,14 @@ function ScheduleRow({ agentSlug }: { agentSlug: string }) {
   )
 }
 
-/** A few overlapping marks and how many there are in all, for a folded card's header. */
+/** A few overlapping marks and how many there are in all, for a folded section's header. */
 function StackSummary({ marks, count }: { marks: ReactNode[]; count: number }) {
   return (
     <>
       <span className="flex -space-x-1.5" aria-hidden="true">
         {marks.slice(0, 4)}
       </span>
-      <span className="text-xs tabular-nums text-muted-foreground">{count}</span>
+      <span className={SECTION_COUNT_CLASS}>{count}</span>
     </>
   )
 }
@@ -693,11 +726,13 @@ function SourcesSection({ agentSlug }: { agentSlug: string }) {
     </span>
   ))
   return (
-    <HomeCollapsible title="Sources" defaultOpen={false} summary={<StackSummary marks={marks} count={accounts.length} />} testId="team-brain-sources">
-      <div className="mt-2 divide-y divide-border/50">
+    <PanelSection title="Sources" summary={<StackSummary marks={marks} count={accounts.length} />} testId="team-brain-sources">
+      {/* Agent Home's side-panel rows: no dividers, and no fill or chevron on hover. */}
+      <div className="mt-2">
         {accounts.map((account) => (
           <IntegrationRow
             key={account.id}
+            className="hover:bg-transparent"
             iconSlug={account.toolkitSlug}
             iconFallback="oauth"
             name={account.provider?.displayName ?? account.toolkitSlug}
@@ -712,7 +747,6 @@ function SourcesSection({ agentSlug }: { agentSlug: string }) {
             subtitle={<span className="truncate">{account.displayName}</span>}
             onActivate={() => openConnections(`account-${account.id}`)}
             ariaLabel={`Open ${account.provider?.displayName ?? account.toolkitSlug} connection details`}
-            right={<RowHoverChevron />}
           />
         ))}
       </div>
@@ -722,7 +756,7 @@ function SourcesSection({ agentSlug }: { agentSlug: string }) {
           {accounts.length > 0 ? 'Manage Sources' : 'Add Source'}
         </Button>
       </div>
-    </HomeCollapsible>
+    </PanelSection>
   )
 }
 
@@ -740,7 +774,7 @@ function AgentsSection({ brainSlug, agents }: { brainSlug: string; agents: reado
     </span>
   ))
   return (
-    <HomeCollapsible title="Agents" defaultOpen={false} summary={<StackSummary marks={marks} count={using.length} />} testId="team-brain-agents">
+    <PanelSection title="Agents" summary={<StackSummary marks={marks} count={using.length} />} testId="team-brain-agents">
       <EveryAgentRow
         checked={access.everyAgent}
         canGoGlobal={access.canGoGlobal}
@@ -748,12 +782,12 @@ function AgentsSection({ brainSlug, agents }: { brainSlug: string; agents: reado
         className="px-4 pb-3 pt-2"
       />
       {agents.length > 0 ? (
-        <AgentAccessList agents={agents} everyAgent={access.everyAgent} isOn={access.isOn} isChanging={access.isChanging} onToggle={access.toggle} className="border-y" rowClassName="px-4" />
+        <AgentAccessList agents={agents} everyAgent={access.everyAgent} isOn={access.isOn} isChanging={access.isChanging} onToggle={access.toggle} className="border-y border-border/50" rowClassName="px-4" />
       ) : (
         <p className="px-4 text-xs text-muted-foreground">No agents yet. Agents you make later can add the Team Brain drive from their Drives.</p>
       )}
       <p className="mt-3 px-4 pb-1 text-xs text-muted-foreground">An agent that uses it reads the drive and can message Team Brain.</p>
-    </HomeCollapsible>
+    </PanelSection>
   )
 }
 
@@ -766,12 +800,7 @@ function SessionsSection({ agentSlug }: { agentSlug: string }) {
   const { data: runs } = useScheduledTaskSessions(useBrainUpkeep(agentSlug)?.id ?? null)
   const sessions = useMemo(() => [...(chats ?? []).map(toSessionItem), ...(runs ?? [])], [chats, runs])
   return (
-    <HomeCollapsible
-      title="Sessions"
-      defaultOpen={false}
-      summary={<span className="text-xs tabular-nums text-muted-foreground">{sessions.length}</span>}
-      testId="team-brain-sessions"
-    >
+    <PanelSection title="Sessions" summary={<span className={SECTION_COUNT_CLASS}>{sessions.length}</span>} testId="team-brain-sessions">
       {sessions.length > 0 ? (
         <RelatedSessions
           sessions={sessions}
@@ -785,7 +814,7 @@ function SessionsSection({ agentSlug }: { agentSlug: string }) {
       ) : (
         <p className="px-4 pt-2 text-xs text-muted-foreground">No sessions yet.</p>
       )}
-    </HomeCollapsible>
+    </PanelSection>
   )
 }
 
