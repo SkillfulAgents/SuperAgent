@@ -13,6 +13,7 @@ import { syncAgentConnectionEnvironment } from '@shared/lib/container/connection
 import { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import { localHostPort } from '@shared/lib/host/local-host-port'
 import { LocalAgentActor, type LocalActorDeps } from './local-agent-actor'
+import { RemoteAgentActor, type RemoteWorkspace } from './remote-agent-actor'
 import { serializingActor } from './serializing-actor'
 import type { AgentState } from './agent-state'
 import type { AgentStoreDirectory } from './store-directory'
@@ -48,6 +49,13 @@ export function createAgentRegistry(
      * routers reach the actors' state directly, as before.
      */
     transport?: (actor: AgentActor) => AgentActor
+    /**
+     * The workspace of an agent whose container and files live with a
+     * provider (its handle is a `RemoteAgentActor`), or null for an agent on
+     * this machine. Asked when the handle is made, so it must not do I/O:
+     * `get` never does.
+     */
+    remoteWorkspace?: (slug: AgentSlug) => RemoteWorkspace | null
   } = {},
 ): AgentRegistry {
   const states = options.states ?? new Map<AgentSlug, AgentState>()
@@ -65,7 +73,8 @@ export function createAgentRegistry(
   }
 
   const wrap = (slug: AgentSlug, state?: AgentState): LocalAgentActor => {
-    const actor = new LocalAgentActor(slug, deps, state)
+    const remote = options.remoteWorkspace?.(slug) ?? null
+    const actor = remote ? new RemoteAgentActor(slug, deps, remote, state) : new LocalAgentActor(slug, deps, state)
     handles.set(slug, actor)
     states.set(slug, actor.state)
     return actor
@@ -145,6 +154,18 @@ if (process.env.NODE_ENV !== 'production') {
   globalForRegistry.agentActorStates = agentActorStates
 }
 
+let remoteWorkspaces: ((slug: AgentSlug) => RemoteWorkspace | null) | null = null
+
+/**
+ * Tell the registry which agents keep their files with a provider's
+ * container, and where. A deployment whose agents run in a sandbox provider
+ * sets it at startup, before any agent is reached: a handle that already
+ * exists keeps its kind until it is evicted. Unset, every agent is local.
+ */
+export function setRemoteWorkspaces(resolver: ((slug: AgentSlug) => RemoteWorkspace | null) | null): void {
+  remoteWorkspaces = resolver
+}
+
 // Getters, not values: each dependency is read when an actor method runs, not
 // when this module loads. A test that mocks one of these modules therefore
 // intercepts exactly the call it always intercepted, and the others are never
@@ -200,6 +221,7 @@ export const agentRegistry: AgentRegistry = createAgentRegistry({
   },
 }, {
   states: agentActorStates,
+  remoteWorkspace: (slug) => remoteWorkspaces?.(slug) ?? null,
   // Development and tests only: every actor reached through the serializing test transport.
   ...(process.env.NODE_ENV !== 'production' && process.env.SUPERAGENT_ACTOR_TRANSPORT === 'serializing'
     ? { transport: serializingActor }

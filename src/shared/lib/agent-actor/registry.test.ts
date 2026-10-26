@@ -13,6 +13,8 @@ import type { AgentState } from './agent-state'
 import type { LocalActorDeps, LocalAgentActor } from './local-agent-actor'
 import type { SessionStore } from './session-store'
 import { createRecordingHostPort } from './testing/recording-host-port'
+import { InMemoryFileOps } from './testing/in-memory-file-ops'
+import { RemoteAgentActor } from './remote-agent-actor'
 
 // The singleton registry wires the real container host. These tests build
 // their own registry from fakes, so that module is stubbed to keep the
@@ -99,6 +101,8 @@ function fakeDeps() {
     getClient: vi.fn().mockReturnValue(client),
     ensureRunning: vi.fn().mockResolvedValue(client),
     getCachedInfo: vi.fn().mockReturnValue({ status: 'running', port: 4321 }),
+    isStarting: vi.fn().mockReturnValue(false),
+    isStopping: vi.fn().mockReturnValue(false),
     keepAlive: vi.fn(),
     noteSessionActivity: vi.fn(),
     idleSince: vi.fn<() => number | null>().mockReturnValue(null),
@@ -819,5 +823,68 @@ describe('createAgentRegistry', () => {
 
       expect(order).toEqual(['unsubscribe s1', 'delete', 'unsubscribe s2', 'unsubscribe s3', 'delete-batch s2,s3'])
     })
+  })
+})
+
+describe('an agent whose workspace lives with a remote container', () => {
+  let fake: ReturnType<typeof fakeDeps>
+
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    userInputRequestManager.reset()
+    fake = fakeDeps()
+  })
+
+  function remoteRegistry(store: InMemoryFileOps) {
+    return createAgentRegistry(fake.deps, {
+      remoteWorkspace: (slug) => (slug === 'remote' ? { asleep: store, key: 'store:remote' } : null),
+    })
+  }
+
+  it('gets a remote actor; every other agent stays local', () => {
+    const registry = remoteRegistry(new InMemoryFileOps())
+    const remote = registry.get('remote') as RemoteAgentActor
+    expect(remote).toBeInstanceOf(RemoteAgentActor)
+    expect(remote.store.key).toBe('store:remote')
+    expect(registry.get('local')).not.toBeInstanceOf(RemoteAgentActor)
+  })
+
+  it('reads its files from the store while the container is down, without waking it', async () => {
+    const store = new InMemoryFileOps()
+    await store.putDoc('notes.txt', 'from the store')
+    const actor = remoteRegistry(store).get('remote')
+    fake.containerHost.runtime('remote').getCachedInfo.mockReturnValue({ status: 'stopped' })
+
+    expect(new TextDecoder().decode((await actor.files.getDoc('notes.txt'))!)).toBe('from the store')
+    expect(fake.client.fetch).not.toHaveBeenCalled()
+    expect(fake.containerHost.runtime('remote').ensureRunning).not.toHaveBeenCalled()
+  })
+
+  it('reads and writes its files through the container while it runs', async () => {
+    const store = new InMemoryFileOps()
+    const actor = remoteRegistry(store).get('remote')
+    fake.client.fetch.mockImplementation(async (target: string) =>
+      target.startsWith('/workspace/fs/read?')
+        ? new Response('from the container', { headers: { 'X-Workspace-File-Size': '18' } })
+        : Response.json({ size: 2 }),
+    )
+
+    expect(new TextDecoder().decode((await actor.files.getDoc('notes.txt'))!)).toBe('from the container')
+    await actor.files.putDoc('notes.txt', 'hi')
+
+    expect(fake.client.fetch.mock.calls.map(([target]) => target)).toEqual([
+      '/workspace/fs/read?path=notes.txt',
+      '/workspace/fs/file?path=notes.txt&flush=1',
+    ])
+    expect(await store.stat('notes.txt')).toBeNull()
+  })
+
+  it('its config documents follow the same switch', async () => {
+    const store = new InMemoryFileOps()
+    await store.putDoc('AGENTS.md', '# From the store')
+    const actor = remoteRegistry(store).get('remote')
+    fake.containerHost.runtime('remote').getCachedInfo.mockReturnValue({ status: 'stopped' })
+
+    expect(await actor.config.get('instructions')).toBe('# From the store')
   })
 })

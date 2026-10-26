@@ -477,8 +477,200 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  # Workspace file operations (agent-container/src/workspace-fs.ts): one route
+  # per FileOps operation, for a host whose agent workspace lives in the container.
+  /workspace/fs/stat:
+    get:
+      tags: [Workspace]
+      summary: What is at a workspace path
+      operationId: workspaceStat
+      parameters:
+        - $ref: '#/components/parameters/WorkspacePath'
+      responses:
+        '200':
+          description: The entry, or null when nothing is there
+          content:
+            application/json:
+              schema:
+                nullable: true
+                allOf:
+                  - $ref: '#/components/schemas/WorkspaceFileStat'
+        '400':
+          $ref: '#/components/responses/WorkspaceFsError'
+
+  /workspace/fs/list:
+    get:
+      tags: [Workspace]
+      summary: Immediate children of a directory (links are not listed)
+      operationId: workspaceList
+      parameters:
+        - $ref: '#/components/parameters/WorkspacePath'
+      responses:
+        '200':
+          description: The children
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WorkspaceFileEntry'
+        '404':
+          $ref: '#/components/responses/WorkspaceFsError'
+
+  /workspace/fs/resolve:
+    get:
+      tags: [Workspace]
+      summary: Where a path really leads, links followed
+      operationId: workspaceResolve
+      parameters:
+        - $ref: '#/components/parameters/WorkspacePath'
+      responses:
+        '200':
+          description: The workspace path, or null when nothing is there
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  path:
+                    type: string
+                    nullable: true
+        '400':
+          $ref: '#/components/responses/WorkspaceFsError'
+
+  /workspace/fs/read:
+    get:
+      tags: [Workspace]
+      summary: A file's bytes from one open, bounded to its size at the open
+      operationId: workspaceRead
+      parameters:
+        - $ref: '#/components/parameters/WorkspacePath'
+        - name: start
+          in: query
+          schema: { type: integer }
+          description: First byte of a closed range
+        - name: end
+          in: query
+          schema: { type: integer }
+          description: Last byte of a closed range (inclusive)
+        - name: lenient
+          in: query
+          schema: { type: string, enum: ['1'] }
+          description: Cut a range at the end of the file instead of refusing it
+        - name: confined
+          in: query
+          schema: { type: string, enum: ['1'] }
+          description: Refuse a path that leads out of the workspace through a link
+      responses:
+        '200':
+          description: The bytes
+          headers:
+            X-Workspace-File-Size:
+              description: The file's size when it was opened
+              schema: { type: integer }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '404':
+          $ref: '#/components/responses/WorkspaceFsError'
+
+  /workspace/fs/file:
+    put:
+      tags: [Workspace]
+      summary: Write a whole file atomically; missing parents are created
+      operationId: workspaceWrite
+      parameters:
+        - $ref: '#/components/parameters/WorkspacePath'
+        - name: mode
+          in: query
+          schema: { type: integer }
+          description: Permission bits to apply; without it an existing file keeps its mode
+        - name: flush
+          in: query
+          schema: { type: string, enum: ['1'] }
+          description: Flush the file to disk before answering
+        - name: overwrite
+          in: query
+          schema: { type: string, enum: ['0', '1'] }
+          description: With 0, refuse when the file exists
+        - name: confined
+          in: query
+          schema: { type: string, enum: ['1'] }
+      requestBody:
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        '200':
+          description: Written
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  size: { type: integer }
+        '404':
+          $ref: '#/components/responses/WorkspaceFsError'
+
+  /workspace/fs/append:
+    post:
+      tags: [Workspace]
+      summary: Add bytes to the end of a file, creating it and its parents; one request is one append
+      operationId: workspaceAppend
+      parameters:
+        - $ref: '#/components/parameters/WorkspacePath'
+      requestBody:
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        '200':
+          description: Appended
+        '404':
+          $ref: '#/components/responses/WorkspaceFsError'
+
+  /workspace/fs/entry:
+    delete:
+      tags: [Workspace]
+      summary: Remove a file, or a directory tree with recursive; an absent path is a no-op
+      operationId: workspaceDelete
+      parameters:
+        - $ref: '#/components/parameters/WorkspacePath'
+        - name: recursive
+          in: query
+          schema: { type: string, enum: ['1'] }
+        - name: confined
+          in: query
+          schema: { type: string, enum: ['1'] }
+      responses:
+        '200':
+          description: Removed
+        '404':
+          $ref: '#/components/responses/WorkspaceFsError'
+
+  /workspace/fs/mkdir:
+    post:
+      tags: [Workspace]
+      summary: Create a directory and any missing parents
+      operationId: workspaceMkdir
+      parameters:
+        - $ref: '#/components/parameters/WorkspacePath'
+      responses:
+        '200':
+          description: Created
+        '404':
+          $ref: '#/components/responses/WorkspaceFsError'
+
 components:
   parameters:
+    WorkspacePath:
+      name: path
+      in: query
+      required: true
+      description: Workspace path (relative to /workspace; `/workspace/...` accepted). A path that would leave the workspace is refused.
+      schema:
+        type: string
+      example: notes/today.txt
     SessionId:
       name: sessionId
       in: path
@@ -488,6 +680,14 @@ components:
         type: string
         format: uuid
       example: "550e8400-e29b-41d4-a716-446655440000"
+
+  responses:
+    WorkspaceFsError:
+      description: Refused; the status follows the code (400 invalid-path / outside-workspace, 403 not-accessible, 404 not-found / not-a-file / not-a-directory, 409 already-exists / not-empty)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/WorkspaceFsError'
 
   schemas:
     CreateSessionRequest:
@@ -641,6 +841,33 @@ components:
           description: Child files and directories (only for directories)
           items:
             $ref: '#/components/schemas/FileTree'
+
+    WorkspaceFileStat:
+      type: object
+      properties:
+        kind: { type: string, enum: [file, directory] }
+        size: { type: integer }
+        mtimeMs: { type: number }
+        mode: { type: integer, description: Permission bits }
+        birthtimeMs: { type: number }
+
+    WorkspaceFileEntry:
+      type: object
+      properties:
+        name: { type: string }
+        path: { type: string, description: The entry's own workspace path }
+        kind: { type: string, enum: [file, directory] }
+
+    WorkspaceFsError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum: [already-exists, invalid-path, outside-workspace, not-found, not-a-file, not-a-directory, not-accessible, not-empty]
+            message: { type: string }
 
     Error:
       type: object

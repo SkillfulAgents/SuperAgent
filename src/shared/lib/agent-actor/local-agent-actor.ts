@@ -120,8 +120,17 @@ export class LocalAgentActor implements AgentActor {
    * `state` is given when the handle is wrapping state that outlived an
    * earlier handle for the slug (the registry rebuilding after a dev-server
    * reload); otherwise the handle starts with none.
+   *
+   * `makeStore` builds the agent's session store when the handle starts
+   * with no state: the workspace on this machine unless an actor whose files
+   * are elsewhere (`RemoteAgentActor`) brings its own.
    */
-  constructor(readonly slug: AgentSlug, deps: LocalActorDeps, state?: AgentState) {
+  constructor(
+    readonly slug: AgentSlug,
+    deps: LocalActorDeps,
+    state?: AgentState,
+    makeStore: (hooks: Pick<SessionStore, 'onActivity'>) => SessionStore = (hooks) => createLocalSessionStore(slug, deps, hooks),
+  ) {
     // Every write to a session goes through the store, so this is where the
     // container's idle clock learns of session activity — the live sessions'
     // stream frames, the transcript appends and `sessions.recordActivity`
@@ -130,7 +139,7 @@ export class LocalAgentActor implements AgentActor {
       state ??
       createAgentState(slug, {
         sessions: {
-          store: createLocalSessionStore(slug, deps, {
+          store: makeStore({
             onActivity: (at) => deps.containerHost.runtime(slug).noteSessionActivity(at),
           }),
           host: deps.host,

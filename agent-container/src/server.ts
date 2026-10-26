@@ -46,6 +46,7 @@ import {
   type RenameWorkspaceEntryRequest,
 } from './workspace-entry-operations';
 import { registerLegacyFileRoutes } from './legacy-file-routes';
+import { registerWorkspaceFsRoutes } from './workspace-fs';
 
 import { getEditingCommands } from './cdp-editing-commands';
 import { createBrowserNavigation, type BrowserNavigation } from './browser-navigation';
@@ -385,6 +386,7 @@ app.delete('/workspace/entries', async (c) => {
 });
 
 registerLegacyFileRoutes(app);
+registerWorkspaceFsRoutes(app);
 
 app.delete('/files/*', async (c) => {
   const filePath = c.req.param('*') || '';
@@ -3965,6 +3967,7 @@ console.log('  POST   /files/*/upload');
 console.log('  DELETE /files/*');
 console.log('  POST   /files/*/mkdir');
 console.log('  GET    /files/tree');
+console.log('  *      /workspace/fs/* (workspace file operations)');
 console.log('  POST   /inputs/:toolUseId/resolve');
 console.log('  POST   /inputs/:toolUseId/reject');
 console.log('  GET    /inputs/pending');
