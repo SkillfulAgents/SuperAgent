@@ -69,7 +69,7 @@ export function VolumeFolderPicker<Cursor>({ source, accountId, initial, selecte
 
   // Opening inside the first folder happens once per opening of the picker, so stepping back up to the top stays there.
   const entered = useRef(false)
-  const entering = browsing && !!source.opensInFirst && !entered.current && selected === null && crumbs.length === 1
+  const entering = browsing && !!source.opensInFirst && !entered.current && selected === null && crumbs.length === 1 && !folders.error
   useEffect(() => {
     if (!entering || !folders.data || folders.isFetching) return
     entered.current = true

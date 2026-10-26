@@ -5,7 +5,7 @@ import { cn } from '@shared/lib/utils/cn'
 import type { useConnectedAccountsByToolkit } from '@renderer/hooks/use-connected-accounts'
 import { useConnectAccount, type NewApiConnection } from '@renderer/hooks/use-connect-account'
 import { Button } from '@renderer/components/ui/button'
-import { LoginButton } from '@renderer/components/connections/login-button'
+import { LoginButton, useFocusAfterCancel } from '@renderer/components/connections/login-button'
 import { LoginWindowCancel } from '@renderer/components/connections/login-window-cancel'
 import { VolumeDetailsFields, VolumeSetupFooter } from './volume-setup-layout'
 import type { VolumeDetails } from './volume-details-schema'
@@ -40,6 +40,8 @@ export function VolumeAccountStep({ toolkit, label, accounts, accountId, active,
   }, [toolkit, onSelect])
   const { connect, connecting, canCancel, cancel, error } = useConnectAccount({ location: 'drive_setup', onConnected })
   const pending = connecting === toolkit
+  // Cancel sits under the button and unmounts with it; focus returns to the connect area.
+  const { targetRef: connectAreaRef, arm: focusConnectAreaAfterCancel } = useFocusAfterCancel<HTMLDivElement>(pending)
 
   useEffect(() => {
     if (!advanceTo || advanceTo !== accountId || !active) return
@@ -47,7 +49,8 @@ export function VolumeAccountStep({ toolkit, label, accounts, accountId, active,
     onNext()
   }, [advanceTo, accountId, active, onNext])
 
-  const lone = loaded && list.length === 1 && list[0].status === 'active' ? list[0].id : null
+  const usable = list.filter(item => item.status === 'active')
+  const lone = loaded && usable.length === 1 ? usable[0].id : null
   // Two connections can carry the same name (one account connected twice); their time tells them apart.
   const shared = new Set(list.map(item => item.displayName).filter((name, index, names) => names.indexOf(name) !== index))
   useEffect(() => {
@@ -66,14 +69,14 @@ export function VolumeAccountStep({ toolkit, label, accounts, accountId, active,
           onSelect={() => onSelect(item.id)} />)}
       </div>
     </div>}
-    <div className="space-y-1">
+    <div ref={connectAreaRef} tabIndex={-1} className="space-y-1 rounded-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
       <LoginButton type="button" variant={hasAccounts ? 'outline' : 'default'} className="w-full" icon={<Plus className="h-4 w-4" />}
         label={hasAccounts ? `Connect another ${label} account` : `Connect ${label}`} pendingLabel={`Connecting ${label}…`}
         pending={pending} canCancel={pending && canCancel} onCancel={cancel} cancelSide="none"
-        disabled={accounts.isLoading || (connecting !== null && !pending)}
+        disabled={accounts.isLoading}
         onClick={() => { firstAccount.current = !hasAccounts; void connect(toolkit) }} data-testid={`volume-${toolkit}-connect`} />
       {/* The button is full width, so its Cancel sits under it. */}
-      <div className="flex justify-center"><LoginWindowCancel visible={pending && canCancel} onCancel={cancel} testId={`volume-${toolkit}-connect-cancel`} /></div>
+      <div className="flex justify-center"><LoginWindowCancel visible={pending && canCancel} onCancel={() => { focusConnectAreaAfterCancel(); cancel() }} testId={`volume-${toolkit}-connect-cancel`} /></div>
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     </div>
     <VolumeSetupFooter onBack={onBack} onCancel={onCancel} isSaving={false} disabled={!active} submitLabel="Next" />
@@ -86,7 +89,7 @@ function connectedOn(createdAt: string | undefined, withTime: boolean): string |
   return at && !Number.isNaN(at.getTime()) ? `Connected ${format(at, withTime ? 'MMM d, yyyy, h:mm a' : 'MMM d, yyyy')}` : null
 }
 
-/** One connected account in the account step's list: a radio card in Team Brain set-up's choice style (brand border and dot when chosen). */
+/** One connected account in the account step's list: a radio card with a brand border and dot when chosen. */
 function AccountOption({ name, detail, selected, disabled, onSelect }: {
   name: string; detail: string | null; selected: boolean; disabled: boolean; onSelect: () => void
 }) {

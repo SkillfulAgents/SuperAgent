@@ -8,7 +8,7 @@ Element.prototype.scrollIntoView = vi.fn()
 Element.prototype.hasPointerCapture = vi.fn(() => false)
 Element.prototype.releasePointerCapture = vi.fn()
 
-const state = vi.hoisted(() => ({ connects: [] as string[], accounts: [{ id: 'first', displayName: 'Work Dropbox', status: 'active' }] }))
+const state = vi.hoisted(() => ({ connects: [] as string[], accounts: [{ id: 'first', displayName: 'Work Dropbox', status: 'active' }] as { id: string; displayName: string; status: string; createdAt?: string }[] }))
 vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: () => false }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: false }) }))
 vi.mock('@renderer/hooks/use-connected-accounts', () => ({ useConnectedAccountsByToolkit: () => ({ data: { accounts: state.accounts }, isLoading: false }) }))
@@ -36,7 +36,7 @@ async function setup(save = vi.fn()) {
   expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
   await userEvent.click(screen.getByRole('button', { name: 'Dropbox' }))
   expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
-  expect(screen.queryByLabelText('Set folder name')).not.toBeInTheDocument()
+  expect(screen.queryByLabelText('Name')).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: /^Select folder location/ })).not.toBeInTheDocument()
   return save
 }
@@ -63,8 +63,8 @@ describe('Dropbox volume creation', () => {
     expect(screen.getByRole('button', { name: /^Select folder location/ })).toBeInTheDocument()
   })
 
-  it('chooses a lone account for you', async () => {
-    state.accounts = [{ id: 'first', displayName: 'Work Dropbox', status: 'active' }]
+  it('chooses the lone usable account for you', async () => {
+    state.accounts = [{ id: 'first', displayName: 'Work Dropbox', status: 'active' }, { id: 'old', displayName: 'Old Dropbox', status: 'expired' }]
     render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <VolumeSettingsDialog onSave={vi.fn()} onClose={vi.fn()} />
     </QueryClientProvider>)
@@ -72,6 +72,19 @@ describe('Dropbox volume creation', () => {
     expect(screen.getByRole('radio', { name: 'Work Dropbox' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Connect another Dropbox account' })).toBeInTheDocument()
+  })
+
+  it('dates each account, to the minute where two share a name', async () => {
+    state.accounts = [
+      { id: 'a', displayName: 'Work Dropbox', status: 'active', createdAt: '2026-10-20T16:05:00' },
+      { id: 'b', displayName: 'Work Dropbox', status: 'active', createdAt: '2026-10-21T09:30:00' },
+      { id: 'c', displayName: 'Team Dropbox', status: 'active', createdAt: '2026-09-02T18:40:00' },
+      { id: 'd', displayName: 'Shared Dropbox', status: 'active' },
+    ]
+    await setup()
+    expect(screen.getAllByRole('radio').map(radio => radio.textContent)).toEqual([
+      'Work DropboxConnected Oct 20, 2026, 4:05 PM', 'Work DropboxConnected Oct 21, 2026, 9:30 AM', 'Team DropboxConnected Sep 2, 2026', 'Shared Dropbox',
+    ])
   })
 
   it('connects another account straight from the step, and continues with it', async () => {
@@ -102,8 +115,8 @@ describe('Dropbox volume creation', () => {
   it('retains a selected folder on cancellation and preserves it when saving fails', async () => {
     const save = await setup(vi.fn().mockRejectedValue(new Error('Connection expired')))
     await chooseRoot()
-    await userEvent.clear(screen.getByLabelText('Set folder name', { exact: true }))
-    await userEvent.type(screen.getByLabelText('Set folder name', { exact: true }), 'My shared files')
+    await userEvent.clear(screen.getByLabelText('Name', { exact: true }))
+    await userEvent.type(screen.getByLabelText('Name', { exact: true }), 'My shared files')
     await userEvent.click(screen.getByRole('button', { name: 'Back' }))
     await userEvent.click(screen.getByRole('button', { name: 'Next' }))
     await userEvent.click(screen.getByRole('button', { name: /^Select folder location/ }))
@@ -112,6 +125,6 @@ describe('Dropbox volume creation', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Create drive' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Connection expired')
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ name: 'My shared files', source: { type: 'dropbox', config: { accountId: 'first', path: '' } } }))
-    expect(screen.getByLabelText('Set folder name', { exact: true })).toHaveValue('My shared files')
+    expect(screen.getByLabelText('Name', { exact: true })).toHaveValue('My shared files')
   })
 })

@@ -38,8 +38,7 @@ function GoogleDriveVolumeSetup({ initialDetails, onSubmit, onBack, onCancel, is
   const active = account?.status === 'active' && !accounts.error
 
   const selectAccount = (id: string) => {
-    // Radix's hidden select can emit an empty value while OAuth refreshes the list.
-    if (!id || id === accountId) return
+    if (id === accountId) return
     if (config && details.name === config.folderName) setDetails({ ...details, name: '' })
     setAccountId(id)
     setConfig(null)

@@ -8,13 +8,14 @@ Element.prototype.scrollIntoView = vi.fn()
 Element.prototype.hasPointerCapture = vi.fn(() => false)
 Element.prototype.releasePointerCapture = vi.fn()
 
-const state = vi.hoisted(() => ({ connects: [] as string[], accounts: [{ id: 'first', displayName: 'Work Drive', status: 'active' }] }))
+const state = vi.hoisted(() => ({ failTop: false, connects: [] as string[], accounts: [{ id: 'first', displayName: 'Work Drive', status: 'active' }] }))
 vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: () => false }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: false }) }))
 vi.mock('@renderer/hooks/use-connected-accounts', () => ({ useConnectedAccountsByToolkit: () => ({ data: { accounts: state.accounts }, isLoading: false }) }))
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: async (url: string) => {
     const folderId = new URL(url, 'http://app').searchParams.get('folderId')
+    if (!folderId && state.failTop) return Response.json({ error: 'Google Drive is unavailable' }, { status: 503 })
     if (!folderId) return Response.json({ folders: [{ id: 'mydrive', name: 'My Drive' }, { id: 'shared1', name: 'Shared drive' }] })
     return Response.json({ folders: folderId === 'mydrive' ? [{ id: 'team', name: 'Team' }] : [] })
   },
@@ -32,7 +33,7 @@ vi.mock('@renderer/hooks/use-connect-account', () => ({
 }))
 import { VolumeSettingsDialog } from './volume-settings-dialog'
 
-beforeEach(() => { state.connects = []; state.accounts = [{ id: 'first', displayName: 'Work Drive', status: 'active' }, { id: 'second', displayName: 'Personal Drive', status: 'active' }] })
+beforeEach(() => { state.failTop = false; state.connects = []; state.accounts = [{ id: 'first', displayName: 'Work Drive', status: 'active' }, { id: 'second', displayName: 'Personal Drive', status: 'active' }] })
 afterEach(cleanup)
 async function setup(save = vi.fn()) {
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -40,7 +41,7 @@ async function setup(save = vi.fn()) {
   </QueryClientProvider>)
   await userEvent.click(screen.getByRole('button', { name: 'Google Drive' }))
   expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
-  expect(screen.queryByLabelText('Set folder name')).not.toBeInTheDocument()
+  expect(screen.queryByLabelText('Name')).not.toBeInTheDocument()
   return save
 }
 async function chooseAccount(account = 'Work Drive') {
@@ -64,7 +65,7 @@ describe('Google Drive volume creation', () => {
     expect(screen.getByRole('button', { name: 'Create drive' })).toBeDisabled()
     await chooseTeam()
     expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent('My Drive / Team')
-    expect(screen.getByLabelText('Set folder name', { exact: true })).toHaveValue('Team')
+    expect(screen.getByLabelText('Name', { exact: true })).toHaveValue('Team')
     await userEvent.click(screen.getByRole('button', { name: 'Create drive' }))
     expect(save).toHaveBeenCalledWith({ name: 'Team', source: { type: 'googledrive', config: { accountId: 'first', folderId: 'team', folderName: 'Team', driveName: 'My Drive' } }, visibility: 'private' })
   })
@@ -77,7 +78,7 @@ describe('Google Drive volume creation', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Back' }))
     await chooseAccount('Personal Drive')
     expect(screen.queryByTestId('selected-volume-folder')).not.toBeInTheDocument()
-    expect(screen.getByLabelText('Set folder name', { exact: true })).toHaveValue('')
+    expect(screen.getByLabelText('Name', { exact: true })).toHaveValue('')
     expect(screen.getByRole('button', { name: 'Create drive' })).toBeDisabled()
   })
 
@@ -111,5 +112,15 @@ describe('Google Drive volume creation', () => {
     expect(screen.getByRole('button', { name: 'Select a folder' })).toBeDisabled()
     await userEvent.click(screen.getByRole('button', { name: 'Shared drive' }))
     expect(screen.getByRole('button', { name: 'Use “Shared drive”' })).toBeEnabled()
+  })
+  it('shows a failed first load with Try again, then opens in My Drive', async () => {
+    state.failTop = true
+    await setup()
+    await chooseAccount()
+    await userEvent.click(screen.getByRole('button', { name: /^Select folder location/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Google Drive is unavailable')
+    state.failTop = false
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByRole('button', { name: 'Open Team' })).toBeInTheDocument()
   })
 })

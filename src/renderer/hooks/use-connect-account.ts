@@ -41,8 +41,12 @@ export function useConnectAccount({
   const connecting = loginWindow.pending ? launchedSlug : null
   const connectingRef = useRef(connecting)
   connectingRef.current = connecting
+  // Only a callback carrying the connection this attempt started completes it; a late one finds it cleared.
+  const connectionIdRef = useRef<string | null>(null)
+  useEffect(() => () => { connectionIdRef.current = null }, [])
 
   const cancel = useCallback(() => {
+    connectionIdRef.current = null
     closeLoginWindow()
     setError(null)
   }, [closeLoginWindow])
@@ -52,6 +56,7 @@ export function useConnectAccount({
 
     const handleComplete = (success: boolean, accountId?: string, toolkit?: string) => {
       const resolvedToolkit = toolkit || connectingRef.current
+      connectionIdRef.current = null
       closeLoginWindow()
       if (success) {
         invalidateAccounts()
@@ -65,7 +70,7 @@ export function useConnectAccount({
 
     if (window.electronAPI) {
       const unsubscribe = window.electronAPI.onOAuthCallback(async (params) => {
-        if (params.toolkit && params.toolkit !== connectingRef.current) return
+        if (!params.connectionId || params.connectionId !== connectionIdRef.current) return
         if (params.error || params.status === 'failed') {
           handleComplete(false)
           return
@@ -80,13 +85,11 @@ export function useConnectAccount({
                 toolkit: params.toolkit,
               }),
             })
-            if (res.ok) {
-              const data = await res.json()
-              handleComplete(true, data.account?.id, params.toolkit)
-            } else {
-              handleComplete(false)
-            }
+            const data = res.ok ? await res.json() : undefined
+            if (params.connectionId !== connectionIdRef.current) return
+            handleComplete(res.ok, data?.account?.id, params.toolkit)
           } catch {
+            if (params.connectionId !== connectionIdRef.current) return
             handleComplete(false)
           }
         } else {
@@ -97,6 +100,7 @@ export function useConnectAccount({
     }
 
     const handleMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return
       if (event.data?.type === 'oauth-callback') {
         if (event.data.toolkitSlug && event.data.toolkitSlug !== connectingRef.current) return
         handleComplete(event.data.success, event.data.accountId, event.data.toolkitSlug)
@@ -114,15 +118,20 @@ export function useConnectAccount({
     }
     setLaunchedSlug(slug)
     setError(null)
+    connectionIdRef.current = null
     try {
-      await loginWindow.open(async () => {
+      let connectionId: string | null = null
+      const outcome = await loginWindow.open(async () => {
         const result = await initiateConnection.mutateAsync({
           providerSlug: slug,
           electron: !!window.electronAPI,
           location,
         })
-        return 'redirectUrl' in result ? result.redirectUrl : null
+        if (!('redirectUrl' in result)) return null
+        connectionId = result.connectionId
+        return result.redirectUrl
       })
+      if (outcome === 'waiting') connectionIdRef.current = connectionId
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to connect')
     }
