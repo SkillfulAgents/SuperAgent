@@ -3,6 +3,7 @@ import type { SQLiteTable } from 'drizzle-orm/sqlite-core'
 import {
   proxyAuditLog,
   proxyTokens,
+  platformAgentKeys,
   agentConnectedAccounts,
   scheduledTasks,
   notifications,
@@ -58,6 +59,7 @@ function factoryResetTables(): SQLiteTable[] { return [
   // Leaf / no-FK-to-reset-table audit + attribution rows
   proxyAuditLog,
   proxyTokens,
+  platformAgentKeys,
   mcpAuditLog,
   messageAuthor,
   agentAcl,

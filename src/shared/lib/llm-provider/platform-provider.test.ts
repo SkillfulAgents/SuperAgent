@@ -3,24 +3,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // Stub everything with side effects: attribution pulls in the DB, auth-service
 // reads settings storage, config resolves the proxy URL from the environment.
 const currentAttribution = vi.fn()
-const forAgentAttribution = vi.fn()
-const requiresActingMember = vi.fn(() => false)
-const captureMessage = vi.fn()
 const platformAuthStatus = vi.fn()
 const platformAccessToken = vi.fn((): string | null => 'platform-token')
 const fetchActingAccount = vi.fn()
 vi.mock('@shared/lib/platform-attribution', () => ({
   attribution: {
     current: () => currentAttribution(),
-    forAgent: (slug: string) => forAgentAttribution(slug),
-    requiresActingMember: () => requiresActingMember(),
   },
-}))
-vi.mock('@shared/lib/error-reporting', () => ({
-  captureMessage: (...args: unknown[]) => captureMessage(...args),
 }))
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAccessToken: () => platformAccessToken(),
+  getPlatformAppKey: () => platformAccessToken() ?? undefined,
   getPlatformAuthStatus: () => platformAuthStatus(),
   getStoredPlatformMemberId: () => null,
   fetchActingPlatformAccount: () => fetchActingAccount(),
@@ -33,21 +26,22 @@ vi.mock('../config/settings', () => ({
   getSettings: () => ({}),
 }))
 vi.mock('@anthropic-ai/sdk', () => ({ default: class {} }))
+const containerToken = vi.fn()
+vi.mock('../platform-attribution/container-token', () => ({
+  getPlatformContainerToken: (agentId?: string) => containerToken(agentId),
+}))
 
 import { PlatformLlmProvider, sanitizeAgentName } from './platform-provider'
 import { platformPlanCache } from './platform-plan-cache'
-import { getPlatformContainerToken } from '../platform-attribution/container-token'
 
 const provider = new PlatformLlmProvider()
 
 beforeEach(() => {
   currentAttribution.mockReset().mockReturnValue(null)
-  forAgentAttribution.mockReset().mockReturnValue(null)
-  requiresActingMember.mockReset().mockReturnValue(false)
-  captureMessage.mockReset()
   platformAccessToken.mockReset().mockReturnValue('platform-token')
   platformAuthStatus.mockReturnValue({ connected: true, orgId: 'org_123' })
   fetchActingAccount.mockReset()
+  containerToken.mockReset().mockResolvedValue('plat_ag_agent')
   platformPlanCache.clear()
 })
 
@@ -130,42 +124,16 @@ describe('getModelAvailability', () => {
   })
 })
 
-describe('getContainerEnvVars auth token (cold start)', () => {
-  it('does not carry an ambient token into a disconnected container', async () => {
-    platformAccessToken.mockReturnValue(null)
-    currentAttribution.mockReturnValue({ bearerToken: () => 'old-token::member' })
-    expect(await getPlatformContainerToken('abc123')).toBeUndefined()
-    expect(forAgentAttribution).not.toHaveBeenCalled()
-    expect(currentAttribution).not.toHaveBeenCalled()
+describe('getContainerEnvVars auth token', () => {
+  it("bakes the agent's limited key", async () => {
+    const env = await provider.getContainerEnvVars({ id: 'abc123', name: 'My Agent' })
+    expect(containerToken).toHaveBeenCalledWith('abc123')
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('plat_ag_agent')
   })
 
-  it('bakes the agent-resolved attribution token when an identity is provided', async () => {
-    forAgentAttribution.mockReturnValue({ bearerToken: () => 'org-jwt::sub_owner' })
-    const env = (await provider.getContainerEnvVars({ id: 'abc123', name: 'My Agent' }))
-    expect(forAgentAttribution).toHaveBeenCalledWith('abc123')
-    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('org-jwt::sub_owner')
-  })
-
-  it('uses the ambient attribution when no identity is provided', async () => {
-    currentAttribution.mockReturnValue({ bearerToken: () => 'org-jwt::sub_ambient' })
-    expect((await provider.getContainerEnvVars()).ANTHROPIC_AUTH_TOKEN).toBe('org-jwt::sub_ambient')
-    expect(forAgentAttribution).not.toHaveBeenCalled()
-  })
-
-  it('reports and falls back to the bare token when an org JWT resolves no member', async () => {
-    requiresActingMember.mockReturnValue(true)
-    const env = (await provider.getContainerEnvVars({ id: 'abc123' }))
-    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('platform-token')
-    expect(captureMessage).toHaveBeenCalledWith(
-      'platform container env built without acting member',
-      expect.objectContaining({ tags: { area: 'platform-attribution', op: 'container.env.no_member' } }),
-    )
-  })
-
-  it('does not report the fallback for an opaque access key', async () => {
-    requiresActingMember.mockReturnValue(false)
-    expect((await provider.getContainerEnvVars({ id: 'abc123' })).ANTHROPIC_AUTH_TOKEN).toBe('platform-token')
-    expect(captureMessage).not.toHaveBeenCalled()
+  it("never falls back to the app's own key", async () => {
+    containerToken.mockResolvedValue(undefined)
+    expect((await provider.getContainerEnvVars({ id: 'abc123' })).ANTHROPIC_AUTH_TOKEN).toBeUndefined()
   })
 })
 
@@ -181,7 +149,7 @@ describe('getContainerEnvVars agent identity', () => {
     const env = (await provider.getContainerEnvVars({ id: 'abc123', name: 'My Agent' }))
     expect(env.SUPERAGENT_AGENT_ID).toBe('abc123')
     expect(env.SUPERAGENT_AGENT_NAME).toBe('My Agent')
-    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('platform-token')
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('plat_ag_agent')
   })
 
   it('omits identity env vars when no identity is provided', async () => {

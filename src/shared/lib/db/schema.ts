@@ -429,6 +429,19 @@ export const proxyTokens = sqliteTable('proxy_tokens', {
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
 })
 
+// Limited platform keys handed to agent containers in place of the app's own
+// platform key. parentHash is the sha256 of the app bearer that minted the key,
+// acting member included, so each member keeps one key per agent and a changed
+// app key mints a new one.
+export const platformAgentKeys = sqliteTable('platform_agent_keys', {
+  agentSlug: text('agent_slug').notNull(),
+  parentHash: text('parent_hash').notNull(),
+  key: text('key').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.agentSlug, table.parentHash] }),
+}))
+
 // Proxy audit log - structured log of all proxied requests
 export const proxyAuditLog = sqliteTable('proxy_audit_log', {
   id: text('id').primaryKey(),
