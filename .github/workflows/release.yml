@@ -503,3 +503,18 @@ jobs:
             echo "::error::Feed metadata upload failed (${failed[*]}); clients on the R2 feed will not see this release."
             exit 1
           fi
+
+      # Differential updates need the feed to answer one request for many byte
+      # ranges with 206 multipart/byteranges; otherwise every update silently
+      # downloads the whole file, as every macOS update did until gamut-releases#2.
+      # Last, so it never holds a release back; a failure still fails the job.
+      - name: Check the feed serves differential updates
+        if: ${{ env.CLOUDFLARE_ACCOUNT_ID != '' }}
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          status=0
+          for name in "Gamut-${VERSION}-arm64.zip" "Gamut-${VERSION}-Setup.exe"; do
+            node scripts/check-feed-ranges.mjs "https://updates.gamutagents.com/$name" "./release-artifacts/$name" || status=1
+          done
+          exit "$status"
