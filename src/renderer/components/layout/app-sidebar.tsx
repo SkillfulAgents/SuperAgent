@@ -147,9 +147,7 @@ import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import { useRememberedFlag } from '@renderer/hooks/use-remembered-flag'
 import { useSidebarFileDrop } from './use-sidebar-file-drop'
 
-/** Set once Explore has been opened, which retires its "New" badge. */
-const EXPLORE_SEEN_KEY = 'explore.seen'
-/** Same for Team Brain: the badge invites a first look, then goes away. */
+/** Set once Team Brain has been opened, which retires its "New" badge: the badge invites a first look, then goes away. */
 const TEAM_BRAIN_SEEN_KEY = 'team-brain.seen'
 
 function VersionBehindDot({
@@ -874,15 +872,6 @@ function TeamBrainMenuButton() {
     <>
       <Brain className="h-4 w-4" />
       <span>Team Brain</span>
-      {brainAgent && (
-        <AgentAvatar
-          agent={brainAgent}
-          state={agentAvatarState(brainAgent, undefined)}
-          size={AGENT_AVATAR_SIZE}
-          followPointer={SIDEBAR_FOLLOW_REGION}
-          className="ml-auto"
-        />
-      )}
       {!seen && !visited && !brainAgent && (
         <span className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-white">
           New
@@ -1099,12 +1088,6 @@ export function AppSidebar() {
   const todoBoardEnabled = useExperiment('todo-board')
   const teamBrainEnabled = useExperiment('team-brain')
   const exploreVisited = pathname === '/explore' || pathname.startsWith('/explore/')
-  // Sticky across reloads, and read once at mount so the badge doesn't vanish
-  // out from under the pointer mid-click.
-  const [seenExplore] = useState(() => localStorage.getItem(EXPLORE_SEEN_KEY) === '1')
-  useEffect(() => {
-    if (exploreVisited) localStorage.setItem(EXPLORE_SEEN_KEY, '1')
-  }, [exploreVisited])
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
   const { data: runtimeStatus } = useRuntimeStatus()
@@ -1790,13 +1773,6 @@ export function AppSidebar() {
                       <AppLink to="/explore">
                         <Compass className="h-4 w-4" />
                         <span>Discover New Agents</span>
-                        {/* Retires itself the first time the page is opened —
-                            a badge that says "New" forever says nothing. */}
-                        {!seenExplore && (
-                          <span className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-white">
-                            New
-                          </span>
-                        )}
                       </AppLink>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
