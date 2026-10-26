@@ -21,7 +21,7 @@ import {
 import { updateScheduledTaskInputSchema, type ScheduledTaskUpdateInput } from '@shared/lib/services/automation-update-schema'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
 import { getFrequencyWarning, getScheduleCountWarning, validateScheduleExpression } from '@shared/lib/services/schedule-parser'
-import { errorMessage, parseToolInput, rejected, resolved, sessionOwnerOf } from './host-tool-result'
+import { agentModelChoice, errorMessage, parseToolInput, rejected, resolved, sessionOwnerOf } from './host-tool-result'
 
 interface ScheduleTaskInput {
   scheduleType: 'at' | 'cron'
@@ -55,6 +55,7 @@ export async function scheduleTask({ agentSlug, sessionId, toolUseId, input: raw
   let taskId: string
   let timezone: string | undefined
   try {
+    const modelChoice = await agentModelChoice(agentSlug, input.model)
     // An explicit timezone from the agent wins over the agent owner's.
     timezone = input.timezone || (await resolveTimezoneForAgent(agentSlug))
     taskId = await createScheduledTask({
@@ -66,7 +67,7 @@ export async function scheduleTask({ agentSlug, sessionId, toolUseId, input: raw
       createdBySessionId: sessionId,
       createdByUserId: await sessionOwnerOf(agentSlug, sessionId),
       timezone,
-      model: input.model,
+      ...modelChoice,
       effort: input.effort,
       speed: input.speed,
     })

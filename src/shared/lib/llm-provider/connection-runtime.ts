@@ -36,6 +36,30 @@ export async function resolveConnectionRuntimeInherit(
   return { ...knobs, model: resolved.model, llmProviderId: resolved.llmProviderId }
 }
 
+/**
+ * Bind a model an agent names for an automation (a catalog id or a family
+ * alias such as `sonnet`) to the connection the agent runs on. The name is
+ * saved as given, so a family alias keeps following the family's latest model.
+ * Throws with the valid ids when the connection has no such model, so the
+ * agent can retry instead of the automation silently running on a default.
+ */
+export async function bindAgentModelChoice(
+  model: string | undefined,
+  agent: Partial<AgentPreferences> | null | undefined
+): Promise<{ model?: string; llmProviderId?: string }> {
+  if (!model || !getSettings().llmDefault) return { model }
+  const { connection } = await resolveSelectionHierarchy(
+    storedSelection(agent?.defaultModel, agent?.defaultLlmProviderId)
+  )
+  const catalog = connectionCatalog(connection)
+  const picked = resolveSelection({ llmProviderId: connection.id, model }, [{ id: connection.id, catalog }])
+  if (!picked) {
+    const ids = catalog.map((m) => m.id)
+    throw new Error(`Unknown model "${model}". Models available to this agent: ${ids.join(', ')}. Leave out model to use the agent's default.`)
+  }
+  return { model, llmProviderId: connection.id }
+}
+
 /** Enforce selection access only for an explicit new binding. An attached
  * personal connection can be continued by every existing session collaborator.
  */
