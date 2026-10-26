@@ -14,7 +14,8 @@ vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode:
 vi.mock('@renderer/lib/api', () => ({ apiFetch: () => state.list() }))
 import { VolumeSettingsDialog } from './volume-settings-dialog'
 
-afterEach(cleanup)
+const listDrives = state.list
+afterEach(() => { cleanup(); state.list = listDrives })
 async function open(save = vi.fn()) {
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
     <VolumeSettingsDialog onSave={save} onClose={vi.fn()} />
@@ -51,6 +52,32 @@ describe('Gamut drive setup', () => {
     await userEvent.click(screen.getByLabelText('Drive'))
     await userEvent.click(await screen.findByRole('option', { name: 'Q4 Plans' }))
     expect(screen.getByLabelText('Name')).toHaveValue('Mine')
+  })
+
+  it('picks the drive a failed save created, so trying again adds it', async () => {
+    const created = { id: 'vol_00000000-0000-0000-0000-000000000002', name: 'Launch' }
+    const save = vi.fn().mockImplementationOnce(async () => {
+      state.list = async () => Response.json({ folders: [{ id: 'vol_00000000-0000-0000-0000-000000000001', name: 'Q4 Plans' }, created] })
+      throw new Error('Drive could not be loaded')
+    })
+    await open(save)
+    await userEvent.click(await screen.findByRole('option', { name: 'New drive' }))
+    await userEvent.type(screen.getByLabelText('Name'), 'Launch')
+    await userEvent.click(screen.getByRole('button', { name: 'Create drive' }))
+    expect(await screen.findByText('“Launch” was created and is picked now.')).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('Drive could not be loaded')
+    await userEvent.click(screen.getByRole('button', { name: 'Add drive' }))
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'Launch', source: { type: 'platform', config: { volumeId: created.id } } }))
+  })
+
+  it('leaves the pick alone when the name was already taken', async () => {
+    const save = vi.fn().mockRejectedValueOnce(new Error('A Gamut drive with this name exists'))
+    await open(save)
+    await userEvent.click(await screen.findByRole('option', { name: 'New drive' }))
+    await userEvent.type(screen.getByLabelText('Name'), 'Q4 Plans')
+    await userEvent.click(screen.getByRole('button', { name: 'Create drive' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('A Gamut drive with this name exists')
+    expect(screen.getByRole('button', { name: 'Create drive' })).toBeInTheDocument()
   })
 
   it('shows why drives cannot load and offers a retry', async () => {

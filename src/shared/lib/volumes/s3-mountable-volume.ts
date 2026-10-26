@@ -5,7 +5,7 @@ import { AbortMultipartUploadCommand, CompleteMultipartUploadCommand, CopyObject
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { writeProxyAuditEntry } from '@shared/lib/proxy/audit'
 import { BaseMountableVolume, type VolumeEntry, type VolumeFile } from './base-mountable-volume'
-import { S3VolumeClient, sealedS3Keys, type S3KeySource } from './s3-client'
+import { S3VolumeClient, sealedS3Access, type S3Access } from './s3-client'
 import type { S3Location, S3VolumeConfig } from './s3-schema'
 import { RemoteListingCache } from './remote-listing-cache'
 import { RemoteHealthCache } from './remote-health-cache'
@@ -42,26 +42,43 @@ function mutate<T>(namespace: string, paths: string[], operation: () => Promise<
   })
 }
 
+interface OpenedS3 { client: S3VolumeClient; location: S3Location; recheck: S3Access['recheck'] }
+
 /** S3 directories are prefixes; a zero-byte trailing-slash object preserves an
  * empty directory. Reads use fresh ETags, writes use conditional publication.
  * Credentials and direct S3 traffic stay on the host. */
-export abstract class S3StorageVolume<C extends S3Location> extends BaseMountableVolume<C> {
+export abstract class S3StorageVolume<C> extends BaseMountableVolume<C> {
   readonly cacheMode = 'remote'
-  private readonly client: S3VolumeClient
-  constructor(id: string, name: string, config: C, keys: S3KeySource, private readonly agentSlug?: string) {
+  private opening?: Promise<void>
+  private opened?: OpenedS3
+  constructor(id: string, name: string, config: C, private readonly access: () => S3Access | Promise<S3Access>, private readonly agentSlug?: string) {
     super(id, name, config)
-    this.client = new S3VolumeClient(config, keys)
   }
-  private get Bucket(): string { return this.config.bucket }
+  /** Every operation opens the volume first, once per volume: the source decides there whether the
+   * caller may use it and where it lives. Cached views are shared across callers, and nothing below
+   * reaches them, or S3, before this succeeds. */
+  private async open(): Promise<void> {
+    await (this.opening ??= (async () => {
+      const access = await this.access()
+      this.opened = { client: new S3VolumeClient(access), location: access.location, recheck: access.recheck }
+    })())
+  }
+  private get s3(): OpenedS3 {
+    if (!this.opened) throw new Error('S3 volume used before it was opened')
+    return this.opened
+  }
+  private get client(): S3VolumeClient { return this.s3.client }
+  private get Bucket(): string { return this.s3.location.bucket }
   private key(relative: string, mutate = false): string {
     if ((mutate && !relative) || (relative && relative.split('/').some(part => !representable(part)))) throw new WorkspaceFileError('invalid-path')
-    const key = `${this.config.prefix ? `${this.config.prefix}/` : ''}${relative}`
+    const { prefix } = this.s3.location
+    const key = `${prefix ? `${prefix}/` : ''}${relative}`
     if (Buffer.byteLength(key) > 1024) throw new WorkspaceFileError('invalid-path', 'S3 object keys cannot exceed 1,024 bytes')
     return key
   }
   private prefix(relative: string): string { return relative ? `${this.key(relative)}/` : this.key('') }
   private cacheKey(relative: string): string { return JSON.stringify([this.client.cacheKey, this.key(relative)]) }
-  private uploadKey(relative: string): string { return JSON.stringify([this.type, this.id, this.key(relative)]) }
+  private uploadKey(relative: string): string { return JSON.stringify([this.type, this.id, relative]) }
   private async head(key: string): Promise<HeadObjectCommandOutput | null> {
     try { return await this.client.send(new HeadObjectCommand({ Bucket: this.Bucket, Key: key }), { read: true }) }
     catch (error) { if (missing(error)) return null; throw error }
@@ -95,7 +112,7 @@ export abstract class S3StorageVolume<C extends S3Location> extends BaseMountabl
     return !!relative && listings.cached(this.cacheKey(parentOf(relative)))?.some(entry => entry.name === filename(relative)) === false
   }
   async stat(relative: string): Promise<VolumeEntry> {
-    await this.client.authorize()
+    await this.open()
     if (this.knownAbsent(relative)) throw new WorkspaceFileError('not-found')
     const cached = listings.cached(this.cacheKey(parentOf(relative)))?.find(entry => entry.name === filename(relative))
     if (relative && cached?.kind === 'directory') return cached
@@ -103,8 +120,8 @@ export abstract class S3StorageVolume<C extends S3Location> extends BaseMountabl
     return this.freshStat(relative)
   }
   override async health(): Promise<VolumeEntry> {
-    await this.client.authorize()
-    return health.check(this.client.cacheKey, this.config.prefix, 0, () => this.freshStat(''))
+    await this.open()
+    return health.check(this.client.cacheKey, this.s3.location.prefix, 0, () => this.freshStat(''))
   }
   private async listFresh(relative: string): Promise<VolumeEntry[]> {
     const Prefix = this.prefix(relative)
@@ -134,12 +151,13 @@ export abstract class S3StorageVolume<C extends S3Location> extends BaseMountabl
     return [...entries.values()]
   }
   async list(relative: string): Promise<VolumeEntry[]> {
+    await this.open()
     this.key(relative)
-    await this.client.authorize()
     return listings.list(this.client.namespace, this.cacheKey(relative), () => this.listFresh(relative))
   }
   async read(relative: string): Promise<VolumeFile> {
     if (!relative) throw new WorkspaceFileError('not-a-file')
+    await this.open()
     const key = this.key(relative)
     const object = await this.head(key)
     if (!object) { if (await this.directoryExists(relative)) throw new WorkspaceFileError('not-a-file'); throw new WorkspaceFileError('not-found') }
@@ -179,7 +197,7 @@ export abstract class S3StorageVolume<C extends S3Location> extends BaseMountabl
    * since its outcome in S3 may be unknown. */
   private async change<T>(paths: string[], operation: () => Promise<T>, settled?: () => [string, VolumeEntry | null][]): Promise<T> {
     return mutate(this.client.namespace, paths.map(relative => this.key(relative)), async () => {
-      await this.client.authorize()
+      await this.s3.recheck()
       const keep = new Set(settled ? paths.map(relative => this.cacheKey(parentOf(relative))) : [])
       this.invalidate(paths, keep)
       let ok = false
@@ -205,6 +223,7 @@ export abstract class S3StorageVolume<C extends S3Location> extends BaseMountabl
     }
   }
   async write(relative: string, body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<void> {
+    await this.open()
     this.key(relative, true)
     return guardedUpload(this.agentSlug, this.uploadKey(relative), body, signal, () => this.audit('PUT', relative, async () => {
       const Key = this.key(relative)
@@ -260,6 +279,7 @@ export abstract class S3StorageVolume<C extends S3Location> extends BaseMountabl
     }))
   }
   async mkdir(relative: string): Promise<void> {
+    await this.open()
     const Key = `${this.key(relative, true)}/`
     await this.audit('MKCOL', relative, () => this.change([relative], async () => {
       await this.parent(relative)
@@ -282,6 +302,7 @@ export abstract class S3StorageVolume<C extends S3Location> extends BaseMountabl
     if (listing.Contents?.some(object => object.Size)) throw new WorkspaceFileError('not-accessible', 'This folder marker contains data and cannot be deleted as a folder.')
   }
   async delete(relative: string): Promise<void> {
+    await this.open()
     const key = this.key(relative, true)
     await guardDelete(this.agentSlug, this.uploadKey(relative))
     await this.audit('DELETE', relative, () => this.change([relative], async () => {
@@ -325,6 +346,7 @@ export abstract class S3StorageVolume<C extends S3Location> extends BaseMountabl
     }
   }
   async move(from: string, to: string): Promise<void> {
+    await this.open()
     const source = this.key(from, true), target = this.key(to, true)
     await this.audit('MOVE', from, () => this.change([from, to], async () => {
       const entry = await this.freshStat(from)
@@ -365,7 +387,7 @@ export abstract class S3StorageVolume<C extends S3Location> extends BaseMountabl
 export class S3MountableVolume extends S3StorageVolume<S3VolumeConfig> {
   readonly type = 's3'
   constructor(id: string, name: string, config: S3VolumeConfig, agentSlug?: string) {
-    super(id, name, config, sealedS3Keys(config), agentSlug)
+    super(id, name, config, () => sealedS3Access(config), agentSlug)
   }
   get sourceLabel(): string { return `S3 · ${this.config.bucket}${this.config.prefix ? `/${this.config.prefix}` : ''}` }
 }

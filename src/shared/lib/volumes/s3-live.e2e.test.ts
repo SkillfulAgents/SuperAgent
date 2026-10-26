@@ -14,7 +14,7 @@ import { serve, type ServerType } from '@hono/node-server'
 import { AbortMultipartUploadCommand, DeleteObjectsCommand, GetObjectCommand, ListMultipartUploadsCommand, ListObjectsV2Command, PutObjectCommand } from '@aws-sdk/client-s3'
 import { s3InputConfigSchema, type S3InputConfig } from './s3-schema'
 import { S3MountableVolume, S3_PART_BYTES } from './s3-mountable-volume'
-import { S3VolumeClient, sealedS3Keys } from './s3-client'
+import { S3VolumeClient, sealedS3Access } from './s3-client'
 import { validateS3Volume } from './s3-validation'
 
 let volume: S3MountableVolume
@@ -47,7 +47,7 @@ describe.skipIf(!enabled)('live S3 bucket and mounted filesystem', () => {
     const input = s3InputConfigSchema.parse(JSON.parse(readFileSync(process.env.S3_TEST_CONFIG!, 'utf8')))
     if (!input.prefix) throw new Error('Live testing requires an explicit test prefix')
     config = { ...input, prefix: `${input.prefix}/run-${randomUUID()}` }
-    client = new S3VolumeClient(config, sealedS3Keys(config))
+    client = new S3VolumeClient(sealedS3Access(config))
     volume = new S3MountableVolume(randomUUID(), 'S3 Test', config)
     console.log('Live S3 test prefix:', config.prefix)
   })

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Plus } from 'lucide-react'
 import { useVolumeFolders } from '@renderer/hooks/use-volume-folders'
 import { Button } from '@renderer/components/ui/button'
@@ -20,14 +20,28 @@ function PlatformVolumeSetup({ initialDetails, onSubmit, onBack, onCancel, isSav
   const drives = useVolumeFolders({ type: 'platform', label: 'Gamut drive' }, {}, true)
   const [driveId, setDriveId] = useState('')
   const [details, setDetails] = useState(initialDetails)
-  // A save can fail after the drive was created; refresh so it can be picked.
+  const [created, setCreated] = useState<string | null>(null)
+  // A save can fail after the drive was created. Refresh, and pick a drive that appeared under the
+  // name just sent, so trying again adds it instead of creating another.
+  const creating = useRef<{ name: string; known: Set<string> } | null>(null)
   const refetchDrives = drives.refetch
-  useEffect(() => { if (error) void refetchDrives() }, [error, refetchDrives])
+  useEffect(() => {
+    if (!error) return
+    void refetchDrives().then(({ data }) => {
+      const sent = creating.current
+      creating.current = null
+      const drive = sent && data?.folders.find(item => item.name === sent.name && !sent.known.has(item.id))
+      if (!drive) return
+      setDriveId(current => current === NEW ? drive.id : current)
+      setCreated(drive.name)
+    })
+  }, [error, refetchDrives])
 
   const selectDrive = (id: string) => {
     if (!id || id === driveId) return
     const previousName = drives.data?.folders.find(drive => drive.id === driveId)?.name
     setDriveId(id)
+    setCreated(null)
     const name = drives.data?.folders.find(drive => drive.id === id)?.name
     // A typed name stays; a name filled from the previous pick follows the new one (empty for a new drive).
     setDetails(current => !current.name || current.name === previousName ? { ...current, name: name ?? '' } : current)
@@ -35,7 +49,9 @@ function PlatformVolumeSetup({ initialDetails, onSubmit, onBack, onCancel, isSav
   }
 
   const submit = () => {
-    if (driveId) void onSubmit(driveId === NEW ? { name: details.name } : { volumeId: driveId }, details)
+    if (!driveId) return
+    creating.current = driveId === NEW ? { name: details.name.trim(), known: new Set(drives.data?.folders.map(drive => drive.id)) } : null
+    void onSubmit(driveId === NEW ? { name: details.name } : { volumeId: driveId }, details)
   }
 
   return <>
@@ -54,6 +70,7 @@ function PlatformVolumeSetup({ initialDetails, onSubmit, onBack, onCancel, isSav
         </Select>
         {drives.error && <div><p role="alert" className="text-sm text-destructive">{drives.error.message}</p><Button type="button" variant="ghost" size="sm" onClick={() => { void drives.refetch() }}>Try again</Button></div>}
         {driveId === NEW && <p className="text-xs text-muted-foreground">Everyone in your org can add this drive to their agents.</p>}
+        {created && driveId !== NEW && <p className="text-xs text-muted-foreground">“{created}” was created and is picked now.</p>}
       </div>
       {driveId && <VolumeDetailsFields value={details} onChange={value => { setDetails(value); clearError() }} disabled={isSaving}>{null}</VolumeDetailsFields>}
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
