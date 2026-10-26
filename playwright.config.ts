@@ -18,6 +18,8 @@ const configuredWorkers = process.env.PLAYWRIGHT_WORKERS
 
 const webTestIgnore = [
   '**/auth/**',
+  // Desktop runtime tests have their own app launcher and config.
+  '**/electron/**',
   // Real-container probes with their own config (playwright.live-mcp.config.ts).
   '**/live/**',
   // Recorded walkthroughs, not regression tests — they throttle the network and
@@ -82,7 +84,7 @@ export default defineConfig({
   // Auth tests use a separate config (playwright.auth.config.ts); e2e/live
   // holds probes against the REAL container (playwright.live-mcp.config.ts
   // and the .mjs harnesses), which the mock host cannot satisfy.
-  testIgnore: ['**/auth/**', '**/live/**'],
+  testIgnore: ['**/auth/**', '**/live/**', '**/electron/**'],
   outputDir: playwrightOutputDir,
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
