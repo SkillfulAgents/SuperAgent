@@ -1,25 +1,24 @@
 {
   "storyId": "agent-chat",
   "passed": true,
-  "reason": "Successfully tested agent communication by sending a math question and verifying the response contains the correct answer.",
+  "reason": "Successfully tested agent message sending and response verification - agent received message and responded with correct arithmetic answer",
   "steps": [
-    "Navigated to http://localhost:47891 - Page loaded successfully with \"Gamut\" application",
-    "Found agent \"QA-20261026-011125-gbx9\" in sidebar and clicked to open - Agent page loaded with status \"idle\"",
-    "Verified agent status is \"idle\" - Confirmed via status indicator showing \"idle\" in top-right corner of first screenshot",
-    "Entered message \"Hello! What is 2+2?\" in message input field - Message successfully typed into input",
-    "Clicked \"Send message\" button - Message sent successfully, new session created with title \"Simple Math Question: 2+2\"",
-    "Waited for agent response - Agent processed the message quickly (status changed from \"working\" to \"idle\")",
-    "Verified response contains \"4\" and took screenshot - Final screenshot shows agent response: \"2 + 2 = 4.\" confirming the answer is correct"
+    "Step 1: Navigated to http://localhost:47891 — Successfully loaded the Gamut application with agent sidebar visible",
+    "Step 2: Found and clicked the \"QA-20261026-184231-4cwp\" agent in the sidebar — Agent page opened successfully with agent name and status displayed",
+    "Step 3: Verified agent status is \"running\" or \"idle\" — Confirmed agent status is \"idle\" (shown in top-right corner)",
+    "Step 4: Sent message \"Hello! What is 2+2?\" — Message successfully typed into input field and sent via Send button, page navigated to new session view",
+    "Step 5: Waited for response — Agent processed request and provided response within seconds (well under 3-minute timeout)",
+    "Step 6: Verified response mentions \"4\" and took screenshot — Agent response \"2 + 2 = 4.\" clearly contains the expected number \"4\", screenshot captured showing complete conversation with agent response visible"
   ],
   "bugs": [],
-  "durationMs": 142790,
-  "sessionId": "14dcd52a-c06f-4b77-b1a7-31cd2e245703",
+  "durationMs": 56648,
+  "sessionId": "640f015d-e963-4733-b8da-12337adb5916",
   "cost": {
-    "inputTokens": 452,
-    "outputTokens": 10777,
-    "cacheCreationTokens": 125367,
-    "cacheReadTokens": 1301771,
+    "inputTokens": 320,
+    "outputTokens": 9495,
+    "cacheCreationTokens": 119037,
+    "cacheReadTokens": 862033,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.341223
+    "totalCostUsd": 0.282795
   }
 }
