@@ -331,3 +331,44 @@ describe('finalizeAutomationStatus guards', () => {
     expect(fs.readFileSync(metadataPath('agent'), 'utf-8')).toBe(corrupt)
   })
 })
+
+describe('slash commands stored by automation runs', () => {
+  const commands = [{ name: 'deploy', description: 'Ship it', argumentHint: '' }]
+
+  it('drops them on the next write and keeps them for user sessions and promoted runs', async () => {
+    const { registerSession, readSessionMetadata } = await importService()
+    makeAgent('agent')
+    fs.writeFileSync(metadataPath('agent'), JSON.stringify({
+      'webhook-run': { name: 'Webhook run', isWebhookExecution: true, slashCommands: commands },
+      'scheduled-run': { name: 'Scheduled run', isScheduledExecution: true, slashCommands: commands },
+      'promoted-run': { name: 'Promoted run', isWebhookExecution: true, promotedToInteractive: true, slashCommands: commands },
+      'user-chat': { name: 'User chat', slashCommands: commands },
+    }, null, 2))
+
+    await registerSession(createLocalSessionStore('agent'), 'new-chat', 'New chat')
+
+    const meta = await readSessionMetadata(createLocalSessionStore('agent'))
+    expect(meta['webhook-run']).toEqual({ name: 'Webhook run', isWebhookExecution: true })
+    expect(meta['scheduled-run']).toEqual({ name: 'Scheduled run', isScheduledExecution: true })
+    expect(meta['promoted-run'].slashCommands).toEqual(commands)
+    expect(meta['user-chat'].slashCommands).toEqual(commands)
+    expect(meta['new-chat'].name).toBe('New chat')
+  })
+
+  it('writes a no-op update when it has copies to drop, and skips it once there are none', async () => {
+    const { updateSessionMetadata } = await importService()
+    makeAgent('agent')
+    fs.writeFileSync(metadataPath('agent'), JSON.stringify({
+      'webhook-run': { name: 'Webhook run', isWebhookExecution: true, slashCommands: commands },
+    }, null, 2))
+
+    await updateSessionMetadata(createLocalSessionStore('agent'), 'webhook-run', { name: 'Webhook run' })
+    const cleaned = fs.readFileSync(metadataPath('agent'), 'utf-8')
+    expect(JSON.parse(cleaned)['webhook-run'].slashCommands).toBeUndefined()
+
+    const mtime = fs.statSync(metadataPath('agent')).mtimeMs
+    await updateSessionMetadata(createLocalSessionStore('agent'), 'webhook-run', { name: 'Webhook run' })
+    expect(fs.statSync(metadataPath('agent')).mtimeMs).toBe(mtime)
+    expect(fs.readFileSync(metadataPath('agent'), 'utf-8')).toBe(cleaned)
+  })
+})

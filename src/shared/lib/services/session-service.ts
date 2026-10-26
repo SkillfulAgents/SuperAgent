@@ -204,8 +204,22 @@ async function mutateSessionMetadata(
     // given back to `update` means "nothing changed".
     const metadata = { ...(current ?? {}) } as SessionMetadataMap
     const changed = mutator(metadata)
-    return changed === false ? null : (metadata as ConfigDoc<'sessionMetadata'>)
+    const dropped = dropAutomationSlashCommands(metadata)
+    return changed === false && !dropped ? null : (metadata as ConfigDoc<'sessionMetadata'>)
   })
+}
+
+/** Earlier builds copied the agent's whole slash-command list into every automation run's entry. */
+function dropAutomationSlashCommands(metadata: SessionMetadataMap): boolean {
+  let dropped = false
+  for (const [sessionId, entry] of Object.entries(metadata)) {
+    if (!entry.slashCommands || !isHiddenAutomatedSession(entry)) continue
+    const rest = { ...entry }
+    delete rest.slashCommands
+    metadata[sessionId] = rest
+    dropped = true
+  }
+  return dropped
 }
 
 /**
