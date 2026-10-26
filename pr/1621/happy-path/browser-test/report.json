@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Verified that the QA-20261026-224059-40a5 agent can successfully execute browser actions, navigate to https://example.com, retrieve the page title \"Example Domain\", and report the result.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Successfully loaded the Gamut dashboard with the agent list visible in the sidebar.",
+    "Found and clicked the \"QA-20261026-224059-40a5\" agent link in the sidebar — Successfully opened the agent configuration page.",
+    "Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully submitted to the agent.",
+    "Waited for agent response (monitoring for up to 3 minutes) — Agent responded within approximately 10 seconds with tool execution details (9s execution time, 3 tool calls, 156,015 tokens).",
+    "Verified response mentions \"Example Domain\" — Response successfully confirmed: \"The page title is \\\"Example Domain\\\". The page at https://example.com loaded normally (HTTP 200), and I've closed the browser since that's all you needed.\"",
+    "Captured screenshot showing the complete conversation — Screenshot (page-2026-10-26T22-41-59-325Z.png) shows the user message and the agent's response with the correct page title."
+  ],
+  "bugs": [],
+  "durationMs": 69662,
+  "sessionId": "9d92a7f0-11f0-4f4e-955e-edaf4377aaf9",
+  "cost": {
+    "inputTokens": 344,
+    "outputTokens": 9512,
+    "cacheCreationTokens": 76547,
+    "cacheReadTokens": 992627,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.24285
+  }
+}
