@@ -16,6 +16,7 @@ vi.mock('@renderer/hooks/use-platform-auth', () => ({
 
 vi.mock('@renderer/lib/capabilities', () => ({
   canUseHostFeatures: () => false,
+  offersComputerUseSettings: () => false,
 }))
 
 vi.mock('@renderer/components/connections/connections-list', () => ({

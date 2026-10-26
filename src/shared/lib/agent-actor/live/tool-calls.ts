@@ -20,7 +20,7 @@
  */
 import type { ContainerClient } from '@shared/lib/container/types'
 import { getToolDefinition } from '@shared/lib/tools/registry'
-import { supportsComputerUse } from '@shared/lib/facts/capabilities'
+import { runsHostScripts, supportsComputerUse } from '@shared/lib/facts/capabilities'
 import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { getBlockingUserInputRequestKind } from '@shared/lib/tools/user-input-tools'
 import type { AgentInputRequests } from '@shared/lib/tools/requests/agent-input-requests'
@@ -401,6 +401,10 @@ export class ToolCalls {
       return
     }
     const platform = process.platform
+    if (!runsHostScripts(getServerFacts())) {
+      this.autoReject(toolUse.id, 'Host scripts are not available in the Mac App Store edition, whose sandbox confines what the app runs.')
+      return
+    }
     const supported = VALID_SCRIPT_TYPES[platform]
     if (!supported) {
       this.autoReject(toolUse.id, `Host script execution is not supported on this platform (${platform}). Only macOS and Windows are supported.`)
@@ -450,9 +454,10 @@ export class ToolCalls {
       // permission level, the card and the executor all see that.
       ;({ method, params } = unwrapComputerRun(method, params))
 
-      // macOS and Windows only (the mock E2E runtime drives no machine).
+      // macOS and Windows outside the Mac App Store edition (the mock E2E
+      // runtime drives no machine).
       if (process.env.E2E_MOCK !== 'true' && !supportsComputerUse(getServerFacts())) {
-        this.autoReject(toolUse.id, `Computer use is not supported on this platform (${process.platform}). macOS and Windows are supported.`)
+        this.autoReject(toolUse.id, `Computer use is not available on this machine (${process.platform}). It needs macOS or Windows, and is not in the Mac App Store edition.`)
         return
       }
 

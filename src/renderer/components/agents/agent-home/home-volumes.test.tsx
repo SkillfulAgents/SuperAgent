@@ -30,7 +30,7 @@ vi.mock('@renderer/hooks/use-volume-definitions', () => ({ useSaveVolumeDefiniti
 const { mockCanUseHostFeatures } = vi.hoisted(() => ({
   mockCanUseHostFeatures: vi.fn(() => true),
 }))
-vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: mockCanUseHostFeatures }))
+vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: mockCanUseHostFeatures, usesHostFolderPaths: mockCanUseHostFeatures, agentsRunInAppSandbox: () => false }))
 
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'

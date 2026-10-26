@@ -32,6 +32,23 @@ function onPlatform(platform: NodeJS.Platform): void {
   Object.defineProperty(process, 'platform', { value: platform, configurable: true })
 }
 
+/** Be the Mac App Store build's main process, the way Electron marks it. */
+function inAppSandbox(): void {
+  onPlatform('darwin')
+  Object.defineProperty(process, 'type', { value: 'browser', configurable: true, writable: true })
+  Object.defineProperty(process, 'mas', { value: true, configurable: true, writable: true })
+}
+const ORIGINAL_PROCESS_MARKS = {
+  type: Object.getOwnPropertyDescriptor(process, 'type'),
+  mas: Object.getOwnPropertyDescriptor(process, 'mas'),
+}
+function restoreProcessMarks(): void {
+  for (const [key, descriptor] of Object.entries(ORIGINAL_PROCESS_MARKS)) {
+    if (descriptor) Object.defineProperty(process, key, descriptor)
+    else delete (process as unknown as Record<string, unknown>)[key]
+  }
+}
+
 type Route = (path: string, init?: RequestInit) => Response | Promise<Response>
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
@@ -139,6 +156,7 @@ beforeEach(() => {
 
 afterEach(() => {
   onPlatform(ORIGINAL_PLATFORM)
+  restoreProcessMarks()
   vi.unstubAllEnvs()
   vi.restoreAllMocks()
 })
@@ -444,6 +462,20 @@ describe('ToolCalls', () => {
       }])
     })
 
+    it('rejects every script in the Mac App Store edition, whose sandbox confines them', () => {
+      inAppSandbox()
+      const h = harness()
+
+      h.calls.mainToolUse(use('t_script', 'mcp__user-input__request_script_run', { ...script, scriptType: 'applescript' }))
+
+      expect(h.answered).toEqual([{
+        toolUseId: 't_script',
+        how: 'reject',
+        value: 'Host scripts are not available in the Mac App Store edition, whose sandbox confines what the app runs.',
+      }])
+      expect(h.open('t_script')).toBeNull()
+    })
+
     it('ignores a script request missing its script or type, or not JSON', () => {
       const h = harness()
 
@@ -569,7 +601,22 @@ describe('ToolCalls', () => {
       expect(h.answered).toEqual([{
         toolUseId: 't_cu',
         how: 'reject',
-        value: 'Computer use is not supported on this platform (linux). macOS and Windows are supported.',
+        value: 'Computer use is not available on this machine (linux). It needs macOS or Windows, and is not in the Mac App Store edition.',
+      }])
+      expect(h.open('t_cu')).toBeNull()
+    })
+
+    it('rejects a command in the Mac App Store edition, on macOS', async () => {
+      inAppSandbox()
+      const h = harness()
+
+      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_apps', {}))
+      await settle()
+
+      expect(h.answered).toEqual([{
+        toolUseId: 't_cu',
+        how: 'reject',
+        value: 'Computer use is not available on this machine (darwin). It needs macOS or Windows, and is not in the Mac App Store edition.',
       }])
       expect(h.open('t_cu')).toBeNull()
     })

@@ -7,9 +7,55 @@ import type { ClientFacts, DesktopDistribution, ServerDistribution, ServerFacts 
  * can't disagree.
  */
 
-/** Computer use drives the desktop of the agents' machine, and has a backend for macOS and Windows only. */
+/**
+ * Whether agents can drive the apps on the desktop of their machine. There is a
+ * backend for macOS and Windows only, and the App Sandbox forbids it: a
+ * sandboxed app may not control other apps. The container offers its script
+ * tool on the same answer (`HOST_COMPUTER_USE`).
+ */
 export function supportsComputerUse(server: ServerFacts): boolean {
-  return server.os === 'darwin' || server.os === 'win32'
+  return (server.os === 'darwin' || server.os === 'win32') && !runsInAppSandbox(server)
+}
+
+/**
+ * Whether the server runs the scripts agents ask for on its machine, of the
+ * types `VALID_SCRIPT_TYPES` lists for its OS. A script a sandboxed app runs is
+ * confined to the app's container and may not script other apps.
+ */
+export function runsHostScripts(server: ServerFacts): boolean {
+  return !runsInAppSandbox(server)
+}
+
+/**
+ * Whether the server can use the person's installed Chrome: launch it with a
+ * debugging port as the agents' browser, copy a profile's logins into the
+ * built-in browser, and read Apple Passwords through Chrome's extension. A
+ * sandboxed app can't: macOS strips the arguments of an app it opens, Chrome
+ * aborts when started inside the sandbox, and Chrome's profiles are outside the
+ * app's container. Agents there browse in their built-in browser.
+ */
+export function drivesUserChrome(server: ServerFacts): boolean {
+  return !runsInAppSandbox(server)
+}
+
+/**
+ * Whether the server reads a folder of its machine by path: to mount it into
+ * agents as a local drive, or to copy it in. A sandboxed app reaches only its
+ * container, plus what the person picks in its open panel until it quits.
+ */
+export function readsHostFolders(server: ServerFacts): boolean {
+  return !runsInAppSandbox(server)
+}
+
+/**
+ * Whether the server runs git and gh on its machine: to clone a private
+ * skillset, and to publish skills and agents to one as commits and pull
+ * requests. Public skillsets need neither; they download as an archive. A
+ * sandboxed app can run neither: macOS's own git is a stub that installs the
+ * developer tools, and gh lives outside the app.
+ */
+export function runsHostGit(server: ServerFacts): boolean {
+  return !runsInAppSandbox(server)
 }
 
 /**
@@ -22,6 +68,11 @@ export function supportsComputerUse(server: ServerFacts): boolean {
  *   limit for Lima's sockets;
  * - it can signal only the processes of its own launch, so it can't tell
  *   whether an earlier launch left something running.
+ *
+ * What it withholds from agents has a capability each here, and the desktop
+ * app's own Mac integrations ask theirs in `renderer/lib/capabilities.ts`.
+ * Settings lists all of it for the person (`SandboxNotice`), and the agents'
+ * prompt the agents' part (`appSandbox`); a new one goes in both.
  */
 export function runsInAppSandbox(facts: { distribution: ServerDistribution | DesktopDistribution | null }): boolean {
   return facts.distribution === 'mac-app-store'

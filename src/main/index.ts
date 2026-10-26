@@ -861,6 +861,8 @@ function sanitizeLimit(raw: unknown): number {
 // IPC handler for getting recent files from the OS
 ipcMain.handle('get-recent-files', async (_event, rawLimit: unknown): Promise<{ name: string; path: string; thumbnail?: string }[]> => {
   const limit = sanitizeLimit(rawLimit)
+  // Spotlight in the App Sandbox sees only the app's own container.
+  if (runsInAppSandbox(desktopClientFacts())) return []
   try {
     let files: { name: string; path: string }[]
     if (process.platform === 'win32') {
@@ -992,6 +994,10 @@ ipcMain.handle('open-dashboard-window', (_event, { agentSlug, dashboardSlug }: {
 
 // IPC handler for creating a macOS dock shortcut for a dashboard
 ipcMain.handle('create-dock-shortcut', (_event, { agentSlug, dashboardSlug, dashboardName, iconPng }: { agentSlug: string; dashboardSlug: string; dashboardName: string; iconPng: number[] }) => {
+  // The App Sandbox lets the app write neither ~/Applications nor the Dock's preferences.
+  if (runsInAppSandbox(desktopClientFacts())) {
+    throw new Error('Adding to the Dock is not available in the Mac App Store edition')
+  }
   const iconBuffer = Buffer.from(iconPng)
 
   // Create temp directory for iconset generation
