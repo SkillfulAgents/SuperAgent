@@ -607,8 +607,8 @@ export function checkImageIntegrity(runner: ContainerRunner, image: string): Pro
   })
 }
 
-/** Wall-clock cap for removing an image; a runtime that takes longer has stopped answering. */
-export const IMAGE_REMOVE_TIMEOUT_MS = 60 * 1000
+/** Wall-clock cap for a quick image command (inspect, remove); a runtime that takes longer has stopped answering. */
+export const IMAGE_COMMAND_TIMEOUT_MS = 60 * 1000
 
 /**
  * Best-effort image removal; a failure here just leaves the next pull to
@@ -623,7 +623,7 @@ function removeImage(runner: ContainerRunner, image: string): Promise<boolean> {
     const timer = setTimeout(() => {
       try { proc.kill('SIGKILL') } catch { /* already gone */ }
       resolve(false)
-    }, IMAGE_REMOVE_TIMEOUT_MS)
+    }, IMAGE_COMMAND_TIMEOUT_MS)
     const finish = () => {
       clearTimeout(timer)
       resolve(true)
@@ -708,7 +708,7 @@ async function loadOrPullImage(
     try {
       await loadImageArchive(runner, bundled, onProgress)
       // The archive names the image; make sure the runtime now has it by that name.
-      if (!(await checkImageExists(runner, image, { timeoutMs: IMAGE_REMOVE_TIMEOUT_MS }))) throw new Error(`the archive loaded, but ${image} isn't there`)
+      if (!(await checkImageExists(runner, image, { timeoutMs: IMAGE_COMMAND_TIMEOUT_MS }))) throw new Error(`the archive loaded, but ${image} isn't there`)
       addErrorBreadcrumb({ category: 'container', message: 'Loaded the bundled agent image', data: { image, runner, ms: Date.now() - startedAt } })
       console.log(`[Container] Loaded the bundled agent image ${image} in ${Date.now() - startedAt} ms`)
       return
@@ -727,7 +727,7 @@ async function loadOrPullImage(
         // The runtime answers neither the load nor the removal, so a pull
         // would hang the same way. "Image pull stalled" is what startup
         // retries after recovering the VM (container-host.ts).
-        throw new Error(`Image pull stalled: ${runner} stopped answering while loading the bundled agent image (${detail.slice(-300)}), and removing what the load left timed out after ${IMAGE_REMOVE_TIMEOUT_MS / 1000}s`)
+        throw new Error(`Image pull stalled: ${runner} stopped answering while loading the bundled agent image (${detail.slice(-300)}), and removing what the load left timed out after ${IMAGE_COMMAND_TIMEOUT_MS / 1000}s`)
       }
     }
   }

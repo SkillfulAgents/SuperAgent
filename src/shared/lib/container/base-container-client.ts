@@ -1977,7 +1977,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     // VM has no buildkit, so a build there fails unconditionally ("buildctl
     // not found in $PATH") — otherwise pull from the registry. Lazy import
     // avoids a base-client ↔ client-factory module cycle.
-    const { canBuildImage, buildImage, pullImage, checkImageExists, getAvailableDiskSpace, MIN_IMAGE_DISK_SPACE_BYTES } = await import('./client-factory')
+    const { canBuildImage, buildImage, pullImage, checkImageExists, getAvailableDiskSpace, MIN_IMAGE_DISK_SPACE_BYTES, IMAGE_COMMAND_TIMEOUT_MS } = await import('./client-factory')
     const runner = settings.container.containerRunner as import('./client-factory').ContainerRunner
 
     // Same pre-flight ensureImageReady() runs at startup: creating the image
@@ -2018,8 +2018,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
     } catch (createError) {
       // A concurrent create (e.g. startup's ensureImageReady racing this
       // start path) may have produced the image even though our attempt
-      // failed — re-check before propagating.
-      if (await checkImageExists(runner, image)) {
+      // failed — re-check before propagating. Bounded: a create that failed
+      // because the runtime stopped answering must still reach recovery.
+      if (await checkImageExists(runner, image, { timeoutMs: IMAGE_COMMAND_TIMEOUT_MS })) {
         console.log(`Container image ${image} appeared concurrently`)
         return
       }

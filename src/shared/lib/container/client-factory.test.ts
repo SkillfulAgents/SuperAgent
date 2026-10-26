@@ -141,7 +141,7 @@ import {
   IMAGE_CHECK_MARKER,
   IMAGE_CHECK_TIMEOUT_MS,
   IMAGE_LOAD_TIMEOUT_MS,
-  IMAGE_REMOVE_TIMEOUT_MS,
+  IMAGE_COMMAND_TIMEOUT_MS,
   pullImage,
   PULL_STALL_TIMEOUT_MS,
   KILL_STALLED_PULL_TIMEOUT_MS,
@@ -887,7 +887,7 @@ describe('pullImage with the agent image bundled with the app', () => {
     expect(argsOf()).toEqual(['load', 'run'])
     expect(Buffer.concat(spawned[0].received).equals(ARCHIVE_BYTES)).toBe(true)
     // Loaded by the name the settings ask for, checked before the pull path is skipped.
-    expect(mockExecWithPath).toHaveBeenCalledWith(`/mock/nerdctl image inspect ${IMAGE}`, { timeoutMs: IMAGE_REMOVE_TIMEOUT_MS })
+    expect(mockExecWithPath).toHaveBeenCalledWith(`/mock/nerdctl image inspect ${IMAGE}`, { timeoutMs: IMAGE_COMMAND_TIMEOUT_MS })
     expect(progress.map((p) => p.percent)).toEqual(expect.arrayContaining([33, 100, null]))
     expect(progress.find((p) => p.percent === 100)?.status).toBe('Copying the agent image bundled with the app')
     expect(mockCaptureMessage).not.toHaveBeenCalled()
@@ -957,7 +957,7 @@ describe('pullImage with the agent image bundled with the app', () => {
       () => { throw new Error('expected the pull to fail') },
       (err: Error) => err
     )
-    await vi.advanceTimersByTimeAsync(IMAGE_LOAD_TIMEOUT_MS + IMAGE_REMOVE_TIMEOUT_MS + 1)
+    await vi.advanceTimersByTimeAsync(IMAGE_LOAD_TIMEOUT_MS + IMAGE_COMMAND_TIMEOUT_MS + 1)
 
     // Startup retries "Image pull stalled" after recovering the VM.
     expect((await failure).message).toMatch(/^Image pull stalled: lima stopped answering while loading the bundled agent image/)
@@ -968,7 +968,7 @@ describe('pullImage with the agent image bundled with the app', () => {
   it('bounds the check that the loaded image is there by its name', async () => {
     await pullImage('lima', IMAGE)
 
-    expect(mockExecWithPath).toHaveBeenCalledWith(`/mock/nerdctl image inspect ${IMAGE}`, { timeoutMs: IMAGE_REMOVE_TIMEOUT_MS })
+    expect(mockExecWithPath).toHaveBeenCalledWith(`/mock/nerdctl image inspect ${IMAGE}`, { timeoutMs: IMAGE_COMMAND_TIMEOUT_MS })
   })
 
   it('pulls when nothing is bundled for the image', async () => {
