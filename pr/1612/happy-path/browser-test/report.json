@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "All 5 steps were executed successfully. Agent opened browser, navigated to example.com, retrieved page title \"Example Domain\", and responded with correct result. Browser preview panel shows live webpage.",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — Success. Page loaded showing Gamut application with sidebar containing the test agent.",
+    "Step 2: Found and clicked the QA-20261026-200922-lxll agent in sidebar — Success. Agent page opened with chat interface.",
+    "Step 3: Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" and clicked Send button — Success. Message sent and agent status changed to \"working\".",
+    "Step 4: Waited for agent response (up to 3 minutes) — Success. Agent responded within approximately 11 seconds.",
+    "Step 5: Verified response mentions \"Example Domain\" and took screenshot — Success. Response clearly states \"The page title is 'Example Domain'.\" Screenshot captured showing agent response, browser preview panel with Example Domain website open, and browser agent actions confirming the tool was used."
+  ],
+  "bugs": [],
+  "durationMs": 68718,
+  "sessionId": "3d5673ac-42f0-43d9-9dfc-63cabfb63a77",
+  "cost": {
+    "inputTokens": 310,
+    "outputTokens": 9870,
+    "cacheCreationTokens": 63703,
+    "cacheReadTokens": 821983,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.211487
+  }
+}
