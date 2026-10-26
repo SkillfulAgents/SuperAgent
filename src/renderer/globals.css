@@ -1294,3 +1294,18 @@ html[data-keyboard-open] [data-composer-footer] {
   .composer-enter-contents > * { animation: none; }
   .voice-strip-enter { animation: none; }
 }
+
+/* SidePanelIcon (components/ui/side-panel-icon.tsx): its panel widens from a
+   line as a side panel slides out, an ease-out with a long tail, and narrows
+   back to a line as the panel slides away, accelerating. Those are the side
+   panels' own slide curves, so the button and the panel move as one. */
+.side-panel-icon-panel {
+  transition: x 300ms cubic-bezier(0.55, 0, 1, 0.45), width 300ms cubic-bezier(0.55, 0, 1, 0.45);
+}
+[data-state="open"] > .side-panel-icon-panel {
+  transition-duration: 450ms;
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .side-panel-icon-panel { transition: none; }
+}
