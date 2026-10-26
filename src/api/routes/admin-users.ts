@@ -6,6 +6,7 @@ import { user, authAccount } from '@shared/lib/db/schema'
 import { hashPassword } from 'better-auth/crypto'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { addTeamBrainUser } from '@shared/lib/services/agent-members-service'
 
 const adminUsersRouter = new Hono()
 adminUsersRouter.use('*', Authenticated(), IsAdmin())
@@ -54,6 +55,9 @@ adminUsersRouter.post('/invite', async (c) => {
       createdAt: now,
       updatedAt: now,
     }).run()
+
+    // Made here rather than through sign-up, so it misses sign-up's hook: the workspace's Team Brain is given here too.
+    await addTeamBrainUser(userId).catch((error) => console.error('Failed to give an invited member the Team Brain:', error))
 
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'user', objectId: userId, action: 'invited', details: { email: trimmedEmail, role: role || 'user' } })
     return c.json({ user: { id: userId, name: trimmedName, email: trimmedEmail } })

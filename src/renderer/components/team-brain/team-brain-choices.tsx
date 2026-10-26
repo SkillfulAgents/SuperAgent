@@ -10,7 +10,6 @@ import { TEAM_BRAIN_LOCATIONS, type TeamBrainLocation } from './team-brain-locat
  * offers fewer homes.
  */
 
-export const SECTION_LABEL = 'text-[14px] text-foreground'
 /** A choice card: hairline border, brand border when chosen. */
 export const CHOICE =
   'relative rounded-lg border bg-background text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50'
@@ -76,7 +75,6 @@ export function LocationChoices({
     if (disabled || !location.isAvailable()) return
     onChoose(location.id)
   }
-
 
   return (
     <>

@@ -2,6 +2,8 @@ import * as llmProviders from '@shared/lib/llm-provider'
 import { syncProviderSettings } from '@shared/lib/llm-provider/connection-settings'
 vi.mock('@shared/lib/llm-provider/connections', () => ({ listConnections: vi.fn(async () => []) }))
 vi.mock('@shared/lib/llm-provider/connection-settings', () => ({ syncProviderSettings: vi.fn(async () => {}) }))
+const { addAgentUsers } = vi.hoisted(() => ({ addAgentUsers: vi.fn(async () => {}) }))
+vi.mock('@shared/lib/services/agent-members-service', () => ({ addAgentUsers }))
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 
@@ -338,6 +340,39 @@ describe('settings route', () => {
       body: JSON.stringify(body),
     })
   }
+
+  describe('Team Brain record', () => {
+    // Each write is what the next request reads, so a repeated write meets the record it left.
+    const persistWrites = () => mockUpdateSettings.mockImplementation((next: unknown) => { mockGetSettings.mockReturnValue(next) })
+
+    it('gives every member the agent on each write of the record, and on no other write', async () => {
+      persistWrites()
+      expect((await putSettings({ teamBrain: { agentSlug: 'team-brain', volumeId: 'vol-1' } })).status).toBe(200)
+      expect((await putSettings({ teamBrain: { agentSlug: 'team-brain', volumeId: 'vol-1' } })).status).toBe(200)
+      expect(addAgentUsers.mock.calls).toEqual([['team-brain'], ['team-brain']])
+      addAgentUsers.mockClear()
+      expect((await putSettings({ shareAnalytics: false })).status).toBe(200)
+      expect(addAgentUsers).not.toHaveBeenCalled()
+    })
+
+    it('fails a write whose grant fails, keeps the record, and the same write again grants it', async () => {
+      persistWrites()
+      addAgentUsers.mockRejectedValueOnce(new Error('database busy'))
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      expect((await putSettings({ teamBrain: { agentSlug: 'team-brain', volumeId: 'vol-1' } })).status).toBe(500)
+      expect(mockGetSettings().teamBrain).toEqual({ agentSlug: 'team-brain', volumeId: 'vol-1' })
+      expect((await putSettings({ teamBrain: { agentSlug: 'team-brain', volumeId: 'vol-1' } })).status).toBe(200)
+      expect(addAgentUsers).toHaveBeenCalledTimes(2)
+    })
+
+    it('gives no one the agent when the write is refused', async () => {
+      // Refused inside the route, after the record is in the patch: a runner that manages its own agent image.
+      const res = await putSettings({ teamBrain: { agentSlug: 'team-brain', volumeId: 'vol-1' }, container: { containerRunner: 'lambda-microvm', agentImage: 'ghcr.io/custom/image:v9' } })
+      expect(res.status).toBe(400)
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+      expect(addAgentUsers).not.toHaveBeenCalled()
+    })
+  })
 
   // =========================================================================
   // PUT request boundary validation

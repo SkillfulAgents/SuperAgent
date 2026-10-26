@@ -179,6 +179,9 @@ function createAuthInstance() {
             } catch (err) {
               console.error('Failed to check/set admin role:', err)
             }
+            // The workspace's Team Brain is every member's, so someone joining gets it too.
+            const { addTeamBrainUser } = await import('@shared/lib/services/agent-members-service')
+            await addTeamBrainUser(createdUser.id).catch((err) => console.error('Failed to give a new member the Team Brain:', err))
           },
         },
       },

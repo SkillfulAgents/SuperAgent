@@ -17,6 +17,7 @@ import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provid
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
 import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
 import { Authenticated, IsAdmin } from '../middleware/auth'
+import { addAgentUsers } from '@shared/lib/services/agent-members-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
@@ -526,6 +527,11 @@ settings.put(
         action: 'updated',
         details: buildSettingsAuditDetails(currentSettings, newSettings),
       })
+      // The Team Brain is the workspace's: every member is a user of the agent its record names, and members who join
+      // later get it when their account is made. Every write of the record gives it again, so writing the record again
+      // heals a grant that failed, and giving it twice adds no one twice. Last, so a failed grant still leaves the write
+      // audited and its other effects done.
+      if (body.teamBrain) await addAgentUsers(body.teamBrain.agentSlug)
       return c.json(buildSettingsResponse(newSettings, hasRunningAgents, runnerAvailability))
     } catch (error) {
       console.error('Failed to update settings:', error)
