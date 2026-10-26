@@ -59,7 +59,7 @@ import {
 import { importLlmConnections } from '../db/data-migrations/0003-import-llm-connections'
 import { runDataMigrations } from '../db/data-migrations'
 import { syncProviderSettings, ensureManagedPlatformConnection } from './connection-settings'
-import { connectionNeedsAttachment, connectionRuntime } from './connection-runtime'
+import { bindAgentModelChoice, connectionNeedsAttachment, connectionRuntime } from './connection-runtime'
 import { runWithRequestUser } from '../platform-attribution/request-context'
 import { LlmProviderNotFoundError } from '../agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
 
@@ -912,5 +912,39 @@ describe('a model the provider says cannot run counts as unset (SUP-1124)', () =
     const runtime = await connectionRuntime(await resolveExecutionSelection(), 'test-agent')
     expect(runtime).toMatchObject({ model: 'model-a', browserModel: 'model-a' })
     expect(runtime.subagentModels.map(model => model.id)).toEqual(['model-a', 'model-b'])
+  })
+})
+
+describe('a model an agent names for an automation', () => {
+  async function addDeepSeek() {
+    return saveConnection(
+      {
+        name: 'DeepSeek',
+        provider: 'generic',
+        userId: null,
+        config: { apiKeys: { genericApiKey: 'key', genericBaseUrl: 'https://deepseek.example' } },
+        modelOverrides: [{ id: 'deepseek-v4', label: 'DeepSeek V4', family: 'deepseek', isLatest: true, supportedEfforts: ['low' as const] }],
+      },
+      admin
+    )
+  }
+
+  it('binds an id or a family name to the connection the agent runs on', async () => {
+    const first = await add()
+    const deepseek = await addDeepSeek()
+    await setGlobalSelection('default', { llmProviderId: first, model: 'model-a' })
+    const agent = { defaultModel: 'deepseek-v4', defaultLlmProviderId: deepseek }
+    expect(await bindAgentModelChoice('deepseek-v4', agent)).toEqual({ model: 'deepseek-v4', llmProviderId: deepseek })
+    expect(await bindAgentModelChoice('deepseek', agent)).toEqual({ model: 'deepseek-v4', llmProviderId: deepseek })
+    expect(await bindAgentModelChoice('model-a', null)).toEqual({ model: 'model-a', llmProviderId: first })
+  })
+
+  it('rejects a model the connection does not have and lists the valid ids', async () => {
+    const first = await add()
+    await addDeepSeek()
+    await setGlobalSelection('default', { llmProviderId: first, model: 'model-a' })
+    await expect(bindAgentModelChoice('deepseek-v4', null)).rejects.toThrow(
+      'Unknown model "deepseek-v4". Models available to this agent: model-a.'
+    )
   })
 })
