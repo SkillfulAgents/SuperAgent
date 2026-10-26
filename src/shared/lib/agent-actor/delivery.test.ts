@@ -350,7 +350,7 @@ describe('start', () => {
     } as never)
   })
 
-  it('creates, marks, registers with the listed commands, then attaches', async () => {
+  it('creates, marks, registers, then attaches; an automation keeps its commands live only', async () => {
     const order: string[] = []
     const register = vi.spyOn(service, 'registerSession').mockImplementation(async (...args) => {
       order.push(`register (active ${sessions().isActive('new-session')})`)
@@ -364,11 +364,16 @@ describe('start', () => {
     const session = await delivery().start(request)
     expect(session.id).toBe('new-session')
     expect(order).toEqual(['register (active true)', 'attach new-session'])
-    expect(register).toHaveBeenCalledWith(store(), 'new-session', 'Scheduled run', {
-      ...request.metadata,
-      slashCommands: [{ name: 'deploy', description: 'Ship it', argumentHint: '' }],
-    })
+    expect(register).toHaveBeenCalledWith(store(), 'new-session', 'Scheduled run', request.metadata)
+    expect((await sessionService.getSessionMetadata(store(), 'new-session'))?.slashCommands).toBeUndefined()
     expect(sessions().slashCommands('new-session')).toEqual([{ name: 'deploy', description: 'Ship it', argumentHint: '' }])
+  })
+
+  it('stores the listed commands for a session a user starts', async () => {
+    await delivery().start({ create: { initialMessage: 'go' }, name: 'Chat', metadata: { createdByUserId: 'user-a' } })
+
+    expect((await sessionService.getSessionMetadata(store(), 'new-session'))?.slashCommands)
+      .toEqual([{ name: 'deploy', description: 'Ship it', argumentHint: '' }])
   })
 
   it('listens at once, and holds the first turn\'s frames until the session is registered', async () => {
