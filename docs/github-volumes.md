@@ -70,7 +70,10 @@ The drive records each label it writes in `edits.json`, and a push holds a file 
 An edit against a delete on either side, and a binary file changed on both sides, are held without markers.
 Deleting a conflicted file keeps GitHub's version.
 
-These stay local and show as not synced: paths a `.gitignore` matches (including those above a subfolder drive), `.git` folders, `.github/workflows/`, files over 700 KB, and paths GitHub tracks as links or submodules.
+Paths a `.gitignore` matches (including those above a subfolder drive) and `.git` folders stay local and are never recorded as changes.
+Changes under `.github/workflows/`, files over 700 KB, and paths GitHub tracks as links or submodules stay local and show as not synced.
+GitHub keeps an edited file's mode, so an executable stays executable; a new file lands as 100644, since the mount carries no modes.
+An unpushed file over 700 KB is never merged: a change GitHub makes to it waits as a conflict.
 A path GitHub has that the pull cannot place waits instead of pausing the drive: a local file GitHub has just added too (a conflict), or a folder where GitHub now has a file, or the reverse.
 The rest of the pull applies, edits at, under or over such a path wait with it, and it is tried again once the way is clear or the agent edits it.
 

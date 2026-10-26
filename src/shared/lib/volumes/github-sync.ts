@@ -267,6 +267,18 @@ export class GithubSync {
 
   private version(sha: string): string { return path.join(this.folder, 'versions', sha) }
 
+  /** Whether the copy's file is too large to push: such a file is never merged, so never read whole. */
+  private async oversized(name: string): Promise<boolean> {
+    return ((await fs.lstat(this.target(name)).catch(() => null))?.size ?? 0) > GITHUB_PUSH_BYTES
+  }
+
+  /** Keeps the bytes of a version just recorded as served when only the copy has them: a later upload may merge against it. */
+  private async keepServed(name: string, sha: string | null): Promise<void> {
+    if (!sha || this.kept.has(sha) || this.onGithub(sha) || await this.oversized(name)) return
+    const bytes = await this.bytes(name)
+    if (bytes && blobSha(bytes) === sha) await this.remember(bytes)
+  }
+
   private onGithub(sha: string): boolean {
     let shas = this.githubShas.get(this.state)
     if (!shas) { shas = new Set(Object.values(this.state.files).map(file => file.sha)); this.githubShas.set(this.state, shas) }
@@ -395,12 +407,7 @@ export class GithubSync {
     return serialize([this.key], async () => {
       const versions = this.seen(mount).get(name) ?? []
       const sha = this.current(name)
-      if (sha && !this.kept.has(sha) && !this.onGithub(sha) && own(this.edits.unpushed, name)?.sha === sha) {
-        // Only a file small enough to push can be merged, so a larger one is never read here.
-        const entry = await fs.lstat(this.target(name)).catch(() => null)
-        const bytes = entry?.isFile() && entry.size <= GITHUB_PUSH_BYTES ? await this.bytes(name) : null
-        if (bytes && blobSha(bytes) === sha) await this.remember(bytes)
-      }
+      await this.keepServed(name, sha)
       if (versions.at(-1) !== sha) this.seen(mount).set(name, versions.length ? [versions[0], sha] : [sha])
       this.sentBy(mount).delete(name)
       return this.local.read(requested)
@@ -561,7 +568,12 @@ export class GithubSync {
   async move(mount: string, agent: string, requestedFrom: string, requestedTo: string): Promise<void> {
     await this.ready()
     const from = await this.canonical(requestedFrom)
-    const to = await this.canonical(requestedTo)
+    let to = await this.canonical(requestedTo)
+    // A rename that changes only case is one name to the disk and two to GitHub: it keeps the new spelling.
+    if (to === from && requestedTo !== requestedFrom) {
+      const slash = requestedTo.lastIndexOf('/')
+      to = slash < 0 ? requestedTo : `${await this.canonical(requestedTo.slice(0, slash))}/${requestedTo.slice(slash + 1)}`
+    }
     if (from === to) return
     const held = [from, to].find(name => own(this.edits.held, name))
     if (held) throw new WorkspaceFileError('not-accessible', `${held} has a conflict with GitHub. Resolve it before moving it.`)
@@ -602,7 +614,10 @@ export class GithubSync {
         this.unsee(mount, destination)
         if (versions) seen.set(destination, versions)
         else if (sent) this.sentBy(mount).set(destination, sent)
-        else seen.set(destination, [sha])
+        else {
+          await this.keepServed(destination, sha)
+          seen.set(destination, [sha])
+        }
       }
       await this.saveEdits()
       return marked
@@ -730,7 +745,7 @@ export class GithubSync {
       if (Object.keys(incoming).length) await this.archive(head, incoming, stage)
       const bases = new Map<string, Buffer | null>()
       for (const name of changed) {
-        if (Object.hasOwn(this.edits.unpushed, name) && !own(this.edits.held, name)) bases.set(name, await this.blob(own(this.state.files, name)?.sha))
+        if (Object.hasOwn(this.edits.unpushed, name) && !own(this.edits.held, name) && !await this.oversized(name)) bases.set(name, await this.blob(own(this.state.files, name)?.sha))
       }
       if (this.removed) return
       await serialize([this.key], async () => {
@@ -755,6 +770,11 @@ export class GithubSync {
           for (const name of changed) {
             if (held.has(name) || own(blocked, name)) continue
             if (Object.hasOwn(this.edits.unpushed, name)) {
+              // A file too large to push is never merged: GitHub's change to it waits as a conflict.
+              if (await this.oversized(name)) {
+                this.edits.held[name] = { reason: own(files, name) ? 'changed on GitHub too' : 'deleted on GitHub, edited here' }
+                continue
+              }
               const local = await this.bytes(name)
               if (local) await this.remember(local)
               const remote = own(files, name) ? await fs.readFile(path.join(stage, name)) : null
@@ -798,6 +818,11 @@ export class GithubSync {
             const tracked = own(this.state.files, name)
             if (tracked) next[name] = tracked
             else delete next[name]
+          }
+          // Edits that waited on a path GitHub has since let go of push on this run, and leave the pill.
+          if (Object.keys(this.edits.blocked).some(name => !own(blocked, name))) {
+            this.policyHeld.clear()
+            this.pushWanted ||= this.unpushed > 0
           }
           this.edits.blocked = blocked
           await this.save({ ...this.state, base: head, files: next })

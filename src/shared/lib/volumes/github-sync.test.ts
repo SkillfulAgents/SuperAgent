@@ -530,6 +530,35 @@ it('writes into the spelling GitHub or the copy already has, on a disk that igno
   expect([remote['Docs/a.md'].toString(), await text('Docs/new.md')]).toEqual(['changed', 'new'])
 })
 
+it('pushes a rename that changes only case, on a disk that ignores case', async () => {
+  const stat = fs.stat
+  vi.spyOn(fs, 'stat').mockImplementation((name, options) => stat(String(name).replace(/(case-[\w-]+-)A$/, '$1a'), options))
+  const { sync, volume } = await setup({ 'docs/a.md': 'a' })
+  await volume.move('docs', 'Docs')
+  await sync.run(true)
+  expect(Object.keys(remote)).toEqual(['Docs/a.md'])
+})
+
+it('keeps the version a folder move records, so a later write by the moving mount still merges', async () => {
+  const { volume, row, sync } = await setup({ 'dir/notes.txt': 'a\n1\nb\n2\nc\n' })
+  client.githubBlob.mockImplementation(async (_config, sha) => {
+    const found = [...Object.values(remote), ...history].find(bytes => blobSha(bytes) === sha)
+    if (!found) throw new WorkspaceFileError('not-found', 'The GitHub repository or branch is unavailable.')
+    return found
+  })
+  const other = new GithubMountableVolume('mount-2', row.name, row.config, row.id, 'other')
+  const put = (mount: GithubMountableVolume, name: string, text: string) => mount.write(name, new Blob([text]).stream())
+  await new Response(await (await other.read('dir/notes.txt')).stream()).text()
+  teammate({ 'dir/notes.txt': 'a\n1\nb\n2\nC\n' })
+  await sync.run()
+  await put(other, 'dir/notes.txt', 'A\n1\nb\n2\nc\n')
+  await volume.move('dir', 'dir2')
+  await put(other, 'dir2/notes.txt', 'A\n1\nb\n2\nC\nmore\n')
+  await put(volume, 'dir2/notes.txt', 'A\n1\nB\n2\nC\n')
+  await sync.run(true)
+  expect(remote['dir2/notes.txt'].toString()).toBe('A\n1\nB\n2\nC\nmore\n')
+})
+
 it('treats a move onto itself as nothing', async () => {
   const { volume, sync, text } = await setup()
   await volume.move('notes.txt', 'notes.txt')
@@ -566,6 +595,29 @@ it("holds a local file GitHub just added too, syncs the rest, and places GitHub'
   await sync.run(true)
   expect(await text('secret.txt')).toBe('theirs')
   expect([sync.attention, commits.length]).toEqual([null, 1])
+})
+
+it('pushes an edit that waited on a blocked path as soon as GitHub lets the path go', async () => {
+  const { sync, volume, write } = await setup({ 'notes.txt': 'kept' })
+  await volume.mkdir('docs')
+  await write('docs/new.md', 'draft')
+  teammate({ docs: 'a file now' })
+  await sync.run(true)
+  expect(remote['docs/new.md']).toBeUndefined()
+  teammate({ docs: null })
+  await sync.run()
+  expect([remote['docs/new.md']?.toString(), sync.attention]).toEqual(['draft', null])
+})
+
+it('never merges or reads whole an unpushed file too large to push: a GitHub change to it waits as a conflict', async () => {
+  const { sync, write, read } = await setup({ 'notes.txt': 'kept', 'big.bin': 'small on GitHub' })
+  await write('big.bin', 'x'.repeat(800_000))
+  teammate({ 'big.bin': 'changed on GitHub' })
+  const readFile = vi.spyOn(fs, 'readFile')
+  await sync.run()
+  expect(readFile.mock.calls.filter(([target]) => String(target).endsWith('big.bin'))).toEqual([])
+  expect((await read('big.bin')).length).toBe(800_000)
+  expect(sync.attention?.detail).toBe('big.bin (changed on GitHub too)')
 })
 
 it('merges an edit of a local file GitHub just added too, now that GitHub tracks it', async () => {
