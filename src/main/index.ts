@@ -87,6 +87,9 @@ process.env.SUPERAGENT_IS_PACKAGED = app.isPackaged ? '1' : '0'
 // won't share it). So it uses `<container>/.superagent`, getDataDir()'s own default.
 if (runsInAppSandbox(getServerFacts())) {
   process.env.SUPERAGENT_DATA_DIR ??= path.join(app.getPath('home'), '.superagent')
+  // A local drive's folder opens through the bookmark made when it was picked.
+  // Electron has this function only in Mac App Store builds.
+  setFolderAccessStarter((bookmark) => app.startAccessingSecurityScopedResource(bookmark) as () => void)
 }
 if (app.isPackaged) {
   process.env.SUPERAGENT_DATA_DIR ??= path.join(app.getPath('appData'), 'Superagent')
@@ -130,6 +133,7 @@ import { applyPreferredApiTarget, resolveApiTargetForRenderer, type CloudEndpoin
 import { desktopClientFacts, factsForRenderer } from './facts'
 import { clearStaleProcessSingleton } from './process-singleton'
 import { runsInAppSandbox, updatesItself } from '@shared/lib/facts/capabilities'
+import { closeLocalFolders, setFolderAccessStarter } from '@shared/lib/volumes/local-folder-access'
 import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
 import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
@@ -787,16 +791,22 @@ ipcMain.handle('detect-host-browser', () => {
 // Without a defaultPath Electron opens the dialog in Downloads, and the OS no
 // longer remembers where the user last was. Start beside the last folder picked
 // this run, else in home: what gets mounted here is a project, not a download.
+// In the App Sandbox the pick is what grants access, and only until quit, so
+// the dialog also returns a security-scoped bookmark that reopens the folder on
+// later launches (`local-folder-access.ts`).
 let lastPickedDirectoryParent: string | null = null
-ipcMain.handle('open-directory', async () => {
+ipcMain.handle('open-directory', async (): Promise<{ path: string; bookmark?: string } | null> => {
+  const sandboxed = runsInAppSandbox(desktopClientFacts())
   // createDirectory: macOS shows New Folder only when asked (Windows always does).
   const result = await dialog.showOpenDialog({
     properties: ['openDirectory', 'createDirectory'],
     defaultPath: lastPickedDirectoryParent ?? app.getPath('home'),
+    ...(sandboxed ? { securityScopedBookmarks: true } : {}),
   })
   if (result.canceled) return null
   lastPickedDirectoryParent = path.dirname(result.filePaths[0])
-  return result.filePaths[0]
+  const bookmark = sandboxed ? result.bookmarks?.[0] : undefined
+  return { path: result.filePaths[0], ...(bookmark ? { bookmark } : {}) }
 })
 
 // IPC handler for revealing a path in the OS file manager.
@@ -1892,6 +1902,7 @@ async function gracefulShutdown() {
 
   // Restore system sleep settings (best-effort, no sudo prompt)
   cleanupKeepAwake()
+  closeLocalFolders()
 
   // Give back a music player voice mode holds paused
   await releaseAllNowPlaying()

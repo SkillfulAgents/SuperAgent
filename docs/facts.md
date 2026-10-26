@@ -87,9 +87,15 @@ it, the renderer hides it, and the agents are never told about it.
 | Computer use | `supportsComputerUse()` | the container's tools and prompt (`HOST_COMPUTER_USE`), the tool call, the Computer Use tab (`offersComputerUseSettings()`) |
 | Host scripts | `runsHostScripts()`; the container's script tool follows `HOST_COMPUTER_USE` | the tool call |
 | The person's Chrome: CDP launch, profile copy, Apple Passwords | `drivesUserChrome()` | `ChromeProvider.detect()` (the Browser tab shows why), the profile seed, the Apple Passwords runtime |
-| A folder by path: local drives, copying a dropped folder in | `readsHostFolders()`, `usesHostFolderPaths()` | `prepareLocalVolume()`, the upload-folder routes, the Drives tab, folder drops (which upload instead) |
+| A folder by its path alone: copying a dropped folder in, or a drive of one | `readsHostFolders()`, `usesHostFolderPaths()` | the upload-folder routes, the mount offer on a drop (the folder uploads its files instead), and `prepareLocalVolume()` for a folder without its pick's bookmark |
 | Private skillsets, publishing to GitHub | `runsHostGit()`, `offersPrivateSkillsets()` | the git probes (public skillsets download an archive), repository tokens, `publishMode`, the token fields |
 | Keep Awake, Add to Dock, recent files, music control | `keepsMacAwake()`, `addsToDock()`, `listsRecentFiles()`, `userMusicSupported()` | the settings and menus that offer them, and main's handlers |
+
+Local drives stay. The Store build's folder picker returns a security-scoped
+bookmark with the pick, which is stored with the drive. The folder opens
+through it the first time the drive is read after each launch, and stays open
+until quit (`local-folder-access.ts`). A bookmark that no longer opens leaves
+the drive "pick the folder again".
 
 Two lists say this in words, and a new row goes in both: Settings → General
 shows the person `SandboxNotice` (`sandbox-notice.tsx`), and the agents'

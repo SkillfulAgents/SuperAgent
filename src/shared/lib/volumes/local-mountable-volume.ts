@@ -6,6 +6,7 @@ import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import { readsHostFolders } from '@shared/lib/facts/capabilities'
 import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { VolumeError } from './volume-error'
+import { openLocalFolder } from './local-folder-access'
 import { BaseMountableVolume, type VolumeEntry, type VolumeFile } from './base-mountable-volume'
 import type { LocalVolumeConfig } from './volume-config-schema'
 export { localVolumeConfigSchema, type LocalVolumeConfig } from './volume-config-schema'
@@ -54,12 +55,17 @@ function refuseRoot(volumePath: string): void {
   if (volumePath === '') throw new WorkspaceFileError('invalid-path', 'The volume root cannot be made, replaced, removed or moved')
 }
 
+/** Why a local drive can't be read: the sandbox lost its folder, and only the open panel can give it back. */
+export const PICK_FOLDER_AGAIN = 'This drive’s folder has to be picked again'
+
 /** A local volume's folder, by its real path. */
 /** Checks a folder picked for a new local volume, and names the volume after it. */
-export async function prepareLocalVolume({ path: folder }: LocalVolumeConfig): Promise<{ name: string; config: LocalVolumeConfig }> {
-  // The sandbox would lose the folder when the app quits.
+export async function prepareLocalVolume({ path: folder, bookmark }: LocalVolumeConfig): Promise<{ name: string; config: LocalVolumeConfig }> {
+  // A server that can't read a folder by its path alone reads it through the
+  // bookmark of the person's pick, which must open now and on every later launch.
   if (!readsHostFolders(getServerFacts())) {
-    throw new VolumeError('Folders on this Mac are not available as drives in the Mac App Store edition', 400)
+    if (!bookmark) throw new VolumeError('Choose the folder in the app’s folder picker to make it a drive', 400)
+    if (!openLocalFolder(bookmark)) throw new VolumeError(PICK_FOLDER_AGAIN, 400)
   }
   if (!path.isAbsolute(folder)) {
     throw new Error('The folder path must be an absolute path')
@@ -72,7 +78,7 @@ export async function prepareLocalVolume({ path: folder }: LocalVolumeConfig): P
   if (!path.basename(resolved)) {
     throw new Error('The folder must have a name')
   }
-  return { name: path.basename(resolved), config: { path: resolved } }
+  return { name: path.basename(resolved), config: { path: resolved, ...(bookmark ? { bookmark } : {}) } }
 }
 
 /**
@@ -94,8 +100,14 @@ export class LocalMountableVolume extends BaseMountableVolume<LocalVolumeConfig>
     return this.config.path
   }
 
+  /** Whether this process can read the folder: always, outside the sandbox; through its bookmark inside it. */
+  opens(): boolean {
+    return openLocalFolder(this.config.bookmark)
+  }
+
   /** The entry itself, under a parent checked to lead where its name says. Delete and move act on a link as a link. */
   private async entry(volumePath: string): Promise<string> {
+    if (!this.opens()) throw new WorkspaceFileError('not-accessible', PICK_FOLDER_AGAIN)
     // The folder is stored by its real path. One that now resolves elsewhere was replaced by a link: it is gone.
     const root = await fs.promises.realpath(this.config.path).catch(fromFsError)
     if (root !== this.config.path) throw new WorkspaceFileError('not-found')

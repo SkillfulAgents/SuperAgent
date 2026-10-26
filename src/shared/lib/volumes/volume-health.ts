@@ -2,6 +2,7 @@ import type { NotMountedReason, StoredVolume, VolumeSummary, VolumeSummaryWithHe
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { VolumePreparingError } from './volume-error'
 import { instantiateVolume } from './volume-factory'
+import { LocalMountableVolume } from './local-mountable-volume'
 
 export function volumeSummary(row: StoredVolume): VolumeSummary {
   const volume = instantiateVolume(row)
@@ -22,6 +23,8 @@ export async function volumeProblem(row: StoredVolume, agentSlug?: string): Prom
   if (!row.name || row.name === '.' || row.name === '..' || /[/\\\0]/.test(row.name)) return 'invalid name'
   const volume = instantiateVolume(row, agentSlug)
   if (!volume) return 'unreadable'
+  // The sandbox lost the folder: nothing to fix in it, only the pick to make again.
+  if (volume instanceof LocalMountableVolume && !volume.opens()) return 'pick the folder again'
   try {
     return (await volume.health()).kind === 'directory' ? null : 'not found'
   } catch (error) {

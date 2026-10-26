@@ -5,7 +5,12 @@ import { s3VolumeConfigSchema } from './s3-schema'
 import { dropboxVolumeConfigSchema } from './dropbox-schema'
 import { googleDriveVolumeConfigSchema } from './google-drive-schema'
 
-export const localVolumeConfigSchema = z.object({ path: z.string() })
+/**
+ * A folder by its real path. `bookmark` is the security-scoped bookmark the
+ * Mac App Store build's open panel makes when the person picks the folder: the
+ * sandbox reads the folder only through it (`local-folder-access.ts`).
+ */
+export const localVolumeConfigSchema = z.object({ path: z.string(), bookmark: z.string().min(1).optional() })
 export type LocalVolumeConfig = z.infer<typeof localVolumeConfigSchema>
 
 /** A Gamut drive: the platform's id for an org drive. Setup sends an existing drive's id, or a name to

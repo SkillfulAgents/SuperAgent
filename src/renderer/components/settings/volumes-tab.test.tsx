@@ -15,7 +15,7 @@ vi.mock('@renderer/hooks/use-volume-definitions', () => ({
   useSaveVolumeDefinition: () => ({ mutateAsync: state.save, isPending: false }),
   useDeleteVolumeDefinition: () => ({ mutateAsync: state.remove, isPending: false }),
 }))
-vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: () => state.host, usesHostFolderPaths: () => state.host, agentsRunInAppSandbox: () => false }))
+vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: () => state.host }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: state.isAdmin }) }))
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => state.navigate, useRouter: () => ({ history: { push: state.push } }), useSearch: () => ({ volume: state.selectedId, source: state.source, from: state.from }) }))
 vi.mock('@renderer/components/volumes/volume-file-browser', () => ({ VolumeFileBrowser: () => <div>Volume files</div> }))
@@ -31,7 +31,7 @@ beforeEach(() => {
   state.host = true
   state.isAdmin = true
   state.definitions = [{ id: 'v1', name: 'Notes', type: 'local', hostPath: '/notes', userId: 'alice', canManage: true, attachmentCount: 0, health: 'ok', globalAccess: null }]
-  window.electronAPI = { openDirectory: vi.fn().mockResolvedValue('/new/folder') } as never
+  window.electronAPI = { openDirectory: vi.fn().mockResolvedValue({ path: '/new/folder' }) } as never
 })
 afterEach(() => {
   cleanup()

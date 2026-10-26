@@ -1,21 +1,17 @@
 import { useState } from 'react'
 import { Folder } from 'lucide-react'
-import { agentsRunInAppSandbox, usesHostFolderPaths } from '@renderer/lib/capabilities'
+import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { localVolumeConfigSchema } from '@shared/lib/volumes/volume-config-schema'
 import { VolumeDetailsFields, VolumeSetupFooter, VolumeSetupHeader } from './volume-setup-layout'
 import { FolderLocationField } from './volume-folder-picker'
 import type { VolumeSetupDefinition, VolumeSetupProps } from './volume-setup'
 
-function localFolderUnavailableReason(): string {
-  return agentsRunInAppSandbox()
-    ? 'Not available in the Mac App Store edition.'
-    : 'Available in the desktop app for a local workspace.'
-}
-
+// The pick comes with its bookmark where the App Sandbox needs one to reopen
+// the folder after a relaunch, so a picked folder is a drive in every build.
 async function selectLocalFolder() {
-  if (!usesHostFolderPaths()) throw new Error(localFolderUnavailableReason())
-  const path = await window.electronAPI?.openDirectory()
-  return path ? localVolumeConfigSchema.parse({ path }) : null
+  if (!canUseHostFeatures()) throw new Error('Local folders are available in the desktop app on this workspace’s computer.')
+  const picked = await window.electronAPI?.openDirectory()
+  return picked ? localVolumeConfigSchema.parse(picked) : null
 }
 
 function folderName(path: string) {
@@ -57,7 +53,7 @@ function LocalVolumeSetup({ initialConfig, initialDetails, onSubmit, onBack, onC
 
 export const localVolumeSetup = {
   type: 'local', label: 'Local folder', description: 'Choose a folder on this computer.', Logo: Folder,
-  configSchema: localVolumeConfigSchema, isAvailable: usesHostFolderPaths,
-  get unavailableReason() { return localFolderUnavailableReason() },
+  configSchema: localVolumeConfigSchema, isAvailable: canUseHostFeatures,
+  unavailableReason: 'Available in the desktop app for a local workspace.',
   begin: selectLocalFolder, Setup: LocalVolumeSetup,
 } satisfies VolumeSetupDefinition<'local'>

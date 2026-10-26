@@ -334,8 +334,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return webUtils.getPathForFile(file)
   },
 
-  // Open a native directory picker dialog
-  openDirectory: (): Promise<string | null> => {
+  // Open a native directory picker dialog. In the Mac App Store build the pick
+  // also carries the security-scoped bookmark that reopens it after a relaunch.
+  openDirectory: (): Promise<{ path: string; bookmark?: string } | null> => {
     return ipcRenderer.invoke('open-directory')
   },
 
@@ -575,7 +576,7 @@ declare global {
       showEmojiPanel: () => Promise<void>
       createDockShortcut: (agentSlug: string, dashboardSlug: string, dashboardName: string, iconPng: Uint8Array) => Promise<void>
       getPathForFile: (file: File) => string
-      openDirectory: () => Promise<string | null>
+      openDirectory: () => Promise<{ path: string; bookmark?: string } | null>
       showInFolder: (hostPath: string) => Promise<string | null>
       revealInFolder: (hostPath: string) => Promise<string | null>
       getRecentFiles: (limit?: number) => Promise<{ name: string; path: string; thumbnail?: string }[]>

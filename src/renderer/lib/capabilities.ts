@@ -88,10 +88,11 @@ export function offersComputerUseSettings(): boolean {
 }
 
 /**
- * Whether this window hands the server folders of this computer by path: to
- * mount one as an agent's drive, or to copy a dropped one in. That needs the
- * desktop app driving its own machine, outside the sandbox. Without it a
- * dropped folder uploads its files instead.
+ * Whether this window hands the server a dropped folder by its path alone, to
+ * mount it or copy it in. That needs the desktop app driving its own machine,
+ * outside the sandbox, which reads a folder only through the bookmark of a
+ * pick in its open panel. Without it a dropped folder uploads its files; a
+ * picked one still becomes a drive (`localVolumeSetup`).
  */
 export function usesHostFolderPaths(): boolean {
   const server = serverFacts()
