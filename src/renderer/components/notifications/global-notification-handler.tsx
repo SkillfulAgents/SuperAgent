@@ -736,6 +736,9 @@ export function GlobalNotificationHandler() {
       if (isReconnect) {
         queryClient.invalidateQueries({ queryKey: ['agent-members'] })
         queryClient.invalidateQueries({ queryKey: ['agent-invite-candidates'] })
+        // A drive announces only a change to its status pill, so one missed in the gap is never sent again.
+        queryClient.invalidateQueries({ queryKey: ['mounts'] })
+        queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
       }
     }
 
