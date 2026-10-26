@@ -129,10 +129,8 @@ describe('LiveSessions.follow', () => {
       expect(storeAgentSlashCommands).not.toHaveBeenCalled()
     })
 
-    it('falls back to a session entry\'s older copy, repaired and kept for the agent once', async () => {
-      vi.mocked(getSessionMetadata).mockResolvedValue({
-        slashCommands: [{ name: 'Code Review', description: 'Review it', argumentHint: '' }],
-      } as SessionMetadata)
+    it('repairs legacy command names and keeps the repaired list for the agent once', async () => {
+      vi.mocked(readAgentSlashCommands).mockResolvedValueOnce([{ name: 'Code Review', description: 'Review it', argumentHint: '' }])
       const v = viewer()
       await sessions().follow(SESSION, undefined, v.onFrame)
 
@@ -141,9 +139,9 @@ describe('LiveSessions.follow', () => {
         { name: 'code-review', description: 'Review it', argumentHint: '' },
       ])
       // The live state has them now: the next viewer reads nothing.
-      vi.mocked(getSessionMetadata).mockClear()
+      vi.mocked(readAgentSlashCommands).mockClear()
       await sessions().follow(SESSION, undefined, viewer().onFrame)
-      expect(getSessionMetadata).not.toHaveBeenCalled()
+      expect(readAgentSlashCommands).not.toHaveBeenCalled()
     })
 
     it('leaves slash commands off the wire when the session has none anywhere', async () => {

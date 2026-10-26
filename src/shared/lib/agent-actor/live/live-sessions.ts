@@ -325,10 +325,9 @@ export class LiveSessions {
     )
   }
 
-  /** The commands the agent kept (after a container restart, say), else an older session entry's copy, repaired once. */
+  /** The commands the agent kept (after a container restart, say), repaired once. */
   private async storedSlashCommands(sessionId: string): Promise<SlashCommandInfo[]> {
-    let commands = await readAgentSlashCommands(this.deps.store)
-    if (commands.length === 0) commands = (await getSessionMetadata(this.deps.store, sessionId))?.slashCommands ?? []
+    const commands = await readAgentSlashCommands(this.deps.store)
     if (commands.length === 0) return []
     const repaired = repairLegacySlashCommands(commands)
     this.setSlashCommands(sessionId, repaired.commands)

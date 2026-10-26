@@ -397,4 +397,28 @@ describe('slash commands stored in session entries by earlier builds', () => {
     await storeAgentSlashCommands(createLocalSessionStore('agent'), newer)
     expect(JSON.parse(fs.readFileSync(agentCopyPath(), 'utf-8'))).toEqual(newer)
   })
+
+  it('reads the newest session copy when the agent has none, whichever session is opened', async () => {
+    const { readAgentSlashCommands } = await importService()
+    makeAgent('agent')
+    fs.writeFileSync(metadataPath('agent'), JSON.stringify({
+      'old-chat': { name: 'Old chat', createdAt: '2026-10-01T00:00:00Z', slashCommands: older },
+      'user-chat': { name: 'User chat', createdAt: '2026-10-20T00:00:00Z', slashCommands: newer },
+    }, null, 2))
+
+    expect(await readAgentSlashCommands(createLocalSessionStore('agent'))).toEqual(newer)
+  })
+
+  it('reads the session copies when the agent copy is corrupt, and leaves the file alone', async () => {
+    const { readAgentSlashCommands } = await importService()
+    makeAgent('agent')
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    fs.writeFileSync(metadataPath('agent'), JSON.stringify({
+      'user-chat': { name: 'User chat', createdAt: '2026-10-20T00:00:00Z', slashCommands: older },
+    }, null, 2))
+    fs.writeFileSync(agentCopyPath(), '[{')
+
+    expect(await readAgentSlashCommands(createLocalSessionStore('agent'))).toEqual(older)
+    expect(fs.readFileSync(agentCopyPath(), 'utf-8')).toBe('[{')
+  })
 })

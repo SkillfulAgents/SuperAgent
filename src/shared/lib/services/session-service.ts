@@ -211,18 +211,28 @@ async function mutateSessionMetadata(
   })
 }
 
-/** Earlier builds copied the agent's whole slash-command list into every session's entry; returns the newest copy dropped. */
-function dropStoredSlashCommands(metadata: SessionMetadataMap): SlashCommandInfo[] | null {
+/** Earlier builds copied the agent's whole slash-command list into every session's entry; returns the newest copy. */
+function newestStoredSlashCommands(metadata: SessionMetadataMap): SlashCommandInfo[] | null {
   let newest: { createdAt: string; commands: SlashCommandInfo[] } | null = null
-  for (const [sessionId, entry] of Object.entries(metadata)) {
+  for (const entry of Object.values(metadata)) {
     if (!entry.slashCommands) continue
     const createdAt = entry.createdAt ?? ''
     if (!newest || createdAt > newest.createdAt) newest = { createdAt, commands: entry.slashCommands }
+  }
+  return newest?.commands ?? null
+}
+
+/** Drops every session entry's copy; returns the newest copy dropped. */
+function dropStoredSlashCommands(metadata: SessionMetadataMap): SlashCommandInfo[] | null {
+  const newest = newestStoredSlashCommands(metadata)
+  if (!newest) return null
+  for (const [sessionId, entry] of Object.entries(metadata)) {
+    if (!entry.slashCommands) continue
     const rest = { ...entry }
     delete rest.slashCommands
     metadata[sessionId] = rest
   }
-  return newest?.commands ?? null
+  return newest
 }
 
 /** A dropped copy becomes the agent's when it has none yet, so a cold session's composer keeps its commands. */
@@ -234,9 +244,21 @@ async function seedAgentSlashCommands(store: SessionStore, commands: SlashComman
   }
 }
 
-/** The slash commands the agent's container last listed, shared by every session. */
+/**
+ * The slash commands the agent's container last listed, shared by every
+ * session. Without a usable agent copy, the newest copy an earlier build left
+ * in a session entry. Read-only: a corrupt agent copy is skipped, not thrown,
+ * so a viewer still attaches.
+ */
 export async function readAgentSlashCommands(store: SessionStore): Promise<SlashCommandInfo[]> {
-  return ((await store.config.get('slashCommands')) ?? []) as SlashCommandInfo[]
+  try {
+    const commands = (await store.config.get('slashCommands')) as SlashCommandInfo[] | null
+    if (commands?.length) return commands
+  } catch (error) {
+    if (!(error instanceof ConfigDocError && error.code === 'corrupt')) throw error
+    console.error(`[SessionService] Corrupt slash commands for agent ${store.slug}; using session metadata`, error)
+  }
+  return newestStoredSlashCommands(await readSessionMetadata(store)) ?? []
 }
 
 export async function storeAgentSlashCommands(store: SessionStore, commands: SlashCommandInfo[]): Promise<void> {
