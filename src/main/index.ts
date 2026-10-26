@@ -783,7 +783,8 @@ ipcMain.handle('detect-host-browser', () => {
 
 // IPC handler for opening a native directory picker
 ipcMain.handle('open-directory', async () => {
-  const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
+  // createDirectory: macOS shows New Folder only when asked (Windows always does).
+  const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
   return result.canceled ? null : result.filePaths[0]
 })
 

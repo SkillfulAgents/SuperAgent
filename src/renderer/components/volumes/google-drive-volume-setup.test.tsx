@@ -8,7 +8,7 @@ Element.prototype.scrollIntoView = vi.fn()
 Element.prototype.hasPointerCapture = vi.fn(() => false)
 Element.prototype.releasePointerCapture = vi.fn()
 
-const state = vi.hoisted(() => ({ accounts: [{ id: 'first', displayName: 'Work Drive', status: 'active' }] }))
+const state = vi.hoisted(() => ({ connects: [] as string[], accounts: [{ id: 'first', displayName: 'Work Drive', status: 'active' }] }))
 vi.mock('@renderer/lib/host-features', () => ({ canUseHostFeatures: () => false }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: false }) }))
 vi.mock('@renderer/hooks/use-connected-accounts', () => ({ useConnectedAccountsByToolkit: () => ({ data: { accounts: state.accounts }, isLoading: false }) }))
@@ -19,17 +19,20 @@ vi.mock('@renderer/lib/api', () => ({
     return Response.json({ folders: folderId === 'mydrive' ? [{ id: 'team', name: 'Team' }] : [] })
   },
 }))
-vi.mock('@renderer/components/connections/integration-directory-dialog', () => ({
-  IntegrationDirectoryDialog: ({ onApiConnected, onOpenChange }: { onApiConnected: (result: { accountId: string; toolkit: string }) => void; onOpenChange: (open: boolean) => void }) =>
-    <button type="button" onClick={() => {
+// Connect goes straight into the provider's sign-in; here it hands back a new account at once.
+vi.mock('@renderer/hooks/use-connect-account', () => ({
+  useConnectAccount: ({ onConnected }: { onConnected: (result: { accountId: string; toolkit: string }) => void }) => ({
+    connect: async (toolkit: string) => {
+      state.connects.push(toolkit)
       state.accounts.push({ id: 'new', displayName: 'New Drive', status: 'active' })
-      onApiConnected({ accountId: 'new', toolkit: 'googledrive' })
-      onOpenChange(false)
-    }}>Finish connecting Google Drive</button>,
+      onConnected({ accountId: 'new', toolkit })
+    },
+    connecting: null, canCancel: false, cancel: () => {}, error: null,
+  }),
 }))
 import { VolumeSettingsDialog } from './volume-settings-dialog'
 
-beforeEach(() => { state.accounts = [{ id: 'first', displayName: 'Work Drive', status: 'active' }, { id: 'second', displayName: 'Personal Drive', status: 'active' }] })
+beforeEach(() => { state.connects = []; state.accounts = [{ id: 'first', displayName: 'Work Drive', status: 'active' }, { id: 'second', displayName: 'Personal Drive', status: 'active' }] })
 afterEach(cleanup)
 async function setup(save = vi.fn()) {
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -82,8 +85,8 @@ describe('Google Drive volume creation', () => {
 
   it('continues with a newly connected account and steps back up through the picker', async () => {
     await setup()
-    await userEvent.click(screen.getByRole('button', { name: 'Connect Google Drive account' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Finish connecting Google Drive' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Connect another Google Drive account' }))
+    expect(state.connects).toEqual(['googledrive'])
     await waitFor(() => expect(screen.getByLabelText('Google Drive account', { exact: true })).toHaveTextContent('New Drive'))
     await userEvent.click(screen.getByRole('button', { name: 'Next' }))
     await userEvent.click(screen.getByRole('button', { name: 'Select folder' }))
