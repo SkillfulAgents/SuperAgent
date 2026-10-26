@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { GithubConflictFileHook } from './github-conflict-hook'
-import { editedContent } from './file-hook'
+import { editedContent, GithubConflictFileHook } from './github-conflict-hook'
 import { fileHooks } from './index'
 
 const hook = new GithubConflictFileHook()
@@ -25,6 +24,8 @@ describe('GithubConflictFileHook', () => {
     expect(editedContent(reply)).toBe(`$&!\n${marked}y $& x\n`)
     expect(editedContent({ ...reply, replaceAll: true })).toBe(`$&!\n${marked}y $& $&!\n`)
     expect(editedContent({ ...reply, originalFile: null })).toBeNull()
+    expect(hook.onEditReply('/mounts/repo/a.md', reply)?.warning).toContain('Resolve it now')
+    expect(hook.onEditReply('/mounts/repo/a.md', { ...reply, originalFile: null })).toBeNull()
   })
 
   it('only looks under /mounts', () => {

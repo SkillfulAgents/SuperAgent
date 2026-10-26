@@ -10,7 +10,6 @@ export interface StoredVolume {
   config: unknown
 }
 
-/** A volume as the API returns it: no config, only the host folder the card shows. */
 /** Changes that have not reached the source. */
 export interface VolumeAttention {
   badge?: { label: string; tone: 'warning' | 'error' } // shown in place of the health badge
@@ -18,6 +17,7 @@ export interface VolumeAttention {
   unsynced: number // files a delete of the drive would lose
 }
 
+/** A volume as the API returns it: no config, only the host folder the card shows. */
 export interface VolumeSummary extends Omit<StoredVolume, 'config'> {
   sourceLabel?: string // display-only description for remote sources
   sourceReadOnly?: boolean // the source itself refuses writes, whatever the attachment says

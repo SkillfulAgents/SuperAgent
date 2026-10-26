@@ -24,7 +24,7 @@ import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpS
 import { createBrowserTools } from './tools/browser';
 import { renameBrowserSession } from './browser-state';
 import { computerUseTools } from './tools/computer-use';
-import { editedContent, fileHooks, mountIndexCommandHint, resolveToolFilePath } from './file-hooks';
+import { fileHooks, mountIndexCommandHint, resolveToolFilePath } from './file-hooks';
 import { elapsedTimeNote } from './elapsed-time-note';
 import { builtinHints, createHintHookMatchers } from './hints';
 import { promptDate } from './prompt-date';
@@ -1540,12 +1540,11 @@ export class ClaudeCodeProcess extends EventEmitter {
                 const toolInput = (input as any).tool_input as Record<string, unknown>;
                 const filePath = resolveToolFilePath(toolInput, this.workingDirectory);
                 if (!filePath) return {};
-                let content: string | undefined;
                 for (const hook of fileHooks) {
                   if (!hook.matches(filePath)) continue;
                   try {
-                    content ??= editedContent((input as any).tool_response) ?? await fs.promises.readFile(filePath, 'utf-8');
-                    const result = hook.onEdit(filePath, content);
+                    const result = hook.onEditReply?.(filePath, (input as any).tool_response)
+                      ?? hook.onEdit(filePath, await fs.promises.readFile(filePath, 'utf-8'));
                     if (result.error) {
                       return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: `Warning: ${result.error}` } };
                     }

@@ -1,4 +1,4 @@
-export { FileHook, resolveToolFilePath, editedContent } from './file-hook'
+export { FileHook, resolveToolFilePath } from './file-hook'
 export type { FileHookReadResult, FileHookWriteResult, FileHookChangeResult } from './file-hook'
 export { BookmarksFileHook } from './bookmarks-hook'
 export { bookmarksSchema, bookmarkSchema } from './bookmarks-schema'

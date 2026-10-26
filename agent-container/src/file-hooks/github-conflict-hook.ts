@@ -8,6 +8,15 @@ const HINT = 'This file has unresolved conflict markers from a GitHub drive: a t
   'If resolving it is outside what you were asked to do, tell the user this file has a conflict.'
 
 const readResponseSchema = z.object({ file: z.object({ content: z.string() }) })
+const editReplySchema = z.object({ originalFile: z.string(), oldString: z.string(), newString: z.string(), replaceAll: z.boolean().optional() })
+
+/** The file after an Edit, rebuilt from the tool's reply so a file on a drive is not read back. Null when the reply has no original. */
+export function editedContent(reply: unknown): string | null {
+  const edit = editReplySchema.safeParse(reply)
+  if (!edit.success) return null
+  const { originalFile, oldString, newString, replaceAll } = edit.data
+  return replaceAll ? originalFile.split(oldString).join(newString) : originalFile.replace(oldString, () => newString)
+}
 
 /** Checks the text the agent already has, so no tool call costs an extra read. */
 export class GithubConflictFileHook extends FileHook {
@@ -30,5 +39,10 @@ export class GithubConflictFileHook extends FileHook {
 
   onEdit(_filePath: string, contentAfterEdit: string): FileHookWriteResult {
     return CONFLICT_LABEL.test(contentAfterEdit) ? { warning: HINT } : {}
+  }
+
+  onEditReply(filePath: string, reply: unknown): FileHookWriteResult | null {
+    const content = editedContent(reply)
+    return content === null ? null : this.onEdit(filePath, content)
   }
 }

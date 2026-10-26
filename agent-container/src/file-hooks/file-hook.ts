@@ -1,5 +1,4 @@
 import * as path from 'path'
-import { z } from 'zod'
 
 export interface FileHookReadResult {
   additionalContext?: string
@@ -64,6 +63,12 @@ export abstract class FileHook {
   }
 
   /**
+   * Called after an Edit tool call for a matching file, with what the Edit returned. A hook that can
+   * judge the edit from the reply answers here and its file is not read; null falls back to `onEdit`.
+   */
+  onEditReply?(filePath: string, reply: unknown): FileHookWriteResult | null
+
+  /**
    * Called after a Write or Edit tool call changed a matching file, with its
    * content before the call (null when it did not exist) and after. For hooks
    * that act on what the change did rather than on the content alone; the
@@ -81,14 +86,4 @@ export function resolveToolFilePath(toolInput: Record<string, unknown>, workingD
   const filePath = toolInput.file_path as string | undefined
   if (!filePath) return null
   return path.resolve(workingDirectory, filePath)
-}
-
-const editResponseSchema = z.object({ originalFile: z.string(), oldString: z.string(), newString: z.string(), replaceAll: z.boolean().optional() })
-
-/** The file after an Edit, rebuilt from the tool's reply so hooks need not read it back. Null when the reply has no original. */
-export function editedContent(response: unknown): string | null {
-  const edit = editResponseSchema.safeParse(response)
-  if (!edit.success) return null
-  const { originalFile, oldString, newString, replaceAll } = edit.data
-  return replaceAll ? originalFile.split(oldString).join(newString) : originalFile.replace(oldString, () => newString)
 }
