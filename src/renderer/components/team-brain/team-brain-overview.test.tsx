@@ -21,7 +21,7 @@ vi.mock('@renderer/hooks/use-agents', () => ({
   useDeleteAgent: () => ({ mutate: app.deleteAgent, isPending: false }),
 }))
 // The Team Brain agent's own drive, in Dropbox.
-vi.mock('@renderer/hooks/use-mounts', () => ({ useAgentMounts: () => ({ data: [{ id: 'm1', volumeId: 'vol1', name: 'Team Brain', type: 'dropbox', hostPath: null, sourceLabel: 'Dropbox › Team Brain' }] }) }))
+vi.mock('@renderer/hooks/use-mounts', () => ({ useAgentMounts: () => ({ data: [{ id: 'm1', volumeId: 'vol1', name: 'Team Brain', type: 'dropbox', hostPath: null, sourceLabel: 'Dropbox › Team Brain', webUrl: 'https://www.dropbox.com/home/Team%20Brain' }] }) }))
 // The drive as listed: a README and three sections, with the pages the tree is clicked through.
 const { drive } = vi.hoisted(() => {
   const page = (id: string, name: string) => ({ id, name, kind: 'file' as const, sources: [] })
@@ -80,8 +80,25 @@ vi.mock('@renderer/hooks/use-team-brain-syncs', () => ({
 }))
 vi.mock('@renderer/hooks/use-sessions', () => ({ useSessions: () => ({ data: [] }) }))
 // Read and listed, unless a case says the drive could not be read.
-const { driveRead } = vi.hoisted(() => ({ driveRead: { ready: true, error: null as string | null } }))
-vi.mock('@renderer/hooks/use-team-brain-drive', () => ({ useTeamBrainDrive: () => ({ drive, ...driveRead }) }))
+const { driveRead } = vi.hoisted(() => ({
+  driveRead: {
+    ready: true,
+    error: null as string | null,
+    // The record's parts there are to show, and the parts the page last asked the tree to show.
+    recordParts: [
+      { name: 'syncs', path: '_brain/syncs', type: 'directory' as const },
+      { name: 'rules.md', path: '_brain/rules.md', type: 'file' as const },
+      { name: 'INDEX.md', path: 'INDEX.md', type: 'file' as const },
+    ],
+    record: new Set<string>() as ReadonlySet<string>,
+  },
+}))
+vi.mock('@renderer/hooks/use-team-brain-drive', () => ({
+  useTeamBrainDrive: (_slug: string, _volume: string, _expanded: unknown, record: ReadonlySet<string>) => {
+    driveRead.record = record
+    return { drive, ready: driveRead.ready, error: driveRead.error, recordParts: driveRead.recordParts }
+  },
+}))
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
 vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl }))
 // Agent Home's composer needs the app's providers; here it only needs to be there, for the Team Brain agent.
@@ -198,26 +215,22 @@ describe('TeamBrainOverview', () => {
     expect(screen.getByTestId('team-brain-menu')).toHaveAttribute('aria-expanded', 'true')
     const details = within(screen.getByTestId('team-brain-details'))
     expect(details.getByText('Storage location')).toBeInTheDocument()
-    // Where it lives comes from the Team Brain agent's own drive.
+    // Where it lives comes from the Team Brain agent's own drive: folded, its home; open, where in it.
+    expect(screen.getByTestId('team-brain-storage-section-toggle')).toHaveTextContent('Dropbox')
+    expect(details.queryByText('Dropbox › Team Brain')).toBeNull()
+    await userEvent.click(screen.getByTestId('team-brain-storage-section-toggle'))
     expect(details.getByText('Dropbox › Team Brain')).toBeInTheDocument()
-    expect(details.getByText('Next:')).toBeInTheDocument()
+    // The whole row opens it in Dropbox.
+    await userEvent.click(screen.getByRole('button', { name: 'Open Team Brain in Dropbox' }))
+    expect(openExternalUrl).toHaveBeenCalledWith('https://www.dropbox.com/home/Team%20Brain')
+    expect(screen.getByTestId('team-brain-sync-note')).toHaveTextContent(/^Syncs in (60 min|1 h) · last ran 2 h ago$/)
 
-    // Sync is the upkeep task: its last run in the status line, and the toggle pauses the task itself.
+    // Sync is the upkeep task: its last run in the status line, and one row for when it runs and how often, which opens
+    // the task's own page to change the schedule or pause it.
     expect(screen.getByTestId('team-brain-status')).toHaveTextContent('Active · Synced 2 h ago')
-    await userEvent.click(screen.getByRole('switch', { name: 'Pause syncing' }))
-    expect(upkeep.pause).toHaveBeenCalledWith({ taskId: 't1', agentSlug: 'team-brain' })
-
-    // The schedule is picked here too, from a row like Agent Home's default model, with what each choice costs.
-    expect(screen.getByTestId('team-brain-schedule-trigger')).toHaveTextContent('Daily')
-    await userEvent.click(screen.getByTestId('team-brain-schedule-trigger'))
-    expect(screen.getByRole('option', { name: /^Daily/ })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('option', { name: /^Weekly/ })).toHaveTextContent(/Cheapest/)
-    // A pick changes the upkeep task's cron.
-    await userEvent.click(screen.getByTestId('team-brain-schedule-option-weekly'))
-    expect(upkeep.update).toHaveBeenCalledWith({ taskId: 't1', scheduleExpression: '0 0 * * 1' })
-    // Escape puts the picker away and leaves the drawer open.
-    await userEvent.keyboard('{Escape}')
-    expect(screen.queryByRole('listbox', { name: 'Schedule' })).toBeNull()
+    expect(screen.getByTestId('team-brain-schedule')).toHaveTextContent('Daily')
+    await userEvent.click(screen.getByTestId('team-brain-sync'))
+    expect(navigate).toHaveBeenCalledWith({ to: '/agents/$slug/tasks/$taskId', params: { slug: 'team-brain', taskId: 't1' } })
     expect(screen.getByTestId('team-brain-menu')).toHaveAttribute('aria-expanded', 'true')
 
     // Sources are the agent's connections, managed on its Connections page.
@@ -278,12 +291,58 @@ describe('TeamBrainOverview', () => {
     expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'false')
   })
 
-  it('says so where the tree would be when the drive cannot be read', () => {
+  it('says so at the top of the page when the drive cannot be read, whole or in part', () => {
     Object.assign(driveRead, { ready: false, error: 'Drive not available' })
-    render(<TeamBrainOverview agent={BRAIN} />)
+    const { unmount } = render(<TeamBrainOverview agent={BRAIN} />)
     expect(screen.getByTestId('team-brain-drive-error')).toHaveTextContent("Couldn't read the Team Brain drive. Drive not available")
     expect(screen.queryByTestId('team-brain-radial')).toBeNull()
+    expect(screen.getByText('The tree shows once the drive can be read.')).toBeInTheDocument()
+    unmount()
+    // Up, with a folder that hung: the tree stays, and the banner says why in words.
+    Object.assign(driveRead, { ready: true, error: 'signal timed out' })
+    render(<TeamBrainOverview agent={BRAIN} />)
+    expect(screen.getByTestId('team-brain-drive-error')).toHaveTextContent("Couldn't read part of the Team Brain drive. It took too long to answer.")
+    expect(screen.getByTestId('team-brain-radial')).toBeInTheDocument()
     Object.assign(driveRead, { ready: true, error: null })
+  })
+
+  it('shows the parts of the team record switched on in Views, each on its own', async () => {
+    render(<TeamBrainOverview agent={BRAIN} />)
+    await userEvent.click(screen.getByTestId('team-brain-menu'))
+    // Folded, it says how many views are on; open, a switch for each.
+    expect(screen.getByTestId('team-brain-views-count')).toHaveTextContent('Off')
+    expect(screen.queryByTestId('team-brain-view-rules')).toBeNull()
+    await userEvent.click(screen.getByTestId('team-brain-views-toggle'))
+    const views = within(screen.getByTestId('team-brain-views'))
+    // Every usual part has its switch, written yet or not.
+    expect(views.getAllByRole('switch').map((toggle) => toggle.id)).toEqual(
+      ['rules', 'sources', 'changelog', 'archive', 'syncs', 'index'].map((view) => `team-brain-view-${view}`),
+    )
+    expect(views.getByLabelText(/^Show changelog/)).toBeInTheDocument()
+    expect(within(views.getByText('Show changelog').closest('li')!).getByText('Not written yet')).toBeInTheDocument()
+    expect(within(views.getByText('Show rules').closest('li')!).queryByText('Not written yet')).toBeNull()
+    expect(driveRead.record.size).toBe(0)
+    await userEvent.click(views.getByLabelText(/^Show sync summaries/))
+    await userEvent.click(views.getByLabelText(/^Show agents' index/))
+    expect([...driveRead.record]).toEqual(['syncs', 'index'])
+    expect(screen.getByTestId('team-brain-views-count')).toHaveTextContent('2 on')
+    await userEvent.click(views.getByLabelText(/^Show sync summaries/))
+    expect([...driveRead.record]).toEqual(['index'])
+  })
+
+  it('stands mocked states in for the live ones from its dev menu, and goes back to live', async () => {
+    render(<TeamBrainOverview agent={BRAIN} />)
+    await userEvent.click(screen.getByTestId('team-brain-dev-states'))
+    await userEvent.click(screen.getByTestId('team-brain-dev-drive-unreadable'))
+    expect(screen.getByTestId('team-brain-drive-error')).toHaveTextContent("Couldn't read the Team Brain drive.")
+    expect(screen.queryByTestId('team-brain-radial')).toBeNull()
+    await userEvent.click(screen.getByTestId('team-brain-dev-upkeep-none'))
+    expect(screen.getByTestId('team-brain-status')).toHaveTextContent('Not scheduled yet')
+    await userEvent.click(screen.getByTestId('team-brain-dev-syncs-sample'))
+    expect(screen.getByText('Acme’s renewal moves to Q1')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Back to live' }))
+    expect(screen.queryByTestId('team-brain-drive-error')).toBeNull()
+    expect(screen.getByTestId('team-brain-radial')).toBeInTheDocument()
   })
 
   it('sums up each sync, and turns off by deleting the Team Brain agent', async () => {

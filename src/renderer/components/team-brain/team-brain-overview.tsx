@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
-import { ArrowUpRight, Check, ChevronDown, Plus, Settings2 } from 'lucide-react'
+import { AlertCircle, AlertTriangle, ArrowUpRight, ChevronDown, ChevronRight, Plus, Settings2 } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
 import { Switch } from '@renderer/components/ui/switch'
-import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -15,14 +14,16 @@ import {
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
 import { SettingsPageContainer } from '@renderer/components/layout/settings-page'
+import { openExternalUrl } from '@renderer/lib/open-external'
 import { useDeleteAgent, useListedAgents, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useAgentMounts } from '@renderer/hooks/use-mounts'
 import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { useMinuteClock } from '@renderer/hooks/use-minute-clock'
-import { TEAM_BRAIN_LOCATION_IDS, TEAM_BRAIN_SCHEDULES, type TeamBrainLocationId } from '@renderer/lib/team-brain/team-brain-schema'
+import { TEAM_BRAIN_LOCATION_IDS, type TeamBrainLocationId } from '@renderer/lib/team-brain/team-brain-schema'
 import type { TeamBrainNode } from '@renderer/lib/team-brain/team-brain-structure'
 import { useTeamBrainDrive } from '@renderer/hooks/use-team-brain-drive'
-import { splitFrontPages, TEAM_RECORD_FOLDER } from '@renderer/lib/team-brain/team-brain-drive'
+import { splitFrontPages, TEAM_RECORD_FOLDER, teamRecordView } from '@renderer/lib/team-brain/team-brain-drive'
+import type { FolderEntry } from '@renderer/hooks/use-folder-entries'
 import { useTeamBrainSyncs } from '@renderer/hooks/use-team-brain-syncs'
 import type { TeamBrainSync } from '@renderer/lib/team-brain/team-brain-syncs'
 import { getApiBaseUrl } from '@renderer/lib/env'
@@ -43,10 +44,10 @@ import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
 import { isForeignAgentConnectedAccount } from '@shared/lib/agent-connections/public'
 import { toast } from 'sonner'
 import { formatSince, formatUntil, SCHEDULE_LABELS } from '@renderer/lib/team-brain/team-brain-format'
-import { isBrainUpkeep, scheduleOfCron, TEAM_BRAIN_CRON } from '@renderer/lib/team-brain/team-brain-setup-block'
-import { usePauseScheduledTask, useResumeScheduledTask, useScheduledTaskSessions, useScheduledTasks, useUpdateSchedule, type ApiScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
-import { StatusToggle } from '@renderer/components/triggers/status-toggle'
-import { TeamBrainRadial } from './team-brain-radial'
+import { isBrainUpkeep, scheduleOfCron } from '@renderer/lib/team-brain/team-brain-setup-block'
+import { useScheduledTaskSessions, useScheduledTasks, type ApiScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
+import { TeamBrainRadial, TeamBrainRadialLoading } from './team-brain-radial'
+import { DEV_STATES_ENABLED, devDrive, devSyncs, devUpkeep, TeamBrainDevStatesMenu, useTeamBrainDevStates } from './team-brain-dev-states'
 import { TeamBrainSyncSummaries } from './team-brain-sync-summaries'
 import { TeamBrainHomeComposer } from './team-brain-home-composer'
 import { AgentAccessList, EveryAgentRow } from './team-brain-agent-access'
@@ -66,12 +67,16 @@ const PREVIEW_SLUG = 'team-brain'
  */
 export function TeamBrainOverview({ agent }: { agent: ApiAgent }) {
   const [settingsOpen, setSettingsOpen] = useState(false)
-  // Shown from the settings drawer. Switched off, the record stays in the tree while it draws back in, then goes.
-  const [showRecord, setShowRecord] = useState(false)
-  const [recordLeaving, setRecordLeaving] = useState(false)
-  const switchRecord = (on: boolean) => {
-    setShowRecord(on)
-    setRecordLeaving(!on)
+  // The views of the team record the tree shows (`teamRecordView`), switched on in the settings' Views; none by default.
+  // When the last one is switched off, the parts that were showing stay in the tree while they draw back in, then go.
+  const [views, setViews] = useState<ReadonlySet<string>>(() => new Set())
+  const [leaving, setLeaving] = useState<ReadonlySet<string> | null>(null)
+  const switchView = (view: string, on: boolean) => {
+    const next = new Set(views)
+    if (on) next.add(view)
+    else next.delete(view)
+    setViews(next)
+    setLeaving(next.size === 0 && views.size > 0 ? views : null)
   }
   return (
     <FilePreviewProvider sessionId="team-brain" commentsEnabled={false}>
@@ -81,10 +86,11 @@ export function TeamBrainOverview({ agent }: { agent: ApiAgent }) {
             agent={agent}
             settingsOpen={settingsOpen}
             onSettingsOpenChange={setSettingsOpen}
-            showRecord={showRecord}
-            recordLeaving={recordLeaving}
-            onShowRecordChange={switchRecord}
-            onRecordLeft={() => setRecordLeaving(false)}
+            views={views}
+            record={views.size > 0 ? views : (leaving ?? views)}
+            recordLeaving={views.size === 0 && leaving !== null}
+            onViewChange={switchView}
+            onRecordLeft={() => setLeaving(null)}
           />
           <TrayManager agentSlug={PREVIEW_SLUG} sessionId="team-brain" browserActive={false} filePreviewWideLayout="overlay" />
         </div>
@@ -104,7 +110,9 @@ function useTeamBrainLocation(agentSlug: string) {
 /** The task Team Brain syncs on: the one recurring task its onboarding names "Brain upkeep". None until its first chat. */
 function useBrainUpkeep(agentSlug: string): ApiScheduledTask | undefined {
   const { data: tasks } = useScheduledTasks(agentSlug)
-  return tasks?.find((task) => isBrainUpkeep(task.name) && (task.status === 'pending' || task.status === 'paused'))
+  const live = tasks?.find((task) => isBrainUpkeep(task.name) && (task.status === 'pending' || task.status === 'paused'))
+  // Dev builds can stand a state in for it (team-brain-dev-states.tsx).
+  return devUpkeep(useTeamBrainDevStates().upkeep, live)
 }
 
 const isoOf = (at: Date | string | null) => (at ? new Date(at).toISOString() : null)
@@ -124,17 +132,21 @@ function OverviewBody({
   agent,
   settingsOpen,
   onSettingsOpenChange,
-  showRecord,
+  views,
+  record,
   recordLeaving,
-  onShowRecordChange,
+  onViewChange,
   onRecordLeft,
 }: {
   agent: ApiAgent
   settingsOpen: boolean
   onSettingsOpenChange: (open: boolean) => void
-  showRecord: boolean
+  /** The record's views switched on in Views. */
+  views: ReadonlySet<string>
+  /** The views the tree shows: those, or while the last is drawing back in, the ones that were. */
+  record: ReadonlySet<string>
   recordLeaving: boolean
-  onShowRecordChange: (on: boolean) => void
+  onViewChange: (view: string, on: boolean) => void
   onRecordLeft: () => void
 }) {
   const agentSlug = agent.slug
@@ -144,10 +156,16 @@ function OverviewBody({
   const { data: mounts } = useAgentMounts(agentSlug)
   const volumeId = mounts?.[0]?.volumeId
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
-  const { drive, ready, error } = useTeamBrainDrive(agentSlug, volumeId, expanded, showRecord || recordLeaving, recordLeaving)
+  // Dev builds can stand a state in for the drive and the summaries (team-brain-dev-states.tsx); live otherwise.
+  const dev = useTeamBrainDevStates()
+  const read = useTeamBrainDrive(agentSlug, volumeId, expanded, record, recordLeaving)
+  const { drive, ready, error } = devDrive(dev.drive, read)
+  const recordParts = read.recordParts
+  const noDrive = dev.drive === 'none' || (!!mounts && !volumeId)
   const { front, index, rest } = useMemo(() => splitFrontPages(drive), [drive])
   const upkeep = useBrainUpkeep(agentSlug)
-  const { data: syncs = [], isError: syncsUnreadable } = useTeamBrainSyncs(agentSlug, volumeId)
+  const liveSyncs = useTeamBrainSyncs(agentSlug, volumeId)
+  const { syncs, unreadable: syncsUnreadable } = devSyncs(dev.syncs, { syncs: liveSyncs.data ?? [], unreadable: liveSyncs.isError })
   const navigate = useNavigate()
   // A page opens in the file drawer from the drive, as the drive's own file browser opens it. A "+N more" past what
   // even an opened folder shows opens as a list of the pages it stands for.
@@ -191,20 +209,26 @@ function OverviewBody({
   }, [settingsOpen])
   const showSettings = settingsOpen || settingsClosing
   const settingsClosed = useCallback(() => setSettingsClosing(false), [])
+  // Beside the page the panel sits out of the column's flow, so a short column (no syncs yet) would end above the
+  // panel's foot and the page could not scroll the panel clear of the bottom. The column grows to at least its height.
+  const [panelHeight, setPanelHeight] = useState(0)
 
   return (
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- a pointer convenience; each drawer has its own close button
     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background" onClick={closeDrawersOnClickOff}>
+      {error && !noDrive && <DriveErrorBanner error={error} partial={ready} />}
+      {DEV_STATES_ENABLED && <TeamBrainDevStatesMenu className="absolute bottom-3 left-3 z-40" />}
       <SettingsPageContainer className={cn(PAGE_WIDTH, 'space-y-8')} scrollContainerRef={scrollRef}>
         {/* The centrepiece: what Team Brain knows, as a tree floating on the page with no frame around it. It fills the
             view down to where the composer peeks in and stays where it is as the page scrolls, so what follows passes over it.
             Held back until its first view is listed, so the opening plays once over the whole of it. A drive it can't read
             says so where the tree would be. */}
         <div ref={treeRef} className="sticky z-0" style={{ top: treeTop }} data-testid="team-brain-tree-layer">
-          {mounts && !volumeId ? (
+          {noDrive ? (
             <TreeNote height={treeHeight}>Team Brain has no drive yet.</TreeNote>
           ) : error && !ready ? (
-            <TreeNote height={treeHeight} alert testId="team-brain-drive-error">{`Couldn't read the Team Brain drive. ${error}`}</TreeNote>
+            // What went wrong is in the banner at the top.
+            <TreeNote height={treeHeight}>The tree shows once the drive can be read.</TreeNote>
           ) : ready && drive.length === 0 ? (
             <TreeNote height={treeHeight}>Nothing in the drive yet. Team Brain fills it as it builds the brain.</TreeNote>
           ) : ready ? (
@@ -220,7 +244,7 @@ function OverviewBody({
               height={treeHeight}
             />
           ) : (
-            <div style={{ height: treeHeight }} aria-busy="true" data-testid="team-brain-radial-loading" />
+            <TeamBrainRadialLoading height={treeHeight} />
           )}
         </div>
 
@@ -229,6 +253,7 @@ function OverviewBody({
         <div
           // Makes room on the panel's own curves (globals.css), so the two move as one.
           className={cn('team-brain-column relative space-y-8', settingsOpen && 'xl:pr-[392px]')}
+          style={showSettings && wide && panelHeight ? { minHeight: panelHeight - 2 * PANEL_INSET } : undefined}
           data-settings={settingsOpen ? 'open' : 'closed'}
           data-testid="team-brain-column"
         >
@@ -241,12 +266,6 @@ function OverviewBody({
             data-stuck={docked || undefined}
             data-testid="team-brain-dock"
           >
-            {/* A folder that fails after the tree is up leaves the tree and says so here, above how Team Brain is doing. */}
-            {error && ready && (
-              <p className="text-center text-sm text-muted-foreground" role="alert" data-testid="team-brain-drive-error">
-                {`Couldn't read part of the Team Brain drive. ${error}`}
-              </p>
-            )}
             {/* No heading of its own: the nav bar names the page, so this is just how Team Brain is doing, riding above
                 the composer at its width. */}
             <header className="relative flex flex-wrap items-center justify-between gap-4" data-testid="team-brain-overview">
@@ -254,7 +273,8 @@ function OverviewBody({
                   the composer instead of showing round the status row. Only then: on its way up it would blank out a
                   strip of the tree. */}
               <div aria-hidden="true" className="team-brain-dock-cover pointer-events-none absolute -inset-x-6 -bottom-7 -z-10 bg-background" style={{ top: -treeTop }} />
-              <p className="flex items-center gap-1.5 text-sm text-muted-foreground" data-testid="team-brain-status">
+              {/* On the page's glass, with the composer's buttons' corners, so it reads over the tree as it passes behind. */}
+              <p className={cn('flex items-center gap-1.5 rounded-md px-3 py-1 text-sm text-muted-foreground', GLASS_SURFACE)} data-testid="team-brain-status">
                 <span className={cn('inline-block h-1.5 w-1.5 rounded-full', upkeep?.status === 'pending' ? 'bg-green-500' : 'bg-muted-foreground')} aria-hidden="true" />
                 {syncLine(upkeep, syncs[0])}
               </p>
@@ -262,7 +282,7 @@ function OverviewBody({
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-8 w-8"
+                className={cn('h-8 w-8 hover:bg-background/80', GLASS_SURFACE)}
                 onClick={toggleSettings}
                 aria-label="Team Brain settings"
                 aria-expanded={settingsOpen}
@@ -280,7 +300,7 @@ function OverviewBody({
 
           {/* What each sync filed, read like a changelog, on a glass sheet like the composer's and as wide as it: the tree
               shows through it, blurred, as it passes over. */}
-          <div className="relative z-10 mx-auto w-full max-w-[720px] rounded-3xl border border-border/60 bg-background/60 px-6 pb-8 pt-8 shadow-[0_0_24px_rgba(15,23,42,0.07),0_2px_10px_-4px_rgba(15,23,42,0.08)] backdrop-blur-xl supports-[backdrop-filter]:bg-background/40 dark:shadow-[0_0_26px_rgba(0,0,0,0.22),0_2px_12px_-4px_rgba(0,0,0,0.16)]">
+          <div className={cn('relative z-10 mx-auto w-full max-w-[720px] rounded-3xl px-6 pb-8 pt-8', GLASS_SURFACE)}>
             <TeamBrainSyncSummaries
               syncs={syncs}
               unreadable={syncsUnreadable}
@@ -299,9 +319,13 @@ function OverviewBody({
                 open={settingsOpen}
                 onClose={() => onSettingsOpenChange(false)}
                 onClosed={settingsClosed}
-                showRecord={showRecord}
-                onShowRecordChange={onShowRecordChange}
-                style={{ top: treeTop, maxHeight: Math.max(viewHeight - treeTop - 24, 320) }}
+                views={views}
+                recordParts={recordParts}
+                onViewChange={onViewChange}
+                onHeightChange={setPanelHeight}
+                // Its box reaches PANEL_INSET past its cards, so it sticks that much higher, and is twice that taller,
+                // for the cards to stick level with the status row and stop 24px above the foot of the view.
+                style={{ top: treeTop - PANEL_INSET, maxHeight: Math.max(viewHeight - treeTop - 24, 320) + 2 * PANEL_INSET }}
               />
             </div>
           )}
@@ -318,8 +342,9 @@ function OverviewBody({
               open={settingsOpen}
               onClose={() => onSettingsOpenChange(false)}
               onClosed={settingsClosed}
-              showRecord={showRecord}
-              onShowRecordChange={onShowRecordChange}
+              views={views}
+              recordParts={recordParts}
+              onViewChange={onViewChange}
             />
           </div>
         </div>
@@ -349,6 +374,24 @@ function useMediaQuery(query: string): boolean {
 const PAGE_WIDTH = 'max-w-[1040px]'
 
 /** What the tree's place says when there is no tree to draw. */
+/**
+ * A drive that can't be read, in the strip at the top of the page that agent pages use for their warnings and errors:
+ * red when none of it could be read, yellow when the tree is up but a folder failed (that folder stays folded).
+ */
+function DriveErrorBanner({ error, partial }: { error: string; partial: boolean }) {
+  // A listing that hangs is cut off by its own timeout, whose message ("signal timed out") says nothing to a person.
+  const reason = /timed? ?out/i.test(error) ? 'It took too long to answer.' : error
+  const Icon = partial ? AlertTriangle : AlertCircle
+  return (
+    <div role="alert" className={cn('shrink-0 border-b px-4 py-2', partial ? 'bg-yellow-500/10' : 'bg-destructive/10')} data-testid="team-brain-drive-error">
+      <div className={cn('flex items-center gap-2 text-xs select-text', partial ? 'text-yellow-700 dark:text-yellow-400' : 'text-destructive')}>
+        <Icon className="h-3 w-3 shrink-0" />
+        <span>{`Couldn't read ${partial ? 'part of ' : ''}the Team Brain drive. ${reason}`}</span>
+      </div>
+    </div>
+  )
+}
+
 function TreeNote({ height, alert = false, testId, children }: { height: number; alert?: boolean; testId?: string; children: ReactNode }) {
   return (
     <p style={{ height }} className="flex items-center justify-center text-sm text-muted-foreground" role={alert ? 'alert' : undefined} data-testid={testId}>
@@ -432,7 +475,7 @@ const PANEL_FADE_MS = 300
  * the status line toggles it, Escape closes it, and where it floats over the
  * page (narrower than xl) so does a click off it.
  */
-function SettingsPanel({ agent, placement, open, onClose, onClosed, showRecord, onShowRecordChange, style }: {
+function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recordParts, onViewChange, onHeightChange, style }: {
   agent: ApiAgent
   /** Beside the page, in its column (sticky; `style` gives where it sticks and its tallest), or floating over it. */
   placement: 'beside' | 'over'
@@ -440,10 +483,22 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, showRecord, 
   onClose: () => void
   /** The panel has slid out and can go. */
   onClosed: () => void
-  showRecord: boolean
-  onShowRecordChange: (on: boolean) => void
+  views: ReadonlySet<string>
+  /** The team record's parts there are. */
+  recordParts: readonly FolderEntry[]
+  onViewChange: (view: string, on: boolean) => void
+  /** How tall it is, as it changes (sections opening and closing). */
+  onHeightChange?: (height: number) => void
   style?: CSSProperties
 }) {
+  const panelRef = useRef<HTMLElement>(null)
+  useLayoutEffect(() => {
+    const panel = panelRef.current
+    if (!panel || !onHeightChange || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => onHeightChange(Math.ceil(panel.offsetHeight)))
+    observer.observe(panel)
+    return () => observer.disconnect()
+  }, [onHeightChange])
   const { data: agents = [] } = useListedAgents()
   const deleteAgent = useDeleteAgent()
   const [confirmOff, setConfirmOff] = useState(false)
@@ -470,35 +525,38 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, showRecord, 
   }, [open, onClose, confirmOff])
   return (
     <aside
+      ref={panelRef}
       id="team-brain-settings"
       aria-label="Settings"
       style={style}
       data-placement={placement}
       className={cn(
-        placement === 'beside' ? 'sticky w-full' : 'max-h-full w-[360px] max-w-full self-start',
-        // Concentric with the cards inside it: their 16px radius plus the panel's 12px inset.
-        'pointer-events-auto flex flex-col overflow-hidden rounded-[28px] border border-border/60 bg-background/70 shadow-[0_8px_40px_rgba(15,23,42,0.12),0_2px_10px_-4px_rgba(15,23,42,0.1)] backdrop-blur-xl supports-[backdrop-filter]:bg-background/55 dark:shadow-[0_8px_40px_rgba(0,0,0,0.4),0_2px_12px_-4px_rgba(0,0,0,0.3)]',
+        // Beside: its 360px slot plus the inset below. Over: 360px of cards plus the inset.
+        placement === 'beside' ? 'sticky' : 'max-h-[calc(100%+64px)] w-[424px] max-w-[calc(100%+64px)] self-start',
+        // No surface of its own, as Agent Home's side panel has none: its glass cards float on the page. Only a column
+        // that scrolls when it is taller than the view.
+        'pointer-events-auto -m-8 flex flex-col overflow-hidden',
         // The slide's curves are in globals.css, beside the page column's.
         open ? 'team-brain-settings-in' : 'team-brain-settings-out',
       )}
       data-testid="team-brain-settings"
     >
-      {/* Laid out as Agent Home's side panel: the pickers in one card, the sections as rows of another. */}
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3" data-testid="team-brain-details">
-        <SyncCard agentSlug={agent.slug} showRecord={showRecord} onShowRecordChange={onShowRecordChange} />
+      {/* Laid out as Agent Home's side panel: the pickers in one card, the sections as rows of another, then Turn off.
+          It scrolls when taller than the view, which clips it; the 32px inset (undone by the -m-8 above) puts that clip
+          past the reach of the cards' soft shadows. */}
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-8" data-testid="team-brain-details">
+        <SyncCard agentSlug={agent.slug} />
         <div className={SECTIONS_CARD_CLASS}>
           <StorageSection agentSlug={agent.slug} />
           <SourcesSection agentSlug={agent.slug} />
           <AgentsSection brainSlug={agent.slug} agents={agents} />
           <SessionsSection agentSlug={agent.slug} />
         </div>
-      </div>
-      {/* Pinned to the foot of the panel, below everything that scrolls; as wide as the cards, red only in its words until hovered. */}
-      <div className="shrink-0 border-t border-border/40 p-3">
+        <ViewsCard parts={recordParts} views={views} onViewChange={onViewChange} />
+        {/* Last, on a glass row of its own: red only in its words until hovered. */}
         <Button
           variant="ghost"
-          size="sm"
-          className="h-9 w-full text-destructive hover:bg-destructive/10 hover:text-destructive"
+          className={cn('h-12 w-full rounded-2xl text-destructive hover:bg-destructive/10 hover:text-destructive', GLASS_SURFACE)}
           onClick={() => setConfirmOff(true)}
           disabled={deleteAgent.isPending}
           data-testid="team-brain-turn-off"
@@ -527,8 +585,16 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, showRecord, 
   )
 }
 
+/** How far the panel's box reaches past its cards on every side (`-m-8 p-8`), so their shadows are never clipped. */
+const PANEL_INSET = 32
+/**
+ * The page's glass, the sync summaries' sheet and the settings panel's cards alike: translucent enough that the tree
+ * shows through, blurred, as the composer's does.
+ */
+const GLASS_SURFACE =
+  'border border-border/60 bg-background/60 shadow-[0_0_24px_rgba(15,23,42,0.07),0_2px_10px_-4px_rgba(15,23,42,0.08)] backdrop-blur-xl supports-[backdrop-filter]:bg-background/40 dark:shadow-[0_0_26px_rgba(0,0,0,0.22),0_2px_12px_-4px_rgba(0,0,0,0.16)]'
 /** The card the panel's sections share, as Agent Home's side panel has it: each section a row, divided from the next, clipped to the card's corners. */
-const SECTIONS_CARD_CLASS = 'overflow-hidden rounded-2xl border border-border/60 bg-background shadow-sm divide-y divide-border/50'
+const SECTIONS_CARD_CLASS = cn('overflow-hidden rounded-2xl divide-y divide-border/50', GLASS_SURFACE)
 /** A section's header row, as tall as the pickers' rows. The focus ring is inset because the card clips its rows. */
 const SECTION_HEADER_CLASS = 'flex min-h-12 w-full items-center justify-between gap-2 px-4 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring'
 /** Every label in the panel: a section's title, a picker row's name. */
@@ -536,57 +602,17 @@ const PANEL_LABEL_CLASS = 'text-[12px]/5 text-muted-foreground'
 /** How many a folded section holds, in Agent Home's style for a section's count. */
 const SECTION_COUNT_CLASS = 'text-[12px]/5 tabular-nums text-muted-foreground/50'
 
-/**
- * How Team Brain keeps up and what the tree shows, in a card of picker rows
- * like Agent Home's default model and auto-delete: whether it is syncing (its
- * toggle pauses that; agents still read what is already there), when it last
- * ran and next will, how often, and whether the tree shows the team record.
- */
-function SyncCard({ agentSlug, showRecord, onShowRecordChange }: { agentSlug: string; showRecord: boolean; onShowRecordChange: (on: boolean) => void }) {
-  const upkeep = useBrainUpkeep(agentSlug)
-  const pause = usePauseScheduledTask()
-  const resume = useResumeScheduledTask()
-  const paused = upkeep?.status === 'paused'
+/** How Team Brain keeps up, in a card of its own above the sections, as Agent Home's pickers sit above its sections. */
+function SyncCard({ agentSlug }: { agentSlug: string }) {
   return (
-    <div className="divide-y divide-border/50 rounded-2xl border bg-background">
-      <div className="flex items-center justify-between gap-2 px-4 py-2" data-testid="team-brain-sync">
-        <div className="min-w-0">
-          <span className={cn('block', PANEL_LABEL_CLASS)}>Sync</span>
-          <dl className="flex flex-wrap gap-x-3 text-[11px]">
-            <div className="flex gap-1">
-              <dt className="text-muted-foreground">Next:</dt>
-              <dd>{!upkeep ? 'After the first chat' : paused ? 'Paused' : formatUntil(upkeep.nextExecutionAt)}</dd>
-            </div>
-            <div className="flex gap-1">
-              <dt className="text-muted-foreground">Last run:</dt>
-              <dd>{upkeep?.lastExecutedAt ? formatSince(isoOf(upkeep.lastExecutedAt)) : 'Not yet'}</dd>
-            </div>
-          </dl>
-        </div>
-        <StatusToggle
-          status={paused ? 'paused' : 'active'}
-          isActive={!!upkeep}
-          isPaused={paused}
-          canToggle={!!upkeep}
-          onToggle={(on) => upkeep && (on ? resume : pause).mutate({ taskId: upkeep.id, agentSlug })}
-          ariaLabelResume="Resume syncing"
-          ariaLabelPause="Pause syncing"
-        />
-      </div>
-      <ScheduleRow agentSlug={agentSlug} />
-      {/* What the tree shows: the agent's own record, off by default. */}
-      <div className="flex items-center gap-3 px-4 py-2">
-        <label htmlFor="team-brain-show-record" className="min-w-0 flex-1">
-          <span className={cn('block', PANEL_LABEL_CLASS)}>Show team record</span>
-          <span className="block text-[11px] text-muted-foreground/70">{"Rules, sources, changelog, archive, sync summaries and the agents' index."}</span>
-        </label>
-        <Switch id="team-brain-show-record" checked={showRecord} onCheckedChange={onShowRecordChange} data-testid="team-brain-show-record" />
-      </div>
+    <div className={cn('overflow-hidden rounded-2xl', GLASS_SURFACE)}>
+      <SyncRow agentSlug={agentSlug} />
     </div>
   )
 }
 
-/** Where Team Brain lives, as a connector row under its section label; it opens the folder on this computer when it can. */
+/** Where Team Brain lives, folded down to its home's mark and name, as the other sections are; open, a connector row that
+ * opens the folder: on this computer for a folder here, else in its provider's own web app (Google Drive, Dropbox). */
 function StorageSection({ agentSlug }: { agentSlug: string }) {
   const location = useTeamBrainLocation(agentSlug)
   const LocationIcon = location.Icon
@@ -595,26 +621,51 @@ function StorageSection({ agentSlug }: { agentSlug: string }) {
   const mount = mounts?.[0]
   const hostPath = mount?.hostPath ?? null
   const showInFolder = canUseHostFeatures() && hostPath !== null ? () => void window.electronAPI?.showInFolder(hostPath) : undefined
+  const webUrl = mount?.webUrl
+  const openIt = showInFolder ?? (webUrl ? () => void openExternalUrl(webUrl) : undefined)
   return (
-    <section className="pb-3">
-      <h3 className={cn('flex min-h-12 items-center px-4', PANEL_LABEL_CLASS)}>Storage location</h3>
-      <IntegrationRow
-        icon={<LocationIcon className="h-4 w-4" />}
-        name={location.name}
-        onActivate={showInFolder}
-        ariaLabel={showInFolder ? `Open Team Brain in ${location.name}` : undefined}
-        right={showInFolder ? <RowHoverChevron icon={<ArrowUpRight className="h-4 w-4 shrink-0 text-muted-foreground" />} /> : undefined}
-        // No fill on hover, as rows in Agent Home's side panel have none: the ↗ says it opens.
-        className="hover:bg-transparent"
-        data-testid="team-brain-storage"
-        subtitle={
-          <span className="min-w-0 truncate" data-testid="team-brain-location">
-            {mount?.sourceLabel ?? hostPath}
-          </span>
-        }
-      />
-    </section>
+    <PanelSection
+      title="Storage location"
+      summary={
+        <>
+          <LocationIcon className="size-3.5 shrink-0" aria-hidden="true" />
+          <span className={SECTION_COUNT_CLASS}>{location.name}</span>
+        </>
+      }
+      testId="team-brain-storage-section"
+    >
+      {/* One row, so it sits right under the header rather than a list's gap below it. */}
+      <div className="-mt-1">
+        <IntegrationRow
+          icon={<LocationIcon className="h-4 w-4" />}
+          name={location.name}
+          // The whole row opens it; the ↗ says it leaves the app.
+          onActivate={openIt}
+          ariaLabel={openIt ? `Open Team Brain in ${location.name}` : undefined}
+          right={openIt ? <ArrowUpRight className="h-4 w-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" aria-hidden="true" /> : undefined}
+          // Hovered, the row fills (the card clips it to its corners) and its ↗ darkens, as it is a way out of the app.
+          className="py-2"
+          data-testid="team-brain-storage"
+          subtitle={
+            <span className="min-w-0 truncate" data-testid="team-brain-location">
+              {placeIn(mount?.sourceLabel ?? hostPath)}
+            </span>
+          }
+        />
+      </div>
+    </PanelSection>
   )
+}
+
+/**
+ * Where in its home a drive is, without the home's name the row already shows ("Google Drive · My Drive / Team" is
+ * "My Drive / Team"), and a drive chosen whole named once ("My Drive / My Drive" is "My Drive").
+ */
+function placeIn(label: string | null): string | null {
+  if (!label) return label
+  const place = label.includes(' · ') ? label.slice(label.indexOf(' · ') + 3) : label
+  const [drive, folder, ...rest] = place.split(' / ')
+  return rest.length === 0 && folder !== undefined && drive === folder ? drive : place
 }
 
 /**
@@ -638,62 +689,45 @@ function PanelSection({ title, summary, testId, children }: { title: string; sum
 }
 
 /**
- * How often Team Brain syncs, as one of Agent Home's preference rows: the
- * label, and an outlined trigger whose popover lists the choices with what
- * each trades away. A pick doesn't close it, as the model picker's don't.
+ * How Team Brain keeps up, in one row: when it next syncs and when it last ran, and on the right how often. It opens
+ * the upkeep task's own page, where its schedule is changed and it is paused or resumed. Until the first chat
+ * schedules that task there is nothing to open, only when it starts.
  */
-function ScheduleRow({ agentSlug }: { agentSlug: string }) {
+function SyncRow({ agentSlug }: { agentSlug: string }) {
+  const navigate = useNavigate()
   const upkeep = useBrainUpkeep(agentSlug)
-  const update = useUpdateSchedule()
+  const paused = upkeep?.status === 'paused'
   const schedule = upkeep ? scheduleOfCron(upkeep.scheduleExpression) : null
-  const title = !upkeep ? 'After the first chat' : schedule ? SCHEDULE_LABELS[schedule].title : 'Custom'
+  const lastRun = upkeep?.lastExecutedAt ? `last ran ${formatSince(isoOf(upkeep.lastExecutedAt))}` : 'not run yet'
+  const note = !upkeep ? 'Starts after the first chat' : `${paused ? 'Paused' : `Syncs ${formatUntil(upkeep.nextExecutionAt)}`} · ${lastRun}`
+  const summary = (
+    <span className="min-w-0">
+      <span className={cn('block', PANEL_LABEL_CLASS)}>Sync schedule</span>
+      <span className="block truncate text-[11px] text-muted-foreground" data-testid="team-brain-sync-note">{note}</span>
+    </span>
+  )
+  if (!upkeep) {
+    return (
+      <div className="flex min-h-12 items-center px-4 py-2" data-testid="team-brain-sync">
+        {summary}
+      </div>
+    )
+  }
+  const how = paused ? 'Paused' : schedule ? SCHEDULE_LABELS[schedule].title : 'Custom'
   return (
-    <div className="flex items-center justify-between gap-2 px-4 py-2" data-testid="team-brain-schedule">
-      <span className={PANEL_LABEL_CLASS}>Schedule</span>
-      <Popover>
-        <PopoverTrigger asChild>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-[34px] justify-between gap-1.5 px-2 text-xs font-medium"
-            disabled={!upkeep}
-            aria-label={`Schedule: ${title}. Click to change.`}
-            data-testid="team-brain-schedule-trigger"
-          >
-            <span className="truncate">{title}</span>
-            <ChevronDown className="h-3.5 w-3.5" />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent className="flex w-64 flex-col px-1 py-2" align="end" collisionPadding={8} onOpenAutoFocus={(e) => e.preventDefault()}>
-          <div className="flex flex-col" role="listbox" aria-label="Schedule">
-            {TEAM_BRAIN_SCHEDULES.map((option) => {
-              const isSelected = option === schedule
-              return (
-                <button
-                  key={option}
-                  type="button"
-                  role="option"
-                  aria-selected={isSelected}
-                  onClick={() => upkeep && update.mutate({ taskId: upkeep.id, scheduleExpression: TEAM_BRAIN_CRON[option] })}
-                  data-testid={`team-brain-schedule-option-${option}`}
-                  className={cn(
-                    'flex items-start justify-between gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent hover:text-accent-foreground',
-                    isSelected ? 'text-foreground' : 'text-muted-foreground',
-                  )}
-                >
-                  <span className="min-w-0">
-                    <span className="block">{SCHEDULE_LABELS[option].title}</span>
-                    <span className="mt-0.5 block text-[11px] text-muted-foreground">{SCHEDULE_LABELS[option].detail}</span>
-                  </span>
-                  {isSelected && <Check className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
-                </button>
-              )
-            })}
-          </div>
-        </PopoverContent>
-      </Popover>
-    </div>
+    <button
+      type="button"
+      onClick={() => void navigate({ to: '/agents/$slug/tasks/$taskId', params: { slug: agentSlug, taskId: upkeep.id } })}
+      // The focus ring is inset because the card clips its rows to its corners.
+      className="flex min-h-12 w-full items-center justify-between gap-2 px-4 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      data-testid="team-brain-sync"
+    >
+      {summary}
+      <span className="flex shrink-0 items-center gap-1" data-testid="team-brain-schedule">
+        <span className={SECTION_COUNT_CLASS}>{how}</span>
+        <ChevronRight className="h-4 w-4 text-muted-foreground/50" aria-hidden="true" />
+      </span>
+    </button>
   )
 }
 
@@ -815,6 +849,51 @@ function SessionsSection({ agentSlug }: { agentSlug: string }) {
         <p className="px-4 pt-2 text-xs text-muted-foreground">No sessions yet.</p>
       )}
     </PanelSection>
+  )
+}
+
+/** The team record's usual parts, each a view of its own, in the order they're listed. */
+const RECORD_VIEWS: readonly { id: string; name: string }[] = [
+  { id: 'rules', name: 'Show rules' },
+  { id: 'sources', name: 'Show sources' },
+  { id: 'changelog', name: 'Show changelog' },
+  { id: 'archive', name: 'Show archive' },
+  { id: 'syncs', name: 'Show sync summaries' },
+  { id: 'index', name: "Show agents' index" },
+]
+/** Any other part the agent keeps in `_brain`, named after its file. */
+const partName = (part: FolderEntry) => `Show ${part.name.replace(/\.md$/i, '').replace(/[-_]+/g, ' ').toLowerCase()}`
+
+/**
+ * Which parts of Team Brain's own record the tree shows, in a folded card of their own below the sections, as Sync has
+ * one above: a switch for each of the record's usual parts, whether or not the agent has written it yet, and for anything
+ * else it keeps in `_brain`. All off by default, so the tree is the team's knowledge until one is asked for.
+ */
+function ViewsCard({ parts, views, onViewChange }: { parts: readonly FolderEntry[]; views: ReadonlySet<string>; onViewChange: (view: string, on: boolean) => void }) {
+  const written = new Set(parts.map(teamRecordView))
+  const extras = parts.filter((part) => !RECORD_VIEWS.some((view) => view.id === teamRecordView(part))).map((part) => ({ id: teamRecordView(part), name: partName(part) }))
+  const all = [...RECORD_VIEWS, ...extras]
+  const on = all.filter((view) => views.has(view.id)).length
+  return (
+    // A card of its own, folded by default like the sections: the header says how many views are on.
+    <div className={cn('overflow-hidden rounded-2xl', GLASS_SURFACE)}>
+      <PanelSection title="Views" summary={<span className={SECTION_COUNT_CLASS} data-testid="team-brain-views-count">{on > 0 ? `${on} on` : 'Off'}</span>} testId="team-brain-views">
+        <ul className="-mt-1 pb-1">
+          {all.map((view) => {
+            const id = `team-brain-view-${view.id}`
+            return (
+              <li key={view.id} className="flex items-center justify-between gap-2 px-4 py-1.5">
+                <label htmlFor={id} className="min-w-0">
+                  <span className="block truncate text-xs">{view.name}</span>
+                  {!written.has(view.id) && <span className="block text-[11px] text-muted-foreground">Not written yet</span>}
+                </label>
+                <Switch id={id} checked={views.has(view.id)} onCheckedChange={(checked) => onViewChange(view.id, checked)} data-testid={id} />
+              </li>
+            )
+          })}
+        </ul>
+      </PanelSection>
+    </div>
   )
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { FolderEntry } from '@renderer/hooks/use-folder-entries'
-import { driveTree, foldersToList, splitFrontPages, withoutTeamRecord, type DriveListing } from './team-brain-drive'
+import { driveTree, foldersToList, splitFrontPages, teamRecordParts, teamRecordView, withoutTeamRecord, withTeamRecordParts, type DriveListing } from './team-brain-drive'
 
 const file = (path: string, mtimeMs?: number): FolderEntry => ({ name: path.split('/').at(-1)!, path, type: 'file', mtimeMs })
 const dir = (path: string): FolderEntry => ({ name: path.split('/').at(-1)!, path, type: 'directory' })
@@ -60,5 +60,32 @@ describe('splitFrontPages', () => {
     expect([front?.id, index?.id]).toEqual(['README.md', 'INDEX.md'])
     expect(rest.map((node) => node.id)).toEqual(['company'])
     expect(splitFrontPages(rest)).toMatchObject({ front: undefined, index: undefined })
+  })
+})
+
+describe('the team record’s parts', () => {
+  const listed: DriveListing = new Map([
+    ['', [dir('_brain'), dir('customers'), file('INDEX.md'), file('README.md')]],
+    ['_brain', [file('_brain/Rules.md'), dir('_brain/syncs'), file('_brain/.keep')]],
+  ])
+
+  it('lists each part in _brain, then the agents’ index, leaving out hidden files, each under its view', () => {
+    const parts = teamRecordParts(listed)
+    expect(parts.map((entry) => entry.path)).toEqual(['_brain/Rules.md', '_brain/syncs', 'INDEX.md'])
+    expect(parts.map(teamRecordView)).toEqual(['rules', 'syncs', 'index'])
+  })
+
+  it('keeps only the parts whose views are on, and _brain only while one of its parts is', () => {
+    const syncsOnly = withTeamRecordParts(listed, new Set(['syncs']))
+    expect(syncsOnly.get('')?.map((entry) => entry.path)).toEqual(['_brain', 'customers', 'README.md'])
+    expect(syncsOnly.get('_brain')?.map((entry) => entry.path)).toEqual(['_brain/syncs'])
+    expect(withTeamRecordParts(listed, new Set(['index'])).get('')?.map((entry) => entry.path)).toEqual(['customers', 'INDEX.md', 'README.md'])
+    // A view with no part of its own yet shows nothing.
+    expect(withTeamRecordParts(listed, new Set(['changelog'])).get('')?.map((entry) => entry.path)).toEqual(['customers', 'README.md'])
+  })
+
+  it('keeps _brain while it is not listed yet, so a view on in it gets it listed', () => {
+    const unlisted: DriveListing = new Map([['', [dir('_brain'), file('INDEX.md')]]])
+    expect(withTeamRecordParts(unlisted, new Set(['rules'])).get('')?.map((entry) => entry.path)).toEqual(['_brain'])
   })
 })

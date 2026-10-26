@@ -44,6 +44,35 @@ export function withoutTeamRecord(listed: DriveListing): DriveListing {
   return top ? new Map([...listed, ['', top.filter((entry) => !TEAM_RECORD.has(entry.path))]]) : listed
 }
 
+/** The agents' index at the drive's top, which goes into every agent's prompt; one of the record's parts. */
+export const TEAM_RECORD_INDEX = 'INDEX.md'
+
+/** The team record's parts there are: each entry in `_brain` (rules, sources, sync summaries, …), then the agents' index. */
+export function teamRecordParts(listed: DriveListing): FolderEntry[] {
+  const index = listed.get('')?.find((entry) => entry.path === TEAM_RECORD_INDEX)
+  return [...(listed.get(TEAM_RECORD_FOLDER) ?? []).filter(shown), ...(index ? [index] : [])]
+}
+
+/** The view that shows a part of the team record: `index` for the agents' index, else the part's name ("Rules.md" is `rules`). */
+export function teamRecordView(entry: { path: string; name: string }): string {
+  return entry.path === TEAM_RECORD_INDEX ? 'index' : entry.name.replace(/\.md$/i, '').toLowerCase()
+}
+
+/**
+ * The listing with only the parts of the team record whose views are on, so the tree shows and lists those alone. Until
+ * `_brain` is listed, it stays while any view in it is on, so it gets listed.
+ */
+export function withTeamRecordParts(listed: DriveListing, views: ReadonlySet<string>): DriveListing {
+  const top = listed.get('')
+  if (!top) return listed
+  const brain = listed.get(TEAM_RECORD_FOLDER)
+  const inBrain = brain ? brain.some((entry) => views.has(teamRecordView(entry))) : [...views].some((view) => view !== 'index')
+  const next = new Map(listed)
+  next.set('', top.filter((entry) => (entry.path === TEAM_RECORD_FOLDER ? inBrain : entry.path === TEAM_RECORD_INDEX ? views.has('index') : true)))
+  if (brain) next.set(TEAM_RECORD_FOLDER, brain.filter((entry) => views.has(teamRecordView(entry))))
+  return next
+}
+
 /**
  * The brain's two front pages at the drive's top, which the tree's middle opens instead of showing them as pages:
  * `README.md` for people, and `INDEX.md` for agents (listed only while the team record shows).

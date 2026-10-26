@@ -748,13 +748,36 @@ html[data-keyboard-open] [data-composer-footer] {
   mask-composite: intersect;
 }
 
+/* Team Brain's tree while its drive is first listed (TeamBrainRadialLoading in
+   team-brain-radial.tsx): it fades in after a beat, so a quick listing never
+   flashes it, and a light runs round each ring at its own pace. */
+@keyframes team-brain-radial-wait-in {
+  from { opacity: 0; }
+}
+.team-brain-radial-wait-in {
+  animation: team-brain-radial-wait-in 500ms ease-out 250ms backwards;
+}
+@keyframes team-brain-radial-wait {
+  to { transform: rotate(360deg); }
+}
+.team-brain-radial-wait {
+  transform-box: view-box;
+  animation: team-brain-radial-wait 9s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .team-brain-radial-wait-in, .team-brain-radial-wait { animation: none; }
+}
+
 /* Team Brain's settings panel (team-brain-overview.tsx) slides in from the
    page's right edge and eases to a stop, an ease-out with a long tail, and
    slides back out accelerating away. The page's column makes room for it on
    the same curves, so the two move as one. */
+/* Transform only, no opacity: an ancestor whose opacity animates becomes the
+   backdrop root of the glass cards inside, which then blur nothing behind the
+   panel. */
 @keyframes team-brain-settings-in {
-  from { transform: translateX(calc(100% + 24px)); opacity: 0.5; }
-  to { transform: translateX(0); opacity: 1; }
+  from { transform: translateX(calc(100% + 24px)); }
+  to { transform: translateX(0); }
 }
 .team-brain-settings-in {
   animation: team-brain-settings-in 450ms cubic-bezier(0.22, 1, 0.36, 1) both;
@@ -762,8 +785,8 @@ html[data-keyboard-open] [data-composer-footer] {
 /* Out by an animation too, not a transition: going from the in-animation's
    held frame to a transition snaps instead of sliding. */
 @keyframes team-brain-settings-out {
-  from { transform: translateX(0); opacity: 1; }
-  to { transform: translateX(calc(100% + 24px)); opacity: 0.5; }
+  from { transform: translateX(0); }
+  to { transform: translateX(calc(100% + 24px)); }
 }
 .team-brain-settings-out {
   pointer-events: none;
@@ -772,12 +795,12 @@ html[data-keyboard-open] [data-composer-footer] {
 /* Beside the page it comes out from behind the page's column instead, and
    goes back under it, on the same curves. */
 @keyframes team-brain-settings-from-column {
-  from { transform: translateX(-100%); opacity: 0; }
-  to { transform: translateX(0); opacity: 1; }
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
 }
 @keyframes team-brain-settings-into-column {
-  from { transform: translateX(0); opacity: 1; }
-  to { transform: translateX(-100%); opacity: 0; }
+  from { transform: translateX(0); }
+  to { transform: translateX(-100%); }
 }
 .team-brain-settings-in[data-placement="beside"] { animation-name: team-brain-settings-from-column; }
 .team-brain-settings-out[data-placement="beside"] { animation-name: team-brain-settings-into-column; }

@@ -28,7 +28,7 @@ describe('useTeamBrainDrive', () => {
   it('shows the rest of the tree when one folder cannot be listed, and says so', async () => {
     const client = new QueryClient()
     const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
-    const { result } = renderHook(() => useTeamBrainDrive('brain', 'vol', new Set(), false), { wrapper })
+    const { result } = renderHook(() => useTeamBrainDrive('brain', 'vol', new Set()), { wrapper })
     await waitFor(() => expect(result.current.ready).toBe(true))
     // The healthy side still goes a level deeper.
     await waitFor(() => expect(result.current.drive[1].children?.[0].children).toHaveLength(1))

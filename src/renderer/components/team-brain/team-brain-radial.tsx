@@ -954,3 +954,81 @@ export function TeamBrainRadial({
   )
 }
 
+
+/** How long a light takes to run once round each ring, innermost first, while the drive is read. */
+const WAIT_LAPS_MS = [7000, 11000, 15000]
+
+/**
+ * What stands in for the tree while the drive is first listed: the tree's own frame and fitted size, the middle's
+ * "Team Brain" pill where the tree will grow from, and its three rings drawn faint, a light running slowly round each
+ * (alternating ways) so the wait reads as the drive being read rather than an empty page. It fades in only after a
+ * moment, so a quick listing never flashes it, and holds still under reduced motion.
+ */
+export function TeamBrainRadialLoading({ height }: { height: number }) {
+  const frameRef = useRef<HTMLDivElement>(null)
+  const width = useFrameWidth(frameRef)
+  const [font, setFont] = useState('sans-serif')
+  useEffect(() => {
+    if (frameRef.current) setFont(getComputedStyle(frameRef.current).fontFamily || 'sans-serif')
+  }, [])
+  const k = width ? fitZoom(width, height) : 1
+  const frontWidth = nameWidth('Team Brain', 12, font) + PILL.x * 2
+  // The rings where the tree's sections, folders and pages will sit, the sections' kept clear of the pill as the tree keeps them.
+  const sectionRing = Math.min(Math.max(SECTION_RING, (frontWidth / 2 + MIDDLE.clearance) / k), 0.6 * RING)
+  const rings = [sectionRing, FOLDER_RING, RING].map((r) => r * k)
+  const cx = width / 2
+  const cy = height / 2
+  return (
+    <div
+      ref={frameRef}
+      className="team-brain-radial-fade team-brain-radial-wait-in relative"
+      style={{ height }}
+      role="status"
+      aria-label="Loading Team Brain"
+      data-testid="team-brain-radial-loading"
+    >
+      {width > 0 && (
+        <svg width={width} height={height} aria-hidden="true" className="block">
+          {rings.map((r, i) => {
+            const lap = 2 * Math.PI * r
+            return (
+              <g key={i}>
+                <circle cx={cx} cy={cy} r={r} strokeDasharray="1 6" strokeLinecap="round" className="fill-none stroke-foreground/15" />
+                <g
+                  className="team-brain-radial-wait"
+                  style={{ transformOrigin: `${cx}px ${cy}px`, animationDuration: `${WAIT_LAPS_MS[i]}ms`, animationDirection: i % 2 ? 'reverse' : 'normal' } as CSSProperties}
+                >
+                  <circle
+                    cx={cx}
+                    cy={cy}
+                    r={r}
+                    strokeWidth={1.5}
+                    strokeLinecap="round"
+                    strokeDasharray={`${lap * 0.12} ${lap}`}
+                    className="fill-none stroke-foreground/30"
+                  />
+                </g>
+              </g>
+            )
+          })}
+          <g transform={`translate(${cx} ${cy})`}>
+            <rect
+              x={-frontWidth / 2}
+              y={-MIDDLE.front / 2}
+              width={frontWidth}
+              height={MIDDLE.front}
+              rx={MIDDLE.front / 2}
+              className="fill-background stroke-border"
+            />
+            <text textAnchor="middle" dominantBaseline="central" className="fill-foreground" style={{ fontSize: '12px' }}>
+              Team Brain
+            </text>
+            <text y={MIDDLE.front / 2 + 16} textAnchor="middle" dominantBaseline="central" className="fill-muted-foreground" style={{ fontSize: '11px' }}>
+              Reading the drive…
+            </text>
+          </g>
+        </svg>
+      )}
+    </div>
+  )
+}
