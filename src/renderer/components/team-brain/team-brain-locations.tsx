@@ -1,7 +1,7 @@
 import type { ComponentType } from 'react'
 import { cn } from '@shared/lib/utils/cn'
 import type { VolumeType } from '@shared/lib/types/mount'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { volumeSetupRegistry } from '@renderer/components/volumes/volume-setup-registry'
 import type { TeamBrainLocationId } from '@renderer/lib/team-brain/team-brain-schema'
