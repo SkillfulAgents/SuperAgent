@@ -1,25 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Successfully verified that the agent can open a browser, navigate to a URL, retrieve the page title, and report back with the correct information containing \"Example Domain\".",
+  "reason": "Agent successfully opened a browser, navigated to https://example.com, and reported the page title as \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 - Successfully loaded the Gamut application home page showing \"Your Agents\" section with agent list visible in sidebar and main area",
-    "Clicked on the \"QA-20261025-014600-awap\" agent card in the main content area - Successfully navigated to the agent page with message input interface",
-    "Clicked on message input textbox - Successfully focused the input field for message entry",
-    "Filled message with \"Open a browser and go to https://example.com. Tell me the page title.\" - Successfully entered the complete message in the input field",
-    "Sent message using Cmd+Enter keyboard shortcut - Successfully created a new session (b5f146ae-b27d-4fe9-b43d-38639abe3dc2) and initiated agent execution",
-    "Waited 5 seconds for agent processing - Agent completed its work in approximately 4 seconds, processing completed successfully",
-    "Verified agent response contains \"Example Domain\" - Response received: \"The page title is \"Example Domain\". The page at https://example.com loaded normally, and I've closed the browser.\""
+    "Navigated to http://localhost:47891 — Page loaded showing Gamut home with Your Agents list",
+    "Found and clicked the \"QA-20261026-005129-j7wf\" agent in the sidebar — Agent configuration page opened",
+    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message delivered to agent, agent status changed to \"working\"",
+    "Waited for response (up to 3 minutes) — Agent completed in 8 seconds with 3 tool calls",
+    "Verified response mentions \"Example Domain\" — Response text clearly states: \"The page title at https://example.com is \"Example Domain\". The page loaded fine, and I've closed the browser.\""
   ],
   "bugs": [],
-  "durationMs": 106593,
-  "sessionId": "b1ce537a-3985-4ad7-aa53-dd5138dd4aa0",
+  "durationMs": 68477,
+  "sessionId": "70ac67ff-1376-4745-b095-b3cc658e95b9",
   "cost": {
-    "inputTokens": 530,
-    "outputTokens": 16559,
-    "cacheCreationTokens": 76449,
-    "cacheReadTokens": 1707082,
+    "inputTokens": 414,
+    "outputTokens": 10546,
+    "cacheCreationTokens": 78482,
+    "cacheReadTokens": 1200661,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.349594
+    "totalCostUsd": 0.271313
   }
 }
