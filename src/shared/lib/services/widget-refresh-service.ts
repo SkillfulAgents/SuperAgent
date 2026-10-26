@@ -1,5 +1,6 @@
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
+import { background } from '@shared/lib/background'
 import { containerWidgetRefreshResponseSchema, type ApiAgentWidget } from '@shared/lib/widgets/widget-schema'
 import type { WidgetRefreshOutcome } from '@shared/lib/widgets/agent-widget-refreshes'
 import { openWidgetRepairSession } from './widget-repair-service'
@@ -113,7 +114,7 @@ class WidgetRefreshService {
     opts: { wake: boolean; reason: RefreshReason },
   ): Promise<void> {
     const token = await agentRegistry.get(agentSlug).widgets.beginRefresh(widgetSlug)
-    if (token) void this.runRefresh(agentSlug, widgetSlug, token, opts)
+    if (token) background(this.runRefresh(agentSlug, widgetSlug, token, opts), { name: 'widget-refresh.refresh-widget' })
   }
 
   /** Run the refresh `token` began and hand its outcome to whoever joined it. Never rejects. */
@@ -171,9 +172,9 @@ class WidgetRefreshService {
       // The container ran and the SCRIPT failed — that is the agent's code,
       // and no turn is going to notice on its own. Ask the agent to fix it.
       if (snapshot.lastError) {
-        void openWidgetRepairSession(agentSlug, widgetSlug, snapshot.lastError).catch((err) => {
+        background(openWidgetRepairSession(agentSlug, widgetSlug, snapshot.lastError).catch((err) => {
           console.warn(`[WidgetRefresh] repair session for ${agentSlug}/${widgetSlug} failed:`, err)
-        })
+        }), { name: 'widget-refresh.open-repair-session' })
       }
       return { ok: true, snapshot }
     } catch (error) {
@@ -230,9 +231,9 @@ class WidgetRefreshService {
       if (generation !== this.generation || !(await widgets.isLatestPostRun(stamp))) return
       await this.runPostRun(agentSlug)
     }
-    sweep().catch((error) => {
+    background(sweep().catch((error) => {
       console.warn(`[WidgetRefresh] post-run sweep for ${agentSlug} failed:`, error)
-    })
+    }), { name: 'widget-refresh.post-run-sweep' })
   }
 
   async runPostRun(agentSlug: string): Promise<string[]> {

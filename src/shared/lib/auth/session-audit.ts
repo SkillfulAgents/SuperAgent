@@ -43,6 +43,8 @@ const METHOD_BY_ENDPOINT_PATH: Record<string, SessionCreationMethod> = {
   '/sign-up/email': 'password',
   '/callback/:id': 'oidc',
   '/oauth2/callback/:providerId': 'oidc',
+  // Generic providers can also authenticate a verified ID token in 1.7.
+  '/sign-in/social': 'oidc',
   // Belt and braces. Impersonation is normally recognized from the session's
   // `impersonatedBy` column, which also names the actor; this only keeps the
   // label right if that column is ever absent.

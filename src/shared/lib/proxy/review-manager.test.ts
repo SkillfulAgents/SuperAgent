@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest'
 
 import { ReviewManager, humanizeActionName, generateReviewDisplayText } from './review-manager'
+import { getScopeDescriptors } from './scope-catalog'
+import { pendingUserInputRequestSchema } from '@shared/lib/tools/requests/request-schema'
 import { requestBodyPreview } from './review-display'
 import { awaitReview } from './review-request'
 import {
@@ -117,6 +119,38 @@ describe('ReviewManager', () => {
   it('submitDecision returns false for unknown reviewId', () => {
     const result = manager.submitDecision('agent-1', 'nonexistent-id', 'allow')
     expect(result).toBe(false)
+  })
+
+  it('streams and replays authoritative metadata for matched API scopes only', async () => {
+    const promise = manager.requestReview({
+      agentSlug: 'agent-1', accountId: 'github-1', reviewType: 'api', toolkit: 'github',
+      method: 'POST', targetPath: '/user/repos',
+      matchedScopes: ['administration:write', 'future.scope'],
+      scopeDescriptions: { 'administration:write': 'stale description', 'future.scope': 'New capability' },
+    })
+    const [entry] = userInputRequestManager.getAgentScopedRequests('agent-1')
+    const expected = getScopeDescriptors('github', ['administration:write', 'future.scope'], { 'future.scope': 'New capability' })
+    expect(entry.payload.scopeMetadata).toEqual(expected)
+    const replay = pendingUserInputRequestSchema.parse(JSON.parse(JSON.stringify(entry)))
+    expect(replay.payload.scopeMetadata).toEqual(expected)
+    expect(created()[0].request.payload.scopeMetadata).toEqual(expected)
+    expect(manager.getPendingReviewsForAgent('agent-1')[0].scopeMetadata).toEqual(expected)
+    expect(expected[0].label).toBe('destructive')
+    expect(expected[1]).toEqual({ scope: 'future.scope', description: 'New capability', label: 'other' })
+    manager.submitDecision('agent-1', entry.id, 'deny')
+    await promise
+  })
+
+  it('does not apply API metadata to an MCP tool with the same name', async () => {
+    const promise = manager.requestReview({
+      agentSlug: 'agent-1', accountId: 'mcp-1', reviewType: 'mcp', toolkit: 'github',
+      method: 'POST', targetPath: 'subscriptions/listen',
+      matchedScopes: ['administration:write'], scopeDescriptions: {},
+    })
+    const [entry] = userInputRequestManager.getAgentScopedRequests('agent-1')
+    expect(entry.payload.scopeMetadata).toBeUndefined()
+    manager.submitDecision('agent-1', entry.id, 'deny')
+    await promise
   })
 
   it('registers the review envelope with the full details plus the derived displayText', async () => {

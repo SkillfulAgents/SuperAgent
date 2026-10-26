@@ -199,6 +199,7 @@ const ASK_BY_KIND: Record<UserInputRequestKind, TodoAsk> = {
   secret: 'info',
   file: 'info',
   browser_input: 'info',
+  login: 'info',
 }
 
 /** The ask for a session's open requests: the oldest one that blocks it. */

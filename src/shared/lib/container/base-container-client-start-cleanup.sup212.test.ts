@@ -252,3 +252,43 @@ describe('start() run flags for volumes', () => {
     }
   })
 })
+
+describe('start() beforeRun', () => {
+  class RefusingClient extends TestContainerClient {
+    protected async beforeRun(): Promise<void> {
+      throw new Error('the runtime cannot see the workspace')
+    }
+  }
+
+  beforeEach(() => {
+    execCommands.length = 0
+  })
+
+  it('refuses the start before any container is run', async () => {
+    const client = new RefusingClient({ agentId: 'abc123' } as ContainerConfig)
+
+    await expect(client.start()).rejects.toThrow('the runtime cannot see the workspace')
+    expect(execCommands.some((c) => /run\s+-d/.test(c))).toBe(false)
+  })
+
+  it('checks again before a retry, since a recovery may have restarted the runtime', async () => {
+    const checks: number[] = []
+    const runsSoFar = () => execCommands.filter((c) => /run\s+-d/.test(c)).length
+    class RecoveringClient extends TestContainerClient {
+      protected async beforeRun(): Promise<void> {
+        checks.push(runsSoFar())
+      }
+      protected async handleRunError(): Promise<boolean> {
+        return true // e.g. the VM was restarted
+      }
+    }
+    Object.assign(refused, { flag: 'run -d', message: 'the VM went away' })
+    try {
+      await expect(new RecoveringClient({ agentId: 'abc123' } as ContainerConfig).start()).rejects.toThrow(/the VM went away/)
+      // One check before each of the two runs.
+      expect(checks).toEqual([0, 1])
+    } finally {
+      Object.assign(refused, { flag: '', message: '' })
+    }
+  })
+})

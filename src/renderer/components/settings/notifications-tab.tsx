@@ -3,7 +3,7 @@ import { Switch } from '@renderer/components/ui/switch'
 import { Button } from '@renderer/components/ui/button'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
-import { Info } from 'lucide-react'
+import { Info, TriangleAlert } from 'lucide-react'
 import { isElectron } from '@renderer/lib/env'
 import {
   requestNotificationPermission,
@@ -17,6 +17,10 @@ import {
   unsubscribeThisDevice,
 } from '@renderer/lib/push-notifications'
 import { isIos } from '@renderer/hooks/use-pwa-install'
+import { openExternalUrl } from '@renderer/lib/open-external'
+
+const MACOS_NOTIFICATION_SETTINGS_URL =
+  'x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.superagent.app'
 
 interface SettingRowProps {
   name: string
@@ -151,6 +155,17 @@ export function NotificationsTab() {
     typeof Notification !== 'undefined' ? Notification.permission : 'default'
   )
 
+  const [osNotificationsBlocked, setOsNotificationsBlocked] = useState(false)
+  useEffect(() => {
+    const api = window.electronAPI
+    if (!api?.getOsNotificationsBlocked) return
+    const check = () => void api.getOsNotificationsBlocked().then(setOsNotificationsBlocked)
+    check()
+    // The user changes the toggle in System Settings, then comes back to the app.
+    window.addEventListener('focus', check)
+    return () => window.removeEventListener('focus', check)
+  }, [])
+
   // Reset local state when settings update
   useEffect(() => {
     if (userSettings) {
@@ -186,6 +201,22 @@ export function NotificationsTab() {
         Only sessions you aren&apos;t viewing trigger notifications. Opening a session marks its
         notifications as read.
       </p>
+
+      {osNotificationsBlocked && (
+        <Alert variant="destructive">
+          <TriangleAlert className="h-4 w-4" />
+          <AlertDescription className="flex items-center justify-between gap-4">
+            <span>Notifications for Gamut are turned off in System Settings.</span>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void openExternalUrl(MACOS_NOTIFICATION_SETTINGS_URL)}
+            >
+              Open System Settings
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
 
       {/* Browser Permission Section (web only) */}
       {showBrowserPermissionSection && (

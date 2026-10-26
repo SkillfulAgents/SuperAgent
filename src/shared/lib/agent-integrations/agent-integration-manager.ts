@@ -38,6 +38,7 @@ import {
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { recordIntegrationMessage } from '@shared/lib/services/agent-integration-message-service'
 import { INTEGRATION_MESSAGE_DISPLAY_VERSION, INTEGRATION_MESSAGE_LIMITS, clampIntegrationText, type IntegrationMessageDisplay } from './message-display-schema'
 // ── Sentry helpers ─────────────────────────────────────────────────────
@@ -221,7 +222,7 @@ export class AgentIntegrationManager {
     if (this.isRunning) return
     this.isRunning = true
     this.authorizationUnsubscribe = onIntegrationAuthorizationLost(change => {
-      void this.authorizationLost(change).catch(error => reportError(error, 'authorization-lost', { integrationId: change.integrationId }))
+      background(this.authorizationLost(change).catch(error => reportError(error, 'authorization-lost', { integrationId: change.integrationId })), { name: 'integration-manager.authorization-lost' })
     })
 
     await this.deliveries.start()
@@ -243,10 +244,10 @@ export class AgentIntegrationManager {
     }
 
     this.healthCheckInterval = setInterval(() => {
-      this.runHealthChecks().catch((err) => {
+      background(this.runHealthChecks().catch((err) => {
         console.error('[AgentIntegrationManager] Health check error:', err)
         reportError(err, 'health-check')
-      })
+      }), { name: 'integration-manager.health-check' })
     }, HEALTH_CHECK_INTERVAL_MS)
 
     this.subscribeGlobalNotifications()
@@ -275,7 +276,7 @@ export class AgentIntegrationManager {
 
     // Disconnect all integrations (fire-and-forget: stop() is shutdown-path sync)
     for (const [, conn] of this.connections) {
-      void this.disconnectConnection(conn)
+      background(this.disconnectConnection(conn), { name: 'integration-manager.disconnect' })
     }
     this.connections.clear()
     this.disconnectedSince.clear()
@@ -475,7 +476,7 @@ export class AgentIntegrationManager {
     const existing = await resolveActiveSession(
       integrationId, chatId, policy.timeoutHours,
       (archivedId) => {
-        void this.teardownManagedSession(integrationId, chatId)
+        background(this.teardownManagedSession(integrationId, chatId), { name: 'integration-manager.teardown-session' })
         this.lastSessionTouch.delete(archivedId)
       },
     )
@@ -614,7 +615,7 @@ export class AgentIntegrationManager {
           if (!route.externalId) return 'rejected'
           const result = await this.deliveries.accept(id, event, route)
           if (result === 'accepted' && this.connections.get(id) === conn && this.generationOf(id) === generation) {
-            void connector.acknowledgeInput(event).catch(error => reportError(error, 'acknowledge-input', { integrationId: id }))
+            background(connector.acknowledgeInput(event).catch(error => reportError(error, 'acknowledge-input', { integrationId: id })), { name: 'integration-manager.acknowledge-input' })
           }
           return result
         }
@@ -634,14 +635,14 @@ export class AgentIntegrationManager {
       }
     })
 
-    const errorUnsubscribe = connector.onError(async (error) => {
+    const errorUnsubscribe = connector.onError((error) => background(async () => {
       console.error(`[AgentIntegrationManager] Connector error for ${integration.id}:`, error)
       reportError(error, 'connector-error', { integrationId: integration.id, provider: integration.provider, agentSlug: integration.agentSlug })
       try { await this.writeStatus(integration.id, generation, 'error', error.message) } catch { /* best-effort */ }
       this.emitNotification(integration, 'error', error.message)
-    })
+    }, { name: 'integration-manager.connector-error' }))
     const recoveredUnsubscribe = connector.onRecovered(() => {
-      void this.writeStatus(integration.id, generation, 'active', null).catch(() => { /* best-effort */ })
+      background(this.writeStatus(integration.id, generation, 'active', null).catch(() => { /* best-effort */ }), { name: 'integration-manager.mark-recovered' })
     })
     conn.errorUnsubscribe = () => { errorUnsubscribe(); recoveredUnsubscribe() }
 
@@ -655,9 +656,9 @@ export class AgentIntegrationManager {
       // silently kill the healthy winner.
       if (this.connections.get(id) === conn) {
         this.connections.delete(id)
-        void this.disconnectConnection(conn)
+        background(this.disconnectConnection(conn), { name: 'integration-manager.disconnect' })
       } else {
-        connector.disconnect().catch(() => {})
+        background(connector.disconnect().catch(() => {}), { name: 'integration-manager.disconnect' })
       }
       throw err
     }
@@ -668,7 +669,7 @@ export class AgentIntegrationManager {
     // freshly opened, now-ownerless socket.
     if (this.connections.get(id) !== conn || this.generationOf(id) !== generation || !this.isRunning) {
       if (this.connections.get(id) === conn) this.connections.delete(id)
-      void this.disconnectConnection(conn)
+      background(this.disconnectConnection(conn), { name: 'integration-manager.disconnect' })
       return false
     }
     this.deliveries.wake()
@@ -704,18 +705,18 @@ export class AgentIntegrationManager {
       // A creation accepted during teardown can acquire its mapping after the
       // old connector vanished. Reattach that known running turn on reconnect.
       if (state.activity !== 'idle' && !state.streamAttached) {
-        void this.recoverSessionContext(id, session.externalId, generation, session.sessionId)
-          .catch(error => reportError(error, 'restore-stream', { integrationId: id, sessionId: session.sessionId }))
+        background(this.recoverSessionContext(id, session.externalId, generation, session.sessionId)
+          .catch(error => reportError(error, 'restore-stream', { integrationId: id, sessionId: session.sessionId })), { name: 'integration-manager.restore-stream' })
       }
     }
     // Recovery is bounded to work the family declares unfinished, and runs off
     // the boot/connect critical path so one slow container cannot block others.
-    void connector.sessionsToRecover().then(async sessions => {
+    background(connector.sessionsToRecover().then(async sessions => {
       for (const session of sessions) {
         if (this.connections.get(id) !== conn || this.generationOf(id) !== generation) return
         await this.recoverSessionContext(id, session.externalId, generation, session.sessionId)
       }
-    }).catch(error => reportError(error, 'restore-sessions', { integrationId: id }))
+    }).catch(error => reportError(error, 'restore-sessions', { integrationId: id })), { name: 'integration-manager.restore-sessions' })
     await this.syncMcpEnvironment(integration)
     return this.generationOf(id) === generation
   }
@@ -783,7 +784,7 @@ export class AgentIntegrationManager {
     let ended = false
     const unsubscribe = () => {
       ended = true
-      void reader?.cancel()
+      if (reader) background(reader.cancel(), { name: 'integration-manager.cancel-session-events' })
     }
     session.sseUnsubscribe = unsubscribe
     const events = await agentRegistry.get(agentSlug).messages.subscribe(sessionId)
@@ -792,8 +793,8 @@ export class AgentIntegrationManager {
       return
     }
     reader = events.getReader()
-    void this.readSessionEvents(reader, integrationId, chatId, sessionId, session)
-      .catch(error => reportError(error, 'sse-event', { integrationId, chatId }))
+    background(this.readSessionEvents(reader, integrationId, chatId, sessionId, session)
+      .catch(error => reportError(error, 'sse-event', { integrationId, chatId })), { name: 'integration-manager.read-session-events' })
     await this.observe(session)
   }
 
@@ -906,8 +907,8 @@ export class AgentIntegrationManager {
         clearTimeout(session.recoveryTimer)
         session.recoveryTimer = setTimeout(() => {
           session.recoveryTimer = undefined
-          void this.recoverSessionContext(integrationId, externalId, generation, row.sessionId)
-            .catch(error => reportError(error, 'restore-stream', { integrationId }))
+          background(this.recoverSessionContext(integrationId, externalId, generation, row.sessionId)
+            .catch(error => reportError(error, 'restore-stream', { integrationId })), { name: 'integration-manager.restore-stream' })
         }, 30_000)
         session.recoveryTimer.unref()
       }).finally(() => { if (session.sessionId === row.sessionId) session.recovery = undefined })
@@ -962,8 +963,8 @@ export class AgentIntegrationManager {
       if (session.sessionId) {
         const live = await agentRegistry.get(session.integration.agentSlug).sessions.live(session.sessionId)
         if (live.activity !== 'idle' && !live.streamAttached) {
-          void this.recoverSessionContext(session.integration.id, session.chatId, this.generationOf(session.integration.id), session.sessionId)
-            .catch(error => reportError(error, 'restore-stream', { integrationId: session.integration.id }))
+          background(this.recoverSessionContext(session.integration.id, session.chatId, this.generationOf(session.integration.id), session.sessionId)
+            .catch(error => reportError(error, 'restore-stream', { integrationId: session.integration.id })), { name: 'integration-manager.restore-stream' })
         }
       }
     }
@@ -1105,7 +1106,7 @@ export class AgentIntegrationManager {
    * promise's own settlement avoids needing to.
    */
   private scheduleQueueEviction(queueKey: string, promise: Promise<void>): void {
-    void promise.catch(() => {}).finally(() => {
+    promise.catch(() => {}).finally(() => {
       if (this.messageQueues.get(queueKey) === promise) {
         this.messageQueues.delete(queueKey)
       }
@@ -1162,7 +1163,7 @@ export class AgentIntegrationManager {
     check()
     const chatSession = await resolveActiveSession(integrationId, chatId, conn.connector.sessionPolicy(integration, route).timeoutHours,
       archivedId => {
-        void this.teardownManagedSession(integrationId, chatId)
+        background(this.teardownManagedSession(integrationId, chatId), { name: 'integration-manager.teardown-session' })
         this.lastSessionTouch.delete(archivedId)
       })
     // An unaccepted input may follow a replacement mapping after timeout or
@@ -1473,9 +1474,9 @@ export class AgentIntegrationManager {
 
   /** Pre-warm the agent container so it's ready when the user's message arrives. */
   private preWarmContainer(agentSlug: string): void {
-    agentRegistry.get(agentSlug).container.start().catch(() => {
+    background(agentRegistry.get(agentSlug).container.start().catch(() => {
       // Best-effort — if it fails, the normal message flow will handle the error
-    })
+    }), { name: 'integration-manager.pre-warm-container' })
   }
 
   // ── Global notification handling (proxy review requests) ─────────
@@ -1489,10 +1490,10 @@ export class AgentIntegrationManager {
   private subscribeGlobalNotifications(): void {
     if (this.globalNotificationUnsubscribe) return
     this.globalNotificationUnsubscribe = globalFeed.subscribe((event) => {
-      this.handleGlobalNotification(event).catch((err) => {
+      background(this.handleGlobalNotification(event).catch((err) => {
         console.error('[AgentIntegrationManager] Error handling global notification:', err)
         reportError(err, 'global-notification')
-      })
+      }), { name: 'integration-manager.global-notification' })
     })
   }
 
@@ -1718,13 +1719,13 @@ export class AgentIntegrationManager {
     event: 'connected' | 'disconnected' | 'error',
     detail?: string,
   ): void {
-    import('@shared/lib/notifications/notification-manager').then(({ notificationManager }) => {
+    background(import('@shared/lib/notifications/notification-manager').then(({ notificationManager }) => {
       const name = integration.name || `${integration.provider} bot`
       const sessionId = integration.id
-      notificationManager.triggerChatIntegrationEvent(
+      background(notificationManager.triggerChatIntegrationEvent(
         sessionId, integration.agentSlug, name, event, detail,
-      ).catch(() => {})
-    }).catch(() => {})
+      ).catch(() => {}), { name: 'integration-manager.trigger-notification' })
+    }).catch(() => {}), { name: 'integration-manager.emit-notification' })
   }
 }
 

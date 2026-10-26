@@ -66,7 +66,7 @@ export function PdfRenderer({
   }
 
   return (
-    <div ref={containerRef} className="relative flex flex-col items-center">
+    <div ref={containerRef} data-testid="pdf-renderer" className="relative flex flex-col items-center">
       <Document
         file={url}
         onLoadSuccess={handleLoadSuccess}

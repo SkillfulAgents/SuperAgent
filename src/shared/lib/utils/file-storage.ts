@@ -17,6 +17,7 @@ import pLimit from 'p-limit'
 import { getDataDir } from '@shared/lib/config/data-dir'
 import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
 import { CLI_TRANSCRIPTS_DIR } from '@shared/lib/agent-actor/session-store'
+import { background } from '@shared/lib/background'
 
 // ============================================================================
 // Slug Generation
@@ -1036,9 +1037,9 @@ export function withFileLock<T>(filePath: string, fn: () => Promise<T>): Promise
   fileWriteQueues.set(key, tail)
   // Drop the map entry once this is the last queued op, so the map can't grow
   // unbounded across many distinct paths.
-  void tail.then(() => {
+  background(tail.then(() => {
     if (fileWriteQueues.get(key) === tail) fileWriteQueues.delete(key)
-  })
+  }), { name: 'file-storage.drop-write-queue' })
   return result
 }
 

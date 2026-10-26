@@ -34,23 +34,30 @@ const SHOWN_HEADERS = new Set(['from', 'to', 'cc', 'bcc', 'reply-to', 'subject',
 /**
  * The message's `raw` and `threadId`, from the card's copy of the request body. A copy cut short is read only when the raw runs
  * to the cut and no key before it sets raw too, so no other raw can hide past the cut or under an escaped key name.
+ * A draft carries its message under `message`.
  */
-function sentMessage(requestBody: string): { raw: string; threadId?: string; cut: boolean } | undefined {
+function sentMessage(requestBody: string, draft: boolean): { raw: string; threadId?: string; cut: boolean } | undefined {
   const fields = (json: unknown) => (json && typeof json === 'object' && !Array.isArray(json) ? json as Record<string, unknown> : undefined)
+  const messageOf = (json: unknown) => (draft ? fields(fields(json)?.message) : fields(json))
   const threadIdOf = (json: Record<string, unknown>) => (typeof json.threadId === 'string' ? { threadId: json.threadId } : {})
   let whole: Record<string, unknown> | undefined
   try {
-    whole = fields(JSON.parse(requestBody))
+    whole = messageOf(JSON.parse(requestBody))
   } catch {
     const match = /"raw":\s*"([A-Za-z0-9+/_-]+=*)…?$/.exec(requestBody)
     if (!match) return undefined
+    const prefix = requestBody.slice(0, match.index)
+    // As with raw, an earlier or escaped message key could be the one Gmail reads.
+    if (draft && (/\\u/i.test(prefix) || prefix.match(/"message"\s*:/g)?.length !== 1)) return undefined
+    // The cut raw's object takes this key, so a draft's raw counts only when that object is the message. Random, so a body cannot plant it.
+    const end = crypto.randomUUID()
     let head: Record<string, unknown> | undefined
     try {
-      head = fields(JSON.parse(`${requestBody.slice(0, match.index)}"":0}`))
+      head = messageOf(JSON.parse(`${prefix}"${end}":0}${draft ? '}' : ''}`))
     } catch {
       return undefined
     }
-    return head && !Object.hasOwn(head, 'raw') ? { raw: match[1], ...threadIdOf(head), cut: true } : undefined
+    return head && Object.hasOwn(head, end) && !Object.hasOwn(head, 'raw') ? { raw: match[1], ...threadIdOf(head), cut: true } : undefined
   }
   return whole && typeof whole.raw === 'string' ? { raw: whole.raw, ...threadIdOf(whole), cut: false } : undefined
 }
@@ -59,8 +66,8 @@ function sentMessage(requestBody: string): { raw: string; threadId?: string; cut
  * The email in a Gmail send, read from the request body the card shows, which may be cut short. Undefined when
  * the headers do not all fit, or a recipient could hide from the card.
  */
-export async function readGmailSend(requestBody: string): Promise<GmailSend | undefined> {
-  const message = sentMessage(requestBody)
+export async function readGmailSend(requestBody: string, draft = false): Promise<GmailSend | undefined> {
+  const message = sentMessage(requestBody, draft)
   if (!message) return undefined
   const { cut, threadId: thread } = message
   const base64 = message.raw.replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '')
@@ -208,13 +215,19 @@ export function GmailSendView({ email }: { email: GmailSend }) {
   )
 }
 
-export const gmailSendCustomPreview: CustomPreview = {
-  toolkit: 'gmail',
-  method: 'POST',
-  path: /^gmail\/v1\/users\/[^/]+\/messages\/send$/,
-  title: 'Allow sending this email from Gmail?',
-  read: async (requestBody) => {
-    const email = await readGmailSend(requestBody)
-    return email ? <GmailSendView email={email} /> : undefined
-  },
+function gmailCustomPreview(method: string, path: RegExp, title: string, draft: boolean): CustomPreview {
+  return {
+    toolkit: 'gmail',
+    method,
+    path,
+    title,
+    read: async (requestBody) => {
+      const email = await readGmailSend(requestBody, draft)
+      return email ? <GmailSendView email={email} /> : undefined
+    },
+  }
 }
+
+export const gmailSendCustomPreview = gmailCustomPreview('POST', /^gmail\/v1\/users\/[^/]+\/messages\/send$/, 'Allow sending this email from Gmail?', false)
+export const gmailDraftCreateCustomPreview = gmailCustomPreview('POST', /^gmail\/v1\/users\/[^/]+\/drafts$/, 'Allow saving this draft in Gmail?', true)
+export const gmailDraftUpdateCustomPreview = gmailCustomPreview('PUT', /^gmail\/v1\/users\/[^/]+\/drafts\/[^/]+$/, 'Allow changing this draft in Gmail?', true)

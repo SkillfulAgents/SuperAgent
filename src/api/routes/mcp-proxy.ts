@@ -5,6 +5,7 @@ import { withDismissalReason } from '@shared/lib/proxy/reauth-dismissal'
 import { db } from '@shared/lib/db'
 import { mcpAuditLog } from '@shared/lib/db/schema'
 import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
+import { background } from '@shared/lib/background'
 import { parseMcpResponse } from '@shared/lib/mcp/discover-tools'
 import { resolveMcpConnection } from '@shared/lib/mcp/connections'
 import type { McpAuthorization, McpRecoveryResult } from '@shared/lib/mcp/connection-types'
@@ -587,7 +588,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     // A failed retry stays marked, but is returned rather than opening an
     // unbounded second reconnect loop for the same proxy request.
     if (response.status === 401) {
-      void mcp.markAuthRequired('Remote server returned 401').catch(() => {})
+      background(mcp.markAuthRequired('Remote server returned 401').catch(() => {}), { name: 'mcp-proxy-route.mark-auth-required' })
     }
 
     if (method === 'DELETE' && clientMcpSessionId && syntheticSession) {

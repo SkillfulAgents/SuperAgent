@@ -31,10 +31,11 @@ import { mergeCanonicalSlashCommands } from '@shared/lib/container/slash-command
 import { credentialSource } from '@shared/lib/llm-provider/connection-runtime'
 import { getActiveLlmProvider, getLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
 import type { SubagentCapture } from '@shared/lib/container/subagent-capture'
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
-import { finalizeAutomationStatus, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { finalizeAutomationStatus, recordErrorProvider, updateSessionMetadata } from '@shared/lib/services/session-service'
 import {
   recordProvisionalSessionActivity,
   recordSessionActivity,
@@ -867,8 +868,11 @@ export class LiveSession {
     const orphaned = this.ctx.requests.resolveRequestsByParent(parentToolId, 'invalidated')
     if (orphaned.length === 0) return
     for (const request of orphaned) {
-      this.answerInput(request.id, 'reject', { reason: 'The subagent that asked for this input was terminated.' }).catch((error) =>
-        console.error(`[LiveSession] dead-subagent reject failed for ${request.id}:`, error),
+      background(
+        this.answerInput(request.id, 'reject', { reason: 'The subagent that asked for this input was terminated.' }).catch((error) =>
+          console.error(`[LiveSession] dead-subagent reject failed for ${request.id}:`, error),
+        ),
+        { name: 'live-session.reject-orphaned-input' },
       )
     }
     this.syncAwaiting()
@@ -889,7 +893,7 @@ export class LiveSession {
 
   /** One frame from the container's stream. */
   frame(message: StreamMessage): void {
-    void this.ctx.capture?.recordInput(this.ctx.sessionId, message)
+    if (this.ctx.capture) background(this.ctx.capture.recordInput(this.ctx.sessionId, message), { name: 'live-session.capture-input' })
     const content = message.content
 
     // After a stop, the stopped turn's own content still in the pipe is
@@ -1020,6 +1024,12 @@ export class LiveSession {
     }
     if (content.error) {
       this.lastApiErrorCode = content.error
+      const provider = this.ctx.modelRuntime()?.provider
+      if (provider && typeof content.uuid === 'string' && content.uuid) {
+        background(recordErrorProvider(this.ctx.store, this.ctx.sessionId, content.uuid, provider).catch((error) => {
+          console.error('[LiveSession] Failed to record error provider:', error)
+        }), { name: 'live-session.record-error-provider' })
+      }
       // Style what already streamed as a provider error at once, without
       // waiting for the transcript refetch: the code alone if text streamed,
       // the text with it otherwise.
@@ -1368,9 +1378,9 @@ export class LiveSession {
       }
       const lastUsage: SessionUsage | null = this.stream.settleUsage(contextWindow)
       if (lastUsage) {
-        updateSessionMetadata(this.ctx.store, this.ctx.sessionId, { lastUsage }).catch((error) => {
+        background(updateSessionMetadata(this.ctx.store, this.ctx.sessionId, { lastUsage }).catch((error) => {
           console.error('[LiveSession] Failed to persist lastUsage:', error)
-        })
+        }), { name: 'live-session.persist-last-usage' })
       }
     } catch (error) {
       console.error('[LiveSession] Error handling result usage:', error)
@@ -1427,13 +1437,16 @@ export class LiveSession {
     if (!isBlocking && !isWarning) return
     const text = typeof content.content === 'string' ? content.content : ''
     if (!text) return
-    void appendInformationalEntry(this.ctx.store, this.ctx.sessionId, {
-      uuid: (typeof content.uuid === 'string' && content.uuid) || randomUUID(),
-      content: text,
-      level: typeof content.level === 'string' ? content.level : undefined,
-    })
-      .then(() => this.ctx.emit({ type: 'messages_updated' }))
-      .catch((error) => console.error('[LiveSession] Failed to persist informational banner:', error))
+    background(
+      appendInformationalEntry(this.ctx.store, this.ctx.sessionId, {
+        uuid: (typeof content.uuid === 'string' && content.uuid) || randomUUID(),
+        content: text,
+        level: typeof content.level === 'string' ? content.level : undefined,
+      })
+        .then(() => this.ctx.emit({ type: 'messages_updated' }))
+        .catch((error) => console.error('[LiveSession] Failed to persist informational banner:', error)),
+      { name: 'live-session.persist-informational-banner' },
+    )
   }
 
   /**
@@ -1455,29 +1468,32 @@ export class LiveSession {
       this.markInactive()
       return
     }
-    client
-      .getSession(this.ctx.sessionId)
-      .then((session) => {
-        if (!this.ctx.isCurrent()) return
-        if (!session) {
-          console.log(`[LiveSession] Session ${this.ctx.sessionId} not found in container, marking inactive`)
+    background(
+      client
+        .getSession(this.ctx.sessionId)
+        .then((session) => {
+          if (!this.ctx.isCurrent()) return
+          if (!session) {
+            console.log(`[LiveSession] Session ${this.ctx.sessionId} not found in container, marking inactive`)
+            this.markInactive()
+            this.ctx.detachTransport()
+          } else if ((session as { isRunning?: boolean }).isRunning) {
+            console.log(`[LiveSession] Session ${this.ctx.sessionId} still running, re-subscribing`)
+            this.ctx.reattachTransport(client)
+          } else {
+            console.log(`[LiveSession] Session ${this.ctx.sessionId} not running in container, marking inactive`)
+            this.markInactive()
+            this.ctx.detachTransport()
+          }
+        })
+        .catch((error) => {
+          if (!this.ctx.isCurrent()) return
+          console.error(`[LiveSession] Failed to check container for session ${this.ctx.sessionId}:`, error)
           this.markInactive()
           this.ctx.detachTransport()
-        } else if ((session as { isRunning?: boolean }).isRunning) {
-          console.log(`[LiveSession] Session ${this.ctx.sessionId} still running, re-subscribing`)
-          this.ctx.reattachTransport(client)
-        } else {
-          console.log(`[LiveSession] Session ${this.ctx.sessionId} not running in container, marking inactive`)
-          this.markInactive()
-          this.ctx.detachTransport()
-        }
-      })
-      .catch((error) => {
-        if (!this.ctx.isCurrent()) return
-        console.error(`[LiveSession] Failed to check container for session ${this.ctx.sessionId}:`, error)
-        this.markInactive()
-        this.ctx.detachTransport()
-      })
+        }),
+      { name: 'live-session.check-closed-session' },
+    )
   }
 
   // ===========================================================================
@@ -1518,24 +1534,30 @@ export class LiveSession {
    */
   private persistAutomationStatus(status: 'succeeded' | 'failed'): void {
     if (this.notAutomation) return
-    void finalizeAutomationStatus(this.ctx.store, this.ctx.sessionId, status)
-      .then((result) => {
-        if (result === 'not-automation') this.notAutomation = true
-      })
-      .catch((error) => console.error('[LiveSession] Failed to persist automation status:', error))
+    background(
+      finalizeAutomationStatus(this.ctx.store, this.ctx.sessionId, status)
+        .then((result) => {
+          if (result === 'not-automation') this.notAutomation = true
+        })
+        .catch((error) => console.error('[LiveSession] Failed to persist automation status:', error)),
+      { name: 'live-session.persist-automation-status' },
+    )
   }
 
   /** Refresh the session's summary entry from its transcript's real mtime (a missed turn end). */
   private refreshActivityFromTranscript(): void {
     const { store, sessionId } = this.ctx
-    void store.files
-      .stat(transcriptPath(store, sessionId))
-      .then((stat) => {
-        if (stat) recordSessionActivity(store, sessionId, stat.mtimeMs)
-      })
-      .catch(() => {
-        // Missing or unreadable: the TTL reconciliation repairs it.
-      })
+    background(
+      store.files
+        .stat(transcriptPath(store, sessionId))
+        .then((stat) => {
+          if (stat) recordSessionActivity(store, sessionId, stat.mtimeMs)
+        })
+        .catch(() => {
+          // Missing or unreadable: the TTL reconciliation repairs it.
+        }),
+      { name: 'live-session.refresh-activity-from-transcript' },
+    )
   }
 
   /** The automation stream policy, from the session's metadata. */
