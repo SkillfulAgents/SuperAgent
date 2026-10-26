@@ -158,6 +158,11 @@ describe('resolvePackages', () => {
 describe('lima-packages.json', () => {
   it('lists specs the resolver understands', () => {
     expect(limaPackages.packages.length).toBeGreaterThan(0)
-    for (const spec of limaPackages.packages) expect(() => satisfiesSpec(spec, '0')).not.toThrow()
+    for (const spec of [...limaPackages.installedByLima, ...limaPackages.packages]) expect(() => satisfiesSpec(spec, '0')).not.toThrow()
+  })
+
+  // Lima's boot installs them before provisioning runs, so install_if must count them as installed.
+  it("counts Lima's own packages as preinstalled", () => {
+    for (const name of limaPackages.installedByLima) expect(limaPackages.preinstalled).toContain(name)
   })
 })

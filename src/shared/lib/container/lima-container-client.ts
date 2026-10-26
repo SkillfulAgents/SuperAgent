@@ -1090,8 +1090,11 @@ function canSignalHostAgent(): boolean {
 }
 
 /**
- * Get the bundled Alpine cloud image path if available.
- * Falls back to null (will download from Alpine CDN at runtime).
+ * Get the bundled Alpine cloud image path if available: sudo and the
+ * first-boot packages are installed in it (scripts/build-lima-image.sh), and
+ * it has no user of its own, so the first boot neither downloads nor reboots.
+ * A build without Docker bundles the stock image instead.
+ * Falls back to null (will download the stock image from Alpine CDN at runtime).
  */
 function getBundledVmImagePath(): string | null {
   if (typeof process !== 'undefined' && process.resourcesPath) {
@@ -1159,6 +1162,8 @@ function restageBundledPackagesFor(instanceConfig: string): void {
 /**
  * First-boot provisioning, then containerd enabled and started on every boot.
  *
+ * The bundled image has the packages installed already, so the install below
+ * only runs for a stock image, or to repair an install that lost them.
  * With bundled packages, apk installs from the staged copy only (no network,
  * no other repositories), checking Alpine's index signature and each package
  * against it. It runs as a dependency script, which Lima runs inside its own

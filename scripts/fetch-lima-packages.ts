@@ -1,9 +1,10 @@
-// Download the Alpine packages a new Lima VM installs on first boot
+// Download the Alpine packages a new Lima VM needs
 // (src/shared/lib/container/lima-packages.json, plus their dependencies) into
-// a local apk repository that ships in the app, so the VM downloads nothing.
+// a local apk repository. build-lima-image.sh installs them into the VM image
+// from it, and the app ships it too: a VM whose image lacks them (or lost
+// them) installs them from it, so the VM downloads nothing.
 //
-// Plain HTTPS and no VM: it runs wherever download-lima.sh runs, CI's macOS
-// runners included, which can't boot a VM to bake a custom image.
+// Plain HTTPS and no VM.
 //
 // Usage: tsx scripts/fetch-lima-packages.ts <alpine-branch, e.g. v3.23> <arch, e.g. aarch64> <out-dir>
 //
@@ -65,9 +66,11 @@ async function main(): Promise<void> {
     indexes.set(repo, tarGz)
     entries.push(...parseApkIndex(readIndexText(tarGz), repo))
   }
-  // `preinstalled`: what the VM has before provisioning runs (the image's
-  // alpine-base, and sudo, which Lima's own boot installs), for install_if.
-  const selected = resolvePackages(entries, limaPackages.packages, limaPackages.preinstalled)
+  // `installedByLima` too (sudo, which Lima's own boot installs before any of
+  // ours runs), so the bundled image can have it installed already
+  // (bake-lima-image.sh). `preinstalled`: what the VM has before provisioning
+  // runs (the image's alpine-base, and sudo), for install_if.
+  const selected = resolvePackages(entries, [...limaPackages.installedByLima, ...limaPackages.packages], limaPackages.preinstalled)
 
   fs.rmSync(outDir, { recursive: true, force: true })
   for (const repo of REPOS) {
@@ -91,7 +94,7 @@ async function main(): Promise<void> {
 
   fs.writeFileSync(path.join(outDir, 'packages.txt'), selected.map((e) => `${e.name}-${e.version}`).join('\n') + '\n')
   const totalMb = selected.reduce((sum, e) => sum + e.size, 0) / 1048576
-  console.log(`  packages: ${selected.length} for ${limaPackages.packages.join(' ')} (${totalMb.toFixed(1)} MiB)`)
+  console.log(`  packages: ${selected.length} for ${[...limaPackages.installedByLima, ...limaPackages.packages].join(' ')} (${totalMb.toFixed(1)} MiB)`)
 }
 
 main().catch((error) => {

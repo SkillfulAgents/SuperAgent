@@ -1,0 +1,65 @@
+name: Lima VM Image
+
+# The built-in Lima runtime's VM image: Alpine's cloud image with the
+# first-boot packages installed, built without booting it (scripts/
+# build-lima-image.sh). That takes Docker, which CI's macOS runners lack, so
+# the macOS builds call this, download the artifact and point
+# download-lima.sh's LIMA_IMAGE_DIR at it.
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Commit to build from (default: the calling workflow commit)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # The guest's architecture, so the packages' install scripts run natively.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
+
+      # Only tsx is needed (fetch-lima-packages.ts); skip Electron's postinstall download.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # An older commit (an on-demand PR build of a branch from before this
+      # workflow) has no build script, and its download-lima.sh downloads the
+      # stock image itself: hand it an artifact with nothing in it to use.
+      - name: Build the VM image
+        run: |
+          if [ ! -f scripts/build-lima-image.sh ]; then
+            mkdir -p build/lima-image
+            echo "No VM image: this commit predates scripts/build-lima-image.sh" > build/lima-image/README.txt
+            exit 0
+          fi
+          bash scripts/build-lima-image.sh arm64 build/lima-image
+
+      - name: Upload the VM image
+        uses: actions/upload-artifact@v4
+        with:
+          name: lima-image-arm64
+          path: build/lima-image/
+          retention-days: 5
+          # The image is compressed qcow2 and the packages are .apk files.
+          compression-level: 0

@@ -46,8 +46,14 @@ jobs:
             core.setOutput('head-sha', pr.head.sha);
             core.info(`Building PR #${pr.number} at ${pr.head.sha}`);
 
-  build-mac:
+  lima-image:
     needs: resolve-pr
+    uses: ./.github/workflows/lima-image.yml
+    with:
+      ref: ${{ needs.resolve-pr.outputs.head-sha }}
+
+  build-mac:
+    needs: [resolve-pr, lima-image]
     runs-on: macos-26
     steps:
       - name: Checkout
@@ -70,6 +76,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Download the Lima VM image
+        uses: actions/download-artifact@v4
+        with:
+          name: lima-image-arm64
+          path: build/lima-image
+
       - name: Decode Apple API Key
         env:
           APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY }}
@@ -89,6 +101,7 @@ jobs:
           PLATFORM_BASE_URL: ${{ secrets.PLATFORM_BASE_URL }}
           PLATFORM_PROXY_URL: ${{ secrets.PLATFORM_PROXY_URL }}
           PLATFORM_AUTH_ISSUER_URL: ${{ secrets.PLATFORM_AUTH_ISSUER_URL }}
+          LIMA_IMAGE_DIR: build/lima-image
         run: npm run dist:mac
 
       - name: Enforce release artifact size limit
