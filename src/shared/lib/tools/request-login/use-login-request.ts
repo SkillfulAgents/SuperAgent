@@ -139,8 +139,13 @@ export function useLoginRequestActions({ agentSlug, sessionId, toolUseId }: UseL
   const fill = (context: LoginContext, values: string[], options: LoginFillOptions = {}) =>
     runLoginAction<LoginRequestState>(key, 'fill', async () => {
       const data = await postJson(`${base}/fill-login`, { toolUseId, origin: context.origin, values, ...options })
-      // Answered elsewhere (another window, or the browser closed): nothing was sent.
+      // Answered elsewhere (another window): nothing was sent.
       if (data.alreadySettled) return { status: 'settled' }
+      // The browser had closed: kept in the vault for the agent's next try, or not at all.
+      if (data.browserClosed === true) {
+        const saved = data.saved as { username?: unknown } | undefined
+        return { status: 'browser_closed', saved: typeof saved?.username === 'string' ? saved.username : null }
+      }
       const result = loginFillResultSchema.parse(data)
       rememberLoginValues(agentSlug, sessionId, context.origin, context.fields, values)
       return { status: 'filled', result }

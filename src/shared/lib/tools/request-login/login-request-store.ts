@@ -31,6 +31,8 @@ export type LoginRequestState =
   | { status: 'filled'; result: LoginFillResult }
   /** The user signs in through another account: `provider` is that account's username. */
   | { status: 'via'; provider: string }
+  /** The browser had closed: nothing went into a page. `saved`: the account kept for the agent's next try. */
+  | { status: 'browser_closed'; saved: string | null }
   | { status: 'manual' }
   | { status: 'declined' }
   /** Answered elsewhere (another window, or it ended) before this one acted. */

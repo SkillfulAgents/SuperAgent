@@ -116,6 +116,21 @@ held value expired, a part was deleted: those fields are shown) or
 `account_unavailable` (the account the host chose was deleted or revoked: the
 card asks for every field rather than granting it again).
 
+### When the browser closes first
+
+A card outlives its browser. Closing the browser, or Browserbase ending its
+session while the user is away, does not cancel a sign-in: the agent keeps
+waiting, and the card stays (up to the 24-hour limit on any request). Nothing
+can go into a page once the browser is gone (the container answers the fill
+with `browser_closed`), so:
+
+- With "Save for later", what the user entered (this step's fields and the
+  next step's) is saved and granted, and the agent is told to open the
+  sign-in page again and call request_login with that username: the vault
+  signs in, and the user typed it once.
+- Without it, nothing is kept, not even in memory: the agent is told to open
+  the page again and ask, and the user types it again.
+
 ## Settings → Logins
 
 Each user's saved accounts, the agents allowed to sign in with each (the same

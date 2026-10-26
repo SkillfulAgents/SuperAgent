@@ -148,10 +148,22 @@ export const loginViaReportSchema = z.object({
   saved: z.boolean(),
 })
 
+/**
+ * The browser closed before the user answered: nothing went into a page.
+ * What they saved signs the agent in once it opens the page again.
+ */
+export const loginBrowserClosedReportSchema = z.object({
+  type: z.literal('browser_closed'),
+  site: z.string(),
+  /** The account the user saved to their vault, granted to this agent; absent when they saved nothing. */
+  saved: z.object({ username: z.string() }).optional(),
+})
+
 export const loginResolutionSchema = z.discriminatedUnion('type', [
   loginFillReportSchema,
   loginManualReportSchema,
   loginAccountsReportSchema,
   loginViaReportSchema,
+  loginBrowserClosedReportSchema,
 ])
 export type LoginResolution = z.infer<typeof loginResolutionSchema>

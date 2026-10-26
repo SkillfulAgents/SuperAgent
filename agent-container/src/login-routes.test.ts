@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { inputManager } from './input-manager'
 import { forgetInjectedSecrets, redactInjectedSecrets, REDACTED } from './injected-secrets'
-import { forgetAllPreparedLogins, getPreparedLogin, putPreparedLogin } from './login-requests'
+import { closePreparedLogins, forgetAllPreparedLogins, getPreparedLogin, putPreparedLogin } from './login-requests'
 import type { LoginFillDeps, PageActivity, PreparedLogin, WrittenField } from './login-fill'
 import type { LoginFillReport } from './login-schema'
 
@@ -259,6 +259,23 @@ describe('POST /browser/login/fill', () => {
     deps.hostAuthEnabled.mockReturnValueOnce(false)
     expect((await post('/browser/login/fill', fillBody())).status).toBe(503)
     expect(fillDeps.connect).not.toHaveBeenCalled()
+  })
+
+  it('says the browser closed, for a request located before it did, and leaves the request open', async () => {
+    closePreparedLogins()
+    const res = await post('/browser/login/fill', fillBody())
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ error: 'The browser that showed this sign-in form was closed', reason: 'browser_closed' })
+    expect(fillDeps.connect).not.toHaveBeenCalled()
+    expect(inputManager.hasPending('tu-1')).toBe(true)
+    // The form is still the user's to read.
+    expect((await app.request('/browser/login/context?toolUseId=tu-1')).status).toBe(200)
+
+    // No browser at all says the same.
+    putPreparedLogin({ ...PREPARED, toolUseId: 'tu-2' })
+    park('tu-2')
+    deps.browserActive.mockReturnValueOnce(false)
+    expect(await (await post('/browser/login/fill', fillBody({ toolUseId: 'tu-2' }))).json()).toMatchObject({ reason: 'browser_closed' })
   })
 
   it('refuses values for another origin than the browser located, before touching the page', async () => {

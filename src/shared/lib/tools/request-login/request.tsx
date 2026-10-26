@@ -28,6 +28,11 @@ const STATUS_LABELS = {
   settled: 'Already answered',
 } as const
 
+/** The browser had closed before the user answered. */
+function browserClosedLabel(saved: string | null): string {
+  return saved ? 'Saved for the agent' : 'The browser had closed'
+}
+
 export function LoginRequestItem({
   toolUseId,
   message,
@@ -42,7 +47,7 @@ export function LoginRequestItem({
   // Viewers who cannot answer do not read the form's context (they may not).
   const context = useLoginContext(agentSlug, sessionId, toolUseId, !readOnly)
   const origin = context.data?.origin ?? null
-  const done = state.status === 'filled' || state.status === 'via' || state.status === 'manual' || state.status === 'declined' || state.status === 'settled'
+  const done = state.status === 'filled' || state.status === 'via' || state.status === 'manual' || state.status === 'declined' || state.status === 'settled' || state.status === 'browser_closed'
   // Here, not in the form: the shell swaps the form for its completed row in
   // the same render that settles the request, so the form never sees it.
   const onCompleteRef = useRef(onComplete)
@@ -62,6 +67,12 @@ export function LoginRequestItem({
       })
     }
   }, [result])
+  const closedSaved = state.status === 'browser_closed' ? state.saved : undefined
+  useEffect(() => {
+    if (closedSaved === undefined) return
+    if (closedSaved) toast.success(`${closedSaved} is saved`, { description: 'The browser had closed, so nothing went into the page. The agent opens it again and signs in with this.' })
+    else toast.warning('The browser had closed', { description: 'Nothing went into the page, and nothing was saved. The agent opens it again and asks you.' })
+  }, [closedSaved])
 
   return (
     <RequestItemShell
@@ -82,8 +93,8 @@ export function LoginRequestItem({
                 />
               ),
               label: <span className="text-sm">{origin ? siteLabel(origin) : 'Sign in'}</span>,
-              statusLabel: STATUS_LABELS[state.status],
-              isSuccess: state.status !== 'declined',
+              statusLabel: state.status === 'browser_closed' ? browserClosedLabel(state.saved) : STATUS_LABELS[state.status],
+              isSuccess: state.status === 'browser_closed' ? state.saved !== null : state.status !== 'declined',
             }
           : null
       }

@@ -33,6 +33,7 @@ import {
   failPreparedLogin,
   forgetPreparedLogin,
   getPreparedLogin,
+  isPreparedLoginClosed,
   putPreparedLogin,
   waitForPreparedLogin,
 } from './login-requests'
@@ -255,9 +256,13 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
       return c.json({ error: 'One value per field is required' }, 400)
     }
     if (!body.values.some(Boolean)) return c.json({ error: 'Enter at least one value' }, 400)
+    // The browser that showed the form is gone (closed, or replaced since):
+    // nothing can go into its page. The host keeps what the user saves.
+    if (isPreparedLoginClosed(body.toolUseId) || !deps.browserActive()) {
+      return c.json({ error: 'The browser that showed this sign-in form was closed', reason: 'browser_closed' }, 409)
+    }
     const sessionError = deps.validateSession(prepared.sessionId)
     if (sessionError) return c.json({ error: sessionError }, 409)
-    if (!deps.browserActive()) return c.json({ error: 'Browser is not active' }, 409)
     if (fillsInFlight.has(body.toolUseId)) {
       return c.json({ error: 'This sign-in request is already being filled' }, 409)
     }

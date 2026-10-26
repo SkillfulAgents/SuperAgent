@@ -208,14 +208,34 @@ describe('request_login tool', () => {
     expect(result.content[0].text).toBe('Sign-in request cancelled: The user declined to sign in. The user may want to discuss the task with you.')
   })
 
-  it('is rejected with the other browser-bound requests when the browser closes, saying no more than that', async () => {
+  it('ends as cancelled when the request is rejected, saying no more than why', async () => {
     vi.stubGlobal('fetch', respond(200, prepared))
     inputManager.setCurrentToolUseId('login-closing')
     const done = handlerFor()(args)
     await vi.waitFor(() => expect(inputManager.hasPending('login-closing')).toBe(true))
-    inputManager.rejectByType('login', 'The browser was closed before the user completed this request')
+    inputManager.rejectByType('login', 'The request timed out before the user completed it')
     const result = await done
-    expect(result.content[0].text).toBe('Sign-in request cancelled: The browser was closed before the user completed this request.')
+    expect(result.content[0].text).toBe('Sign-in request cancelled: The request timed out before the user completed it.')
+  })
+
+  it('tells the agent what the user saved while its browser was closed, and how to sign in with it', async () => {
+    vi.stubGlobal('fetch', respond(200, prepared))
+    inputManager.setCurrentToolUseId('login-closed')
+    const done = handlerFor()(args)
+    await vi.waitFor(() => expect(inputManager.hasPending('login-closed')).toBe(true))
+    inputManager.resolve('login-closed', JSON.stringify({ type: 'browser_closed', site: 'github.com', saved: { username: 'octocat' } }))
+    const result = await done
+    expect(result.isError).toBeUndefined()
+    expect(result.content[0].text).toBe([
+      'The browser was closed before the user answered, so nothing went into a page. The user saved the account octocat on github.com to their vault, for you to use.',
+      'Open its sign-in page again and call request_login with username "octocat": the host signs in with it.',
+    ].join('\n'))
+
+    inputManager.setCurrentToolUseId('login-closed-2')
+    const again = handlerFor()(args)
+    await vi.waitFor(() => expect(inputManager.hasPending('login-closed-2')).toBe(true))
+    inputManager.resolve('login-closed-2', JSON.stringify({ type: 'browser_closed', site: 'github.com' }))
+    expect(await again).toMatchObject({ isError: true, content: [{ text: expect.stringContaining('The user saved nothing.') }] })
   })
 })
 

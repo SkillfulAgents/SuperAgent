@@ -12,7 +12,7 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
 
-const mockToast = vi.hoisted(() => ({ warning: vi.fn() }))
+const mockToast = vi.hoisted(() => ({ warning: vi.fn(), success: vi.fn(), error: vi.fn() }))
 vi.mock('sonner', () => ({ toast: mockToast }))
 
 const electron = vi.hoisted(() => ({ value: false }))
@@ -94,6 +94,7 @@ describe('LoginRequestItem', () => {
     resetLoginRequestStore()
     mockApiFetch.mockReset()
     mockToast.warning.mockReset()
+    mockToast.success.mockReset()
     electron.value = false
     pickerAnswer.body = { success: true, filled: 2, failed: 0, submitted: true, problems: [] }
     routes = {
@@ -251,6 +252,23 @@ describe('LoginRequestItem', () => {
     }])
     expect(screen.getByTestId('login-request-completed')).toHaveAttribute('data-status', 'filled')
     expect(mockToast.warning).not.toHaveBeenCalled()
+  })
+
+  it('says what was kept when the browser had closed before the user answered', async () => {
+    const user = userEvent.setup()
+    const onComplete = vi.fn()
+    routes[`${BASE}/fill-login`] = () => json(200, { success: true, browserClosed: true, saved: { username: '+1 555 0100', site: 'github.com' } })
+    render(<LoginRequestItem {...props({ onComplete })} />)
+    const username = await ready()
+    await user.type(username, '+1 555 0100')
+    await user.type(screen.getByLabelText('Password'), 'hunter2-hunter2')
+    await user.type(screen.getByLabelText('Authentication code'), '482913')
+    await user.click(screen.getByTestId('login-submit'))
+
+    await waitFor(() => expect(onComplete).toHaveBeenCalled())
+    expect(screen.getByTestId('login-request-completed')).toHaveAttribute('data-status', 'browser_closed')
+    expect(screen.getByTestId('login-request-completed')).toHaveTextContent('Saved for the agent')
+    expect(mockToast.success).toHaveBeenCalledWith('+1 555 0100 is saved', expect.objectContaining({ description: expect.stringContaining('signs in with this') }))
   })
 
   it('keeps every digit of a code pasted with separators, applying the page\'s limit to the code', async () => {

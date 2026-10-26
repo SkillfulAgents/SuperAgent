@@ -38,7 +38,7 @@ const loginContextErrorSchema = z.object({
   error: z.string().optional(),
   problems: z.array(z.string()).optional(),
 })
-const containerErrorSchema = z.object({ error: z.string() })
+const containerErrorSchema = z.object({ error: z.string(), reason: z.string().optional() })
 
 export type LoginContextRead =
   | { ok: true; context: LoginContext }
@@ -102,7 +102,7 @@ export async function fillLoginInContainer(
   context: LoginContext,
   values: string[],
   account?: FillAccountNote,
-): Promise<{ ok: true; result: LoginFillResult } | { ok: false; status: 409 | 502; error: string }> {
+): Promise<{ ok: true; result: LoginFillResult } | { ok: false; status: 409 | 502; error: string; browserClosed?: true }> {
   const actor = agentRegistry.get(agentSlug)
   const response = await actor.container.fetch('/browser/login/fill', {
     method: 'POST',
@@ -112,7 +112,13 @@ export async function fillLoginInContainer(
   const data: unknown = await response.json().catch(() => null)
   if (!response.ok) {
     const failure = containerErrorSchema.safeParse(data)
-    return { ok: false, status: response.status === 409 ? 409 : 502, error: failure.success ? failure.data.error : 'The sign-in form could not be filled' }
+    return {
+      ok: false,
+      status: response.status === 409 ? 409 : 502,
+      error: failure.success ? failure.data.error : 'The sign-in form could not be filled',
+      // The browser that showed the form closed since: the request is still open.
+      ...(response.status === 409 && failure.success && failure.data.reason === 'browser_closed' ? { browserClosed: true as const } : {}),
+    }
   }
   const result = loginFillResultSchema.safeParse(data)
   if (!result.success) return { ok: false, status: 502, error: 'The browser returned an unreadable result' }

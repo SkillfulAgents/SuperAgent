@@ -219,6 +219,23 @@ function formatVia(resolution: Extract<LoginResolution, { type: 'via' }>, named:
   ].join('\n')
 }
 
+function formatBrowserClosed(resolution: Extract<LoginResolution, { type: 'browser_closed' }>, named: Name): { content: Array<{ type: 'text'; text: string }>; isError?: boolean } {
+  const closed = 'The browser was closed before the user answered, so nothing went into a page.'
+  if (!resolution.saved) {
+    return {
+      content: [{ type: 'text', text: `${closed} The user saved nothing. To sign in to ${resolution.site}, open its sign-in page again and call request_login: the user is asked again.` }],
+      isError: true,
+    }
+  }
+  const account = named(resolution.saved.username)
+  return {
+    content: [{ type: 'text', text: [
+      `${closed} The user saved the account ${account} on ${resolution.site} to their vault, for you to use.`,
+      `Open its sign-in page again and call request_login with username "${account}": the host signs in with it.`,
+    ].join('\n') }],
+  }
+}
+
 /** Where the values came from and what was kept for later, by account. */
 function accountLines(account: LoginFillAccount | undefined, named: Name): string[] {
   if (!account) return []
@@ -243,6 +260,7 @@ export function formatLoginResolution(resolution: LoginResolution, named: Name =
   }
   if (resolution.type === 'accounts') return { content: [{ type: 'text', text: formatAccounts(resolution, named) }] }
   if (resolution.type === 'via') return { content: [{ type: 'text', text: formatVia(resolution, named) }] }
+  if (resolution.type === 'browser_closed') return formatBrowserClosed(resolution, named)
 
   const { origin, outcomes, lost, submitted, submitError, observation, changedSecrets, pageActivity, account } = resolution
   const filled = outcomes.filter((outcome) => outcome.status === 'filled' || outcome.status === 'changed')

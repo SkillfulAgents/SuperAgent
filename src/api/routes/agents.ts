@@ -4242,6 +4242,29 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
       saved: saving,
       held: heldLabels,
     })
+    // The browser that showed the form closed while the user was away (a
+    // Browserbase session ends long before they come back): nothing can go
+    // into a page now. What they save is saved and granted, and the agent is
+    // told to open the page again and sign in with it; unsaved, it asks again.
+    if (!filled.ok && filled.browserClosed) {
+      let kept: VaultAccount | null = null
+      if (saving && identity) {
+        // What they typed, this step's and the next's: the vault fills both once the page is back.
+        const result = await saveAccount({ owner: viewer, site, origin: context.origin, username: identity, values: { ...partsFrom(context.fields, body.values), ...heldParts } })
+        kept = result.account
+        await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: kept.id, action: result.created ? 'created' : 'updated', details: { site } })
+        if (await grantAccount({ accountId: kept.id, agentSlug, grantedBy: viewer })) {
+          await logAuditEvent({ userId: viewer, object: 'browser_account', objectId: kept.id, action: 'assigned', details: { agentSlug } })
+        }
+      }
+      const answered = await answerLoginRequest(agentSlug, body.toolUseId, { type: 'browser_closed', site, ...(kept ? { saved: { username: kept.username } } : {}) })
+      if (!answered) return c.json({ error: 'The agent could not be told. Try again.' }, 502)
+      await actor.inputs.complete(sessionId, body.toolUseId, 'answered')
+      claimed = null
+      forgetHeldLogin(agentSlug, sessionId, site)
+      trackServerEvent('login_request_browser_closed', { saved: kept !== null })
+      return c.json({ success: true, browserClosed: true, ...(kept ? { saved: { username: kept.username, site } } : {}) })
+    }
     // Still open on failure: the user can try again or sign in on the page.
     // Nothing is saved, granted or held for a step that never went in.
     if (!filled.ok) return c.json({ error: filled.error }, filled.status)
