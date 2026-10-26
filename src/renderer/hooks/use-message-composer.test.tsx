@@ -9,6 +9,7 @@ import { secretMarker } from '@renderer/components/messages/secret-chip'
 import type { ChipContext } from '@renderer/components/messages/composer-chips'
 import { formatChipMarker } from '@renderer/lib/chip-marker'
 import { parseMentions } from '@shared/lib/utils/mentions'
+import { appendDictationNote } from '@shared/lib/utils/dictation-note'
 import { DraftsProvider, useDraft } from '@renderer/context/drafts-context'
 
 // --- Mocks ---
@@ -33,10 +34,12 @@ const mockVoiceInput = {
   stopRecording: vi.fn(),
 }
 let capturedTranscriptUpdate: ((text: string) => void) | undefined
+let capturedOnDictated: (() => void) | undefined
 
 vi.mock('@renderer/hooks/use-voice-input', () => ({
-  useVoiceInput: ({ onTranscriptUpdate }: { onTranscriptUpdate: (text: string) => void }) => {
+  useVoiceInput: ({ onTranscriptUpdate, onDictated }: { onTranscriptUpdate: (text: string) => void; onDictated?: () => void }) => {
     capturedTranscriptUpdate = onTranscriptUpdate
+    capturedOnDictated = onDictated
     return mockVoiceInput
   },
 }))
@@ -153,6 +156,7 @@ describe('useMessageComposer', () => {
     capturedOnFoldersReceived = undefined
     capturedOnAttachmentsAdded = undefined
     capturedTranscriptUpdate = undefined
+    capturedOnDictated = undefined
     mockQueue.retryAndWait.mockResolvedValue({ ok: true })
     mockSavedSecrets = []
   })
@@ -500,6 +504,77 @@ describe('useMessageComposer', () => {
     })
 
     expect(opts.onSubmit).toHaveBeenCalledWith('flushed tail text', { silent: false })
+  })
+
+  // --- Dictation note ---
+
+  describe('dictation note', () => {
+    const submit = async (result: { current: ReturnType<typeof useMessageComposer> }) => {
+      await act(async () => {
+        await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+      })
+    }
+    const dictate = (text: string) => act(() => {
+      capturedTranscriptUpdate?.(text)
+      capturedOnDictated?.()
+    })
+
+    it('tells the agent a dictated message may hold transcription slips, once', async () => {
+      const opts = defaultOptions()
+      const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+
+      dictate('meet at to')
+      await submit(result)
+      act(() => result.current.setMessage('typed this time'))
+      await submit(result)
+
+      expect(opts.onSubmit.mock.calls).toEqual([
+        [appendDictationNote('meet at to'), { silent: false }],
+        ['typed this time', { silent: false }],
+      ])
+    })
+
+    it('adds it when submit stops a recording that heard words', async () => {
+      mockVoiceInput.isRecording = true
+      mockVoiceInput.stopRecording.mockImplementation(async () => {
+        capturedOnDictated?.()
+        return 'voice transcription'
+      })
+      const opts = defaultOptions()
+      const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+
+      await submit(result)
+
+      expect(opts.onSubmit).toHaveBeenCalledWith(appendDictationNote('voice transcription'), { silent: false })
+    })
+
+    it('forgets the dictation once the draft is emptied', async () => {
+      const opts = defaultOptions()
+      const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+
+      dictate('meet at to')
+      act(() => result.current.setMessage(''))
+      act(() => result.current.setMessage('typed instead'))
+      await submit(result)
+
+      expect(opts.onSubmit).toHaveBeenCalledWith('typed instead', { silent: false })
+    })
+
+    it('keeps it for the retry after a failed send', async () => {
+      const opts = defaultOptions()
+      opts.onSubmit.mockRejectedValueOnce(new Error('offline'))
+      const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+
+      dictate('meet at to')
+      await submit(result)
+      expect(result.current.message).toBe('meet at to')
+      await submit(result)
+
+      expect(opts.onSubmit.mock.calls).toEqual([
+        [appendDictationNote('meet at to'), { silent: false }],
+        [appendDictationNote('meet at to'), { silent: false }],
+      ])
+    })
   })
 
   describe('upload lifecycle', () => {

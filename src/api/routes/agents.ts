@@ -9,6 +9,7 @@ import agentMembers, { agentMembersBatch } from './agent-members'
 import { notifySessionMentions, readSessionMentions } from './session-mentions'
 import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
 import { parseMentions } from '@shared/lib/utils/mentions'
+import { parseDictationNote } from '@shared/lib/utils/dictation-note'
 import { notifyAgentMembersChanged, changeMemberRole, removeMember, countMembersWithMinRole } from '@shared/lib/services/agent-members-service'
 import { formatSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
@@ -17,7 +18,8 @@ import { bodyLimit } from 'hono/body-limit'
 import { streamSSE } from 'hono/streaming'
 import { getConnInfo } from '@hono/node-server/conninfo'
 import type Anthropic from '@anthropic-ai/sdk'
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
+import { Worker } from 'node:worker_threads'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
@@ -76,11 +78,21 @@ import { isBlockingUserInputToolName } from '@shared/lib/tools/user-input-tools'
 import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTriggers } from '@shared/lib/services/webhook-trigger-service'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
+import { HEIC_PREVIEW_MAX_SOURCE_BYTES } from '@shared/lib/utils/heic-preview'
 import { servedRange } from '@shared/lib/utils/http-range'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { isSystemMessageText } from '@shared/lib/utils/system-message'
 import { credentialBroker } from '../credentials/credential-broker'
 import { CredentialBrokerError } from '../credentials/types'
+import {
+  completeLoginBodySchema,
+  fillLoginBodySchema,
+  fillLoginCredentialBodySchema,
+  loginContextSchema,
+  loginFillResultSchema,
+  type LoginContext,
+  type LoginFillResult,
+} from '@shared/lib/tools/request-login/login-request'
 import type {
   UserInputRequestKind,
   UserInputRequestScope,
@@ -124,6 +136,7 @@ import { scheduledTasks, webhookTriggers, chatIntegrations, connectedAccounts, a
 import { eq, and, inArray, isNotNull, desc, count } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
+import { isOwnOrigin } from '@shared/lib/auth/own-origin'
 import { getViewerUserId, ownerScope } from '@shared/lib/auth/ownership'
 import { normalizeMcpRequestLog, normalizeProxyRequestLog } from '@shared/lib/types/request-log'
 import { withRuleNames } from '@shared/lib/proxy/rules/log-names'
@@ -222,6 +235,7 @@ import { stopInstanceOnAllProviders } from '../../main/host-browser'
 import { deleteBrowserProfile } from '../../main/host-browser/profile-maintenance'
 import { logAuditEvent, logAuditEventOrThrow } from '@shared/lib/services/audit-log-service'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import * as fs from 'fs'
 import { Readable, pipeline } from 'stream'
 import pLimit from 'p-limit'
@@ -784,7 +798,7 @@ async function enrichAgentsWithSummary(
           name: a.name || a.slug,
           ...(a.hasScreenshot ? { hasScreenshot: true } : {}),
         })),
-        widgets: widgetRefreshService.decorate(agent.slug, widgets),
+        widgets: await widgetRefreshService.decorate(agent.slug, widgets),
         ...(options.includeLatestVisibleSessionTail
           ? {
               latestVisibleSession: visibleSessionExpansion?.latestVisibleSession ?? null,
@@ -1252,18 +1266,15 @@ function getSummarizerModel(): string {
   return resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
 }
 
-// Sessions opened by a system notice (voice mode started from the agent
-// home) rather than by something the person said. The notice must not name
-// the session; the first human message does, when it arrives. In-memory:
-// after a restart such a session simply keeps its placeholder name.
-const sessionsAwaitingHumanName = new Set<string>()
-
-/** Name a session opened by a notice from the first message a person sends to it. */
-function nameSessionFromFirstHumanMessage(agentSlug: string, sessionId: string, message: string, agentName: string): void {
-  const key = `${agentSlug}/${sessionId}`
-  if (!sessionsAwaitingHumanName.has(key) || isSystemMessageText(message)) return
-  sessionsAwaitingHumanName.delete(key)
-  generateAndUpdateSessionNameAsync(agentSlug, sessionId, message, agentName).catch(console.error)
+/**
+ * Name a session opened by a system notice (voice mode started from the
+ * agent home) from the first message a person sends to it. The notice must
+ * not name the session; the agent remembers which sessions wait for this
+ * (`sessions.deferNaming`).
+ */
+async function nameSessionFromFirstHumanMessage(actor: AgentActor, sessionId: string, message: string, agentName: string): Promise<void> {
+  if (isSystemMessageText(message) || !(await actor.sessions.takeDeferredNaming(sessionId))) return
+  background(generateAndUpdateSessionNameAsync(actor.slug, sessionId, message, agentName).catch(console.error), { name: 'agents-route.generate-session-name' })
 }
 
 // Generate session name using AI (fire and forget)
@@ -1273,8 +1284,8 @@ async function generateAndUpdateSessionNameAsync(
   firstMessage: string,
   agentName: string
 ): Promise<void> {
-  // Named from what the person wrote, without the block that tells the agent who it tags.
-  const message = parseMentions(firstMessage).cleanText
+  // Named from what the person wrote, without the notes that tell the agent who it tags and that it was dictated.
+  const message = parseMentions(parseDictationNote(firstMessage).cleanText).cleanText
   let sessionName: string | null = null
   // The E2E mock avoids all real provider calls — but this host-direct SDK
   // call bypassed it, so every test session made a doomed HTTPS round trip
@@ -1770,7 +1781,7 @@ agents.post('/:id/start', AgentUser(), async (c) => {
     const actor = agentRegistry.get(slug)
 
     await actor.container.start()
-    if (sessionId) void preResumeSession(actor, sessionId)
+    if (sessionId) background(preResumeSession(actor, sessionId), { name: 'agents-route.pre-resume-session' })
 
     // Skip the session-summary enrichment: it stats every transcript, and every
     // caller of this command discards the body and refetches agent data anyway.
@@ -2152,14 +2163,14 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     await notifySessionMentions(c, mentions, { agentSlug: slug, agentName: agent.name, sessionId, messageUuid: initialMessageUuid })
 
     if (isSystemMessageText(message.trim())) {
-      sessionsAwaitingHumanName.add(`${slug}/${sessionId}`)
+      await actor.sessions.deferNaming(sessionId)
     } else {
-      generateAndUpdateSessionNameAsync(
+      background(generateAndUpdateSessionNameAsync(
         slug,
         sessionId,
         message.trim(),
         agent.name
-      ).catch(console.error)
+      ).catch(console.error), { name: 'agents-route.generate-session-name' })
     }
 
     return c.json(
@@ -2208,13 +2219,13 @@ const messagesListQuerySchema = z
   .refine((q) => !(q.cursor && q.after), { message: 'cursor and after are mutually exclusive' })
 
 // Presentation is derived fresh per response (not persisted), so provider copy
-// changes and provider switches apply to history retroactively.
+// changes apply to history retroactively.
 async function attachProviderErrorPresentations(transformed: TransformedItem[], agentSlug: string, sessionId: string): Promise<void> {
   if (!transformed.some(item => item?.type === 'assistant' && item.apiError)) return
   const runtimeProvider = (await agentRegistry.get(agentSlug).sessions.live(sessionId)).runtime?.provider
   let provider = runtimeProvider ? getLlmProvider(runtimeProvider) : undefined
+  const metadata = await agentRegistry.get(agentSlug).sessions.metadata(sessionId)
   if (!provider) {
-    const metadata = await agentRegistry.get(agentSlug).sessions.metadata(sessionId)
     // Resolve the saved account even if its selected model has since retired.
     const id = storedSelection(metadata?.model, metadata?.llmProviderId)?.llmProviderId
     const connection = id ? await getConnection(id) : null
@@ -2223,8 +2234,10 @@ async function attachProviderErrorPresentations(transformed: TransformedItem[], 
   for (const item of transformed) {
     // Holes serialize as null (JSON.stringify / streamJsonArrayResponse); skip so this walk does not 500.
     if (!item || item.type !== 'assistant' || !item.apiError) continue
+    // An error keeps the copy of the provider that produced it.
+    const recorded = metadata?.errorProviders?.[item.id]
     item.errorPresentation =
-      provider.presentationForTurnError(undefined, item.content.text, item.apiError) ?? undefined
+      (recorded ? getLlmProvider(recorded) : provider).presentationForTurnError(undefined, item.content.text, item.apiError) ?? undefined
   }
 }
 
@@ -2761,7 +2774,7 @@ agents.post('/:id/sessions/:sessionId/messages', AgentUser(), async (c) => {
     }
     const queued = delivery.status !== 'sent' || delivery.queued
     if (delivery.status === 'sent' && runtimeOptions.shouldQuery !== false) {
-      nameSessionFromFirstHumanMessage(agentSlug, sessionId, text, agent.name)
+      await nameSessionFromFirstHumanMessage(actor, sessionId, text, agent.name)
     }
     if (mentions.teammates.length > 0) {
       const sessionName = (await actor.sessions.metadata(sessionId))?.name
@@ -3090,7 +3103,7 @@ agents.get('/:id/sessions/:sessionId/stream', AgentRead(), async (c) => {
     // Last-Event-ID when it reconnects. The stream ending (the client fell too
     // far behind) ends the response, and the browser reconnects.
     const frames = (await actor.messages.follow(sessionId, { after: c.req.header('Last-Event-ID') })).getReader()
-    void clientGone.then(() => frames.cancel())
+    background(clientGone.then(() => frames.cancel()), { name: 'agents-route.cancel-message-stream' })
     try {
       for (let next = await frames.read(); !next.done; next = await frames.read()) {
         await stream.writeSSE({ id: next.value.id, data: next.value.data, event: 'message' })
@@ -3799,21 +3812,44 @@ async function refreshBrowserInputUrl(
   return url
 }
 
+/**
+ * The open request a password-manager lookup belongs to: a browser hand-off,
+ * or a sign-in form (request_login), whose fields' frame is the page.
+ */
+async function gateCredentialRequest(c: Context, toolUseId: string): Promise<Response | 'browser_input' | 'login'> {
+  const open = await agentRegistry.get(getAgentId(c)).inputs.get(toolUseId)
+  const kind = open?.kind === 'login' ? 'login' : 'browser_input'
+  return (await gateOpenRequestAccess(c, toolUseId, kind)) ?? kind
+}
+
+/** The sign-in form's context when it can be read now; null while it cannot. */
+async function loginRequestContext(agentSlug: string, toolUseId: string): Promise<LoginContext | null> {
+  const read = await readLoginContext(agentSlug, toolUseId)
+  return read.ok ? read.context : null
+}
+
 // GET /api/agents/:id/sessions/:sessionId/browser-credentials - Metadata-only suggestions
 agents.get('/:id/sessions/:sessionId/browser-credentials', IsAdmin(), async (c) => {
   const toolUseId = c.req.query('toolUseId')
   if (!toolUseId) return c.json({ error: 'toolUseId is required' }, 400)
-  const gated = await gateOpenRequestAccess(c, toolUseId, 'browser_input')
-  if (gated) return gated
+  const kind = await gateCredentialRequest(c, toolUseId)
+  if (kind instanceof Response) return kind
 
   const agentSlug = getAgentId(c)
   const sessionId = c.req.param('sessionId')
   try {
-    // New requests carry a harness-probed URL. Explicit refreshes and stale or
-    // recovered requests re-probe the live browser and replace that context.
-    const forceRefresh = c.req.query('refresh') === 'true'
-    const url = (!forceRefresh && await capturedBrowserInputUrl(agentSlug, toolUseId)) ||
-      await refreshBrowserInputUrl(agentSlug, sessionId, toolUseId)
+    let url: string
+    if (kind === 'login') {
+      const context = await loginRequestContext(agentSlug, toolUseId)
+      if (!context) return c.json({ error: 'The sign-in form is not ready yet' }, 409)
+      url = context.url
+    } else {
+      // New requests carry a harness-probed URL. Explicit refreshes and stale or
+      // recovered requests re-probe the live browser and replace that context.
+      const forceRefresh = c.req.query('refresh') === 'true'
+      url = (!forceRefresh && await capturedBrowserInputUrl(agentSlug, toolUseId)) ||
+        await refreshBrowserInputUrl(agentSlug, sessionId, toolUseId)
+    }
     const result = await credentialBroker.suggest(
       { agentSlug, sessionId, toolUseId },
       url,
@@ -3833,8 +3869,8 @@ agents.post(
   async (c) => {
   try {
     const body = c.req.valid('json')
-    const gated = await gateOpenRequestAccess(c, body.toolUseId, 'browser_input')
-    if (gated) return gated
+    const gated = await gateCredentialRequest(c, body.toolUseId)
+    if (gated instanceof Response) return gated
     if (!passwordManagerIsConfigured(body.provider)) {
       return c.json({ error: 'Configure this password manager in Browser Use settings' }, 409)
     }
@@ -3866,8 +3902,8 @@ agents.post(
   async (c) => {
   try {
     const body = c.req.valid('json')
-    const gated = await gateOpenRequestAccess(c, body.toolUseId, 'browser_input')
-    if (gated) return gated
+    const gated = await gateCredentialRequest(c, body.toolUseId)
+    if (gated instanceof Response) return gated
     if (!passwordManagerIsConfigured(body.provider)) {
       return c.json({ error: 'Configure this password manager in Browser Use settings' }, 409)
     }
@@ -3979,6 +4015,263 @@ agents.post(
   }
   },
 )
+
+// ── Sign-in requests (request_login) ────────────────────────────────────────
+// The agent maps a page's sign-in fields; the user types the values into the
+// app's form, and they go to the container's page writer. Values are never
+// logged, echoed, or stored: they cross this route once, in the body.
+
+const loginContextErrorSchema = z.object({
+  error: z.string().optional(),
+  problems: z.array(z.string()).optional(),
+})
+const containerErrorSchema = z.object({ error: z.string() })
+
+type LoginContextRead =
+  | { ok: true; context: LoginContext }
+  | { ok: false; status: 404 | 409 | 502; error: string; problems: string[] }
+
+/**
+ * The sign-in form's context as the browser reported it when it located the
+ * fields: kept on the request once read, and read from the container again
+ * when the request does not hold it (a request recovered after a restart).
+ * 404 means still locating — the app tries again; 409 means the fields the
+ * agent picked could not be used.
+ */
+async function readLoginContext(agentSlug: string, toolUseId: string): Promise<LoginContextRead> {
+  const actor = agentRegistry.get(agentSlug)
+  const request = await actor.inputs.get(toolUseId)
+  const cached = loginContextSchema.safeParse(request?.kind === 'login' ? request.payload.login : undefined)
+  if (cached.success) return { ok: true, context: cached.data }
+  try {
+    // The container answers once the agent's tool has located the fields.
+    const response = await actor.container.fetch(`/browser/login/context?toolUseId=${encodeURIComponent(toolUseId)}`)
+    const data: unknown = await response.json().catch(() => null)
+    if (!response.ok) {
+      const failure = loginContextErrorSchema.safeParse(data)
+      const problems = failure.success ? failure.data.problems ?? [] : []
+      return response.status === 404
+        ? { ok: false, status: 404, error: 'The sign-in form is still being located', problems }
+        : { ok: false, status: 409, error: 'The browser could not locate the sign-in fields', problems }
+    }
+    const context = loginContextSchema.safeParse(data)
+    if (!context.success) return { ok: false, status: 502, error: 'The browser returned an unreadable sign-in form', problems: [] }
+    await actor.inputs.enrich(toolUseId, 'login', { login: context.data })
+    return { ok: true, context: context.data }
+  } catch (error) {
+    console.error('[login-request] Reading the sign-in form failed:', error instanceof Error ? error.message : error)
+    return { ok: false, status: 502, error: 'The browser is unavailable', problems: [] }
+  }
+}
+
+/**
+ * A form for this app itself, at any of its addresses (see isOwnOrigin):
+ * signing the agent's browser in there would hand it the user's session here.
+ */
+function signsInToThisApp(c: Context, origin: string): boolean {
+  return isOwnOrigin(origin, [c.req.header('origin'), c.req.url])
+}
+
+function thisAppProblem(origin: string) {
+  return {
+    error: 'This sign-in form is for this app itself',
+    // The form offers no way around it: not even signing in on the page by hand.
+    reason: 'this_app' as const,
+    problems: [`The fields are on ${origin}, this app's own address: the agent's browser is not signed in to it.`],
+  }
+}
+
+/**
+ * Hand the values to the container, which writes them into the page (re-
+ * checking the origin in the page) and answers the agent's parked call.
+ * On success the request is settled here too; on failure it stays open.
+ */
+async function fillLoginInContainer(
+  agentSlug: string,
+  sessionId: string,
+  toolUseId: string,
+  context: LoginContext,
+  values: string[],
+): Promise<{ ok: true; result: LoginFillResult } | { ok: false; status: 409 | 502; error: string }> {
+  const actor = agentRegistry.get(agentSlug)
+  const response = await actor.container.fetch('/browser/login/fill', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, toolUseId, expectedOrigin: context.origin, values }),
+  })
+  const data: unknown = await response.json().catch(() => null)
+  if (!response.ok) {
+    const failure = containerErrorSchema.safeParse(data)
+    return { ok: false, status: response.status === 409 ? 409 : 502, error: failure.success ? failure.data.error : 'The sign-in form could not be filled' }
+  }
+  const result = loginFillResultSchema.safeParse(data)
+  if (!result.success) return { ok: false, status: 502, error: 'The browser returned an unreadable result' }
+  await actor.inputs.complete(sessionId, toolUseId, 'answered')
+  return { ok: true, result: result.data }
+}
+
+// GET /api/agents/:id/sessions/:sessionId/login-request - Where the fields are
+agents.get('/:id/sessions/:sessionId/login-request', AgentUser(), async (c) => {
+  const toolUseId = c.req.query('toolUseId')
+  if (!toolUseId) return c.json({ error: 'toolUseId is required' }, 400)
+  const gated = await gateOpenRequestAccess(c, toolUseId, 'login')
+  if (gated) return gated
+
+  const read = await readLoginContext(getAgentId(c), toolUseId)
+  if (!read.ok) return c.json({ error: read.error, problems: read.problems }, read.status)
+  if (signsInToThisApp(c, read.context.origin)) return c.json(thisAppProblem(read.context.origin), 409)
+  return c.json(read.context)
+})
+
+// POST /api/agents/:id/sessions/:sessionId/fill-login - Write the user's values into the page
+agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
+  let claimed: { id: string; token: string } | null = null
+  c.header('Cache-Control', 'no-store')
+  try {
+    // Parsed by hand: a validator's error response could quote the values.
+    const parsed = fillLoginBodySchema.safeParse(await c.req.json().catch(() => null))
+    if (!parsed.success) return c.json({ error: 'Invalid sign-in request' }, 400)
+    const body = parsed.data
+    const gated = await gateRequestDecision(c, body.toolUseId, 'login')
+    if (gated) return gated
+
+    const agentSlug = getAgentId(c)
+    const sessionId = c.req.param('sessionId')
+    const actor = agentRegistry.get(agentSlug)
+    // The values go only to the origin the browser reported and the form
+    // showed — never to one the client names.
+    const read = await readLoginContext(agentSlug, body.toolUseId)
+    if (!read.ok || read.context.origin !== body.origin) {
+      return c.json({ error: 'The sign-in form changed. Reload it and try again.' }, 409)
+    }
+    const context = read.context
+    if (signsInToThisApp(c, context.origin)) return c.json({ error: thisAppProblem(context.origin).error }, 409)
+    if (body.values.length !== context.fields.length) {
+      return c.json({ error: 'One value per field is required' }, 400)
+    }
+    const claim = await actor.inputs.claim(body.toolUseId)
+    if (!claim) return c.json({ error: 'This sign-in request is already being handled' }, 409)
+    claimed = { id: body.toolUseId, token: claim.token }
+
+    const filled = await fillLoginInContainer(agentSlug, sessionId, body.toolUseId, context, body.values)
+    // Still open on failure: the user can try again or sign in on the page.
+    if (!filled.ok) return c.json({ error: filled.error }, filled.status)
+    claimed = null
+    trackServerEvent('login_request_filled', {
+      submitted: filled.result.submitted,
+      filled: filled.result.filled,
+      failed: filled.result.failed,
+      source: 'form',
+    })
+    return c.json(filled.result)
+  } catch (error) {
+    console.error('[fill-login] Failed:', error instanceof Error ? error.message : 'Unknown error')
+    return c.json({ error: 'The sign-in form could not be filled' }, 500)
+  } finally {
+    if (claimed) await agentRegistry.get(getAgentId(c)).inputs.releaseClaim(claimed.id, claimed.token)
+  }
+})
+
+// POST /api/agents/:id/sessions/:sessionId/fill-login-credential - A saved login from the
+// host's password manager, straight into the page: the secret never reaches the renderer.
+agents.post(
+  '/:id/sessions/:sessionId/fill-login-credential',
+  IsAdmin(),
+  zValidator('json', fillLoginCredentialBodySchema),
+  async (c) => {
+  let claimed: { id: string; token: string } | null = null
+  c.header('Cache-Control', 'no-store')
+  try {
+    const body = c.req.valid('json')
+    const gated = await gateRequestDecision(c, body.toolUseId, 'login')
+    if (gated) return gated
+
+    const agentSlug = getAgentId(c)
+    const sessionId = c.req.param('sessionId')
+    const context = await loginRequestContext(agentSlug, body.toolUseId)
+    if (!context) return c.json({ error: 'The sign-in form is not ready yet' }, 409)
+    if (signsInToThisApp(c, context.origin)) return c.json({ error: thisAppProblem(context.origin).error }, 409)
+    // A saved login holds an identifier and a password, nothing else.
+    if (!context.fields.every((field) => field.kind === 'username' || field.kind === 'password')) {
+      return c.json({ error: 'This form asks for more than a saved login holds' }, 409)
+    }
+    const claim = await agentRegistry.get(agentSlug).inputs.claim(body.toolUseId)
+    if (!claim) return c.json({ error: 'This sign-in request is already being handled' }, 409)
+    claimed = { id: body.toolUseId, token: claim.token }
+
+    const { credential, expectedOrigin } = await credentialBroker.retrieve(
+      { agentSlug, sessionId, toolUseId: body.toolUseId },
+      body.credentialId,
+      context.url,
+    )
+    if (expectedOrigin !== context.origin) {
+      return c.json({ error: 'The saved login is for a different site than the sign-in form' }, 409)
+    }
+    const values = context.fields.map((field) => (field.kind === 'username' ? credential.username : credential.password))
+    const filled = await fillLoginInContainer(agentSlug, sessionId, body.toolUseId, context, values)
+    if (!filled.ok) return c.json({ error: filled.error }, filled.status)
+    claimed = null
+    trackServerEvent('login_request_filled', {
+      submitted: filled.result.submitted,
+      filled: filled.result.filled,
+      failed: filled.result.failed,
+      source: 'password_manager',
+    })
+    return c.json(filled.result)
+  } catch (error) {
+    return credentialBrokerErrorResponse(c, error)
+  } finally {
+    if (claimed) await agentRegistry.get(getAgentId(c)).inputs.releaseClaim(claimed.id, claimed.token)
+  }
+  },
+)
+
+// POST /api/agents/:id/sessions/:sessionId/complete-login - Signed in on the page instead, or declined
+agents.post('/:id/sessions/:sessionId/complete-login', AgentUser(), zValidator('json', completeLoginBodySchema), async (c) => {
+  let claimed: { id: string; token: string } | null = null
+  try {
+    const body = c.req.valid('json')
+    const gated = await gateRequestDecision(c, body.toolUseId, 'login')
+    if (gated) return gated
+
+    const agentSlug = getAgentId(c)
+    const sessionId = c.req.param('sessionId')
+    const actor = agentRegistry.get(agentSlug)
+    const claim = await actor.inputs.claim(body.toolUseId)
+    if (!claim) return c.json({ error: 'This sign-in request is already being handled' }, 409)
+    claimed = { id: body.toolUseId, token: claim.token }
+
+    const response = body.action === 'manual'
+      ? await actor.container.fetch(`/inputs/${encodeURIComponent(body.toolUseId)}/resolve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ value: JSON.stringify({ type: 'manual' }) }),
+        })
+      : await actor.container.fetch(`/inputs/${encodeURIComponent(body.toolUseId)}/reject`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason: body.reason || 'The user declined to sign in' }),
+        })
+    if (!response.ok) {
+      console.error(`[complete-login] The container did not accept the ${body.action} answer (HTTP ${response.status})`)
+      return c.json({ error: 'Failed to answer the sign-in request' }, 500)
+    }
+
+    await actor.inputs.complete(sessionId, body.toolUseId, body.action === 'manual' ? 'answered' : 'declined')
+    claimed = null
+    if (body.action === 'decline') {
+      // As with a browser hand-off: stop the turn so the user can talk to the agent.
+      await actor.messages.stop(sessionId, { scope: 'turn' })
+      trackServerEvent('request_declined', { type: 'login', withReason: !!body.reason })
+    }
+    return c.json({ success: true })
+  } catch (error) {
+    console.error('[complete-login] Failed:', error instanceof Error ? error.message : 'Unknown error')
+    return c.json({ error: 'Failed to answer the sign-in request' }, 500)
+  } finally {
+    if (claimed) await agentRegistry.get(getAgentId(c)).inputs.releaseClaim(claimed.id, claimed.token)
+  }
+})
 
 // POST /api/agents/:id/sessions/:sessionId/complete-browser-input - Complete or cancel a browser input request
 agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), async (c) => {
@@ -5248,7 +5541,7 @@ agents.post('/:id/export-template', AgentAdmin(), async (c) => {
     const agent = await getAgent(slug)
     const zipStream = await exportAgentTemplate(slug, c.req.raw.signal)
     return sendLockedExportStream(zipStream, () => {
-      void logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'template' } })
+      background(logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'template' } }), { name: 'agents-route.audit-export' })
       return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-template${AGENT_PACKAGE_EXTENSION}`)
     })
   } catch (error) {
@@ -5263,7 +5556,7 @@ agents.post('/:id/export-full', AgentAdmin(), async (c) => {
     const agent = await getAgent(slug)
     const zipStream = await exportAgentFull(slug, c.req.raw.signal)
     return sendLockedExportStream(zipStream, () => {
-      void logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'full' } })
+      background(logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: slug, action: 'exported', details: { type: 'full' } }), { name: 'agents-route.audit-export' })
       return packageDownloadResponse(zipStream, `${agent?.frontmatter.name || slug}-full${AGENT_PACKAGE_EXTENSION}`)
     })
   } catch (error) {
@@ -6229,6 +6522,147 @@ agents.post('/:id/folders/reveal-path', AgentAdmin(), async (c) => {
   }
 })
 
+const HEIC_EXTENSIONS = new Set(['.heic', '.heif'])
+const HEIC_PREVIEW_CACHE_BYTES = 64 * 1024 * 1024
+const HEIC_PREVIEW_MAX_PIXELS = 50_000_000
+const HEIC_PREVIEW_TIMEOUT_MS = 30_000
+const heicPreviewCache = new Map<string, Uint8Array>()
+let heicPreviewCacheBytes = 0
+let heicPreviewQueue: Promise<void> = Promise.resolve()
+
+function cachedHeicPreview(key: string): Uint8Array | undefined {
+  const preview = heicPreviewCache.get(key)
+  if (!preview) return undefined
+  heicPreviewCache.delete(key)
+  heicPreviewCache.set(key, preview)
+  return preview
+}
+
+function cacheHeicPreview(key: string, preview: Uint8Array) {
+  if (preview.byteLength > HEIC_PREVIEW_CACHE_BYTES) return
+  const existing = heicPreviewCache.get(key)
+  if (existing) {
+    heicPreviewCache.delete(key)
+    heicPreviewCacheBytes -= existing.byteLength
+  }
+  while (heicPreviewCacheBytes + preview.byteLength > HEIC_PREVIEW_CACHE_BYTES) {
+    const oldest = heicPreviewCache.entries().next().value as [string, Uint8Array] | undefined
+    if (!oldest) break
+    heicPreviewCache.delete(oldest[0])
+    heicPreviewCacheBytes -= oldest[1].byteLength
+  }
+  heicPreviewCache.set(key, preview)
+  heicPreviewCacheBytes += preview.byteLength
+}
+
+function heicPreviewWorkerUrl(): URL {
+  try {
+    // Electron emits CommonJS; the web build and unbundled source use ESM.
+    const filename = process.versions.electron ? './heic-preview-worker.cjs' : './heic-preview-worker.mjs'
+    return new URL(filename, import.meta.url)
+  } catch (error) {
+    throw new Error('Failed to resolve HEIC preview worker', { cause: error })
+  }
+}
+
+function runHeicPreviewWorker(input: Uint8Array): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const inputBuffer = input.buffer as ArrayBuffer
+    const worker = new Worker(heicPreviewWorkerUrl(), {
+      workerData: {
+        input: inputBuffer,
+        maxPixels: HEIC_PREVIEW_MAX_PIXELS,
+        quality: 85,
+      },
+      transferList: [inputBuffer],
+      resourceLimits: {
+        maxOldGenerationSizeMb: 384,
+        maxYoungGenerationSizeMb: 64,
+        stackSizeMb: 4,
+      },
+    })
+    let settled = false
+    let timedOut = false
+    let workerError: Error | undefined
+    let result: { output?: ArrayBuffer; error?: string } | undefined
+    const timeout = setTimeout(() => {
+      if (settled) return
+      timedOut = true
+      background(worker.terminate().catch((error) => {
+        if (settled) return
+        settled = true
+        reject(error)
+      }), { name: 'heic-preview.terminate-worker' })
+    }, HEIC_PREVIEW_TIMEOUT_MS)
+
+    worker.once('message', (message: { output?: ArrayBuffer; error?: string }) => {
+      result = message
+    })
+    worker.once('error', (error) => {
+      workerError = error
+    })
+    worker.once('exit', (code) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      if (timedOut) reject(new Error('HEIC preview conversion timed out'))
+      else if (workerError) reject(workerError)
+      else if (code !== 0) reject(new Error(`HEIC preview worker exited with code ${code}`))
+      else if (result?.error) reject(new Error(result.error))
+      else if (result?.output) resolve(new Uint8Array(result.output))
+      else reject(new Error('HEIC preview worker returned no image'))
+    })
+  })
+}
+
+function queueHeicPreview<T>(task: () => Promise<T>): Promise<T> {
+  const queued = heicPreviewQueue.then(task)
+  heicPreviewQueue = queued.then(() => undefined, () => undefined)
+  return queued
+}
+
+async function renderHeicPreview(actor: AgentActor, resolvedPath: string, stat: FileStat): Promise<Uint8Array> {
+  if (stat.size > HEIC_PREVIEW_MAX_SOURCE_BYTES) {
+    throw new Error('HEIC file exceeds the preview size limit')
+  }
+
+  return queueHeicPreview(async () => {
+    const reader = (await actor.files.read(resolvedPath)).getReader()
+    const chunks: Uint8Array[] = []
+    let size = 0
+    let done = false
+    while (!done) {
+      const read = await reader.read()
+      if (read.done) {
+        done = true
+        continue
+      }
+      const value = read.value
+      size += value.byteLength
+      if (size > HEIC_PREVIEW_MAX_SOURCE_BYTES) {
+        await reader.cancel()
+        throw new Error('HEIC file exceeds the preview size limit')
+      }
+      chunks.push(value)
+    }
+
+    const input = new Uint8Array(size)
+    let offset = 0
+    for (const chunk of chunks) {
+      input.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    const digest = createHash('sha256').update(input).digest('base64url')
+    const key = `${actor.slug}\0${resolvedPath}\0${digest}`
+    const cached = cachedHeicPreview(key)
+    if (cached) return cached
+
+    const preview = await runHeicPreviewWorker(input)
+    cacheHeicPreview(key, preview)
+    return preview
+  })
+}
+
 // GET /api/agents/:id/files/* - Download a file from the agent workspace
 agents.get('/:id/files/*', AgentRead(), async (c) => {
   try {
@@ -6263,9 +6697,10 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
     const filename = path.basename(filePath)
     const encodedFilename = encodeURIComponent(filename)
     const inline = new URL(c.req.url).searchParams.get('inline') === 'true'
+    const heicPreview = inline && HEIC_EXTENSIONS.has(path.extname(filename).toLowerCase())
     if (inline) {
       c.header('Content-Disposition', `inline; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`)
-      c.header('Content-Type', guessMimeType(filename))
+      c.header('Content-Type', heicPreview ? 'image/jpeg' : guessMimeType(filename))
     } else {
       c.header('Content-Disposition', `attachment; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`)
       c.header('Content-Type', 'application/octet-stream')
@@ -6285,6 +6720,22 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
     // validator — an mtime/size ETag plus If-None-Match → 304 — which is worth
     // doing, but not as an unvalidated rider on a leak fix.
     c.header('Cache-Control', 'private, no-store, max-age=0')
+
+    if (heicPreview) {
+      if (c.req.method === 'HEAD') return c.body(null)
+      try {
+        const preview = await renderHeicPreview(actor, resolved, stat)
+        c.header('Content-Length', String(preview.byteLength))
+        return c.body(new Uint8Array(preview))
+      } catch (error) {
+        console.error('Failed to render HEIC preview:', error)
+        captureException(error, {
+          tags: { component: 'agents', operation: 'render-heic-preview' },
+          extra: { agentSlug, filePath },
+        })
+        return c.json({ error: 'Failed to preview image' }, 422)
+      }
+    }
 
     const served = servedRange(c.req.header('range'), stat.size)
 
@@ -6504,7 +6955,7 @@ agents.get('/:id/widgets', AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
     const widgets = await listWidgetsFromFilesystem(slug)
-    return c.json(widgetRefreshService.decorate(slug, widgets))
+    return c.json(await widgetRefreshService.decorate(slug, widgets))
   } catch (error) {
     console.error('Failed to list widgets:', error)
     return c.json({ error: 'Failed to list widgets' }, 500)
@@ -7027,8 +7478,8 @@ async function cleanupStaleUploads() {
 }
 
 // Run cleanup on startup and every 30 minutes
-void cleanupStaleUploads()
-setInterval(cleanupStaleUploads, 30 * 60 * 1000).unref()
+background(cleanupStaleUploads(), { name: 'agents-route.cleanup-stale-uploads' })
+setInterval(() => background(cleanupStaleUploads(), { name: 'agents-route.cleanup-stale-uploads' }), 30 * 60 * 1000).unref()
 
 // =============================================================================
 // Pending user-input requests (unified wire)

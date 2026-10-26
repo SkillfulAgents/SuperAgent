@@ -993,7 +993,7 @@ export class ClaudeCodeProcess extends EventEmitter {
    */
   private buildSdkMcpServers(browserMcpTools: ReturnType<typeof createBrowserTools>): Record<string, McpServerConfig> {
     const servers: Record<string, McpServerConfig> = {
-      'user-input': createUserInputMcpServer(() => this),
+      'user-input': createUserInputMcpServer(() => this, () => this.sessionId),
       'browser': createBrowserMcpServer(browserMcpTools),
       'dashboards': createDashboardsMcpServer(),
       'widgets': createWidgetsMcpServer(),
@@ -1266,8 +1266,10 @@ export class ClaudeCodeProcess extends EventEmitter {
             // when one is active (native is Anthropic-server-side, absent on non-Claude models).
             ...(this.webSearchProvider ? ['mcp__web__web_search'] : ['WebSearch']),
             'Read',
+            'Glob',
             'mcp__user-input__request_file',
             'mcp__user-input__request_browser_input',
+            'mcp__user-input__request_login',
           ],
           prompt: WEB_BROWSER_AGENT_PROMPT,
           maxTurns: 500,

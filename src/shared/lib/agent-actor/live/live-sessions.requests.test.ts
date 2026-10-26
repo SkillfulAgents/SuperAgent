@@ -59,6 +59,7 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 import { attachLiveSessionsHarness, createStreamClient, type StreamClient } from '../testing/live-sessions-harness'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
+import { LiveSessions } from './live-sessions'
 
 // An auto-approved script runs on the host: it answers like a script that ran.
 const live = attachLiveSessionsHarness({
@@ -304,7 +305,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
     )
 
     await vi.waitFor(() => {
-      expect(userInputRequestManager.getOpenRequest('tool-browser-context')?.payload)
+      expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'tool-browser-context')?.payload)
         .toMatchObject({
           browserContext: {
             url: 'https://example.com/login',
@@ -494,7 +495,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(sessions().isAwaitingInput(SESSION_ID)).toBe(true)
 
       // The review settles — nothing is open anymore.
-      userInputRequestManager.resolve('mix-review-1', 'answered')
+      userInputRequestManager.resolve(AGENT_SLUG, 'mix-review-1', 'answered')
       sessions().syncAwaiting()
       expect(sessions().isAwaitingInput(SESSION_ID)).toBe(false)
     })
@@ -514,7 +515,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       sendToolResult('unknown-tool-id')
       expect(sessions().isAwaitingInput(SESSION_ID)).toBe(true)
 
-      userInputRequestManager.resolve('mix-review-2', 'declined')
+      userInputRequestManager.resolve(AGENT_SLUG, 'mix-review-2', 'declined')
       sessions().syncAwaiting()
       expect(sessions().isAwaitingInput(SESSION_ID)).toBe(false)
     })
@@ -800,7 +801,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(openStreamRequestIds()).toHaveLength(0)
       expect(sessions().isAwaitingInput(SESSION_ID)).toBe(true)
 
-      userInputRequestManager.resolve('side-review-1', 'answered')
+      userInputRequestManager.resolve(AGENT_SLUG, 'side-review-1', 'answered')
       sessions().syncAwaiting()
       expect(sessions().isAwaitingInput(SESSION_ID)).toBe(false)
     })
@@ -1036,7 +1037,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(globalEvents().filter((e) => e.type === 'session_input_provided')).toHaveLength(0)
 
       // The review settles → the falling edge fires now, not never.
-      userInputRequestManager.resolve('boundary-review-1', 'answered')
+      userInputRequestManager.resolve(AGENT_SLUG, 'boundary-review-1', 'answered')
       sessions().syncAwaiting()
       expect(sessions().isAwaitingInput(SESSION_ID)).toBe(false)
       expect(globalEvents().filter((e) => e.type === 'session_input_provided')).toHaveLength(1)
@@ -1440,7 +1441,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(createdFor(globalEvents(), 'wire-review-1')).toHaveLength(1)
       expect(createdFor(sseEvents, 'wire-review-1')).toHaveLength(0)
 
-      userInputRequestManager.resolve('wire-review-1', 'declined')
+      userInputRequestManager.resolve(AGENT_SLUG, 'wire-review-1', 'declined')
       const resolved = resolvedFor(globalEvents(), 'wire-review-1')
       expect(resolved).toHaveLength(1)
       expect(resolved[0].outcome).toBe('declined')
@@ -1480,7 +1481,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
       expect(createdFor(sseEvents, 'wire-noslug-1')).toHaveLength(0)
       expect(createdFor(sseEvents, 'wire-noslug-2')).toHaveLength(0)
 
-      userInputRequestManager.resolve('wire-noslug-1', 'answered')
+      userInputRequestManager.resolve(AGENT_SLUG, 'wire-noslug-1', 'answered')
       expect(resolvedFor(globalEvents(), 'wire-noslug-1')).toHaveLength(0)
       expect(resolvedFor(sseEvents, 'wire-noslug-1')).toHaveLength(0)
     })
@@ -1541,7 +1542,7 @@ describe('pending user-input request lifecycle (characterization)', () => {
         .sort()
       expect(ids).toEqual(['wire-snap-1', 'wire-snap-review'])
 
-      userInputRequestManager.resolve('wire-snap-review', 'answered')
+      userInputRequestManager.resolve(AGENT_SLUG, 'wire-snap-review', 'answered')
       sendToolResult('wire-snap-1')
       expect(userInputRequestManager.getSnapshotForScope(AGENT_SLUG, SESSION_ID)).toHaveLength(0)
     })
@@ -1666,8 +1667,8 @@ describe('request id ownership across agents', () => {
   }
 
   it('completeInputRequest settles the named agent\'s request when another agent holds the same id', () => {
-    // Every agent's store reports each transition to the router first.
-    const report = vi.spyOn(userInputRequestManager, 'report')
+    // Every agent's store reports each transition to its own live sessions.
+    const report = vi.spyOn(LiveSessions.prototype, 'requestTransition')
     try {
       registerInBoth('secret')
       live.sessions('original').completeRequest('copied-session-id', 'copied-tool-id', 'answered')
@@ -1683,12 +1684,11 @@ describe('request id ownership across agents', () => {
     }
   })
 
-  it('clearing one agent\'s copy leaves the other agent\'s reachable by bare id', () => {
+  it('clearing one agent\'s copy leaves the other agent\'s open', () => {
     registerInBoth('computer_use')
     userInputRequestManager.dropSessionRequests('original', 'copied-session-id')
     expect(userInputRequestManager.getOpenRequestsForAgent('original')).toHaveLength(0)
-    expect(userInputRequestManager.getOpenRequest('copied-tool-id')?.scope.agentSlug).toBe('clone')
-    expect(userInputRequestManager.getOpenRequest('copied-tool-id', 'clone')?.scope.agentSlug).toBe('clone')
-    expect(userInputRequestManager.getOpenRequest('copied-tool-id', 'original')).toBeNull()
+    expect(userInputRequestManager.getOpenRequest('clone', 'copied-tool-id')?.scope.agentSlug).toBe('clone')
+    expect(userInputRequestManager.getOpenRequest('original', 'copied-tool-id')).toBeNull()
   })
 })

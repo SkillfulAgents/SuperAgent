@@ -186,6 +186,37 @@ describe('ToolCalls', () => {
       ])
     })
 
+    it('parks a sign-in request with the fields its form draws, and no refs', () => {
+      const h = harness({ client: false })
+
+      h.calls.mainToolUse(use('t_login', 'mcp__user-input__request_login', {
+        message: 'Sign in to GitHub.',
+        fields: [
+          { ref: '@e3', kind: 'username', label: 'Email' },
+          { ref: '@e4', kind: 'pin', label: 'PIN' },
+          { ref: '@e5', kind: 'password', label: 'Password' },
+        ],
+        submit: '@e6',
+      }))
+
+      expect(h.open('t_login')).toMatchObject({
+        kind: 'login',
+        payload: { message: 'Sign in to GitHub.', fields: [{ kind: 'username', label: 'Email' }, { kind: 'password', label: 'Password' }] },
+      })
+      expect(JSON.stringify(h.open('t_login')?.payload)).not.toContain('@e')
+      // Its context comes from the container when the form asks, not at parking.
+      expect(h.fetches).toEqual([])
+      expect(h.host.sent('analytics').map((e) => e.event)).toEqual(['agent_request_login'])
+    })
+
+    it('parks no sign-in request without fields to draw, or without a reason', () => {
+      const h = harness({ client: false })
+      h.calls.mainToolUse(use('t_login', 'mcp__user-input__request_login', { message: 'Sign in.' }))
+      expect(h.open('t_login')).toBeNull()
+      h.calls.mainToolUse(use('t_blank', 'mcp__user-input__request_login', { message: '   ', fields: [] }))
+      expect(h.open('t_blank')).toBeNull()
+    })
+
     it('parks nothing for an ask missing its required field, but still recomputes the wait', () => {
       const h = harness()
 

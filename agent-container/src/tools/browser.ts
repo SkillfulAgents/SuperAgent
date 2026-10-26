@@ -22,6 +22,7 @@ import { landedElsewhere, pageWarnings } from '../page-status'
 import { formatActionEffect, type ActionEffect, type ActionVerb, type EffectTreeDiff } from '../action-settle'
 import { classifyWaitTarget, formatWaitResult } from '../wait-target'
 import { stripAnsi, extractScreenshotPath } from '../browser-output'
+import { redactToolResult } from '../injected-secrets'
 
 /** The effect line for a mutating action's result, from the server's settle-and-diff (and tree diff, when one was read). */
 function effectText(data: Record<string, unknown> | undefined, verb: ActionVerb, fallbackSettleMs: number, opts: { valueReadBack?: boolean } = {}): string {
@@ -900,5 +901,16 @@ The recording has no Cookie or Set-Cookie headers and none of the headers the br
     browserRunTool,
     browserGetStateTool,
     browserCaptureTrafficTool,
-  ]
+  ].map(withRedactedResults)
+}
+
+/**
+ * Every browser tool's text passes here on its way to the agent: a password
+ * or code the host injected (request_login) comes back from `get value`,
+ * `eval`, a code field's snapshot line, the console, or a URL a GET form put
+ * it in — whether the server read it from the CLI or from the tab list.
+ */
+function withRedactedResults<T extends { handler: (...args: any[]) => Promise<any> }>(definition: T): T {
+  const handler = definition.handler
+  return { ...definition, handler: (async (...args: unknown[]) => redactToolResult(await handler(...args))) as T['handler'] }
 }

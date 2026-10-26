@@ -1,5 +1,5 @@
 
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { WidgetActionRow, WidgetBoard, WidgetSizePopover, type GridRect, type WidgetItem, type WidgetSizeKey } from './widget-grid'
 import { useListedAgents, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
@@ -7,6 +7,7 @@ import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user
 import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notifications'
 import { useHomeCardHealth } from '@renderer/hooks/use-home-card-health'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
+import { lazyWithReload } from '@renderer/lib/lazy-with-reload'
 import { useNotableSessions } from '@renderer/hooks/use-sessions'
 import { LazyHalftone } from '@renderer/components/agents/halftone'
 import { ActivitySparkChart, CronSparkChart } from '@renderer/components/activity/activity-spark-chart'
@@ -44,7 +45,7 @@ import { toast } from 'sonner'
 
 // Code-split: the graph pulls in @xyflow/react + d3-force, which nobody
 // should pay for on a cards-only page load.
-const AgentGraph = lazy(() =>
+const AgentGraph = lazyWithReload(() =>
   import('./graph/agent-graph').then((m) => ({ default: m.AgentGraph })),
 )
 

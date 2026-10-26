@@ -42,17 +42,18 @@ describe('SentAttachmentChip', () => {
     expect(openFile).toHaveBeenCalledWith('/workspace/uploads/1788459888315-report.pdf', 'a1', undefined)
   })
 
-  it('renders an image at native aspect ratio with a height cap', () => {
-    render(<SentAttachmentChip filePath="/workspace/uploads/1788459888336-photo.png" agentSlug="a1" />)
+  it.each(['png', 'heic', 'heif'])('renders a sent %s image at native aspect ratio with a height cap', (extension) => {
+    const filePath = `/workspace/uploads/1788459888336-photo.${extension}`
+    render(<SentAttachmentChip filePath={filePath} agentSlug="a1" />)
     const chip = screen.getByTestId('file-pill')
     expect(chip).toHaveAttribute('data-attachment-kind', 'image')
-    const img = screen.getByAltText('1788459888336-photo.png')
-    expect(img).toHaveAttribute('src', 'http://api.test/api/agents/a1/files/uploads/1788459888336-photo.png?inline=true')
+    const img = screen.getByAltText(`1788459888336-photo.${extension}`)
+    expect(img).toHaveAttribute('src', `http://api.test/api/agents/a1/files/uploads/1788459888336-photo.${extension}?inline=true`)
     expect(img.className).toContain('max-h-64')
     expect(img.className).toContain('max-w-full')
     expect(img.className).not.toContain('object-cover')
     expect(chip).toHaveAttribute('data-image-size', 'single')
-    expect(chip).toHaveAttribute('title', '1788459888336-photo.png · 2.0 KB')
+    expect(chip).toHaveAttribute('title', `1788459888336-photo.${extension} · 2.0 KB`)
     expect(chip.querySelector('[data-file-icon-size]')).toBeNull()
   })
 

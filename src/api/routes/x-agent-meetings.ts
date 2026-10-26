@@ -15,6 +15,7 @@ import { meetingProviders } from '@shared/lib/meeting-integrations/providers'
 import { meetingModeSchema, type PublicMeeting } from '@shared/lib/meeting-integrations/schemas'
 import { getMeeting, listMeetings, toPublicMeeting } from '@shared/lib/meeting-integrations/store'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 
 /**
  * The agent's own way into meetings: the container's meeting tools call these
@@ -79,7 +80,7 @@ async function ensureMeetingIntegration(callerSlug: string, request: Request): P
   } catch (error) {
     await updateAgentIntegrationStatus(id, 'error', error instanceof Error ? error.message : String(error))
   }
-  void agentIntegrationManager.integrationCreated(id)
+  background(agentIntegrationManager.integrationCreated(id), { name: 'x-agent-meetings-route.integration-created' })
   const integration = await getAgentIntegration(id)
   if (!integration) throw new Error('Meeting integration created but could not be retrieved')
   return { integration, created: true }

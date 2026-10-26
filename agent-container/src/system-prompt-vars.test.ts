@@ -62,23 +62,35 @@ describe('generateSystemPrompt rendering', () => {
   })
 
   it('renders the drives block only when drives are present', () => {
-    expect(generateSystemPrompt()).not.toContain('Mounted drives:')
+    expect(generateSystemPrompt()).not.toContain('## Mounted Drives')
     vi.mocked(mountedDrives).mockReturnValueOnce([{ name: 'Team Notes', path: '/mounts/team-notes', readOnly: false }])
     const out = generateSystemPrompt()
-    expect(out).toContain('Mounted drives:\n- "Team Notes" at "/mounts/team-notes"\n')
+    expect(out).toContain('## Mounted Drives\n\n- "Team Notes" at "/mounts/team-notes"\n')
     expect(out).toContain("These are the only drives mounted besides `/workspace`. Keep this agent's own work in `/workspace`.")
-    const workspaceIdx = out.indexOf('## Workspace vs Tmp')
-    const mountsIdx = out.indexOf('Mounted drives:')
-    const fileHandlingIdx = out.indexOf('## File Handling')
-    expect(workspaceIdx).toBeLessThan(mountsIdx)
-    expect(mountsIdx).toBeLessThan(fileHandlingIdx)
     expect(out).not.toContain('INDEX.md')
     expect(out).not.toContain('<mount-index')
   })
 
   it('marks read-only drives and leaves the others as they were', () => {
     vi.mocked(mountedDrives).mockReturnValueOnce([{ name: 'Team', path: '/mounts/team', readOnly: true }, { name: 'Notes', path: '/mounts/notes', readOnly: false }])
-    expect(generateSystemPrompt()).toContain('Mounted drives:\n- "Team" at "/mounts/team" (read only)\n- "Notes" at "/mounts/notes"\n')
+    expect(generateSystemPrompt()).toContain('## Mounted Drives\n\n- "Team" at "/mounts/team" (read only)\n- "Notes" at "/mounts/notes"\n')
+  })
+
+  // A prompt change anywhere invalidates the prompt cache from that point on,
+  // so text that changes between renders stays after the static body.
+  it('renders the mount index and the date after the static body', () => {
+    vi.mocked(mountedDrives).mockReturnValueOnce([{ name: 'Team', path: '/mounts/team', readOnly: false }])
+    vi.mocked(mountedVolumeIndexes).mockReturnValueOnce([{ path: '/mounts/team', index: { text: '# Team', truncated: false } }])
+    const out = generateSystemPrompt(undefined, 'Agent rules')
+    const staticEnd = out.indexOf('## Other Guidelines')
+    const mounts = out.indexOf('## Mounted Drives')
+    const date = out.indexOf('## Current Date')
+    expect(out.indexOf('Today is ')).toBeGreaterThan(date)
+    expect(staticEnd).toBeGreaterThan(0)
+    expect(mounts).toBeGreaterThan(staticEnd)
+    expect(out.indexOf('<mount-index')).toBeGreaterThan(mounts)
+    expect(date).toBeGreaterThan(mounts)
+    expect(out.indexOf('## Agent-Specific Instructions')).toBeGreaterThan(date)
   })
 
   it('keeps an index that tries to close its tag inside it', () => {
@@ -271,6 +283,7 @@ describe('generateSystemPrompt rendering', () => {
     expect(guide).toContain('Do not use Exa to bypass a denied permission')
     expect(guide).toContain('Never print either environment variable')
     expect(guide).toContain('`costDollars.total`')
+    expect(guide).toContain('| `lite` |')
   })
 
   it('references every image-owned capability guide and keeps its source file present', () => {

@@ -37,6 +37,7 @@ import { buildSessionContextPrompt } from './chat-session-context'
 import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
 import { withSessionUrl, type AppLinkContext } from '@shared/lib/agent-integrations/app-link'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { markdownToRichMessage, splitForRichLimits, splitForHtmlLimits, escapeMarkdown, codeSpan } from './telegram-rich-message'
 import type { InputRichMessage } from 'grammy/types'
 
@@ -476,7 +477,7 @@ export class TelegramConnector extends ChatAgentIntegration {
     // crashes the Electron app.
     // Before its first getUpdates, grammY deletes any webhook (an earlier
     // connection's), keeping the updates held for it.
-    bot.start({
+    background(bot.start({
       allowed_updates: [...TELEGRAM_UPDATE_TYPES],
       drop_pending_updates: false,
       onStart: () => {
@@ -499,7 +500,7 @@ export class TelegramConnector extends ChatAgentIntegration {
         extra: { provider: 'telegram' },
       })
       this.emitError(error)
-    })
+    }), { name: 'telegram-connector.poll' })
 
     // Wait briefly to verify connection. Short-circuit if polling rejected
     // early (e.g. invalid token, 409 Conflict) — no need to wait 10s in that case.
@@ -1084,7 +1085,7 @@ export class TelegramConnector extends ChatAgentIntegration {
     if (!pending || pending.texts.length === 0) return
 
     const combined = pending.texts.join('\n\n---\n\n')
-    void this.emitMessage({
+    background(this.emitMessage({
       externalMessageId: lastMessageId,
       text: combined,
       chatId,
@@ -1093,7 +1094,7 @@ export class TelegramConnector extends ChatAgentIntegration {
       userName: pending.userName,
       chatName: pending.chatName,
       timestamp: new Date(),
-    })
+    }), { name: 'telegram-connector.flush-batch' })
     this.pendingFirstPollMessages.delete(chatId)
   }
 

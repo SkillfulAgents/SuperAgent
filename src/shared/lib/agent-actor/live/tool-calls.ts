@@ -20,6 +20,8 @@
  */
 import type { ContainerClient } from '@shared/lib/container/types'
 import { getToolDefinition } from '@shared/lib/tools/registry'
+import { supportsComputerUse } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { getBlockingUserInputRequestKind } from '@shared/lib/tools/user-input-tools'
 import type { AgentInputRequests } from '@shared/lib/tools/requests/agent-input-requests'
 import {
@@ -32,12 +34,15 @@ import type { RequestFileInput } from '@shared/lib/tools/request-file/definition
 import type { RequestConnectedAccountInput } from '@shared/lib/tools/request-connected-account/definition'
 import type { RequestRemoteMcpInput } from '@shared/lib/tools/request-remote-mcp/definition'
 import type { RequestBrowserInputInput } from '@shared/lib/tools/request-browser-input/definition'
+import type { RequestLoginInput } from '@shared/lib/tools/request-login/definition'
+import { summarizeLoginFields } from '@shared/lib/tools/request-login/login-request'
 import type { RequestScriptRunInput } from '@shared/lib/tools/request-script-run/definition'
 import { VALID_SCRIPT_TYPES, getAgentCapabilitySettings } from '@shared/lib/config/settings'
 import { sessionCapabilityGrantsResponseSchema } from '@shared/lib/config/capability-policy-schema'
 import type { AgentComputerUse } from '@shared/lib/computer-use/agent-permissions'
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp } from '@shared/lib/computer-use/types'
 import { unwrapComputerRun } from '@shared/lib/computer-use/computer-run'
+import { background } from '@shared/lib/background'
 import { hostToolNameOf, type HostPort, type HostToolName, type HostToolResult } from '../host-port'
 import { runAutoApproved, type HostRunActor } from '../host-runs'
 import type { SessionEvent } from './session-channel'
@@ -114,6 +119,17 @@ const USER_INPUT_REQUESTS: Record<
       return url ? { url, name, reason, authHint, clientId, clientName } : 'missing url'
     },
   },
+  login: {
+    label: 'sign-in request',
+    payload: (input) => {
+      const { message, fields } = input as RequestLoginInput
+      // The card draws the model's field list only until the container's
+      // context arrives; refs never leave the container's side of the tool.
+      return typeof message === 'string' && message.trim() && Array.isArray(fields)
+        ? { message, fields: summarizeLoginFields(fields) }
+        : 'missing message or fields'
+    },
+  },
   browser_input: {
     label: 'browser input request',
     payload: (input) => {
@@ -166,10 +182,10 @@ export class ToolCalls {
     const hostTool = hostToolNameOf(name)
     if (hostTool) this.runHostTool(toolUse, hostTool)
     if (this.isScriptRun(name)) this.scriptRun(toolUse)
-    if (name.startsWith(COMPUTER_USE_PREFIX)) void this.computerUse(toolUse)
+    if (name.startsWith(COMPUTER_USE_PREFIX)) background(this.computerUse(toolUse), { name: 'tool-calls.computer-use' })
     // Under a 'review' policy the container parks the launch on an approval;
     // the review itself checks the policy and the session's grants.
-    if (REVIEWED_LAUNCH_TOOLS.has(name)) void this.capabilityReview(toolUse)
+    if (REVIEWED_LAUNCH_TOOLS.has(name)) background(this.capabilityReview(toolUse), { name: 'tool-calls.capability-review' })
     if (name === DELIVER_FILE_TOOL) this.rememberDelivery(toolUse)
     if (LAUNCH_TOOLS.has(name)) this.ctx.trackSubagentLaunch(toolUse.id, toolUse.input)
   }
@@ -178,10 +194,10 @@ export class ToolCalls {
   subagentStreamedToolUse(toolUse: ToolUse, parentToolId: string): void {
     this.parkUserInput(toolUse, parentToolId)
     if (this.isScriptRun(toolUse.name)) this.scriptRun(toolUse, parentToolId)
-    if (toolUse.name.startsWith(COMPUTER_USE_PREFIX)) void this.computerUse(toolUse, parentToolId)
+    if (toolUse.name.startsWith(COMPUTER_USE_PREFIX)) background(this.computerUse(toolUse, parentToolId), { name: 'tool-calls.computer-use' })
     if (LAUNCH_TOOLS.has(toolUse.name)) this.ctx.trackSubagentLaunch(toolUse.id, toolUse.input)
     // A nested launch parks on the same approval as a top-level one.
-    if (REVIEWED_LAUNCH_TOOLS.has(toolUse.name)) void this.capabilityReview(toolUse)
+    if (REVIEWED_LAUNCH_TOOLS.has(toolUse.name)) background(this.capabilityReview(toolUse), { name: 'tool-calls.capability-review' })
   }
 
   /** A tool call in a subagent's complete message. */
@@ -189,7 +205,7 @@ export class ToolCalls {
     if (LAUNCH_TOOLS.has(toolUse.name)) this.ctx.trackSubagentLaunch(toolUse.id, toolUse.input)
     this.parkUserInput(toolUse, parentToolId)
     if (this.isScriptRun(toolUse.name)) this.scriptRun(toolUse, parentToolId)
-    if (toolUse.name.startsWith(COMPUTER_USE_PREFIX)) void this.computerUse(toolUse, parentToolId)
+    if (toolUse.name.startsWith(COMPUTER_USE_PREFIX)) background(this.computerUse(toolUse, parentToolId), { name: 'tool-calls.computer-use' })
   }
 
   /**
@@ -321,19 +337,22 @@ export class ToolCalls {
   private captureBrowserContext(toolUseId: string): void {
     const client = this.ctx.transport()
     if (!client) return
-    void client
-      .fetch(`/browser/credential-context?sessionId=${encodeURIComponent(this.ctx.sessionId)}`)
-      .then(async (response) => {
-        if (!response?.ok || typeof response.json !== 'function') return
-        const context = (await response.json()) as { url?: unknown }
-        if (typeof context.url !== 'string') return
-        this.ctx.requests.enrichOpenRequestPayload(toolUseId, 'browser_input', {
-          browserContext: { url: context.url, capturedAt: Date.now() },
+    background(
+      client
+        .fetch(`/browser/credential-context?sessionId=${encodeURIComponent(this.ctx.sessionId)}`)
+        .then(async (response) => {
+          if (!response?.ok || typeof response.json !== 'function') return
+          const context = (await response.json()) as { url?: unknown }
+          if (typeof context.url !== 'string') return
+          this.ctx.requests.enrichOpenRequestPayload(toolUseId, 'browser_input', {
+            browserContext: { url: context.url, capturedAt: Date.now() },
+          })
         })
-      })
-      .catch((error: unknown) => {
-        console.warn('[LiveSession] Failed to capture browser input context:', error instanceof Error ? error.message : error)
-      })
+        .catch((error: unknown) => {
+          console.warn('[LiveSession] Failed to capture browser input context:', error instanceof Error ? error.message : error)
+        }),
+      { name: 'tool-calls.capture-browser-context' },
+    )
   }
 
   /**
@@ -343,7 +362,7 @@ export class ToolCalls {
    * failed, and it would retry into a duplicate.
    */
   private runHostTool(toolUse: ToolUse, toolName: HostToolName): void {
-    void (async () => {
+    background(async () => {
       let result: HostToolResult
       try {
         result = await this.ctx.host.call('hostTool', {
@@ -365,7 +384,7 @@ export class ToolCalls {
       await this.ctx.resolveInput(toolUse.id, result.value).catch((error) => {
         console.error(`[LiveSession] ${toolName} succeeded but its result was not delivered:`, error)
       })
-    })()
+    }, { name: 'tool-calls.run-host-tool' })
   }
 
   /** A host script: run at once under a use_host_shell grant, otherwise park on an approval. */
@@ -401,13 +420,13 @@ export class ToolCalls {
     })
     if (autoApproved) {
       // After the registration: the run claims the request it settles.
-      void runAutoApproved(this.ctx.runs, this.ctx.host, {
+      background(runAutoApproved(this.ctx.runs, this.ctx.host, {
         kind: 'script',
         sessionId: this.ctx.sessionId,
         toolUseId: toolUse.id,
         script: input.script,
         scriptType: input.scriptType,
-      })
+      }), { name: 'tool-calls.auto-run-script' })
     } else {
       // Only a request the user must answer makes the session wait.
       this.ctx.syncAwaiting()
@@ -432,7 +451,7 @@ export class ToolCalls {
       ;({ method, params } = unwrapComputerRun(method, params))
 
       // macOS and Windows only (the mock E2E runtime drives no machine).
-      if (process.env.E2E_MOCK !== 'true' && process.platform !== 'darwin' && process.platform !== 'win32') {
+      if (process.env.E2E_MOCK !== 'true' && !supportsComputerUse(getServerFacts())) {
         this.autoReject(toolUse.id, `Computer use is not supported on this platform (${process.platform}). macOS and Windows are supported.`)
         return
       }
@@ -454,7 +473,7 @@ export class ToolCalls {
         // Registered anyway, flagged so no projection reads it as a wait: the
         // run claims the request it settles, as a decision in the app does.
         this.register('computer_use', toolUse.id, payload, { parentToolUseId, autoApproved: true })
-        void runAutoApproved(this.ctx.runs, this.ctx.host, {
+        background(runAutoApproved(this.ctx.runs, this.ctx.host, {
           kind: 'computerUse',
           sessionId: this.ctx.sessionId,
           toolUseId: toolUse.id,
@@ -462,7 +481,7 @@ export class ToolCalls {
           params,
           permissionLevel,
           appName,
-        })
+        }), { name: 'tool-calls.auto-run-computer-use' })
         return
       }
       this.register('computer_use', toolUse.id, payload, { parentToolUseId })
@@ -538,8 +557,8 @@ export class ToolCalls {
   }
 
   private autoReject(toolUseId: string, reason: string): void {
-    this.ctx.rejectInput(toolUseId, reason).catch((error: unknown) => {
+    background(this.ctx.rejectInput(toolUseId, reason).catch((error: unknown) => {
       console.error('[LiveSession] Failed to auto-reject input request:', error)
-    })
+    }), { name: 'tool-calls.auto-reject' })
   }
 }

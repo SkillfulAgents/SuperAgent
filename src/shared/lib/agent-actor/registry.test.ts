@@ -8,6 +8,7 @@ import { McpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import { ComputerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import type { AgentSessionsAccess } from '@shared/lib/container/agent-sessions-access'
 import { createAgentRegistry } from './registry'
+import { LiveSessions } from './live/live-sessions'
 import type { AgentState } from './agent-state'
 import type { LocalActorDeps, LocalAgentActor } from './local-agent-actor'
 import type { SessionStore } from './session-store'
@@ -57,15 +58,14 @@ type FakeRequest = {
 }
 
 /**
- * The routers the registry attaches to. The user-input router is the module
- * singleton: the review router's owner lookup goes through it, so the one the
- * actors report to must be the one it consults. Spied, so a test can see what
- * the stores reported and what the registry attached.
+ * The routers the registry attaches to, spied so a test can see what the
+ * registry attached, and the transitions the stores reported to their
+ * agents' live sessions, which is how the wire hears of them.
  */
 function routers() {
   const inputManager = userInputRequestManager
-  vi.spyOn(inputManager, 'report')
   vi.spyOn(inputManager, 'attachAgents')
+  const transitions = vi.spyOn(LiveSessions.prototype, 'requestTransition')
   const reviewManager = new ReviewManager()
   vi.spyOn(reviewManager, 'attachAgents')
   const accountReauthManager = new AccountReauthManager()
@@ -76,9 +76,9 @@ function routers() {
   vi.spyOn(computerUsePermissionManager, 'attachAgents')
   return {
     inputManager: inputManager as typeof inputManager & {
-      report: ReturnType<typeof vi.fn>
       attachAgents: ReturnType<typeof vi.fn>
     },
+    transitions,
     reviewManager,
     accountReauthManager,
     mcpReauthManager,
@@ -123,7 +123,7 @@ function fakeDeps() {
     attachAgentWorkspaces: vi.fn(),
     attachAgentSessions: vi.fn(),
   }
-  const { inputManager, reviewManager, accountReauthManager, mcpReauthManager, computerUsePermissionManager } =
+  const { inputManager, transitions, reviewManager, accountReauthManager, mcpReauthManager, computerUsePermissionManager } =
     routers()
   const loadDailyUsageData = vi.fn().mockResolvedValue([])
   const loadSessionUsageTotals = vi.fn().mockResolvedValue({ totalCost: 0, totalTokens: 0, priceMissing: false })
@@ -167,6 +167,7 @@ function fakeDeps() {
     client,
     reviewManager,
     inputManager,
+    transitions,
     loadDailyUsageData,
     loadSessionUsageTotals,
     syncAgentConnectionEnvironment,
@@ -387,8 +388,8 @@ describe('createAgentRegistry', () => {
       expect(open).toMatchObject({ kind: 'proxy_review', scope: { agentSlug: 'a' }, payload: { ...details, agentSlug: 'a' } })
       expect((await actor.live()).pendingReviews.map((r) => r.id)).toEqual([open.id])
       expect(await actor.inputs.reviews.get(open.id)).toMatchObject({ id: open.id, ...details })
-      // The transition reached the router, which is how the wire hears of it.
-      expect(fake.inputManager.report).toHaveBeenCalledWith(expect.objectContaining({ type: 'created', request: open }))
+      // The transition reached the agent's sessions, which is how the wire hears of it.
+      expect(fake.transitions).toHaveBeenCalledWith(expect.objectContaining({ type: 'created', request: open }))
       expect(await actor.inputs.reviews.submit(open.id, 'allow')).toBe(true)
       await expect(decision).resolves.toBe('allow')
       // The review opening and closing changed whether the agent's sessions wait.
@@ -467,7 +468,7 @@ describe('createAgentRegistry', () => {
       const stored = await actor.inputs.register({ ...request('r1', 'b'), blocking: true } as never)
       expect(stored).toMatchObject({ id: 'r1', scope: { agentSlug: 'a', sessionId: 's' } })
       expect((await actor.sessions.live('s')).openRequests.map((r) => r.id)).toEqual(['r1'])
-      expect(fake.inputManager.report).toHaveBeenCalledWith({ type: 'created', request: stored })
+      expect(fake.transitions).toHaveBeenCalledWith({ type: 'created', request: stored })
     })
 
     it('another agent\'s request is not found: get, claim, enrich and resolve miss and leave it untouched', async () => {
@@ -589,7 +590,7 @@ describe('createAgentRegistry', () => {
       await actor.inputs.computerUse.setGrabbedApp('Calculator')
       getSessionSummaryCacheSlot(actor.store).revision = 7
       expect((await actor.live()).openRequests).toHaveLength(4)
-      fake.inputManager.report.mockClear()
+      fake.transitions.mockClear()
       const syncAwaiting = vi.spyOn(actor.state.sessions, 'syncAwaiting')
       const dispose = vi.spyOn(actor.state.sessions, 'dispose')
 
@@ -598,8 +599,8 @@ describe('createAgentRegistry', () => {
       await expect(review).resolves.toBe('timeout')
       await expect(account).resolves.toEqual({ outcome: 'cancelled', message: expect.stringMatching(/no longer held by this process/) })
       await expect(mcp).resolves.toEqual({ outcome: 'cancelled', message: expect.stringMatching(/no longer held by this process/) })
-      // Every settlement went out as a transition, so the wire and the index heard of it.
-      const resolved = fake.inputManager.report.mock.calls
+      // Every settlement went out as a transition, so the wire heard of it.
+      const resolved = fake.transitions.mock.calls
         .map(([transition]) => transition as { type: string; request: { id: string; kind: string }; outcome?: string })
         .filter((t) => t.type === 'resolved')
       expect(resolved.map((t) => t.request.kind).sort()).toEqual([

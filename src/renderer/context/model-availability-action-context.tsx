@@ -1,6 +1,5 @@
 import {
   createContext,
-  lazy,
   Suspense,
   useCallback,
   useContext,
@@ -11,6 +10,7 @@ import {
 } from 'react'
 
 import { openExternalUrl } from '@renderer/lib/open-external'
+import { lazyWithReload } from '@renderer/lib/lazy-with-reload'
 import type { ModelAvailabilityAction } from '@shared/lib/llm-provider/model-availability-schema'
 import { PLATFORM_PLAN_UPGRADE_ACTION } from '@shared/lib/llm-provider/platform-plan-policy'
 
@@ -32,7 +32,7 @@ type OpenAction = (request: ModelAvailabilityActionRequest) => void
 
 // `availability.action.component` → the dialog that resolves it. Adding a provider's flow = one row here.
 const REGISTRY: Record<string, LazyExoticComponent<ComponentType<ModelAvailabilityActionProps>>> = {
-  [PLATFORM_PLAN_UPGRADE_ACTION]: lazy(() =>
+  [PLATFORM_PLAN_UPGRADE_ACTION]: lazyWithReload(() =>
     import('@renderer/components/billing/plan-upgrade-dialog').then((m) => ({ default: m.PlanUpgradeDialog })),
   ),
 }

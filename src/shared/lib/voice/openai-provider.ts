@@ -8,6 +8,7 @@ import { BaseVoiceProvider } from './voice-provider'
 import { getEffectiveModels, type VoiceProvider } from '../config/settings'
 import { getConfiguredLlmClient, createSummarizerText } from '../llm-provider/helpers'
 import { resolveActiveProviderModel } from '../llm-provider'
+import { background } from '../background'
 import { liveRequestSchema, type LiveAgentContext, type LiveConversationProvider, type LiveMappingInput, type LiveSessionAnswer, type VoiceHistory } from './live-types'
 import { buildLiveConversationPrompt, LIVE_REPLY_PROMPT, LIVE_REQUEST_PROMPT } from '../../prompts/voice-live'
 import { windowVoiceHistory } from './voice-history-window'
@@ -69,7 +70,7 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
         speed: input.speed, response_format: 'pcm' }),
     })
     if (!response.ok || !response.body) {
-      void response.body?.cancel().catch(() => {})
+      if (response.body) background(response.body.cancel().catch(() => {}), { name: 'openai-voice-provider.cancel-response-body' })
       throw new VoiceProviderError(this.failureMessage(response.status,
         `${this.name} speech synthesis failed (${response.status}). Please try again.`))
     }
@@ -119,7 +120,7 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
       }),
     })
     if (!res.ok) {
-      void res.body?.cancel().catch(() => {})
+      if (res.body) background(res.body.cancel().catch(() => {}), { name: 'openai-voice-provider.cancel-response-body' })
       throw new Error(this.failureMessage(res.status,
         `${this.name} Live session failed (${res.status}). ${this.messages().liveSessionHint}`))
     }
@@ -195,7 +196,7 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
       body: JSON.stringify({ session: { type: 'transcription' } }),
     })
     if (!res.ok) {
-      void res.body?.cancel().catch(() => {})
+      if (res.body) background(res.body.cancel().catch(() => {}), { name: 'openai-voice-provider.cancel-response-body' })
       throw new Error(this.failureMessage(res.status, `${this.name} API error (${res.status}). Please try again.`))
     }
     const data = await res.json()

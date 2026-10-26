@@ -3,6 +3,7 @@ import path from 'node:path'
 import type { z } from 'zod'
 import { BaseMountableVolume, type VolumeEntry, type VolumeFile } from './base-mountable-volume'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
+import { background } from '@shared/lib/background'
 import { DriveExportTooLargeError, driveRequest, driveUpload, requireGoogleDriveAccount, withGoogleDriveAccount, type DriveRequest } from './google-drive-client'
 import pLimit from 'p-limit'
 import { googleDriveBrowseSchema, DRIVE_FILE_FIELDS, FOLDER_MIME_TYPE, SHORTCUT_MIME_TYPE, driveFileListSchema, driveFileSchema, driveListSchema, driveSchema, type DriveFile, type GoogleDriveVolumeConfig } from './google-drive-schema'
@@ -13,7 +14,7 @@ import { GoogleDriveChangeFeed } from './google-drive-changes'
 import { volumeFolderBrowser } from './volume-folder-browser'
 import { rangedVolumeFile } from './remote-file'
 import { RemoteHealthCache } from './remote-health-cache'
-import { volumeUploads } from './volume-upload-guard'
+import { guardDelete, guardedUpload } from './guarded-upload'
 import { throwIfUploadAborted } from './remote-transfer'
 import { VolumeError } from './volume-error'
 
@@ -410,7 +411,9 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
       if (prefetching.has(key) || googleDriveListingCache.cached(key)) continue
       prefetching.add(key)
       // A failed listing ahead is read again when the walk reaches it.
-      void limit(() => this.children(file.id)).catch(() => {}).finally(() => prefetching.delete(key))
+      background(limit(() => this.children(file.id)).catch(() => {}).finally(() => prefetching.delete(key)), {
+        name: 'google-drive-volume.prefetch-folder',
+      })
     }
   }
 
@@ -456,7 +459,7 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
   }
 
   async write(relative: string, body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<void> {
-    return volumeUploads.write(JSON.stringify([this.id, relative]), body, signal, () =>
+    return guardedUpload(this.agentSlug, JSON.stringify([this.id, relative]), body, signal, () =>
       withGoogleDriveAccount(this.config.accountId, () => this.writeImpl(relative, body, signal)))
   }
 
@@ -548,7 +551,7 @@ export class GoogleDriveMountableVolume extends BaseMountableVolume<GoogleDriveV
 
   private async deleteImpl(relative: string): Promise<void> {
     this.writableName(relative)
-    volumeUploads.beforeDelete(JSON.stringify([this.id, relative]))
+    await guardDelete(this.agentSlug, JSON.stringify([this.id, relative]))
     const planned = await this.planned(relative)
     // A folder is held too, so nothing is written into it while it is checked empty and trashed.
     await this.change([planned.parentId, planned.entry.file.id], async (fresh, settle) => {

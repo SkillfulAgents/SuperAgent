@@ -1,6 +1,5 @@
 import type { XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
 import { AttachedStores, type AgentStoreDirectory } from '@shared/lib/agent-actor/store-directory'
-import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import type { AgentReviews, ReviewDecision, ReviewOutcome, ReviewRequest, ReviewRequestOptions, XAgentOperation } from './agent-reviews'
 import type { ReviewDetails } from './review-display'
 import { awaitReview, type ReviewReevaluator } from './review-request'
@@ -13,7 +12,7 @@ export { AgentReviews, type ReviewDecision, type ReviewOutcome, type ReviewReque
  * The router in front of every agent's reviews. The reviews live in each
  * agent's actor (`AgentReviews`); this singleton dispatches the calls that
  * arrive with a slug (the proxy's `requestReview` for the agent a call came
- * from), finds the owner of a bare review id, and runs the shutdown sweep.
+ * from) and runs the shutdown sweep.
  */
 export class ReviewManager {
   private readonly agents = new AttachedStores<AgentReviews>('reviews')
@@ -47,23 +46,13 @@ export class ReviewManager {
   }
 
   /**
-   * Resolve a pending review by id.
-   *
-   * `expectedAgentSlug` MUST be passed when the call originates from an
-   * HTTP route — it guards against a user with role on agent A submitting
-   * a decision for agent B's review by sending B's reviewId to A's URL.
-   * Internal callers may omit it, in which case the review's owner decides.
+   * Resolve one of the agent's pending reviews by id. Only the agent's store
+   * is consulted: a user with a role on agent A who sends agent B's review id
+   * to A's URL finds nothing — the same `false` as "review not found", so
+   * nothing leaks to an unauthorized caller.
    */
-  submitDecision(id: string, decision: ReviewDecision, expectedAgentSlug?: string): boolean {
-    // With the agent named, only its store is consulted: a review id another
-    // agent holds is simply not found there — the same `false` shape as
-    // "review not found", so nothing leaks to an unauthorized caller.
-    if (expectedAgentSlug !== undefined) {
-      return this.agents.peek(expectedAgentSlug)?.submit(id, decision) ?? false
-    }
-    const owner = userInputRequestManager.getOpenRequest(id)?.scope.agentSlug
-    if (owner === undefined) return false
-    return this.agents.peek(owner)?.submit(id, decision) ?? false
+  submitDecision(agentSlug: string, id: string, decision: ReviewDecision): boolean {
+    return this.agents.peek(agentSlug)?.submit(id, decision) ?? false
   }
 
   resolveMatchingPending(agentSlug: string, scope: string, decision: ReviewDecision): void {

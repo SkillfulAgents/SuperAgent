@@ -750,6 +750,31 @@ Instructions`
 
       expect(mockStopContainer).toHaveBeenCalledWith('test-agent')
     })
+
+    it('drops what the host kept for the agent: locks, widget refreshes, proxy sessions, uploads, deferred namings', async () => {
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
+      const actor = agentRegistry.get('test-agent')
+      expect(await actor.locks.tryAcquire('wake:task-1')).not.toBeNull()
+      const waiting = actor.locks.acquire('wake:task-1')
+      expect(await actor.widgets.beginRefresh('macros')).not.toBeNull()
+      const joined = actor.widgets.beginOrJoinRefresh('macros')
+      const proxySession = await actor.mcpSessions.open('mcp-1', '2025-06-18')
+      await actor.volumeUploads.end('notes.txt', await actor.volumeUploads.begin('notes.txt'), 'failed')
+      await actor.sessions.deferNaming('session-1')
+
+      await deleteAgent('test-agent')
+
+      // Whoever waited on it hears the end of it…
+      await expect(waiting).rejects.toThrow(/no longer held/)
+      await expect(joined).resolves.toMatchObject({ outcome: { ok: false } })
+      // …and none of it reaches the next handle for the slug.
+      const fresh = agentRegistry.get('test-agent')
+      expect(await fresh.locks.tryAcquire('wake:task-1')).not.toBeNull()
+      expect(await fresh.widgets.refreshing()).toEqual([])
+      expect(await fresh.mcpSessions.get('mcp-1', proxySession)).toBeNull()
+      expect(await fresh.volumeUploads.allowDelete('notes.txt')).toBe(true)
+      expect(await fresh.sessions.takeDeferredNaming('session-1')).toBe(false)
+    })
   })
 
   // ============================================================================

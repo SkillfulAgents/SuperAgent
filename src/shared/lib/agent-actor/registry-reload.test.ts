@@ -91,10 +91,7 @@ describe('the actors\' state survives a backend module reload', () => {
     expect(reloaded.userInputRequestManager).toBe(original.userInputRequestManager)
     expect(reloaded.agentRegistry).not.toBe(original.agentRegistry)
     expect(await reloaded.agentRegistry.get('a').inputs.get('reload-secret')).not.toBeNull()
-    expect(reloaded.userInputRequestManager.getOpenRequest('reload-secret', 'a')?.id).toBe('reload-secret')
-    // The router's id index was rebuilt from the surviving stores: a bare id
-    // still finds its owner, and the owner is not announced a second time.
-    expect(reloaded.userInputRequestManager.getOpenRequest('reload-secret')?.scope.agentSlug).toBe('a')
+    expect(reloaded.userInputRequestManager.getOpenRequest('a', 'reload-secret')?.id).toBe('reload-secret')
     // Visible to sweeps without anyone asking for the handle first.
     expect(reloaded.userInputRequestManager.getOpenRequestsForAgent('a').map((r) => r.id)).toEqual(['reload-secret'])
   })
@@ -118,7 +115,7 @@ describe('the actors\' state survives a backend module reload', () => {
     expect(access.peek('a')).toBe(sessions)
   })
 
-  it('a bare id shared by two agents still goes to the agent that registered it first after the reload', async () => {
+  it('an id open in two agents is answered by the agent the router names, before and after the reload', async () => {
     const original = await load()
     // a's handle exists first; b registers the shared id first.
     original.agentRegistry.get('a')
@@ -136,16 +133,17 @@ describe('the actors\' state survives a backend module reload', () => {
       blocking: true,
       payload: {},
     })
-    expect(original.userInputRequestManager.getOpenRequest('shared-id')?.scope.agentSlug).toBe('b')
+    expect(original.userInputRequestManager.getOpenRequest('b', 'shared-id')?.scope.agentSlug).toBe('b')
 
     const reloaded = await reload()
 
-    expect(reloaded.userInputRequestManager.getOpenRequest('shared-id')?.scope.agentSlug).toBe('b')
-    expect(reloaded.userInputRequestManager.resolve('shared-id', 'answered')?.scope.agentSlug).toBe('b')
-    expect(reloaded.userInputRequestManager.getOpenRequest('shared-id')?.scope.agentSlug).toBe('a')
+    expect(reloaded.userInputRequestManager.getOpenRequest('b', 'shared-id')?.scope.agentSlug).toBe('b')
+    expect(reloaded.userInputRequestManager.resolve('b', 'shared-id', 'answered')?.scope.agentSlug).toBe('b')
+    expect(reloaded.userInputRequestManager.getOpenRequest('b', 'shared-id')).toBeNull()
+    expect(reloaded.userInputRequestManager.getOpenRequest('a', 'shared-id')?.scope.agentSlug).toBe('a')
   })
 
-  it('a review parked before the reload is decidable after it, by the actor and by bare id, and the parked call resumes', async () => {
+  it('a review parked before the reload is decidable after it, by the actor and by the router, and the parked call resumes', async () => {
     const original = await load()
     const decision = original.agentRegistry
       .get('a')
@@ -161,8 +159,8 @@ describe('the actors\' state survives a backend module reload', () => {
     expect((await reloaded.agentRegistry.get('a').inputs.reviews.get(entry.id))?.id).toBe(entry.id)
     expect(await reloaded.agentRegistry.get('a').inputs.reviews.submit(entry.id, 'allow')).toBe(true)
     await expect(decision).resolves.toBe('allow')
-    // The id-only decision path finds the owner through the rebuilt index.
-    expect(reloaded.reviewManager.submitDecision(bareEntry.id, 'allow')).toBe(true)
+    // The router reaches the surviving store through the reloaded registry.
+    expect(reloaded.reviewManager.submitDecision('b', bareEntry.id, 'allow')).toBe(true)
     await expect(bare).resolves.toBe('allow')
   })
 
