@@ -37,7 +37,7 @@ import { computerUsePermissionManager } from '@shared/lib/computer-use/permissio
 import { captureException, captureMessage } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
-import { listVolumes } from '@shared/lib/services/mount-service'
+import { firstCopies, listVolumes } from '@shared/lib/services/mount-service'
 import type { ContainerVolume, NotMountedReason, NotMountedVolume } from '@shared/lib/types/mount'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { getDefaultAccountProvider } from '@shared/lib/account-providers/provider-factory'
@@ -771,8 +771,19 @@ export class ContainerRuntime {
       })
     }
     showNotMounted(slug, [...notMounted, ...failed])
+    const preparing = notMounted.filter((volume) => volume.reason === 'preparing').map((volume) => volume.name)
+    if (preparing.length > 0) background(this.staleOnceCopied(lifecycle, preparing), { name: 'container-runtime.stale-after-first-copy' })
 
     return client
+  }
+
+  /** A drive still making its first copy missed this start: once it can mount, the agent is stale until it restarts. */
+  private async staleOnceCopied(lifecycle: number, preparing: string[]): Promise<void> {
+    await firstCopies(this.slug)
+    const { volumes } = await listVolumes(this.slug)
+    if (lifecycle !== this.lifecycle || this.cached?.status !== 'running' || !volumes.some((volume) => preparing.includes(volume.name))) return
+    this.markStale()
+    globalFeed.publish({ type: 'agent_updated', agentSlug: this.slug })
   }
 
   // Record a keep-alive ping (e.g. from an open dashboard) to prevent auto-sleep

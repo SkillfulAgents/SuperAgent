@@ -14,20 +14,29 @@ The first health check, list or read starts copying the selected folder in the b
 Until staging finishes, the drive reports `preparing` through the existing mount-status path.
 Initial staging writes directly into `copy/`.
 A staging failure reports its reason and removes the partial copy.
-After a restart, the drive serves an existing copy without waiting for GitHub.
+A container start waits up to 20 seconds for a drive still making its first copy, so a restart right after adding the drive mounts it.
+A drive that misses the start that way marks the agent stale once its copy lands, so the app asks for a restart.
 Attachments share one copy at `getDataDir()/volumes/<volume id>/copy/`.
 Validated `sync.json` records the base commit and each path's blob SHA and mode.
 The app writes that state atomically.
 It records the new base after publication finishes.
 Missing, invalid or null-base state causes a fresh copy because the drive accepts no local edits.
 
-List and read operations start a background branch check when the previous check is over 30 seconds old.
-They serve the current copy without waiting for GitHub.
+List and read operations check the branch when the previous check is over 30 seconds old.
+A read waits up to 5 seconds for that check, so it shows what a teammate pushed meanwhile; every read waiting on one check shares those 5 seconds.
+After the wait, the read serves the current copy and the check finishes in the background.
 A changed branch pulls only changed paths, including additions and deletions.
-Pulls with added or changed files stream one tarball into a temporary pull folder, then publish only changed paths.
-Unchanged and delete-only pulls skip the tarball.
-Initial staging also uses a tarball, checked against the tree from the same commit.
-Truncated trees use complete per-folder listings before any changes apply.
+Up to 32 added or changed files totalling at most 8 MB come one by one through the blobs endpoint.
+More, or larger, stream one tarball into a temporary pull folder; either way only changed paths are published.
+Unchanged and delete-only pulls download nothing.
+Initial staging follows the same rule, checked against the tree from the same commit.
+
+The tree comes from one recursive listing of the drive's folder.
+A subfolder drive lists each folder above it alone, never the whole repository.
+A folder too large for one listing (about 50,000 entries) is listed folder by folder, 8 at a time.
+`trees.json` keeps that walk's listings by tree SHA, so the next walk asks GitHub only for folders whose SHA changed.
+It is a cache: missing or unreadable means a full walk.
+Every listing completes before any change applies.
 Files omitted by `export-ignore` or rewritten by `export-subst` are fetched by blob SHA through the base64 blobs endpoint.
 SHA verification preserves file contents exactly.
 

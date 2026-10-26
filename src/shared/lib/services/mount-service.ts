@@ -10,6 +10,9 @@ import { prepareVolumeDefinition, selectableVolumes, storedDefinition, VolumeErr
 
 export { volumeSummary } from '@shared/lib/volumes/volume-health'
 
+/** How long a container start waits for drives still making their first copy. Past it, the start goes on without them. */
+const FIRST_COPY_WAIT_MS = 20_000
+
 /** Allocate inside the INSERT so concurrent attachments cannot claim the same
  * name. With N existing mounts, N+1 candidate suffixes always suffice. */
 function availableMountName(slug: string, base: string) {
@@ -117,7 +120,16 @@ async function judgeVolumes(slug: string) {
   return Promise.all((await getMounts(slug)).map(async row => ({ row, reason: await volumeProblem(row, slug) })))
 }
 
+/** Settles once each of the agent's drives that is copied first has a copy, or has stopped trying for now. */
+export async function firstCopies(slug: string): Promise<void> {
+  await Promise.all((await getMounts(slug)).map(row => instantiateVolume(row, slug)?.whenReady()))
+}
+
 export async function listVolumes(slug: string): Promise<{ volumes: ContainerVolume[]; notMounted: NotMountedVolume[] }> {
+  // A drive joins the container only when it starts, so a start right after adding one waits for its first copy.
+  let timer: ReturnType<typeof setTimeout> | undefined
+  await Promise.race([firstCopies(slug), new Promise<void>(resolve => { timer = setTimeout(resolve, FIRST_COPY_WAIT_MS) })])
+  clearTimeout(timer)
   const judged = await judgeVolumes(slug)
   return {
     volumes: judged.flatMap(({ row, reason }) => {

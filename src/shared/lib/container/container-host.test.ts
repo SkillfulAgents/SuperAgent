@@ -190,8 +190,10 @@ vi.mock('@shared/lib/services/timezone-resolver', () => ({
 }))
 
 const mockListVolumes = vi.fn()
+const mockFirstCopies = vi.fn()
 vi.mock('@shared/lib/services/mount-service', () => ({
   listVolumes: (...args: unknown[]) => mockListVolumes(...args),
+  firstCopies: (...args: unknown[]) => mockFirstCopies(...args),
 }))
 
 import { containerHost } from './container-host'
@@ -543,6 +545,34 @@ describe('ContainerRuntime.ensureRunning — mount volumes', () => {
     expect(mockHealth).toHaveBeenCalledWith(8080)
     expect(mountWarnings()).toEqual([[{ name: 'gone', reason: 'not found' }, { name: 'stuck', reason: 'failed in the agent' }]])
     expect(mockCaptureMessage).toHaveBeenCalledWith('Agent container could not mount folders', expect.objectContaining({ extra: { agentId: 'test-agent', count: 1 } }))
+  })
+
+  it('marks the agent stale once a drive that missed its start making its first copy can mount', async () => {
+    let copied!: () => void
+    mockFirstCopies.mockReturnValueOnce(new Promise<void>((resolve) => { copied = resolve }))
+    mockListVolumes.mockResolvedValueOnce({ volumes: [], notMounted: [{ name: 'repo', reason: 'preparing' }] })
+      .mockResolvedValueOnce({ volumes: [{ volumeId: 'm1', name: 'repo' }], notMounted: [] })
+    const runtime = containerHost.runtime('test-agent')
+
+    await runtime.ensureRunning()
+    expect(mountWarnings()).toEqual([[{ name: 'repo', reason: 'preparing' }]])
+    expect(runtime.isStale()).toBe(false)
+    copied()
+
+    await vi.waitFor(() => expect(runtime.isStale()).toBe(true))
+    expect(globalFeed.publish).toHaveBeenCalledWith({ type: 'agent_updated', agentSlug: 'test-agent' })
+  })
+
+  it('leaves the agent as it is when a drive that missed its start fails its first copy', async () => {
+    mockFirstCopies.mockResolvedValueOnce(undefined)
+    mockListVolumes.mockResolvedValueOnce({ volumes: [], notMounted: [{ name: 'repo', reason: 'preparing' }] })
+      .mockResolvedValueOnce({ volumes: [], notMounted: [{ name: 'repo', reason: 'preparing: GitHub is busy' }] })
+    const runtime = containerHost.runtime('test-agent')
+
+    await runtime.ensureRunning()
+    await vi.waitFor(() => expect(mockListVolumes).toHaveBeenCalledTimes(2))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(runtime.isStale()).toBe(false)
   })
 
   it.each([

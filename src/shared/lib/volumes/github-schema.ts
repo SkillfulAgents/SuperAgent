@@ -32,9 +32,12 @@ export const githubTreeSchema = z.object({
   tree: z.array(githubTreeEntrySchema.extend({ path: z.string() }))
     .transform(entries => entries.filter(entry => !/[\\\0]/.test(entry.path)))
     .pipe(z.array(githubTreeEntrySchema)),
+  sha: githubOidSchema.optional(),
   truncated: z.boolean(),
 })
-const githubFileSchema = z.object({ sha: githubOidSchema, mode: z.string() })
+/** Folder listings a walk of a repository too large for one listing can reuse, by tree SHA. */
+export const githubTreesSchema = z.object({ version: z.literal(1), trees: z.record(githubOidSchema, z.array(githubTreeEntrySchema)) })
+const githubFileSchema = z.object({ sha: githubOidSchema, mode: z.string(), size: z.number().int().nonnegative().optional() })
 export type GithubFile = z.infer<typeof githubFileSchema>
 export const githubSyncStateSchema = z.object({
   version: z.literal(1), base: githubOidSchema.nullable(), files: z.record(githubPathSchema, githubFileSchema),

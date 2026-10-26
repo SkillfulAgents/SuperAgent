@@ -5,13 +5,15 @@ import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { ReadableStream } from 'node:stream/web'
 import * as tar from 'tar'
+import pLimit from 'p-limit'
+import { background } from '@shared/lib/background'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { errnoCode } from '@shared/lib/agent-actor/local-file-ops'
 import { LocalMountableVolume } from './local-mountable-volume'
 import { VolumeError, VolumePreparingError } from './volume-error'
 import { githubBlob, githubHead, githubTarball, githubTree } from './github-client'
 import type { GithubFile, GithubVolumeConfig, SyncState } from './github-schema'
-import { blobSha, emptySyncState, loadSyncState, saveSyncState, snapshotCollisions, fileBlobSha, volumeFolder } from './github-sync-state'
+import { blobSha, emptySyncState, loadSyncState, loadTrees, saveSyncState, saveTrees, snapshotCollisions, fileBlobSha, volumeFolder } from './github-sync-state'
 
 const syncs = new Map<string, GithubSync>()
 /** A read never shows the branch older than this, as Google Drive's listing cache allows. */
@@ -19,6 +21,9 @@ const FRESH_MS = 30_000
 /** How long a stale read waits for the check before serving the copy. The proxy can hold a request while an account reconnects. */
 const FRESH_WAIT_MS = 5_000
 type GithubVolume = { id: string; name: string; config: GithubVolumeConfig }
+/** Changes this small cost less as single files than as the repository's whole archive. */
+const BLOB_FILES = 32
+const BLOB_BYTES = 8_000_000
 
 export class GithubSync {
   readonly folder: string
@@ -86,7 +91,14 @@ export class GithubSync {
 
   keepFresh(): void {
     if (this.removed || this.syncing || this.checkedAt > Date.now() - FRESH_MS) return
-    void this.run()
+    background(this.run(), { name: 'github-sync.refresh' })
+  }
+
+  /** Settles once a copy exists, or once the attempt at the first one ends. */
+  async firstCopy(): Promise<void> {
+    if (this.removed) return
+    await this.loaded.catch(() => {})
+    if (!this.prepared) await this.run()
   }
 
   /** Before a read: a copy checked over 30 s ago waits for the check. Every read waiting on one check shares its 5 s. */
@@ -132,9 +144,13 @@ export class GithubSync {
 
   private async snapshot(oid: string): Promise<Record<string, GithubFile>> {
     this.clash = null
-    const entries = await githubTree(this.volume.config, oid)
-    const files = Object.fromEntries(entries.filter(entry => entry.type === 'blob' && entry.mode !== '120000')
-      .map(entry => [this.relative(entry.path), { sha: entry.sha, mode: entry.mode }]))
+    const root = this.volume.config.path
+    const known = await loadTrees(this.folder)
+    const entries = await githubTree(this.volume.config, oid, known)
+    this.checkRemoved()
+    await saveTrees(this.folder, known)
+    const files = Object.fromEntries(entries.filter(entry => entry.type === 'blob' && entry.mode !== '120000' && (!root || entry.path.startsWith(`${root}/`)))
+      .map(entry => [this.relative(entry.path), { sha: entry.sha, mode: entry.mode, ...(entry.size === undefined ? {} : { size: entry.size }) }]))
     const collisions = snapshotCollisions(Object.keys(files), this.caseInsensitive).flat()
     if (collisions.length) {
       this.clash = `Paths collide on this disk: ${collisions.join(', ')}`
@@ -146,34 +162,39 @@ export class GithubSync {
   private async archive(oid: string, files: Record<string, GithubFile>, destination: string): Promise<void> {
     this.checkRemoved()
     await fs.mkdir(destination, { recursive: true })
-    const response = await githubTarball(this.volume.config, oid)
-    this.checkRemoved()
-    if (!(response.body instanceof ReadableStream)) throw new VolumeError('GitHub returned an empty archive.', 503)
-    const root = this.volume.config.path
-    const strip = 1 + (root ? root.split('/').length : 0)
-    const extractor = tar.x({ cwd: destination, strip, strict: true, filter: (name, entry) => {
-      if (this.removed) return false
-      const repositoryPath = name.split('/').slice(1).join('/').replace(/\/$/, '')
-      if (root && !repositoryPath.startsWith(`${root}/`)) return false
-      const relative = this.relative(repositoryPath)
-      return Object.hasOwn(files, relative) && 'type' in entry && entry.type === 'File'
-    } })
-    await pipeline(Readable.fromWeb(response.body), extractor)
-    for (const [name, file] of Object.entries(files)) {
+    const names = Object.keys(files)
+    if (names.length > BLOB_FILES || names.reduce((bytes, name) => bytes + (files[name].size ?? Infinity), 0) > BLOB_BYTES) {
+      const response = await githubTarball(this.volume.config, oid)
+      this.checkRemoved()
+      if (!(response.body instanceof ReadableStream)) throw new VolumeError('GitHub returned an empty archive.', 503)
+      const root = this.volume.config.path
+      const strip = 1 + (root ? root.split('/').length : 0)
+      const extractor = tar.x({ cwd: destination, strip, strict: true, filter: (name, entry) => {
+        if (this.removed) return false
+        const repositoryPath = name.split('/').slice(1).join('/').replace(/\/$/, '')
+        if (root && !repositoryPath.startsWith(`${root}/`)) return false
+        const relative = this.relative(repositoryPath)
+        return Object.hasOwn(files, relative) && 'type' in entry && entry.type === 'File'
+      } })
+      await pipeline(Readable.fromWeb(response.body), extractor)
+    }
+    // What the archive left out or rewrote (export-ignore, export-subst), or every file of a small change, comes by blob SHA.
+    const limit = pLimit(8)
+    await Promise.all(names.map(name => limit(async () => {
+      const file = files[name]
       const target = path.join(destination, name)
       const sha = await fileBlobSha(target).catch(error => {
         if (errnoCode(error) === 'ENOENT') return null
         throw error
       })
-      if (sha !== file.sha) {
-        const original = await githubBlob(this.volume.config, file.sha)
-        if (blobSha(original) !== file.sha) throw new VolumeError('GitHub blob content did not match its SHA.', 503)
-        this.checkRemoved()
-        await fs.mkdir(path.dirname(target), { recursive: true })
-        this.checkRemoved()
-        await fs.writeFile(target, original, { mode: parseInt(file.mode, 8) })
-      }
-    }
+      if (sha === file.sha) return
+      const original = await githubBlob(this.volume.config, file.sha)
+      if (blobSha(original) !== file.sha) throw new VolumeError('GitHub blob content did not match its SHA.', 503)
+      this.checkRemoved()
+      await fs.mkdir(path.dirname(target), { recursive: true })
+      this.checkRemoved()
+      await fs.writeFile(target, original, { mode: parseInt(file.mode, 8) })
+    }))).finally(() => limit.clearQueue())
   }
 
   private async save(state: SyncState): Promise<void> {

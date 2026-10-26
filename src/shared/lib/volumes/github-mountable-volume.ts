@@ -38,6 +38,8 @@ export class GithubMountableVolume extends BaseMountableVolume<GithubVolumeConfi
     return this.sync.local.list(name)
   }
 
+  override whenReady(): Promise<void> { return this.sync.firstCopy() }
+
   override health(): Promise<VolumeEntry> {
     if (!this.sync.isReady) this.sync.keepFresh()
     return this.stat('')

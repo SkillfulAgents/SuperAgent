@@ -5,7 +5,7 @@ vi.mock('@shared/lib/db', () => ({ db: { select: () => ({ from: () => ({ where: 
 vi.mock('@shared/lib/account-providers/provider-factory', () => ({ getAccountProviderByName: () => ({ makeApiCall: forward }) }))
 vi.mock('@shared/lib/platform-attribution', () => ({ attribution: { fromResourceCreator: owner }, runWithAttribution: (_owner: unknown, run: () => unknown) => run() }))
 vi.mock('@shared/lib/proxy/audit', () => ({ writeProxyAuditEntry: audit }))
-import { githubBlob, githubBranches, githubFolder, githubHead, githubRepo, githubRepos, githubRequest, githubTree, requireGithubAccount } from './github-client'
+import { githubBlob, githubBranches, githubFolder, githubHead, githubRepo, githubRepos, githubRequest, githubTree, requireGithubAccount, type GithubTrees } from './github-client'
 import { GithubMountableVolume, prepareGithubVolume } from './github-mountable-volume'
 import { withRemoteAccount } from './remote-account'
 import { githubVolumeConfigSchema } from './github-schema'
@@ -86,18 +86,35 @@ describe('GitHub responses', () => {
     expect(forward).toHaveBeenCalledTimes(4)
   })
 
-  it('walks a truncated tree and filters unsupported names before validating copy paths', async () => {
+  it('walks a truncated folder and filters unsupported names before validating copy paths', async () => {
     const folder = { path: 'docs', sha: childSha, mode: '040000', type: 'tree' }
     const file = { path: 'readme.md', sha, mode: '100644', type: 'blob', size: 0 }
-    forward.mockResolvedValueOnce(Response.json({ tree: [], truncated: true }))
-      .mockResolvedValueOnce(Response.json({ tree: [folder, { ...file, path: 'bad\\name' }, { ...file, path: 'bad\0name' }], truncated: false }))
+    forward.mockResolvedValueOnce(Response.json({ tree: [folder, { ...file, path: 'bad\\name' }, { ...file, path: 'bad\0name' }], truncated: false }))
+      .mockResolvedValueOnce(Response.json({ tree: [], truncated: true }))
       .mockResolvedValueOnce(Response.json({ tree: [file], truncated: false }))
-    expect(await githubTree({ ...config, path: 'docs' }, sha)).toEqual([{ ...file, path: 'docs/readme.md' }])
+    expect(await githubTree({ ...config, path: 'docs' }, sha)).toEqual([folder, { ...file, path: 'docs/readme.md' }])
     expect(forward.mock.calls.map(([call]) => call.targetUrl)).toEqual([
-      `https://api.github.com/repositories/123/git/trees/${sha}?recursive=1`,
       `https://api.github.com/repositories/123/git/trees/${sha}`,
+      `https://api.github.com/repositories/123/git/trees/${childSha}?recursive=1`,
       `https://api.github.com/repositories/123/git/trees/${childSha}`,
     ])
+  })
+
+  it('walks a repository too large for one listing again through only the folders whose SHA changed', async () => {
+    const [a, b, b2, next] = ['c', 'd', 'e', 'f'].map(c => c.repeat(40))
+    const folder = (path: string, folderSha: string) => ({ path, sha: folderSha, mode: '040000', type: 'tree' })
+    const listings: Record<string, unknown[]> = {
+      [sha]: [folder('a', a), folder('b', b)], [next]: [folder('a', a), folder('b', b2)],
+      [a]: [{ path: 'one', sha, mode: '100644', type: 'blob' }], [b]: [{ path: 'two', sha, mode: '100644', type: 'blob' }], [b2]: [{ path: 'three', sha, mode: '100644', type: 'blob' }],
+    }
+    forward.mockImplementation(async ({ targetUrl }: { targetUrl: string }) => targetUrl.endsWith('?recursive=1')
+      ? Response.json({ tree: [], truncated: true }) : Response.json({ tree: listings[targetUrl.split('/').at(-1)!], truncated: false }))
+    const known: GithubTrees = new Map()
+    expect((await githubTree(config, sha, known)).map(entry => entry.path).sort()).toEqual(['a', 'a/one', 'b', 'b/two'])
+    forward.mockClear()
+    expect((await githubTree(config, next, known)).map(entry => entry.path).sort()).toEqual(['a', 'a/one', 'b', 'b/three'])
+    expect(forward.mock.calls.map(([call]) => call.targetUrl.split('/').at(-1))).toEqual([next, b2])
+    expect([...known.keys()].sort()).toEqual([a, b2, next].sort())
   })
 
   it('lists every folder of a truncated tree when listings finish out of order', async () => {
@@ -134,11 +151,17 @@ describe('GitHub responses', () => {
     expect(forward).toHaveBeenCalledTimes(10)
   })
 
-  it('filters out-of-root entries in a complete recursive listing', async () => {
-    const file = { path: 'docs/inside', sha, mode: '100644', type: 'blob' }
-    forward.mockResolvedValueOnce(Response.json({ tree: [file, { ...file, path: 'docs-other/outside' }, { ...file, path: 'outside' }], truncated: false }))
-    expect(await githubTree({ ...config, path: 'docs' }, sha)).toEqual([file])
-    expect(forward).toHaveBeenCalledOnce()
+  it("lists a subfolder drive's folder alone, with only the entries beside each folder above it", async () => {
+    const docs = { path: 'docs', sha: childSha, mode: '040000', type: 'tree' }
+    const ignore = { path: '.gitignore', sha, mode: '100644', type: 'blob' }
+    const inside = { path: 'inside', sha, mode: '100644', type: 'blob' }
+    forward.mockResolvedValueOnce(Response.json({ tree: [docs, ignore, { ...docs, path: 'docs-other', sha: 'e'.repeat(40) }], truncated: false }))
+      .mockResolvedValueOnce(Response.json({ tree: [inside], truncated: false }))
+    expect(await githubTree({ ...config, path: 'docs' }, sha)).toEqual([docs, ignore, { ...docs, path: 'docs-other', sha: 'e'.repeat(40) }, { ...inside, path: 'docs/inside' }])
+    expect(forward.mock.calls.map(([call]) => call.targetUrl)).toEqual([
+      `https://api.github.com/repositories/123/git/trees/${sha}`,
+      `https://api.github.com/repositories/123/git/trees/${childSha}?recursive=1`,
+    ])
   })
 
   it('decodes binary blobs from the proxy JSON response without changing bytes', async () => {

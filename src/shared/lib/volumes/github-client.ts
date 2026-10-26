@@ -81,28 +81,61 @@ export async function githubFolder(config: Pick<GithubVolumeConfig, 'accountId' 
   }
 }
 
-export async function githubTree(config: Pick<GithubVolumeConfig, 'accountId' | 'repoId' | 'path'>, sha: string): Promise<GithubTreeEntry[]> {
-  const recursive = await tree(config, sha, true)
-  let entries = recursive.tree
-  if (recursive.truncated) {
-    entries = []
-    const limit = pLimit(8)
-    let failed = false
-    // A repo over GitHub's one-listing limit is listed folder by folder, 8 at a time.
-    const walk = async (folderSha: string, prefix: string): Promise<void> => {
-      if (failed) return
-      const listing = await limit(() => failed ? null : tree(config, folderSha).catch(error => { failed = true; throw error }))
-      if (!listing) return
-      await Promise.all(listing.tree.map(entry => {
-        const path = prefix ? `${prefix}/${entry.path}` : entry.path
-        entries.push({ ...entry, path })
-        return entry.type === 'tree' ? walk(entry.sha, path) : undefined
-      }))
+/** Folder listings by tree SHA. A SHA names one listing, so a folder whose SHA is known needs no request. */
+export type GithubTrees = Map<string, GithubTreeEntry[]>
+
+const under = (prefix: string, entry: GithubTreeEntry) => ({ ...entry, path: prefix ? `${prefix}/${entry.path}` : entry.path })
+
+/**
+ * Every entry under the drive's folder, and the entries beside each folder above it. A folder that fits one
+ * recursive listing costs one request. A larger one is listed folder by folder, 8 at a time, skipping folders
+ * whose listing `known` holds. On return `known` holds this walk's folders, or nothing when one listing sufficed.
+ */
+export async function githubTree(config: Pick<GithubVolumeConfig, 'accountId' | 'repoId' | 'path'>, sha: string, known: GithubTrees = new Map()): Promise<GithubTreeEntry[]> {
+  const seen: GithubTrees = new Map()
+  const list = async (folderSha: string) => {
+    let children = known.get(folderSha)
+    if (!children) {
+      const listing = await tree(config, folderSha)
+      children = listing.tree
+      folderSha = listing.sha ?? folderSha
     }
-    await walk(sha, '').finally(() => limit.clearQueue())
+    seen.set(folderSha, children)
+    return children
   }
   const root = githubPathSchema.parse(config.path)
-  return entries.filter(entry => !root || entry.path.startsWith(`${root}/`))
+  const entries: GithubTreeEntry[] = []
+  // Each folder above the drive is listed alone: a subfolder drive needs only the files beside its path.
+  let prefix = ''
+  for (const part of root ? root.split('/') : []) {
+    const children = await list(sha)
+    entries.push(...children.map(entry => under(prefix, entry)))
+    const folder = children.find(entry => entry.type === 'tree' && entry.path === part)
+    if (!folder) return entries
+    sha = folder.sha
+    prefix = prefix ? `${prefix}/${part}` : part
+  }
+  // A folder walked before is walked again, without first asking for the listing GitHub truncated last time.
+  if (!known.size) {
+    const recursive = await tree(config, sha, true)
+    if (!recursive.truncated) return entries.concat(recursive.tree.map(entry => under(prefix, entry)))
+  }
+  const limit = pLimit(8)
+  let failed = false
+  const walk = async (folderSha: string, path: string): Promise<void> => {
+    if (failed) return
+    const children = await limit(() => failed ? null : list(folderSha).catch(error => { failed = true; throw error }))
+    if (!children) return
+    await Promise.all(children.map(entry => {
+      const child = under(path, entry)
+      entries.push(child)
+      return entry.type === 'tree' ? walk(entry.sha, child.path) : undefined
+    }))
+  }
+  await walk(sha, prefix).finally(() => limit.clearQueue())
+  known.clear()
+  for (const [folderSha, children] of seen) known.set(folderSha, children)
+  return entries
 }
 
 export async function githubTarball(config: Pick<GithubVolumeConfig, 'accountId' | 'repoId'>, sha: string): Promise<Response> {

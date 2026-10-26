@@ -9,6 +9,7 @@ import { GithubMountableVolume } from './github-mountable-volume'
 import { blobSha, loadSyncState } from './github-sync-state'
 import { VolumeError } from './volume-error'
 import { githubTreeSchema, type GithubVolumeConfig } from './github-schema'
+import type { GithubTrees } from './github-client'
 
 const client = vi.hoisted(() => ({ githubHead: vi.fn(), githubTree: vi.fn(), githubTarball: vi.fn(), githubBlob: vi.fn() }))
 vi.mock('./github-client', () => client)
@@ -18,14 +19,17 @@ let dataDir: string, head: string
 let remote: Record<string, Buffer>
 let modes: Map<string, string>
 let archiveFiles: Record<string, Buffer> | undefined
+/** Whether listings report sizes, and sizes they report other than the bytes' own. */
+let sized = false
+let sizes: Map<string, number>
 
 beforeEach(async () => {
   vi.resetAllMocks()
   dataDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'github-sync-test-')))
   vi.stubEnv('SUPERAGENT_DATA_DIR', dataDir)
-  modes = new Map(); archiveFiles = undefined; head = 'a'.repeat(40)
+  modes = new Map(); archiveFiles = undefined; sized = false; sizes = new Map(); head = 'a'.repeat(40)
   client.githubHead.mockImplementation(async () => head)
-  client.githubTree.mockImplementation(async () => githubTreeSchema.parse({ tree: Object.entries(remote).map(([name, bytes]) => ({ path: name, sha: blobSha(bytes), mode: modes.get(name) ?? '100644', type: modes.get(name) === '160000' ? 'commit' : 'blob' })), truncated: false }).tree)
+  client.githubTree.mockImplementation(async () => githubTreeSchema.parse({ tree: Object.entries(remote).map(([name, bytes]) => ({ path: name, sha: blobSha(bytes), mode: modes.get(name) ?? '100644', type: modes.get(name) === '160000' ? 'commit' : 'blob', ...(sized ? { size: sizes.get(name) ?? bytes.length } : {}) })), truncated: false }).tree)
   client.githubBlob.mockImplementation(async (_config, sha) => Object.values(remote).find(bytes => blobSha(bytes) === sha))
   client.githubTarball.mockImplementation(async () => {
     const fixture = path.join(dataDir, 'fixture')
@@ -201,6 +205,42 @@ it('waits for the check on the first read after 30 s, so it returns what a teamm
   expect(await text()).toBe('kept')
   vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 30_000)
   expect(await text()).toBe('pushed')
+})
+
+it('pulls a small change file by file, and many files or large ones from the archive', async () => {
+  sized = true
+  const { sync, read } = await setup({ 'notes.txt': 'kept', 'changed.txt': 'old' })
+  expect(client.githubTarball).not.toHaveBeenCalled()
+  client.githubBlob.mockClear()
+  remote['changed.txt'] = Buffer.from('new'); head = 'b'.repeat(40)
+  await sync.run()
+  expect(await read('changed.txt')).toEqual(Buffer.from('new'))
+  expect(client.githubTarball).not.toHaveBeenCalled()
+  expect(client.githubBlob).toHaveBeenCalledExactlyOnceWith(config, blobSha(Buffer.from('new')))
+  for (let i = 0; i < 33; i++) remote[`many-${i}`] = Buffer.from(String(i))
+  head = 'c'.repeat(40)
+  await sync.run()
+  expect(client.githubTarball).toHaveBeenCalledExactlyOnceWith(config, head)
+  expect(await read('many-32')).toEqual(Buffer.from('32'))
+  remote.big = Buffer.from('big'); sizes.set('big', 8_000_001); head = 'd'.repeat(40)
+  await sync.run()
+  expect(client.githubTarball).toHaveBeenLastCalledWith(config, head)
+  expect(await read('big')).toEqual(remote.big)
+})
+
+it('keeps the folder listings of a walk for the next one, and drops them once one listing suffices', async () => {
+  const listing = client.githubTree.getMockImplementation()!
+  const folder = 'e'.repeat(40)
+  const knownAtCall: string[][] = []
+  client.githubTree.mockImplementation(async (config, sha, known: GithubTrees) => { knownAtCall.push([...known.keys()]); known.set(folder, []); return listing(config, sha, known) })
+  const { sync } = await setup()
+  remote['notes.txt'] = Buffer.from('changed'); head = 'b'.repeat(40)
+  await sync.run()
+  expect(knownAtCall).toEqual([[], [folder]])
+  client.githubTree.mockImplementation(async (config, sha, known: GithubTrees) => { known.clear(); return listing(config, sha, known) })
+  head = 'c'.repeat(40)
+  await sync.run()
+  await expect(fs.stat(path.join(sync.folder, 'trees.json'))).rejects.toMatchObject({ code: 'ENOENT' })
 })
 
 it('fetches export-ignore omissions and export-subst bytes by blob sha', async () => {

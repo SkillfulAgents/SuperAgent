@@ -65,6 +65,8 @@ export abstract class BaseMountableVolume<C> {
   abstract stat(path: string): Promise<VolumeEntry>
   /** Advisory root health for settings and mount status. Remote drivers may cache it. */
   health(): Promise<VolumeEntry> { return this.stat('') }
+  /** Settles once the volume can be mounted, or once its attempt to get there ends. Only a source copied first waits. */
+  whenReady(): Promise<void> { return Promise.resolve() }
   abstract read(path: string): Promise<VolumeFile>
   /** Replace a whole file. `signal` aborts when the client stops waiting for the write. */
   abstract write(path: string, body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<void>
