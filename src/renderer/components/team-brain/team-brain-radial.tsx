@@ -118,6 +118,26 @@ function branch(parent: RadialNode, child: RadialNode, radius: (n: RadialNode) =
 }
 
 /**
+ * A folded folder's trail, so the rim beside it isn't left bare: a dotted stretch of the outer ring where its pages would
+ * sit, reaching `share` of the way to the leaves either side (at most `most` radians), and up to `lines` faint branches
+ * out to it from the folder.
+ */
+const TRAIL = { share: 0.35, most: 0.3, lines: 5 }
+/** A trail drawn in the folder's own frame, the folder at twelve o'clock: one branch out to `angle` on the outer ring. */
+function trailLine(from: number, angle: number): string {
+  const mid = (from + RING) / 2
+  const c2 = polar(angle, mid)
+  const to = polar(angle, RING)
+  return `M 0 ${-from} C 0 ${-mid} ${c2.x.toFixed(1)} ${c2.y.toFixed(1)} ${to.x.toFixed(1)} ${to.y.toFixed(1)}`
+}
+/** The trail's stretch of the outer ring, clockwise from `left` before the folder to `right` after it. */
+function trailArc(left: number, right: number): string {
+  const from = polar(-left, RING)
+  const to = polar(right, RING)
+  return `M ${from.x.toFixed(1)} ${from.y.toFixed(1)} A ${RING} ${RING} 0 ${left + right > Math.PI ? 1 : 0} 1 ${to.x.toFixed(1)} ${to.y.toFixed(1)}`
+}
+
+/**
  * The drive as a radial tree, after the "codebase as a tree" explorations:
  * Team Brain at the middle, sections and folders on rings, every page on the
  * outer ring with its name running outwards, coloured by section, every page
@@ -321,6 +341,30 @@ export function TeamBrainRadial({
     }
     return out
   }, [nodes, byId])
+  /**
+   * Folded folders inside the outer ring, each with how far its trail reaches round before and after it, and the pages'
+   * own spacing round the ring (the nearest two siblings'), so a trail's dots sit as the pages' do.
+   */
+  const trails = useMemo(() => {
+    const parents = new Set(nodes.map((n) => n.parent))
+    // In drive order, which is the order round the ring.
+    const leaves = nodes.filter((n) => n.kind !== 'root' && !parents.has(n.id))
+    const reach = (gap: number) => Math.min(TRAIL.share * (leaves.length > 1 ? gap : TAU), TRAIL.most)
+    const spacing = Math.min(
+      ...leaves.flatMap((node, i) => (leaves[i + 1]?.parent === node.parent ? [(leaves[i + 1].angle - node.angle) * RING] : [])),
+    )
+    return {
+      spacing: Math.max(Number.isFinite(spacing) ? spacing : 0, PAGE_DOT * 3),
+      folded: leaves.flatMap((node, i) => {
+        if (node.kind !== 'folder' || !node.folded || radius(node) === RING) return []
+        const before = leaves[(i - 1 + leaves.length) % leaves.length]
+        const after = leaves[(i + 1) % leaves.length]
+        return [{ node, left: reach(wrap(node.angle - before.angle)), right: reach(wrap(after.angle - node.angle)) }]
+      }),
+    }
+  }, [nodes, radius])
+  /** Folders whose count their trail's "+N more" carries, so their own pill gives just the name. */
+  const trailed = useMemo(() => new Set(trails.folded.map((trail) => trail.node.id)), [trails])
   const pulseTargets = useRef<string[]>([])
   useEffect(() => {
     pulseTargets.current = [...routes.keys()]
@@ -382,6 +426,7 @@ export function TeamBrainRadial({
     const nodeEls = tagged('data-node')
     const branchEls = tagged('data-branch')
     const spokeEls = tagged('data-spoke')
+    const trailEls = tagged('data-trail')
     const { nodes: laid, byId: laidById, radius: ring } = drawn.current
     const place = (e: number) => {
       const at = new Map<string, Placement>()
@@ -396,6 +441,7 @@ export function TeamBrainRadial({
         if (n.kind === 'root') continue
         const p = polar(angleAt(n), radiusAt(n))
         nodeEls.get(n.id)?.setAttribute('transform', `translate(${p.x.toFixed(1)} ${p.y.toFixed(1)})`)
+        trailEls.get(n.id)?.setAttribute('transform', `rotate(${((angleAt(n) * 180) / Math.PI).toFixed(2)})`)
         const spoke = spokeEls.get(n.id)
         if (spoke) {
           const degrees = (angleAt(n) * 180) / Math.PI - 90
@@ -736,6 +782,74 @@ export function TeamBrainRadial({
             })}
           </g>
 
+          {/* Folded folders' trails, out to where their pages would be: lit and faded with the folder, in as the signal reaches the rim. */}
+          <g fill="none" className="pointer-events-none" aria-hidden="true">
+            {trails.folded.map(({ node, left, right }) => {
+              const from = radius(node)
+              const lines = Math.min(Math.max(node.hidden ?? TRAIL.lines, 1), TRAIL.lines)
+              const ends = Array.from({ length: lines }, (_, i) => (lines === 1 ? (right - left) / 2 : -left + ((left + right) * i) / (lines - 1)))
+              const lit = focus?.has(node.id) ?? false
+              const motion = motionOf(node)
+              const out = (RING - from) / ((RING - sectionRing) / ENTRY.signalMs)
+              // The last of its dots is named "+N more", with how many the folder holds, as a page's dot is named.
+              const last = -left + (Math.floor(((left + right) * RING - 0.01) / trails.spacing) * trails.spacing) / RING
+              const flip = wrap(angleOf(node) + last) > Math.PI
+              const isHovered = hovered === node.id
+              return (
+                <g
+                  key={node.id}
+                  transform={`rotate(${((angleOf(node) * 180) / Math.PI).toFixed(2)})`}
+                  data-trail={node.id}
+                  style={motion ? startAt({ at: Math.max(0, motion.out ? motion.at - out : motion.at + out) }) : undefined}
+                  className={cn(sectionColor(node), play(motion, 'team-brain-radial-name'))}
+                  data-testid={`team-brain-radial-trail-${node.id}`}
+                >
+                  {ends.map((angle) => (
+                    <path
+                      key={angle}
+                      d={trailLine(from, angle)}
+                      vectorEffect="non-scaling-stroke"
+                      strokeOpacity={lit ? 0.3 : focus ? 0.03 : 0.07}
+                      className="stroke-foreground transition-[stroke-opacity]"
+                    />
+                  ))}
+                  {/* The pages' own dots, at their size and spacing, where they would be; faded only as a page is, with another branch lit. */}
+                  <path
+                    d={trailArc(left, right)}
+                    strokeWidth={PAGE_DOT * 2}
+                    strokeLinecap="round"
+                    strokeDasharray={`0 ${trails.spacing.toFixed(2)}`}
+                    strokeOpacity={focus && !lit ? 0.1 : 1}
+                    className="stroke-current transition-[stroke-opacity]"
+                  />
+                  {!!node.hidden && (
+                    // Opens the folder, as the folder itself does.
+                    <g
+                      transform={`rotate(${(last * 180) / Math.PI - 90 + (flip ? 180 : 0)}) translate(${(flip ? -1 : 1) * (RING + PAGE_DOT + 5)} 0)`}
+                      onPointerDown={(event) => start(event, node)}
+                      onPointerEnter={() => !drag.current && setHovered(node.id)}
+                      onPointerLeave={() => !drag.current && setHovered(null)}
+                      className="pointer-events-auto cursor-pointer"
+                      data-testid={`team-brain-radial-more-${node.id}`}
+                    >
+                      <text
+                        textAnchor={flip ? 'end' : 'start'}
+                        dominantBaseline="central"
+                        className={cn(
+                          'transition-[font-size] duration-150 ease-out',
+                          isHovered ? 'fill-foreground font-medium' : lit ? 'fill-foreground/80' : 'fill-muted-foreground/70',
+                        )}
+                        style={{ fontSize: `${isHovered ? 11.5 : 9.5}px`, transform: 'scale(calc(1 / var(--graph-k, 1)))' }}
+                      >
+                        +{node.hidden.toLocaleString()} more
+                      </text>
+                    </g>
+                  )}
+                </g>
+              )
+            })}
+          </g>
+
           {/* Pulses while it drifts: the opening's signal again, down one section's branch to one page, then a bloom. */}
           <g fill="none" className="pointer-events-none" aria-hidden="true">
             {pulses.map((pulse) => {
@@ -900,7 +1014,8 @@ export function TeamBrainRadial({
                   // outwards from where the folder sits, so the pills fan out from the middle.
                   (() => {
                     const size = node.depth === 1 ? 11 : 10
-                    const w = nameWidth(node.label, size, font) + PILL.x * 2
+                    const label = trailed.has(node.id) ? node.name : node.label
+                    const w = nameWidth(label, size, font) + PILL.x * 2
                     const h = size + PILL.y * 2
                     return (
                       <g style={motion ? startAt(motion) : undefined} className={cn(play(motion, 'team-brain-radial-pop'))}>
@@ -937,7 +1052,7 @@ export function TeamBrainRadial({
                           )}
                           style={{ fontSize: `${size}px` }}
                         >
-                          {node.label}
+                          {label}
                         </text>
                       </g>
                       </g>
