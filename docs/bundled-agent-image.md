@@ -60,7 +60,7 @@ runtime pull as before.
 
 | | Pulled (before) | Bundled |
 | --- | --- | --- |
-| DMG / ZIP | 363 / 353 MiB | 1090 / 1079 MiB (the CI size budget is 1200) |
+| DMG / ZIP | 363 / 353 MiB | 1090 / 1079 MiB; ~1165 MiB with the VM image's installed packages (#1600). The CI size budget is 1300 |
 | Agent image | 730 MiB from ghcr.io, after install | in the DMG and the ZIP |
 | First image create, same VM, empty store | 32.9 s (a fast connection) | 16.2 s, no network |
 | VM disk | 730 MiB content + 1.8 GiB unpacked | the same |

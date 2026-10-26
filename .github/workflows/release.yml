@@ -153,13 +153,17 @@ jobs:
             -f event_type=superagent-release \
             -f "client_payload[version]=$VERSION"
 
+  # The built-in Lima runtime's VM image, which the macOS build bundles
+  lima-image:
+    uses: ./.github/workflows/lima-image.yml
+
   # Build macOS Electron app (signed + notarized)
   build-mac:
     runs-on: macos-26
     # The app bundles the agent image this release publishes (dist:mac's
     # download:agent-image), so it waits for it: ~35 s when the layers are
-    # cached from main.
-    needs: [prepare, build-agent-container]
+    # cached from main. lima-image builds the built-in runtime's VM image.
+    needs: [prepare, lima-image, build-agent-container]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -177,6 +181,12 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Download the Lima VM image
+        uses: actions/download-artifact@v4
+        with:
+          name: lima-image-arm64
+          path: build/lima-image
 
       - name: Decode Apple API Key
         env:
@@ -209,6 +219,7 @@ jobs:
           PLATFORM_BASE_URL: ${{ secrets.PLATFORM_BASE_URL }}
           PLATFORM_PROXY_URL: ${{ secrets.PLATFORM_PROXY_URL }}
           PLATFORM_AUTH_ISSUER_URL: ${{ secrets.PLATFORM_AUTH_ISSUER_URL }}
+          LIMA_IMAGE_DIR: build/lima-image
           # A release never ships without its agent image.
           AGENT_IMAGE_REQUIRED: 'true'
         run: npm run dist:mac
@@ -240,8 +251,10 @@ jobs:
           # A size budget, not a platform limit: the R2 feed upload is multipart
           # and GitHub release assets go to 2 GiB. It catches an installer that
           # balloons unnoticed. The macOS app carries the agent image
-          # (scripts/fetch-agent-image.ts, ~730 MiB of a ~1090 MiB DMG).
-          limit=$((1200 * 1024 * 1024))
+          # (scripts/fetch-agent-image.ts, ~730 MiB) and the built-in runtime's
+          # VM image with its packages installed, which it also ships to repair
+          # it: a DMG of ~1165 MiB.
+          limit=$((1300 * 1024 * 1024))
           bad=0
           for f in release/*.exe release/*.dmg release/*.zip; do
             [ -e "$f" ] || continue

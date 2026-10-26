@@ -233,7 +233,7 @@ ANTHROPIC_API_KEY=your-api-key-here
 ### Distribution
 | Script | Description |
 |--------|-------------|
-| `npm run dist:mac` | Package Electron app for macOS |
+| `npm run dist:mac` | Package Electron app for macOS. Building the built-in runtime's VM image needs Docker running (`scripts/build-lima-image.sh`); without it the app ships Alpine's stock image, whose first boot downloads sudo and reboots once |
 | `npm run dist:win` | Package Electron app for Windows |
 | `npm run preview` | Build and run production server locally |
 

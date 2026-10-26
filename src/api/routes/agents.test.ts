@@ -24,6 +24,8 @@ import { underActorTransport } from '@shared/lib/agent-actor/testing/via-test-tr
 import type { LiveSessionsAnswers } from '@shared/lib/agent-actor/testing/live-sessions-double'
 import type { WireFrame } from '@shared/lib/agent-actor'
 
+const TINY_HEIC = Buffer.from('AAAAHGZ0eXBoZWljAAAAAG1pZjFoZWljbWlhZgAAAXxtZXRhAAAAAAAAACFoZGxyAAAAAAAAAABwaWN0AAAAAAAAAAAAAAAAAAAAACJpbG9jAAAAAERAAAEAAQAAAAABoAABAAAAAAAAADYAAAAjaWluZgAAAAAAAQAAABVpbmZlAgAAAAABAABodmMxAAAAAA5waXRtAAAAAAABAAAA/GlwcnAAAADcaXBjbwAAAHVodmNDAQNwAAAAkAAAAAAAHvAA/P34+AAADwNgAAEAGEABDAH//wNwAAADAJAAAAMAAAMAHroCQGEAAQApQgEBA3AAAAMAkAAAAwAAAwAeoCCBBZbqrprm4CGgwIAAAAyAAAADAIRiAAEABkQBwXPBiQAAABNjb2xybmNseAABAA0ABoAAAAAUaXNwZQAAAAAAAABAAAAAQAAAAChjbGFwAAAAEAAAAAEAAAAQAAAAAf///9AAAAAC////0AAAAAIAAAAQcGl4aQAAAAADCAgIAAAAGGlwbWEAAAAAAAAAAQABBYECAwWEAAAAPm1kYXQAAAAyKAGvBPIWhzRxZNLf/Jd///8rTey/kupBJtUI7P1SxGAmv3XroGTEzROpbNAoK6inXqY=', 'base64')
+
 // ============================================================================
 // Mocks — must be declared before import
 // ============================================================================
@@ -2787,6 +2789,45 @@ describe('path traversal security — GET /:id/files/*', () => {
 
     const res = await getReq(app, '/api/agents/test-agent/files/a/b/c/d/e/file.txt')
     expect(res.status).not.toBe(400)
+  })
+
+  it.each(['heic', 'heif'])('serves real %s files as browser-displayable JPEGs for inline previews', async (extension) => {
+    mockFsStat.mockResolvedValue(fileStat(TINY_HEIC.byteLength))
+    mockCreateReadStream.mockImplementation(() => Readable.from([TINY_HEIC]))
+    const url = `/api/agents/test-agent/files/uploads/photo.${extension}?inline=true`
+
+    const res = await getReq(app, url)
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('image/jpeg')
+    const jpeg = new Uint8Array(await res.arrayBuffer())
+    expect(jpeg.slice(0, 3)).toEqual(new Uint8Array([0xff, 0xd8, 0xff]))
+    expect(jpeg.slice(-2)).toEqual(new Uint8Array([0xff, 0xd9]))
+
+    const cached = await getReq(app, url)
+    expect(new Uint8Array(await cached.arrayBuffer())).toEqual(jpeg)
+    expect(mockCreateReadStream).toHaveBeenCalledTimes(2)
+  })
+
+  it('rejects an oversized HEIC preview before opening the file', async () => {
+    mockFsStat.mockResolvedValue(fileStat(25 * 1024 * 1024 + 1))
+
+    const res = await getReq(app, '/api/agents/test-agent/files/uploads/huge.heic?inline=true')
+
+    expect(res.status).toBe(422)
+    expect(await res.json()).toEqual({ error: 'Failed to preview image' })
+    expect(mockCreateReadStream).not.toHaveBeenCalled()
+  })
+
+  it('keeps the original HEIC bytes for downloads', async () => {
+    mockFsStat.mockResolvedValue(fileStat(TINY_HEIC.byteLength))
+    mockCreateReadStream.mockReturnValueOnce(Readable.from([TINY_HEIC]))
+
+    const res = await getReq(app, '/api/agents/test-agent/files/uploads/photo.heic')
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('application/octet-stream')
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array(TINY_HEIC))
   })
 
   it('marks workspace files uncacheable so a CDN cannot serve a stale or cross-user body', async () => {
