@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { FileHook, type FileHookReadResult, type FileHookWriteResult } from './file-hook'
 
-/** The label a GitHub drive writes under each conflict; a file containing it never syncs. */
+/** The label a GitHub drive writes under each conflict it makes. The drive holds that file until the markers are gone. */
 const CONFLICT_LABEL = />>>>>>> GitHub [0-9a-f]{7,40} \(/
 const HINT = 'This file has unresolved conflict markers from a GitHub drive: a teammate changed the same lines on GitHub. ' +
   'It will not sync until they are gone. Resolve it now: keep what each side meant, then remove every marker line. ' +

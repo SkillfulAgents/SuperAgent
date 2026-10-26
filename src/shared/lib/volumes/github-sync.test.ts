@@ -10,6 +10,7 @@ import { GithubMountableVolume } from './github-mountable-volume'
 import { blobSha, loadSyncState } from './github-sync-state'
 import { VolumeError } from './volume-error'
 import { githubTreeSchema, type GithubVolumeConfig } from './github-schema'
+import { markerLabel } from './github-merge'
 import type { GithubTrees } from './github-client'
 
 const client = vi.hoisted(() => ({ githubHead: vi.fn(), githubTree: vi.fn(), githubTarball: vi.fn(), githubBlob: vi.fn(), githubRepo: vi.fn(), githubCommit: vi.fn() }))
@@ -209,6 +210,20 @@ it('labels a same-line conflict with how to resolve it, never pushes markers, an
   await write('notes.txt', 'BOTH\ntwo\n')
   await sync.run(true)
   expect(remote['notes.txt'].toString()).toBe('BOTH\ntwo\n')
+})
+
+it('holds only the markers the drive wrote, wherever the file moves, and pushes the same text in any other file', async () => {
+  const { sync, volume, write, marked } = await conflicted()
+  await write('notes.txt', `${marked}more\n`)
+  await volume.move('notes.txt', 'moved.txt')
+  await write('example.md', `A conflict looks like this:\n${markerLabel('b'.repeat(40))}\n`)
+  await sync.run(true)
+  expect(remote['example.md'].toString()).toContain('>>>>>>> GitHub bbbbbbbbbbbb')
+  expect([remote['moved.txt'], remote['notes.txt'].toString()]).toEqual([undefined, 'TEAM\ntwo\n'])
+  expect(sync.attention?.detail?.split('\n').sort()).toEqual(['moved.txt (conflict markers to resolve)', 'notes.txt (conflict markers to resolve)'])
+  await write('moved.txt', 'BOTH\ntwo\nmore\n')
+  await sync.run(true)
+  expect([remote['moved.txt'].toString(), remote['notes.txt'], sync.attention]).toEqual(['BOTH\ntwo\nmore\n', undefined, null])
 })
 
 it("keeps GitHub's version when the agent deletes a conflicted file", async () => {

@@ -36,7 +36,7 @@ const PUSH_DELAY = 15_000
 const PUSH_MAX_DELAY = 120_000
 const ADDED = 'added on GitHub too'
 const CONFLICTS = new Set(['conflict markers to resolve', 'edited on GitHub, deleted here', 'deleted on GitHub, edited here', 'changed on GitHub too', ADDED])
-const emptyEdits = (): GithubEdits => ({ version: 1, unpushed: {}, held: {}, stopped: null, ignores: [], links: [], blocked: {} })
+const emptyEdits = (): GithubEdits => ({ version: 1, unpushed: {}, held: {}, stopped: null, ignores: [], links: [], blocked: {}, markers: {} })
 /** A record's own entry: paths like `constructor` must not read through the prototype. */
 const own = <T>(record: Record<string, T>, key: string): T | undefined => Object.hasOwn(record, key) ? record[key] : undefined
 const missing = (error: unknown) => ['ENOENT', 'ENOTDIR', 'EISDIR'].includes(errnoCode(error) ?? '')
@@ -439,18 +439,21 @@ export class GithubSync {
       const hold = own(this.edits.held, name)
       let out: Buffer = upload
       let conflict: string | undefined
+      let label: string | undefined
       const resolving = hold?.behind !== undefined
       if (resolving) {
         // A rewrite resolves the conflict, merged with what GitHub changed since the markers were made.
         const merged = mergePath(await bytesOf(own(this.state.files, name)?.sha), upload, await bytesOf(hold?.behind), this.state.base!)
         out = merged.content ?? upload
         conflict = merged.conflict
+        label = merged.label
       } else if (needsMerge()) {
         const merged = mergePath(await bytesOf(base), upload, await this.bytes(name), this.state.base!)
         // GitHub deleted the file and the agent wrote back what it read: the delete stands.
         if (!merged.content) { this.seen(mount).delete(name); this.sentBy(mount).set(name, await this.remember(upload)); return }
         out = merged.content
         conflict = merged.conflict
+        label = merged.label
       }
       await this.mark([name], agent, () => group)
       await this.local.write(name, new Blob([new Uint8Array(out)]).stream())
@@ -459,11 +462,19 @@ export class GithubSync {
       if (entry) entry.sha = blobSha(out)
       if (conflict) this.edits.held[name] = { reason: conflict }
       else delete this.edits.held[name]
+      this.label(name, out, label)
       this.seen(mount).delete(name)
       this.sentBy(mount).set(name, await this.remember(upload))
       await this.saveEdits()
     })
     this.schedulePush()
+  }
+
+  /** Keeps the record of the marker labels the drive wrote into `name` that `content` still holds, with `added` if a merge just wrote one. */
+  private label(name: string, content: Buffer | null, added?: string): void {
+    const labels = [...new Set([...own(this.edits.markers, name) ?? [], ...added ? [added] : []])].filter(label => content?.includes(label))
+    if (labels.length) this.edits.markers[name] = labels
+    else delete this.edits.markers[name]
   }
 
   /** A rewrite of a held path takes GitHub's newer version, recorded while it was held, as its base. */
@@ -500,6 +511,7 @@ export class GithubSync {
         await this.save({ ...this.state, files })
         delete this.edits.held[name]
         delete this.edits.unpushed[name]
+        delete this.edits.markers[name]
         this.unsee(mount, name)
         await this.saveEdits()
         return false
@@ -508,8 +520,10 @@ export class GithubSync {
       await this.local.delete(name)
       const entry = own(this.edits.unpushed, name)
       if (entry) entry.sha = null
+      const labelled = Object.hasOwn(this.edits.markers, name)
+      delete this.edits.markers[name]
       this.unsee(mount, name)
-      if (marked) await this.saveEdits()
+      if (marked || labelled) await this.saveEdits()
       return marked
     })
     if (marked) this.schedulePush()
@@ -533,6 +547,8 @@ export class GithubSync {
       const bytes = await this.bytes(from)
       if (!bytes) throw new WorkspaceFileError('not-found')
       const group = randomUUID()
+      const labels = own(this.edits.markers, from)
+      if (labels) await serialize([this.key], async () => { this.edits.markers[to] = [...new Set([...own(this.edits.markers, to) ?? [], ...labels])] })
       await this.write(mount, agent, to, new Blob([new Uint8Array(bytes)]).stream(), undefined, group)
       return this.delete(mount, agent, from, group, blobSha(bytes))
     }
@@ -554,6 +570,9 @@ export class GithubSync {
         const moved = own(this.edits.unpushed, source), landed = own(this.edits.unpushed, destination)
         if (moved) moved.sha = null
         if (landed) landed.sha = sha
+        const labels = own(this.edits.markers, source)
+        delete this.edits.markers[source]
+        if (labels) this.edits.markers[destination] = labels
         const versions = seen.get(source), sent = this.sentBy(mount).get(source)
         this.unsee(mount, source)
         this.unsee(mount, destination)
@@ -717,6 +736,7 @@ export class GithubSync {
               const remote = own(files, name) ? await fs.readFile(path.join(stage, name)) : null
               const base = bases.has(name) ? bases.get(name)! : await this.blob(own(this.state.files, name)?.sha)
               const merged = mergePath(base, local, remote, head)
+              this.label(name, merged.content, merged.label)
               if (merged.conflict) { this.edits.held[name] = { reason: merged.conflict }; await this.saveEdits() }
               if (!merged.content) {
                 if (local) { await fs.unlink(this.target(name)); removed.push(name) }
@@ -790,6 +810,8 @@ export class GithubSync {
         }
         const contents = await this.bytes(entry.name)
         if ((contents && blobSha(contents)) === (own(this.state.files, entry.name)?.sha ?? null)) { settled.push(entry); continue }
+        // Only markers the drive wrote hold a file: the same text in a file of the repository's own pushes.
+        if (own(this.edits.markers, entry.name)?.some(label => contents?.includes(label))) { changes.push({ ...change, held: 'conflict markers to resolve' }); continue }
         changes.push({ ...change, contents })
       }
       const plan = planPush(changes)
