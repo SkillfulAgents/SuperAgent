@@ -20,6 +20,7 @@ import { SubAgentBlock } from './subagent-block'
 import { WorkflowBlock } from './workflow-block'
 import { CompactBoundaryItem } from './compact-boundary-item'
 import { MemoryRecallItem } from './memory-recall-item'
+import { MonitorEventItem } from './monitor-event-item'
 import { InformationalItem } from './informational-item'
 import { isSessionTimeGap, SessionTimeFlag } from './session-time-flag'
 import { ForkBoundaryItem, forkBoundaryIndex } from './fork-boundary'
@@ -48,7 +49,7 @@ import {
   type ReactNode,
 } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
-import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational } from '@shared/lib/types/api'
+import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational, ApiMonitorEvent } from '@shared/lib/types/api'
 import { isBlockingUserInputToolName } from '@shared/lib/tools/user-input-tools'
 import { parseSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { useMessageListScroll } from './use-message-list-scroll'
@@ -1166,9 +1167,12 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
           const isAssistantItem = item.type === 'assistant'
           const isAnswerMessage =
             !!turn && isAssistantItem && turn.answerMessageIds.has(item.id)
+          // A monitor's events are what woke the turn's later work: they fold
+          // away with it.
           const isFoldedWorkItem =
             (isAssistantItem && !isAnswerMessage) ||
-            item.type === 'compact_boundary'
+            item.type === 'compact_boundary' ||
+            item.type === 'monitor_event'
           const hideItem = collapsed && isFoldedWorkItem
           const isRevealedWorkItem = expanded && isFoldedWorkItem
 
@@ -1180,6 +1184,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
               renderedItem = <CompactBoundaryItem boundary={item as ApiCompactBoundary} />
             } else if (item.type === 'informational') {
               renderedItem = <InformationalItem item={item as ApiInformational} />
+            } else if (item.type === 'monitor_event') {
+              renderedItem = <MonitorEventItem item={item as ApiMonitorEvent} />
             } else {
               const message = item as ApiMessage
               // Collapsed answer shapes are memoized with the turn grouping so
