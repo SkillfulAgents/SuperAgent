@@ -7,28 +7,29 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 // Mocks
 // ---------------------------------------------------------------------------
 
-// Mock EventSource
-class MockEventSource extends EventTarget {
-  static instances: MockEventSource[] = []
+// Mock WebSocket
+class MockWebSocket {
+  static instances: MockWebSocket[] = []
   static CONNECTING = 0
   static OPEN = 1
-  static CLOSED = 2
+  static CLOSING = 2
+  static CLOSED = 3
   onmessage: ((event: { data: string }) => void) | null = null
   onopen: (() => void) | null = null
-  onerror: (() => void) | null = null
+  onclose: (() => void) | null = null
+  send = vi.fn()
   url: string
-  readyState = MockEventSource.OPEN
+  readyState = MockWebSocket.OPEN
   constructor(url: string) {
-    super()
     this.url = url
-    MockEventSource.instances.push(this)
+    MockWebSocket.instances.push(this)
   }
   close() {
-    this.readyState = MockEventSource.CLOSED
+    this.readyState = MockWebSocket.CLOSED
   }
 }
 
-vi.stubGlobal('EventSource', MockEventSource)
+vi.stubGlobal('WebSocket', MockWebSocket)
 
 vi.mock('@renderer/lib/env', () => ({
   getApiBaseUrl: () => 'http://localhost:3000',
@@ -85,11 +86,11 @@ import { GlobalNotificationHandler, isRefetchableAfterOutage } from './global-no
 // Helpers
 // ---------------------------------------------------------------------------
 
-function getLatestEventSource(): MockEventSource {
-  return MockEventSource.instances[MockEventSource.instances.length - 1]
+function getLatestSocket(): MockWebSocket {
+  return MockWebSocket.instances[MockWebSocket.instances.length - 1]
 }
 
-function simulateSSEMessage(es: MockEventSource, data: unknown) {
+function simulateSSEMessage(es: MockWebSocket, data: unknown) {
   es.onmessage?.({ data: JSON.stringify(data) })
 }
 
@@ -101,7 +102,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
   let queryClient: QueryClient
 
   beforeEach(async () => {
-    MockEventSource.instances = []
+    MockWebSocket.instances = []
     queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
@@ -148,13 +149,13 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
 
-    simulateSSEMessage(getLatestEventSource(), { type: 'runtime_readiness_changed', readiness: pulling(45) })
+    simulateSSEMessage(getLatestSocket(), { type: 'runtime_readiness_changed', readiness: pulling(45) })
     expect(invalidate).not.toHaveBeenCalled()
     expect(queryClient.getQueryData(['runtime-status'])).toEqual({ runtimeReadiness: pulling(45), hasRunningAgents: false })
     expect(queryClient.getQueryData(['settings'])).toEqual({ runtimeReadiness: pulling(45), app: { theme: 'dark' } })
 
     const ready = { status: 'READY', message: 'Ready', pullProgress: null }
-    simulateSSEMessage(getLatestEventSource(), { type: 'runtime_readiness_changed', readiness: ready })
+    simulateSSEMessage(getLatestSocket(), { type: 'runtime_readiness_changed', readiness: ready })
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['settings'] })
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['runtime-status'] })
   })
@@ -162,11 +163,11 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
   it('invalidates the current roster on changes and rejects malformed hints', () => {
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
-    simulateSSEMessage(getLatestEventSource(), { type: 'agent_members_changed', agentSlug: 'shared-agent' })
+    simulateSSEMessage(getLatestSocket(), { type: 'agent_members_changed', agentSlug: 'shared-agent' })
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['agent-members', 'shared-agent'] })
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
     invalidate.mockClear()
-    simulateSSEMessage(getLatestEventSource(), { type: 'agent_members_changed', agentSlug: 42 })
+    simulateSSEMessage(getLatestSocket(), { type: 'agent_members_changed', agentSlug: 42 })
     expect(invalidate).not.toHaveBeenCalled()
   })
 
@@ -178,7 +179,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     queryClient.setQueryData(['agents', 'launch-0123456789'], { name: 'Private' })
     queryClient.setQueryData(['my-agent-roles'], { '0123456789': { role: 'viewer' }, other: { role: 'user' } })
     render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
-    await act(async () => simulateSSEMessage(getLatestEventSource(), { type: 'agent_access_revoked', agentSlug: '0123456789' }))
+    await act(async () => simulateSSEMessage(getLatestSocket(), { type: 'agent_access_revoked', agentSlug: '0123456789' }))
     expect(mockNavigate).toHaveBeenCalledWith({ to: '/' })
     expect(queryClient.getQueryData(['my-agent-roles'])).toEqual({ other: { role: 'user' } })
     expect(queryClient.getQueryData(['agent-members', '0123456789'])).toBeUndefined()
@@ -194,7 +195,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       </QueryClientProvider>
     )
 
-    const es = getLatestEventSource()
+    const es = getLatestSocket()
 
     // A dashboard-triggered review can exist with NO session anywhere — this
     // global event is its only push signal. Every review surface (in-chat
@@ -241,7 +242,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       </QueryClientProvider>
     )
 
-    const es = getLatestEventSource()
+    const es = getLatestSocket()
     simulateSSEMessage(es, {
       type: 'os_notification',
       notificationType: 'session_waiting',
@@ -282,7 +283,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       </QueryClientProvider>
     )
 
-    const es = getLatestEventSource()
+    const es = getLatestSocket()
     simulateSSEMessage(es, {
       type: 'os_notification',
       notificationType: 'session_chat_integration',
@@ -329,7 +330,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       </QueryClientProvider>
     )
 
-    const es = getLatestEventSource()
+    const es = getLatestSocket()
     simulateSSEMessage(es, {
       type: 'os_notification',
       notificationType: 'session_complete',
@@ -378,7 +379,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       </QueryClientProvider>
     )
 
-    const es = getLatestEventSource()
+    const es = getLatestSocket()
     simulateSSEMessage(es, {
       type: 'os_notification',
       notificationType: 'session_complete',
@@ -416,7 +417,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       </QueryClientProvider>
     )
 
-    const es = getLatestEventSource()
+    const es = getLatestSocket()
     simulateSSEMessage(es, {
       type: 'os_notification',
       notificationType: 'session_complete',
@@ -442,7 +443,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       </QueryClientProvider>
     )
 
-    const es = getLatestEventSource()
+    const es = getLatestSocket()
 
     simulateSSEMessage(es, {
       type: 'session_awaiting_input',
@@ -485,7 +486,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       </QueryClientProvider>
     )
 
-    simulateSSEMessage(getLatestEventSource(), {
+    simulateSSEMessage(getLatestSocket(), {
       type: 'session_input_provided',
       agentSlug: 'my-agent',
       sessionId: 'sess-1',
@@ -521,7 +522,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       </QueryClientProvider>
     )
 
-    simulateSSEMessage(getLatestEventSource(), {
+    simulateSSEMessage(getLatestSocket(), {
       type: 'session_awaiting_input',
       agentSlug: 'my-agent',
       sessionId: 'sess-1',
@@ -560,7 +561,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       </QueryClientProvider>
     )
 
-    simulateSSEMessage(getLatestEventSource(), {
+    simulateSSEMessage(getLatestSocket(), {
       type: 'session_idle',
       agentSlug: 'my-agent',
       sessionId: 'sess-1',
@@ -594,7 +595,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       </QueryClientProvider>
     )
 
-    simulateSSEMessage(getLatestEventSource(), {
+    simulateSSEMessage(getLatestSocket(), {
       type: 'os_notification',
       notificationType: 'session_complete',
       sessionId: 'sess-1',
@@ -639,7 +640,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       </QueryClientProvider>
     )
 
-    simulateSSEMessage(getLatestEventSource(), {
+    simulateSSEMessage(getLatestSocket(), {
       type: 'os_notification',
       notificationType: 'session_complete',
       notificationId: 'notif-1',
@@ -687,7 +688,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       </QueryClientProvider>
     )
 
-    simulateSSEMessage(getLatestEventSource(), {
+    simulateSSEMessage(getLatestSocket(), {
       type: 'os_notification',
       notificationType: 'session_complete',
       notificationId: 'notif-1',
@@ -715,7 +716,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       </QueryClientProvider>
     )
 
-    simulateSSEMessage(getLatestEventSource(), { type: 'platform_notifications_changed' })
+    simulateSSEMessage(getLatestSocket(), { type: 'platform_notifications_changed' })
 
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['platform-notifications'] })
   })
@@ -729,7 +730,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       </QueryClientProvider>
     )
 
-    simulateSSEMessage(getLatestEventSource(), {
+    simulateSSEMessage(getLatestSocket(), {
       type: 'session_mention_withdrawn', agentSlug: 'agent-x', sessionId: 'sess-1', recipientUserId: 'user-b',
     })
 
@@ -746,7 +747,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     )
     const status = { available: false, unavailableReason: 'platform_disconnected', transport: 'idle', lastClaimAt: null }
 
-    simulateSSEMessage(getLatestEventSource(), { type: 'webhook_relay_changed', status })
+    simulateSSEMessage(getLatestSocket(), { type: 'webhook_relay_changed', status })
 
     expect(queryClient.getQueryData(['webhook-relay'])).toEqual(status)
   })
@@ -764,7 +765,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     )
 
     const platformNotificationId = 'ntf_00000001-1111-1111-1111-111111111111'
-    simulateSSEMessage(getLatestEventSource(), {
+    simulateSSEMessage(getLatestSocket(), {
       type: 'os_notification',
       notificationType: 'platform_notification',
       platformNotificationId,
@@ -806,7 +807,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       </QueryClientProvider>
     )
 
-    simulateSSEMessage(getLatestEventSource(), {
+    simulateSSEMessage(getLatestSocket(), {
       type: 'os_notification',
       notificationType: 'platform_notification',
       platformNotificationId: 'ntf_00000001-1111-1111-1111-111111111111',
@@ -845,7 +846,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       </QueryClientProvider>
     )
 
-    simulateSSEMessage(getLatestEventSource(), {
+    simulateSSEMessage(getLatestSocket(), {
       type: 'agent_status_changed',
       agentSlug: 'agent-a',
       status: 'running',
@@ -877,7 +878,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
           <GlobalNotificationHandler />
         </QueryClientProvider>
       )
-      const es = getLatestEventSource()
+      const es = getLatestSocket()
       simulateSSEMessage(es, { type: 'session_active', agentSlug: 'agent-a', sessionId: 's1' })
       simulateSSEMessage(es, { type: 'session_active', agentSlug: 'agent-b', sessionId: 's2' })
       simulateSSEMessage(es, { type: 'session_idle', agentSlug: 'agent-a', sessionId: 's1' })
@@ -908,7 +909,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
           <GlobalNotificationHandler />
         </QueryClientProvider>
       )
-      simulateSSEMessage(getLatestEventSource(), { type: 'session_idle', agentSlug: 'agent-a', sessionId: 's1' })
+      simulateSSEMessage(getLatestSocket(), { type: 'session_idle', agentSlug: 'agent-a', sessionId: 's1' })
       expect(callsWith(invalidateSpy, ['agents'])).toBe(0)
 
       unmount()
@@ -936,7 +937,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       </QueryClientProvider>
     )
 
-    simulateSSEMessage(getLatestEventSource(), {
+    simulateSSEMessage(getLatestSocket(), {
       type: 'dashboard_screenshot_ready',
       agentSlug: 'agent-a',
       dashboardSlug: 'sales',
@@ -969,7 +970,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       </QueryClientProvider>
     )
 
-    simulateSSEMessage(getLatestEventSource(), {
+    simulateSSEMessage(getLatestSocket(), {
       type: 'dashboard_status_changed',
       agentSlug: 'agent-a',
       dashboardSlug: 'sales',
@@ -988,7 +989,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     queryClient.setQueryData(['agents'], [])
     queryClient.setQueryData(['agents', 'agent-a'], {})
     render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
-    simulateSSEMessage(getLatestEventSource(), { type: 'agent_updated', agentSlug: 'agent-a' })
+    simulateSSEMessage(getLatestSocket(), { type: 'agent_updated', agentSlug: 'agent-a' })
     expect(queryClient.getQueryState(['agents'])?.isInvalidated).toBe(true)
     expect(queryClient.getQueryState(['agents', 'agent-a'])?.isInvalidated).toBe(true)
   })
@@ -998,7 +999,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     queryClient.setQueryData(['mounts', 'agent-b'], [])
     queryClient.setQueryData(['volume-definitions'], [])
     render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
-    simulateSSEMessage(getLatestEventSource(), { type: 'volume_attention_changed' })
+    simulateSSEMessage(getLatestSocket(), { type: 'volume_attention_changed' })
     for (const key of [['mounts', 'agent-a'], ['mounts', 'agent-b'], ['volume-definitions']]) {
       expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true)
     }
@@ -1014,7 +1015,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     )
 
     // Producer contract: x-agent create broadcasts this exact shape after ACL writes.
-    simulateSSEMessage(getLatestEventSource(), {
+    simulateSSEMessage(getLatestSocket(), {
       type: 'agent_created',
       agentSlug: 'new-helper',
     })
@@ -1032,7 +1033,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       </QueryClientProvider>
     )
 
-    const es = getLatestEventSource()
+    const es = getLatestSocket()
     es.onopen?.()
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
@@ -1060,7 +1061,7 @@ describe('stream healing', () => {
 
   beforeEach(() => {
     vi.useFakeTimers()
-    MockEventSource.instances = []
+    MockWebSocket.instances = []
     queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
@@ -1080,10 +1081,10 @@ describe('stream healing', () => {
   }
 
   async function killLatest() {
-    const es = getLatestEventSource()
-    es.readyState = MockEventSource.CLOSED
+    const es = getLatestSocket()
+    es.readyState = MockWebSocket.CLOSED
     await act(async () => {
-      es.dispatchEvent(new Event('error'))
+      es.onclose?.()
     })
   }
 
@@ -1093,27 +1094,32 @@ describe('stream healing', () => {
     })
   }
 
-  it('error at readyState 2 reopens and the reopen refetches everything mounted except LLM-backed queries', async () => {
+  it('a closed socket reopens and the reopen refetches everything mounted except LLM-backed queries', async () => {
     renderHandler()
-    expect(MockEventSource.instances).toHaveLength(1)
+    expect(MockWebSocket.instances).toHaveLength(1)
 
     await killLatest()
     await advance(STREAM_RECONNECT_MS)
 
-    expect(MockEventSource.instances).toHaveLength(2)
+    expect(MockWebSocket.instances).toHaveLength(2)
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
-    getLatestEventSource().onopen?.()
+    getLatestSocket().onopen?.()
     expect(invalidateSpy).toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
     expect(isRefetchableAfterOutage({ queryKey: ['sessions', 'a1'] })).toBe(true)
     for (const key of ['agent-template-publish-info', 'agent-template-pr-info', 'skill-publish-info', 'skill-pr-info']) {
       expect(isRefetchableAfterOutage({ queryKey: [key, 'a1'] })).toBe(false)
     }
 
-    // A later transient reconnect on the same stream is not an outage.
-    invalidateSpy.mockClear()
-    getLatestEventSource().onopen?.()
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
-    expect(invalidateSpy).not.toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
+  })
+
+  it('opens the notifications socket and pings it every 30 seconds', async () => {
+    renderHandler()
+    const socket = getLatestSocket()
+    expect(socket.url).toBe('ws://localhost:3000/api/notifications/socket')
+
+    await advance(30_000)
+
+    expect(socket.send).toHaveBeenCalledExactlyOnceWith('ping')
   })
 
   it('reopen delay doubles per consecutive fatal close and resets on open', async () => {
@@ -1121,34 +1127,34 @@ describe('stream healing', () => {
 
     await killLatest()
     await advance(STREAM_RECONNECT_MS)
-    expect(MockEventSource.instances).toHaveLength(2)
+    expect(MockWebSocket.instances).toHaveLength(2)
 
     // Second consecutive fatal close: 2s, not 1s.
     await killLatest()
     await advance(STREAM_RECONNECT_MS)
-    expect(MockEventSource.instances).toHaveLength(2)
+    expect(MockWebSocket.instances).toHaveLength(2)
     await advance(STREAM_RECONNECT_MS)
-    expect(MockEventSource.instances).toHaveLength(3)
+    expect(MockWebSocket.instances).toHaveLength(3)
 
     // A successful open resets the ladder to 1s.
-    getLatestEventSource().onopen?.()
+    getLatestSocket().onopen?.()
     await killLatest()
     await advance(STREAM_RECONNECT_MS)
-    expect(MockEventSource.instances).toHaveLength(4)
+    expect(MockWebSocket.instances).toHaveLength(4)
   })
 
   it('unmount does not reopen after a fatal close', async () => {
     const { unmount } = renderHandler()
-    expect(MockEventSource.instances).toHaveLength(1)
+    expect(MockWebSocket.instances).toHaveLength(1)
 
-    const first = getLatestEventSource()
-    first.readyState = MockEventSource.CLOSED
+    const first = getLatestSocket()
+    first.readyState = MockWebSocket.CLOSED
     unmount()
     await act(async () => {
-      first.dispatchEvent(new Event('error'))
+      first.onclose?.()
       await vi.advanceTimersByTimeAsync(STREAM_RECONNECT_MS)
     })
 
-    expect(MockEventSource.instances).toHaveLength(1)
+    expect(MockWebSocket.instances).toHaveLength(1)
   })
 })

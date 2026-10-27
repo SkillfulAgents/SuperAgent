@@ -57,7 +57,7 @@ import type { RuntimeReadiness } from '@shared/lib/container/types'
 import type { RuntimeStatusResponse } from '@renderer/hooks/use-runtime-status'
 import type { GlobalSettingsResponse } from '@renderer/hooks/use-settings'
 import { TODOS_QUERY_KEY } from '@renderer/hooks/use-todos'
-import { reconnectDelayMs, watchStreamLiveness } from '@renderer/lib/stream-liveness'
+import { reconnectDelayMs } from '@renderer/lib/stream-liveness'
 
 // Queries whose fetch runs an LLM completion server-side. Everything else is
 // refetched wholesale after the stream comes back from a fatal close.
@@ -132,7 +132,7 @@ export function GlobalNotificationHandler() {
   const reconnectAttemptRef = useRef(0)
   const wasDeadRef = useRef(false)
   const hasConnectedRef = useRef(false)
-  const streamRef = useRef<EventSource | null>(null)
+  const streamRef = useRef<WebSocket | null>(null)
 
   // Sync dock badge count with unread notifications (macOS Electron only)
   useEffect(() => {
@@ -266,8 +266,9 @@ export function GlobalNotificationHandler() {
 
   useEffect(() => {
     const baseUrl = getApiBaseUrl()
-    const url = `${baseUrl}/api/notifications/stream`
-    const es = new EventSource(url)
+    const wsProtocol = baseUrl.startsWith('https') || window.location.protocol === 'https:' ? 'wss' : 'ws'
+    const wsHost = baseUrl ? baseUrl.replace(/^https?:\/\//, '') : window.location.host
+    const es = new WebSocket(`${wsProtocol}://${wsHost}/api/notifications/socket`)
     streamRef.current = es
     const confirmations = createInvalidationCoalescer(queryClient, SESSION_CONFIRMATION_DELAY_MS)
 
@@ -745,13 +746,15 @@ export function GlobalNotificationHandler() {
       }
     }
 
-    es.onerror = () => {
-      // Network errors reconnect in the browser. Fatal close is the watcher.
-    }
+    // Keeps proxies from closing an idle socket; the server answers `pong`.
+    const keepAlive = setInterval(() => {
+      if (es.readyState === WebSocket.OPEN) es.send('ping')
+    }, 30_000)
 
-    const disposeLiveness = watchStreamLiveness(es, () => {
+    // Events sent while the socket was down are lost, so every close is an outage.
+    es.onclose = () => {
       if (streamRef.current !== es) return
-      es.close()
+      clearInterval(keepAlive)
       wasDeadRef.current = true
       const delay = reconnectDelayMs(reconnectAttemptRef.current)
       reconnectAttemptRef.current += 1
@@ -760,10 +763,10 @@ export function GlobalNotificationHandler() {
         if (streamRef.current !== es) return
         setReconnectKey((k) => k + 1)
       }, delay)
-    })
+    }
 
     return () => {
-      disposeLiveness()
+      clearInterval(keepAlive)
       confirmations.flush()
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
       reconnectTimerRef.current = null

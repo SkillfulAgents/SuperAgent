@@ -300,6 +300,7 @@ export class LiveSessions {
     const tagged = this.provisionalSessions.has(sessionId) ? { ...event, provisional: true } : event
     if (this.deps.capture) background(this.deps.capture.recordOutput(sessionId, tagged), { name: 'live-sessions.capture-output' })
     this.channels.emit(sessionId, tagged)
+    this.deps.host.send('session', { agentSlug: this.deps.slug, sessionId, event: tagged })
   }
 
   /** The session as a viewer starting from nothing needs it: it stands for every event up to `lastId`. */
