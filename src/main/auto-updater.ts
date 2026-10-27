@@ -407,6 +407,9 @@ export async function initAutoUpdater(mainWindow: BrowserWindow) {
     // Don't auto-download — let the user choose
     autoUpdater.autoDownload = false
     autoUpdater.autoInstallOnAppQuit = true
+    // The update feed sends Mac apps without this header to a small release first:
+    // older updaters crash on a zip over 1 GiB.
+    autoUpdater.requestHeaders = { 'X-Gamut-Version': app.getVersion() }
     autoUpdater.allowPrerelease = !!(await getUserSettings('local')).allowPrereleaseUpdates
 
     autoUpdater.on('checking-for-update', () => {

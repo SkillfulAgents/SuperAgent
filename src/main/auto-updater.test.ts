@@ -1022,6 +1022,19 @@ describe('prerelease setting transitions', () => {
   })
 })
 
+describe('update feed request headers', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    delete mockAutoUpdater.requestHeaders
+  })
+
+  it('sends the running app version', async () => {
+    vi.mocked(app.getVersion).mockReturnValue('0.6.1')
+    await boot()
+    expect(mockAutoUpdater.requestHeaders).toEqual({ 'X-Gamut-Version': '0.6.1' })
+  })
+})
+
 describe('Windows signature check', () => {
   const platform = process.platform
 
