@@ -99,6 +99,9 @@ until quit (`local-folder-access.ts`). A bookmark the sandbox still refuses
 Drives offers Choose folder again: a new pick of the same folder replaces the
 bookmark and keeps the drive's id, so every agent that has it keeps it
 (`reconnectLocalVolume()`, `POST /api/volume-definitions/:id/reconnect`).
+Every running agent that has the drive is then marked stale for a restart: a
+link that opens stays open for the run, so the drive was already dead when
+each of them started, and none has its mount.
 Only a folder that listed is kept open, so anything else (a folder that is
 gone, an unplugged disk, the folder's own permissions) is tried again on the
 next read.

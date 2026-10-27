@@ -20,6 +20,23 @@ vi.mock('../middleware/auth', () => ({
   },
 }))
 vi.mock('@shared/lib/services/audit-log-service', () => ({ logAuditEvent: vi.fn() }))
+// Agents as the container sees them: a running one is marked stale, a stopped one is left alone.
+const containers = vi.hoisted(() => ({ running: new Set<string>(), stale: new Set<string>(), calls: [] as string[] }))
+vi.mock('@shared/lib/agent-actor/registry', () => ({
+  agentRegistry: {
+    get: (slug: string) => ({
+      container: {
+        invalidate: async (options?: { restart?: boolean }) => {
+          containers.calls.push(slug)
+          if (options?.restart) throw new Error('a drive change never restarts an agent itself')
+          if (!containers.running.has(slug)) return 'not-running'
+          containers.stale.add(slug)
+          return 'marked-stale'
+        },
+      },
+    }),
+  },
+}))
 import routes from './volume-definitions'
 const app = new Hono().route('/volumes', routes)
 function request(route = '', method = 'GET', body?: unknown, caller = 'alice') {
@@ -32,6 +49,9 @@ beforeEach(async () => {
   vi.stubEnv('AUTH_MODE', 'true')
   folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'volume-api-')))
   handle = await createTestDatabase()
+  containers.running.clear()
+  containers.stale.clear()
+  containers.calls.length = 0
   await handle.db.insert(user).values(['alice', 'bob', 'admin'].map(id => ({ id, name: id, email: `${id}@example.com` }))).run()
   await handle.db.insert(agents).values({ slug: 'agent', name: 'Agent', createdAt: new Date() }).run()
 })
@@ -94,6 +114,36 @@ describe('volume definition API', () => {
     }
     expect((await request(`/${id}/reconnect`, 'POST', { path: folder, name: 'x' })).status).toBe(400)
     expect((await request(`/${id}/reconnect`, 'POST', { path: 7 })).status).toBe(400)
+  })
+  it('marks the running agents that have the drive stale once its folder is chosen again, and only then', async () => {
+    await handle.db.insert(agents).values(['stopped', 'other'].map(slug => ({ slug, name: slug, createdAt: new Date() }))).run()
+    const { id } = await (await request('', 'POST', input())).json()
+    await attachMount('agent', id, { userId: 'alice', admin: false })
+    await attachMount('stopped', id, { userId: 'alice', admin: false })
+    containers.running = new Set(['agent', 'other'])
+
+    // A refused pick changes nothing, so no agent is told to restart.
+    expect((await request(`/${id}/reconnect`, 'POST', { path: folder }, 'bob')).status).toBe(404)
+    const other = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'volume-api-other-')))
+    try {
+      expect((await request(`/${id}/reconnect`, 'POST', { path: other })).status).toBe(400)
+    } finally {
+      fs.rmSync(other, { recursive: true, force: true })
+    }
+    expect(containers.calls).toEqual([])
+
+    expect((await request(`/${id}/reconnect`, 'POST', { path: folder })).status).toBe(200)
+    expect(containers.calls.sort()).toEqual(['agent', 'stopped'])
+    expect([...containers.stale]).toEqual(['agent'])
+  })
+  it('marks every running agent stale for a global drive, attached or not', async () => {
+    await handle.db.insert(agents).values(['other', 'stopped'].map(slug => ({ slug, name: slug, createdAt: new Date() }))).run()
+    const { id } = await (await request('', 'POST', { ...input(), visibility: 'public' }, 'admin')).json()
+    expect((await request(`/${id}`, 'PATCH', { global: 'read' }, 'admin')).status).toBe(200)
+    containers.running = new Set(['agent', 'other'])
+    expect((await request(`/${id}/reconnect`, 'POST', { path: folder }, 'admin')).status).toBe(200)
+    expect(containers.calls.sort()).toEqual(['agent', 'other', 'stopped'])
+    expect([...containers.stale].sort()).toEqual(['agent', 'other'])
   })
 })
 

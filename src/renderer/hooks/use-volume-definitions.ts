@@ -53,6 +53,8 @@ export function useReconnectLocalVolume() {
       client.invalidateQueries({ queryKey: ['volume-definitions'] })
       client.invalidateQueries({ queryKey: ['mounts'] })
       client.invalidateQueries({ queryKey: ['volume-files', id] })
+      // The host marks running agents with the drive stale, which their restart prompt reads.
+      client.invalidateQueries({ queryKey: ['agents'] })
     },
   })
 }

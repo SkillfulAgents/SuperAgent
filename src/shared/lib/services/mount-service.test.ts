@@ -6,7 +6,7 @@ import { eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { agents, agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
-import { addMount, attachMount, getMounts, getMountsWithHealth, listVolumes, removeMount, resolveVolume, setMountReadOnly, volumeSummary } from './mount-service'
+import { addMount, agentsWithVolume, attachMount, getMounts, getMountsWithHealth, listVolumes, removeMount, resolveVolume, setMountReadOnly, volumeSummary } from './mount-service'
 import { updateVolumeDefinition } from './volume-service'
 import { volumeHealth } from '@shared/lib/volumes/volume-health'
 import { BaseMountableVolume } from '@shared/lib/volumes/base-mountable-volume'
@@ -155,6 +155,18 @@ describe('global drives', () => {
     expect(await resolveVolume('agent-b', global.id)).toBeNull()
     expect(await getMounts('agent-b')).toEqual([other])
     expect(await getMounts('test-agent')).toEqual([team])
+  })
+  it('names the agents a drive reaches: its attachments, or every agent while it is global', async () => {
+    await handle.db.insert(agents).values({ slug: 'agent-c', name: 'agent-c', createdAt: new Date() }).run()
+    const team = await add(folder('team'))
+    await attachMount('agent-b', team.volumeId, viewer)
+    expect((await agentsWithVolume(team.volumeId)).sort()).toEqual(['agent-b', 'test-agent'])
+    await updateVolumeDefinition(team.volumeId, { global: 'read' }, viewer)
+    expect((await agentsWithVolume(team.volumeId)).sort()).toEqual(['agent-b', 'agent-c', 'test-agent'])
+    await updateVolumeDefinition(team.volumeId, { global: null }, viewer)
+    await removeMount('agent-b', (await getMounts('agent-b'))[0].id)
+    expect(await agentsWithVolume(team.volumeId)).toEqual(['test-agent'])
+    expect(await agentsWithVolume('missing')).toEqual([])
   })
 })
 

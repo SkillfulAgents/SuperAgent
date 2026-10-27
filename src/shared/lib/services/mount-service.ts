@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { and, asc, eq, exists, isNotNull, isNull, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
-import { agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
+import { agents, agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
 import type { ContainerVolume, MountedVolume, MountSummaryWithHealth, NotMountedVolume } from '@shared/lib/types/mount'
 import { instantiateVolume } from '@shared/lib/volumes/volume-factory'
 import { volumeHealth, volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
@@ -48,6 +48,16 @@ export async function getMounts(slug: string): Promise<MountedVolume[]> {
     return [{ ...stored, id: `global-${slug}-${volume.id}`, name, volumeId: volume.id, volumeName: volume.name, readOnly: volume.globalAccess !== 'write', global: true }]
   })
   return [...own, ...global]
+}
+
+/** The agents `getMounts` gives this drive: those it is attached to, or every agent while it is global. */
+export async function agentsWithVolume(volumeId: string): Promise<string[]> {
+  const global = await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions)
+    .where(and(eq(volumeDefinitions.id, volumeId), isNotNull(volumeDefinitions.globalAccess), isNull(volumeDefinitions.userId))).get()
+  const rows = global
+    ? await db.select({ agentSlug: agents.slug }).from(agents).all()
+    : await db.select({ agentSlug: agentVolumes.agentSlug }).from(agentVolumes).where(eq(agentVolumes.volumeId, volumeId)).all()
+  return [...new Set(rows.map(row => row.agentSlug))]
 }
 
 function uniqueName(base: string, taken: Set<string>): string {
