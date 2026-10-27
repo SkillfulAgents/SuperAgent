@@ -29,11 +29,15 @@ Each sign-in step adds parts to the same account: `password`, or
 `text:<label>` for another field the site asks for (a workspace). Parts are
 sealed together in `secrets` (AES-256-GCM, bound to the row's id, site and
 purpose); `parts` lists their names in plain text for the UI and the agent. A
-one-time code is never a part. The key is derived from the deployment's auth
-secret (HKDF, as the S3 volume credentials are): restoring the database with
-that secret opens the vault. An account sealed under another secret fills
-nothing (the user is asked), and is saved over only with every part it lists,
-never by dropping the rest.
+one-time code is never a part. The key is the vault's own: 32 random bytes in
+`<data dir>/.vault-key` (owner-only), made on first use with an exclusive
+create, so two processes starting at once keep one key. It is not the auth
+secret: setting, rotating or resetting that never locks the vault. Restoring
+the database with that file opens the vault; a file that holds no key is never
+written over. An account sealed under another key fills nothing (the user is
+asked), and is saved over only with every part it lists, never by dropping the
+rest. On desktop, Electron's `safeStorage` (Keychain, DPAPI, libsecret) can
+hold the key later: a migration only re-stores the same key.
 
 An account that signs in through another one ("Continue with Google") points
 at the provider's account with `via_account_id`. Granting the site's account

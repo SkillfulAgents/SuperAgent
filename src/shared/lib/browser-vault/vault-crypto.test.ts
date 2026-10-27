@@ -1,3 +1,4 @@
+import crypto from 'crypto'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -11,7 +12,6 @@ let dataDir: string
 beforeEach(() => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-crypto-'))
   vi.stubEnv('SUPERAGENT_DATA_DIR', dataDir)
-  // The data dir's own secret, as on a desktop install.
   vi.stubEnv('BETTER_AUTH_SECRET', '')
   resetVaultKeyCache()
 })
@@ -32,15 +32,32 @@ describe('vault sealing', () => {
     expect(openJson(sealed, binding, accountSecretsSchema)).toEqual({ values: { password: 'hunter2' } })
   })
 
-  it('derives its key from the auth secret: the same secret opens it after a restart, another does not', () => {
+  it('keeps its own key in the data directory, owner-only, apart from the auth secret', () => {
     const sealed = sealJson({ values: { password: 'a' } }, binding, accountSecretsSchema)
-    // No key file of its own: the auth secret is the one thing to keep.
-    expect(fs.readdirSync(dataDir)).toEqual(['.auth-secret'])
+    expect(fs.readdirSync(dataDir)).toEqual(['.vault-key'])
+    if (process.platform !== 'win32') expect(fs.statSync(path.join(dataDir, '.vault-key')).mode & 0o777).toBe(0o600)
+    // A restart, with an auth secret set (or rotated) meanwhile: the vault still opens.
     resetVaultKeyCache()
+    vi.stubEnv('BETTER_AUTH_SECRET', 'another-deployment-secret-of-32-chars!')
     expect(openJson(sealed, binding, accountSecretsSchema).values.password).toBe('a')
 
-    vi.stubEnv('BETTER_AUTH_SECRET', 'another-deployment-secret-of-32-chars!')
+    // Another key does not.
+    fs.writeFileSync(path.join(dataDir, '.vault-key'), crypto.randomBytes(32).toString('base64'))
+    resetVaultKeyCache()
     expect(() => openJson(sealed, binding, accountSecretsSchema)).toThrow(VaultSealError)
+  })
+
+  it('uses a key file another process made first, and never writes over one that holds no key', () => {
+    const key = `${crypto.randomBytes(32).toString('base64')}\n`
+    fs.writeFileSync(path.join(dataDir, '.vault-key'), key)
+    const sealed = sealJson({ values: { password: 'a' } }, binding, accountSecretsSchema)
+    expect(fs.readFileSync(path.join(dataDir, '.vault-key'), 'utf-8')).toBe(key)
+    expect(openJson(sealed, binding, accountSecretsSchema).values.password).toBe('a')
+
+    fs.writeFileSync(path.join(dataDir, '.vault-key'), 'not a key')
+    resetVaultKeyCache()
+    expect(() => sealJson({ values: { password: 'a' } }, binding, accountSecretsSchema)).toThrow(VaultSealError)
+    expect(fs.readFileSync(path.join(dataDir, '.vault-key'), 'utf-8')).toBe('not a key')
   })
 
   it('does not open a value sealed for another row, site or purpose', () => {

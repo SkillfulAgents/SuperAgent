@@ -1,20 +1,25 @@
 import crypto from 'crypto'
+import fs from 'fs'
+import path from 'path'
 import type { z } from 'zod'
-import { getOrCreateAuthSecret } from '@shared/lib/auth/secret'
+import { getDataDir } from '@shared/lib/config/data-dir'
 
 /**
- * Sealing for the Browser Vault: AES-256-GCM under a key derived from the
- * deployment's auth secret, as the S3 volume credentials are (an OS keychain
- * or a KMS can replace it later). One secret to keep: restore the database
- * with it and the vault opens; lose it and nothing sealed does. Each sealed
- * value is bound to the row and purpose it was written for, so a ciphertext
- * copied into another row or column does not open.
+ * Sealing for the Browser Vault: AES-256-GCM under the vault's own key, 32
+ * random bytes in `<data dir>/.vault-key` (owner-only), made on first use.
+ * Not the auth secret: setting, rotating or resetting that (to sign everyone
+ * out) never locks the vault. One file to keep with the database: restore
+ * both and the vault opens; lose the key and nothing sealed does. An OS
+ * keychain (Electron safeStorage) or a KMS can hold the key later. Each
+ * sealed value is bound to the row and purpose it was written for, so a
+ * ciphertext copied into another row or column does not open.
  */
 
 const KEY_BYTES = 32
 const IV_BYTES = 12
 const TAG_BYTES = 16
 const FORMAT = 'v1'
+const KEY_FILE = '.vault-key'
 
 /** What a sealed value belongs to: bound in as additional authenticated data. */
 export interface SealBinding {
@@ -26,15 +31,39 @@ export interface SealBinding {
 
 export class VaultSealError extends Error {}
 
+/** The key file's contents, if it holds a key; null if there is none yet. Never regenerated over a key that may have sealed something. */
+function readKeyFile(keyPath: string): Buffer | null {
+  let text: string
+  try {
+    text = fs.readFileSync(keyPath, 'utf-8').trim()
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw new VaultSealError('The vault key could not be read')
+  }
+  const key = Buffer.from(text, 'base64')
+  if (key.length !== KEY_BYTES) throw new VaultSealError(`The vault key file ${keyPath} does not hold a vault key`)
+  return key
+}
+
 const keys = new Map<string, Buffer>()
 
 function vaultKey(): Buffer {
-  const secret = getOrCreateAuthSecret()
-  let key = keys.get(secret)
+  const keyPath = path.join(getDataDir(), KEY_FILE)
+  const cached = keys.get(keyPath)
+  if (cached) return cached
+  let key = readKeyFile(keyPath)
   if (!key) {
-    key = Buffer.from(crypto.hkdfSync('sha256', secret, 'gamut-browser-vault', 'account-secrets-v1', KEY_BYTES))
-    keys.set(secret, key)
+    fs.mkdirSync(path.dirname(keyPath), { recursive: true })
+    try {
+      // Exclusive: two processes starting at once keep one key, not two.
+      fs.writeFileSync(keyPath, crypto.randomBytes(KEY_BYTES).toString('base64'), { mode: 0o600, flag: 'wx' })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw new VaultSealError('The vault key could not be saved')
+    }
+    key = readKeyFile(keyPath)
+    if (!key) throw new VaultSealError('The vault key could not be read')
   }
+  keys.set(keyPath, key)
   return key
 }
 

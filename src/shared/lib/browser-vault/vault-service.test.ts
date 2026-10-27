@@ -1,3 +1,4 @@
+import crypto from 'crypto'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -182,15 +183,19 @@ describe('saveAccount', () => {
   it('does not save over an account it cannot unlock, unless every part it holds is entered again', async () => {
     const { account } = await saveAccount({ ...github, username: 'octocat', values: { password: 'pw', 'text:workspace': 'acme' } })
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
-    // Another deployment's secret: the seal no longer opens.
-    vi.stubEnv('BETTER_AUTH_SECRET', 'a-different-auth-secret-of-enough-length')
+    // Another vault key (the key file lost, and a new one made): the seal no longer opens.
+    const keyFile = path.join(dataDir, '.vault-key')
+    const original = fs.readFileSync(keyFile, 'utf-8')
+    fs.writeFileSync(keyFile, crypto.randomBytes(32).toString('base64'))
+    resetVaultKeyCache()
     try {
       expect(await readAccountValues(account.id)).toEqual({})
       await expect(saveAccount({ ...github, username: 'octocat', values: { password: 'new' } })).rejects.toBeInstanceOf(VaultConflictError)
       await saveAccount({ ...github, username: 'octocat', values: { password: 'new', 'text:workspace': 'acme' } })
       expect(await readAccountValues(account.id)).toEqual({ password: 'new', 'text:workspace': 'acme' })
     } finally {
-      vi.stubEnv('BETTER_AUTH_SECRET', '')
+      fs.writeFileSync(keyFile, original)
+      resetVaultKeyCache()
       errors.mockRestore()
     }
   })
