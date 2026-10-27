@@ -56,6 +56,8 @@ const FOLDER_RING = 0.72 * RING
 /** How far the drift turns, in radians, before the tree is redrawn there; names flip sides at most this late. */
 const DRIFT_REDRAW = 0.05
 const DRIFT = { speed: 0.03, afterMs: 1500, easeInMs: 900, easeOutMs: 250 }
+/** Only ambient spin redraws at 30 fps; opening, interaction and layout animations keep the display's cadence. */
+const DRIFT_FRAME_MS = 1000 / 30
 /**
  * While it drifts, a pulse every so often runs out from a section to one of its pages in the section's colour, as the
  * opening's signal does, and blooms on arrival: one leaves `everyMs` apart (give or take `jitterMs`), and each takes
@@ -210,6 +212,7 @@ export function TeamBrainRadial({
   )
   const svgRef = useRef<SVGSVGElement>(null)
   const viewRef = useRef<SVGGElement>(null)
+  const centreRef = useRef<SVGGElement>(null)
   const view = useRef({ x: 0, y: 0, k: 1 })
   const drag = useRef<Drag | null>(null)
   /**
@@ -403,16 +406,17 @@ export function TeamBrainRadial({
     viewRef.current?.setAttribute('transform', `translate(${x} ${y}) scale(${k}) rotate(${spin})`)
     // Names, pills and pulses divide by this so they stay one size on screen at any zoom.
     svgRef.current?.style.setProperty('--graph-k', String(k))
-    // The middle's name turns back by this, so it stays level while the tree turns round it.
-    svgRef.current?.style.setProperty('--graph-spin', `${spin}deg`)
+    // Only the middle needs the counter-rotation; setting this on the SVG would restyle the whole tree every frame.
+    centreRef.current?.style.setProperty('--graph-spin', `${spin}deg`)
     const deep = k >= fittedZoom.current * NAME_DEEP_AT
     if (deep !== zoomedInRef.current) setZoomedIn((zoomedInRef.current = deep))
   }, [])
   // Once the tree is drawn at the new turn, the rotation standing in for it goes.
+  // Also initialize the counter-rotation when the middle first appears.
   useLayoutEffect(() => {
     drawnTurn.current = turn
     applyView()
-  }, [turn, applyView])
+  }, [turn, centred, applyView])
 
   useEffect(() => {
     placed.current = new Map(nodes.map((n) => [n.id, { angle: n.angle, radius: radius(n) }]))
@@ -427,7 +431,7 @@ export function TeamBrainRadial({
     if (!glide || !svg) return
     const tagged = (attr: string) => new Map([...svg.querySelectorAll(`[${attr}]`)].map((el) => [el.getAttribute(attr) ?? '', el]))
     const nodeEls = tagged('data-node')
-    const branchEls = tagged('data-branch')
+    const branchPaths = new Map([...tagged('data-branch')].map(([id, el]) => [id, el.querySelectorAll('path')]))
     const spokeEls = tagged('data-spoke')
     const trailEls = tagged('data-trail')
     const { nodes: laid, byId: laidById, radius: ring } = drawn.current
@@ -452,8 +456,11 @@ export function TeamBrainRadial({
           spoke.setAttribute('transform', `rotate(${spoke.hasAttribute('data-flip') ? degrees + 180 : degrees})${offset ? ` ${offset}` : ''}`)
         }
         const parent = n.parent ? laidById.get(n.parent) : undefined
-        const lines = branchEls.get(n.id)
-        if (parent && lines) for (const line of lines.querySelectorAll('path')) line.setAttribute('d', branch(parent, n, radiusAt, angleAt))
+        const lines = branchPaths.get(n.id)
+        if (parent && lines) {
+          const path = branch(parent, n, radiusAt, angleAt)
+          for (const line of lines) line.setAttribute('d', path)
+        }
       }
     }
     const started = performance.now()
@@ -599,6 +606,7 @@ export function TeamBrainRadial({
   useEffect(() => {
     if (prefersReducedMotion()) return
     let last = performance.now()
+    let lastDraw = last
     let velocity = 0
     let nextPulseAt = 0
     let pulseId = 0
@@ -611,8 +619,13 @@ export function TeamBrainRadial({
       velocity += ((idle ? DRIFT.speed : 0) - velocity) * Math.min((dt * 1000) / (idle ? DRIFT.easeInMs : DRIFT.easeOutMs), 1)
       if (velocity < 1e-4) return
       turnRef.current += velocity * dt
-      if (Math.abs(turnRef.current - drawnTurn.current) > DRIFT_REDRAW) setTurn(turnRef.current)
-      else applyView()
+      const sinceDraw = now - lastDraw
+      if (!idle || sinceDraw >= DRIFT_FRAME_MS) {
+        // Keep the remainder so display-frame rounding doesn't slow the cadence. Motion and pulses still tick every frame.
+        lastDraw = idle ? now - (sinceDraw % DRIFT_FRAME_MS) : now
+        if (Math.abs(turnRef.current - drawnTurn.current) > DRIFT_REDRAW) setTurn(turnRef.current)
+        else applyView()
+      }
       // Pulses only while it is properly drifting, not while it eases to a stop under the pointer.
       if (!idle || velocity < DRIFT.speed / 2 || now < nextPulseAt || live >= PULSE.most) return
       const targets = pulseTargets.current
@@ -909,7 +922,7 @@ export function TeamBrainRadial({
               const below = onOpenCentre ? MIDDLE.front / 2 + MIDDLE.gap + MIDDLE.index / 2 : 0
               return (
                 <g key={node.id} style={entering ? startAt({ at: 0 }) : undefined} className={cn(entering && !centreShown && 'team-brain-radial-pop')} data-testid="team-brain-radial-centre">
-                  <g style={{ transform: 'rotate(calc(-1 * var(--graph-spin, 0deg))) scale(calc(1 / var(--graph-k, 1)))' }}>
+                  <g ref={centreRef} style={{ transform: 'rotate(calc(-1 * var(--graph-spin, 0deg))) scale(calc(1 / var(--graph-k, 1)))' }}>
                     {onOpenCentre && (
                       <g onPointerDown={(event) => start(event, node, onOpenCentre)} className="group cursor-pointer" data-testid="team-brain-radial-front">
                         <rect
