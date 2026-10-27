@@ -47,7 +47,7 @@ describe('volume settings', () => {
     expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument()
     expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent('/notes')
     expect(screen.queryByRole('textbox', { name: 'Folder' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Select folder' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Select folder location/ })).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Name')).not.toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: /who can add/i })).toBeDisabled()
     await userEvent.click(screen.getByRole('button', { name: 'Rename drive' }))

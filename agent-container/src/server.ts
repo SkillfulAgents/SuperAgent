@@ -54,7 +54,7 @@ import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
 import { CdpConnection } from './login-cdp';
 import type { LoginFillDeps, PageActivity } from './login-fill';
 import type { FieldBox } from './login-form-script';
-import { forgetAllPreparedLogins } from './login-requests';
+import { closePreparedLogins } from './login-requests';
 import type { LoginFillReport } from './login-schema';
 import { clickSubmit, registerLoginRoutes, type SubmitOutcome, type SubmitPlan } from './login-routes';
 import { forgetInjectedSecrets, redactInjectedSecrets, redactInjectedSecretsDeep, rememberInjectedSecret } from './injected-secrets';
@@ -1110,18 +1110,19 @@ function resetPerBrowserState(): void {
   forgetScreenshots();
   setCapture(null);
   resetChallengedSites();
-  forgetAllPreparedLogins();
+  closePreparedLogins();
   forgetInjectedSecrets();
 }
 
 /**
- * Requests only answerable while the browser exists: a hand-off, and a
- * sign-in whose fields live in its pages. They may belong to a session other
- * than the one that closed it (a background subagent parked on a login).
+ * Requests only answerable while the browser exists: a hand-off. They may
+ * belong to a session other than the one that closed it (a background
+ * subagent parked on a hand-off). A sign-in is not one of them: the user may
+ * answer it long after its browser closed, and what they save then signs the
+ * agent in once it opens the page again.
  */
 function rejectBrowserBoundInputs(reason: string): void {
   inputManager.rejectByType('browser_input', reason);
-  inputManager.rejectByType('login', reason);
 }
 
 /**

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   REDACTED,
   forgetInjectedSecrets,
+  keptSpans,
   redactInjectedSecrets,
   redactInjectedSecretsDeep,
   redactToolResult,
@@ -93,6 +94,26 @@ describe('injected secret redaction', () => {
     const image = { type: 'image', data: 'aHVudGVyMi1wYXNz', mimeType: 'image/png' }
     const result = redactToolResult({ content: [{ type: 'text', text: 'value: hunter2-pass' }, image], isError: false })
     expect(result).toEqual({ content: [{ type: 'text', text: `value: ${REDACTED}` }, image], isError: false })
+  })
+
+  it('keeps only the spans a result marks whole, and redacts the same characters everywhere else', () => {
+    rememberInjectedSecret('acme')
+    rememberInjectedSecret('alice-secret')
+    const kept = keptSpans()
+    const text = `account ${kept.wrap('jane@acme.com')}; workspace acme; page /session?password=alice-secret; as ${kept.wrap('alice')}`
+    expect(redactToolResult({ content: [{ type: 'text', text }] }, kept).content[0].text)
+      .toBe(`account jane@acme.com; workspace ${REDACTED}; page /session?password=${REDACTED}; as alice`)
+    // Unmarked, a username holding a typed value is redacted like page text.
+    expect(redactToolResult({ content: [{ type: 'text', text: 'jane@acme.com' }] }).content[0].text).toBe(`jane@${REDACTED}.com`)
+  })
+
+  it('drops its marks with nothing to redact, and takes an unclosed mark for page text', () => {
+    const kept = keptSpans()
+    expect(redactToolResult({ content: [{ type: 'text', text: `as ${kept.wrap('alice')}` }] }, kept).content[0].text).toBe('as alice')
+    rememberInjectedSecret('hunter2-pass')
+    expect(redactToolResult({ content: [{ type: 'text', text: `${kept.open}hunter2-pass` }] }, kept).content[0].text).toBe(REDACTED)
+    // Another result's marks are not this one's.
+    expect(redactToolResult({ content: [{ type: 'text', text: keptSpans().wrap('hunter2-pass') }] }, kept).content[0].text).not.toContain('hunter2-pass')
   })
 
   it('redacts every occurrence, and the longest match first', () => {

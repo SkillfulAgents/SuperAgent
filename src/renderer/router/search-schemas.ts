@@ -96,6 +96,8 @@ export const settingsSearchSchema = z
     from: internalPath.optional(),
     detail: connectionDetailKey.optional(),
     volume: z.string().min(1).max(255).optional(),
+    // A saved login open in Settings → Logins.
+    login: z.string().min(1).max(64).optional(),
     source: z.enum(['home', 'list']).optional(),
     connectionView: z.literal('logs').optional(),
   })
@@ -120,6 +122,7 @@ export const SETTINGS_TABS = [
   'browser',
   'web',
   'volumes',
+  'logins',
   'capabilities',
   'global-guidance',
   'computer-use',

@@ -270,6 +270,24 @@ export async function locateFocusedElement(cdp: CdpConnection): Promise<LocatedE
   return unreachable
 }
 
+/**
+ * The page's main frame as the browser reports it: no page script is
+ * involved, so a page cannot claim another origin.
+ */
+export async function mainFrameOf(cdp: CdpConnection): Promise<{ origin: string; url: string }> {
+  const tree = await cdp.send<{ frameTree: { frame: { url: string; securityOrigin?: string } } }>('Page.getFrameTree', {}, cdp.pageSession)
+  const { url, securityOrigin } = tree.frameTree.frame
+  let origin = securityOrigin ?? ''
+  if (!origin) {
+    try {
+      origin = new URL(url).origin
+    } catch {
+      origin = ''
+    }
+  }
+  return { origin, url }
+}
+
 /** Call a page function on a located element, with arguments passed by value. */
 export async function callOnElement<T>(
   cdp: CdpConnection,

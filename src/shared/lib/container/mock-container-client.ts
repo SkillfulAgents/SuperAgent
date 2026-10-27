@@ -955,6 +955,34 @@ const MOCK_LOGIN_CONTEXT = {
     { kind: 'username', label: 'Email address', inputType: 'email', inputMode: '', autocomplete: 'username', maxLength: -1 },
     { kind: 'password', label: 'Password', inputType: 'password', inputMode: '', autocomplete: 'current-password', maxLength: -1 },
   ],
+  held: [] as Array<{ kind: string; label: string }>,
+  providers: [] as string[],
+}
+
+/** How the mock page's inputs of each kind look, as the real container would describe them. */
+const MOCK_FIELD_SHAPES: Record<string, { inputType: string; inputMode: string; autocomplete: string; maxLength: number }> = {
+  username: { inputType: 'email', inputMode: '', autocomplete: 'username', maxLength: -1 },
+  password: { inputType: 'password', inputMode: '', autocomplete: 'current-password', maxLength: -1 },
+  otp: { inputType: 'text', inputMode: 'numeric', autocomplete: 'one-time-code', maxLength: 6 },
+  text: { inputType: 'text', inputMode: '', autocomplete: 'off', maxLength: -1 },
+}
+
+/**
+ * The form the mock browser "located" for a request_login call: its fields
+ * with a ref are on the page, the rest are held for a later step, and its
+ * providers are the page's, as the real container reports them. The fixed
+ * form when the call is unknown.
+ */
+function mockLoginContext(input: Record<string, unknown> | undefined) {
+  if (!input || !Array.isArray(input.fields)) return MOCK_LOGIN_CONTEXT
+  const fields = input.fields as Array<{ ref?: string; kind: string; label: string }>
+  return {
+    ...MOCK_LOGIN_CONTEXT,
+    submit: typeof input.submit === 'string',
+    fields: fields.filter((field) => field.ref).map(({ kind, label }) => ({ kind, label, ...MOCK_FIELD_SHAPES[kind] })),
+    held: fields.filter((field) => !field.ref).map(({ kind, label }) => ({ kind, label })),
+    providers: Array.isArray(input.providers) ? input.providers.filter((id): id is string => typeof id === 'string') : [],
+  }
 }
 
 /**
@@ -1017,7 +1045,7 @@ export class UserInputRequestScenario implements MockScenario {
     client.registerPendingInputs(sessionId, tools.length, {
       holdResultsUntilAll: this.opts?.holdResultsUntilAll,
       // AskUserQuestion parks as 'question'; the others keep their tool name here.
-      inputs: tools.map((tool, i) => ({ toolUseId: toolIds[i], inputType: tool.name === 'AskUserQuestion' ? 'question' : tool.name })),
+      inputs: tools.map((tool, i) => ({ toolUseId: toolIds[i], inputType: tool.name === 'AskUserQuestion' ? 'question' : tool.name, input: tool.input })),
     })
 
     // Write the user message entry immediately so the JSONL file exists on disk.
@@ -2176,6 +2204,56 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         },
       },
     ])],
+    // The vault's states of the sign-in card: a later step's password asked
+    // with the email, a code a saved account cannot give, and a page that
+    // offers only "Continue with …".
+    ['vault login email first', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_login',
+        input: {
+          message: 'Sign in to Example so the agent can check the order status.',
+          fields: [
+            { ref: '@e4', kind: 'username', label: 'Email address' },
+            { kind: 'password', label: 'Password' },
+          ],
+          submit: '@e6',
+        },
+      },
+    ])],
+    ['vault login code', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_login',
+        input: {
+          message: 'Sign in to Example so the agent can check the order status.',
+          username: 'octocat@example.com',
+          fields: [{ ref: '@e7', kind: 'otp', label: 'Verification code' }],
+          submit: '@e8',
+        },
+      },
+    ])],
+    ['vault login social', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_login',
+        input: { message: 'Sign in to Example so the agent can check the order status.', fields: [], providers: ['google', 'apple', 'facebook'] },
+      },
+    ])],
+    // The site rejected the saved password: the agent asks again, saying why.
+    ['vault login retry', new UserInputRequestScenario([
+      {
+        name: 'mcp__user-input__request_login',
+        input: {
+          message: 'Sign in to Example so the agent can check the order status.',
+          username: 'octocat@example.com',
+          ask_user: true,
+          reason: 'The page says "Incorrect username or password."',
+          fields: [
+            { ref: '@e4', kind: 'username', label: 'Email address' },
+            { ref: '@e5', kind: 'password', label: 'Password' },
+          ],
+          submit: '@e6',
+        },
+      },
+    ])],
     ['ask secret', new UserInputRequestScenario([
       {
         name: 'mcp__user-input__request_secret',
@@ -2606,7 +2684,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   // Track pending user input requests per session for auto-completion
   private pendingInputCounts: Map<string, number> = new Map()
   // The parked requests themselves, for GET /inputs/pending
-  private pendingInputs: Map<string, { sessionId: string; inputType: string }> = new Map()
+  private pendingInputs: Map<string, { sessionId: string; inputType: string; input?: Record<string, unknown> }> = new Map()
   // Delay between the last input resolving and the turn-ending 'result', per
   // session (default 50ms). Scenarios that must expose the post-resolve window
   // (agent resumed, not yet settled) register a longer one.
@@ -2736,10 +2814,10 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   registerPendingInputs(
     sessionId: string,
     count: number,
-    opts?: { completionDelayMs?: number; holdResultsUntilAll?: boolean; inputs?: Array<{ toolUseId: string; inputType: string }> },
+    opts?: { completionDelayMs?: number; holdResultsUntilAll?: boolean; inputs?: Array<{ toolUseId: string; inputType: string; input?: Record<string, unknown> }> },
   ): void {
     this.pendingInputCounts.set(sessionId, count)
-    for (const input of opts?.inputs ?? []) this.pendingInputs.set(input.toolUseId, { sessionId, inputType: input.inputType })
+    for (const input of opts?.inputs ?? []) this.pendingInputs.set(input.toolUseId, { sessionId, inputType: input.inputType, input: input.input })
     if (opts?.completionDelayMs !== undefined) {
       this.inputCompletionDelays.set(sessionId, opts.completionDelayMs)
     }
@@ -3153,7 +3231,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       if (pending?.inputType !== 'mcp__user-input__request_login') {
         return new Response(JSON.stringify({ error: 'No sign-in request is being prepared under this id' }), { status: 404, headers: { 'Content-Type': 'application/json' } })
       }
-      return new Response(JSON.stringify(MOCK_LOGIN_CONTEXT), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      return new Response(JSON.stringify(mockLoginContext(pending.input)), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
     if (fetchPath === '/browser/login/fill' && init?.method === 'POST') {
       let body: { sessionId: string; toolUseId: string; expectedOrigin: string; values: string[] }
@@ -3169,7 +3247,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       if (body.expectedOrigin !== MOCK_LOGIN_CONTEXT.origin) {
         return new Response(JSON.stringify({ error: 'This sign-in request is for a different site' }), { status: 409, headers: { 'Content-Type': 'application/json' } })
       }
-      if (body.values.length !== MOCK_LOGIN_CONTEXT.fields.length || !body.values.some(Boolean)) {
+      if (body.values.length !== mockLoginContext(this.pendingInputs.get(body.toolUseId)?.input).fields.length || !body.values.some(Boolean)) {
         return new Response(JSON.stringify({ error: 'One value per field is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } })
       }
       if (this.loginFillsInFlight.has(body.toolUseId)) {
@@ -3180,7 +3258,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       await this.fetch(`/inputs/${encodeURIComponent(body.toolUseId)}/resolve`, { method: 'POST', body: '{}' })
       this.loginFillsInFlight.delete(body.toolUseId)
       const filled = body.values.filter(Boolean).length
-      return new Response(JSON.stringify({ success: true, filled, failed: 0, submitted: true, problems: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      const outcomes = body.values.map((value: string) => (value ? 'filled' : 'skipped'))
+      return new Response(JSON.stringify({ success: true, filled, failed: 0, outcomes, submitted: true, problems: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
 
     if (fetchPath === '/inputs/pending') {

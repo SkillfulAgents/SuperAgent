@@ -5,6 +5,11 @@ export interface RequestLoginInput {
   message?: string
   fields?: LoginFieldInput[]
   submit?: string
+  /** A saved account the agent signs in with. */
+  username?: string
+  ask_user?: boolean
+  /** With ask_user: why the agent asks (what the page said when it rejected the sign-in). */
+  reason?: string
 }
 
 function parseInput(input: unknown): RequestLoginInput {

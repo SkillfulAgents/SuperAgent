@@ -303,7 +303,8 @@ describe('fillLogin', () => {
     const { outcomes, written } = await fillLogin(deps, cdp, prepared, ['alice', 'pw-1234'], 'fill-1')
     expect(outcomes).toMatchObject([
       { ref: '@e3', status: 'failed', problem: '@e3 could not be focused: ✗ Unknown ref: e3' },
-      { ref: '@e6', status: 'failed', problem: 'the write into @e6 returned no answer (The page function threw)' },
+      // Sent, and the page may hold it: not a failure that wrote nothing.
+      { ref: '@e6', status: 'unconfirmed', problem: 'the write into @e6 was sent and returned no answer (The page function threw)' },
     ])
     expect(written).toEqual([])
   })
