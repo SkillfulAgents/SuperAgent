@@ -75,7 +75,13 @@ const pendingLiveStarts = new Map<string, number>()
 // What any process needs to close a session this one opened: the release may
 // reach another process, and an open provider session keeps billing.
 type SharedLiveSession = { owner: string; provider: VoiceProvider; providerSessionId: string; closing: boolean }
-const sharedLiveSessions = expiringMap<SharedLiveSession>('voice-live', LIVE_SESSION_MAX_MS)
+const sharedLiveSessionSchema = z.object({
+  owner: z.string(),
+  provider: z.custom<VoiceProvider>((value) => typeof value === 'string'),
+  providerSessionId: z.string(),
+  closing: z.boolean(),
+})
+const sharedLiveSessions = expiringMap<SharedLiveSession>('voice-live', LIVE_SESSION_MAX_MS, sharedLiveSessionSchema)
 const liveKey = (owner: string, handle: string) => `${owner}:${handle}`
 
 async function openLiveSessionCount(owner: string): Promise<number> {

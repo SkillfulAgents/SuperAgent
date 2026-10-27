@@ -35,8 +35,8 @@ export interface HeldLogin {
 
 // Sealed in a shared store: the values are what the user typed, passwords included.
 const heldLoginSchema = z.custom<HeldLogin>((value) => typeof value === 'object' && value !== null && 'values' in value)
-const held = expiringMap<HeldLogin>('held-login', HOLD_MS, { sealed: heldLoginSchema })
-const identities = expiringMap<string>('sign-in-identity', HOLD_MS)
+const held = expiringMap<HeldLogin>('held-login', HOLD_MS, heldLoginSchema, { sealed: true })
+const identities = expiringMap('sign-in-identity', HOLD_MS, z.string())
 
 function keyOf(agentSlug: string, sessionId: string, site: string): string {
   return `${agentSlug}\u0000${sessionId}\u0000${site}`

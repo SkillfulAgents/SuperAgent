@@ -67,7 +67,7 @@ type Login = {
 }
 // Sealed in a shared store: it carries the flow's secrets and, once signed in, the credential.
 const loginSchema = z.custom<Login>((value) => typeof value === 'object' && value !== null && 'flow' in value && 'device' in value)
-const logins = expiringMap<Login>('llm-oauth-login', 15 * 60 * 1000, { sealed: loginSchema })
+const logins = expiringMap<Login>('llm-oauth-login', 15 * 60 * 1000, loginSchema, { sealed: true })
 
 async function requireLogin(id: string, viewer: ConnectionViewer) {
   const login = await logins.get(id)

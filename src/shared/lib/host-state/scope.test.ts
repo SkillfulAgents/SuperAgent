@@ -1,20 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { libsql } from '@shared/lib/db/drivers/libsql'
-import type { OpenedDatabase } from '@shared/lib/db/drivers/types'
-import { migrateFromBundle } from '@shared/lib/db/open-database'
+import { z } from 'zod'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { getSettings, loadSettingsStrict, mutateSettings, updateSettings } from '@shared/lib/config/settings'
 import { getOrCreateHostToken, hostTokenForStart } from '@shared/lib/container/host-token-store'
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { expiringMap } from './expiring-map'
-import { HostStateConflictError, runWithHostState } from './scope'
+import { HostStateConflictError, flushHostState, runWithHostState } from './scope'
 import { databaseHostStateStore, type HostStateStore } from './store'
 
-let handle: OpenedDatabase
+let handle: TestDatabase
 let store: HostStateStore
 
 beforeEach(async () => {
-  handle = await libsql(':memory:').open()
-  await migrateFromBundle(handle.db)
+  handle = await createTestDatabase()
   store = databaseHostStateStore(handle.db)
 })
 
@@ -71,6 +69,25 @@ describe('settings in a host state scope', () => {
     })
   })
 
+  it('shows another request\'s change after a later write of the same key saves on the rebased value', async () => {
+    const other = gate()
+    const request = runWithHostState(store, async () => {
+      await other.opened
+      mutateSettings((s) => { s.app.theme = 'dark' })
+      mutateSettings((s) => { s.app.theme = 'light' })
+      await flushHostState()
+      return getSettings().app
+    })
+    await runWithHostState(store, async () => {
+      mutateSettings((s) => { s.app.autoSleepTimeoutMinutes = 9 })
+    })
+    other.release()
+
+    const app = await request
+    expect(app.theme).toBe('light')
+    expect(app.autoSleepTimeoutMinutes).toBe(9)
+  })
+
   it('runs a mutator once when nothing conflicts', async () => {
     let calls = 0
     await runWithHostState(store, async () => {
@@ -113,7 +130,7 @@ describe('host files in a host state scope', () => {
 
 describe('expiringMap in a host state scope', () => {
   it('lets a later request read and delete what an earlier one stored', async () => {
-    const flows = expiringMap<{ codeVerifier: string }>('mcp-oauth', 60_000)
+    const flows = expiringMap('mcp-oauth', 60_000, z.object({ codeVerifier: z.string() }))
     await runWithHostState(store, () => flows.set('state-123', { codeVerifier: 'verifier-abc' }))
 
     const found = await runWithHostState(store, async () => {
@@ -127,8 +144,14 @@ describe('expiringMap in a host state scope', () => {
   })
 
   it('hides an expired entry', async () => {
-    const flows = expiringMap<string>('mcp-oauth', -1)
+    const flows = expiringMap('mcp-oauth', -1, z.string())
     await runWithHostState(store, () => flows.set('state-old', 'stale'))
     expect(await runWithHostState(store, () => flows.get('state-old'))).toBeUndefined()
+  })
+
+  it('treats a stored entry that does not match the schema as missing', async () => {
+    await store.compareAndSet('mcp-oauth:state-bad', JSON.stringify({ redirectUri: 'https://example.com/cb' }), 0, Date.now() + 60_000)
+    const flows = expiringMap('mcp-oauth', 60_000, z.object({ codeVerifier: z.string() }))
+    expect(await runWithHostState(store, () => flows.get('state-bad'))).toBeUndefined()
   })
 })

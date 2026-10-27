@@ -1,5 +1,6 @@
 import crypto from 'crypto'
 import { expiringMap } from '@shared/lib/host-state/expiring-map'
+import { pendingOAuthFlowSchema, type PendingOAuthFlow } from './oauth-flow-schema'
 import { db } from '@shared/lib/db'
 import { remoteMcpServers } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
@@ -396,34 +397,14 @@ async function registerDynamicClientWithFallback(
   throw lastError ?? new McpOAuthSetupError('No redirect URLs available for client registration')
 }
 
-type PendingOAuthFlow = {
-  codeVerifier: string
-  redirectUri: string
-  resource: string
-  tokenEndpoint: string
-  expectedIssuer?: string
-  authorizationResponseIssParameterSupported: boolean
-  clientId: string
-  clientSecret?: string
-  mcpId?: string
-  newServer?: { name: string; url: string }
-  userId?: string
-  // True when the flow was initiated by the Electron app. Combined with whether
-  // the winning redirect is the custom app scheme, this tells the callback route
-  // how to hand the result back (see completeOAuthFlow's return).
-  electron?: boolean
-  // The desktop app's deep-link scheme, kept on the flow because the callback
-  // may be served by a cloud deployment with no SUPERAGENT_PROTOCOL of its own.
-  desktopProtocol?: string
-}
-
 type OAuthIssuerValidationResult =
   | { valid: true }
   | { valid: false; error: string }
 
 // Pending OAuth flows, keyed by the `state` parameter. They expire: a user
 // who never finishes sign-in leaves nothing behind.
-const pendingOAuthFlows = expiringMap<PendingOAuthFlow>('mcp-oauth', 15 * 60 * 1000)
+// Sealed in a shared store: a flow holds its PKCE verifier and client secret.
+const pendingOAuthFlows = expiringMap('mcp-oauth', 15 * 60 * 1000, pendingOAuthFlowSchema, { sealed: true })
 
 /**
  * How the callback route should deliver the result to the client, derived from

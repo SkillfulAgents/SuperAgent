@@ -6,6 +6,7 @@ import { createServer, request as httpRequest } from 'node:http'
 import { once } from 'node:events'
 import { getRequestListener } from '@hono/node-server'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { z } from 'zod'
 const mocks = vi.hoisted(() => ({
   providerName: 'openai' as string | undefined, alternateEnabled: false, user: 'alice', authenticated: true,
   agentExists: true, agentRole: 'user', getAgent: vi.fn(),
@@ -26,6 +27,7 @@ vi.mock('@shared/lib/services/agent-service', () => ({ getAgent: mocks.getAgent 
 vi.mock('@shared/lib/config/settings', () => ({ getVoiceSettings: () => ({ sttProvider: mocks.providerName }), getAgentCapabilitySettings: () => ({ subagents: 'block', workflows: 'review' }) }))
 vi.mock('@shared/lib/voice', () => ({
   getVoiceProvider: (id: string) => ({
+    id,
     name: { openai: 'OpenAI', deepgram: 'Deepgram', platform: 'Platform' }[id],
     getLiveConversation: () => (id === 'openai' || id === 'platform')
       ? { createLiveSession: mocks.create, mapLiveConversation: mocks.map, closeLiveSession: mocks.close, getLiveVoices: () => LIVE_VOICES, resolveLiveVoice: () => 'marin' }
@@ -311,7 +313,7 @@ describe('Live sessions opened by another process', () => {
   // Another process's session is only in the shared record: this process's registry never saw it.
   async function openedElsewhere(handle: string, owner = 'alice') {
     const { expiringMap } = await import('@shared/lib/host-state/expiring-map')
-    await expiringMap('voice-live', 60_000).set(`${owner}:${handle}`, { owner, provider: 'openai', providerSessionId: `rtc-${handle}`, closing: false })
+    await expiringMap('voice-live', 60_000, z.custom<object>(() => true)).set(`${owner}:${handle}`, { owner, provider: 'openai', providerSessionId: `rtc-${handle}`, closing: false })
   }
 
   beforeEach(async () => {

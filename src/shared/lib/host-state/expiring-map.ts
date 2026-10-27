@@ -29,19 +29,25 @@ export interface ExpiringMap<T> {
   clear(): Promise<void>
 }
 
-export interface ExpiringMapOptions<T> {
+export interface ExpiringMapOptions {
   /** Seal values in a shared store: they hold secrets. */
-  sealed?: z.ZodType<T>
+  sealed?: boolean
 }
 
-export function expiringMap<T>(namespace: string, ttlMs: number, options: ExpiringMapOptions<T> = {}): ExpiringMap<T> {
+export function expiringMap<T>(
+  namespace: string,
+  ttlMs: number,
+  schema: z.ZodType<T>,
+  options: ExpiringMapOptions = {},
+): ExpiringMap<T> {
   const storeKey = (key: string) => `${namespace}:${key}`
   const binding = (key: string) => ({ purpose: 'host-state' as const, id: storeKey(key), site: '' })
+  const sealed = (store: HostStateStore) => options.sealed === true && store.shared
   const encode = (store: HostStateStore, key: string, value: T) =>
-    options.sealed && store.shared ? sealJson(value, binding(key), options.sealed) : JSON.stringify(value)
+    sealed(store) ? sealJson(value, binding(key), schema) : JSON.stringify(schema.parse(value))
   const decode = (store: HostStateStore, key: string, raw: string): T | undefined => {
     try {
-      return options.sealed && store.shared ? openJson(raw, binding(key), options.sealed) : (JSON.parse(raw) as T)
+      return sealed(store) ? openJson(raw, binding(key), schema) : schema.parse(JSON.parse(raw))
     } catch {
       return undefined
     }

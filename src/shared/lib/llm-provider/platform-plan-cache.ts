@@ -1,4 +1,5 @@
 import { background } from '@shared/lib/background'
+import { z } from 'zod'
 import { expiringMap } from '@shared/lib/host-state/expiring-map'
 import { getPlatformBaseUrl } from '@shared/lib/platform-auth/config'
 
@@ -18,7 +19,11 @@ const UNKNOWN_MS = 10 * 60_000
 type Entry = { policy: PlatformPlanPolicy | null; expiresAt: number }
 
 // An expired entry is still served while it reloads, so the store keeps it a day.
-const entries = expiringMap<Entry>('platform-plan', 24 * 60 * 60_000)
+const entrySchema = z.object({
+  policy: z.object({ planName: z.string().nullable(), deniedModels: z.array(z.string()) }).nullable(),
+  expiresAt: z.number(),
+})
+const entries = expiringMap<Entry>('platform-plan', 24 * 60 * 60_000, entrySchema)
 
 /**
  * Plan policies per platform account: platform host, workspace and member,

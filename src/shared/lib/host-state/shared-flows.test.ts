@@ -91,7 +91,7 @@ describe('rate limits and lockouts', () => {
 
 describe('sealed values', () => {
   it('stores a sealed value encrypted, bound to its key', async () => {
-    const secrets = expiringMap<{ password: string }>('test-secret', 60_000, { sealed: z.object({ password: z.string() }) })
+    const secrets = expiringMap('test-secret', 60_000, z.object({ password: z.string() }), { sealed: true })
     await request(() => secrets.set('a', { password: 'hunter2' }))
 
     const [row] = await rawRows('test-secret:a')
