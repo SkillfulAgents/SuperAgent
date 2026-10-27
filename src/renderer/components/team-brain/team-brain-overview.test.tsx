@@ -97,13 +97,9 @@ const { driveRead } = vi.hoisted(() => ({
   driveRead: {
     ready: true,
     error: null as string | null,
-    // The record's parts there are to show, and the parts the page last asked the tree to show.
-    recordParts: [
-      { name: 'syncs', path: '_brain/syncs', type: 'directory' as const },
-      { name: 'rules.md', path: '_brain/rules.md', type: 'file' as const },
-      { name: 'INDEX.md', path: 'INDEX.md', type: 'file' as const },
-    ],
-    record: new Set<string>() as ReadonlySet<string>,
+    // Which of the record's groups have something in them, and the groups the page last asked the tree to show.
+    recordGroups: { status: 'listed', present: new Set(['about', 'archive']) } as RecordGroupsRead,
+    record: new Set() as ReadonlySet<string>,
   },
 }))
 vi.mock('@renderer/hooks/use-team-brain-drive', () => ({
@@ -111,8 +107,14 @@ vi.mock('@renderer/hooks/use-team-brain-drive', () => ({
     app.read.drive = volumeId
     driveRead.record = record
     // A drive it is not handed is not read, so it cannot fail.
-    return { drive, ready: driveRead.ready, error: volumeId ? driveRead.error : null, recordParts: driveRead.recordParts }
+    return { drive, ready: driveRead.ready, error: volumeId ? driveRead.error : null, recordGroups: driveRead.recordGroups }
   },
+}))
+// The person's settings: which groups Views last had on, and the writes that save them.
+const { userSettings } = vi.hoisted(() => ({ userSettings: { data: {} as { teamBrainViews?: string[] }, save: vi.fn() } }))
+vi.mock('@renderer/hooks/use-user-settings', () => ({
+  useUserSettings: () => ({ data: userSettings.data }),
+  useUpdateUserSettings: () => ({ mutate: userSettings.save }),
 }))
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
 const { user } = vi.hoisted(() => ({ user: { isAuthMode: false, isAdmin: false } }))
@@ -142,6 +144,7 @@ vi.mock('@renderer/components/tray/tray-manager', async () => {
 import { TeamBrainOverview } from './team-brain-overview'
 import { resetTeamBrainState } from '@renderer/lib/team-brain/team-brain-store'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
+import type { RecordGroupsRead } from '@renderer/hooks/use-team-brain-drive'
 
 /** The Team Brain agent set-up made. */
 const BRAIN: ApiAgent = {
@@ -154,6 +157,8 @@ beforeEach(() => {
   app.pollFailed = false
   resetTeamBrainState()
   upkeep.tasks = [task('t1', 'Nightly digest', 'pending'), task('t2', 'Weekly people check', 'paused')]
+  userSettings.data = {}
+  driveRead.recordGroups = { status: 'listed', present: new Set(['about', 'archive']) }
   screenSize.wide = true
   screenSize.listeners.clear()
   window.matchMedia = ((query: string) => ({
@@ -357,28 +362,68 @@ describe('TeamBrainOverview', () => {
     Object.assign(driveRead, { ready: true, error: null })
   })
 
-  it('shows the parts of the team record switched on in Views, each on its own', async () => {
+  it('shows a switch for each group of the record with something in it, and saves the ones on', async () => {
     render(<TeamBrainOverview agent={BRAIN} />)
     await userEvent.click(screen.getByTestId('team-brain-menu'))
-    // Folded, it says how many views are on; open, a switch for each.
+    // Folded, it says how many groups are on; open, a switch for each.
     expect(screen.getByTestId('team-brain-views-count')).toHaveTextContent('Off')
-    expect(screen.queryByTestId('team-brain-view-rules')).toBeNull()
     await userEvent.click(screen.getByTestId('team-brain-views-toggle'))
     const views = within(screen.getByTestId('team-brain-views'))
-    // Every usual part has its switch, written yet or not.
-    expect(views.getAllByRole('switch').map((toggle) => toggle.id)).toEqual(
-      ['rules', 'sources', 'changelog', 'archive', 'syncs', 'index'].map((view) => `team-brain-view-${view}`),
-    )
-    expect(views.getByLabelText(/^Show changelog/)).toBeInTheDocument()
-    expect(within(views.getByText('Show changelog').closest('li')!).getByText('Not written yet')).toBeInTheDocument()
-    expect(within(views.getByText('Show rules').closest('li')!).queryByText('Not written yet')).toBeNull()
+    expect(views.getAllByRole('switch').map((toggle) => toggle.id)).toEqual(['team-brain-view-about', 'team-brain-view-archive'])
     expect(driveRead.record.size).toBe(0)
-    await userEvent.click(views.getByLabelText(/^Show sync summaries/))
-    await userEvent.click(views.getByLabelText(/^Show agents' index/))
-    expect([...driveRead.record]).toEqual(['syncs', 'index'])
+    await userEvent.click(views.getByLabelText('Archive'))
+    await userEvent.click(views.getByLabelText('About this brain'))
+    expect([...driveRead.record]).toEqual(['about', 'archive'])
     expect(screen.getByTestId('team-brain-views-count')).toHaveTextContent('2 on')
-    await userEvent.click(views.getByLabelText(/^Show sync summaries/))
-    expect([...driveRead.record]).toEqual(['index'])
+    expect(userSettings.save).toHaveBeenLastCalledWith({ teamBrainViews: ['about', 'archive'] })
+    await userEvent.click(views.getByLabelText('Archive'))
+    expect([...driveRead.record]).toEqual(['about'])
+    expect(userSettings.save).toHaveBeenLastCalledWith({ teamBrainViews: ['about'] })
+  })
+
+  it('opens with the groups the person left on, leaving out any it doesn’t know', async () => {
+    userSettings.data = { teamBrainViews: ['archive', 'syncs'] }
+    render(<TeamBrainOverview agent={BRAIN} />)
+    expect([...driveRead.record]).toEqual(['archive'])
+    await userEvent.click(screen.getByTestId('team-brain-menu'))
+    expect(screen.getByTestId('team-brain-views-count')).toHaveTextContent('1 on')
+  })
+
+  it('shows only the groups with something in them, and no card until it knows or when there are none', async () => {
+    driveRead.recordGroups = { status: 'listed', present: new Set(['about']) }
+    const { unmount } = render(<TeamBrainOverview agent={BRAIN} />)
+    await userEvent.click(screen.getByTestId('team-brain-menu'))
+    await userEvent.click(screen.getByTestId('team-brain-views-toggle'))
+    expect(within(screen.getByTestId('team-brain-views')).getAllByRole('switch').map((toggle) => toggle.id)).toEqual(['team-brain-view-about'])
+    unmount()
+    for (const groups of [{ status: 'pending' }, { status: 'listed', present: new Set() }] as RecordGroupsRead[]) {
+      driveRead.recordGroups = groups
+      const view = render(<TeamBrainOverview agent={BRAIN} />)
+      await userEvent.click(screen.getByTestId('team-brain-menu'))
+      expect(screen.getByTestId('team-brain-settings')).toBeInTheDocument()
+      expect(screen.queryByTestId('team-brain-views')).toBeNull()
+      view.unmount()
+    }
+  })
+
+  it('says the record can’t be read rather than showing it as empty', async () => {
+    driveRead.recordGroups = { status: 'failed' }
+    render(<TeamBrainOverview agent={BRAIN} />)
+    await userEvent.click(screen.getByTestId('team-brain-menu'))
+    await userEvent.click(screen.getByTestId('team-brain-views-toggle'))
+    expect(screen.getByTestId('team-brain-views-unreadable')).toHaveTextContent('can’t be read')
+    expect(screen.queryAllByRole('switch', { name: /About this brain|Archive/ })).toHaveLength(0)
+  })
+
+  it('keeps a saved group switchable off while the record can’t be read', async () => {
+    userSettings.data = { teamBrainViews: ['about'] }
+    driveRead.recordGroups = { status: 'failed' }
+    render(<TeamBrainOverview agent={BRAIN} />)
+    await userEvent.click(screen.getByTestId('team-brain-menu'))
+    await userEvent.click(screen.getByTestId('team-brain-views-toggle'))
+    expect(screen.getByTestId('team-brain-views-unreadable')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('switch', { name: 'About this brain' }))
+    expect(userSettings.save).toHaveBeenLastCalledWith({ teamBrainViews: [] })
   })
 
   it('is paused only when every scheduled task is, and says so when it has none', async () => {

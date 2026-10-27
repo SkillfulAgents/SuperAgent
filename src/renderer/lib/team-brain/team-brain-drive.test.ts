@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { FolderEntry } from '@renderer/hooks/use-folder-entries'
-import { driveTree, foldersToList, splitFrontPages, teamRecordParts, teamRecordView, withoutTeamRecord, withTeamRecordParts, type DriveListing } from './team-brain-drive'
+import { driveTree, foldersToList, presentRecordGroups, recordPlaceOf, splitFrontPages, withRecordGroups, type DriveListing } from './team-brain-drive'
 
 const file = (path: string, mtimeMs?: number): FolderEntry => ({ name: path.split('/').at(-1)!, path, type: 'file', mtimeMs })
 const dir = (path: string): FolderEntry => ({ name: path.split('/').at(-1)!, path, type: 'directory' })
@@ -44,10 +44,10 @@ describe('driveTree', () => {
   })
 })
 
-describe('withoutTeamRecord', () => {
+describe('withRecordGroups with none on', () => {
   it('drops the team record from the top, so its folders are neither shown nor listed', () => {
     const listed: DriveListing = new Map([['', [dir('_brain'), dir('company'), file('INDEX.md'), file('README.md')]]])
-    const hidden = withoutTeamRecord(listed)
+    const hidden = withRecordGroups(listed, new Set())
     expect(hidden.get('')?.map((entry) => entry.path)).toEqual(['company', 'README.md'])
     expect(foldersToList(hidden, new Set())).toEqual(['company'])
   })
@@ -63,29 +63,57 @@ describe('splitFrontPages', () => {
   })
 })
 
-describe('the team record’s parts', () => {
+describe('the team record’s groups', () => {
+  // A brain as the template builds it, plus a page the agent added and a hidden file.
   const listed: DriveListing = new Map([
     ['', [dir('_brain'), dir('customers'), file('INDEX.md'), file('README.md')]],
-    ['_brain', [file('_brain/Rules.md'), dir('_brain/syncs'), file('_brain/.keep')]],
+    ['_brain', [file('_brain/team.md'), file('_brain/sources.md'), file('_brain/changelog.md'), file('_brain/glossary.md'), dir('_brain/archive'), dir('_brain/syncs'), file('_brain/.keep')]],
   ])
+  const top = (listing: DriveListing) => listing.get('')?.map((entry) => entry.path)
+  const brain = (listing: DriveListing) => listing.get('_brain')?.map((entry) => entry.path)
 
-  it('lists each part in _brain, then the agents’ index, leaving out hidden files, each under its view', () => {
-    const parts = teamRecordParts(listed)
-    expect(parts.map((entry) => entry.path)).toEqual(['_brain/Rules.md', '_brain/syncs', 'INDEX.md'])
-    expect(parts.map(teamRecordView)).toEqual(['rules', 'syncs', 'index'])
+  it('places each path by where it sits, not its name', () => {
+    expect(['INDEX.md', '_brain/team.md', '_brain/changelog.md', '_brain/glossary.md', '_brain/index.md', '_brain/sources'].map(recordPlaceOf)).toEqual(Array(6).fill('about'))
+    expect(['_brain/archive', '_archive'].map(recordPlaceOf)).toEqual(['archive', 'archive'])
+    expect(recordPlaceOf('_brain/syncs')).toBe('syncs')
+    expect(['customers', 'README.md', 'archive'].map(recordPlaceOf)).toEqual(['team', 'team', 'team'])
   })
 
-  it('keeps only the parts whose views are on, and _brain only while one of its parts is', () => {
-    const syncsOnly = withTeamRecordParts(listed, new Set(['syncs']))
-    expect(syncsOnly.get('')?.map((entry) => entry.path)).toEqual(['_brain', 'customers', 'README.md'])
-    expect(syncsOnly.get('_brain')?.map((entry) => entry.path)).toEqual(['_brain/syncs'])
-    expect(withTeamRecordParts(listed, new Set(['index'])).get('')?.map((entry) => entry.path)).toEqual(['customers', 'INDEX.md', 'README.md'])
-    // A view with no part of its own yet shows nothing.
-    expect(withTeamRecordParts(listed, new Set(['changelog'])).get('')?.map((entry) => entry.path)).toEqual(['customers', 'README.md'])
+  it('shows the team’s knowledge alone with no group on', () => {
+    expect(top(withRecordGroups(listed, new Set()))).toEqual(['customers', 'README.md'])
   })
 
-  it('keeps _brain while it is not listed yet, so a view on in it gets it listed', () => {
+  it('shows each group’s paths alone, and never the sync summaries', () => {
+    const about = withRecordGroups(listed, new Set(['about']))
+    expect(top(about)).toEqual(['_brain', 'customers', 'INDEX.md', 'README.md'])
+    expect(brain(about)).toEqual(['_brain/team.md', '_brain/sources.md', '_brain/changelog.md', '_brain/glossary.md'])
+    const archive = withRecordGroups(listed, new Set(['archive']))
+    expect(top(archive)).toEqual(['_brain', 'customers', 'README.md'])
+    expect(brain(archive)).toEqual(['_brain/archive'])
+    expect(brain(withRecordGroups(listed, new Set(['about', 'archive'])))).not.toContain('_brain/syncs')
+  })
+
+  it('drops _brain when a group on has nothing in it', () => {
+    const syncsOnly: DriveListing = new Map([['', [dir('_brain'), dir('customers')]], ['_brain', [dir('_brain/syncs')]]])
+    expect(top(withRecordGroups(syncsOnly, new Set(['about', 'archive'])))).toEqual(['customers'])
+    const hiddenOnly: DriveListing = new Map([['', [dir('_brain')]], ['_brain', [file('_brain/.keep')]]])
+    expect(top(withRecordGroups(hiddenOnly, new Set(['about'])))).toEqual([])
+  })
+
+  it('keeps _brain while it is not listed yet, so a group on in it gets it listed', () => {
     const unlisted: DriveListing = new Map([['', [dir('_brain'), file('INDEX.md')]]])
-    expect(withTeamRecordParts(unlisted, new Set(['rules'])).get('')?.map((entry) => entry.path)).toEqual(['_brain'])
+    expect(top(withRecordGroups(unlisted, new Set(['archive'])))).toEqual(['_brain'])
+  })
+
+  it('puts an older brain’s top-level _archive under Archive', () => {
+    const legacy: DriveListing = new Map([['', [dir('_archive'), dir('customers')]]])
+    expect(top(withRecordGroups(legacy, new Set()))).toEqual(['customers'])
+    expect(top(withRecordGroups(legacy, new Set(['archive'])))).toEqual(['_archive', 'customers'])
+    expect([...presentRecordGroups(legacy)]).toEqual(['archive'])
+  })
+
+  it('finds a group only where it has something, never from the sync summaries or a hidden file', () => {
+    expect([...presentRecordGroups(listed)].sort()).toEqual(['about', 'archive'])
+    expect([...presentRecordGroups(new Map([['', [dir('_brain'), dir('customers')]], ['_brain', [dir('_brain/syncs'), file('_brain/.keep')]]]))]).toEqual([])
   })
 })

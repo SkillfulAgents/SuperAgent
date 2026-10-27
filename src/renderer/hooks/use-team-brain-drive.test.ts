@@ -35,4 +35,39 @@ describe('useTeamBrainDrive', () => {
     expect(result.current.drive[0]).toMatchObject({ id: 'busy', children: undefined })
     expect(result.current.error).toBe('Google Drive is busy.')
   })
+
+  it('knows the record’s groups only once _brain is listed, and says when it can’t be', async () => {
+    const brainAnswers = async (status: number) => {
+      apiFetch.mockImplementation(async (url: string) => {
+        const path = new URL(url, 'http://x').searchParams.get('path')
+        if (path === '_brain' && status !== 200) return new Response(JSON.stringify({ error: 'gone' }), { status })
+        const entries =
+          path === ''
+            ? [{ name: '_brain', path: '_brain', type: 'directory' }, { name: 'INDEX.md', path: 'INDEX.md', type: 'file' }]
+            : path === '_brain'
+              ? [{ name: 'archive', path: '_brain/archive', type: 'directory' }, { name: 'syncs', path: '_brain/syncs', type: 'directory' }]
+              : []
+        return new Response(JSON.stringify({ root: '', path, entries }))
+      })
+      const client = new QueryClient()
+      const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
+      return renderHook(() => useTeamBrainDrive('brain', 'vol', new Set()), { wrapper })
+    }
+    const listed = await brainAnswers(200)
+    await waitFor(() => expect(listed.result.current.recordGroups.status).toBe('listed'))
+    const groups = listed.result.current.recordGroups
+    expect(groups.status === 'listed' && [...groups.present].sort()).toEqual(['about', 'archive'])
+    listed.unmount()
+    const refused = await brainAnswers(403)
+    await waitFor(() => expect(refused.result.current.recordGroups.status).toBe('failed'))
+    // The record listed ahead of being shown reports no error of its own to the tree.
+    expect(refused.result.current.error).toBeNull()
+    refused.unmount()
+    // A top that can't be listed can't say what the record holds either: it reads as failed, not as still to come.
+    apiFetch.mockImplementation(async () => new Response(JSON.stringify({ error: 'gone' }), { status: 403 }))
+    const client = new QueryClient()
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
+    const top = renderHook(() => useTeamBrainDrive('brain', 'vol', new Set()), { wrapper })
+    await waitFor(() => expect(top.result.current.recordGroups.status).toBe('failed'))
+  })
 })

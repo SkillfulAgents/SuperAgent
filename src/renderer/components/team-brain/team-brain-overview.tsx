@@ -22,8 +22,9 @@ import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avat
 import { useMinuteClock } from '@renderer/hooks/use-minute-clock'
 import type { TeamBrainNode } from '@renderer/lib/team-brain/team-brain-structure'
 import { useTeamBrainDrive } from '@renderer/hooks/use-team-brain-drive'
-import { splitFrontPages, TEAM_RECORD_FOLDER, teamRecordView } from '@renderer/lib/team-brain/team-brain-drive'
-import type { FolderEntry } from '@renderer/hooks/use-folder-entries'
+import { RECORD_GROUPS, RECORD_SECTIONS, splitFrontPages, type RecordGroup } from '@renderer/lib/team-brain/team-brain-drive'
+import type { RecordGroupsRead } from '@renderer/hooks/use-team-brain-drive'
+import { useUpdateUserSettings, useUserSettings } from '@renderer/hooks/use-user-settings'
 import { useTeamBrainSyncs } from '@renderer/hooks/use-team-brain-syncs'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { FilePreviewProvider, useFilePreview } from '@renderer/context/file-preview-context'
@@ -66,16 +67,20 @@ const PREVIEW_SLUG = 'team-brain'
  */
 export function TeamBrainOverview({ agent }: { agent: ApiAgent }) {
   const [settingsOpen, setSettingsOpen] = useState(false)
-  // The views of the team record the tree shows (`teamRecordView`), switched on in the settings' Views; none by default.
-  // When the last one is switched off, the parts that were showing stay in the tree while they draw back in, then go.
-  const [views, setViews] = useState<ReadonlySet<string>>(() => new Set())
-  const [leaving, setLeaving] = useState<ReadonlySet<string> | null>(null)
-  const switchView = (view: string, on: boolean) => {
-    const next = new Set(views)
-    if (on) next.add(view)
-    else next.delete(view)
-    setViews(next)
-    setLeaving(next.size === 0 && views.size > 0 ? views : null)
+  // The record's groups the tree shows, switched on in the settings' Views and kept in the person's settings; none by
+  // default. The override answers at once while the write round-trips, as the home graph's Details switch does. When
+  // the last one is switched off, the groups that were showing stay in the tree while they draw back in, then go.
+  const { data: userSettings } = useUserSettings()
+  const { mutate: saveSettings } = useUpdateUserSettings()
+  const [viewsOverride, setViewsOverride] = useState<readonly RecordGroup[] | null>(null)
+  const saved: readonly string[] | undefined = viewsOverride ?? userSettings?.teamBrainViews
+  const views = useMemo<ReadonlySet<RecordGroup>>(() => new Set(RECORD_GROUPS.filter((group) => saved?.includes(group))), [saved])
+  const [leaving, setLeaving] = useState<ReadonlySet<RecordGroup> | null>(null)
+  const switchView = (group: RecordGroup, on: boolean) => {
+    const next = RECORD_GROUPS.filter((g) => (g === group ? on : views.has(g)))
+    setViewsOverride(next)
+    saveSettings({ teamBrainViews: next })
+    setLeaving(next.length === 0 && views.size > 0 ? views : null)
   }
   return (
     <FilePreviewProvider sessionId="team-brain" commentsEnabled={false}>
@@ -141,12 +146,12 @@ function OverviewBody({
   agent: ApiAgent
   settingsOpen: boolean
   onSettingsOpenChange: (open: boolean) => void
-  /** The record's views switched on in Views. */
-  views: ReadonlySet<string>
-  /** The views the tree shows: those, or while the last is drawing back in, the ones that were. */
-  record: ReadonlySet<string>
+  /** The record's groups switched on in Views. */
+  views: ReadonlySet<RecordGroup>
+  /** The groups the tree shows: those, or while the last is drawing back in, the ones that were. */
+  record: ReadonlySet<RecordGroup>
   recordLeaving: boolean
-  onViewChange: (view: string, on: boolean) => void
+  onViewChange: (group: RecordGroup, on: boolean) => void
   onRecordLeft: () => void
 }) {
   const agentSlug = agent.slug
@@ -160,7 +165,7 @@ function OverviewBody({
   const copying = mounts?.find((mount) => mount.volumeId === volumeId)?.health === 'preparing'
   const readable = mountsUnreadable || (mounts && !copying) ? volumeId : undefined
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
-  const { drive, ready, error, recordParts } = useTeamBrainDrive(agentSlug, readable, expanded, record, recordLeaving)
+  const { drive, ready, error, recordGroups } = useTeamBrainDrive(agentSlug, readable, expanded, record, recordLeaving)
   // Opened on the loading middle: the tree then grows from it rather than popping its middle in again.
   const [openedLoading] = useState(() => !ready)
   // The loading middle stays until its line has gone back out, so the tree starts after it rather than over it.
@@ -370,7 +375,7 @@ function OverviewBody({
                 onClose={() => onSettingsOpenChange(false)}
                 onClosed={settingsClosed}
                 views={views}
-                recordParts={recordParts}
+                recordGroups={recordGroups}
                 onViewChange={onViewChange}
                 onHeightChange={setPanelHeight}
                 // Its box reaches PANEL_INSET past its cards, so it sticks that much higher, and is twice that taller,
@@ -393,7 +398,7 @@ function OverviewBody({
               onClose={() => onSettingsOpenChange(false)}
               onClosed={settingsClosed}
               views={views}
-              recordParts={recordParts}
+              recordGroups={recordGroups}
               onViewChange={onViewChange}
             />
           </div>
@@ -449,9 +454,6 @@ function TreeNote({ height, alert = false, testId, children }: { height: number;
     </p>
   )
 }
-
-/** What draws back in when the team record is switched off. */
-const RECORD_SECTIONS = [TEAM_RECORD_FOLDER]
 
 /** The page's gap between the tree and the column, and the column's between its sections (space-y-8, space-y-4). */
 const PAGE_GAP = 32
@@ -557,7 +559,7 @@ const PANEL_FADE_MS = 300
  * the status line toggles it, Escape closes it, and where it floats over the
  * page (narrower than xl) so does a click off it.
  */
-function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recordParts, onViewChange, onHeightChange, style }: {
+function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recordGroups, onViewChange, onHeightChange, style }: {
   agent: ApiAgent
   /** Beside the page, in its column (sticky; `style` gives where it sticks and its tallest), or floating over it. */
   placement: 'beside' | 'over'
@@ -565,10 +567,10 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
   onClose: () => void
   /** The panel has slid out and can go. */
   onClosed: () => void
-  views: ReadonlySet<string>
-  /** The team record's parts there are. */
-  recordParts: readonly FolderEntry[]
-  onViewChange: (view: string, on: boolean) => void
+  views: ReadonlySet<RecordGroup>
+  /** Which of the record's groups have something in them. */
+  recordGroups: RecordGroupsRead
+  onViewChange: (group: RecordGroup, on: boolean) => void
   /** How tall it is, as it changes (sections opening and closing). */
   onHeightChange?: (height: number) => void
   style?: CSSProperties
@@ -636,7 +638,7 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
           <SourcesSection agentSlug={agent.slug} />
           <AgentsSection brainSlug={agent.slug} volumeId={agent.teamBrain?.volumeId} agents={agents} canManage={canManage} />
         </div>
-        <ViewsCard parts={recordParts} views={views} onViewChange={onViewChange} />
+        <ViewsCard groups={recordGroups} views={views} onViewChange={onViewChange} />
         {/* Last, on a glass row of its own: red only in its words until hovered. */}
         {canManage && <Button
           variant="ghost"
@@ -913,46 +915,40 @@ function AgentsSection({ brainSlug, volumeId, agents, canManage }: { brainSlug: 
   )
 }
 
-/** The team record's usual parts, each a view of its own, in the order they're listed. */
-const RECORD_VIEWS: readonly { id: string; name: string }[] = [
-  { id: 'rules', name: 'Show rules' },
-  { id: 'sources', name: 'Show sources' },
-  { id: 'changelog', name: 'Show changelog' },
-  { id: 'archive', name: 'Show archive' },
-  { id: 'syncs', name: 'Show sync summaries' },
-  { id: 'index', name: "Show agents' index" },
-]
-/** Any other part the agent keeps in `_brain`, named after its file. */
-const partName = (part: FolderEntry) => `Show ${part.name.replace(/\.md$/i, '').replace(/[-_]+/g, ' ').toLowerCase()}`
+/** The record's groups as Views names them. */
+const GROUP_LABELS: Record<RecordGroup, string> = { about: 'About this brain', archive: 'Archive' }
 
 /**
- * Which parts of Team Brain's own record the tree shows, in a folded card of their own below the sections, as Sync has
- * one above: a switch for each of the record's usual parts, whether or not the agent has written it yet, and for anything
- * else it keeps in `_brain`. All off by default, so the tree is the team's knowledge until one is asked for.
+ * Which of Team Brain's own files the tree shows, in a folded card of its own below the sections: a switch for each
+ * group with something in it, all off by default, so the tree is the team's knowledge until one is asked for. Hidden
+ * until `_brain` is listed and when no group has anything; a `_brain` that can't be listed says so rather than reading as empty.
  */
-function ViewsCard({ parts, views, onViewChange }: { parts: readonly FolderEntry[]; views: ReadonlySet<string>; onViewChange: (view: string, on: boolean) => void }) {
-  const written = new Set(parts.map(teamRecordView))
-  const extras = parts.filter((part) => !RECORD_VIEWS.some((view) => view.id === teamRecordView(part))).map((part) => ({ id: teamRecordView(part), name: partName(part) }))
-  const all = [...RECORD_VIEWS, ...extras]
-  const on = all.filter((view) => views.has(view.id)).length
+function ViewsCard({ groups, views, onViewChange }: { groups: RecordGroupsRead; views: ReadonlySet<RecordGroup>; onViewChange: (group: RecordGroup, on: boolean) => void }) {
+  if (groups.status === 'pending') return null
+  // Unreadable, a group that is on still shows, so it can be switched off.
+  const present = RECORD_GROUPS.filter((group) => (groups.status === 'listed' ? groups.present.has(group) : views.has(group)))
+  if (groups.status === 'listed' && present.length === 0) return null
+  const on = present.filter((group) => views.has(group)).length
   return (
-    // A card of its own, folded by default like the sections: the header says how many views are on.
+    // A card of its own, folded by default like the sections: the header says how many groups are on.
     <div className={cn('overflow-hidden rounded-2xl', GLASS_SURFACE)}>
       <PanelSection title="Views" summary={<span className={SECTION_COUNT_CLASS} data-testid="team-brain-views-count">{on > 0 ? `${on} on` : 'Off'}</span>} testId="team-brain-views">
-        <ul className="-mt-1 pb-1">
-          {all.map((view) => {
-            const id = `team-brain-view-${view.id}`
-            return (
-              <li key={view.id} className="flex items-center justify-between gap-2 px-4 py-1.5">
-                <label htmlFor={id} className="min-w-0">
-                  <span className="block truncate text-xs">{view.name}</span>
-                  {!written.has(view.id) && <span className="block text-[11px] text-muted-foreground">Not written yet</span>}
-                </label>
-                <Switch id={id} checked={views.has(view.id)} onCheckedChange={(checked) => onViewChange(view.id, checked)} data-testid={id} />
-              </li>
-            )
-          })}
-        </ul>
+        {groups.status === 'failed' && (
+          <p className="px-4 py-1.5 text-xs text-muted-foreground" data-testid="team-brain-views-unreadable">Team Brain&rsquo;s own files can&rsquo;t be read right now.</p>
+        )}
+        {present.length > 0 && (
+          <ul className="-mt-1 pb-1">
+            {present.map((group) => {
+              const id = `team-brain-view-${group}`
+              return (
+                <li key={group} className="flex items-center justify-between gap-2 px-4 py-1.5">
+                  <label htmlFor={id} className="min-w-0 truncate text-xs">{GROUP_LABELS[group]}</label>
+                  <Switch id={id} checked={views.has(group)} onCheckedChange={(checked) => onViewChange(group, checked)} data-testid={id} />
+                </li>
+              )
+            })}
+          </ul>
+        )}
       </PanelSection>
     </div>
   )
