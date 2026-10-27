@@ -98,6 +98,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Gamut-MAS-${{ github.ref_name }}
-          path: release/*.pkg
+          # electron-builder writes a mas target into its own folder, named for
+          # the target and the runner's architecture, not into release/.
+          path: release/mas-arm64/*.pkg
           if-no-files-found: error
           retention-days: 30
