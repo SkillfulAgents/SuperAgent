@@ -349,6 +349,13 @@ paths:
           schema:
             type: string
           example: myproject/src/index.js
+        - name: Range
+          in: header
+          required: false
+          description: One byte range (`bytes=start-end`, `bytes=start-` or `bytes=-length`). Other forms return the whole file.
+          schema:
+            type: string
+          example: bytes=0-65535
       responses:
         '200':
           description: File content
@@ -356,6 +363,15 @@ paths:
             text/plain:
               schema:
                 type: string
+        '206':
+          description: The requested byte range; `Content-Range` gives its position and the file size
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '416':
+          description: The range starts past the end of the file; `Content-Range` is `bytes */<size>`
         '404':
           description: File not found
           content:
