@@ -1720,10 +1720,13 @@ export class ClaudeCodeProcess extends EventEmitter {
             : [];
           await this.loadCliCommands();
           const unsupported = unsupportedBuiltinCommands(this.cliCommands, this.runnableCommandNames);
+          const menuNames = this.runnableCommandNames.filter((name) => !unsupported.has(name));
           this.slashCommands = mergeCanonicalSlashCommands(
-            this.runnableCommandNames.filter((name) => !unsupported.has(name)),
+            menuNames,
             (this.cliCommands ?? []).filter((command) => !unsupported.has(command.name)),
           );
+          // The host rebuilds a live session's menu from this frame's list.
+          message.slash_commands = menuNames;
           this.emit('init-complete');
         }
 
