@@ -13,7 +13,8 @@ import type { AgentIntegrationRecord, IntegrationInputEvent, IntegrationOutput, 
 const state = vi.hoisted(() => ({
   rows: [] as AgentIntegrationRecord[],
   mappings: new Map<string, { id: string; integrationId: string; externalChatId: string; sessionId: string; displayName?: string }>(),
-  streams: new Map<string, (event: unknown) => void>(),
+  // The sessions the manager follows (set below, once `manager` exists).
+  streams: undefined as unknown as { get(id: string): ((event: unknown) => void) | undefined; has(id: string): boolean; readonly size: number; clear(): void },
   global: undefined as ((event: GlobalFeedEvent) => void) | undefined, stop: vi.fn<(sessionId: string, options: StopSessionOptions) => Promise<StopSessionResult>>(),
   authorizationLost: undefined as ((change: { integrationId: string }) => void) | undefined,
   syncMcp: vi.fn(async () => true),
@@ -75,17 +76,6 @@ vi.mock('@shared/lib/agent-actor', async () => {
         await state.send(request.sessionId, request.content, request.uuid)
         return { status: 'sent', queued: false }
       },
-      // The actor's event stream for the session.
-      subscribe: async (session: string) => {
-        let listener: (event: unknown) => void
-        return new ReadableStream({
-          start(controller) {
-            listener = (event) => controller.enqueue(event)
-            state.streams.set(session, listener)
-          },
-          cancel() { if (state.streams.get(session) === listener) state.streams.delete(session) },
-        })
-      },
     },
   }) },
   }
@@ -139,6 +129,14 @@ function record(id: string): AgentIntegrationRecord {
 }
 
 let manager: AgentIntegrationManager
+const followers = () => (manager as unknown as { sessionFollowers: Map<string, unknown> }).sessionFollowers
+// Calling a followed session's entry delivers an event the way the actor's host port does.
+state.streams = {
+  get: (id) => followers().has(id) ? (event) => manager.handleSessionEvent({ agentSlug: 'installation-a', sessionId: id, event: event as never }) : undefined,
+  has: (id) => followers().has(id),
+  get size() { return followers().size },
+  clear: () => {},
+}
 let adapter: ObjectIntegration
 let registry: AgentIntegrationRegistry
 beforeEach(async () => {

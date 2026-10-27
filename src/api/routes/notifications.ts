@@ -1,4 +1,3 @@
-import { subscribeCollaborationEvents } from '@shared/lib/services/collaboration-events'
 /**
  * Notifications API Routes
  *
@@ -16,15 +15,14 @@ import {
   markAllAsRead,
   markSessionNotificationsRead,
   deleteNotification,
-  getAccessibleAgentSlugs,
   getUnreadMentionCount,
 } from '@shared/lib/services/notification-service'
-import { globalFeed, type GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
+import type { GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
 import { background } from '@shared/lib/background'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, HasNotificationAccess } from '../middleware/auth'
 import { waitForClientGone } from '../lib/wait-for-client-gone'
-import { createAgentAccessGate, type AgentAccessGate } from '../lib/agent-access-gate'
+import { openNotificationsFeed } from '../lib/notifications-feed'
 
 const notificationsRouter = new Hono()
 
@@ -56,9 +54,7 @@ notificationsRouter.get('/stream', async (c) => {
     if (clientSignal.aborted) return
     const clientGone = waitForClientGone(clientSignal, stream)
     let pingInterval: ReturnType<typeof setInterval> | null = null
-    let unsubscribe: (() => void) | null = null
-    let unsubscribeCollaboration: (() => void) | undefined
-    let gate: AgentAccessGate | null = null
+    let close: (() => void) | null = null
 
     const write = (event: GlobalFeedEvent): void => {
       background(stream.writeSSE({ data: JSON.stringify(event), event: 'message' }).catch((error) => {
@@ -67,35 +63,7 @@ notificationsRouter.get('/stream', async (c) => {
     }
 
     try {
-      // In auth mode the stream carries only the agents the user can access
-      // (admins included). Without a user there is nothing to scope by.
-      if (isAuthMode() && user) {
-        gate = createAgentAccessGate({
-          load: () => getAccessibleAgentSlugs(user.id),
-          deliver: write,
-          onLoadError: (error) => {
-            // Without the list nothing about an agent can be judged; the
-            // client reconnects and the next stream loads it again.
-            console.error('Failed to load accessible agents for the notifications stream:', error)
-            stream.abort()
-          },
-        })
-      }
-      const scoped = gate
-      unsubscribe = globalFeed.subscribe((event) => {
-        // A targeted frame (a mention) goes to its recipient alone.
-        if (user && event.recipientUserId !== undefined && event.recipientUserId !== user.id) return
-        if (scoped) scoped.push(event)
-        else write(event)
-      })
-
-      if (user) {
-        unsubscribeCollaboration = subscribeCollaborationEvents(user.id, async (data) => {
-          // A membership change can grant or revoke this user's access.
-          scoped?.refresh()
-          await stream.writeSSE({ data: JSON.stringify(data), event: 'message' })
-        })
-      }
+      close = openNotificationsFeed({ user, deliver: write, onLoadError: () => stream.abort() })
 
       // Send initial connection message
       await stream.writeSSE({
@@ -118,9 +86,7 @@ notificationsRouter.get('/stream', async (c) => {
       await clientGone
     } finally {
       if (pingInterval) clearInterval(pingInterval)
-      if (unsubscribe) unsubscribe()
-      unsubscribeCollaboration?.()
-      gate?.dispose()
+      close?.()
     }
   })
 })

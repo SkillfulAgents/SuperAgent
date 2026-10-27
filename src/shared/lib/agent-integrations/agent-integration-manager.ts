@@ -20,6 +20,7 @@ import { integrationRelays } from './relay-transport'
 import type { IntegrationRelayHost, IntegrationTransport } from './transport'
 import { agentRegistry, type AgentActor, type SessionEvent } from '@shared/lib/agent-actor'
 import { deliveryFailure } from '@shared/lib/agent-actor/delivery-errors'
+import type { HostEvents } from '@shared/lib/agent-actor/host-port'
 import {
   listStartupIntegrations,
   getIntegration,
@@ -150,6 +151,8 @@ export class AgentIntegrationManager {
   private connections: Map<string, IntegrationConnection> = new Map()
   // Per-chat session: one streaming context per (integrationId, externalId)
   private chatSessions: Map<string, ManagedSession> = new Map() // key: `${integrationId}:${chatId}`
+  /** What each agent session's events go to, by session id (see `handleSessionEvent`). */
+  private readonly sessionFollowers = new Map<string, Set<(event: SessionEvent) => void>>()
   private isRunning = false
   private authorizationUnsubscribe?: () => void
   private healthCheckInterval: ReturnType<typeof setInterval> | null = null
@@ -762,11 +765,10 @@ export class AgentIntegrationManager {
     return session
   }
 
-  /** Point the chat session at `sessionId` and listen to it; resolves once listening, so nothing it does after is missed. */
+  /** Point the chat session at `sessionId` and follow its events; resolves once observed. */
   private async subscribeChatSession(integrationId: string, chatId: string, sessionId: string): Promise<void> {
     const session = this.getOrCreateChatSession(integrationId, chatId)
     if (!session) return
-    const agentSlug = session.integration.agentSlug
 
     session.sseUnsubscribe?.()
     if (session.sessionId && session.sessionId !== sessionId) {
@@ -779,34 +781,25 @@ export class AgentIntegrationManager {
     }
     session.sessionId = sessionId
     session.context = routing(session.context, { sessionId })
-    // Set before the await: a later subscribe or a teardown meanwhile ends this one.
-    let reader: ReadableStreamDefaultReader<SessionEvent> | undefined
-    let ended = false
-    const unsubscribe = () => {
-      ended = true
-      if (reader) background(reader.cancel(), { name: 'integration-manager.cancel-session-events' })
+    const follow = (event: SessionEvent) => {
+      // Provisional activity is visible to the app, but is not a real turn
+      // start/completion for the integration's durable work queue.
+      if (event.provisional) return
+      this.enqueueSSEEvent(integrationId, chatId, event, sessionId, session)
     }
-    session.sseUnsubscribe = unsubscribe
-    const events = await agentRegistry.get(agentSlug).messages.subscribe(sessionId)
-    if (ended) {
-      await events.cancel()
-      return
+    const followers = this.sessionFollowers.get(sessionId) ?? new Set()
+    followers.add(follow)
+    this.sessionFollowers.set(sessionId, followers)
+    session.sseUnsubscribe = () => {
+      followers.delete(follow)
+      if (followers.size === 0 && this.sessionFollowers.get(sessionId) === followers) this.sessionFollowers.delete(sessionId)
     }
-    reader = events.getReader()
-    background(this.readSessionEvents(reader, integrationId, chatId, sessionId, session)
-      .catch(error => reportError(error, 'sse-event', { integrationId, chatId })), { name: 'integration-manager.read-session-events' })
     await this.observe(session)
   }
 
-  /** The chat session's side of its agent session's event stream, until the stream is cancelled. */
-  private async readSessionEvents(reader: ReadableStreamDefaultReader<SessionEvent>, integrationId: string, chatId: string, sessionId: string, session: ManagedSession): Promise<void> {
-    for (let next = await reader.read(); !next.done; next = await reader.read()) {
-      const event = next.value
-      // Provisional activity is visible to the app, but is not a real turn
-      // start/completion for the integration's durable work queue.
-      if (event.provisional) continue
-      this.enqueueSSEEvent(integrationId, chatId, event, sessionId, session)
-    }
+  /** An event the actor sent through its host port: it goes to the chat sessions following that session. */
+  handleSessionEvent({ sessionId, event }: HostEvents['session']): void {
+    for (const follow of this.sessionFollowers.get(sessionId) ?? []) follow(event)
   }
 
   /** Let the connector see what the chat's session is doing now. */
