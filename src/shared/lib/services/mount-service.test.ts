@@ -58,6 +58,7 @@ describe('SQLite mount attachments', () => {
     fs.writeFileSync(path.join(hostPath, 'a.txt'), 'shared content')
     const a = await add(hostPath)
     const b = await attachMount('agent-b', a.volumeId, viewer)
+    expect(b.readOnly).toBe(false)
     expect(b.volumeId).toBe(a.volumeId)
     expect(b.id).not.toBe(a.id)
     expect(await handle.db.select().from(volumeDefinitions).all()).toHaveLength(1)
@@ -92,6 +93,13 @@ describe('SQLite mount attachments', () => {
     expect(await setMountReadOnly('test-agent', mount.id, false)).toBe(true)
     expect((await listVolumes('test-agent')).volumes[0]).not.toHaveProperty('readOnly')
   })
+  it('attaches read-only when asked, an attachment the agent already had included', async () => {
+    const mount = await add(folder('brain'))
+    expect((await attachMount('agent-b', mount.volumeId, viewer, { readOnly: true })).readOnly).toBe(true)
+    expect((await attachMount('test-agent', mount.volumeId, viewer, { readOnly: true })).readOnly).toBe(true)
+    expect((await attachMount('test-agent', mount.volumeId, viewer)).readOnly).toBe(true)
+  })
+
   it('detaches only the specified mount and preserves sources and files', async () => {
     const a = await add(folder('keep'))
     const b = await add(folder('detach'))

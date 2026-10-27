@@ -860,7 +860,7 @@ import {
 import { getAgent, getAgentRecord, getAgentWithStatus, listAgentsWithStatus, updateAgentAvatar } from '@shared/lib/services/agent-service'
 import { countMembersWithMinRole, countOtherMembers, listAgentMembers } from '@shared/lib/services/agent-members-service'
 import { loginFillAccountSchema } from '../../../agent-container/src/login-schema'
-import { removeMount } from '@shared/lib/services/mount-service'
+import { attachMount, removeMount } from '@shared/lib/services/mount-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { appendMentions } from '@shared/lib/utils/mentions'
 import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
@@ -11440,6 +11440,11 @@ describe('drive changes on a running agent', () => {
     expect((await changes[0][1](createApp(), 'drives-restart', true)).ok).toBe(true)
     expect(mockRestartContainer).toHaveBeenCalledOnce()
     expect((await agentRegistry.get('drives-restart').live()).container.stale).toBe(false)
+  })
+
+  it('adds a drive read-only when asked', async () => {
+    expect((await postJson(createApp(), '/api/agents/drives-read-only/mounts', { volumeId: 'v1', readOnly: true })).ok).toBe(true)
+    expect(attachMount).toHaveBeenLastCalledWith('drives-read-only', 'v1', expect.anything(), { readOnly: true })
   })
 
   it('answers 404 to removing a drive the agent has no own copy of, and leaves it unmarked', async () => {
