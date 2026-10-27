@@ -43,7 +43,7 @@ export class GrokSubscriptionLlmProvider extends BaseLlmProvider {
   readonly catalogDefaultModels = GROK_DEFAULT_MODELS
   protected readonly settingsKeyField = undefined
   protected readonly envVarName = ''
-  override readonly toolSearchEnv = 'true' as const
+  override toolSearchEnv() { return 'true' as const }
   override readonly mediaPrompt = GROK_MEDIA_PROMPT
   override readonly supportsModelSearch = true
 
@@ -86,7 +86,7 @@ export class GrokSubscriptionLlmProvider extends BaseLlmProvider {
     })
   }
   createClient(): Anthropic {
-    return new Anthropic({ apiKey: '', authToken: 'app-managed', baseURL: GROK_SUBSCRIPTION_BASE_URL,
+    return new Anthropic({ authToken: 'app-managed', baseURL: GROK_SUBSCRIPTION_BASE_URL,
       // Rebuild translation after an auth retry so reasoning replay is scoped
       // to the credential actually used, including reconnects to another account.
       fetch: (input, init) => this.withCredential(credential => translatedMessagesFetch(

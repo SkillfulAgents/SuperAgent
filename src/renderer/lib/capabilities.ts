@@ -1,4 +1,4 @@
-import { supportsComputerUse, updatesItself } from '@shared/lib/facts/capabilities'
+import { readsHostFolders, runsHostGit, runsInAppSandbox, supportsComputerUse, updatesItself } from '@shared/lib/facts/capabilities'
 import { targetIsRemote } from './api-target'
 import { isElectron } from './env'
 import { clientFacts, serverFacts } from './facts'
@@ -66,4 +66,66 @@ export function computerUseSupported(): boolean {
  */
 export function appUpdatesItself(): boolean {
   return updatesItself(clientFacts())
+}
+
+/**
+ * Whether the agents run inside the App Sandbox: the Mac App Store build
+ * driving its own API. Settings then lists what the sandbox leaves out
+ * (`SandboxNotice`). Unknown server facts read as no.
+ */
+export function agentsRunInAppSandbox(): boolean {
+  const server = serverFacts()
+  return server !== null && runsInAppSandbox(server)
+}
+
+/**
+ * Whether Settings has a Computer Use tab: the desktop app driving its own
+ * machine, unless that machine's sandbox leaves computer use out entirely. On
+ * Linux the tab stays, to say computer use needs macOS or Windows.
+ */
+export function offersComputerUseSettings(): boolean {
+  return canUseHostFeatures() && !agentsRunInAppSandbox()
+}
+
+/**
+ * Whether this window hands the server folders of this computer by path: to
+ * mount one as an agent's drive, or to copy a dropped one in. That needs the
+ * desktop app driving its own machine, outside the sandbox. Without it a
+ * dropped folder uploads its files instead.
+ */
+export function usesHostFolderPaths(): boolean {
+  const server = serverFacts()
+  return canUseHostFeatures() && server !== null && readsHostFolders(server)
+}
+
+/**
+ * Whether a skillset can be a private repository, cloned with a token: the
+ * server runs git. A server that didn't say is an older deployment, which did.
+ */
+export function offersPrivateSkillsets(): boolean {
+  const server = serverFacts()
+  return server === null || runsHostGit(server)
+}
+
+/*
+ * The desktop app's own Mac integrations. Each acts on the computer the window
+ * runs on, whichever Superagent it drives, so each asks the client half, and
+ * the App Sandbox allows none of them.
+ */
+
+/** Whether Settings offers Keep Awake, which stops the Mac sleeping with its lid closed (`pmset` under sudo). */
+export function keepsMacAwake(): boolean {
+  const client = clientFacts()
+  return client.shell === 'electron' && client.os === 'darwin' && !runsInAppSandbox(client)
+}
+
+/** Whether a dashboard can be added to the Dock, as a launcher app in ~/Applications. */
+export function addsToDock(): boolean {
+  const client = clientFacts()
+  return client.shell === 'electron' && client.os === 'darwin' && !runsInAppSandbox(client)
+}
+
+/** Whether the attachment menus list recently used files, which Spotlight finds. */
+export function listsRecentFiles(): boolean {
+  return !!window.electronAPI?.getRecentFiles && !runsInAppSandbox(clientFacts())
 }

@@ -263,6 +263,8 @@ import { transformMessages, type TransformedMessage, type TransformedItem } from
 import { subagentOwnEntries } from '@shared/lib/utils/fork-subagent-transcript'
 import { workflowRoutes } from './workflows'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, getTeamBrain, mutateSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
+import { readsHostFolders } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { ungrabAC } from '@shared/lib/computer-use/executor'
 import type { PermissionGrantType } from '@shared/lib/computer-use/types'
 import { rejectInput, type HostRunOutcome } from '@shared/lib/agent-actor/host-runs'
@@ -4478,6 +4480,10 @@ agents.post(
     if (!context.fields.every((field) => field.kind === 'username' || field.kind === 'password')) {
       return c.json({ error: 'This form asks for more than a saved login holds' }, 409)
     }
+    if (body.save) {
+      const refused = await sharedAgentRefusal(c, agentSlug, body.sharedAgentAcknowledged)
+      if (refused) return refused
+    }
     const claim = await agentRegistry.get(agentSlug).inputs.claim(body.toolUseId)
     if (!claim) return c.json({ error: 'This sign-in request is already being handled' }, 409)
     claimed = { id: body.toolUseId, token: claim.token }
@@ -4490,35 +4496,79 @@ agents.post(
     if (expectedOrigin !== context.origin) {
       return c.json({ error: 'The saved login is for a different site than the sign-in form' }, 409)
     }
+    const viewer = getViewerUserId(c)
+    const site = siteOfOrigin(context.origin)
+    // The login's own username, else whose account the last step went in as.
+    const identity = credential.username.trim() || (site ? recentSignInIdentity(agentSlug, sessionId, site) : null) || null
+    // "Save for later" copies the whole login into the vault, also on a step
+    // that shows only the username: the next step then needs no one.
+    const saving = Boolean(body.save && site && identity && credential.password)
+    const shown = noteUsername(identity)
     const values = context.fields.map((field) => (field.kind === 'username' ? credential.username : credential.password))
-    const filled = await fillLoginInContainer(agentSlug, sessionId, body.toolUseId, context, values)
+    const filled = await fillLoginInContainer(agentSlug, sessionId, body.toolUseId, context, values, site
+      ? { ...(shown ? { username: shown } : {}), site, source: 'user', saved: saving, held: [] }
+      : undefined)
     // The browser closed while the user was away: the login they picked is
-    // held a while (not saved: it lives in their password manager), and the
-    // agent's next try signs in with it without asking again.
+    // saved when they chose to, else held a while, and the agent's next try
+    // signs in with it without asking again.
     if (!filled.ok && filled.browserClosed) {
-      const site = siteOfOrigin(context.origin)
-      const username = credential.username || null
-      const holds = site !== null && context.fields.some((field) => field.kind === 'password') && credential.password.length > 0
-      if (holds) holdLoginValues(agentSlug, sessionId, site, { username, values: { password: credential.password }, origin: context.origin, save: null })
-      const shown = noteUsername(username)
-      const kept = holds ? { how: 'held' as const, ...(shown ? { username: shown } : {}) } : null
+      let kept: { how: 'saved' | 'held'; username?: string } | null = null
+      if (saving && site && identity) {
+        try {
+          const savedNow = await saveAndGrant(viewer, agentSlug, { site, origin: context.origin, username: identity, values: { password: credential.password } })
+          kept = { how: 'saved', username: savedNow.username }
+        } catch (error) {
+          // Held instead, below: the agent's next try still needs no one.
+          console.error('[fill-login-credential] Saving the account failed:', error instanceof Error ? error.message : 'Unknown error')
+        }
+      }
+      if (!kept && site !== null && context.fields.some((field) => field.kind === 'password') && credential.password.length > 0) {
+        holdLoginValues(agentSlug, sessionId, site, { username: identity, values: { password: credential.password }, origin: context.origin, save: null })
+        kept = { how: 'held', ...(shown ? { username: shown } : {}) }
+      }
       const answered = await answerLoginRequest(agentSlug, body.toolUseId, { type: 'browser_closed', site: site ?? context.origin, ...(kept ? { kept } : {}) })
       if (!answered) return c.json({ error: 'The agent could not be told. Try again.' }, 502)
       await agentRegistry.get(agentSlug).inputs.complete(sessionId, body.toolUseId, 'answered')
       claimed = null
-      if (site && username) rememberSignInIdentity(agentSlug, sessionId, site, username)
+      if (site && identity) rememberSignInIdentity(agentSlug, sessionId, site, identity)
       trackServerEvent('login_request_browser_closed', { kept: kept?.how ?? 'nothing' })
       return c.json({ success: true, browserClosed: true, ...(kept ? { kept: { how: kept.how, username: kept.username ?? null } } : {}) })
     }
     if (!filled.ok) return c.json({ error: filled.error }, filled.status)
     claimed = null
+
+    let savedAccount: VaultAccount | null = null
+    let saveError: string | undefined
+    if (saving && site && identity) {
+      try {
+        savedAccount = await saveAndGrant(viewer, agentSlug, { site, origin: context.origin, username: identity, values: { password: credential.password } })
+      } catch (error) {
+        // The page has the login either way; the user is told it was not saved.
+        console.error('[fill-login-credential] Saving the account failed:', error instanceof Error ? error.message : 'Unknown error')
+        saveError = error instanceof VaultConflictError ? error.message : 'The account could not be saved'
+      }
+    } else if (body.save) {
+      saveError = identity ? 'The saved login has no password to save' : 'The saved login has no username, so it was not saved'
+    }
+    if (site && identity) rememberSignInIdentity(agentSlug, sessionId, site, identity)
+    // The user signed in with the account themselves: what the vault may fill without them counts from here.
+    const wentIn = fieldsWentIn(filled.result, context.fields.length)
+    if (savedAccount && wentIn.some(Boolean)) {
+      const passwordWentIn = context.fields.some((field, index) => field.kind === 'password' && wentIn[index])
+      await recordAccountUse({ agentSlug, accountId: savedAccount.id, sessionId, userId: viewer, password: passwordWentIn, by: 'user' })
+    }
     trackServerEvent('login_request_filled', {
       submitted: filled.result.submitted,
       filled: filled.result.filled,
       failed: filled.result.failed,
       source: 'password_manager',
+      saved: savedAccount !== null,
     })
-    return c.json(filled.result)
+    return c.json({
+      ...filled.result,
+      ...(savedAccount && site ? { saved: { username: savedAccount.username, site } } : {}),
+      ...(saveError ? { saveError } : {}),
+    })
   } catch (error) {
     return credentialBrokerErrorResponse(c, error)
   } finally {
@@ -6425,6 +6475,10 @@ agents.post('/:id/upload-file', AgentUser(), uploadRequestBodyLimit, respondUplo
 // POST /api/agents/:id/sessions/:sessionId/upload-file - Upload a file to the agent workspace
 agents.post('/:id/sessions/:sessionId/upload-file', AgentUser(), uploadRequestBodyLimit, respondUploadFile)
 
+// The Mac App Store build reaches only folders picked in its open panel, and a
+// dropped folder arrives through the web upload instead.
+const FOLDER_BY_PATH_UNAVAILABLE = 'Copying a folder by its path is not available in the Mac App Store edition'
+
 async function handleFolderUpload(agentSlug: string, sourcePath: string) {
   // `sourcePath` is a folder on this machine, chosen in the Electron file
   // picker. Walk it with fs and copy each regular file into the workspace;
@@ -6472,6 +6526,7 @@ agents.post('/:id/upload-folder', AgentUser(), async (c) => {
     const agentSlug = getAgentId(c)
     const { sourcePath } = await c.req.json<{ sourcePath: string }>()
     if (!sourcePath) return c.json({ error: 'No source path provided' }, 400)
+    if (!readsHostFolders(getServerFacts())) return c.json({ error: FOLDER_BY_PATH_UNAVAILABLE }, 400)
     const result = await handleFolderUpload(agentSlug, sourcePath)
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${result.folderName}`, action: 'uploaded' })
     return c.json(result)
@@ -6488,6 +6543,7 @@ agents.post('/:id/sessions/:sessionId/upload-folder', AgentUser(), async (c) => 
     const agentSlug = getAgentId(c)
     const { sourcePath } = await c.req.json<{ sourcePath: string }>()
     if (!sourcePath) return c.json({ error: 'No source path provided' }, 400)
+    if (!readsHostFolders(getServerFacts())) return c.json({ error: FOLDER_BY_PATH_UNAVAILABLE }, 400)
     const result = await handleFolderUpload(agentSlug, sourcePath)
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${result.folderName}`, action: 'uploaded' })
     return c.json(result)

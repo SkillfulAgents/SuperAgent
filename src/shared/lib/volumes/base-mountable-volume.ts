@@ -1,5 +1,5 @@
 import type { ByteRange, FileKind } from '@shared/lib/agent-actor/types'
-import type { VolumeCacheMode, VolumeType } from '@shared/lib/types/mount'
+import type { VolumeAttention, VolumeCacheMode, VolumeType } from '@shared/lib/types/mount'
 
 /** One entry of a volume, with what a WebDAV listing reports. `name` is '' for the volume root. */
 export interface VolumeEntry {
@@ -41,6 +41,7 @@ export abstract class BaseMountableVolume<C> {
   readonly caseInsensitive: boolean = false
   /** Whether the source can store an upload at a size other than the bytes sent. */
   readonly ignoreSize: boolean = false
+  readonly readOnly: boolean = false
   /** How long the mount trusts a folder listing, when the cache policy's default is wrong for the source. */
   readonly dirCacheSeconds: number | null = null
 
@@ -60,10 +61,19 @@ export abstract class BaseMountableVolume<C> {
     return null
   }
 
+  /** Changes that have not reached the source, or null. */
+  get attention(): VolumeAttention | null {
+    return null
+  }
+
   abstract list(path: string): Promise<VolumeEntry[]>
   abstract stat(path: string): Promise<VolumeEntry>
   /** Advisory root health for settings and mount status. Remote drivers may cache it. */
   health(): Promise<VolumeEntry> { return this.stat('') }
+  /** Settles once the volume can be mounted, or once its attempt to get there ends. Only a source copied first waits. */
+  whenReady(): Promise<void> { return Promise.resolve() }
+  /** The agent's container just mounted this volume afresh, holding nothing from its earlier mounts. */
+  remounted(): void {}
   abstract read(path: string): Promise<VolumeFile>
   /** Replace a whole file. `signal` aborts when the client stops waiting for the write. */
   abstract write(path: string, body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<void>

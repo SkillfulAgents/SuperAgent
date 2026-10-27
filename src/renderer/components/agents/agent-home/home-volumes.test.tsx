@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const volumes = vi.hoisted(() => ({
-  mounts: [] as { id: string; volumeId?: string; name: string; volumeName: string; type: string; hostPath: string | null; health?: unknown; global?: true }[],
+  mounts: [] as { id: string; volumeId?: string; name: string; volumeName: string; type: string; hostPath: string | null; health?: unknown; global?: true; sourceReadOnly?: boolean }[],
   definitions: [] as { id: string; name: string; hostPath: string; canManage?: boolean }[],
   canModifyMounts: true,
   operationError: null as string | null,
@@ -30,7 +30,7 @@ vi.mock('@renderer/hooks/use-volume-definitions', () => ({ useSaveVolumeDefiniti
 const { mockCanUseHostFeatures } = vi.hoisted(() => ({
   mockCanUseHostFeatures: vi.fn(() => true),
 }))
-vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: mockCanUseHostFeatures }))
+vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: mockCanUseHostFeatures, usesHostFolderPaths: mockCanUseHostFeatures, agentsRunInAppSandbox: () => false }))
 
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -87,6 +87,17 @@ describe('a volume with no local folder', () => {
     expect(screen.queryByRole('button', { name: /open in finder/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /copy path/i })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /remove from agent/i })).toBeInTheDocument()
+  })
+})
+
+describe('a source that refuses writes', () => {
+  it('shows Read only and offers no read-only toggle', async () => {
+    volumes.mounts = [{ id: 'g1', name: 'repo', volumeName: 'repo', type: 'github', hostPath: null, sourceReadOnly: true }]
+    render(<HomeVolumes agentSlug="a1" />)
+
+    expect(screen.getByText('Read only')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Drive actions' }))
+    expect(screen.queryByRole('switch', { name: /read only/i })).not.toBeInTheDocument()
   })
 })
 

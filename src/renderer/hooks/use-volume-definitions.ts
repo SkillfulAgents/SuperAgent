@@ -21,6 +21,7 @@ export function useVolumeDefinitions() {
   return useQuery<VolumeDefinitionSummary[]>({
     queryKey: ['volume-definitions'],
     queryFn: async () => (await checkedResponse(await apiFetch('/api/volume-definitions'))).json(),
+    refetchInterval: query => query.state.status !== 'error' && query.state.data?.some(volume => volume.health === 'preparing') ? 2000 : false,
   })
 }
 

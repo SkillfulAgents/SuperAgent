@@ -200,6 +200,8 @@ export interface JsonlMessageEntry {
     interrupted: boolean
     isImage: boolean
     backgroundTaskId?: string
+    // Monitor's result: the id of the watch it started
+    taskId?: string
     // Subagent-specific (present only on Task tool results)
     agentId?: string
     status?: string

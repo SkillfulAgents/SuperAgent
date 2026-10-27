@@ -9,6 +9,7 @@ import { EFFORT_LEVELS } from '@shared/lib/container/types'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 import { readLocalFileAsFile } from '@renderer/lib/read-local-file'
+import { listsRecentFiles } from '@renderer/lib/capabilities'
 
 // Inline, full-width menus for the quick-dispatch launcher. Unlike the main
 // app's floating popovers, these render INSIDE the panel's flex column so the
@@ -148,10 +149,10 @@ export function AttachMenu({
   const folderRef = useRef<HTMLInputElement>(null)
   const [recent, setRecent] = useState<RecentFile[]>([])
   const [loadingPath, setLoadingPath] = useState<string | null>(null)
-  const isElectron = !!window.electronAPI?.getRecentFiles
+  const recentFilesListed = listsRecentFiles()
 
   useEffect(() => {
-    if (!isElectron) return
+    if (!recentFilesListed) return
     let cancelled = false
     window.electronAPI!.getRecentFiles(5)
       .then((files) => {
@@ -161,7 +162,7 @@ export function AttachMenu({
     return () => {
       cancelled = true
     }
-  }, [isElectron])
+  }, [recentFilesListed])
 
   const handleRecent = useCallback(
     async (filePath: string) => {

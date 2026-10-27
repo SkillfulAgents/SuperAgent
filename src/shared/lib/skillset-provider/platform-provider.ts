@@ -17,6 +17,8 @@ import { ensureDirectory } from '@shared/lib/utils/file-storage'
 import { validateSafeCloneUrl } from '@shared/lib/utils/url-safety'
 import { withRetry, NonRetryableError } from '@shared/lib/utils/retry'
 import { captureException } from '@shared/lib/error-reporting'
+import { runsHostGit } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { atomicSwapCacheDir } from './atomic-cache-swap'
 import {
   BaseSkillsetProvider,
@@ -39,6 +41,8 @@ let cachedGitAvailable: boolean | null = null
 
 function isGitAvailableSync(): boolean {
   if (cachedGitAvailable !== null) return cachedGitAvailable
+  // The sandbox downloads the archive, without probing macOS's git stub.
+  if (!runsHostGit(getServerFacts())) return (cachedGitAvailable = false)
   try {
     execFileSync('git', ['--version'], { timeout: 2000, stdio: 'ignore' })
     cachedGitAvailable = true

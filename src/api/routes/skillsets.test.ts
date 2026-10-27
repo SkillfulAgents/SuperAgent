@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
 
 const mockGetSettings = vi.fn()
@@ -36,6 +36,7 @@ vi.mock('@shared/lib/services/skillset-service', () => ({
   removeSkillsetCache: (...args: unknown[]) => mockRemoveSkillsetCache(...args),
   ensureSkillsetCached: (...args: unknown[]) => mockEnsureSkillsetCached(...args),
   isGitAvailable: (...args: unknown[]) => mockIsGitAvailable(...args),
+  HOST_GIT_UNAVAILABLE: 'This needs git, which the Mac App Store edition can’t run.',
 }))
 
 vi.mock('@shared/lib/platform-auth/config', () => ({
@@ -215,9 +216,48 @@ describe('skillsets routes', () => {
     app.route('/api/skillsets', skillsets)
     const res = await app.request('/api/skillsets')
 
-    const body = await res.json() as Array<{ error?: string; skillCount: number }>
+    const body = await res.json() as Array<{ error?: string; skillCount: number; publishMode: string }>
     expect(body[0].error).toBeUndefined()
     expect(body[0].skillCount).toBe(1)
+    expect(body[0].publishMode).toBe('pull_request')
+  })
+
+  describe('in the Mac App Store edition, which can’t run git', () => {
+    beforeEach(() => {
+      vi.stubEnv('E2E_MOCK', 'true')
+      vi.stubEnv('SUPERAGENT_FAKE_DISTRIBUTION', 'mac-app-store')
+    })
+    afterEach(() => {
+      vi.unstubAllEnvs()
+    })
+
+    it('GET / offers no pull requests to a GitHub skillset', async () => {
+      mockGetSettings.mockReturnValue({
+        skillsets: [{ id: 'gh', url: 'https://github.com/Org/repo', name: 'GH', description: '', addedAt: '2026-01-01T00:00:00.000Z', provider: 'github' }],
+      })
+      mockGetSkillsetIndex.mockResolvedValue({ skills: [], agents: [] })
+
+      const app = new Hono()
+      app.route('/api/skillsets', skillsets)
+      const body = await (await app.request('/api/skillsets')).json() as Array<{ publishMode: string }>
+
+      expect(body[0].publishMode).toBe('none')
+    })
+
+    it('POST / refuses a private repository token before validating anything', async () => {
+      mockGetSettings.mockReturnValue({ skillsets: [] })
+      const app = new Hono()
+      app.route('/api/skillsets', skillsets)
+      const res = await app.request('/api/skillsets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: 'https://github.com/Org/private-repo', token: 'github_pat_x_1234' }),
+      })
+
+      expect(await res.json()).toEqual({ error: 'This needs git, which the Mac App Store edition can’t run.' })
+      expect(mockValidateSkillsetUrl).not.toHaveBeenCalled()
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
   })
 
   it('POST /validate auto-detects public provider when git is unavailable', async () => {

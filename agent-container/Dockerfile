@@ -326,11 +326,10 @@ ENV DISABLE_AUTOUPDATER=1
 # discarded on every restart (each start is `rm -f` + a fresh `run`), so any
 # dashboard dependency install after a wake re-downloaded every package.
 ENV BUN_INSTALL_CACHE_DIR=/workspace/.bun-cache
-# ENABLE_TOOL_SEARCH is deliberately NOT set here. The host passes it at
-# `docker run` only for providers whose endpoint expands deferred tools; for
-# the rest it must stay unset so the CLI applies its own guard (it disables
-# tool search for base URLs that aren't first-party Anthropic hosts). An image
-# default would make "unset" impossible to express.
+# ENABLE_TOOL_SEARCH is deliberately NOT set here. The host passes 'true' or
+# 'false' for every session, depending on whether the provider's endpoint
+# expands deferred tools (BaseLlmProvider.toolSearchEnv); unset would read as
+# on behind any custom base URL (CLI 2.1.304+).
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

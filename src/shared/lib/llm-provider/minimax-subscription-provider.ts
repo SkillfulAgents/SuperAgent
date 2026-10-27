@@ -40,7 +40,7 @@ export class MinimaxSubscriptionLlmProvider extends BaseLlmProvider {
   readonly catalogDefaultModels = MINIMAX_DEFAULT_MODELS
   protected readonly settingsKeyField = undefined
   protected readonly envVarName = ''
-  override readonly toolSearchEnv = 'true' as const
+  override toolSearchEnv() { return 'true' as const }
   override readonly mediaPrompt = MINIMAX_MEDIA_PROMPT
   override readonly supportsModelSearch = true
   override readonly supportsUsage = true
@@ -84,7 +84,7 @@ export class MinimaxSubscriptionLlmProvider extends BaseLlmProvider {
     return response
   }
   createClient(): Anthropic {
-    return new Anthropic({ apiKey: '', authToken: 'app-managed', baseURL: `${this.apiBase}/anthropic`, fetch: (input, init) => this.fetch(input, init) })
+    return new Anthropic({ authToken: 'app-managed', baseURL: `${this.apiBase}/anthropic`, fetch: (input, init) => this.fetch(input, init) })
   }
   private async allowance(accessToken: string) {
     const response = await fetch(`${this.apiBase}/v1/token_plan/remains`, {

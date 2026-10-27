@@ -3,6 +3,9 @@ import path from 'path'
 import { LocalFileOps, errnoCode, fromFsError } from '@shared/lib/agent-actor/local-file-ops'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
+import { readsHostFolders } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
+import { VolumeError } from './volume-error'
 import { BaseMountableVolume, type VolumeEntry, type VolumeFile } from './base-mountable-volume'
 import type { LocalVolumeConfig } from './volume-config-schema'
 export { localVolumeConfigSchema, type LocalVolumeConfig } from './volume-config-schema'
@@ -54,6 +57,10 @@ function refuseRoot(volumePath: string): void {
 /** A local volume's folder, by its real path. */
 /** Checks a folder picked for a new local volume, and names the volume after it. */
 export async function prepareLocalVolume({ path: folder }: LocalVolumeConfig): Promise<{ name: string; config: LocalVolumeConfig }> {
+  // The sandbox would lose the folder when the app quits.
+  if (!readsHostFolders(getServerFacts())) {
+    throw new VolumeError('Folders on this Mac are not available as drives in the Mac App Store edition', 400)
+  }
   if (!path.isAbsolute(folder)) {
     throw new Error('The folder path must be an absolute path')
   }

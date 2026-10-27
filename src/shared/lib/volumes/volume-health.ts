@@ -1,5 +1,6 @@
-import type { NotMountedReason, StoredVolume, VolumeSummary } from '@shared/lib/types/mount'
+import type { NotMountedReason, StoredVolume, VolumeSummary, VolumeSummaryWithHealth } from '@shared/lib/types/mount'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
+import { VolumePreparingError } from './volume-error'
 import { instantiateVolume } from './volume-factory'
 
 export function volumeSummary(row: StoredVolume): VolumeSummary {
@@ -7,7 +8,14 @@ export function volumeSummary(row: StoredVolume): VolumeSummary {
   return {
     id: row.id, name: row.name, type: row.type, hostPath: volume?.hostPath ?? null,
     ...(volume?.sourceLabel ? { sourceLabel: volume.sourceLabel } : {}),
+    ...(volume?.readOnly ? { sourceReadOnly: true } : {}),
+    ...(volume?.attention ? { attention: volume.attention } : {}),
   }
+}
+
+/** A preparing reason that carries an error is a failed first copy, so it reads as missing. */
+export function volumeHealth(reason: NotMountedReason | null): VolumeSummaryWithHealth['health'] {
+  return reason === null ? 'ok' : reason === 'preparing' ? 'preparing' : 'missing'
 }
 
 export async function volumeProblem(row: StoredVolume, agentSlug?: string): Promise<NotMountedReason | null> {
@@ -17,6 +25,7 @@ export async function volumeProblem(row: StoredVolume, agentSlug?: string): Prom
   try {
     return (await volume.health()).kind === 'directory' ? null : 'not found'
   } catch (error) {
+    if (error instanceof VolumePreparingError) return error.reason ? `preparing: ${error.reason}` : 'preparing'
     if (error instanceof WorkspaceFileError && error.code === 'not-found') return 'not found'
     if (error instanceof WorkspaceFileError && error.code === 'not-accessible') return 'not accessible'
     return 'unreadable'

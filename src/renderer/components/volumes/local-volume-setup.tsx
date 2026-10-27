@@ -1,13 +1,19 @@
 import { useState } from 'react'
 import { Folder } from 'lucide-react'
-import { canUseHostFeatures } from '@renderer/lib/capabilities'
+import { agentsRunInAppSandbox, usesHostFolderPaths } from '@renderer/lib/capabilities'
 import { localVolumeConfigSchema } from '@shared/lib/volumes/volume-config-schema'
 import { VolumeDetailsFields, VolumeSetupFooter, VolumeSetupHeader } from './volume-setup-layout'
 import { FolderLocationField } from './volume-folder-picker'
 import type { VolumeSetupDefinition, VolumeSetupProps } from './volume-setup'
 
+function localFolderUnavailableReason(): string {
+  return agentsRunInAppSandbox()
+    ? 'Not available in the Mac App Store edition.'
+    : 'Available in the desktop app for a local workspace.'
+}
+
 async function selectLocalFolder() {
-  if (!canUseHostFeatures()) throw new Error('Local folders are available in the desktop app on this workspace’s computer.')
+  if (!usesHostFolderPaths()) throw new Error(localFolderUnavailableReason())
   const path = await window.electronAPI?.openDirectory()
   return path ? localVolumeConfigSchema.parse({ path }) : null
 }
@@ -51,7 +57,7 @@ function LocalVolumeSetup({ initialConfig, initialDetails, onSubmit, onBack, onC
 
 export const localVolumeSetup = {
   type: 'local', label: 'Local folder', description: 'Choose a folder on this computer.', Logo: Folder,
-  configSchema: localVolumeConfigSchema, isAvailable: canUseHostFeatures,
-  unavailableReason: 'Available in the desktop app for a local workspace.',
+  configSchema: localVolumeConfigSchema, isAvailable: usesHostFolderPaths,
+  get unavailableReason() { return localFolderUnavailableReason() },
   begin: selectLocalFolder, Setup: LocalVolumeSetup,
 } satisfies VolumeSetupDefinition<'local'>

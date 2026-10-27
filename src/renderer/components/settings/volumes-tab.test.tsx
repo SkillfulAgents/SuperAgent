@@ -15,7 +15,7 @@ vi.mock('@renderer/hooks/use-volume-definitions', () => ({
   useSaveVolumeDefinition: () => ({ mutateAsync: state.save, isPending: false }),
   useDeleteVolumeDefinition: () => ({ mutateAsync: state.remove, isPending: false }),
 }))
-vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: () => state.host }))
+vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: () => state.host, usesHostFolderPaths: () => state.host, agentsRunInAppSandbox: () => false }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: state.isAdmin }) }))
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => state.navigate, useRouter: () => ({ history: { push: state.push } }), useSearch: () => ({ volume: state.selectedId, source: state.source, from: state.from }) }))
 vi.mock('@renderer/components/volumes/volume-file-browser', () => ({ VolumeFileBrowser: () => <div>Volume files</div> }))
@@ -172,5 +172,15 @@ describe('volume settings', () => {
     expect(state.remove).not.toHaveBeenCalled()
     await userEvent.click(screen.getByRole('button', { name: 'Remove drive' }))
     expect(state.remove).toHaveBeenCalledWith('v1')
+  })
+  it('warns what a drive has not synced, and deletes it on the first confirm', async () => {
+    state.definitions = [{ ...state.definitions[0], type: 'github', hostPath: null, attention: { badge: { label: '1 conflict', tone: 'warning' }, detail: 'notes.md (conflict markers to resolve)', unsynced: 2 } }]
+    render(<VolumesTab />)
+    await userEvent.hover(screen.getByText('1 conflict'))
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('notes.md (conflict markers to resolve)')
+    await userEvent.click(screen.getByRole('button', { name: 'Remove Notes' }))
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Remove "Notes" from saved drives. 2 files that have not synced will be lost.')
+    await userEvent.click(screen.getByRole('button', { name: 'Remove drive' }))
+    expect(state.remove).toHaveBeenCalledExactlyOnceWith('v1')
   })
 })

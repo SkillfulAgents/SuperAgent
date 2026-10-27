@@ -5,6 +5,8 @@ import fs from 'fs'
 import { getSettings } from '@shared/lib/config/settings'
 import { ensureDirectory } from '@shared/lib/utils/file-storage'
 import { withLoginShellPath } from '@shared/lib/utils/login-shell-path'
+import { runsHostGit } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import {
   BaseSkillsetProvider,
   type SkillsetProviderRef,
@@ -134,6 +136,10 @@ export class GithubSkillsetProvider extends BaseSkillsetProvider {
   }
 
   async ensurePublishPreconditions(ref?: SkillsetProviderRef): Promise<void> {
+    // Publishing commits and opens pull requests with git and gh on the host.
+    if (!runsHostGit(getServerFacts())) {
+      throw new Error('Publishing to GitHub needs git and the GitHub CLI, which the Mac App Store edition can’t run.')
+    }
     await this.ensureAuthenticated(ref)
   }
 

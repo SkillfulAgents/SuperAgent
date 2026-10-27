@@ -195,7 +195,7 @@ export interface ApiToolCall {
     totalTokens?: number
     totalToolUseCount?: number
   }
-  /** The runtime's task id for a Bash call run in the background. */
+  /** The runtime's task id for a Bash call run in the background, or a Monitor's watch. */
   backgroundTaskId?: string
 }
 
@@ -324,9 +324,27 @@ export interface ApiInformational {
 }
 
 /**
+ * One batch of a Monitor watch's output, shown where the runtime delivered it
+ * (see monitor-notifications.ts)
+ */
+export interface ApiMonitorEvent {
+  id: string
+  type: 'monitor_event'
+  /** The watch's task id: the Monitor call's backgroundTaskId. */
+  taskId: string
+  description: string | null
+  events: string[]
+  /** Set on the batch that ended the watch (completed, failed, …). */
+  status: string | null
+  endReason: string | null
+  createdAt: Date
+  forked?: boolean
+}
+
+/**
  * Union type for all message-like items in the API response
  */
-export type ApiMessageOrBoundary = ApiMessage | ApiCompactBoundary | ApiMemoryRecall | ApiInformational
+export type ApiMessageOrBoundary = ApiMessage | ApiCompactBoundary | ApiMemoryRecall | ApiInformational | ApiMonitorEvent
 
 // ============================================================================
 // Secret API Types
