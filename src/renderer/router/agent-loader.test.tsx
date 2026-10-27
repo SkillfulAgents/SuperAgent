@@ -32,7 +32,7 @@ vi.mock('@renderer/hooks/query-options', () => ({
 
 // The REAL HttpError so the loader's `err instanceof HttpError` branch matches.
 import { HttpError } from '@renderer/lib/api'
-import { agentLayoutRoute, type RouterContext } from './routes'
+import { agentHomeRoute, agentLayoutRoute, type RouterContext } from './routes'
 import { lenient } from './zod-search'
 import { rootSearchSchema } from './search-schemas'
 import type { UserContextValue } from '@renderer/context/user-context'
@@ -108,14 +108,22 @@ function buildRouter(initialPath: string) {
   // The layout stub renders no <Outlet/>, so this index leaf never actually
   // renders — it only needs to exist so '/agents/$slug' matches. A trivial stub
   // avoids grafting the real agent-home component across a different route tree
-  // (its type is bound to the production root's context/search).
+  // (its type is bound to the production root's context/search). Its loader is
+  // the real one: the Team Brain agent's home redirects to /team-brain.
   const home = createRoute({
     getParentRoute: () => layout,
     path: '/',
+    loader: agentHomeRoute.options.loader,
     component: () => <div data-testid="agent-home-stub" />,
   })
 
-  const routeTree = rootRoute.addChildren([appShellRoute.addChildren([layout.addChildren([home])])])
+  const teamBrain = createRoute({
+    getParentRoute: () => appShellRoute,
+    path: 'team-brain',
+    component: () => <div data-testid="team-brain-stub" />,
+  })
+
+  const routeTree = rootRoute.addChildren([appShellRoute.addChildren([layout.addChildren([home]), teamBrain])])
 
   return createRouter({
     routeTree,
@@ -159,6 +167,16 @@ describe('agentLayoutRoute loader (access-control collapse + rethrow + cache war
 
     expect(await screen.findByTestId('agent-load-error')).toBeInTheDocument()
     expect(screen.queryByTestId('agent-not-found')).toBeNull()
+  })
+
+  it('the Team Brain agent → its home redirects to /team-brain, replacing the entry', async () => {
+    agentQueryFn.mockResolvedValue({ slug: 'brain', name: 'Team Brain', teamBrain: { volumeId: 'v1' } })
+    const router = buildRouter('/agents/brain')
+    render(<RouterProvider router={router} />)
+
+    expect(await screen.findByTestId('team-brain-stub')).toBeInTheDocument()
+    expect(router.state.location.pathname).toBe('/team-brain')
+    expect(router.history.length).toBe(1)
   })
 
   it('success → agent renders (neither fallback) AND the loader warms the cache', async () => {

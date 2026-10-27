@@ -21,17 +21,20 @@ const DESCRIPTIONS: Partial<Record<TeamBrainLocationId, string>> = {
   dropbox: 'A Team Brain folder in your Dropbox.',
 }
 
-// In the drives' own order, as their source picker lists them.
-export const TEAM_BRAIN_LOCATIONS: readonly TeamBrainLocation[] = Object.values(volumeSetupRegistry).map((drive) => {
-  return {
+/** Where most teams already keep shared files, offered first; every other drive follows in the drives' own order. */
+const FIRST: readonly TeamBrainLocationId[] = ['googledrive', 'dropbox']
+const rank = (id: TeamBrainLocationId) => (FIRST.includes(id) ? FIRST.indexOf(id) : FIRST.length)
+
+export const TEAM_BRAIN_LOCATIONS: readonly TeamBrainLocation[] = Object.values(volumeSetupRegistry)
+  .toSorted((a, b) => rank(a.type) - rank(b.type))
+  .map((drive) => ({
     id: drive.type,
     name: drive.label,
     description: DESCRIPTIONS[drive.type] ?? drive.description,
     Icon: drive.Logo,
     isAvailable: drive.isAvailable,
     unavailableReason: drive.unavailableReason,
-  }
-})
+  }))
 
 export function teamBrainLocation(id: TeamBrainLocationId): TeamBrainLocation {
   const location = TEAM_BRAIN_LOCATIONS.find((l) => l.id === id)

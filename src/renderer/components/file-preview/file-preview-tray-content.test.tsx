@@ -41,7 +41,13 @@ vi.mock('@renderer/context/user-context', () => ({
 vi.mock('@renderer/hooks/use-file-size', () => ({ useFileSize: () => ({ data: 12_800 }) }))
 // The drawer's close controls ride in the tab bar's trailing slot; render just that.
 vi.mock('./file-tab-bar', () => ({ FileTabBar: ({ trailing }: { trailing?: ReactNode }) => <div>{trailing}</div> }))
-vi.mock('./renderers/file-renderer', () => ({ FileRenderer: () => <div data-testid="file-renderer" /> }))
+const { renderer } = vi.hoisted(() => ({ renderer: { agentSlug: undefined as string | undefined } }))
+vi.mock('./renderers/file-renderer', () => ({
+  FileRenderer: ({ agentSlug }: { agentSlug?: string }) => {
+    renderer.agentSlug = agentSlug
+    return <div data-testid="file-renderer" />
+  },
+}))
 vi.mock('./folder-browser', () => ({ FolderBrowser: () => <div data-testid="folder-browser" /> }))
 vi.mock('./comments/comment-bar', () => ({ CommentBar: () => <div data-testid="comment-bar" /> }))
 
@@ -131,6 +137,9 @@ describe('FilePreviewTrayContent', () => {
     expect(screen.getByTestId('file-preview-title')).toHaveTextContent('README.md')
     expect(screen.getByTestId('file-renderer')).toBeInTheDocument()
     expect(screen.getByLabelText('Download file').closest('a')).toHaveAttribute('href', url)
+    // It is no agent's file: nothing in it resolves against a workspace, and it takes no comments.
+    expect(renderer.agentSlug).toBeUndefined()
+    expect(screen.queryByTestId('comment-bar')).toBeNull()
   })
 
   it('hides copy for a file whose bytes could not be text', () => {

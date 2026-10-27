@@ -5,7 +5,7 @@ import { useOnboarding } from '@renderer/context/onboarding-context'
 import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
 import { captureRendererException } from '@renderer/lib/error-reporting'
-import { fillTeamBrainSetupBlock } from '@renderer/lib/team-brain/team-brain-setup-block'
+import { fillTeamBrainSetupBlock, TEAM_BRAIN_CRON } from '@renderer/lib/team-brain/team-brain-setup-block'
 import type { TeamBrainPrepared } from '@renderer/lib/team-brain/team-brain-schema'
 import { getTeamBrainState, usesTeamBrain, useTeamBrain } from '@renderer/lib/team-brain/team-brain-store'
 import type { VolumeDetails } from '@renderer/components/volumes/volume-details-schema'
@@ -15,7 +15,9 @@ import { mountPathOf } from '@shared/lib/volumes/base-mountable-volume'
 import type { VolumeSource } from '@shared/lib/volumes/volume-config-schema'
 import { useDiscoverableAgents, useInstallAgentFromSkillset } from './use-agent-templates'
 import { useAgents, useDeleteAgent, useStartAgent, useUpdateAgent } from './use-agents'
-import { useAddMount, useSetMountReadOnly } from './use-mounts'
+import { useConnectedAccounts } from './use-connected-accounts'
+import { useAddMount } from './use-mounts'
+import { useGiveTeamBrain } from './use-team-brain-access'
 import { useStartOnboardingSession } from './use-start-onboarding-session'
 import { useSettings, useUpdateSettings } from './use-settings'
 import { useDeleteVolumeDefinition, useSaveVolumeDefinition } from './use-volume-definitions'
@@ -30,13 +32,15 @@ const TEAM_BRAIN_TEMPLATE_PATH = 'agents/team-brain/'
 export function useTeamBrainSetup() {
   const tb = useTeamBrain()
   const { setOnboarding } = useOnboarding()
+  const { user } = useUser()
+  const { data: connected } = useConnectedAccounts()
   const queryClient = useQueryClient()
   // Also warms the skillset cache the install reads from.
   const { data: templates } = useDiscoverableAgents()
   const { data: agents } = useAgents()
   const install = useInstallAgentFromSkillset()
   const addMount = useAddMount()
-  const setMountReadOnly = useSetMountReadOnly()
+  const giveTeamBrain = useGiveTeamBrain()
   const startAgent = useStartAgent()
   const deleteAgent = useDeleteAgent()
   const deleteVolume = useDeleteVolumeDefinition()
@@ -123,7 +127,7 @@ export function useTeamBrainSetup() {
     const { instructions = '' }: ApiAgent = await res.json()
     await updateAgent.mutateAsync({
       slug: prepared.agentSlug,
-      instructions: fillTeamBrainSetupBlock(instructions, { agentSlug: prepared.agentSlug, brainPath: prepared.brainPath, schedule }),
+      instructions: fillTeamBrainSetupBlock(instructions, { agentSlug: prepared.agentSlug, brainPath: prepared.brainPath, schedule, setUpBy: user, accounts: connected?.accounts }),
     })
     // Only a refusal says the record is not this set-up's: after any other failure it may have been saved.
     onRecordWrite()
@@ -139,20 +143,16 @@ export function useTeamBrainSetup() {
     }
     // Published once the record is this set-up's. Team Brain's own read-write attachment wins over the global read-only one.
     if (everyAgent) await saveVolume.mutateAsync({ id: prepared.volumeId, global: 'read' })
+    const upkeep = await apiFetch(`/api/agents/${prepared.agentSlug}/team-brain/upkeep`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scheduleExpression: TEAM_BRAIN_CRON[schedule] }),
+    }).catch(() => null)
+    // Past the record Team Brain exists, so a failure here is reported, never thrown back into a set-up that would delete it.
+    if (!upkeep?.ok) toast.error('Could not schedule Brain upkeep', { description: 'Team Brain is set up but will not sync on its own yet.' })
     // The record marks the agent; the list must carry the mark before set-up stops hiding it.
     await queryClient.invalidateQueries({ queryKey: ['agents'] })
 
     // Running agents pick the drive up on their next start.
-    const attached = Promise.allSettled(chosen.map(async (slug) => {
-      if (!everyAgent) {
-        const mount = await addMount.mutateAsync({ agentSlug: slug, volumeId: prepared.volumeId })
-        await setMountReadOnly.mutateAsync({ agentSlug: slug, mountId: mount.id, readOnly: true })
-      }
-      const grant = await apiFetch(`/api/agents/${slug}/x-agent-policies/invoke/${prepared.agentSlug}`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'allow' }),
-      })
-      if (!grant.ok) throw new Error('Could not let it message Team Brain')
-    }))
+    const attached = Promise.allSettled(chosen.map((slug) => giveTeamBrain(slug, { volumeId: prepared.volumeId, brainSlug: prepared.agentSlug, mount: !everyAgent })))
     await startOnboardingSession(prepared.agentSlug, prepared.firstPrompt)
     const failed = (await attached).filter((result) => result.status === 'rejected').length
     if (failed > 0) {

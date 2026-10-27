@@ -516,6 +516,9 @@ export function GlobalNotificationHandler() {
               queryClient.invalidateQueries({ queryKey: ['artifacts'] })
             }
 
+            // A finished run may have changed Team Brain's drive: its tree and sync summaries read again (none for other agents).
+            if ((data.type === 'session_idle' || data.type === 'session_error') && eventAgentSlug) confirmations.invalidate(['team-brain', eventAgentSlug])
+
             // Automation session lists show isActive status — refresh them
             confirmations.invalidate(['webhook-trigger-sessions'])
             confirmations.invalidate(['scheduled-task-sessions'])

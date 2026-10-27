@@ -53,9 +53,10 @@ export function useDeleteVolumeDefinition() {
 }
 
 
-export function useVolumeAgents(id: string) {
+export function useVolumeAgents(id: string | undefined) {
   return useQuery<{ attachments: { agentSlug: string; mountId: string }[] }>({
     queryKey: ['volume-agents', id],
-    queryFn: async () => (await checkedResponse(await apiFetch(`/api/volume-definitions/${encodeURIComponent(id)}/agents`))).json(),
+    enabled: !!id,
+    queryFn: async () => (await checkedResponse(await apiFetch(`/api/volume-definitions/${encodeURIComponent(id!)}/agents`))).json(),
   })
 }

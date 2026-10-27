@@ -1,7 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { Brain, Folder, Loader2, X } from 'lucide-react'
 import { useAgents } from '@renderer/hooks/use-agents'
-import { Switch } from '@renderer/components/ui/switch'
 import { volumeSetupRegistry } from '@renderer/components/volumes/volume-setup-registry'
 import { parseVolumeSource, type VolumeSetupDefinition } from '@renderer/components/volumes/volume-setup'
 import { VolumeEveryoneOnlyContext, VolumeSetupFooterContext, type VolumeSetupFooterProps } from '@renderer/components/volumes/volume-setup-layout'
@@ -19,11 +18,12 @@ import {
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@renderer/components/ui/dialog'
-import { useTeamBrain, type TeamBrainStore } from '@renderer/lib/team-brain/team-brain-store'
+import { usesTeamBrain, useTeamBrain, type TeamBrainStore } from '@renderer/lib/team-brain/team-brain-store'
 import { TEAM_BRAIN_STEPS, type TeamBrainLocationId, type TeamBrainSourceId, type TeamBrainStep } from '@renderer/lib/team-brain/team-brain-schema'
 import { TeamBrainSourceIcon } from './team-brain-source-icon'
 import { LocationChoices, ScheduleChoices } from './team-brain-choices'
-import { AgentAccessList } from './team-brain-agent-access'
+import { teamBrainLocation } from './team-brain-locations'
+import { AgentAccessList, EveryAgentRow } from './team-brain-agent-access'
 
 /** The rail's names for each step. */
 const STEP_LABELS: Record<TeamBrainStep, string> = {
@@ -175,14 +175,12 @@ function StepPanel({
   children,
   back,
   next,
-  hint,
 }: {
   title: string
   subtitle: ReactNode
   children: ReactNode
   back?: () => void
   next?: { label: string; onClick: () => void; disabled?: boolean; testId?: string }
-  hint?: ReactNode
 }) {
   return (
     <>
@@ -193,7 +191,6 @@ function StepPanel({
         <div className="my-auto pt-7">{children}</div>
       </div>
       <footer className="flex h-[60px] shrink-0 items-center justify-end gap-2 border-t px-[18px]">
-        {hint && <span className="mr-auto min-w-0 text-[13px] text-muted-foreground">{hint}</span>}
         {back && (
           <button type="button" className={SECONDARY} onClick={back} data-testid="team-brain-back">
             Back
@@ -211,7 +208,10 @@ function StepPanel({
 
 // ── 01 Where it lives ────────────────────────────────────────────────────────
 
-/** Choosing a home opens that drive's own set-up in place of the cards; saving it prepares Team Brain there. */
+/**
+ * Choosing a home only selects it; Next opens that drive's own set-up in place of the cards, and saving it prepares
+ * Team Brain there. Back on this step with the prepared home still chosen, Next goes straight on.
+ */
 function LocationStep({
   tb,
   nav,
@@ -221,6 +221,7 @@ function LocationStep({
   nav: StepNav
   onPrepare: (source: VolumeSource, details: VolumeDetails) => Promise<boolean>
 }) {
+  const [picked, setPicked] = useState<TeamBrainLocationId | null>(tb.state.location)
   const [setup, setSetup] = useState<{ definition: VolumeSetupDefinition; config: unknown } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
@@ -281,13 +282,18 @@ function LocationStep({
     )
   }
 
+  const ready = !!tb.state.prepared && picked === tb.state.location
   return (
     <StepPanel
       title="Choose where Team Brain knowledge is stored"
       subtitle="Every agent you connect to Team Brain will read and add to the knowledge in this storage. It is possible to migrate later if needed."
-      next={{ label: nav.nextLabel, disabled: !tb.state.prepared, onClick: nav.next }}
+      next={{
+        label: ready || !picked ? nav.nextLabel : `Next: Set up ${teamBrainLocation(picked).name}`,
+        disabled: !picked,
+        onClick: () => { if (ready) nav.next(); else if (picked) void choose(picked) },
+      }}
     >
-      <LocationChoices value={tb.state.location} onChoose={(id) => void choose(id)} />
+      <LocationChoices value={picked} onChoose={(id) => { setPicked(id); setError(null) }} />
       {error && <p role="alert" className="mt-4 text-[13px] text-destructive">{error}</p>}
     </StepPanel>
   )
@@ -331,22 +337,15 @@ function AgentsStep({ tb, nav }: { tb: TeamBrainStore; nav: StepNav }) {
       back={nav.back}
       next={{ label: nav.nextLabel, onClick: nav.next }}
     >
-      <div className="flex items-center gap-3 pb-3" data-testid="team-brain-every-agent">
-        <span className="min-w-0 flex-1">
-          <span className="block text-[13px] font-medium">Every agent</span>
-          <span className="block text-[12px] text-muted-foreground">
-            Includes agents you make later.
-          </span>
-        </span>
-        <Switch
-          checked={tb.state.everyAgent}
-          onCheckedChange={tb.setEveryAgent}
-          aria-label="Every agent"
-          data-testid="team-brain-every-agent-switch"
-        />
-      </div>
+      <EveryAgentRow checked={tb.state.everyAgent} canGoGlobal onCheckedChange={tb.setEveryAgent} className="pb-3" />
       {agents.length > 0 ? (
-        <AgentAccessList agents={agents} everyAgent={tb.state.everyAgent} className="border-y" />
+        <AgentAccessList
+          agents={agents}
+          everyAgent={tb.state.everyAgent}
+          isOn={(slug) => usesTeamBrain(tb.state, slug)}
+          onToggle={tb.setUsesTeamBrain}
+          className="border-y"
+        />
       ) : (
         <p className="text-[13px] text-muted-foreground">No agents yet. Agents you make later can add the Team Brain drive from their Drives.</p>
       )}
@@ -362,10 +361,10 @@ function SyncStep({ tb, nav }: { tb: TeamBrainStore; nav: StepNav }) {
       title="Set how often it syncs"
       subtitle="Each sync reads what changed in your sources, which costs tokens. Syncing more often keeps your agents’ context fresher; less often costs less."
       back={nav.back}
-      hint="You can change this any time."
       next={{ label: nav.nextLabel, onClick: nav.next }}
     >
       <ScheduleChoices value={tb.state.schedule} onChoose={tb.setSchedule} />
+      <p className="mt-4 text-[13px] text-muted-foreground">You can change this any time.</p>
     </StepPanel>
   )
 }
