@@ -8,6 +8,7 @@
 import { createClient } from '@libsql/client'
 import { drizzle } from 'drizzle-orm/libsql'
 import * as schema from '../schema'
+import { migrateInBatch } from '../batch-migrate'
 import type { DatabaseDriver } from './types'
 
 /**
@@ -23,6 +24,18 @@ export function libsql(url: string): DatabaseDriver {
       if (url.startsWith('file:')) await client.execute('PRAGMA journal_mode = WAL')
       return {
         db: drizzle(client, { schema }),
+        // A batch, not BEGIN/COMMIT: the path a D1 driver takes.
+        migrate: (migrations, table) =>
+          migrateInBatch(
+            {
+              query: async (sql) => (await client.execute(sql)).rows.map((row) => Array.from(row)),
+              batch: async (statements) => {
+                await client.batch(statements, 'write')
+              },
+            },
+            migrations,
+            table,
+          ),
         close: () => {
           client.close()
         },

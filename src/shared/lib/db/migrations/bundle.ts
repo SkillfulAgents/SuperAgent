@@ -658,5 +658,13 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1792781899070,
     "hash": "01e2b1213c3ad5da13957a52c4656cfb11eddcd8ea9347b9b3252697db96790d"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `host_state` (\n\t`key` text PRIMARY KEY NOT NULL,\n\t`value` text NOT NULL,\n\t`version` integer NOT NULL,\n\t`expires_at` integer\n);\n"
+    ],
+    "bps": true,
+    "folderMillis": 1793131332452,
+    "hash": "2097bc081d9102323ec94dea5d91c123396be290d7e78686309ff9381b8407b7"
   }
 ]

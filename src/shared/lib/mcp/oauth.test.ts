@@ -1624,7 +1624,7 @@ describe('oauth', () => {
       expect(mockFetch).toHaveBeenCalledTimes(fetchCallsBefore)
       expect(mockInsertValues).not.toHaveBeenCalled()
       expect(
-        validateAndConsumeOAuthErrorResponse(state, 'https://auth.example.com').valid
+        (await validateAndConsumeOAuthErrorResponse(state, 'https://auth.example.com')).valid
       ).toBe(true)
     })
 
@@ -1645,7 +1645,7 @@ describe('oauth', () => {
       expect(mockFetch).toHaveBeenCalledTimes(fetchCallsBefore)
       expect(mockInsertValues).not.toHaveBeenCalled()
       expect(
-        validateAndConsumeOAuthErrorResponse(state, 'https://auth.example.com').valid
+        (await validateAndConsumeOAuthErrorResponse(state, 'https://auth.example.com')).valid
       ).toBe(true)
     })
 
@@ -1665,7 +1665,7 @@ describe('oauth', () => {
       expect(result.success).toBe(false)
       expect(mockFetch).toHaveBeenCalledTimes(fetchCallsBefore)
       expect(
-        validateAndConsumeOAuthErrorResponse(state, 'https://auth.example.com').valid
+        (await validateAndConsumeOAuthErrorResponse(state, 'https://auth.example.com')).valid
       ).toBe(true)
     })
 
@@ -1710,7 +1710,7 @@ describe('oauth', () => {
       expect(result.success).toBe(false)
       expect(mockFetch).toHaveBeenCalledTimes(fetchCallsBefore)
       expect(
-        validateAndConsumeOAuthErrorResponse(state, 'https://auth.example.com').valid
+        (await validateAndConsumeOAuthErrorResponse(state, 'https://auth.example.com')).valid
       ).toBe(true)
     })
 
@@ -1730,7 +1730,7 @@ describe('oauth', () => {
       expect(result.success).toBe(false)
       expect(mockFetch).toHaveBeenCalledTimes(fetchCallsBefore)
       expect(
-        validateAndConsumeOAuthErrorResponse(state, 'https://auth.example.com').valid
+        (await validateAndConsumeOAuthErrorResponse(state, 'https://auth.example.com')).valid
       ).toBe(true)
     })
 
@@ -1772,7 +1772,7 @@ describe('oauth', () => {
         supportsIss: true,
       })
 
-      const validation = validateAndConsumeOAuthErrorResponse(
+      const validation = await validateAndConsumeOAuthErrorResponse(
         state,
         'https://auth.example.com'
       )
@@ -1793,7 +1793,7 @@ describe('oauth', () => {
         supportsIss: true,
       })
 
-      const validation = validateAndConsumeOAuthErrorResponse(
+      const validation = await validateAndConsumeOAuthErrorResponse(
         state,
         'https://evil.example.com'
       )

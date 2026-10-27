@@ -3,6 +3,7 @@ import fs from 'fs'
 import path from 'path'
 import type { z } from 'zod'
 import { getDataDir } from '@shared/lib/config/data-dir'
+import { defineSingletonHostFile, hostFileKey, hostStateActive, readScoped } from '@shared/lib/host-state/scope'
 
 /**
  * Sealing for the Browser Vault: AES-256-GCM under the vault's own key, 32
@@ -47,7 +48,16 @@ function readKeyFile(keyPath: string): Buffer | null {
 
 const keys = new Map<string, Buffer>()
 
+defineSingletonHostFile(KEY_FILE, () => crypto.randomBytes(KEY_BYTES).toString('base64'))
+
+function scopedVaultKey(): Buffer {
+  const key = Buffer.from(readScoped(hostFileKey(KEY_FILE)) ?? '', 'base64')
+  if (key.length !== KEY_BYTES) throw new VaultSealError('The stored vault key is not a vault key')
+  return key
+}
+
 function vaultKey(): Buffer {
+  if (hostStateActive()) return scopedVaultKey()
   const keyPath = path.join(getDataDir(), KEY_FILE)
   const cached = keys.get(keyPath)
   if (cached) return cached
