@@ -11,10 +11,12 @@ function GithubLogo({ className }: { className?: string }) {
   return <ServiceIcon slug="github" className={className} />
 }
 
+/** The picker walks a repository, then one of its branches, then that branch's folders. A branch's root or any
+ * folder in it can be chosen; a repository can only be opened. */
 type GithubCursor = { id: string; name: string }[]
 const githubFolders: VolumeFolderSource<GithubCursor> = {
   type: 'github', label: 'GitHub',
-  title: 'Select a GitHub folder', description: 'Choose a repository, then a branch and folder.',
+  title: 'Choose a GitHub folder', description: 'Open a repository and a branch, then select the folder to use or open one to look inside it.',
   query: (accountId, cursor): Record<string, string> => {
     const [repo, branch] = cursor
     if (!repo) return { accountId }
@@ -22,9 +24,8 @@ const githubFolders: VolumeFolderSource<GithubCursor> = {
     return { accountId, repoId: repo.id, branch: branch.id, path: cursor.length > 2 ? cursor.at(-1)?.id ?? '' : '' }
   },
   folders: (data, cursor) => data.folders.map(folder => ({ id: folder.id, name: folder.name, cursor: [...cursor, folder] })),
-  location: cursor => cursor.map(folder => folder.name).join(' / ') || 'GitHub',
-  parent: cursor => cursor.length ? cursor.slice(0, -1) : null,
-  selectLabel: cursor => cursor.length < 2 ? null : cursor.length === 2 ? 'Use repository root' : 'Use this folder',
+  crumbs: cursor => [{ name: 'GitHub', cursor: [] }, ...cursor.map((folder, index) => ({ name: folder.name, cursor: cursor.slice(0, index + 1) }))],
+  confirmLabel: cursor => cursor.length < 2 ? null : cursor.length === 2 ? 'Use repository root' : `Use “${cursor.at(-1)?.name}”`,
 }
 
 function GithubVolumeSetup({ initialDetails, onSubmit, onBack, onCancel, isSaving, error, clearError, attachToAgent }: VolumeSetupProps) {
@@ -37,7 +38,7 @@ function GithubVolumeSetup({ initialDetails, onSubmit, onBack, onCancel, isSavin
   const active = account?.status === 'active' && !accounts.error
 
   const selectAccount = (id: string) => {
-    if (!id || id === accountId) return
+    if (id === accountId) return
     if (config && details.name === (config.path.split('/').at(-1) || config.repo)) setDetails({ ...details, name: '' })
     setAccountId(id)
     setConfig(null)
@@ -46,7 +47,7 @@ function GithubVolumeSetup({ initialDetails, onSubmit, onBack, onCancel, isSavin
 
   return <>
     <VolumeSetupHeader title={step === 'account' ? 'Connect GitHub' : 'Set up GitHub drive'}
-      description={step === 'account' ? 'Choose an account or connect a new one.' : 'Select a repository, branch and folder, then name this drive.'}
+      description={step === 'account' ? (accounts.data?.accounts.length === 0 ? 'Sign in to GitHub, then choose a repository to add.' : 'Choose an account or connect a new one.') : 'Select a repository, branch and folder, then name this drive.'}
       Logo={GithubLogo} steps={['Source', 'Account', 'Details']} step={step === 'account' ? 1 : 2} />
     {step === 'account' ? <VolumeAccountStep toolkit="github" label="GitHub" accounts={accounts} accountId={accountId} active={active}
       onSelect={selectAccount} onNext={() => { clearError(); setStep('details') }} onBack={onBack} onCancel={onCancel} />
