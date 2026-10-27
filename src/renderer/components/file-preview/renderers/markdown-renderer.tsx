@@ -46,7 +46,14 @@ export function MarkdownRenderer({ url, filePath, agentSlug }: MarkdownRendererP
           {frontmatter !== null && (
             <details className="not-prose mb-4 rounded-md border text-xs" data-testid="markdown-frontmatter">
               <summary className="cursor-pointer select-none px-3 py-1.5 text-muted-foreground">Properties</summary>
-              <pre className="whitespace-pre-wrap break-words border-t px-3 py-2 font-mono text-muted-foreground">{frontmatter}</pre>
+              <pre className="whitespace-pre-wrap break-words border-t px-3 py-2 font-mono text-muted-foreground">
+                {frontmatter.split(/\r?\n/).map((line, i) => (
+                  // The opening delimiter is line 1. Nest the text so updates preserve comment pins.
+                  <span key={i} data-comment-lines={`${i + 2}-${i + 2}`} className="block">
+                    <span>{line || '\n'}</span>
+                  </span>
+                ))}
+              </pre>
             </details>
           )}
           <AgentMarkdown text={body} mode="settled" agentSlug={agentSlug} rehypePlugins={REHYPE_PLUGINS} />
