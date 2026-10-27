@@ -66,10 +66,13 @@ scheduledTasksRouter.get('/:taskId/sessions', TaskAgentRole('viewer'), async (c)
     const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
     const actor = agentRegistry.get(task!.agentSlug)
     const sessions = await actor.sessions.byScheduledTask(task!.id)
-    const active = new Set((await actor.live()).activeSessionIds)
+    const live = await actor.live()
+    const active = new Set(live.activeSessionIds)
+    const awaiting = new Set(live.awaitingSessionIds)
     const sessionsWithStatus = sessions.map((session) => ({
       ...session,
       isActive: active.has(session.id),
+      isAwaitingInput: awaiting.has(session.id),
     }))
     return c.json(sessionsWithStatus)
   } catch (error) {

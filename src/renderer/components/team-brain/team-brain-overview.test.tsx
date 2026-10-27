@@ -44,9 +44,11 @@ const { upkeep } = vi.hoisted(() => ({
 const task = (id: string, name: string, status: string) => ({
   id, name, status, scheduleExpression: '0 0 * * *', nextExecutionAt: new Date(Date.now() + 3_600_000).toISOString(), lastExecutedAt: new Date(Date.now() - 7_200_000).toISOString(),
 })
+// Its sessions: chats from the agent's list, and runs of its scheduled tasks.
+const { sessions } = vi.hoisted(() => ({ sessions: { chats: [] as unknown[], runs: [] as unknown[] } }))
 vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
   useScheduledTasks: () => ({ data: upkeep.tasks }),
-  useScheduledTasksSessions: () => [],
+  useScheduledTasksSessions: () => sessions.runs,
 }))
 // Sources are the Team Brain agent's own connections; they open on its Connections page.
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }))
@@ -75,7 +77,9 @@ vi.mock('@renderer/hooks/use-team-brain-syncs', () => ({
     ],
   }),
 }))
-vi.mock('@renderer/hooks/use-sessions', () => ({ useSessions: () => ({ data: [] }) }))
+vi.mock('@renderer/hooks/use-sessions', () => ({ useSessions: () => ({ data: sessions.chats }) }))
+// A session row's right-click menu needs the app's session actions; here a row is only its link.
+vi.mock('@renderer/components/sessions/session-context-menu', () => ({ SessionContextMenu: ({ children }: { children: unknown }) => children }))
 // Read and listed, unless a case says the drive could not be read.
 const { driveRead } = vi.hoisted(() => ({
   driveRead: {
@@ -131,6 +135,8 @@ const BRAIN: ApiAgent = {
 }
 
 beforeEach(() => {
+  sessions.chats = []
+  sessions.runs = []
   resetTeamBrainState()
   upkeep.tasks = [task('t1', 'Nightly digest', 'pending'), task('t2', 'Weekly people check', 'paused')]
   screenSize.wide = true
@@ -410,5 +416,59 @@ describe('TeamBrainOverview', () => {
     expect(screen.queryByTestId('team-brain-turn-off')).toBeNull()
     await userEvent.click(screen.getByTestId('team-brain-agents-toggle'))
     expect(screen.getByTestId('team-brain-agent-writer')).toBeDisabled()
+  })
+
+  it('shows the latest sessions a person started under the composer, and See all opens the rest in place', async () => {
+    const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString()
+    const chat = (id: string, h: number, extra = {}) => ({ id, agentSlug: 'team-brain', name: `Chat ${id}`, createdAt: hoursAgo(h + 1), lastActivityAt: hoursAgo(h), ...extra })
+    sessions.chats = [chat('1', 1), chat('2', 2), chat('3', 3), chat('4', 4), chat('5', 5), chat('agent', 0, { invokedByAgentSlug: 'writer' })]
+    sessions.runs = [
+      { id: 'sync-waiting', name: 'Brain upkeep asks', createdAt: hoursAgo(9), lastActivityAt: hoursAgo(8), isAwaitingInput: true },
+      { id: 'sync-done', name: 'Brain upkeep', createdAt: hoursAgo(1), lastActivityAt: hoursAgo(0) },
+    ]
+    render(<TeamBrainOverview agent={BRAIN} />)
+    const recent = screen.getByTestId('team-brain-recent-sessions')
+    const rows = () => within(recent).getAllByText(/^(Chat|Brain upkeep)/).map((row) => row.textContent).sort()
+    // The run waiting on someone, then the two newest chats; not other agents' messages or a finished sync.
+    expect(rows()).toEqual(['Brain upkeep asks', 'Chat 1', 'Chat 2'])
+    // It sits between the composer and the sync summaries.
+    const composer = screen.getByTestId('team-brain-composer')
+    const summaries = screen.getByTestId('team-brain-syncs')
+    expect(composer.compareDocumentPosition(recent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(recent.compareDocumentPosition(summaries) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    await userEvent.click(within(recent).getByTestId('team-brain-see-all-sessions'))
+    // All six, five a page, newest first: the run waiting since eight hours ago is on the second.
+    expect(rows()).toEqual(['Chat 1', 'Chat 2', 'Chat 3', 'Chat 4', 'Chat 5'])
+    expect(within(recent).getByText('Page 1 of 2')).toBeInTheDocument()
+    expect(screen.queryByTestId('team-brain-settings')).toBeNull()
+    await userEvent.click(within(recent).getByTestId('team-brain-see-all-sessions'))
+    expect(rows()).toHaveLength(3)
+  })
+
+  it('has no See all sessions while the recent ones are all there are', () => {
+    sessions.chats = [{ id: '1', agentSlug: 'team-brain', name: 'Chat 1', createdAt: new Date().toISOString(), lastActivityAt: new Date().toISOString() }]
+    render(<TeamBrainOverview agent={BRAIN} />)
+    expect(screen.getByTestId('team-brain-recent-sessions')).toBeInTheDocument()
+    expect(screen.queryByTestId('team-brain-see-all-sessions')).toBeNull()
+  })
+
+  it('has no recent sessions until someone starts one', () => {
+    render(<TeamBrainOverview agent={BRAIN} />)
+    expect(screen.queryByTestId('team-brain-recent-sessions')).toBeNull()
+  })
+
+  it('pages all its sessions five at a time once expanded', async () => {
+    const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString()
+    sessions.chats = Array.from({ length: 14 }, (_, i) => ({ id: `${i + 1}`, agentSlug: 'team-brain', name: `Chat ${i + 1}`, createdAt: hoursAgo(i + 2), lastActivityAt: hoursAgo(i + 1) }))
+    render(<TeamBrainOverview agent={BRAIN} />)
+    const recent = screen.getByTestId('team-brain-recent-sessions')
+    expect(within(recent).queryByText(/^Page /)).toBeNull()
+    await userEvent.click(within(recent).getByTestId('team-brain-see-all-sessions'))
+    expect(within(recent).getByText('Page 1 of 3')).toBeInTheDocument()
+    expect(within(recent).getAllByText(/^Chat /)).toHaveLength(5)
+    await userEvent.click(within(recent).getByRole('button', { name: 'Next page' }))
+    await userEvent.click(within(recent).getByRole('button', { name: 'Next page' }))
+    expect(within(recent).getAllByText(/^Chat /)).toHaveLength(4)
   })
 })

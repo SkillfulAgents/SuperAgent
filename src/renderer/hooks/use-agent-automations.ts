@@ -20,6 +20,8 @@ export interface AutomationSessionInfo {
   createdAt: string
   lastActivityAt?: string
   isActive?: boolean
+  /** Waiting on a person: a question, an approval or a review. */
+  isAwaitingInput?: boolean
 }
 
 // ---------------------------------------------------------------------------

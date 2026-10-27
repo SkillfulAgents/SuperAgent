@@ -34,7 +34,8 @@ import { IntegrationRow, RowHoverChevron } from '@renderer/components/connection
 import { useNavigate } from '@tanstack/react-router'
 import { formatDistanceToNow } from 'date-fns'
 import { useSessions } from '@renderer/hooks/use-sessions'
-import { RelatedSessions, toSessionItem } from '@renderer/components/sessions/related-sessions'
+import { recentSessions, RECENT_SESSIONS } from '@renderer/lib/team-brain/team-brain-sessions'
+import { RelatedSessions } from '@renderer/components/sessions/related-sessions'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { AccountStatusBadge } from '@renderer/components/connections/account-status-badge'
 import { useAgentConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
@@ -167,6 +168,12 @@ function OverviewBody({
   const tasks = useBrainTasks(agentSlug)
   const active = tasks.some((task) => task.status === 'pending')
   const { data: syncs = [], isError: syncsUnreadable } = useTeamBrainSyncs(agentSlug, volumeId)
+  // Recent sessions: what a person started here, and any scheduled run waiting on someone.
+  const { data: chats } = useSessions(agentSlug)
+  const runs = useScheduledTasksSessions(tasks.map((task) => task.id))
+  const [allSessions, setAllSessions] = useState(false)
+  const everySession = useMemo(() => recentSessions(chats ?? [], runs, Infinity), [chats, runs])
+  const recent = allSessions ? everySession : everySession.slice(0, RECENT_SESSIONS)
   const navigate = useNavigate()
   // A page opens in the file drawer from the drive, as the drive's own file browser opens it. A "+N more" past what
   // even an opened folder shows opens as a list of the pages it stands for.
@@ -200,8 +207,8 @@ function OverviewBody({
     if (settingsOpen && !wide && !target.closest('#team-brain-settings')) onSettingsOpenChange(false)
   }
 
-  const { scrollRef, treeRef, treeTop, treeHeight, viewHeight } = useStickyTree()
-  const { ref: dockRef, stuck: docked } = useStuck(scrollRef, treeTop)
+  const { scrollRef, treeRef, dockRef, treeTop, treeHeight, viewHeight } = useStickyTree()
+  const docked = useStuck(scrollRef, dockRef, treeTop)
   const wide = useMediaQuery(SETTINGS_BESIDE_PAGE)
   // The panel stays out while it fades away after closing.
   const [settingsClosing, setSettingsClosing] = useState(false)
@@ -253,7 +260,7 @@ function OverviewBody({
             columns do, while the tree behind stays exactly where it is. */}
         <div
           // Makes room on the panel's own curves (team-brain.css), so the two move as one.
-          className={cn('team-brain-column relative space-y-8', settingsOpen && 'xl:pr-[392px]')}
+          className={cn('team-brain-column relative space-y-4', settingsOpen && 'xl:pr-[392px]')}
           style={showSettings && wide && panelHeight ? { minHeight: panelHeight - 2 * PANEL_INSET } : undefined}
           data-settings={settingsOpen ? 'open' : 'closed'}
           data-testid="team-brain-column"
@@ -298,6 +305,44 @@ function OverviewBody({
                 composer is, so the tree shows through it as it passes over. */}
             <TeamBrainHomeComposer agent={agent} />
           </div>
+
+          {/* The latest few sessions, on the composer's glass and at its width, as Agent Home has them; See all sessions
+              opens the rest in place, a page at a time. */}
+          {recent.length > 0 && (
+            <section
+              aria-labelledby="team-brain-recent-title"
+              className={cn('relative z-10 mx-auto w-full max-w-[720px] rounded-3xl px-5 pb-3 pt-4', GLASS_SURFACE)}
+              data-testid="team-brain-recent-sessions"
+            >
+              <h2 id="team-brain-recent-title" className="flex min-h-8 items-center text-sm font-normal text-muted-foreground">
+                Recent sessions
+              </h2>
+              <RelatedSessions
+                sessions={recent}
+                agentSlug={agentSlug}
+                formatDate={formatSessionDate}
+                showIcon={false}
+                showHeader={false}
+                pageSize={allSessions ? ALL_SESSIONS_PAGE : RECENT_SESSIONS}
+                className="mt-1"
+                // Right under the last row, its text lined up with the rows'.
+                afterRows={everySession.length > RECENT_SESSIONS && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="-ml-2 mt-1"
+                    onClick={() => setAllSessions(!allSessions)}
+                    aria-expanded={allSessions}
+                    data-testid="team-brain-see-all-sessions"
+                  >
+                    {allSessions ? 'Show fewer' : 'See all sessions'}
+                    <ChevronDown className={cn('transition-transform', allSessions && 'rotate-180')} aria-hidden="true" />
+                  </Button>
+                )}
+              />
+            </section>
+          )}
 
           {/* What each sync filed, read like a changelog, on a glass sheet like the composer's and as wide as it: the tree
               shows through it, blurred, as it passes over. */}
@@ -404,17 +449,26 @@ function TreeNote({ height, alert = false, testId, children }: { height: number;
 /** What draws back in when the team record is switched off. */
 const RECORD_SECTIONS = [TEAM_RECORD_FOLDER]
 
-/** How much shows at the foot of the view before scrolling (the status row and the composer's top), and the shortest the tree gets. */
-const COMPOSER_PEEK = 124
-const MIN_TREE_HEIGHT = 520
+/** The page's gap between the tree and the column, and the column's between its sections (space-y-8, space-y-4). */
+const PAGE_GAP = 32
+const COLUMN_GAP = 16
+/** The shortest the tree gets, however short the view. */
+const MIN_TREE_HEIGHT = 420
+/**
+ * How much of the column shows at the foot of the view when the page opens: the status row, the composer and the top
+ * of Recent sessions. Scrolled back from there, the column goes down until only the status row and composer show.
+ */
+const OPENING_PEEK = 300
 
 /**
- * The tree fills the view from the top down to where the status row and composer peek in, and sticks there, so
- * everything after it passes over the tree.
+ * The tree fills the view from the top down to where the status row and the whole composer (`dockRef`) sit at its
+ * foot, with the top of what follows them (Recent sessions) just below the view, and sticks there, so everything after
+ * it passes over the tree. That is as far back as the page scrolls; it opens a little further on (`OPENING_PEEK`).
  */
 function useStickyTree() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const treeRef = useRef<HTMLDivElement>(null)
+  const dockRef = useRef<HTMLDivElement>(null)
   const [treeTop, setTreeTop] = useState(0)
   const [treeHeight, setTreeHeight] = useState(680)
   const [viewHeight, setViewHeight] = useState(0)
@@ -430,22 +484,45 @@ function useStickyTree() {
       const top = page ? Math.round(parseFloat(getComputedStyle(page).paddingTop) || 0) : 0
       setTreeTop(top)
       setViewHeight(scroller.clientHeight)
-      // The page's 32px gap sits between the tree and the composer.
-      setTreeHeight(Math.max(MIN_TREE_HEIGHT, Math.round(scroller.clientHeight - top - 32 - COMPOSER_PEEK)))
+      // Measured when the view changes, not as the composer grows with a long message, so the tree holds still then.
+      const dock = dockRef.current?.offsetHeight ?? 0
+      setTreeHeight(Math.max(MIN_TREE_HEIGHT, Math.round(scroller.clientHeight - top - PAGE_GAP - dock - COLUMN_GAP)))
+      return dock + COLUMN_GAP
     }
-    measure()
-    if (typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(measure)
+    // The page opens scrolled on to OPENING_PEEK, placed again as the composer lays out its controls, until the person
+    // scrolls or presses a key; after that the tree only follows the view, not the composer growing with a message.
+    let settled = false
+    const settle = () => { settled = true }
+    const place = () => {
+      const shown = measure()
+      if (!settled) scroller.scrollTop = Math.max(0, OPENING_PEEK - shown)
+    }
+    place()
+    const frame = requestAnimationFrame(place)
+    const settleOn = ['wheel', 'touchstart', 'keydown', 'pointerdown'] as const
+    settleOn.forEach((type) => scroller.addEventListener(type, settle, { passive: true }))
+    const unlisten = () => settleOn.forEach((type) => scroller.removeEventListener(type, settle))
+    if (typeof ResizeObserver === 'undefined') return () => { cancelAnimationFrame(frame); unlisten() }
+    const observer = new ResizeObserver((entries) => {
+      if (entries.some((entry) => entry.target === scroller)) measure()
+      if (!settled) place()
+    })
     observer.observe(scroller)
-    return () => observer.disconnect()
+    // The composer laying out, and the page growing as sessions and summaries arrive, so there is room to scroll on to.
+    if (dockRef.current) observer.observe(dockRef.current)
+    if (scroller.firstElementChild) observer.observe(scroller.firstElementChild)
+    return () => {
+      cancelAnimationFrame(frame)
+      unlisten()
+      observer.disconnect()
+    }
   }, [])
 
-  return { scrollRef, treeRef, treeTop, treeHeight, viewHeight }
+  return { scrollRef, treeRef, dockRef, treeTop, treeHeight, viewHeight }
 }
 
 /** Whether an element sticky at `top` in the scroller is stuck there, rather than in its place on the page. */
-function useStuck(scrollRef: RefObject<HTMLDivElement | null>, top: number) {
-  const ref = useRef<HTMLDivElement>(null)
+function useStuck(scrollRef: RefObject<HTMLDivElement | null>, ref: RefObject<HTMLDivElement | null>, top: number) {
   const [stuck, setStuck] = useState(false)
   useEffect(() => {
     const root = scrollRef.current
@@ -459,8 +536,8 @@ function useStuck(scrollRef: RefObject<HTMLDivElement | null>, top: number) {
     }, { root, rootMargin: `-${top + 1}px 0px 0px 0px`, threshold: 1 })
     observer.observe(element)
     return () => observer.disconnect()
-  }, [scrollRef, top])
-  return { ref, stuck }
+  }, [scrollRef, ref, top])
+  return stuck
 }
 
 /** How long the panel takes to slide out (see its classes), after which it is taken away. */
@@ -554,7 +631,6 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
           <StorageSection agent={agent} />
           <SourcesSection agentSlug={agent.slug} />
           <AgentsSection brainSlug={agent.slug} volumeId={agent.teamBrain?.volumeId} agents={agents} canManage={canManage} />
-          <SessionsSection agentSlug={agent.slug} />
         </div>
         <ViewsCard parts={recordParts} views={views} onViewChange={onViewChange} />
         {/* Last, on a glass row of its own: red only in its words until hovered. */}
@@ -833,33 +909,6 @@ function AgentsSection({ brainSlug, volumeId, agents, canManage }: { brainSlug: 
   )
 }
 
-/**
- * Team Brain's own sessions, its chats and each scheduled task's runs, in Agent Home's list. Its Agent Home stays out of
- * reach. The agent's list leaves scheduled runs out, as Agent Home shows them under their task, so they join it here.
- */
-function SessionsSection({ agentSlug }: { agentSlug: string }) {
-  const { data: chats } = useSessions(agentSlug)
-  const runs = useScheduledTasksSessions(useBrainTasks(agentSlug).map((task) => task.id))
-  const sessions = useMemo(() => [...(chats ?? []).map(toSessionItem), ...runs], [chats, runs])
-  return (
-    <PanelSection title="Sessions" summary={<span className={SECTION_COUNT_CLASS}>{sessions.length}</span>} testId="team-brain-sessions">
-      {sessions.length > 0 ? (
-        <RelatedSessions
-          sessions={sessions}
-          agentSlug={agentSlug}
-          formatDate={formatSessionDate}
-          showIcon={false}
-          showHeader={false}
-          pageSize={10}
-          className="px-3 pt-2"
-        />
-      ) : (
-        <p className="px-4 pt-2 text-xs text-muted-foreground">No sessions yet.</p>
-      )}
-    </PanelSection>
-  )
-}
-
 /** The team record's usual parts, each a view of its own, in the order they're listed. */
 const RECORD_VIEWS: readonly { id: string; name: string }[] = [
   { id: 'rules', name: 'Show rules' },
@@ -904,5 +953,8 @@ function ViewsCard({ parts, views, onViewChange }: { parts: readonly FolderEntry
     </div>
   )
 }
+
+/** How many of all its sessions show at once, opened in place. */
+const ALL_SESSIONS_PAGE = 5
 
 const formatSessionDate = (date: string) => formatDistanceToNow(new Date(date), { addSuffix: true })

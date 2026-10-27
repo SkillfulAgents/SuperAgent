@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { MessageSquare, ChevronLeft, ChevronRight, MoreVertical, MoonStar } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
@@ -18,7 +18,7 @@ import { sortSessionsByActivity, type SessionSortOrder } from '@shared/lib/sessi
 import { UnreadDot } from '@renderer/components/agents/status-indicators'
 import type { ApiSession } from '@shared/lib/types/api'
 
-interface SessionItem {
+export interface SessionItem {
   id: string
   name: string
   createdAt: string
@@ -58,13 +58,15 @@ interface RelatedSessionsProps {
   dateAsTitle?: boolean
   formatSubtext?: (date: string) => string
   pageSize?: number
+  /** Shown right under the last row, above the page controls. */
+  afterRows?: ReactNode
 }
 
 export type SortOrder = SessionSortOrder
 
 const DEFAULT_PAGE_SIZE = 10
 
-export function RelatedSessions({ sessions, formatDate, className, showIcon = true, title, showHeader = true, agentSlug, searchQuery, sortOrder: sortOrderProp, dateAsTitle = false, formatSubtext, pageSize = DEFAULT_PAGE_SIZE }: RelatedSessionsProps) {
+export function RelatedSessions({ sessions, formatDate, className, showIcon = true, title, showHeader = true, agentSlug, searchQuery, sortOrder: sortOrderProp, dateAsTitle = false, formatSubtext, pageSize = DEFAULT_PAGE_SIZE, afterRows }: RelatedSessionsProps) {
   const [page, setPage] = useState(0)
   const [sortOrderInternal, setSortOrder] = useState<SortOrder>('newest')
   const sortOrder = sortOrderProp ?? sortOrderInternal
@@ -121,6 +123,7 @@ export function RelatedSessions({ sessions, formatDate, className, showIcon = tr
           />
         ))}
       </div>
+      {afterRows}
       {totalPages > 1 && (
         <div className="flex items-center justify-between mt-3">
           <span className="text-xs text-muted-foreground">
