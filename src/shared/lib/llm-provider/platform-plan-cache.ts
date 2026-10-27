@@ -1,4 +1,5 @@
 import { background } from '@shared/lib/background'
+import { expiringMap } from '@shared/lib/host-state/expiring-map'
 import { getPlatformBaseUrl } from '@shared/lib/platform-auth/config'
 
 /** What one platform account may not run, and the plan that says so (SUP-1124). */
@@ -16,17 +17,23 @@ const UNKNOWN_MS = 10 * 60_000
 
 type Entry = { policy: PlatformPlanPolicy | null; expiresAt: number }
 
+// An expired entry is still served while it reloads, so the store keeps it a day.
+const entries = expiringMap<Entry>('platform-plan', 24 * 60 * 60_000)
+
 /**
  * Plan policies per platform account: platform host, workspace and member,
  * because seats in one workspace may hold different plans. Fed by every
  * `/v1/account` read, which carries identity and policy together, and by
  * billing reads. Model selection reads it on every turn, so a read never waits
- * on the network unless the account has no entry yet.
+ * on the platform unless the account has no entry yet. Entries live in the
+ * shared host state when there is one, so an upgrade seen by one process
+ * unlocks models in all of them.
  */
 class PlatformPlanCache {
-  private entries = new Map<string, Entry>()
   private loads = new Map<string, Promise<PlatformPlanPolicy | null>>()
   private generation = 0
+  /** This process's writes, in order: a read waits for them, as it did when they were synchronous. */
+  private writes: Promise<void> = Promise.resolve()
 
   key(orgId: string | null | undefined, memberId: string | null | undefined): string {
     return JSON.stringify([getPlatformBaseUrl(), orgId ?? null, memberId ?? null])
@@ -34,12 +41,22 @@ class PlatformPlanCache {
 
   /** Record what a platform response said. Saying nothing never replaces an answer. */
   remember(key: string, policy: PlatformPlanPolicy | null): void {
-    const known = this.entries.get(key)?.policy
+    this.enqueue(() => this.store(key, policy), 'platform-plan-cache.remember-policy')
+  }
+
+  private async store(key: string, policy: PlatformPlanPolicy | null): Promise<void> {
+    const known = (await entries.get(key))?.policy
     if (!policy && known) {
-      this.entries.set(key, { policy: known, expiresAt: Date.now() + UNKNOWN_MS })
+      await entries.put(key, { policy: known, expiresAt: Date.now() + UNKNOWN_MS })
       return
     }
-    this.entries.set(key, { policy, expiresAt: Date.now() + (policy ? FRESH_MS : UNKNOWN_MS) })
+    await entries.put(key, { policy, expiresAt: Date.now() + (policy ? FRESH_MS : UNKNOWN_MS) })
+  }
+
+  private enqueue(write: () => Promise<void>, name: string): void {
+    const next = this.writes.then(write)
+    this.writes = next.catch(() => undefined)
+    background(next, { name })
   }
 
   /**
@@ -52,7 +69,8 @@ class PlatformPlanCache {
     load: () => Promise<PlatformPlanPolicy | null>,
     options: { fresh?: boolean } = {},
   ): Promise<PlatformPlanPolicy | null> {
-    const entry = this.entries.get(key)
+    await this.writes
+    const entry = await entries.get(key)
     if (entry && !options.fresh) {
       if (entry.expiresAt <= Date.now()) background(this.reload(key, load), { name: 'platform-plan-cache.reload-policy' })
       return entry.policy
@@ -66,10 +84,10 @@ class PlatformPlanCache {
     const generation = this.generation
     const next = load()
       .catch(() => null)
-      .then((policy) => {
+      .then(async (policy) => {
         // A load that began before a clear() may carry the policy it cleared.
-        if (generation === this.generation) this.remember(key, policy)
-        return this.entries.get(key)?.policy ?? policy
+        if (generation === this.generation) await this.store(key, policy)
+        return (await entries.get(key))?.policy ?? policy
       })
       .finally(() => this.loads.delete(key))
     this.loads.set(key, next)
@@ -79,8 +97,8 @@ class PlatformPlanCache {
   /** Forget every account: a refusal proved one stale, or the platform connection changed. */
   clear(): void {
     this.generation += 1
-    this.entries.clear()
     this.loads.clear()
+    this.enqueue(() => entries.clear(), 'platform-plan-cache.clear')
   }
 }
 

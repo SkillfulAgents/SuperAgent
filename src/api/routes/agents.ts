@@ -4129,7 +4129,7 @@ agents.get('/:id/sessions/:sessionId/login-request/vault', AgentUser(), async (c
   return c.json({
     site,
     otherMembers,
-    identity: recentSignInIdentity(agentSlug, c.req.param('sessionId'), site),
+    identity: await recentSignInIdentity(agentSlug, c.req.param('sessionId'), site),
     accounts: accounts.map(offer),
     providerAccounts: providerAccounts.map((account) => ({
       ...offer(account),
@@ -4216,11 +4216,11 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
       account?.username ||
       body.username ||
       (vault.success ? vault.data.username : undefined) ||
-      recentSignInIdentity(agentSlug, sessionId, site) ||
+      await recentSignInIdentity(agentSlug, sessionId, site) ||
       null
     if (body.save && !identity) return c.json({ error: 'Enter the username of this account to save it' }, 400)
     if (body.save && identity && identity.length > MAX_USERNAME) return c.json({ error: 'That username is too long to save' }, 400)
-    const held = usableHeld(heldLoginFor(agentSlug, sessionId, site, identity ?? undefined), context.origin)
+    const held = usableHeld(await heldLoginFor(agentSlug, sessionId, site, identity ?? undefined), context.origin)
     const saved = account && vaultFillsInto(account.origin, context.origin) ? await readAccountValues(account.id) : {}
     const fallback = valuesFor(context.fields, identity, { ...saved, ...(held?.values ?? {}) })
     const values = body.values.map((value, index) => value || fallback[index])
@@ -4278,14 +4278,14 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
         try {
           const savedNow = await saveAndGrant(viewer, agentSlug, { site, origin: context.origin, username: identity, values: { ...(held?.save ? earlier : {}), ...entered } })
           kept = { how: 'saved', username: savedNow.username }
-          if (held?.save) forgetHeldLogin(agentSlug, sessionId, site)
+          if (held?.save) await forgetHeldLogin(agentSlug, sessionId, site)
         } catch (error) {
           // Held instead, below: the agent's next try still needs no one.
           console.error('[fill-login] Saving the account failed:', error instanceof Error ? error.message : 'Unknown error')
         }
       }
       if (!kept && Object.keys({ ...earlier, ...entered }).length > 0) {
-        holdLoginValues(agentSlug, sessionId, site, {
+        await holdLoginValues(agentSlug, sessionId, site, {
           username: identity,
           values: { ...earlier, ...entered },
           origin: held && Object.keys(entered).length === 0 ? held.origin : context.origin,
@@ -4300,7 +4300,7 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
       if (!answered) return c.json({ error: 'The agent could not be told. Try again.' }, 502)
       await actor.inputs.complete(sessionId, body.toolUseId, 'answered')
       claimed = null
-      if (identity) rememberSignInIdentity(agentSlug, sessionId, site, identity)
+      if (identity) await rememberSignInIdentity(agentSlug, sessionId, site, identity)
       trackServerEvent('login_request_browser_closed', { kept: kept?.how ?? 'nothing' })
       return c.json({ success: true, browserClosed: true, ...(kept ? { kept: { how: kept.how, username: kept.username ?? null } } : {}) })
     }
@@ -4328,17 +4328,17 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     // The step that was held is done before the next one is held.
     const usedHeld = fromHeld.filter((part) => context.fields.some((field, index) => partKeyOf(field) === part && wentIn[index]))
     if (held) await settleHeldParts({ agentSlug, sessionId, site, held, used: usedHeld, username: identity })
-    if (typedOverHeld.length) releaseHeldValues(agentSlug, sessionId, site, typedOverHeld)
+    if (typedOverHeld.length) await releaseHeldValues(agentSlug, sessionId, site, typedOverHeld)
     if (account?.rejectedAt && usesSavedPassword && passwordWentIn && !hostsAccount) await clearAccountRejected(account.id)
     if (heldLabels.length) {
-      holdLoginValues(agentSlug, sessionId, site, {
+      await holdLoginValues(agentSlug, sessionId, site, {
         username: identity,
         values: heldParts,
         origin: context.origin,
         save: body.save ? { owner: viewer, origin: context.origin } : null,
       })
     }
-    if (identity) rememberSignInIdentity(agentSlug, sessionId, site, identity)
+    if (identity) await rememberSignInIdentity(agentSlug, sessionId, site, identity)
     // The account the values were for, and whether its password went in: a
     // password tried counts toward how often the vault fills it without the user.
     const usedAccount = savedAccount ?? account
@@ -4493,7 +4493,7 @@ agents.post(
     const viewer = getViewerUserId(c)
     const site = siteOfOrigin(context.origin)
     // The login's own username, else whose account the last step went in as.
-    const identity = credential.username.trim() || (site ? recentSignInIdentity(agentSlug, sessionId, site) : null) || null
+    const identity = credential.username.trim() || (site ? await recentSignInIdentity(agentSlug, sessionId, site) : null) || null
     // "Save for later" copies the whole login into the vault, also on a step
     // that shows only the username: the next step then needs no one.
     const saving = Boolean(body.save && site && identity && credential.password)
@@ -4517,14 +4517,14 @@ agents.post(
         }
       }
       if (!kept && site !== null && context.fields.some((field) => field.kind === 'password') && credential.password.length > 0) {
-        holdLoginValues(agentSlug, sessionId, site, { username: identity, values: { password: credential.password }, origin: context.origin, save: null })
+        await holdLoginValues(agentSlug, sessionId, site, { username: identity, values: { password: credential.password }, origin: context.origin, save: null })
         kept = { how: 'held', ...(shown ? { username: shown } : {}) }
       }
       const answered = await answerLoginRequest(agentSlug, body.toolUseId, { type: 'browser_closed', site: site ?? context.origin, ...(kept ? { kept } : {}) })
       if (!answered) return c.json({ error: 'The agent could not be told. Try again.' }, 502)
       await agentRegistry.get(agentSlug).inputs.complete(sessionId, body.toolUseId, 'answered')
       claimed = null
-      if (site && identity) rememberSignInIdentity(agentSlug, sessionId, site, identity)
+      if (site && identity) await rememberSignInIdentity(agentSlug, sessionId, site, identity)
       trackServerEvent('login_request_browser_closed', { kept: kept?.how ?? 'nothing' })
       return c.json({ success: true, browserClosed: true, ...(kept ? { kept: { how: kept.how, username: kept.username ?? null } } : {}) })
     }
@@ -4544,7 +4544,7 @@ agents.post(
     } else if (body.save) {
       saveError = identity ? 'The saved login has no password to save' : 'The saved login has no username, so it was not saved'
     }
-    if (site && identity) rememberSignInIdentity(agentSlug, sessionId, site, identity)
+    if (site && identity) await rememberSignInIdentity(agentSlug, sessionId, site, identity)
     // The user signed in with the account themselves: what the vault may fill without them counts from here.
     const wentIn = fieldsWentIn(filled.result, context.fields.length)
     if (savedAccount && wentIn.some(Boolean)) {
@@ -4608,7 +4608,7 @@ agents.post('/:id/sessions/:sessionId/complete-login', AgentUser(), zValidator('
     await actor.inputs.complete(sessionId, body.toolUseId, body.action === 'manual' ? 'answered' : 'declined')
     claimed = null
     const site = located.success ? siteOfOrigin(located.data.origin) : null
-    if (site) forgetHeldLogin(agentSlug, sessionId, site)
+    if (site) await forgetHeldLogin(agentSlug, sessionId, site)
     if (body.action === 'decline') {
       // As with a browser hand-off: stop the turn so the user can talk to the agent.
       await actor.messages.stop(sessionId, { scope: 'turn' })

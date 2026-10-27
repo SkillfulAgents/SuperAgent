@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import type { HostStateEntry, HostStateStore } from './store'
+import { memoryHostStateStore, type HostStateEntry, type HostStateStore } from './store'
 
 /**
  * Per-request view of the shared host state. The request reads one snapshot
@@ -148,7 +148,15 @@ export function hostFileKey(name: string): string {
   return FILE_PREFIX + name
 }
 
-/** This request's store, or null outside a scope. */
-export function scopedStore(): HostStateStore | null {
-  return als.getStore()?.store ?? null
+/** This process's own state, for code running outside a scope (desktop, single-tenant web). */
+const processStore = memoryHostStateStore()
+
+/** Where short-lived shared state lives: this request's store inside a scope, this process's memory outside one. */
+export function currentStore(): HostStateStore {
+  return als.getStore()?.store ?? processStore
+}
+
+/** Test seam: forget this process's state. */
+export function resetProcessHostState(): void {
+  processStore.clear()
 }

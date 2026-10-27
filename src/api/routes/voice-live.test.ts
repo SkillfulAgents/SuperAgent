@@ -306,3 +306,44 @@ describe('Live voice routes', () => {
   })
 
 })
+
+describe('Live sessions opened by another process', () => {
+  // Another process's session is only in the shared record: this process's registry never saw it.
+  async function openedElsewhere(handle: string, owner = 'alice') {
+    const { expiringMap } = await import('@shared/lib/host-state/expiring-map')
+    await expiringMap('voice-live', 60_000).set(`${owner}:${handle}`, { owner, provider: 'openai', providerSessionId: `rtc-${handle}`, closing: false })
+  }
+
+  beforeEach(async () => {
+    const { resetProcessHostState } = await import('@shared/lib/host-state/scope')
+    resetProcessHostState()
+    mocks.user = 'alice'
+    mocks.providerName = 'openai'
+    mocks.close.mockReset().mockResolvedValue(undefined)
+  })
+
+  it('closes the provider session when the hang-up reaches a process that did not open it', async () => {
+    await openedElsewhere('handle-elsewhere')
+
+    const res = await voice.request('/live/session/handle-elsewhere', { method: 'DELETE' })
+
+    expect(res.status).toBe(200)
+    expect(mocks.close).toHaveBeenCalledWith('rtc-handle-elsewhere')
+    expect((await voice.request('/live/session/handle-elsewhere', { method: 'DELETE' })).status).toBe(404)
+  })
+
+  it('does not close another user\'s session', async () => {
+    await openedElsewhere('handle-bob', 'bob')
+
+    expect((await voice.request('/live/session/handle-bob', { method: 'DELETE' })).status).toBe(404)
+    expect(mocks.close).not.toHaveBeenCalled()
+  })
+
+  it('counts sessions open in other processes against the limit of four', async () => {
+    for (const handle of ['h1', 'h2', 'h3', 'h4']) await openedElsewhere(handle)
+
+    const res = await request('/live/session', { sdp: 'v=0', history: [] })
+
+    expect(res.status).toBe(429)
+  })
+})
