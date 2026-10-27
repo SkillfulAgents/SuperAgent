@@ -282,6 +282,22 @@ jobs:
           # image): deflating them again only costs time here and in create-release.
           compression-level: 0
 
+  # Build the Mac App Store package and upload it to App Store Connect, where it
+  # lands in TestFlight; submitting it for review stays a person's step. Like
+  # build-mac it bundles the agent image this release publishes, so it waits for
+  # it. create-release doesn't wait for this job: a Store problem never holds up
+  # the direct release, and the package isn't one of its files (its artifact
+  # name doesn't match `*-release-artifacts`).
+  build-mas:
+    needs: [prepare, lima-image, build-agent-container]
+    uses: ./.github/workflows/build-mas.yml
+    secrets: inherit
+    with:
+      # Higher for every upload, re-runs included: 412.1, 412.2, 413.1.
+      build-number: ${{ github.run_number }}.${{ github.run_attempt }}
+      app-store-connect: upload
+      artifact-name: Gamut-MAS-${{ needs.prepare.outputs.version }}
+
   # Build Windows Electron app
   build-win:
     runs-on: windows-latest

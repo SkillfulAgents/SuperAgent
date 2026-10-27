@@ -1,9 +1,13 @@
 name: Build Mac App Store App
 
 # The Mac App Store build (`npm run dist:mas`, config electron-builder.mas.cjs):
-# a signed installer package for App Store Connect. It runs only where its
-# signing secrets are set, and otherwise says so and stops. Nothing here
-# uploads to Apple.
+# a signed installer package, sent to App Store Connect. Two workflows call it,
+# each after running lima-image.yml:
+#   release.yml, for every release (rc and full): it builds once the release has
+#       published its agent image, and uploads the package, which lands in TestFlight.
+#   pr-build.yml, when its `mas` input is ticked: App Store Connect validates the
+#       package, and it is never uploaded.
+# Without its signing secrets it says so and builds nothing.
 #
 # Secrets, all for team HL9SP7TJ3J:
 #   MAS_CSC_LINK, MAS_CSC_KEY_PASSWORD
@@ -13,10 +17,41 @@ name: Build Mac App Store App
 #       Distribution) certificate and its key, and its password
 #   MAS_PROVISIONING_PROFILE
 #       base64 of the Mac App Store provisioning profile for so.gamut.app
+#   APPLE_API_KEY, APPLE_API_KEY_ID, APPLE_API_ISSUER
+#       the App Store Connect API key the direct build notarizes with, which also
+#       validates and uploads this package
 on:
-  push:
-    branches: [main]
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Commit to build (default: the calling workflow commit)'
+        required: false
+        type: string
+        default: ''
+      build-number:
+        description: 'CFBundleVersion: App Store Connect takes each number once, and an upload must be higher than the last'
+        required: true
+        type: string
+      require-agent-image:
+        description: 'Fail when the agent image this version runs is not published'
+        required: false
+        type: boolean
+        default: true
+      app-store-connect:
+        description: 'What App Store Connect does with the package: validate or upload'
+        required: true
+        type: string
+      artifact-name:
+        required: true
+        type: string
+      retention-days:
+        required: false
+        type: number
+        default: 30
+    outputs:
+      secrets-set:
+        description: "'true' when the signing secrets are set, so the package was built"
+        value: ${{ jobs.secrets.outputs.present }}
 
 permissions:
   contents: read
@@ -30,28 +65,33 @@ jobs:
       - id: check
         env:
           MAS_CSC_LINK: ${{ secrets.MAS_CSC_LINK }}
+          MAS_CSC_KEY_PASSWORD: ${{ secrets.MAS_CSC_KEY_PASSWORD }}
           MAS_INSTALLER_CSC_LINK: ${{ secrets.MAS_INSTALLER_CSC_LINK }}
+          MAS_INSTALLER_CSC_KEY_PASSWORD: ${{ secrets.MAS_INSTALLER_CSC_KEY_PASSWORD }}
           MAS_PROVISIONING_PROFILE: ${{ secrets.MAS_PROVISIONING_PROFILE }}
         run: |
-          if [ -n "$MAS_CSC_LINK" ] && [ -n "$MAS_INSTALLER_CSC_LINK" ] && [ -n "$MAS_PROVISIONING_PROFILE" ]; then
+          if [ -n "$MAS_CSC_LINK" ] && [ -n "$MAS_CSC_KEY_PASSWORD" ] && [ -n "$MAS_INSTALLER_CSC_LINK" ] \
+            && [ -n "$MAS_INSTALLER_CSC_KEY_PASSWORD" ] && [ -n "$MAS_PROVISIONING_PROFILE" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice title=Mac App Store build skipped::Its signing secrets are not set: MAS_CSC_LINK, MAS_INSTALLER_CSC_LINK and MAS_PROVISIONING_PROFILE (see .github/workflows/build-mas.yml)."
+            echo "::notice title=Mac App Store build skipped::Its signing secrets are not all set: MAS_CSC_LINK, MAS_CSC_KEY_PASSWORD, MAS_INSTALLER_CSC_LINK, MAS_INSTALLER_CSC_KEY_PASSWORD and MAS_PROVISIONING_PROFILE (see .github/workflows/build-mas.yml)."
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
 
-  lima-image:
+  build-mas:
     needs: secrets
     if: needs.secrets.outputs.present == 'true'
-    uses: ./.github/workflows/lima-image.yml
-
-  build-mas:
-    needs: [secrets, lima-image]
-    if: needs.secrets.outputs.present == 'true'
-    runs-on: blacksmith-6vcpu-macos-26
+    runs-on: macos-26
+    env:
+      # The Gamut record's Apple ID (App Store Connect → App Information). altool
+      # needs it to find the record: the bundle id alone did not, in the spike.
+      MAS_APPLE_ID: '6801340586'
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -85,25 +125,47 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.MAS_CSC_KEY_PASSWORD }}
           CSC_INSTALLER_LINK: ${{ secrets.MAS_INSTALLER_CSC_LINK }}
           CSC_INSTALLER_KEY_PASSWORD: ${{ secrets.MAS_INSTALLER_CSC_KEY_PASSWORD }}
+          CSC_FOR_PULL_REQUEST: true
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PLATFORM_BASE_URL: ${{ secrets.PLATFORM_BASE_URL }}
           PLATFORM_PROXY_URL: ${{ secrets.PLATFORM_PROXY_URL }}
           PLATFORM_AUTH_ISSUER_URL: ${{ secrets.PLATFORM_AUTH_ISSUER_URL }}
           LIMA_IMAGE_DIR: build/lima-image
-          # The Store's build number (CFBundleVersion), which grows with every upload.
-          MAS_BUILD_NUMBER: ${{ github.run_number }}
-          # dist:mas refuses to package without the agent image, since a Store
-          # package is built to upload. This one is never uploaded, and a release's
-          # version bump reaches main before the release publishes its image.
-          AGENT_IMAGE_REQUIRED: 'false'
+          MAS_BUILD_NUMBER: ${{ inputs.build-number }}
+          AGENT_IMAGE_REQUIRED: ${{ inputs.require-agent-image }}
         run: npm run dist:mas
 
       - name: Upload the package
         uses: actions/upload-artifact@v4
         with:
-          name: Gamut-MAS-${{ github.ref_name }}
+          name: ${{ inputs.artifact-name }}
           # electron-builder writes a mas target into its own folder, named for
           # the target and the runner's architecture, not into release/.
           path: release/mas-arm64/*.pkg
           if-no-files-found: error
-          retention-days: 30
+          retention-days: ${{ inputs.retention-days }}
+
+      - name: Send the package to App Store Connect (${{ inputs.app-store-connect }})
+        shell: bash
+        env:
+          ACTION: ${{ inputs.app-store-connect }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          case "$ACTION" in
+            validate) command=--validate-app ;;
+            upload) command=--upload-app ;;
+            *) echo "::error::app-store-connect is validate or upload, not '$ACTION'"; exit 1 ;;
+          esac
+          # Every altool version looks for the key file here, by its id.
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "$APPLE_API_KEY_BASE64" | base64 --decode > ~/.appstoreconnect/private_keys/AuthKey_${APPLE_API_KEY_ID}.p8
+          shopt -s nullglob
+          packages=(release/mas-arm64/*.pkg)
+          if [ "${#packages[@]}" -ne 1 ]; then
+            echo "::error::Expected one package in release/mas-arm64, found ${#packages[@]}"
+            exit 1
+          fi
+          xcrun altool "$command" -f "${packages[0]}" -t macos --apple-id "$MAS_APPLE_ID" \
+            --apiKey "$APPLE_API_KEY_ID" --apiIssuer "$APPLE_API_ISSUER"
