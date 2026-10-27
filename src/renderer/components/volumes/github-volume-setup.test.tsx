@@ -9,7 +9,7 @@ Element.prototype.hasPointerCapture = vi.fn(() => false)
 Element.prototype.releasePointerCapture = vi.fn()
 
 const requests = vi.hoisted(() => vi.fn())
-vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: () => false }))
+vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: () => false, usesHostFolderPaths: () => false, agentsRunInAppSandbox: () => false }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: false }) }))
 vi.mock('@renderer/hooks/use-connected-accounts', () => ({ useConnectedAccountsByToolkit: () => ({
   data: { accounts: [{ id: 'account', displayName: 'Work GitHub', status: 'active' }] }, isLoading: false,
