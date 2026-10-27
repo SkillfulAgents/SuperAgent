@@ -156,6 +156,8 @@ export interface SessionMetadataMap {
   [sessionId: string]: SessionMetadata
 }
 
+export type SessionOrigin = 'user' | 'scheduled' | 'webhook' | 'integration' | 'agent' | 'widget-repair'
+
 /**
  * Session info derived from JSONL file + metadata
  */
@@ -166,6 +168,8 @@ export interface SessionInfo {
   createdAt: Date
   lastActivityAt: Date
   isActive?: boolean
+  /** Original source, preserved when an automated session becomes interactive. */
+  origin?: SessionOrigin
 }
 
 /**

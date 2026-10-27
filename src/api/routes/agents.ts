@@ -226,6 +226,7 @@ import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSe
 import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { annotateIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
+import { withSessionStatus } from '@shared/lib/session-status'
 import { getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
 import { isValidApiScope } from '@shared/lib/proxy/scope-matcher'
 import { isLabelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
@@ -1974,24 +1975,15 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
         isAuthMode() ? getSessionIdsWithUnreadMentions(slug, getCurrentUserId(c)) : new Set<string>(),
       ])
       const live = await actor.live()
-      const active = new Set(live.activeSessionIds)
-      const awaiting = new Set(live.awaitingSessionIds)
       const infos = await actor.sessions.listByIds(
         [...new Set([...live.activeSessionIds, ...unreadIds, ...markedUnreadIds])],
         { excludeAutomated: true },
       )
-      const enriched = infos.map((session) => {
-        const isActive = active.has(session.id)
-        return {
-          ...session,
-          isActive,
-          // The awaiting projection already counts agent-scoped reviews
-          // against every active session of the agent — no review special-case.
-          isAwaitingInput: awaiting.has(session.id),
-          hasUnreadNotifications: unreadIds.has(session.id) || markedUnreadIds.has(session.id),
-          hasUnreadMention: mentionedIds.has(session.id),
-        }
-      })
+      const enriched = withSessionStatus(infos, live).map((session) => ({
+        ...session,
+        hasUnreadNotifications: unreadIds.has(session.id) || markedUnreadIds.has(session.id),
+        hasUnreadMention: mentionedIds.has(session.id),
+      }))
       const ordered = sortSessionsNewestFirst(enriched, sortBy)
       if (sortByRaw === undefined) {
         // Preserve the existing notable-only contract when no explicit order
@@ -2022,17 +2014,10 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
     ])
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
     const live = await actor.live()
-    const active = new Set(live.activeSessionIds)
-    const awaiting = new Set(live.awaitingSessionIds)
-    const sessionsWithStatus = sessionList.map((session) => {
-      const isActive = active.has(session.id)
+    const sessionsWithStatus = withSessionStatus(sessionList, live).map((session) => {
       const wake = wakesBySession.get(session.id)
       return {
         ...session,
-        isActive,
-        // The awaiting projection already counts agent-scoped reviews against
-        // every active session of the agent — no review special-case.
-        isAwaitingInput: awaiting.has(session.id),
         hasUnreadNotifications:
           unreadSessionIds.has(session.id) || markedUnreadSessionIds.has(session.id),
         hasUnreadMention: mentionedSessionIds.has(session.id),
@@ -4967,7 +4952,6 @@ agents.get('/:id/scheduled-tasks/completed-sessions', AgentRead(), async (c) => 
     const metadata = await actor.sessions.readMetadata()
     const live = await actor.live()
     const active = new Set(live.activeSessionIds)
-    const awaiting = new Set(live.awaitingSessionIds)
 
     const completedSessionIds = tasks
       .map((task) => task.lastSessionId)
@@ -4981,16 +4965,7 @@ agents.get('/:id/scheduled-tasks/completed-sessions', AgentRead(), async (c) => 
       })
 
     const sessions = await actor.sessions.listByIds(completedSessionIds)
-    const sessionsWithStatus = sessions.map((session) => ({
-      ...session,
-      isActive: active.has(session.id),
-      isAwaitingInput: awaiting.has(session.id),
-    }))
-    sessionsWithStatus.sort(
-      (a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime()
-    )
-
-    return c.json(sessionsWithStatus)
+    return c.json(sortSessionsNewestFirst(withSessionStatus(sessions, live)))
   } catch (error) {
     console.error('Failed to fetch completed one-time sessions:', error)
     return c.json({ error: 'Failed to fetch completed one-time sessions' }, 500)

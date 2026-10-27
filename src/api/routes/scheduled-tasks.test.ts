@@ -82,6 +82,7 @@ vi.mock('@shared/lib/container/container-host', async () => {
 const mockLiveSessions = vi.hoisted(() => ({
   isActive: vi.fn(),
   activeIds: vi.fn((_agentSlug: string): string[] => []),
+  awaitingIds: vi.fn((_agentSlug: string): string[] => []),
   subscribe: vi.fn(async (..._args: unknown[]) => {}),
   markActive: vi.fn(),
   markIdle: vi.fn(),
@@ -216,6 +217,7 @@ describe('scheduled-tasks route', () => {
     ])
     mockLiveSessions.isActive.mockImplementation((_agentSlug: string, sessionId: string) => sessionId === 'session-active')
     mockLiveSessions.activeIds.mockReturnValue(['session-active'])
+    mockLiveSessions.awaitingIds.mockReturnValue([])
     mockCreateSession.mockResolvedValue({ id: 'container-session-1' })
     mockEnsureRunning.mockResolvedValue({ createSession: mockCreateSession })
     mockGetSecretEnvVars.mockResolvedValue(['GITHUB_TOKEN'])
@@ -237,12 +239,14 @@ describe('scheduled-tasks route', () => {
   })
 
   it("returns task sessions with live activity from the agent's live sessions", async () => {
+    // The active run is waiting on a person.
+    mockLiveSessions.awaitingIds.mockReturnValue(['session-active'])
     const res = await app.request('http://localhost/api/scheduled-tasks/task-1/sessions')
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual([
-      { id: 'session-active', name: 'Active session', isActive: true },
-      { id: 'session-idle', name: 'Idle session', isActive: false },
+      { id: 'session-active', name: 'Active session', isActive: true, isAwaitingInput: true },
+      { id: 'session-idle', name: 'Idle session', isActive: false, isAwaitingInput: false },
     ])
     expect(mockGetSessionsByScheduledTask).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-one' }), 'task-1')
   })

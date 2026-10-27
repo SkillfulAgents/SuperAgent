@@ -54,7 +54,7 @@ export function TeamBrainSyncSummaries({
   return (
     // Narrower than the page, centred under the tree, so the lines stay a comfortable length to read.
     <section aria-labelledby="team-brain-syncs-title" className="mx-auto w-full max-w-[720px]" data-testid="team-brain-syncs">
-      <h2 id="team-brain-syncs-title" className="mb-6 text-base font-medium">
+      <h2 id="team-brain-syncs-title" className="mb-6 text-sm font-normal text-muted-foreground">
         Sync summaries
       </h2>
       {syncs.length === 0 && (
