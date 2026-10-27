@@ -8,7 +8,7 @@ import { Authenticated, getReadableAgentIds } from '../middleware/auth'
 import { volumeViewer } from '../lib/volume-access'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
-import { createVolumeDefinition, deleteVolumeDefinition, listVolumeDefinitions, updateVolumeDefinition, VolumeError, openVolumeDefinition, listVolumeAttachments } from '@shared/lib/services/volume-service'
+import { createVolumeDefinition, deleteVolumeDefinition, listVolumeDefinitions, reconnectLocalVolume, updateVolumeDefinition, VolumeError, openVolumeDefinition, listVolumeAttachments } from '@shared/lib/services/volume-service'
 
 const routes = new Hono()
 routes.use('*', Authenticated())
@@ -79,6 +79,12 @@ routes.post('/', async c => {
 routes.patch('/:id', async c => {
   const id = c.req.param('id')
   await updateVolumeDefinition(id, await c.req.json(), volumeViewer(c))
+  await logAuditEvent({ userId: getCurrentUserId(c), object: 'volume', objectId: id, action: 'updated' })
+  return c.json({ success: true })
+})
+routes.post('/:id/reconnect', async c => {
+  const id = c.req.param('id')
+  await reconnectLocalVolume(id, await c.req.json(), volumeViewer(c))
   await logAuditEvent({ userId: getCurrentUserId(c), object: 'volume', objectId: id, action: 'updated' })
   return c.json({ success: true })
 })

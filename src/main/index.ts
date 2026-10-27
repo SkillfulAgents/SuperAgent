@@ -793,14 +793,15 @@ ipcMain.handle('detect-host-browser', () => {
 // this run, else in home: what gets mounted here is a project, not a download.
 // In the App Sandbox the pick is what grants access, and only until quit, so
 // the dialog also returns a security-scoped bookmark that reopens the folder on
-// later launches (`local-folder-access.ts`).
+// later launches (`local-folder-access.ts`). A drive choosing its folder again
+// passes that folder, so the dialog opens in it.
 let lastPickedDirectoryParent: string | null = null
-ipcMain.handle('open-directory', async (): Promise<{ path: string; bookmark?: string } | null> => {
+ipcMain.handle('open-directory', async (_event, startIn?: unknown): Promise<{ path: string; bookmark?: string } | null> => {
   const sandboxed = runsInAppSandbox(desktopClientFacts())
   // createDirectory: macOS shows New Folder only when asked (Windows always does).
   const result = await dialog.showOpenDialog({
     properties: ['openDirectory', 'createDirectory'],
-    defaultPath: lastPickedDirectoryParent ?? app.getPath('home'),
+    defaultPath: typeof startIn === 'string' && path.isAbsolute(startIn) ? startIn : lastPickedDirectoryParent ?? app.getPath('home'),
     ...(sandboxed ? { securityScopedBookmarks: true } : {}),
   })
   if (result.canceled) return null

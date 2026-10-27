@@ -75,6 +75,26 @@ describe('volume definition API', () => {
     expect((await request('', 'POST', input())).status).toBe(201)
     expect(await (await request()).json()).toMatchObject([{ userId: null, canManage: true }])
   })
+  it('chooses a local drive’s folder again in place, for its manager only', async () => {
+    const { logAuditEvent } = await import('@shared/lib/services/audit-log-service')
+    const { id } = await (await request('', 'POST', input())).json()
+    await attachMount('agent', id, { userId: 'alice', admin: false })
+    const response = await request(`/${id}/reconnect`, 'POST', { path: folder })
+    expect(response.status).toBe(200)
+    expect(logAuditEvent).toHaveBeenLastCalledWith({ userId: 'alice', object: 'volume', objectId: id, action: 'updated' })
+    expect(await (await request()).json()).toMatchObject([{ id, attachmentCount: 1, health: 'ok' }])
+    expect((await request(`/${id}/reconnect`, 'POST', { path: folder }, 'bob')).status).toBe(404)
+    const other = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'volume-api-other-')))
+    try {
+      const refused = await request(`/${id}/reconnect`, 'POST', { path: other })
+      expect(refused.status).toBe(400)
+      expect(await refused.json()).toEqual({ error: `Choose this drive’s own folder, ${folder}. Add another folder as a new drive.` })
+    } finally {
+      fs.rmSync(other, { recursive: true, force: true })
+    }
+    expect((await request(`/${id}/reconnect`, 'POST', { path: folder, name: 'x' })).status).toBe(400)
+    expect((await request(`/${id}/reconnect`, 'POST', { path: 7 })).status).toBe(400)
+  })
 })
 
 

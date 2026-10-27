@@ -55,8 +55,8 @@ function refuseRoot(volumePath: string): void {
   if (volumePath === '') throw new WorkspaceFileError('invalid-path', 'The volume root cannot be made, replaced, removed or moved')
 }
 
-/** Why a local drive can't be read: the sandbox lost its folder, and only the open panel can give it back. */
-export const PICK_FOLDER_AGAIN = 'This drive’s folder has to be picked again'
+/** Why a local drive can't be read: the sandbox lost its folder, and only the open panel can give it back (`reconnectLocalVolume`). */
+export const PICK_FOLDER_AGAIN = 'This drive’s folder has to be chosen again: Settings → Drives, then Choose folder again'
 
 /** A local volume's folder, by its real path. */
 /** Checks a folder picked for a new local volume, and names the volume after it. */
