@@ -13,11 +13,12 @@ import { CloudflareContainerRuntimeClient } from './cloudflare-container-runtime
 const ENV = {
   CLOUDFLARE_CONTAINER_URL: 'http://agent-container.internal/',
   CLOUDFLARE_CONTAINER_HOST_URL: 'http://host.internal',
+  CLOUDFLARE_CONTAINER_TOKEN: 'control-token',
 }
 
 /** The deployment's side of the contract, in memory: one container per agent. */
-function fakeDeployment(options: { running?: boolean; startStatus?: number } = {}) {
-  const state = { running: options.running ?? false }
+function fakeDeployment(options: { running?: boolean; startStatus?: number; bootFails?: boolean } = {}) {
+  const state = { running: options.running ?? false, controlDown: false }
   const calls: string[] = []
   const bodies: unknown[] = []
   vi.stubGlobal('fetch', vi.fn(async (input: string, init?: RequestInit) => {
@@ -25,10 +26,16 @@ function fakeDeployment(options: { running?: boolean; startStatus?: number } = {
     const method = init?.method ?? 'GET'
     calls.push(`${method} ${url.pathname}`)
     if (init?.body) bodies.push(JSON.parse(String(init.body)))
+    if (url.pathname.startsWith('/_control/')) {
+      if ((init?.headers as Record<string, string>)?.authorization !== 'Bearer control-token') {
+        return new Response('unauthorized', { status: 401 })
+      }
+      if (state.controlDown) return new Response('bad gateway', { status: 502 })
+    }
     if (url.pathname === '/_control/agent-1') return Response.json({ running: state.running })
     if (url.pathname === '/_control/agent-1/start') {
       if (options.startStatus) return new Response('no capacity', { status: options.startStatus })
-      state.running = true
+      state.running = !options.bootFails
       return new Response(null, { status: 204 })
     }
     if (url.pathname === '/_control/agent-1/stop') {
@@ -53,8 +60,11 @@ afterEach(() => {
 })
 
 describe('CloudflareContainerRuntimeClient', () => {
-  it('is eligible only when both URLs are set', () => {
+  it('is eligible only when both URLs and the control token are set', () => {
     expect(CloudflareContainerRuntimeClient.isEligible()).toBe(true)
+    delete process.env.CLOUDFLARE_CONTAINER_TOKEN
+    expect(CloudflareContainerRuntimeClient.isEligible()).toBe(false)
+    process.env.CLOUDFLARE_CONTAINER_TOKEN = ENV.CLOUDFLARE_CONTAINER_TOKEN
     delete process.env.CLOUDFLARE_CONTAINER_HOST_URL
     expect(CloudflareContainerRuntimeClient.isEligible()).toBe(false)
   })
@@ -97,6 +107,26 @@ describe('CloudflareContainerRuntimeClient', () => {
     await expect(new CloudflareContainerRuntimeClient({ agentId: 'agent-1' }).start()).rejects.toThrow(
       'Cloudflare container POST /_control/agent-1/start failed: 503 no capacity',
     )
+  })
+
+  it('stops a container that never becomes healthy, so the next start does not adopt it', async () => {
+    const deployment = fakeDeployment({ bootFails: true })
+    const client = new CloudflareContainerRuntimeClient({ agentId: 'agent-1' })
+
+    await expect(client.start()).rejects.toThrow('Container for agent agent-1 did not become healthy')
+
+    expect(deployment.calls).toContain('POST /_control/agent-1/stop')
+    await expect(client.getInfoFromRuntime()).resolves.toEqual({ status: 'stopped', port: null })
+  })
+
+  it('keeps the last known state when a status call fails', async () => {
+    const deployment = fakeDeployment()
+    const client = new CloudflareContainerRuntimeClient({ agentId: 'agent-1' })
+    await client.start()
+
+    deployment.state.controlDown = true
+
+    await expect(client.getInfoFromRuntime()).resolves.toEqual({ status: 'running', port: 3000 })
   })
 
   it('reaches the container and the host at the configured URLs', () => {
