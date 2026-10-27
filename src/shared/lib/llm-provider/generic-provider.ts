@@ -71,6 +71,15 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
 }
 
+function isAnthropicApiHost(url: string | undefined): boolean {
+  if (!url) return false
+  try {
+    return new URL(url).host === 'api.anthropic.com'
+  } catch {
+    return false
+  }
+}
+
 function mapRemoteModel(model: RemoteModelListing): ModelSearchResult | null {
   const id = stringValue(model.id)
   if (!id) return null
@@ -91,9 +100,15 @@ export class GenericLlmProvider extends BaseLlmProvider {
   readonly defaultModelOptions = []
   readonly catalogDefaultModels = GENERIC_CATALOG_DEFAULT_MODELS
   override readonly supportsModelSearch = true
-  override readonly toolSearchEnv = this.configuration?.apiFormat && this.configuration.apiFormat !== 'messages' ? 'true' as const : undefined
-
   private get apiFormat() { return this.configuration?.apiFormat ?? 'messages' }
+
+  // The OpenAI translations rebuild every tool, so `defer_loading` never
+  // reaches the endpoint. An Anthropic-wire endpoint we can't vouch for stays
+  // off, except Anthropic's own API (the guard the CLI applied before 2.1.304).
+  override toolSearchEnv(): 'true' | 'false' {
+    if (this.apiFormat !== 'messages') return 'true'
+    return isAnthropicApiHost(this.getEffectiveBaseUrl()) ? 'true' : 'false'
+  }
   protected readonly settingsKeyField = 'genericApiKey' as const
   protected readonly envVarName = 'GENERIC_API_KEY'
 

@@ -62,7 +62,7 @@ vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({ enableToolSearch: true }),
 }))
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: () => ({ getContainerEnvVars: () => ({}) }),
+  getActiveLlmProvider: () => ({ getContainerEnvVars: () => ({}), toolSearchEnv: () => 'false' }),
 }))
 
 class RunningTestClient extends BaseContainerClient {

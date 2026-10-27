@@ -18,9 +18,9 @@ vi.mock('../platform-attribution/container-token', () => ({
 vi.mock('../platform-auth/config', () => ({
   getPlatformProxyBaseUrl: () => 'http://localhost:8080',
 }))
-const toolSearchEnv = vi.fn((): 'true' | undefined => 'true')
+const toolSearchEnv = vi.fn((): 'true' | 'false' => 'true')
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: () => ({ getContainerEnvVars, toolSearchEnv: toolSearchEnv() }),
+  getActiveLlmProvider: () => ({ getContainerEnvVars, toolSearchEnv }),
 }))
 
 /** Minimal concrete subclass to exercise protected run-error classification. */
@@ -90,17 +90,19 @@ describe('buildAgentEnv', () => {
     expect(env.ENABLE_TOOL_SEARCH).toBe('false')
   })
 
-  it('leaves ENABLE_TOOL_SEARCH unset when the provider does not declare one', async () => {
-    toolSearchEnv.mockReturnValue(undefined)
+  // Unset reads as on behind any custom base URL (CLI 2.1.304+), so a
+  // provider's 'false' must reach the container as an explicit value.
+  it("passes a provider's 'false' through", async () => {
+    toolSearchEnv.mockReturnValue('false')
     const env = await new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
-    expect('ENABLE_TOOL_SEARCH' in env).toBe(false)
+    expect(env.ENABLE_TOOL_SEARCH).toBe('false')
   })
 
   // The setting is a master switch, not a way to force tool search onto an
   // endpoint that rejects deferred tools.
   it('keeps ENABLE_TOOL_SEARCH=false over the provider value when the setting is off', async () => {
     enableToolSearch.mockReturnValue(false)
-    toolSearchEnv.mockReturnValue(undefined)
+    toolSearchEnv.mockReturnValue('true')
     const env = await new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
     expect(env.ENABLE_TOOL_SEARCH).toBe('false')
   })

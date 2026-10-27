@@ -34,7 +34,7 @@ export class KimiSubscriptionLlmProvider extends BaseLlmProvider {
   readonly catalogDefaultModels = KIMI_DEFAULT_MODELS
   protected readonly settingsKeyField = undefined
   protected readonly envVarName = ''
-  override readonly toolSearchEnv = 'true' as const
+  override toolSearchEnv() { return 'true' as const }
   override readonly supportsModelSearch = true
   override readonly supportsUsage = true
 

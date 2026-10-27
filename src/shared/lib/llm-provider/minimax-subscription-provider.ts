@@ -40,7 +40,7 @@ export class MinimaxSubscriptionLlmProvider extends BaseLlmProvider {
   readonly catalogDefaultModels = MINIMAX_DEFAULT_MODELS
   protected readonly settingsKeyField = undefined
   protected readonly envVarName = ''
-  override readonly toolSearchEnv = 'true' as const
+  override toolSearchEnv() { return 'true' as const }
   override readonly mediaPrompt = MINIMAX_MEDIA_PROMPT
   override readonly supportsModelSearch = true
   override readonly supportsUsage = true
