@@ -22,6 +22,7 @@ const apiFetch = vi.fn(async (url: string) => {
 })
 vi.mock('@renderer/lib/api', () => ({ apiFetch: (url: string) => apiFetch(url) }))
 
+import { TREE_BUDGET } from '@renderer/lib/team-brain/team-brain-budget'
 import { useTeamBrainDrive } from './use-team-brain-drive'
 
 describe('useTeamBrainDrive', () => {
@@ -69,5 +70,22 @@ describe('useTeamBrainDrive', () => {
     const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
     const top = renderHook(() => useTeamBrainDrive('brain', 'vol', new Set()), { wrapper })
     await waitFor(() => expect(top.result.current.recordGroups.status).toBe('failed'))
+  })
+
+  it('lists _brain on a top too wide for the tree to walk, with a group saved on', async () => {
+    apiFetch.mockImplementation(async (url: string) => {
+      const path = new URL(url, 'http://x').searchParams.get('path')
+      const entries =
+        path === ''
+          ? [{ name: '_brain', path: '_brain', type: 'directory' }, ...Array.from({ length: TREE_BUDGET + 1 }, (_, i) => ({ name: `p${i}.md`, path: `p${i}.md`, type: 'file' }))]
+          : path === '_brain'
+            ? [{ name: 'team.md', path: '_brain/team.md', type: 'file' }]
+            : []
+      return new Response(JSON.stringify({ root: '', path, entries }))
+    })
+    const client = new QueryClient()
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
+    const { result } = renderHook(() => useTeamBrainDrive('brain', 'vol', new Set(), new Set(['about'] as const)), { wrapper })
+    await waitFor(() => expect(result.current.recordGroups.status).toBe('listed'))
   })
 })

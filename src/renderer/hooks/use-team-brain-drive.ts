@@ -59,7 +59,7 @@ export function useTeamBrainDrive(brainSlug: string, volumeId: string | undefine
   // Once the first view is in, the record's folders list behind it, so switching a group on shows it at once. `_brain`
   // always does, however wide the top is, since what it holds decides which switches there are.
   const ahead = useMemo(
-    () => (!withRecord && listed.has('') && need.length === 0 ? [...(hasBrain ? [TEAM_RECORD_FOLDER] : []), ...foldersToList(walked, expanded).filter(inRecord)] : []),
+    () => (listed.has('') && need.length === 0 ? [...(hasBrain ? [TEAM_RECORD_FOLDER] : []), ...(withRecord ? [] : foldersToList(walked, expanded).filter(inRecord))] : []),
     [withRecord, listed, need, walked, expanded, hasBrain],
   )
   useEffect(() => {
