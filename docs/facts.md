@@ -87,9 +87,24 @@ it, the renderer hides it, and the agents are never told about it.
 | Computer use | `supportsComputerUse()` | the container's tools and prompt (`HOST_COMPUTER_USE`), the tool call, the Computer Use tab (`offersComputerUseSettings()`) |
 | Host scripts | `runsHostScripts()`; the container's script tool follows `HOST_COMPUTER_USE` | the tool call |
 | The person's Chrome: CDP launch, profile copy, Apple Passwords | `drivesUserChrome()` | `ChromeProvider.detect()` (the Browser tab shows why), the profile seed, the Apple Passwords runtime |
-| A folder by path: local drives, copying a dropped folder in | `readsHostFolders()`, `usesHostFolderPaths()` | `prepareLocalVolume()`, the upload-folder routes, the Drives tab, folder drops (which upload instead) |
+| A folder by its path alone: copying a dropped folder in, or a drive of one | `readsHostFolders()`, `usesHostFolderPaths()` | the upload-folder routes, the mount offer on a drop (the folder uploads its files instead), and `prepareLocalVolume()` for a folder without its pick's bookmark |
 | Private skillsets, publishing to GitHub | `runsHostGit()`, `offersPrivateSkillsets()` | the git probes (public skillsets download an archive), repository tokens, `publishMode`, the token fields |
 | Keep Awake, Add to Dock, recent files, music control | `keepsMacAwake()`, `addsToDock()`, `listsRecentFiles()`, `userMusicSupported()` | the settings and menus that offer them, and main's handlers |
+
+Local drives stay. The Store build's folder picker returns a security-scoped
+bookmark with the pick, which is stored with the drive. The folder opens
+through it the first time the drive is read after each launch, and stays open
+until quit (`local-folder-access.ts`). A bookmark the sandbox still refuses
+(EPERM) leaves the drive "pick the folder again", and its page in Settings →
+Drives offers Choose folder again: a new pick of the same folder replaces the
+bookmark and keeps the drive's id, so every agent that has it keeps it
+(`reconnectLocalVolume()`, `POST /api/volume-definitions/:id/reconnect`).
+Every running agent that has the drive is then marked stale for a restart: a
+link that opens stays open for the run, so the drive was already dead when
+each of them started, and none has its mount.
+Only a folder that listed is kept open, so anything else (a folder that is
+gone, an unplugged disk, the folder's own permissions) is tried again on the
+next read.
 
 Two lists say this in words, and a new row goes in both: Settings → General
 shows the person `SandboxNotice` (`sandbox-notice.tsx`), and the agents'

@@ -7,15 +7,16 @@ import type { VolumeDefinitionSummary } from '@shared/lib/types/mount'
 const state = vi.hoisted(() => ({
   definitions: [] as VolumeDefinitionSummary[],
   selectedId: undefined as string | undefined, source: undefined as 'home' | undefined, from: undefined as string | undefined, navigate: vi.fn(), push: vi.fn(),
-  host: true, isAdmin: true, save: vi.fn(), remove: vi.fn(),
+  host: true, isAdmin: true, save: vi.fn(), remove: vi.fn(), reconnect: vi.fn(),
 }))
 vi.mock('@renderer/hooks/use-volume-definitions', () => ({
   useVolumeAgents: () => ({ data: { attachments: [] }, isLoading: false }),
   useVolumeDefinitions: () => ({ data: state.definitions, isLoading: false }),
   useSaveVolumeDefinition: () => ({ mutateAsync: state.save, isPending: false }),
   useDeleteVolumeDefinition: () => ({ mutateAsync: state.remove, isPending: false }),
+  useReconnectLocalVolume: () => ({ mutateAsync: state.reconnect, isPending: false }),
 }))
-vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: () => state.host, usesHostFolderPaths: () => state.host, agentsRunInAppSandbox: () => false }))
+vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: () => state.host }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: state.isAdmin }) }))
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => state.navigate, useRouter: () => ({ history: { push: state.push } }), useSearch: () => ({ volume: state.selectedId, source: state.source, from: state.from }) }))
 vi.mock('@renderer/components/volumes/volume-file-browser', () => ({ VolumeFileBrowser: () => <div>Volume files</div> }))
@@ -31,7 +32,7 @@ beforeEach(() => {
   state.host = true
   state.isAdmin = true
   state.definitions = [{ id: 'v1', name: 'Notes', type: 'local', hostPath: '/notes', userId: 'alice', canManage: true, attachmentCount: 0, health: 'ok', globalAccess: null }]
-  window.electronAPI = { openDirectory: vi.fn().mockResolvedValue('/new/folder') } as never
+  window.electronAPI = { openDirectory: vi.fn().mockResolvedValue({ path: '/new/folder' }) } as never
 })
 afterEach(() => {
   cleanup()
@@ -182,5 +183,47 @@ describe('volume settings', () => {
     expect(screen.getByRole('alertdialog')).toHaveTextContent('Remove "Notes" from saved drives. 2 files that have not synced will be lost.')
     await userEvent.click(screen.getByRole('button', { name: 'Remove drive' }))
     expect(state.remove).toHaveBeenCalledExactlyOnceWith('v1')
+  })
+})
+
+describe('a drive whose folder the app can no longer open', () => {
+  beforeEach(() => {
+    state.selectedId = 'v1'
+    state.definitions[0] = { ...state.definitions[0], health: 'missing', pickFolderAgain: true, attachmentCount: 2 }
+  })
+  it('chooses the same folder again in the picker, opened in it, and keeps the drive', async () => {
+    vi.mocked(window.electronAPI!.openDirectory).mockResolvedValue({ path: '/notes', bookmark: 'Ym0y' })
+    state.reconnect.mockResolvedValue({ success: true })
+    render(<VolumesTab />)
+    expect(screen.getByTestId('choose-folder-again')).toHaveTextContent('Choose the same folder again to keep this drive and its agents.')
+    await userEvent.click(screen.getByRole('button', { name: 'Choose folder again' }))
+    expect(window.electronAPI!.openDirectory).toHaveBeenCalledExactlyOnceWith('/notes')
+    expect(state.reconnect).toHaveBeenCalledExactlyOnceWith({ id: 'v1', config: { path: '/notes', bookmark: 'Ym0y' } })
+    expect(state.remove).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+  it('shows why another folder was refused', async () => {
+    vi.mocked(window.electronAPI!.openDirectory).mockResolvedValue({ path: '/elsewhere', bookmark: 'Ym0z' })
+    state.reconnect.mockRejectedValue(new Error('Choose this drive’s own folder, /notes. Add another folder as a new drive.'))
+    render(<VolumesTab />)
+    await userEvent.click(screen.getByRole('button', { name: 'Choose folder again' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Add another folder as a new drive.')
+  })
+  it('changes nothing when the picker is cancelled', async () => {
+    vi.mocked(window.electronAPI!.openDirectory).mockResolvedValue(null)
+    render(<VolumesTab />)
+    await userEvent.click(screen.getByRole('button', { name: 'Choose folder again' }))
+    expect(state.reconnect).not.toHaveBeenCalled()
+  })
+  it('says where to choose it from a window that cannot pick this computer’s folders', () => {
+    state.host = false
+    render(<VolumesTab />)
+    expect(screen.queryByRole('button', { name: 'Choose folder again' })).not.toBeInTheDocument()
+    expect(screen.getByText(/Choose it again in the desktop app/)).toBeInTheDocument()
+  })
+  it('is not offered on a drive that opens', () => {
+    state.definitions[0] = { ...state.definitions[0], health: 'ok', pickFolderAgain: undefined }
+    render(<VolumesTab />)
+    expect(screen.queryByTestId('choose-folder-again')).not.toBeInTheDocument()
   })
 })

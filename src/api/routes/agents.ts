@@ -153,6 +153,7 @@ import { getMountsWithHealth, addMount, attachMount, removeMount, setMountReadOn
 import { addMountSchema, updateMountSchema } from '@shared/lib/services/mount-schema'
 import { releaseVolume, VolumeError } from '@shared/lib/services/volume-service'
 import { volumeViewer } from '../lib/volume-access'
+import { afterMountChange } from '../lib/mount-change'
 import { readAgentHooks, removeAgentHook } from '@shared/lib/services/agent-hooks-service'
 import { removeAgentHookSchema } from '@shared/lib/services/agent-hooks-schema'
 import {
@@ -6607,11 +6608,6 @@ agents.get('/:id/mounts', AgentRead(), async (c) => {
     return c.json({ error: 'Failed to list drives' }, 500)
   }
 })
-
-// A running container keeps the drives it started with until it restarts.
-async function afterMountChange(agentSlug: string, restart?: boolean) {
-  await agentRegistry.get(agentSlug).container.invalidate({ restart })
-}
 
 // POST /api/agents/:id/mounts - Add a mount
 agents.post('/:id/mounts', AgentUser(), async (c) => {

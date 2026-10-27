@@ -6,7 +6,8 @@ import { batch, changesOf } from '@shared/lib/db/batch'
 import { agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
 import { VOLUME_TYPES, type StoredVolume, type VolumeDefinitionSummary } from '@shared/lib/types/mount'
 import { instantiateVolume, prepareVolume, removeVolume } from '@shared/lib/volumes/volume-factory'
-import { volumeConfigSchema } from '@shared/lib/volumes/volume-config-schema'
+import { localVolumeConfigSchema, volumeConfigSchema } from '@shared/lib/volumes/volume-config-schema'
+import { prepareLocalVolume } from '@shared/lib/volumes/local-mountable-volume'
 import { volumeHealth, volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
 import { VolumeError } from '@shared/lib/volumes/volume-error'
 import { createVolumeSchema, updateVolumeSchema, volumeNameSchema } from './mount-schema'
@@ -81,10 +82,12 @@ export async function listVolumeDefinitions(viewer: VolumeViewer): Promise<Volum
   const summaries = await Promise.all(rows.map(async ({ volume, attachmentCount }) => {
     const stored = storedDefinition(volume)
     if (!stored) return null
+    // The health check loads the drive's state first, so the summary's attention line reads it.
+    const problem = await volumeProblem(stored)
     return {
-      // The health check loads the drive's state first, so the summary's attention line reads it.
-      health: volumeHealth(await volumeProblem(stored)),
+      health: volumeHealth(problem),
       ...volumeSummary(stored),
+      ...(problem === 'pick the folder again' ? { pickFolderAgain: true as const } : {}),
       userId: volume.userId,
       canManage: volume.userId === null ? viewer.admin : volume.userId === viewer.userId,
       attachmentCount,
@@ -112,6 +115,43 @@ export async function updateVolumeDefinition(id: string, raw: unknown, viewer: V
     if (input.global && existing.userId !== null) throw new VolumeError('Only public drives can be global', 400)
     if (typeof userId === 'string' && existing.globalAccess) throw new VolumeError('Turn off global before changing access', 409)
     throw new VolumeError('Remove this drive from all agents before changing its access', 409)
+  }
+  throw new VolumeError('Drive not found', 404)
+}
+
+/**
+ * Gives a local drive its folder again from a new pick in the open panel,
+ * keeping the drive's id and so every agent that has it. The Mac App Store
+ * build reads the folder only through the pick's bookmark, and a bookmark can
+ * stop opening it (the folder deleted and made again, the disk erased). The
+ * same folder only: another one is a new drive, since agents' mounts lead here.
+ */
+export async function reconnectLocalVolume(id: string, raw: unknown, viewer: VolumeViewer): Promise<void> {
+  const ownership = and(eq(volumeDefinitions.id, id), manageableVolumes(viewer))
+  const row = await db.select().from(volumeDefinitions).where(ownership).get()
+  if (!row) throw new VolumeError('Drive not found', 404)
+  const stored = storedDefinition(row)
+  if (stored?.type !== 'local') throw new VolumeError('Only a local folder’s drive can have its folder chosen again', 400)
+  const current = localVolumeConfigSchema.safeParse(stored.config)
+  if (!current.success) throw new VolumeError('Drive configuration is unavailable', 400)
+  const input = localVolumeConfigSchema.strict().parse(raw)
+  let prepared: Awaited<ReturnType<typeof prepareLocalVolume>>
+  try {
+    prepared = await prepareLocalVolume(input)
+  } catch (error) {
+    if (error instanceof VolumeError) throw error
+    throw new VolumeError(error instanceof Error ? error.message : 'Invalid drive configuration', 400)
+  }
+  if (prepared.config.path !== current.data.path) {
+    throw new VolumeError(`Choose this drive’s own folder, ${current.data.path}. Add another folder as a new drive.`, 400)
+  }
+  const config = volumeConfigSchema.parse({ type: 'local', config: prepared.config }).config
+  // Unchanged since it was read, so a second pick racing this one can't be overwritten unseen.
+  const result = await db.update(volumeDefinitions).set({ config: JSON.stringify(config), updatedAt: new Date() })
+    .where(and(ownership, eq(volumeDefinitions.config, row.config))).run()
+  if (changesOf(result) > 0) return
+  if (await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(ownership).get()) {
+    throw new VolumeError('The drive changed while its folder was chosen. Try again.', 409)
   }
   throw new VolumeError('Drive not found', 404)
 }

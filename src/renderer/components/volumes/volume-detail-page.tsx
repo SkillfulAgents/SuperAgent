@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { ChevronLeft, Globe, Lock, X } from 'lucide-react'
+import { ChevronLeft, FolderOpen, Globe, Lock, X } from 'lucide-react'
 import type { GlobalAccess, VolumeDefinitionSummary } from '@shared/lib/types/mount'
+import { localVolumeConfigSchema } from '@shared/lib/volumes/volume-config-schema'
+import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { useHideSettingsHeader, useFullWidthSettingsContent } from '@renderer/components/settings/settings-page'
 import { AgentAssignmentList } from '@renderer/components/agents/agent-assignment-list'
 import { AppLink } from '@renderer/components/ui/app-link'
@@ -10,7 +12,7 @@ import { VolumeStatusBadge } from '@renderer/components/agents/volume-status-bad
 import { useAgents } from '@renderer/hooks/use-agents'
 import { useUser } from '@renderer/context/user-context'
 import { useAddMount, useRemoveMount } from '@renderer/hooks/use-mounts'
-import { useSaveVolumeDefinition, useVolumeAgents } from '@renderer/hooks/use-volume-definitions'
+import { useReconnectLocalVolume, useSaveVolumeDefinition, useVolumeAgents } from '@renderer/hooks/use-volume-definitions'
 import { InlineEditableTitle } from '@renderer/components/ui/inline-editable-title'
 import { Switch } from '@renderer/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select'
@@ -87,6 +89,33 @@ function VolumeAgentsList({ volume }: { volume: VolumeDefinitionSummary }) {
   </section>
 }
 
+/** A local drive whose folder the app can no longer open, chosen again in the open panel. The drive keeps its agents. */
+function ChooseFolderAgain({ volume }: { volume: VolumeDefinitionSummary }) {
+  const reconnect = useReconnectLocalVolume()
+  const [error, setError] = useState<string | null>(null)
+  if (!canUseHostFeatures()) {
+    return <p className="text-xs text-orange-600 dark:text-orange-400">The app can no longer open this folder. Choose it again in the desktop app on this workspace’s computer.</p>
+  }
+  const choose = async () => {
+    setError(null)
+    try {
+      const picked = await window.electronAPI?.openDirectory(volume.hostPath ?? undefined)
+      if (!picked) return
+      await reconnect.mutateAsync({ id: volume.id, config: localVolumeConfigSchema.parse(picked) })
+      toast.success(`${volume.name} can be read again`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not choose the folder')
+    }
+  }
+  return <div className="space-y-2" data-testid="choose-folder-again">
+    <p className="text-xs text-orange-600 dark:text-orange-400">The app can no longer open this folder. Choose the same folder again to keep this drive and its agents.</p>
+    <Button type="button" variant="outline" size="sm" onClick={() => void choose()} disabled={reconnect.isPending}>
+      <FolderOpen className="h-3.5 w-3.5" />{reconnect.isPending ? 'Choosing…' : 'Choose folder again'}
+    </Button>
+    {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+  </div>
+}
+
 function VolumeSettingsForm({ volume, onDelete }: { volume: VolumeDefinitionSummary; onDelete: () => void }) {
   const { isAuthMode, isAdmin } = useUser()
   const save = useSaveVolumeDefinition()
@@ -102,7 +131,7 @@ function VolumeSettingsForm({ volume, onDelete }: { volume: VolumeDefinitionSumm
     <h3 className="text-xs font-normal text-muted-foreground">Settings</h3>
     <form className="rounded-xl border bg-background p-4 space-y-4" onSubmit={event => { event.preventDefault(); void submit() }}>
       <VolumeDetailsFields showName={false} value={{ name: volume.name, visibility }} onChange={next => { setVisibility(next.visibility); setSaved(false); setError(null) }} disabled={save.isPending} inUse={volume.attachmentCount > 0}>
-        <div className="space-y-1"><p className="text-sm font-medium">Folder</p><p className="break-all text-xs text-muted-foreground" data-testid="selected-volume-folder">{volume.sourceLabel ?? volume.hostPath}</p></div>
+        <div className="space-y-1"><p className="text-sm font-medium">Folder</p><p className="break-all text-xs text-muted-foreground" data-testid="selected-volume-folder">{volume.sourceLabel ?? volume.hostPath}</p>{volume.pickFolderAgain && <ChooseFolderAgain volume={volume} />}</div>
       </VolumeDetailsFields>
       {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
       <div className="flex items-center gap-2">

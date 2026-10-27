@@ -4,7 +4,9 @@ import path from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LocalFileOps } from '@shared/lib/agent-actor/local-file-ops'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
-import { LocalMountableVolume, prepareLocalVolume } from './local-mountable-volume'
+import { LocalMountableVolume, PICK_FOLDER_AGAIN, prepareLocalVolume } from './local-mountable-volume'
+import { closeLocalFolders, setFolderAccessStarter } from './local-folder-access'
+import { volumeProblem } from './volume-health'
 
 async function codeOf(promise: Promise<unknown>): Promise<string> {
   try {
@@ -493,13 +495,56 @@ describe('prepareLocalVolume', () => {
     }
   })
 
-  it('refuses every folder in the Mac App Store edition, whose sandbox would lose it at quit', async () => {
-    vi.stubEnv('E2E_MOCK', 'true')
-    vi.stubEnv('SUPERAGENT_FAKE_DISTRIBUTION', 'mac-app-store')
-    await expect(prepareLocalVolume({ path: os.tmpdir() })).rejects.toMatchObject({
-      name: 'VolumeError',
-      status: 400,
-      message: 'Folders on this Mac are not available as drives in the Mac App Store edition',
+  describe('in the Mac App Store edition, which reads a folder only through its pick’s bookmark', () => {
+    let folder: string
+    beforeEach(() => {
+      vi.stubEnv('E2E_MOCK', 'true')
+      vi.stubEnv('SUPERAGENT_FAKE_DISTRIBUTION', 'mac-app-store')
+      folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'local-volume-sandbox-')))
+      fs.writeFileSync(path.join(folder, 'notes.txt'), 'hello')
+    })
+    afterEach(() => {
+      closeLocalFolders()
+      setFolderAccessStarter(null)
+      fs.rmSync(folder, { recursive: true, force: true })
+    })
+
+    it('refuses a folder it was only told the path of', async () => {
+      setFolderAccessStarter(() => () => {})
+      await expect(prepareLocalVolume({ path: folder })).rejects.toMatchObject({
+        name: 'VolumeError',
+        status: 400,
+        message: 'Choose the folder in the app’s folder picker to make it a drive',
+      })
+    })
+
+    it('makes a drive of a picked folder, keeping the bookmark, and reads it again after a relaunch', async () => {
+      const start = vi.fn(() => () => {})
+      setFolderAccessStarter(start)
+      const prepared = await prepareLocalVolume({ path: folder, bookmark: 'bm' })
+      expect(prepared.config).toEqual({ path: folder, bookmark: 'bm' })
+      expect(start).toHaveBeenCalledWith('bm')
+
+      // Quit, then launch again: the drive's first read reopens the folder from the stored bookmark.
+      closeLocalFolders()
+      const relaunch = vi.fn(() => () => {})
+      setFolderAccessStarter(relaunch)
+      const volume = new LocalMountableVolume('v', prepared.name, prepared.config)
+      expect((await volume.list('')).map((entry) => entry.name)).toEqual(['notes.txt'])
+      expect(relaunch).toHaveBeenCalledWith('bm')
+      expect(await volumeProblem({ id: 'v', name: prepared.name, type: 'local', config: prepared.config })).toBeNull()
+    })
+
+    it('has a drive whose bookmark went stale picked again, rather than reading as broken', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      setFolderAccessStarter(() => {
+        throw new Error('bookmarkDataIsStale - try recreating the bookmark')
+      })
+      const config = { path: folder, bookmark: 'stale' }
+
+      await expect(prepareLocalVolume(config)).rejects.toMatchObject({ status: 400, message: PICK_FOLDER_AGAIN })
+      await expect(new LocalMountableVolume('v', 'Notes', config).list('')).rejects.toMatchObject({ code: 'not-accessible', message: PICK_FOLDER_AGAIN })
+      expect(await volumeProblem({ id: 'v', name: 'Notes', type: 'local', config })).toBe('pick the folder again')
     })
   })
 })

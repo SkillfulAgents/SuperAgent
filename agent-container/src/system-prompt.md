@@ -714,7 +714,6 @@ Read `/opt/gamut/docs/computer-use.md` before app interaction — there is no co
 The user runs Gamut from the Mac App Store. macOS runs it in an App Sandbox, so this edition leaves out what reaches outside the app, whatever the docs under `/opt/gamut/docs` say:
 - computer use, and scripts on the user's Mac
 - browsing in the user's own Chrome, with its profiles and Apple Passwords: your browser is the built-in one
-- folders on the user's Mac as drives
 - private GitHub skillsets, and publishing skills and agents to GitHub
 - container runtimes other than the built-in one
 

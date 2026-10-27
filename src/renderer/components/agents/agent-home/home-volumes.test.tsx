@@ -30,7 +30,7 @@ vi.mock('@renderer/hooks/use-volume-definitions', () => ({ useSaveVolumeDefiniti
 const { mockCanUseHostFeatures } = vi.hoisted(() => ({
   mockCanUseHostFeatures: vi.fn(() => true),
 }))
-vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: mockCanUseHostFeatures, usesHostFolderPaths: mockCanUseHostFeatures, agentsRunInAppSandbox: () => false }))
+vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: mockCanUseHostFeatures }))
 
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -53,7 +53,7 @@ beforeEach(() => {
   volumes.operationError = null
   volumes.pendingRestart = false
   mockCanUseHostFeatures.mockReturnValue(true)
-  window.electronAPI = { platform: 'darwin', showInFolder: vi.fn(), openDirectory: vi.fn().mockResolvedValue('/new/folder') } as never
+  window.electronAPI = { platform: 'darwin', showInFolder: vi.fn(), openDirectory: vi.fn().mockResolvedValue({ path: '/new/folder' }) } as never
 })
 
 afterEach(() => {
