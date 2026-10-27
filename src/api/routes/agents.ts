@@ -8340,7 +8340,7 @@ agents.put('/:id/x-agent-policies', AgentAdmin(), async (c) => {
   return c.json({ ok: true })
 })
 
-const targetedOperationSchema = xAgentOperationSchema.exclude(['list'])
+const targetedOperationSchema = z.enum(['invoke', 'read'])
 
 // PUT /api/agents/:id/x-agent-policies/{invoke|read}/:target - Upsert ONE
 // targeted policy atomically. The batch PUT above is a whole-form replace: concurrent
