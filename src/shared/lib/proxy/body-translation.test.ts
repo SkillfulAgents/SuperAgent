@@ -281,23 +281,23 @@ describe('translateProxyBody', () => {
     })
   })
 
-  describe('unsupported media types (415)', () => {
+  describe('form-encoded bodies', () => {
     it.each([
-      ['application/x-www-form-urlencoded', 'foo=bar&baz=qux'],
-      [
-        'application/x-www-form-urlencoded; charset=utf-8',
-        'token=xyz',
-      ],
-    ])('rejects form-encoded %j with 415', (ct, body) => {
-      const r = translateProxyBody('POST', ct, bufFromString(body))
-      expect(r).toMatchObject({
-        ok: false,
-        status: 415,
-        errorCode: 'unsupported_media_type',
+      'application/x-www-form-urlencoded',
+      'application/x-www-form-urlencoded; charset=utf-8',
+    ])('forwards %j as binary_body with its content type', (ct) => {
+      const r = translateProxyBody('POST', ct, bufFromString('channel=general&text=hello'))
+      expect(r).toEqual({
+        ok: true,
+        binaryBody: {
+          base64: Buffer.from('channel=general&text=hello').toString('base64'),
+          content_type: ct,
+        },
       })
-      if (!r.ok) expect(r.message).toContain(ct)
     })
+  })
 
+  describe('unsupported media types (415)', () => {
     it('rejects multipart/form-data with 415', () => {
       const ct = 'multipart/form-data; boundary=----xyz'
       const body = '------xyz\r\nContent-Disposition: form-data; name="x"\r\n\r\n1\r\n------xyz--\r\n'
@@ -340,8 +340,8 @@ describe('translateProxyBody', () => {
     it('error message guides the user toward custom auth config', () => {
       const r = translateProxyBody(
         'POST',
-        'application/x-www-form-urlencoded',
-        bufFromString('a=b')
+        'text/plain',
+        bufFromString('hello')
       )
       expect(r.ok).toBe(false)
       if (!r.ok) {
