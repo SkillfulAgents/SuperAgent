@@ -55,15 +55,15 @@ export function devDrive<Drive extends readonly unknown[]>(state: TeamBrainDevSt
 
 const HOUR = 3_600_000
 
-/** The upkeep task as the dev menu has it: none yet, or a daily one active or paused. */
-export function devUpkeep(state: TeamBrainDevStates['upkeep'], live: ApiScheduledTask | undefined): ApiScheduledTask | undefined {
+/** The scheduled tasks as the dev menu has them: none yet, or one daily upkeep active or paused. */
+export function devTasks(state: TeamBrainDevStates['upkeep'], live: ApiScheduledTask[]): ApiScheduledTask[] {
   if (state === 'live') return live
-  if (state === 'none') return undefined
+  if (state === 'none') return []
   const now = Date.now()
-  // Only what the page reads is real; the rest of a task's fields keep the live task's, or none.
+  // Only what the page reads is real; the rest of a task's fields keep the first live task's, or none.
   const task = {
-    ...live,
-    id: live?.id ?? 'dev-brain-upkeep',
+    ...live[0],
+    id: live[0]?.id ?? 'dev-brain-upkeep',
     name: 'Brain upkeep',
     scheduleType: 'cron',
     scheduleExpression: '0 0 * * *',
@@ -71,7 +71,7 @@ export function devUpkeep(state: TeamBrainDevStates['upkeep'], live: ApiSchedule
     lastExecutedAt: new Date(now - 2 * HOUR),
     status: state === 'paused' ? 'paused' : 'pending',
   } as ApiScheduledTask
-  return task
+  return [task]
 }
 
 /** A few syncs' summaries as an upkeep run writes them, for the sample state. */

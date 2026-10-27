@@ -35,21 +35,18 @@ const { drive } = vi.hoisted(() => {
     ],
   }
 })
-// The task Team Brain syncs on, as its onboarding named it: daily, last run two hours ago.
+// Team Brain's scheduled tasks, whatever the agent named them: set-up's upkeep, renamed, and one it added and paused.
 const { upkeep } = vi.hoisted(() => ({
   upkeep: {
-    pause: vi.fn(),
-    resume: vi.fn(),
-    update: vi.fn(),
-    task: { id: 't1', name: 'Brain upkeep', status: 'pending', scheduleExpression: '0 0 * * *', nextExecutionAt: new Date(Date.now() + 3_600_000).toISOString(), lastExecutedAt: new Date(Date.now() - 7_200_000).toISOString() },
+    tasks: [] as Array<{ id: string; name: string; status: string; scheduleExpression: string; nextExecutionAt: string; lastExecutedAt: string }>,
   },
 }))
+const task = (id: string, name: string, status: string) => ({
+  id, name, status, scheduleExpression: '0 0 * * *', nextExecutionAt: new Date(Date.now() + 3_600_000).toISOString(), lastExecutedAt: new Date(Date.now() - 7_200_000).toISOString(),
+})
 vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
-  useScheduledTasks: () => ({ data: [upkeep.task] }),
-  usePauseScheduledTask: () => ({ mutate: upkeep.pause }),
-  useResumeScheduledTask: () => ({ mutate: upkeep.resume }),
-  useUpdateSchedule: () => ({ mutate: upkeep.update }),
-  useScheduledTaskSessions: () => ({ data: [] }),
+  useScheduledTasks: () => ({ data: upkeep.tasks }),
+  useScheduledTasksSessions: () => [],
 }))
 // Sources are the Team Brain agent's own connections; they open on its Connections page.
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }))
@@ -135,6 +132,7 @@ const BRAIN: ApiAgent = {
 
 beforeEach(() => {
   resetTeamBrainState()
+  upkeep.tasks = [task('t1', 'Nightly digest', 'pending'), task('t2', 'Weekly people check', 'paused')]
   screenSize.wide = true
   screenSize.listeners.clear()
   window.matchMedia = ((query: string) => ({
@@ -226,15 +224,20 @@ describe('TeamBrainOverview', () => {
     // The whole row opens it in Dropbox.
     await userEvent.click(screen.getByRole('button', { name: 'Open Team Brain drive settings' }))
     expect(navigate).toHaveBeenCalledWith({ to: '/settings/$tab', params: { tab: 'volumes' }, search: { volume: 'vol1', source: 'home', from: '/agents/team-brain' } })
-    expect(screen.getByTestId('team-brain-sync-note')).toHaveTextContent(/^Syncs in (60 min|1 h) · last ran 2 h ago$/)
-    expect(screen.getByTestId('team-brain-schedule-runs')).toHaveTextContent(/^Runs [a-z].* · \S/)
 
-    // Sync is the upkeep task: its last run in the status line, and one row for when it runs and how often, which opens
-    // the task's own page to change the schedule or pause it.
-    expect(screen.getByTestId('team-brain-status')).toHaveTextContent('Active · Synced 2 h ago')
-    expect(screen.getByTestId('team-brain-schedule')).toHaveTextContent('Daily')
-    await userEvent.click(screen.getByTestId('team-brain-sync'))
+    // Scheduled tasks are every one the agent has, by its id, whatever it is named: a row each for when it runs and how
+    // often, which opens the task's own page to change the schedule or pause it.
+    expect(screen.getByTestId('team-brain-status')).toHaveTextContent(/^Active$/)
+    const nightly = within(screen.getByTestId('team-brain-sync-t1'))
+    expect(nightly.getByText('Nightly digest')).toBeInTheDocument()
+    expect(nightly.getByTestId('team-brain-sync-note')).toHaveTextContent(/^Syncs in (60 min|1 h) · last ran 2 h ago$/)
+    expect(nightly.getByTestId('team-brain-schedule-runs')).toHaveTextContent(/^Runs [a-z].* · \S/)
+    expect(nightly.getByTestId('team-brain-schedule')).toHaveTextContent('Daily')
+    expect(within(screen.getByTestId('team-brain-sync-t2')).getByTestId('team-brain-schedule')).toHaveTextContent('Paused')
+    await userEvent.click(screen.getByTestId('team-brain-sync-t1'))
     expect(navigate).toHaveBeenCalledWith({ to: '/agents/$slug/tasks/$taskId', params: { slug: 'team-brain', taskId: 't1' } })
+    await userEvent.click(screen.getByTestId('team-brain-sync-t2'))
+    expect(navigate).toHaveBeenCalledWith({ to: '/agents/$slug/tasks/$taskId', params: { slug: 'team-brain', taskId: 't2' } })
     expect(screen.getByTestId('team-brain-menu')).toHaveAttribute('aria-expanded', 'true')
 
     // Sources are the agent's connections, managed on its Connections page.
@@ -357,6 +360,17 @@ describe('TeamBrainOverview', () => {
     expect([...driveRead.record]).toEqual(['index'])
   })
 
+  it('is paused only when every scheduled task is, and says so when it has none', async () => {
+    upkeep.tasks = [task('t2', 'Weekly people check', 'paused')]
+    const page = render(<TeamBrainOverview agent={BRAIN} />)
+    expect(screen.getByTestId('team-brain-status')).toHaveTextContent(/^Paused$/)
+    upkeep.tasks = []
+    page.rerender(<TeamBrainOverview agent={BRAIN} />)
+    expect(screen.getByTestId('team-brain-status')).toHaveTextContent(/^Not scheduled$/)
+    await userEvent.click(screen.getByTestId('team-brain-menu'))
+    expect(screen.getByTestId('team-brain-sync-note')).toHaveTextContent('No scheduled tasks')
+  })
+
   it('stands mocked states in for the live ones from its dev menu, and goes back to live', async () => {
     render(<TeamBrainOverview agent={BRAIN} />)
     await userEvent.click(screen.getByTestId('team-brain-dev-states'))
@@ -364,7 +378,7 @@ describe('TeamBrainOverview', () => {
     expect(screen.getByTestId('team-brain-drive-error')).toHaveTextContent("Couldn't read the Team Brain drive.")
     expect(screen.queryByTestId('team-brain-radial')).toBeNull()
     await userEvent.click(screen.getByTestId('team-brain-dev-upkeep-none'))
-    expect(screen.getByTestId('team-brain-status')).toHaveTextContent('Not scheduled yet')
+    expect(screen.getByTestId('team-brain-status')).toHaveTextContent(/^Not scheduled$/)
     await userEvent.click(screen.getByTestId('team-brain-dev-syncs-sample'))
     expect(screen.getByText('Acme’s renewal moves to Q1')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Back to live' }))

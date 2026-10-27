@@ -3,6 +3,7 @@ import { ArrowUp, Loader2 } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
+import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { UploadError } from '@renderer/components/ui/upload-error'
 import { ChatComposerBox, FLOATING_COMPOSER_CLASS } from '@renderer/components/messages/chat-composer-box'
@@ -44,6 +45,11 @@ export function TeamBrainHomeComposer({ agent }: { agent: ApiAgent }) {
 
   return (
     <>
+      <MountChoiceDialog
+        open={composer.mountDialog.open}
+        onChoice={composer.mountDialog.onChoice}
+        folderName={composer.mountDialog.folderName}
+      />
       {composer.chipDialog}
       <form
         onSubmit={composer.handleSubmit}

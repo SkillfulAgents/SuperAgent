@@ -25,14 +25,12 @@ import { useTeamBrainDrive } from '@renderer/hooks/use-team-brain-drive'
 import { splitFrontPages, TEAM_RECORD_FOLDER, teamRecordView } from '@renderer/lib/team-brain/team-brain-drive'
 import type { FolderEntry } from '@renderer/hooks/use-folder-entries'
 import { useTeamBrainSyncs } from '@renderer/hooks/use-team-brain-syncs'
-import type { TeamBrainSync } from '@renderer/lib/team-brain/team-brain-syncs'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { FilePreviewProvider, useFilePreview } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
 import { TrayManager } from '@renderer/components/tray/tray-manager'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@renderer/components/ui/collapsible'
 import { IntegrationRow, RowHoverChevron } from '@renderer/components/connections/integration-row'
-import { useHumanizedCron } from '@renderer/hooks/use-humanized-cron'
 import { useNavigate } from '@tanstack/react-router'
 import { formatDistanceToNow } from 'date-fns'
 import { useSessions } from '@renderer/hooks/use-sessions'
@@ -44,10 +42,11 @@ import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
 import { isForeignAgentConnectedAccount } from '@shared/lib/agent-connections/public'
 import { toast } from 'sonner'
 import { formatSince, formatUntil, SCHEDULE_LABELS } from '@renderer/lib/team-brain/team-brain-format'
-import { isBrainUpkeep, scheduleOfCron } from '@renderer/lib/team-brain/team-brain-setup-block'
-import { useScheduledTaskSessions, useScheduledTasks, type ApiScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
+import { scheduleOfCron } from '@renderer/lib/team-brain/team-brain-setup-block'
+import { useHumanizedCron } from '@renderer/hooks/use-humanized-cron'
+import { useScheduledTasks, useScheduledTasksSessions, type ApiScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { TeamBrainRadial, TeamBrainRadialLoading } from './team-brain-radial'
-import { DEV_STATES_ENABLED, devDrive, devSyncs, devUpkeep, TeamBrainDevStatesMenu, useTeamBrainDevStates } from './team-brain-dev-states'
+import { DEV_STATES_ENABLED, devDrive, devSyncs, devTasks, TeamBrainDevStatesMenu, useTeamBrainDevStates } from './team-brain-dev-states'
 import { TeamBrainSyncSummaries } from './team-brain-sync-summaries'
 import { TeamBrainHomeComposer } from './team-brain-home-composer'
 import { AgentAccessList, EveryAgentRow } from './team-brain-agent-access'
@@ -62,7 +61,7 @@ const PREVIEW_SLUG = 'team-brain'
  * drawer sits beside it (set up as on Agent Home) so a page in the drive opens
  * like any other file, and its settings open as a second column; the file
  * drawer and the settings never show together. Everything on it is the Team
- * Brain agent's own: its drive, its upkeep task, its connections and the
+ * Brain agent's own: its drive, its scheduled tasks, its connections and the
  * agents its drive is on.
  */
 export function TeamBrainOverview({ agent }: { agent: ApiAgent }) {
@@ -111,20 +110,19 @@ function useTeamBrainLocation(agent: ApiAgent) {
   return type ? teamBrainLocation(type) : null
 }
 
-/** The task Team Brain syncs on: the one recurring task set-up names "Brain upkeep". */
-function useBrainUpkeep(agentSlug: string): ApiScheduledTask | undefined {
+/** Team Brain's scheduled tasks still to run or paused, whatever they are named: set-up makes one, the agent may add others. */
+function useBrainTasks(agentSlug: string): ApiScheduledTask[] {
   const { data: tasks } = useScheduledTasks(agentSlug)
-  const live = tasks?.find((task) => isBrainUpkeep(task.name) && (task.status === 'pending' || task.status === 'paused'))
-  // Dev builds can stand a state in for it (team-brain-dev-states.tsx).
-  return devUpkeep(useTeamBrainDevStates().upkeep, live)
+  const live = (tasks ?? []).filter((task) => task.status === 'pending' || task.status === 'paused')
+  // Dev builds can stand a state in for them (team-brain-dev-states.tsx).
+  return devTasks(useTeamBrainDevStates().upkeep, live)
 }
 
 const isoOf = (at: Date | string | null) => (at ? new Date(at).toISOString() : null)
 
-/** How the sync is doing, in a line. Synced is from the latest summary, which a run writes once it is done, not from a run starting. */
-function syncLine(upkeep: ApiScheduledTask | undefined, lastSync: TeamBrainSync | undefined) {
-  if (!upkeep) return 'Not scheduled yet'
-  return `${upkeep.status === 'paused' ? 'Paused' : 'Active'} · ${lastSync ? `Synced ${formatSince(lastSync.at)}` : 'Not synced yet'}`
+/** Whether it keeps up on its own: a task runs on schedule, every one is paused, or it has none. */
+function syncLine(active: boolean, tasks: ApiScheduledTask[]) {
+  return tasks.length === 0 ? 'Not scheduled' : active ? 'Active' : 'Paused'
 }
 
 /**
@@ -173,7 +171,8 @@ function OverviewBody({
   const recordParts = read.recordParts
   const noDrive = dev.drive === 'none' || (!!mounts && !mounts.some((mount) => mount.volumeId === volumeId))
   const { front, index, rest } = useMemo(() => splitFrontPages(drive), [drive])
-  const upkeep = useBrainUpkeep(agentSlug)
+  const tasks = useBrainTasks(agentSlug)
+  const active = tasks.some((task) => task.status === 'pending')
   const liveSyncs = useTeamBrainSyncs(agentSlug, volumeId)
   const { syncs, unreadable: syncsUnreadable } = devSyncs(dev.syncs, { syncs: liveSyncs.data ?? [], unreadable: liveSyncs.isError })
   const navigate = useNavigate()
@@ -286,8 +285,8 @@ function OverviewBody({
               <div aria-hidden="true" className="team-brain-dock-cover pointer-events-none absolute -inset-x-6 -bottom-7 -z-10 bg-background" style={{ top: -treeTop }} />
               {/* On the page's glass, with the composer's buttons' corners, so it reads over the tree as it passes behind. */}
               <p className={cn('flex items-center gap-1.5 rounded-md px-3 py-1 text-sm text-muted-foreground', GLASS_SURFACE)} data-testid="team-brain-status">
-                <span className={cn('inline-block h-1.5 w-1.5 rounded-full', upkeep?.status === 'pending' ? 'bg-green-500' : 'bg-muted-foreground')} aria-hidden="true" />
-                {syncLine(upkeep, syncs[0])}
+                <span className={cn('inline-block h-1.5 w-1.5 rounded-full', active ? 'bg-green-500' : 'bg-muted-foreground')} aria-hidden="true" />
+                {syncLine(active, tasks)}
               </p>
               {/* Opens the settings panel: where it lives, the schedule, sources, agents, turning it off. */}
               <Button
@@ -616,11 +615,20 @@ const PANEL_LABEL_CLASS = 'text-[12px]/5 text-muted-foreground'
 /** How many a folded section holds, in Agent Home's style for a section's count. */
 const SECTION_COUNT_CLASS = 'text-[12px]/5 tabular-nums text-muted-foreground/50'
 
-/** How Team Brain keeps up, in a card of its own above the sections, as Agent Home's pickers sit above its sections. */
+/**
+ * How Team Brain keeps up, in a card of its own above the sections, as Agent Home's pickers sit above its sections:
+ * every task it runs on its own is there to keep it in sync, so each is a row here.
+ */
 function SyncCard({ agentSlug }: { agentSlug: string }) {
+  const tasks = useBrainTasks(agentSlug)
   return (
-    <div className={cn('overflow-hidden rounded-2xl', GLASS_SURFACE)}>
-      <SyncRow agentSlug={agentSlug} />
+    <div className={cn('overflow-hidden rounded-2xl', GLASS_SURFACE)} data-testid="team-brain-sync">
+      <p className={cn('px-4 pt-3', PANEL_LABEL_CLASS)}>Scheduled tasks</p>
+      <div className="divide-y divide-border/50">
+        {tasks.length > 0 ? tasks.map((task) => <SyncRow key={task.id} agentSlug={agentSlug} task={task} />) : (
+          <p className="px-4 pb-3 text-[11px] text-muted-foreground" data-testid="team-brain-sync-note">No scheduled tasks</p>
+        )}
+      </div>
     </div>
   )
 }
@@ -703,47 +711,36 @@ function PanelSection({ title, summary, testId, children }: { title: string; sum
 }
 
 /**
- * How Team Brain keeps up, in one row: when it next syncs and when it last ran, and on the right how often. It opens
- * the upkeep task's own page, where its schedule is changed and it is paused or resumed. Without that task there is
- * nothing to open.
+ * How Team Brain keeps up, one row per scheduled task whatever it is named: when it next runs and when it last ran,
+ * and on the right how often. A row opens the task's own page, where its schedule is changed and it is paused or
+ * resumed. Without a task there is nothing to open.
  */
-function SyncRow({ agentSlug }: { agentSlug: string }) {
+function SyncRow({ agentSlug, task }: { agentSlug: string; task: ApiScheduledTask }) {
   const navigate = useNavigate()
-  const upkeep = useBrainUpkeep(agentSlug)
-  const paused = upkeep?.status === 'paused'
-  const schedule = upkeep ? scheduleOfCron(upkeep.scheduleExpression) : null
-  const lastRun = upkeep?.lastExecutedAt ? `last ran ${formatSince(isoOf(upkeep.lastExecutedAt))}` : 'not run yet'
-  const note = !upkeep ? 'Not scheduled' : `${paused ? 'Paused' : `Syncs ${formatUntil(upkeep.nextExecutionAt)}`} · ${lastRun}`
+  const paused = task.status === 'paused'
+  const schedule = scheduleOfCron(task.scheduleExpression)
+  const lastRun = task.lastExecutedAt ? `last ran ${formatSince(isoOf(task.lastExecutedAt))}` : 'not run yet'
+  const note = `${paused ? 'Paused' : `Syncs ${formatUntil(task.nextExecutionAt)}`} · ${lastRun}`
   // As the task's own page says it (scheduled-task-view.tsx).
-  const runs = useHumanizedCron(upkeep?.scheduleExpression)
-  const summary = (
-    <span className="min-w-0">
-      <span className={cn('block', PANEL_LABEL_CLASS)}>Sync schedule</span>
-      <span className="block truncate text-[11px] text-muted-foreground" data-testid="team-brain-sync-note">{note}</span>
-      {upkeep && runs && (
-        <span className="block truncate text-[11px] text-muted-foreground" data-testid="team-brain-schedule-runs">
-          {`Runs ${runs.charAt(0).toLowerCase() + runs.slice(1)} · ${upkeep.timezone?.replace(/_/g, ' ') || 'UTC'}`}
-        </span>
-      )}
-    </span>
-  )
-  if (!upkeep) {
-    return (
-      <div className="flex min-h-12 items-center px-4 py-2" data-testid="team-brain-sync">
-        {summary}
-      </div>
-    )
-  }
+  const runs = useHumanizedCron(task.scheduleExpression)
   const how = paused ? 'Paused' : schedule ? SCHEDULE_LABELS[schedule].title : 'Custom'
   return (
     <button
       type="button"
-      onClick={() => void navigate({ to: '/agents/$slug/tasks/$taskId', params: { slug: agentSlug, taskId: upkeep.id } })}
+      onClick={() => void navigate({ to: '/agents/$slug/tasks/$taskId', params: { slug: agentSlug, taskId: task.id } })}
       // The focus ring is inset because the card clips its rows to its corners.
       className="flex min-h-12 w-full items-center justify-between gap-2 px-4 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-      data-testid="team-brain-sync"
+      data-testid={`team-brain-sync-${task.id}`}
     >
-      {summary}
+      <span className="min-w-0">
+        <span className="block truncate text-[13px]/5">{task.name ?? 'Scheduled task'}</span>
+        <span className="block truncate text-[11px] text-muted-foreground" data-testid="team-brain-sync-note">{note}</span>
+        {runs && (
+          <span className="block truncate text-[11px] text-muted-foreground" data-testid="team-brain-schedule-runs">
+            {`Runs ${runs.charAt(0).toLowerCase() + runs.slice(1)} · ${task.timezone?.replace(/_/g, ' ') || 'UTC'}`}
+          </span>
+        )}
+      </span>
       <span className="flex shrink-0 items-center gap-1" data-testid="team-brain-schedule">
         <span className={SECTION_COUNT_CLASS}>{how}</span>
         <ChevronRight className="h-4 w-4 text-muted-foreground/50" aria-hidden="true" />
@@ -846,13 +843,13 @@ function AgentsSection({ brainSlug, volumeId, agents, canManage }: { brainSlug: 
 }
 
 /**
- * Team Brain's own sessions, its chats and each upkeep run, in Agent Home's list. Its Agent Home stays out of reach.
- * The agent's list leaves scheduled runs out, as Agent Home shows them under their task, so the upkeep's runs join it here.
+ * Team Brain's own sessions, its chats and each scheduled task's runs, in Agent Home's list. Its Agent Home stays out of
+ * reach. The agent's list leaves scheduled runs out, as Agent Home shows them under their task, so they join it here.
  */
 function SessionsSection({ agentSlug }: { agentSlug: string }) {
   const { data: chats } = useSessions(agentSlug)
-  const { data: runs } = useScheduledTaskSessions(useBrainUpkeep(agentSlug)?.id ?? null)
-  const sessions = useMemo(() => [...(chats ?? []).map(toSessionItem), ...(runs ?? [])], [chats, runs])
+  const runs = useScheduledTasksSessions(useBrainTasks(agentSlug).map((task) => task.id))
+  const sessions = useMemo(() => [...(chats ?? []).map(toSessionItem), ...runs], [chats, runs])
   return (
     <PanelSection title="Sessions" summary={<span className={SECTION_COUNT_CLASS}>{sessions.length}</span>} testId="team-brain-sessions">
       {sessions.length > 0 ? (

@@ -7,9 +7,6 @@ export const TEAM_BRAIN_CRON: Record<TeamBrainSchedule, string> = {
   weekly: '0 0 * * 1',
 }
 
-/** The upkeep task the onboarding skill schedules, by its name, however the agent cased or spaced it. */
-export const isBrainUpkeep = (name: string | null) => name?.trim().replace(/\s+/g, ' ').toLowerCase() === 'brain upkeep'
-
 /** Which schedule a cron is, if it is one of them. */
 export const scheduleOfCron = (cron: string) => TEAM_BRAIN_SCHEDULES.find((s) => TEAM_BRAIN_CRON[s] === cron) ?? null
 

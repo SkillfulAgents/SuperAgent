@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fillTeamBrainSetupBlock, isBrainUpkeep } from './team-brain-setup-block'
+import { fillTeamBrainSetupBlock } from './team-brain-setup-block'
 
 const BLOCK = [
   '- **Brain location:** `{{brain_path}}`',
@@ -42,12 +42,5 @@ describe('fillTeamBrainSetupBlock', () => {
       { toolkitSlug: 'slack', status: 'active' }, { toolkitSlug: 'notion', status: 'expired' },
     ])).toContain('- **Already connected:** `github, slack`.')
     expect(fill([])).toContain('- **Already connected:** `none`.')
-  })
-})
-
-describe('isBrainUpkeep', () => {
-  it('finds the upkeep task however the agent cased or spaced its name', () => {
-    expect(['Brain upkeep', 'Brain Upkeep', ' brain  upkeep '].every(isBrainUpkeep)).toBe(true)
-    expect(isBrainUpkeep('Brain upkeep (weekly)')).toBe(false)
   })
 })
