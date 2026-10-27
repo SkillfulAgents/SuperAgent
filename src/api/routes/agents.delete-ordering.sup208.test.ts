@@ -138,7 +138,11 @@ vi.mock('@shared/lib/auth/config', () => ({
 
 vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => false }))
 
+const workspaceSettings = vi.hoisted(() => ({ current: {} as { teamBrain?: { agentSlug: string; volumeId: string } } }))
+
 vi.mock('@shared/lib/config/settings', () => ({
+  getTeamBrain: () => workspaceSettings.current.teamBrain ?? null,
+  mutateSettings: (mutate: (settings: typeof workspaceSettings.current) => void) => mutate(workspaceSettings.current),
   getAccountProviderUserId: () => 'test-user',
   getEffectiveAnthropicApiKey: () => 'test-key',
   getEffectiveModels: () => ({ summarizerModel: 'claude-3-haiku' }),
@@ -326,5 +330,15 @@ describe('SUP-208: DELETE /api/agents/:id — peripheral cleanup precedes worksp
     expect(body.error).toMatch(/container/i)
     // Peripheral cleanup still ran (it precedes the stop); only the workspace survived.
     expect(mockCleanupAgentData).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears the Team Brain record when the agent it names is deleted, and only then', async () => {
+    workspaceSettings.current = { teamBrain: { agentSlug: 'other-agent', volumeId: 'v1' } }
+    expect((await deleteAgentReq()).status).toBe(204)
+    expect(workspaceSettings.current.teamBrain).toEqual({ agentSlug: 'other-agent', volumeId: 'v1' })
+
+    workspaceSettings.current = { teamBrain: { agentSlug: 'test-agent', volumeId: 'v1' } }
+    expect((await deleteAgentReq()).status).toBe(204)
+    expect(workspaceSettings.current.teamBrain).toBeUndefined()
   })
 })

@@ -131,6 +131,12 @@ export async function deleteVolumeDefinition(id: string, viewer: VolumeViewer): 
   throw new VolumeError('Drive not found', 404)
 }
 
+/** Whether every member can add the drive: no one user owns it. */
+export async function isPublicVolume(id: string): Promise<boolean> {
+  const row = await db.select({ userId: volumeDefinitions.userId }).from(volumeDefinitions).where(eq(volumeDefinitions.id, id)).get()
+  return row !== undefined && row.userId === null
+}
+
 /** User-facing access to a source, independent of any agent or running container. */
 export async function getVisibleVolumeDefinition(id: string, viewer: VolumeViewer): Promise<StoredVolume> {
   const row = await db.select().from(volumeDefinitions)

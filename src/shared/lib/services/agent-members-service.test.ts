@@ -13,9 +13,12 @@ vi.mock('../db', () => ({
     return testDb
   },
 }))
-vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => false }))
+const auth = vi.hoisted(() => ({ on: false }))
+const record = vi.hoisted(() => ({ teamBrain: null as { agentSlug: string; volumeId: string } | null }))
+vi.mock('@shared/lib/config/settings', () => ({ getTeamBrain: () => record.teamBrain }))
+vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => auth.on }))
 
-import { changeMemberRole, countMembersWithMinRole, countOtherMembers, removeMember } from './agent-members-service'
+import { addAgentUsers, addTeamBrainUser, changeMemberRole, countMembersWithMinRole, countOtherMembers, removeMember } from './agent-members-service'
 
 const { agentAcl, user } = schema
 const AGENT = 'shared-agent'
@@ -154,5 +157,43 @@ describe('changeMemberRole', () => {
 
     expect(outcomes.sort()).toEqual(['done', 'last-owner'])
     expect(owners()).toHaveLength(1)
+  })
+})
+
+describe('addAgentUsers', () => {
+  afterEach(() => { auth.on = false })
+
+  it('makes every user a user of the agent, keeps a higher role, and adds no one twice', async () => {
+    auth.on = true
+    seed([{ id: 'admin', role: 'owner' }])
+    testDb.insert(user).values([{ id: 'ana', name: 'ana', email: 'ana@example.test' }, { id: 'bo', name: 'bo', email: 'bo@example.test' }]).run()
+    await addAgentUsers(AGENT)
+    await addAgentUsers(AGENT)
+    expect([roleOf('admin'), roleOf('ana'), roleOf('bo')]).toEqual(['owner', 'user', 'user'])
+    expect(testDb.select().from(agentAcl).where(eq(agentAcl.agentSlug, AGENT)).all()).toHaveLength(3)
+  })
+
+  it('adds only the users named, when it is given some', async () => {
+    auth.on = true
+    testDb.insert(user).values([{ id: 'ana', name: 'ana', email: 'ana@example.test' }, { id: 'bo', name: 'bo', email: 'bo@example.test' }]).run()
+    await addAgentUsers(AGENT, ['bo'])
+    expect([roleOf('ana'), roleOf('bo')]).toEqual([null, 'user'])
+  })
+
+  it('gives someone new the Team Brain when the workspace has one, and nothing when it has none', async () => {
+    auth.on = true
+    testDb.insert(user).values({ id: 'new', name: 'new', email: 'new@example.test' }).run()
+    await addTeamBrainUser('new')
+    expect(roleOf('new')).toBeNull()
+    record.teamBrain = { agentSlug: AGENT, volumeId: 'vol-1' }
+    await addTeamBrainUser('new')
+    expect(roleOf('new')).toBe('user')
+    record.teamBrain = null
+  })
+
+  it('does nothing outside auth mode, where agents have no members', async () => {
+    testDb.insert(user).values({ id: 'ana', name: 'ana', email: 'ana@example.test' }).run()
+    await addAgentUsers(AGENT)
+    expect(roleOf('ana')).toBeNull()
   })
 })

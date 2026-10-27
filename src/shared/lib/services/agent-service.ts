@@ -26,6 +26,7 @@ import {
 import type { ApiAgent } from '@shared/lib/types/api'
 import { agentAvatarSchema, type AgentAvatar } from '@shared/lib/types/agent-avatar'
 import { workspaceAgentDescriptionSchema, workspaceAgentNameSchema } from './agent-identity-schema'
+import { getTeamBrain } from '@shared/lib/config/settings'
 import {
   CONFIG_DOCS,
   agentCatalog,
@@ -61,10 +62,12 @@ function toApiAgent(
 
 /** The API shape of an agent that was just created: stopped, and with no health to report yet. */
 function newAgentResponse(record: AgentRecord, instructions?: string): ApiAgent {
+  const teamBrain = getTeamBrain()
   return {
     slug: record.slug,
     displaySlug: displaySlug(record.name, record.slug),
     name: record.name,
+    ...(teamBrain?.agentSlug === record.slug ? { teamBrain: { volumeId: teamBrain.volumeId } } : {}),
     avatar: record.avatar,
     description: record.description,
     ...(instructions === undefined ? {} : { instructions }),

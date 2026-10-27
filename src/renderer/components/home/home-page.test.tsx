@@ -73,7 +73,7 @@ vi.mock('@renderer/lib/api', () => ({
 
 const mockAgentsData = vi.fn()
 vi.mock('@renderer/hooks/use-agents', () => ({
-  useAgents: () => mockAgentsData(),
+  useListedAgents: () => mockAgentsData(),
   useStartAgent: () => ({ mutate: vi.fn(), isPending: false }),
   useStopAgent: () => ({ mutate: vi.fn(), isPending: false }),
 }))

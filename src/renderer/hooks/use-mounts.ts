@@ -50,7 +50,8 @@ export function useAddMount() {
           : { ...volumeConfigSchema.parse(data.type ? { type: data.type, config: data.config } : { type: 'local', config: { path: data.hostPath } }), name: data.name, visibility: data.visibility, restart: data.restart }),
       })
       if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to add drive'))
-      return res.json() as Promise<VolumeSummary>
+      // The route adds the attached definition's id and name to the mount's summary.
+      return res.json() as Promise<VolumeSummary & { volumeId: string; volumeName: string }>
     },
     onSuccess: () => {
       // Bare prefix (not keyed on agentSlug): the agent-home Volumes card keys on the
