@@ -46,6 +46,12 @@ const DEFAULT_CONTEXT_WINDOW = 200_000
 export class MainStream {
   /** Text streamed in the current message; cleared once the message is complete. */
   currentText = ''
+  /**
+   * The current message streamed text. Unlike `currentText`, a frame of the
+   * same message that persists first does not clear it: some models open the
+   * tool block before the text block closes, so the text frame lands last.
+   */
+  streamedText = false
   /** Reply text owns the surface (set at the first text token, not at message start). */
   isStreaming = false
   currentToolUse: { id: string; name: string } | null = null
@@ -69,6 +75,7 @@ export class MainStream {
     switch (event.type) {
       case 'message_start':
         this.currentText = ''
+        this.streamedText = false
         // Streaming starts at the first text token, so a message that opens
         // with a tool call stays 'working' rather than flipping streaming→working.
         this.isStreaming = false
@@ -104,6 +111,7 @@ export class MainStream {
       case 'content_block_delta':
         if (event.delta?.type === 'text_delta' && event.delta.text) {
           this.currentText += event.delta.text
+          this.streamedText = true
           this.sink.textStreamed(event.delta.text)
           this.sink.emit({ type: 'stream_delta', text: event.delta.text })
           this.isStreaming = true
@@ -225,12 +233,14 @@ export class MainStream {
     this.messageId = null
     this.thinkingBlockIndex = null
     this.isRetrying = false
+    this.streamedText = false
   }
 
   /** The turn stopped: nothing is streaming any more. */
   stop(): void {
     this.isStreaming = false
     this.currentText = ''
+    this.streamedText = false
     this.currentToolUse = null
     this.currentToolInput = ''
   }

@@ -104,6 +104,43 @@ describe('main message handling', () => {
     expect(ready[0].toolName).toBe('Bash')
   })
 
+  it('sends streamed text once when its frame lands after the tool frame', () => {
+    // Grok's order: the tool block opens before the text block closes, so the
+    // CLI writes the tool_use frame first and the text frame last.
+    const text = "I'll list the files in that directory."
+    mockClient.emit({ type: 'stream_event', event: { type: 'message_start', message: { id: 'msg-1' } } })
+    mockClient.emit({ type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } })
+    mockClient.emit({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } } })
+    mockClient.emit({ type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'tool-1', name: 'Bash' } } })
+    mockClient.emit({
+      type: 'assistant',
+      uuid: 'entry-tool',
+      message: { id: 'msg-1', role: 'assistant', content: [{ type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'ls' } }] },
+    })
+    mockClient.emit({ type: 'stream_event', event: { type: 'content_block_stop', index: 1 } })
+    mockClient.emit({
+      type: 'assistant',
+      uuid: 'entry-text',
+      message: { id: 'msg-1', role: 'assistant', content: [{ type: 'text', text }] },
+    })
+    mockClient.emit({ type: 'stream_event', event: { type: 'content_block_stop', index: 0 } })
+
+    const deltas = sseEvents.filter(e => e.type === 'stream_delta').map(e => e.text)
+    expect(deltas).toEqual([text])
+  })
+
+  it('sends a finished answer that streamed no deltas', () => {
+    mockClient.emit({ type: 'stream_event', event: { type: 'message_start', message: { id: 'msg-1' } } })
+    mockClient.emit({
+      type: 'assistant',
+      uuid: 'entry-text',
+      message: { id: 'msg-1', role: 'assistant', content: [{ type: 'text', text: 'All done.' }] },
+    })
+
+    const deltas = sseEvents.filter(e => e.type === 'stream_delta').map(e => e.text)
+    expect(deltas).toEqual(['All done.'])
+  })
+
   it('skips messages after session is interrupted (except result)', async () => {
     sessions().markActive(SESSION_ID)
     sessions().markInterrupted(SESSION_ID)

@@ -1024,7 +1024,7 @@ export class LiveSession {
     const text = this.response.assistantFrame(content)
     // Email and chat deliver only stream_delta: a finished answer that
     // streamed no deltas would show in the transcript and never be sent.
-    if (text !== null && !content.error && this.stream.currentText.length === 0 && text) {
+    if (text !== null && !content.error && !this.stream.streamedText && text) {
       this.response.appendStreamedText(text)
       this.ctx.emit({ type: 'stream_delta', text })
     }
