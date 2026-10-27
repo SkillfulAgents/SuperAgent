@@ -28,6 +28,7 @@ import { inferOomSigkillFatal } from '@shared/lib/container/runtime-death'
 import { parseBackgroundTasksChanged } from '@shared/lib/container/background-tasks-changed'
 import { parseCommandLifecycle } from '@shared/lib/container/command-lifecycle'
 import { mergeCanonicalSlashCommands } from '@shared/lib/container/slash-commands'
+import { slashCommandListSchema } from '@shared/lib/services/session-metadata-schema'
 import { credentialSource } from '@shared/lib/llm-provider/connection-runtime'
 import { getActiveLlmProvider, getLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
 import { captureException } from '@shared/lib/error-reporting'
@@ -1117,6 +1118,14 @@ export class LiveSession {
         this.response.beginStreamedText()
         this.ctx.emit({ type: 'stream_start', slashCommands: this.slashCommands.length > 0 ? this.slashCommands : undefined })
         return
+      case 'commands_changed': {
+        // The container's menu after a mid-turn change, such as a skill the agent just wrote.
+        const parsed = slashCommandListSchema.safeParse(content.commands)
+        if (!parsed.success) return
+        this.slashCommands = parsed.data
+        this.ctx.emit({ type: 'slash_commands_changed', slashCommands: this.slashCommands })
+        return
+      }
       case 'status':
         if (content.status === 'compacting') this.stream.compactionStarted()
         // The CLI is composing its next request, the moment it drains its

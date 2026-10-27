@@ -63,6 +63,23 @@ function commandIdentity(name: string): string {
 }
 
 /**
+ * The runnable names after a mid-session commands_changed push, which carries
+ * no runnable names of its own. A new command joins under its listed name; one
+ * listed under a display title with spaces waits for the next system/init.
+ * Nothing is dropped until that init: it owns the names.
+ */
+export function withPushedCommandNames(
+  runnableNames: readonly string[],
+  pushed: readonly SlashCommand[],
+): string[] {
+  const known = new Set(runnableNames.map(commandIdentity));
+  const added = pushed
+    .map((command) => command.name)
+    .filter((name) => !/\s/.test(name) && !known.has(commandIdentity(name)));
+  return [...runnableNames, ...added];
+}
+
+/**
  * Keep the CLI init event's executable command names while enriching them with
  * the SDK control response's descriptions and argument hints. For skills, the
  * latter may expose a display title ("Order Canvas Print") where the former
