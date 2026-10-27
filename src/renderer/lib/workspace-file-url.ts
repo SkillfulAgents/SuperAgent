@@ -29,11 +29,12 @@ interface AgentFileUrlOptions {
   /** Ask the route to serve the bytes for display rather than as a download. */
   inline?: boolean
   /**
-   * The tab's cache-busting token. `v` is not read by the server: it exists so
-   * a redelivered file does not resolve to a URL a browser or CDN still holds
-   * the previous body for. `0` means "never redelivered" and is left off.
+   * Cache-busting token: the drawer tab's counter, or a delivery's id. `v` is
+   * not read by the server: it exists so a redelivered file does not resolve to
+   * a URL a browser or CDN still holds the previous body for. `0` or `''` means
+   * "never redelivered" and is left off.
    */
-  version?: number
+  version?: number | string
 }
 
 /** Absolute URL for a workspace file, for an `<a href>`, an `<img src>` or a fetch. */
@@ -44,7 +45,7 @@ export function getAgentFileUrl(
 ): string {
   const params = new URLSearchParams()
   if (inline) params.set('inline', 'true')
-  if (version > 0) params.set('v', String(version))
+  if (version) params.set('v', String(version))
   const query = params.toString()
   return `${getApiBaseUrl()}${getAgentFileApiPath(agentSlug, filePath)}${query ? `?${query}` : ''}`
 }
