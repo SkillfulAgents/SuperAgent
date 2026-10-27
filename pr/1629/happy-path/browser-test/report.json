@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "QA agent successfully executed browser navigation task and returned response mentioning \"Example Domain\" page title",
+  "steps": [
+    "Navigated to http://localhost:47891 — Page loaded successfully showing Gamut application with agent sidebar",
+    "Clicked on \"QA-20261027-013926-1ywg\" agent in sidebar (ref=e51) — Agent page opened, URL changed to /agents/qa-20261027-013926-1ywg-7g6ob9gwf6, showing message input interface",
+    "Clicked message input field (ref=e233) — Input field became active and ready for text input",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" with submit=true — Message was entered into the input field",
+    "Clicked Send button (ref=e398) — Message was sent, page URL changed to session URL /agents/qa-20261027-013926-1ywg-7g6ob9gwf6/sessions/04d0665d-04e3-4bca-93cd-384419b264ee, agent status changed to \"working\", browser tool execution began",
+    "Waited up to 3 minutes for response (timeout=180000) — Agent completed task in 8 seconds with 3 tool calls, returned response visible on page",
+    "Took screenshot of final response — Screenshot shows agent response: \"The page title is 'Example Domain'. The page at https://example.com loaded normally, and I've closed the browser.\" Response clearly mentions \"Example Domain\" as required"
+  ],
+  "bugs": [],
+  "durationMs": 78272,
+  "sessionId": "7bd964a3-790b-4836-b7a2-f836fc1e9ae0",
+  "cost": {
+    "inputTokens": 434,
+    "outputTokens": 12244,
+    "cacheCreationTokens": 71076,
+    "cacheReadTokens": 1249062,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.275405
+  }
+}
