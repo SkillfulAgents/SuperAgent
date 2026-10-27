@@ -150,7 +150,6 @@ describe('GenericLlmProvider.createClient', () => {
   it('builds an Anthropic client with the baseURL and Bearer auth token', () => {
     provider.createClient()
     expect(anthropicCtor).toHaveBeenCalledWith({
-      apiKey: '',
       baseURL: 'https://proxy.example',
       authToken: 'test-key',
     })

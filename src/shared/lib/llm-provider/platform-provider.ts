@@ -84,7 +84,6 @@ export class PlatformLlmProvider extends BaseLlmProvider {
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) throw new Error('Platform token not configured. Please log in to the platform.')
     return new Anthropic({
-      apiKey: '',
       baseURL: getPlatformProxyBaseUrl(),
       authToken: apiKey,
     })
@@ -151,7 +150,6 @@ export class PlatformLlmProvider extends BaseLlmProvider {
   async validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
     try {
       const client = new Anthropic({
-        apiKey: '',
         baseURL: getPlatformProxyBaseUrl(),
         authToken: apiKey,
       })

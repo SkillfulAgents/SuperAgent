@@ -136,9 +136,8 @@ export class GenericLlmProvider extends BaseLlmProvider {
     if (!baseURL) throw new Error('Generic provider base URL not configured')
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) throw new Error('Generic provider API key not configured')
-    // Anthropic-wire endpoint with Bearer auth (same shape as OpenRouter/Platform):
-    // apiKey '' suppresses the x-api-key header; authToken sends Authorization: Bearer.
-    return new Anthropic({ apiKey: '', baseURL, authToken: apiKey,
+    // Anthropic-wire endpoint with Bearer auth (same shape as OpenRouter/Platform).
+    return new Anthropic({ baseURL, authToken: apiKey,
       ...(this.apiFormat !== 'messages' ? { fetch: translatedMessagesFetch(openAiBaseUrl(baseURL), apiKey, this.apiFormat, this.configuration?.chatTokenLimitField) } : {}),
     })
   }

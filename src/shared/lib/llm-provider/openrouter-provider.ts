@@ -155,10 +155,7 @@ export class OpenRouterLlmProvider extends BaseLlmProvider {
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) throw new Error('OpenRouter API key not configured')
     // OpenRouter uses the Anthropic-compatible API with Bearer auth.
-    // apiKey must be empty string so the SDK doesn't send x-api-key header;
-    // authToken sends the OpenRouter key via the Authorization: Bearer header.
     return new Anthropic({
-      apiKey: '',
       baseURL: OPENROUTER_BASE_URL,
       authToken: apiKey,
     })
@@ -179,7 +176,6 @@ export class OpenRouterLlmProvider extends BaseLlmProvider {
   async validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
     try {
       const client = new Anthropic({
-        apiKey: '',
         baseURL: OPENROUTER_BASE_URL,
         authToken: apiKey,
       })

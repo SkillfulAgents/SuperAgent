@@ -687,6 +687,26 @@ it('validates the configured Anthropic endpoint and custom bearer', async () => 
   expect(sent.headers.get('Authorization')).toBe('Bearer custom-bearer')
 })
 
+// SDK 1.x sends an apiKey as a bearer and takes one credential. Host calls keep
+// the key in X-Api-Key, as the CLI sends it, so a gateway reading that header
+// authenticates host and agent requests alike.
+it('sends the Anthropic key in X-Api-Key, with a gateway token as the bearer', async () => {
+  const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ id: 'msg_test', type: 'message', role: 'assistant', model: 'claude-haiku-4-5', content: [], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }), { headers: { 'Content-Type': 'application/json' } }))
+  vi.stubGlobal('fetch', fetchMock)
+  const sentHeaders = async (config: Record<string, unknown>) => {
+    const provider = providerForConnection((await getConnection(await saveConnection({ name: `Wire ${fetchMock.mock.calls.length}`, provider: 'anthropic', config }, admin)))!)
+    await provider.createClient().messages.create({ model: 'claude-haiku-4-5', max_tokens: 1, messages: [{ role: 'user', content: 'Hi' }] })
+    const [url, init] = fetchMock.mock.calls.at(-1)!
+    return new Request(url, init).headers
+  }
+  const keyOnly = await sentHeaders({ apiKeys: { anthropicApiKey: 'sk-key' } })
+  expect(keyOnly.get('X-Api-Key')).toBe('sk-key')
+  expect(keyOnly.get('Authorization')).toBeNull()
+  const gateway = await sentHeaders({ apiKeys: { anthropicApiKey: 'sk-key' }, runtimeEnv: { ANTHROPIC_BASE_URL: 'https://gateway.example', ANTHROPIC_AUTH_TOKEN: 'gateway-token' } })
+  expect(gateway.get('X-Api-Key')).toBe('sk-key')
+  expect(gateway.get('Authorization')).toBe('Bearer gateway-token')
+})
+
 it('publishes the same default used for provider-only selections, including disabled preferred models', async () => {
   state.platformToken = 'platform-token'
   await ensureManagedPlatformConnection()
