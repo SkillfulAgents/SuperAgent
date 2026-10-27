@@ -277,8 +277,11 @@ never uploaded. It needs the Store's signing secrets (see
 The manual trigger becomes available once this workflow change is merged into
 `main`. PR pushes run tests without automatically packaging desktop apps; builds
 on `main` pushes and version-tag releases still run automatically. The Mac App
-Store package is built only by releases, which upload it to App Store Connect
-(TestFlight), and on demand for a PR.
+Store package is built only by releases, and on demand for a PR. A release
+uploads it to App Store Connect and adds it to the TestFlight groups: Team at
+once, and Beta after Beta App Review. Every release of a version shares one
+TestFlight version (0.6.0-rc.1, rc.2 and 0.6.0 are all 0.6.0), so only its
+first build needs a full review.
 
 ## Architecture
 
