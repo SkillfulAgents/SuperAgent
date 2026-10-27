@@ -127,6 +127,11 @@ async function save(
     const version = await scope.store.compareAndSet(key, value, base?.version ?? 0)
     if (version !== null) {
       scope.stored.set(key, { value, version })
+      // An earlier save of this key may have rebased onto another writer's change.
+      if (value !== localNext && scope.lastWrite.get(key) === seq) {
+        scope.local.set(key, value)
+        scope.memo.delete(key)
+      }
       return
     }
     if (!rebase) throw new HostStateConflictError(key)

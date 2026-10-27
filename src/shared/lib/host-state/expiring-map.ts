@@ -1,3 +1,4 @@
+import type { z } from 'zod'
 import { scopedStore } from './scope'
 
 /**
@@ -11,7 +12,7 @@ export interface ExpiringMap<T> {
   delete(key: string): Promise<void>
 }
 
-export function expiringMap<T>(namespace: string, ttlMs: number): ExpiringMap<T> {
+export function expiringMap<T>(namespace: string, ttlMs: number, schema: z.ZodType<T>): ExpiringMap<T> {
   const memory = new Map<string, { value: T; expiresAt: number }>()
   const storeKey = (key: string) => `${namespace}:${key}`
   return {
@@ -21,7 +22,7 @@ export function expiringMap<T>(namespace: string, ttlMs: number): ExpiringMap<T>
         const entry = await store.get(storeKey(key))
         if (!entry) return undefined
         try {
-          return JSON.parse(entry.value) as T
+          return schema.parse(JSON.parse(entry.value))
         } catch {
           return undefined
         }
@@ -39,7 +40,7 @@ export function expiringMap<T>(namespace: string, ttlMs: number): ExpiringMap<T>
       const store = scopedStore()
       if (store) {
         // Keys are fresh random ids, so a plain insert is enough.
-        if ((await store.compareAndSet(storeKey(key), JSON.stringify(value), 0, expiresAt)) === null) {
+        if ((await store.compareAndSet(storeKey(key), JSON.stringify(schema.parse(value)), 0, expiresAt)) === null) {
           throw new Error(`${namespace} key already in use`)
         }
         return
