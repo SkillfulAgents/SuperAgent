@@ -85,7 +85,8 @@ describe('volume browsing', () => {
     fs.writeFileSync(path.join(folder, 'a.txt'), 'root')
     const { id } = await (await request('', 'POST', input())).json()
     expect(await (await request(`/${id}/folders`)).json()).toEqual({ root: '', path: '', truncated: false, entries: [
-      { name: 'Reports', path: 'Reports', type: 'directory' }, { name: 'a.txt', path: 'a.txt', type: 'file' },
+      { name: 'Reports', path: 'Reports', type: 'directory', mtimeMs: expect.any(Number) },
+      { name: 'a.txt', path: 'a.txt', type: 'file', mtimeMs: fs.statSync(path.join(folder, 'a.txt')).mtimeMs },
     ] })
     const filePath = encodeURIComponent('Reports/Q1 # 日本語.txt')
     const listing = await request(`/${id}/folders?path=Reports`)

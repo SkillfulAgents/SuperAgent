@@ -1,20 +1,20 @@
-import { Suspense, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Plus } from 'lucide-react'
+import { format } from 'date-fns'
+import { cn } from '@shared/lib/utils/cn'
 import type { useConnectedAccountsByToolkit } from '@renderer/hooks/use-connected-accounts'
+import { useConnectAccount, type NewApiConnection } from '@renderer/hooks/use-connect-account'
 import { Button } from '@renderer/components/ui/button'
-import { Label } from '@renderer/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select'
-import { lazyWithReload } from '@renderer/lib/lazy-with-reload'
+import { LoginButton, useFocusAfterCancel } from '@renderer/components/connections/login-button'
+import { LoginWindowCancel } from '@renderer/components/connections/login-window-cancel'
 import { VolumeDetailsFields, VolumeSetupFooter } from './volume-setup-layout'
 import type { VolumeDetails } from './volume-details-schema'
 
-const IntegrationDirectoryDialog = lazyWithReload(async () => {
-  const module = await import('@renderer/components/connections/integration-directory-dialog')
-  return { default: module.IntegrationDirectoryDialog }
-})
-
 /** The account step of a remote source's setup: choose a connected account of its
- * toolkit, or connect one in the existing directory dialog. */
+ * toolkit, or connect one here, straight into the provider's sign-in. With no account
+ * yet there is nothing to choose, so there is no list, just Connect; a first account
+ * connected here moves straight on to the next step. A lone usable account is chosen
+ * for you. */
 export function VolumeAccountStep({ toolkit, label, accounts, accountId, active, onSelect, onNext, onBack, onCancel }: {
   toolkit: string
   label: string
@@ -26,28 +26,87 @@ export function VolumeAccountStep({ toolkit, label, accounts, accountId, active,
   onBack: () => void
   onCancel: () => void
 }) {
-  const [connecting, setConnecting] = useState(false)
-  return <>
-    <form className="space-y-4" onSubmit={event => { event.preventDefault(); if (active) onNext() }}>
-      <div className="space-y-2">
-        <Label htmlFor={`volume-${toolkit}-account`}>{label} account</Label>
-        <Select value={accountId} onValueChange={onSelect} disabled={accounts.isLoading}>
-          <SelectTrigger id={`volume-${toolkit}-account`}><SelectValue placeholder={accounts.isLoading ? 'Loading accounts…' : 'Select an account'} /></SelectTrigger>
-          <SelectContent>
-            {accounts.data?.accounts.map(item => <SelectItem key={item.id} value={item.id} disabled={item.status !== 'active'}>
-              {item.displayName}{item.status !== 'active' ? ' (reconnect in Connections)' : ''}
-            </SelectItem>)}
-          </SelectContent>
-        </Select>
-        {accounts.error && <div><p role="alert" className="text-sm text-destructive">Could not load {label} accounts.</p><Button type="button" variant="ghost" size="sm" onClick={() => { void accounts.refetch() }}>Try again</Button></div>}
-        {!accounts.isLoading && !accounts.error && accounts.data?.accounts.length === 0 && <p className="text-sm text-muted-foreground">Connect your first {label} account to continue.</p>}
+  const list = accounts.data?.accounts ?? []
+  const loaded = !accounts.isLoading && !accounts.error
+  const hasAccounts = loaded && list.length > 0
+
+  // A first account goes straight on once the refreshed list has it and it is usable.
+  const [advanceTo, setAdvanceTo] = useState<string | null>(null)
+  const firstAccount = useRef(false)
+  const onConnected = useCallback(({ accountId: id, toolkit: connected }: NewApiConnection) => {
+    if (connected !== toolkit) return
+    onSelect(id)
+    if (firstAccount.current) setAdvanceTo(id)
+  }, [toolkit, onSelect])
+  const { connect, connecting, canCancel, cancel, error } = useConnectAccount({ location: 'drive_setup', onConnected })
+  const pending = connecting === toolkit
+  // Cancel sits under the button and unmounts with it; focus returns to the connect area.
+  const { targetRef: connectAreaRef, arm: focusConnectAreaAfterCancel } = useFocusAfterCancel<HTMLDivElement>(pending)
+
+  useEffect(() => {
+    if (!advanceTo || advanceTo !== accountId || !active) return
+    setAdvanceTo(null)
+    onNext()
+  }, [advanceTo, accountId, active, onNext])
+
+  const usable = list.filter(item => item.status === 'active')
+  const lone = loaded && usable.length === 1 ? usable[0].id : null
+  // Two connections can carry the same name (one account connected twice); their time tells them apart.
+  const shared = new Set(list.map(item => item.displayName).filter((name, index, names) => names.indexOf(name) !== index))
+  useEffect(() => {
+    if (lone && !accountId) onSelect(lone)
+  }, [lone, accountId, onSelect])
+
+  return <form className="space-y-4" onSubmit={event => { event.preventDefault(); if (active) onNext() }}>
+    {accounts.isLoading && <p role="status" className="text-sm text-muted-foreground">Loading {label} accounts…</p>}
+    {accounts.error && <div><p role="alert" className="text-sm text-destructive">Could not load {label} accounts.</p><Button type="button" variant="ghost" size="sm" onClick={() => { void accounts.refetch() }}>Try again</Button></div>}
+    {hasAccounts && <div className="space-y-2">
+      <p id={`volume-${toolkit}-account`} className="text-sm font-medium">{label} account</p>
+      {/* Every account in view at once, as Settings' provider choices are, rather than behind a dropdown. */}
+      <div role="radiogroup" aria-labelledby={`volume-${toolkit}-account`} className="space-y-2">
+        {list.map(item => <AccountOption key={item.id} name={item.displayName} selected={item.id === accountId} disabled={item.status !== 'active'}
+          detail={item.status !== 'active' ? 'Reconnect it in Connections to use it' : connectedOn(item.createdAt, shared.has(item.displayName))}
+          onSelect={() => onSelect(item.id)} />)}
       </div>
-      <Button type="button" variant="outline" className="w-full" onClick={() => setConnecting(true)}><Plus className="h-4 w-4" />Connect {label} account</Button>
-      <VolumeSetupFooter onBack={onBack} onCancel={onCancel} isSaving={false} disabled={!active} submitLabel="Next" />
-    </form>
-    {connecting && <Suspense fallback={<p role="status" className="text-sm text-muted-foreground">Loading connections…</p>}><IntegrationDirectoryDialog open onOpenChange={setConnecting} initialTab="apis" initialFilter={label}
-      onApiConnected={connection => { if (connection.toolkit === toolkit) onSelect(connection.accountId) }} /></Suspense>}
-  </>
+    </div>}
+    <div ref={connectAreaRef} tabIndex={-1} className="space-y-1 rounded-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+      <LoginButton type="button" variant={hasAccounts ? 'outline' : 'default'} className="w-full" icon={<Plus className="h-4 w-4" />}
+        label={hasAccounts ? `Connect another ${label} account` : `Connect ${label}`} pendingLabel={`Connecting ${label}…`}
+        pending={pending} canCancel={pending && canCancel} onCancel={cancel} cancelSide="none"
+        disabled={accounts.isLoading}
+        onClick={() => { firstAccount.current = !hasAccounts; void connect(toolkit) }} data-testid={`volume-${toolkit}-connect`} />
+      {/* The button is full width, so its Cancel sits under it. */}
+      <div className="flex justify-center"><LoginWindowCancel visible={pending && canCancel} onCancel={() => { focusConnectAreaAfterCancel(); cancel() }} testId={`volume-${toolkit}-connect-cancel`} /></div>
+      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+    </div>
+    <VolumeSetupFooter onBack={onBack} onCancel={onCancel} isSaving={false} disabled={!active} submitLabel="Next" />
+  </form>
+}
+
+/** When an account was connected, to the minute where two share a name; nothing when the date is missing. */
+function connectedOn(createdAt: string | undefined, withTime: boolean): string | null {
+  const at = createdAt ? new Date(createdAt) : null
+  return at && !Number.isNaN(at.getTime()) ? `Connected ${format(at, withTime ? 'MMM d, yyyy, h:mm a' : 'MMM d, yyyy')}` : null
+}
+
+/** One connected account in the account step's list: a radio card with a brand border and dot when chosen. */
+function AccountOption({ name, detail, selected, disabled, onSelect }: {
+  name: string; detail: string | null; selected: boolean; disabled: boolean; onSelect: () => void
+}) {
+  const id = useId()
+  // Named by the account alone; when it was connected is its description.
+  return <button type="button" role="radio" aria-checked={selected} disabled={disabled} onClick={onSelect}
+    aria-labelledby={`${id}-name`} aria-describedby={detail ? `${id}-detail` : undefined}
+    className={cn('flex w-full items-start gap-3 rounded-lg border bg-background px-4 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+      selected ? 'border-brand ring-1 ring-brand' : disabled ? 'cursor-not-allowed opacity-60' : 'hover:border-foreground/25')}>
+    <span aria-hidden className={cn('grid size-[18px] shrink-0 place-items-center rounded-full border-[1.5px] bg-background', selected ? 'border-brand' : 'border-foreground/30')}>
+      {selected && <span className="size-2.5 rounded-full bg-brand" />}
+    </span>
+    <span className="min-w-0 flex-1">
+      <span id={`${id}-name`} className="block truncate text-sm font-medium">{name}</span>
+      {detail && <span id={`${id}-detail`} className="mt-0.5 block text-[11px] text-muted-foreground">{detail}</span>}
+    </span>
+  </button>
 }
 
 /** The details step of a remote source's setup: the chosen account, the name and access

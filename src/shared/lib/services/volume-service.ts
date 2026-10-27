@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
-import { and, asc, eq, isNull, notExists, or, sql } from 'drizzle-orm'
+import { and, asc, eq, isNull, ne, notExists, or, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { db } from '@shared/lib/db'
-import { changesOf } from '@shared/lib/db/batch'
+import { batch, changesOf } from '@shared/lib/db/batch'
 import { agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
 import { VOLUME_TYPES, type StoredVolume, type VolumeDefinitionSummary } from '@shared/lib/types/mount'
 import { instantiateVolume, prepareVolume } from '@shared/lib/volumes/volume-factory'
@@ -141,6 +141,20 @@ export async function openVolumeDefinition(id: string, viewer: VolumeViewer) {
   const volume = instantiateVolume(await getVisibleVolumeDefinition(id, viewer))
   if (!volume) throw new VolumeError('Drive configuration is unavailable', 400)
   return volume
+}
+
+/**
+ * Takes a drive off every agent but `keep` and clears its global access. Checks no viewer: the caller authorizes first.
+ * Returns the agents it came off, read just before the delete, so a drive added in between is removed but not listed.
+ */
+export async function releaseVolume(id: string, keep: string): Promise<string[]> {
+  const where = and(eq(agentVolumes.volumeId, id), ne(agentVolumes.agentSlug, keep))
+  const attached = await db.select({ agentSlug: agentVolumes.agentSlug }).from(agentVolumes).where(where).all()
+  await batch([
+    db.delete(agentVolumes).where(where),
+    db.update(volumeDefinitions).set({ globalAccess: null, updatedAt: new Date() }).where(eq(volumeDefinitions.id, id)),
+  ])
+  return attached.map((row) => row.agentSlug)
 }
 
 export async function listVolumeAttachments(id: string, viewer: VolumeViewer) {

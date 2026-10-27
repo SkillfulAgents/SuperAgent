@@ -2211,6 +2211,46 @@ describe('MessageList', () => {
     expect(images.querySelector('img')).toHaveAttribute('alt', 'chart.png')
   })
 
+  // The agent rewrote chart.png and delivered it again. The browser reuses an
+  // image it already decoded for a URL in this page, even under no-store, so
+  // each delivery needs its own URL or the second shows the first's picture.
+  it('gives each delivery of the same image path its own URL', () => {
+    mockMessagesData.data = [
+      createUserMessage({ content: { text: 'Make a chart' }, createdAt: new Date('2025-01-01T00:00:00Z') }),
+      createAssistantMessage({
+        content: { text: 'Here it is' },
+        createdAt: new Date('2025-01-01T00:00:30Z'),
+        toolCalls: [createToolCall({
+          id: 'toolu_first',
+          name: 'mcp__user-input__deliver_file',
+          input: { filePath: '/workspace/chart.png' },
+          result: 'File delivered',
+        })],
+      }),
+      createUserMessage({ content: { text: 'Use other colors' }, createdAt: new Date('2025-01-01T00:01:00Z') }),
+      createAssistantMessage({
+        content: { text: 'Recolored' },
+        createdAt: new Date('2025-01-01T00:01:30Z'),
+        toolCalls: [createToolCall({
+          id: 'toolu_second',
+          name: 'mcp__user-input__deliver_file',
+          input: { filePath: '/workspace/chart.png' },
+          result: 'File delivered',
+        })],
+      }),
+    ]
+
+    renderWithProviders(
+      <MessageList sessionId="s-1" agentSlug="agent-1" />
+    )
+
+    const sources = screen.getAllByTestId('delivered-images').map((block) => block.querySelector('img')?.getAttribute('src'))
+    expect(sources).toEqual([
+      'http://test-api/api/agents/agent-1/files/chart.png?inline=true&v=toolu_first',
+      'http://test-api/api/agents/agent-1/files/chart.png?inline=true&v=toolu_second',
+    ])
+  })
+
   it('keeps delivered files visible when user sends a new message (pendingUserMessage)', () => {
     mockStreamState.isActive = true
     mockMessagesData.data = [

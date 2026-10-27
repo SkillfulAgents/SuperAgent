@@ -30,7 +30,7 @@ export const updateVolumeSchema = z.object({
 }).strict()
 
 export const addMountSchema = z.union([
-  z.object({ volumeId: z.string().min(1), restart: z.boolean().optional() }).strict(),
+  z.object({ volumeId: z.string().min(1), readOnly: z.boolean().optional(), restart: z.boolean().optional() }).strict(),
   createVolumeSchema.extend({ restart: z.boolean().optional() }),
 ])
 

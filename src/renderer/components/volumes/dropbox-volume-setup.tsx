@@ -11,15 +11,17 @@ function DropboxLogo({ className }: { className?: string }) {
   return <ServiceIcon slug="dropbox" className={className} />
 }
 
-/** The picker walks Dropbox paths; '' is the account root, which can be mounted. */
+/** The picker walks Dropbox paths from the account root (''), which can be chosen too, for the whole Dropbox. */
 const dropboxFolders: VolumeFolderSource<string> = {
   type: 'dropbox', label: 'Dropbox',
-  title: 'Select a Dropbox folder', description: 'Choose a folder, or select the root to add your entire Dropbox.',
+  title: 'Choose a Dropbox folder', description: 'Select the folder to use, or open one to look inside it.',
   query: (accountId, path) => ({ accountId, path }),
   folders: data => data.folders.map(folder => ({ id: folder.id, name: folder.name, cursor: folder.id })),
-  location: path => path || 'Dropbox',
-  parent: path => path ? path.slice(0, path.lastIndexOf('/')) : null,
-  selectLabel: path => path ? 'Use this folder' : 'Use Dropbox root',
+  crumbs: path => {
+    const names = path.split('/').filter(Boolean)
+    return [{ name: 'Dropbox', cursor: '' }, ...names.map((name, index) => ({ name, cursor: `/${names.slice(0, index + 1).join('/')}` }))]
+  },
+  confirmLabel: path => path ? `Use “${path.split('/').at(-1)}”` : 'Use all of Dropbox',
 }
 
 function DropboxVolumeSetup({ initialDetails, onSubmit, onBack, onCancel, isSaving, error, clearError, attachToAgent }: VolumeSetupProps) {
@@ -32,8 +34,7 @@ function DropboxVolumeSetup({ initialDetails, onSubmit, onBack, onCancel, isSavi
   const active = account?.status === 'active' && !accounts.error
 
   const selectAccount = (id: string) => {
-    // Radix's hidden select can emit an empty value while OAuth refreshes the list.
-    if (!id || id === accountId) return
+    if (id === accountId) return
     if (config && details.name === (config.path.split('/').at(-1) || 'Dropbox')) setDetails({ ...details, name: '' })
     setAccountId(id)
     setConfig(null)
@@ -42,7 +43,7 @@ function DropboxVolumeSetup({ initialDetails, onSubmit, onBack, onCancel, isSavi
 
   return <>
     <VolumeSetupHeader title={step === 'account' ? 'Connect Dropbox' : 'Set up Dropbox drive'}
-      description={step === 'account' ? 'Choose an account or connect a new one.' : 'Select a folder and name it. Agents you add it to get read/write access.'}
+      description={step === 'account' ? (accounts.data?.accounts.length === 0 ? 'Sign in to Dropbox, then choose a folder to add.' : 'Choose an account or connect a new one.') : 'Select a folder and name it. Agents you add it to get read/write access.'}
       Logo={DropboxLogo} steps={['Source', 'Account', 'Details']} step={step === 'account' ? 1 : 2} />
     {step === 'account' ? <VolumeAccountStep toolkit="dropbox" label="Dropbox" accounts={accounts} accountId={accountId} active={active}
       onSelect={selectAccount} onNext={() => { clearError(); setStep('details') }} onBack={onBack} onCancel={onCancel} />

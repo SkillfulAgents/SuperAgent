@@ -3,8 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
 import { FileBrowser, type FileSource } from '@renderer/components/file-preview/file-browser'
 import { Button } from '@renderer/components/ui/button'
-import { FolderEntriesError, type FolderEntriesResponse } from '@renderer/hooks/use-folder-entries'
-import { apiFetch } from '@renderer/lib/api'
+import { fetchVolumeFolder, type FolderEntriesResponse } from '@renderer/hooks/use-folder-entries'
 import { getApiBaseUrl } from '@renderer/lib/env'
 
 /** A separate browser scope prevents tab state leaking between volume definitions. */
@@ -17,14 +16,7 @@ export function VolumeFileBrowser({ volumeId }: { volumeId: string }) {
     useEntries(path, enabled) {
       return useQuery<FolderEntriesResponse>({
         queryKey: ['volume-files', volumeId, path],
-        queryFn: async () => {
-          const response = await apiFetch(`${base}/folders?${new URLSearchParams({ path })}`)
-          if (!response.ok) {
-            const body = await response.json().catch(() => null) as { error?: string } | null
-            throw new FolderEntriesError(body?.error ?? 'Could not load this drive', response.status)
-          }
-          return response.json()
-        },
+        queryFn: () => fetchVolumeFolder(volumeId, path),
         enabled, staleTime: 5_000, retry: false,
       })
     },

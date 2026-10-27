@@ -32,7 +32,30 @@ export interface HostCalls {
   computerUseAppIcon: { request: { app: string }; response: string | null }
   /** Run a script on this machine. A script that fails still resolves, with its exit code. */
   hostScript: { request: { script: string; scriptType: string }; response: HostScriptOutput }
+  /** Answer a request_login call from the user's vault, or say how to leave it for the user. */
+  loginRequest: { request: LoginRequestCall; response: LoginDecision }
 }
+
+/** A request_login call, with its raw streamed input. */
+export interface LoginRequestCall {
+  agentSlug: string
+  sessionId: string
+  toolUseId: string
+  input: string
+}
+
+/**
+ * How the host decided a request_login call:
+ * - settled: answered without the user (filled from the vault, or the
+ *   saved accounts listed), so no card;
+ * - none: the call already ended (its fields could not be used), so no card;
+ * - ask: the user answers it: the card opens with `vault` (how the form
+ *   starts) and `login` (the located fields' context) on its payload.
+ */
+export type LoginDecision =
+  | { action: 'settled' }
+  | { action: 'none' }
+  | { action: 'ask'; vault: Record<string, unknown>; login?: Record<string, unknown> }
 
 export interface HostEvents {
   /** An event for the global feed. */

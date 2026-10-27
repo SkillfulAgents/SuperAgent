@@ -12,6 +12,7 @@ const read = (file_path: string): HintEventInput => ({ event: 'PreToolUse', tool
 const wrote = (file_path: string): HintEventInput => ({ event: 'PostToolUse', toolName: 'Write', toolInput: { file_path } })
 const edited = (file_path: string): HintEventInput => ({ event: 'PostToolUse', toolName: 'Edit', toolInput: { file_path } })
 const before = (toolName: string, toolInput: Record<string, unknown> = {}): HintEventInput => ({ event: 'PreToolUse', toolName, toolInput })
+const after = (toolName: string, toolInput: Record<string, unknown> = {}): HintEventInput => ({ event: 'PostToolUse', toolName, toolInput })
 
 // Every row lists the exact hints a call triggers. A new hint that also fires on another hint's example
 // fails here, so its author decides whether both should fire.
@@ -44,6 +45,9 @@ const CASES: Array<[string, HintEventInput, string[]]> = [
   ['list triggers', before('mcp__user-input__list_triggers'), []],
   ['supabase SQL', before('mcp__supabase__execute_sql', { project_id: 'abc', query: 'select id from public.orders limit 5' }), ['supabase-check-columns']],
   ['supabase list tables', before('mcp__supabase__list_tables', { project_id: 'abc' }), []],
+  ['after a sign-in step', after('mcp__user-input__request_login', { message: 'Sign in to MockMail.', fields: [] }), ['sign-in-verify-way']],
+  ['before a sign-in step', before('mcp__user-input__request_login', { message: 'Sign in to MockMail.' }), []],
+  ['browser hand-over', before('mcp__user-input__request_browser_input', { message: 'Solve the CAPTCHA.' }), []],
 ]
 
 describe('built-in hints: which hints each call triggers', () => {
