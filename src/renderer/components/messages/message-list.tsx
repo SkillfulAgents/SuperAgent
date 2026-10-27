@@ -144,7 +144,7 @@ function DeliveredFiles({ files, agentSlug }: { files: DeliveredFile[]; agentSlu
       ))}
       {images.length > 0 && (
         <AttachedImages
-          images={images.map((file) => ({ ...file, key: file.id }))}
+          images={images.map((file) => ({ ...file, key: file.id, version: file.id }))}
           agentSlug={agentSlug}
           align="start"
           data-testid="delivered-images"
