@@ -11,15 +11,31 @@ agent without downloading anything: the VM image, its Linux packages
 `ghcr.io/skillfulagents/superagent-agent-container-base:<package.json version>`,
 the image `getDefaultAgentImage()` names, for the build machine's
 architecture. It uses plain HTTPS, with no Docker and no VM, because CI's macOS
-runners have neither. Every blob is checked against its digest and size. It
-writes two files to `build/agent-image/`, which electron-builder copies to
+runners have neither. Every blob is checked against its digest and size.
+
+It then recompresses the gzip layers as zstd, level 19
+(`scripts/lib/zstd-layers.ts`), which makes the archive about a quarter
+smaller: 0.6.0's went from 733 to 543 MiB. That keeps the macOS update ZIP
+under 1 GiB, the most Gamut 0.5.47 and older (Electron 41) can install. Their
+updater (Squirrel.Mac) holds the whole download in one buffer, which macOS grows
+to 2 GiB past 1 GiB, and Chromium's allocator refuses a 2 GiB allocation, so
+the app crashes. Each layer's uncompressed tar is checked against the image
+config's diff ID. The config, and so the image ID, is the registry's. zstd
+needs Node 22.15 or later. Without it a release fails, and other builds warn
+and keep gzip.
+
+It writes two files to `build/agent-image/`, which electron-builder copies to
 `Resources/agent-image/`:
 
 - `agent-image.tar`: an OCI image layout plus Docker's `manifest.json`, the
   format `docker save` writes. The tar has no owner and no timestamps, and the
-  base layers come first, so the same image always makes the same bytes.
-- `agent-image.json`: the image reference, architecture, manifest digest and
-  archive size (`bundled-agent-image-schema.ts`).
+  base layers come first, so the same image always makes the same bytes. That
+  holds for zstd too: each layer is compressed on one thread, and fed to it
+  one chunk at a time so that how the data happens to be chunked doesn't change
+  the output (`compressZstd`). Its bytes then depend only on the level and
+  Node's libzstd.
+- `agent-image.json`: the image reference, architecture, the registry's
+  manifest digest and the archive size (`bundled-agent-image-schema.ts`).
 
 If the tag isn't published, the script warns and bundles nothing; the app then
 pulls the image as it always did. A release sets `AGENT_IMAGE_REQUIRED=true`, so
@@ -53,6 +69,11 @@ over `limactl shell`, since the VM doesn't mount the app bundle. Then:
   "did the image appear?" re-check would take that name for a working image.
   containerd checks every blob's digest as it ingests it, so a damaged archive
   fails the load; it can't load as a wrong image.
+
+containerd has read zstd layers since 1.5. With 0.6.0's baked VM image
+(containerd 2.2.0, nerdctl 2.1.6), the zstd archive loaded in 11 s against
+17 s for the gzip one. Both gave the same image ID and the same 1.98 GB
+unpacked, and the container ran.
 
 A custom image in settings, another architecture, or a truncated archive
 (wrong size) is never loaded. Only the built-in Lima runtime loads the archive
@@ -111,7 +132,9 @@ So an update costs what it did, moved from the pull into the update. There are
 two exceptions:
 
 - The first update to a version with the bundle downloads the whole image once,
-  even where the image changed little.
+  even where the image changed little. So does the first update with zstd
+  layers (about 543 MiB), and the first one built on a Node with a different
+  libzstd.
 - An install that has never auto-updated has no cached `update.zip`.
   electron-updater then downloads the full ZIP, now 1.1 GiB instead of 353 MiB.
   Before, it downloaded the 353 MiB ZIP and pulled the new layers.
