@@ -23,7 +23,7 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
 }))
 // The agent's LLM and platform credentials are not under test.
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: () => ({ getContainerEnvVars: async () => ({}), toolSearchEnv: undefined }),
+  getActiveLlmProvider: () => ({ getContainerEnvVars: async () => ({}), toolSearchEnv: () => 'false' }),
 }))
 vi.mock('@shared/lib/platform-attribution/container-token', () => ({ getPlatformContainerToken: async () => undefined }))
 

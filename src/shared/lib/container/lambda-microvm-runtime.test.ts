@@ -34,7 +34,7 @@ vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), addEr
 // output here (that's the builder's concern), we only verify the runtime
 // delivers the agent's own config.envVars through runHookPayload.
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: () => ({ getContainerEnvVars: () => ({}) }),
+  getActiveLlmProvider: () => ({ getContainerEnvVars: () => ({}), toolSearchEnv: () => 'false' }),
 }))
 
 const autoSleepTimeoutMinutes = vi.fn((): number | undefined => 30)

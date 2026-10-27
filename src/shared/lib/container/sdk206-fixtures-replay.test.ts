@@ -524,7 +524,8 @@ describe('sdk 0.3.206 capture replays', () => {
 //     the child's completion re-runs the subagent under the same task_id.
 // SDK 0.3.300 / CLI 2.1.300 re-captured the same scenarios with no protocol
 // change (same task bookend, snapshot and idle order), and so did SDK 0.3.303 /
-// CLI 2.1.303, so every assertion below runs against all three generations.
+// CLI 2.1.303 and SDK 0.3.311 / CLI 2.1.311, so every assertion below runs
+// against all four generations.
 const SDK296_SCENARIOS = [
   'bg-bash-premature-idle',
   'bg-subagent-no-idle',
@@ -533,7 +534,7 @@ const SDK296_SCENARIOS = [
   'sendmessage-resumed-subagent',
 ]
 
-describe.each(['sdk296', 'sdk300', 'sdk303'])('%s capture replays', (sdk) => {
+describe.each(['sdk296', 'sdk300', 'sdk303', 'sdk311'])('%s capture replays', (sdk) => {
   const SDK296_FIXTURES = SDK296_SCENARIOS.map((scenario) => `${sdk}-${scenario}`)
 
   afterEach(() => {
@@ -700,12 +701,12 @@ describe.each(['sdk296', 'sdk300', 'sdk303'])('%s capture replays', (sdk) => {
 // a background subagent like any other (async_launched ack, task_started with
 // is_backgrounded, terminal task frames); only its transcript differs (see
 // subagentOwnEntries).
-describe('sdk303 fork captures replay', () => {
+describe.each(['sdk303', 'sdk311'])('%s fork captures replay', (sdk) => {
   afterEach(() => {
     vi.clearAllMocks()
   })
 
-  it.each(['sdk303-fork-subagent', 'sdk303-fork-sendmessage-resumed'])(
+  it.each([`${sdk}-fork-subagent`, `${sdk}-fork-sendmessage-resumed`])(
     '%s: background contract holds and the session finalizes once',
     async (name) => {
       const { sseEvents, timeline } = await replayTracked(name)
@@ -722,7 +723,7 @@ describe('sdk303 fork captures replay', () => {
   )
 
   it('keeps the fork running past its launch ack, and completes it once at its task_notification', async () => {
-    const { streamEntries, sseEvents } = await replayTracked('sdk303-fork-subagent')
+    const { streamEntries, sseEvents } = await replayTracked(`${sdk}-fork-subagent`)
     const contents = streamEntries.map((e) => e.message.content as Record<string, unknown>)
     const notification = contents.find((c) => c['subtype'] === 'task_notification')!
     const ackIndex = contents.findIndex((c) =>
@@ -742,7 +743,7 @@ describe('sdk303 fork captures replay', () => {
   })
 
   it('streams a SendMessage-resumed fork into its own entry, not the finished first run', async () => {
-    const { streamEntries, sseEvents } = await replayTracked('sdk303-fork-sendmessage-resumed')
+    const { streamEntries, sseEvents } = await replayTracked(`${sdk}-fork-sendmessage-resumed`)
     const contents = streamEntries.map((e) => e.message.content as Record<string, unknown>)
     const starts = contents.filter((c) => c['subtype'] === 'task_started' && c['task_type'] === 'local_agent')
     expect(starts).toHaveLength(2)

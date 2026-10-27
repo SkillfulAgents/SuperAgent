@@ -9,6 +9,6 @@ describe('BedrockLlmProvider — tool search', () => {
   // Bedrock serves Claude models, and the CLI's non-first-party guard never
   // fires in Bedrock mode — so unset would mean on anyway. Declared for intent.
   it('turns ENABLE_TOOL_SEARCH on', () => {
-    expect(new BedrockLlmProvider().toolSearchEnv).toBe('true')
+    expect(new BedrockLlmProvider().toolSearchEnv()).toBe('true')
   })
 })

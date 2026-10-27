@@ -2055,9 +2055,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       // The setting only switches tool search OFF; whether it may be on is the
       // provider's call, because it depends on the endpoint expanding deferred
-      // tools (see BaseLlmProvider.toolSearchEnv). Undefined leaves the var
-      // unset — the image must not define it either, or unset would read as on.
-      ENABLE_TOOL_SEARCH: settings.enableToolSearch === false ? 'false' : provider.toolSearchEnv,
+      // tools (see BaseLlmProvider.toolSearchEnv). Always set: unset reads as
+      // on behind any custom base URL.
+      ENABLE_TOOL_SEARCH: settings.enableToolSearch === false ? 'false' : provider.toolSearchEnv(),
       ...this.config.envVars,
       ...extra,
       // Platform services stay available with any LLM provider. Pin these after

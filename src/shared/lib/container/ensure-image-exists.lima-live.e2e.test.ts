@@ -30,7 +30,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
   addErrorBreadcrumb: vi.fn(),
 }))
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: () => ({ getContainerEnvVars: () => ({}) }),
+  getActiveLlmProvider: () => ({ getContainerEnvVars: () => ({}), toolSearchEnv: () => 'false' }),
 }))
 
 // Real Lima runner, tiny throwaway image for the pull test. The mock is

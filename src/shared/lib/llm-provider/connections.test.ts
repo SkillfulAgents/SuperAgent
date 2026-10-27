@@ -704,6 +704,22 @@ it('publishes the same default used for provider-only selections, including disa
   expect((await resolveExecutionSelection({ llmProviderId: openrouter })).model).toBe(fallback.defaultModel)
 })
 
+// Unset reads as on behind any custom base URL (CLI 2.1.304+), so the runtime
+// always says which, and per model where the endpoint's support differs.
+it('decides tool search from the session model', async () => {
+  const openrouter = await saveConnection({ name: 'Router', provider: 'openrouter', config: { apiKeys: { openrouterApiKey: 'key' } },
+    modelOverrides: [{ id: 'openai/gpt-test', label: 'GPT', family: 'gpt', supportedEfforts: ['low'] }] }, admin)
+  const toolSearch = async (model: string) =>
+    (await connectionRuntime(await resolveExecutionSelection({ llmProviderId: openrouter, model }), 'agent')).env.ENABLE_TOOL_SEARCH
+  const claude = await resolveExecutionSelection({ llmProviderId: openrouter, model: 'sonnet' })
+  expect(claude.wireModel).toMatch(/^claude-/)
+  expect(await toolSearch('sonnet')).toBe('true')
+  expect(await toolSearch('openai/gpt-test')).toBe('false')
+  expect((await connectionRuntime(await resolveExecutionSelection({ llmProviderId: await add() }), 'agent')).env.ENABLE_TOOL_SEARCH).toBe('false')
+  state.settings.enableToolSearch = false
+  expect(await toolSearch('sonnet')).toBe('false')
+})
+
 
 describe('summarizer selection', () => {
   beforeEach(() => {

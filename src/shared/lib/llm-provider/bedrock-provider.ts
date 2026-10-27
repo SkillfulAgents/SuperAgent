@@ -14,7 +14,7 @@ export class BedrockLlmProvider extends BaseLlmProvider {
   // Used for simple Bedrock API Key auth (AWS_BEARER_TOKEN_BEDROCK)
   // Bedrock serves Claude models, and the CLI's own guard (which only fires
   // for custom first-party base URLs) never applies in Bedrock mode.
-  override readonly toolSearchEnv = 'true' as const
+  override toolSearchEnv() { return 'true' as const }
   protected readonly settingsKeyField = 'bedrockApiKey' as const
   protected readonly envVarName = 'AWS_BEARER_TOKEN_BEDROCK'
 

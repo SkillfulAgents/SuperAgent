@@ -43,7 +43,7 @@ export class GrokSubscriptionLlmProvider extends BaseLlmProvider {
   readonly catalogDefaultModels = GROK_DEFAULT_MODELS
   protected readonly settingsKeyField = undefined
   protected readonly envVarName = ''
-  override readonly toolSearchEnv = 'true' as const
+  override toolSearchEnv() { return 'true' as const }
   override readonly mediaPrompt = GROK_MEDIA_PROMPT
   override readonly supportsModelSearch = true
 

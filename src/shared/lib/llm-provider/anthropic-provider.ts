@@ -11,7 +11,7 @@ export class AnthropicLlmProvider extends BaseLlmProvider {
   readonly defaultModelOptions = CLAUDE_DEFAULT_MODEL_OPTIONS
   readonly catalogDefaultModels = ANTHROPIC_CATALOG_DEFAULT_MODELS
   // Anthropic's own API is where deferred tool loading is expanded server-side.
-  override readonly toolSearchEnv = 'true' as const
+  override toolSearchEnv() { return 'true' as const }
   protected readonly settingsKeyField = 'anthropicApiKey' as const
   protected readonly envVarName = 'ANTHROPIC_API_KEY'
 

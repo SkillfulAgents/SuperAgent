@@ -46,9 +46,13 @@ afterEach(() => {
 })
 
 describe('GenericLlmProvider — catalog and capabilities', () => {
-  // The endpoint is whatever the user pointed us at, so the CLI decides.
-  it('declares no ENABLE_TOOL_SEARCH value', () => {
-    expect(new GenericLlmProvider().toolSearchEnv).toBeUndefined()
+  // The endpoint is whatever the user pointed us at: off unless it is
+  // Anthropic's own API.
+  it('keeps ENABLE_TOOL_SEARCH off for an Anthropic-wire endpoint it cannot vouch for', () => {
+    expect(new GenericLlmProvider().toolSearchEnv()).toBe('false')
+    const endpoint = (genericBaseUrl: string) => new GenericLlmProvider({ apiKeys: { genericApiKey: 'key', genericBaseUrl }, env: {} })
+    expect(endpoint('https://gateway.example/v1').toolSearchEnv()).toBe('false')
+    expect(endpoint('https://api.anthropic.com').toolSearchEnv()).toBe('true')
   })
 
   it('ships an empty built-in catalog and opts into model search', () => {
