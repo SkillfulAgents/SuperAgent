@@ -5,22 +5,35 @@ import { apiFetch } from '@renderer/lib/api'
 import { useAddMount, useRemoveMount } from '@renderer/hooks/use-mounts'
 import { useSaveVolumeDefinition, useVolumeAgents, useVolumeDefinitions } from '@renderer/hooks/use-volume-definitions'
 
-/** Let `slug` message the Team Brain agent, or stop it. */
-async function setMessaging(queryClient: QueryClient, slug: string, brainSlug: string, allowed: boolean) {
-  const res = await apiFetch(
-    `/api/agents/${slug}/x-agent-policies/invoke/${brainSlug}`,
-    allowed ? { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'allow' }) } : { method: 'DELETE' },
-  )
-  if (!res.ok) throw new Error(allowed ? 'Could not let it message Team Brain' : 'Could not stop it messaging Team Brain')
+/** Let `slug` message the Team Brain agent and Team Brain read `slug`'s sessions, or stop both. */
+async function setLinked(queryClient: QueryClient, slug: string, brainSlug: string, linked: boolean) {
+  const init = linked ? { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'allow' }) } : { method: 'DELETE' }
+  const results = await Promise.allSettled([
+    apiFetch(`/api/agents/${slug}/x-agent-policies/invoke/${brainSlug}`, init),
+    apiFetch(`/api/agents/${brainSlug}/x-agent-policies/read/${slug}`, init),
+  ])
   await Promise.all([
     queryClient.invalidateQueries({ queryKey: ['x-agent-policies', slug] }),
+    queryClient.invalidateQueries({ queryKey: ['x-agent-policies', brainSlug] }),
     queryClient.invalidateQueries({ queryKey: ['inbound-x-agent', brainSlug] }),
     queryClient.invalidateQueries({ queryKey: ['home-graph'] }),
   ])
+  if (results.some((result) => result.status === 'rejected' || !result.value.ok)) {
+    throw new Error(linked ? 'Could not connect it to Team Brain' : 'Could not disconnect it from Team Brain')
+  }
+}
+
+/** Allow Team Brain to list every agent, or read every agent's sessions (agents made later too), or clear it. */
+export async function setTeamBrainReach(queryClient: QueryClient, brainSlug: string, operation: 'list' | 'read', allowed: boolean) {
+  const res = await apiFetch(`/api/agents/${brainSlug}/x-agent-policies`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operation, targetSlug: null, decision: allowed ? 'allow' : 'default' }),
+  })
+  if (!res.ok) throw new Error('Could not change what Team Brain can see')
+  await queryClient.invalidateQueries({ queryKey: ['x-agent-policies', brainSlug] })
 }
 
 /**
- * What an agent gets when it uses Team Brain: the drive, read-only, and leave to message the Team Brain agent.
+ * What an agent gets when it uses Team Brain: the drive, read-only, leave to message the Team Brain agent, and Team Brain reading its sessions.
  * `mount: false` when the drive already reaches every agent.
  */
 export function useGiveTeamBrain() {
@@ -28,7 +41,7 @@ export function useGiveTeamBrain() {
   const queryClient = useQueryClient()
   return async (slug: string, { volumeId, brainSlug, mount = true }: { volumeId: string; brainSlug: string; mount?: boolean }) => {
     if (mount) await addMount.mutateAsync({ agentSlug: slug, volumeId, readOnly: true })
-    await setMessaging(queryClient, slug, brainSlug, true)
+    await setLinked(queryClient, slug, brainSlug, true)
   }
 }
 
@@ -53,7 +66,7 @@ export function useTeamBrainAccess(brainSlug: string, volumeId: string | undefin
     setChanging((prev) => new Map(prev).set(slug, on))
     const change = on
       ? give(slug, { volumeId, brainSlug })
-      : Promise.all([mountId && removeMount.mutateAsync({ agentSlug: slug, mountId }), setMessaging(queryClient, slug, brainSlug, false)])
+      : Promise.all([mountId && removeMount.mutateAsync({ agentSlug: slug, mountId }), setLinked(queryClient, slug, brainSlug, false)])
     void change
       .catch(failed)
       .then(() => queryClient.invalidateQueries({ queryKey: ['volume-agents', volumeId] }))
@@ -65,11 +78,11 @@ export function useTeamBrainAccess(brainSlug: string, volumeId: string | undefin
   }
   const setEveryAgent = (on: boolean, slugs: readonly string[]) => {
     if (!volumeId) return
-    // Agents with their own attachment keep it, and with it their leave to message Team Brain.
+    // Agents with their own attachment keep it, and with it their link to Team Brain.
     const others = slugs.filter((slug) => !mountOf(slug))
     void saveVolume
       .mutateAsync({ id: volumeId, global: on ? 'read' : null })
-      .then(() => Promise.all(others.map((slug) => setMessaging(queryClient, slug, brainSlug, on))))
+      .then(() => Promise.all([setTeamBrainReach(queryClient, brainSlug, 'read', on), ...others.map((slug) => setLinked(queryClient, slug, brainSlug, on))]))
       .catch(failed)
   }
   return {

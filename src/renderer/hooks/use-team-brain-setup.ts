@@ -17,7 +17,7 @@ import { useDiscoverableAgents, useInstallAgentFromSkillset } from './use-agent-
 import { useAgents, useDeleteAgent, useStartAgent, useUpdateAgent } from './use-agents'
 import { useConnectedAccounts } from './use-connected-accounts'
 import { useAddMount } from './use-mounts'
-import { useGiveTeamBrain } from './use-team-brain-access'
+import { setTeamBrainReach, useGiveTeamBrain } from './use-team-brain-access'
 import { useStartOnboardingSession } from './use-start-onboarding-session'
 import { useSettings, useUpdateSettings } from './use-settings'
 import { useDeleteVolumeDefinition, useSaveVolumeDefinition } from './use-volume-definitions'
@@ -151,14 +151,23 @@ export function useTeamBrainSetup() {
     // The record marks the agent; the list must carry the mark before set-up stops hiding it.
     await queryClient.invalidateQueries({ queryKey: ['agents'] })
 
-    // Running agents pick the drive up on their next start.
-    const attached = Promise.allSettled(chosen.map((slug) => giveTeamBrain(slug, { volumeId: prepared.volumeId, brainSlug: prepared.agentSlug, mount: !everyAgent })))
+    // Running agents pick the drive up on their next start. Team Brain can list and read them before its first chat.
+    const [attached, reached] = await Promise.all([
+      Promise.allSettled(chosen.map((slug) => giveTeamBrain(slug, { volumeId: prepared.volumeId, brainSlug: prepared.agentSlug, mount: !everyAgent }))),
+      Promise.allSettled([
+        setTeamBrainReach(queryClient, prepared.agentSlug, 'list', true),
+        everyAgent && setTeamBrainReach(queryClient, prepared.agentSlug, 'read', true),
+      ]).then((results) => results.every((result) => result.status === 'fulfilled')),
+    ])
     await startOnboardingSession(prepared.agentSlug, prepared.firstPrompt)
-    const failed = (await attached).filter((result) => result.status === 'rejected').length
+    const failed = attached.filter((result) => result.status === 'rejected').length
     if (failed > 0) {
       toast.error(`Team Brain could not be added to ${failed} ${failed === 1 ? 'agent' : 'agents'}`, {
         description: 'Add the Team Brain drive to them from each agent’s Drives. Their first message to Team Brain will ask for approval.',
       })
+    }
+    if (!reached) {
+      toast.error('Team Brain cannot see your other agents yet', { description: 'Allow it from Team Brain’s “Connect this agent to others” settings.' })
     }
     return true
   }
