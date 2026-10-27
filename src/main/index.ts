@@ -789,8 +789,9 @@ ipcMain.handle('detect-host-browser', () => {
 // this run, else in home: what gets mounted here is a project, not a download.
 let lastPickedDirectoryParent: string | null = null
 ipcMain.handle('open-directory', async () => {
+  // createDirectory: macOS shows New Folder only when asked (Windows always does).
   const result = await dialog.showOpenDialog({
-    properties: ['openDirectory'],
+    properties: ['openDirectory', 'createDirectory'],
     defaultPath: lastPickedDirectoryParent ?? app.getPath('home'),
   })
   if (result.canceled) return null
