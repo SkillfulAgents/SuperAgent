@@ -74,6 +74,34 @@ the first fetch after connecting).
   maintenance cycle heard, at most half an hour old. Anything that can change at
   runtime, or must be current the moment it changes, stays an API read.
 
+## What the Mac App Store build leaves out
+
+The App Sandbox confines the Store build to its own container: it may not
+control or launch other apps with arguments, run Homebrew's or the developer
+tools' binaries, use sudo, or keep a folder outside the container past a quit.
+Each feature that needs one of those asks a capability, so the server refuses
+it, the renderer hides it, and the agents are never told about it.
+
+| Feature | Capability | Where it is withheld |
+| --- | --- | --- |
+| Computer use | `supportsComputerUse()` | the container's tools and prompt (`HOST_COMPUTER_USE`), the tool call, the Computer Use tab (`offersComputerUseSettings()`) |
+| Host scripts | `runsHostScripts()`; the container's script tool follows `HOST_COMPUTER_USE` | the tool call |
+| The person's Chrome: CDP launch, profile copy, Apple Passwords | `drivesUserChrome()` | `ChromeProvider.detect()` (the Browser tab shows why), the profile seed, the Apple Passwords runtime |
+| A folder by path: local drives, copying a dropped folder in | `readsHostFolders()`, `usesHostFolderPaths()` | `prepareLocalVolume()`, the upload-folder routes, the Drives tab, folder drops (which upload instead) |
+| Private skillsets, publishing to GitHub | `runsHostGit()`, `offersPrivateSkillsets()` | the git probes (public skillsets download an archive), repository tokens, `publishMode`, the token fields |
+| Keep Awake, Add to Dock, recent files, music control | `keepsMacAwake()`, `addsToDock()`, `listsRecentFiles()`, `userMusicSupported()` | the settings and menus that offer them, and main's handlers |
+
+Two lists say this in words, and a new row goes in both: Settings → General
+shows the person `SandboxNotice` (`sandbox-notice.tsx`), and the agents'
+prompt has a "Mac App Store Edition" section (`appSandbox`, from
+`HOST_APP_SANDBOX`), since the docs baked into the agent image describe every
+feature.
+
+To see the Store build's UI without one, run the mock web server with
+`E2E_MOCK=true SUPERAGENT_FAKE_DISTRIBUTION=mac-app-store`. Only server facts
+change, so this shows what the server withholds and the Settings notice, not
+the desktop app's own integrations.
+
 ## Adding a fact
 
 1. Add it to `serverFactsSchema` (or `ClientFacts`) and compute it in

@@ -19,6 +19,8 @@ import {
   getPlatformDeviceName,
 } from '@shared/lib/services/platform-device-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
+import { runsInAppSandbox } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 
 const execFileAsync = promisify(execFile)
 const EXEC_TIMEOUT_MS = 5_000
@@ -179,7 +181,8 @@ async function scanForNonceCandidates(): Promise<string[]> {
     add(await readWindowsHandoffNonce(config.windowsHandoffFile))
   }
 
-  if (process.platform === 'darwin') {
+  // A Store install comes from no stamped download, so there is nothing to find.
+  if (process.platform === 'darwin' && !runsInAppSandbox(getServerFacts())) {
     const bundlePath = config.macBundlePath ?? deriveMacBundlePath(process.execPath)
     if (bundlePath) {
       add(await readWhereFromsNonce(bundlePath))

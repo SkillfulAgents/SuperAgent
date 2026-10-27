@@ -15,6 +15,8 @@ import yaml from 'js-yaml'
 import pLimit from 'p-limit'
 import { getCacheDir } from '@shared/lib/config/data-dir'
 import { getEffectiveModels } from '@shared/lib/config/settings'
+import { runsHostGit } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
 import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import {
@@ -767,7 +769,13 @@ async function getOriginalFromGitHistory(
 // Skillset Cache Management
 // ============================================================================
 
+/** Why a skillset that needs git can't be used in the Mac App Store edition. */
+export const HOST_GIT_UNAVAILABLE = 'This needs git, which the Mac App Store edition can’t run. Public GitHub skillsets work without it.'
+
 export async function isGitAvailable(): Promise<boolean> {
+  // Not even probed in the sandbox, where macOS's git stub would offer to
+  // install the developer tools.
+  if (!runsHostGit(getServerFacts())) return false
   try {
     await execFileAsync('git', ['--version'], { timeout: 5000 })
     return true
@@ -777,6 +785,9 @@ export async function isGitAvailable(): Promise<boolean> {
 }
 
 export async function ensureGitInstalled(): Promise<void> {
+  if (!runsHostGit(getServerFacts())) {
+    throw new Error(HOST_GIT_UNAVAILABLE)
+  }
   if (!(await isGitAvailable())) {
     throw new Error(
       'Git is not installed. Install it from https://git-scm.com/install/mac'

@@ -6,6 +6,8 @@ import os from 'os'
 import path from 'path'
 import WebSocket from 'ws'
 import { getDataDir } from '@shared/lib/config/data-dir'
+import { drivesUserChrome } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 
 const EXTENSION_IDS = [
   'pejdijmoenmkgeppbflobdenhhabjlaj',
@@ -101,6 +103,7 @@ const COMPLETE_PAIRING_FUNCTION = `function(pin) {
 
 type RuntimeErrorCode =
   | 'unsupported_platform'
+  | 'app_sandbox'
   | 'extension_not_found'
   | 'extension_invalid'
   | 'native_host_missing'
@@ -484,6 +487,10 @@ export class ApplePasswordsRuntime implements ApplePasswordsRuntimeLike {
 
   /** Pure filesystem/platform validation; never prepares a profile or launches Chrome. */
   private validatePrerequisites(): InstalledApplePasswordsExtension {
+    // The broker drives Chrome with Apple's extension, which the Store build can't.
+    if (!drivesUserChrome(getServerFacts())) {
+      throw new ApplePasswordsRuntimeError('app_sandbox', 'Apple Passwords is not available in the Mac App Store edition')
+    }
     if (this.dependencies.platform() !== 'darwin') {
       throw new ApplePasswordsRuntimeError('unsupported_platform', 'Apple Passwords is available only on macOS')
     }

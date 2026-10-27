@@ -9,7 +9,7 @@ import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/att
 import { appendDictationNote } from '@shared/lib/utils/dictation-note'
 import { mountPathOf } from '@shared/lib/volumes/base-mountable-volume'
 import { filesFromClipboard, folderChoice, type FolderGroup } from '@renderer/lib/file-utils'
-import { canUseHostFeatures } from '@renderer/lib/capabilities'
+import { usesHostFolderPaths } from '@renderer/lib/capabilities'
 import { attachmentStatus, type Attachment, type MountAttachment } from '@renderer/components/messages/attachment-preview'
 import type { UploadProgress } from '@renderer/lib/upload'
 import { usePendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
@@ -120,7 +120,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   // Whether a dropped folder can be offered as a *mount* rather than an upload.
   // Mounting hands the agent's machine a path on this one, so it needs both the
   // bridge and for the two to be the same machine.
-  const canOfferMount = canUseHostFeatures()
+  const canOfferMount = usesHostFolderPaths()
 
   const handleFoldersReceived = useCallback((folders: FolderGroup[]) => {
     setPendingFolders((current) => [...current, ...folders])

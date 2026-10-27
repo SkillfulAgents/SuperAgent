@@ -13,7 +13,7 @@ vi.mock('./volume-mounts', async (importOriginal) => ({
   mountedVolumeIndexes: vi.fn(() => []),
 }))
 
-const KEYS = ['COMPOSIO_PLATFORM_MODE', 'CONNECTED_ACCOUNT_TOOLKITS', 'PLATFORM_AUTH_ACTIVE', 'WEBHOOK_RELAY_AVAILABLE', 'CONNECTED_ACCOUNTS', 'REMOTE_MCPS', 'CLAUDE_CONFIG_DIR', 'HOST_PLATFORM']
+const KEYS = ['COMPOSIO_PLATFORM_MODE', 'CONNECTED_ACCOUNT_TOOLKITS', 'PLATFORM_AUTH_ACTIVE', 'WEBHOOK_RELAY_AVAILABLE', 'CONNECTED_ACCOUNTS', 'REMOTE_MCPS', 'CLAUDE_CONFIG_DIR', 'HOST_PLATFORM', 'HOST_COMPUTER_USE', 'HOST_APP_SANDBOX']
 let saved: Record<string, string | undefined>
 beforeEach(() => { saved = Object.fromEntries(KEYS.map(k => [k, process.env[k]])); for (const k of KEYS) delete process.env[k] })
 afterEach(() => { for (const k of KEYS) { saved[k] === undefined ? delete process.env[k] : process.env[k] = saved[k]! } })
@@ -588,6 +588,35 @@ describe('generateSystemPrompt rendering', () => {
     expect(out.includes('## Computer Use')).toBe(present)
     expect(out.includes('computer_launch')).toBe(present)
     expect(out.includes('request_script_run')).toBe(present)
+  })
+
+  // The host answers whether its agents get computer use; the Mac App Store
+  // build says no on macOS, and its prompt names what the edition leaves out.
+  it.each([
+    { label: 'a host that offers computer use', computerUse: 'true', sandbox: 'false', present: true },
+    { label: 'the Mac App Store edition', computerUse: 'false', sandbox: 'true', present: false },
+  ])('on macOS, $label', ({ computerUse, sandbox, present }) => {
+    process.env.HOST_PLATFORM = 'darwin'
+    process.env.HOST_COMPUTER_USE = computerUse
+    process.env.HOST_APP_SANDBOX = sandbox
+    const out = generateSystemPrompt()
+    expect(out.includes('## Computer Use')).toBe(present)
+    expect(out.includes('Native desktop control')).toBe(present)
+    expect(out.includes('computer_launch')).toBe(present)
+    expect(out.includes('request_script_run')).toBe(present)
+    expect(out.includes('## Mac App Store Edition')).toBe(!present)
+  })
+
+  it('tells a Mac App Store edition’s agents what the sandbox leaves out, before the per-render tail', () => {
+    process.env.HOST_PLATFORM = 'darwin'
+    process.env.HOST_COMPUTER_USE = 'false'
+    process.env.HOST_APP_SANDBOX = 'true'
+    const out = generateSystemPrompt()
+    const note = out.slice(out.indexOf('## Mac App Store Edition'), out.indexOf('## Language Guidelines'))
+    for (const left of ['computer use', 'own Chrome', "folders on the user's Mac", 'GitHub skillsets', 'container runtimes']) {
+      expect(note).toContain(left)
+    }
+    expect(out.indexOf('## Mac App Store Edition')).toBeLessThan(out.indexOf('## Other Guidelines'))
   })
 
   // A vendor disables the native tool, so the catalog must name whichever tool the

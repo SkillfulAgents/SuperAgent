@@ -1,6 +1,7 @@
 import { startLlmProxy, llmProxyBinding, type LlmProxyHandle } from './llm-proxy';
 import { withoutProviderCredentials, resolveSessionRuntime, type ConnectionRuntime } from './connection-runtime';
 import { webhookRelayAvailable } from './webhook-relay-env';
+import { isAppSandboxHost, isComputerUseHost } from './host-desktop-env';
 import {
   query,
   startup,
@@ -304,10 +305,6 @@ export function resultNeedsResumeErrorFallback(msg: {
   return !msg.error && !msg.message && !msg.result;
 }
 
-export function isComputerUseHost(): boolean {
-  return ['darwin', 'win32'].includes(process.env.HOST_PLATFORM || '');
-}
-
 /**
  * The template renders every section itself; this bag carries only data. Each
  * list is paired with a `has*` boolean because a Mustache list section repeats
@@ -331,6 +328,8 @@ export interface SystemPromptVars {
   /** Platform token present — built-in service prompt sections (Replicate, Apollo). */
   platformServices: boolean;
   computerUse: boolean;
+  /** The Mac App Store edition: the prompt says what its sandbox leaves out. */
+  appSandbox: boolean;
   /** The host can run meeting bots — the mcp__meetings__* tools are registered and the Meetings section renders. */
   meetings: boolean;
   hasModelHints: boolean;
@@ -405,6 +404,7 @@ export function buildSystemPromptVars(
     anyTriggers: composioTriggers || webhookEndpoints,
     platformServices,
     computerUse: isComputerUseHost(),
+    appSandbox: isAppSandboxHost(),
     meetings: meetingsAvailable(availableIntegrationFamilies),
     hasModelHints: modelHints.length > 0,
     modelHints,

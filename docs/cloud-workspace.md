@@ -506,12 +506,16 @@ somewhere else.
 
 | Site | Why |
 | --- | --- |
-| Create a local volume (`volume-settings-dialog.tsx`, `use-mounts.ts`) | Uses the existing OS folder picker on this computer. Dropbox creation and attaching an existing saved volume work against any API target |
+| Create a local volume (`volume-settings-dialog.tsx`, `use-mounts.ts`), through `usesHostFolderPaths()` | Uses the existing OS folder picker on this computer. Dropbox creation and attaching an existing saved volume work against any API target |
 | Open-a-mount in Finder/Explorer (`home-volumes.tsx`) | `hostPath` belongs to the agent's machine |
 | Reveal a workspace file (`folder-file-context-menu.tsx`) | The deployment returns *its* host path; opening it here lands nowhere, or on a same-named folder of yours |
 | Reveal a workspace folder in Finder/Explorer (`folder-host-actions.tsx`) | The folder panel's header action. Same reasoning as revealing a file: the deployment returns *its* host path. The Copy-path action beside it stays everywhere, since a path is just text |
-| Computer Use — the settings tab and the System Settings recovery link (`global-settings-page.tsx`, `computer-use-request-item.tsx`) | It drives the machine the agent runs on, and its whole UI is written for that being yours. The missing-permission *list* still shows remotely; only the button that would fix the wrong computer is withdrawn |
-| Dropped/picked folder paths (`file-utils.ts`, `use-message-composer.ts`) | A `folderPath` exists only to be mounted or read by the agent's machine. Remotely, the web route — enumerate and upload the bytes — is the only one that works, and the mount/upload choice is not offered |
+| Computer Use — the settings tab (`global-settings-page.tsx`, through `offersComputerUseSettings()`) and the System Settings recovery link (`computer-use-request-item.tsx`) | It drives the machine the agent runs on, and its whole UI is written for that being yours. The missing-permission *list* still shows remotely; only the button that would fix the wrong computer is withdrawn |
+| Dropped/picked folder paths (`file-utils.ts`, `use-message-composer.ts`, `todo-draft-dialog.tsx`), through `usesHostFolderPaths()` | A `folderPath` exists only to be mounted or read by the agent's machine. Remotely, the web route — enumerate and upload the bytes — is the only one that works, and the mount/upload choice is not offered |
+
+The ones marked "through" ask a narrower capability built on this one, which
+also withholds the feature from the Mac App Store build: see
+[docs/facts.md § What the Mac App Store build leaves out](facts.md#what-the-mac-app-store-build-leaves-out).
 
 #### Acts on the API's machine → `!targetIsRemote()`
 

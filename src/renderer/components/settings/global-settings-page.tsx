@@ -4,7 +4,7 @@ import { SettingsPage, type SettingsPageSection, type SettingsPageSectionGroup }
 import { lazyRouteComponent, type LinkProps } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
-import { canUseHostFeatures } from '@renderer/lib/capabilities'
+import { offersComputerUseSettings } from '@renderer/lib/capabilities'
 
 // Each settings pane is a separate on-demand boundary. The navigation shell is
 // immediately usable, while only the active pane (and its dependency graph) is
@@ -144,8 +144,9 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
           // UI — permission grants, the recovery link into System Settings — is
           // written for that machine being yours. `isElectron()` stays true in
           // cloud mode while execution moves to the deployment, so the tab would
-          // describe your laptop and govern someone else's.
-          ...(canUseHostFeatures() ? [{ id: 'computer-use', label: 'Computer Use', icon: <Mouse className="h-4 w-4" />, render: () => deferredTab(<ComputerUseTab />) }] : []),
+          // describe your laptop and govern someone else's. A sandboxed build
+          // has no computer use to govern.
+          ...(offersComputerUseSettings() ? [{ id: 'computer-use', label: 'Computer Use', icon: <Mouse className="h-4 w-4" />, render: () => deferredTab(<ComputerUseTab />) }] : []),
           { id: 'capabilities', label: 'Subagents', icon: <Workflow className="h-4 w-4" />, render: () => deferredTab(<CapabilitiesTab />) },
         ]
       : []),
