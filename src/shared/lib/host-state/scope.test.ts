@@ -33,11 +33,11 @@ describe('settings in a host state scope', () => {
     const b = gate()
     const first = runWithHostState(store, async () => {
       await a.opened
-      mutateSettings((s) => { s.app.theme = 'dark' })
+      mutateSettings((s) => { s.app = { ...s.app, theme: 'dark' } })
     })
     const second = runWithHostState(store, async () => {
       await b.opened
-      mutateSettings((s) => { s.app.autoSleepTimeoutMinutes = 7 })
+      mutateSettings((s) => { s.app = { ...s.app, autoSleepTimeoutMinutes: 7 } })
     })
     a.release()
     await first
@@ -45,8 +45,8 @@ describe('settings in a host state scope', () => {
     await second
 
     await runWithHostState(store, async () => {
-      expect(getSettings().app.theme).toBe('dark')
-      expect(getSettings().app.autoSleepTimeoutMinutes).toBe(7)
+      expect(getSettings().app?.theme).toBe('dark')
+      expect(getSettings().app?.autoSleepTimeoutMinutes).toBe(7)
     })
   })
 
@@ -58,14 +58,14 @@ describe('settings in a host state scope', () => {
       updateSettings({ ...current, app: { ...current.app, theme: 'light' } })
     })
     await runWithHostState(store, async () => {
-      mutateSettings((s) => { s.app.autoSleepTimeoutMinutes = 9 })
+      mutateSettings((s) => { s.app = { ...s.app, autoSleepTimeoutMinutes: 9 } })
     })
     replacing.release()
 
     await expect(replace).rejects.toBeInstanceOf(HostStateConflictError)
     await runWithHostState(store, async () => {
-      expect(getSettings().app.autoSleepTimeoutMinutes).toBe(9)
-      expect(getSettings().app.theme).not.toBe('light')
+      expect(getSettings().app?.autoSleepTimeoutMinutes).toBe(9)
+      expect(getSettings().app?.theme).not.toBe('light')
     })
   })
 
@@ -73,19 +73,19 @@ describe('settings in a host state scope', () => {
     const other = gate()
     const request = runWithHostState(store, async () => {
       await other.opened
-      mutateSettings((s) => { s.app.theme = 'dark' })
-      mutateSettings((s) => { s.app.theme = 'light' })
+      mutateSettings((s) => { s.app = { ...s.app, theme: 'dark' } })
+      mutateSettings((s) => { s.app = { ...s.app, theme: 'light' } })
       await flushHostState()
       return getSettings().app
     })
     await runWithHostState(store, async () => {
-      mutateSettings((s) => { s.app.autoSleepTimeoutMinutes = 9 })
+      mutateSettings((s) => { s.app = { ...s.app, autoSleepTimeoutMinutes: 9 } })
     })
     other.release()
 
     const app = await request
-    expect(app.theme).toBe('light')
-    expect(app.autoSleepTimeoutMinutes).toBe(9)
+    expect(app?.theme).toBe('light')
+    expect(app?.autoSleepTimeoutMinutes).toBe(9)
   })
 
   it('runs a mutator once when nothing conflicts', async () => {

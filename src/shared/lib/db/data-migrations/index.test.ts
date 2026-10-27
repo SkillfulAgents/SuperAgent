@@ -121,7 +121,7 @@ describe('runDataMigrations', () => {
       id: 2,
       name: 'global-model-pricing',
       async run() {
-        mutateSettings((s) => { s.app.theme = 'dark' })
+        mutateSettings((s) => { s.app = { ...s.app, theme: 'dark' } })
       },
     }
 

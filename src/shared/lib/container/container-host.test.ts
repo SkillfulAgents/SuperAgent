@@ -66,6 +66,7 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
 const mockGetOrCreateHostToken = vi.fn((..._args: unknown[]) => 'hostc_test-token')
 vi.mock('@shared/lib/container/host-token-store', () => ({
   getOrCreateHostToken: (...args: unknown[]) => mockGetOrCreateHostToken(...args),
+  hostTokenForStart: async (...args: unknown[]) => mockGetOrCreateHostToken(...args),
 }))
 
 const mockGetContainerHostUrl = vi.fn()
