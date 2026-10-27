@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser use feature successfully executed: agent opened a browser, navigated to https://example.com, captured the page title \"Example Domain\", and reported the result in the chat.",
+  "steps": [
+    "Navigated to http://localhost:47891 — Application loaded successfully showing the Gamut agent interface with sidebar containing agent list.",
+    "Clicked the \"QA-20261027-031330-j2fx\" agent link in the sidebar — Agent configuration page loaded successfully.",
+    "Clicked \"New session with QA-20261027-031330-j2fx\" link in the sidebar — New chat session opened with empty message area and input field ready for message entry.",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into the chat input field — Message successfully entered into the textbox.",
+    "Pressed Enter to send the message — Message was sent successfully, session status changed to \"working\", and the sidebar reflected the session with title \"Check Example.com Page Title\".",
+    "Waited up to 3 minutes for response — Agent completed processing in 8 seconds after 3 tool calls and 159,729 tokens used.",
+    "Verified response contains \"Example Domain\" — Response message clearly states: \"The page title is \"Example Domain\". The page loaded normally at https://example.com/, and I closed the browser afterwards.\""
+  ],
+  "bugs": [],
+  "durationMs": 120601,
+  "sessionId": "b3aae0a1-af6e-485f-af90-b79354898d07",
+  "cost": {
+    "inputTokens": 440,
+    "outputTokens": 15255,
+    "cacheCreationTokens": 90893,
+    "cacheReadTokens": 1364849,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.326816
+  }
+}
