@@ -3,6 +3,7 @@ import { ttsSynthesisSchema } from '@shared/lib/voice/tts-types'
 import { VoiceProviderError } from '@shared/lib/voice/provider-error'
 import { LIVE_SESSION_MAX_MS, LiveSessionRegistry } from '@shared/lib/voice/live-session-registry'
 import { expiringMap } from '@shared/lib/host-state/expiring-map'
+import { sharedLiveSessionSchema } from '@shared/lib/voice/shared-live-session-schema'
 import { z } from 'zod'
 import { limitJsonBody, type LimitedJsonBodyEnv } from '../middleware/limit-json-body'
 import { Authenticated, ResolveAgent, AgentUser, getAgentId } from '../middleware/auth'
@@ -74,14 +75,7 @@ const liveSessions = new LiveSessionRegistry()
 const pendingLiveStarts = new Map<string, number>()
 // What any process needs to close a session this one opened: the release may
 // reach another process, and an open provider session keeps billing.
-type SharedLiveSession = { owner: string; provider: VoiceProvider; providerSessionId: string; closing: boolean }
-const sharedLiveSessionSchema = z.object({
-  owner: z.string(),
-  provider: z.custom<VoiceProvider>((value) => typeof value === 'string'),
-  providerSessionId: z.string(),
-  closing: z.boolean(),
-})
-const sharedLiveSessions = expiringMap<SharedLiveSession>('voice-live', LIVE_SESSION_MAX_MS, sharedLiveSessionSchema)
+const sharedLiveSessions = expiringMap('voice-live', LIVE_SESSION_MAX_MS, sharedLiveSessionSchema)
 const liveKey = (owner: string, handle: string) => `${owner}:${handle}`
 
 async function openLiveSessionCount(owner: string): Promise<number> {
@@ -98,11 +92,12 @@ async function createLiveSession(c: Context<LimitedJsonBodyEnv>) {
   if (!parsed.success) return c.json({ error: 'Invalid Live session request.' }, 400)
   const owner = getCurrentUserId(c)
   const pending = pendingLiveStarts.get(owner) ?? 0
-  if (pending + await openLiveSessionCount(owner) >= 4) {
-    return c.json({ error: 'Close an existing voice session before starting another.' }, 429)
-  }
+  // Counted before the await below, so a concurrent start sees this one.
   pendingLiveStarts.set(owner, pending + 1)
   try {
+    if (pending + await openLiveSessionCount(owner) >= 4) {
+      return c.json({ error: 'Close an existing voice session before starting another.' }, 429)
+    }
     let agentContext: LiveAgentContext | undefined
     if (c.req.param('id')) {
       // Only the protected route resolves an agent. Load instructions after ACL

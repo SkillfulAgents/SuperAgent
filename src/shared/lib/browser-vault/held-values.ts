@@ -1,5 +1,5 @@
 import { usernameKey } from './site'
-import type { VaultOwner } from './vault-service'
+import { heldLoginSchema, type HeldLogin } from './held-values-schema'
 import { z } from 'zod'
 import { expiringMap } from '@shared/lib/host-state/expiring-map'
 import { resetProcessHostState } from '@shared/lib/host-state/scope'
@@ -23,19 +23,8 @@ import { resetProcessHostState } from '@shared/lib/host-state/scope'
 
 const HOLD_MS = 30 * 60 * 1000
 
-export interface HeldLogin {
-  username: string | null
-  /** By part key ('password', 'text:…'). */
-  values: Record<string, string>
-  /** Where the user typed them: they go only where a saved account's would (vaultFillsInto). */
-  origin: string
-  /** Add them to the owner's account once they are filled: the user checked "Save for later". */
-  save: { owner: VaultOwner; origin: string } | null
-}
-
 // Sealed in a shared store: the values are what the user typed, passwords included.
-const heldLoginSchema = z.custom<HeldLogin>((value) => typeof value === 'object' && value !== null && 'values' in value)
-const held = expiringMap<HeldLogin>('held-login', HOLD_MS, heldLoginSchema, { sealed: true })
+const held = expiringMap('held-login', HOLD_MS, heldLoginSchema, { sealed: true })
 const identities = expiringMap('sign-in-identity', HOLD_MS, z.string())
 
 function keyOf(agentSlug: string, sessionId: string, site: string): string {

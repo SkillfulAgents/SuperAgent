@@ -348,4 +348,28 @@ describe('Live sessions opened by another process', () => {
 
     expect(res.status).toBe(429)
   })
+
+  it('admits one of two starts that race for the last slot', async () => {
+    for (const handle of ['h1', 'h2', 'h3']) await openedElsewhere(handle)
+    // Both starts wait on the shared count at once, as they do on a remote store.
+    const { currentStore } = await import('@shared/lib/host-state/scope')
+    const store = currentStore()
+    const getMany = store.getMany.bind(store)
+    let bothWaiting!: () => void
+    const gate = new Promise<void>((resolve) => { bothWaiting = resolve })
+    let calls = 0
+    const spy = vi.spyOn(store, 'getMany').mockImplementation(async (keys, prefixes) => {
+      if (++calls === 2) bothWaiting()
+      if (calls <= 2) await gate
+      return getMany(keys, prefixes)
+    })
+    try {
+      const statuses = (await Promise.all([1, 2].map(() => request('/live/session', { sdp: 'v=0', history: [] })))).map((res) => res.status)
+
+      expect(statuses.sort()).toEqual([201, 429])
+      expect(mocks.create).toHaveBeenCalledTimes(1)
+    } finally {
+      spy.mockRestore()
+    }
+  })
 })

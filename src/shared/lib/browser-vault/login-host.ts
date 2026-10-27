@@ -11,7 +11,8 @@ import {
   type LoginVaultPayload,
 } from '@shared/lib/tools/request-login/login-request'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
-import { heldLoginFor, releaseHeldValues, rememberSignInIdentity, type HeldLogin } from './held-values'
+import { heldLoginFor, releaseHeldValues, rememberSignInIdentity } from './held-values'
+import type { HeldLogin } from './held-values-schema'
 import { providerName } from './providers'
 import { siteOfOrigin, usernameKey, vaultFillsInto } from './site'
 import {

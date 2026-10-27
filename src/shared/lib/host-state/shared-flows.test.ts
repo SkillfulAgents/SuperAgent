@@ -13,9 +13,7 @@ vi.mock('@shared/lib/platform-auth/config', () => ({ getPlatformBaseUrl: () => '
 
 import { sql } from 'drizzle-orm'
 import { z } from 'zod'
-import { libsql } from '@shared/lib/db/drivers/libsql'
-import type { OpenedDatabase } from '@shared/lib/db/drivers/types'
-import { migrateFromBundle } from '@shared/lib/db/open-database'
+import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { hostState } from '@shared/lib/db/schema'
 import { background, backgroundSettled, runWithRequestLifetime } from '@shared/lib/background'
 import { heldLoginFor, holdLoginValues } from '@shared/lib/browser-vault/held-values'
@@ -26,7 +24,7 @@ import { expiringMap } from './expiring-map'
 import { runWithHostState } from './scope'
 import { databaseHostStateStore, type HostStateStore } from './store'
 
-let handle: OpenedDatabase
+let handle: TestDatabase
 let store: HostStateStore
 const request = <T>(fn: () => Promise<T>) => runWithHostState(store, fn)
 
@@ -35,8 +33,7 @@ async function rawRows(prefix: string): Promise<Array<{ key: string; value: stri
 }
 
 beforeEach(async () => {
-  handle = await libsql(':memory:').open()
-  await migrateFromBundle(handle.db)
+  handle = await createTestDatabase()
   store = databaseHostStateStore(handle.db)
 })
 
