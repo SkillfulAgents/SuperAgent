@@ -59,6 +59,13 @@ describe('the Mac App Store build config', () => {
     expect(version).toMatch(/^\d+\.\d+\.\d+$/)
     expect(loadConfig().mac).toMatchObject({ bundleShortVersion: version, bundleVersion: version })
     expect(loadConfig({ MAS_BUILD_NUMBER: '412' }).mac.bundleVersion).toBe('412')
+    expect(loadConfig({ MAS_BUILD_NUMBER: '412.2' }).mac.bundleVersion).toBe('412.2')
+  })
+
+  it('refuses a build number the Store would reject at upload', () => {
+    for (const number of ['412.', '412.1.2.3', 'v412', '412-rc.1']) {
+      expect(() => loadConfig({ MAS_BUILD_NUMBER: number }), number).toThrow(/MAS_BUILD_NUMBER/)
+    }
   })
 
   it('signs with the sandbox entitlements and a profile only from the environment', () => {

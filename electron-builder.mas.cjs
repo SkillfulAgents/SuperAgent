@@ -24,10 +24,14 @@ const LEFT_OUT_RESOURCES = new Set(['mediaremote-adapter', 'spotlight-bridge'])
 const { CFBundleAlternateNames: _alternateNames, ...extendInfo } = base.mac.extendInfo
 
 // The Store takes a version of at most three integers (0.5.50, never
-// 0.5.50-rc.2), and a build number that grows with every upload of it: CI's
-// run number, or the version itself for a local build.
+// 0.5.50-rc.2), and a build number of one to three integers that grows with
+// every upload of it: the release run's number and attempt (412.1), or the
+// version itself for a local build. A malformed one fails here, not at upload.
 const STORE_VERSION = version.split(/[-+]/)[0]
 const STORE_BUILD_NUMBER = process.env.MAS_BUILD_NUMBER || STORE_VERSION
+if (!/^\d+(\.\d+){0,2}$/.test(STORE_BUILD_NUMBER)) {
+  throw new Error(`MAS_BUILD_NUMBER must be one to three integers separated by dots, not "${STORE_BUILD_NUMBER}"`)
+}
 
 /** A provisioning profile path from the environment; CI decodes one from a secret. */
 function profile(name) {

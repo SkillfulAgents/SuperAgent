@@ -23,11 +23,12 @@ writes two files to `build/agent-image/`, which electron-builder copies to
 
 If the tag isn't published, the script warns and bundles nothing; the app then
 pulls the image as it always did. A release sets `AGENT_IMAGE_REQUIRED=true`, so
-there the missing tag is an error. `npm run dist:mas` defaults it to `true`,
-because a Store package is built to upload; `build-mas.yml`'s build on main,
-which is never uploaded, sets it to `false`. `release.yml`'s `build-mac` job therefore
+there the missing tag is an error. `release.yml`'s `build-mac` job therefore
 waits for `build-agent-container`, about 35 s when the layers are cached from
-main. In CI the download itself takes about 8 s. Signing and notarizing the
+main, and so does its `build-mas` job. `npm run dist:mas` defaults the flag to
+`true`, because a Store package is built to upload; a PR's on-demand Store
+build, which is never uploaded, sets it to `false`. In CI the download itself
+takes about 8 s. Signing and notarizing the
 bigger app took 13 and 16 min in two PR builds, instead of about 6, so the
 macOS job runs about 21–24 min instead of 13.
 

@@ -8,6 +8,11 @@ on:
         description: 'Pull request number to build (from this repository)'
         required: true
         type: number
+      mas:
+        description: 'Also build the Mac App Store package, for App Store Connect to validate (never uploaded)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -142,6 +147,22 @@ jobs:
           path: release/*.zip
           retention-days: 14
 
+  build-mas:
+    needs: [resolve-pr, lima-image]
+    if: inputs.mas
+    uses: ./.github/workflows/build-mas.yml
+    secrets: inherit
+    with:
+      ref: ${{ needs.resolve-pr.outputs.head-sha }}
+      # Never uploaded, so any number will do.
+      build-number: ${{ github.run_number }}
+      # A PR may run a version whose image isn't published yet; its package then
+      # pulls the image, as the direct build does.
+      require-agent-image: false
+      app-store-connect: validate
+      artifact-name: Gamut-MAS
+      retention-days: 14
+
   build-win:
     needs: resolve-pr
     runs-on: windows-latest
@@ -216,7 +237,7 @@ jobs:
 
   comment:
     runs-on: ubuntu-latest
-    needs: [resolve-pr, build-mac, build-win]
+    needs: [resolve-pr, build-mac, build-win, build-mas]
     if: ${{ always() && needs.resolve-pr.result == 'success' }}
     permissions:
       pull-requests: write
@@ -226,6 +247,9 @@ jobs:
         env:
           PR_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
           PR_HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          MAS_REQUESTED: ${{ inputs.mas }}
+          MAS_RESULT: ${{ needs.build-mas.result }}
+          MAS_SECRETS_SET: ${{ needs.build-mas.outputs.secrets-set }}
         with:
           script: |
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
@@ -239,6 +263,14 @@ jobs:
             const macStatus = macResult === 'success' ? '✅' : '❌';
             const winStatus = winResult === 'success' ? '✅' : '❌';
 
+            // Only when asked for. Without its signing secrets the job succeeds
+            // having built nothing, so that reads as skipped.
+            const masResult = process.env.MAS_RESULT;
+            const masRow = process.env.MAS_REQUESTED !== 'true' ? []
+              : masResult === 'success' && process.env.MAS_SECRETS_SET !== 'true'
+                ? ['| Mac App Store (PKG, validated) | ⏭️ skipped: signing secrets not set |']
+                : [`| Mac App Store (PKG, validated) | ${masResult === 'success' ? '✅' : '❌'} ${masResult} |`];
+
             const body = [
               `## 🏗️ PR Build`,
               ``,
@@ -248,6 +280,7 @@ jobs:
               `|----------|--------|`,
               `| macOS (DMG + ZIP) | ${macStatus} ${macResult} |`,
               `| Windows (Installer + ZIP) | ${winStatus} ${winResult} |`,
+              ...masRow,
               ``,
               `**[⬇️ Download artifacts from this workflow run](${runUrl}#artifacts)**`,
               ``,

@@ -269,9 +269,16 @@ once and uses it for both platforms. It posts the commit and artifact download
 links in a PR comment; artifacts are retained for 14 days. Signed builds require
 a PR branch in this repository, because they use repository signing secrets.
 
+For the Mac App Store package as well, tick **Also build the Mac App Store
+package** (or add `-f mas=true`). App Store Connect validates it, and it is
+never uploaded. It needs the Store's signing secrets (see
+`.github/workflows/build-mas.yml`); without them the comment says it was skipped.
+
 The manual trigger becomes available once this workflow change is merged into
 `main`. PR pushes run tests without automatically packaging desktop apps; builds
-on `main` pushes and version-tag releases still run automatically.
+on `main` pushes and version-tag releases still run automatically. The Mac App
+Store package is built only by releases, which upload it to App Store Connect
+(TestFlight), and on demand for a PR.
 
 ## Architecture
 
