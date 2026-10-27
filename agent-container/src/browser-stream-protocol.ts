@@ -33,3 +33,9 @@ export interface BrowserNavigateCommand {
   type: 'navigate';
   action: BrowserNavigateAction;
 }
+
+/** The viewer's canvas width in device pixels; frames are never streamed wider than this. */
+export interface BrowserViewportCommand {
+  type: 'viewport';
+  width: number;
+}

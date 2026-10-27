@@ -413,3 +413,72 @@ describe('useBrowserStream ordered history', () => {
     expect(hook.result.current.canGoBack).toBe(false)
   })
 })
+
+describe('useBrowserStream viewport width', () => {
+  let observed: Array<{ target: Element; options?: ResizeObserverOptions; fire: (entry: object) => void }>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    FakeWebSocket.instances = []
+    observed = []
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    vi.stubGlobal('devicePixelRatio', 2)
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private callback: (entries: object[]) => void) {}
+      observe(target: Element, options?: ResizeObserverOptions) {
+        observed.push({ target, options, fire: (entry) => this.callback([entry]) })
+      }
+      disconnect() {}
+    })
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  function canvasOfCssWidth(width: number) {
+    const canvas = document.createElement('canvas')
+    canvas.getBoundingClientRect = () => ({ width }) as DOMRect
+    return { current: canvas }
+  }
+
+  const resize = (devicePixels: number) =>
+    observed[0].fire({ devicePixelContentBoxSize: [{ inlineSize: devicePixels }], contentRect: { width: devicePixels / 2 } })
+
+  it('puts the canvas width in device pixels on the stream URL', async () => {
+    const hook = renderHook(() => useBrowserStream(baseOpts(canvasOfCssWidth(420.5))))
+    await settle()
+    expect(new URL(FakeWebSocket.instances[0].url).search).toBe('?width=841')
+    hook.unmount()
+  })
+
+  it('reports only width changes past the hysteresis, with the exact width', async () => {
+    const canvasRef = canvasOfCssWidth(420.5)
+    const hook = renderHook(() => useBrowserStream(baseOpts(canvasRef)))
+    await settle()
+    const ws = FakeWebSocket.instances[0]
+    act(() => ws.completeHandshake())
+    expect(observed[0].target).toBe(canvasRef.current)
+    expect(observed[0].options).toEqual({ box: 'device-pixel-content-box' })
+
+    // The first observation and small rounding nudges match the width already on the URL.
+    act(() => resize(841))
+    act(() => resize(846))
+    act(() => resize(838))
+    act(() => vi.advanceTimersByTime(200))
+    expect(ws.sent).toEqual([])
+
+    // A drag sends once, after it settles.
+    act(() => resize(1000))
+    act(() => resize(1200))
+    act(() => vi.advanceTimersByTime(200))
+    expect(ws.sent).toEqual([{ type: 'viewport', width: 1200 }])
+
+    act(() => resize(1210))
+    act(() => vi.advanceTimersByTime(200))
+    expect(ws.sent).toHaveLength(1)
+    hook.unmount()
+  })
+})

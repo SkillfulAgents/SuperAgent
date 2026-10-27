@@ -15,6 +15,7 @@ import { getSettings } from '@shared/lib/config/settings'
 import { captureException } from '@shared/lib/error-reporting'
 import { authenticateAgentWebSocket } from './agent-websocket-auth'
 import { BrowserFrameRelay } from './browser-frame-relay'
+import type { BrowserViewportCommand } from '@shared/lib/browser-stream-protocol'
 
 const browserWss = new WebSocketServer({ noServer: true })
 
@@ -72,7 +73,12 @@ export function setupBrowserStreamProxy(server: ServerType): void {
     try {
         // Cached status only — no runtime query
         const actor = agentRegistry.get(agentSlug)
-        const target = await actor.container.webSocketTarget('/browser/stream')
+        // The canvas width comes with the connection: messages sent before upstream opens are dropped.
+        // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- request.url from HTTP server is always valid
+        const width = new URL(request.url || '', 'http://localhost').searchParams.get('width')
+        const target = await actor.container.webSocketTarget('/browser/stream', {
+          search: width && /^\d+$/.test(width) ? `?width=${width}` : '',
+        })
         if (!target) {
           ws.close(1011, 'Agent container is not running')
           return
@@ -95,7 +101,8 @@ export function setupBrowserStreamProxy(server: ServerType): void {
 
         // Forward input events from client to container (only if user has 'user' role)
         ws.on('message', (data, isBinary) => {
-          if (!canInput) return // Viewers can watch but not send input
+          // Viewers can watch but not send input; their canvas width only sizes the frames.
+          if (!canInput && !(!isBinary && isViewportCommand(data.toString()))) return
           if (upstream.readyState === WebSocket.OPEN) {
             upstream.send(data, { binary: isBinary })
           }
@@ -154,4 +161,12 @@ export function setupBrowserStreamProxy(server: ServerType): void {
         ws.close(1011, 'Failed to connect to browser stream')
       }
   })
+}
+
+function isViewportCommand(raw: string): boolean {
+  try {
+    return (JSON.parse(raw) as Partial<BrowserViewportCommand> | null)?.type === 'viewport'
+  } catch {
+    return false
+  }
 }
