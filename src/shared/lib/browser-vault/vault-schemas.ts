@@ -56,11 +56,17 @@ export type AccountSecrets = z.infer<typeof accountSecretsSchema>
 /** The part keys a row lists in plain text (never values). */
 export const accountPartsSchema = z.array(partKeySchema).max(MAX_PARTS)
 
-// ── Saved sessions (part 3) ────────────────────────────────────────────────
-// An account's cookies and web storage, captured after a sign-in. The shape
-// follows #1210's capture/restore primitives; part 3 writes and restores it.
 
-const originSchema = z.string().max(2048).refine((value) => {
+// ── Saved sessions ─────────────────────────────────────────────────────────
+// An account's cookies and web storage on its site, captured from the
+// browser after a sign-in (the container's browser-session-schema.ts holds
+// the same shape; a contract test keeps the two together).
+
+/** The browser types a saved session restores into: only the type it came from. */
+export const BROWSER_TYPES = ['container', 'chrome', 'browserbase', 'platform'] as const
+export type BrowserType = (typeof BROWSER_TYPES)[number]
+
+const sessionOriginSchema = z.string().max(300).refine((value) => {
   try {
     const url = new URL(value)
     return (url.protocol === 'https:' || url.protocol === 'http:') && url.origin === value
@@ -69,12 +75,10 @@ const originSchema = z.string().max(2048).refine((value) => {
   }
 }, 'must be an http(s) origin')
 
-const entriesSchema = z.array(z.tuple([z.string(), z.string()])).max(10_000)
-
-const cookieSchema = z.object({
+const sessionCookieSchema = z.object({
   name: z.string().max(4096),
-  value: z.string().max(16_384),
-  domain: z.string().min(1).max(253),
+  value: z.string().max(8192),
+  domain: z.string().min(1).max(260),
   path: z.string().max(2048),
   expires: z.number().optional(),
   httpOnly: z.boolean(),
@@ -88,40 +92,29 @@ const cookieSchema = z.object({
 
 const keyPathSchema = z.union([z.string(), z.array(z.string())])
 
-const indexedDbDatabaseSchema = z.object({
+const indexedDbSchema = z.object({
   name: z.string(),
   version: z.number().int().positive(),
   stores: z.array(z.object({
     name: z.string(),
     keyPath: keyPathSchema.nullable(),
     autoIncrement: z.boolean(),
-    indexes: z.array(z.object({
-      name: z.string(),
-      keyPath: keyPathSchema,
-      unique: z.boolean(),
-      multiEntry: z.boolean(),
-    }).strict()),
+    indexes: z.array(z.object({ name: z.string(), keyPath: keyPathSchema, unique: z.boolean(), multiEntry: z.boolean() }).strict()),
     records: z.array(z.object({ key: z.unknown(), value: z.unknown() }).strict()),
   }).strict()),
 }).strict()
 
-const originStorageSchema = z.object({
-  origin: originSchema,
-  localStorage: entriesSchema,
-  indexedDB: z.array(indexedDbDatabaseSchema).max(100),
-  /** Only when a tab of this origin was open at capture time. */
-  sessionStorage: entriesSchema.optional(),
-  /** Databases left out for their size. */
-  oversizedDatabases: z.array(z.string()).optional(),
-  /** Value types that cannot leave the browser (a non-extractable CryptoKey). */
-  unsupported: z.array(z.string()),
-}).strict()
-
 export const sessionBundleSchema = z.object({
   version: z.literal(1),
-  site: z.string().max(253),
-  capturedAt: z.string(),
-  cookies: z.array(cookieSchema).max(5000),
-  origins: z.array(originStorageSchema).max(100),
+  site: z.string().min(1).max(260),
+  capturedAt: z.string().max(40),
+  cookies: z.array(sessionCookieSchema).max(3000),
+  origins: z.array(z.object({
+    origin: sessionOriginSchema,
+    localStorage: z.array(z.tuple([z.string(), z.string()])).max(10_000),
+    indexedDB: z.array(indexedDbSchema).max(100),
+  }).strict()).max(50),
+  /** Values and databases left out for their size. */
+  leftOut: z.number().int().min(0).optional(),
 }).strict()
 export type SessionBundle = z.infer<typeof sessionBundleSchema>

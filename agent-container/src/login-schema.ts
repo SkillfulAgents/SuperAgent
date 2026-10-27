@@ -165,11 +165,29 @@ export const loginBrowserClosedReportSchema = z.object({
   }).optional(),
 })
 
+/**
+ * The host wrote the account's saved session (its cookies and storage from an
+ * earlier sign-in) into the browser instead of filling the page, and the page
+ * loaded again. `restored: false`: it could not be, and `cleared` says
+ * whether the browser was signed out of the site rather than left with part
+ * of it.
+ */
+export const loginSessionReportSchema = z.object({
+  type: z.literal('session'),
+  site: z.string(),
+  username: z.string(),
+  restored: z.boolean(),
+  cleared: z.boolean().optional(),
+  /** The digest of the page after it loaded again. */
+  observation: z.record(z.string(), z.unknown()).optional(),
+})
+
 export const loginResolutionSchema = z.discriminatedUnion('type', [
   loginFillReportSchema,
   loginManualReportSchema,
   loginAccountsReportSchema,
   loginViaReportSchema,
   loginBrowserClosedReportSchema,
+  loginSessionReportSchema,
 ])
 export type LoginResolution = z.infer<typeof loginResolutionSchema>

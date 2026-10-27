@@ -96,13 +96,13 @@ describe('vault sealing', () => {
     expect(() => openJson(sealJson<unknown>('x', binding, z.unknown()), binding, z.object({}))).toThrow(VaultSealError)
   })
 
-  it('seals a saved session (part 3) like the secrets', () => {
+  it('seals a saved session like the secrets', () => {
     const bundle = {
       version: 1 as const,
       site: 'github.com',
       capturedAt: '2026-10-23T00:00:00.000Z',
       cookies: [{ name: 'user_session', value: 'abc', domain: '.github.com', path: '/', httpOnly: true, secure: true, sameSite: 'Lax' as const }],
-      origins: [{ origin: 'https://github.com', localStorage: [['k', 'v']] as Array<[string, string]>, indexedDB: [], unsupported: [] }],
+      origins: [{ origin: 'https://github.com', localStorage: [['k', 'v']] as Array<[string, string]>, indexedDB: [] }],
     }
     const sessionBinding = { purpose: 'account-session' as const, id: 'session-1', site: 'github.com' }
     expect(openJson(sealJson<SessionBundle>(bundle, sessionBinding, sessionBundleSchema), sessionBinding, sessionBundleSchema)).toEqual(bundle)

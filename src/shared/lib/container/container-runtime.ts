@@ -644,12 +644,15 @@ export class ContainerRuntime {
       envVars['REMOTE_MCPS'] = JSON.stringify(mcpConfigs)
     }
 
-    // Pass host browser env vars if a host browser provider is selected
+    // Where the container's browser reaches the host (/api/browser/*, behind
+    // the proxy token): to launch a host browser, and for any browser to ask
+    // for a newer saved session when it opens a page (Browser Vault).
+    envVars['HOST_APP_URL'] = hostApiBaseUrl
+    envVars['AGENT_ID'] = slug
+    // Pass the host browser flag if a host browser provider is selected
     const settings = getSettings()
     if (settings.app?.hostBrowserProvider) {
       envVars['AGENT_BROWSER_USE_HOST'] = '1'
-      envVars['HOST_APP_URL'] = hostApiBaseUrl
-      envVars['AGENT_ID'] = slug
     }
 
     // What the start needs from the agent's workspace goes through the

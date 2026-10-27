@@ -57,6 +57,9 @@ import type { FieldBox } from './login-form-script';
 import { closePreparedLogins } from './login-requests';
 import type { LoginFillReport } from './login-schema';
 import { clickSubmit, registerLoginRoutes, type SubmitOutcome, type SubmitPlan } from './login-routes';
+import { registerSessionRoutes } from './session-routes';
+import { syncSavedSession } from './session-sync';
+import { isSessionStubTarget } from './browser-session';
 import { forgetInjectedSecrets, redactInjectedSecrets, redactInjectedSecretsDeep, rememberInjectedSecret } from './injected-secrets';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
@@ -1531,6 +1534,10 @@ app.post('/browser/open', async (c) => {
     resetUrlTracking();
     // A new document: no tree from before it can be diffed against.
     resetTreeBaseline();
+    // Another agent's later sign-in with the account this browser holds on the
+    // site it landed on (a saved session): in place before the agent sees it.
+    const landedUrl = (await tabManager.queryTabs().catch(() => [])).find(tab => tab.active)?.url || body.url;
+    await syncSavedSession(body.sessionId, landedUrl);
     // Read the landing page once: it seeds the URL baseline so the FIRST
     // post-action digest can distinguish "navigated" from "unchanged", and it
     // tells the tool where the browser actually ended up — final URL, title,
@@ -3011,8 +3018,12 @@ async function listPageTargetsStrict(): Promise<Array<{ type: string }>> {
   return targets.filter(t => t.type === 'page');
 }
 
-/** Get ALL CDP page targets across all strategies */
+/** Get ALL CDP page targets across all strategies, except the tabs a saved session is read on */
 async function getAllPageTargets(): Promise<PageTarget[]> {
+  return (await discoverPageTargets()).filter((target) => !isSessionStubTarget(target.id));
+}
+
+async function discoverPageTargets(): Promise<PageTarget[]> {
   // Try Chrome's HTTP /json endpoint first (works for local Chrome)
   const endpoint = getCdpHttpEndpoint();
   try {
@@ -3119,7 +3130,7 @@ function findPageTargetViaCdp(browserWsUrl: string): Promise<PageTarget | null> 
           clearTimeout(timeout);
           ws.close();
           const pages = (msg.result?.targetInfos || []).filter(
-            (t: { type: string }) => t.type === 'page'
+            (t: { type: string; targetId: string }) => t.type === 'page' && !isSessionStubTarget(t.targetId)
           );
           if (pages.length === 0) { resolve(null); return; }
           const target = pages[pages.length - 1];
@@ -3413,6 +3424,38 @@ registerLoginRoutes(app, {
     return digest ? { ...digest } : null;
   },
   notifyBrowserAction,
+});
+
+/** The browser's own CDP endpoint, not a page's: a host browser's is the one it launched with. */
+async function browserWsUrl(): Promise<string> {
+  if (browserState.cdpUrl) return browserState.cdpUrl;
+  const endpoint = getCdpHttpEndpoint();
+  const response = await fetch(`${endpoint}/json/version`);
+  if (!response.ok) throw new Error(`CDP /json/version answered ${response.status}`);
+  const { webSocketDebuggerUrl } = await response.json() as { webSocketDebuggerUrl?: string };
+  if (!webSocketDebuggerUrl) throw new Error('the browser named no endpoint');
+  return webSocketDebuggerUrl.replace(/^ws:\/\/[^/]+/, `ws://${endpoint.replace(/^https?:\/\//, '')}`);
+}
+
+// ── Saved sessions ──────────────────────────────────────────────────────────
+// The endpoints live in session-routes.ts; reading or replacing a site's
+// state goes over a browser-level connection of our own.
+
+registerSessionRoutes(app, {
+  hostAuthEnabled,
+  validateSession: validateBrowserSessionWithRecovery,
+  browserActive: () => browserState.active,
+  // A remote browser answers slower; a database read is one call.
+  connectBrowser: async () => CdpConnection.openBrowser(await browserWsUrl(), { callTimeoutMs: 20_000 }),
+  activeTabId: async () => (await findActivePageTarget())?.id ?? null,
+  observeUrl: async () => {
+    const digest = await observeUrlDigest();
+    return digest ? { ...digest } : null;
+  },
+  pageReplaced: () => {
+    resetTreeBaseline();
+    notifyBrowserAction();
+  },
 });
 
 /** Helper to build a CDP message, adding sessionId when in session mode */

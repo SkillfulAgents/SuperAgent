@@ -261,6 +261,29 @@ describe('formatLoginResolution when the browser closed first', () => {
   })
 })
 
+describe('formatLoginResolution for a saved session', () => {
+  const session = (restored: boolean, extra: Record<string, unknown> = {}) =>
+    formatLoginResolution({ type: 'session', site: 'github.com', username: 'octocat', restored, ...extra })
+
+  it('says the vault restored the session instead of filling, and what to do if the page still asks', () => {
+    const result = session(true, { observation: { digest: { url: 'https://github.com/', navigated: true } } })
+    expect(result.isError).toBeUndefined()
+    expect(result.content[0].text).toBe([
+      'Nothing was filled: the vault restored the saved session of octocat on github.com (the cookies and storage of an earlier sign-in), and the page loaded again: refs from earlier snapshots are stale.',
+      "If the page asks you to sign in, call request_login again with username \"octocat\" and the page's sign-in fields mapped by ref: the vault fills the account's saved values then.",
+      'Page NAVIGATED — now at https://github.com/. Refs from previous snapshots are stale; take a fresh browser_snapshot before further ref actions.',
+    ].join('\n'))
+  })
+
+  it('says a session that could not be restored signed the browser out of the site, or may have left part of it', () => {
+    const cleared = session(false, { cleared: true })
+    expect(cleared.isError).toBe(true)
+    expect(cleared.content[0].text).toContain('could not be restored, so the browser was signed out of github.com and the page loaded again.')
+    expect(cleared.content[0].text).toContain('To sign in, call request_login again with username "octocat"')
+    expect(session(false, { cleared: false }).content[0].text).toContain('and the browser may hold part of it on github.com.')
+  })
+})
+
 describe('formatLoginResolution for the vault', () => {
   it('lists the saved accounts the agent may use, what each holds, and how to use one', () => {
     const { content, isError } = formatLoginResolution({

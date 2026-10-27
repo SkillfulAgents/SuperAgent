@@ -7,7 +7,8 @@ import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { IsAgent } from '../middleware/auth'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
-import { hostBrowserRequestSchema, browserLaunchErrorReportSchema } from './browser-schema'
+import { syncSessionOnOpen } from '@shared/lib/browser-vault/session-host'
+import { hostBrowserRequestSchema, browserLaunchErrorReportSchema, sessionSyncRequestSchema } from './browser-schema'
 
 const browser = new Hono()
 
@@ -131,6 +132,17 @@ browser.post('/debug-info', IsAgent(), async (c) => {
     console.error('[Browser] Failed to get debug info:', message)
     return c.json({ error: message }, 500)
   }
+})
+
+// POST /api/browser/session-sync - The agent's browser just opened a page: a newer
+// saved session of the account it holds on that site goes in before the agent
+// uses the page (Browser Vault). Answers only whether one went in, never a value.
+browser.post('/session-sync', IsAgent(), async (c) => {
+  const agentSlug = c.get('agentSlug' as never) as string | undefined
+  if (!agentSlug) return c.json({ error: 'Unauthorized' }, 401)
+  const parsed = sessionSyncRequestSchema.safeParse(await c.req.json().catch(() => null))
+  if (!parsed.success) return c.json({ error: 'Invalid request body' }, 400)
+  return c.json({ restored: await syncSessionOnOpen({ agentSlug, ...parsed.data }) })
 })
 
 // When a host browser instance closes externally (e.g. user closed Chrome),

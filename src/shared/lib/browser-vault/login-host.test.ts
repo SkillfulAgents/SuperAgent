@@ -21,6 +21,10 @@ const container = vi.hoisted(() => ({
   fillReason: null as string | null,
   /** Per-field outcomes the fill answers with; null answers the counts only. */
   fillOutcomes: null as string[] | null,
+  /** The browser /browser/status reports; null: none (404). */
+  browser: null as { active: boolean; sessionId: string | null; location: 'host' | 'container' | null } | null,
+  /** How /browser/session/restore answers. */
+  restore: { status: 200, body: {} as Record<string, unknown> },
   calls: [] as Array<{ path: string; body?: unknown }>,
 }))
 
@@ -55,6 +59,9 @@ vi.mock('@shared/lib/agent-actor', () => ({
             return new Response(JSON.stringify({ success: true, filled: body.values.filter(Boolean).length, failed: 0, submitted: true, problems: [] }), { status: 200 })
           }
           if (url.startsWith('/inputs/')) return new Response('{}', { status: 200 })
+          if (url === '/browser/status' && container.browser) return new Response(JSON.stringify(container.browser), { status: 200 })
+          if (url === '/browser/session/restore') return new Response(JSON.stringify(container.restore.body), { status: container.restore.status })
+          if (url === '/browser/session/capture') return new Response(JSON.stringify({ unchanged: true, cookieHash: 'h' }), { status: 200 })
           return new Response('{}', { status: 404 })
         },
       },
@@ -64,7 +71,9 @@ vi.mock('@shared/lib/agent-actor', () => ({
 
 const { decideLoginRequest } = await import('./login-host')
 const { grantAccount, getOwnedAccount, readAccountValues, recordAccountUse, saveAccount, listAccountAgentSlugs } = await import('./vault-service')
-const { holdLoginValues, heldLoginFor, resetHeldLogins, recentSignInIdentity } = await import('./held-values')
+const { holdLoginValues, heldLoginFor, resetHeldLogins, recentSignInIdentity, rememberSignInIdentity } = await import('./held-values')
+const { heldSessionVersion, readAccountSession, saveAccountSession } = await import('./session-service')
+const { resetSessionWatches } = await import('./session-host')
 
 const field = (kind: LoginContext['fields'][number]['kind'], label: string, inputType = 'text') =>
   ({ kind, label, inputType, inputMode: '', autocomplete: '', maxLength: -1 })
@@ -104,11 +113,14 @@ beforeEach(async () => {
   container.fillStatus = 200
   container.fillReason = null
   container.fillOutcomes = null
+  container.browser = null
+  container.restore = { status: 200, body: {} }
   container.calls = []
   resetHeldLogins()
 })
 
 afterEach(async () => {
+  resetSessionWatches()
   await handle.close()
 })
 
@@ -525,5 +537,112 @@ describe('decideLoginRequest', () => {
     expect(await decide({ username: 'me@acme.com' })).toMatchObject({ action: 'ask', vault: { mode: 'ask', username: 'me@acme.com' } })
     expect(await decide({})).toMatchObject({ action: 'ask', vault: { mode: 'new' } })
     expect(fills()).toEqual([])
+  })
+})
+
+describe('decideLoginRequest with saved sessions', () => {
+  const restoreCalls = () => container.calls.filter((call) => call.path === '/browser/session/restore')
+  const sessionBundle = (who: string) => ({
+    version: 1 as const,
+    site: 'github.com',
+    capturedAt: '2026-10-26T00:00:00.000Z',
+    cookies: [{ name: 'user_session', value: `${who}-session`, domain: 'github.com', path: '/', httpOnly: true, secure: true }],
+    origins: [],
+  })
+
+  /** A session saved by another agent's sign-in: agent A's browser has not had it. */
+  async function savedSession(account: { id: string; site: string }, browserType: 'container' | 'chrome' = 'container') {
+    await saveAccountSession({ agentSlug: 'agent-b', account, browserType, bundle: sessionBundle('octocat') })
+    return (await readAccountSession(account, browserType))!.version
+  }
+
+  beforeEach(() => {
+    container.browser = { active: true, sessionId: 's-1', location: 'container' }
+    container.restore = { status: 200, body: { restored: true, skippedRecords: 0, cookieHash: 'h', observation: { digest: { url: 'https://github.com/', navigated: true } } } }
+  })
+
+  it('restores a named account\'s saved session in place of filling it, once', async () => {
+    const account = await grantedAccount('octocat', { password: 'hunter2' })
+    const version = await savedSession(account)
+
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(fills()).toEqual([])
+    expect(restoreCalls()).toEqual([{
+      path: '/browser/session/restore',
+      body: { sessionId: 's-1', site: 'github.com', origin: 'https://github.com', bundle: sessionBundle('octocat') },
+    }])
+    expect(answers()[0].value).toEqual({
+      type: 'session',
+      site: 'github.com',
+      username: 'octocat',
+      restored: true,
+      observation: { digest: { url: 'https://github.com/', navigated: true } },
+    })
+    expect(JSON.stringify(answers())).not.toContain('octocat-session')
+    expect(await heldSessionVersion('agent-a', account.id)).toBe(version)
+    const audit = await testDb.select({ action: auditLog.action, details: auditLog.details }).from(auditLog).all()
+    expect(audit.map((row) => [row.action, JSON.parse(row.details ?? '{}').session])).toEqual([['used', true]])
+
+    // It did not sign the agent in (the agent calls again): the values fill.
+    container.calls = []
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(restoreCalls()).toEqual([])
+    expect(fills()[0].body).toMatchObject({ values: ['octocat', 'hunter2'] })
+  })
+
+  it('switches the site to another account with no field mapped', async () => {
+    const account = await grantedAccount('octocat', { password: 'hunter2' })
+    await savedSession(account)
+    container.context = { ...GITHUB, fields: [] }
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(restoreCalls()).toHaveLength(1)
+    expect(answers()[0].value).toMatchObject({ type: 'session', restored: true })
+  })
+
+  it('restores nothing once a sign-in is under way, for a code, without a username, or in another browser type', async () => {
+    const account = await grantedAccount('octocat', { password: 'hunter2' })
+    await savedSession(account, 'chrome')
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(restoreCalls()).toEqual([])
+
+    await savedSession(account)
+    container.calls = []
+    expect(await decide({ fields: [] })).toEqual({ action: 'settled' })
+    expect(answers()[0].value).toMatchObject({ type: 'accounts' })
+    rememberSignInIdentity('agent-a', 's-1', 'github.com', 'octocat')
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    container.browser = { active: true, sessionId: 's-2', location: 'container' }
+    container.context = { ...GITHUB, fields: [field('otp', 'Code')] }
+    expect(await decide({ username: 'octocat' }, 's-2')).toMatchObject({ action: 'ask' })
+    expect(restoreCalls()).toEqual([])
+  })
+
+  it('fills in the same call when the restore failed before it changed anything', async () => {
+    const account = await grantedAccount('octocat', { password: 'hunter2' })
+    await savedSession(account)
+    container.restore = { status: 500, body: { error: 'The saved session could not be restored: no browser page is open', touched: false, cleared: false } }
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(fills()[0].body).toMatchObject({ values: ['octocat', 'hunter2'] })
+    expect(await heldSessionVersion('agent-a', account.id)).toBeNull()
+  })
+
+  it('says a restore that changed the page and failed signed the browser out of the site', async () => {
+    const account = await grantedAccount('octocat', { password: 'hunter2' })
+    const version = await savedSession(account)
+    container.restore = { status: 500, body: { error: 'The saved session could not be restored: injected', touched: true, cleared: true } }
+    expect(await decide({ username: 'octocat' })).toEqual({ action: 'settled' })
+    expect(fills()).toEqual([])
+    expect(answers()[0].value).toEqual({ type: 'session', site: 'github.com', username: 'octocat', restored: false, cleared: true })
+    // Tried: the next call fills.
+    expect(await heldSessionVersion('agent-a', account.id)).toBe(version)
+  })
+
+  it('restores the site\'s own session of an account that signs in through Google before naming Google', async () => {
+    const google = await saveAccount({ owner: null, site: 'accounts.google.com', origin: 'https://accounts.google.com', username: 'me@gmail.com' })
+    const { account } = await saveAccount({ owner: null, site: 'github.com', origin: 'https://github.com', username: 'me@gmail.com', viaAccountId: google.account.id })
+    await grantAccount({ accountId: account.id, agentSlug: 'agent-a', grantedBy: null })
+    await savedSession(account)
+    expect(await decide({ username: 'me@gmail.com' })).toEqual({ action: 'settled' })
+    expect(answers()[0].value).toMatchObject({ type: 'session', restored: true })
   })
 })

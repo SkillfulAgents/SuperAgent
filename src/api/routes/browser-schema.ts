@@ -29,3 +29,14 @@ export const browserLaunchErrorReportSchema = z.object({
 })
 
 export type BrowserLaunchErrorReport = z.infer<typeof browserLaunchErrorReportSchema>
+
+/**
+ * Request body for `/api/browser/session-sync` — a container that just opened
+ * a page, asking for a newer saved session of the account its browser holds
+ * on that site. The agent is the token's; the session is checked against the
+ * browser it names before anything goes in.
+ */
+export const sessionSyncRequestSchema = z.object({
+  sessionId: z.string().min(1).max(200),
+  url: z.string().min(1).max(4096),
+}).strict()

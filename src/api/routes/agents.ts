@@ -115,6 +115,7 @@ import {
   rememberSignInIdentity,
 } from '@shared/lib/browser-vault/held-values'
 import { providerName, providerOf, SIGN_IN_PROVIDERS } from '@shared/lib/browser-vault/providers'
+import { watchAfterHandOver, watchSignIn } from '@shared/lib/browser-vault/session-host'
 import { registrableDomain, siteOfOrigin, usernameKey, vaultFillsInto } from '@shared/lib/browser-vault/site'
 import { partKeyOf } from '@shared/lib/browser-vault/vault-schemas'
 import {
@@ -4345,6 +4346,9 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
     const usedAccount = savedAccount ?? account
     if (usedAccount && wentIn.some(Boolean)) {
       await recordAccountUse({ agentSlug, accountId: usedAccount.id, sessionId, userId: viewer, password: passwordWentIn, by: 'user' })
+      // Its session, as the sign-in leaves it: saved to that account, and only
+      // when it is the one that signed in (the user may have typed another).
+      if (!identity || usernameKey(identity) === usernameKey(usedAccount.username)) watchSignIn({ agentSlug, sessionId, account: usedAccount })
     }
     trackServerEvent('login_request_filled', {
       submitted: filled.result.submitted,
@@ -4441,6 +4445,8 @@ agents.post('/:id/sessions/:sessionId/login-via', AgentUser(), zValidator('json'
     if (!answered) return c.json({ error: 'The agent could not be told. Try again.' }, 502)
     await actor.inputs.complete(sessionId, body.toolUseId, 'answered')
     claimed = null
+    // The site's own session, once the provider sends the agent back signed in.
+    watchSignIn({ agentSlug, sessionId, account })
     trackServerEvent('login_request_via', { provider: providerOf(provider.site)?.id ?? 'other' })
     return c.json({ success: true, account: { username: account.username, site }, provider: { site: provider.site, username: provider.username } })
   } catch (error) {
@@ -4656,6 +4662,8 @@ agents.post('/:id/sessions/:sessionId/complete-browser-input', AgentUser(), asyn
     }
 
     await agentRegistry.get(agentSlug).inputs.complete(c.req.param('sessionId'), toolUseId, 'answered')
+    // A step the user did by hand may have finished a sign-in (a passkey, a phone prompt).
+    watchAfterHandOver({ agentSlug, sessionId: c.req.param('sessionId'), viewer: getViewerUserId(c) })
     return c.json({ success: true })
   } catch (error) {
     console.error('Failed to complete browser input:', error)
