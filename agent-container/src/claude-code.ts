@@ -1,6 +1,7 @@
 import { startLlmProxy, llmProxyBinding, type LlmProxyHandle } from './llm-proxy';
 import { withoutProviderCredentials, resolveSessionRuntime, type ConnectionRuntime } from './connection-runtime';
 import { webhookRelayAvailable } from './webhook-relay-env';
+import { isAppSandboxHost, isComputerUseHost } from './host-desktop-env';
 import {
   query,
   startup,
@@ -26,6 +27,7 @@ import { renameBrowserSession } from './browser-state';
 import { computerUseTools } from './tools/computer-use';
 import { fileHooks, mountIndexCommandHint, resolveToolFilePath } from './file-hooks';
 import { elapsedTimeNote } from './elapsed-time-note';
+import { builtinHints, createHintHookMatchers } from './hints';
 import { promptDate } from './prompt-date';
 import { mountedDrives, mountedVolumeIndexes, type VolumeIndex } from './volume-mounts';
 import { prepareResumeDiagnostics } from './resume-diagnostics';
@@ -90,14 +92,6 @@ const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] ';
 // already awaits.
 const REMOTE_MCP_READY_TIMEOUT_MS = 8_000;
 const REMOTE_MCP_READY_POLL_MS = 250;
-
-export const AGENT_BROWSER_BASH_WARNING =
-  'STRONG WARNING: This Bash command is probably bypassing Gamut\'s browser integration. For website work, use the dedicated mcp__browser__browser_* tools; if they are deferred, load their exact full names with ToolSearch. The Bash command is still allowed, but continue with agent-browser only when the dedicated browser tools genuinely cannot perform the operation.';
-
-export function startsWithAgentBrowserCommand(command: unknown): boolean {
-  if (typeof command !== 'string') return false;
-  return /^(?:agent-browser|which\s+agent-browser)(?=$|[\s;&|])/.test(command.trimStart());
-}
 
 // Default values for system-prompt template vars when the host env is unset.
 // Mirror values the host (base-container-client.ts) sets, so out-of-host runs
@@ -311,10 +305,6 @@ export function resultNeedsResumeErrorFallback(msg: {
   return !msg.error && !msg.message && !msg.result;
 }
 
-export function isComputerUseHost(): boolean {
-  return ['darwin', 'win32'].includes(process.env.HOST_PLATFORM || '');
-}
-
 /**
  * The template renders every section itself; this bag carries only data. Each
  * list is paired with a `has*` boolean because a Mustache list section repeats
@@ -338,6 +328,8 @@ export interface SystemPromptVars {
   /** Platform token present — built-in service prompt sections (Replicate, Apollo). */
   platformServices: boolean;
   computerUse: boolean;
+  /** The Mac App Store edition: the prompt says what its sandbox leaves out. */
+  appSandbox: boolean;
   /** The host can run meeting bots — the mcp__meetings__* tools are registered and the Meetings section renders. */
   meetings: boolean;
   hasModelHints: boolean;
@@ -412,6 +404,7 @@ export function buildSystemPromptVars(
     anyTriggers: composioTriggers || webhookEndpoints,
     platformServices,
     computerUse: isComputerUseHost(),
+    appSandbox: isAppSandboxHost(),
     meetings: meetingsAvailable(availableIntegrationFamilies),
     hasModelHints: modelHints.length > 0,
     modelHints,
@@ -556,6 +549,16 @@ export interface ClaudeCodeProcessOptions {
   globalInstructions?: string;
 }
 
+type SendOptions = {
+  llmRuntime?: ConnectionRuntime;
+  effort?: EffortLevel;
+  speed?: SpeedLevel;
+  model?: string;
+  shouldQuery?: boolean;
+  capabilityPolicies?: AgentCapabilityPolicies;
+  globalInstructions?: string;
+};
+
 export class ClaudeCodeProcess extends EventEmitter {
   private queryInstance: Query | null = null;
   private messageQueue: MessageQueue | null = null;
@@ -603,6 +606,8 @@ export class ClaudeCodeProcess extends EventEmitter {
   // session-manager persists them via the 'capability-grant' event), or the
   // host's grant record diverges and a gated launch hangs with no card.
   private sessionCapabilityGrants: Set<Capability>;
+  // Per process, so shown hints are tracked per session, not per container.
+  private readonly hintHooks = createHintHookMatchers(builtinHints, () => this.userMessageCount);
   // Kept so the system prompt can be regenerated when a capability block
   // boundary flips mid-session (the prompt gates delegation sections on it).
   private availableEnvVars: string[] | undefined;
@@ -633,6 +638,20 @@ export class ClaudeCodeProcess extends EventEmitter {
   private currentStop: Promise<void> | null = null;
   // Terminal: the session was deleted. No path may revive this process.
   private disposed = false;
+  // The restart a pre-resume (warm()) is running right now. A send waits for
+  // it and then judges its options against the query it built, exactly as on
+  // a live process — joining it blind could deliver the message into a query
+  // built without the send's runtime options.
+  private warmRestart: Promise<void> | null = null;
+  // A pre-resume is under way (any phase); a second one is a no-op.
+  private preResuming = false;
+  // Sends inside sendMessage(). A pre-resume yields to them: a send into a
+  // cold process restarts it itself, with the runtime the host resolved for
+  // that send, so a pre-resume must never start a second restart beside it.
+  private sendsInFlight = 0;
+  // A hooked file's content as each in-flight Write/Edit found it (null when
+  // absent), keyed by tool use, for the file hooks that act on the change.
+  private fileChangeSnapshots = new Map<string, string | null>();
   private userMessageCount: number = 0;
   private isResumedSession: boolean;
   // Late-join replay state. A turn can complete before the host's WebSocket
@@ -974,7 +993,7 @@ export class ClaudeCodeProcess extends EventEmitter {
    */
   private buildSdkMcpServers(browserMcpTools: ReturnType<typeof createBrowserTools>): Record<string, McpServerConfig> {
     const servers: Record<string, McpServerConfig> = {
-      'user-input': createUserInputMcpServer(() => this),
+      'user-input': createUserInputMcpServer(() => this, () => this.sessionId),
       'browser': createBrowserMcpServer(browserMcpTools),
       'dashboards': createDashboardsMcpServer(),
       'widgets': createWidgetsMcpServer(),
@@ -1058,7 +1077,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         ...remoteMcpToolPatterns,
       ],
       disallowedTools: [
-        'Monitor', 'DesignSync',
+        'DesignSync',
         'CronCreate', 'CronDelete', 'CronList',
         'ScheduleWakeup', 'RemoteTrigger', 'PushNotification',
         'EnterWorktree', 'ExitWorktree',
@@ -1182,7 +1201,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         // The host treats `idle` as the authoritative end-of-session signal (a
         // 'result' alone doesn't end it — queued messages can keep the run going).
         // server.ts announces this capability on WebSocket connect — keep the two
-        // in sync. See message-persister.ts.
+        // in sync. See the host's live-session.ts.
         CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
         // The id of the session this process IS, inherited by every Bash
         // child. /opt/gamut/bin/list-sessions.py and read-session.py use it
@@ -1247,8 +1266,10 @@ export class ClaudeCodeProcess extends EventEmitter {
             // when one is active (native is Anthropic-server-side, absent on non-Claude models).
             ...(this.webSearchProvider ? ['mcp__web__web_search'] : ['WebSearch']),
             'Read',
+            'Glob',
             'mcp__user-input__request_file',
             'mcp__user-input__request_browser_input',
+            'mcp__user-input__request_login',
           ],
           prompt: WEB_BROWSER_AGENT_PROMPT,
           maxTurns: 500,
@@ -1367,8 +1388,10 @@ export class ClaudeCodeProcess extends EventEmitter {
               },
             ],
           },
+          ...this.hintHooks.UserPromptSubmit,
         ],
         PreToolUse: [
+          ...this.hintHooks.PreToolUse,
           {
             matcher: 'mcp__user-input__.*',
             hooks: [
@@ -1392,21 +1415,6 @@ export class ClaudeCodeProcess extends EventEmitter {
             ],
           },
           {
-            matcher: 'Bash',
-            hooks: [
-              async (input) => {
-                const toolInput = (input as any).tool_input as Record<string, unknown> | undefined;
-                if (!startsWithAgentBrowserCommand(toolInput?.command)) return {};
-                return {
-                  hookSpecificOutput: {
-                    hookEventName: 'PreToolUse' as const,
-                    additionalContext: AGENT_BROWSER_BASH_WARNING,
-                  },
-                };
-              },
-            ],
-          },
-          {
             // Launch-policy gate for subagents/workflows — see
             // createCapabilityGateHook for why this is a hook and not
             // canUseTool.
@@ -1423,7 +1431,7 @@ export class ClaudeCodeProcess extends EventEmitter {
                   this.emit('capability-grant', { capability });
                 },
                 onReviewCancelled: (cancelledToolUseId, capability) => {
-                  // Same relay as SDK frames (persister → SSE → renderer),
+                  // Same relay as SDK frames (live session → SSE → renderer),
                   // so the host closes the orphaned approval card.
                   this.emit('message', {
                     type: 'capability_review_cancelled',
@@ -1474,8 +1482,30 @@ export class ClaudeCodeProcess extends EventEmitter {
               },
             ],
           },
+          {
+            matcher: 'Write|Edit',
+            hooks: [
+              async (input, toolUseId) => {
+                const filePath = resolveToolFilePath((input as any).tool_input as Record<string, unknown>, this.workingDirectory);
+                if (filePath) await this.snapshotForChangeHooks(toolUseId, filePath);
+                return {};
+              },
+            ],
+          },
+        ],
+        PostToolUseFailure: [
+          {
+            matcher: 'Write|Edit',
+            hooks: [
+              async (_input, toolUseId) => {
+                if (toolUseId) this.fileChangeSnapshots.delete(toolUseId);
+                return {};
+              },
+            ],
+          },
         ],
         PostToolUse: [
+          ...this.hintHooks.PostToolUse,
           {
             matcher: 'Bash',
             hooks: [
@@ -1494,7 +1524,7 @@ export class ClaudeCodeProcess extends EventEmitter {
                 if (!filePath) return {};
                 for (const hook of fileHooks) {
                   if (!hook.matches(filePath)) continue;
-                  const result = hook.onRead(filePath);
+                  const result = hook.onRead(filePath, (input as any).tool_response);
                   if (result.additionalContext) {
                     return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: result.additionalContext } };
                   }
@@ -1513,8 +1543,8 @@ export class ClaudeCodeProcess extends EventEmitter {
                 for (const hook of fileHooks) {
                   if (!hook.matches(filePath)) continue;
                   try {
-                    const content = await fs.promises.readFile(filePath, 'utf-8');
-                    const result = hook.onEdit(filePath, content);
+                    const result = hook.onEditReply?.(filePath, (input as any).tool_response)
+                      ?? hook.onEdit(filePath, await fs.promises.readFile(filePath, 'utf-8'));
                     if (result.error) {
                       return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: `Warning: ${result.error}` } };
                     }
@@ -1529,6 +1559,18 @@ export class ClaudeCodeProcess extends EventEmitter {
               },
             ],
           },
+          {
+            matcher: 'Write|Edit',
+            hooks: [
+              async (input, toolUseId) => {
+                const filePath = resolveToolFilePath((input as any).tool_input as Record<string, unknown>, this.workingDirectory);
+                if (!filePath) return {};
+                const warnings = await this.runChangeHooks(toolUseId, filePath);
+                if (warnings.length === 0) return {};
+                return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: warnings.join('\n\n') } };
+              },
+            ],
+          },
         ],
       },
       // Object form with `snapshot: false`: SDK 0.3.267+ records a custom
@@ -1540,6 +1582,28 @@ export class ClaudeCodeProcess extends EventEmitter {
       // on every launch or those refreshes are silently ignored.
       systemPrompt: { type: 'custom', prompt: this.systemPrompt, snapshot: false },
     };
+  }
+
+  /** Before a Write/Edit: remember the file as it is, if a file hook acts on its changes. */
+  private async snapshotForChangeHooks(toolUseId: string | undefined, filePath: string): Promise<void> {
+    if (!toolUseId || !fileHooks.some((hook) => hook.onChange && hook.matches(filePath))) return;
+    this.fileChangeSnapshots.set(toolUseId, await fs.promises.readFile(filePath, 'utf-8').catch(() => null));
+  }
+
+  /** After a Write/Edit landed: run the change hooks against the snapshot, returning their warnings. */
+  private async runChangeHooks(toolUseId: string | undefined, filePath: string): Promise<string[]> {
+    if (!toolUseId || !this.fileChangeSnapshots.has(toolUseId)) return [];
+    const before = this.fileChangeSnapshots.get(toolUseId) ?? null;
+    this.fileChangeSnapshots.delete(toolUseId);
+    const after = await fs.promises.readFile(filePath, 'utf-8').catch(() => null);
+    if (after === null) return [];
+    const warnings: string[] = [];
+    for (const hook of fileHooks) {
+      if (!hook.onChange || !hook.matches(filePath)) continue;
+      const { warning } = hook.onChange(filePath, before, after);
+      if (warning) warnings.push(warning);
+    }
+    return warnings;
   }
 
   /**
@@ -1702,7 +1766,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           } else {
             userError = errorMsg || 'An unexpected error occurred';
           }
-          // Emit synthetic result so downstream (WebSocket → message-persister → UI)
+          // Emit synthetic result so downstream (WebSocket → host's live session → UI)
           // knows the query failed and can transition to error state
           const isFatal = errorMsg.includes('SIGKILL') || errorMsg.includes('SIGTERM');
           this.emit('message', {
@@ -1730,7 +1794,21 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
   }
 
-  async sendMessage(content: string, uuid?: UUID, options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies; globalInstructions?: string }): Promise<void> {
+  async sendMessage(content: string, uuid?: UUID, options?: SendOptions): Promise<void> {
+    // Counted before any await, so a pre-resume that has not started its
+    // restart yet sees this send and stands down (see warm()).
+    this.sendsInFlight++;
+    try {
+      // A pre-resume already restarting the process: let it land, then judge
+      // this send against the query it built, as if the process had been live.
+      if (this.warmRestart) await this.warmRestart.catch(() => undefined);
+      await this.sendMessageNow(content, uuid, options);
+    } finally {
+      this.sendsInFlight--;
+    }
+  }
+
+  private async sendMessageNow(content: string, uuid?: UUID, options?: SendOptions): Promise<void> {
     const nextRuntime = options?.llmRuntime ?? (this.requiresConnectionRuntime && !this.llmRuntime
       ? await resolveSessionRuntime(this.sessionId) : undefined);
     const connectionChanged = nextRuntime !== undefined && (
@@ -1744,14 +1822,8 @@ export class ClaudeCodeProcess extends EventEmitter {
         llmProxyBinding(this.llmRuntime?.llmProviderId ?? '', this.llmRuntime?.proxy)
     );
     if (nextRuntime) {
-      this.llmRuntime = nextRuntime;
       if (!connectionChanged && nextRuntime.proxy) this.llmProxy?.updateCredential(nextRuntime.proxy.credential);
-      this.browserModel = nextRuntime.browserModel;
-      this.dashboardBuilderModel = nextRuntime.dashboardBuilderModel;
-      this.subagentModels = nextRuntime.subagentModels;
-      this.modelContextWindows = nextRuntime.modelContextWindows;
-      this.modelPromptHints = nextRuntime.modelPromptHints;
-      this.refreshSystemPrompt();
+      this.adoptRuntime(nextRuntime);
     }
     const effort = options?.effort;
     const speed = options?.speed;
@@ -2018,6 +2090,90 @@ export class ClaudeCodeProcess extends EventEmitter {
     await this.queryInstance?.return(undefined);
     await this.initializeQuery();
     this.processingDone = this.processMessages();
+  }
+
+  /** Whether a send would have to restart the query before queueing (see sendMessageNow). */
+  private isCold(): boolean {
+    return this.stopping || !this.messageQueue || !this.isReady;
+  }
+
+  /** A pre-resume may still start its restart: nothing else has taken the process over. */
+  private mayPreResume(): boolean {
+    return !this.disposed && this.sendsInFlight === 0 && this.isCold();
+  }
+
+  /**
+   * Take a connection runtime's execution facts for the next query. The model
+   * is left to the caller: sendMessageNow decides between setModel and a
+   * re-query by comparing the new model with the current one.
+   */
+  private adoptRuntime(runtime: ConnectionRuntime): void {
+    this.llmRuntime = runtime;
+    this.browserModel = runtime.browserModel;
+    this.dashboardBuilderModel = runtime.dashboardBuilderModel;
+    this.subagentModels = runtime.subagentModels;
+    this.modelContextWindows = runtime.modelContextWindows;
+    this.modelPromptHints = runtime.modelPromptHints;
+    this.refreshSystemPrompt();
+  }
+
+  /**
+   * Pre-resume: bring a cold process back up WITHOUT queueing a message, so
+   * the next send finds a live query instead of paying the CLI spawn and
+   * `--resume` on its critical path. Cold means idle-evicted (a stop may still
+   * be closing it) or resumed with its start deferred to the first send. It
+   * runs the restart a cold send runs, with the runtime the session last ran
+   * on — or, for a deferred start, the one the host resolves for the session,
+   * as for an internal send.
+   *
+   * Resolves true when this call restarted the query. False when there was
+   * nothing to do: already live, disposed, another pre-resume under way, or a
+   * send in flight — that send restarts the process itself with the runtime
+   * the host resolved for it, and a send arriving before the restart begins
+   * makes this stand down. Rejects only when the restart fails; the next send
+   * then cold-restarts as it would have without this.
+   *
+   * Turn and settlement state are untouched: the process idles like any live
+   * one, and the session manager's idle eviction reclaims it if no send comes.
+   */
+  async warm(): Promise<boolean> {
+    if (this.preResuming || !this.mayPreResume()) return false;
+    this.preResuming = true;
+    try {
+      if (this.currentStop) await this.currentStop.catch(() => undefined);
+      if (this.requiresConnectionRuntime && !this.llmRuntime && this.mayPreResume()) {
+        const runtime = await resolveSessionRuntime(this.sessionId);
+        if (!this.mayPreResume()) return false;
+        this.adoptRuntime(runtime);
+        this.model = runtime.model;
+      }
+      // Re-checked after every await: a send or a delete that arrived meanwhile owns the process.
+      if (!this.mayPreResume()) return false;
+      console.log(`[Session ${this.sessionId}] Pre-resuming cold session`);
+      // As in sendMessageNow: a rebuilt query whose remote-MCP set changed
+      // waits for the new servers before the first message may land.
+      const remoteMcpsChanged = remoteMcpsSnapshot() !== this.remoteMcpsSnapshot;
+      const restart = (async () => {
+        await this.restart();
+        if (remoteMcpsChanged) await this.waitForRemoteMcpsReady();
+      })();
+      // Published synchronously with the restart's start, so a send can never
+      // slip between the check above and the restart without seeing it.
+      this.warmRestart = restart;
+      try {
+        await restart;
+      } finally {
+        this.warmRestart = null;
+      }
+      // A delete that raced the restart wins: no live query outlives a disposed process.
+      if (this.disposed) {
+        await this.stop();
+        return false;
+      }
+      return true;
+    } finally {
+      this.preResuming = false;
+    }
   }
 
   /**
@@ -2292,7 +2448,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     return { promise, cancel: () => cleanup() };
   }
 
-  // Downstream (persister → SSE → renderer) learns each dead uuid through the
+  // Downstream (live session → SSE → renderer) learns each dead uuid through the
   // exact same pipeline as real SDK frames and can rescue the message text
   // deterministically instead of racing a refetch.
   private emitDiscarded(uuid: string): void {

@@ -625,5 +625,38 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1792098812435,
     "hash": "e5fea3fe1d8a068040f3db42f3826bc027eef61e032a262fbdfe88b8f05c3c36"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `notifications` ADD `recipient_user_id` text;",
+      "\nALTER TABLE `notifications` ADD `message_uuid` text;",
+      "\nCREATE UNIQUE INDEX `notifications_message_recipient_unique` ON `notifications` (`message_uuid`,`recipient_user_id`);"
+    ],
+    "bps": true,
+    "folderMillis": 1792435823425,
+    "hash": "2839f95efe6f7fdd06bbf0e4dd0f5c1570fc0466f32ae73c26d59851f12a3ee2"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `volume_definitions` ADD `global_access` text;"
+    ],
+    "bps": true,
+    "folderMillis": 1792530753728,
+    "hash": "120b750015a5321de599a2ce92bb3160d57bdfa308b901568816b27a503ff0ff"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `agent_browser_accounts` (\n\t`agent_slug` text NOT NULL,\n\t`account_id` text NOT NULL,\n\t`granted_by` text,\n\t`applied_session_version` integer,\n\t`created_at` integer NOT NULL,\n\t`last_used_at` integer,\n\tPRIMARY KEY(`agent_slug`, `account_id`),\n\tFOREIGN KEY (`agent_slug`) REFERENCES `agents`(`slug`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`account_id`) REFERENCES `browser_accounts`(`id`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`granted_by`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE set null\n);\n",
+      "\nCREATE INDEX `agent_browser_accounts_account_idx` ON `agent_browser_accounts` (`account_id`);",
+      "\nCREATE TABLE `browser_account_sessions` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`account_id` text NOT NULL,\n\t`browser_type` text NOT NULL,\n\t`bundle` text NOT NULL,\n\t`version` integer DEFAULT 1 NOT NULL,\n\t`captured_at` integer NOT NULL,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`account_id`) REFERENCES `browser_accounts`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE UNIQUE INDEX `browser_account_sessions_account_type_unique` ON `browser_account_sessions` (`account_id`,`browser_type`);",
+      "\nCREATE TABLE `browser_accounts` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` text,\n\t`site` text NOT NULL,\n\t`username` text NOT NULL,\n\t`username_key` text NOT NULL,\n\t`label` text,\n\t`origin` text NOT NULL,\n\t`via_account_id` text,\n\t`secrets` text,\n\t`parts` text DEFAULT '[]' NOT NULL,\n\t`revision` integer DEFAULT 1 NOT NULL,\n\t`rejected_at` integer,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\t`last_used_at` integer,\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`via_account_id`) REFERENCES `browser_accounts`(`id`) ON UPDATE no action ON DELETE set null\n);\n",
+      "\nCREATE UNIQUE INDEX `browser_accounts_owner_site_username_unique` ON `browser_accounts` (coalesce(`user_id`, ''),`site`,`username_key`);",
+      "\nCREATE INDEX `browser_accounts_user_site_idx` ON `browser_accounts` (`user_id`,`site`);",
+      "\nCREATE INDEX `browser_accounts_via_idx` ON `browser_accounts` (`via_account_id`);"
+    ],
+    "bps": true,
+    "folderMillis": 1792781899070,
+    "hash": "01e2b1213c3ad5da13957a52c4656cfb11eddcd8ea9347b9b3252697db96790d"
   }
 ]

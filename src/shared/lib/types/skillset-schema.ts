@@ -10,6 +10,7 @@
 import { z } from 'zod'
 
 import { normalizeDeniedModels } from '@shared/lib/llm-provider/platform-plan-policy'
+import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 
 export const SkillProviderSchema = z.enum(['github', 'platform', 'public'])
 
@@ -42,6 +43,12 @@ export const SkillsetIndexAgentSchema = z.object({
   category: z.string().optional(),
   /** kebab-case lucide icon name, e.g. "badge-dollar-sign". */
   icon: z.string().optional(),
+  /**
+   * The template's orb. A colour or shape this build doesn't know (a newer
+   * palette) drops to undefined, so the card falls back to a hashed avatar
+   * rather than the whole template being dropped.
+   */
+  avatar: agentAvatarSchema.optional().catch(undefined),
   tags: z.array(z.string()).optional(),
   /** Services the template connects to; `slug` matches our service-icon set. */
   works_with: z
@@ -260,6 +267,7 @@ export const PlatformAccountInfoSchema = z.object({
     .transform((v) => v ?? null),
   deniedModels: z
     .unknown()
+    .optional()
     .transform((v) => (v == null ? null : normalizeDeniedModels(v))),
 })
 export type ParsedPlatformAccountInfo = z.infer<typeof PlatformAccountInfoSchema>
@@ -309,7 +317,7 @@ export const PlatformBillingInfoSchema = z.object({
     .object({
       id: z.string(),
       name: z.string(),
-      deniedModels: z.unknown().transform(normalizeDeniedModels),
+      deniedModels: z.unknown().optional().transform(normalizeDeniedModels),
     })
     .nullish()
     .catch(null)
@@ -318,6 +326,7 @@ export const PlatformBillingInfoSchema = z.object({
   // workspace gets the free tier's list). Null from a proxy that predates it.
   deniedModels: z
     .unknown()
+    .optional()
     .transform((v) => (v == null ? null : normalizeDeniedModels(v))),
   // A plan switch scheduled for a later date (a downgrade applies at renewal).
   pendingPlanChange: z

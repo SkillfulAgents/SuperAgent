@@ -14,7 +14,7 @@ export class ClaudeSubscriptionLlmProvider extends BaseLlmProvider {
   readonly catalogDefaultModels = ANTHROPIC_CATALOG_DEFAULT_MODELS
   protected readonly settingsKeyField = 'claudeSubscriptionToken' as const
   protected readonly envVarName = 'CLAUDE_CODE_OAUTH_TOKEN'
-  override readonly toolSearchEnv = 'true' as const
+  override toolSearchEnv() { return 'true' as const }
   override readonly supportsDirectApi = false
 
   // Optional connections never adopt ambient host or legacy settings credentials.

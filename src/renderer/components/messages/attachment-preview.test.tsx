@@ -69,16 +69,20 @@ describe('AttachmentPreview', () => {
     expect(screen.getByText('5.0 MB')).toBeInTheDocument()
   })
 
-  it('renders image preview when attachment is an image with preview URL', () => {
+  it.each([
+    ['photo.png', 'image/png'],
+    ['photo.heic', 'image/heic'],
+    ['photo.heif', 'image/heif'],
+  ])('renders %s as an image when a displayable preview URL is available', (name, type) => {
     const attachments = [
       createAttachment({
-        name: 'photo.png',
-        type: 'image/png',
+        name,
+        type,
         preview: 'blob:http://localhost/abc123',
       }),
     ]
     render(<AttachmentPreview attachments={attachments} onRemove={vi.fn()} />)
-    const img = screen.getByAltText('photo.png')
+    const img = screen.getByAltText(name)
     expect(img).toBeInTheDocument()
     expect(img).toHaveAttribute('src', 'blob:http://localhost/abc123')
   })

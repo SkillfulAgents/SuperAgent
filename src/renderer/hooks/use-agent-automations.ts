@@ -95,18 +95,21 @@ export function useCancelAutomation(type: 'scheduled-tasks' | 'webhook-triggers'
 /**
  * Fetch sessions created by an automation entity.
  */
-export function useAutomationSessions(
-  type: 'scheduled-tasks' | 'webhook-triggers',
-  id: string | null,
-) {
+export function automationSessionsQuery(type: 'scheduled-tasks' | 'webhook-triggers', id: string | null) {
   const singularKey = type.replace(/s$/, '')
-  return useQuery<AutomationSessionInfo[]>({
+  return {
     queryKey: [`${singularKey}-sessions`, id],
-    queryFn: async () => {
+    queryFn: async (): Promise<AutomationSessionInfo[]> => {
       const res = await apiFetch(`/api/${type}/${id}/sessions`)
       if (!res.ok) throw new Error('Failed to fetch sessions')
       return res.json()
     },
-    enabled: !!id,
-  })
+  }
+}
+
+export function useAutomationSessions(
+  type: 'scheduled-tasks' | 'webhook-triggers',
+  id: string | null,
+) {
+  return useQuery<AutomationSessionInfo[]>({ ...automationSessionsQuery(type, id), enabled: !!id })
 }

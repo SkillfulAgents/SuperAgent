@@ -1,4 +1,7 @@
 import { z } from 'zod'
+import { GithubMountableVolume, prepareGithubVolume } from './github-mountable-volume'
+import { githubVolumeConfigSchema } from './github-schema'
+import { removeGithubSync } from './github-sync'
 import { S3MountableVolume } from './s3-mountable-volume'
 import { s3VolumeConfigSchema, s3StoredConfigSchema } from './s3-schema'
 import { prepareS3Volume, validateS3Volume } from './s3-validation'
@@ -9,6 +12,8 @@ import { DropboxMountableVolume, prepareDropboxVolume } from './dropbox-mountabl
 import { dropboxVolumeConfigSchema } from './dropbox-schema'
 import { GoogleDriveMountableVolume, prepareGoogleDriveVolume } from './google-drive-mountable-volume'
 import { googleDriveVolumeConfigSchema } from './google-drive-schema'
+import { PlatformMountableVolume, preparePlatformVolume } from './platform-mountable-volume'
+import { platformVolumeConfigSchema, storedPlatformVolumeConfigSchema } from './volume-config-schema'
 import type { BaseMountableVolume } from './base-mountable-volume'
 import type { VolumeFolderBrowser, VolumeSetupViewer } from './volume-folder-browser'
 import { VolumeError } from './volume-error'
@@ -21,23 +26,28 @@ interface PreparedVolume {
 }
 
 interface VolumeTypeEntry {
+  remove?: (id: string) => Promise<void>
   instantiate(row: StoredVolume, agentSlug?: string): BaseMountableVolume<unknown> | null
   prepare(config: unknown, creator?: { userId: string | null }): Promise<{ name: string; config: unknown }>
   browseFolders?: VolumeFolderBrowser
   validate?: (config: unknown, viewer: VolumeSetupViewer) => Promise<VolumeValidation>
 }
 
-// Each type's functions are bound to its schema, so they receive the config that schema produced.
-function volumeType<C>(
+// Each type's functions are bound to its schemas, so they receive the config those schemas produced:
+// `prepare` the setup input, `create` the stored config (the same schema unless the type stores another).
+function volumeType<C, S = C>(
   schema: z.ZodType<C>,
-  create: (row: StoredVolume, config: C, agentSlug?: string) => BaseMountableVolume<C>,
-  prepare: (config: C, creator?: { userId: string | null }) => Promise<{ name: string; config: C }>,
-  browseFolders?: VolumeFolderBrowser,
+  create: (row: StoredVolume, config: S, agentSlug?: string) => BaseMountableVolume<unknown>,
+  prepare: (config: C, creator?: { userId: string | null }) => Promise<{ name: string; config: S }>,
+  options: { stored?: z.ZodType<S>; browseFolders?: VolumeFolderBrowser; validate?: VolumeTypeEntry['validate'] } = {},
 ): VolumeTypeEntry {
+  // With no stored schema, S defaults to C.
+  const stored = options.stored ?? schema as unknown as z.ZodType<S>
   return {
-    browseFolders,
+    browseFolders: options.browseFolders,
+    validate: options.validate,
     instantiate(row, agentSlug) {
-      const config = schema.safeParse(row.config)
+      const config = stored.safeParse(row.config)
       if (config.success) return create(row, config.data, agentSlug)
       console.warn(`[volumes] Volume ${row.id} of type ${row.type} has an invalid config; leaving it out:`, config.error.message)
       return null
@@ -51,17 +61,21 @@ function volumeType<C>(
 }
 
 const volumeTypes: Record<VolumeType, VolumeTypeEntry> = {
-  s3: {
-    ...volumeType(s3VolumeConfigSchema, (row, config, agentSlug) => new S3MountableVolume(row.id, row.name, config, agentSlug), prepareS3Volume),
-    instantiate(row, agentSlug) {
-      const parsed = s3StoredConfigSchema.safeParse(row.config)
-      return parsed.success ? new S3MountableVolume(row.id, row.name, parsed.data, agentSlug) : null
-    },
-    validate: validateS3Volume,
+  github: {
+    ...volumeType(githubVolumeConfigSchema, (row, config, agentSlug) => new GithubMountableVolume(row.id, row.name, config,
+      'volumeId' in row && typeof row.volumeId === 'string' ? row.volumeId : row.id, agentSlug), prepareGithubVolume,
+      { browseFolders: GithubMountableVolume.browseFolders }),
+    remove: removeGithubSync,
   },
-  dropbox: volumeType(dropboxVolumeConfigSchema, (row, config, agentSlug) => new DropboxMountableVolume(row.id, row.name, config, agentSlug), prepareDropboxVolume, DropboxMountableVolume.browseFolders),
-  googledrive: volumeType(googleDriveVolumeConfigSchema, (row, config, agentSlug) => new GoogleDriveMountableVolume(row.id, row.name, config, agentSlug), prepareGoogleDriveVolume, GoogleDriveMountableVolume.browseFolders),
+  s3: volumeType(s3VolumeConfigSchema, (row, config, agentSlug) => new S3MountableVolume(row.id, row.name, config, agentSlug), prepareS3Volume,
+    { stored: s3StoredConfigSchema, validate: validateS3Volume }),
+  dropbox: volumeType(dropboxVolumeConfigSchema, (row, config, agentSlug) => new DropboxMountableVolume(row.id, row.name, config, agentSlug), prepareDropboxVolume,
+    { browseFolders: DropboxMountableVolume.browseFolders }),
+  googledrive: volumeType(googleDriveVolumeConfigSchema, (row, config, agentSlug) => new GoogleDriveMountableVolume(row.id, row.name, config, agentSlug), prepareGoogleDriveVolume,
+    { browseFolders: GoogleDriveMountableVolume.browseFolders }),
   local: volumeType(localVolumeConfigSchema, (row, config) => new LocalMountableVolume(row.id, row.name, config), prepareLocalVolume),
+  platform: volumeType(platformVolumeConfigSchema, (row, config, agentSlug) => new PlatformMountableVolume(row.id, row.name, config, agentSlug), preparePlatformVolume,
+    { stored: storedPlatformVolumeConfigSchema, browseFolders: PlatformMountableVolume.browseFolders }),
 }
 
 function isVolumeType(type: string): type is VolumeType {
@@ -94,4 +108,8 @@ export async function validateVolumeSource(type: string, config: unknown, viewer
   const validate = volumeTypes[type].validate
   if (!validate) throw new VolumeError('This source does not support a connection check', 400)
   return validate(config, viewer)
+}
+
+export async function removeVolume(type: string, id: string): Promise<void> {
+  if (isVolumeType(type)) await volumeTypes[type].remove?.(id)
 }

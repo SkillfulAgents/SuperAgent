@@ -1,4 +1,4 @@
-import { MessageNotAcceptedError } from '../container/message-dispatch-error'
+import { DeliveryError } from '../agent-actor/delivery-errors'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
@@ -165,7 +165,7 @@ describe('durable integration delivery (common SQL path)', () => {
   })
   it('retries a definite pre-acceptance refusal but not an unknown transport failure', async () => {
     dispatch.mockImplementationOnce(async (_row, attempt) => {
-      await attempt.handoff('runtime-session', async () => { throw new MessageNotAcceptedError('unavailable', 'not running') })
+      await attempt.handoff('runtime-session', async () => { throw new DeliveryError('unavailable', 'not running') })
     })
     const q = queue(); await q.start(); await q.accept('integration', event(), route)
     await settled({ state: 'pending', attempts: 1 })
@@ -175,7 +175,7 @@ describe('durable integration delivery (common SQL path)', () => {
   it.each([400, 503])('settles a confirmed creation rejection as failed/retryable, never uncertain (HTTP %s)', async status => {
     dispatch.mockImplementationOnce(async (_row, attempt) => {
       await attempt.handoff(undefined, async () => {
-        throw Object.assign(new MessageNotAcceptedError('rejected', 'Runtime rejected before submission'), { status })
+        throw new DeliveryError('rejected', 'Runtime rejected before submission', { status })
       })
     })
     const q = queue(); await q.start(); await q.accept('integration', event(), route)

@@ -89,7 +89,7 @@ const ROLE_LABELS: Record<AgentRole, string> = Object.fromEntries(
 const REMOVE_SENTINEL = '__remove__'
 
 /** Two-line role items (label + permission description) shared by both selects. */
-function RoleSelectItems() {
+export function RoleSelectItems() {
   return (
     <>
       {ROLE_OPTIONS.map((role) => (

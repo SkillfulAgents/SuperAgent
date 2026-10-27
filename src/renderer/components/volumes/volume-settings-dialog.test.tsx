@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-vi.mock('@renderer/lib/host-features', () => ({ canUseHostFeatures: () => true }))
+vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: () => true, usesHostFolderPaths: () => true, agentsRunInAppSandbox: () => false }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: false, isAdmin: true }) }))
 import { VolumeSettingsDialog } from './volume-settings-dialog'
 
@@ -28,7 +28,7 @@ describe('volume folder selection', () => {
     expect(picker).toHaveBeenCalledOnce()
     await userEvent.clear(screen.getByLabelText('Name'))
     await userEvent.type(screen.getByLabelText('Name'), 'Shared documents')
-    await userEvent.click(screen.getByRole('button', { name: 'Change folder' }))
+    await userEvent.click(screen.getByRole('button', { name: /^Select folder location/ }))
     expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent('/documents')
     expect(screen.getByLabelText('Name')).toHaveValue('Shared documents')
     expect(screen.getAllByRole('textbox')).toHaveLength(1)

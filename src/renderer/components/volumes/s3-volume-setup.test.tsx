@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 const { fetch } = vi.hoisted(() => ({ fetch: vi.fn() }))
 vi.mock('@renderer/lib/api', () => ({ apiFetch: fetch }))
-vi.mock('@renderer/lib/host-features', () => ({ canUseHostFeatures: () => false }))
+vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: () => false, usesHostFolderPaths: () => false, agentsRunInAppSandbox: () => false }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: false }) }))
 import { VolumeSettingsDialog } from './volume-settings-dialog'
 afterEach(cleanup)

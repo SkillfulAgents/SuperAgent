@@ -5,10 +5,13 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { readBootstrapEnv } from '@shared/lib/container/agent-bootstrap-env-store'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { agentRegistry } from '@shared/lib/agent-actor'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { widgetSnapshotReadyEventSchema } from '@shared/lib/widgets/widget-schema'
 import { captureException } from '@shared/lib/error-reporting'
 import { getSettings } from '@shared/lib/config/settings'
+import { syncAgentIdentityFromWorkspace } from '@shared/lib/services/agent-service'
+import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 
 const agentBootstrap = new Hono()
 const DASHBOARD_SLUG_REGEX = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
@@ -69,7 +72,7 @@ agentBootstrap.post('/:agentSlug/events/dashboard-screenshot-ready', async (c) =
   const parsed = DashboardScreenshotReadySchema.safeParse(await c.req.json().catch(() => null))
   if (!parsed.success) return c.json({ error: 'Invalid dashboard screenshot event' }, 400)
 
-  messagePersister.broadcastGlobal({
+  globalFeed.publish({
     type: 'dashboard_screenshot_ready',
     agentSlug,
     dashboardSlug: parsed.data.dashboardSlug,
@@ -91,7 +94,7 @@ agentBootstrap.post('/:agentSlug/events/dashboard-status-changed', async (c) => 
   const parsed = DashboardStatusChangedSchema.safeParse(await c.req.json().catch(() => null))
   if (!parsed.success) return c.json({ error: 'Invalid dashboard status event' }, 400)
 
-  messagePersister.broadcastGlobal({
+  globalFeed.publish({
     type: 'dashboard_status_changed',
     agentSlug,
     dashboardSlug: parsed.data.dashboardSlug,
@@ -114,11 +117,30 @@ agentBootstrap.post('/:agentSlug/events/widget-snapshot-ready', async (c) => {
   const parsed = widgetSnapshotReadyEventSchema.safeParse(await c.req.json().catch(() => null))
   if (!parsed.success) return c.json({ error: 'Invalid widget snapshot event' }, 400)
 
-  messagePersister.broadcastGlobal({
+  globalFeed.publish({
     type: 'widget_snapshot_ready',
     agentSlug,
     ...parsed.data,
   })
+  return c.body(null, 204)
+})
+
+// The agent changed the name or description in its instructions frontmatter
+// with Write or Edit. A signal only: the identity comes from the file, read
+// under the identity lock, so a user rename that landed since still wins.
+agentBootstrap.post('/:agentSlug/events/agent-identity-changed', async (c) => {
+  const agentSlug = c.req.param('agentSlug')
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token) return c.json({ error: 'Unauthorized' }, 401)
+  const callerSlug = await validateProxyToken(token)
+  if (!callerSlug) return c.json({ error: 'Unauthorized' }, 401)
+  if (callerSlug !== agentSlug) return c.json({ error: 'Token does not match agent' }, 403)
+
+  const fields = await syncAgentIdentityFromWorkspace(agentSlug)
+  if (fields.length > 0) {
+    globalFeed.publish({ type: 'agent_updated', agentSlug })
+    await logAuditEvent({ userId: null, object: 'agent', objectId: agentSlug, action: 'updated', details: { fields, source: 'agent' } })
+  }
   return c.body(null, 204)
 })
 
@@ -140,8 +162,8 @@ agentBootstrap.post('/:agentSlug/events/undelivered-turn', async (c) => {
   const containerRunner = getSettings().container?.containerRunner ?? 'unknown'
   // Only a host that still shows the turn as working on a socket it thinks is
   // open is stuck; anything else already settled or detached on purpose.
-  const hostStuck = messagePersister.isSessionActive(agentSlug, report.sessionId) &&
-    messagePersister.isSubscribed(agentSlug, report.sessionId)
+  const live = await agentRegistry.get(agentSlug).sessions.live(report.sessionId)
+  const hostStuck = live.isActive && live.streamAttached
   console.warn(
     `[AgentBootstrap] Session ${report.sessionId} (${agentSlug}) ended a turn with no stream subscriber ` +
     `(runner=${containerRunner}, closeCode=${closeCode}, hostStuck=${hostStuck})`,

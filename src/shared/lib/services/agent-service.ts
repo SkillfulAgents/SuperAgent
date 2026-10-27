@@ -6,7 +6,9 @@
  * the `AGENTS.md` in its workspace, read and written through the agent
  * actor's `config` document `instructions`. The frontmatter of that document
  * is a projection of the catalog row that the host writes on create and
- * rename, so the agent still sees who it is and exports still carry it.
+ * rename, so the agent still sees who it is and exports still carry it. The
+ * agent may edit the name and description there; its container reports the
+ * edit and the host reads them back.
  */
 
 import {
@@ -23,12 +25,15 @@ import {
 } from '@shared/lib/types/agent'
 import type { ApiAgent } from '@shared/lib/types/api'
 import { agentAvatarSchema, type AgentAvatar } from '@shared/lib/types/agent-avatar'
+import { workspaceAgentDescriptionSchema, workspaceAgentNameSchema } from './agent-identity-schema'
+import { getTeamBrain } from '@shared/lib/config/settings'
 import {
   CONFIG_DOCS,
   agentCatalog,
   agentRegistry,
   identityFromInstructions,
   type AgentIdentityChanges,
+  type AgentLiveSummary,
   type AgentRecord,
 } from '@shared/lib/agent-actor'
 
@@ -42,27 +47,27 @@ import {
  */
 function toApiAgent(
   record: AgentRecord,
-  status: 'running' | 'stopped',
-  containerPort: number | null,
+  container: Pick<AgentLiveSummary['container'], 'status' | 'port' | 'healthWarnings' | 'stale'>,
   instructions?: string,
 ): ApiAgent {
-  const container = agentRegistry.get(record.slug).container
-  const healthWarnings = container.health()
+  const { status, port, healthWarnings, stale } = container
   return {
     ...newAgentResponse(record, instructions),
     status,
-    containerPort,
+    containerPort: port,
     ...(healthWarnings.length > 0 ? { healthWarnings } : {}),
-    ...(container.stale() ? { stale: true } : {}),
+    ...(stale ? { stale: true } : {}),
   }
 }
 
 /** The API shape of an agent that was just created: stopped, and with no health to report yet. */
 function newAgentResponse(record: AgentRecord, instructions?: string): ApiAgent {
+  const teamBrain = getTeamBrain()
   return {
     slug: record.slug,
     displaySlug: displaySlug(record.name, record.slug),
     name: record.name,
+    ...(teamBrain?.agentSlug === record.slug ? { teamBrain: { volumeId: teamBrain.volumeId } } : {}),
     avatar: record.avatar,
     description: record.description,
     ...(instructions === undefined ? {} : { instructions }),
@@ -101,22 +106,20 @@ async function readInstructionsDocument(slug: string): Promise<InstructionsDocum
 }
 
 /**
- * Per-slug promise chains: every change to an agent's identity, which spans
+ * The agent's identity lock: every change to an agent's identity, which spans
  * the catalog row and the `AGENTS.md` projection, runs to completion before
  * the next one starts, so two overlapping renames cannot leave the row with
- * one name and the document with the other. The same in-process
- * serialization the config documents use for their read-modify-write.
+ * one name and the document with the other.
  */
-const identityChains = new Map<string, Promise<unknown>>()
-function withIdentityLock<T>(slug: string, fn: () => Promise<T>): Promise<T> {
-  const previous = identityChains.get(slug) ?? Promise.resolve()
-  const run = previous.then(fn, fn)
-  const settled = run.catch(() => undefined)
-  identityChains.set(slug, settled)
-  void settled.then(() => {
-    if (identityChains.get(slug) === settled) identityChains.delete(slug)
-  })
-  return run
+const IDENTITY_LOCK = 'identity'
+async function withIdentityLock<T>(slug: string, fn: () => Promise<T>): Promise<T> {
+  const { locks } = agentRegistry.get(slug)
+  const token = await locks.acquire(IDENTITY_LOCK)
+  try {
+    return await fn()
+  } finally {
+    await locks.release(IDENTITY_LOCK, token)
+  }
 }
 
 /**
@@ -200,38 +203,23 @@ export async function getAgentWithStatus(
   }
 
   const actor = agentRegistry.get(slug)
-  // Use cached status to avoid spawning docker processes
-  const info = actor.container.status()
+  // The cached container status: no docker process is spawned.
+  const live = await actor.live()
   const record = (await agentCatalog.get(slug))!
-  const base = toApiAgent(record, info.status, info.port, agent.instructions)
+  const base = toApiAgent(record, live.container, agent.instructions)
 
   // Routes that either discard the body (/start) or immediately run the richer
   // enrichAgentsWithSummary pass (list/detail) skip this otherwise-duplicate
   // O(session-count) stat scan; standalone callers keep the enriched default.
   if (options.includeSummary === false) return base
 
-  // Compute session activity flags (same logic as the list endpoint)
+  // The same session flags as the list endpoint: pending proxy reviews need
+  // the user whether or not a session waits on them.
   const sessionSummary = await actor.sessions.summary()
-  let hasActiveSessions = false
-  let hasSessionsAwaitingInput = false
-  for (const sessionId of sessionSummary.sessionIds) {
-    if (actor.sessions.isActive(sessionId)) hasActiveSessions = true
-    if (actor.sessions.isAwaitingInput(sessionId)) hasSessionsAwaitingInput = true
-  }
-  if (!hasActiveSessions) {
-    hasActiveSessions = actor.sessions.hasActive()
-  }
-  if (!hasSessionsAwaitingInput) {
-    hasSessionsAwaitingInput = actor.sessions.hasAwaitingInput()
-  }
-  if (actor.inputs.reviews.pending().length > 0) {
-    hasSessionsAwaitingInput = true
-  }
-
   return {
     ...base,
-    hasActiveSessions,
-    hasSessionsAwaitingInput,
+    hasActiveSessions: live.activeSessionIds.length > 0,
+    hasSessionsAwaitingInput: live.awaitingSessionIds.length > 0 || live.pendingReviews.length > 0,
     sessionCount: sessionSummary.sessionCount,
     lastActivityAt: sessionSummary.lastActivityAt,
   }
@@ -250,11 +238,8 @@ export async function listAgents(): Promise<AgentRecord[]> {
 export async function listAgentsWithStatus(options: { slugs?: string[] } = {}): Promise<ApiAgent[]> {
   const records = options.slugs ? await agentCatalog.getMany(options.slugs) : await agentCatalog.records()
 
-  // Use cached status to avoid spawning docker processes
-  return records.map((record) => {
-    const info = agentRegistry.get(record.slug).container.status()
-    return toApiAgent(record, info.status, info.port)
-  })
+  // The cached container statuses: no docker process is spawned.
+  return Promise.all(records.map(async (record) => toApiAgent(record, (await agentRegistry.get(record.slug).live()).container)))
 }
 
 // ============================================================================
@@ -332,10 +317,10 @@ export async function updateAgent(
     const updated = await commitIdentity(record, changes, document, body)
     if (!updated) return null
 
-    // Get container status
-    const info = await agentRegistry.get(slug).container.info()
-
-    return toApiAgent(updated, info.status, info.port, body)
+    // The runtime's own status, with the cached health beside it.
+    const actor = agentRegistry.get(slug)
+    const [info, live] = await Promise.all([actor.container.info(), actor.live()])
+    return toApiAgent(updated, { ...live.container, status: info.status, port: info.port }, body)
   })
 }
 
@@ -398,6 +383,29 @@ export async function adoptAgentIdentityFromWorkspace(
 }
 
 /**
+ * Take the name and description the agent wrote into its own `AGENTS.md`
+ * frontmatter into the row. A missing, blank or invalid field leaves that
+ * column alone. Returns the fields that changed.
+ */
+export async function syncAgentIdentityFromWorkspace(slug: string): Promise<Array<'name' | 'description'>> {
+  return withIdentityLock(slug, async () => {
+    const record = await agentCatalog.get(slug)
+    if (!record) return []
+    const document = await readInstructionsDocument(slug)
+    if (!document) return []
+    const carried = identityFromInstructions(document.raw)
+    const name = workspaceAgentNameSchema.safeParse(carried.name)
+    const description = workspaceAgentDescriptionSchema.safeParse(carried.description)
+    const changes: { name?: string; description?: string } = {}
+    if (name.success && name.data !== record.name) changes.name = name.data
+    if (description.success && description.data !== record.description) changes.description = description.data
+    const fields = Object.keys(changes) as Array<'name' | 'description'>
+    if (fields.length > 0) await agentCatalog.update(slug, changes)
+    return fields
+  })
+}
+
+/**
  * Thrown by {@link deleteAgent} when the agent's container cannot be stopped.
  *
  * stopContainer is idempotent for already-stopped/missing containers, so a
@@ -445,7 +453,7 @@ export async function deleteAgent(slug: string): Promise<boolean> {
   // Remove the agent only after the container has been confirmed stopped, then
   // forget the handle and runtime the stop above created for it.
   await agentCatalog.remove(slug)
-  agentRegistry.evict(slug)
+  await agentRegistry.evict(slug)
 
   return true
 }

@@ -15,7 +15,7 @@ vi.mock('@renderer/hooks/use-volume-definitions', () => ({
   useSaveVolumeDefinition: () => ({ mutateAsync: state.save, isPending: false }),
   useDeleteVolumeDefinition: () => ({ mutateAsync: state.remove, isPending: false }),
 }))
-vi.mock('@renderer/lib/host-features', () => ({ canUseHostFeatures: () => state.host }))
+vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: () => state.host, usesHostFolderPaths: () => state.host, agentsRunInAppSandbox: () => false }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: state.isAdmin }) }))
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => state.navigate, useRouter: () => ({ history: { push: state.push } }), useSearch: () => ({ volume: state.selectedId, source: state.source, from: state.from }) }))
 vi.mock('@renderer/components/volumes/volume-file-browser', () => ({ VolumeFileBrowser: () => <div>Volume files</div> }))
@@ -30,7 +30,7 @@ beforeEach(() => {
   state.from = undefined
   state.host = true
   state.isAdmin = true
-  state.definitions = [{ id: 'v1', name: 'Notes', type: 'local', hostPath: '/notes', userId: 'alice', canManage: true, attachmentCount: 0, health: 'ok' }]
+  state.definitions = [{ id: 'v1', name: 'Notes', type: 'local', hostPath: '/notes', userId: 'alice', canManage: true, attachmentCount: 0, health: 'ok', globalAccess: null }]
   window.electronAPI = { openDirectory: vi.fn().mockResolvedValue('/new/folder') } as never
 })
 afterEach(() => {
@@ -43,18 +43,41 @@ describe('volume settings', () => {
     state.definitions[0].attachmentCount = 2
     state.selectedId = 'v1'
     render(<VolumesTab />)
-    expect(screen.getByRole('button', { name: 'Delete drive' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Remove drive' })).toBeDisabled()
     expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument()
     expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent('/notes')
     expect(screen.queryByRole('textbox', { name: 'Folder' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Select folder' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Select folder location/ })).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Name')).not.toBeInTheDocument()
-    expect(screen.getByRole('combobox')).toBeDisabled()
+    expect(screen.getByRole('combobox', { name: /who can add/i })).toBeDisabled()
     await userEvent.click(screen.getByRole('button', { name: 'Rename drive' }))
     await userEvent.clear(screen.getByTestId('volume-title-input'))
     await userEvent.type(screen.getByTestId('volume-title-input'), 'Team notes{Enter}')
     expect(state.save).toHaveBeenCalledWith({ id: 'v1', name: 'Team notes' })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+  it('shows Global disabled with the reason on a drive only its owner can add', () => {
+    state.selectedId = 'v1'
+    render(<VolumesTab />)
+    expect(screen.getByRole('switch', { name: 'Global drive' })).toBeDisabled()
+    expect(screen.getByText('Only drives Everyone can add can be global.')).toBeInTheDocument()
+  })
+  it('turns a public drive global after a confirm, then locks the access picker and lists every agent', async () => {
+    state.definitions[0] = { ...state.definitions[0], userId: null }
+    state.selectedId = 'v1'
+    state.save.mockResolvedValue(undefined)
+    const { rerender } = render(<VolumesTab />)
+    expect(screen.getByRole('switch', { name: 'Global drive' })).not.toBeChecked()
+    expect(screen.getByRole('combobox', { name: 'Access on every agent' })).toBeEnabled()
+    await userEvent.click(screen.getByRole('switch', { name: 'Global drive' }))
+    expect(state.save).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(state.save).toHaveBeenCalledExactlyOnceWith({ id: 'v1', global: 'read' })
+    state.definitions[0] = { ...state.definitions[0], globalAccess: 'read' }
+    rerender(<VolumesTab />)
+    expect(screen.getByRole('combobox', { name: 'Access on every agent' })).toBeDisabled()
+    expect(screen.getByText('Every agent has this drive')).toBeInTheDocument()
+    expect(screen.queryByText('Agents Without This Drive')).not.toBeInTheDocument()
   })
   it('returns Back to an agent page only when the agent home opened the drive', () => {
     expect(agentBackPath('home', '/agents/a1')).toBe('/agents/a1')
@@ -129,7 +152,7 @@ describe('volume settings', () => {
     render(<VolumesTab />)
     expect(screen.getByText('Public')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Edit Notes' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Delete Notes' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Remove Notes' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Add drive' })).toBeInTheDocument()
   })
   it('keeps inline edits with the server error when a volume cannot be saved', async () => {
@@ -144,10 +167,20 @@ describe('volume settings', () => {
   })
   it('confirms deletion of an unused definition', async () => {
     render(<VolumesTab />)
-    await userEvent.click(screen.getByRole('button', { name: 'Delete Notes' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Remove Notes' }))
     expect(screen.getByRole('alertdialog')).toHaveTextContent('The source folder and its files will remain unchanged')
     expect(state.remove).not.toHaveBeenCalled()
-    await userEvent.click(screen.getByRole('button', { name: 'Delete drive' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Remove drive' }))
     expect(state.remove).toHaveBeenCalledWith('v1')
+  })
+  it('warns what a drive has not synced, and deletes it on the first confirm', async () => {
+    state.definitions = [{ ...state.definitions[0], type: 'github', hostPath: null, attention: { badge: { label: '1 conflict', tone: 'warning' }, detail: 'notes.md (conflict markers to resolve)', unsynced: 2 } }]
+    render(<VolumesTab />)
+    await userEvent.hover(screen.getByText('1 conflict'))
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('notes.md (conflict markers to resolve)')
+    await userEvent.click(screen.getByRole('button', { name: 'Remove Notes' }))
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Remove "Notes" from saved drives. 2 files that have not synced will be lost.')
+    await userEvent.click(screen.getByRole('button', { name: 'Remove drive' }))
+    expect(state.remove).toHaveBeenCalledExactlyOnceWith('v1')
   })
 })

@@ -1,6 +1,6 @@
 import { betterAuth } from 'better-auth'
 import { drizzleAdapter } from 'better-auth/adapters/drizzle'
-import { admin, bearer, genericOAuth } from 'better-auth/plugins'
+import { admin, bearer } from 'better-auth/plugins'
 import { and, eq, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
@@ -13,6 +13,8 @@ import { PENDING_APPROVAL_BAN_REASON } from './clear-pending-approval-bans'
 import { enforceMaxConcurrentSessions } from './session-enforcement'
 import { auditSessionCreated, resolveSessionCreationMethod } from './session-audit'
 import { getGenericOAuthProviderConfigs } from './provider-config'
+import { lazyGenericOAuth } from './lazy-generic-oauth'
+import { oidcIssuerPolicy } from './oidc-issuer-policy'
 
 // Re-export isAuthMode from its own file (no better-auth imports)
 // so consumers that only need the check don't pull in ESM deps.
@@ -48,7 +50,7 @@ function createAuthInstance() {
   const authSettings = resolveAuthSettings(settings.auth)
   const oauthProviders = getGenericOAuthProviderConfigs()
   const oauthPlugin = oauthProviders.length > 0
-    ? genericOAuth({
+    ? lazyGenericOAuth({
         config: oauthProviders,
       })
     : null
@@ -74,8 +76,8 @@ function createAuthInstance() {
         // auto-links to the local account even if its email is unverified.
         // This app does not require email verification, so the hardened
         // default would stop OAuth/password accounts from merging.
-        // The option is deprecated upstream and the secure gate becomes
-        // unconditional in the next minor — revisit before moving past 1.6.
+        // Still supported (deprecated) in 1.7. Keep this policy aligned with
+        // the installed-client token exchange and covered by linking tests.
         requireLocalEmailVerified: false,
       },
     },
@@ -122,7 +124,9 @@ function createAuthInstance() {
       admin({
         defaultRole: authSettings.defaultUserRole === 'admin' ? 'admin' : 'user',
       }),
-      ...(oauthPlugin ? [oauthPlugin] : []),
+      // Run after genericOAuth's before hook so recovered discovery is checked
+      // on the same request, before authorization or identity provisioning.
+      ...(oauthPlugin ? [oauthPlugin, oidcIssuerPolicy()] : []),
     ],
     secret: getOrCreateAuthSecret(),
     baseURL: getAppBaseUrl(),
@@ -175,6 +179,9 @@ function createAuthInstance() {
             } catch (err) {
               console.error('Failed to check/set admin role:', err)
             }
+            // The workspace's Team Brain is every member's, so someone joining gets it too.
+            const { addTeamBrainUser } = await import('@shared/lib/services/agent-members-service')
+            await addTeamBrainUser(createdUser.id).catch((err) => console.error('Failed to give a new member the Team Brain:', err))
           },
         },
       },

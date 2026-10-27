@@ -27,6 +27,8 @@ export interface ApiAgent {
   /** Decorative `{slug(name)}-{id}` projection for URLs/links; recomputed from the current name. */
   displaySlug: string
   name: string
+  /** The workspace's Team Brain agent, reached from its own sidebar item rather than the agent list, and the drive it keeps. */
+  teamBrain?: { volumeId: string }
   /** Older deployments omit avatar metadata; hide avatar UI when unavailable. */
   avatar?: AgentAvatar | null
   description?: string
@@ -42,6 +44,8 @@ export interface ApiAgent {
   hasActiveSessions?: boolean
   hasSessionsAwaitingInput?: boolean
   hasUnreadNotifications?: boolean
+  /** One of its sessions has an unread notification that tags the viewer. */
+  hasUnreadMention?: boolean
   sessionCount?: number
   lastActivityAt?: Date | null
   dashboards?: ApiAgentDashboard[]
@@ -115,6 +119,8 @@ export interface ApiDiscoverableAgent {
   category?: string
   /** kebab-case lucide icon name, e.g. "badge-dollar-sign". */
   icon?: string
+  /** The template's orb, when its skillset names one. */
+  avatar?: AgentAvatar
   tags?: string[]
   /** Services the template connects to; `slug` matches the service-icon set. */
   worksWith?: { type: string; slug: string }[]
@@ -137,6 +143,8 @@ export interface ApiSession {
   isActive?: boolean
   isAwaitingInput?: boolean
   hasUnreadNotifications?: boolean
+  /** An unread notification that tags the viewer: drawn as an @, not a dot. */
+  hasUnreadMention?: boolean
   lastUsage?: SessionUsage
   // Present when session was created by a scheduled task or webhook trigger
   scheduledTaskId?: string
@@ -187,7 +195,7 @@ export interface ApiToolCall {
     totalTokens?: number
     totalToolUseCount?: number
   }
-  /** The runtime's task id for a Bash call run in the background. */
+  /** The runtime's task id for a Bash call run in the background, or a Monitor's watch. */
   backgroundTaskId?: string
 }
 
@@ -316,9 +324,27 @@ export interface ApiInformational {
 }
 
 /**
+ * One batch of a Monitor watch's output, shown where the runtime delivered it
+ * (see monitor-notifications.ts)
+ */
+export interface ApiMonitorEvent {
+  id: string
+  type: 'monitor_event'
+  /** The watch's task id: the Monitor call's backgroundTaskId. */
+  taskId: string
+  description: string | null
+  events: string[]
+  /** Set on the batch that ended the watch (completed, failed, …). */
+  status: string | null
+  endReason: string | null
+  createdAt: Date
+  forked?: boolean
+}
+
+/**
  * Union type for all message-like items in the API response
  */
-export type ApiMessageOrBoundary = ApiMessage | ApiCompactBoundary | ApiMemoryRecall | ApiInformational
+export type ApiMessageOrBoundary = ApiMessage | ApiCompactBoundary | ApiMemoryRecall | ApiInformational | ApiMonitorEvent
 
 // ============================================================================
 // Secret API Types
@@ -452,12 +478,16 @@ export interface ApiScheduledTask {
  */
 export interface ApiNotification {
   id: string
-  type: 'session_complete' | 'session_waiting' | 'session_scheduled' | 'session_webhook' | 'session_chat_integration'
+  type: 'session_complete' | 'session_waiting' | 'session_scheduled' | 'session_webhook' | 'session_chat_integration' | 'session_mention'
   sessionId: string
   agentSlug: string
   title: string
   body: string
   isRead: boolean
+  /** Set on a mention: it is this user's alone. */
+  recipientUserId?: string | null
+  /** The message a mention points at. */
+  messageUuid?: string | null
   createdAt: Date
   readAt: Date | null
 }

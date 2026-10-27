@@ -1,6 +1,6 @@
 import { cn } from '@shared/lib/utils/cn'
 import { useCallback, useRef, useMemo, memo } from 'react'
-import { Link2 } from 'lucide-react'
+import { AtSign, Link2 } from 'lucide-react'
 import { resolveProviderError } from '@renderer/components/provider-error/provider-error-registry'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { ToolCallItem } from './tool-call-item'
@@ -31,6 +31,8 @@ import { useIsReadAloudAvailable, useIsBeingRead, useSpokenWordHighlight } from 
 import { useIsTtsConfigured } from '@renderer/hooks/use-voice-input'
 import { ReadAloudControls } from './read-aloud-controls'
 import { UserAvatar } from '@renderer/components/ui/user-avatar'
+import { rehypeMentions } from '@renderer/lib/rehype-mentions'
+import type { Mention } from '@shared/lib/utils/mentions'
 
 // Re-export for use by other components
 export type { ApiToolCall }
@@ -51,14 +53,22 @@ interface MarkdownBlockProps {
   spokenOffset?: number
   /** Render settled ```html fences as live previews (assistant replies only). */
   htmlPreview?: boolean
+  /** The people and agents a sent message mentions, drawn as chips where their names stand. */
+  mentions?: readonly Mention[]
 }
 
 function spokenPlugins(spoken: boolean | undefined, offset: number | undefined): MarkdownProps['rehypePlugins'] {
   return spoken ? [[rehypeSpokenWords, { offset: offset ?? 0 }]] : undefined
 }
 
-export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAliases, agentSlug, spoken, spokenOffset, htmlPreview }: MarkdownBlockProps) {
-  const rehypePlugins = useMemo(() => spokenPlugins(spoken, spokenOffset), [spoken, spokenOffset])
+const NO_MENTIONS: readonly Mention[] = []
+
+export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAliases, agentSlug, spoken, spokenOffset, htmlPreview, mentions = NO_MENTIONS }: MarkdownBlockProps) {
+  const rehypePlugins = useMemo(() => {
+    const plugins = spokenPlugins(spoken, spokenOffset)
+    if (mentions.length === 0) return plugins
+    return [[rehypeMentions, { mentions, agentSlug }], ...(plugins ?? [])] as MarkdownProps['rehypePlugins']
+  }, [spoken, spokenOffset, mentions, agentSlug])
   return (
     <AgentMarkdown
       text={text}
@@ -144,6 +154,15 @@ interface MessageItemProps {
   isStreamingRow?: boolean
 }
 
+function isSubagentTool(name: string): boolean {
+  return name === 'Task' || name === 'Agent'
+}
+
+// The rows that read activeSubagents/completedSubagents: they draw a subagent or workflow card.
+export function readsSubagentState(message: ApiMessage): boolean {
+  return message.toolCalls?.some(tc => isSubagentTool(tc.name) || tc.name === 'Workflow') ?? false
+}
+
 function resolveSubagentRun(
   toolCall: ApiToolCall,
   activeSubagents: SubagentInfo[] | undefined,
@@ -172,9 +191,13 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   const isAssistant = message.type === 'assistant'
 
   const rawText = message.content.text
-  // User bubbles: lift the attached-files / mounted-folders blocks into pills
-  // and the sender prefix into the sender label, leaving just the typed text.
-  const userParts = isUser ? parseUserMessageParts(rawText) : null
+  // User bubbles: lift the attached-files / mounted-folders blocks into pills,
+  // the sender prefix into the sender label and the mentions block into chips,
+  // leaving just the typed text. Memoized so the mentions keep their identity.
+  const userParts = useMemo(() => (isUser ? parseUserMessageParts(rawText) : null), [isUser, rawText])
+  const mentions = userParts?.mentions.length ? userParts.mentions : undefined
+  // A message that opened on a teammate only notified them: the agent did not run.
+  const silentMention = !!userParts?.silent
   const senderFromPrefix = userParts?.sender ?? null
   // A mirror prefix carries only a name, so it hashes the name for an initials avatar.
   const sender = message.sender ?? (senderFromPrefix ? { id: senderFromPrefix, name: senderFromPrefix } : null)
@@ -349,7 +372,9 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
               className={cn(
                 'rounded-lg max-w-full text-foreground',
                 !isAssistant && 'overflow-hidden',
-                isUser && 'bg-zinc-100 dark:bg-zinc-800/70 px-4 py-2',
+                isUser && 'px-4 py-2',
+                isUser && !silentMention && 'bg-zinc-100 dark:bg-zinc-800/70',
+                silentMention && 'border border-dashed border-violet-300 bg-violet-50/60 dark:border-violet-400/40 dark:bg-violet-400/10',
                 // Relative for the read-aloud controls, which overlay the
                 // gap under the bubble rather than adding a row to it.
                 isAssistant && 'relative py-1'
@@ -399,6 +424,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                       agentSlug={agentSlug}
                       spoken={isBeingRead}
                       htmlPreview={isAssistant && !isStreamingRow}
+                      mentions={mentions}
                     />
                   )}
                   {isStreaming && (
@@ -421,6 +447,14 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
               )}
             </div>
           </MessageContextMenu>
+        )}
+
+        {/* Who a notify-only message reached: the agent did not run for it */}
+        {silentMention && (
+          <span className="flex items-center gap-1 text-xs text-muted-foreground" data-testid="mention-notified">
+            <AtSign className="h-3 w-3 text-violet-500" aria-hidden />
+            Notified {userParts!.mentions.flatMap((mention) => mention.kind === 'user' ? [mention.name] : []).join(', ')}
+          </span>
         )}
 
         {/* Attached file chips for user messages */}
@@ -495,7 +529,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                     }
                   >
                     <MessageErrorBoundary kind="tool call" raw={toolCall} itemId={toolCall.id}>
-                      {(toolCall.name === 'Task' || toolCall.name === 'Agent') && sessionId ? (
+                      {isSubagentTool(toolCall.name) && sessionId ? (
                         <SubAgentBlock
                           toolCall={toolCall}
                           sessionId={sessionId}
@@ -528,10 +562,9 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
 // Memoized: on the 5s refetch React Query's structural sharing preserves the
 // object reference of any unchanged message, so the default shallow prop compare
 // skips re-rendering all but the items that actually changed. Handlers, agentSlug
-// and sessionId are referentially stable. Note: activeSubagents/completedSubagents
-// are passed to every item and change identity on each subagent SSE event, so the
-// memo gives no benefit while a subagent is actively streaming — it still pays off
-// for the common idle/refetch and plain-text-streaming cases.
+// and sessionId are referentially stable. activeSubagents/completedSubagents
+// change identity on each subagent SSE event, so MessageList passes them only to
+// rows with Task/Agent/Workflow calls; other rows skip re-rendering.
 export const MessageItem = memo(MessageItemComponent)
 
 if (__RENDER_TRACKING__) {

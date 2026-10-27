@@ -37,6 +37,8 @@ export interface ActivityBackgroundTask {
   isWorkflow?: boolean
   /** A background subagent; folded into its named subagent row when one is shown. */
   isSubagent?: boolean
+  /** A Monitor watch; its detail is the watch's description, not a command. */
+  isMonitor?: boolean
   /** What kind of work ("Background command"); the generic noun when absent. */
   title?: string
   /** The command or description, when known. */
@@ -114,7 +116,8 @@ export function ActivityCard({
   )
   const backgroundAgentCount = visibleBackgroundTasks.filter((task) => task.isSubagent).length
   const backgroundWorkflowCount = visibleBackgroundTasks.filter((task) => task.isWorkflow).length
-  const backgroundProcessCount = visibleBackgroundTasks.length - backgroundWorkflowCount - backgroundAgentCount
+  const monitorCount = visibleBackgroundTasks.filter((task) => task.isMonitor).length
+  const backgroundProcessCount = visibleBackgroundTasks.length - backgroundWorkflowCount - backgroundAgentCount - monitorCount
   const activeSubagentCount = subagents.filter((item) => item.status === 'running').length + backgroundAgentCount
   const pendingTaskCount = todos?.filter((todo) => todo.status !== 'completed').length ?? 0
   // The tree is live work only — things running right now, hanging off the orb.
@@ -130,6 +133,7 @@ export function ActivityCard({
     // track that the agent still has hold of one of their apps.
     computerUse ? `computer use: ${computerUse.app}` : '',
     formatActivityCount(backgroundProcessCount, 'background process', 'background processes'),
+    formatActivityCount(monitorCount, 'monitor', 'monitors'),
     formatActivityCount(backgroundWorkflowCount, 'background workflow', 'background workflows'),
     formatActivityCount(activeSubagentCount, 'subagent', 'subagents'),
     formatActivityCount(pendingTaskCount, 'pending task', 'pending tasks'),
@@ -571,7 +575,7 @@ function BackgroundTaskRow({ task, tracerRow, onStop }: {
         <span className="min-w-0 flex-1 truncate" title={fullText}>
           <span className="text-muted-foreground">{title}</span>
           {task.detail && (
-            <span className="font-mono text-muted-foreground/80">{' '}{task.detail}</span>
+            <span className={cn('text-muted-foreground/80', !task.isMonitor && 'font-mono')}>{' '}{task.detail}</span>
           )}
         </span>
         {elapsed && (

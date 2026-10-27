@@ -7,6 +7,7 @@ import type { ApiAgent } from '@shared/lib/types/api'
 import { updateAgentAvatarCache, updateAgentRuntimeCache } from '@renderer/lib/agent-cache'
 import { agentAvatarSchema, type AgentAvatar } from '@shared/lib/types/agent-avatar'
 import { TODOS_QUERY_KEY } from './todos-query-key'
+import { usePreparedTeamBrainSlug } from '@renderer/lib/team-brain/team-brain-store'
 
 // Re-export for convenience
 export type { ApiAgent }
@@ -109,6 +110,16 @@ export function useAgents<TData = ApiAgent[]>(options?: {
   })
 }
 
+/** The agents the sidebar and Home list: all but the Team Brain agent, which is reached only through its own sidebar item. */
+export function useListedAgents() {
+  const preparedSlug = usePreparedTeamBrainSlug()
+  const withoutTeamBrain = useCallback(
+    (agents: ApiAgent[]) => agents.filter((agent) => !agent.teamBrain && agent.slug !== preparedSlug),
+    [preparedSlug],
+  )
+  return useAgents({ select: withoutTeamBrain })
+}
+
 export function useAgent(slug: string | null) {
   return useQuery<ApiAgent>({
     queryFn: async () => {
@@ -183,6 +194,10 @@ export function useDeleteAgent() {
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
       // Todo items given to it let go of it on the server.
       queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
+      // Deleting the Team Brain agent takes its drive off every other agent and off global.
+      queryClient.invalidateQueries({ queryKey: ['mounts'] })
+      queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
+      queryClient.invalidateQueries({ queryKey: ['volume-agents'] })
     },
   })
 }
@@ -241,7 +256,15 @@ export function useUpdateAgentAvatar() {
   })
 }
 
-export type StartAgentVars = string | { slug: string; source?: 'user' | 'warm-start' }
+export type StartAgentVars = string | {
+  slug: string
+  source?: 'user' | 'warm-start'
+  /**
+   * The session the caller is typing into. The server then also resumes that
+   * session's agent process if it went idle, so the next send starts sooner.
+   */
+  sessionId?: string
+}
 
 function resolveStartAgentSlug(vars: StartAgentVars): string {
   return typeof vars === 'string' ? vars : vars.slug
@@ -255,7 +278,13 @@ export function useStartAgent() {
     meta: { skipGlobalErrorToast: true },
     mutationFn: async (vars: StartAgentVars) => {
       const slug = resolveStartAgentSlug(vars)
-      const res = await apiFetch(`/api/agents/${slug}/start`, { method: 'POST' })
+      const sessionId = typeof vars === 'string' ? undefined : vars.sessionId
+      const res = await apiFetch(
+        `/api/agents/${slug}/start`,
+        sessionId
+          ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId }) }
+          : { method: 'POST' },
+      )
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
         throw new Error(body.error || 'Failed to start agent')

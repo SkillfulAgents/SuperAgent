@@ -208,6 +208,10 @@ export const userSettingsSchema = z.object({
   // Agent slugs whose associated app/dashboard card is hidden from the home grid
   // (toggled from the agent card). Absent/empty = all app cards shown.
   hiddenAppCards: z.array(z.string()).optional(),
+  // Individual home grid cards the user hid, keyed like homeGridLayout (agent
+  // slug or dashboard key). Unhidden from the home options menu beside New Agent.
+  // Absent/empty = every card shown.
+  hiddenHomeCards: z.array(z.string()).optional(),
   defaultApiPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   defaultMcpPolicy: z.enum(['allow', 'review', 'block']).default('review'),
   keepAwakeEnabled: z.boolean().default(false),

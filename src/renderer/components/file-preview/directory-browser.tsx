@@ -15,7 +15,7 @@ export interface DirectoryBrowserState {
 
 interface DirectoryBrowserProps {
   folder: DirectoryBrowserState
-  useEntries: (path: string, enabled: boolean) => Pick<ReturnType<typeof useFolderEntries>, 'data' | 'isLoading' | 'error' | 'refetch'>
+  useEntries: (path: string, enabled: boolean) => Pick<ReturnType<typeof useFolderEntries>, 'data' | 'isLoading' | 'error'> & { refetch: () => unknown }
   onToggle: (path: string) => void
   onOpenFile: (entry: FolderEntry) => void
   onQueryChange: (query: string) => void

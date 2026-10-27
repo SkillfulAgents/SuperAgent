@@ -1,6 +1,6 @@
 {
   "name": "superagent",
-  "version": "0.5.43",
+  "version": "0.5.50",
   "description": "AI agent management platform",
   "author": "Datawizz Inc.",
   "license": "MIT",
@@ -10,20 +10,22 @@
   },
   "main": "dist/main/index.js",
   "scripts": {
-    "dev": "npm rebuild better-sqlite3 && vite",
+    "dev": "vite",
     "dev:web": "vite",
     "dev:api": "tsx watch src/web/server.ts",
-    "dev:electron": "electron-rebuild -f && cross-env SUPERAGENT_BASE_PORT=5000 electron-vite dev",
+    "dev:electron": "install-electron && cross-env SUPERAGENT_BASE_PORT=5000 electron-vite dev",
     "build": "npm run build:web && npm run build:api",
-    "build:web": "vite build",
+    "build:web": "node --max-old-space-size=4096 node_modules/vite/bin/vite.js build",
     "build:api": "tsup && node scripts/check-runtime-dependencies.mjs web",
-    "build:electron": "electron-vite build && node scripts/check-runtime-dependencies.mjs electron",
+    "build:electron": "node --max-old-space-size=4096 node_modules/electron-vite/bin/electron-vite.js build && node scripts/check-runtime-dependencies.mjs electron",
     "check:runtime-deps": "node scripts/check-runtime-dependencies.mjs all",
     "preview": "npm run build && node dist/web/server.mjs",
     "download:lima": "bash scripts/download-lima.sh",
     "download:wsl-rootfs": "bash scripts/download-wsl-rootfs.sh",
+    "download:agent-image": "tsx scripts/fetch-agent-image.ts build/agent-image",
     "build:mediaremote-adapter": "bash scripts/build-mediaremote-adapter.sh",
-    "dist:mac": "PLATFORM_PROXY_URL=${PLATFORM_PROXY_URL:-https://platformproxy.gamutagents.com} npm run download:lima && npm run build:mediaremote-adapter && npm run build:electron && electron-builder --mac --publish never",
+    "build:spotlight-bridge": "bash scripts/build-spotlight-bridge.sh",
+    "dist:mac": "PLATFORM_PROXY_URL=${PLATFORM_PROXY_URL:-https://platformproxy.gamutagents.com} npm run download:lima && npm run download:agent-image && npm run build:mediaremote-adapter && npm run build:spotlight-bridge && npm run build:electron && electron-builder --mac --publish never",
     "dist:win": "npm run download:wsl-rootfs && npm run build:electron && electron-builder --win --publish never",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src e2e perf --ext .ts,.tsx",
@@ -44,7 +46,7 @@
     "test:e2e:auth": "npx playwright test --config=playwright.auth.config.ts",
     "test:live:mcp-hot-add": "node e2e/live/mcp-hot-add/run.mjs",
     "test:live:x-agent-attachments": "tsx e2e/live/x-agent-attachments/run.ts",
-    "test:e2e:electron": "npm run build:electron && E2E_MOCK=true playwright test --project=electron",
+    "test:e2e:electron": "E2E_MOCK=true playwright test --config=playwright.electron.config.ts",
     "test:e2e:perf": "RENDER_TRACKING=true E2E_MOCK=true playwright test --project=web-chromium e2e/specs/render-perf.spec.ts",
     "test:halftone:visual": "E2E_MOCK=true playwright test e2e/specs/halftone-visual.spec.ts --project=web-chromium --workers=1",
     "benchmark:halftone": "tsx scripts/benchmark-halftone.ts",
@@ -58,44 +60,52 @@
     "icons:download": "tsx scripts/download-service-icons.ts",
     "icons:optimize": "tsx scripts/optimize-service-icons.ts",
     "test:perf": "vitest run --config vitest.perf.config.ts",
-    "test:libsql": "node scripts/run-libsql-tests.mjs"
+    "test:libsql": "node scripts/run-libsql-tests.mjs",
+    "test:actor-transport": "node scripts/run-actor-transport-tests.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/bedrock-sdk": "^0.35.0",
-    "@anthropic-ai/sdk": "^0.134.0",
+    "@anthropic-ai/bedrock-sdk": "^1.1.0",
+    "@anthropic-ai/sdk": "^1.3.0",
     "@aws-sdk/client-lambda-microvms": "^3.1075.0",
     "@aws-sdk/client-s3": "^3.1149.0",
-    "@hono/node-server": "^1.13.7",
-    "@hono/zod-validator": "^0.8.0",
+    "@hono/node-server": "^2.1.5",
+    "@hono/zod-validator": "^0.9.1",
     "@sentry/node": "^10.48.0",
     "@skillful-agents/agent-computer": "^0.0.15",
     "@slack/bolt": "^4.7.0",
     "@smithy/node-http-handler": "^4.12.1",
     "archiver": "^7.0.1",
-    "better-sqlite3": "^12.8.0",
-    "chrono-node": "^2.9.0",
-    "cron-parser": "^5.5.0",
+    "better-sqlite3": "^13.0.3",
+    "chrono-node": "^2.10.3",
+    "cron-parser": "^5.10.2",
     "date-fns": "^4.1.0",
     "drizzle-orm": "^0.45.1",
-    "electron-updater": "^6.7.3",
+    "electron-updater": "^6.8.11",
     "eventsource": "^4.1.0",
     "grammy": "^1.44.0",
-    "hono": "^4.6.14",
+    "graphql": "^17.0.2",
+    "heic-decode": "^2.1.0",
+    "hono": "^4.13.13",
+    "ignore": "^5.3.2",
     "jose": "^6.1.3",
-    "js-yaml": "^4.1.1",
-    "llm-endpoint-translation": "https://github.com/SkillfulAgents/llm-endpoint-translation/releases/download/v0.1.4/llm-endpoint-translation-0.1.4.tgz",
-    "marked": "^18.0.0",
+    "jpeg-js": "^0.4.4",
+    "js-yaml": "^4.3.2",
+    "koffi": "^3.3.3",
+    "llm-endpoint-translation": "https://github.com/SkillfulAgents/llm-endpoint-translation/releases/download/v0.1.6/llm-endpoint-translation-0.1.6.tgz",
+    "marked": "^18.1.1",
+    "node-diff3": "^3.2.1",
     "pngjs": "^7.0.0",
     "semver": "~7.7.3",
-    "tar": "^7.5.15",
+    "tar": "^7.5.22",
+    "tldts": "^7.0.23",
     "tokenx": "^2.1.0",
-    "undici": "^7.28.0",
+    "undici": "^7.30.1",
     "uuid": "^14.0.1",
     "web-push": "^3.6.7",
-    "ws": "^8.18.0",
+    "ws": "^8.22.0",
     "yauzl": "^3.3.0",
     "yazl": "^3.3.1",
-    "zod": "^4.3.6"
+    "zod": "~4.3.6"
   },
   "devDependencies": {
     "@analytics/amplitude": "^0.1.3",
@@ -106,7 +116,6 @@
     "@dnd-kit/modifiers": "^9.0.0",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
-    "@electron/rebuild": "^4.0.6",
     "@hono/vite-dev-server": "^0.24.1",
     "@hookform/resolvers": "^5.2.2",
     "@libsql/client": "^0.18.0",
@@ -128,10 +137,9 @@
     "@radix-ui/react-tabs": "^1.1.0",
     "@radix-ui/react-tooltip": "^1.2.8",
     "@sentry/browser": "^10.48.0",
-    "@sentry/electron": "^7.11.0",
     "@smithy/types": "^4.19.0",
     "@tailwindcss/typography": "^0.5.19",
-    "@tanstack/react-query": "^5.56.0",
+    "@tanstack/react-query": "^5.104.5",
     "@tanstack/react-router": "1.170.15",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
@@ -148,7 +156,7 @@
     "@types/react-dom": "^18.2.0",
     "@types/semver": "^7.8.0",
     "@types/web-push": "^3.6.4",
-    "@types/ws": "^8.5.12",
+    "@types/ws": "^8.18.2",
     "@types/yauzl": "^2.10.3",
     "@types/yazl": "^3.3.1",
     "@typescript-eslint/eslint-plugin": "^7.18.0",
@@ -160,18 +168,19 @@
     "analytics": "^0.8.19",
     "autoprefixer": "^10.4.0",
     "beautiful-mermaid": "^1.1.3",
-    "better-auth": "^1.6.23",
+    "better-auth": "1.7.12",
     "ccusage": "^15.2.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "concurrently": "^9.1.2",
-    "cronstrue": "^3.14.0",
+    "concurrently": "^9.2.5",
+    "cronstrue": "^3.32.0",
     "cross-env": "^7.0.3",
     "d3-force": "^3.0.0",
+    "dompurify": "3.4.17",
     "drizzle-kit": "^0.31.9",
-    "electron": "^41.1.0",
-    "electron-builder": "^26.4.0",
-    "electron-vite": "^5.0.0",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^6.0.0",
     "esbuild": "^0.25.12",
     "eslint": "^8.0.0",
     "eslint-plugin-jsx-a11y": "^6.10.2",
@@ -182,30 +191,32 @@
     "jsdom": "^28.1.0",
     "katex": "^0.18.9",
     "lucide-react": "^1.40.0",
-    "markdown-it": "^14.3.0",
+    "markdown-it": "^14.3.3",
+    "monaco-editor": "0.55.1",
     "p-limit": "^3.1.0",
-    "postcss": "^8.4.0",
-    "prosemirror-commands": "^1.7.1",
-    "prosemirror-history": "^1.5.0",
+    "postal-mime": "^4.0.6",
+    "postcss": "^8.5.23",
+    "prosemirror-commands": "^1.7.2",
+    "prosemirror-history": "^1.5.1",
     "prosemirror-inputrules": "^1.5.1",
     "prosemirror-keymap": "^1.2.3",
-    "prosemirror-markdown": "^1.13.5",
-    "prosemirror-model": "^1.25.10",
+    "prosemirror-markdown": "^1.13.8",
+    "prosemirror-model": "^1.25.12",
     "prosemirror-schema-list": "^1.5.1",
     "prosemirror-state": "^1.4.4",
-    "prosemirror-view": "^1.42.0",
+    "prosemirror-view": "^1.42.6",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-hook-form": "^7.71.2",
     "react-markdown": "^10.1.0",
-    "react-pdf": "^10.4.1",
+    "react-pdf": "^10.5.0",
     "react-qr-code": "^2.2.0",
     "recharts": "^2.15.4",
     "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",
     "remark-rehype": "^11.1.2",
     "sonner": "^2.0.7",
-    "svgo": "4.0.2",
+    "svgo": "4.1.0",
     "tailwind-merge": "^2.6.0",
     "tailwindcss": "^3.4.0",
     "tailwindcss-animate": "^1.0.7",
@@ -214,9 +225,14 @@
     "tsx": "^4.19.2",
     "typescript": "^5.3.0",
     "unified": "^11.0.5",
-    "vite": "^7.0.0",
+    "vite": "^7.3.7",
     "vite-plugin-pwa": "^1.3.0",
     "vitest": "^4.0.18"
+  },
+  "overrides": {
+    "monaco-editor": {
+      "dompurify": "$dompurify"
+    }
   },
   "build": {
     "appId": "com.superagent.app",
@@ -243,8 +259,10 @@
       }
     ],
     "files": [
-      "dist/**/*"
+      "dist/**/*",
+      "!node_modules/better-sqlite3/{build,deps,src,binding.gyp}"
     ],
+    "npmRebuild": false,
     "asarUnpack": [
       "node_modules/@skillful-agents/agent-computer/bin/**"
     ],
@@ -263,8 +281,10 @@
         "to": "lima",
         "filter": [
           "bin/limactl",
+          "bin/lima-nerdctl",
           "share/lima/lima-guestagent*",
-          "alpine.qcow2"
+          "alpine.qcow2",
+          "packages/**"
         ]
       },
       {
@@ -285,15 +305,35 @@
         {
           "from": "build/mediaremote-adapter",
           "to": "mediaremote-adapter"
+        },
+        {
+          "from": "build/spotlight-bridge",
+          "to": "spotlight-bridge"
+        },
+        {
+          "from": "build/notification-bridge",
+          "to": "notification-bridge"
+        },
+        {
+          "from": "build/agent-image",
+          "to": "agent-image",
+          "filter": [
+            "agent-image.tar",
+            "agent-image.json"
+          ]
         }
       ],
       "artifactName": "Gamut-${version}-${arch}.${ext}",
       "category": "public.app-category.developer-tools",
+      "minimumSystemVersion": "13.0",
       "icon": "build/icon.icon",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "notarize": true,
       "extendInfo": {
+        "NSUserActivityTypes": [
+          "com.apple.corespotlightitem"
+        ],
         "CFBundleAlternateNames": [
           "Gamut",
           "Superagent",
@@ -315,7 +355,8 @@
         ]
       },
       "files": [
-        "!node_modules/@skillful-agents/agent-computer/bin/ac-core-win32-*"
+        "!node_modules/@skillful-agents/agent-computer/bin/ac-core-win32-*",
+        "!node_modules/better-sqlite3/prebuilds/{linux,linuxmusl,win32}-*"
       ]
     },
     "win": {
@@ -399,7 +440,9 @@
       },
       "files": [
         "!node_modules/@skillful-agents/agent-computer/bin/ac-core-darwin-*",
-        "!node_modules/@skillful-agents/agent-computer/bin/ac-core-win32-!(${arch}).exe"
+        "!node_modules/@skillful-agents/agent-computer/bin/ac-core-win32-!(${arch}).exe",
+        "!node_modules/better-sqlite3/prebuilds/{darwin,linux,linuxmusl}-*",
+        "!node_modules/better-sqlite3/prebuilds/win32-!(${arch}).node"
       ]
     },
     "nsis": {

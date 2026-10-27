@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { renderWithProviders } from '@renderer/test/test-utils'
 import { createPortal } from 'react-dom'
 
@@ -17,6 +17,7 @@ const {
   mockUserSettingsData,
   mockUpdateSettingsMutate,
   mockToastError,
+  mockToast,
   mockUseIsMobile,
 } = vi.hoisted(() => ({
   mockUseNotableSessions: vi.fn<() => { data: Array<Record<string, unknown>> }>(() => ({ data: [] })),
@@ -25,6 +26,7 @@ const {
   mockUserSettingsData: vi.fn<() => Record<string, unknown> | null>(() => null),
   mockUpdateSettingsMutate: vi.fn(),
   mockToastError: vi.fn(),
+  mockToast: vi.fn(),
   mockUseIsMobile: vi.fn(() => false),
 }))
 
@@ -71,7 +73,7 @@ vi.mock('@renderer/lib/api', () => ({
 
 const mockAgentsData = vi.fn()
 vi.mock('@renderer/hooks/use-agents', () => ({
-  useAgents: () => mockAgentsData(),
+  useListedAgents: () => mockAgentsData(),
   useStartAgent: () => ({ mutate: vi.fn(), isPending: false }),
   useStopAgent: () => ({ mutate: vi.fn(), isPending: false }),
 }))
@@ -133,6 +135,18 @@ vi.mock('@renderer/components/ui/popover', () => ({
 }))
 
 vi.mock('@renderer/components/ui/context-menu', () => ({
+  ContextMenuItem: ({
+    children,
+    onClick,
+    ...props
+  }: {
+    children: React.ReactNode
+    onClick?: () => void
+  }) => (
+    <button type="button" onClick={onClick} {...props}>
+      {children}
+    </button>
+  ),
   ContextMenuSwitchItem: ({
     children,
     checked,
@@ -162,7 +176,7 @@ vi.mock('@renderer/hooks/use-mobile', () => ({
 }))
 
 vi.mock('sonner', () => ({
-  toast: { error: mockToastError },
+  toast: Object.assign(mockToast, { error: mockToastError }),
 }))
 
 vi.mock('@renderer/lib/env', () => ({
@@ -189,6 +203,16 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks()
 })
+
+// The app tile's card-options row; the agent card's context menu carries an
+// item with the same label.
+function hideAppButton() {
+  const button = screen
+    .getAllByRole('button', { name: 'Hide from Home' })
+    .find((b) => b.getAttribute('data-testid') !== 'hide-agent-card-item')
+  if (!button) throw new Error('no app-tile Hide from Home button')
+  return button
+}
 
 function makeAgent(overrides = {}) {
   return {
@@ -395,6 +419,25 @@ describe('HomePage AgentCard', () => {
     expect(cardLink).toHaveAttribute('data-widget-drag-surface')
     expect(screen.getByRole('button', { name: 'Mark as read' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Open session' })).toBeVisible()
+  })
+
+  it('marks a session where you were mentioned with an @ instead of the dot', () => {
+    mockUseNotableSessions.mockReturnValue({
+      data: [
+        { id: 'session-1', name: 'Launch plan', hasUnreadNotifications: true, hasUnreadMention: true },
+        { id: 'session-2', name: 'Weekly digest', hasUnreadNotifications: true },
+      ],
+    })
+    mockAgentsData.mockReturnValue({
+      data: [makeAgent({ hasUnreadNotifications: true, hasUnreadMention: true })],
+      isLoading: false,
+    })
+    renderWithProviders(<HomePage />)
+
+    expect(screen.getByText('Mentioned you:')).toBeVisible()
+    expect(screen.getByRole('img', { name: 'mentioned you' })).toBeVisible()
+    expect(screen.getByText('New message:')).toBeVisible()
+    expect(screen.getAllByRole('button', { name: 'Mark as read' })).toHaveLength(2)
   })
 
   it('uses the notable-session fast path for cards with live or unread work', () => {
@@ -635,6 +678,128 @@ describe('HomePage AgentCard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Done' }))
     expect(mockUpdateSettingsMutate).toHaveBeenCalledWith(
       { hiddenAppCards: ['test-agent'] },
+      expect.any(Object)
+    )
+  })
+
+  it('hides an agent card from its context menu and offers Undo', () => {
+    mockUserSettingsData.mockReturnValue({ hiddenHomeCards: [] })
+    mockAgentsData.mockReturnValue({
+      data: [makeAgent(), makeAgent({ slug: 'other', displaySlug: 'other', name: 'Other Agent' })],
+      isLoading: false,
+    })
+    renderWithProviders(<HomePage />)
+
+    fireEvent.click(screen.getAllByTestId('hide-agent-card-item')[0])
+
+    expect(document.querySelector('[data-widget-id="test-agent"]')).toBeNull()
+    expect(document.querySelector('[data-widget-id="other"]')).not.toBeNull()
+    expect(mockUpdateSettingsMutate).toHaveBeenCalledWith(
+      { hiddenHomeCards: ['test-agent'] },
+      expect.any(Object)
+    )
+    expect(mockToast).toHaveBeenCalledWith('Test Agent hidden from Home', expect.any(Object))
+
+    const undo = mockToast.mock.calls[0][1].action.onClick as () => void
+    act(() => undo())
+    expect(mockUpdateSettingsMutate).toHaveBeenLastCalledWith({ hiddenHomeCards: [] }, expect.any(Object))
+  })
+
+  it('hides an app tile from its card options without hiding the agent', () => {
+    mockUserSettingsData.mockReturnValue({ hiddenHomeCards: [] })
+    mockAgentsData.mockReturnValue({
+      data: [makeAgent({ dashboards: [{ slug: 'sales', name: 'Sales' }] })],
+      isLoading: false,
+    })
+    renderWithProviders(<HomePage />)
+
+    fireEvent.click(hideAppButton())
+
+    expect(screen.queryByText('Open app')).not.toBeInTheDocument()
+    expect(document.querySelector('[data-widget-id="test-agent"]')).not.toBeNull()
+    expect(mockUpdateSettingsMutate).toHaveBeenCalledWith(
+      { hiddenHomeCards: ['dash::test-agent::sales'] },
+      expect.any(Object)
+    )
+  })
+
+  it('lists hidden cards in the options menu and unhides them', () => {
+    mockUserSettingsData.mockReturnValue({
+      hiddenHomeCards: ['test-agent', 'dash::test-agent::sales', 'deleted-agent'],
+    })
+    mockAgentsData.mockReturnValue({
+      data: [
+        makeAgent({ dashboards: [{ slug: 'sales', name: 'Sales' }] }),
+        makeAgent({ slug: 'other', displaySlug: 'other', name: 'Other Agent' }),
+      ],
+      isLoading: false,
+    })
+    renderWithProviders(<HomePage />)
+
+    expect(document.querySelector('[data-widget-id="test-agent"]')).toBeNull()
+    expect(screen.queryByText('Open app')).not.toBeInTheDocument()
+    // Stale ids (deleted agents) are never listed.
+    expect(screen.getByTestId('home-unhide-test-agent')).toBeInTheDocument()
+    expect(screen.getByTestId('home-unhide-dash::test-agent::sales')).toBeInTheDocument()
+    expect(screen.queryByTestId('home-unhide-deleted-agent')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show Sales' }))
+    expect(screen.getByText('Open app')).toBeInTheDocument()
+    expect(mockUpdateSettingsMutate).toHaveBeenCalledWith(
+      { hiddenHomeCards: ['test-agent', 'deleted-agent'] },
+      expect.any(Object)
+    )
+
+  })
+
+  it('shows every hidden card at once from the options menu', () => {
+    mockUserSettingsData.mockReturnValue({ hiddenHomeCards: ['test-agent', 'dash::test-agent::sales'] })
+    mockAgentsData.mockReturnValue({
+      data: [makeAgent({ dashboards: [{ slug: 'sales', name: 'Sales' }] })],
+      isLoading: false,
+    })
+    renderWithProviders(<HomePage />)
+
+    fireEvent.click(screen.getByTestId('home-unhide-all'))
+
+    expect(mockUpdateSettingsMutate).toHaveBeenCalledWith({ hiddenHomeCards: [] }, expect.any(Object))
+    expect(document.querySelector('[data-widget-id="test-agent"]')).not.toBeNull()
+    expect(screen.getByText('Open app')).toBeInTheDocument()
+    expect(screen.queryByTestId('home-hidden-cards')).not.toBeInTheDocument()
+  })
+
+  it('explains where hidden cards went when every card is hidden', () => {
+    mockUserSettingsData.mockReturnValue({ hiddenHomeCards: ['test-agent'] })
+    mockAgentsData.mockReturnValue({ data: [makeAgent()], isLoading: false })
+    renderWithProviders(<HomePage />)
+
+    expect(screen.getByTestId('home-all-hidden')).toBeInTheDocument()
+    expect(screen.queryByTestId('home-empty-state')).not.toBeInTheDocument()
+  })
+
+  it('stages hiding until Done while arranging', () => {
+    mockUserSettingsData.mockReturnValue({ hiddenHomeCards: [] })
+    mockAgentsData.mockReturnValue({
+      data: [makeAgent({ dashboards: [{ slug: 'sales', name: 'Sales' }] })],
+      isLoading: false,
+    })
+    renderWithProviders(<HomePage />)
+    const agentCard = () => document.querySelector('[data-widget-id="test-agent"]')
+
+    fireEvent.click(screen.getByTestId('home-arrange-action'))
+    fireEvent.click(screen.getByTestId('hide-agent-card-item'))
+    expect(agentCard()).toBeNull()
+    expect(mockUpdateSettingsMutate).not.toHaveBeenCalled()
+    expect(mockToast).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(agentCard()).not.toBeNull()
+
+    fireEvent.click(screen.getByTestId('home-arrange-action'))
+    fireEvent.click(screen.getByTestId('hide-agent-card-item'))
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+    expect(mockUpdateSettingsMutate).toHaveBeenCalledWith(
+      { hiddenHomeCards: ['test-agent'] },
       expect.any(Object)
     )
   })

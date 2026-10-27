@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto'
-import { and, asc, eq, isNull, notExists, or, sql } from 'drizzle-orm'
+import { and, asc, eq, isNull, ne, notExists, or, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { db } from '@shared/lib/db'
-import { changesOf } from '@shared/lib/db/batch'
+import { batch, changesOf } from '@shared/lib/db/batch'
 import { agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
 import { VOLUME_TYPES, type StoredVolume, type VolumeDefinitionSummary } from '@shared/lib/types/mount'
-import { instantiateVolume, prepareVolume } from '@shared/lib/volumes/volume-factory'
+import { instantiateVolume, prepareVolume, removeVolume } from '@shared/lib/volumes/volume-factory'
 import { volumeConfigSchema } from '@shared/lib/volumes/volume-config-schema'
-import { volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
+import { volumeHealth, volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
 import { VolumeError } from '@shared/lib/volumes/volume-error'
 import { createVolumeSchema, updateVolumeSchema, volumeNameSchema } from './mount-schema'
 
@@ -63,7 +63,7 @@ export async function prepareVolumeDefinition(raw: unknown, viewer: VolumeViewer
   const now = new Date()
   return {
     id: randomUUID(), userId, name: volumeNameSchema.parse(input.name ?? prepared.name),
-    type: prepared.type, config: JSON.stringify(config), createdAt: now, updatedAt: now,
+    type: prepared.type, config: JSON.stringify(config), globalAccess: null, createdAt: now, updatedAt: now,
   }
 }
 
@@ -82,11 +82,13 @@ export async function listVolumeDefinitions(viewer: VolumeViewer): Promise<Volum
     const stored = storedDefinition(volume)
     if (!stored) return null
     return {
+      // The health check loads the drive's state first, so the summary's attention line reads it.
+      health: volumeHealth(await volumeProblem(stored)),
       ...volumeSummary(stored),
-      health: await volumeProblem(stored) === null ? 'ok' as const : 'missing' as const,
       userId: volume.userId,
       canManage: volume.userId === null ? viewer.admin : volume.userId === viewer.userId,
       attachmentCount,
+      globalAccess: volume.globalAccess,
     }
   }))
   return summaries.filter(row => row !== null)
@@ -96,14 +98,19 @@ export async function updateVolumeDefinition(id: string, raw: unknown, viewer: V
   const input = updateVolumeSchema.parse(raw)
   const ownership = and(eq(volumeDefinitions.id, id), manageableVolumes(viewer))
   const userId = input.visibility === undefined ? undefined : ownerFor(input.visibility, viewer)
-  // Evaluate attachment state with the write, including races with attachment.
-  const result = await db.update(volumeDefinitions).set({ name: input.name, userId, updatedAt: new Date() })
+  if (input.global && typeof userId === 'string') throw new VolumeError('Only public drives can be global', 400)
+  // Evaluate attachment and global state with the write, including races with attachment.
+  const result = await db.update(volumeDefinitions).set({ name: input.name, userId, globalAccess: input.global, updatedAt: new Date() })
     .where(and(ownership, userId === undefined ? undefined : or(
       userId === null ? isNull(volumeDefinitions.userId) : eq(volumeDefinitions.userId, userId),
       notExists(db.select({ id: agentVolumes.id }).from(agentVolumes).where(eq(agentVolumes.volumeId, id))),
-    ))).run()
+    ), input.global && userId === undefined ? isNull(volumeDefinitions.userId) : undefined,
+    typeof userId === 'string' ? isNull(volumeDefinitions.globalAccess) : undefined)).run()
   if (changesOf(result) > 0) return
-  if (await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(ownership).get()) {
+  const existing = await db.select({ userId: volumeDefinitions.userId, globalAccess: volumeDefinitions.globalAccess }).from(volumeDefinitions).where(ownership).get()
+  if (existing) {
+    if (input.global && existing.userId !== null) throw new VolumeError('Only public drives can be global', 400)
+    if (typeof userId === 'string' && existing.globalAccess) throw new VolumeError('Turn off global before changing access', 409)
     throw new VolumeError('Remove this drive from all agents before changing its access', 409)
   }
   throw new VolumeError('Drive not found', 404)
@@ -111,14 +118,23 @@ export async function updateVolumeDefinition(id: string, raw: unknown, viewer: V
 
 export async function deleteVolumeDefinition(id: string, viewer: VolumeViewer): Promise<void> {
   const ownership = and(eq(volumeDefinitions.id, id), manageableVolumes(viewer))
-  const result = await db.delete(volumeDefinitions).where(and(ownership,
+  const rows = await db.delete(volumeDefinitions).where(and(ownership,
     notExists(db.select({ id: agentVolumes.id }).from(agentVolumes).where(eq(agentVolumes.volumeId, id))),
-  )).run()
-  if (changesOf(result) > 0) return
+  )).returning({ type: volumeDefinitions.type }).all()
+  if (rows.length > 0) {
+    await removeVolume(rows[0].type, id)
+    return
+  }
   if (await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(ownership).get()) {
     throw new VolumeError('Remove this drive from all agents before deleting it', 409)
   }
   throw new VolumeError('Drive not found', 404)
+}
+
+/** Whether every member can add the drive: no one user owns it. */
+export async function isPublicVolume(id: string): Promise<boolean> {
+  const row = await db.select({ userId: volumeDefinitions.userId }).from(volumeDefinitions).where(eq(volumeDefinitions.id, id)).get()
+  return row !== undefined && row.userId === null
 }
 
 /** User-facing access to a source, independent of any agent or running container. */
@@ -135,6 +151,20 @@ export async function openVolumeDefinition(id: string, viewer: VolumeViewer) {
   const volume = instantiateVolume(await getVisibleVolumeDefinition(id, viewer))
   if (!volume) throw new VolumeError('Drive configuration is unavailable', 400)
   return volume
+}
+
+/**
+ * Takes a drive off every agent but `keep` and clears its global access. Checks no viewer: the caller authorizes first.
+ * Returns the agents it came off, read just before the delete, so a drive added in between is removed but not listed.
+ */
+export async function releaseVolume(id: string, keep: string): Promise<string[]> {
+  const where = and(eq(agentVolumes.volumeId, id), ne(agentVolumes.agentSlug, keep))
+  const attached = await db.select({ agentSlug: agentVolumes.agentSlug }).from(agentVolumes).where(where).all()
+  await batch([
+    db.delete(agentVolumes).where(where),
+    db.update(volumeDefinitions).set({ globalAccess: null, updatedAt: new Date() }).where(eq(volumeDefinitions.id, id)),
+  ])
+  return attached.map((row) => row.agentSlug)
 }
 
 export async function listVolumeAttachments(id: string, viewer: VolumeViewer) {

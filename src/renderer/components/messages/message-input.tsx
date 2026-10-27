@@ -4,7 +4,7 @@ import { useMessages, useSendMessage, useUploadFile, useUploadFolder, useInterru
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { labelBackgroundTasks } from '@renderer/lib/background-task-label'
 import { StopSessionDialog } from './stop-session-dialog'
-import { WifiOff } from 'lucide-react'
+import { AtSign, WifiOff } from 'lucide-react'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
@@ -35,6 +35,7 @@ import { SlashCommandMenu } from './slash-command-menu'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
+import { silentOpener } from './composer-chips'
 import { registerSessionComposerFocus } from './composer-focus'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { ChatComposerBox, FLOATING_COMPOSER_CLASS } from './chat-composer-box'
@@ -147,7 +148,7 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
   const uploadFile = useUploadFile()
   const uploadFolder = useUploadFolder()
   const interruptSession = useInterruptSession()
-  const { isActive, slashCommands, isWaitingBackground, backgroundTasks } = useMessageStream(sessionId, agentSlug)
+  const { isActive, slashCommands, isWaitingBackground, backgroundTasks } = useMessageStream(sessionId, agentSlug, ['isActive', 'slashCommands', 'isWaitingBackground', 'backgroundTasks'])
   // The Stop dialog names what is running; the launching tool calls in the
   // transcript carry the names.
   const { data: messages } = useMessages(sessionId, agentSlug)
@@ -197,7 +198,7 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
       ({ sourcePath }) => uploadFolder.mutateAsync({ sessionId: sessionId ?? undefined, agentSlug, sourcePath }),
       [uploadFolder, sessionId, agentSlug]
     ),
-    onSubmit: useCallback(async (content: string) => {
+    onSubmit: useCallback(async (content: string, { silent }: { silent: boolean }) => {
       if (!sessionId) return createFirstTurn(content)
       // Local correlation id for the optimistic copy; the server-assigned
       // message uuid arrives with the POST response (the server always
@@ -205,44 +206,57 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
       const localId = crypto.randomUUID()
       const inputMode = voiceSendRef.current ? 'voice' : 'text'
       voiceSendRef.current = false
+      // A message that only notifies joins the transcript and runs no turn,
+      // so it is never queued behind one.
       // Mid-turn sends are queued by the agent loop (SDK streaming input) and
       // picked up after the current step. They must not carry model/effort —
       // a parameter change would interrupt/restart the in-flight query.
       // (The server also strips them when it sees the session is active.)
-      const queued = isActive && !isWaitingBackground
-      const runtimeOptions = queued ? {} : composerOptions.toRuntimeOptions()
+      const queued = !silent && isActive && !isWaitingBackground
+      const runtimeOptions = queued || silent ? {} : composerOptions.toRuntimeOptions()
       onMessageSent?.(content, localId, queued)
+      let credentialSource: string | undefined
       try {
         const result = await sendMessage.mutateAsync({
           sessionId,
           agentSlug,
           content,
           ...runtimeOptions,
+          ...(silent ? { shouldQuery: false } : {}),
         })
         // Only a fresh turn accepts runtime-option changes. The server's
         // queued decision is authoritative and may differ from our SSE-based
         // guess, so keep a user pick dirty when the server stripped it.
-        if (!result.queued) composerOptions.markSubmitted(runtimeOptions)
+        if (!result.queued && !silent) composerOptions.markSubmitted(runtimeOptions)
         // Reconcile against the server's authoritative decision: our local
         // `queued` guess is derived from SSE state that can be stale (reconnect,
         // a peer's turn, background-task flag), and a mismatch otherwise strands
         // the ghost — a server-queued message is re-id'd by the CLI, so it never
         // matches our uuid and never materializes.
         onMessageUuidAssigned?.(localId, result.uuid, result.queued)
+        credentialSource = result.credentialSource
       } catch (error) {
         onMessageFailed?.(localId)
         throw error
       }
-      track('message_sent', { origin: 'user', input_mode: inputMode })
+      track('message_sent', {
+        origin: 'user', input_mode: inputMode,
+        session_id: sessionId, credential_source: credentialSource ?? 'unknown',
+        notify_only: silent,
+      })
     }, [createFirstTurn, onMessageSent, onMessageUuidAssigned, onMessageFailed, sendMessage, sessionId, agentSlug, track, composerOptions, isActive, isWaitingBackground]),
     submitDisabled: isSending || isOffline || !isRuntimeReady || isViewOnly,
     keepMessageUntilComplete: !sessionId,
     draftKey: sessionId ? `session:${sessionId}` : `new-session:${agentSlug}`,
+    silentSends: !!sessionId,
   })
+  const notifiesOnly = sessionId ? silentOpener(composer.message) : null
 
   const warmStartEnabled = useWarmStartOnTypeEnabled()
   const { warmStart } = useWarmStartOnType({
     agentSlug,
+    // Also resumes this session's agent process if it went idle.
+    sessionId,
     message: composer.message,
     enabled: warmStartEnabled && !isViewOnly && !isOffline,
   })
@@ -253,7 +267,6 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
     model: undefined,
     effort: composerOptions.effort,
     speed: composerOptions.speed,
-    securedSecrets: [],
   })
   snapshotRef.current = {
     text: composer.message,
@@ -261,7 +274,6 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
     model: composerOptions.model,
     effort: composerOptions.effort,
     speed: composerOptions.speed,
-    securedSecrets: composer.securedSecrets,
   }
   useEffect(() => {
     if (!registerSnapshot) return
@@ -605,6 +617,7 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
         onChoice={composer.mountDialog.onChoice}
         folderName={composer.mountDialog.folderName}
       />
+      {composer.chipDialog}
       <SlashCommandMenu
         commands={filteredCommands}
         selectedIndex={slashMenuIndex}
@@ -639,11 +652,10 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
         secureSecrets={{
           agentSlug,
           potentialSecrets: composer.potentialSecrets,
-          securedSecrets: composer.securedSecrets,
           onDismiss: composer.dismissPotentialSecret,
           onSecure: composer.securePotentialSecret,
-          onRemove: composer.removeSecuredSecrets,
         }}
+        chipContext={composer.chipContext}
         leftActions={(
           <>
             <AttachmentPicker
@@ -686,6 +698,12 @@ export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessage
               <div className="mt-2 flex items-center gap-1.5 text-xs text-destructive">
                 <WifiOff className="h-3 w-3 shrink-0" />
                 <span>No internet connection. Messages cannot be sent.</span>
+              </div>
+            )}
+            {notifiesOnly && (
+              <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground" data-testid="mention-notify-only-hint">
+                <AtSign className="h-3 w-3 shrink-0 text-violet-500" />
+                <span>{`Only notifies ${notifiesOnly.label}. The agent won't reply.`}</span>
               </div>
             )}
             <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2" />

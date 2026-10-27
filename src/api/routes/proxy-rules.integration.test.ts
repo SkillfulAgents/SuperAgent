@@ -22,9 +22,6 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
 vi.mock('@shared/lib/services/user-settings-service', () => ({
   getUserSettings: async () => ({ defaultApiPolicy: defaultPolicy, defaultMcpPolicy: defaultPolicy }),
 }))
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: { syncAgentSessionsAwaiting: vi.fn() },
-}))
 vi.mock('@shared/lib/services/audit-log-service', () => ({ logAuditEvent: vi.fn() }))
 vi.mock('@shared/lib/analytics/server-analytics', () => ({ trackServerEvent: vi.fn() }))
 vi.mock('@shared/lib/platform-attribution', () => ({
@@ -48,13 +45,12 @@ const restated = {
 vi.mock('@shared/lib/proxy/rules/author', () => ({
   catalogFor: () => '',
   restateRule: vi.fn(async () => restated),
-  authorRule: vi.fn(),
 }))
 
 import proxy from './proxy'
 import xAgentRules, { _setProposalTimingForTest } from './x-agent-rules'
 import proxyRules from './proxy-rules'
-import { authorRule, restateRule } from '@shared/lib/proxy/rules/author'
+import { restateRule } from '@shared/lib/proxy/rules/author'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import { addRuleVersion, createRule, invalidateRuleCache, listRules } from '@shared/lib/proxy/rules/store'
@@ -175,7 +171,7 @@ describe('API proxy with rules', () => {
     const review = await waitForReview('agent-a')
     const outcome = (review.payload as { ruleOutcomes?: Array<{ name: string; result: string }> }).ruleOutcomes?.[0]
     expect(outcome).toMatchObject({ name: 'Internal-only sends', result: 'false' })
-    agentRegistry.get('agent-a').inputs.reviews.submit(review.id, 'deny')
+    await agentRegistry.get('agent-a').inputs.reviews.submit(review.id, 'deny')
     const res = await pending
     expect(res.status).toBe(403)
     const body = await res.json() as { error: string; rules: Array<Record<string, unknown>> }
@@ -189,7 +185,7 @@ describe('API proxy with rules', () => {
   it('returns an empty rules list when no rule matched', async () => {
     const pending = proxySend('agent-a', 'To: a@acme.com\r\n\r\nhi')
     const review = await waitForReview('agent-a')
-    agentRegistry.get('agent-a').inputs.reviews.submit(review.id, 'deny')
+    await agentRegistry.get('agent-a').inputs.reviews.submit(review.id, 'deny')
     expect((await (await pending).json() as { rules: unknown[] }).rules).toEqual([])
   })
 
@@ -221,7 +217,7 @@ describe('API proxy with rules', () => {
     const review = await waitForReview('agent-a')
     const outcomes = (review.payload as { ruleOutcomes?: Array<{ effect: string; name: string; result: string }> }).ruleOutcomes
     expect(outcomes).toEqual([expect.objectContaining({ effect: 'require', name: 'Review external sends', result: 'false' })])
-    agentRegistry.get('agent-a').inputs.reviews.submit(review.id, 'deny')
+    await agentRegistry.get('agent-a').inputs.reviews.submit(review.id, 'deny')
     const res = await pending
     expect(res.status).toBe(403)
     const body = await res.json() as { rules: Array<{ effect: string; name: string }> }
@@ -232,7 +228,7 @@ describe('API proxy with rules', () => {
 
     // Approving a held request forwards it.
     const again = proxySend('agent-a', 'To: a@evil.com\r\n\r\n')
-    agentRegistry.get('agent-a').inputs.reviews.submit((await waitForReview('agent-a')).id, 'allow')
+    await agentRegistry.get('agent-a').inputs.reviews.submit((await waitForReview('agent-a')).id, 'allow')
     expect((await again).status).toBe(200)
     expect(upstreamCalls).toHaveLength(2)
   })
@@ -264,14 +260,14 @@ describe('API proxy with rules', () => {
     testDb.insert(schema.apiScopePolicies).values({
       id: 'p-send', accountId: 'acct-gmail', scope: 'gmail.send', decision: 'allow', createdAt: now, updatedAt: now,
     }).run()
-    agentRegistry.get('agent-a').inputs.reviews.resolveMatching('gmail.send', 'allow')
+    await agentRegistry.get('agent-a').inputs.reviews.resolveMatching('gmail.send', 'allow')
 
     // The internal send is decided again (now allowed) and goes out; the
     // external one is still held by the rule.
     expect((await internal).status).toBe(200)
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(pendingReviews('agent-a').map((r) => r.id)).toEqual([externalReview.id])
-    agentRegistry.get('agent-a').inputs.reviews.submit(externalReview.id, 'deny')
+    await agentRegistry.get('agent-a').inputs.reviews.submit(externalReview.id, 'deny')
     expect((await external).status).toBe(403)
     expect(upstreamCalls).toHaveLength(1)
   })
@@ -290,7 +286,7 @@ describe('API proxy with rules', () => {
     // A request the policy reviews anyway still goes to review.
     defaultPolicy = 'review'
     const pending = proxySend('agent-a', 'To: a@acme.com\r\n\r\n')
-    agentRegistry.get('agent-a').inputs.reviews.submit((await waitForReview('agent-a')).id, 'deny')
+    await agentRegistry.get('agent-a').inputs.reviews.submit((await waitForReview('agent-a')).id, 'deny')
     expect((await pending).status).toBe(403)
   })
 
@@ -299,7 +295,7 @@ describe('API proxy with rules', () => {
     expect((await proxySend('agent-a', 'To: a@acme.com\r\n\r\n')).status).toBe(200)
     const pending = proxySend('agent-b', 'To: a@acme.com\r\n\r\n')
     const review = await waitForReview('agent-b')
-    agentRegistry.get('agent-b').inputs.reviews.submit(review.id, 'deny')
+    await agentRegistry.get('agent-b').inputs.reviews.submit(review.id, 'deny')
     expect((await pending).status).toBe(403)
   })
 
@@ -350,7 +346,7 @@ describe('agent rule tools', () => {
     expect(proposal.restatement).toMatch(/@acme.com/)
     expect(proposal.tests.every((t) => t.passed)).toBe(true)
     expect(proposal.coverage[0]).toMatch(/^POST \/gmail\/v1\/users\/\*\/messages\/send/)
-    agentRegistry.get('agent-a').inputs.reviews.submit(review.id, 'allow')
+    await agentRegistry.get('agent-a').inputs.reviews.submit(review.id, 'allow')
     const res = await pending
     expect(res.status).toBe(200)
     const [saved] = await listRules({ kind: 'api', targetId: 'acct-gmail' })
@@ -379,14 +375,14 @@ describe('agent rule tools', () => {
     const proposal = (review.payload as { ruleProposal: { effect: string; warnings: string[] } }).ruleProposal
     expect(proposal.effect).toBe('require')
     expect(proposal.warnings.some((w) => w.startsWith('A require rule only holds'))).toBe(true)
-    agentRegistry.get('agent-a').inputs.reviews.submit(review.id, 'allow')
+    await agentRegistry.get('agent-a').inputs.reviews.submit(review.id, 'allow')
     expect((await pending).status).toBe(200)
     const [saved] = await listRules({ kind: 'api', targetId: 'acct-gmail' })
     expect(saved.version.effect).toBe('require')
 
     defaultPolicy = 'allow'
     const held = proxySend('agent-a', 'To: a@evil.com\r\n\r\n')
-    agentRegistry.get('agent-a').inputs.reviews.submit((await waitForReview('agent-a')).id, 'deny')
+    await agentRegistry.get('agent-a').inputs.reviews.submit((await waitForReview('agent-a')).id, 'deny')
     expect((await held).status).toBe(403)
     expect((await proxySend('agent-b', 'To: a@evil.com\r\n\r\n')).status).toBe(200)
   })
@@ -394,7 +390,7 @@ describe('agent rule tools', () => {
   it('does not save a rejected rule', async () => {
     const pending = propose('agent-a', 'create', draft)
     const review = await waitForReview('agent-a')
-    agentRegistry.get('agent-a').inputs.reviews.submit(review.id, 'deny')
+    await agentRegistry.get('agent-a').inputs.reviews.submit(review.id, 'deny')
     expect((await pending).status).toBe(403)
     expect(await listRules({ kind: 'api', targetId: 'acct-gmail' })).toEqual([])
   })
@@ -403,7 +399,7 @@ describe('agent rule tools', () => {
     const shared = await userRule()
     await userRule('agent-b')
     const created = propose('agent-a', 'create', draft)
-    agentRegistry.get('agent-a').inputs.reviews.submit((await waitForReview('agent-a')).id, 'allow')
+    await agentRegistry.get('agent-a').inputs.reviews.submit((await waitForReview('agent-a')).id, 'allow')
     expect((await created).status).toBe(200)
 
     const list = await (await call('agent-a', 'list', { kind: 'api', targetId: 'acct-gmail' })).json() as { rules: Array<Record<string, unknown>> }
@@ -426,13 +422,13 @@ describe('agent rule tools', () => {
     expect(proposal.deletesRuleId).toBe(shared.rule.id)
     expect(proposal.effect).toBe('require')
     expect(proposal.warnings[0]).toMatch(/without review/)
-    agentRegistry.get('agent-a').inputs.reviews.submit(keepReview.id, 'deny')
+    await agentRegistry.get('agent-a').inputs.reviews.submit(keepReview.id, 'deny')
     expect((await kept).status).toBe(403)
     expect((await listRules({ kind: 'api', targetId: 'acct-gmail' })).map((r) => r.rule.id)).toContain(shared.rule.id)
 
     // Deleted: the user approves.
     const deleted = propose('agent-a', 'delete', { ruleId: shared.rule.id })
-    agentRegistry.get('agent-a').inputs.reviews.submit((await waitForReview('agent-a')).id, 'allow')
+    await agentRegistry.get('agent-a').inputs.reviews.submit((await waitForReview('agent-a')).id, 'allow')
     expect((await deleted).status).toBe(200)
     expect((await listRules({ kind: 'api', targetId: 'acct-gmail' })).map((r) => r.rule.id)).toEqual([others.rule.id])
     expect(vi.mocked(logAuditEvent).mock.calls.map(([event]) => [event.action, (event.details as { ruleId?: string }).ruleId])).toEqual([
@@ -450,7 +446,7 @@ describe('agent rule tools', () => {
       patterns: ['POST /gmail/v1/users/*/messages/send'], code: INTERNAL_ONLY, tests: gmailTests, warnings: [], toolSchemaHash: null,
     })
     expect(replaced?.version.version).toBe(2)
-    agentRegistry.get('agent-a').inputs.reviews.submit(review.id, 'allow')
+    await agentRegistry.get('agent-a').inputs.reviews.submit(review.id, 'allow')
     const res = await pending
     expect(res.status).toBe(409)
     expect((await res.json() as { error: string }).error).toBe('rule_changed')
@@ -460,7 +456,7 @@ describe('agent rule tools', () => {
 
   it('replaces only the version the user was shown', async () => {
     const created = propose('agent-a', 'create', draft)
-    agentRegistry.get('agent-a').inputs.reviews.submit((await waitForReview('agent-a')).id, 'allow')
+    await agentRegistry.get('agent-a').inputs.reviews.submit((await waitForReview('agent-a')).id, 'allow')
     expect((await created).status).toBe(200)
     const [rule] = await listRules({ kind: 'api', targetId: 'acct-gmail' })
 
@@ -470,7 +466,7 @@ describe('agent rule tools', () => {
       effect: 'require', name: 'Changed meanwhile', description: 'x', restatement: 'x',
       patterns: ['POST /gmail/v1/users/*/messages/send'], code: INTERNAL_ONLY, tests: gmailTests, warnings: [], toolSchemaHash: null,
     })
-    agentRegistry.get('agent-a').inputs.reviews.submit(review.id, 'allow')
+    await agentRegistry.get('agent-a').inputs.reviews.submit(review.id, 'allow')
     expect((await pending).status).toBe(409)
     const [after] = await listRules({ kind: 'api', targetId: 'acct-gmail' })
     expect(after.version.version).toBe(2)
@@ -487,8 +483,8 @@ describe('agent rule tools', () => {
       await new Promise((resolve) => setTimeout(resolve, 5))
       secondReview = pendingReviews('agent-a').find((r) => r.id !== firstReview.id)
     }
-    agentRegistry.get('agent-a').inputs.reviews.submit(firstReview.id, 'allow')
-    agentRegistry.get('agent-a').inputs.reviews.submit(secondReview!.id, 'allow')
+    await agentRegistry.get('agent-a').inputs.reviews.submit(firstReview.id, 'allow')
+    await agentRegistry.get('agent-a').inputs.reviews.submit(secondReview!.id, 'allow')
     const statuses = [(await first).status, (await second).status].sort()
     expect(statuses).toEqual([200, 409])
     expect(await listRules({ kind: 'api', targetId: 'acct-gmail' })).toHaveLength(20)
@@ -515,11 +511,20 @@ describe('agent rule tools', () => {
   })
 
   it('withdraws the card of a proposal its agent stopped waiting for', async () => {
-    _setProposalTimingForTest({ leaseMs: 30 })
-    expect((await call('agent-a', 'create', draft)).status).toBe(202)
-    await waitForReview('agent-a')
-    await new Promise((resolve) => setTimeout(resolve, 60))
-    expect(pendingReviews('agent-a')).toHaveLength(0)
+    // The agent polls until its card is up, then stops. Polling is what holds
+    // the lease, so the card comes up however long preparing it takes; a bare
+    // 30 ms lease lapsed first on a loaded runner, and the proposal was
+    // abandoned before any card existed (the next test's case, not this one).
+    _setProposalTimingForTest({ leaseMs: 200, waitMs: 10 })
+    const res = await call('agent-a', 'create', draft)
+    expect(res.status).toBe(202)
+    const { proposalId } = await res.json() as { proposalId: string }
+    await vi.waitFor(async () => {
+      expect((await call('agent-a', 'wait', { proposalId })).status).toBe(202)
+      expect(pendingReviews('agent-a')).toHaveLength(1)
+    }, { timeout: 10_000, interval: 20 })
+
+    await vi.waitFor(() => expect(pendingReviews('agent-a')).toHaveLength(0), { timeout: 10_000 })
     expect(await listRules({ kind: 'api', targetId: 'acct-gmail' })).toEqual([])
   })
 
@@ -546,83 +551,22 @@ describe('agent rule tools', () => {
   })
 })
 
-describe('writing a rule in the app', () => {
+describe('rules in the app', () => {
   const base = '/api/proxy-rules/api/acct-gmail'
-  const json = (body: unknown) => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
 
-  beforeEach(() => {
-    vi.mocked(authorRule).mockReset()
-    vi.mocked(authorRule).mockResolvedValue({
-      type: 'draft',
-      draft: { kind: 'api', effect: 'allow', description: 'Send only to @acme.com', patterns: ['POST /gmail/v1/users/*/messages/send'], code: INTERNAL_ONLY, tests: gmailTests },
-      report: { ok: true, errors: [], warnings: [], testResults: [], coverage: [], toolSchemaHash: null },
-      attempts: 1,
-    } as Awaited<ReturnType<typeof authorRule>>)
+  it('lists every rule on the connection and deletes one', async () => {
+    const shared = await userRule()
+    await userRule('agent-a')
+    const listed = await (await app.request(base)).json() as { rules: Array<{ id: string; agentSlug: string | null }> }
+    expect(listed.rules.map((r) => r.agentSlug).sort()).toEqual(['agent-a', null].sort())
+
+    expect((await app.request(`${base}/${shared.rule.id}`, { method: 'DELETE' })).status).toBe(200)
+    expect((await listRules({ kind: 'api', targetId: 'acct-gmail' })).map((r) => r.rule.agentSlug)).toEqual(['agent-a'])
   })
 
-  async function author() {
-    const started = await app.request(`${base}/author`, json({ description: 'Send only to @acme.com' }))
-    expect(started.status).toBe(202)
-    const { jobId } = await started.json() as { jobId: string }
-    let res = await app.request(`${base}/author/${jobId}`)
-    while (res.status === 202) res = await app.request(`${base}/author/${jobId}`)
-    return { jobId, res }
-  }
-
-  it('writes the rule as a job, and saves the draft that job validated and restated', async () => {
-    const { jobId, res } = await author()
-    expect(res.status).toBe(200)
-    const body = await res.json() as { type: string; name: string; restatement: string; report: { ok: boolean } }
-    expect(body).toMatchObject({ type: 'draft', name: restated.name, restatement: restated.restatement, report: { ok: true } })
-    const calls = vi.mocked(restateRule).mock.calls.length
-
-    const saved = await app.request(base, json({ jobId, name: 'Internal sends' }))
-    expect(saved.status).toBe(200)
-    // Saving reuses the job's restatement instead of asking the model again.
-    expect(vi.mocked(restateRule).mock.calls.length).toBe(calls)
-    const [rule] = await listRules({ kind: 'api', targetId: 'acct-gmail' })
-    expect(rule.version).toMatchObject({ name: 'Internal sends', restatement: restated.restatement, code: INTERNAL_ONLY })
-    expect(rule.rule.createdBy).toBe('user')
-
-    // A draft saves once.
-    expect((await app.request(base, json({ jobId }))).status).toBe(410)
+  it('deletes only rules on the connection in the path', async () => {
+    const rule = await userRule()
+    expect((await app.request(`/api/proxy-rules/mcp/acct-gmail/${rule.rule.id}`, { method: 'DELETE' })).status).toBe(404)
     expect(await listRules({ kind: 'api', targetId: 'acct-gmail' })).toHaveLength(1)
-  })
-
-  it('returns a clarifying question from the job', async () => {
-    vi.mocked(authorRule).mockResolvedValueOnce({ type: 'question', question: 'Which domain?' })
-    const { jobId, res } = await author()
-    expect(await res.json()).toEqual({ type: 'question', question: 'Which domain?' })
-    expect((await app.request(base, json({ jobId }))).status).toBe(410)
-  })
-
-  it('returns a failed authoring run as the job\'s result, not an HTTP error', async () => {
-    vi.mocked(authorRule).mockRejectedValueOnce(new Error('The model returned malformed JSON'))
-    const { res } = await author()
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ type: 'failed', error: 'The model returned malformed JSON' })
-  })
-
-  it('keeps a draft that hit the rule cap, so it can be saved after deleting a rule', async () => {
-    for (let i = 0; i < 19; i++) await userRule()
-    const first = await author()
-    const second = await author()
-    // Both pass the early count check; the atomic insert lets only one in.
-    const [a, b] = await Promise.all([
-      app.request(base, json({ jobId: first.jobId })),
-      app.request(base, json({ jobId: second.jobId })),
-    ])
-    expect([a.status, b.status].sort()).toEqual([200, 422])
-    const rejected = a.status === 422 ? first.jobId : second.jobId
-
-    const [oldest] = await listRules({ kind: 'api', targetId: 'acct-gmail' })
-    expect((await app.request(`${base}/${oldest.rule.id}`, { method: 'DELETE' })).status).toBe(200)
-    expect((await app.request(base, json({ jobId: rejected }))).status).toBe(200)
-    expect(await listRules({ kind: 'api', targetId: 'acct-gmail' })).toHaveLength(20)
-  })
-
-  it('refuses a job id it did not hand out', async () => {
-    expect((await app.request(`${base}/author/nope`)).status).toBe(410)
-    expect((await app.request(base, json({ jobId: 'nope' }))).status).toBe(410)
   })
 })

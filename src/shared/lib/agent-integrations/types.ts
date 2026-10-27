@@ -94,10 +94,12 @@ export interface IntegrationSessionRecovery {
 export interface IntegrationSessionContext {
   integration: AgentIntegrationRecord
   externalId: string
-  /** Live read-only observation. Unknown means recovery has not established state. */
+  /**
+   * What the session was doing when the host handed this context over (an
+   * observation, or `IntegrationHost.session`). Unknown means recovery has not
+   * established state.
+   */
   readonly activity?: SessionActivity | 'unknown'
-  /** Current host requests, including decisions recovered during stream attachment. */
-  readonly pendingRequests?: readonly PendingUserInputRequest[]
   sessionId?: string
   interactionId?: string
   replyTarget?: Readonly<Record<string, string>>

@@ -2,7 +2,7 @@
  * Tool definition registry.
  *
  * Maps tool names to their definitions. Usable from both backend
- * (MessagePersister, AgentIntegrationManager) and renderer.
+ * (the agents' live sessions, AgentIntegrationManager) and renderer.
  */
 
 import type { AnyRequestDefinition, RequestDefinition } from './requests/definition'
@@ -16,6 +16,7 @@ import { accountReauthRequestDef } from './account-reauth/definition'
 import { mcpReauthRequestDef } from './mcp-reauth/definition'
 import type { ToolDefinition } from './types'
 import { bashDef } from './bash/definition'
+import { monitorDef } from './monitor/definition'
 import { readDef } from './read/definition'
 import { writeDef } from './write/definition'
 import { globDef } from './glob/definition'
@@ -35,10 +36,13 @@ import { requestFileDef } from './request-file/definition'
 import { requestRemoteMcpDef } from './request-remote-mcp/definition'
 import { requestScriptRunDef } from './request-script-run/definition'
 import { requestBrowserInputDef } from './request-browser-input/definition'
+import { requestLoginDef } from './request-login/definition'
 import {
   browserOpenDef,
   browserCloseDef,
   browserSnapshotDef,
+  browserReadDef,
+  browserCaptureTrafficDef,
   browserClickDef,
   browserFillDef,
   browserScrollDef,
@@ -84,6 +88,7 @@ const definitions: Record<string, ToolDefinition> = {
 
   // Shell/command tools
   Bash: bashDef,
+  Monitor: monitorDef,
 
   // File operations
   Read: readDef,
@@ -118,11 +123,14 @@ const definitions: Record<string, ToolDefinition> = {
   'mcp__user-input__request_remote_mcp': requestRemoteMcpDef,
   'mcp__user-input__request_script_run': requestScriptRunDef,
   'mcp__user-input__request_browser_input': requestBrowserInputDef,
+  'mcp__user-input__request_login': requestLoginDef,
 
   // MCP tools - browser
   'mcp__browser__browser_open': browserOpenDef,
   'mcp__browser__browser_close': browserCloseDef,
   'mcp__browser__browser_snapshot': browserSnapshotDef,
+  'mcp__browser__browser_read': browserReadDef,
+  'mcp__browser__browser_capture_traffic': browserCaptureTrafficDef,
   'mcp__browser__browser_click': browserClickDef,
   'mcp__browser__browser_fill': browserFillDef,
   'mcp__browser__browser_scroll': browserScrollDef,

@@ -26,6 +26,10 @@ const TodoRoute = lazyRouteComponent(
   () => import('@renderer/components/layout/todo-route'),
   'TodoRoute',
 )
+const TeamBrainRoute = lazyRouteComponent(
+  () => import('@renderer/components/layout/team-brain-route'),
+  'TeamBrainRoute',
+)
 const ExploreRoute = lazyRouteComponent(
   () => import('@renderer/components/layout/explore-route'),
   'ExploreRoute',
@@ -114,6 +118,15 @@ export const todoRoute = createRoute({
   component: TodoRoute,
 })
 
+// Team Brain (the `team-brain` experiment): the workspace's shared wiki. For
+// now the page before set-up and its set-up modal. Like Todo, the route points
+// at Settings → Experiments when the experiment is off.
+export const teamBrainRoute = createRoute({
+  getParentRoute: () => appShellRoute,
+  path: 'team-brain',
+  component: TeamBrainRoute,
+})
+
 export const exploreRoute = createRoute({
   getParentRoute: () => appShellRoute,
   path: 'explore',
@@ -170,6 +183,12 @@ export const agentHomeRoute = createRoute({
   // sibling route, so this leaf is just AgentHome.
   getParentRoute: () => agentLayoutRoute,
   path: '/',
+  // The Team Brain agent has no Agent Home: every way in lands on its own page. A failed read is left to the layout's
+  // loader, which owns turning it into not-found or an error.
+  loader: async ({ context, params }) => {
+    const agent = await context.queryClient.ensureQueryData(agentQuery(params.slug)).catch(() => null)
+    if (agent?.teamBrain) throw redirect({ to: '/team-brain', replace: true })
+  },
   component: AgentHomeRoute,
 })
 
@@ -316,6 +335,7 @@ export const routeTree = rootRoute.addChildren([
     notificationsRoute,
     notificationDetailRoute,
     todoRoute,
+    teamBrainRoute,
     exploreRoute,
     exploreCategoryRoute,
     exploreTemplateRoute,

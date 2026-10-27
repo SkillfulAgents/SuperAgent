@@ -16,14 +16,15 @@ import { isOwnedByCaller } from '@shared/lib/auth/ownership'
 import { getAccountProviderUserId } from '@shared/lib/config/settings'
 import { Authenticated, OwnsAccount, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
+import { background } from '@shared/lib/background'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { countActiveTriggersPerAccount, cancelTriggersForConnectedAccount } from '@shared/lib/services/webhook-trigger-service'
 import {
   findAgentsAssignedConnectedAccount,
+  resumeAccountReauthWaits,
   syncAgentsAssignedConnectedAccount,
   syncConnectedAccountAgents,
 } from '@shared/lib/services/connection-sync-service'
-import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
 import { getServerAdapter } from '@shared/lib/account-providers/server-adapters'
 import type { BaseAccountProvider } from '@shared/lib/account-providers/base-account-provider'
 
@@ -306,12 +307,12 @@ connectedAccountsRouter.post('/complete', async (c) => {
       // The account row now points at a provider connection that was verified
       // ACTIVE above. Resume every proxy request parked on this account before
       // the best-effort runtime refresh, which is unrelated to proxy tokens.
-      accountReauthManager.completeAccount(id)
+      await resumeAccountReauthWaits(id)
 
       // Clean up the old remote connection (fire-and-forget)
       if (oldRecord && oldRecord.providerConnectionId !== connectionId) {
-        accountProvider.deleteConnection(oldRecord.providerConnectionId, toolkitSlug)
-          .catch((err) => console.warn('[reconnect] Failed to delete old remote connection:', err))
+        background(accountProvider.deleteConnection(oldRecord.providerConnectionId, toolkitSlug)
+          .catch((err) => console.warn('[reconnect] Failed to delete old remote connection:', err)), { name: 'connected-accounts-route.delete-old-connection' })
       }
 
       trackServerEvent('account_oauth_reconnected', { toolkitSlug })
@@ -442,11 +443,11 @@ connectedAccountsRouter.get('/callback', async (c) => {
         .where(eq(connectedAccounts.id, reconnectAccountId))
       id = reconnectAccountId
 
-      accountReauthManager.completeAccount(id)
+      await resumeAccountReauthWaits(id)
 
       if (oldRecord && oldRecord.providerConnectionId !== connectionId) {
-        accountProvider.deleteConnection(oldRecord.providerConnectionId, toolkitSlug)
-          .catch((err) => console.warn('[reconnect] Failed to delete old remote connection:', err))
+        background(accountProvider.deleteConnection(oldRecord.providerConnectionId, toolkitSlug)
+          .catch((err) => console.warn('[reconnect] Failed to delete old remote connection:', err)), { name: 'connected-accounts-route.delete-old-connection' })
       }
 
       trackServerEvent('account_oauth_reconnected', { toolkitSlug })

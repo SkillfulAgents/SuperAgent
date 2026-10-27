@@ -4,7 +4,7 @@ import path from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LocalFileOps } from '@shared/lib/agent-actor/local-file-ops'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
-import { LocalMountableVolume } from './local-mountable-volume'
+import { LocalMountableVolume, prepareLocalVolume } from './local-mountable-volume'
 
 async function codeOf(promise: Promise<unknown>): Promise<string> {
   try {
@@ -475,5 +475,31 @@ describe('LocalMountableVolume', () => {
     expect(file.size).toBe(11)
     expect(await text(await file.stream({ start: 6, end: 10 }))).toBe('world')
     expect(await volume.stat('notes.txt')).toMatchObject({ name: 'notes.txt', kind: 'file', size: 11 })
+  })
+})
+
+describe('prepareLocalVolume', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('names a picked folder after itself', async () => {
+    const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'local-volume-'))
+    try {
+      const real = fs.realpathSync(folder)
+      await expect(prepareLocalVolume({ path: folder })).resolves.toEqual({ name: path.basename(real), config: { path: real } })
+    } finally {
+      fs.rmSync(folder, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses every folder in the Mac App Store edition, whose sandbox would lose it at quit', async () => {
+    vi.stubEnv('E2E_MOCK', 'true')
+    vi.stubEnv('SUPERAGENT_FAKE_DISTRIBUTION', 'mac-app-store')
+    await expect(prepareLocalVolume({ path: os.tmpdir() })).rejects.toMatchObject({
+      name: 'VolumeError',
+      status: 400,
+      message: 'Folders on this Mac are not available as drives in the Mac App Store edition',
+    })
   })
 })

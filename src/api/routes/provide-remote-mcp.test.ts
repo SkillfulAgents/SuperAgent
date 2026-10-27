@@ -33,15 +33,6 @@ vi.mock('@shared/lib/container/container-host', async () => {
   }
 })
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    broadcastGlobal: vi.fn(),
-    persistMessage: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(),
-    completeInputRequest: vi.fn(),
-  },
-}))
-
 const mockSelectFrom = vi.fn()
 const mockInsertValues = vi.fn()
 
@@ -256,6 +247,8 @@ vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
 
 vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadNotifications: vi.fn(),
+  getSessionIdsWithUnreadMentions: vi.fn(),
+  getUnreadMentionsByAgents: vi.fn(),
   getUnreadNotificationsByAgents: vi.fn(),
   deleteNotificationsBySessionIds: vi.fn(),
 }))

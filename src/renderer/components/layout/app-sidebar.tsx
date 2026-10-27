@@ -1,11 +1,12 @@
 
-import { Bell, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, ListTodo, SquareMousePointer, LogOut, Compass, MoonStar, SquarePen } from 'lucide-react'
+import { Bell, Brain, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, ListTodo, SquareMousePointer, LogOut, Compass, MoonStar, SquarePen } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { AppLink } from '@renderer/components/ui/app-link'
+import { UnreadDot } from '@renderer/components/agents/status-indicators'
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
 import { openExternalUrl } from '@renderer/lib/open-external'
@@ -49,7 +50,7 @@ import {
   type FirewallFixUiState,
 } from '@renderer/components/runtime/runtime-status-banners'
 import { useFirewallStatus, useFixFirewall } from '@renderer/hooks/use-firewall-status'
-import { useAgents, useRouteAgentId, useStartAgent, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useAgents, useListedAgents, useRouteAgentId, useStartAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useSettings, useModelSettings, useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
@@ -146,8 +147,8 @@ import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import { useRememberedFlag } from '@renderer/hooks/use-remembered-flag'
 import { useSidebarFileDrop } from './use-sidebar-file-drop'
 
-/** Set once Explore has been opened, which retires its "New" badge. */
-const EXPLORE_SEEN_KEY = 'explore.seen'
+/** Set once Team Brain has been opened, which retires its "New" badge: the badge invites a first look, then goes away. */
+const TEAM_BRAIN_SEEN_KEY = 'team-brain.seen'
 
 function VersionBehindDot({
   wayBehind,
@@ -209,7 +210,7 @@ function SessionSubItem({
   const { sessionId: routeSessionId } = useParams({ strict: false }) as { sessionId?: string }
   const routeAgentId = useRouteAgentId()
   const isSelected = routeAgentId === agentSlug && routeSessionId === session.id
-  const { isStreaming } = useMessageStream(isSelected ? session.id : null, isSelected ? agentSlug : null)
+  const { isStreaming } = useMessageStream(isSelected ? session.id : null, isSelected ? agentSlug : null, ['isStreaming'])
   const isWorking = (session.isActive || isStreaming) && !session.isAwaitingInput
   const isAwaitingInput = session.isAwaitingInput
   const hasUnread = !session.isActive && !session.isAwaitingInput && session.hasUnreadNotifications
@@ -280,7 +281,7 @@ function SessionSubItem({
                 ) : isWorking ? (
                   <WorkingDots />
                 ) : hasUnread ? (
-                  <span className="h-1.5 w-1.5 rounded-full bg-blue-500" role="img" aria-label="unread notifications" />
+                  <UnreadDot mention={session.hasUnreadMention} />
                 ) : null}
               </span>
             )}
@@ -461,8 +462,8 @@ function AgentRowIndicator({
   const isUnread = !isOpen && !isAwaiting && !isWorking && (agent.hasUnreadNotifications ?? false)
   if (isUnread) {
     return (
-      <span className="flex items-center w-4 justify-center" role="img" aria-label="unread notifications">
-        <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+      <span className="flex items-center w-4 justify-center">
+        <UnreadDot mention={agent.hasUnreadMention} />
       </span>
     )
   }
@@ -801,6 +802,7 @@ function NotificationsMenuButton() {
   const { data: countData } = useUnreadNotificationCount()
   const { data: platformCountData } = usePlatformUnreadCount()
   const unreadCount = (countData?.count ?? 0) + (platformCountData?.count ?? 0)
+  const unreadMentions = countData?.mentions ?? 0
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const isActive = pathname === '/notifications'
 
@@ -809,7 +811,9 @@ function NotificationsMenuButton() {
       <AppLink to="/notifications">
         <Bell className="h-4 w-4" />
         <span>Notifications</span>
-        {unreadCount > 0 && (
+        {unreadMentions > 0 ? (
+          <UnreadDot mention className="ml-auto" />
+        ) : unreadCount > 0 && (
           <span
             className="ml-auto h-1.5 w-1.5 rounded-full bg-blue-500"
             aria-label={`${unreadCount} unread`}
@@ -842,6 +846,42 @@ function TodoMenuButton() {
           />
         )}
       </AppLink>
+    </SidebarMenuButton>
+  )
+}
+
+function findTeamBrainAgent(agents: ApiAgent[]): ApiAgent | undefined {
+  return agents.find((agent) => agent.teamBrain)
+}
+
+/**
+ * Team Brain (the `team-brain` experiment): its page, the pitch and set-up or,
+ * once set up, its home page; lit there and in its agent's sessions. The row
+ * carries Explore's "New" badge until opened or set up.
+ */
+function TeamBrainMenuButton() {
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const { data: brainAgent } = useAgents({ select: findTeamBrainAgent, poll: false })
+  const visited = pathname === '/team-brain' || (!!brainAgent && pathname.startsWith(`/agents/${brainAgent.displaySlug}`))
+  const [seen] = useState(() => localStorage.getItem(TEAM_BRAIN_SEEN_KEY) === '1')
+  useEffect(() => {
+    if (visited) localStorage.setItem(TEAM_BRAIN_SEEN_KEY, '1')
+  }, [visited])
+
+  const label = (
+    <>
+      <Brain className="h-4 w-4" />
+      <span>Team Brain</span>
+      {!seen && !visited && !brainAgent && (
+        <span className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-white">
+          New
+        </span>
+      )}
+    </>
+  )
+  return (
+    <SidebarMenuButton asChild data-testid="team-brain-button" isActive={visited}>
+      <AppLink to="/team-brain">{label}</AppLink>
     </SidebarMenuButton>
   )
 }
@@ -1028,7 +1068,7 @@ export function AppSidebar() {
   useEffect(() => {
     if (isMobile) setOpenMobile(false)
   }, [locationHref, isMobile, setOpenMobile])
-  const { data: agents, isLoading, error } = useAgents()
+  const { data: agents, isLoading, error } = useListedAgents()
   // Whether to offer Explore is two round trips deep — skillsets, and only then
   // the discoverable agents they contain — so the item arrives after the rest of
   // the nav and pushes it down on the way in. Remember the last answer for this
@@ -1046,13 +1086,8 @@ export function AppSidebar() {
           : discoverableAgents.length > 0
   const hasMarketplace = useRememberedFlag('marketplace', marketplaceAnswer)
   const todoBoardEnabled = useExperiment('todo-board')
+  const teamBrainEnabled = useExperiment('team-brain')
   const exploreVisited = pathname === '/explore' || pathname.startsWith('/explore/')
-  // Sticky across reloads, and read once at mount so the badge doesn't vanish
-  // out from under the pointer mid-click.
-  const [seenExplore] = useState(() => localStorage.getItem(EXPLORE_SEEN_KEY) === '1')
-  useEffect(() => {
-    if (exploreVisited) localStorage.setItem(EXPLORE_SEEN_KEY, '1')
-  }, [exploreVisited])
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
   const { data: runtimeStatus } = useRuntimeStatus()
@@ -1722,6 +1757,11 @@ export function AppSidebar() {
                     <TodoMenuButton />
                   </SidebarMenuItem>
                 )}
+                {teamBrainEnabled && (
+                  <SidebarMenuItem>
+                    <TeamBrainMenuButton />
+                  </SidebarMenuItem>
+                )}
                 {hasMarketplace && (
                   <SidebarMenuItem>
                     <SidebarMenuButton
@@ -1733,13 +1773,6 @@ export function AppSidebar() {
                       <AppLink to="/explore">
                         <Compass className="h-4 w-4" />
                         <span>Discover New Agents</span>
-                        {/* Retires itself the first time the page is opened —
-                            a badge that says "New" forever says nothing. */}
-                        {!seenExplore && (
-                          <span className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-white">
-                            New
-                          </span>
-                        )}
                       </AppLink>
                     </SidebarMenuButton>
                   </SidebarMenuItem>

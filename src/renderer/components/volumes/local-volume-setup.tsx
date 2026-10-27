@@ -1,13 +1,19 @@
 import { useState } from 'react'
-import { Folder, FolderOpen } from 'lucide-react'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
-import { Button } from '@renderer/components/ui/button'
+import { Folder } from 'lucide-react'
+import { agentsRunInAppSandbox, usesHostFolderPaths } from '@renderer/lib/capabilities'
 import { localVolumeConfigSchema } from '@shared/lib/volumes/volume-config-schema'
 import { VolumeDetailsFields, VolumeSetupFooter, VolumeSetupHeader } from './volume-setup-layout'
+import { FolderLocationField } from './volume-folder-picker'
 import type { VolumeSetupDefinition, VolumeSetupProps } from './volume-setup'
 
+function localFolderUnavailableReason(): string {
+  return agentsRunInAppSandbox()
+    ? 'Not available in the Mac App Store edition.'
+    : 'Available in the desktop app for a local workspace.'
+}
+
 async function selectLocalFolder() {
-  if (!canUseHostFeatures()) throw new Error('Local folders are available in the desktop app on this workspace’s computer.')
+  if (!usesHostFolderPaths()) throw new Error(localFolderUnavailableReason())
   const path = await window.electronAPI?.openDirectory()
   return path ? localVolumeConfigSchema.parse({ path }) : null
 }
@@ -41,13 +47,7 @@ function LocalVolumeSetup({ initialConfig, initialDetails, onSubmit, onBack, onC
     <VolumeSetupHeader title="Set up local drive" description="Choose a name for this folder. Agents you add it to get read/write access." Logo={Folder} steps={['Source', 'Details']} step={1} />
     <form onSubmit={event => { event.preventDefault(); void onSubmit(config, details) }} className="space-y-4">
       <VolumeDetailsFields value={details} onChange={value => { setDetails(value); clearError() }} disabled={isSaving || isPicking}>
-        <div className="space-y-2">
-          <p className="text-sm font-medium">Folder</p>
-          <Button type="button" variant="outline" className="w-full justify-start" onClick={() => { void changeFolder() }} disabled={isSaving || isPicking}>
-            <FolderOpen className="h-4 w-4" />Change folder
-          </Button>
-          <p className="break-all font-mono text-xs text-muted-foreground" data-testid="selected-volume-folder">{config.path}</p>
-        </div>
+        <FolderLocationField location={config.path || null} onClick={() => { void changeFolder() }} disabled={isSaving || isPicking} />
       </VolumeDetailsFields>
       {(error || pickerError) && <p role="alert" className="text-sm text-destructive">{error || pickerError}</p>}
       <VolumeSetupFooter onBack={onBack} onCancel={onCancel} isSaving={isSaving || isPicking} disabled={!details.name.trim() || !config.path} submitLabel={attachToAgent ? 'Create and add' : 'Create drive'} />
@@ -57,7 +57,7 @@ function LocalVolumeSetup({ initialConfig, initialDetails, onSubmit, onBack, onC
 
 export const localVolumeSetup = {
   type: 'local', label: 'Local folder', description: 'Choose a folder on this computer.', Logo: Folder,
-  configSchema: localVolumeConfigSchema, isAvailable: canUseHostFeatures,
-  unavailableReason: 'Available in the desktop app for a local workspace.',
+  configSchema: localVolumeConfigSchema, isAvailable: usesHostFolderPaths,
+  get unavailableReason() { return localFolderUnavailableReason() },
   begin: selectLocalFolder, Setup: LocalVolumeSetup,
 } satisfies VolumeSetupDefinition<'local'>

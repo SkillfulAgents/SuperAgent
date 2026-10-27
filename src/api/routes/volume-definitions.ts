@@ -38,7 +38,7 @@ routes.get('/:id/folders', async c => {
   const entries = (await volume.list(path))
     .filter(entry => entry.kind === 'file' || entry.kind === 'directory')
     .sort((a, b) => Number(b.kind === 'directory') - Number(a.kind === 'directory') || a.name.localeCompare(b.name))
-    .map(entry => ({ name: entry.name, path: path ? `${path}/${entry.name}` : entry.name, type: entry.kind }))
+    .map(entry => ({ name: entry.name, path: path ? `${path}/${entry.name}` : entry.name, type: entry.kind, mtimeMs: entry.mtimeMs }))
   return c.json({ root: '', path, entries, truncated: false })
 })
 

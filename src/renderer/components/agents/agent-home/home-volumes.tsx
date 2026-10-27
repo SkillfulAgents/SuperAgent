@@ -31,7 +31,7 @@ import {
 import { HomeCollapsible } from './home-collapsible'
 import { useVolumesManager } from '@renderer/hooks/use-mounts'
 import { openableProps } from '@renderer/lib/openable'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { VolumeSettingsDialog } from '@renderer/components/volumes/volume-settings-dialog'
 import { InlineEditableTitle, type InlineEditableTitleHandle } from '@renderer/components/ui/inline-editable-title'
 import { useSaveVolumeDefinition } from '@renderer/hooks/use-volume-definitions'
@@ -66,7 +66,7 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
               onSetReadOnly={(readOnly) => volumes.handleSetReadOnly(mount.id, readOnly)}
               isRemovingMount={volumes.isRemovingMount}
               isUpdatingMount={volumes.isUpdatingMount}
-              canRemove={volumes.canModifyMounts}
+              canRemove={volumes.canModifyMounts && !mount.global}
             />
           ))}
         </div>
@@ -83,7 +83,7 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
           <div className="flex flex-col gap-1 rounded-lg bg-orange-50 dark:bg-orange-950/30 p-2.5">
             <div className="flex items-center gap-2">
               <span className="text-xs text-orange-600 dark:text-orange-400 flex-1">
-                Restart your agent for drive changes to take effect.
+                Restart your agent to apply recent changes.
               </span>
               <Button
                 size="sm"
@@ -96,11 +96,6 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
                 {volumes.isRestarting ? 'Restarting...' : 'Restart'}
               </Button>
             </div>
-            {volumes.restartError && (
-              <span className="text-xs text-destructive" role="alert">
-                {volumes.restartError}
-              </span>
-            )}
           </div>
         ) : null}
         {volumes.canAddMount && (
@@ -116,7 +111,7 @@ export function HomeVolumes({ agentSlug, className }: HomeVolumesProps) {
                 <DropdownMenuContent align="end" className="w-72">
                   <DropdownMenuLabel>Saved drives</DropdownMenuLabel>
                   {volumes.definitions.map(volume => {
-                    const attached = volumes.mounts.some(m => m.volumeId === volume.id)
+                    const attached = volumes.mounts.some(m => m.volumeId === volume.id && !m.global)
                     return (
                       <DropdownMenuItem key={volume.id} disabled={attached} onSelect={() => { void volumes.handleAttach(volume.id) }}>
                         <VolumeIcon type={volume.type} className="h-4 w-4 shrink-0" />
@@ -231,13 +226,14 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
             />
           ) : <>
             <span className="text-xs font-medium truncate">{mount.volumeName}</span>
-            <VolumeStatusBadge health={mount.health} />
-            {mount.readOnly && (
+            <VolumeStatusBadge health={mount.health} attention={mount.attention} />
+            {(mount.readOnly || mount.sourceReadOnly) && (
               <span className="inline-flex items-center gap-1 text-2xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground">
                 <Lock className="h-2.5 w-2.5" />
                 Read only
               </span>
             )}
+            {mount.global && <span className="inline-flex items-center text-2xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground">Global</span>}
           </>}
         </div>
         {subtitle && (
@@ -299,7 +295,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
                   Rename
                 </button>
               )}
-              {canRemove && (
+              {canRemove && !mount.sourceReadOnly && (
                 <button
                   role="switch"
                   aria-checked={mount.readOnly}

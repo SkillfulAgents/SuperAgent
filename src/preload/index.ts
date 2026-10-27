@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 // Type-only (erased at build — the preload bundle has no @shared alias).
 import type { ClassifiedImportPackage } from '../shared/lib/utils/package-extensions'
 import type { ApiTarget, ResolvedApiTarget } from '../shared/lib/api-target'
+import type { Facts } from '../shared/lib/facts/facts-schema'
 import type { NowPlayingPauseResult, NowPlayingProbe, NowPlayingResumeResult } from '../shared/lib/voice/now-playing-types'
 
 // Expose protected methods that allow the renderer process to use
@@ -20,6 +21,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Records the choice for subsequent boots; the caller reloads.
   setPreferredApiTarget: (target: ApiTarget): Promise<void> => {
     return ipcRenderer.invoke('set-preferred-api-target', target)
+  },
+  // The facts this renderer gates on, for the target it settled (main/facts.ts).
+  getFacts: (target: ApiTarget): Promise<Facts> => {
+    return ipcRenderer.invoke('get-facts', target)
   },
   platform: process.platform,
   osVersion: process.getSystemVersion(),
@@ -186,6 +191,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.removeAllListeners('open-create-agent')
   },
 
+  // Main asking this window to switch Superagents (a Spotlight result from the
+  // other side). The renderer runs its own Local/Cloud checks before switching.
+  onSwitchTarget: (callback: (target: ApiTarget) => void): (() => void) => {
+    const handler = (_event: unknown, target: unknown) => callback(target === 'cloud' ? 'cloud' : 'local')
+    ipcRenderer.on('switch-target', handler)
+    return () => {
+      ipcRenderer.removeListener('switch-target', handler)
+    }
+  },
+  // The switch main asked for did not happen (refused, or one already under way).
+  declineTargetSwitch: () => {
+    ipcRenderer.send('target-switch-declined')
+  },
+
   onHistoryNavigationCommand: (callback: (command: 'back' | 'forward') => void): (() => void) => {
     const handler = (_event: unknown, command: unknown) => {
       if (command === 'back' || command === 'forward') callback(command)
@@ -246,6 +265,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  // True when the user turned off notifications for the app in macOS System Settings.
+  getOsNotificationsBlocked: (): Promise<boolean> => {
+    return ipcRenderer.invoke('get-os-notifications-blocked')
+  },
+
   // Pull events queued while the window was closed (main-process fallback
   // notifications). Renderer calls this once on mount so click/action
   // events captured before any IPC listener existed still get dispatched.
@@ -256,14 +280,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('flush-pending-notification-events')
   },
 
-  // Pull menu commands (Settings / New Agent / navigate-to-agent) queued while
-  // the window was closed. The renderer calls this once on mount so commands
-  // captured before its IPC listeners existed still get dispatched (SUP-264).
+  // Pull menu commands (Settings / New Agent / navigate-to-agent / switch-target)
+  // queued while the window was closed. The renderer calls this once on mount so
+  // commands captured before its IPC listeners existed still get dispatched (SUP-264).
   flushPendingMenuCommands: (): Promise<
     Array<
-      | { channel: 'navigate-to-agent'; agentSlug: string }
+      | { channel: 'navigate-to-agent'; agentSlug: string; sessionId?: string | null }
       | { channel: 'open-settings' }
       | { channel: 'open-create-agent' }
+      | { channel: 'switch-target'; target: ApiTarget }
     >
   > => {
     return ipcRenderer.invoke('flush-pending-menu-commands')
@@ -484,6 +509,8 @@ declare global {
       // Optional: an older main process has no such handler (see env.ts).
       getApiTarget?: () => Promise<ResolvedApiTarget>
       setPreferredApiTarget?: (target: ApiTarget) => Promise<void>
+      // Optional for the same reason as getApiTarget.
+      getFacts?: (target: ApiTarget) => Promise<Facts>
       platform: string
       osVersion: string
       desktopProtocol?: string
@@ -511,6 +538,8 @@ declare global {
       removeOpenSettings: () => void
       onOpenCreateAgent: (callback: () => void) => () => void
       removeOpenCreateAgent: () => void
+      onSwitchTarget?: (callback: (target: ApiTarget) => void) => () => void
+      declineTargetSwitch?: () => void
       onHistoryNavigationCommand: (callback: (command: 'back' | 'forward') => void) => () => void
       removeHistoryNavigationCommand: () => void
       beginTargetSwitch: () => Promise<void>
@@ -525,15 +554,17 @@ declare global {
       onNotificationEvent: (
         callback: (event: { type: 'click' | 'action'; actionIndex?: number; context?: unknown }) => void,
       ) => () => void
+      getOsNotificationsBlocked: () => Promise<boolean>
       flushPendingNotificationEvents: () => Promise<{
         events: Array<{ type: 'click' | 'action'; actionIndex?: number; context?: unknown }>
         navigations: Array<{ agentSlug: string; sessionId: string | null }>
       }>
       flushPendingMenuCommands: () => Promise<
         Array<
-          | { channel: 'navigate-to-agent'; agentSlug: string }
+          | { channel: 'navigate-to-agent'; agentSlug: string; sessionId?: string | null }
           | { channel: 'open-settings' }
           | { channel: 'open-create-agent' }
+          | { channel: 'switch-target'; target: ApiTarget }
         >
       >
       setBadgeCount: (count: number) => Promise<void>

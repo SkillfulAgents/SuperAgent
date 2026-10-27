@@ -2,7 +2,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { listSubagents, readSubagentTranscript } from './local-transcript-ops'
+import { copyDerivedSessionFiles, listSubagents, readSubagentTranscript } from './local-transcript-ops'
 import { WorkspaceFileError } from './workspace-path'
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 
@@ -90,5 +90,94 @@ describe('local transcript ops — containment', () => {
 
   it('a traversal in a segment is rejected before the filesystem is consulted', async () => {
     expect(await codeOf(readSubagentTranscript(createLocalSessionStore(AGENT), '../../..', 'x'))).toBe('invalid-path')
+  })
+})
+
+// Real capture: CLI 2.1.303, a fork subagent launched after a Bash step.
+const FORK_FIXTURE = path.resolve(__dirname, '../container/__fixtures__/sdk303-fork-subagent')
+
+describe('copyDerivedSessionFiles — fork subagents', () => {
+  let dataDir: string
+  let previousDataDir: string | undefined
+  let sessionsDir: string
+  let forkFile: string
+  const COPY = 'session-copy'
+
+  /** The transcript a session fork writes: every entry re-id'd, its source named in forkedFrom. */
+  function copyOf(lines: string[], uuids: Map<string, string>): string {
+    return lines.map((line) => {
+      const entry = JSON.parse(line)
+      if (typeof entry.uuid !== 'string') return line
+      return JSON.stringify({
+        ...entry,
+        uuid: uuids.get(entry.uuid),
+        parentUuid: entry.parentUuid ? uuids.get(entry.parentUuid) ?? null : null,
+        sessionId: COPY,
+        forkedFrom: { sessionId: SESSION, messageUuid: entry.uuid },
+      })
+    }).join('\n') + '\n'
+  }
+
+  beforeEach(async () => {
+    dataDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'transcript-ops-fork-'))
+    previousDataDir = process.env.SUPERAGENT_DATA_DIR
+    process.env.SUPERAGENT_DATA_DIR = dataDir
+    sessionsDir = sessionsDirOf(dataDir, AGENT)
+    const subagentsDir = path.join(sessionsDir, SESSION, 'subagents')
+    await fs.promises.mkdir(subagentsDir, { recursive: true })
+
+    // The capture names its own session; rename it to SESSION here.
+    const meta = JSON.parse(await fs.promises.readFile(path.join(FORK_FIXTURE, 'metadata.json'), 'utf8'))
+    const lead = (await fs.promises.readFile(path.join(FORK_FIXTURE, 'lead-transcript.jsonl'), 'utf8')).replaceAll(meta.sessionId, SESSION).trim().split('\n')
+    await fs.promises.writeFile(path.join(sessionsDir, `${SESSION}.jsonl`), lead.join('\n') + '\n')
+    const uuids = new Map<string, string>(
+      lead.map((line) => JSON.parse(line).uuid).filter((uuid): uuid is string => typeof uuid === 'string').map((uuid, i) => [uuid, `copy-${i}`]),
+    )
+    await fs.promises.writeFile(path.join(sessionsDir, `${COPY}.jsonl`), copyOf(lead, uuids))
+    for (const name of await fs.promises.readdir(path.join(FORK_FIXTURE, 'fs-snapshot'))) {
+      const body = (await fs.promises.readFile(path.join(FORK_FIXTURE, 'fs-snapshot', name), 'utf8')).replaceAll(meta.sessionId, SESSION)
+      await fs.promises.writeFile(path.join(subagentsDir, name), body)
+      if (name.endsWith('.jsonl')) forkFile = name
+    }
+  })
+
+  afterEach(async () => {
+    if (previousDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
+    else process.env.SUPERAGENT_DATA_DIR = previousDataDir
+    await fs.promises.rm(dataDir, { recursive: true, force: true })
+  })
+
+  const lines = async (session: string, name: string) =>
+    (await fs.promises.readFile(path.join(sessionsDir, session, 'subagents', name), 'utf8')).split('\n')
+
+  it("repoints a copied fork's inherited context at the copy", async () => {
+    const [sourceRef, ...sourceRest] = await lines(SESSION, forkFile)
+    const { parentLastUuid } = JSON.parse(sourceRef)
+    expect(JSON.parse(sourceRef)).toMatchObject({ type: 'fork-context-ref', parentSessionId: SESSION })
+
+    await copyDerivedSessionFiles(createLocalSessionStore(AGENT), SESSION, COPY)
+
+    const [ref, ...rest] = await lines(COPY, forkFile)
+    const copied = (await fs.promises.readFile(path.join(sessionsDir, `${COPY}.jsonl`), 'utf8')).trim().split('\n').map((l) => JSON.parse(l))
+    const counterpart = copied.find((e) => e.forkedFrom?.messageUuid === parentLastUuid)
+    expect(counterpart).toBeDefined()
+    expect(JSON.parse(ref)).toEqual({ ...JSON.parse(sourceRef), parentSessionId: COPY, parentLastUuid: counterpart.uuid })
+    expect(rest).toEqual(sourceRest)
+    // The source keeps its own.
+    expect((await lines(SESSION, forkFile))[0]).toBe(sourceRef)
+  })
+
+  it('leaves a ref with no copied counterpart, and any other subagent transcript, as copied', async () => {
+    const subagentsDir = path.join(sessionsDir, SESSION, 'subagents')
+    const [sourceRef, ...sourceRest] = await lines(SESSION, forkFile)
+    const unmapped = JSON.stringify({ ...JSON.parse(sourceRef), parentLastUuid: 'not-copied' })
+    await fs.promises.writeFile(path.join(subagentsDir, forkFile), [unmapped, ...sourceRest].join('\n'))
+    const plain = JSON.stringify({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'hi' } }) + '\n'
+    await fs.promises.writeFile(path.join(subagentsDir, 'agent-plain.jsonl'), plain)
+
+    await copyDerivedSessionFiles(createLocalSessionStore(AGENT), SESSION, COPY)
+
+    expect((await lines(COPY, forkFile))[0]).toBe(unmapped)
+    expect(await fs.promises.readFile(path.join(sessionsDir, COPY, 'subagents', 'agent-plain.jsonl'), 'utf8')).toBe(plain)
   })
 })

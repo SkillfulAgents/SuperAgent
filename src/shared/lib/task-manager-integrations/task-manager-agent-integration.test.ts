@@ -34,6 +34,19 @@ beforeEach(async () => {
 afterEach(async () => { await tasks.disconnect(); vi.useRealTimers() })
 
 describe('TaskManagerAgentIntegration live input', () => {
+  it('routes and hydrates an older event whose optional provider context was omitted', async () => {
+    const task = event('without-context')
+    delete task.payload
+    await tasks.accept(task)
+    expect(tasks.resolveRoute(input())).toMatchObject({ externalId: 'issue', replyTarget: { commentId: 'root' }, action: 'run' })
+    await tasks.acknowledgeInput(input())
+    expect(tasks.acknowledgeTask).toHaveBeenCalledOnce()
+    const prepared = await tasks.prepareInput(input(), context() as IntegrationInputContext)
+    expect(prepared.text).toContain('Request: Do work')
+    expect(prepared.text).toContain('SUP-1')
+    expect(tasks.hydrateTask).toHaveBeenCalledWith('issue')
+  })
+
   it('hands every follow-up to the manager immediately without waiting for turn completion', async () => {
     const activityLookup = vi.fn(async () => ({ integration, externalId: 'issue', sessionId: 'session', activity: 'working' as const }))
     tasks.bindHost({ session: activityLookup })

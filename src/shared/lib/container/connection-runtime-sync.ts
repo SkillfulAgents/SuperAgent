@@ -65,8 +65,9 @@ export async function syncAgentConnectionEnvironment(
   agentSlug: string,
   kind: ConnectionRuntimeKind,
   runtime: ConnectionRuntime,
+  options: { confirm?: boolean } = {},
 ): Promise<boolean> {
-  if (runtime.getCachedInfo().status !== 'running') {
+  if (!options.confirm && runtime.getCachedInfo().status !== 'running') {
     // Container startup rebuilds both projections from the mapping tables.
     return true
   }

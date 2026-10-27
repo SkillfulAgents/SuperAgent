@@ -844,13 +844,38 @@ describe('Auth Middleware', () => {
     })
 
     it('allows admin users without agent access check', async () => {
+      mockLimit.mockResolvedValueOnce([{ agentSlug: 'test-agent', recipientUserId: null }])
       const app = new Hono()
       setUser(app, { id: 'admin-1', role: 'admin' })
       app.get('/:id', HasNotificationAccess(), (c) => c.json({ ok: true }))
 
       const res = await request(app, '/notif-1')
       expect(res.status).toBe(200)
-      expect(mockSelect).not.toHaveBeenCalled()
+      // The notification row only: no role lookup.
+      expect(mockSelect).toHaveBeenCalledTimes(1)
+    })
+
+    it("hides a mention addressed to someone else, even from an admin", async () => {
+      for (const user of [{ id: 'user-1', role: 'user' }, { id: 'admin-1', role: 'admin' }]) {
+        mockLimit.mockResolvedValueOnce([{ agentSlug: 'test-agent', recipientUserId: 'user-2' }])
+        const app = new Hono()
+        setUser(app, user)
+        app.get('/:id', HasNotificationAccess(), (c) => c.json({ ok: true }))
+
+        const res = await request(app, '/notif-1')
+        expect(res.status).toBe(404)
+      }
+    })
+
+    it('allows the recipient of a mention', async () => {
+      mockLimit.mockResolvedValueOnce([{ agentSlug: 'test-agent', recipientUserId: 'user-1' }])
+      mockLimit.mockResolvedValueOnce([{ role: 'viewer' }])
+      const app = new Hono()
+      setUser(app, { id: 'user-1', role: 'user' })
+      app.get('/:id', HasNotificationAccess(), (c) => c.json({ ok: true }))
+
+      const res = await request(app, '/notif-1')
+      expect(res.status).toBe(200)
     })
 
     it('allows when user has access to notification agent', async () => {

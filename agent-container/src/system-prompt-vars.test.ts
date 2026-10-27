@@ -13,7 +13,7 @@ vi.mock('./volume-mounts', async (importOriginal) => ({
   mountedVolumeIndexes: vi.fn(() => []),
 }))
 
-const KEYS = ['COMPOSIO_PLATFORM_MODE', 'PLATFORM_AUTH_ACTIVE', 'WEBHOOK_RELAY_AVAILABLE', 'CONNECTED_ACCOUNTS', 'REMOTE_MCPS', 'CLAUDE_CONFIG_DIR', 'HOST_PLATFORM']
+const KEYS = ['COMPOSIO_PLATFORM_MODE', 'CONNECTED_ACCOUNT_TOOLKITS', 'PLATFORM_AUTH_ACTIVE', 'WEBHOOK_RELAY_AVAILABLE', 'CONNECTED_ACCOUNTS', 'REMOTE_MCPS', 'CLAUDE_CONFIG_DIR', 'HOST_PLATFORM', 'HOST_COMPUTER_USE', 'HOST_APP_SANDBOX']
 let saved: Record<string, string | undefined>
 beforeEach(() => { saved = Object.fromEntries(KEYS.map(k => [k, process.env[k]])); for (const k of KEYS) delete process.env[k] })
 afterEach(() => { for (const k of KEYS) { saved[k] === undefined ? delete process.env[k] : process.env[k] = saved[k]! } })
@@ -62,23 +62,35 @@ describe('generateSystemPrompt rendering', () => {
   })
 
   it('renders the drives block only when drives are present', () => {
-    expect(generateSystemPrompt()).not.toContain('Mounted drives:')
+    expect(generateSystemPrompt()).not.toContain('## Mounted Drives')
     vi.mocked(mountedDrives).mockReturnValueOnce([{ name: 'Team Notes', path: '/mounts/team-notes', readOnly: false }])
     const out = generateSystemPrompt()
-    expect(out).toContain('Mounted drives:\n- "Team Notes" at "/mounts/team-notes"\n')
+    expect(out).toContain('## Mounted Drives\n\n- "Team Notes" at "/mounts/team-notes"\n')
     expect(out).toContain("These are the only drives mounted besides `/workspace`. Keep this agent's own work in `/workspace`.")
-    const workspaceIdx = out.indexOf('## Workspace vs Tmp')
-    const mountsIdx = out.indexOf('Mounted drives:')
-    const fileHandlingIdx = out.indexOf('## File Handling')
-    expect(workspaceIdx).toBeLessThan(mountsIdx)
-    expect(mountsIdx).toBeLessThan(fileHandlingIdx)
     expect(out).not.toContain('INDEX.md')
     expect(out).not.toContain('<mount-index')
   })
 
   it('marks read-only drives and leaves the others as they were', () => {
     vi.mocked(mountedDrives).mockReturnValueOnce([{ name: 'Team', path: '/mounts/team', readOnly: true }, { name: 'Notes', path: '/mounts/notes', readOnly: false }])
-    expect(generateSystemPrompt()).toContain('Mounted drives:\n- "Team" at "/mounts/team" (read only)\n- "Notes" at "/mounts/notes"\n')
+    expect(generateSystemPrompt()).toContain('## Mounted Drives\n\n- "Team" at "/mounts/team" (read only)\n- "Notes" at "/mounts/notes"\n')
+  })
+
+  // A prompt change anywhere invalidates the prompt cache from that point on,
+  // so text that changes between renders stays after the static body.
+  it('renders the mount index and the date after the static body', () => {
+    vi.mocked(mountedDrives).mockReturnValueOnce([{ name: 'Team', path: '/mounts/team', readOnly: false }])
+    vi.mocked(mountedVolumeIndexes).mockReturnValueOnce([{ path: '/mounts/team', index: { text: '# Team', truncated: false } }])
+    const out = generateSystemPrompt(undefined, 'Agent rules')
+    const staticEnd = out.indexOf('## Other Guidelines')
+    const mounts = out.indexOf('## Mounted Drives')
+    const date = out.indexOf('## Current Date')
+    expect(out.indexOf('Today is ')).toBeGreaterThan(date)
+    expect(staticEnd).toBeGreaterThan(0)
+    expect(mounts).toBeGreaterThan(staticEnd)
+    expect(out.indexOf('<mount-index')).toBeGreaterThan(mounts)
+    expect(date).toBeGreaterThan(mounts)
+    expect(out.indexOf('## Agent-Specific Instructions')).toBeGreaterThan(date)
   })
 
   it('keeps an index that tries to close its tag inside it', () => {
@@ -271,6 +283,7 @@ describe('generateSystemPrompt rendering', () => {
     expect(guide).toContain('Do not use Exa to bypass a denied permission')
     expect(guide).toContain('Never print either environment variable')
     expect(guide).toContain('`costDollars.total`')
+    expect(guide).toContain('| `lite` |')
   })
 
   it('references every image-owned capability guide and keeps its source file present', () => {
@@ -406,44 +419,34 @@ describe('generateSystemPrompt rendering', () => {
     }
   })
 
-  // The prompt's toolkit list is what the agent picks a `request_connected_account`
-  // slug from without a discovery round-trip, so it has to stay in step with the
-  // catalog `search_connected_account_services` answers from.
-  it('keeps the prompt toolkit list in step with the searchable service catalog', () => {
+  it('directs account discovery to the searchable catalog instead of duplicating it', () => {
     const line = generateSystemPrompt()
       .split('\n')
-      .find(candidate => candidate.startsWith('**Supported services include:**'))
-    expect(line, 'prompt no longer has a "Supported services include" line').toBeDefined()
-
-    const promptSlugs = [...line!.matchAll(/`([a-z_0-9]+)`/g)].map(match => match[1])
-    expect(new Set(promptSlugs).size, 'prompt lists a slug twice').toBe(promptSlugs.length)
-    expect(promptSlugs).not.toContain('twitter')
-    expect(promptSlugs).not.toContain('plaid')
-    expect(promptSlugs).not.toContain('shopify')
-    expect(promptSlugs.sort()).toEqual(SERVICES.map(service => service.slug).sort())
+      .find(candidate => candidate.startsWith('**Discover supported services:**'))
+    expect(line).toContain('mcp__user-input__search_connected_account_services')
+    expect(line).toContain('exact toolkit slugs before requesting a new account')
+    expect(generateSystemPrompt()).not.toContain('**Supported services include:**')
   })
 
   // The catalog reads the env at import, so platform mode needs a fresh import.
-  it('lists X, Plaid, and Shopify in both the prompt and the catalog on Gamut\'s Composio', async () => {
+  it('makes platform-specific accounts discoverable on Gamut\'s Composio', async () => {
     process.env.COMPOSIO_PLATFORM_MODE = 'true'
     vi.resetModules()
     const { SERVICES: platformServices } = await import('./tools/search-connected-account-services')
-    const line = generateSystemPrompt()
-      .split('\n')
-      .find(candidate => candidate.startsWith('**Supported services include:**'))
-    const promptSlugs = [...line!.matchAll(/`([a-z_0-9]+)`/g)].map(match => match[1])
-    expect(promptSlugs).toContain('twitter')
-    expect(promptSlugs).toContain('plaid')
-    expect(promptSlugs).toContain('shopify')
-    expect(promptSlugs.sort()).toEqual(platformServices.map(service => service.slug).sort())
+    const catalogSlugs = platformServices.map(service => service.slug)
+    expect(catalogSlugs).toContain('twitter')
+    expect(catalogSlugs).toContain('plaid')
+    expect(catalogSlugs).toContain('shopify')
+    expect(generateSystemPrompt()).toContain('mcp__user-input__search_connected_account_services')
   })
 
-  // The FAQ used to carry its own copy of the toolkit list, which drifted
-  // silently against the two real sources.
+  // The FAQ may clarify restricted account types, but should not maintain a
+  // second full service catalog that can drift from discovery.
   it('does not let the integrations FAQ grow a second toolkit list', () => {
     const faq = readFileSync(join(__dirname, '..', 'docs', 'faqs', 'what-integrations-are-supported.md'), 'utf8')
     const catalogSlugs = SERVICES.map(service => service.slug)
-    const echoed = catalogSlugs.filter(slug => new RegExp(`\`${slug}\``).test(faq))
+    const accountTypeExamples = new Set(['facebook', 'whatsapp', 'notebook_lm'])
+    const echoed = catalogSlugs.filter(slug => !accountTypeExamples.has(slug) && new RegExp(`\`${slug}\``).test(faq))
     expect(echoed, 'FAQ should point at the prompt/search tool, not restate slugs').toEqual([])
   })
 
@@ -585,6 +588,35 @@ describe('generateSystemPrompt rendering', () => {
     expect(out.includes('## Computer Use')).toBe(present)
     expect(out.includes('computer_launch')).toBe(present)
     expect(out.includes('request_script_run')).toBe(present)
+  })
+
+  // The host answers whether its agents get computer use; the Mac App Store
+  // build says no on macOS, and its prompt names what the edition leaves out.
+  it.each([
+    { label: 'a host that offers computer use', computerUse: 'true', sandbox: 'false', present: true },
+    { label: 'the Mac App Store edition', computerUse: 'false', sandbox: 'true', present: false },
+  ])('on macOS, $label', ({ computerUse, sandbox, present }) => {
+    process.env.HOST_PLATFORM = 'darwin'
+    process.env.HOST_COMPUTER_USE = computerUse
+    process.env.HOST_APP_SANDBOX = sandbox
+    const out = generateSystemPrompt()
+    expect(out.includes('## Computer Use')).toBe(present)
+    expect(out.includes('Native desktop control')).toBe(present)
+    expect(out.includes('computer_launch')).toBe(present)
+    expect(out.includes('request_script_run')).toBe(present)
+    expect(out.includes('## Mac App Store Edition')).toBe(!present)
+  })
+
+  it('tells a Mac App Store edition’s agents what the sandbox leaves out, before the per-render tail', () => {
+    process.env.HOST_PLATFORM = 'darwin'
+    process.env.HOST_COMPUTER_USE = 'false'
+    process.env.HOST_APP_SANDBOX = 'true'
+    const out = generateSystemPrompt()
+    const note = out.slice(out.indexOf('## Mac App Store Edition'), out.indexOf('## Language Guidelines'))
+    for (const left of ['computer use', 'own Chrome', "folders on the user's Mac", 'GitHub skillsets', 'container runtimes']) {
+      expect(note).toContain(left)
+    }
+    expect(out.indexOf('## Mac App Store Edition')).toBeLessThan(out.indexOf('## Other Guidelines'))
   })
 
   // A vendor disables the native tool, so the catalog must name whichever tool the

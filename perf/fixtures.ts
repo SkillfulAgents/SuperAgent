@@ -8,6 +8,7 @@
  */
 import * as fs from 'fs'
 import * as path from 'path'
+import { prng } from '@shared/lib/agent-actor/testing/prng'
 
 export interface SeedProfile {
   name: string
@@ -22,6 +23,22 @@ export interface SeedProfile {
   /** user/assistant turn pairs per transcript. */
   turnsPerTranscript: number
   artifactsPerAgent: number
+  /** One extra, long agentic session on the first agent (see LongTranscriptSpec). */
+  longTranscript?: LongTranscriptSpec
+}
+
+/**
+ * A long agentic session: every turn is a question, a tool call whose result
+ * is a file read (recorded twice, in the tool_result block and in
+ * `toolUseResult`, as the CLI writes it), and a final answer. On this shape
+ * the trailing page's byte window, not its item count, decides what a read
+ * costs: 300 display items span far more than the page budget.
+ */
+export interface LongTranscriptSpec {
+  turns: number
+  /** File-read payload, drawn per turn from the PRNG, in bytes. */
+  minResultBytes: number
+  maxResultBytes: number
 }
 
 export const PROFILES = {
@@ -47,6 +64,18 @@ export const PROFILES = {
     turnsPerTranscript: 12,
     artifactsPerAgent: 3,
   },
+  /** One agent whose latest session is a long tool-heavy transcript (~20 MB). */
+  transcript: {
+    name: 'transcript',
+    agents: 1,
+    sessionsPerAgent: 2,
+    hiddenEvery: 0,
+    metadataOnlyPerAgent: 0,
+    sdkArtifactsPerAgent: 0,
+    turnsPerTranscript: 12,
+    artifactsPerAgent: 0,
+    longTranscript: { turns: 300, minResultBytes: 4 * 1024, maxResultBytes: 60 * 1024 },
+  },
 } as const satisfies Record<string, SeedProfile>
 
 export interface SeededData {
@@ -56,17 +85,13 @@ export interface SeededData {
   latestVisibleByAgent: Record<string, string>
   /** Total transcript files written (including SDK artifacts). */
   transcriptCount: number
-}
-
-/** Small deterministic PRNG (mulberry32). */
-function prng(seed: number): () => number {
-  let a = seed >>> 0
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0
-    let t = a
-    t = Math.imul(t ^ (t >>> 15), t | 1)
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  /** The profile's long session, when it has one. */
+  longSession?: {
+    agentSlug: string
+    sessionId: string
+    bytes: number
+    /** Display-item id of the newest item (the last turn's answer). */
+    newestItemId: string
   }
 }
 
@@ -108,12 +133,75 @@ function transcriptLines(sessionId: string, turns: number, rand: () => number): 
   return lines.join('\n') + '\n'
 }
 
+/** Deterministic file content of exactly `bytes` ASCII bytes. */
+function filePayload(turn: number, bytes: number): string {
+  const lines: string[] = []
+  let size = 0
+  for (let n = 1; size < bytes; n++) {
+    const line = `${String(n).padStart(5)}\tconst value${turn}_${n} = compute(${n}, '${'abcdefgh'.repeat(4)}')\n`
+    lines.push(line)
+    size += line.length
+  }
+  return lines.join('').slice(0, bytes)
+}
+
+function longTranscriptLines(
+  sessionId: string,
+  spec: LongTranscriptSpec,
+): { content: string; newestItemId: string } {
+  const rand = prng(0x5eed)
+  const lines: string[] = []
+  let ts = BASE_TIME
+  let parent: string | null = null
+  const stamp = () => new Date((ts += 1000)).toISOString()
+  for (let i = 0; i < spec.turns; i++) {
+    const userId = `${sessionId}-u${i}`
+    const callId = `${sessionId}-a${i}`
+    const resultId = `${sessionId}-r${i}`
+    const answerId = `${sessionId}-f${i}`
+    const toolUseId = `toolu_${String(i).padStart(5, '0')}`
+    const filePath = `/workspace/src/module-${i}.ts`
+    const payloadBytes =
+      spec.minResultBytes + Math.floor(rand() * (spec.maxResultBytes - spec.minResultBytes))
+    const payload = filePayload(i, payloadBytes)
+    lines.push(JSON.stringify({
+      type: 'user', uuid: userId, parentUuid: parent, sessionId, timestamp: stamp(),
+      message: { role: 'user', content: `Step ${i}: look at module ${i} and summarize what changed.` },
+    }))
+    lines.push(JSON.stringify({
+      type: 'assistant', uuid: callId, parentUuid: userId, sessionId, timestamp: stamp(),
+      message: {
+        id: `msg_${sessionId}_${i}_call`, role: 'assistant',
+        content: [
+          { type: 'text', text: `Reading module ${i}.` },
+          { type: 'tool_use', id: toolUseId, name: 'Read', input: { file_path: filePath } },
+        ],
+      },
+    }))
+    lines.push(JSON.stringify({
+      type: 'user', uuid: resultId, parentUuid: callId, sessionId, timestamp: stamp(),
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: payload }] },
+      toolUseResult: { type: 'text', file: { filePath, content: payload, numLines: payload.split('\n').length, startLine: 1 } },
+    }))
+    lines.push(JSON.stringify({
+      type: 'assistant', uuid: answerId, parentUuid: resultId, sessionId, timestamp: stamp(),
+      message: {
+        id: `msg_${sessionId}_${i}_answer`, role: 'assistant',
+        content: [{ type: 'text', text: `Module ${i}: ${'the change is contained and tested. '.repeat(4 + Math.floor(rand() * 12))}` }],
+      },
+    }))
+    parent = answerId
+  }
+  return { content: lines.join('\n') + '\n', newestItemId: `${sessionId}-f${spec.turns - 1}` }
+}
+
 export async function seedDataDir(dataDir: string, profile: SeedProfile): Promise<SeededData> {
   const rand = prng(0xc0ffee)
   const agentsDir = path.join(dataDir, 'agents')
   const agentSlugs: string[] = []
   const latestVisibleByAgent: Record<string, string> = {}
   let transcriptCount = 0
+  let longSession: SeededData['longSession']
 
   for (let a = 0; a < profile.agents; a++) {
     const slug = `agent-${String(a).padStart(3, '0')}`
@@ -169,6 +257,20 @@ export async function seedDataDir(dataDir: string, profile: SeedProfile): Promis
       transcriptCount++
     }
 
+    if (profile.longTranscript && a === 0) {
+      const id = `${slug}-long`
+      const { content, newestItemId } = longTranscriptLines(id, profile.longTranscript)
+      const file = path.join(sessionsDir, `${id}.jsonl`)
+      await fs.promises.writeFile(file, content)
+      // The newest session, so it is also what the agent's home card tails.
+      const at = BASE_TIME + 150 * 86_400_000
+      await fs.promises.utimes(file, new Date(at), new Date(at))
+      metadata[id] = { name: 'Long session', createdAt: new Date(at - 3_600_000).toISOString() }
+      transcriptCount++
+      latestVisible = { id, at }
+      longSession = { agentSlug: slug, sessionId: id, bytes: Buffer.byteLength(content), newestItemId }
+    }
+
     await fs.promises.writeFile(
       path.join(workspace, 'session-metadata.json'),
       JSON.stringify(metadata),
@@ -188,5 +290,5 @@ export async function seedDataDir(dataDir: string, profile: SeedProfile): Promis
     if (latestVisible) latestVisibleByAgent[slug] = latestVisible.id
   }
 
-  return { dataDir, agentSlugs, latestVisibleByAgent, transcriptCount }
+  return { dataDir, agentSlugs, latestVisibleByAgent, transcriptCount, ...(longSession ? { longSession } : {}) }
 }

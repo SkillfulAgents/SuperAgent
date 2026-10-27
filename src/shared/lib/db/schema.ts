@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { sqliteTable, text, integer, real, uniqueIndex, index, check, primaryKey } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, real, uniqueIndex, index, check, primaryKey, type AnySQLiteColumn } from 'drizzle-orm/sqlite-core'
 import { AGENT_INTEGRATION_PROVIDERS } from '@shared/lib/agent-integrations/provider-types'
 
 // =============================================================================
@@ -217,6 +217,67 @@ export const agentConnectedAccounts = sqliteTable(
   })
 )
 
+// Browser Vault - accounts the owner signs in to websites with, saved from the
+// sign-in form (request_login). An account is a site and a username; each
+// sign-in step can add parts. See src/shared/lib/browser-vault/.
+export const browserAccounts = sqliteTable('browser_accounts', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }), // Owner in auth mode, null in non-auth mode
+  site: text('site').notNull(), // Host of the frame holding the fields, without a leading www, e.g. 'github.com', 'acme.okta.com'
+  username: text('username').notNull(), // The identifier the site knows the account by, as entered
+  usernameKey: text('username_key').notNull(), // `username` trimmed and lowercased: what makes two saves one account
+  label: text('label'), // The owner's name for it; null shows the username
+  origin: text('origin').notNull(), // Where its password was last typed (else where it was first saved), e.g. 'https://acme.okta.com'
+  // The account it signs in with on another site ("Continue with Google"):
+  // this site's row points at the provider's.
+  viaAccountId: text('via_account_id').references((): AnySQLiteColumn => browserAccounts.id, { onDelete: 'set null' }),
+  secrets: text('secrets'), // Sealed JSON (vault-crypto, accountSecretsSchema); null until a secret part is saved
+  parts: text('parts').notNull().default('[]'), // JSON list of the part keys `secrets` holds ('password', 'text:…'), never values
+  revision: integer('revision').notNull().default(1), // Bumped on every write: the compare-and-set guard for `secrets`
+  // An agent said the site rejected what the vault filled: the user is asked
+  // until they enter its password again. Null while it signs in fine.
+  rejectedAt: integer('rejected_at', { mode: 'timestamp_ms' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  lastUsedAt: integer('last_used_at', { mode: 'timestamp_ms' }),
+}, (table) => ({
+  // coalesce: non-auth mode's NULL owner counts as one owner.
+  ownerSiteUsernameUnique: uniqueIndex('browser_accounts_owner_site_username_unique')
+    .on(sql`coalesce(user_id, '')`, table.site, table.usernameKey),
+  userSiteIdx: index('browser_accounts_user_site_idx').on(table.userId, table.site),
+  viaIdx: index('browser_accounts_via_idx').on(table.viaAccountId),
+}))
+
+// Browser Vault grants - which agents may sign in with an account.
+export const agentBrowserAccounts = sqliteTable('agent_browser_accounts', {
+  agentSlug: text('agent_slug').notNull().references(() => agents.slug, { onDelete: 'cascade' }),
+  accountId: text('account_id').notNull().references(() => browserAccounts.id, { onDelete: 'cascade' }),
+  grantedBy: text('granted_by').references(() => user.id, { onDelete: 'set null' }), // Who granted it (auth mode)
+  // Part 3: the version of the account's saved session this agent's browser holds.
+  appliedSessionVersion: integer('applied_session_version'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  lastUsedAt: integer('last_used_at', { mode: 'timestamp_ms' }),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.agentSlug, table.accountId] }),
+  accountIdx: index('agent_browser_accounts_account_idx').on(table.accountId),
+}))
+
+// Browser Vault saved sessions (part 3) - an account's cookies and web
+// storage, captured after a sign-in. They restore only into the browser type
+// they came from.
+export const browserAccountSessions = sqliteTable('browser_account_sessions', {
+  id: text('id').primaryKey(),
+  accountId: text('account_id').notNull().references(() => browserAccounts.id, { onDelete: 'cascade' }),
+  browserType: text('browser_type', { enum: ['container', 'chrome', 'browserbase', 'platform'] }).notNull(),
+  bundle: text('bundle').notNull(), // Sealed JSON (vault-crypto, sessionBundleSchema)
+  version: integer('version').notNull().default(1), // Bumped on every capture
+  capturedAt: integer('captured_at', { mode: 'timestamp_ms' }).notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  accountTypeUnique: uniqueIndex('browser_account_sessions_account_type_unique').on(table.accountId, table.browserType),
+}))
+
 // Scheduled tasks - tasks scheduled by agents for future execution
 export const scheduledTasks = sqliteTable('scheduled_tasks', {
   id: text('id').primaryKey(),
@@ -284,28 +345,34 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
 // Notifications - user notifications for session events
 export const notifications = sqliteTable('notifications', {
   id: text('id').primaryKey(),
-  type: text('type', { enum: ['session_complete', 'session_waiting', 'session_scheduled', 'session_webhook', 'session_chat_integration'] }).notNull(),
+  type: text('type', { enum: ['session_complete', 'session_waiting', 'session_scheduled', 'session_webhook', 'session_chat_integration', 'session_mention'] }).notNull(),
   sessionId: text('session_id').notNull(),
   agentSlug: text('agent_slug').notNull(),
   title: text('title').notNull(),
   body: text('body').notNull(),
   isRead: integer('is_read', { mode: 'boolean' }).notNull().default(false),
-  // NOTE: notifications are intentionally agent/session-scoped, NOT per-user.
-  // Read state is shared across everyone with access to the agent (a teammate
+  // NOTE: most notifications are agent/session-scoped, NOT per-user. Read state
+  // is shared across everyone with access to the agent (a teammate
   // acknowledging a "session waiting"/"session complete" item clears it for the
-  // team). There is deliberately no per-user owner column here: cross-agent
-  // isolation is enforced by getAccessibleAgentSlugs() in the service layer and
-  // by HasNotificationAccess on the by-id routes. A previously-speculative
-  // `user_id` column was dropped (SUP-227, never wired up — always NULL). Do not
-  // re-add a per-user owner unless a *targeted* notification type lands (e.g. an
-  // @-mention or per-approver request), which needs a recipient + split read
-  // state, not a single shared isRead bit.
+  // team), and those rows leave `recipient_user_id` null. Cross-agent isolation
+  // is enforced by getAccessibleAgentSlugs() in the service layer and by
+  // HasNotificationAccess on the by-id routes.
+  //
+  // A targeted row (`session_mention`: one per person tagged in a message) names
+  // its recipient, so its read state is that person's alone and nobody else
+  // sees it. Every read applies `recipient_user_id IS NULL OR = me`. Plain text
+  // with no FK, like `session_unread_marks.user_id`.
+  recipientUserId: text('recipient_user_id'),
+  /** The transcript message a targeted row points at (the mention). */
+  messageUuid: text('message_uuid'),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   readAt: integer('read_at', { mode: 'timestamp_ms' }),
 }, (table) => ({
   agentSlugIsReadIdx: index('notifications_agent_slug_is_read_idx').on(table.agentSlug, table.isRead),
   sessionIdIdx: index('notifications_session_id_idx').on(table.sessionId),
   createdAtIdx: index('notifications_created_at_idx').on(table.createdAt),
+  // One mention row per person per message, so a retried insert is a no-op.
+  messageRecipientUnique: uniqueIndex('notifications_message_recipient_unique').on(table.messageUuid, table.recipientUserId),
 }))
 
 /**
@@ -549,6 +616,8 @@ export const volumeDefinitions = sqliteTable('volume_definitions', {
   name: text('name').notNull(),
   type: text('type').notNull(),
   config: text('config').notNull(),
+  // Set on a public drive: every agent mounts it at this level, on top of its own drives.
+  globalAccess: text('global_access', { enum: ['read', 'write'] }),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 }, table => ({ ownerIdx: index('volume_definitions_owner_idx').on(table.userId) }))
@@ -982,6 +1051,10 @@ export type ConnectedAccount = typeof connectedAccounts.$inferSelect
 export type NewConnectedAccount = typeof connectedAccounts.$inferInsert
 export type AgentConnectedAccount = typeof agentConnectedAccounts.$inferSelect
 export type NewAgentConnectedAccount = typeof agentConnectedAccounts.$inferInsert
+export type BrowserAccount = typeof browserAccounts.$inferSelect
+export type NewBrowserAccount = typeof browserAccounts.$inferInsert
+export type AgentBrowserAccount = typeof agentBrowserAccounts.$inferSelect
+export type BrowserAccountSession = typeof browserAccountSessions.$inferSelect
 export type ScheduledTask = typeof scheduledTasks.$inferSelect
 export type NewScheduledTask = typeof scheduledTasks.$inferInsert
 export type Notification = typeof notifications.$inferSelect

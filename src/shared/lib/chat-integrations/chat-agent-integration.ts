@@ -20,6 +20,7 @@ import type { SessionActivity } from '@shared/lib/types/agent'
 import type { ChatProvider } from './config-schema'
 import { incomingMessageSchema } from './message-schema'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import {
   INTEGRATION_MESSAGE_LIMITS, clampIntegrationText, integrationTimestamp, safeIntegrationLink,
   type IntegrationMessagePresentation, type IntegrationMessageSource,
@@ -342,11 +343,14 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     if (!context.sessionId) return false
     const message = incomingMessageSchema.parse(event.payload)
     const { actor } = context
+    const { sessionId } = context
     return consumeOrCancelAwaitingInput({
-      sessionId: context.sessionId, agentSlug: context.integration.agentSlug, chatId: context.externalId,
-      messageText: input.text, answerText: message.text, hasFiles: !!message.files?.length,
-      persister: { isSessionAwaitingInput: (_slug, id) => actor.sessions.isAwaitingInput(id), cancelAwaitingInput: (_slug, id) => actor.inputs.cancelAwaiting(id) },
-      registry: { getOpenRequestsForSession: (_slug, id) => actor.inputs.open(id) }, connector: this,
+      chatId: context.externalId, messageText: input.text, answerText: message.text, hasFiles: !!message.files?.length,
+      session: {
+        live: () => actor.sessions.live(sessionId),
+        cancelAwaiting: () => actor.inputs.cancelAwaiting(sessionId),
+      },
+      connector: this,
     })
   }
 
@@ -385,6 +389,8 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     await processSSEEvent(state, output.event, chatSettings(context.integration).showToolCalls, context.sessionId ?? '')
   }
 
+  // The working indicator is armed from what the session is doing.
+  override readonly observesActivity = true
   observeSession(context: IntegrationSessionContext): void {
     if (!context.sessionId) return
     const state = this.deliveryState(context)
@@ -398,7 +404,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     const state = this.deliverySessions.get(context.externalId)
     if (!state || (context.sessionId && state.sessionId !== context.sessionId)) return
     stopIndicatorTick(state)
-    void this.stopWorking(context.externalId).catch(() => {})
+    background(this.stopWorking(context.externalId).catch(() => {}), { name: 'chat-integration.stop-working' })
     this.deliverySessions.delete(context.externalId)
   }
 
@@ -439,16 +445,16 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
   protected emitInteractiveResponse(toolUseId: string, response: unknown, chatId?: string): void {
     const review = toolUseId.startsWith('review:')
     const value = response as { answer?: string; question?: string; answers?: Record<string, string> } | undefined
-    void this.emitEvent({
+    background(this.emitEvent({
       type: 'response', externalId: chatId ?? '',
       requestId: review ? toolUseId.split(':')[1] : toolUseId,
       requestKind: review ? 'review' : 'input',
       value: review ? (value?.answer?.toLowerCase().includes('allow') ? 'allow' : 'deny')
         : value?.question && value.answer !== undefined ? value.answers ?? { [value.question]: value.answer } : response,
-    }).catch(error => this.emitError(error instanceof Error ? error : new Error(String(error))))
+    }).catch(error => this.emitError(error instanceof Error ? error : new Error(String(error)))), { name: 'chat-integration.interactive-response' })
   }
 
   protected emitTypingHint(chatId: string): void {
-    void this.emitEvent({ type: 'hint', externalId: chatId }).catch(() => {})
+    background(this.emitEvent({ type: 'hint', externalId: chatId }).catch(() => {}), { name: 'chat-integration.typing-hint' })
   }
 }

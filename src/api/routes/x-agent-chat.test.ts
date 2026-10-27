@@ -112,6 +112,10 @@ vi.mock('fs', () => ({
   promises: {
     appendFile: (...args: unknown[]) => mockAppendFile(...args),
     mkdir: vi.fn(),
+    // No session metadata yet: the delivery reads none.
+    readFile: vi.fn(async () => {
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+    }),
   },
 }))
 
@@ -186,7 +190,10 @@ describe('x-agent chat route', () => {
     mockGetConnectorClass.mockResolvedValue(undefined)
     mockGetActiveIntegrationIds.mockReturnValue(['integration-1'])
     mockEnsureSession.mockResolvedValue('session-1')
-    mockEnsureRunning.mockResolvedValue({ sendMessage: containerSendMessage })
+    mockEnsureRunning.mockResolvedValue({
+      sendMessage: containerSendMessage,
+      subscribeToStream: vi.fn(() => ({ unsubscribe: vi.fn(), ready: Promise.resolve() })),
+    })
     mockAppendFile.mockResolvedValue(undefined)
     mockExistsSync.mockReturnValue(false)
     vi.spyOn(Math, 'random').mockReturnValue(0)
@@ -341,7 +348,7 @@ describe('x-agent chat route', () => {
       'session-1',
       '[SYSTEM] A message was sent to the user on your behalf via chat integration:\n[Internal context: Asked from a scheduled task]\n\nShip the update',
       undefined,
-      { shouldQuery: false },
+      { shouldQuery: false, preserveRuntime: true },
     )
   })
 

@@ -12,6 +12,7 @@ import volumeDefinitions from './routes/volume-definitions'
 import volumeTypes from './routes/volume-types'
 import webFetch from './routes/web-fetch'
 import connectedAccounts from './routes/connected-accounts'
+import browserAccounts from './routes/browser-accounts'
 import settings from './routes/settings'
 import providers from './routes/providers'
 import scheduledTasks from './routes/scheduled-tasks'
@@ -44,6 +45,7 @@ import llmRouter from './routes/llm'
 import llmRuntimeRouter from './routes/llm-runtime'
 import llmConnectionsRouter from './routes/llm-connections'
 import faviconRouter from './routes/favicon'
+import serverFactsRouter from './routes/server-facts'
 import { getPolyfillJs } from './speech-recognition-polyfill'
 import { getLlmPolyfillJs } from './llm-polyfill'
 import adminUsersRouter from './routes/admin-users'
@@ -67,6 +69,7 @@ import { getPublicAuthProviders } from '@shared/lib/auth/provider-config'
 import { LocalModeAuth, isContainerFacingPath } from './middleware/local-mode-auth'
 import { armAbortSignal } from './middleware/arm-abort-signal'
 import { defaultCacheControl } from './middleware/default-cache-control'
+import { apiErrorHandler } from './error-handler'
 
 const app = new Hono()
 
@@ -177,8 +180,8 @@ if (isAuthMode()) {
 // Mount Better Auth handler (only when AUTH_MODE is enabled)
 if (isAuthMode()) {
   app.on(['POST', 'GET'], '/api/auth/*', async (c) => {
-    const { getAuth } = await import('@shared/lib/auth/index')
-    return getAuth().handler(c.req.raw)
+    const { handleAuthRequest } = await import('@shared/lib/auth/handler')
+    return handleAuthRequest(c.req.raw)
   })
 }
 
@@ -246,6 +249,7 @@ app.route('/api/x-agent/rules', xAgentRules)
 app.route('/api/web-search', webSearch)
 app.route('/api/web-fetch', webFetch)
 app.route('/api/connected-accounts', connectedAccounts)
+app.route('/api/browser-accounts', browserAccounts)
 app.route('/api/settings', settings)
 app.route('/api/providers', providers)
 app.route('/api/scheduled-tasks', scheduledTasks)
@@ -297,6 +301,7 @@ app.route('/api/llm', llmRouter)
 app.route('/api/llm-runtime', llmRuntimeRouter)
 app.route('/api/llm-connections', llmConnectionsRouter)
 app.route('/api/favicon', faviconRouter)
+app.route('/api/server-facts', serverFactsRouter)
 app.route('/api/debug', debugRouter)
 
 // Desktop → cloud-workspace forwarding. Mounted outside `/api` on purpose: it
@@ -309,10 +314,7 @@ if (isCloudProxyEnabled()) {
 }
 
 // Global error handler
-app.onError((err, c) => {
-  console.error('API Error:', err)
-  return c.json({ error: 'Internal server error' }, 500)
-})
+app.onError(apiErrorHandler)
 
 // 404 handler
 app.notFound((c) => {

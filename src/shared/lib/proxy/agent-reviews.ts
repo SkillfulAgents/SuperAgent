@@ -3,32 +3,39 @@
  * The router in front of every agent's store is `review-manager`.
  */
 import { requiresOneTimeXAgentReview, type XAgentFileTransfer } from './x-agent-review'
-import crypto from 'crypto'
 import type { AgentSlug } from '@shared/lib/agent-actor/types'
 import type { AgentInputRequests } from '@shared/lib/tools/requests/agent-input-requests'
 import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
 import { generateReviewDisplayText, type ReviewDetails } from './review-display'
 import { heldByRequireRule, parseRuleProposal } from './rules/proposal-schema'
 import { getScopeLabel, type ScopeLabel } from './scope-metadata'
+import { getScopeDescriptors } from './scope-catalog'
 
 const REVIEW_TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes
 
-interface ReviewSettler {
-  resolve: (decision: 'allow' | 'deny') => void
-  reject: (error: Error) => void
-  timer: ReturnType<typeof setTimeout>
-  reevaluate?: ReviewReevaluator
-}
-
 /**
- * Decide the parked request again from scratch (policy and proxy rules), for
- * when a sibling's "always" decision changed the policy: 'allow' or 'deny'
- * settles it, 'review' leaves it for the person.
+ * How a parked review ends for the call waiting on it:
+ * - `allow` / `deny`: decided;
+ * - `recheck`: an allow sweep changed the policy, and the caller asked to
+ *   decide again itself (`recheck`): the review stays open until it settles
+ *   or resumes it;
+ * - `timeout`: nobody decided in time, or the agent was let go;
+ * - `withdrawn`: the caller withdrew it (its request was aborted).
  */
-export type ReviewReevaluator = () => Promise<'allow' | 'deny' | 'review'>
+export type ReviewOutcome = ReviewDecision | 'recheck' | 'timeout' | 'withdrawn'
 
 export interface ReviewRequestOptions {
-  reevaluate?: ReviewReevaluator
+  /** The review's id, chosen by the caller so it can withdraw, resume or settle it. */
+  id: string
+  /** On an allow sweep, hand back `recheck` instead of releasing the call. */
+  recheck?: boolean
+}
+
+interface ReviewSettler {
+  /** The caller waiting for the next outcome; absent while it rechecks a sweep. */
+  waiter?: (outcome: ReviewOutcome) => void
+  timer: ReturnType<typeof setTimeout>
+  recheck: boolean
 }
 
 type ReviewRegistryEntry = Extract<
@@ -60,10 +67,11 @@ function detailsOf(entry: ReviewRegistryEntry): ReviewDetails & { displayText: s
       : {}
   const endpointDescription =
     typeof p.endpointDescription === 'string' ? p.endpointDescription : undefined
+  const endpointAmbiguous = p.endpointAmbiguous === true
   const displayText =
     typeof p.displayText === 'string' && p.displayText.length > 0
       ? p.displayText
-      : generateReviewDisplayText(toolkit, method, targetPath, scopeDescriptions, endpointDescription)
+      : generateReviewDisplayText(toolkit, method, targetPath, scopeDescriptions, endpointDescription, endpointAmbiguous)
   return {
     agentSlug: entry.scope.agentSlug ?? '',
     accountId: typeof p.accountId === 'string' ? p.accountId : '',
@@ -73,7 +81,11 @@ function detailsOf(entry: ReviewRegistryEntry): ReviewDetails & { displayText: s
     targetPath,
     matchedScopes: Array.isArray(p.matchedScopes) ? (p.matchedScopes as string[]) : [],
     scopeDescriptions,
+    ...(entry.kind === 'proxy_review' && entry.payload.scopeMetadata !== undefined
+      ? { scopeMetadata: entry.payload.scopeMetadata } : {}),
     ...(endpointDescription !== undefined ? { endpointDescription } : {}),
+    ...(endpointAmbiguous ? { endpointAmbiguous } : {}),
+    ...(typeof p.requestBody === 'string' ? { requestBody: p.requestBody } : {}),
     ...(Array.isArray(p.ruleOutcomes) && p.ruleOutcomes.length > 0
       ? { ruleOutcomes: p.ruleOutcomes as ReviewDetails['ruleOutcomes'] }
       : {}),
@@ -101,6 +113,8 @@ function detailsOf(entry: ReviewRegistryEntry): ReviewDetails & { displayText: s
  */
 export class AgentReviews {
   private settlers: Map<string, ReviewSettler> = new Map()
+  /** Outcomes that ended a review while its caller was rechecking: the caller's next resume takes them. */
+  private readonly held = new Map<string, ReviewOutcome>()
 
   constructor(
     readonly slug: AgentSlug,
@@ -128,89 +142,78 @@ export class AgentReviews {
   private settleReview(
     entry: ReviewRegistryEntry,
     outcome: 'answered' | 'declined' | 'cancelled' | 'timeout',
-    action: { type: 'resolve'; decision: ReviewDecision } | { type: 'reject'; error: Error },
+    result: ReviewOutcome,
   ): void {
     const settler = this.settlers.get(entry.id)
     this.settlers.delete(entry.id)
     if (settler) clearTimeout(settler.timer)
     this.inputs.resolve(entry.id, outcome)
-    if (settler) {
-      if (action.type === 'resolve') settler.resolve(action.decision)
-      else settler.reject(action.error)
-    }
+    if (settler) this.handOver(entry.id, settler, result)
+  }
+
+  /** Give the caller its outcome, or keep it for the caller's next resume when it is rechecking. */
+  private handOver(id: string, settler: ReviewSettler, outcome: ReviewOutcome): void {
+    const waiter = settler.waiter
+    settler.waiter = undefined
+    if (waiter) waiter(outcome)
+    else this.held.set(id, outcome)
   }
 
   private settleDecided(entry: ReviewRegistryEntry, decision: ReviewDecision): void {
-    this.settleReview(entry, decision === 'allow' ? 'answered' : 'declined', { type: 'resolve', decision })
+    this.settleReview(entry, decision === 'allow' ? 'answered' : 'declined', decision)
   }
 
   /**
    * Settle a sibling review swept by an "always" decision on another one. A
-   * deny sweep denies. An allow sweep doesn't release the request outright:
-   * the request is decided again under the new policy (a require rule may
-   * still hold it), and stays pending if it still needs review. A review
-   * without a re-evaluator (nothing parked behind it) is released unless a
-   * require rule held it.
+   * deny sweep denies. An allow sweep doesn't release the request outright
+   * when its caller asked to recheck: the caller decides it again under the
+   * new policy (a require rule may still hold it) and settles or resumes it,
+   * the review open meanwhile. One already rechecking keeps the sweep for its
+   * next resume, since its policy read may predate it. A review whose caller
+   * did not ask is released unless a require rule held it.
    */
   private settleSwept(entry: ReviewRegistryEntry, decision: ReviewDecision): void {
     if (decision === 'deny') {
       this.settleDecided(entry, 'deny')
       return
     }
-    const reevaluate = this.settlers.get(entry.id)?.reevaluate
-    if (!reevaluate) {
-      if (!heldByRequireRule(detailsOf(entry).ruleOutcomes)) this.settleDecided(entry, 'allow')
+    const settler = this.settlers.get(entry.id)
+    if (settler?.recheck) {
+      if (settler.waiter) this.handOver(entry.id, settler, 'recheck')
+      else if (!this.held.has(entry.id)) this.held.set(entry.id, 'recheck')
       return
     }
-    const id = entry.id
-    void reevaluate().then((result) => {
-      if (result === 'review' || !this.settlers.has(id)) return
-      const current = this.inputs.getOpenRequest(id)
-      if (!current || !isReviewEntry(current)) return
-      this.settleDecided(current, result)
-      this.shadowSettlerCheck('reevaluatedAfterSweep')
-      this.syncAwaiting()
-    }, (error: unknown) => {
-      console.warn('[reviews] Re-evaluating a swept review failed; it stays pending:', error)
-    })
+    if (!heldByRequireRule(detailsOf(entry).ruleOutcomes)) this.settleDecided(entry, 'allow')
   }
 
-  request(details: ReviewRequest, signal?: AbortSignal, options: ReviewRequestOptions = {}): Promise<ReviewDecision> {
-    // The caller is already gone (abort listeners never fire for a signal
-    // aborted before they were added): raise no card nobody waits on.
-    if (signal?.aborted) return Promise.reject(new Error('Request aborted'))
-    const id = crypto.randomUUID()
+  /**
+   * Park the caller's proxied call on a review card until its outcome (see
+   * `ReviewOutcome`). The caller names the review (`options.id`), so it can
+   * withdraw it, and resume or settle it after a recheck.
+   */
+  request(details: ReviewRequest, options: ReviewRequestOptions): Promise<ReviewOutcome> {
+    const { id } = options
 
-    return new Promise<ReviewDecision>((resolve, reject) => {
+    return new Promise<ReviewOutcome>((resolve) => {
       const settleTimedOut = () => {
-        if (!this.settlers.has(id)) return
+        const settler = this.settlers.get(id)
+        if (!settler) return
         this.settlers.delete(id)
         this.inputs.resolve(id, 'timeout')
         this.shadowSettlerCheck('settleTimedOut')
         this.syncAwaiting()
-        reject(new Error('Review timeout'))
+        this.handOver(id, settler, 'timeout')
       }
 
+      // An id asked again replaces the call parked on it, which is told it
+      // was withdrawn; its timer would otherwise time out the new one.
+      const earlier = this.settlers.get(id)
+      if (earlier) {
+        clearTimeout(earlier.timer)
+        earlier.waiter?.('withdrawn')
+      }
       const timer = setTimeout(settleTimedOut, REVIEW_TIMEOUT_MS)
-
-      const cleanup = () => {
-        clearTimeout(timer)
-        this.settlers.delete(id)
-        this.inputs.resolve(id, 'cancelled')
-        this.shadowSettlerCheck('abortCleanup')
-        this.syncAwaiting()
-      }
-
-      // If the request is aborted (e.g. task stopped), clean up the orphaned review
-      if (signal) {
-        signal.addEventListener('abort', () => {
-          if (!this.settlers.has(id)) return // already resolved/timed out
-          cleanup()
-          reject(new Error('Request aborted'))
-        }, { once: true })
-      }
-
-      this.settlers.set(id, { resolve, reject, timer, reevaluate: options.reevaluate })
+      this.settlers.set(id, { waiter: resolve, timer, recheck: options.recheck === true })
 
       const displayText = generateReviewDisplayText(
         details.toolkit,
@@ -218,6 +221,7 @@ export class AgentReviews {
         details.targetPath,
         details.scopeDescriptions,
         details.endpointDescription,
+        details.endpointAmbiguous,
       )
 
       // Reviews are agent-scoped — no sessionId in the proxied call, so the
@@ -231,15 +235,23 @@ export class AgentReviews {
         scope: { agentSlug: this.slug },
         blocking: true,
         autoApproved: false,
-        payload: { ...details, agentSlug: this.slug, displayText },
+        payload: {
+          ...details, agentSlug: this.slug, displayText,
+          // Ship the same metadata used by policy resolution in both the live
+          // event and the persisted envelope replayed after reconnecting.
+          ...(!details.xAgent && (details.reviewType === 'api' ||
+            (!details.reviewType && !details.targetPath.startsWith('tools/call')))
+            ? { scopeMetadata: getScopeDescriptors(details.toolkit, details.matchedScopes, details.scopeDescriptions) }
+            : {}),
+        },
       })
       if (!registered) {
         // Can't happen with our own envelope construction, but if the registry
-        // ever drops it, fail the proxied call now — a review that exists
+        // ever drops it, end the proxied call now — a review that exists
         // nowhere would otherwise park until the timeout.
         clearTimeout(timer)
         this.settlers.delete(id)
-        reject(new Error('Failed to register review'))
+        resolve('timeout')
         return
       }
       this.shadowSettlerCheck('requestReview')
@@ -254,9 +266,58 @@ export class AgentReviews {
       this.syncAwaiting()
 
       // The OS notification fires from the registry 'created' transition
-      // (persister dispatchRequestNotification) — one per review, attributed
+      // (the live sessions' notifyRequest) — one per review, attributed
       // to the agent's first active session there.
     })
+  }
+
+  /**
+   * The caller is gone (its request was aborted): close the card. Its parked
+   * outcome, if it still waits on one, is `withdrawn`.
+   */
+  withdraw(id: string): void {
+    this.held.delete(id)
+    const entry = this.inputs.getOpenRequest(id)
+    if (entry && isReviewEntry(entry) && this.settlers.has(id)) {
+      this.settleReview(entry, 'cancelled', 'withdrawn')
+      this.shadowSettlerCheck('withdraw')
+      this.syncAwaiting()
+    }
+  }
+
+  /**
+   * After a recheck that found the review still needed: wait for its next
+   * outcome. One that ended it during the recheck (a person decided, the
+   * timer ran out) is handed back at once.
+   */
+  resume(id: string): Promise<ReviewOutcome> {
+    const held = this.held.get(id)
+    if (held !== undefined) {
+      this.held.delete(id)
+      return Promise.resolve(held)
+    }
+    const settler = this.settlers.get(id)
+    if (!settler) return Promise.resolve('withdrawn')
+    return new Promise<ReviewOutcome>((resolve) => {
+      settler.waiter = resolve
+    })
+  }
+
+  /**
+   * After a recheck that decided the review: settle it so, unless it ended
+   * meanwhile. Resolves to how it ended.
+   */
+  settle(id: string, decision: ReviewDecision): Promise<ReviewOutcome> {
+    // A sweep kept during the recheck is answered by this decision.
+    if (this.held.get(id) === 'recheck') this.held.delete(id)
+    const outcome = this.resume(id)
+    const entry = this.inputs.getOpenRequest(id)
+    if (entry && isReviewEntry(entry) && this.settlers.has(id)) {
+      this.settleDecided(entry, decision)
+      this.shadowSettlerCheck('reevaluatedAfterSweep')
+      this.syncAwaiting()
+    }
+    return outcome
   }
 
   /**
@@ -336,13 +397,10 @@ export class AgentReviews {
    * scopeDescriptions/displayText that the dedicated UI renderer keys off.
    */
   requestXAgent(
-    targetAgentSlug: string,
-    targetAgentName: string,
-    operation: XAgentOperation,
-    preview?: string,
-    fileTransfer?: XAgentFileTransfer,
-    signal?: AbortSignal,
-  ): Promise<ReviewDecision> {
+    request: { targetAgentSlug: string; targetAgentName: string; operation: XAgentOperation; preview?: string; fileTransfer?: XAgentFileTransfer },
+    options: ReviewRequestOptions,
+  ): Promise<ReviewOutcome> {
+    const { targetAgentSlug, targetAgentName, operation, preview, fileTransfer } = request
     const scope =
       operation === 'list'
         ? 'list'
@@ -382,30 +440,30 @@ export class AgentReviews {
           ...(fileTransfer ? { fileTransfer } : {}),
         },
       },
-      signal,
+      options,
     )
   }
 
   denyAll(): void {
     for (const entry of this.entries()) {
-      this.settleReview(entry, 'declined', { type: 'resolve', decision: 'deny' })
+      this.settleReview(entry, 'declined', 'deny')
     }
     this.shadowSettlerCheck('denyAllForAgent')
     this.syncAwaiting()
   }
 
-  /** Reject every parked review: the process is shutting down, or the agent is gone. */
+  /** End every parked review as timed out: the process is shutting down, or the agent is gone. */
   rejectAll(): void {
     const entries = this.entries()
     for (const entry of entries) {
-      this.settleReview(entry, 'cancelled', { type: 'reject', error: new Error('Review timeout') })
+      this.settleReview(entry, 'cancelled', 'timeout')
     }
     // Defensive: a settler whose registry entry vanished is still a parked
     // proxied call — shutdown must never leave one hung.
     for (const [id, settler] of this.settlers) {
       clearTimeout(settler.timer)
       this.settlers.delete(id)
-      settler.reject(new Error('Review timeout'))
+      this.handOver(id, settler, 'timeout')
     }
     if (entries.length > 0) this.syncAwaiting()
   }

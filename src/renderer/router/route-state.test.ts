@@ -45,6 +45,7 @@ const cases: AppLocation[] = [
   { selectedAgentSlug: SLUG, view: { kind: 'connections', detail: { rowKey: 'account-123', source: 'home' } } },
   { selectedAgentSlug: SLUG, view: { kind: 'connections', detail: { rowKey: 'mcp-456', source: 'list' } } },
   { selectedAgentSlug: SLUG, view: { kind: 'connections', detail: { rowKey: 'account-123', source: 'home', view: 'logs' } } },
+  { selectedAgentSlug: SLUG, view: { kind: 'connections', detail: { rowKey: 'account-123', source: 'home', view: 'logs', from: '/agents/a?session=s1' } } },
 ]
 
 describe('route-state codec', () => {
@@ -87,6 +88,19 @@ describe('route-state codec', () => {
   // These feed decodeLocation snapshots that encodeLocation can never EMIT (a
   // half-pair, an out-of-enum source, a non-string session, missing params), so
   // they are NOT round-trip cases — they pin the decoder's defensive guards.
+
+  it('drops an unsafe connections from', () => {
+    expect(
+      decodeLocation({
+        to: '/agents/$slug/connections',
+        params: { slug: 'a' },
+        search: { detail: 'account-1', source: 'home', from: '//evil.example' },
+      }),
+    ).toEqual({
+      selectedAgentSlug: 'a',
+      view: { kind: 'connections', detail: { rowKey: 'account-1', source: 'home' } },
+    })
+  })
 
   it('drops a connections half-pair (detail without source) to the bare connections view', () => {
     expect(

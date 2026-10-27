@@ -31,6 +31,7 @@ import { RuleJobs, TooManyJobsError } from '@shared/lib/proxy/rules/jobs'
 import type { RuleProposalReview } from '@shared/lib/proxy/rules/proposal-schema'
 import { RULE_HELPERS_DOC } from '@shared/lib/proxy/rules/helpers-source'
 import { RULE_INPUT_DOC } from '@shared/lib/proxy/rules/input'
+import { awaitReview } from '@shared/lib/proxy/review-request'
 
 type Variables = { callerSlug: string }
 const xAgentRules = new Hono<{ Variables: Variables }>()
@@ -173,7 +174,8 @@ xAgentRules.post('/delete', zValidator('json', z.object({ ruleId: z.string().min
     }
     let decision: 'allow' | 'deny'
     try {
-      decision = await agentRegistry.get(callerSlug).inputs.reviews.request({
+      const reviews = agentRegistry.get(callerSlug).inputs.reviews
+      decision = await awaitReview(reviews, (raise) => reviews.request({
         accountId: target.targetId,
         reviewType: target.kind,
         toolkit: context.toolkit ?? context.name,
@@ -183,7 +185,7 @@ xAgentRules.post('/delete', zValidator('json', z.object({ ruleId: z.string().min
         scopeDescriptions: {},
         endpointDescription: `Delete rule "${rule.name}" on ${context.name}?`,
         ruleProposal: proposal,
-      }, signal)
+      }, raise), { signal })
     } catch {
       await auditRuleDecision({ proposal, approved: false, agentSlug: callerSlug, via: 'timeout' })
       return { status: 408, body: { error: 'review_timeout', message: 'Deleting the rule needed approval but the request timed out. It was not deleted.' } }
@@ -281,7 +283,8 @@ async function proposeRule({ callerSlug, body, target, context, replaces, signal
 
   let decision: 'allow' | 'deny'
   try {
-    decision = await agentRegistry.get(callerSlug).inputs.reviews.request({
+    const reviews = agentRegistry.get(callerSlug).inputs.reviews
+    decision = await awaitReview(reviews, (raise) => reviews.request({
       accountId: body.targetId,
       reviewType: body.kind,
       toolkit: context.toolkit ?? context.name,
@@ -293,7 +296,7 @@ async function proposeRule({ callerSlug, body, target, context, replaces, signal
         ? `Update rule "${prepared.name}" on ${context.name}?`
         : `Add rule "${prepared.name}" on ${context.name}?`,
       ruleProposal: proposal,
-    }, signal)
+    }, raise), { signal })
   } catch {
     await auditRuleDecision({ proposal, approved: false, agentSlug: callerSlug, via: 'timeout' })
     return { status: 408, body: { error: 'review_timeout', message: 'The rule needed approval but the request timed out. It was not saved.' } }

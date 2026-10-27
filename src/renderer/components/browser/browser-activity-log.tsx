@@ -26,7 +26,7 @@ interface BrowserActivityLogProps {
 
 export function BrowserActivityLog({ sessionId, agentSlug }: BrowserActivityLogProps) {
   const { data: messages } = useMessages(sessionId, agentSlug)
-  const { streamingToolUses, activeSubagents } = useMessageStream(sessionId, agentSlug)
+  const { streamingToolUses, activeSubagents } = useMessageStream(sessionId, agentSlug, ['streamingToolUses', 'activeSubagents'])
   const bottomSentinelRef = useRef<HTMLDivElement>(null)
 
   // Collect ALL subagent IDs from the session messages

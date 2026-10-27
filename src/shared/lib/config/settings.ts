@@ -14,7 +14,9 @@ import {
 import { captureException } from '@shared/lib/error-reporting'
 import { persistedSettingsSchema } from './settings-schema'
 import { globalInstructionsSchema } from './global-instructions-schema'
+import { teamBrainRecordSchema, type TeamBrainRecord } from './team-brain-schema'
 import { coerceApiTarget, type ApiTarget } from '@shared/lib/api-target'
+import type { CloudServerFactsRecord } from '@shared/lib/facts/facts-schema'
 import { DEFAULT_GLOBAL_DISPATCH_SHORTCUT } from './shortcuts'
 import { DEFAULT_API_LOG_AUTO_DELETE_DAYS } from './api-log-auto-delete'
 import type { SkillsetConfig, SkillsetCredential } from '@shared/lib/types/skillset'
@@ -205,7 +207,7 @@ export const DEFAULT_AUTH_SETTINGS: AuthSettings = {
 
 export type ScriptType = 'applescript' | 'shell' | 'powershell'
 
-/** Script types supported on each host platform. Used for validation in both message-persister and the run-script API endpoint. */
+/** Script types supported on each host platform. Used for validation in both the live sessions' tool calls and the run-script API endpoint. */
 export const VALID_SCRIPT_TYPES: Record<string, ScriptType[]> = {
   darwin: ['applescript', 'shell'],
   linux: ['shell'],
@@ -310,6 +312,12 @@ export interface AppSettings {
    */
   cloudWorkspace?: CloudWorkspaceSettings
   /**
+   * Desktop-only: the cloud workspace's server facts as last heard, so a
+   * renderer driving it has them at boot without a request. Validated on read
+   * (`cloud-server-facts.ts`).
+   */
+  cloudServerFacts?: CloudServerFactsRecord
+  /**
    * Desktop platform-notifications state: the OS-notification dedup watermark
    * (newest created_at already OS-notified). Content is never mirrored locally
    * — the inbox reads live from the platform.
@@ -330,6 +338,8 @@ export interface AppSettings {
    * section). Admin-edited; readable by every signed-in user.
    */
   globalInstructions?: string
+  /** The workspace's one Team Brain (team-brain experiment). Admin-written; readable by every signed-in user. */
+  teamBrain?: TeamBrainRecord
   /**
    * Desktop-only: whether the UI drives this machine or the org's cloud
    * workspace. Main-owned rather than per-renderer so the main window and the
@@ -421,6 +431,7 @@ export interface GlobalSettingsResponse {
   shareErrorReports: boolean
   enableToolSearch: boolean
   agentCapabilities: AgentCapabilitySettings
+  teamBrain?: TeamBrainRecord
 }
 
 /**
@@ -622,6 +633,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     shareErrorReports: loaded.shareErrorReports,
     platformAuth: loaded.platformAuth,
     cloudWorkspace: loaded.cloudWorkspace,
+    cloudServerFacts: loaded.cloudServerFacts,
     push: loaded.push,
     // Narrowed on read: an unrecognized value (hand-edited file, a future
     // version's target) must resolve to local rather than to something that
@@ -650,6 +662,13 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
       const parsed = globalInstructionsSchema.safeParse(loaded.globalInstructions)
       if (parsed.success) return parsed.data
       console.warn('Invalid globalInstructions in settings.json; ignoring it')
+      return undefined
+    })(),
+    teamBrain: (() => {
+      if (loaded.teamBrain === undefined) return undefined
+      const parsed = teamBrainRecordSchema.safeParse(loaded.teamBrain)
+      if (parsed.success) return parsed.data
+      console.warn('Invalid teamBrain in settings.json; ignoring it')
       return undefined
     })(),
   }
@@ -1004,6 +1023,11 @@ export function getAgentCapabilitySettings(): AgentCapabilitySettings {
 /** The global guidance every agent receives; '' when none is set. */
 export function getGlobalInstructions(): string {
   return getSettings().globalInstructions ?? ''
+}
+
+/** The workspace's Team Brain, or null before one is set up. */
+export function getTeamBrain(): TeamBrainRecord | null {
+  return getSettings().teamBrain ?? null
 }
 
 export { DEFAULT_SETTINGS }

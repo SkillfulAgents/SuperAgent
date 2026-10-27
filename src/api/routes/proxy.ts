@@ -3,12 +3,15 @@ import { routePath } from 'hono/route'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { isHostAllowed } from '@shared/lib/proxy/allowed-hosts'
 import { matchScopes } from '@shared/lib/proxy/scope-matcher'
+import { requestBodyPreview } from '@shared/lib/proxy/review-display'
+import { isPreviewableContentType } from '@shared/lib/proxy/body-translation'
 import { canonicalizeTargetPath, rawRouteTail } from '@shared/lib/proxy/target-path'
 import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { getReplacementAccountId } from '@shared/lib/proxy/account-replacement'
-import { isReauthDismissed, reauthDismissalReason, withDismissalReason } from '@shared/lib/proxy/reauth-dismissal'
+import { withDismissalReason } from '@shared/lib/proxy/reauth-dismissal'
+import { awaitReauth } from '@shared/lib/proxy/reauth-request'
 import { getAccountProviderByName } from '@shared/lib/account-providers'
+import { getProviderDisplayName } from '@shared/lib/account-providers/service-catalog'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
 import { writeProxyAuditEntry, type ProxyAuditEntry } from '@shared/lib/proxy/audit'
 import { hasDotSegment } from '@shared/lib/proxy/rules/patterns'
@@ -27,6 +30,7 @@ import {
   agentConnectedAccounts,
 } from '@shared/lib/db/schema'
 import { eq, and } from 'drizzle-orm'
+import { awaitReview } from '@shared/lib/proxy/review-request'
 
 const proxy = new Hono()
 
@@ -153,22 +157,16 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     | { ok: false; reason: 'timeout' | 'dismissed' | 'missing' | 'inactive'; dismissReason?: string }
 
   const holdForReauth = async (status: 'expired' | 'revoked'): Promise<ReauthResult> => {
-    try {
-      await agentRegistry.get(agentSlug).inputs.accountReauth.request({
-        accountId,
-        toolkit: account!.toolkitSlug,
-        accountStatus: status,
-      }, c.req.raw.signal)
-    } catch (error) {
-      const replacementAccountId = getReplacementAccountId(error)
-      if (replacementAccountId) return { ok: false, reason: 'replaced', replacementAccountId }
-      // A person pressing Dismiss and a five-minute timer both land here; only
-      // the first should read as a decision the agent must respect.
-      if (isReauthDismissed(error)) {
-        return { ok: false, reason: 'dismissed', dismissReason: reauthDismissalReason(error) }
-      }
-      return { ok: false, reason: 'timeout' }
-    }
+    const wait = await awaitReauth(agentRegistry.get(agentSlug).inputs.accountReauth, {
+      accountId,
+      toolkit: account!.toolkitSlug,
+      accountStatus: status,
+    }, c.req.raw.signal)
+    if (wait.outcome === 'replaced') return { ok: false, reason: 'replaced', replacementAccountId: wait.replacementId }
+    // A person pressing Dismiss is a decision the agent must respect; a
+    // five-minute timer, an abort or a lost card are not.
+    if (wait.outcome === 'dismissed') return { ok: false, reason: 'dismissed', dismissReason: wait.reason }
+    if (wait.outcome !== 'resumed') return { ok: false, reason: 'timeout' }
 
     const refreshed = await loadMappedAccount()
     if (!refreshed) return { ok: false, reason: 'missing' }
@@ -255,17 +253,18 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     return c.json({ error: 'invalid_path', message: 'The request path must not contain "." or ".." segments.' }, 400)
   }
 
-  // The body is read at most once: by rules (when one's patterns match) and
-  // by the forwarder.
+  // The body is read at most once, shared by the matcher, the card, rules and the
+  // forwarder: text bodies before matching, others only when a rule or the forward needs them.
   let bodyRead: Promise<ArrayBuffer | null> | null = null
   const readBody = () => bodyRead ??= (method === 'GET' || method === 'HEAD')
     ? Promise.resolve(null)
     : c.req.arrayBuffer()
+  const textBody = isPreviewableContentType(c.req.header('content-type')) ? await readBody() : null
 
   // 3.5 Policy enforcement
   const resolvePolicy = async () => {
     try {
-      const matchResult = matchScopes(account.toolkitSlug, method, '/' + targetPath, targetHost)
+      const matchResult = matchScopes(account.toolkitSlug, method, '/' + targetPath, targetHost, textBody)
       const userId = account.userId ?? 'local'
       return await resolveApiPolicy(accountId, matchResult, userId, account.toolkitSlug)
     } catch (policyError) {
@@ -291,7 +290,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
       message: 'This request was blocked by your API access policy.',
       scopes: policyResult.matchedScopes,
       toolkit: account.toolkitSlug,
-      settingsHint: 'You can adjust policies in Settings > Accounts > Policies',
+      settingsHint: `You can change this on the agent's Connections page: open ${getProviderDisplayName(account.toolkitSlug)} and edit its Permissions.`,
     }, 403)
   }
 
@@ -345,7 +344,8 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     const ruleOutcomes = reviewRuleOutcomes(ruleGate.evaluations)
     const rules = reportedRules(ruleGate)
     try {
-      const decision = await agentRegistry.get(agentSlug).inputs.reviews.request({
+      const reviews = agentRegistry.get(agentSlug).inputs.reviews
+      const decision = await awaitReview(reviews, (raise) => reviews.request({
         accountId,
         reviewType: 'api',
         toolkit: account.toolkitSlug,
@@ -354,8 +354,11 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
         matchedScopes: policyResult.matchedScopes,
         scopeDescriptions: policyResult.scopeDescriptions,
         endpointDescription: policyResult.endpointDescription,
+        endpointAmbiguous: policyResult.endpointAmbiguous,
+        requestBody: requestBodyPreview(textBody),
         ...(ruleOutcomes.length > 0 ? { ruleOutcomes } : {}),
-      }, c.req.raw.signal, {
+      }, raise), {
+        signal: c.req.raw.signal,
         // When an "always" decision on another card changes the policy, this
         // request is decided again rather than released.
         reevaluate: async () => {

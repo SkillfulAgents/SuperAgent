@@ -4,6 +4,7 @@ export const MAX_MEMORY_BYTES = 1024 * 1024
 export class MemoryError extends Error {
   constructor(message: string, readonly status: 400 | 404 | 409 | 413 | 422) {
     super(message)
+    this.name = 'MemoryError'
   }
 }
 

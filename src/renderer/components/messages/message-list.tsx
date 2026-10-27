@@ -12,7 +12,7 @@ import {
 } from '@renderer/hooks/use-message-stream'
 import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
 import { classifyUserMessage, classifyUserText } from './user-message-kinds'
-import { MessageItem } from './message-item'
+import { MessageItem, readsSubagentState } from './message-item'
 import { currentRoutedProviderError } from '@renderer/components/provider-error/provider-error-placement'
 import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
 import { ThinkingBlockItem } from './thinking-block-item'
@@ -20,6 +20,7 @@ import { SubAgentBlock } from './subagent-block'
 import { WorkflowBlock } from './workflow-block'
 import { CompactBoundaryItem } from './compact-boundary-item'
 import { MemoryRecallItem } from './memory-recall-item'
+import { MonitorEventItem } from './monitor-event-item'
 import { InformationalItem } from './informational-item'
 import { isSessionTimeGap, SessionTimeFlag } from './session-time-flag'
 import { ForkBoundaryItem, forkBoundaryIndex } from './fork-boundary'
@@ -33,6 +34,9 @@ import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { appendToSessionDraft, useDraftsStore } from '@renderer/context/drafts-context'
+import { useQueryClient } from '@tanstack/react-query'
+import { resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
+import { draftFromAgentText } from './composer-chips'
 import { useWorkflow } from '@renderer/context/workflow-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import {
@@ -45,7 +49,7 @@ import {
   type ReactNode,
 } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
-import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational } from '@shared/lib/types/api'
+import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational, ApiMonitorEvent } from '@shared/lib/types/api'
 import { isBlockingUserInputToolName } from '@shared/lib/tools/user-input-tools'
 import { parseSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { useMessageListScroll } from './use-message-list-scroll'
@@ -141,7 +145,7 @@ function DeliveredFiles({ files, agentSlug }: { files: DeliveredFile[]; agentSlu
       ))}
       {images.length > 0 && (
         <AttachedImages
-          images={images.map((file) => ({ ...file, key: file.id }))}
+          images={images.map((file) => ({ ...file, key: file.id, version: file.id }))}
           agentSlug={agentSlug}
           align="start"
           data-testid="delivered-images"
@@ -175,8 +179,10 @@ interface MessageListProps {
 export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false, bottomInset = 0 }: MessageListProps) {
   useRenderTracker('MessageList')
   const { data: messages, isLoading, error, fetchOlder, hasOlder, isFetchingOlder } = useMessages(sessionId, agentSlug)
-  const deleteMessage = useDeleteMessage()
-  const deleteToolCall = useDeleteToolCall()
+  // useMutation returns a new object every render; only `mutate` is stable, and the
+  // row handlers must stay stable for MessageItem's memo.
+  const { mutate: deleteMessage } = useDeleteMessage()
+  const { mutate: deleteToolCall } = useDeleteToolCall()
   const cancelQueuedMessage = useCancelQueuedMessage()
   // Ghosts with a cancel request in flight (disables their Cancel button)
   const [cancellingIds, setCancellingIds] = useState<Set<string>>(new Set())
@@ -185,20 +191,24 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // materialize on the next refetch.
   const [pickedUpIds, setPickedUpIds] = useState<Set<string>>(new Set())
   const { user } = useUser()
-  // Imperative draft access for restoring undelivered messages at idle (must not
-  // re-render this list on every composer keystroke).
+  // Imperative draft access for returning a never-ran message's text to the
+  // composer (must not re-render this list on every composer keystroke).
   const draftsStore = useDraftsStore()
+  const queryClient = useQueryClient()
+  // A message that never ran goes back to the composer with its chips.
+  const asDraft = useCallback((text: string) => draftFromAgentText(text.trim(), (slug) =>
+    resolveRouteAgentId(slug, queryClient.getQueryData<ApiAgent[]>(['agents'])) ?? slug), [queryClient])
 
   const handleRemoveMessage = useCallback(
     (messageId: string) => {
-      deleteMessage.mutate({ sessionId, agentSlug, messageId })
+      deleteMessage({ sessionId, agentSlug, messageId })
     },
     [sessionId, agentSlug, deleteMessage]
   )
 
   const handleRemoveToolCall = useCallback(
     (toolCallId: string) => {
-      deleteToolCall.mutate({ sessionId, agentSlug, toolCallId })
+      deleteToolCall({ sessionId, agentSlug, toolCallId })
     },
     [sessionId, agentSlug, deleteToolCall]
   )
@@ -342,18 +352,16 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   }, [messages, pendingUserMessages, peerUserMessages, onPendingMessageAppeared, sessionId, user?.id])
 
   // Deterministic ghost rescue: the runtime reported these queued messages
-  // dead via command_lifecycle discarded/cancelled (e.g. killed by Stop, or
-  // dropped by the interrupt-and-restart an MCP injection does). No grace
-  // race — the runtime named the uuid, so restore the ghost's text to the
-  // composer right away. Peer ghosts just drop (their own client restores
-  // their text). The idle-grace effect below stays as the fallback for
-  // runtimes that don't emit lifecycle frames.
+  // dead via command_lifecycle discarded (e.g. killed by Stop, or dropped by
+  // the interrupt-and-restart an MCP injection does). The runtime named the
+  // uuid, so restore the ghost's text to the composer right away. Peer ghosts
+  // just drop (their own client restores their text).
   useEffect(() => {
     if (discardedCommandUuids.length === 0) return
     const dead = new Set(discardedCommandUuids)
     const rescued = (pendingUserMessages ?? []).filter((p) => p.uuid && dead.has(p.uuid))
     if (rescued.length > 0) {
-      const restored = rescued.map((p) => p.text.trim()).filter(Boolean)
+      const restored = rescued.map((p) => asDraft(p.text)).filter(Boolean)
       appendToSessionDraft(draftsStore, sessionId, restored.join('\n\n'), { prepend: true })
       for (const pending of rescued) {
         onPendingMessageAppeared?.(pending.localId)
@@ -366,50 +374,30 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         consumeDiscardedCommand(sessionId, peer.uuid)
       }
     }
-  }, [discardedCommandUuids, pendingUserMessages, peerUserMessages, sessionId, draftsStore, onPendingMessageAppeared])
+  }, [discardedCommandUuids, pendingUserMessages, peerUserMessages, sessionId, draftsStore, onPendingMessageAppeared, asDraft])
 
-  // Once the session goes idle, our messages still showing as pending are
-  // treated as undelivered — the agent was interrupted before picking them
-  // up, or the turn ended without consuming them. Restore their text to the
-  // composer so the user can edit/resend, and remove the ghosts; drop peer
-  // ghosts (we can't restore another user's text into our composer — their
-  // own client restores it for them). Messages that WERE delivered clear via
-  // the materialize effect above, which prunes them from this list as the
-  // post-idle refetch lands. The short grace below gives that refetch a beat
-  // to settle so a just-answered message isn't yanked back into the composer.
-  // While the agent is active, queued ghosts may wait minutes.
+  // A pending message resolves only on proof: the transcript shows its id
+  // (materialize effect above), or the host says it never ran (discarded
+  // rescue above, a failed send, a confirmed take-back). Idle plus a transcript
+  // copy without it is not proof - the client's view of both can lag the
+  // host's - so it stays pending until one of those arrives.
   //
-  // EXCEPT: a non-queued pending without a uuid has its POST still in flight
-  // — commonly a send into a session whose container is waking, where the
-  // server can spend seconds before it accepts the message and broadcasts
-  // session_active. Its outcome already has owners (a failed POST restores
-  // the text via the composer's catch; a successful one assigns the uuid and
-  // materializes above), so restoring it here would yank back a message that
-  // is actually mid-delivery — it then lands in the transcript AND sits in
-  // the composer, baiting a duplicate resend. Leave those pending.
-  //
-  // Manual /compact is also not restorable user text. It persists as a compact
-  // boundary rather than a user message, and compact_complete can beat the
-  // boundary refetch by more than this grace period. Consume its ghost at idle
-  // without prepending the command over a draft typed during compaction.
+  // Idle still settles what is not a deliverable message: other viewers'
+  // ghosts (their own client resolves them), and a manual /compact, which
+  // persists as a compact boundary rather than a user message and whose
+  // compact_complete can beat the boundary refetch.
   useEffect(() => {
-    if (isActive || ((pendingUserMessages?.length ?? 0) === 0 && peerUserMessages.length === 0)) return
-    const undelivered = (pendingUserMessages ?? []).filter((p) => p.queued || p.uuid)
+    if (isActive) return
+    const compacts = (pendingUserMessages ?? []).filter(
+      (p) => (p.queued || p.uuid) && classifyUserText(p.text).kind === 'compact'
+    )
+    if (compacts.length === 0 && peerUserMessages.length === 0) return
     const timerId = setTimeout(() => {
-      if (undelivered.length > 0) {
-        const restored = undelivered
-          .filter((p) => classifyUserText(p.text).kind !== 'compact')
-          .map((p) => p.text.trim())
-          .filter(Boolean)
-        if (restored.length > 0) {
-          appendToSessionDraft(draftsStore, sessionId, restored.join('\n\n'), { prepend: true })
-        }
-        for (const pending of undelivered) onPendingMessageAppeared?.(pending.localId)
-      }
+      for (const pending of compacts) onPendingMessageAppeared?.(pending.localId)
       clearPeerUserMessages(sessionId)
     }, 1500)
     return () => clearTimeout(timerId)
-  }, [pendingUserMessages, peerUserMessages, isActive, onPendingMessageAppeared, sessionId, draftsStore])
+  }, [pendingUserMessages, peerUserMessages, isActive, onPendingMessageAppeared, sessionId])
 
   // Hidden system messages and redundant interrupt markers must not consume
   // window slots: windowing operates on what the user can see.
@@ -976,30 +964,31 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // Cancel a queued message before the agent picks it up. cancelled: false
   // means we lost the race — the agent already has the message, so flip the
   // ghost to a picked-up state (no Cancel) until it materializes.
+  // Awaited per call: a second mutate() drops the first call's callbacks, which
+  // would strand its ghost and lose its text when two are cancelled at once.
   const handleCancelQueued = useCallback(
-    (localId: string, uuid: string) => {
+    async (localId: string, uuid: string, text: string) => {
       setCancellingIds((prev) => new Set(prev).add(localId))
-      cancelQueuedMessage.mutate(
-        { sessionId, agentSlug, uuid },
-        {
-          onSuccess: ({ cancelled }) => {
-            if (cancelled) {
-              onPendingMessageAppeared?.(localId)
-            } else {
-              setPickedUpIds((prev) => new Set(prev).add(localId))
-            }
-          },
-          onSettled: () => {
-            setCancellingIds((prev) => {
-              const next = new Set(prev)
-              next.delete(localId)
-              return next
-            })
-          },
+      try {
+        const { cancelled } = await cancelQueuedMessage.mutateAsync({ sessionId, agentSlug, uuid })
+        if (cancelled) {
+          // The host removed it before pickup: it never ran, so its text goes back.
+          appendToSessionDraft(draftsStore, sessionId, asDraft(text), { prepend: true })
+          onPendingMessageAppeared?.(localId)
+        } else {
+          setPickedUpIds((prev) => new Set(prev).add(localId))
         }
-      )
+      } catch {
+        // A failed cancel leaves the ghost as it was; the user can retry.
+      } finally {
+        setCancellingIds((prev) => {
+          const next = new Set(prev)
+          next.delete(localId)
+          return next
+        })
+      }
     },
-    [cancelQueuedMessage, sessionId, agentSlug, onPendingMessageAppeared]
+    [cancelQueuedMessage, sessionId, agentSlug, onPendingMessageAppeared, draftsStore, asDraft]
   )
 
   // Single render path for both local pending ghosts and peer ghosts.
@@ -1066,7 +1055,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       // only once the POST response has landed (a sub-second window).
       ...(pending.queued && pending.uuid
         ? {
-            onCancel: () => handleCancelQueued(pending.localId, pending.uuid!),
+            onCancel: () => void handleCancelQueued(pending.localId, pending.uuid!, pending.text),
             cancelling: cancellingIds.has(pending.localId),
             pickedUp: pickedUpIds.has(pending.localId),
           }
@@ -1179,9 +1168,12 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
           const isAssistantItem = item.type === 'assistant'
           const isAnswerMessage =
             !!turn && isAssistantItem && turn.answerMessageIds.has(item.id)
+          // A monitor's events are what woke the turn's later work: they fold
+          // away with it.
           const isFoldedWorkItem =
             (isAssistantItem && !isAnswerMessage) ||
-            item.type === 'compact_boundary'
+            item.type === 'compact_boundary' ||
+            item.type === 'monitor_event'
           const hideItem = collapsed && isFoldedWorkItem
           const isRevealedWorkItem = expanded && isFoldedWorkItem
 
@@ -1193,6 +1185,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
               renderedItem = <CompactBoundaryItem boundary={item as ApiCompactBoundary} />
             } else if (item.type === 'informational') {
               renderedItem = <InformationalItem item={item as ApiInformational} />
+            } else if (item.type === 'monitor_event') {
+              renderedItem = <MonitorEventItem item={item as ApiMonitorEvent} />
             } else {
               const message = item as ApiMessage
               // Collapsed answer shapes are memoized with the turn grouping so
@@ -1210,8 +1204,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                       isLatestAssistant={item.id === latestAssistantId && !(streamingMessage && !isStreamingMessagePersisted)}
                       voiceReading={voiceReading && item.id === latestAssistantId}
                       isSessionActive={canHaveRunningToolCalls.has(item.id)}
-                      activeSubagents={activeSubagents}
-                      completedSubagents={completedSubagents}
+                      // Subagent state changes identity on every subagent event; passing it only
+                      // to rows that read it keeps the other rows' memo.
+                      activeSubagents={readsSubagentState(displayedMessage) ? activeSubagents : undefined}
+                      completedSubagents={readsSubagentState(displayedMessage) ? completedSubagents : undefined}
                       onRemoveMessage={readOnly ? undefined : handleRemoveMessage}
                       onRemoveToolCall={readOnly ? undefined : handleRemoveToolCall}
                       workDetailClassName={

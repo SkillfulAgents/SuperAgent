@@ -10,7 +10,7 @@ import { platformBillingQueryKey, type BillingInfoResponse } from '@renderer/hoo
 import type { PlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 
 import { FRAME_READY_TIMEOUT_MS } from './billing-embed-frame'
-import { PlatformPaywallCard } from './platform-paywall-card'
+import { HANDOFF_CHECKING_MS, PlatformPaywallCard } from './platform-paywall-card'
 import { PAYWALL_RECHECK_INTERVAL_MS } from './use-platform-paywall-billing'
 
 const PLATFORM_ORIGIN = 'https://platform.example.com'
@@ -176,9 +176,10 @@ function Slot(props: Omit<ComponentProps<typeof PlatformPaywallCard>, 'onDisplac
   )
 }
 
-function clickRecheck(ctaName: string) {
+// Opens billing elsewhere, then comes back to the window (the card's refresh-on-return signal).
+function handOffAndReturn(ctaName: string) {
   act(() => { screen.getByRole('button', { name: ctaName }).click() })
-  act(() => { screen.getByRole('button', { name: 'Recheck' }).click() })
+  act(() => { window.dispatchEvent(new Event('focus')) })
 }
 
 describe('PlatformPaywallCard', () => {
@@ -244,6 +245,7 @@ describe('PlatformPaywallCard', () => {
     expect(mocks.track).toHaveBeenCalledWith('paywall_shown', expect.objectContaining({
       paywallId: expect.any(String), entryPoint: 'platform_paywall', ctaKind: 'ask_admin',
       blocked: true, placement: 'composer', role: 'member', live: true,
+      session_id: 's', credential_source: 'platform',
     }))
     expect(mocks.track).toHaveBeenCalledTimes(1)
     act(() => { screen.getByRole('button', { name: 'Go to billing' }).click() })
@@ -381,7 +383,7 @@ describe('PlatformPaywallCard', () => {
     })
   })
 
-  it('opens the platform on Add usage, then that button becomes Recheck', async () => {
+  it('opens the platform on Add usage, then shows a checking status until billing clears', async () => {
     platformAuth.role = 'owner'
     renderCard()
     const button = await screen.findByRole('button', { name: 'Add usage' })
@@ -394,12 +396,36 @@ describe('PlatformPaywallCard', () => {
     expect(url.searchParams.get('tab')).toBe('billing')
     expect(url.searchParams.get('intent')).toBe('topup')
     expect(url.searchParams.has('return_app')).toBe(false)
-    const recheck = screen.getByRole('button', { name: 'Recheck' })
+    expect(screen.getByRole('status')).toHaveTextContent('Checking billing…')
     expect(screen.queryByRole('button', { name: 'Add usage' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Recheck' })).not.toBeInTheDocument()
     fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
-    act(() => { recheck.click() })
+    act(() => { window.dispatchEvent(new Event('focus')) })
     await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
     expect(screen.getByTestId('composer')).toBeVisible()
+    expect(toastSuccess).toHaveBeenCalledWith('Billing updated. You can continue.')
+  })
+
+  it('offers the CTA again when billing has not cleared two minutes after the hand-off', async () => {
+    platformAuth.role = 'owner'
+    renderCard()
+    const button = await screen.findByRole('button', { name: 'Add usage' })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      act(() => { button.click() })
+      expect(screen.getByRole('status')).toHaveTextContent('Checking billing…')
+      act(() => { vi.advanceTimersByTime(HANDOFF_CHECKING_MS - 1) })
+      expect(screen.getByRole('status')).toBeInTheDocument()
+      act(() => { vi.advanceTimersByTime(1) })
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+      expect(screen.getByText("Didn't finish? Open billing again.")).toBeInTheDocument()
+      act(() => { screen.getByRole('button', { name: 'Add usage' }).click() })
+      expect(openExternalUrl).toHaveBeenCalledTimes(2)
+      expect(screen.getByRole('status')).toHaveTextContent('Checking billing…')
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(toastSuccess).not.toHaveBeenCalled()
   })
 
   it('disables the CTA when the provider attached no href', async () => {
@@ -535,7 +561,7 @@ describe('PlatformPaywallCard', () => {
     renderCard()
     await screen.findByText('Workspace billing needs attention')
     fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
-    clickRecheck('Go to billing')
+    handOffAndReturn('Go to billing')
     await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
     expect(screen.getByTestId('composer')).toBeVisible()
   })
@@ -545,7 +571,7 @@ describe('PlatformPaywallCard', () => {
     await screen.findByText('Workspace billing needs attention')
     const before = fetchBilling.mock.calls.length
     fetchBilling.mockResolvedValue({ ...billing({ access: ALLOWED }), stale: true })
-    clickRecheck('Go to billing')
+    handOffAndReturn('Go to billing')
     await waitFor(() => expect(fetchBilling.mock.calls.length).toBeGreaterThan(before))
     await waitFor(() => expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-blocked', 'false'))
     expect(screen.getByTestId('composer')).toBeVisible()
@@ -1074,7 +1100,7 @@ describe('PlatformPaywallCard', () => {
       expect(screen.queryByText('Add usage credit to resume this answer.')).not.toBeInTheDocument()
     })
 
-    it('falls back to opening billing externally when the workspace has no org id, then offers a recheck', async () => {
+    it('falls back to opening billing externally when the workspace has no org id, then checks billing', async () => {
       platformAuth.orgId = null
       renderCard()
       const fallback = await screen.findByRole('button', { name: 'Open billing in a new tab' })
@@ -1085,7 +1111,7 @@ describe('PlatformPaywallCard', () => {
       act(() => { fallback.click() })
       expect(openExternalUrl).toHaveBeenCalledTimes(1)
       expect(new URL(openExternalUrl.mock.calls[0][0]).searchParams.get('intent')).toBe('topup')
-      expect(screen.getByRole('button', { name: 'Recheck' })).toBeInTheDocument()
+      expect(screen.getByRole('status')).toHaveTextContent('Checking billing…')
     })
 
     it('falls back when platform base URL is missing', async () => {
@@ -1174,7 +1200,7 @@ describe('PlatformPaywallCard', () => {
       expect(screen.queryByTestId('billing-embed-body')).not.toBeInTheDocument()
       act(() => { button.click() })
       expect(openExternalUrl).toHaveBeenCalledTimes(1)
-      expect(screen.getByRole('button', { name: 'Recheck' })).toBeInTheDocument()
+      expect(screen.getByRole('status')).toHaveTextContent('Checking billing…')
     })
 
     it('hands off the subscribe card in Electron with the blue button and no quote', async () => {
@@ -1186,7 +1212,7 @@ describe('PlatformPaywallCard', () => {
       expect(screen.queryByTestId('paywall-plan')).not.toBeInTheDocument()
       act(() => { button.click() })
       expect(openExternalUrl).toHaveBeenCalledWith(BILLING_URL)
-      expect(screen.getByRole('button', { name: 'Recheck' })).toBeInTheDocument()
+      expect(screen.getByRole('status')).toHaveTextContent('Checking billing…')
     })
 
     it('keeps the system-browser hand-off on web when the workspace is not platform-controlled', async () => {

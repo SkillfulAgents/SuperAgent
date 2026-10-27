@@ -2,16 +2,18 @@ import { ArrowDownToLine } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 import { getPathName } from '@shared/lib/utils/workspace-path'
-import { describeWorkspaceFile } from '@renderer/lib/workspace-file'
+
+export const NO_PREVIEW = 'Preview is not available for this file type'
 
 interface UnsupportedRendererProps {
   filePath: string
-  agentSlug: string
   downloadUrl?: string
+  /** Why the drawer can't show this file, when it is not the file type. */
+  reason?: string
 }
 
-export function UnsupportedRenderer({ filePath, agentSlug, downloadUrl }: UnsupportedRendererProps) {
-  const file = agentSlug ? describeWorkspaceFile(filePath, agentSlug) : { name: getPathName(filePath), downloadUrl }
+export function UnsupportedRenderer({ filePath, downloadUrl, reason = NO_PREVIEW }: UnsupportedRendererProps) {
+  const file = { name: getPathName(filePath), downloadUrl }
 
   return (
     <div className="flex flex-col items-center justify-center gap-4 py-16 px-8 text-center">
@@ -21,7 +23,7 @@ export function UnsupportedRenderer({ filePath, agentSlug, downloadUrl }: Unsupp
           <span className="text-sm font-medium">{file.name}</span>
         </div>
         <p className="text-xs text-muted-foreground">
-          Preview is not available for this file type
+          {reason}
         </p>
       </div>
       {file.downloadUrl && (

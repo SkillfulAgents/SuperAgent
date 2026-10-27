@@ -3,7 +3,8 @@
  * implementation the contract suite runs, and the workspace of an in-memory
  * agent actor in tests.
  */
-import type { ByteRange, FileEntry, FileOps, FileStat, OpenFile, WriteOptions } from '../types'
+import type { ByteRange, FileEntry, FileStat, OpenFile, StoreFileOps, WriteOptions } from '../types'
+import { readSized } from '../read-sized'
 import { WorkspaceFileError, normalizeWorkspacePath, workspaceDirname } from '../workspace-path'
 
 function ancestorsOf(rel: string): string[] {
@@ -44,7 +45,7 @@ function streamOf(bytes: Uint8Array): ReadableStream<Uint8Array> {
   })
 }
 
-export class InMemoryFileOps implements FileOps {
+export class InMemoryFileOps implements StoreFileOps {
   private readonly files = new Map<string, Uint8Array>()
   private readonly dirs = new Set<string>([''])
   private readonly mtimes = new Map<string, number>()
@@ -98,6 +99,10 @@ export class InMemoryFileOps implements FileOps {
     return null
   }
 
+  readSized(workspacePath: string): Promise<{ size: number; stream: ReadableStream<Uint8Array> }> {
+    return readSized(this.open(workspacePath))
+  }
+
   async open(workspacePath: string): Promise<OpenFile> {
     const rel = normalizeWorkspacePath(workspacePath)
     if (this.dirs.has(rel)) throw new WorkspaceFileError('not-a-file')
@@ -149,7 +154,6 @@ export class InMemoryFileOps implements FileOps {
     const rel = normalizeWorkspacePath(workspacePath)
     if (rel === '') throw new WorkspaceFileError('invalid-path', 'The workspace root is not a file')
     if (this.dirs.has(rel)) throw new WorkspaceFileError('not-a-file')
-    options?.signal?.throwIfAborted()
     if (options?.overwrite === false && this.files.has(rel)) throw new WorkspaceFileError('already-exists')
     this.ensureDirs(workspaceDirname(rel))
     this.files.set(rel, typeof bytes === 'string' ? new TextEncoder().encode(bytes) : new Uint8Array(bytes))

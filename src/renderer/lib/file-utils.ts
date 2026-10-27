@@ -1,4 +1,4 @@
-import { canUseHostFeatures } from './host-features'
+import { usesHostFolderPaths } from './capabilities'
 
 /**
  * A dropped or picked file's absolute path on this computer, or null when that
@@ -10,7 +10,7 @@ import { canUseHostFeatures } from './host-features'
  * (enumerate and upload the bytes), which is the only thing that can work.
  */
 function hostPathOf(file: File): string | null {
-  if (!canUseHostFeatures()) return null
+  if (!usesHostFolderPaths()) return null
   return window.electronAPI?.getPathForFile(file) ?? null
 }
 

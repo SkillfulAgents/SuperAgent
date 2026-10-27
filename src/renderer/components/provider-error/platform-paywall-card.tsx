@@ -69,6 +69,9 @@ const CTA_LABELS: Record<PaywallCta['kind'], string> = {
 // The two CTAs that buy something are brand blue; the rest stay neutral.
 const BRAND_CTAS = new Set<PaywallCta['kind']>(['topup', 'subscribe'])
 
+// Long enough to finish a Stripe checkout; after it the CTA comes back in case the billing tab was closed.
+export const HANDOFF_CHECKING_MS = 120_000
+
 function ctaHref(cta: PaywallCta): string | null {
   if (cta.kind === 'topup') return buildTopupHandoffUrl(cta.href)
   return cta.href
@@ -100,18 +103,21 @@ function formatDollars(cents: number): string {
 function PaywallActions({
   cta,
   loading,
-  handedOff,
+  checking,
+  retry,
   expanded,
   stretch,
   dismissible,
   embeddedAction,
   onDismiss,
   onHandOff,
-  onRecheck,
 }: {
   cta: PaywallCta | null
   loading: boolean
-  handedOff: boolean
+  // Billing is open elsewhere; the card's own refresh signals pick up the result.
+  checking: boolean
+  // The hand-off timed out without a result: offer the CTA again.
+  retry: boolean
   // The embedded frame is showing a panel: give it the full row, Dismiss drops below it.
   expanded: boolean
   // Fill the column (the subscribe price block) instead of hugging the right edge.
@@ -120,7 +126,6 @@ function PaywallActions({
   embeddedAction: ReactNode
   onDismiss: (ctaKind: string) => void
   onHandOff: (ctaKind: string) => void
-  onRecheck: (ctaKind: string) => void
 }) {
   if (loading) {
     return (
@@ -144,17 +149,14 @@ function PaywallActions({
           Dismiss
         </Button>
       )}
-      {handedOff ? (
-        <Button
-          size="sm"
-          className={stretch ? 'flex-1' : undefined}
-          onClick={(event) => {
-            event.stopPropagation()
-            onRecheck(ctaKind)
-          }}
-        >
-          Recheck
-        </Button>
+      {retry && !checking && (
+        <span className="self-center text-xs text-muted-foreground">Didn&apos;t finish? Open billing again.</span>
+      )}
+      {checking ? (
+        <div className="flex h-8 items-center gap-1.5 self-center text-xs text-muted-foreground" role="status" data-testid="paywall-handoff-checking">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+          Checking billing…
+        </div>
       ) : embeddedAction ?? (cta ? (
         <Button
           size="sm"
@@ -278,6 +280,12 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
     return () => { mounted.current = false }
   }, [])
   const [handedOff, setHandedOff] = useState(false)
+  const [checking, setChecking] = useState(false)
+  useEffect(() => {
+    if (!checking) return
+    const id = setTimeout(() => setChecking(false), HANDOFF_CHECKING_MS)
+    return () => clearTimeout(id)
+  }, [checking])
   const [expanded, setExpanded] = useState(false)
   // An open panel's outcome is unknown until the platform reports it: a background poll
   // can see the charge before the panel finishes saving settings, so only a settled
@@ -321,10 +329,11 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
     collapse()
   }, [view, collapse])
   useEffect(() => {
-    if (!billing.cleared || holding || !inApp || !billingChanged.current || successShown.current) return
+    if (!billing.cleared || holding || successShown.current) return
+    if (!(inApp && billingChanged.current) && !handedOff) return
     successShown.current = true
     toast.success('Billing updated. You can continue.')
-  }, [billing.cleared, holding, inApp])
+  }, [billing.cleared, holding, inApp, handedOff])
 
   const ctaKind = billing.cta?.kind ?? 'none'
   const analytics = useMemo<PaywallAnalyticsContext>(() => ({
@@ -339,8 +348,12 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
   useEffect(() => {
     if (shownRef.current || billing.loading || billing.cleared || dismissed) return
     shownRef.current = true
-    track('paywall_shown', { ...analytics, blocked: billing.blocked, live, role: platformAuth?.role ?? 'unknown' })
-  }, [billing.loading, billing.cleared, billing.blocked, dismissed, analytics, live, platformAuth?.role, track])
+    // Only Platform-served turns reach the platform billing gate.
+    track('paywall_shown', {
+      ...analytics, blocked: billing.blocked, live, role: platformAuth?.role ?? 'unknown',
+      session_id: session?.sessionId ?? null, credential_source: 'platform',
+    })
+  }, [billing.loading, billing.cleared, billing.blocked, dismissed, analytics, live, platformAuth?.role, session?.sessionId, track])
   useEffect(() => {
     if (!shownRef.current || clearedRef.current || !billing.cleared || holding) return
     clearedRef.current = true
@@ -379,7 +392,8 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
     <PaywallActions
       cta={billing.cta}
       loading={billing.loading}
-      handedOff={handedOff}
+      checking={checking}
+      retry={handedOff}
       expanded={embedded && expanded}
       stretch={subscribeLayout}
       dismissible={dismissible}
@@ -417,6 +431,7 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
             track('paywall_cta_clicked', { ...analytics, surface: 'external', action: 'embed_fallback' })
             collapse()
             setHandedOff(true)
+            setChecking(true)
           }}
         />
       ) : null}
@@ -427,10 +442,7 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
       onHandOff={(kind) => {
         track('paywall_cta_clicked', { ...analytics, ctaKind: kind, surface: 'external', action: 'open_billing' })
         setHandedOff(true)
-      }}
-      onRecheck={(kind) => {
-        track('paywall_recheck_clicked', { ...analytics, ctaKind: kind })
-        billing.recheck()
+        setChecking(true)
       }}
     />
   )

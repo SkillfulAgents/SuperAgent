@@ -15,6 +15,20 @@ export const browserSnapshotDef: ToolDefinition = {
   displayName: 'Page Snapshot', getSummary: noSummary,
 }
 
+export const browserReadDef: ToolDefinition = {
+  displayName: 'Read Page',
+  getSummary: (input) => {
+    const { outline, section } = input as { outline?: boolean; section?: string }
+    if (outline) return 'outline'
+    return section ? `section "${section.length > 40 ? `${section.slice(0, 37)}...` : section}"` : null
+  },
+}
+
+export const browserCaptureTrafficDef: ToolDefinition = {
+  displayName: 'Capture Traffic',
+  getSummary: (input) => (input as { action?: string }).action ?? null,
+}
+
 export const browserClickDef: ToolDefinition = {
   displayName: 'Click',
   getSummary: (input) => (input as { ref?: string }).ref ?? null,

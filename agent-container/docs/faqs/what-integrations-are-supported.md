@@ -7,11 +7,13 @@ There are four distinct ways an agent integrates with the outside world. Pick by
 
 ## Connected accounts (OAuth)
 
-Managed OAuth with proxied, policy-controlled API access: tokens stay outside the container, hosts are allowlisted per provider, scopes are policy-controlled, and every call is audited. For these services, connecting an account is always preferred over pasting raw API keys.
+Managed OAuth with proxied, policy-controlled API access: tokens stay outside the container, hosts are allowlisted per provider, and every call is audited. Services with endpoint permission maps support per-scope policies; other requests follow the account-wide policy or the global API policy. For these services, connecting an account is always preferred over pasting raw API keys.
 
 Coverage spans Google Workspace, Microsoft, communication tools, developer tools, project management, CRM and support, storage and data, social, finance, and marketing/design/scheduling.
 
-**As the agent:** do not recite a supported-service list from this file. The authoritative list of toolkit slugs is in your system prompt under "Requesting Connected Accounts (OAuth)", and `search_connected_account_services` returns the live catalog with descriptions. Use one of those to answer "do you support X?" or to pick a slug for `request_connected_account`.
+**As the agent:** use `search_connected_account_services` for the available catalog with descriptions. Use it to answer "do you support X?" or to pick a slug for `request_connected_account`; examples in the system prompt are not an exhaustive list.
+
+Some services ask for an account ID, tenant, or region on Composio's hosted connection page. These details do not require asking the user for an OAuth client ID or secret. Product editions matter: `notebook_lm` connects NotebookLM Enterprise in a Google Cloud project, `whatsapp` connects WhatsApp Business, and `facebook` connects Facebook Pages. Available API operations also depend on the permissions granted by the provider. Connecting an account does not automatically add a chat integration or a mounted storage volume.
 
 ## Chat integrations
 

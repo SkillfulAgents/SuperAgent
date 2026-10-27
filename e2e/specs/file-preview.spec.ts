@@ -5,6 +5,7 @@ import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
 import { mockSpeech } from '../helpers/speech'
+import { strToU8, zipSync } from 'fflate'
 
 const e2eDataDir = path.resolve(process.cwd(), process.env.SUPERAGENT_DATA_DIR ?? '.e2e-data')
 
@@ -666,13 +667,13 @@ test.describe('File Preview', () => {
       await agentPage.createAgent(`SlideOver ${Date.now()}`)
       const agentSlug = await getLatestAgentSlug(page)
       seedWorkspaceFile(agentSlug, 'output/report.md', '# Report')
-      seedWorkspaceFile(agentSlug, 'output/bundle.zip', Buffer.alloc(64))
+      seedWorkspaceFile(agentSlug, 'output/bundle.tar', Buffer.alloc(64))
 
       await sessionPage.sendMessage('deliver archive')
       await sessionPage.waitForResponse(15000)
       await sessionPage.sendMessage('deliver file')
       await sessionPage.waitForResponse(15000)
-      const downloadLabel = getDeliveredFileRow(page, 'bundle.zip').getByText('Download', { exact: true })
+      const downloadLabel = getDeliveredFileRow(page, 'bundle.tar').getByText('Download', { exact: true })
       await expect(downloadLabel).toBeVisible()
       await getDeliveredFileRow(page, 'report.md').first().click()
 
@@ -859,8 +860,16 @@ test.describe('File Preview', () => {
     await page.getByTestId('delivered-images').getByRole('button', { name: 'chart.png', exact: true }).click()
     const image = page.getByTestId('tray-drawer').getByRole('img', { name: 'chart.png', exact: true })
     await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth), { timeout: 10000 }).toBe(400)
-    // The drawer grows in: measure the image once it has its size.
-    await expect.poll(async () => (await image.boundingBox())?.width).toBeGreaterThan(300)
+    // The drawer grows in: click only once the image's box holds still, or a
+    // click measured mid-animation lands a point or two off the expected spot.
+    let lastBox = ''
+    await expect.poll(async () => {
+      const box = await image.boundingBox()
+      const key = box && box.width > 300 ? JSON.stringify(box) : ''
+      const held = key !== '' && key === lastBox
+      lastBox = key
+      return held
+    }).toBe(true)
     const at = async (x: number, y: number) => {
       const b = (await image.boundingBox())!
       await page.mouse.click(b.x + b.width * x, b.y + b.height * y)
@@ -915,6 +924,31 @@ test.describe('File Preview', () => {
     await expect(composer).toContainText('Line 3: > "The build is green."')
     await expect(composer).toContainText('Line 9: > "Ship it."')
     await expect.poll(() => page.evaluate(() => CSS.highlights.has('file-comment'))).toBe(false)
+  })
+
+  test('browses a zip and opens a file inside it, with HTML kept in its sandbox', async ({ page }) => {
+    await agentPage.createAgent(`ZipBrowse ${Date.now()}`)
+    const agentSlug = await getLatestAgentSlug(page)
+    seedWorkspaceFile(agentSlug, 'output/bundle.zip', Buffer.from(zipSync({
+      'notes/summary.md': strToU8('# Summary\n\nRevenue up 12%.'),
+      'site/index.html': strToU8('<p id="probe"></p><script>try { probe.textContent = parent.document.title } catch (e) { probe.textContent = e.name }</script>'),
+    })))
+    await sessionPage.sendMessage('deliver zip')
+    await sessionPage.waitForResponse(15000)
+    await getDeliveredFileRow(page, 'bundle.zip').first().click()
+    const zip = page.getByTestId('archive-renderer')
+
+    // The zip lists no folder entries, so the list adds them.
+    await zip.locator('[data-entry-path="notes"]').click()
+    await zip.locator('[data-entry-path="notes/summary.md"]').click()
+    await expect(zip.getByRole('heading', { name: 'Summary', exact: true })).toBeVisible({ timeout: 10000 })
+
+    await zip.getByTestId('file-tab-select').filter({ hasText: 'Files' }).click()
+    await zip.locator('[data-entry-path="site"]').click()
+    await zip.locator('[data-entry-path="site/index.html"]').click()
+    await expect(zip.frameLocator('iframe').locator('#probe')).toHaveText('SecurityError', { timeout: 10000 })
+    // Opened in a tab of its own, the page still cannot run as the app: a data: URL has no origin, a blob: URL has the app's.
+    await expect(zip.locator('iframe')).toHaveAttribute('src', /^data:text\/html;/)
   })
 
   test('multiple file tabs, switching, and image rendering', async ({ page }) => {

@@ -1,3 +1,4 @@
+import { eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { messageAuthor } from '@shared/lib/db/schema'
 
@@ -39,5 +40,17 @@ async function insertOne(params: AuthorRow): Promise<boolean> {
       error: error instanceof Error ? error.message : String(error),
     })
     return false
+  }
+}
+
+/** Remove the attribution of a message that never reached the agent. Best-effort. */
+export async function deleteMessageAuthorBestEffort(messageUuid: string): Promise<void> {
+  try {
+    await db.delete(messageAuthor).where(eq(messageAuthor.id, messageUuid))
+  } catch (error) {
+    console.warn('failed to remove the attribution of an undelivered message', {
+      messageUuid,
+      error: error instanceof Error ? error.message : String(error),
+    })
   }
 }

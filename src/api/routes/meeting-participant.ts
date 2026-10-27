@@ -14,6 +14,7 @@ import { Hono, type Context } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { z } from 'zod'
 import { agentCatalog } from '@shared/lib/agent-actor'
+import { background } from '@shared/lib/background'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { getIntegrationSession } from '@shared/lib/agent-integrations/store'
 import { getAgentIntegration } from '@shared/lib/services/agent-integration-service'
@@ -23,6 +24,7 @@ import { meetingRoster } from '@shared/lib/meeting-integrations/roster'
 import { isTerminalMeetingStatus } from '@shared/lib/meeting-integrations/schemas'
 import { toPublicMeeting, verifyParticipantToken, type MeetingRecord } from '@shared/lib/meeting-integrations/store'
 import { limitJsonBody, type LimitedJsonBodyEnv } from '../middleware/limit-json-body'
+import { waitForClientGone } from '../lib/wait-for-client-gone'
 
 const router = new Hono<LimitedJsonBodyEnv>()
 const query = z.object({ token: z.string().min(1).max(200) })
@@ -64,22 +66,21 @@ router.get('/:meetingId', async (c) => {
 
 /** Who is in the call, as a stream of roster snapshots: one now, one per change. */
 router.get('/:meetingId/stream', async (c) => {
+  const clientSignal = c.req.raw.signal
   const auth = await authorize(c.req.param('meetingId'), c.req.query())
   if ('error' in auth) return c.json({ error: auth.error }, auth.status)
   const meetingId = auth.meeting.id
   return streamSSE(c, async (stream) => {
-    let closed = false
-    const finished = new Promise<void>(resolve => {
-      const done = () => { closed = true; resolve() }
-      stream.onAbort(done)
-      c.req.raw.signal.addEventListener('abort', done, { once: true })
-    })
+    // The client left while it was being authorized: nothing to set up for it.
+    if (clientSignal.aborted) return
+    // Once the client is gone the stream is aborted, whichever way it was heard.
+    const finished = waitForClientGone(clientSignal, stream)
     const send = (roster: ReturnType<typeof meetingRoster.get>) => {
-      if (!closed) void stream.writeSSE({ event: 'roster', data: JSON.stringify(roster) })
+      if (!stream.aborted) background(stream.writeSSE({ event: 'roster', data: JSON.stringify(roster) }), { name: 'meeting-participant-route.write-roster' })
     }
     const unsubscribe = meetingRoster.subscribe(meetingId, send)
     send(meetingRoster.get(meetingId))
-    const ping = setInterval(() => { if (!closed) void stream.writeSSE({ event: 'ping', data: '' }) }, ROSTER_PING_MS)
+    const ping = setInterval(() => { if (!stream.aborted) background(stream.writeSSE({ event: 'ping', data: '' }), { name: 'meeting-participant-route.write-ping' }) }, ROSTER_PING_MS)
     try { await finished } finally { clearInterval(ping); unsubscribe() }
   })
 })

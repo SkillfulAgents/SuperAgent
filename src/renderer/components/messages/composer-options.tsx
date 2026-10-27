@@ -13,6 +13,7 @@ import { useModelAvailabilities } from '@renderer/hooks/use-provider-model-avail
 import { useModelAvailabilityAction } from '@renderer/context/model-availability-action-context'
 import { announceModelFallback } from '@renderer/lib/model-fallback-notice'
 import type { ModelLock } from './model-family-list'
+import { clampEffortForDisplay } from '@shared/lib/container/runtime-options'
 
 /**
  * State + presentation helpers shared between the AgentHome composer (used to
@@ -377,6 +378,15 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
   // Seeded refs are read at submit time: only a user pick or a session-seeded
   // value counts as an explicit choice worth putting on the wire.
   const displayedModel = connectionData?.defaultSelection ? effectiveSelection?.model : model
+  // An untouched effort the model can't run is snapped for display only. The
+  // picker's clamp writes through setEffort, which would mark the snap as a
+  // user pick and block the default that is still loading.
+  const supportedEfforts = (
+    findCatalogModel(displayedModel, catalog) ?? findCatalogModel(fallbackModel, catalog) ?? catalog[0]
+  )?.supportedEfforts
+  const displayedEffort = effortSeededRef.current
+    ? effort
+    : clampEffortForDisplay(effort, supportedEfforts) ?? effort
 
   // The selected connection's restrictions, for the picker's lock badges.
   const modelLock = useModelLock(selectedConnection)
@@ -422,7 +432,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       llmProviderId: effectiveLlmProviderId,
       connections,
       setConnection,
-      effort,
+      effort: displayedEffort,
       setEffort,
       speed,
       setSpeed,
@@ -435,7 +445,7 @@ export function useComposerOptions(args: UseComposerOptionsArgs = {}): ComposerO
       toRuntimeOptions,
       markSubmitted,
     }),
-    [effectiveLlmProviderId, connections, setConnection, effort, setEffort, speed, setSpeed, displayedModel, setModel, catalog, fallbackModel, settings, modelLock, toRuntimeOptions, markSubmitted],
+    [effectiveLlmProviderId, connections, setConnection, displayedEffort, setEffort, speed, setSpeed, displayedModel, setModel, catalog, fallbackModel, settings, modelLock, toRuntimeOptions, markSubmitted],
   )
 }
 

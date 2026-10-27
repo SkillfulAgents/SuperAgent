@@ -11,6 +11,7 @@ import type { ApiMessageOrBoundary } from '@shared/lib/types/api'
 import { describeWorkspaceFile, type WorkspaceFile } from '@renderer/lib/workspace-file'
 import { deliverFileDef } from '@shared/lib/tools/deliver-file/definition'
 import { useVoiceMode } from '@renderer/hooks/use-voice-mode'
+import { useVoiceConversationProblem } from '@renderer/hooks/use-voice-input'
 import { VoiceOrb } from '@renderer/components/messages/voice-orb'
 import { boundVoiceHistoryTransport } from '@shared/lib/voice/voice-history-transport'
 import type { PublicMeeting } from '@shared/lib/meeting-integrations/schemas'
@@ -90,7 +91,7 @@ function Participant({ agentSlug, agentName, sessionId, meeting, token }: Partic
   const spoken = mode === 'voice'
   const { data: messages } = useMessages(sessionId, agentSlug)
   // The session's browser, when open, takes the camera the way the tray takes the chat.
-  const { browserActive, isActive } = useMessageStream(sessionId, agentSlug)
+  const { browserActive, isActive } = useMessageStream(sessionId, agentSlug, ['browserActive', 'isActive'])
   const roster = useMeetingRoster(meeting.id, token)
   const send = useSendMessage({ quiet: true })
   const [sendError, setSendError] = useState<string | null>(null)
@@ -111,6 +112,10 @@ function Participant({ agentSlug, agentName, sessionId, meeting, token }: Partic
       catch (error) { setSendError(error instanceof Error ? error.message : 'Could not reach the agent'); return false }
     },
   })
+  // Voice mode does not start without an engine, and says nothing about it; here
+  // that would leave the tile on "Connecting…" for the whole call.
+  const voiceProblem = useVoiceConversationProblem()
+  const fault = voiceProblem ?? voice.error ?? sendError
   // A silent or listening bot plays nothing into the call, whatever the voice model does.
   // The mute is per engine run, so it is applied again after every reconnect.
   const setOutputMuted = voice.setOutputMuted
@@ -133,7 +138,7 @@ function Participant({ agentSlug, agentName, sessionId, meeting, token }: Partic
   if (mode === 'listen') {
     // The room gets nothing: no orb, no words, no browser, no roster. The
     // engine still runs as the agent's ears; a fault is the one thing shown.
-    return <Stage title={agentName} subtitle={`${meeting.botName} · Listening in`} error={voice.error ?? sendError} />
+    return <Stage title={agentName} subtitle={`${meeting.botName} · Listening in`} error={fault} />
   }
 
   const speaking = spoken && (voice.assistantSpeaking || voice.phase === 'speaking')
@@ -142,7 +147,8 @@ function Participant({ agentSlug, agentName, sessionId, meeting, token }: Partic
     : voice.userSpeaking ? 'user'
     : voice.working || voice.phase === 'thinking' ? 'thinking'
     : 'ready'
-  const caption = !voice.ready ? 'Connecting…'
+  const caption = voiceProblem ? 'Voice unavailable'
+    : !voice.ready ? 'Connecting…'
     : voice.working ? 'Working on it'
     : speaking ? 'Speaking'
     : spoken ? 'Listening' : 'Silent'
@@ -157,7 +163,7 @@ function Participant({ agentSlug, agentName, sessionId, meeting, token }: Partic
   // What shares the camera with the orb: the live browser while it is open,
   // else the latest delivered image, else nothing.
   return (
-    <Stage title={agentName} subtitle={`${meeting.botName} · ${caption}`} error={voice.error ?? sendError} compact={browserActive || !!image} footer={<Roster roster={roster} />}>
+    <Stage title={agentName} subtitle={`${meeting.botName} · ${caption}`} error={fault} compact={browserActive || !!image} footer={<Roster roster={roster} />}>
       {browserActive ? (
         <div className="flex items-center gap-10">
           <MeetingBrowserCard agentSlug={agentSlug} sessionId={sessionId} isActive={isActive} width={760} />

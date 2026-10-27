@@ -331,7 +331,7 @@ test.describe('User Input Requests', () => {
     await sessionPage.waitForScriptRunRequest()
 
     // Verify content is shown. The mock scenario picks a platform-valid
-    // script type (persister auto-rejects mismatches), so assert per platform.
+    // script type (the live session auto-rejects mismatches), so assert per platform.
     const expectedScript = process.platform === 'win32' ? 'Get-ComputerInfo' : 'sw_vers'
     const request = sessionPage.getScriptRunRequests().first()
     await expect(request).toContainText(expectedScript)

@@ -1,6 +1,7 @@
 import type { ToolRenderer } from './renderer-types'
 import { getToolDefinition, getRegisteredDefinitionNames } from './registry'
 import { bashRenderer } from './bash/renderer'
+import { monitorRenderer } from './monitor/renderer'
 import { readRenderer } from './read/renderer'
 import { writeRenderer } from './write/renderer'
 import { globRenderer } from './glob/renderer'
@@ -19,11 +20,14 @@ import { requestFileRenderer } from './request-file/renderer'
 import { requestRemoteMcpRenderer } from './request-remote-mcp/renderer'
 import { requestScriptRunRenderer } from './request-script-run/renderer'
 import { requestBrowserInputRenderer } from './request-browser-input/renderer'
+import { requestLoginRenderer } from './request-login/renderer'
 import { taskRenderer } from './task/renderer'
 import {
   browserOpenRenderer,
   browserCloseRenderer,
   browserSnapshotRenderer,
+  browserReadRenderer,
+  browserCaptureTrafficRenderer,
   browserClickRenderer,
   browserFillRenderer,
   browserScrollRenderer,
@@ -72,6 +76,7 @@ export type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps, Colla
 const toolRenderers = new Map([
   taskRenderer,
   bashRenderer,
+  monitorRenderer,
   readRenderer,
   writeRenderer,
   globRenderer,
@@ -93,9 +98,12 @@ const toolRenderers = new Map([
   requestRemoteMcpRenderer,
   requestScriptRunRenderer,
   requestBrowserInputRenderer,
+  requestLoginRenderer,
   browserOpenRenderer,
   browserCloseRenderer,
   browserSnapshotRenderer,
+  browserReadRenderer,
+  browserCaptureTrafficRenderer,
   browserClickRenderer,
   browserFillRenderer,
   browserScrollRenderer,

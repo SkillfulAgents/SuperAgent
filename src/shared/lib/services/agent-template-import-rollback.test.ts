@@ -45,7 +45,7 @@ beforeEach(() => {
   vi.clearAllMocks()
 })
 afterEach(async () => {
-  for (const slug of await agentCatalog.list()) agentRegistry.evict(slug)
+  for (const slug of await agentCatalog.list()) await agentRegistry.evict(slug)
   sqlite.close()
   vi.unstubAllEnvs()
   fs.rmSync(testDir, { recursive: true, force: true })

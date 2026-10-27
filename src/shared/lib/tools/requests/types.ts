@@ -1,6 +1,7 @@
 import type { XAgentReview } from '@shared/lib/proxy/x-agent-review'
 import type { ReviewRuleOutcomeView, RuleProposalReview } from '@shared/lib/proxy/rules/proposal-schema'
 import type { ProxyReviewType } from '@shared/lib/proxy/review-display'
+import type { LoginFieldSummary, LoginVaultPayload } from '../request-login/login-request'
 
 export type Question = {
   question: string
@@ -16,10 +17,11 @@ export type PendingRequestDescriptor =
   | { kind: 'question'; key: string; toolUseId: string; questions: Question[]; onComplete: () => void }
   | { kind: 'file'; key: string; toolUseId: string; description: string; fileTypes?: string; onComplete: () => void }
   | { kind: 'browser_input'; key: string; toolUseId: string; message: string; requirements: string[]; onComplete: () => void }
+  | { kind: 'login'; key: string; toolUseId: string; message: string; fields: LoginFieldSummary[]; vault?: LoginVaultPayload; onComplete: () => void }
   | { kind: 'script_run'; key: string; toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell'; onComplete: () => void }
   | { kind: 'computer_use'; key: string; toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string; onComplete: () => void }
   | { kind: 'capability_review'; key: string; toolUseId: string; capability: 'subagents' | 'workflows'; toolName: string; input: Record<string, unknown>; onComplete: () => void }
-  | { kind: 'proxy_review'; key: string; reviewId: string; accountId: string; reviewType?: ProxyReviewType; toolkit: string; method: string; targetPath: string; matchedScopes: string[]; scopeDescriptions: Record<string, string>; displayText?: string; ruleOutcomes?: ReviewRuleOutcomeView[]; ruleProposal?: RuleProposalReview; onComplete: () => void }
+  | { kind: 'proxy_review'; key: string; reviewId: string; accountId: string; reviewType?: ProxyReviewType; toolkit: string; method: string; targetPath: string; matchedScopes: string[]; scopeDescriptions: Record<string, string>; displayText?: string; endpointDescription?: string; requestBody?: string; ruleOutcomes?: ReviewRuleOutcomeView[]; ruleProposal?: RuleProposalReview; onComplete: () => void }
   | { kind: 'x_agent_review'; key: string; reviewId: string; xAgent: XAgentReview; onComplete: () => void }
   | { kind: 'account_reauth_required'; key: string; proxyRequestId: string; accountId: string; toolkit: string; accountStatus: 'expired' | 'revoked'; onComplete: () => void }
   | { kind: 'mcp_reauth_required'; key: string; proxyRequestId: string; mcpId: string; mcpName: string; authType: 'none' | 'oauth' | 'bearer'; onComplete: () => void }

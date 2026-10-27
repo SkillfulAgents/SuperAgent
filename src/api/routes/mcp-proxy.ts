@@ -5,9 +5,11 @@ import { withDismissalReason } from '@shared/lib/proxy/reauth-dismissal'
 import { db } from '@shared/lib/db'
 import { mcpAuditLog } from '@shared/lib/db/schema'
 import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
+import { background } from '@shared/lib/background'
 import { parseMcpResponse } from '@shared/lib/mcp/discover-tools'
 import { resolveMcpConnection } from '@shared/lib/mcp/connections'
 import type { McpAuthorization, McpRecoveryResult } from '@shared/lib/mcp/connection-types'
+import { agentRegistry, type AgentActor } from '@shared/lib/agent-actor'
 
 // MCP 2026-07-28 clients (Claude Code CLI 2.1.274+ by default) open every
 // connection with a `server/discover` era probe before `initialize`. It carries
@@ -16,16 +18,6 @@ import type { McpAuthorization, McpRecoveryResult } from '@shared/lib/mcp/connec
 // handshake. Treat it as protocol chatter: without this every remote MCP
 // server raised an "Allow POST request?" review card per session.
 const MCP_ERA_PROBE_METHOD = 'server/discover'
-
-const SYNTHETIC_MCP_SESSION_TTL_MS = 24 * 60 * 60 * 1000
-
-interface SyntheticMcpSession {
-  mcpId: string
-  protocolVersion: string
-  upstreamSessionId: string | null | undefined
-  initializationPromise?: Promise<string | null>
-  lastUsedAt: number
-}
 
 class McpSessionInitializationError extends Error {
   constructor(
@@ -38,57 +30,40 @@ class McpSessionInitializationError extends Error {
 }
 
 // The SDK must receive a session id from the local initialize stub so it keeps
-// sending one after re-authentication. We bind that stable client-facing id to
-// the real upstream id lazily, once fresh credentials are available.
-const syntheticMcpSessions = new Map<string, SyntheticMcpSession>()
+// sending one after re-authentication. That stable client-facing id is bound
+// to the real upstream id lazily, once fresh credentials are available. The
+// sessions are the agent's (`actor.mcpSessions`).
 
-function pruneSyntheticMcpSessions(now = Date.now()): void {
-  for (const [id, session] of syntheticMcpSessions) {
-    if (now - session.lastUsedAt > SYNTHETIC_MCP_SESSION_TTL_MS) {
-      syntheticMcpSessions.delete(id)
-    }
-  }
-}
-
-function createSyntheticMcpSession(mcpId: string, protocolVersion: string): string {
-  pruneSyntheticMcpSessions()
-  const id = crypto.randomUUID()
-  syntheticMcpSessions.set(id, {
-    mcpId,
-    protocolVersion,
-    upstreamSessionId: undefined,
-    lastUsedAt: Date.now(),
-  })
-  return id
-}
-
-function getSyntheticMcpSession(
-  mcpId: string,
-  clientSessionId: string | undefined,
-): SyntheticMcpSession | null {
-  if (!clientSessionId) return null
-  const session = syntheticMcpSessions.get(clientSessionId)
-  if (!session || session.mcpId !== mcpId) return null
-  if (Date.now() - session.lastUsedAt > SYNTHETIC_MCP_SESSION_TTL_MS) {
-    syntheticMcpSessions.delete(clientSessionId)
-    return null
-  }
-  session.lastUsedAt = Date.now()
-  return session
-}
-
-async function initializeUpstreamSession(options: {
-  session: SyntheticMcpSession
+/**
+ * The upstream session a proxy-opened session speaks for now, initializing one
+ * if it has none. The binding is read here, at the point of use, never from
+ * the request's start: another request may have reconnected and bound a new
+ * upstream session while this one waited for authorization. One
+ * initialization at a time per session: a request that waited behind another
+ * reads what that one bound. `handshake` says the binding was not there on
+ * arrival, so the caller's credentials predate the wait.
+ */
+async function upstreamSessionFor(options: {
+  actor: AgentActor
+  mcpId: string
+  sessionId: string
+  protocolVersion: string
   targetUrl: string
   accessToken: string | null
   headers: Headers
   signal?: AbortSignal
-}): Promise<string | null> {
-  const { session, targetUrl, accessToken } = options
-  if (session.upstreamSessionId !== undefined) return session.upstreamSessionId
-  if (session.initializationPromise) return session.initializationPromise
+}): Promise<{ upstreamSessionId: string | null; handshake: boolean }> {
+  const { actor, mcpId, sessionId, targetUrl, accessToken } = options
+  const current = await actor.mcpSessions.get(mcpId, sessionId)
+  if (current && current.upstreamSessionId !== undefined) return { upstreamSessionId: current.upstreamSessionId, handshake: false }
 
-  const initializationPromise = (async () => {
+  const lockKey = `mcp-session-init:${sessionId}`
+  const lock = await actor.locks.acquire(lockKey)
+  try {
+    // Gone since the request read it (expired): initialize for this request alone.
+    const session = await actor.mcpSessions.get(mcpId, sessionId)
+    if (session && session.upstreamSessionId !== undefined) return { upstreamSessionId: session.upstreamSessionId, handshake: true }
+
     const headers = new Headers(options.headers)
     headers.delete('Mcp-Session-Id')
     headers.set('Content-Type', 'application/json')
@@ -104,7 +79,7 @@ async function initializeUpstreamSession(options: {
         id: `superagent-reauth-${crypto.randomUUID()}`,
         method: 'initialize',
         params: {
-          protocolVersion: session.protocolVersion,
+          protocolVersion: session?.protocolVersion ?? options.protocolVersion,
           capabilities: {},
           clientInfo: { name: 'SuperAgent MCP proxy', version: '1.0.0' },
         },
@@ -149,16 +124,10 @@ async function initializeUpstreamSession(options: {
       )
     }
     await initializedResponse.body?.cancel().catch(() => undefined)
-    session.upstreamSessionId = upstreamSessionId
-    session.lastUsedAt = Date.now()
-    return upstreamSessionId
-  })()
-
-  session.initializationPromise = initializationPromise
-  try {
-    return await initializationPromise
+    await actor.mcpSessions.bind(sessionId, upstreamSessionId)
+    return { upstreamSessionId, handshake: true }
   } finally {
-    session.initializationPromise = undefined
+    await actor.locks.release(lockKey, lock)
   }
 }
 
@@ -270,6 +239,8 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
 
   const method = c.req.method
   const clientMcpSessionId = c.req.header('Mcp-Session-Id')
+  // The proxy's own sessions with this MCP are the agent's.
+  const actor = agentRegistry.get(agentSlug)
 
   // 2.5 Parse JSON-RPC body early for policy enforcement and audit logging
   let bodyBuffer: ArrayBuffer | undefined
@@ -352,7 +323,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   // cached tool definitions, then park only the eventual tools/call. This
   // preserves a seamless reconnect/resume flow without freezing session init
   // or unrelated chat turns.
-  const authRequiredProtocolResponse = (): Response | null => {
+  const authRequiredProtocolResponse = async (): Promise<Response | null> => {
     if ((method === 'GET' || method === 'HEAD') && !rest) {
       return new Response(null, { status: 405, headers: { Allow: 'POST' } })
     }
@@ -360,10 +331,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
       return new Response(null, { status: 202 })
     }
     if (mcpMethodInfo === 'initialize') {
-      const syntheticSessionId = createSyntheticMcpSession(
-        mcpId,
-        requestedProtocolVersion,
-      )
+      const syntheticSessionId = await actor.mcpSessions.open(mcpId, requestedProtocolVersion)
       const response = c.json({
         jsonrpc: '2.0',
         id: jsonRpcId,
@@ -402,7 +370,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   // eager protocol discovery locally without entering the authorization path.
   // Non-protocol calls are parked only after their policy gate below.
   if (mcp.descriptor.status === 'auth_required') {
-    const protocolResponse = authRequiredProtocolResponse()
+    const protocolResponse = await authRequiredProtocolResponse()
     if (protocolResponse) return protocolResponse
   }
 
@@ -438,7 +406,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     const failures = {
       blocked: { status: 403, policyDecision: 'block', body: {
         error: 'blocked_by_policy', message: 'This request was blocked by your MCP access policy.',
-        tool: toolName, settingsHint: 'You can adjust policies in Settings > MCP Servers > Policies',
+        tool: toolName, settingsHint: `You can change this on the agent's Connections page: open ${mcp.descriptor.name} and edit its Permissions.`,
       } },
       denied: { status: 403, policyDecision: 'denied_by_user', body: { error: 'denied_by_user', message: 'Request denied by user.', rules: access.rules ?? [] } },
       review_timeout: { status: 408, policyDecision: 'review_timeout', body: { error: 'review_timeout', message: 'Request required user approval but timed out.', rules: access.rules ?? [] } },
@@ -466,7 +434,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
   const prepareAuthorization = async (): Promise<Extract<McpAuthorization, { ok: true }> | Response> => {
     const authorization = await mcp.authorization()
     if (authorization.ok) return authorization
-    const protocolResponse = authRequiredProtocolResponse()
+    const protocolResponse = await authRequiredProtocolResponse()
     if (protocolResponse) return protocolResponse
     const recovered = await mcp.recoverAuthorization(c.req.raw.signal)
     if (!recovered.ok) return reauthFailureResponse(recovered)
@@ -495,7 +463,11 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     }
   })
 
-  const syntheticSession = getSyntheticMcpSession(mcpId, clientMcpSessionId)
+  // A session the proxy opened while the server needed re-authentication. What
+  // it is bound to upstream is read where it is used (`upstreamSessionFor`).
+  const syntheticSession = clientMcpSessionId ? await actor.mcpSessions.get(mcpId, clientMcpSessionId) : null
+  // The upstream session this request's last forward went out on.
+  let forwardedOn: string | null = null
 
   // Only failures while talking to the upstream affect its health. Parent
   // authorization, local lifecycle changes and cancelled callers do not.
@@ -515,20 +487,23 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
 
     const headers = new Headers(forwardHeaders)
     if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
-    if (syntheticSession) {
-      const needsHandshake = syntheticSession.upstreamSessionId === undefined
-      const upstreamSessionId = await requestUpstream(() => initializeUpstreamSession({
-        session: syntheticSession,
+    if (syntheticSession && clientMcpSessionId) {
+      const { upstreamSessionId, handshake } = await requestUpstream(() => upstreamSessionFor({
+        actor,
+        mcpId,
+        sessionId: clientMcpSessionId,
+        protocolVersion: syntheticSession.protocolVersion,
         targetUrl,
         accessToken,
         headers,
         signal: c.req.raw.signal,
       }))
+      forwardedOn = upstreamSessionId
       headers.delete('Mcp-Session-Id')
       if (upstreamSessionId) headers.set('Mcp-Session-Id', upstreamSessionId)
       // A real handshake yielded to the network: revalidate before sending the
       // queued tool call. Established/stateless requests authorize only once.
-      if (needsHandshake) {
+      if (handshake) {
         const refreshed = await mcp.authorization()
         if (!refreshed.ok) throw new Error('MCP authorization unavailable after handshake')
         accessToken = refreshed.accessToken
@@ -556,8 +531,9 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
         console.warn('[mcp-proxy] Failed to cancel unauthorized response body:', err)
       }
       await mcp.markAuthRequired('Remote server returned 401')
-      if (syntheticSession) syntheticSession.upstreamSessionId = undefined
-      const protocolResponse = authRequiredProtocolResponse()
+      // Only the binding this request used: another request may have bound a newer one since.
+      if (syntheticSession && clientMcpSessionId) await actor.mcpSessions.unbind(clientMcpSessionId, forwardedOn)
+      const protocolResponse = await authRequiredProtocolResponse()
       if (protocolResponse) return protocolResponse
       const reauthResult = await mcp.recoverAuthorization(c.req.raw.signal)
       if (!reauthResult.ok) return reauthFailureResponse(reauthResult)
@@ -612,11 +588,11 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     // A failed retry stays marked, but is returned rather than opening an
     // unbounded second reconnect loop for the same proxy request.
     if (response.status === 401) {
-      void mcp.markAuthRequired('Remote server returned 401').catch(() => {})
+      background(mcp.markAuthRequired('Remote server returned 401').catch(() => {}), { name: 'mcp-proxy-route.mark-auth-required' })
     }
 
     if (method === 'DELETE' && clientMcpSessionId && syntheticSession) {
-      syntheticMcpSessions.delete(clientMcpSessionId)
+      await actor.mcpSessions.close(clientMcpSessionId)
     }
 
     // Pass response through (including SSE streams)

@@ -13,6 +13,7 @@ import { getAgentWorkspaceDir } from '../utils/file-storage'
 import { ComposioAccountProvider } from '../account-providers/composio-account-provider'
 import { registerAccountProvider } from '../account-providers/provider-factory'
 import { MockContainerClient, SimpleTextResponseScenario, type MockScenario } from './mock-container-client'
+import { background } from '../background'
 
 const runFile = promisify(execFile)
 
@@ -36,9 +37,9 @@ class DemoAccountProvider extends ComposioAccountProvider {
 
 class ConnectionReplacementScenario implements MockScenario {
   execute(sessionId: string, client: MockContainerClient, message: string): void {
-    void this.run(sessionId, client, message).catch((error: unknown) => {
+    background(this.run(sessionId, client, message).catch((error: unknown) => {
       new SimpleTextResponseScenario(`Demo failed: ${String(error)}`).execute(sessionId, client, message)
-    })
+    }), { name: 'mock-connection-replacement-scenario.run-demo' })
   }
 
   private async run(sessionId: string, client: MockContainerClient, message: string): Promise<void> {

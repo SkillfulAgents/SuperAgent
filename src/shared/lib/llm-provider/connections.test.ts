@@ -48,6 +48,7 @@ import {
   providerForConnection,
   deleteConnection,
   setGlobalSelection,
+  compareAndSetGlobalDefault,
   resolveExecutionSelection,
   resolveHelperSelection,
   resolveSelectionHierarchy,
@@ -58,7 +59,9 @@ import {
 import { importLlmConnections } from '../db/data-migrations/0003-import-llm-connections'
 import { runDataMigrations } from '../db/data-migrations'
 import { syncProviderSettings, ensureManagedPlatformConnection } from './connection-settings'
-import { connectionRuntime, withSessionSelection } from './connection-runtime'
+import { bindAgentModelChoice, connectionNeedsAttachment, connectionRuntime } from './connection-runtime'
+import { runWithRequestUser } from '../platform-attribution/request-context'
+import { LlmProviderNotFoundError } from '../agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
 
 let handle: TestDatabase
 const admin = { userId: null, admin: true }
@@ -162,6 +165,41 @@ describe('LLM connections', () => {
     expect(storedSelection('a', null)).toBeNull()
     expect(storedSelection('a')).toEqual({ llmProviderId: 'imported', model: 'a' })
   })
+  it('restores a global default only when neither the default nor the summarizer changed since the write', async () => {
+    const first = await add('First')
+    const second = await add('Second')
+    const third = await add('Third')
+    await setGlobalSelection('default', { llmProviderId: first, model: 'a' })
+    const previous = { defaultSelection: { llmProviderId: first, model: 'a' }, summarizerSelection: null }
+    const written = await setGlobalSelection('default', { llmProviderId: second, model: 'a' })
+    expect(written).toEqual({ before: previous, after: { defaultSelection: { llmProviderId: second, model: 'a' }, summarizerSelection: null } })
+    await expect(compareAndSetGlobalDefault(written.after, written.before)).resolves.toBe(true)
+    expect(state.settings.llmDefault).toEqual({ llmProviderId: first, model: 'a' })
+    expect(state.settings.llmSummarizer).toBeNull()
+
+    const rewritten = await setGlobalSelection('default', { llmProviderId: second, model: 'a' })
+    await setGlobalSelection('summarizer', { llmProviderId: third, model: 'a' })
+    await expect(compareAndSetGlobalDefault(rewritten.after, rewritten.before)).resolves.toBe(false)
+    expect(state.settings.llmDefault).toEqual({ llmProviderId: second, model: 'a' })
+    expect(state.settings.llmSummarizer).toEqual({ llmProviderId: third, model: 'a' })
+  })
+
+  it('captures rollback state after earlier queued edits to the summarizer', async () => {
+    const first = await add('First')
+    const second = await add('Second')
+    const helper = await add('Helper')
+    await setGlobalSelection('default', { llmProviderId: first, model: 'a' })
+    const summarizer = { llmProviderId: helper, model: 'a' }
+    const [, changed] = await Promise.all([
+      setGlobalSelection('summarizer', summarizer),
+      setGlobalSelection('default', { llmProviderId: second, model: 'a' }),
+    ])
+    expect(changed.before).toEqual({ defaultSelection: { llmProviderId: first, model: 'a' }, summarizerSelection: summarizer })
+    await expect(compareAndSetGlobalDefault(changed.after, changed.before)).resolves.toBe(true)
+    expect(state.settings.llmDefault).toEqual({ llmProviderId: first, model: 'a' })
+    expect(state.settings.llmSummarizer).toEqual(summarizer)
+  })
+
   it('rejects personal defaults and only exposes another owner through the attached session', async () => {
     await state
       .db!.insert(user)
@@ -288,26 +326,18 @@ it('uses session connection overrides and falls back to its main model when remo
   })
 })
 
-it('serializes edits for one session without serializing independent sessions', async () => {
-  const order: string[] = []
-  let release!: () => void
-  const first = withSessionSelection('agent', 'session', async () => {
-    order.push('first')
-    await new Promise<void>((resolve) => {
-      release = resolve
-    })
-    order.push('first-done')
-  })
-  const second = withSessionSelection('agent', 'session', async () => {
-    order.push('second')
-  })
-  await withSessionSelection('agent', 'other-session', async () => {
-    order.push('independent')
-  })
-  expect(order).toEqual(['first', 'independent'])
-  release()
-  await Promise.all([first, second])
-  expect(order).toEqual(['first', 'independent', 'first-done', 'second'])
+it('lets a session send bind another member\'s connection only while the session holds it', async () => {
+  await state
+    .db!.insert(user)
+    .values({ id: 'alice', name: 'Alice', email: 'alice@example.com' })
+    .run()
+  const personal = await add('Personal', 'alice')
+  const shared = await add('Shared')
+  expect(await connectionNeedsAttachment(undefined)).toBe(false)
+  expect(await runWithRequestUser('bob', () => connectionNeedsAttachment(shared))).toBe(false)
+  expect(await runWithRequestUser('alice', () => connectionNeedsAttachment(personal))).toBe(false)
+  expect(await runWithRequestUser('bob', () => connectionNeedsAttachment(personal))).toBe(true)
+  await expect(connectionNeedsAttachment('missing')).rejects.toThrow(LlmProviderNotFoundError)
 })
 
 it('migrates version pins in SQL and old file selections before applying strict membership', async () => {
@@ -657,6 +687,26 @@ it('validates the configured Anthropic endpoint and custom bearer', async () => 
   expect(sent.headers.get('Authorization')).toBe('Bearer custom-bearer')
 })
 
+// SDK 1.x sends an apiKey as a bearer and takes one credential. Host calls keep
+// the key in X-Api-Key, as the CLI sends it, so a gateway reading that header
+// authenticates host and agent requests alike.
+it('sends the Anthropic key in X-Api-Key, with a gateway token as the bearer', async () => {
+  const fetchMock = vi.fn().mockImplementation(async () => new Response(JSON.stringify({ id: 'msg_test', type: 'message', role: 'assistant', model: 'claude-haiku-4-5', content: [], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }), { headers: { 'Content-Type': 'application/json' } }))
+  vi.stubGlobal('fetch', fetchMock)
+  const sentHeaders = async (config: Record<string, unknown>) => {
+    const provider = providerForConnection((await getConnection(await saveConnection({ name: `Wire ${fetchMock.mock.calls.length}`, provider: 'anthropic', config }, admin)))!)
+    await provider.createClient().messages.create({ model: 'claude-haiku-4-5', max_tokens: 1, messages: [{ role: 'user', content: 'Hi' }] })
+    const [url, init] = fetchMock.mock.calls.at(-1)!
+    return new Request(url, init).headers
+  }
+  const keyOnly = await sentHeaders({ apiKeys: { anthropicApiKey: 'sk-key' } })
+  expect(keyOnly.get('X-Api-Key')).toBe('sk-key')
+  expect(keyOnly.get('Authorization')).toBeNull()
+  const gateway = await sentHeaders({ apiKeys: { anthropicApiKey: 'sk-key' }, runtimeEnv: { ANTHROPIC_BASE_URL: 'https://gateway.example', ANTHROPIC_AUTH_TOKEN: 'gateway-token' } })
+  expect(gateway.get('X-Api-Key')).toBe('sk-key')
+  expect(gateway.get('Authorization')).toBe('Bearer gateway-token')
+})
+
 it('publishes the same default used for provider-only selections, including disabled preferred models', async () => {
   state.platformToken = 'platform-token'
   await ensureManagedPlatformConnection()
@@ -672,6 +722,22 @@ it('publishes the same default used for provider-only selections, including disa
   const fallback = (await listConnections(admin)).find(c => c.id === openrouter)!
   expect(fallback.defaultModel).not.toBe('sonnet')
   expect((await resolveExecutionSelection({ llmProviderId: openrouter })).model).toBe(fallback.defaultModel)
+})
+
+// Unset reads as on behind any custom base URL (CLI 2.1.304+), so the runtime
+// always says which, and per model where the endpoint's support differs.
+it('decides tool search from the session model', async () => {
+  const openrouter = await saveConnection({ name: 'Router', provider: 'openrouter', config: { apiKeys: { openrouterApiKey: 'key' } },
+    modelOverrides: [{ id: 'openai/gpt-test', label: 'GPT', family: 'gpt', supportedEfforts: ['low'] }] }, admin)
+  const toolSearch = async (model: string) =>
+    (await connectionRuntime(await resolveExecutionSelection({ llmProviderId: openrouter, model }), 'agent')).env.ENABLE_TOOL_SEARCH
+  const claude = await resolveExecutionSelection({ llmProviderId: openrouter, model: 'sonnet' })
+  expect(claude.wireModel).toMatch(/^claude-/)
+  expect(await toolSearch('sonnet')).toBe('true')
+  expect(await toolSearch('openai/gpt-test')).toBe('false')
+  expect((await connectionRuntime(await resolveExecutionSelection({ llmProviderId: await add() }), 'agent')).env.ENABLE_TOOL_SEARCH).toBe('false')
+  state.settings.enableToolSearch = false
+  expect(await toolSearch('sonnet')).toBe('false')
 })
 
 
@@ -882,5 +948,47 @@ describe('a model the provider says cannot run counts as unset (SUP-1124)', () =
     const runtime = await connectionRuntime(await resolveExecutionSelection(), 'test-agent')
     expect(runtime).toMatchObject({ model: 'model-a', browserModel: 'model-a' })
     expect(runtime.subagentModels.map(model => model.id)).toEqual(['model-a', 'model-b'])
+  })
+})
+
+describe('a model an agent names for an automation', () => {
+  async function addDeepSeek() {
+    return saveConnection(
+      {
+        name: 'DeepSeek',
+        provider: 'generic',
+        userId: null,
+        config: { apiKeys: { genericApiKey: 'key', genericBaseUrl: 'https://deepseek.example' } },
+        modelOverrides: [
+          { id: 'deepseek-v4', label: 'DeepSeek V4', family: 'deepseek', isLatest: true, supportedEfforts: ['low' as const] },
+          { id: 'deepseek-r2', label: 'DeepSeek R2', family: 'deepseek', supportedEfforts: ['low' as const] },
+        ],
+      },
+      admin
+    )
+  }
+
+  it('binds an id or a family name to the connection the agent runs on', async () => {
+    const first = await add()
+    const deepseek = await addDeepSeek()
+    await setGlobalSelection('default', { llmProviderId: first, model: 'model-a' })
+    const agent = { defaultModel: 'deepseek-v4', defaultLlmProviderId: deepseek }
+    expect(await bindAgentModelChoice('deepseek-v4', agent)).toEqual({ model: 'deepseek-v4', llmProviderId: deepseek })
+    expect(await bindAgentModelChoice('deepseek', agent)).toEqual({ model: 'deepseek', llmProviderId: deepseek })
+    expect(await bindAgentModelChoice('deepseek-r2', agent)).toEqual({ model: 'deepseek-r2', llmProviderId: deepseek })
+    expect(await bindAgentModelChoice('model-a', null)).toEqual({ model: 'model-a', llmProviderId: first })
+  })
+
+  it('rejects a model the connection does not have and lists the valid ids', async () => {
+    const first = await add()
+    const deepseek = await addDeepSeek()
+    await setGlobalSelection('default', { llmProviderId: first, model: 'model-a' })
+    await expect(bindAgentModelChoice('deepseek-v4', null)).rejects.toThrow(
+      'Unknown model "deepseek-v4". Models available to this agent: model-a.'
+    )
+    const agent = { defaultModel: 'deepseek-v4', defaultLlmProviderId: deepseek }
+    await expect(bindAgentModelChoice('model-a', agent)).rejects.toThrow(
+      'Unknown model "model-a". Models available to this agent: deepseek-v4, deepseek-r2.'
+    )
   })
 })

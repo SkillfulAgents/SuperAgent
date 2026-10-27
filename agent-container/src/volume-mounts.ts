@@ -91,10 +91,25 @@ export function rcloneMountArgs(volumeId: string, mountPath: string, hostApiUrl:
 
 // One authenticated PROPFIND of the volume root, the request rclone makes first. A 207 proves the app answers and
 // accepts the token without listing anything: a remote source may have to export every document a listing names.
-export async function volumeAnswers(hostApiUrl: string, volumeId: string, token: string): Promise<void> {
-  const response = await fetch(`${hostApiUrl}/volumes/${volumeId}`, { method: 'PROPFIND', headers: { Authorization: `Bearer ${token}`, Depth: '0' } });
-  await response.arrayBuffer();
-  if (response.status !== 207) throw new Error(`volume answered ${response.status}`);
+// A dropped connection, 408, 429 or 5xx can clear on its own, so it is asked again until `signal` aborts. Any
+// other status is a rejection, which a retry would get again.
+export async function volumeAnswers(hostApiUrl: string, volumeId: string, token: string, signal: AbortSignal): Promise<void> {
+  for (let delay = 250; ; delay = Math.min(delay * 2, 2_000)) {
+    const answer: unknown = await fetch(`${hostApiUrl}/volumes/${volumeId}`, {
+      method: 'PROPFIND', headers: { Authorization: `Bearer ${token}`, Depth: '0' }, signal,
+    }).then((response) => {
+      // The status is the answer. A body that fails to close must not turn a rejection into a retry.
+      response.body?.cancel().catch(() => {});
+      return response.status;
+    }).catch((error: unknown) => error);
+    if (answer === 207) return;
+    const failure = typeof answer === 'number' ? new Error(`volume answered ${answer}`) : answer;
+    const transient = typeof answer !== 'number' || answer === 408 || answer === 429 || answer >= 500;
+    if (!transient || signal.aborted) throw failure;
+    console.warn(`[volumes] ${volumeId} check failed, asking again:`, failure);
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    if (signal.aborted) throw failure;
+  }
 }
 
 export async function untilMountAnswers(mountPath: string, unmountedDev: number, settled: () => boolean, answers: () => Promise<void>): Promise<void> {
@@ -139,7 +154,7 @@ async function mountVolume(volume: ContainerMount): Promise<(typeof mounted)[num
   const mountPath = path.join(MOUNTS_DIR, name);
   let rclone: ChildProcess | undefined;
   let timer: NodeJS.Timeout | undefined;
-  let settled = false;
+  const stop = new AbortController();
   try {
     await fs.promises.mkdir(mountPath, { recursive: true });
     const cache = await createVolumeCache(volume);
@@ -152,13 +167,13 @@ async function mountVolume(volume: ContainerMount): Promise<(typeof mounted)[num
     });
     rclone = child;
     await Promise.race([
-      untilMountAnswers(mountPath, unmountedDev, () => settled, () => volumeAnswers(hostApiUrl, volumeId, token)),
+      untilMountAnswers(mountPath, unmountedDev, () => stop.signal.aborted, () => volumeAnswers(hostApiUrl, volumeId, token, stop.signal)),
       new Promise((_, reject) => {
         child.once('error', reject);
         child.once('exit', (code) => reject(new Error(`rclone exited with code ${code}`)));
         timer = setTimeout(() => reject(new Error('mount timed out')), MOUNT_TIMEOUT_MS);
       }),
-    ]);
+    ]).finally(() => stop.abort());
     return { ...volume, rclone: child, cache };
   } catch (error) {
     console.error(`[volumes] Leaving out ${mountPath}:`, error);
@@ -168,7 +183,6 @@ async function mountVolume(volume: ContainerMount): Promise<(typeof mounted)[num
     await fs.promises.rmdir(mountPath).catch(() => {});
     return undefined;
   } finally {
-    settled = true;
     clearTimeout(timer);
   }
 }

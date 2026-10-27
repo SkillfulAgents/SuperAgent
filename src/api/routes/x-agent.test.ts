@@ -3,7 +3,7 @@
  *
  * Strategy: real in-memory SQLite for proxyTokens / agentAcl / xAgentPolicies
  * (so policy + ACL logic is exercised end-to-end). Mock the file-based agent/session
- * services and the container/messagePersister.
+ * services, the container and the agents' live sessions.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
@@ -17,8 +17,10 @@ import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import { randomUUID } from 'crypto'
 import { agentRegistry } from '@shared/lib/agent-actor/registry'
-import type { FileOps, OpenFile } from '@shared/lib/agent-actor/types'
+import type { FileOps, OpenFile, StoreFileOps } from '@shared/lib/agent-actor/types'
+import type { LocalAgentActor } from '@shared/lib/agent-actor/local-agent-actor'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
+import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import * as schema from '@shared/lib/db/schema'
 
 // Shrink the readLastAssistantMessage retry budget in tests (default is 10×500ms).
@@ -109,6 +111,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
     return null
   },
   registerSession: (...args: unknown[]) => mockRegisterSession(...args),
+  finalizeAutomationStatus: vi.fn(async () => 'not-automation'),
   updateSessionMetadata: (...args: unknown[]) => mockUpdateSessionMetadata(...args),
   getSessionMetadata: (...args: unknown[]) => mockGetSessionMetadata(...args),
   sessionIsKnown: (...args: unknown[]) => mockSessionIsKnown(...args),
@@ -123,8 +126,8 @@ function openBytes(bytes: Uint8Array | string, size?: number, body?: ReadableStr
     readAt: vi.fn(),
   }
 }
-const mockSourceOpen = vi.fn<FileOps['open']>()
-const mockTargetOpen = vi.fn<FileOps['open']>()
+const mockSourceOpen = vi.fn<StoreFileOps['open']>()
+const mockTargetOpen = vi.fn<StoreFileOps['open']>()
 const mockTargetWrite = vi.fn<FileOps['write']>()
 const mockTargetDelete = vi.fn<FileOps['delete']>()
 
@@ -155,54 +158,45 @@ vi.mock('@shared/lib/container/container-host', async () => {
   }
 })
 
-// Message persister
-// Built by name, not by importing the class from the (wholesale-mocked) module:
-// the routes match timeout errors on error.name, and this mirrors that contract.
-// message-persister.test.ts pins the real class to this name.
-function waitForIdleTimeoutError(): Error {
-  return Object.assign(new Error('waitForIdle timeout after 120000ms'), {
-    name: 'WaitForIdleTimeoutError',
-  })
-}
-
+// Live sessions
 // Sync waits pass the REMAINING end-to-end budget (deadline stamped at handler
 // entry minus pre-wait work), so the exact timeoutMs varies — assert the shape
-// and that it stays within (0, 120s]. requireActiveFirst is off because sync
-// callers mark/observe the session active before waiting, so "inactive" means
-// the turn already finished.
+// and that it stays within (0, 120s].
 function expectBoundedSyncWait(sessionId: string): void {
   expect(mockWaitForIdle).toHaveBeenCalledWith('target-agent', sessionId, {
     timeoutMs: expect.any(Number),
-    requireActiveFirst: false,
   })
   const opts = mockWaitForIdle.mock.calls.at(-1)?.[2] as { timeoutMs: number }
   expect(opts.timeoutMs).toBeGreaterThan(0)
   expect(opts.timeoutMs).toBeLessThanOrEqual(120_000)
 }
 const mockIsSessionActive = vi.fn((_agentSlug?: string, _sessionId?: string): boolean => false)
+const mockActiveIds = vi.fn((_agentSlug: string): string[] => [])
 const mockIsSessionAwaitingInput = vi.fn((_agentSlug?: string, _sessionId?: string): boolean => false)
-const mockWaitForIdle = vi.fn(async (..._args: unknown[]) => {})
-const mockSubscribeToSession = vi.fn()
+const mockWaitForIdle = vi.fn(async (..._args: unknown[]): Promise<'idle' | 'timeout'> => 'idle')
+const mockSubscribeToSession = vi.fn(async (..._args: unknown[]) => {})
 const mockMarkSessionActive = vi.fn()
 const mockMarkSessionIdle = vi.fn()
-const mockBroadcastGlobal = vi.fn()
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    withSessionSend: async (agentSlug: string, sessionId: string, _client: unknown, send: () => Promise<unknown>) => {
+const mockPublishGlobal = vi.fn()
+vi.mock('@shared/lib/notifications/global-feed', () => ({
+  globalFeed: { publish: (...args: unknown[]) => mockPublishGlobal(...args), subscribe: () => () => {} },
+}))
+
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    markSending: (agentSlug, sessionId) => {
+      const queued = mockIsSessionActive(agentSlug, sessionId)
       mockMarkSessionActive(agentSlug, sessionId)
-      return send()
+      return { queued, rollback: () => mockMarkSessionIdle(agentSlug, sessionId) }
     },
-    isSessionActive: (agentSlug?: string, sessionId?: string) => mockIsSessionActive(agentSlug, sessionId),
-    isSessionAwaitingInput: (agentSlug: string, sessionId?: string,) => mockIsSessionAwaitingInput(agentSlug, sessionId),
-    waitForIdle: (...args: unknown[]) => mockWaitForIdle(...args),
-    isSubscribed: vi.fn(() => false),
-    subscribeToSession: (...args: unknown[]) => mockSubscribeToSession(...args),
-    unsubscribeFromSession: vi.fn(),
-    markSessionActive: (...args: unknown[]) => mockMarkSessionActive(...args),
-    markSessionIdle: (...args: unknown[]) => mockMarkSessionIdle(...args),
-    setSlashCommands: vi.fn(),
-    broadcastGlobal: (...args: unknown[]) => mockBroadcastGlobal(...args),
-  },
+    isActive: (agentSlug, sessionId) => mockIsSessionActive(agentSlug, sessionId),
+    activeIds: (agentSlug) => mockActiveIds(agentSlug),
+    isAwaitingInput: (agentSlug, sessionId) => mockIsSessionAwaitingInput(agentSlug, sessionId),
+    waitForIdle: (...args) => mockWaitForIdle(...args),
+    subscribe: (...args) => mockSubscribeToSession(...args),
+    markActive: (...args) => mockMarkSessionActive(...args),
+    markIdle: (...args) => mockMarkSessionIdle(...args),
+  }),
 }))
 
 // Settings + secrets (only used by invoke for new sessions)
@@ -229,9 +223,16 @@ const mockRequestXAgentReview = vi.fn(async (..._args: unknown[]) => {
   if (!next) throw new Error('No queued review decision')
   return next
 })
+// The caller's reviews, as its router answers the actor's review ops: the
+// queued decision is the request's outcome, under the arguments it was raised with.
+type XAgentReviewRequest = { targetAgentSlug: string; targetAgentName: string; operation: string; preview?: string; fileTransfer?: unknown }
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
-    requestXAgentReview: (...args: unknown[]) => mockRequestXAgentReview(...args),
+    requestXAgent: (callerSlug: string, request: XAgentReviewRequest) => mockRequestXAgentReview(
+      callerSlug, request.targetAgentSlug, request.targetAgentName, request.operation, request.preview, request.fileTransfer,
+    ),
+    withdraw: vi.fn(),
+    getPendingReviewsForAgent: () => [],
   },
 }))
 
@@ -372,7 +373,7 @@ beforeEach(async () => {
   vi.clearAllMocks()
   mockIsSessionActive.mockReturnValue(false)
   mockIsSessionAwaitingInput.mockReturnValue(false)
-  mockWaitForIdle.mockResolvedValue(undefined)
+  mockWaitForIdle.mockResolvedValue('idle')
   mockSessionIsKnown.mockResolvedValue(true)
   mockReadAgentPreferences.mockResolvedValue({})
   mockGetSessionMetadata.mockResolvedValue(null)
@@ -385,8 +386,9 @@ beforeEach(async () => {
   } as never)
   mockSourceOpen.mockImplementation(async () => openBytes('source'))
   mockTargetOpen.mockImplementation(async () => openBytes('data'))
-  const sourceFiles = agentRegistry.get(CALLER_SLUG).files
-  const targetFiles = agentRegistry.get(TARGET_SLUG).files
+  // The store's files, inside each actor: reads of either agent's go through their opens.
+  const sourceFiles = (agentRegistry.get(CALLER_SLUG) as LocalAgentActor).store.files as StoreFileOps
+  const targetFiles = (agentRegistry.get(TARGET_SLUG) as LocalAgentActor).store.files as StoreFileOps
   mockTargetWrite.mockImplementation(targetFiles.write.bind(targetFiles))
   mockTargetDelete.mockImplementation(targetFiles.delete.bind(targetFiles))
   vi.spyOn(sourceFiles, 'open').mockImplementation(mockSourceOpen)
@@ -548,7 +550,7 @@ describe('/create', () => {
     })
 
     let ownerAclAtBroadcast: Array<{ userId: string; role: string }> = []
-    mockBroadcastGlobal.mockImplementation(() => {
+    mockPublishGlobal.mockImplementation(() => {
       ownerAclAtBroadcast = testDb
         .select()
         .from(schema.agentAcl)
@@ -561,8 +563,8 @@ describe('/create', () => {
     expect(res.status).toBe(200)
 
     expect(ownerAclAtBroadcast).toEqual([{ userId: OWNER_USER_ID, role: 'owner' }])
-    expect(mockBroadcastGlobal).toHaveBeenCalledTimes(1)
-    expect(mockBroadcastGlobal).toHaveBeenCalledWith({
+    expect(mockPublishGlobal).toHaveBeenCalledTimes(1)
+    expect(mockPublishGlobal).toHaveBeenCalledWith({
       type: 'agent_created',
       agentSlug: 'a1b2c3d4e5',
     })
@@ -685,7 +687,8 @@ describe('/invoke', () => {
 
     expect(res.status).toBe(200)
     expect(mockSourceOpen).toHaveBeenCalledWith('/workspace/results/report.bin', { confined: true })
-    expect(await agentRegistry.get(TARGET_SLUG).files.getDoc(mockTargetWrite.mock.calls[0][0])).toEqual(Buffer.from(sourceBytes))
+    // Bytes, whatever array type carried them.
+    expect(new Uint8Array((await agentRegistry.get(TARGET_SLUG).files.getDoc(mockTargetWrite.mock.calls[0][0]))!)).toEqual(sourceBytes)
     const initialMessage = (mockCreateSession.mock.calls[0][0] as { initialMessage: string }).initialMessage
     expect(initialMessage).toMatch(/^inspect this binary\n\n\[Attached files:\]\n- \/workspace\/uploads\/x-agent\/[\w-]+\/0\/report\.bin$/)
     expect(initialMessage).not.toContain('/workspace/results/report.bin')
@@ -1018,7 +1021,7 @@ describe('/invoke', () => {
       'existing-sess',
       'follow-up',
       expect.any(String),
-      { isAutomated: true },
+      expect.objectContaining({ isAutomated: true }),
     )
     const sentMessageUuid = mockSendMessage.mock.calls[0][2]
     const targetAuthors = await testDb
@@ -1037,7 +1040,7 @@ describe('/invoke', () => {
   it('404s when the continued session belongs to some other agent', async () => {
     // Invoke rights on the target say nothing about the session id passed with
     // them. Without an ownership check, a caller allowed to invoke the target
-    // could name a THIRD agent's session and have the persister re-point it at
+    // could name a THIRD agent's session and have its live sessions re-point it at
     // the target's container — and the target's transcript written under it.
     reviewDecisions.push('allow')
     await grantCallerOwnerTargetAccess()
@@ -1058,11 +1061,11 @@ describe('/invoke', () => {
     expect(mockSendMessage).not.toHaveBeenCalled()
   })
 
-  it('removes continued-session attribution when sendMessage fails', async () => {
+  it('removes continued-session attribution when the container refuses the message', async () => {
     authModeEnabled = true
     reviewDecisions.push('allow')
     await grantCallerOwnerTargetAccess()
-    mockSendMessage.mockRejectedValueOnce(new Error('send failed'))
+    mockSendMessage.mockRejectedValueOnce(new MessageNotAcceptedError('rejected', 'send refused'))
 
     const res = await authedFetch('/x-agent/invoke', {
       slug: TARGET_SLUG,
@@ -1078,10 +1081,28 @@ describe('/invoke', () => {
     expect(targetAuthors).toEqual([])
   })
 
-  it('releases an existing session and staged files when the container confirms a failed send never started', async () => {
+  it('releases an existing session and staged files when the container refuses the message', async () => {
     reviewDecisions.push('allow')
-    mockSendMessage.mockRejectedValueOnce(new Error('send rejected'))
-    mockEnsureRunning.mockResolvedValueOnce({
+    mockSendMessage.mockRejectedValueOnce(new MessageNotAcceptedError('rejected', 'send rejected'))
+
+    const res = await authedFetch('/x-agent/invoke', {
+      slug: TARGET_SLUG,
+      prompt: 'follow-up',
+      sessionId: 'existing-sess',
+      attachments: ['/workspace/report.bin'],
+    })
+
+    expect(res.status).toBe(500)
+    expect(mockMarkSessionIdle).toHaveBeenCalledWith(TARGET_SLUG, 'existing-sess')
+    expect(mockTargetDelete).toHaveBeenCalledWith(expect.stringMatching(/^\/workspace\/uploads\/x-agent\//), { recursive: true, confined: true })
+  })
+
+  it('settles a failed send the container is not running, but keeps the files and author a sent message may need', async () => {
+    authModeEnabled = true
+    reviewDecisions.push('allow')
+    await grantCallerOwnerTargetAccess()
+    mockSendMessage.mockRejectedValueOnce(new Error('socket hang up'))
+    mockEnsureRunning.mockResolvedValue({
       createSession: mockCreateSession,
       sendMessage: mockSendMessage,
       deleteSession: mockDeleteSession,
@@ -1098,7 +1119,9 @@ describe('/invoke', () => {
 
     expect(res.status).toBe(500)
     expect(mockMarkSessionIdle).toHaveBeenCalledWith(TARGET_SLUG, 'existing-sess')
-    expect(mockTargetDelete).toHaveBeenCalledWith(expect.stringMatching(/^\/workspace\/uploads\/x-agent\//), { recursive: true, confined: true })
+    expect(mockTargetDelete).not.toHaveBeenCalled()
+    const targetAuthors = await testDb.select().from(schema.messageAuthor).where(eq(schema.messageAuthor.sessionId, 'existing-sess'))
+    expect(targetAuthors).toHaveLength(1)
   })
 
   it('cleans up the container session if registerSession fails (no orphan)', async () => {
@@ -1176,7 +1199,7 @@ describe('/invoke', () => {
     // rather than re-invoke. Left as a plain network error, callers retried the
     // invoke and spawned duplicate runs (retry storm).
     reviewDecisions.push('allow')
-    mockWaitForIdle.mockRejectedValueOnce(waitForIdleTimeoutError())
+    mockWaitForIdle.mockResolvedValueOnce('timeout')
     const res = await authedFetch('/x-agent/invoke', {
       slug: TARGET_SLUG,
       prompt: 'long-running task',
@@ -1202,7 +1225,7 @@ describe('/invoke', () => {
   it('promotes sync=true on an existing session to async when the wait times out', async () => {
     reviewDecisions.push('allow')
     mockIsSessionActive.mockReturnValue(false)
-    mockWaitForIdle.mockRejectedValueOnce(waitForIdleTimeoutError())
+    mockWaitForIdle.mockResolvedValueOnce('timeout')
     const res = await authedFetch('/x-agent/invoke', {
       slug: TARGET_SLUG,
       prompt: 'follow-up',
@@ -1227,7 +1250,7 @@ describe('/invoke', () => {
     let clockOffsetMs = 0
     const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + clockOffsetMs)
     try {
-      // Mirror the real persister: marking active flips the activity flag, so
+      // Mirror the real live sessions: marking active flips the activity flag, so
       // the exhausted-budget check sees a genuinely still-running turn.
       mockMarkSessionActive.mockImplementation(() => mockIsSessionActive.mockReturnValue(true))
       mockSendMessage.mockImplementationOnce(async () => {
@@ -1305,6 +1328,7 @@ describe('/invoke', () => {
     mockMarkSessionActive.mockImplementation(() => mockIsSessionActive.mockReturnValue(true))
     mockWaitForIdle.mockImplementation(async () => {
       mockIsSessionActive.mockReturnValue(false)
+      return 'idle' as const
     })
     const res = await authedFetch('/x-agent/invoke', {
       slug: TARGET_SLUG,
@@ -1376,7 +1400,7 @@ describe('/invoke', () => {
   })
 
   it('fails fast instead of hanging when the stream attach stalls (existing session)', async () => {
-    // The persister's WebSocket ready promise has no timeout of its own; a
+    // The live sessions' WebSocket ready promise has no timeout of its own; a
     // wedged container must surface as an error before the prompt goes out,
     // not hold the caller's fetch open indefinitely.
     reviewDecisions.push('allow')
@@ -1604,7 +1628,7 @@ describe('/invoke', () => {
     expect(mockGetTranscript).toHaveBeenCalledTimes(3)
   })
 
-  it('rejects when continuing an already-running session', async () => {
+  it('adds the prompt to the turn of an already-running session', async () => {
     reviewDecisions.push('allow')
     mockIsSessionActive.mockReturnValue(true)
     const res = await authedFetch('/x-agent/invoke', {
@@ -1612,44 +1636,9 @@ describe('/invoke', () => {
       prompt: 'hi',
       sessionId: 'existing-sess',
     })
-    expect(res.status).toBe(409)
-  })
-
-  it('reserves an idle existing session while pre-send work is in progress', async () => {
-    const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
-    await setPolicy(CALLER_SLUG, 'invoke', TARGET_SLUG, 'allow')
-    let releaseStart!: () => void
-    const startGate = new Promise<void>((resolve) => { releaseStart = resolve })
-    mockEnsureRunning.mockImplementationOnce(async () => {
-      await startGate
-      return {
-        createSession: mockCreateSession,
-        sendMessage: mockSendMessage,
-        deleteSession: mockDeleteSession,
-        fetch: mockTargetFetch,
-      } as never
-    })
-
-    const first = authedFetch('/x-agent/invoke', {
-      slug: TARGET_SLUG,
-      prompt: 'first',
-      sessionId: 'existing-sess',
-    })
-    await vi.waitFor(() => expect(mockEnsureRunning).toHaveBeenCalledOnce())
-
-    const second = await authedFetch('/x-agent/invoke', {
-      slug: TARGET_SLUG,
-      prompt: 'second',
-      sessionId: 'existing-sess',
-    })
-    expect(second.status).toBe(409)
-    const third = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'third', sessionId: 'existing-sess' })
-    expect(third.status).toBe(409)
-    expect(mockSendMessage).not.toHaveBeenCalled()
-
-    releaseStart()
-    expect((await first).status).toBe(200)
-    expect(mockSendMessage).toHaveBeenCalledOnce()
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ sessionId: 'existing-sess', status: 'running' })
+    expect(mockSendMessage).toHaveBeenCalledWith('existing-sess', 'hi', undefined, expect.objectContaining({ preserveRuntime: true }))
   })
 
   it('continues existing session via sendMessage when not running', async () => {
@@ -1665,7 +1654,7 @@ describe('/invoke', () => {
       'existing-sess',
       'follow-up',
       undefined,
-      { isAutomated: true },
+      expect.objectContaining({ isAutomated: true }),
     )
     expect(mockCreateSession).not.toHaveBeenCalled()
   })
@@ -1687,7 +1676,7 @@ describe('/invoke', () => {
       'existing-sess',
       expect.stringMatching(/^continued file\n\n\[Attached files:\]\n- \/workspace\/uploads\/x-agent\/[\w-]+\/0\/data\.txt$/),
       undefined,
-      { isAutomated: true },
+      expect.objectContaining({ isAutomated: true }),
     )
   })
 
@@ -1776,7 +1765,7 @@ describe('/get-sessions', () => {
       { id: 'sess-1', name: 'S1', createdAt: new Date(), lastActivityAt: new Date() },
       { id: 'sess-2', name: 'S2', createdAt: new Date(), lastActivityAt: new Date() },
     ])
-    mockIsSessionActive.mockImplementation((_agentSlug?: string, id?: string) => id === 'sess-1')
+    mockActiveIds.mockReturnValueOnce(['sess-1'])
     const res = await authedFetch('/x-agent/get-sessions', { slug: TARGET_SLUG })
     const body = await res.json()
     expect(body.sessions).toHaveLength(2)
@@ -1956,6 +1945,7 @@ describe('/get-transcript', () => {
     mockIsSessionActive.mockImplementation(() => true)
     mockWaitForIdle.mockImplementation(async () => {
       mockIsSessionActive.mockReturnValue(false)
+      return 'idle' as const
     })
     mockGetTranscript.mockResolvedValue([])
     const res = await authedFetch('/x-agent/get-transcript', {
@@ -1975,7 +1965,7 @@ describe('/get-transcript', () => {
     // current transcript and can call again with sync=true to keep waiting.
     reviewDecisions.push('allow')
     mockIsSessionActive.mockReturnValue(true)
-    mockWaitForIdle.mockRejectedValueOnce(waitForIdleTimeoutError())
+    mockWaitForIdle.mockResolvedValueOnce('timeout')
     mockGetTranscript.mockResolvedValue([
       { type: 'user', message: { role: 'user', content: 'hello' } },
     ])
@@ -2009,6 +1999,7 @@ describe('/get-transcript', () => {
     mockIsSessionActive.mockReturnValue(true)
     mockWaitForIdle.mockImplementation(async () => {
       mockIsSessionActive.mockReturnValue(false)
+      return 'idle' as const
     })
     const res = await authedFetch('/x-agent/get-transcript', {
       slug: TARGET_SLUG,
@@ -2037,7 +2028,7 @@ describe('/get-transcript', () => {
     mockIsSessionActive.mockReturnValue(true)
     mockWaitForIdle.mockImplementationOnce(async () => {
       mockIsSessionActive.mockReturnValue(false) // turn ended...
-      throw waitForIdleTimeoutError() // ...but the wait had already timed out
+      return 'timeout' as const // ...but the wait had already timed out
     })
     const res = await authedFetch('/x-agent/get-transcript', {
       slug: TARGET_SLUG,

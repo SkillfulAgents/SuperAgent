@@ -1,11 +1,12 @@
 import { randomUUID } from 'crypto'
 import { addErrorBreadcrumb, captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import type { ContainerClient } from './types'
 import type { CoalescedUserMessage, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 
 // Session lifecycle here: active --(unexpected death)--> isRecovering --> either
 // markRecovered (resume prompt sent, turn continues) or settleRecoveringSessions
-// (today's session_error). Flags live in message-persister; this module only orchestrates.
+// (today's session_error). Flags live in the agent's live sessions; this module only orchestrates.
 
 export type RuntimeRecoveryDeps = {
   agentId: string
@@ -25,6 +26,8 @@ export type RuntimeRecoveryDeps = {
     client: ContainerClient,
     containerSessionId: string,
   ) => Promise<void>
+  /** Run `work` in the session's delivery turn, after the deliveries ahead of it and before any that follow. */
+  inDeliveryTurn: <T>(sessionId: string, work: () => Promise<T>) => Promise<T>
   syncAgentStatus?: () => Promise<void>
   // One-session connection_closed. Omitted = every mid-turn session on the agent.
   restrictToSessionIds?: string[]
@@ -60,12 +63,12 @@ export async function recoverFromUnexpectedDeath(deps: RuntimeRecoveryDeps): Pro
     const rerunDeps = pendingRerun.get(deps.agentId)
     if (rerunDeps) {
       pendingRerun.delete(deps.agentId)
-      recoverFromUnexpectedDeath(rerunDeps).catch((error) => {
+      background(recoverFromUnexpectedDeath(rerunDeps).catch((error) => {
         captureException(error, {
           tags: { area: 'container', op: 'runtime.recover.rerun' },
           extra: { agentId: rerunDeps.agentId },
         })
-      })
+      }), { name: 'runtime-recovery.rerun-recovery' })
     }
   })
   inFlight.set(deps.agentId, run)
@@ -303,13 +306,25 @@ async function resumeSessions(
     // No longer recovering: the user interrupted or it settled during recovery.
     if (!deps.isSessionRecovering(sessionId)) continue
     try {
-      if (!deps.isSubscribed(sessionId)) {
-        await deps.subscribeToSession(sessionId, client, sessionId)
-      }
-      await client.sendMessage(sessionId, plan.resumePrompt, randomUUID(), { shouldQuery: true })
-      const coalesced = deps.takeCoalescedUserMessages(sessionId)
-      deps.markRecovered([sessionId])
-      await deliverCoalescedMessages(deps, client, sessionId, coalesced)
+      // In the session's delivery turn: a message sent once the recovery
+      // ends goes after the resume and the messages it held, not between.
+      // Decided again inside the turn, and after the attach: a stop, a settle
+      // or a shutdown while it waited ends the recovery, and must not be undone
+      // by the resume prompt.
+      const stillWanted = () => !deps.isStopping() && deps.isSessionRecovering(sessionId)
+      const resumed = await deps.inDeliveryTurn(sessionId, async () => {
+        if (!stillWanted()) return false
+        if (!deps.isSubscribed(sessionId)) {
+          await deps.subscribeToSession(sessionId, client, sessionId)
+          if (!stillWanted()) return false
+        }
+        await client.sendMessage(sessionId, plan.resumePrompt, randomUUID(), { shouldQuery: true })
+        const coalesced = deps.takeCoalescedUserMessages(sessionId)
+        deps.markRecovered([sessionId])
+        await deliverCoalescedMessages(deps, client, sessionId, coalesced)
+        return true
+      })
+      if (!resumed && deps.isStopping() && deps.isSessionRecovering(sessionId)) failed.push(sessionId)
     } catch (error) {
       captureException(error, {
         tags: { area: 'container', op: 'runtime.resume' },

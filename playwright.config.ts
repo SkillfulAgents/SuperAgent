@@ -18,6 +18,8 @@ const configuredWorkers = process.env.PLAYWRIGHT_WORKERS
 
 const webTestIgnore = [
   '**/auth/**',
+  // Desktop runtime tests have their own app launcher and config.
+  '**/electron/**',
   // Real-container probes with their own config (playwright.live-mcp.config.ts).
   '**/live/**',
   // Recorded walkthroughs, not regression tests — they throttle the network and
@@ -27,6 +29,8 @@ const webTestIgnore = [
   '**/getting-started-wizard.spec.ts',
   // Mutates the global provider API key — quarantined to the wizard config.
   '**/provider-api-key.spec.ts',
+  // Writes app-wide model defaults — also belongs to the isolated wizard suite.
+  '**/paywall-subscriptions.spec.ts',
   // Needs a production build (service worker) — runs under playwright.pwa.config.ts.
   '**/pwa-precache.spec.ts',
   // WebKit-engine regression (async-scroll follow) — runs under the web-webkit project.
@@ -80,7 +84,7 @@ export default defineConfig({
   // Auth tests use a separate config (playwright.auth.config.ts); e2e/live
   // holds probes against the REAL container (playwright.live-mcp.config.ts
   // and the .mjs harnesses), which the mock host cannot satisfy.
-  testIgnore: ['**/auth/**', '**/live/**'],
+  testIgnore: ['**/auth/**', '**/live/**', '**/electron/**'],
   outputDir: playwrightOutputDir,
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
@@ -105,7 +109,7 @@ export default defineConfig({
     // explicitly with --project=web-webkit (needs `npx playwright install webkit`).
     {
       name: 'web-webkit',
-      testMatch: ['**/safari-follow.spec.ts', '**/thinking-collapse-reading-line.spec.ts', '**/read-aloud-follow.spec.ts', '**/openai-read-aloud.spec.ts', '**/sidebar-sections-mobile.spec.ts'],
+      testMatch: ['**/safari-follow.spec.ts', '**/thinking-collapse-reading-line.spec.ts', '**/read-aloud-follow.spec.ts', '**/openai-read-aloud.spec.ts', '**/sidebar-sections-mobile.spec.ts', '**/pdf-preview.spec.ts'],
       use: { ...devices['Desktop Safari'] },
     },
     // Section drag-and-drop and persistence, on their own server/data dir.

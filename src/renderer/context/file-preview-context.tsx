@@ -1,11 +1,24 @@
 import { createContext, useContext, useState, useCallback, useEffect, useMemo, type ReactNode } from 'react'
+import { z } from 'zod'
 import { getPathName } from '@shared/lib/utils/workspace-path'
 import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useFilePreviewTabs, nextFileVersion, type PreviewFileTab, type PreviewFolderTab } from '@renderer/hooks/use-file-preview-tabs'
 import type { CommentAnchor } from '@renderer/components/file-preview/comments/kinds'
+import { RELOADING_EVENT } from '@renderer/lib/lazy-with-reload'
+
+/**
+ * Where a file's bytes come from when it is not in the agent's workspace: a
+ * shared drive's file, say, served from somewhere other than the agent files
+ * API. Without one, the drawer reads `agentSlug`'s copy of the path.
+ * HTTP(S) URLs must accept a `v` cache-busting parameter on each open;
+ * data: and blob: URLs identify fixed bytes and are used unchanged.
+ */
+const previewSourceSchema = z.object({ inlineUrl: z.string(), downloadUrl: z.string().optional() })
+export type PreviewSource = z.infer<typeof previewSourceSchema>
 
 export interface FileTab extends PreviewFileTab {
   agentSlug: string
+  source?: PreviewSource
 }
 
 export interface FolderTab extends PreviewFolderTab {
@@ -62,7 +75,7 @@ interface FilePreviewContextType {
   isOpen: boolean
   commentsEnabled: boolean
 
-  openFile: (filePath: string, agentSlug: string, description?: string) => void
+  openFile: (filePath: string, agentSlug: string, description?: string, source?: PreviewSource) => void
   openFolder: (folderPath: string, agentSlug: string) => void
   toggleFolder: (rootPath: string, agentSlug: string, folderPath: string) => void
   setFolderQuery: (rootPath: string, agentSlug: string, query: string) => void
@@ -106,13 +119,31 @@ function replacePathPrefix(candidatePath: string, oldPath: string, newPath: stri
 
 let commentIdCounter = 0
 
+const REOPEN_KEY = 'file-preview:reopen'
+const ReopenFile = z.object({
+  scope: z.string().nullable(), filePath: z.string(), agentSlug: z.string(),
+  source: previewSourceSchema.optional(),
+})
+
+/** Read and clear the file a preview was opening when its tab reloaded onto a new build. */
+function takeReopenFile(): z.infer<typeof ReopenFile> | null {
+  const raw = sessionStorage.getItem(REOPEN_KEY)
+  sessionStorage.removeItem(REOPEN_KEY)
+  if (!raw) return null
+  try {
+    return ReopenFile.parse(JSON.parse(raw))
+  } catch {
+    return null
+  }
+}
+
 /** One shared empty array: a fresh [] per call would change every consumer's deps. */
 const EMPTY_COMMENTS: FileComment[] = []
 
 export function FilePreviewProvider({
   children,
   sessionId: sessionIdProp,
-  commentsEnabled = true,
+  commentsEnabled = false,
 }: {
   children: ReactNode
   sessionId?: string | null
@@ -139,14 +170,32 @@ export function FilePreviewProvider({
     setIsOpen(false)
   }, [sessionId, setOpenTabs, setActiveTabIndex])
 
-  const openFile = useCallback((filePath: string, agentSlug: string, description?: string) => {
+  const openFile = useCallback((filePath: string, agentSlug: string, description?: string, source?: PreviewSource) => {
     const version = nextFileVersion()
     openTab({
       kind: 'file', filePath, agentSlug, displayName: getDisplayName(filePath),
-      description, version, pdfPage: 1,
-    }, existing => ({ ...existing, version }))
+      description, version, pdfPage: 1, source,
+    }, existing => ({ ...existing, version, source }))
     setIsOpen(true)
   }, [openTab])
+
+  // A stale tab reloads itself when a view's files are gone after an upgrade. The file it
+  // was opening is saved across that reload and opened again, so one click still opens it.
+  const activeTab = isOpen ? openTabs[activeTabIndex] : undefined
+  useEffect(() => {
+    if (activeTab?.kind !== 'file') return
+    const save = () => sessionStorage.setItem(REOPEN_KEY, JSON.stringify({
+      scope: sessionId, filePath: activeTab.filePath, agentSlug: activeTab.agentSlug, source: activeTab.source,
+    }))
+    window.addEventListener(RELOADING_EVENT, save)
+    return () => window.removeEventListener(RELOADING_EVENT, save)
+  }, [activeTab, sessionId])
+
+  // The first preview to mount after the reload takes the entry. Only the one that saved it reopens the file.
+  useEffect(() => {
+    const file = takeReopenFile()
+    if (file?.scope === sessionId) openFile(file.filePath, file.agentSlug, undefined, file.source)
+  }, [sessionId, openFile])
 
   const openFolder = useCallback((folderPath: string, agentSlug: string) => {
     const rootPath = normalizeFolderPath(folderPath)

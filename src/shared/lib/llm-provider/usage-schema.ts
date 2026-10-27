@@ -14,6 +14,20 @@ export type UsageLimit = ProviderUsage['limits'][number]
 export function usageSnapshot(limits: UsageLimit[]): ProviderUsage {
   return { status: limits.length ? 'available' : 'unavailable', observedAt: new Date().toISOString(), limits }
 }
+export function isProviderUsageExhausted(usage: ProviderUsage, provider?: string, model?: string): boolean {
+  if (usage.status !== 'available') return false
+  let windows = usage.limits.filter(limit => limit.kind === 'window')
+  if (provider === 'codex-subscription') {
+    windows = windows.filter(limit => limit.id === 'codex-primary' || limit.id === 'codex-secondary')
+  } else if (provider === 'minimax-subscription' && model) {
+    const selectedModel = windows.filter(limit => limit.label.startsWith(`${model} ·`))
+    if (selectedModel.length) windows = selectedModel
+  }
+  if (windows.some(limit => limit.usedPercent >= 100)) return true
+  if (windows.length) return false
+  const balances = usage.limits.filter(limit => limit.kind === 'balance')
+  return balances.length > 0 && balances.every(limit => limit.remaining <= 0)
+}
 
 const optionalNumber = z.union([z.number(), z.string().trim().min(1)]).transform(Number).pipe(z.number().finite()).nullish().catch(undefined)
 const percent = z.number().finite().min(0).nullish().catch(undefined)

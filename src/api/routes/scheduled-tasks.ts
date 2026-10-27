@@ -28,7 +28,7 @@ import {
 import { promptUpdateSchema } from './trigger-prompt-schema'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { validateCronExpression, getFrequencyWarning } from '@shared/lib/services/schedule-parser'
@@ -66,9 +66,10 @@ scheduledTasksRouter.get('/:taskId/sessions', TaskAgentRole('viewer'), async (c)
     const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
     const actor = agentRegistry.get(task!.agentSlug)
     const sessions = await actor.sessions.byScheduledTask(task!.id)
+    const active = new Set((await actor.live()).activeSessionIds)
     const sessionsWithStatus = sessions.map((session) => ({
       ...session,
-      isActive: actor.sessions.isActive(session.id),
+      isActive: active.has(session.id),
     }))
     return c.json(sessionsWithStatus)
   } catch (error) {
@@ -91,12 +92,12 @@ scheduledTasksRouter.delete('/:taskId', TaskAgentRole('user'), async (c) => {
 
     // Cancelling a session wake changes that session's list/badge state.
     if (task!.resumeSessionId) {
-      messagePersister.broadcastGlobal({
+      globalFeed.publish({
         type: 'session_updated',
         sessionId: task!.resumeSessionId,
         agentSlug: task!.agentSlug,
       })
-      agentRegistry.get(task!.agentSlug).sessions.broadcastUpdate(task!.resumeSessionId)
+      await agentRegistry.get(task!.agentSlug).sessions.broadcastUpdate(task!.resumeSessionId)
     }
 
     return c.body(null, 204)
@@ -320,30 +321,24 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
       models,
     )
 
-    const containerSession = await actor.sessions.create({
-      availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-      initialMessage: task.prompt,
-      model: resolved.model,
-      llmProviderId: resolved.llmProviderId,
-      browserModel: models.browserModel,
-      dashboardBuilderModel: models.dashboardBuilderModel,
-      effort: resolved.effort,
-      ...(resolved.speed ? { speed: resolved.speed } : {}),
+    const { id: sessionId } = await actor.sessions.start({
+      create: {
+        availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
+        initialMessage: task.prompt,
+        model: resolved.model,
+        llmProviderId: resolved.llmProviderId,
+        browserModel: models.browserModel,
+        dashboardBuilderModel: models.dashboardBuilderModel,
+        effort: resolved.effort,
+        ...(resolved.speed ? { speed: resolved.speed } : {}),
+      },
+      name: task.name || 'Scheduled Task (Run Now)',
+      metadata: {
+        isScheduledExecution: true,
+        scheduledTaskId: task.id,
+        scheduledTaskName: task.name || undefined,
+      },
     })
-
-    const sessionId = containerSession.id
-    const sessionName = task.name || 'Scheduled Task (Run Now)'
-
-    await actor.sessions.register(sessionId, sessionName)
-    await actor.sessions.updateMetadata(sessionId, {
-      isScheduledExecution: true,
-      scheduledTaskId: task.id,
-      scheduledTaskName: task.name || undefined,
-    })
-
-    // createSession already started the turn; replay may finish it during attachment.
-    actor.sessions.markActive(sessionId)
-    await actor.sessions.subscribeStream(sessionId, sessionId)
 
     if (task.isRecurring) {
       // Recurring: keep schedule, just record the manual execution

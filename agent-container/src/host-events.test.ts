@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { notifyDashboardScreenshotReady, notifyDashboardStatusChanged, notifyUndeliveredTurn } from './host-events'
+import { notifyAgentIdentityChanged, notifyDashboardScreenshotReady, notifyDashboardStatusChanged, notifyUndeliveredTurn } from './host-events'
 
 describe('notifyDashboardScreenshotReady', () => {
   beforeEach(() => {
@@ -62,6 +62,17 @@ describe('notifyDashboardScreenshotReady', () => {
         },
         body: JSON.stringify({ dashboardSlug: 'sales-dashboard', status: 'running' }),
       },
+    )
+  })
+
+  it('posts the agent identity signal with no body to speak of', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }))
+
+    await expect(notifyAgentIdentityChanged()).resolves.toBe(true)
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'http://host.internal/api/agent-bootstrap/agent-a/events/agent-identity-changed',
+      expect.objectContaining({ method: 'POST', body: '{}' }),
     )
   })
 

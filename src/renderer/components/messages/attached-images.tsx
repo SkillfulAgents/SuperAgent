@@ -7,6 +7,8 @@ export interface AttachedImage {
   filePath: string
   description?: string
   sizeBytes?: number
+  /** Cache-busting token for a delivered image; see SentAttachmentChip. */
+  version?: string
 }
 
 interface AttachedImagesProps {
@@ -45,6 +47,7 @@ export function AttachedImages({ images, agentSlug, align, 'data-testid': testId
           imageSize={imageSize}
           description={image.description}
           sizeBytes={image.sizeBytes}
+          version={image.version}
         />
       ))}
     </div>

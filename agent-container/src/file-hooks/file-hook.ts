@@ -11,6 +11,11 @@ export interface FileHookWriteResult {
   warning?: string
 }
 
+export interface FileHookChangeResult {
+  /** Appended to the tool result as additional context. */
+  warning?: string
+}
+
 /**
  * Base class for file-specific hooks that intercept Read, Write, and Edit
  * tool calls for particular files. Subclasses define which files they match
@@ -32,10 +37,10 @@ export abstract class FileHook {
   abstract matches(filePath: string): boolean
 
   /**
-   * Called after a Read tool call for a matching file.
+   * Called after a Read tool call for a matching file, with what the Read returned.
    * Return additional context to append to the tool result.
    */
-  onRead(_filePath: string): FileHookReadResult {
+  onRead(_filePath: string, _response?: unknown): FileHookReadResult {
     return {}
   }
 
@@ -56,6 +61,21 @@ export abstract class FileHook {
   onEdit(_filePath: string, _contentAfterEdit: string): FileHookWriteResult {
     return {}
   }
+
+  /**
+   * Called after an Edit tool call for a matching file, with what the Edit returned. A hook that can
+   * judge the edit from the reply answers here and its file is not read; null falls back to `onEdit`.
+   */
+  onEditReply?(filePath: string, reply: unknown): FileHookWriteResult | null
+
+  /**
+   * Called after a Write or Edit tool call changed a matching file, with its
+   * content before the call (null when it did not exist) and after. For hooks
+   * that act on what the change did rather than on the content alone; the
+   * change has landed, so it cannot be rejected here. Optional: the file is
+   * read before the call only for hooks that define it.
+   */
+  onChange?(filePath: string, before: string | null, after: string): FileHookChangeResult
 }
 
 /**

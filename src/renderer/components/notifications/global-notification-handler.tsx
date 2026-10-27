@@ -53,6 +53,9 @@ import {
   USER_ACTIONABLE_NOTIFICATION_TYPES,
 } from '@shared/lib/notifications/notification-preferences'
 import { useRenderTracker } from '@renderer/lib/perf'
+import type { RuntimeReadiness } from '@shared/lib/container/types'
+import type { RuntimeStatusResponse } from '@renderer/hooks/use-runtime-status'
+import type { GlobalSettingsResponse } from '@renderer/hooks/use-settings'
 import { TODOS_QUERY_KEY } from '@renderer/hooks/use-todos'
 import { reconnectDelayMs, watchStreamLiveness } from '@renderer/lib/stream-liveness'
 
@@ -302,6 +305,14 @@ export function GlobalNotificationHandler() {
             break
           }
 
+          case 'session_mention_withdrawn': {
+            // The message that tagged this viewer was taken back before it ran.
+            queryClient.invalidateQueries({ queryKey: ['notifications'] })
+            if (typeof data.agentSlug === 'string') queryClient.invalidateQueries({ queryKey: ['sessions', data.agentSlug] })
+            queryClient.invalidateQueries({ queryKey: ['agents'] })
+            break
+          }
+
           case 'platform_notifications_changed': {
             // A platform notification INSERT arrived over Realtime — refresh
             // the proxy-live inbox + badge (there is no local copy to update).
@@ -330,6 +341,9 @@ export function GlobalNotificationHandler() {
             } else if (notifType === 'session_scheduled' && data.taskId) {
               queryClient.invalidateQueries({ queryKey: ['scheduled-task-sessions', data.taskId] })
               queryClient.invalidateQueries({ queryKey: ['scheduled-task', data.taskId] })
+            } else if (notifType === 'session_mention') {
+              // No session lifecycle event follows a mention to refresh the agent row's dot.
+              queryClient.invalidateQueries({ queryKey: ['agents'] })
             }
 
             // Skip if user doesn't have access to the notification's agent
@@ -355,7 +369,7 @@ export function GlobalNotificationHandler() {
             const notifyWhenUnfocused =
               userSettingsRef.current?.notifications?.notifyWhenUnfocused === true
             const isAppActive =
-              notificationType === 'session_waiting' || notifyWhenUnfocused
+              notificationType === 'session_waiting' || notificationType === 'session_mention' || notifyWhenUnfocused
                 ? isTabVisible && document.hasFocus()
                 : isTabVisible
 
@@ -387,6 +401,7 @@ export function GlobalNotificationHandler() {
               ) {
                 applySessionActivityStatus(queryClient, agentSlug, notificationSessionId, {
                   hasUnreadNotifications: true,
+                  ...(notificationType === 'session_mention' ? { hasUnreadMention: true } : {}),
                 })
               }
               const { title, body } = data as { title: string; body: string }
@@ -446,6 +461,7 @@ export function GlobalNotificationHandler() {
                     if (agentSlug && notificationSessionId) {
                       applySessionActivityStatus(queryClient, agentSlug, notificationSessionId, {
                         hasUnreadNotifications: false,
+                        hasUnreadMention: false,
                       })
                       queryClient.invalidateQueries({ queryKey: ['sessions', agentSlug] })
                     }
@@ -499,6 +515,9 @@ export function GlobalNotificationHandler() {
             } else {
               queryClient.invalidateQueries({ queryKey: ['artifacts'] })
             }
+
+            // A finished run may have changed Team Brain's drive: its tree and sync summaries read again (none for other agents).
+            if ((data.type === 'session_idle' || data.type === 'session_error') && eventAgentSlug) confirmations.invalidate(['team-brain', eventAgentSlug])
 
             // Automation session lists show isActive status — refresh them
             confirmations.invalidate(['webhook-trigger-sessions'])
@@ -607,6 +626,12 @@ export function GlobalNotificationHandler() {
             queryClient.invalidateQueries({ queryKey: ['agents'] })
             break
 
+          case 'volume_attention_changed':
+            // A drive's sync state changed: a conflict, a stopped push, or the end of one. Its status pills follow.
+            queryClient.invalidateQueries({ queryKey: ['mounts'] })
+            queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
+            break
+
           case 'agent_created':
             // Agent-created child creation lands outside the human create mutation,
             // so refresh both caches the direct-create path invalidates together.
@@ -669,11 +694,23 @@ export function GlobalNotificationHandler() {
             break
           }
 
-          case 'runtime_readiness_changed':
-            // Runtime readiness changed (e.g., image pull started/completed)
+          case 'runtime_readiness_changed': {
+            const readiness = data.readiness as RuntimeReadiness | undefined
+            const previous =
+              queryClient.getQueryData<RuntimeStatusResponse>(['runtime-status'])?.runtimeReadiness ??
+              queryClient.getQueryData<GlobalSettingsResponse>(['settings'])?.runtimeReadiness
+            // An image pull sends a progress event about every second with the same
+            // status. Patch the new readiness in instead of refetching every
+            // settings query per tick; a status change (e.g. to READY) still refetches.
+            if (readiness && previous?.status === readiness.status) {
+              queryClient.setQueryData<RuntimeStatusResponse>(['runtime-status'], (old) => old && { ...old, runtimeReadiness: readiness })
+              queryClient.setQueryData<GlobalSettingsResponse>(['settings'], (old) => old && { ...old, runtimeReadiness: readiness })
+              break
+            }
             queryClient.invalidateQueries({ queryKey: ['settings'] })
             queryClient.invalidateQueries({ queryKey: ['runtime-status'] })
             break
+          }
 
           case 'webhook_relay_changed':
             queryClient.setQueryData(WEBHOOK_RELAY_QUERY_KEY, data.status)
@@ -702,6 +739,9 @@ export function GlobalNotificationHandler() {
       if (isReconnect) {
         queryClient.invalidateQueries({ queryKey: ['agent-members'] })
         queryClient.invalidateQueries({ queryKey: ['agent-invite-candidates'] })
+        // A drive announces only a change to its status pill, so one missed in the gap is never sent again.
+        queryClient.invalidateQueries({ queryKey: ['mounts'] })
+        queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
       }
     }
 

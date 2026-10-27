@@ -39,6 +39,13 @@ class MockEventSource {
       this.onerror()
     }
   }
+
+  // Helper to simulate the connection (re)opening
+  simulateOpen() {
+    if (this.onopen) {
+      this.onopen()
+    }
+  }
 }
 
 // Mock the environment
@@ -349,6 +356,46 @@ describe('useMessageStream', () => {
     expect(result.current.isStreaming).toBe(false)
     // streamingMessage is preserved until persisted data arrives
     expect(result.current.streamingMessage).toBe('Hello world!')
+  })
+
+  it('re-renders a caller that selects fields only when one of them changes', async () => {
+    const { useMessageStream } = await getHookModule()
+    const wrapper = createWrapper()
+    let fullRenders = 0
+    let selectedRenders = 0
+    const full = renderHook(() => {
+      fullRenders++
+      return useMessageStream('session-1', 'agent-1')
+    }, { wrapper })
+    const selected = renderHook(() => {
+      selectedRenders++
+      return useMessageStream('session-1', 'agent-1', ['isStreaming', 'slashCommands'])
+    }, { wrapper })
+    const es = MockEventSource.instances[0]
+
+    act(() => {
+      es.simulateMessage({ type: 'connected', isActive: true })
+      es.simulateMessage({ type: 'session_active' })
+      es.simulateMessage({ type: 'stream_start' })
+    })
+    expect(selected.result.current.isStreaming).toBe(true)
+    const fullBefore = fullRenders
+    const selectedBefore = selectedRenders
+
+    for (const text of ['Hello ', 'there, ', 'world!']) {
+      act(() => {
+        es.simulateMessage({ type: 'stream_delta', text })
+      })
+    }
+    expect(full.result.current.streamingMessage).toBe('Hello there, world!')
+    expect(fullRenders - fullBefore).toBe(3)
+    expect(selectedRenders).toBe(selectedBefore)
+
+    act(() => {
+      es.simulateMessage({ type: 'stream_end' })
+    })
+    expect(selected.result.current.isStreaming).toBe(false)
+    expect(selectedRenders).toBe(selectedBefore + 1)
   })
 
   it('handles session_idle event', async () => {
@@ -2106,6 +2153,72 @@ describe('useMessageStream', () => {
     expect(result.current.browserActive).toBe(false)
   })
 
+  // ---- Reconnects ----
+
+  describe('a connection that reopens', () => {
+    const browserStatus = (status: { active: boolean; sessionId?: string }) =>
+      vi.mocked(globalThis.fetch).mockResolvedValue({ json: () => Promise.resolve(status) } as Response)
+    const browserStatusCalls = () =>
+      vi.mocked(globalThis.fetch).mock.calls.filter(([url]) => String(url).endsWith('/browser/status')).length
+
+    it('resumed with a replay (no snapshot) checks the browser again and keeps the streamed text', async () => {
+      const { useMessageStream, clearBrowserActive } = await getHookModule()
+      const { result } = renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+      const es = MockEventSource.instances[0]
+      act(() => {
+        es.simulateMessage({ type: 'connected', isActive: true })
+        es.simulateMessage({ type: 'browser_active', active: true })
+        es.simulateMessage({ type: 'stream_start' })
+        es.simulateMessage({ type: 'stream_delta', text: 'Hel' })
+      })
+
+      // The connection drops; the browser stream drops with it and clears the preview.
+      act(() => {
+        es.simulateError()
+        clearBrowserActive('session-1')
+      })
+      expect(result.current.browserActive).toBe(false)
+
+      // The server resumes it: the missed frames, no 'connected'.
+      browserStatus({ active: true, sessionId: 'session-1' })
+      await act(async () => {
+        es.simulateOpen()
+        es.simulateMessage({ type: 'stream_delta', text: 'lo' })
+        await Promise.resolve()
+      })
+
+      await vi.waitFor(() => expect(result.current.browserActive).toBe(true))
+      expect(result.current.streamingMessage).toBe('Hello')
+    })
+
+    it('started over with a snapshot checks once, not twice', async () => {
+      const { useMessageStream } = await getHookModule()
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+      const es = MockEventSource.instances[0]
+      act(() => es.simulateMessage({ type: 'connected', isActive: false }))
+      const before = browserStatusCalls()
+
+      act(() => {
+        es.simulateError()
+        es.simulateOpen()
+        es.simulateMessage({ type: 'connected', isActive: false })
+      })
+
+      expect(browserStatusCalls()).toBe(before + 1)
+    })
+
+    it('opening for the first time leaves the check to the snapshot', async () => {
+      const { useMessageStream } = await getHookModule()
+      renderHook(() => useMessageStream('session-1', 'agent-1'), { wrapper: createWrapper() })
+      const es = MockEventSource.instances[0]
+
+      act(() => es.simulateOpen())
+      expect(browserStatusCalls()).toBe(0)
+      act(() => es.simulateMessage({ type: 'connected', isActive: false }))
+      expect(browserStatusCalls()).toBe(1)
+    })
+  })
+
   // ---- State transition edge cases ----
 
   it('session_active clears previous error', async () => {
@@ -2703,17 +2816,18 @@ describe('useMessageStream', () => {
       return { mod, result, es, queryClient: wrapper.queryClient }
     }
 
-    it('accumulates terminal-dead command uuids (discarded/cancelled), deduped', async () => {
+    it('accumulates discarded command uuids, deduped, and treats cancelled as no answer', async () => {
       const { result, es } = await setupHook('cmd-s1')
 
       act(() => {
         es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u1', state: 'discarded' })
+        // Stop cancels the running command too, so cancelled proves nothing
         es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u2', state: 'cancelled' })
         // Redelivery must not double up
         es.simulateMessage({ type: 'command_lifecycle', commandUuid: 'u1', state: 'discarded' })
       })
 
-      expect(result.current.discardedCommandUuids).toEqual(['u1', 'u2'])
+      expect(result.current.discardedCommandUuids).toEqual(['u1'])
     })
 
     it('does not treat non-terminal states or malformed frames as discarded', async () => {

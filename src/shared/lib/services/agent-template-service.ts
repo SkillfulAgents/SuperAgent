@@ -50,6 +50,7 @@ import {
   getSkillsetIndex,
   getSkillsetRepoDir,
   refreshSkillset,
+  BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS,
 } from '@shared/lib/services/skillset-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import {
@@ -58,6 +59,7 @@ import {
   deleteAgent,
   getAgentWithStatus,
   listAgents,
+  updateAgentAvatar,
   writeAgentIdentityProjection,
 } from '@shared/lib/services/agent-service'
 import type {
@@ -66,10 +68,12 @@ import type {
   AgentTemplateStatus,
   DiscoverableAgent,
   SkillProvider,
+  SkillsetIndexAgent,
 } from '@shared/lib/types/skillset'
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { AgentFrontmatter } from '@shared/lib/types/agent'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { pruneInstalledTemplateIfInvalid } from './skillset-reconcile'
 
 // ============================================================================
@@ -94,6 +98,7 @@ const TEMPLATE_EXCLUDE = new Set([
   'node_modules',
   '__pycache__',
   'session-metadata.json',
+  '.slash-commands.json',
   '.superagent-sessions.json',
   '.skillset-agent-metadata.json',
   'bookmarks.json',
@@ -542,7 +547,7 @@ function createWorkspaceZipStream(
   }
   signal?.addEventListener('abort', onAbort, { once: true })
 
-  void (async () => {
+  background(async () => {
     try {
       if (signal?.aborted) {
         onAbort()
@@ -557,7 +562,7 @@ function createWorkspaceZipStream(
     } finally {
       signal?.removeEventListener('abort', onAbort)
     }
-  })()
+  }, { name: 'agent-template.fill-export-archive' })
 
   return archive
 }
@@ -829,6 +834,17 @@ export async function installAgentFromSkillset(
   // Create a new agent
   const agent = await createAgentFromExistingWorkspace(agentName)
   const actor = agentRegistry.get(agent.slug)
+
+  // Start with the avatar the library showed for this template, when the
+  // skillset names one; otherwise keep the random one creation assigned.
+  // The cache is ready by now, so read its index without checking again.
+  let templateAvatar: SkillsetIndexAgent['avatar']
+  try {
+    templateAvatar = (await readIndexJson(repoDir)).agents?.find((entry) => entry.path === agentPath)?.avatar
+  } catch {
+    // No readable index: keep the random avatar.
+  }
+  if (templateAvatar) await updateAgentAvatar(agent.slug, templateAvatar)
 
   // Copy template files from repo to workspace
   await copyHostDirIntoWorkspace(actor.files, agentDirInRepo, '', { followSymlinks: true })
@@ -1244,6 +1260,7 @@ export async function getDiscoverableAgents(
         details: agent.details,
         category: agent.category,
         icon: agent.icon,
+        avatar: agent.avatar,
         tags: agent.tags,
         worksWith: agent.works_with,
         developer: agent.developer,
@@ -1285,10 +1302,12 @@ export async function refreshSkillsetCaches(
  */
 export async function refreshAgentTemplates(
   skillsets: SkillsetConfig[],
+  options: { background?: boolean } = {},
 ): Promise<void> {
+  const maxAgeMs = options.background ? BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS : undefined
   for (const ss of skillsets) {
     try {
-      await refreshSkillset(toSkillsetRefFromConfig(ss))
+      await refreshSkillset(toSkillsetRefFromConfig(ss), { maxAgeMs })
     } catch (error) {
       console.warn(`Failed to refresh skillset ${ss.id}:`, error)
       captureException(error, { tags: { area: 'template-refresh', op: 'pull' }, extra: { skillsetId: ss.id } })

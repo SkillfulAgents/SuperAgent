@@ -7,6 +7,7 @@ import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/cr
 import { eq } from 'drizzle-orm'
 import { user, llmConnections } from '@shared/lib/db/schema'
 import type { AppSettings } from '@shared/lib/config/settings'
+import { connectionConfigSchema } from '@shared/lib/llm-provider/connection-schema'
 
 const state = vi.hoisted(() => ({
   refresh: vi.fn(),
@@ -135,17 +136,45 @@ describe('connection API ownership and root protection', () => {
     expect((await request('', 'POST', draft(), 'alice')).status).toBe(400)
     expect((await request('', 'POST', draft('bob'), 'alice')).status).toBe(400)
   })
+  it('lets an admin share only their own personal connection so it can become the app default', async () => {
+    await database.db.insert(user).values({ id: 'admin', name: 'Admin', email: 'admin@example.com' }).run()
+    const { id: aliceOwn } = await (await request('', 'POST', draft('alice'), 'alice')).json()
+    const { id: adminOwn } = await (await request('', 'POST', draft('admin'))).json()
+    expect((await request(`/${aliceOwn}/share`, 'POST', undefined, 'alice')).status).toBe(403)
+    expect((await request(`/${aliceOwn}/share`, 'POST', undefined, 'admin')).status).toBe(400)
+    expect((await getConnection(aliceOwn))?.userId).toBe('alice')
+    expect((await request('/defaults/default', 'PUT', { llmProviderId: adminOwn, model: 'model' })).status).toBe(400)
+
+    const shared = await request(`/${adminOwn}/share`, 'POST')
+    expect(shared.status).toBe(200)
+    expect((await getConnection(adminOwn))?.userId).toBeNull()
+    expect((await (await request('', 'GET', undefined, 'bob')).json()).connections).toEqual([
+      expect.objectContaining({ id: adminOwn, userId: null }),
+    ])
+    expect((await request(`/${adminOwn}/share`, 'POST')).status).toBe(200)
+    expect((await request('/defaults/default', 'PUT', { llmProviderId: adminOwn, model: 'model' })).status).toBe(200)
+  })
   it('enforces root/catalog protection through direct HTTP mutations', async () => {
     const { id } = await (await request('', 'POST', draft())).json()
-    expect(
-      (await request('/defaults/default', 'PUT', { llmProviderId: id, model: 'model' })).status
-    ).toBe(200)
+    const write = await request('/defaults/default', 'PUT', { llmProviderId: id, model: 'model' })
+    expect(write.status).toBe(200)
+    expect(await write.json()).toEqual({
+      success: true,
+      before: { defaultSelection: null, summarizerSelection: null },
+      after: { defaultSelection: { llmProviderId: id, model: 'model' }, summarizerSelection: null },
+    })
     expect((await request(`/${id}`, 'DELETE')).status).toBe(400)
     expect((await request(`/${id}`, 'PUT', { ...draft(), modelOverrides: [] })).status).toBe(400)
     expect(
       (await request('/defaults/default', 'PUT', { llmProviderId: id, model: 'model' }, 'alice'))
         .status
     ).toBe(403)
+    const { defaultSelection, summarizerSelection } = await (await request('')).json()
+    const current = { defaultSelection, summarizerSelection }
+    const compare = await request('/defaults/default/compare-and-set', 'PUT', { expected: current, restore: current })
+    expect(compare.status).toBe(200)
+    expect(await compare.json()).toEqual({ updated: true })
+    expect((await request('/defaults/default/compare-and-set', 'PUT', { expected: current, restore: current }, 'alice')).status).toBe(403)
     const { id: personal } = await (await request('', 'POST', draft('alice'), 'alice')).json()
     expect(
       (await request('/defaults/summarizer', 'PUT', { llmProviderId: personal, model: 'model' }))
@@ -446,6 +475,60 @@ it('binds Codex grants to their provider and keeps dashboard helpers on the API 
 })
 
 describe('connection allowance access', () => {
+  it.each([null, 'alice'])('refreshes expired OAuth credentials for paywall eligibility (owner: %s)', async userId => {
+    const id = `expired-${userId ?? 'global'}`
+    const stale = { accessToken: 'expired-access', refreshToken: 'valid-refresh', expiresAt: 0, accountId: 'account' }
+    const fresh = { ...stale, accessToken: 'fresh-access', expiresAt: Date.now() + 3600000 }
+    state.refresh.mockReset().mockResolvedValue(fresh)
+    await database.db.insert(llmConnections).values({
+      id, name: 'Saved Codex', provider: 'codex-subscription', userId,
+      config: JSON.stringify(connectionConfigSchema.parse({ oauth: stale })), createdAt: new Date(), updatedAt: new Date(),
+    }).run()
+    const upstream = vi.fn(async (_url: string, init?: RequestInit) =>
+      new Headers(init?.headers).get('authorization') === 'Bearer fresh-access'
+        ? Response.json({ rate_limit: { primary_window: { used_percent: 20 } } })
+        : new Response('', { status: 401 }))
+    vi.stubGlobal('fetch', upstream)
+
+    if (userId) {
+      // Authorization must happen before a read is allowed to refresh credentials.
+      expect((await request(`/${id}/usage?refreshCredentials=1`, 'GET', undefined, 'bob')).status).toBe(404)
+      expect(state.refresh).not.toHaveBeenCalled()
+    }
+    // The ordinary informational read neither refreshes nor changes credential state.
+    expect(await (await request(`/${id}/usage`, 'GET', undefined, 'alice')).json()).toMatchObject({ status: 'unavailable' })
+    expect(state.refresh).not.toHaveBeenCalled()
+    const reads = await Promise.all([0, 1].map(async () => {
+      const response = await request(`/${id}/usage?refreshCredentials=1`, 'GET', undefined, 'alice')
+      expect(response.status).toBe(200)
+      return response.json()
+    }))
+    for (const usage of reads) expect(usage).toMatchObject({ status: 'available', limits: [{ usedPercent: 20 }] })
+    expect(state.refresh).toHaveBeenCalledOnce()
+    expect(upstream).toHaveBeenCalledTimes(2)
+    // The refreshed generation shares its successful snapshot with informational reads.
+    expect(await (await request(`/${id}/usage`, 'GET', undefined, 'alice')).json()).toEqual(reads[0])
+    expect(upstream).toHaveBeenCalledTimes(2)
+    expect(JSON.stringify(reads)).not.toMatch(/expired-access|valid-refresh|fresh-access/)
+  })
+
+  it('does not treat a failed credential refresh as an available subscription', async () => {
+    state.refresh.mockReset().mockRejectedValue(new Error('private-refresh-error'))
+    await database.db.insert(llmConnections).values({
+      id: 'refresh-fails', name: 'Saved Codex', provider: 'codex-subscription',
+      config: JSON.stringify(connectionConfigSchema.parse({ oauth: {
+        accessToken: 'expired-access', refreshToken: 'invalid-refresh', expiresAt: 0, accountId: 'account',
+      } })), createdAt: new Date(), updatedAt: new Date(),
+    }).run()
+    const upstream = vi.fn()
+    vi.stubGlobal('fetch', upstream)
+    const response = await request('/refresh-fails/usage?refreshCredentials=1')
+    expect(response.ok).toBe(false)
+    expect(await response.text()).not.toContain('private-refresh-error')
+    expect(upstream).not.toHaveBeenCalled()
+    expect(state.refresh).toHaveBeenCalledOnce()
+  })
+
   it('does not share Platform snapshots across members', async () => {
     const id = await saveConnection(draft(), { userId: 'admin', admin: true })
     await database.db.update(llmConnections).set({ provider: 'platform' }).where(eq(llmConnections.id, id)).run()

@@ -6,6 +6,14 @@ import type { ModelDefinition } from './model-catalog-schema'
 import { BEDROCK_CATALOG, CLAUDE_DEFAULT_MODEL_OPTIONS } from './builtin-catalogs'
 import { BEDROCK_CATALOG_DEFAULT_MODELS } from './model-catalog-defaults'
 
+/**
+ * Bedrock serves API version 2026-10-21 (SDK 1.x's default) only for Claude
+ * 4.7 and later, and our helper and validation calls run older models such as
+ * Haiku 4.5, so every client stays on the version SDK 0.x sent. The client
+ * moves this header into the body's `anthropic_version`.
+ */
+const BEDROCK_VERSION = { 'anthropic-version': 'bedrock-2023-05-31' }
+
 export class BedrockLlmProvider extends BaseLlmProvider {
   readonly id = 'bedrock' as const
   readonly name = 'AWS Bedrock'
@@ -14,7 +22,7 @@ export class BedrockLlmProvider extends BaseLlmProvider {
   // Used for simple Bedrock API Key auth (AWS_BEARER_TOKEN_BEDROCK)
   // Bedrock serves Claude models, and the CLI's own guard (which only fires
   // for custom first-party base URLs) never applies in Bedrock mode.
-  override readonly toolSearchEnv = 'true' as const
+  override toolSearchEnv() { return 'true' as const }
   protected readonly settingsKeyField = 'bedrockApiKey' as const
   protected readonly envVarName = 'AWS_BEARER_TOKEN_BEDROCK'
 
@@ -52,7 +60,7 @@ export class BedrockLlmProvider extends BaseLlmProvider {
     // Pass bearer credentials directly; different connections can run concurrently.
     const bearerToken = this.getEffectiveApiKey()
     if (bearerToken) {
-      return new AnthropicBedrock({ awsRegion: region, apiKey: bearerToken }) as unknown as Anthropic
+      return new AnthropicBedrock({ awsRegion: region, apiKey: bearerToken, defaultHeaders: BEDROCK_VERSION }) as unknown as Anthropic
     }
 
     // Advanced auth: AWS access key credentials
@@ -62,7 +70,8 @@ export class BedrockLlmProvider extends BaseLlmProvider {
     if (accessKeyId && secretAccessKey) {
       return new AnthropicBedrock({
         awsRegion: region,
-        apiKey: '',
+        apiKey: null,
+        defaultHeaders: BEDROCK_VERSION,
         awsAccessKey: accessKeyId,
         awsSecretKey: secretAccessKey,
         awsSessionToken: this.envValue('AWS_SESSION_TOKEN'),
@@ -70,7 +79,7 @@ export class BedrockLlmProvider extends BaseLlmProvider {
     }
 
     // Fallback: default AWS credential chain (e.g. ~/.aws/credentials)
-    return new AnthropicBedrock({ awsRegion: region }) as unknown as Anthropic
+    return new AnthropicBedrock({ awsRegion: region, defaultHeaders: BEDROCK_VERSION }) as unknown as Anthropic
   }
 
   getBuiltinCatalog(): ModelDefinition[] {
@@ -100,7 +109,7 @@ export class BedrockLlmProvider extends BaseLlmProvider {
   async validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
     try {
       const region = this.getRegion()
-      const client = new AnthropicBedrock({ awsRegion: region, apiKey })
+      const client = new AnthropicBedrock({ awsRegion: region, apiKey, defaultHeaders: BEDROCK_VERSION })
       await client.messages.create({
         model: 'us.anthropic.claude-haiku-4-5-20251001-v1:0', max_tokens: 1,
         messages: [{ role: 'user', content: 'Hi' }],
@@ -116,7 +125,8 @@ export class BedrockLlmProvider extends BaseLlmProvider {
     try {
       const client = new AnthropicBedrock({
         awsRegion: region,
-        apiKey: '',
+        apiKey: null,
+        defaultHeaders: BEDROCK_VERSION,
         awsAccessKey: accessKeyId,
         awsSecretKey: secretAccessKey,
         awsSessionToken: this.envValue('AWS_SESSION_TOKEN'),

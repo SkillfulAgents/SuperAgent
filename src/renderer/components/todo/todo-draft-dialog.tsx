@@ -8,7 +8,7 @@ import { AttachmentPreview, attachmentStatus, type Attachment, type FileAttachme
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { uploadFileChunked } from '@renderer/lib/upload'
 import { HttpError, isRetryableRequestError } from '@renderer/lib/http-error'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { usesHostFolderPaths } from '@renderer/lib/capabilities'
 import { filesFromClipboard, folderChoice, getItemsFromDataTransfer, type DataTransferResult, type FolderGroup } from '@renderer/lib/file-utils'
 import { MarkdownComposerEditor } from '@renderer/components/messages/markdown-composer-editor'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
@@ -32,6 +32,7 @@ import {
 } from '@renderer/hooks/use-todos'
 import { MOD, ShortcutTooltip } from './todo-shortcuts'
 import { AgentDropdown } from '@renderer/components/agents/agent-dropdown'
+import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { useTodoAgents } from './todo-shared'
 
 /** Which draft the dialog shows: a new one (not saved until there is something in it) or a saved one. */
@@ -361,7 +362,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
   })
 
   const receiveFolders = (folders: FolderGroup[]) => {
-    if (!canUseHostFeatures()) {
+    if (!usesHostFolderPaths()) {
       files.addFolders(folders)
       return
     }
@@ -473,6 +474,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
       trigger={
         agent ? (
           <Button variant="outline" size="sm" className="h-[34px] gap-1.5 text-xs" data-testid="todo-assign-agent">
+            <AgentAvatar agent={agent} size={16} />
             <span className="max-w-[12rem] truncate">{agent.name}</span>
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
           </Button>

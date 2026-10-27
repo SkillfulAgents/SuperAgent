@@ -4,26 +4,45 @@
  * In the app the agent registry creates each agent's `AgentState` with its
  * handle and attaches a directory over the handles to the process-wide
  * routers (`userInputRequestManager`, `reviewManager`, ...). A test that
- * drives the persister, a router or a route without the real registry has
- * no handles, so nothing would attach: this builds the same states in a map
- * and attaches them to the singletons, the way the registry would.
+ * drives a router or a route without the real registry has no handles, so
+ * nothing would attach: this builds the same states in a map and attaches
+ * them to the singletons, the way the registry would.
  *
  *   const agents = attachInMemoryAgentState()
  *   userInputRequestManager.register({ scope: { agentSlug: 'a', ... }, ... })
  *   agents.get('a').inputRequests.getOpenRequests()  // it is there
  *   agents.reset()                                    // between tests
  *
- * `syncAwaiting` receives the slug whose card opened or closed; pass the
- * persister's `syncAgentSessionsAwaiting` (or a mock of it) to assert on it.
+ * Each state's live sessions are real, over an in-memory session store, a
+ * recording host port and a runtime with no container; `sessions` replaces
+ * any of those for a slug.
  */
 import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
 import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
 import { reviewManager } from '@shared/lib/proxy/review-manager'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
-import { createAgentState, releaseAgentState, type AgentState } from '../agent-state'
+import { createAgentState, releaseAgentState, type AgentState, type AgentStateHooks } from '../agent-state'
+import type { SessionsRuntime } from '../live/live-sessions'
 import type { AgentStoreDirectory } from '../store-directory'
 import type { AgentSlug } from '../types'
+import { createInMemorySessionStore } from './in-memory-session-store'
+import { createRecordingHostPort } from './recording-host-port'
+
+export interface InMemoryAgentStateOptions {
+  /** What a slug's live sessions reach, in place of the in-memory defaults. */
+  sessions?: (slug: AgentSlug) => Partial<AgentStateHooks['sessions']>
+}
+
+/** A runtime with no container: there is no client, and nothing recovers. */
+export const NO_CONTAINER_RUNTIME: SessionsRuntime = {
+  client: () => {
+    throw new Error('No container in this test')
+  },
+  fatalResult: () => 'settle',
+  unexpectedDeath: () => {},
+  stopAfterFatalError: () => {},
+}
 
 export interface InMemoryAgentStateDirectory extends AgentStoreDirectory<AgentState> {
   /** The states built so far, by slug. */
@@ -36,16 +55,18 @@ export interface InMemoryAgentStateDirectory extends AgentStoreDirectory<AgentSt
   detach(): void
 }
 
-export function createInMemoryAgentState(
-  options: { syncAwaiting?: (slug: AgentSlug) => void } = {},
-): InMemoryAgentStateDirectory {
+export function createInMemoryAgentState(options: InMemoryAgentStateOptions = {}): InMemoryAgentStateDirectory {
   const states = new Map<AgentSlug, AgentState>()
   const get = (slug: AgentSlug): AgentState => {
     let state = states.get(slug)
     if (!state) {
       state = createAgentState(slug, {
-        transitions: userInputRequestManager,
-        syncAwaiting: () => options.syncAwaiting?.(slug),
+        sessions: {
+          store: createInMemorySessionStore(slug),
+          host: createRecordingHostPort().port,
+          runtime: NO_CONTAINER_RUNTIME,
+          ...options.sessions?.(slug),
+        },
       })
       states.set(slug, state)
     }
@@ -85,9 +106,7 @@ export function createInMemoryAgentState(
  * router the test has replaced with a double may not carry the port; the
  * real ones do.
  */
-export function attachInMemoryAgentState(
-  options: { syncAwaiting?: (slug: AgentSlug) => void } = {},
-): InMemoryAgentStateDirectory {
+export function attachInMemoryAgentState(options: InMemoryAgentStateOptions = {}): InMemoryAgentStateDirectory {
   const agents = createInMemoryAgentState(options)
   userInputRequestManager.attachAgents?.(agents.pick((state) => state.inputRequests))
   reviewManager.attachAgents?.(agents.pick((state) => state.reviews))

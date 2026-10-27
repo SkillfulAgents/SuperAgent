@@ -10,6 +10,7 @@ import {
   tryParseUrl,
   type DiscoveryHostPolicy,
 } from '@shared/lib/utils/url-safety'
+import { background } from '@shared/lib/background'
 
 const MAX_REDIRECTS = 5
 const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308])
@@ -66,7 +67,7 @@ async function pinnedFetch(
       redirect: 'manual',
     })
   } finally {
-    void agent.close()
+    background(agent.close(), { name: 'mcp-safe-fetch.close-dispatcher' })
   }
 }
 

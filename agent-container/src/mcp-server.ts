@@ -24,6 +24,7 @@ import {
 } from './tools/schedule-task'
 import { scheduleResumeTool } from './tools/schedule-resume'
 import { webhookRelayAvailable } from './webhook-relay-env'
+import { isComputerUseHost } from './host-desktop-env'
 import {
   getAvailableTriggersTool,
   listTriggersTool,
@@ -38,6 +39,7 @@ import { deliverFileTool } from './tools/deliver-file'
 import { deliverSessionTool } from './tools/deliver-session'
 import { requestFileTool } from './tools/request-file'
 import { requestBrowserInputTool } from './tools/request-browser-input'
+import { createRequestLoginTool } from './tools/request-login'
 import { requestScriptRunTool } from './tools/request-script-run'
 import { createBrowserTools } from './tools/browser'
 import { computerUseTools } from './tools/computer-use'
@@ -70,10 +72,14 @@ import { meetingTools } from './tools/meetings/meeting-tools'
  * one transport connection per server at a time. Reusing singletons across
  * sessions causes "Already connected to a transport" errors.
  */
-export function createUserInputMcpServer(getProcess: () => RemoteMcpInjectionTarget | null = () => null) {
-  // Only expose script execution tool on supported host platforms (macOS/Windows)
-  const hostPlatform = process.env.HOST_PLATFORM
-  const includeScriptRun = hostPlatform === 'darwin' || hostPlatform === 'win32'
+export function createUserInputMcpServer(
+  getProcess: () => RemoteMcpInjectionTarget | null = () => null,
+  // request_login prepares its fields through the browser, which checks the
+  // calling session owns it — read at call time, since the id changes on restart.
+  getSessionId: () => string | null = () => null,
+) {
+  // Scripts run on the host's desktop, so they come with computer use.
+  const includeScriptRun = isComputerUseHost()
 
   // Every webhook tool needs the host's webhook relay. Composio-catalog
   // triggers also need platform Composio; custom webhook endpoints don't (they
@@ -92,6 +98,7 @@ export function createUserInputMcpServer(getProcess: () => RemoteMcpInjectionTar
       cancelScheduledTaskTool,
       pauseScheduledTaskTool, resumeScheduledTaskTool,
       deliverFileTool, deliverSessionTool, requestFileTool, requestBrowserInputTool,
+      createRequestLoginTool(getSessionId),
       ...(includeScriptRun ? [requestScriptRunTool] : []),
       ...(includeComposioTriggers ? [getAvailableTriggersTool, setupTriggerTool] : []),
       ...(includeComposioTriggers || includeWebhookEndpoints
