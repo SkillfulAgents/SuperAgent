@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { Brain, Folder, Loader2, X } from 'lucide-react'
+import { Brain, Folder, Loader2 } from 'lucide-react'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { volumeSetupRegistry } from '@renderer/components/volumes/volume-setup-registry'
 import { parseVolumeSource, type VolumeSetupDefinition } from '@renderer/components/volumes/volume-setup'
@@ -17,16 +17,20 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@renderer/components/ui/dialog'
 import { usesTeamBrain, useTeamBrain, type TeamBrainStore } from '@renderer/lib/team-brain/team-brain-store'
-import { TEAM_BRAIN_STEPS, type TeamBrainLocationId, type TeamBrainSourceId, type TeamBrainStep } from '@renderer/lib/team-brain/team-brain-schema'
+import { teamBrainSteps, type TeamBrainLocationId, type TeamBrainSourceId, type TeamBrainStep } from '@renderer/lib/team-brain/team-brain-schema'
+import { useCloudTeamBrain } from '@renderer/hooks/use-cloud-team-brain'
 import { TeamBrainSourceIcon } from './team-brain-source-icon'
 import { LocationChoices, ScheduleChoices } from './team-brain-choices'
 import { teamBrainLocation } from './team-brain-locations'
 import { AgentAccessList, EveryAgentRow } from './team-brain-agent-access'
+import { PRIMARY, SECONDARY, StepPanel, TeamBrainModal } from './team-brain-modal'
+import { HowStep, ReadersStep } from './team-brain-connect'
 
 /** The rail's names for each step. */
 const STEP_LABELS: Record<TeamBrainStep, string> = {
+  how: 'Choose how',
+  readers: 'Choose its agents',
   location: 'Choose where it lives',
   agents: 'Choose its agents',
   schedule: 'Set a schedule',
@@ -35,18 +39,14 @@ const STEP_LABELS: Record<TeamBrainStep, string> = {
 
 /** How a "Next: …" button names the step it goes to. */
 const NEXT_LABELS: Record<TeamBrainStep, string> = {
+  how: 'How',
+  readers: 'Agents',
   location: 'Location',
   agents: 'Agents',
   schedule: 'Schedule',
   intake: 'Context ingestion',
 }
 
-// The look of Figma's Dev Mode welcome modal (UI Inspo, node 57:3), in this
-// app's tokens: brand blue where Figma uses its green.
-const BUTTON_BASE =
-  'inline-flex h-7 shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-md px-3 text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50'
-const PRIMARY = cn(BUTTON_BASE, 'bg-brand font-medium text-white hover:bg-brand/90')
-const SECONDARY = cn(BUTTON_BASE, 'border bg-background hover:bg-muted')
 
 /**
  * Set-up as one mid-size modal, laid out like Figma's Dev Mode welcome: a
@@ -56,22 +56,38 @@ const SECONDARY = cn(BUTTON_BASE, 'border bg-background hover:bg-muted')
  *
  * It asks what a form asks best (where it lives, what each agent may do, how
  * often it syncs), then hands over to `onStartChat`: a chat with Team Brain
- * for the team's context. Saving the drive on step 01 calls `onPrepare`.
+ * for the team's context. Saving the drive calls `onPrepare`.
+ *
+ * On the `desktop` it first asks how (team-brain-connect.tsx): connect to the
+ * cloud workspace's Team Brain, read-only, and choose which agents here read
+ * it, or set one up on this computer, the steps above. The rail follows the
+ * path chosen, or preselected.
  */
 export function TeamBrainOnboarding({
   open,
+  desktop = false,
   onPrepare,
+  onDiscard,
   onStartChat,
   onCancel,
 }: {
   open: boolean
+  desktop?: boolean
   onPrepare: (source: VolumeSource, details: VolumeDetails) => Promise<boolean>
+  /** Drop what was prepared, staying in set-up: the desktop turned to connecting instead. */
+  onDiscard?: () => Promise<void>
   onStartChat: () => Promise<void>
   onCancel: () => void
 }) {
   const tb = useTeamBrain()
-  const steps = TEAM_BRAIN_STEPS
-  const index = Math.max(steps.indexOf(tb.state.step), 0)
+  // Asked only while set-up is open on the desktop.
+  const lookup = useCloudTeamBrain(desktop && open)
+  // Connecting is preselected once the cloud has a Team Brain to connect to.
+  const path = tb.state.path ?? (lookup.state === 'found' ? 'cloud' : null)
+  const steps = teamBrainSteps(desktop, path)
+  // Connecting needs the Team Brain it found; should a fresh check lose it, how comes back.
+  const at = tb.state.step === 'readers' && lookup.state !== 'found' ? 'how' : tb.state.step
+  const index = Math.max(steps.indexOf(at), 0)
   const step = steps[index]
   const nav: StepNav = {
     back: index > 0 ? () => tb.goToStep(steps[index - 1]) : undefined,
@@ -79,63 +95,41 @@ export function TeamBrainOnboarding({
     next: () => steps[index + 1] && tb.goToStep(steps[index + 1]),
   }
   const [confirmCancel, setConfirmCancel] = useState(false)
+  // Nothing is made before where it lives, or while connecting, so closing then just closes.
+  const close = () => (!tb.state.prepared && (step === 'how' || step === 'readers') ? onCancel() : setConfirmCancel(true))
+  const leaveHow = () => {
+    if (!path) return
+    if (path === 'cloud' && tb.state.prepared) void onDiscard?.()
+    tb.choosePath(path)
+    nav.next()
+  }
 
   return (
     <>
-      <Dialog open={open} onOpenChange={(next) => { if (!next) setConfirmCancel(true) }}>
-        <DialogContent
-          hideClose
-          className="flex h-[min(600px,calc(100vh-2rem))] w-[min(900px,calc(100vw-2rem))] max-w-none gap-0 overflow-hidden border-0 p-0 shadow-2xl sm:rounded-2xl"
-          data-testid="team-brain-onboarding"
-          aria-describedby="team-brain-onboarding-step"
-        >
-          <aside className="flex w-[300px] shrink-0 flex-col justify-between bg-[#1e1e1e] pb-5 pt-11 text-white max-sm:hidden dark:bg-black">
-            <div className="px-9">
-              <Brain className="size-8" strokeWidth={1.5} aria-hidden="true" />
-              <DialogTitle className="mt-6 text-[33px]/[1.2] font-normal tracking-[-0.01em]">
-                <span className="block">Set up</span>
-                <span className="block">Team Brain</span>
-              </DialogTitle>
-            </div>
-            <ol className="space-y-0.5 px-5" aria-label="Set-up steps">
-              {steps.map((s, i) => (
-                <li
-                  key={s}
-                  aria-current={i === index ? 'step' : undefined}
-                  className={cn(
-                    'flex h-11 items-center gap-4 rounded-md px-3.5 text-[14px] text-white transition-colors',
-                    i === index && 'bg-brand',
-                  )}
-                >
-                  <span className={cn('min-w-[26px] text-[19px]/none font-light tabular-nums', i !== index && 'text-white/40')}>
-                    {String(i + 1).padStart(2, '0')}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate">{STEP_LABELS[s]}</span>
-                </li>
-              ))}
-            </ol>
-          </aside>
-
-          <section className="relative flex min-w-0 flex-1 flex-col bg-background" data-testid="team-brain-onboarding-step" data-step={step}>
-            <DialogDescription id="team-brain-onboarding-step" className="sr-only">
-              Step {index + 1} of {steps.length}: {STEP_LABELS[step]}
-            </DialogDescription>
-            <button
-              type="button"
-              onClick={() => setConfirmCancel(true)}
-              className="absolute right-3 top-3 z-10 grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              aria-label="Close set-up"
-              data-testid="team-brain-cancel"
-            >
-              <X className="size-4" aria-hidden="true" />
-            </button>
-            {step === 'location' && <LocationStep tb={tb} nav={nav} onPrepare={onPrepare} />}
-            {step === 'agents' && <AgentsStep tb={tb} nav={nav} />}
-            {step === 'schedule' && <SyncStep tb={tb} nav={nav} />}
-            {step === 'intake' && <IntakeStep nav={nav} onStart={onStartChat} />}
-          </section>
-        </DialogContent>
-      </Dialog>
+      <TeamBrainModal
+        open={open}
+        title={['Set up', 'Team Brain']}
+        steps={steps.map((s) => ({ id: s, label: STEP_LABELS[s] }))}
+        current={step}
+        onClose={close}
+        close={{ label: 'Close set-up', testId: 'team-brain-cancel' }}
+        testId="team-brain-onboarding"
+      >
+        {step === 'how' && (
+          <HowStep
+            lookup={lookup}
+            path={path}
+            onChoose={tb.choosePath}
+            onLeave={onCancel}
+            next={{ label: path ? nav.nextLabel : 'Next', onClick: leaveHow }}
+          />
+        )}
+        {step === 'readers' && lookup.state === 'found' && <ReadersStep tb={tb} brain={lookup.brain} onBack={() => tb.goToStep('how')} />}
+        {step === 'location' && <LocationStep tb={tb} nav={nav} onPrepare={onPrepare} />}
+        {step === 'agents' && <AgentsStep tb={tb} nav={nav} />}
+        {step === 'schedule' && <SyncStep tb={tb} nav={nav} />}
+        {step === 'intake' && <IntakeStep nav={nav} onStart={onStartChat} />}
+      </TeamBrainModal>
 
       <AlertDialog open={confirmCancel} onOpenChange={setConfirmCancel}>
         <AlertDialogContent>
@@ -162,48 +156,6 @@ interface StepNav {
   back?: () => void
   nextLabel: string
   next: () => void
-}
-
-/**
- * The right panel for one step: title and subtitle, the step's content
- * centred in the space beneath them (scrolling when it's long), and the ruled
- * footer with its buttons.
- */
-function StepPanel({
-  title,
-  subtitle,
-  children,
-  back,
-  next,
-}: {
-  title: string
-  subtitle: ReactNode
-  children: ReactNode
-  back?: () => void
-  next?: { label: string; onClick: () => void; disabled?: boolean; testId?: string }
-}) {
-  return (
-    <>
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pb-8 pt-11 sm:px-[52px]">
-        <h2 className="pr-8 text-[18px] font-medium tracking-[-0.005em]">{title}</h2>
-        <p className="mt-2 text-[13px] text-muted-foreground">{subtitle}</p>
-        {/* Short content sits midway down the space left under the subtitle; long content just scrolls. */}
-        <div className="my-auto pt-7">{children}</div>
-      </div>
-      <footer className="flex h-[60px] shrink-0 items-center justify-end gap-2 border-t px-[18px]">
-        {back && (
-          <button type="button" className={SECONDARY} onClick={back} data-testid="team-brain-back">
-            Back
-          </button>
-        )}
-        {next && (
-          <button type="button" className={PRIMARY} onClick={next.onClick} disabled={next.disabled} data-testid={next.testId ?? 'team-brain-next'}>
-            {next.label}
-          </button>
-        )}
-      </footer>
-    </>
-  )
 }
 
 // ── 01 Where it lives ────────────────────────────────────────────────────────
@@ -287,6 +239,7 @@ function LocationStep({
     <StepPanel
       title="Choose where Team Brain knowledge is stored"
       subtitle="Every agent you connect to Team Brain will read and add to the knowledge in this storage. It is possible to migrate later if needed."
+      back={nav.back}
       next={{
         label: ready || !picked ? nav.nextLabel : `Next: Set up ${teamBrainLocation(picked).name}`,
         disabled: !picked,

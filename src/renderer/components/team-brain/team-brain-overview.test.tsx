@@ -100,6 +100,9 @@ vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
 const { user } = vi.hoisted(() => ({ user: { isAuthMode: false, isAdmin: false } }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => user }))
 vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl }))
+// The Local/Cloud switch, which the cloud's Team Brain opens in Cloud with.
+const { target } = vi.hoisted(() => ({ target: { switching: false, switchTo: vi.fn() } }))
+vi.mock('@renderer/hooks/use-target-switch', () => ({ useTargetSwitch: () => target }))
 // Agent Home's composer needs the app's providers; here it only needs to be there, for the Team Brain agent.
 vi.mock('./team-brain-home-composer', () => ({ TeamBrainHomeComposer: ({ agent }: { agent: { slug: string } }) => <div data-testid="team-brain-composer">{agent.slug}</div> }))
 // The page mounts the app's file drawer, which reads the route; this page has no session.
@@ -121,8 +124,10 @@ vi.mock('@renderer/components/tray/tray-manager', async () => {
   }
 })
 
-import { TeamBrainOverview } from './team-brain-overview'
+import { TeamBrainCloudOverview, TeamBrainOverview } from './team-brain-overview'
 import { resetTeamBrainState } from '@renderer/lib/team-brain/team-brain-store'
+import { getCloudConnection, resetCloudConnection } from '@renderer/lib/team-brain/team-brain-cloud'
+import { cloudTeamBrain } from '@renderer/lib/team-brain/team-brain-cloud-fixture'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
 
 /** The Team Brain agent set-up made. */
@@ -133,6 +138,7 @@ const BRAIN: ApiAgent = {
 beforeEach(() => {
   resetTeamBrainState()
   upkeep.tasks = [task('t1', 'Nightly digest', 'pending'), task('t2', 'Weekly people check', 'paused')]
+  resetCloudConnection()
   screenSize.wide = true
   screenSize.listeners.clear()
   window.matchMedia = ((query: string) => ({
@@ -410,5 +416,41 @@ describe('TeamBrainOverview', () => {
     expect(screen.queryByTestId('team-brain-turn-off')).toBeNull()
     await userEvent.click(screen.getByTestId('team-brain-agents-toggle'))
     expect(screen.getByTestId('team-brain-agent-writer')).toBeDisabled()
+  })
+
+  it('shows the cloud’s Team Brain read only on the desktop: no composer, and settings that show how it is kept', async () => {
+    const clicker = userEvent.setup()
+    render(<TeamBrainCloudOverview brain={cloudTeamBrain('acme.gamut.cloud')} />)
+    expect(screen.getByTestId('team-brain-status')).toHaveTextContent('Read only · Synced 2 h ago')
+    expect(screen.queryByTestId('team-brain-composer')).toBeNull()
+    // Its sync summaries, a page in one opening in the drawer from the cloud's brain.
+    await clicker.click(screen.getByTestId('team-brain-sync-page-customers/Acme Corp.md'))
+    expect(within(screen.getByTestId('drawer-tabs')).getByText(/Acme Corp/)).toBeInTheDocument()
+
+    await clicker.click(screen.getByTestId('team-brain-menu'))
+    const settings = screen.getByTestId('team-brain-settings')
+    expect(within(settings).getByTestId('team-brain-sync-note')).toHaveTextContent('In your cloud workspace · last ran 2 h ago')
+    expect(within(settings).getByTestId('team-brain-schedule')).toHaveTextContent('Daily')
+    await clicker.click(within(settings).getByTestId('team-brain-storage-section-toggle'))
+    expect(within(settings).getByTestId('team-brain-location')).toHaveTextContent('Shared drives / Team Brain')
+    expect(within(settings).queryByTestId('team-brain-turn-off')).toBeNull()
+    // Every agent here reads it until switched off, which this computer holds.
+    await clicker.click(within(settings).getByTestId('team-brain-agents-toggle'))
+    expect(screen.getByTestId('team-brain-agent-planner')).toBeChecked()
+    await clicker.click(screen.getByTestId('team-brain-agent-planner'))
+    expect(getCloudConnection().agents).toEqual({ planner: false })
+    // It is changed in the cloud workspace.
+    await clicker.click(within(settings).getByTestId('team-brain-open-cloud'))
+    expect(target.switchTo).toHaveBeenCalledWith('cloud')
+  })
+
+  it('disconnects from the cloud’s Team Brain after asking', async () => {
+    const clicker = userEvent.setup()
+    render(<TeamBrainCloudOverview brain={cloudTeamBrain('acme.gamut.cloud')} />)
+    await clicker.click(screen.getByTestId('team-brain-menu'))
+    await clicker.click(screen.getByTestId('team-brain-disconnect'))
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Team Brain stays in your cloud workspace')
+    await clicker.click(screen.getByTestId('team-brain-disconnect-confirm'))
+    expect(getCloudConnection()).toMatchObject({ connected: null, agents: {} })
   })
 })

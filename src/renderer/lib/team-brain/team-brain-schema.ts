@@ -34,7 +34,24 @@ export type TeamBrainSchedule = (typeof TEAM_BRAIN_SCHEDULES)[number]
  * hand-over to a chat with Team Brain for the team's context.
  */
 export const TEAM_BRAIN_STEPS = ['location', 'agents', 'schedule', 'intake'] as const
-export type TeamBrainStep = (typeof TEAM_BRAIN_STEPS)[number]
+
+/**
+ * On the desktop set-up first asks how (`how`): connect to the Team Brain the
+ * organization's cloud workspace has, read-only, then choose which agents here
+ * read it (`readers`); or set one up on this computer, the steps above.
+ */
+export const TEAM_BRAIN_CLOUD_STEPS = ['how', 'readers'] as const
+export type TeamBrainStep = (typeof TEAM_BRAIN_STEPS)[number] | (typeof TEAM_BRAIN_CLOUD_STEPS)[number]
+
+/** How the desktop gets its Team Brain: connected to the cloud's, or set up here. */
+export const TEAM_BRAIN_PATHS = ['cloud', 'here'] as const
+export type TeamBrainPath = (typeof TEAM_BRAIN_PATHS)[number]
+
+/** The steps set-up takes: on the desktop, how first and then the chosen path's; elsewhere, setting it up here. */
+export function teamBrainSteps(desktop: boolean, path: TeamBrainPath | null): readonly TeamBrainStep[] {
+  if (!desktop) return TEAM_BRAIN_STEPS
+  return path === 'cloud' ? TEAM_BRAIN_CLOUD_STEPS : ['how', ...TEAM_BRAIN_STEPS]
+}
 
 /** The Team Brain agent and drive created when step 01 is done, before Start chat. */
 export const teamBrainPreparedSchema = z.object({
@@ -49,7 +66,9 @@ export type TeamBrainPrepared = z.infer<typeof teamBrainPreparedSchema>
 /** `off` (the page before anyone opts in) → `onboarding` (the set-up modal) → `launching` (after Start chat). */
 export const teamBrainStateSchema = z.object({
   status: z.enum(['off', 'onboarding', 'launching']),
-  step: z.enum(TEAM_BRAIN_STEPS).default('location'),
+  step: z.enum([...TEAM_BRAIN_CLOUD_STEPS, ...TEAM_BRAIN_STEPS]).default('location'),
+  /** On the desktop, the path chosen at `how`; null until Next there. */
+  path: z.enum(TEAM_BRAIN_PATHS).nullable().default(null),
   /** Where the files live. Chosen first; null until chosen. */
   location: z.enum(TEAM_BRAIN_LOCATION_IDS).nullable().default(null),
   schedule: z.enum(TEAM_BRAIN_SCHEDULES).default('daily'),
