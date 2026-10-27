@@ -26,6 +26,7 @@ export function useAgentMounts(agentSlug: string) {
       return res.json()
     },
     enabled: !!agentSlug,
+    refetchInterval: query => query.state.status !== 'error' && query.state.data?.some(mount => mount.health === 'preparing') ? 2000 : false,
   })
 }
 

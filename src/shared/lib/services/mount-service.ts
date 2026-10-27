@@ -5,10 +5,13 @@ import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
 import { agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
 import type { ContainerVolume, MountedVolume, MountSummaryWithHealth, NotMountedVolume } from '@shared/lib/types/mount'
 import { instantiateVolume } from '@shared/lib/volumes/volume-factory'
-import { volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
+import { volumeHealth, volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
 import { prepareVolumeDefinition, selectableVolumes, storedDefinition, VolumeError, type VolumeViewer } from './volume-service'
 
 export { volumeSummary } from '@shared/lib/volumes/volume-health'
+
+/** How long a container start waits for drives still making their first copy. Past it, the start goes on without them. */
+const FIRST_COPY_WAIT_MS = 20_000
 
 /** Allocate inside the INSERT so concurrent attachments cannot claim the same
  * name. With N existing mounts, N+1 candidate suffixes always suffice. */
@@ -117,7 +120,21 @@ async function judgeVolumes(slug: string) {
   return Promise.all((await getMounts(slug)).map(async row => ({ row, reason: await volumeProblem(row, slug) })))
 }
 
+/** The agent's container just started, so each of its drives is mounted with an empty cache. */
+export async function remounted(slug: string): Promise<void> {
+  for (const row of await getMounts(slug)) instantiateVolume(row, slug)?.remounted()
+}
+
+/** Settles once each of the agent's drives that is copied first has a copy, or has stopped trying for now. */
+export async function firstCopies(slug: string): Promise<void> {
+  await Promise.all((await getMounts(slug)).map(row => instantiateVolume(row, slug)?.whenReady()))
+}
+
 export async function listVolumes(slug: string): Promise<{ volumes: ContainerVolume[]; notMounted: NotMountedVolume[] }> {
+  // A drive joins the container only when it starts, so a start right after adding one waits for its first copy.
+  let timer: ReturnType<typeof setTimeout> | undefined
+  await Promise.race([firstCopies(slug), new Promise<void>(resolve => { timer = setTimeout(resolve, FIRST_COPY_WAIT_MS) })])
+  clearTimeout(timer)
   const judged = await judgeVolumes(slug)
   return {
     volumes: judged.flatMap(({ row, reason }) => {
@@ -127,7 +144,7 @@ export async function listVolumes(slug: string): Promise<{ volumes: ContainerVol
         ...(driver?.caseInsensitive ? { caseInsensitive: true } : {}),
         ...(driver?.ignoreSize ? { ignoreSize: true } : {}),
         ...(driver?.dirCacheSeconds ? { dirCacheSeconds: driver.dirCacheSeconds } : {}),
-        ...(row.readOnly ? { readOnly: true } : {}) }]
+        ...(row.readOnly || driver?.readOnly ? { readOnly: true } : {}) }]
     }),
     notMounted: judged.flatMap(({ row, reason }) => reason === null ? [] : [{ name: row.name, reason }]),
   }
@@ -135,7 +152,7 @@ export async function listVolumes(slug: string): Promise<{ volumes: ContainerVol
 
 export async function getMountsWithHealth(slug: string): Promise<MountSummaryWithHealth[]> {
   return (await judgeVolumes(slug)).map(({ row, reason }) => ({
-    ...volumeSummary(row), volumeId: row.volumeId, volumeName: row.volumeName, readOnly: row.readOnly, health: reason === null ? 'ok' : 'missing',
+    ...volumeSummary(row), volumeId: row.volumeId, volumeName: row.volumeName, readOnly: row.readOnly, health: volumeHealth(reason),
     ...(row.global ? { global: true as const } : {}),
   }))
 }
