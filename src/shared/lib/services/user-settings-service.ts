@@ -197,6 +197,9 @@ export const userSettingsSchema = z.object({
   // Home graph view: the "Details" toggle (pin every resource's detail card
   // + count chips open). Absent = off.
   graphShowDetails: z.boolean().optional(),
+  // Team Brain home page: which groups of the brain's own files its tree shows
+  // ('about', 'archive'). Absent = none.
+  teamBrainViews: z.array(z.string()).optional(),
   // Home page widget grid: per-card position + footprint in grid cells,
   // keyed by card id (agent slug or dashboard key). Absent = never customized
   // (the board auto-packs responsively until the user drags/resizes).

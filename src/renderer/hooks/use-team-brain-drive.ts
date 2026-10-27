@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueries, type UseQueryResult } from '@tanstack/react-query'
 import { fetchVolumeFolder, FolderEntriesError, type FolderEntry } from '@renderer/hooks/use-folder-entries'
-import { driveTree, foldersToList, TEAM_RECORD_FOLDER, teamRecordParts, withoutTeamRecord, withTeamRecordParts, type DriveListing } from '@renderer/lib/team-brain/team-brain-drive'
+import { driveTree, foldersToList, inRecord, presentRecordGroups, TEAM_RECORD_FOLDER, withRecordGroups, type DriveListing, type RecordGroup } from '@renderer/lib/team-brain/team-brain-drive'
 
 /** How long a folder's listing may take before it counts as failed, and how soon a busy one is tried again. */
 const LIST_TIMEOUT_MS = 20_000
@@ -10,19 +10,21 @@ const RETRY_MS = 15_000
 /** A drive that was busy or slow is tried again; one that refused or is gone is not. */
 const busy = (error: Error | null) => !!error && (!(error instanceof FolderEntriesError) || error.status >= 500 || error.status === 429)
 
-const inRecord = (path: string) => path === TEAM_RECORD_FOLDER || path.startsWith(`${TEAM_RECORD_FOLDER}/`)
-const NO_PARTS: ReadonlySet<string> = new Set()
+const NO_GROUPS: ReadonlySet<RecordGroup> = new Set()
+
+/** What the record holds: unknown until `_brain` is listed, and never mistaken for empty when it can't be. */
+export type RecordGroupsRead = { status: 'pending' } | { status: 'failed' } | { status: 'listed'; present: ReadonlySet<RecordGroup> }
 
 /**
  * Team Brain's drive as the tree's nodes, listed as far as the tree shows and further as folders are opened. The team
- * record shows only the parts whose views are in `record` (none by default; see `teamRecordView`), and `recordParts`
- * says which parts there are. Each folder is its own query, under `['team-brain', brainSlug]` so a finished
+ * record shows only its groups in `record` (none by default; see `recordPlaceOf`), and `recordGroups` says which
+ * groups have something in them. Each folder is its own query, under `['team-brain', brainSlug]` so a finished
  * Team Brain session refreshes it: one that fails or hangs stays folded, says so in `error`, and is tried again shortly
  * if the drive was only busy, while the rest of the tree goes on without it.
  */
-export function useTeamBrainDrive(brainSlug: string, volumeId: string | undefined, expanded: ReadonlySet<string>, record: ReadonlySet<string> = NO_PARTS, recordLeaving = false) {
+export function useTeamBrainDrive(brainSlug: string, volumeId: string | undefined, expanded: ReadonlySet<string>, record: ReadonlySet<RecordGroup> = NO_GROUPS, recordLeaving = false) {
   const withRecord = record.size > 0
-  const chosen = useCallback((listing: DriveListing) => (withRecord ? withTeamRecordParts(listing, record) : withoutTeamRecord(listing)), [withRecord, record])
+  const chosen = useCallback((listing: DriveListing) => withRecordGroups(listing, record), [record])
   // Every folder asked for so far. It only grows, so a listing under way is never dropped and asked for again.
   const [paths, setPaths] = useState<readonly string[]>([''])
   const combine = useCallback(
@@ -52,14 +54,16 @@ export function useTeamBrainDrive(brainSlug: string, volumeId: string | undefine
   if (!withRecord) recordIn.current = false
   else if (need.length === 0 && !recordLeaving) recordIn.current = true
   const showRecord = recordIn.current
-  const visible = useMemo(() => (showRecord ? chosen(listed) : withoutTeamRecord(listed)), [listed, showRecord, chosen])
-  // Once the first view is in, the record's folders list behind it, so switching it on shows it at once.
+  const visible = useMemo(() => withRecordGroups(listed, showRecord ? record : NO_GROUPS), [listed, showRecord, record])
+  const hasBrain = !!listed.get('')?.some((entry) => entry.path === TEAM_RECORD_FOLDER)
+  // Once the first view is in, the record's folders list behind it, so switching a group on shows it at once. `_brain`
+  // always does, however wide the top is, since what it holds decides which switches there are.
   const ahead = useMemo(
-    () => (!withRecord && listed.has('') && need.length === 0 ? foldersToList(walked, expanded).filter(inRecord) : []),
-    [withRecord, listed, need, walked, expanded],
+    () => (!withRecord && listed.has('') && need.length === 0 ? [...(hasBrain ? [TEAM_RECORD_FOLDER] : []), ...foldersToList(walked, expanded).filter(inRecord)] : []),
+    [withRecord, listed, need, walked, expanded, hasBrain],
   )
   useEffect(() => {
-    const more = [...need, ...ahead].filter((path) => !paths.includes(path))
+    const more = [...new Set([...need, ...ahead])].filter((path) => !paths.includes(path))
     if (more.length > 0) setPaths([...paths, ...more])
   }, [need, ahead, paths])
   const drive = useMemo(() => driveTree(visible, Date.now()), [visible])
@@ -68,7 +72,12 @@ export function useTeamBrainDrive(brainSlug: string, volumeId: string | undefine
   if (listed.has('') && need.length === 0) ready.current = true
   // The record listed ahead says nothing when it fails: it reports once it is switched on.
   const error = [...failed].find(([path]) => withRecord || !inRecord(path))?.[1] ?? null
-  // The record's parts, as soon as its folder is listed (it lists ahead of being shown).
-  const recordParts = useMemo(() => teamRecordParts(listed), [listed])
-  return { drive, ready: ready.current, error, recordParts }
+  // Which groups there are, once `_brain` is listed (it lists ahead of being shown).
+  const brainFailed = failed.has(TEAM_RECORD_FOLDER)
+  const recordGroups = useMemo<RecordGroupsRead>(() => {
+    if (!listed.has('') || (hasBrain && !listed.has(TEAM_RECORD_FOLDER) && !brainFailed)) return { status: 'pending' }
+    if (hasBrain && brainFailed) return { status: 'failed' }
+    return { status: 'listed', present: presentRecordGroups(listed) }
+  }, [listed, hasBrain, brainFailed])
+  return { drive, ready: ready.current, error, recordGroups }
 }
