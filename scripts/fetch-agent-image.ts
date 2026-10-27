@@ -10,7 +10,8 @@
 //   arch defaults to this machine's (like download-lima.sh), image to the one
 //   package.json's version runs.
 //   AGENT_IMAGE_REQUIRED=true makes a missing image an error (the release
-//   build); otherwise it warns and bundles nothing, and the app pulls as before.
+//   build, and dist:mas unless it is set to false); otherwise it warns and
+//   bundles nothing, and the app pulls as before.
 //
 // Output: <out-dir>/agent-image.tar and <out-dir>/agent-image.json
 // (src/shared/lib/container/bundled-agent-image-schema.ts). Like

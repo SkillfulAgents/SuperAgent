@@ -1,0 +1,109 @@
+name: Build Mac App Store App
+
+# The Mac App Store build (`npm run dist:mas`, config electron-builder.mas.cjs):
+# a signed installer package for App Store Connect. It runs only where its
+# signing secrets are set, and otherwise says so and stops. Nothing here
+# uploads to Apple.
+#
+# Secrets, all for team HL9SP7TJ3J:
+#   MAS_CSC_LINK, MAS_CSC_KEY_PASSWORD
+#       base64 .p12 of the "Apple Distribution" certificate and its key, and its password
+#   MAS_INSTALLER_CSC_LINK, MAS_INSTALLER_CSC_KEY_PASSWORD
+#       base64 .p12 of the "3rd Party Mac Developer Installer" (Mac Installer
+#       Distribution) certificate and its key, and its password
+#   MAS_PROVISIONING_PROFILE
+#       base64 of the Mac App Store provisioning profile for so.gamut.app
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    runs-on: ubuntu-latest
+    outputs:
+      present: ${{ steps.check.outputs.present }}
+    steps:
+      - id: check
+        env:
+          MAS_CSC_LINK: ${{ secrets.MAS_CSC_LINK }}
+          MAS_INSTALLER_CSC_LINK: ${{ secrets.MAS_INSTALLER_CSC_LINK }}
+          MAS_PROVISIONING_PROFILE: ${{ secrets.MAS_PROVISIONING_PROFILE }}
+        run: |
+          if [ -n "$MAS_CSC_LINK" ] && [ -n "$MAS_INSTALLER_CSC_LINK" ] && [ -n "$MAS_PROVISIONING_PROFILE" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=Mac App Store build skipped::Its signing secrets are not set: MAS_CSC_LINK, MAS_INSTALLER_CSC_LINK and MAS_PROVISIONING_PROFILE (see .github/workflows/build-mas.yml)."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  lima-image:
+    needs: secrets
+    if: needs.secrets.outputs.present == 'true'
+    uses: ./.github/workflows/lima-image.yml
+
+  build-mas:
+    needs: [secrets, lima-image]
+    if: needs.secrets.outputs.present == 'true'
+    runs-on: blacksmith-6vcpu-macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # Same pin as build-mac.yml.
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download the Lima VM image
+        uses: actions/download-artifact@v4
+        with:
+          name: lima-image-arm64
+          path: build/lima-image
+
+      - name: Decode the provisioning profile
+        env:
+          MAS_PROVISIONING_PROFILE_BASE64: ${{ secrets.MAS_PROVISIONING_PROFILE }}
+        run: |
+          echo "$MAS_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/mas.provisionprofile"
+          echo "MAS_PROVISIONING_PROFILE=$RUNNER_TEMP/mas.provisionprofile" >> "$GITHUB_ENV"
+
+      - name: Build and sign the Mac App Store package
+        env:
+          CSC_LINK: ${{ secrets.MAS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAS_CSC_KEY_PASSWORD }}
+          CSC_INSTALLER_LINK: ${{ secrets.MAS_INSTALLER_CSC_LINK }}
+          CSC_INSTALLER_KEY_PASSWORD: ${{ secrets.MAS_INSTALLER_CSC_KEY_PASSWORD }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PLATFORM_BASE_URL: ${{ secrets.PLATFORM_BASE_URL }}
+          PLATFORM_PROXY_URL: ${{ secrets.PLATFORM_PROXY_URL }}
+          PLATFORM_AUTH_ISSUER_URL: ${{ secrets.PLATFORM_AUTH_ISSUER_URL }}
+          LIMA_IMAGE_DIR: build/lima-image
+          # The Store's build number (CFBundleVersion), which grows with every upload.
+          MAS_BUILD_NUMBER: ${{ github.run_number }}
+          # dist:mas refuses to package without the agent image, since a Store
+          # package is built to upload. This one is never uploaded, and a release's
+          # version bump reaches main before the release publishes its image.
+          AGENT_IMAGE_REQUIRED: 'false'
+        run: npm run dist:mas
+
+      - name: Upload the package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Gamut-MAS-${{ github.ref_name }}
+          # electron-builder writes a mas target into its own folder, named for
+          # the target and the runner's architecture, not into release/.
+          path: release/mas-arm64/*.pkg
+          if-no-files-found: error
+          retention-days: 30
