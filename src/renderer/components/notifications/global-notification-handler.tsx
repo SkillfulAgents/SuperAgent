@@ -762,7 +762,11 @@ export function GlobalNotificationHandler() {
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
       reconnectTimerRef.current = null
       if (streamRef.current === es) streamRef.current = null
-      es.close()
+      es.onmessage = null
+      // Closing before the handshake ends leaves the socket half-open in some
+      // WebSocket wrappers (Playwright's routing mock among them); close it once open.
+      if (es.readyState === WebSocket.CONNECTING) es.onopen = () => es.close()
+      else es.close()
     }
   }, [queryClient, navigate, reconnectKey])
 
