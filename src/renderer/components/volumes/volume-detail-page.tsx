@@ -186,7 +186,7 @@ export function VolumeDetailPage({ volume, onBack, backLabel = 'Drives', onDelet
         <VolumeAgentsList volume={volume} />
         {volume.canManage && <VolumeSettingsForm volume={volume} onDelete={onDelete} />}
       </div>
-      <VolumeFileBrowser key={volume.health} volumeId={volume.id} />
+      <VolumeFileBrowser key={volume.health} volumeId={volume.id} copying={volume.health === 'preparing'} />
     </div>
   </div>
 }

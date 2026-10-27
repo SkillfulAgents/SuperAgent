@@ -14,6 +14,11 @@ const { app, openExternalUrl, screenSize } = vi.hoisted(() => ({
       { slug: 'planner', displaySlug: 'planner', name: 'Planner', status: 'stopped', avatar: null },
     ],
     deleteAgent: vi.fn(),
+    /** Team Brain's drive: still making its first copy, or not read yet; and whether the drive list's last poll failed. */
+    mount: 'ready' as 'ready' | 'copying' | 'loading',
+    pollFailed: false,
+    /** The drive the page last handed the tree and the syncs to read. */
+    read: { drive: undefined as string | undefined, syncs: undefined as string | undefined },
   },
 }))
 vi.mock('@renderer/hooks/use-agents', () => ({
@@ -21,7 +26,12 @@ vi.mock('@renderer/hooks/use-agents', () => ({
   useDeleteAgent: () => ({ mutate: app.deleteAgent, isPending: false }),
 }))
 // The Team Brain agent's own drive, in Dropbox.
-vi.mock('@renderer/hooks/use-mounts', () => ({ useAgentMounts: () => ({ data: [{ id: 'm1', volumeId: 'vol1', name: 'Team Brain', volumeName: 'Team Brain', type: 'dropbox', hostPath: null, sourceLabel: 'Dropbox › Team Brain' }] }) }))
+vi.mock('@renderer/hooks/use-mounts', () => ({
+  useAgentMounts: () => ({
+    data: app.mount === 'loading' ? undefined : [{ id: 'm1', volumeId: 'vol1', name: 'Team Brain', volumeName: 'Team Brain', type: 'dropbox', hostPath: null, sourceLabel: 'Dropbox › Team Brain', health: app.mount === 'copying' ? 'preparing' : 'ok' }],
+    isError: app.pollFailed,
+  }),
+}))
 // The drive as listed: a README and three sections, with the pages the tree is clicked through.
 const { drive } = vi.hoisted(() => {
   const page = (id: string, name: string) => ({ id, name, kind: 'file' as const, sources: [] })
@@ -65,16 +75,19 @@ vi.mock('@renderer/hooks/use-team-brain-access', () => ({
 }))
 // The latest sync the upkeep run wrote to _brain/syncs/, as parsed.
 vi.mock('@renderer/hooks/use-team-brain-syncs', () => ({
-  useTeamBrainSyncs: () => ({
-    data: [
-      {
-        id: '_brain/syncs/2026-10-23 0300.md', at: new Date(Date.now() - 7_200_000).toISOString(), session: 's-1', sources: ['slack', 'notion'], added: 3, updated: 9,
-        highlights: [{ title: 'Acme’s renewal moves to Q1', body: 'Acme asked to move it; [Acme Corp](../../Customers/Acme%20Corp.md) has the date.' }],
-        changes: ['Cycle 14 closed.'],
-        needsYou: { blocked: ['Reconnect Slack. #sales was not read this run.'], toDecide: [] },
-      },
-    ],
-  }),
+  useTeamBrainSyncs: (_slug: string, volumeId: string | undefined) => {
+    app.read.syncs = volumeId
+    return {
+      data: [
+        {
+          id: '_brain/syncs/2026-10-23 0300.md', at: new Date(Date.now() - 7_200_000).toISOString(), session: 's-1', sources: ['slack', 'notion'], added: 3, updated: 9,
+          highlights: [{ title: 'Acme’s renewal moves to Q1', body: 'Acme asked to move it; [Acme Corp](../../Customers/Acme%20Corp.md) has the date.' }],
+          changes: ['Cycle 14 closed.'],
+          needsYou: { blocked: ['Reconnect Slack. #sales was not read this run.'], toDecide: [] },
+        },
+      ],
+    }
+  },
 }))
 vi.mock('@renderer/hooks/use-sessions', () => ({ useSessions: () => ({ data: sessions.chats }) }))
 // A session row's right-click menu needs the app's session actions; here a row is only its link.
@@ -94,9 +107,11 @@ const { driveRead } = vi.hoisted(() => ({
   },
 }))
 vi.mock('@renderer/hooks/use-team-brain-drive', () => ({
-  useTeamBrainDrive: (_slug: string, _volume: string, _expanded: unknown, record: ReadonlySet<string>) => {
+  useTeamBrainDrive: (_slug: string, volumeId: string | undefined, _expanded: unknown, record: ReadonlySet<string>) => {
+    app.read.drive = volumeId
     driveRead.record = record
-    return { drive, ready: driveRead.ready, error: driveRead.error, recordParts: driveRead.recordParts }
+    // A drive it is not handed is not read, so it cannot fail.
+    return { drive, ready: driveRead.ready, error: volumeId ? driveRead.error : null, recordParts: driveRead.recordParts }
   },
 }))
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
@@ -135,6 +150,8 @@ const BRAIN: ApiAgent = {
 
 beforeEach(() => {
   sessions.chats = []
+  app.mount = 'ready'
+  app.pollFailed = false
   resetTeamBrainState()
   upkeep.tasks = [task('t1', 'Nightly digest', 'pending'), task('t2', 'Weekly people check', 'paused')]
   screenSize.wide = true
@@ -449,6 +466,27 @@ describe('TeamBrainOverview', () => {
     render(<TeamBrainOverview agent={BRAIN} />)
     expect(screen.getByTestId('team-brain-recent-sessions')).toBeInTheDocument()
     expect(screen.queryByTestId('team-brain-see-all-sessions')).toBeNull()
+  })
+
+  it('reads nothing from a drive still making its first copy, and reads it once the copy is in', () => {
+    // Before the drive list says whether it is copying, nothing is read either.
+    app.mount = 'loading'
+    const page = render(<TeamBrainOverview agent={BRAIN} />)
+    expect(app.read).toEqual({ drive: undefined, syncs: undefined })
+    app.mount = 'copying'
+    driveRead.error = 'preparing'
+    page.rerender(<TeamBrainOverview agent={BRAIN} />)
+    expect(app.read).toEqual({ drive: undefined, syncs: undefined })
+    expect(screen.queryByTestId('team-brain-drive-error')).toBeNull()
+    // A drive list that fails after saying copying may be out of date: the drive answers for itself.
+    app.pollFailed = true
+    page.rerender(<TeamBrainOverview agent={BRAIN} />)
+    expect(app.read.drive).toBe('vol1')
+    app.pollFailed = false
+    driveRead.error = null
+    app.mount = 'ready'
+    page.rerender(<TeamBrainOverview agent={BRAIN} />)
+    expect(app.read).toEqual({ drive: 'vol1', syncs: 'vol1' })
   })
 
   it('has no recent sessions until someone starts one', () => {
