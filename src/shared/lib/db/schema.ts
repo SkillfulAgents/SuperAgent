@@ -490,6 +490,17 @@ export const proxyTokens = sqliteTable('proxy_tokens', {
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
 })
 
+// Host state that must outlive one process when the host runs on many
+// isolates: the settings document, small host files, short-lived flow state.
+// `version` is the compare-and-set token; `expires_at` (ms) is null for state
+// that never expires.
+export const hostState = sqliteTable('host_state', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  version: integer('version').notNull(),
+  expiresAt: integer('expires_at'),
+})
+
 // Proxy audit log - structured log of all proxied requests
 export const proxyAuditLog = sqliteTable('proxy_audit_log', {
   id: text('id').primaryKey(),

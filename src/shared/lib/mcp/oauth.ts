@@ -1,4 +1,6 @@
 import crypto from 'crypto'
+import { expiringMap } from '@shared/lib/host-state/expiring-map'
+import { pendingOAuthFlowSchema, type PendingOAuthFlow } from './oauth-flow-schema'
 import { db } from '@shared/lib/db'
 import { remoteMcpServers } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
@@ -395,33 +397,13 @@ async function registerDynamicClientWithFallback(
   throw lastError ?? new McpOAuthSetupError('No redirect URLs available for client registration')
 }
 
-type PendingOAuthFlow = {
-  codeVerifier: string
-  redirectUri: string
-  resource: string
-  tokenEndpoint: string
-  expectedIssuer?: string
-  authorizationResponseIssParameterSupported: boolean
-  clientId: string
-  clientSecret?: string
-  mcpId?: string
-  newServer?: { name: string; url: string }
-  userId?: string
-  // True when the flow was initiated by the Electron app. Combined with whether
-  // the winning redirect is the custom app scheme, this tells the callback route
-  // how to hand the result back (see completeOAuthFlow's return).
-  electron?: boolean
-  // The desktop app's deep-link scheme, kept on the flow because the callback
-  // may be served by a cloud deployment with no SUPERAGENT_PROTOCOL of its own.
-  desktopProtocol?: string
-}
-
 type OAuthIssuerValidationResult =
   | { valid: true }
   | { valid: false; error: string }
 
-// In-memory store for pending OAuth flows
-const pendingOAuthFlows = new Map<string, PendingOAuthFlow>()
+// Pending OAuth flows, keyed by the `state` parameter. They expire: a user
+// who never finishes sign-in leaves nothing behind.
+const pendingOAuthFlows = expiringMap('mcp-oauth', 15 * 60 * 1000, pendingOAuthFlowSchema)
 
 /**
  * How the callback route should deliver the result to the client, derived from
@@ -481,14 +463,14 @@ function validateAuthorizationResponseIssuer(
   return { valid: true }
 }
 
-export function validateAndConsumeOAuthErrorResponse(
+export async function validateAndConsumeOAuthErrorResponse(
   state: string | null | undefined,
   iss: string | null | undefined,
-): OAuthIssuerValidationResult & {
+): Promise<OAuthIssuerValidationResult & {
   electron?: boolean
   redirectWasScheme?: boolean
   desktopProtocol?: string
-} {
+}> {
   if (!state) {
     return {
       valid: false,
@@ -496,7 +478,7 @@ export function validateAndConsumeOAuthErrorResponse(
     }
   }
 
-  const flow = pendingOAuthFlows.get(state)
+  const flow = await pendingOAuthFlows.get(state)
   if (!flow) {
     return {
       valid: false,
@@ -512,7 +494,7 @@ export function validateAndConsumeOAuthErrorResponse(
     return { ...validation, ...delivery }
   }
 
-  pendingOAuthFlows.delete(state)
+  await pendingOAuthFlows.delete(state)
   return { valid: true, ...delivery }
 }
 
@@ -638,7 +620,7 @@ export async function initiateOAuthFlow(
     .where(eq(remoteMcpServers.id, mcpId))
 
   // Store flow state for callback
-  pendingOAuthFlows.set(state, {
+  await pendingOAuthFlows.set(state, {
     codeVerifier,
     redirectUri,
     resource,
@@ -756,7 +738,7 @@ export async function initiateNewServerOAuth(
   const { codeVerifier, codeChallenge } = generatePKCE()
   const state = crypto.randomBytes(16).toString('hex')
 
-  pendingOAuthFlows.set(state, {
+  await pendingOAuthFlows.set(state, {
     codeVerifier,
     redirectUri,
     resource,
@@ -819,7 +801,7 @@ export async function completeOAuthFlow(
   redirectWasScheme?: boolean
   desktopProtocol?: string
 }> {
-  const flow = pendingOAuthFlows.get(state)
+  const flow = await pendingOAuthFlows.get(state)
   if (!flow) {
     console.error('[mcp/oauth] No pending flow for state:', state)
     return { success: false }
@@ -837,7 +819,7 @@ export async function completeOAuthFlow(
     return { success: false, ...delivery }
   }
 
-  pendingOAuthFlows.delete(state)
+  await pendingOAuthFlows.delete(state)
 
   try {
     const body = new URLSearchParams({

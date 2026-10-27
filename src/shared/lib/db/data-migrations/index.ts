@@ -15,6 +15,7 @@
  */
 import type { AppDatabase } from '../drivers/types'
 import { dataMigrations } from '../schema'
+import { flushHostState } from '../../host-state/scope'
 import { globalModelPricing } from './0002-global-model-pricing'
 import { importAgentsFromDirectories } from './0001-import-agents-from-directories'
 import { importLlmConnections } from './0003-import-llm-connections'
@@ -61,6 +62,8 @@ export async function runDataMigrations(
   for (const migration of ordered) {
     if (applied.has(migration.id)) continue
     await migration.run(db)
+    // Its settings writes are queued saves inside a host state scope; record it only once they are stored.
+    await flushHostState()
     await db.insert(dataMigrations).values({ id: migration.id, name: migration.name, appliedAt: new Date() }).run()
     appliedNow.push(migration.id)
   }

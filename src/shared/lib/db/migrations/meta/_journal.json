@@ -428,6 +428,13 @@
       "when": 1792781899070,
       "tag": "0060_browser_vault",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "6",
+      "when": 1793131332452,
+      "tag": "0061_host_state",
+      "breakpoints": true
     }
   ]
 }
