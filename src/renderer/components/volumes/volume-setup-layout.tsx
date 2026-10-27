@@ -27,17 +27,21 @@ export function VolumeSetupHeader({ title, description, Logo, steps, step }: {
   </DialogHeader>
 }
 
+/** A host whose drive every member must reach (Team Brain's set-up) makes it Everyone's and leaves out "Who can add this drive?". */
+export const VolumeEveryoneOnlyContext = createContext(false)
+
 export function VolumeDetailsFields({ value, onChange, disabled, inUse = false, showName = true, children }: {
   value: VolumeDetails; onChange: (value: VolumeDetails) => void; disabled: boolean; inUse?: boolean; showName?: boolean; children: ReactNode
 }) {
   const { isAuthMode, isAdmin } = useUser()
+  const everyoneOnly = useContext(VolumeEveryoneOnlyContext)
   return <>
     {showName && <div className="space-y-2">
       <Label htmlFor="volume-name">Name</Label>
       <Input id="volume-name" value={value.name} onChange={event => onChange({ ...value, name: event.target.value })} maxLength={255} disabled={disabled} required />
     </div>}
     {children}
-    {isAuthMode && <div className="space-y-2">
+    {isAuthMode && !everyoneOnly && <div className="space-y-2">
       <Label htmlFor="volume-access">Who can add this drive?</Label>
       {isAdmin ? <Select value={value.visibility} onValueChange={visibility => onChange({ ...value, visibility: visibility as VolumeDetails['visibility'] })} disabled={disabled || inUse}>
         <SelectTrigger id="volume-access"><SelectValue /></SelectTrigger>

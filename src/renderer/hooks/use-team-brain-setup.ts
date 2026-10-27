@@ -81,10 +81,7 @@ export function useTeamBrainSetup() {
     let prepared: TeamBrainPrepared
     try {
       const mount = await addMount.mutateAsync({ agentSlug: agent.slug, ...source, name: details.name, visibility: details.visibility })
-      prepared = {
-        agentSlug: agent.slug, volumeId: mount.volumeId, brainPath: mountPathOf(mount.name), firstPrompt: agent.onboardingFirstPrompt,
-        isPublic: details.visibility === 'public',
-      }
+      prepared = { agentSlug: agent.slug, volumeId: mount.volumeId, brainPath: mountPathOf(mount.name), firstPrompt: agent.onboardingFirstPrompt }
     } catch (error) {
       void deleteAgent.mutateAsync(agent.slug).catch(() => {})
       if (run !== attempt.current) return false
@@ -114,7 +111,8 @@ export function useTeamBrainSetup() {
     }
   }
 
-  const launch = async (prepared: TeamBrainPrepared) => {
+  /** Launches the prepared Team Brain; false when another admin's set-up took the record first. */
+  const launch = async (prepared: TeamBrainPrepared, onRecordWrite: () => void) => {
     const state = getTeamBrainState()
     const { schedule, everyAgent } = state
     const chosen = (agents ?? [])
@@ -127,9 +125,20 @@ export function useTeamBrainSetup() {
       slug: prepared.agentSlug,
       instructions: fillTeamBrainSetupBlock(instructions, { agentSlug: prepared.agentSlug, brainPath: prepared.brainPath, schedule }),
     })
-    // Team Brain's own read-write attachment wins over the global read-only one.
+    // Only a refusal says the record is not this set-up's: after any other failure it may have been saved.
+    onRecordWrite()
+    const taken = await updateSettings.mutateAsync({ teamBrain: { agentSlug: prepared.agentSlug, volumeId: prepared.volumeId } })
+      .then(() => false, (error: unknown) => {
+        if (typeof error === 'object' && error !== null && 'status' in error && error.status === 409) return true
+        throw error
+      })
+    if (taken) {
+      await discard(prepared).catch((error: unknown) => captureRendererException(error, { tags: { area: 'team-brain', op: 'discard-losing-setup' } }))
+      await queryClient.invalidateQueries({ queryKey: ['settings'] })
+      return false
+    }
+    // Published once the record is this set-up's. Team Brain's own read-write attachment wins over the global read-only one.
     if (everyAgent) await saveVolume.mutateAsync({ id: prepared.volumeId, global: 'read' })
-    await updateSettings.mutateAsync({ teamBrain: { agentSlug: prepared.agentSlug, volumeId: prepared.volumeId } })
     // The record marks the agent; the list must carry the mark before set-up stops hiding it.
     await queryClient.invalidateQueries({ queryKey: ['agents'] })
 
@@ -151,6 +160,7 @@ export function useTeamBrainSetup() {
         description: 'Add the Team Brain drive to them from each agent’s Drives. Their first message to Team Brain will ask for approval.',
       })
     }
+    return true
   }
 
   const startChat = async () => {
@@ -159,14 +169,20 @@ export function useTeamBrainSetup() {
     // The modal gives way to the app's "Setting up your agent..." card, which the onboarding session closes.
     tb.setLaunching(true)
     setOnboarding(true)
+    let recordWritten = false
     try {
       // Stays `launching`, the page blank, until the session replaces the page.
-      await launch(prepared)
+      if (!(await launch(prepared, () => { recordWritten = true }))) {
+        setOnboarding(false)
+        toast.info('Another admin already set up Team Brain', { description: 'This set-up was removed. The page shows theirs.' })
+      }
       // Set-up is over whether or not the session opened; without it the page shows Team Brain.
       tb.cancelSetup()
     } catch (error) {
       setOnboarding(false)
-      tb.setLaunching(false)
+      // Once the record was written the draft may be the Team Brain: forget it, so leaving cannot delete it.
+      if (recordWritten) tb.cancelSetup()
+      else tb.setLaunching(false)
       toast.error('Could not start Team Brain', { description: error instanceof Error ? error.message : 'Please try again.' })
     }
   }

@@ -74,7 +74,8 @@ vi.mock('@renderer/lib/api', () => ({
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => user }))
 vi.mock('@renderer/context/onboarding-context', () => ({ useOnboarding: () => ({ setOnboarding: vi.fn() }) }))
 vi.mock('@renderer/components/ui/app-link', () => ({ AppLink: ({ children }: { children: unknown }) => <span>{children as string}</span> }))
-vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
+const { toast } = vi.hoisted(() => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), info: vi.fn() }) }))
+vi.mock('sonner', () => ({ toast }))
 // The drive's own set-up, reduced to its save.
 vi.mock('@renderer/components/volumes/volume-setup-registry', async (importOriginal) => {
   const { volumeSetupRegistry } = await importOriginal<typeof import('@renderer/components/volumes/volume-setup-registry')>()
@@ -165,7 +166,7 @@ describe('TeamBrainPage', () => {
     expect(screen.getByTestId('team-brain-ready')).toBeInTheDocument()
   })
 
-  it('makes the drive global for every agent before the record, and still lets each one message Team Brain', async () => {
+  it('makes the drive global for every agent once the record is accepted, and still lets each one message Team Brain', async () => {
     const clicker = userEvent.setup()
     render(<TeamBrainPage />)
     await saveDrive(clicker)
@@ -176,9 +177,46 @@ describe('TeamBrainPage', () => {
     await clicker.click(screen.getByTestId('team-brain-start-chat'))
     await waitFor(() => expect(app.calls).toContain('session'))
 
-    expect(app.calls.indexOf('global read')).toBeLessThan(app.calls.indexOf('record'))
+    expect(app.calls.indexOf('global read')).toBeGreaterThan(app.calls.indexOf('record'))
     expect(app.calls).toEqual(expect.arrayContaining(['grant writer', 'grant planner']))
     expect(app.calls).not.toContain('mount writer')
+  })
+
+  it('discards its own draft when another admin\'s set-up took the record first, and publishes nothing', async () => {
+    app.updateSettings.mockImplementationOnce(async () => {
+      app.calls.push('record')
+      throw { error: 'Team Brain is already set up', status: 409 }
+    })
+    const clicker = userEvent.setup()
+    render(<TeamBrainPage />)
+    await saveDrive(clicker)
+    await waitFor(() => expect(screen.getByTestId('team-brain-every-agent-switch')).toBeEnabled())
+    await clicker.click(screen.getByTestId('team-brain-every-agent-switch'))
+    await clicker.click(screen.getByTestId('team-brain-next'))
+    await clicker.click(screen.getByTestId('team-brain-next'))
+    await clicker.click(screen.getByTestId('team-brain-start-chat'))
+    await waitFor(() => expect(app.calls).toContain('delete drive vol1'))
+
+    expect(app.calls.slice(app.calls.indexOf('record'))).toEqual(['record', 'delete agent team-brain', 'delete drive vol1', 'refresh agents'])
+    expect(toast.info).toHaveBeenCalled()
+    expect(getTeamBrainState()).toEqual(TEAM_BRAIN_INITIAL_STATE)
+  })
+
+  it('deletes nothing when the record write fails for another reason, since the record may have been saved', async () => {
+    app.updateSettings.mockRejectedValueOnce({ error: 'Failed to update settings', status: 500 })
+    const clicker = userEvent.setup()
+    const page = render(<TeamBrainPage />)
+    await saveDrive(clicker)
+    await waitFor(() => expect(getTeamBrainState().prepared).not.toBeNull())
+    await clicker.click(screen.getByTestId('team-brain-next'))
+    await clicker.click(screen.getByTestId('team-brain-next'))
+    await clicker.click(screen.getByTestId('team-brain-start-chat'))
+    await waitFor(() => expect(toast.error).toHaveBeenCalled())
+
+    // The record may have been saved, so nothing is deleted, now or when the page is left.
+    expect(getTeamBrainState()).toEqual(TEAM_BRAIN_INITIAL_STATE)
+    page.unmount()
+    expect(app.calls.some((call) => call.startsWith('delete'))).toBe(false)
   })
 
   it('deletes the installed agent when its drive cannot be made, and stays on where it lives', async () => {

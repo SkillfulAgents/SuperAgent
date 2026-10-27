@@ -4,6 +4,8 @@ vi.mock('@shared/lib/llm-provider/connections', () => ({ listConnections: vi.fn(
 vi.mock('@shared/lib/llm-provider/connection-settings', () => ({ syncProviderSettings: vi.fn(async () => {}) }))
 const { addAgentUsers } = vi.hoisted(() => ({ addAgentUsers: vi.fn(async () => {}) }))
 vi.mock('@shared/lib/services/agent-members-service', () => ({ addAgentUsers }))
+const { isPublicVolume } = vi.hoisted(() => ({ isPublicVolume: vi.fn(async (_id: string) => true) }))
+vi.mock('@shared/lib/services/volume-service', () => ({ isPublicVolume }))
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 
@@ -363,6 +365,21 @@ describe('settings route', () => {
       expect(mockGetSettings().teamBrain).toEqual({ agentSlug: 'team-brain', volumeId: 'vol-1' })
       expect((await putSettings({ teamBrain: { agentSlug: 'team-brain', volumeId: 'vol-1' } })).status).toBe(200)
       expect(addAgentUsers).toHaveBeenCalledTimes(2)
+    })
+
+    it('refuses a different record once one is set up, so a later set-up cannot replace the first', async () => {
+      persistWrites()
+      expect((await putSettings({ teamBrain: { agentSlug: 'team-brain', volumeId: 'vol-1' } })).status).toBe(200)
+      expect((await putSettings({ teamBrain: { agentSlug: 'other-brain', volumeId: 'vol-2' } })).status).toBe(409)
+      expect(mockGetSettings().teamBrain).toEqual({ agentSlug: 'team-brain', volumeId: 'vol-1' })
+      expect(addAgentUsers.mock.calls).toEqual([['team-brain']])
+    })
+
+    it('refuses a record whose drive not every member can add', async () => {
+      isPublicVolume.mockResolvedValueOnce(false)
+      expect((await putSettings({ teamBrain: { agentSlug: 'team-brain', volumeId: 'vol-private' } })).status).toBe(400)
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+      expect(addAgentUsers).not.toHaveBeenCalled()
     })
 
     it('gives no one the agent when the write is refused', async () => {

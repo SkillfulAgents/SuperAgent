@@ -18,6 +18,7 @@ import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
 import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
 import { Authenticated, IsAdmin } from '../middleware/auth'
 import { addAgentUsers } from '@shared/lib/services/agent-members-service'
+import { isPublicVolume } from '@shared/lib/services/volume-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
@@ -415,6 +416,11 @@ settings.put(
         if (!providerId || !getVoiceProvider(providerId).hasTtsVoice(ttsVoice)) {
           return c.json({ error: 'Unknown text-to-speech voice for the selected voice provider' }, 400)
         }
+      }
+
+      // Every member is given the Team Brain, so every member must be able to read its drive.
+      if (body.teamBrain && !(await isPublicVolume(body.teamBrain.volumeId))) {
+        return c.json({ error: 'Team Brain needs a drive everyone in the workspace can add' }, 400)
       }
 
       // Read FRESH and fail-closed: never merge onto the possibly-

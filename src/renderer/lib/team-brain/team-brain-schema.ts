@@ -43,8 +43,6 @@ export const teamBrainPreparedSchema = z.object({
   /** Where the drive is mounted inside the agent's container. */
   brainPath: z.string(),
   firstPrompt: z.string().optional(),
-  /** Whether everyone can add the drive. Only such a drive can go to every agent. */
-  isPublic: z.boolean(),
 })
 export type TeamBrainPrepared = z.infer<typeof teamBrainPreparedSchema>
 

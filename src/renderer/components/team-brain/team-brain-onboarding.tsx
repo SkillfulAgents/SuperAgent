@@ -2,10 +2,9 @@ import { useState, type ReactNode } from 'react'
 import { Brain, Folder, Loader2, X } from 'lucide-react'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { Switch } from '@renderer/components/ui/switch'
-import { useUser } from '@renderer/context/user-context'
 import { volumeSetupRegistry } from '@renderer/components/volumes/volume-setup-registry'
 import { parseVolumeSource, type VolumeSetupDefinition } from '@renderer/components/volumes/volume-setup'
-import { VolumeSetupFooterContext, type VolumeSetupFooterProps } from '@renderer/components/volumes/volume-setup-layout'
+import { VolumeEveryoneOnlyContext, VolumeSetupFooterContext, type VolumeSetupFooterProps } from '@renderer/components/volumes/volume-setup-layout'
 import { volumeDetailsSchema, type VolumeDetails } from '@renderer/components/volumes/volume-details-schema'
 import type { VolumeSource } from '@shared/lib/volumes/volume-config-schema'
 import { cn } from '@shared/lib/utils/cn'
@@ -222,7 +221,6 @@ function LocationStep({
   nav: StepNav
   onPrepare: (source: VolumeSource, details: VolumeDetails) => Promise<boolean>
 }) {
-  const { isAuthMode, isAdmin } = useUser()
   const [setup, setSetup] = useState<{ definition: VolumeSetupDefinition; config: unknown } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
@@ -264,10 +262,11 @@ function LocationStep({
       // supporting line: the drive's name and title say enough here.
       <div className="flex min-h-0 flex-1 flex-col gap-7 overflow-y-auto px-6 pt-11 sm:px-[52px] [&>form]:flex [&>form]:flex-1 [&>form]:flex-col [&_[data-volume-setup-description]]:hidden" data-testid="team-brain-drive-setup">
         <VolumeSetupFooterContext.Provider value={DriveSetupFooter}>
+          {/* Every member gets Team Brain, so every member must be able to read its drive. */}
+          <VolumeEveryoneOnlyContext.Provider value>
           <Setup
             initialConfig={setup.config}
-            // Only a drive everyone can add can go to every agent.
-            initialDetails={{ name: 'Team Brain', visibility: isAuthMode && !isAdmin ? 'private' : 'public' }}
+            initialDetails={{ name: 'Team Brain', visibility: 'public' }}
             onSubmit={save}
             onBack={() => { setSetup(null); setError(null) }}
             onCancel={() => { setSetup(null); setError(null) }}
@@ -276,6 +275,7 @@ function LocationStep({
             clearError={() => setError(null)}
             attachToAgent
           />
+          </VolumeEveryoneOnlyContext.Provider>
         </VolumeSetupFooterContext.Provider>
       </div>
     )
@@ -324,7 +324,6 @@ function DriveSetupFooter({ onBack, isSaving, disabled, submitLabel }: VolumeSet
 function AgentsStep({ tb, nav }: { tb: TeamBrainStore; nav: StepNav }) {
   const { data = [] } = useAgents()
   const agents = data.filter((agent) => agent.slug !== tb.state.prepared?.agentSlug)
-  const canGoGlobal = !!tb.state.prepared?.isPublic
   return (
     <StepPanel
       title="Give your agents access to Team Brain"
@@ -336,12 +335,11 @@ function AgentsStep({ tb, nav }: { tb: TeamBrainStore; nav: StepNav }) {
         <span className="min-w-0 flex-1">
           <span className="block text-[13px] font-medium">Every agent</span>
           <span className="block text-[12px] text-muted-foreground">
-            {canGoGlobal ? 'Includes agents you make later.' : 'Only a drive everyone can add can go to every agent.'}
+            Includes agents you make later.
           </span>
         </span>
         <Switch
           checked={tb.state.everyAgent}
-          disabled={!canGoGlobal}
           onCheckedChange={tb.setEveryAgent}
           aria-label="Every agent"
           data-testid="team-brain-every-agent-switch"

@@ -508,7 +508,13 @@ export const generalSettingsComponent = {
     }
   },
 
-  validate(_args: ComponentValidateArgs<GeneralSettingsPatch>): SettingsProblem[] {
+  validate({ before, patch }: ComponentValidateArgs<GeneralSettingsPatch>): SettingsProblem[] {
+    // One Team Brain per workspace: a set-up that lost the race to another admin's is refused; a retry of the same record is not.
+    const current = before.teamBrain
+    const next = patch?.teamBrain
+    if (current && next && (current.agentSlug !== next.agentSlug || current.volumeId !== next.volumeId)) {
+      return [{ status: 409, message: 'Team Brain is already set up' }]
+    }
     return []
   },
 } satisfies SettingsComponent<typeof generalSettingsPatchSchema>
