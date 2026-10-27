@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fillTeamBrainSetupBlock } from './team-brain-setup-block'
+import { fillTeamBrainSetupBlock, setUpByOf } from './team-brain-setup-block'
 
 const BLOCK = [
   '- **Brain location:** `{{brain_path}}`',
@@ -42,5 +42,16 @@ describe('fillTeamBrainSetupBlock', () => {
       { toolkitSlug: 'slack', status: 'active' }, { toolkitSlug: 'notion', status: 'expired' },
     ])).toContain('- **Already connected:** `github, slack`.')
     expect(fill([])).toContain('- **Already connected:** `none`.')
+  })
+})
+
+describe('setUpByOf', () => {
+  it('names the signed-in person, else without a login the Gamut account the app is connected with, else no one', () => {
+    const ada = { name: 'Ada Lovelace', email: 'ada@acme.com' }
+    expect(setUpByOf(ada, { connected: true, email: 'other@acme.com' })).toEqual(ada)
+    expect(setUpByOf(null, { connected: true, email: 'ada@acme.com' })).toEqual({ name: '', email: 'ada@acme.com' })
+    expect(setUpByOf(null, { connected: false, email: 'ada@acme.com' })).toBeNull()
+    expect(setUpByOf(null, { connected: true, email: null })).toBeNull()
+    expect(setUpByOf(null, undefined)).toBeNull()
   })
 })
