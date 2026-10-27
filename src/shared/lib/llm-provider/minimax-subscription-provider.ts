@@ -84,7 +84,7 @@ export class MinimaxSubscriptionLlmProvider extends BaseLlmProvider {
     return response
   }
   createClient(): Anthropic {
-    return new Anthropic({ apiKey: '', authToken: 'app-managed', baseURL: `${this.apiBase}/anthropic`, fetch: (input, init) => this.fetch(input, init) })
+    return new Anthropic({ authToken: 'app-managed', baseURL: `${this.apiBase}/anthropic`, fetch: (input, init) => this.fetch(input, init) })
   }
   private async allowance(accessToken: string) {
     const response = await fetch(`${this.apiBase}/v1/token_plan/remains`, {

@@ -86,7 +86,7 @@ export class GrokSubscriptionLlmProvider extends BaseLlmProvider {
     })
   }
   createClient(): Anthropic {
-    return new Anthropic({ apiKey: '', authToken: 'app-managed', baseURL: GROK_SUBSCRIPTION_BASE_URL,
+    return new Anthropic({ authToken: 'app-managed', baseURL: GROK_SUBSCRIPTION_BASE_URL,
       // Rebuild translation after an auth retry so reasoning replay is scoped
       // to the credential actually used, including reconnects to another account.
       fetch: (input, init) => this.withCredential(credential => translatedMessagesFetch(

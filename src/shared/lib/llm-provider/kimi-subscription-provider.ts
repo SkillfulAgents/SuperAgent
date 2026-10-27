@@ -72,7 +72,7 @@ export class KimiSubscriptionLlmProvider extends BaseLlmProvider {
     return response
   }
   createClient(): Anthropic {
-    return new Anthropic({ apiKey: '', authToken: 'app-managed', baseURL: this.apiBase, fetch: (input, init) => this.fetch(input, init) })
+    return new Anthropic({ authToken: 'app-managed', baseURL: this.apiBase, fetch: (input, init) => this.fetch(input, init) })
   }
   override async getUsage() {
     // Optional usage reporting must never drive OAuth refresh or block sessions.

@@ -251,6 +251,26 @@ describe('LLM proxy endpoint', () => {
       expect(calledWith.base_url).toBeUndefined()
     })
 
+    // API version 2026-10-21 rejects these even at their defaults.
+    it('drops sampling parameters dashboard code may still send', async () => {
+      mockCreate.mockResolvedValue({ content: [] })
+
+      const app = createApp()
+      await post(app, '/api/llm/v1/messages', {
+        messages: [{ role: 'user', content: 'hi' }],
+        max_tokens: 10,
+        temperature: 0.2,
+        top_p: 0.9,
+        top_k: 40,
+      })
+
+      const calledWith = mockCreate.mock.calls[0][0]
+      expect(calledWith).not.toHaveProperty('temperature')
+      expect(calledWith).not.toHaveProperty('top_p')
+      expect(calledWith).not.toHaveProperty('top_k')
+      expect(calledWith.max_tokens).toBe(10)
+    })
+
     it('returns streaming SSE response when stream: true', async () => {
       const mockEvents = [
         { type: 'message_start', message: { id: 'msg_1' } },
