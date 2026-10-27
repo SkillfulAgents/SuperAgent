@@ -154,9 +154,13 @@ function OverviewBody({
 
   // The Team Brain agent's drive, read as far as the tree shows and further as folders open.
   const volumeId = agent.teamBrain?.volumeId
-  const { data: mounts } = useAgentMounts(agentSlug)
+  const { data: mounts, isError: mountsUnreadable } = useAgentMounts(agentSlug)
+  // A drive still making its first copy has nothing to list yet: it is read once the copy is in, and the tree waits.
+  // Until the drive list says which, nothing is read; a list that can't be read now leaves the drive to answer for itself.
+  const copying = mounts?.find((mount) => mount.volumeId === volumeId)?.health === 'preparing'
+  const readable = mountsUnreadable || (mounts && !copying) ? volumeId : undefined
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
-  const { drive, ready, error, recordParts } = useTeamBrainDrive(agentSlug, volumeId, expanded, record, recordLeaving)
+  const { drive, ready, error, recordParts } = useTeamBrainDrive(agentSlug, readable, expanded, record, recordLeaving)
   // Opened on the loading middle: the tree then grows from it rather than popping its middle in again.
   const [openedLoading] = useState(() => !ready)
   // The loading middle stays until its line has gone back out, so the tree starts after it rather than over it.
@@ -167,7 +171,7 @@ function OverviewBody({
   const { front, index, rest } = useMemo(() => splitFrontPages(drive), [drive])
   const tasks = useBrainTasks(agentSlug)
   const active = tasks.some((task) => task.status === 'pending')
-  const { data: syncs = [], isError: syncsUnreadable } = useTeamBrainSyncs(agentSlug, volumeId)
+  const { data: syncs = [], isError: syncsUnreadable } = useTeamBrainSyncs(agentSlug, readable)
   // Recent sessions: what a person started here, and any scheduled run waiting on someone.
   const { data: sessions } = useSessions(agentSlug)
   const [allSessions, setAllSessions] = useState(false)

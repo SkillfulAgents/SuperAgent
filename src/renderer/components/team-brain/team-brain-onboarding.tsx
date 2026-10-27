@@ -1,6 +1,8 @@
 import { useState, type ReactNode } from 'react'
 import { Brain, Folder, Loader2, X } from 'lucide-react'
 import { useAgents } from '@renderer/hooks/use-agents'
+import { usePreparedDriveHealth } from '@renderer/hooks/use-team-brain-setup'
+import { Button } from '@renderer/components/ui/button'
 import { volumeSetupRegistry } from '@renderer/components/volumes/volume-setup-registry'
 import { parseVolumeSource, type VolumeSetupDefinition } from '@renderer/components/volumes/volume-setup'
 import { VolumeEveryoneOnlyContext, VolumeSetupFooterContext, type VolumeSetupFooterProps } from '@renderer/components/volumes/volume-setup-layout'
@@ -70,6 +72,7 @@ export function TeamBrainOnboarding({
   onCancel: () => void
 }) {
   const tb = useTeamBrain()
+  const waiting = driveWait(usePreparedDriveHealth(tb.state.prepared))
   const steps = TEAM_BRAIN_STEPS
   const index = Math.max(steps.indexOf(tb.state.step), 0)
   const step = steps[index]
@@ -132,7 +135,7 @@ export function TeamBrainOnboarding({
             {step === 'location' && <LocationStep tb={tb} nav={nav} onPrepare={onPrepare} />}
             {step === 'agents' && <AgentsStep tb={tb} nav={nav} />}
             {step === 'schedule' && <SyncStep tb={tb} nav={nav} />}
-            {step === 'intake' && <IntakeStep nav={nav} onStart={onStartChat} />}
+            {step === 'intake' && <IntakeStep nav={nav} waiting={waiting} onStart={onStartChat} />}
           </section>
         </DialogContent>
       </Dialog>
@@ -326,6 +329,23 @@ function DriveSetupFooter({ onBack, isSaving, disabled, submitLabel }: VolumeSet
 
 // ── 02 Agents ───────────────────────────────────────────────────────────────
 
+/** Set-up's last button goes on only once the drive is ready, so the agent never starts without it. */
+function driveWait({ health, recheck }: ReturnType<typeof usePreparedDriveHealth>): DriveWait {
+  return {
+    ready: health === 'ok',
+    label: health === 'preparing' ? 'Copying the drive…' : null,
+    problem: health === 'missing' ? 'Couldn’t read the drive.' : health === 'unread' ? 'Couldn’t check the drive.' : null,
+    recheck,
+  }
+}
+type DriveWait = { ready: boolean; label: string | null; problem: string | null; recheck: () => void }
+
+/** A drive that can't be read or checked says so, with Try again, as the drive's own set-up steps do. */
+function DriveProblem({ waiting }: { waiting: DriveWait }) {
+  if (!waiting.problem) return null
+  return <div className="mt-4"><p role="alert" className="text-sm text-destructive">{waiting.problem}</p><Button type="button" variant="ghost" size="sm" onClick={waiting.recheck}>Try again</Button></div>
+}
+
 /** Every agent (a global drive, as in Settings → Drives), or the agents switched on below. */
 function AgentsStep({ tb, nav }: { tb: TeamBrainStore; nav: StepNav }) {
   const { data = [] } = useAgents()
@@ -423,7 +443,7 @@ const INTAKE_STAGES: { title: string; detail: string; Preview: () => ReactNode }
   { title: 'Approve and launch', detail: 'Review the structure it proposes, then launch it to your agents.', Preview: TreePreview },
 ]
 
-function IntakeStep({ nav, onStart }: { nav: StepNav; onStart: () => Promise<void> }) {
+function IntakeStep({ nav, waiting, onStart }: { nav: StepNav; waiting: DriveWait; onStart: () => Promise<void> }) {
   const [starting, setStarting] = useState(false)
   const start = async () => {
     setStarting(true)
@@ -434,7 +454,7 @@ function IntakeStep({ nav, onStart }: { nav: StepNav; onStart: () => Promise<voi
       title="Chat with Team Brain to share your team’s context"
       subtitle="It all happens in one conversation, and you can ask it anything along the way."
       back={nav.back}
-      next={{ label: 'Start chat', onClick: () => void start(), disabled: starting, testId: 'team-brain-start-chat' }}
+      next={{ label: waiting.label ?? 'Start chat', onClick: () => void start(), disabled: starting || !waiting.ready, testId: 'team-brain-start-chat' }}
     >
       <ol className="space-y-3" aria-label="What happens next">
         {INTAKE_STAGES.map(({ title, detail, Preview }, i) => (
@@ -456,6 +476,7 @@ function IntakeStep({ nav, onStart }: { nav: StepNav; onStart: () => Promise<voi
           </li>
         ))}
       </ol>
+      <DriveProblem waiting={waiting} />
     </StepPanel>
   )
 }

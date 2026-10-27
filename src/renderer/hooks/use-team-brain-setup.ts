@@ -11,12 +11,13 @@ import { getTeamBrainState, usesTeamBrain, useTeamBrain } from '@renderer/lib/te
 import type { VolumeDetails } from '@renderer/components/volumes/volume-details-schema'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ApiAgent } from '@shared/lib/types/api'
+import type { MountSummaryWithHealth } from '@shared/lib/types/mount'
 import { mountPathOf } from '@shared/lib/volumes/base-mountable-volume'
 import type { VolumeSource } from '@shared/lib/volumes/volume-config-schema'
 import { useDiscoverableAgents, useInstallAgentFromSkillset } from './use-agent-templates'
 import { useAgents, useDeleteAgent, useStartAgent, useUpdateAgent } from './use-agents'
 import { useConnectedAccounts } from './use-connected-accounts'
-import { useAddMount } from './use-mounts'
+import { useAddMount, useAgentMounts } from './use-mounts'
 import { setTeamBrainReach, useGiveTeamBrain } from './use-team-brain-access'
 import { useStartOnboardingSession } from './use-start-onboarding-session'
 import { useSettings, useUpdateSettings } from './use-settings'
@@ -26,8 +27,9 @@ const TEAM_BRAIN_TEMPLATE_PATH = 'agents/team-brain/'
 
 /**
  * Team Brain set-up for the page that hosts the modal. Saving the drive
- * prepares the agent and its drive and warm-starts the agent, as the new-agent
- * form does; Start chat launches them. Leaving the page mid-set-up cancels it.
+ * prepares the agent and its drive, and the agent warm-starts once the drive can
+ * mount, as the new-agent form does; Start chat launches them. Leaving the page
+ * mid-set-up cancels it.
  */
 export function useTeamBrainSetup() {
   const tb = useTeamBrain()
@@ -55,6 +57,18 @@ export function useTeamBrainSetup() {
   const mounted = useRef(true)
   // Bumped by each prepare and each cancel: work that finds it moved on belongs to an attempt that ended.
   const attempt = useRef(0)
+  // A start mounts only drives that are ready, so a drive still making its first copy waits for the agent's start.
+  const draft = tb.state.prepared
+  const driveHealth = usePreparedDriveHealth(draft).health
+  const warmed = useRef<TeamBrainPrepared | null>(null)
+  const warm = startAgent.mutate
+  useEffect(() => {
+    if (!draft || driveHealth !== 'ok' || warmed.current === draft) return
+    warmed.current = draft
+    warm({ slug: draft.agentSlug, source: 'warm-start' }, {
+      onError: (error) => captureRendererException(error, { tags: { area: 'team-brain', op: 'warm-start' } }),
+    })
+  }, [draft, driveHealth, warm])
 
   const discard = async ({ agentSlug, volumeId }: TeamBrainPrepared) => {
     // The drive delete refuses while the agent still has it attached.
@@ -97,9 +111,6 @@ export function useTeamBrainSetup() {
       void discard(prepared).catch(() => {})
       return false
     }
-    startAgent.mutate({ slug: agent.slug, source: 'warm-start' }, {
-      onError: (error) => captureRendererException(error, { tags: { area: 'team-brain', op: 'warm-start' } }),
-    })
     tb.setPrepared(prepared)
     return true
   }
@@ -212,4 +223,13 @@ export function useTeamBrainSetup() {
   }, [])
 
   return { agentSlug: setUpSlug, prepare, cancel, startChat }
+}
+
+/**
+ * The prepared drive's health: 'preparing' while its first copy runs, undefined until known. A drive list that can't be
+ * read gives 'unread': what it said before may be out of date. `recheck` reads it again.
+ */
+export function usePreparedDriveHealth(prepared: TeamBrainPrepared | null): { health: MountSummaryWithHealth['health'] | 'unread' | undefined; recheck: () => void } {
+  const { data: mounts, isError, refetch } = useAgentMounts(prepared?.agentSlug ?? '')
+  return { health: isError ? 'unread' : mounts?.find((mount) => mount.volumeId === prepared?.volumeId)?.health, recheck: () => void refetch() }
 }

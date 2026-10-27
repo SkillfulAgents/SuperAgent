@@ -22,6 +22,11 @@ const { app, user } = vi.hoisted(() => {
       instructions: '',
       record: undefined as { agentSlug: string; volumeId: string } | undefined,
       upkeepFails: false as boolean | 'rejects',
+      /** The prepared drive's health: 'preparing' while its first copy runs; or the drive list not in yet. */
+      health: 'ok' as 'ok' | 'preparing' | 'missing' | 'loading',
+      /** The drive list's last poll failed, over what it said before. */
+      pollFailed: false,
+      recheck: vi.fn(async () => {}),
       install: record('install', { slug: 'team-brain', onboardingFirstPrompt: 'Set up our team brain' }),
       addMount: vi.fn(async ({ agentSlug, readOnly }: { agentSlug: string; readOnly?: boolean }) => {
         calls.push(`mount ${agentSlug}${readOnly ? ' read-only' : ''}`)
@@ -53,6 +58,11 @@ vi.mock('@renderer/hooks/use-agents', () => ({
   useUpdateAgent: () => ({ mutateAsync: app.updateAgent }),
 }))
 vi.mock('@renderer/hooks/use-mounts', () => ({
+  useAgentMounts: (slug: string) => ({
+    data: slug && app.health !== 'loading' ? [{ id: `m-${slug}`, volumeId: 'vol1', health: app.health }] : undefined,
+    isError: app.pollFailed,
+    refetch: app.recheck,
+  }),
   useAddMount: () => ({ mutateAsync: app.addMount }),
 }))
 vi.mock('@renderer/hooks/use-volume-definitions', () => ({
@@ -112,6 +122,8 @@ beforeEach(() => {
   app.agents = [agent('writer'), agent('planner')]
   app.record = undefined
   app.upkeepFails = false
+  app.health = 'ok'
+  app.pollFailed = false
   Object.assign(user, { isAuthMode: false, isAdmin: false })
 })
 afterEach(() => {
@@ -191,6 +203,48 @@ describe('TeamBrainPage', () => {
     expect(getTeamBrainState()).toEqual(TEAM_BRAIN_INITIAL_STATE)
     page.rerender(<TeamBrainPage />)
     expect(screen.getByTestId('team-brain-home')).toBeInTheDocument()
+  })
+
+  it('starts the agent once its drive has copied, and offers Start chat only then', async () => {
+    const clicker = userEvent.setup()
+    app.health = 'preparing'
+    const page = render(<TeamBrainPage />)
+    await saveDrive(clicker)
+    await waitFor(() => expect(screen.getByTestId('team-brain-onboarding-step')).toHaveAttribute('data-step', 'agents'))
+    await clicker.click(screen.getByTestId('team-brain-next'))
+    await clicker.click(screen.getByTestId('team-brain-next'))
+    // Started now, the agent would run without the drive it is about to build.
+    expect(app.calls).toEqual(['install', 'mount team-brain'])
+    expect(screen.getByTestId('team-brain-start-chat')).toBeDisabled()
+    expect(screen.getByTestId('team-brain-start-chat')).toHaveTextContent('Copying the drive…')
+
+    // Not known yet is not ready, and says nothing it doesn't know.
+    app.health = 'loading'
+    page.rerender(<TeamBrainPage />)
+    expect(screen.getByTestId('team-brain-start-chat')).toBeDisabled()
+    expect(screen.getByTestId('team-brain-start-chat')).toHaveTextContent('Start chat')
+
+    // A poll that fails after one that said copying may be out of date: still not ready.
+    app.health = 'preparing'
+    app.pollFailed = true
+    page.rerender(<TeamBrainPage />)
+    expect(screen.getByTestId('team-brain-start-chat')).toBeDisabled()
+    expect(screen.getByRole('alert')).toHaveTextContent('Couldn’t check the drive.')
+    // Try again reads the drive list again.
+    await clicker.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(app.recheck).toHaveBeenCalled()
+    app.pollFailed = false
+
+    app.health = 'missing'
+    page.rerender(<TeamBrainPage />)
+    expect(screen.getByTestId('team-brain-start-chat')).toBeDisabled()
+    expect(screen.getByRole('alert')).toHaveTextContent('Couldn’t read the drive.')
+
+    app.health = 'ok'
+    page.rerender(<TeamBrainPage />)
+    expect(app.calls).toEqual(['install', 'mount team-brain', 'warm-start'])
+    expect(screen.getByTestId('team-brain-start-chat')).toBeEnabled()
+    expect(screen.getByTestId('team-brain-start-chat')).toHaveTextContent('Start chat')
   })
 
   it('starts on every agent: the drive goes global once the record is accepted, each agent can message Team Brain, and Team Brain reads every agent', async () => {
