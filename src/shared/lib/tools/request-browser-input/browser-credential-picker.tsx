@@ -45,6 +45,8 @@ interface BrowserCredentialPickerProps {
    * values. 'browser_input' (default): a hand-off, filled by the page heuristic.
    */
   kind?: 'browser_input' | 'login'
+  /** 'login': what goes with the pick — the card's "Save for later", and that the user saw who else can use it. */
+  loginOptions?: { save?: boolean; sharedAgentAcknowledged?: boolean }
   /** Called with the route's answer once a saved login was filled into the page. */
   onFilled?: (result: unknown) => void
 }
@@ -55,6 +57,7 @@ export function BrowserCredentialPicker({
   toolUseId,
   disabled,
   kind = 'browser_input',
+  loginOptions,
   onFilled,
 }: BrowserCredentialPickerProps) {
   const { openSettings } = useDialogs()
@@ -131,7 +134,7 @@ export function BrowserCredentialPicker({
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ toolUseId, credentialId }),
+          body: JSON.stringify({ toolUseId, credentialId, ...(kind === 'login' ? loginOptions : {}) }),
         },
       )
       const result = await response.json() as {
@@ -151,7 +154,7 @@ export function BrowserCredentialPicker({
     } finally {
       setFillingId(null)
     }
-  }, [agentSlug, kind, sessionId, toolUseId])
+  }, [agentSlug, kind, loginOptions, sessionId, toolUseId])
 
   const copyManualCredential = useCallback(async (field: 'username' | 'password') => {
     if (!manualCredential) return

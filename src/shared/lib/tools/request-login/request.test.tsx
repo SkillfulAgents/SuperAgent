@@ -25,10 +25,11 @@ vi.mock('@renderer/lib/env', async (importOriginal) => ({
 // what a fill through it does to the request.
 const pickerAnswer = vi.hoisted(() => ({ body: null as unknown }))
 vi.mock('../request-browser-input/browser-credential-picker', () => ({
-  BrowserCredentialPicker: (props: { kind?: string; onFilled?: (body: unknown) => void }) => (
+  BrowserCredentialPicker: (props: { kind?: string; loginOptions?: unknown; onFilled?: (body: unknown) => void }) => (
     <button
       data-testid="credential-picker"
       data-kind={props.kind}
+      data-login-options={JSON.stringify(props.loginOptions ?? null)}
       onClick={() => props.onFilled?.(pickerAnswer.body)}
     >
       saved login
@@ -445,6 +446,16 @@ describe('LoginRequestItem', () => {
     await user.click(picker)
     await waitFor(() => expect(onComplete).toHaveBeenCalled())
     expect(posted('/fill-login')).toEqual([])
+  })
+
+  it('saves a login picked from the password manager when "Save for later" is on, and not once it is off', async () => {
+    const user = userEvent.setup()
+    contextIs({ fields: CONTEXT.fields.slice(0, 2) })
+    render(<LoginRequestItem {...props({ fields: props().fields.slice(0, 2) })} />)
+    const picker = await screen.findByTestId('credential-picker')
+    await waitFor(() => expect(JSON.parse(picker.getAttribute('data-login-options')!)).toEqual({ save: true }))
+    await user.click(screen.getByTestId('login-save'))
+    expect(JSON.parse(picker.getAttribute('data-login-options')!)).toBeNull()
   })
 
   it('shows a saved login sent after the request was answered elsewhere as already answered, not as a failed fill', async () => {

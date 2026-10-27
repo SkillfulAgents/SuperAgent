@@ -181,6 +181,10 @@ export const loginViaBodySchema = z.object({
 export const fillLoginCredentialBodySchema = z.object({
   toolUseId: z.string().min(1),
   credentialId: z.string().min(1),
+  /** Save the login to the user's vault and grant it to this agent ("Save for later"). */
+  save: z.boolean().optional(),
+  /** The user saw that other members of this agent can sign in with what it saves. */
+  sharedAgentAcknowledged: z.boolean().optional(),
 }).strict()
 
 export const completeLoginBodySchema = z.object({
