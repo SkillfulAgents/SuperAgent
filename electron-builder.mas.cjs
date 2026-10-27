@@ -63,6 +63,11 @@ module.exports = {
       ElectronTeamID: TEAM_ID,
       // App Review wants the reason, not Electron's generic default.
       NSMicrophoneUsageDescription: 'Gamut uses the microphone for voice mode, so you can talk with your agents.',
+      // Export compliance: the app uses no encryption beyond the exempt kind
+      // (HTTPS/TLS), the answer given in App Store Connect for the first build
+      // and for the iOS app. Without it, every build waits for that answer before
+      // TestFlight distributes it.
+      ITSAppUsesNonExemptEncryption: false,
     },
     // The Store signs and checks what it distributes.
     notarize: false,

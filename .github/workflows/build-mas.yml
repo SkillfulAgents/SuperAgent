@@ -4,7 +4,8 @@ name: Build Mac App Store App
 # a signed installer package, sent to App Store Connect. Two workflows call it,
 # each after running lima-image.yml:
 #   release.yml, for every release (rc and full): it builds once the release has
-#       published its agent image, and uploads the package, which lands in TestFlight.
+#       published its agent image, uploads the package, and once App Store Connect
+#       has processed it, adds it to the TestFlight groups (testflight job).
 #   pr-build.yml, when its `mas` input is ticked: App Store Connect validates the
 #       package, and it is never uploaded.
 # Without its signing secrets it says so and builds nothing.
@@ -48,6 +49,16 @@ on:
         required: false
         type: number
         default: 30
+      testflight-groups:
+        description: 'After an upload, the TestFlight groups to add the build to, comma-separated. An external one submits it for Beta App Review'
+        required: false
+        type: string
+        default: ''
+      what-to-test:
+        description: "The build's What to Test note in TestFlight"
+        required: false
+        type: string
+        default: ''
     outputs:
       secrets-set:
         description: "'true' when the signing secrets are set, so the package was built"
@@ -55,6 +66,11 @@ on:
 
 permissions:
   contents: read
+
+env:
+  # The Gamut record's Apple ID (App Store Connect → App Information). altool
+  # needs it to find the record: the bundle id alone did not, in the spike.
+  MAS_APPLE_ID: '6801340586'
 
 jobs:
   secrets:
@@ -82,10 +98,6 @@ jobs:
     needs: secrets
     if: needs.secrets.outputs.present == 'true'
     runs-on: blacksmith-12vcpu-macos-26
-    env:
-      # The Gamut record's Apple ID (App Store Connect → App Information). altool
-      # needs it to find the record: the bundle id alone did not, in the spike.
-      MAS_APPLE_ID: '6801340586'
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -169,3 +181,43 @@ jobs:
           fi
           xcrun altool "$command" -f "${packages[0]}" -t macos --apple-id "$MAS_APPLE_ID" \
             --apiKey "$APPLE_API_KEY_ID" --apiIssuer "$APPLE_API_ISSUER"
+
+  # App Store Connect takes 5–15 minutes to process an upload, so the wait runs
+  # here on Linux instead of holding the macOS runner.
+  testflight:
+    needs: build-mas
+    if: inputs.app-store-connect == 'upload' && inputs.testflight-groups != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # Same pin as build-mac.yml.
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
+
+      # For tsx: the script needs no package's install script.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Add the build to its TestFlight groups
+        env:
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          BUILD_NUMBER: ${{ inputs.build-number }}
+          GROUPS: ${{ inputs.testflight-groups }}
+          WHAT_TO_TEST: ${{ inputs.what-to-test }}
+        run: >-
+          npx tsx scripts/testflight-distribute.ts --app "$MAS_APPLE_ID" --build "$BUILD_NUMBER"
+          --groups "$GROUPS" --what-to-test "$WHAT_TO_TEST"

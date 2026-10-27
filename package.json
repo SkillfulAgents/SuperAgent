@@ -93,7 +93,7 @@
     "jpeg-js": "^0.4.4",
     "js-yaml": "^4.3.2",
     "koffi": "^3.3.3",
-    "llm-endpoint-translation": "https://github.com/SkillfulAgents/llm-endpoint-translation/releases/download/v0.1.6/llm-endpoint-translation-0.1.6.tgz",
+    "llm-endpoint-translation": "https://github.com/SkillfulAgents/llm-endpoint-translation/releases/download/v0.1.7/llm-endpoint-translation-0.1.7.tgz",
     "marked": "^18.1.1",
     "node-diff3": "^3.2.1",
     "pngjs": "^7.0.0",

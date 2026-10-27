@@ -251,12 +251,16 @@ jobs:
           # image): deflating them again only costs time here and in create-release.
           compression-level: 0
 
-  # Build the Mac App Store package and upload it to App Store Connect, where it
-  # lands in TestFlight; submitting it for review stays a person's step. Like
-  # build-mac it bundles the agent image this release publishes, so it waits for
-  # it. create-release doesn't wait for this job: a Store problem never holds up
-  # the direct release, and the package isn't one of its files (its artifact
-  # name doesn't match `*-release-artifacts`).
+  # Build the Mac App Store package, upload it to App Store Connect, and hand it
+  # to TestFlight: Team (internal) gets it as soon as Apple has processed it, and
+  # Beta (external) once Beta App Review approves it. Every release of a version
+  # (0.6.0-rc.1, rc.2, 0.6.0) is the same TestFlight version, 0.6.0, so only its
+  # first build needs a full review; Apple may approve later ones without one.
+  # Submitting to the App Store stays a person's step. Like build-mac it bundles
+  # the agent image this release publishes, so it waits for it. create-release
+  # doesn't wait for this job: a Store problem never holds up the direct
+  # release, and the package isn't one of its files (its artifact name doesn't
+  # match `*-release-artifacts`).
   build-mas:
     needs: [prepare, lima-image, build-agent-container]
     uses: ./.github/workflows/build-mas.yml
@@ -266,6 +270,9 @@ jobs:
       build-number: ${{ github.run_number }}.${{ github.run_attempt }}
       app-store-connect: upload
       artifact-name: Gamut-MAS-${{ needs.prepare.outputs.version }}
+      testflight-groups: Team,Beta
+      # Testers see 0.6.0 (412.1); this says which release that is.
+      what-to-test: Gamut ${{ needs.prepare.outputs.version }}
 
   # Build Windows Electron app
   build-win:
