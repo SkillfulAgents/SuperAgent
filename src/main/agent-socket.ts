@@ -25,7 +25,7 @@ export interface AgentSocketRequest {
 export interface AgentSocket {
   readonly readyState: number
   readonly bufferedAmount: number
-  send(data: RawData | string, options?: { binary: boolean }): void
+  send(data: RawData, options: { binary: boolean }): void
   close(code?: number, reason?: string): void
   on(event: 'message', listener: (data: RawData, isBinary: boolean) => void): unknown
   on(event: 'close', listener: (code: number, reason: Buffer) => void): unknown

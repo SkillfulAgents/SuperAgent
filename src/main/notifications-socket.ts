@@ -22,12 +22,12 @@ function streamNotifications(ws: AgentSocket, user: { id: string } | undefined):
   const close = openNotificationsFeed({
     user,
     deliver: (event) => {
-      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(event))
+      if (ws.readyState === WebSocket.OPEN) ws.send(Buffer.from(JSON.stringify(event)), { binary: false })
     },
     onLoadError: () => ws.close(1011, 'Access check failed'),
   })
   ws.on('message', (data) => {
-    if (data.toString() === 'ping' && ws.readyState === WebSocket.OPEN) ws.send('pong')
+    if (data.toString() === 'ping' && ws.readyState === WebSocket.OPEN) ws.send(Buffer.from('pong'), { binary: false })
   })
   ws.on('close', close)
   ws.on('error', (error) => console.error('[NotificationsSocket] Socket error:', error))

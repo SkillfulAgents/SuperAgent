@@ -131,7 +131,6 @@ export function GlobalNotificationHandler() {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectAttemptRef = useRef(0)
   const wasDeadRef = useRef(false)
-  const hasConnectedRef = useRef(false)
   const streamRef = useRef<WebSocket | null>(null)
 
   // Sync dock badge count with unread notifications (macOS Electron only)
@@ -268,7 +267,8 @@ export function GlobalNotificationHandler() {
     const baseUrl = getApiBaseUrl()
     const wsProtocol = baseUrl.startsWith('https') || window.location.protocol === 'https:' ? 'wss' : 'ws'
     const wsHost = baseUrl ? baseUrl.replace(/^https?:\/\//, '') : window.location.host
-    const es = new WebSocket(`${wsProtocol}://${wsHost}/api/notifications/socket`)
+    const wsUrl = `${wsProtocol}://${wsHost}/api/notifications/socket`
+    const es = new WebSocket(wsUrl)
     streamRef.current = es
     const confirmations = createInvalidationCoalescer(queryClient, SESSION_CONFIRMATION_DELAY_MS)
 
@@ -725,8 +725,6 @@ export function GlobalNotificationHandler() {
     // Agents and roles cover the window before the first connect. Rosters are
     // already loading on mount; only refresh them after a gap.
     es.onopen = () => {
-      const isReconnect = hasConnectedRef.current || wasDeadRef.current
-      hasConnectedRef.current = true
       reconnectAttemptRef.current = 0
       if (wasDeadRef.current) {
         // The dead window can be arbitrarily long, and every family this
@@ -737,13 +735,6 @@ export function GlobalNotificationHandler() {
       }
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
-      if (isReconnect) {
-        queryClient.invalidateQueries({ queryKey: ['agent-members'] })
-        queryClient.invalidateQueries({ queryKey: ['agent-invite-candidates'] })
-        // A drive announces only a change to its status pill, so one missed in the gap is never sent again.
-        queryClient.invalidateQueries({ queryKey: ['mounts'] })
-        queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
-      }
     }
 
     // Keeps proxies from closing an idle socket; the server answers `pong`.
