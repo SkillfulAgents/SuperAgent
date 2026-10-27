@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 import { describe, expect, it } from 'vitest'
+import { prepareAppStoreVersion } from '../../scripts/lib/app-store-version'
 import {
   AppStoreConnectError,
   appStoreConnectToken,
@@ -171,5 +172,117 @@ describe('distributeBuild', () => {
     expect(updated.calls.find((c) => c.route === 'PATCH /v1/betaBuildLocalizations/loc-1')?.body).toEqual({
       data: { type: 'betaBuildLocalizations', id: 'loc-1', attributes: { whatsNew: 'Gamut 0.6.0-rc.2' } },
     })
+  })
+})
+
+describe('prepareAppStoreVersion', () => {
+  const version = (id: string, versionString: string, appVersionState: string, createdDate: string) =>
+    ({ id, attributes: { versionString, appVersionState, createdDate } })
+  const prepare = (client: Client, versionString: string) => prepareAppStoreVersion(client, {
+    appId: '6801340586', platform: 'MAC_OS', versionString, buildId: 'build-9', whatsNew: 'Bug fixes and improvements.', log: () => {},
+  })
+  const writes = (calls: { route: string; body: unknown }[]) => calls.filter((c) => !c.route.startsWith('GET'))
+  const attachBuild = (versionId: string) => ({
+    route: `PATCH /v1/appStoreVersions/${versionId}/relationships/build`, body: { data: { type: 'builds', id: 'build-9' } },
+  })
+  const listing = { locale: 'en-US', description: 'Gamut on your Mac', keywords: 'agents', promotionalText: 'Promo', marketingUrl: 'https://www.gamut.so', supportUrl: 'https://www.gamut.so/docs' }
+
+  it('gives the version being prepared the release’s number and build, with no What’s New on a first version', async () => {
+    const { client, calls } = fakeApi({
+      'GET /v1/apps/6801340586/appStoreVersions': ok({ data: [version('v1', '0.5.50', 'PREPARE_FOR_SUBMISSION', '2026-10-27')] }),
+      'PATCH /v1/appStoreVersions/v1': ok({ data: { id: 'v1' } }),
+      'PATCH /v1/appStoreVersions/v1/relationships/build': ok(),
+      'GET /v1/appStoreVersions/v1/appStoreVersionLocalizations': ok({ data: [{ id: 'l1', attributes: { ...listing, whatsNew: null } }] }),
+    })
+    await expect(prepare(client, '0.6.0')).resolves.toBe('updated')
+    expect(writes(calls)).toEqual([
+      { route: 'PATCH /v1/appStoreVersions/v1', body: { data: { type: 'appStoreVersions', id: 'v1', attributes: { versionString: '0.6.0' } } } },
+      attachBuild('v1'),
+    ])
+  })
+
+  it('only attaches the build when the version being prepared has the number already', async () => {
+    const { client, calls } = fakeApi({
+      'GET /v1/apps/6801340586/appStoreVersions': ok({ data: [version('v1', '0.6.0', 'PREPARE_FOR_SUBMISSION', '2026-10-27')] }),
+      'PATCH /v1/appStoreVersions/v1/relationships/build': ok(),
+      'GET /v1/appStoreVersions/v1/appStoreVersionLocalizations': ok({ data: [] }),
+    })
+    await prepare(client, '0.6.0')
+    expect(writes(calls)).toEqual([attachBuild('v1')])
+  })
+
+  it('makes a new version once the last is out, copies the listing App Store Connect left out, and writes What’s New', async () => {
+    const { client, calls } = fakeApi({
+      'GET /v1/apps/6801340586/appStoreVersions': ok({ data: [
+        version('v0', '0.5.50', 'REPLACED_WITH_NEW_VERSION', '2026-10-01'),
+        version('v1', '0.6.0', 'READY_FOR_DISTRIBUTION', '2026-11-01'),
+      ] }),
+      'POST /v1/appStoreVersions': () => ({ status: 201, json: { data: { id: 'v2' } } }),
+      'PATCH /v1/appStoreVersions/v2/relationships/build': ok(),
+      'GET /v1/appStoreVersions/v1/appStoreVersionLocalizations': ok({ data: [{ id: 's1', attributes: { ...listing, whatsNew: 'Last time' } }] }),
+      'GET /v1/appStoreVersions/v2/appStoreVersionLocalizations': ok({ data: [] }),
+      'POST /v1/appStoreVersionLocalizations': () => ({ status: 201, json: { data: { id: 'l2' } } }),
+    })
+    await expect(prepare(client, '0.7.0')).resolves.toBe('created')
+    expect(writes(calls)).toEqual([
+      {
+        route: 'POST /v1/appStoreVersions',
+        body: { data: {
+          type: 'appStoreVersions',
+          attributes: { platform: 'MAC_OS', versionString: '0.7.0', releaseType: 'MANUAL' },
+          relationships: { app: { data: { type: 'apps', id: '6801340586' } } },
+        } },
+      },
+      attachBuild('v2'),
+      {
+        route: 'POST /v1/appStoreVersionLocalizations',
+        body: { data: {
+          type: 'appStoreVersionLocalizations',
+          attributes: { ...listing, whatsNew: 'Bug fixes and improvements.' },
+          relationships: { appStoreVersion: { data: { type: 'appStoreVersions', id: 'v2' } } },
+        } },
+      },
+    ])
+  })
+
+  it('keeps the listing App Store Connect copied, and What’s New someone already wrote', async () => {
+    const routes = (whatsNew: string | null) => fakeApi({
+      'GET /v1/apps/6801340586/appStoreVersions': ok({ data: [
+        version('v1', '0.6.0', 'READY_FOR_DISTRIBUTION', '2026-11-01'),
+        version('v2', '0.7.0', 'PREPARE_FOR_SUBMISSION', '2026-11-20'),
+      ] }),
+      'PATCH /v1/appStoreVersions/v2/relationships/build': ok(),
+      'GET /v1/appStoreVersions/v2/appStoreVersionLocalizations': ok({ data: [{ id: 'l2', attributes: { ...listing, whatsNew } }] }),
+      'PATCH /v1/appStoreVersionLocalizations/l2': ok({ data: { id: 'l2' } }),
+    })
+    const blank = routes(null)
+    await prepare(blank.client, '0.7.0')
+    expect(writes(blank.calls)).toEqual([
+      attachBuild('v2'),
+      {
+        route: 'PATCH /v1/appStoreVersionLocalizations/l2',
+        body: { data: { type: 'appStoreVersionLocalizations', id: 'l2', attributes: { whatsNew: 'Bug fixes and improvements.' } } },
+      },
+    ])
+    const written = routes('Faster agents, and Choose folder again.')
+    await prepare(written.client, '0.7.0')
+    expect(writes(written.calls)).toEqual([attachBuild('v2')])
+  })
+
+  it('changes nothing while a version is in review, or when this version is out already', async () => {
+    const inReview = fakeApi({
+      'GET /v1/apps/6801340586/appStoreVersions': ok({ data: [
+        version('v1', '0.6.0', 'READY_FOR_DISTRIBUTION', '2026-11-01'),
+        version('v2', '0.7.0', 'WAITING_FOR_REVIEW', '2026-11-20'),
+      ] }),
+    })
+    await expect(prepare(inReview.client, '0.7.1')).resolves.toBe('version in review')
+    expect(writes(inReview.calls)).toEqual([])
+
+    const out = fakeApi({
+      'GET /v1/apps/6801340586/appStoreVersions': ok({ data: [version('v1', '0.6.0', 'READY_FOR_DISTRIBUTION', '2026-11-01')] }),
+    })
+    await expect(prepare(out.client, '0.6.0')).resolves.toBe('released already')
+    expect(writes(out.calls)).toEqual([])
   })
 })
