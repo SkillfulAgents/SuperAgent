@@ -27,7 +27,7 @@ const DESCRIPTION = `Sign the browser in to the site on the page. Map the page's
 
 Use this when the page asks for credentials: a username or email, a password, a one-time code (from SMS, email or an authenticator app), or several of these together. Each call is one step of a sign-in:
 1. Call it without username first. When the user has saved accounts on this site that you may use, the result lists them and nothing is filled. Otherwise the user gets the form.
-2. To sign in with a listed account, call again with username set to it. The host fills the mapped fields from it and submits. When the account lacks a value the page asks for (a code, a new field), the user is asked for just that.
+2. To sign in with a listed account, call again with username set to it. The host fills the mapped fields from it and submits. When the account lacks a value the page asks for (a code, a new field), the user is asked for just that. When the account has a session saved from an earlier sign-in, the host may restore that instead and load the page again: check whether it shows you signed in, and if it asks you to sign in, call again with the same username. To switch a site to another of your accounts there, call with its username (no fields needed): its saved session replaces the current one when it has one.
 3. A sign-in split over steps (email first, then password) takes one call per step. Pass the username you used on the earlier step. When a page asks for the email or username alone, also map the password without a ref: the user enters both at once, and the host fills the password when a later call maps that field.
 4. When the site rejects the sign-in (a wrong or changed password), call again with that username, ask_user: true, and reason set to what the page said. The user enters it again; until they do, the vault fills that account's password only with them. For another account, call with ask_user: true and no username.
 
@@ -245,6 +245,30 @@ function formatBrowserClosed(resolution: Extract<LoginResolution, { type: 'brows
   return { content: [{ type: 'text', text: [what ? `${closed} ${what}` : closed, next].join('\n') }] }
 }
 
+function formatSession(resolution: Extract<LoginResolution, { type: 'session' }>, named: Name): { content: Array<{ type: 'text'; text: string }>; isError?: boolean } {
+  const account = named(resolution.username)
+  const again = `call request_login again with username "${account}" and the page's sign-in fields mapped by ref: the vault fills the account's saved values then.`
+  const digest = (resolution.observation?.digest as UrlDigest | undefined) ?? null
+  if (resolution.restored) {
+    return {
+      content: [{
+        type: 'text',
+        text: [
+          `Nothing was filled: the vault restored the saved session of ${account} on ${resolution.site} (the cookies and storage of an earlier sign-in), and the page loaded again: refs from earlier snapshots are stale.`,
+          `If the page asks you to sign in, ${again}`,
+        ].join('\n') + formatUrlDigest(digest),
+      }],
+    }
+  }
+  const state = resolution.cleared
+    ? `so the browser was signed out of ${resolution.site} and the page loaded again`
+    : `and the browser may hold part of it on ${resolution.site}`
+  return {
+    content: [{ type: 'text', text: `Nothing was filled: the saved session of ${account} could not be restored, ${state}.\nTo sign in, ${again}${formatUrlDigest(digest)}` }],
+    isError: true,
+  }
+}
+
 /** Where the values came from and what was kept for later, by account. */
 function accountLines(account: LoginFillAccount | undefined, named: Name): string[] {
   if (!account) return []
@@ -270,6 +294,7 @@ export function formatLoginResolution(resolution: LoginResolution, named: Name =
   if (resolution.type === 'accounts') return { content: [{ type: 'text', text: formatAccounts(resolution, named) }] }
   if (resolution.type === 'via') return { content: [{ type: 'text', text: formatVia(resolution, named) }] }
   if (resolution.type === 'browser_closed') return formatBrowserClosed(resolution, named)
+  if (resolution.type === 'session') return formatSession(resolution, named)
 
   const { origin, outcomes, lost, submitted, submitError, observation, changedSecrets, pageActivity, account } = resolution
   const filled = outcomes.filter((outcome) => outcome.status === 'filled' || outcome.status === 'changed')

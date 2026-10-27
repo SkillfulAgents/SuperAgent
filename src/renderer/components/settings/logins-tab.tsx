@@ -25,6 +25,7 @@ import {
   BrowserAccountRequestError,
   useBrowserAccounts,
   useDeleteBrowserAccount,
+  useForgetBrowserAccountSessions,
   useGrantBrowserAccount,
   useRenameBrowserAccount,
   useRevokeBrowserAccount,
@@ -51,6 +52,18 @@ function describeAccount(account: BrowserAccount): string {
 
 function AccountIcon({ account, className }: { account: Pick<BrowserAccount, 'origin'>; className?: string }) {
   return <SiteFavicon src={`${account.origin}/favicon.ico`} className={className ?? 'h-4 w-4'} />
+}
+
+const BROWSER_NAMES: Record<BrowserAccount['sessions'][number]['browserType'], string> = {
+  container: 'Built-in browser',
+  chrome: 'Chrome',
+  browserbase: 'Browserbase',
+  platform: 'Platform browser',
+}
+
+/** Where a signed-in session is saved, and since when: "Chrome, saved 3h ago". */
+function describeSession(session: BrowserAccount['sessions'][number]): string {
+  return `${BROWSER_NAMES[session.browserType]}, saved ${formatCompactDistance(safeDate(session.capturedAt))}`
 }
 
 function usedBy(count: number): string {
@@ -187,6 +200,7 @@ function LoginDetailPage({ account, onBack, onDelete }: { account: BrowserAccoun
   const grant = useGrantBrowserAccount()
   const revoke = useRevokeBrowserAccount()
   const rename = useRenameBrowserAccount()
+  const forgetSessions = useForgetBrowserAccountSessions()
   const [confirming, setConfirming] = useState<SharedConfirm | null>(null)
   const confirmingRef = useRef<SharedConfirm | null>(null)
   confirmingRef.current = confirming
@@ -305,6 +319,28 @@ function LoginDetailPage({ account, onBack, onDelete }: { account: BrowserAccoun
               <span className="w-24 shrink-0 text-muted-foreground">Last used</span>
               <span>{account.lastUsedAt ? formatCompactDistance(safeDate(account.lastUsedAt)) : 'Never'}</span>
             </div>
+            {account.sessions.length > 0 && (
+              <div className="flex items-center gap-3 px-4 py-2.5" data-testid="login-session">
+                <span className="w-24 shrink-0 text-muted-foreground">Session</span>
+                <span className="min-w-0 flex-1 space-y-0.5">
+                  {account.sessions.map((session) => <span key={session.browserType} className="block">{describeSession(session)}</span>)}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="-my-1 h-6 shrink-0 px-2 text-2xs"
+                  disabled={forgetSessions.isPending}
+                  onClick={() => {
+                    forgetSessions.mutateAsync(account.id)
+                      .then(() => toast.success('Forgot the saved session', { description: 'The next sign-in with this login fills its values.' }))
+                      .catch((error: unknown) => toast.error('Could not forget the session', { description: error instanceof Error ? error.message : 'Please try again.' }))
+                  }}
+                  data-testid="login-session-forget"
+                >
+                  Forget
+                </Button>
+              </div>
+            )}
             {account.rejectedAt && (
               <div className="flex items-start gap-3 px-4 py-2.5" data-testid="login-rejected">
                 <span className="w-24 shrink-0 text-muted-foreground">Rejected</span>
@@ -316,6 +352,7 @@ function LoginDetailPage({ account, onBack, onDelete }: { account: BrowserAccoun
           </div>
           <p className="px-1 text-2xs text-muted-foreground">
             Saved values are never shown. An agent signs in with them; when the site rejects one, it asks you again and what you enter replaces it.
+            {account.sessions.length > 0 && ' A saved session signs an agent in without them, in the same kind of browser it was saved in.'}
           </p>
         </section>
       </div>

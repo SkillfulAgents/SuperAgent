@@ -6,6 +6,7 @@
 
 import * as net from 'net';
 import * as path from 'path';
+import { isSessionStubTarget } from './browser-session';
 
 const DEFAULT_MAX_TABS = 10;
 
@@ -76,7 +77,8 @@ class TabManager {
           const resp = JSON.parse(buf);
           clearTimeout(timeout);
           client.end();
-          const tabs = resp.data?.tabs;
+          // Without the tabs a saved session is read on: no "new tab" for the agent while one is open.
+          const tabs = (resp.data?.tabs as TabInfo[] | undefined)?.filter((tab) => !tab.targetId || !isSessionStubTarget(tab.targetId));
           resp.success && tabs ? resolve(tabs) : reject(new Error(resp.error || 'No tabs'));
         } catch { /* incomplete JSON, wait for more */ }
       });

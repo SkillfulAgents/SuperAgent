@@ -12,6 +12,7 @@ const state = vi.hoisted(() => ({
   revoke: vi.fn(),
   rename: vi.fn(),
   remove: vi.fn(),
+  forgetSessions: vi.fn(),
 }))
 
 vi.mock('@renderer/hooks/use-browser-accounts', async (importOriginal) => ({
@@ -21,6 +22,7 @@ vi.mock('@renderer/hooks/use-browser-accounts', async (importOriginal) => ({
   useRevokeBrowserAccount: () => ({ mutateAsync: state.revoke, isPending: false }),
   useRenameBrowserAccount: () => ({ mutateAsync: state.rename, isPending: false }),
   useDeleteBrowserAccount: () => ({ mutateAsync: state.remove, isPending: false }),
+  useForgetBrowserAccountSessions: () => ({ mutateAsync: state.forgetSessions, isPending: false }),
 }))
 const auth = vi.hoisted(() => ({ isAuthMode: false, usable: new Set<string>() }))
 vi.mock('@renderer/context/user-context', () => ({
@@ -51,6 +53,7 @@ function account(over: Partial<BrowserAccount> = {}): BrowserAccount {
     rejectedAt: null,
     agentSlugs: ['a1'],
     agents: [{ slug: 'a1', name: 'Ada' }],
+    sessions: [],
     ...over,
   }
 }
@@ -93,6 +96,22 @@ describe('Settings → Logins', () => {
     state.selectedId = 'acc-1'
     render(<LoginsTab />)
     expect(screen.getByTestId('login-rejected')).toHaveTextContent('An agent said the site rejected its password, 5m ago.')
+  })
+
+  it('shows where a signed-in session is saved, and forgets it', async () => {
+    state.accounts = [account({ sessions: [{ browserType: 'chrome', capturedAt: new Date(Date.now() - 3 * 3_600_000).toISOString() }] })]
+    state.selectedId = 'acc-1'
+    state.forgetSessions.mockResolvedValue(undefined)
+    render(<LoginsTab />)
+    expect(screen.getByTestId('login-session')).toHaveTextContent('Chrome, saved 3h ago')
+    await userEvent.click(screen.getByTestId('login-session-forget'))
+    await waitFor(() => expect(state.forgetSessions).toHaveBeenCalledWith('acc-1'))
+  })
+
+  it('shows no session row for a login without one', () => {
+    state.selectedId = 'acc-1'
+    render(<LoginsTab />)
+    expect(screen.queryByTestId('login-session')).toBeNull()
   })
 
   it('says how to get one when the vault is empty', () => {

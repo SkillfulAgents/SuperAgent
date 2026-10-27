@@ -173,7 +173,8 @@ export async function isAccountGranted(agentSlug: string, accountId: string): Pr
 /**
  * An agent used an account: when, on both rows, and in the audit log, with
  * whether its password went into the page and who filled it (the vault by
- * itself, or the user's form). Never the values.
+ * itself, or the user's form), or that its saved session was restored
+ * instead. Never the values.
  */
 export async function recordAccountUse(input: {
   agentSlug: string
@@ -182,6 +183,7 @@ export async function recordAccountUse(input: {
   userId?: string | null
   password: boolean
   by: 'vault' | 'user'
+  session?: true
 }): Promise<void> {
   const now = new Date()
   await batch([
@@ -195,7 +197,7 @@ export async function recordAccountUse(input: {
     object: 'browser_account',
     objectId: input.accountId,
     action: 'used',
-    details: { agentSlug: input.agentSlug, sessionId: input.sessionId, password: input.password, by: input.by },
+    details: { agentSlug: input.agentSlug, sessionId: input.sessionId, password: input.password, by: input.by, ...(input.session ? { session: true } : {}) },
   })
 }
 

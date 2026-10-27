@@ -580,6 +580,8 @@ vi.mock('@shared/lib/browser-vault/vault-service', () => ({
   MAX_USERNAME: 320,
   VaultConflictError: class VaultConflictError extends Error {},
 }))
+const sessionWatch = vi.hoisted(() => ({ watchSignIn: vi.fn(), watchAfterHandOver: vi.fn() }))
+vi.mock('@shared/lib/browser-vault/session-host', () => sessionWatch)
 
 vi.mock('@shared/lib/services/audit-log-service', () => ({
   logAuditEvent: vi.fn(),
@@ -6347,6 +6349,13 @@ describe('decision routes settle their request immediately', () => {
     expect(mockLiveSessions.completeRequest).toHaveBeenCalledWith('test-agent', 'sess-1', body.toolUseId, outcome, )
   })
 
+  it('watches the last sign-in of the session again once the user finished a hand-over', async () => {
+    parkOpen('tool-dec-12', 'browser_input')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/complete-browser-input', { toolUseId: 'tool-dec-12' })
+    expect(res.status).toBe(200)
+    expect(sessionWatch.watchAfterHandOver).toHaveBeenCalledWith({ agentSlug: 'test-agent', sessionId: 'sess-1', viewer: null })
+  })
+
   it('answers 409 to a decision whose request another decision settled between its gate and its claim', async () => {
     parkOpen('tool-dec-11', 'browser_input')
     // The gate saw it open; the other decision lands before this one claims.
@@ -12055,6 +12064,8 @@ describe('sign-in requests with the vault (request_login)', () => {
     expect(containerCalls()[0].body).toMatchObject({ values: ['octocat', 'saved-pw'], account: { username: 'octocat', source: 'vault', saved: false } })
     expect(vault.recordAccountUse).toHaveBeenCalledWith({ agentSlug: 'test-agent', accountId: 'acc-1', sessionId: 'sess-1', userId: null, password: true, by: 'user' })
     expect(vault.grantAccount).not.toHaveBeenCalled()
+    // The site's session, as this sign-in leaves it, goes to that account.
+    expect(sessionWatch.watchSignIn).toHaveBeenCalledWith({ agentSlug: 'test-agent', sessionId: 'sess-1', account: expect.objectContaining({ id: 'acc-1' }) })
   })
 
   it('grants the user\'s own saved account picked in the form', async () => {
@@ -12199,6 +12210,8 @@ describe('sign-in requests with the vault (request_login)', () => {
       saved: true,
     })
     expect(mockLiveSessions.completeRequest).toHaveBeenCalledWith('test-agent', 'sess-1', 'tool-login', 'answered')
+    // The site's own session once Google sends the agent back.
+    expect(sessionWatch.watchSignIn).toHaveBeenCalledWith({ agentSlug: 'test-agent', sessionId: 'sess-1', account: expect.objectContaining({ id: 'acc-site' }) })
   })
 
   it('refuses an unknown provider and a provider account on the site itself', async () => {
@@ -12222,6 +12235,20 @@ describe('sign-in requests with the vault (request_login)', () => {
     expect(loginFillAccountSchema.safeParse(note).success).toBe(true)
   })
 
+  it('watches no session for an account when the user typed another username over it', async () => {
+    parkLogin({ login: { ...CONTEXT, fields: [field('username', 'Email'), field('password', 'Password')], held: [] } })
+    vault.isAccountGranted.mockResolvedValueOnce(true)
+    vault.getAccount.mockResolvedValueOnce(account())
+    vault.readAccountValues.mockResolvedValueOnce({ password: 'saved-pw' })
+    mockContainerFetch.mockResolvedValueOnce(filled())
+
+    const res = await postJson(app, `${BASE}/fill-login`, {
+      toolUseId: 'tool-login', origin: 'https://github.com', values: ['someone-else', 'their-pw'], accountId: 'acc-1',
+    })
+    expect(res.status).toBe(200)
+    expect(sessionWatch.watchSignIn).not.toHaveBeenCalled()
+  })
+
   it('saves and grants nothing for a fill the page never got', async () => {
     parkLogin()
     mockContainerFetch.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'This sign-in request is no longer open' }), { status: 409 }))
@@ -12229,6 +12256,7 @@ describe('sign-in requests with the vault (request_login)', () => {
     expect(res.status).toBe(409)
     expect(vault.saveAccount).not.toHaveBeenCalled()
     expect(vault.grantAccount).not.toHaveBeenCalled()
+    expect(sessionWatch.watchSignIn).not.toHaveBeenCalled()
   })
 
   it('reports an account it could not save, the values having gone in', async () => {

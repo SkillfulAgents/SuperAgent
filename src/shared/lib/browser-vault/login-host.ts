@@ -11,8 +11,9 @@ import {
   type LoginVaultPayload,
 } from '@shared/lib/tools/request-login/login-request'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
-import { heldLoginFor, releaseHeldValues, rememberSignInIdentity, type HeldLogin } from './held-values'
+import { heldLoginFor, recentSignInIdentity, releaseHeldValues, rememberSignInIdentity, type HeldLogin } from './held-values'
 import { providerName } from './providers'
+import { restoreSavedSession, watchSignIn } from './session-host'
 import { siteOfOrigin, usernameKey, vaultFillsInto } from './site'
 import {
   findGrantedAccount,
@@ -295,7 +296,9 @@ function ask(vault: LoginVaultPayload, context?: LoginContext): LoginDecision {
  *   is filled), or the form opens when it has none.
  * - A username: that account's parts (and what the user entered earlier for
  *   this step) fill the mapped fields, and the page is submitted. What the
- *   account lacks opens the form for just that.
+ *   account lacks opens the form for just that. On a sign-in's first step,
+ *   a session saved from an earlier one goes in first, when the agent's
+ *   browser has not had it (session-host): nothing is filled then.
  * - ask_user (or a reason): always the form. With a username, the agent says
  *   the site turned that account down: the user enters it again, and until
  *   they do the vault does not fill its password without them.
@@ -346,17 +349,31 @@ export async function decideLoginRequest(call: LoginRequestCall): Promise<LoginD
   // An account the agent may not use (or that does not exist): the user decides.
   if (username && !account && !held) return ask({ mode: 'ask', username }, context)
   const identity = account?.username ?? username ?? held?.username ?? null
+  const asksCode = context.fields.some((field) => field.kind === 'otp')
+
+  // A sign-in that has not begun on this site (no step went in, none held,
+  // not a code): a session saved from an earlier one may sign the agent in
+  // with nothing filled. Also how the agent switches the site to another of
+  // its accounts (a call with no fields).
+  if (username && account && !held && !asksCode && !recentSignInIdentity(agentSlug, sessionId, site)) {
+    const restored = await restoreSavedSession({ agentSlug, sessionId, account })
+    if (restored) {
+      if (await answerLoginRequest(agentSlug, toolUseId, restored)) return { action: 'settled' }
+      return ask({ mode: 'ask', username: account.username }, context)
+    }
+  }
 
   // An account that signs in through another one: the user has nothing to
   // type here, even where the page also shows a password form, unless the
   // step asks only for what it holds besides (a workspace), or for a code:
   // the site's own check after the provider's, which the user answers. The
   // agent is told which provider account to use.
-  const asksCode = context.fields.some((field) => field.kind === 'otp')
   if (account?.via && !asksCode && !fillsWithoutPassword(account, context.fields)) {
     const via = { site: account.via.site, username: account.via.username, name: providerName(account.via.site) }
     if (await answerLoginRequest(agentSlug, toolUseId, { type: 'via', site, username: account.username, provider: via, saved: true })) {
       await recordAccountUse({ agentSlug, accountId: account.id, sessionId, password: false, by: 'vault' })
+      // The site's own session, once the provider sends the agent back signed in.
+      watchSignIn({ agentSlug, sessionId, account })
       return { action: 'settled' }
     }
     return ask({ mode: 'ask', username: account.username }, context)
@@ -415,6 +432,7 @@ export async function decideLoginRequest(call: LoginRequestCall): Promise<LoginD
   if (account && wentIn.some(Boolean)) {
     const password = context.fields.some((field, index) => field.kind === 'password' && wentIn[index])
     await recordAccountUse({ agentSlug, accountId: account.id, sessionId, password, by: fromHeld.includes('password') ? 'user' : 'vault' })
+    watchSignIn({ agentSlug, sessionId, account })
   }
   return { action: 'settled' }
 }
