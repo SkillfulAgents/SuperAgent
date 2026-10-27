@@ -1,4 +1,3 @@
-import { useCallback } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { ArrowUp, Loader2 } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
@@ -7,16 +6,12 @@ import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { UploadError } from '@renderer/components/ui/upload-error'
 import { ChatComposerBox, FLOATING_COMPOSER_CLASS } from '@renderer/components/messages/chat-composer-box'
-import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
+import { ComposerOptions } from '@renderer/components/messages/composer-options'
 import { AgentDefaultFooter } from '@renderer/components/messages/agent-default-footer'
 import { AgentRuntimeErrorView } from '@shared/lib/agent-runtime-errors/agent-runtime-error-view'
-import { useCreateSession } from '@renderer/hooks/use-sessions'
-import { useMessageComposer } from '@renderer/hooks/use-message-composer'
-import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
+import { useNewSessionComposer } from '@renderer/hooks/use-new-session-composer'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
-import { apiFetch } from '@renderer/lib/api'
-import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 
 /**
  * Agent Home's composer on Team Brain's home page, for its agent: ask it
@@ -27,42 +22,19 @@ import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
  */
 export function TeamBrainHomeComposer({ agent }: { agent: ApiAgent }) {
   const navigate = useNavigate()
-  const { data: agentPrefs } = useAgentPreferences(agent.slug)
-  const composerOptions = useComposerOptions({
-    agentDefaultModel: agentPrefs?.defaultModel,
-    agentDefaultLlmProviderId: agentPrefs?.defaultLlmProviderId,
-    agentDefaultEffort: agentPrefs?.defaultEffort,
-    agentDefaultSpeed: agentPrefs?.defaultSpeed,
-    agentKey: agent.slug,
-  })
-  const createSession = useCreateSession({ agentRuntimeErrorsShownInline: true })
   const { data: runtimeStatus, isPending: isRuntimePending } = useRuntimeStatus()
   const isRuntimeReady = isRuntimePending || runtimeStatus?.runtimeReadiness?.status === 'READY'
 
-  const composer = useMessageComposer({
+  const { composer, composerOptions, createSession, isDisabled } = useNewSessionComposer({
     agentSlug: agent.slug,
-    uploadFile: useCallback(({ file, onProgress, signal, stallMs }: { file: File; onProgress?: (p: UploadProgress) => void; signal?: AbortSignal; stallMs?: number }) => {
-      return uploadFileChunked<{ path: string }>({ url: `/api/agents/${agent.slug}/upload-file`, file, onProgress, signal, stallMs })
-    }, [agent.slug]),
-    uploadFolder: useCallback(async ({ sourcePath }: { sourcePath: string }) => {
-      const res = await apiFetch(`/api/agents/${agent.slug}/upload-folder`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sourcePath }),
-      })
-      if (!res.ok) throw new Error('Failed to upload folder')
-      return res.json() as Promise<{ path: string }>
-    }, [agent.slug]),
-    onSubmit: useCallback(async (content: string) => {
-      const session = await createSession.mutateAsync({ agentSlug: agent.slug, message: content, ...composerOptions.toRuntimeOptions() })
-      void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agent.displaySlug ?? agent.slug, sessionId: session.id } })
-    }, [createSession, agent.slug, agent.displaySlug, composerOptions, navigate]),
-    submitDisabled: createSession.isPending || !isRuntimeReady,
-    keepMessageUntilComplete: true,
     draftKey: `team-brain:${agent.slug}`,
+    submitDisabled: !isRuntimeReady,
+    agentRuntimeErrorsShownInline: true,
+    onSessionCreated: ({ session }) => {
+      void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agent.displaySlug ?? agent.slug, sessionId: session.id } })
+    },
   })
 
-  const isDisabled = createSession.isPending || composer.isUploading || !isRuntimeReady
   const handleKeyDown = (event: KeyboardEvent) => {
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
       event.preventDefault()
