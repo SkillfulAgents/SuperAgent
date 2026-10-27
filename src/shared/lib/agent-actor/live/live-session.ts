@@ -315,6 +315,8 @@ export class LiveSession {
       rejectInput: (toolUseId, reason) => this.answerInput(toolUseId, 'reject', { reason }),
       // A tool call's lookups can outlive this attachment.
       syncAwaiting: () => this.ctx.resyncAwaiting(),
+      // The map is carried across a reattach, like the lookups.
+      settled: (toolUseId, outcome) => this.settledInputRequests.set(toolUseId, outcome),
       capabilityGranted: (capability) => this.ctx.capabilityGranted(capability),
       grantCapability: (capability) => this.ctx.grantCapability(capability),
       trackSubagentLaunch: (toolUseId, input) => this.subagents.trackLaunch(toolUseId, input),
@@ -768,6 +770,8 @@ export class LiveSession {
   /** The attachment is being dropped: nothing it scheduled may fire. */
   dispose(): void {
     this.cancelSettleAfterStop()
+    // The session is gone: a sign-in the host is still deciding raises no card.
+    this.toolCalls.dropLoginDecisions()
   }
 
   // ===========================================================================
@@ -865,6 +869,8 @@ export class LiveSession {
    * it, and fail the container's pending input so a late click lands nowhere.
    */
   private invalidateSubagentRequests(parentToolId: string): void {
+    // Nor does a sign-in it asked for that the host is still deciding.
+    this.toolCalls.dropLoginDecisions(parentToolId)
     const orphaned = this.ctx.requests.resolveRequestsByParent(parentToolId, 'invalidated')
     if (orphaned.length === 0) return
     for (const request of orphaned) {

@@ -20,6 +20,9 @@ import {
   pageActivityNow,
   PageWatch,
   prepareLogin,
+  preparePage,
+  type HeldLoginField,
+  type LoginFieldRequest,
   type LoginFillDeps,
   type PageActivity,
   type WrittenField,
@@ -30,6 +33,7 @@ import {
   failPreparedLogin,
   forgetPreparedLogin,
   getPreparedLogin,
+  isPreparedLoginClosed,
   putPreparedLogin,
   waitForPreparedLogin,
 } from './login-requests'
@@ -103,6 +107,8 @@ export interface LoginRouteDeps {
   notifyBrowserAction(): void
   /** How long the host's context read waits for the tool to finish locating fields. */
   contextWaitMs?: number
+  /** How long a fill waits for the tool to open its request once the fields are located. */
+  pendingWaitMs?: number
   /** How long to watch the page after the writes for it to submit the form itself. */
   pageSubmitWaitMs?: number
   /** The same after a one-time code, which a page may verify on its last digit, after a debounce. */
@@ -120,6 +126,22 @@ const LOST_PROBLEMS: Record<LoginFillReport['lost'][number]['state'], string> = 
 function recordActivity(report: LoginFillReport, activity: PageActivity): void {
   if (activity.kind === 'submit') report.submitted = { via: 'page' }
   else report.pageActivity = activity
+}
+
+/** Kinds a field may be mapped without a ref for: a value entered now, for a later step. */
+const HOLDABLE_KINDS = new Set<HeldLoginField['kind']>(['password', 'text'])
+
+/**
+ * The tool opens its request right after the fields are located; the host
+ * can ask for a fill (from a saved account) in between. Wait out that gap.
+ */
+async function pendingLoginOpened(toolUseId: string, waitMs: number): Promise<boolean> {
+  const deadline = Date.now() + waitMs
+  while (!inputManager.hasPendingOfType(toolUseId, 'login')) {
+    if (Date.now() >= deadline || !getPreparedLogin(toolUseId)) return false
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  return true
 }
 
 export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
@@ -143,15 +165,25 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
     const sessionError = deps.validateSession(body.sessionId)
     if (sessionError) return fail(409, [sessionError])
     if (!deps.browserActive()) return fail(409, ['no browser is open'])
+    const located = body.fields.filter((field): field is LoginFieldRequest => field.ref !== undefined)
+    const held: HeldLoginField[] = body.fields.filter((field) => field.ref === undefined).map(({ kind, label }) => ({ kind, label }))
+    const unholdable = held.find((field) => !HOLDABLE_KINDS.has(field.kind))
+    if (unholdable) {
+      return fail(422, [`"${unholdable.label}" (${unholdable.kind}) has no ref: only a password or text field can be asked for ahead of its step`])
+    }
+    if (held.length > 0 && located.length === 0) {
+      return fail(422, ['every field is mapped without a ref: a field without one is asked together with the fields on the page now'])
+    }
+    if (body.submitRef && located.length === 0) return fail(422, ['a submit ref needs at least one field mapped by ref'])
     try {
       const fillDeps = deps.fillDeps()
       if (body.submitRef) {
-        if (body.fields.some((field) => field.ref === body.submitRef)) {
+        if (located.some((field) => field.ref === body.submitRef)) {
           return fail(422, [`${body.submitRef} is mapped as a field and as the submit button`])
         }
         if (!(await fillDeps.boxOfRef(body.submitRef))) return fail(422, [`the box of the submit ref ${body.submitRef} could not be read`])
       }
-      const result = await prepareLogin(fillDeps, body.fields)
+      const result = located.length ? await prepareLogin(fillDeps, located) : await preparePage(fillDeps)
       if (!result.ok) return fail(422, result.problems)
       putPreparedLogin({
         toolUseId: body.toolUseId,
@@ -160,10 +192,12 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
         url: result.url,
         topOrigin: result.topOrigin,
         fields: result.fields,
+        held,
+        providers: [...new Set(body.providers)],
         submitRef: body.submitRef,
         preparedAt: Date.now(),
       })
-      return c.json({ origin: result.origin, url: result.url, topOrigin: result.topOrigin, fields: result.fields })
+      return c.json({ origin: result.origin, url: result.url, topOrigin: result.topOrigin, fields: result.fields, held })
     } catch (error) {
       console.error('[Browser] Sign-in preparation failed:', error instanceof Error ? error.message : 'Unknown error')
       return fail(500, [`the page could not be read: ${error instanceof Error ? error.message : 'unknown error'}`])
@@ -196,6 +230,8 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
         autocomplete: field.autocomplete,
         maxLength: field.maxLength,
       })),
+      held: prepared.held,
+      providers: prepared.providers,
     })
   })
 
@@ -208,7 +244,7 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
     if (!parsed.success) return c.json({ error: 'Invalid sign-in fill request' }, 400)
     const body = parsed.data
     const prepared = getPreparedLogin(body.toolUseId)
-    if (!prepared || !inputManager.hasPendingOfType(body.toolUseId, 'login')) {
+    if (!prepared || !(await pendingLoginOpened(body.toolUseId, deps.pendingWaitMs ?? 3000))) {
       return c.json({ error: 'This sign-in request is no longer open' }, 409)
     }
     // The origin the host showed must be the one the browser located: the
@@ -220,9 +256,13 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
       return c.json({ error: 'One value per field is required' }, 400)
     }
     if (!body.values.some(Boolean)) return c.json({ error: 'Enter at least one value' }, 400)
+    // The browser that showed the form is gone (closed, or replaced since):
+    // nothing can go into its page. The host keeps what the user saves.
+    if (isPreparedLoginClosed(body.toolUseId) || !deps.browserActive()) {
+      return c.json({ error: 'The browser that showed this sign-in form was closed', reason: 'browser_closed' }, 409)
+    }
     const sessionError = deps.validateSession(prepared.sessionId)
     if (sessionError) return c.json({ error: sessionError }, 409)
-    if (!deps.browserActive()) return c.json({ error: 'Browser is not active' }, 409)
     if (fillsInFlight.has(body.toolUseId)) {
       return c.json({ error: 'This sign-in request is already being filled' }, 409)
     }
@@ -250,10 +290,11 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
           await pageWatch.cover(element.sessionId)
         })
         for (const value of pageValues) rememberInjectedSecret(value)
-        report = { type: 'filled', origin: prepared.origin, outcomes, lost: [], submitted: null }
+        report = { type: 'filled', origin: prepared.origin, outcomes, lost: [], submitted: null, ...(body.account ? { account: body.account } : {}) }
         const refOf = (field: WrittenField) => prepared.fields[field.index].ref
 
-        const failed = outcomes.some((outcome) => outcome.status === 'failed')
+        // Nothing is pressed after a write that failed or was never confirmed.
+        const failed = outcomes.some((outcome) => outcome.status === 'failed' || outcome.status === 'unconfirmed')
         if (!failed && written.length > 0) {
           const waitMs = written[written.length - 1].kind === 'otp'
             ? deps.codeSubmitWaitMs ?? 1000
@@ -327,7 +368,9 @@ export function registerLoginRoutes(app: Hono, deps: LoginRouteDeps): void {
       return c.json({
         success: true,
         filled: count('filled') + count('changed'),
-        failed: count('failed'),
+        failed: count('failed') + count('unconfirmed'),
+        // Per field, for the host: only a value that went in was tried or is used up.
+        outcomes: report.outcomes.map((outcome) => outcome.status),
         submitted: report.submitted !== null,
         problems: [
           ...report.outcomes.filter((outcome) => outcome.problem).map((outcome) => `${outcome.label}: ${outcome.problem}`),
