@@ -54,6 +54,11 @@ describe('the Mac App Store build config', () => {
     expect(config.mac.extendInfo.ElectronTeamID).toBe('HL9SP7TJ3J')
   })
 
+  it('answers export compliance, so TestFlight distributes each build without waiting for it', () => {
+    expect(loadConfig().mac.extendInfo.ITSAppUsesNonExemptEncryption).toBe(false)
+    expect(regular.build.mac.extendInfo).not.toHaveProperty('ITSAppUsesNonExemptEncryption')
+  })
+
   it('gives the Store a plain version and a build number from CI, whatever the prerelease', () => {
     const version = regular.version.split(/[-+]/)[0]
     expect(version).toMatch(/^\d+\.\d+\.\d+$/)
