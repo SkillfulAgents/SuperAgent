@@ -6,7 +6,7 @@ import { HttpError } from '@renderer/lib/api'
 import { agentQuery } from '@renderer/hooks/query-options'
 import { AgentNotFound, AgentLoadError } from './route-fallbacks'
 import { lenient } from './zod-search'
-import { chatSearchSchema, connectionsSearchSchema, homeSearchSchema, rootSearchSchema, settingsSearchSchema, settingsTabSchema } from './search-schemas'
+import { agentHomeSearchSchema, chatSearchSchema, connectionsSearchSchema, homeSearchSchema, rootSearchSchema, settingsSearchSchema, settingsTabSchema } from './search-schemas'
 import { HomePage } from '@renderer/components/home/home-page'
 import { RootLayout, AppShellLayout } from '@renderer/components/layout/route-layouts'
 
@@ -178,16 +178,21 @@ export const agentLayoutRoute = createRoute({
   errorComponent: AgentLoadError,
 })
 
+// Hoisted: called inline beside loaderDeps, the generic lenient() leaves the route's search typed as the root's.
+const agentHomeSearch = lenient(agentHomeSearchSchema)
+
 export const agentHomeRoute = createRoute({
   // INDEX of /agents/$slug — the agent home. Every other sub-view is its own
   // sibling route, so this leaf is just AgentHome.
   getParentRoute: () => agentLayoutRoute,
   path: '/',
-  // The Team Brain agent has no Agent Home: every way in lands on its own page. A failed read is left to the layout's
-  // loader, which owns turning it into not-found or an error.
-  loader: async ({ context, params }) => {
+  validateSearch: agentHomeSearch,
+  loaderDeps: ({ search }) => ({ from: search.from }),
+  // The Team Brain agent's own page stands in for its Agent Home: every way in lands there, except its settings' Agent
+  // settings row. A failed read is left to the layout's loader, which owns turning it into not-found or an error.
+  loader: async ({ context, params, deps }) => {
     const agent = await context.queryClient.ensureQueryData(agentQuery(params.slug)).catch(() => null)
-    if (agent?.teamBrain) throw redirect({ to: '/team-brain', replace: true })
+    if (agent?.teamBrain && deps.from !== '/team-brain') throw redirect({ to: '/team-brain', replace: true })
   },
   component: AgentHomeRoute,
 })

@@ -589,6 +589,7 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
   const { data: agents = [] } = useListedAgents()
   const deleteAgent = useDeleteAgent()
   const [confirmOff, setConfirmOff] = useState(false)
+  const navigate = useNavigate()
   // Turning it off deletes the Team Brain agent; the server drops the workspace record with it, and the page
   // goes back to the pitch once the agent list no longer has it. Its drive and files stay.
   const turnOff = () =>
@@ -639,6 +640,16 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
           <AgentsSection brainSlug={agent.slug} volumeId={agent.teamBrain?.volumeId} agents={agents} canManage={canManage} />
         </div>
         <ViewsCard groups={recordGroups} views={views} onViewChange={onViewChange} />
+        {/* The rest of the agent's settings live on its Agent Home, which only this row reaches: every other way in lands here. */}
+        <button
+          type="button"
+          onClick={() => void navigate({ to: '/agents/$slug', params: { slug: agent.slug }, search: { from: '/team-brain' } })}
+          className={cn(SECTION_HEADER_CLASS, 'rounded-2xl', GLASS_SURFACE)}
+          data-testid="team-brain-agent-settings"
+        >
+          <span className={PANEL_LABEL_CLASS}>Agent settings</span>
+          <ChevronRight className="h-4 w-4 text-muted-foreground/50" aria-hidden="true" />
+        </button>
         {/* Last, on a glass row of its own: red only in its words until hovered. */}
         {canManage && <Button
           variant="ghost"

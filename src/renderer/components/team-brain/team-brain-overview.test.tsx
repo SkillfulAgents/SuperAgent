@@ -463,6 +463,9 @@ describe('TeamBrainOverview', () => {
     // The settings button opens the settings drawer, where turning off sits at the foot.
     await userEvent.click(screen.getByTestId('team-brain-menu'))
     expect(screen.getByTestId('team-brain-menu')).toHaveAttribute('aria-expanded', 'true')
+    // Above it, the rest of the agent's settings: its Agent Home, which only this row reaches.
+    await userEvent.click(await screen.findByTestId('team-brain-agent-settings'))
+    expect(navigate).toHaveBeenCalledWith({ to: '/agents/$slug', params: { slug: 'team-brain' }, search: { from: '/team-brain' } })
     await userEvent.click(await screen.findByTestId('team-brain-turn-off'))
     await userEvent.click(await screen.findByTestId('team-brain-turn-off-confirm'))
     expect(app.deleteAgent).toHaveBeenCalledWith('team-brain', expect.anything())
