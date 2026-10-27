@@ -94,8 +94,10 @@ it, the renderer hides it, and the agents are never told about it.
 Local drives stay. The Store build's folder picker returns a security-scoped
 bookmark with the pick, which is stored with the drive. The folder opens
 through it the first time the drive is read after each launch, and stays open
-until quit (`local-folder-access.ts`). A bookmark that no longer opens leaves
-the drive "pick the folder again".
+until quit (`local-folder-access.ts`). A bookmark the sandbox still refuses
+(EPERM) leaves the drive "pick the folder again". Only a folder that listed is
+kept open, so anything else (a folder that is gone, an unplugged disk, the
+folder's own permissions) is tried again on the next read.
 
 Two lists say this in words, and a new row goes in both: Settings → General
 shows the person `SandboxNotice` (`sandbox-notice.tsx`), and the agents'
