@@ -46,7 +46,6 @@ import { scheduleOfCron } from '@renderer/lib/team-brain/team-brain-setup-block'
 import { useHumanizedCron } from '@renderer/hooks/use-humanized-cron'
 import { useScheduledTasks, useScheduledTasksSessions, type ApiScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { TeamBrainRadial, TeamBrainRadialLoading } from './team-brain-radial'
-import { DEV_STATES_ENABLED, devDrive, devSyncs, devTasks, TeamBrainDevStatesMenu, useTeamBrainDevStates } from './team-brain-dev-states'
 import { TeamBrainSyncSummaries } from './team-brain-sync-summaries'
 import { TeamBrainHomeComposer } from './team-brain-home-composer'
 import { AgentAccessList, EveryAgentRow } from './team-brain-agent-access'
@@ -113,9 +112,7 @@ function useTeamBrainLocation(agent: ApiAgent) {
 /** Team Brain's scheduled tasks still to run or paused, whatever they are named: set-up makes one, the agent may add others. */
 function useBrainTasks(agentSlug: string): ApiScheduledTask[] {
   const { data: tasks } = useScheduledTasks(agentSlug)
-  const live = (tasks ?? []).filter((task) => task.status === 'pending' || task.status === 'paused')
-  // Dev builds can stand a state in for them (team-brain-dev-states.tsx).
-  return devTasks(useTeamBrainDevStates().upkeep, live)
+  return (tasks ?? []).filter((task) => task.status === 'pending' || task.status === 'paused')
 }
 
 const isoOf = (at: Date | string | null) => (at ? new Date(at).toISOString() : null)
@@ -158,23 +155,18 @@ function OverviewBody({
   const volumeId = agent.teamBrain?.volumeId
   const { data: mounts } = useAgentMounts(agentSlug)
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
-  // Dev builds can stand a state in for the drive and the summaries (team-brain-dev-states.tsx); live otherwise.
-  const dev = useTeamBrainDevStates()
-  const read = useTeamBrainDrive(agentSlug, volumeId, expanded, record, recordLeaving)
-  const { drive, ready, error } = devDrive(dev.drive, read)
+  const { drive, ready, error, recordParts } = useTeamBrainDrive(agentSlug, volumeId, expanded, record, recordLeaving)
   // Opened on the loading middle: the tree then grows from it rather than popping its middle in again.
   const [openedLoading] = useState(() => !ready)
   // The loading middle stays until its line has gone back out, so the tree starts after it rather than over it.
   const [loadingDone, setLoadingDone] = useState(() => ready)
   const finishLoading = useCallback(() => setLoadingDone(true), [])
   const location = useTeamBrainLocation(agent)
-  const recordParts = read.recordParts
-  const noDrive = dev.drive === 'none' || (!!mounts && !mounts.some((mount) => mount.volumeId === volumeId))
+  const noDrive = !!mounts && !mounts.some((mount) => mount.volumeId === volumeId)
   const { front, index, rest } = useMemo(() => splitFrontPages(drive), [drive])
   const tasks = useBrainTasks(agentSlug)
   const active = tasks.some((task) => task.status === 'pending')
-  const liveSyncs = useTeamBrainSyncs(agentSlug, volumeId)
-  const { syncs, unreadable: syncsUnreadable } = devSyncs(dev.syncs, { syncs: liveSyncs.data ?? [], unreadable: liveSyncs.isError })
+  const { data: syncs = [], isError: syncsUnreadable } = useTeamBrainSyncs(agentSlug, volumeId)
   const navigate = useNavigate()
   // A page opens in the file drawer from the drive, as the drive's own file browser opens it. A "+N more" past what
   // even an opened folder shows opens as a list of the pages it stands for.
@@ -226,7 +218,6 @@ function OverviewBody({
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- a pointer convenience; each drawer has its own close button
     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background" onClick={closeDrawersOnClickOff}>
       {error && !noDrive && <DriveErrorBanner error={error} partial={ready} />}
-      {DEV_STATES_ENABLED && <TeamBrainDevStatesMenu className="absolute bottom-3 left-3 z-40" />}
       <SettingsPageContainer className={cn(PAGE_WIDTH, 'space-y-8')} scrollContainerRef={scrollRef}>
         {/* The centrepiece: what Team Brain knows, as a tree floating on the page with no frame around it. It fills the
             view down to where the composer peeks in and stays where it is as the page scrolls, so what follows passes over it.

@@ -371,21 +371,6 @@ describe('TeamBrainOverview', () => {
     expect(screen.getByTestId('team-brain-sync-note')).toHaveTextContent('No scheduled tasks')
   })
 
-  it('stands mocked states in for the live ones from its dev menu, and goes back to live', async () => {
-    render(<TeamBrainOverview agent={BRAIN} />)
-    await userEvent.click(screen.getByTestId('team-brain-dev-states'))
-    await userEvent.click(screen.getByTestId('team-brain-dev-drive-unreadable'))
-    expect(screen.getByTestId('team-brain-drive-error')).toHaveTextContent("Couldn't read the Team Brain drive.")
-    expect(screen.queryByTestId('team-brain-radial')).toBeNull()
-    await userEvent.click(screen.getByTestId('team-brain-dev-upkeep-none'))
-    expect(screen.getByTestId('team-brain-status')).toHaveTextContent(/^Not scheduled$/)
-    await userEvent.click(screen.getByTestId('team-brain-dev-syncs-sample'))
-    expect(screen.getByText('Acme’s renewal moves to Q1')).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: 'Back to live' }))
-    expect(screen.queryByTestId('team-brain-drive-error')).toBeNull()
-    expect(screen.getByTestId('team-brain-radial')).toBeInTheDocument()
-  })
-
   it('sums up each sync, and turns off by deleting the Team Brain agent', async () => {
     render(<TeamBrainOverview agent={BRAIN} />)
     expect(screen.getByTestId('team-brain-overview')).toBeInTheDocument()
