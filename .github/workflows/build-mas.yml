@@ -5,7 +5,9 @@ name: Build Mac App Store App
 # each after running lima-image.yml:
 #   release.yml, for every release (rc and full): it builds once the release has
 #       published its agent image, uploads the package, and once App Store Connect
-#       has processed it, adds it to the TestFlight groups (testflight job).
+#       has processed it, adds it to the TestFlight groups (testflight job). For a
+#       full release that job also leaves the App Store version ready to submit
+#       with the build.
 #   pr-build.yml, when its `mas` input is ticked: App Store Connect validates the
 #       package, and it is never uploaded.
 # Without its signing secrets it says so and builds nothing.
@@ -56,6 +58,16 @@ on:
         default: ''
       what-to-test:
         description: "The build's What to Test note in TestFlight"
+        required: false
+        type: string
+        default: ''
+      app-store-version:
+        description: 'For a full release, its version: the App Store version left ready to submit with this build. Empty for an rc'
+        required: false
+        type: string
+        default: ''
+      whats-new:
+        description: "What's New for that App Store version, written where it is empty"
         required: false
         type: string
         default: ''
@@ -210,7 +222,7 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      - name: Add the build to its TestFlight groups
+      - name: Add the build to its TestFlight groups, and to the App Store version for a full release
         env:
           APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
@@ -218,6 +230,9 @@ jobs:
           BUILD_NUMBER: ${{ inputs.build-number }}
           GROUPS: ${{ inputs.testflight-groups }}
           WHAT_TO_TEST: ${{ inputs.what-to-test }}
+          APP_STORE_VERSION: ${{ inputs.app-store-version }}
+          WHATS_NEW: ${{ inputs.whats-new }}
         run: >-
           npx tsx scripts/testflight-distribute.ts --app "$MAS_APPLE_ID" --build "$BUILD_NUMBER"
           --groups "$GROUPS" --what-to-test "$WHAT_TO_TEST"
+          --app-store-version "$APP_STORE_VERSION" --whats-new "$WHATS_NEW"

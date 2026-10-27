@@ -256,7 +256,8 @@ jobs:
   # Beta (external) once Beta App Review approves it. Every release of a version
   # (0.6.0-rc.1, rc.2, 0.6.0) is the same TestFlight version, 0.6.0, so only its
   # first build needs a full review; Apple may approve later ones without one.
-  # Submitting to the App Store stays a person's step. Like build-mac it bundles
+  # A full release also leaves its App Store version ready with its build;
+  # submitting it for review stays a person's step. Like build-mac it bundles
   # the agent image this release publishes, so it waits for it. create-release
   # doesn't wait for this job: a Store problem never holds up the direct
   # release, and the package isn't one of its files (its artifact name doesn't
@@ -273,6 +274,12 @@ jobs:
       testflight-groups: Team,Beta
       # Testers see 0.6.0 (412.1); this says which release that is.
       what-to-test: Gamut ${{ needs.prepare.outputs.version }}
+      # A full release also leaves the App Store version ready to submit with its
+      # build: the version being prepared takes this number, or a new one is made
+      # once the last is out. An rc leaves it alone.
+      app-store-version: ${{ needs.prepare.outputs.channel == 'latest' && needs.prepare.outputs.version || '' }}
+      # Written only where empty, so an edit made before submitting stays.
+      whats-new: Bug fixes and improvements.
 
   # Build Windows Electron app
   build-win:

@@ -31,14 +31,15 @@ export class AppStoreConnectError extends Error {
   }
 }
 
-interface Resource {
+export interface Resource {
   id: string
   attributes?: Record<string, unknown>
 }
 
 export interface Client {
   get(path: string): Promise<{ data: Resource | Resource[] | null }>
-  send(method: 'POST' | 'PATCH', path: string, body: object): Promise<void>
+  /** A write; a create answers with the new resource. */
+  send(method: 'POST' | 'PATCH', path: string, body: object): Promise<{ data: Resource | Resource[] | null }>
 }
 
 /** A client that signs each request afresh, so a long wait never outlives its token. */
@@ -64,9 +65,7 @@ export function createClient(token: () => string, fetchImpl: typeof fetch = fetc
   }
   return {
     get: (path) => request('GET', path),
-    send: async (method, path, body) => {
-      await request(method, path, body)
-    },
+    send: (method, path, body) => request(method, path, body),
   }
 }
 

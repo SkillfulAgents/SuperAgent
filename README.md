@@ -281,7 +281,10 @@ Store package is built only by releases, and on demand for a PR. A release
 uploads it to App Store Connect and adds it to the TestFlight groups: Team at
 once, and Beta after Beta App Review. Every release of a version shares one
 TestFlight version (0.6.0-rc.1, rc.2 and 0.6.0 are all 0.6.0), so only its
-first build needs a full review.
+first build needs a full review. A full release also leaves the macOS App Store
+version ready to submit: the version being prepared takes its number and build,
+or a new version is made, with the last one's listing, once the last is out.
+Submitting it for review is a click in App Store Connect.
 
 ## Architecture
 
