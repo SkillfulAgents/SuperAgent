@@ -92,6 +92,10 @@ jobs:
           LIMA_IMAGE_DIR: build/lima-image
           # The Store's build number (CFBundleVersion), which grows with every upload.
           MAS_BUILD_NUMBER: ${{ github.run_number }}
+          # dist:mas refuses to package without the agent image, since a Store
+          # package is built to upload. This one is never uploaded, and a release's
+          # version bump reaches main before the release publishes its image.
+          AGENT_IMAGE_REQUIRED: 'false'
         run: npm run dist:mas
 
       - name: Upload the package
