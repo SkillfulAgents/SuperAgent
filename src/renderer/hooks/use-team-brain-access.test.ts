@@ -19,9 +19,11 @@ vi.mock('@renderer/hooks/use-mounts', () => ({
 vi.mock('@renderer/hooks/use-volume-definitions', () => ({
   useVolumeAgents: () => ({ data: { attachments: [{ agentSlug: 'writer', mountId: 'm1' }] } }),
   useVolumeDefinitions: () => ({ data: [{ id: 'vol', userId: null, canManage: drive.canManage, globalAccess: null }] }),
-  useSaveVolumeDefinition: () => ({ mutateAsync: vi.fn() }),
+  useSaveVolumeDefinition: () => ({ mutateAsync: vi.fn(async () => {}) }),
 }))
 vi.mock('@renderer/lib/api', () => ({ apiFetch: vi.fn(async () => new Response(null, { status: 204 })) }))
+
+import { apiFetch } from '@renderer/lib/api'
 
 import { useTeamBrainAccess } from './use-team-brain-access'
 
@@ -48,5 +50,23 @@ describe('useTeamBrainAccess', () => {
     drive.canManage = false
     expect(renderHook(() => useTeamBrainAccess('brain', 'vol'), { wrapper }).result.current.canGoGlobal).toBe(false)
     drive.canManage = true
+  })
+
+  it('links an agent both ways, so Team Brain reads exactly the agents that use it', async () => {
+    const client = new QueryClient()
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
+    const { result } = renderHook(() => useTeamBrainAccess('brain', 'vol'), { wrapper })
+    const calls = () => vi.mocked(apiFetch).mock.calls.map(([url, init]) => `${init?.method} ${url}${init?.method === 'PATCH' ? ` ${init.body}` : ''}`)
+    vi.mocked(apiFetch).mockClear()
+    act(() => result.current.toggle('sales', true))
+    await waitFor(() => expect(result.current.isChanging('sales')).toBe(false))
+    expect(calls()).toEqual(['PUT /api/agents/sales/x-agent-policies/invoke/brain', 'PUT /api/agents/brain/x-agent-policies/read/sales'])
+
+    vi.mocked(apiFetch).mockClear()
+    act(() => result.current.setEveryAgent(false, ['writer', 'sales']))
+    await waitFor(() => expect(calls()).toHaveLength(3))
+    expect(calls()).toEqual(expect.arrayContaining([
+      'PATCH /api/agents/brain/x-agent-policies {"operation":"read","targetSlug":null,"decision":"default"}', 'DELETE /api/agents/sales/x-agent-policies/invoke/brain', 'DELETE /api/agents/brain/x-agent-policies/read/sales',
+    ]))
   })
 })

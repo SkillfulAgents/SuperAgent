@@ -476,6 +476,25 @@ describe('atomic single invoke policy endpoints', () => {
     expect((await getPolicy(CALLER, 'invoke', TARGET_A))).toBeNull()
   })
 
+  it('sets and removes a read grant the same way, apart from the invoke one', async () => {
+    const readUrl = `/api/agents/${CALLER}/x-agent-policies/read/${TARGET_A}`
+    await setPolicy(CALLER, 'invoke', TARGET_A, 'allow')
+    await app.request(readUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'allow' }) })
+    expect((await getPolicy(CALLER, 'read', TARGET_A))?.decision).toBe('allow')
+    await app.request(readUrl, { method: 'DELETE' })
+    expect(await getPolicy(CALLER, 'read', TARGET_A)).toBeNull()
+    expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
+  })
+
+  it('rejects any operation but invoke and read, so a near-miss never writes an invoke row', async () => {
+    for (const operation of ['list', 'XXread', 'invokeZZ']) {
+      const url = `/api/agents/${CALLER}/x-agent-policies/${operation}/${TARGET_A}`
+      expect((await app.request(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'allow' }) })).status).toBe(400)
+      expect((await app.request(url, { method: 'DELETE' })).status).toBe(400)
+    }
+    expect(await listPoliciesForCaller(CALLER)).toEqual([])
+  })
+
   it('DELETE PRESERVES an explicit block (no silent escalation)', async () => {
     await setPolicy(CALLER, 'invoke', TARGET_A, 'block')
     const res = await app.request(invokeUrl(CALLER, TARGET_A), { method: 'DELETE' })

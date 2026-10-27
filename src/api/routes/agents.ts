@@ -8315,12 +8315,18 @@ agents.put('/:id/x-agent-policies', AgentAdmin(), async (c) => {
   return c.json({ ok: true })
 })
 
-// PUT /api/agents/:id/x-agent-policies/invoke/:target - Upsert ONE invoke
-// policy atomically. The batch PUT above is a whole-form replace: concurrent
+const targetedOperationSchema = z.enum(['invoke', 'read'])
+
+// PUT /api/agents/:id/x-agent-policies/{invoke|read}/:target - Upsert ONE
+// targeted policy atomically. The batch PUT above is a whole-form replace: concurrent
 // single-edge edits through it read-modify-write the full list and the last
 // writer silently drops the other's change. Graph edge edits go through here.
-agents.put('/:id/x-agent-policies/invoke/:target', AgentAdmin(), async (c) => {
+agents.put('/:id/x-agent-policies/:operation/:target', AgentAdmin(), async (c) => {
   const slug = getAgentId(c)
+  const operation = targetedOperationSchema.safeParse(c.req.param('operation'))
+  if (!operation.success) {
+    return c.json({ error: 'Unknown operation' }, 400)
+  }
   const targetSlug = c.req.param('target')
   if (targetSlug === slug) {
     return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
@@ -8339,18 +8345,22 @@ agents.put('/:id/x-agent-policies/invoke/:target', AgentAdmin(), async (c) => {
   if (!parsed.success) {
     return c.json({ error: 'Invalid policy payload', details: parsed.error.format() }, 400)
   }
-  const result = await setPolicy(slug, 'invoke', targetSlug, parsed.data.decision)
+  const result = await setPolicy(slug, operation.data, targetSlug, parsed.data.decision)
   return c.json({ ok: true, ...result })
 })
 
-// DELETE /api/agents/:id/x-agent-policies/invoke/:target - Remove the invoke
+// DELETE /api/agents/:id/x-agent-policies/{invoke|read}/:target - Remove the
 // grant for one target atomically. Preserves 'block' rows: deleting a drawn
 // graph edge revokes a grant, and lifting an explicit block here would
 // silently escalate (effective decision falls back to a global allow).
-agents.delete('/:id/x-agent-policies/invoke/:target', AgentAdmin(), async (c) => {
+agents.delete('/:id/x-agent-policies/:operation/:target', AgentAdmin(), async (c) => {
   const slug = getAgentId(c)
+  const operation = targetedOperationSchema.safeParse(c.req.param('operation'))
+  if (!operation.success) {
+    return c.json({ error: 'Unknown operation' }, 400)
+  }
   const targetSlug = c.req.param('target')
-  const removed = await deleteTargetPolicy(slug, 'invoke', targetSlug, { preserveBlock: true })
+  const removed = await deleteTargetPolicy(slug, operation.data, targetSlug, { preserveBlock: true })
   return c.json({ ok: true, removed })
 })
 

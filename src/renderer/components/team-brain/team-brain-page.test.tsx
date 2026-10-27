@@ -68,7 +68,10 @@ vi.mock('@renderer/hooks/use-connected-accounts', () => ({ useConnectedAccounts:
 vi.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({ invalidateQueries: app.invalidate }) }))
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
-    if (init?.method === 'PUT') app.calls.push(`grant ${url.split('/')[3]}`)
+    // Grants are logged once they land, so the order against the session shows set-up waited for them.
+    if (init?.method === 'PUT' || init?.method === 'PATCH') await new Promise((resolve) => setTimeout(resolve, 0))
+    if (init?.method === 'PUT') app.calls.push(url.includes('/read/') ? `read ${url.split('/').pop()}` : `grant ${url.split('/')[3]}`)
+    if (init?.method === 'PATCH') app.calls.push(`${JSON.parse(init.body ?? '{}').operation} all`)
     if (url.endsWith('/team-brain/upkeep')) {
       app.calls.push(`upkeep ${JSON.parse(init?.body ?? '{}').scheduleExpression}`)
       if (app.upkeepFails === 'rejects') throw new Error('Network down')
@@ -149,7 +152,7 @@ describe('TeamBrainPage', () => {
     expect(screen.getByTestId('team-brain-next')).toBeDisabled()
   })
 
-  it('prepares on the saved drive, and launches in order: instructions, record, upkeep, agent list, session, then the chosen agents', async () => {
+  it('prepares on the saved drive, and launches in order: instructions, record, upkeep, agent list, the chosen agents, then the session', async () => {
     const clicker = userEvent.setup()
     // The record marks the agent once the agent list refreshes.
     app.invalidate.mockImplementationOnce(async () => {
@@ -161,7 +164,8 @@ describe('TeamBrainPage', () => {
     await waitFor(() => expect(screen.getByTestId('team-brain-onboarding-step')).toHaveAttribute('data-step', 'agents'))
     expect(app.calls).toEqual(['install', 'mount team-brain', 'warm-start'])
 
-    // Planner off, weekly.
+    // Every agent off, then planner off, weekly.
+    await clicker.click(screen.getByTestId('team-brain-every-agent-switch'))
     await clicker.click(screen.getByTestId('team-brain-agent-planner'))
     await clicker.click(screen.getByTestId('team-brain-next'))
     await clicker.click(screen.getByTestId('team-brain-schedule-weekly'))
@@ -177,8 +181,10 @@ describe('TeamBrainPage', () => {
 
     const launch = app.calls.slice(3)
     expect(launch.slice(0, 4)).toEqual(['instructions', 'record', 'upkeep 0 0 * * 1', 'refresh agents'])
-    expect(launch).toEqual(expect.arrayContaining(['mount writer read-only', 'grant writer', 'session']))
-    expect(launch.some((call) => call.endsWith('planner'))).toBe(false)
+    expect(launch).toEqual(expect.arrayContaining(['mount writer read-only', 'grant writer', 'read writer', 'list all', 'session']))
+    expect(launch.some((call) => call.endsWith('planner') || call === 'read all')).toBe(false)
+    // Team Brain can list and read the chosen agents before its first chat starts.
+    expect(Math.max(launch.indexOf('list all'), launch.indexOf('read writer'))).toBeLessThan(launch.indexOf('session'))
     expect(app.instructions).toBe('Brain: `/mounts/Team Brain`. Schedule: weekly, Mondays at midnight (cron `0 0 * * 1`).')
 
     // Set-up is over once launched: with no session to replace it, the page shows Team Brain's home page.
@@ -187,19 +193,19 @@ describe('TeamBrainPage', () => {
     expect(screen.getByTestId('team-brain-home')).toBeInTheDocument()
   })
 
-  it('makes the drive global for every agent once the record is accepted, and still lets each one message Team Brain', async () => {
+  it('starts on every agent: the drive goes global once the record is accepted, each agent can message Team Brain, and Team Brain reads every agent', async () => {
     const clicker = userEvent.setup()
     render(<TeamBrainPage />)
     await saveDrive(clicker)
-    await waitFor(() => expect(screen.getByTestId('team-brain-every-agent-switch')).toBeEnabled())
-    await clicker.click(screen.getByTestId('team-brain-every-agent-switch'))
+    await waitFor(() => expect(screen.getByTestId('team-brain-every-agent-switch')).toBeChecked())
     await clicker.click(screen.getByTestId('team-brain-next'))
     await clicker.click(screen.getByTestId('team-brain-next'))
     await clicker.click(screen.getByTestId('team-brain-start-chat'))
     await waitFor(() => expect(app.calls).toContain('session'))
 
     expect(app.calls.indexOf('global read')).toBeGreaterThan(app.calls.indexOf('record'))
-    expect(app.calls).toEqual(expect.arrayContaining(['grant writer', 'grant planner']))
+    expect(app.calls).toEqual(expect.arrayContaining(['grant writer', 'grant planner', 'list all', 'read all']))
+    expect(Math.max(app.calls.indexOf('list all'), app.calls.indexOf('read all'))).toBeLessThan(app.calls.indexOf('session'))
     expect(app.calls).not.toContain('mount writer')
   })
 
@@ -211,8 +217,7 @@ describe('TeamBrainPage', () => {
     const clicker = userEvent.setup()
     render(<TeamBrainPage />)
     await saveDrive(clicker)
-    await waitFor(() => expect(screen.getByTestId('team-brain-every-agent-switch')).toBeEnabled())
-    await clicker.click(screen.getByTestId('team-brain-every-agent-switch'))
+    await waitFor(() => expect(screen.getByTestId('team-brain-every-agent-switch')).toBeChecked())
     await clicker.click(screen.getByTestId('team-brain-next'))
     await clicker.click(screen.getByTestId('team-brain-next'))
     await clicker.click(screen.getByTestId('team-brain-start-chat'))
