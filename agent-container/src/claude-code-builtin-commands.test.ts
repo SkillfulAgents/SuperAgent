@@ -159,6 +159,25 @@ describe('ClaudeCodeProcess unsupported CLI built-ins', () => {
     ])
   })
 
+  it('sends the host a system/init that lists only the menu commands', async () => {
+    proc = new ClaudeCodeProcess({ sessionId: 's2b', workingDirectory: '/tmp' })
+    const forwarded: Frame[] = []
+    proc.on('message', (message: Frame) => forwarded.push(message))
+    await proc.start()
+    queries[0].push(initFrame(['weekly-report', 'reset', 'clear', 'compact', 'model']))
+    await tick()
+
+    const init = forwarded.find((message) => message.type === 'system' && message.subtype === 'init')
+    expect(init?.slash_commands).toEqual(['weekly-report', 'reset', 'compact'])
+
+    await proc.sendMessage('/reset weekly')
+    await proc.sendMessage('/clear')
+    expect(sent(queries[0])).toEqual([
+      { text: '/reset weekly', clientComposed: false },
+      { text: '/clear', clientComposed: true },
+    ])
+  })
+
   it('follows the latest system/init when that skill goes away', async () => {
     proc = new ClaudeCodeProcess({ sessionId: 's3', workingDirectory: '/tmp' })
     await proc.start()
