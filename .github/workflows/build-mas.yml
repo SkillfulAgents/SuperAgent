@@ -81,7 +81,7 @@ jobs:
   build-mas:
     needs: secrets
     if: needs.secrets.outputs.present == 'true'
-    runs-on: macos-26
+    runs-on: blacksmith-12vcpu-macos-26
     env:
       # The Gamut record's Apple ID (App Store Connect → App Information). altool
       # needs it to find the record: the bundle id alone did not, in the spike.
