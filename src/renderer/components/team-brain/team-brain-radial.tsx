@@ -529,19 +529,21 @@ export function TeamBrainRadial({
         view.current = { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t, k: from.k + (to.k - from.k) * t }
         applyView()
       }
+      // Both exits end here: the redraw takes its turn, so names flip to their new side.
+      const finish = () => {
+        setTurn(turnRef.current)
+        onDone?.()
+      }
       if (prefersReducedMotion() || typeof requestAnimationFrame === 'undefined') {
         set(1)
-        return onDone?.()
+        return finish()
       }
       const startedAt = performance.now()
       const step = (now: number) => {
         const t = Math.min((now - startedAt) / ms, 1)
         set(ease(t))
         if (t < 1) turning.current = requestAnimationFrame(step)
-        else {
-          setTurn(turnRef.current)
-          onDone?.()
-        }
+        else finish()
       }
       turning.current = requestAnimationFrame(step)
     },

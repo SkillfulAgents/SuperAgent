@@ -7,7 +7,7 @@ import userEvent from '@testing-library/user-event'
 const { app, openExternalUrl, screenSize } = vi.hoisted(() => ({
   openExternalUrl: vi.fn(),
   // Whether the window is wide enough (xl) for settings to sit beside the page rather than float over it.
-  screenSize: { wide: true, listeners: new Set<() => void>() },
+  screenSize: { wide: true, reduced: false, listeners: new Set<() => void>() },
   app: {
     agents: [
       { slug: 'writer', displaySlug: 'writer', name: 'Writer', status: 'running', avatar: null },
@@ -162,7 +162,7 @@ beforeEach(() => {
   screenSize.wide = true
   screenSize.listeners.clear()
   window.matchMedia = ((query: string) => ({
-    get matches() { return query === '(min-width: 1280px)' ? screenSize.wide : false },
+    get matches() { return query === '(min-width: 1280px)' ? screenSize.wide : query === '(prefers-reduced-motion: reduce)' ? screenSize.reduced : false },
     media: query, onchange: null, addListener: () => {}, removeListener: () => {},
     addEventListener: (_: string, listener: () => void) => screenSize.listeners.add(listener),
     removeEventListener: (_: string, listener: () => void) => screenSize.listeners.delete(listener),
@@ -233,6 +233,28 @@ describe('TeamBrainOverview', () => {
       expect(zoom()).toBeCloseTo(fitted)
     }, { timeout: 3000 })
     width.mockRestore()
+  })
+
+  it('under reduced motion, a folder clicked is drawn at its new turn, not left rotated with names on the old side', async () => {
+    screenSize.reduced = true
+    const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(900)
+    render(<TeamBrainOverview agent={BRAIN} />)
+    const radial = screen.getByTestId('team-brain-radial')
+    expect(radial).not.toHaveAttribute('data-entering')
+    const spin = () => Number(radial.querySelector('svg > g')!.getAttribute('transform')?.match(/rotate\((-?[\d.e-]+)\)/)?.[1] ?? 0)
+    const customers = within(radial).getByTestId('team-brain-radial-node-customers')
+    await userEvent.click(customers)
+    expect(customers).toHaveAttribute('data-selected', 'true')
+    // Drawn at three o'clock itself, with no rotation of the whole tree standing in for the turn.
+    const [x, y] = customers.getAttribute('transform')!.match(/-?[\d.]+/g)!.map(Number)
+    expect(x).toBeGreaterThan(0)
+    expect(Math.abs(y)).toBeLessThan(0.5)
+    expect(Math.abs(spin())).toBeLessThan(0.01)
+    // And back to the whole tree the same way.
+    await userEvent.click(within(radial).getByRole('img'))
+    expect(Math.abs(spin())).toBeLessThan(0.01)
+    width.mockRestore()
+    screenSize.reduced = false
   })
 
   it('keeps its settings in a column beside the page: sync, schedule, where it lives, sources and agents', async () => {
