@@ -24,7 +24,8 @@ vi.mock('@renderer/hooks/use-mounts', () => ({ useVolumesManager: () => volumes 
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: false }) }))
 const { navigate, save, toastError } = vi.hoisted(() => ({ navigate: vi.fn(), save: vi.fn(), toastError: vi.fn() }))
 vi.mock('sonner', () => ({ toast: { error: toastError } }))
-vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate }))
+vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate, useSearch: () => search.current }))
+const search = vi.hoisted(() => ({ current: {} as { from?: string } }))
 vi.mock('@renderer/hooks/use-volume-definitions', () => ({ useSaveVolumeDefinition: () => ({ mutateAsync: save }) }))
 
 const { mockCanUseHostFeatures } = vi.hoisted(() => ({
@@ -35,6 +36,7 @@ vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: mockCanUseHos
 import { render, screen, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HomeVolumes } from './home-volumes'
+import { teamBrainAgentHomePath } from '@renderer/lib/team-brain/team-brain-agent-home'
 
 /**
  * Local folder picking/revealing needs this computer. Saved volumes belong to
@@ -135,6 +137,15 @@ describe('driving a cloud workspace', () => {
     render(<HomeVolumes agentSlug="a1" />)
     await userEvent.click(screen.getByText('code'))
     expect(navigate).toHaveBeenCalledWith({ to: '/settings/$tab', params: { tab: 'volumes' }, search: { volume: 'v1', source: 'home', from: '/agents/a1' } })
+  })
+
+  it('opens the drive settings from the Team Brain agent\'s Agent Home, back to it', async () => {
+    volumes.definitions = [{ id: 'v1', name: 'code', hostPath: '/Users/joe/code' }]
+    search.current = { from: '/team-brain' }
+    render(<HomeVolumes agentSlug="a1" />)
+    await userEvent.click(screen.getByText('code'))
+    expect(navigate).toHaveBeenCalledWith({ to: '/settings/$tab', params: { tab: 'volumes' }, search: { volume: 'v1', source: 'home', from: teamBrainAgentHomePath('a1') } })
+    search.current = {}
   })
 
   it('leaves the row inert when this viewer cannot open the drive\'s settings', async () => {

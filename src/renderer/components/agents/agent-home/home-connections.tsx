@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
-import { useNavigate } from '@tanstack/react-router'
+import { useNavigate, useSearch } from '@tanstack/react-router'
+import { isTeamBrainAgentHome, teamBrainAgentHomePath } from '@renderer/lib/team-brain/team-brain-agent-home'
 import { Button } from '@renderer/components/ui/button'
 import { Plus, Settings2 } from 'lucide-react'
 import { IntegrationRow, RowHoverChevron } from '@renderer/components/connections/integration-row'
@@ -49,6 +50,8 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
   const { data: mcpsData } = useAgentRemoteMcps(agentSlug)
   const { data: activityStats, isPending: activityPending } = useAgentActivityStats(agentSlug)
   const navigate = useNavigate()
+  // Opened as the Team Brain agent's Agent Home, a detail's Back returns here rather than to the Team Brain page.
+  const backHere = isTeamBrainAgentHome(useSearch({ strict: false })) ? teamBrainAgentHomePath(agentSlug) : undefined
   const {
     reconnect: oauthReconnect,
     pendingAccountId,
@@ -162,7 +165,7 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
                 void navigate({
                   to: '/agents/$slug/connections',
                   params: { slug: agentSlug },
-                  search: { detail: conn.id, source: 'home' },
+                  search: { detail: conn.id, source: 'home', ...(backHere && { from: backHere }) },
                 })
               }}
               ariaLabel={conn.foreign ? undefined : `Open ${conn.name} connection details`}

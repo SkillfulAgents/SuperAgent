@@ -26,6 +26,7 @@ import { RECORD_GROUPS, RECORD_SECTIONS, splitFrontPages, type RecordGroup } fro
 import type { RecordGroupsRead } from '@renderer/hooks/use-team-brain-drive'
 import { useUpdateUserSettings, useUserSettings } from '@renderer/hooks/use-user-settings'
 import { useTeamBrainSyncs } from '@renderer/hooks/use-team-brain-syncs'
+import { TEAM_BRAIN_AGENT_HOME_SEARCH } from '@renderer/lib/team-brain/team-brain-agent-home'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { FilePreviewProvider, useFilePreview } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
@@ -643,7 +644,7 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
         {/* The rest of the agent's settings live on its Agent Home, which only this row reaches: every other way in lands here. */}
         <button
           type="button"
-          onClick={() => void navigate({ to: '/agents/$slug', params: { slug: agent.slug }, search: { from: '/team-brain' } })}
+          onClick={() => void navigate({ to: '/agents/$slug', params: { slug: agent.slug }, search: TEAM_BRAIN_AGENT_HOME_SEARCH })}
           className={cn(SECTION_HEADER_CLASS, 'rounded-2xl', GLASS_SURFACE)}
           data-testid="team-brain-agent-settings"
         >

@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HomeConnections } from './home-connections'
+import { teamBrainAgentHomePath } from '@renderer/lib/team-brain/team-brain-agent-home'
 import { renderWithProviders } from '@renderer/test/test-utils'
 
 // Mock apiFetch so the real `useAgentConnectedAccounts` hook runs end-to-end
@@ -28,9 +29,11 @@ vi.mock('@renderer/hooks/use-oauth-reconnect', () => ({
 // Capture navigate so we can assert the deep link into the connections page
 // (the rows navigate directly).
 const mockNavigate = vi.fn()
+const mockSearch = vi.hoisted(() => ({ current: {} as { from?: string } }))
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tanstack/react-router')>()),
   useNavigate: () => mockNavigate,
+  useSearch: () => mockSearch.current,
 }))
 
 const ACCOUNT = {
@@ -64,6 +67,7 @@ describe('HomeConnections — row navigation', () => {
   beforeEach(() => {
     mockApiFetch.mockReset()
     mockNavigate.mockReset()
+    mockSearch.current = {}
     oauthReconnectMocks.reconnect.mockReset()
     oauthReconnectMocks.cancelReconnect.mockReset()
     accountResponse = [ACCOUNT]
@@ -110,6 +114,19 @@ describe('HomeConnections — row navigation', () => {
       to: '/agents/$slug/connections',
       params: { slug: 'test-agent' },
       search: { detail: 'account-acc-1', source: 'home' },
+    })
+  })
+
+  it('keeps Back on the Team Brain agent\'s Agent Home when opened from it', async () => {
+    mockSearch.current = { from: '/team-brain' }
+    const user = userEvent.setup()
+    renderWithProviders(<HomeConnections agentSlug="test-agent" />)
+    expect(await screen.findByText('GitHub')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Open GitHub connection details' }))
+    expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/agents/$slug/connections',
+      params: { slug: 'test-agent' },
+      search: { detail: 'account-acc-1', source: 'home', from: teamBrainAgentHomePath('test-agent') },
     })
   })
 

@@ -6,6 +6,7 @@ import { HttpError } from '@renderer/lib/api'
 import { agentQuery } from '@renderer/hooks/query-options'
 import { AgentNotFound, AgentLoadError } from './route-fallbacks'
 import { lenient } from './zod-search'
+import { isTeamBrainAgentHome } from '@renderer/lib/team-brain/team-brain-agent-home'
 import { agentHomeSearchSchema, chatSearchSchema, connectionsSearchSchema, homeSearchSchema, rootSearchSchema, settingsSearchSchema, settingsTabSchema } from './search-schemas'
 import { HomePage } from '@renderer/components/home/home-page'
 import { RootLayout, AppShellLayout } from '@renderer/components/layout/route-layouts'
@@ -192,7 +193,7 @@ export const agentHomeRoute = createRoute({
   // settings row. A failed read is left to the layout's loader, which owns turning it into not-found or an error.
   loader: async ({ context, params, deps }) => {
     const agent = await context.queryClient.ensureQueryData(agentQuery(params.slug)).catch(() => null)
-    if (agent?.teamBrain && deps.from !== '/team-brain') throw redirect({ to: '/team-brain', replace: true })
+    if (agent?.teamBrain && !isTeamBrainAgentHome(deps)) throw redirect({ to: '/team-brain', replace: true })
   },
   component: AgentHomeRoute,
 })

@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { useNavigate } from '@tanstack/react-router'
+import { useNavigate, useSearch } from '@tanstack/react-router'
+import { isTeamBrainAgentHome, teamBrainAgentHomePath } from '@renderer/lib/team-brain/team-brain-agent-home'
 import { VolumeIcon } from '@renderer/components/volumes/volume-icon'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -171,6 +172,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
   const titleRef = useRef<InlineEditableTitleHandle>(null)
   useLayoutEffect(() => { if (isRenaming) titleRef.current?.startEditing() }, [isRenaming])
   const navigate = useNavigate()
+  const onTeamBrainHome = isTeamBrainAgentHome(useSearch({ strict: false }))
   const save = useSaveVolumeDefinition()
   const fileManagerLabel = getFileManagerLabel()
   // `hostPath` is a path on whichever machine runs the agent. Opening it in the
@@ -191,7 +193,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
 
   const canOpen = definition !== undefined && !isRenaming
   const openSettings = () => {
-    void navigate({ to: '/settings/$tab', params: { tab: 'volumes' }, search: { volume: mount.volumeId, source: 'home', from: `/agents/${encodeURIComponent(agentSlug)}` } })
+    void navigate({ to: '/settings/$tab', params: { tab: 'volumes' }, search: { volume: mount.volumeId, source: 'home', from: onTeamBrainHome ? teamBrainAgentHomePath(agentSlug) : `/agents/${encodeURIComponent(agentSlug)}` } })
   }
 
   const handleDelete = () => {

@@ -11,9 +11,13 @@ import { VolumeSettingsDialog } from '@renderer/components/volumes/volume-settin
 import { VolumeStatusBadge } from '@renderer/components/agents/volume-status-badge'
 import { useAgents } from '@renderer/hooks/use-agents'
 import type { VolumeDefinitionSummary } from '@shared/lib/types/mount'
+import { TEAM_BRAIN_AGENT_HOME_QUERY } from '@renderer/lib/team-brain/team-brain-agent-home'
 
 export function agentBackPath(source: 'home' | 'list' | undefined, from: string | undefined): string | null {
-  return source === 'home' && from && /^\/agents\/[^/?#]+$/.test(from) ? from : null
+  if (source !== 'home' || !from) return null
+  // The one query an agent's page may carry is the one that opens the Team Brain agent's Agent Home.
+  const [path, query, ...rest] = from.split('?')
+  return /^\/agents\/[^/?#]+$/.test(path) && rest.length === 0 && (query === undefined || query === TEAM_BRAIN_AGENT_HOME_QUERY) ? from : null
 }
 
 export function VolumesTab() {
@@ -28,7 +32,7 @@ export function VolumesTab() {
   const backToList = () => { void navigate({ to: '/settings/$tab', params: { tab: 'volumes' }, search: prev => ({ ...prev, volume: undefined, source: undefined }) }) }
   const openVolume = (id: string) => { void navigate({ to: '/settings/$tab', params: { tab: 'volumes' }, search: prev => ({ ...prev, volume: id, source: undefined }) }) }
   const agentPath = agentBackPath(source, from)
-  const homeAgent = agents.data?.find(agent => agentPath === `/agents/${encodeURIComponent(agent.slug)}`)
+  const homeAgent = agents.data?.find(agent => agentPath?.split('?')[0] === `/agents/${encodeURIComponent(agent.slug)}`)
   const back = agentPath
     ? { onBack: () => router.history.push(agentPath), label: homeAgent?.name ?? 'Agent' }
     : { onBack: backToList, label: undefined }
