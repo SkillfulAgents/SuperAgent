@@ -5,6 +5,7 @@ import { FolderBrowser } from './folder-browser'
 import { FolderHostActions } from './folder-host-actions'
 import { CommentBar } from './comments/comment-bar'
 import { describeWorkspaceFile } from '@renderer/lib/workspace-file'
+import { withPreviewVersion } from '@renderer/lib/file-preview-url'
 import { useFileSize } from '@renderer/hooks/use-file-size'
 
 interface FilePreviewTrayContentProps {
@@ -19,7 +20,11 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
   // A tab with its own source (a file outside the agent's workspace) is shown from there.
   const file = activeFile
     ? activeFile.source
-      ? { path: activeFile.filePath, agentSlug: activeFile.agentSlug, apiPath: null, ...activeFile.source }
+      ? {
+        path: activeFile.filePath, agentSlug: activeFile.agentSlug, apiPath: null,
+        inlineUrl: withPreviewVersion(activeFile.source.inlineUrl, activeFile.version),
+        downloadUrl: activeFile.source.downloadUrl === undefined ? undefined : withPreviewVersion(activeFile.source.downloadUrl, activeFile.version),
+      }
       : describeWorkspaceFile(activeFile.filePath, activeFile.agentSlug, { version: activeFile.version })
     : null
   const { data: fileSize } = useFileSize(file?.apiPath ?? null, activeFile?.version ?? 0)

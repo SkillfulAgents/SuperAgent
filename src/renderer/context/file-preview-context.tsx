@@ -10,6 +10,8 @@ import { RELOADING_EVENT } from '@renderer/lib/lazy-with-reload'
  * Where a file's bytes come from when it is not in the agent's workspace: a
  * shared drive's file, say, served from somewhere other than the agent files
  * API. Without one, the drawer reads `agentSlug`'s copy of the path.
+ * HTTP(S) URLs must accept a `v` cache-busting parameter on each open;
+ * data: and blob: URLs identify fixed bytes and are used unchanged.
  */
 const previewSourceSchema = z.object({ inlineUrl: z.string(), downloadUrl: z.string().optional() })
 export type PreviewSource = z.infer<typeof previewSourceSchema>
