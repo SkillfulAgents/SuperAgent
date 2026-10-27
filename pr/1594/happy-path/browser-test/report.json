@@ -1,25 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported it back in the response.",
+  "reason": "QA-20261027-001309-8k2w agent successfully opened a browser, navigated to https://example.com, extracted the page title \"Example Domain\", and provided the correct response.",
   "steps": [
-    "Navigated to http://localhost:47891 — page loaded successfully showing Gamut application with sidebar containing available agents",
-    "Found and clicked on \"QA-20261026-231120-w1yx\" agent in sidebar — agent page opened showing message input field",
-    "Clicked on message input textbox — input field became focused and ready for text entry",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" — message appeared in input field",
-    "Clicked Send message button — message was sent successfully and page navigated to session view titled \"Browser Page Title Check\"",
-    "Waited up to 3 minutes for response mentioning \"Example Domain\" — response received within 12 seconds stating \"The page title of https://example.com is \\\"Example Domain\\\". It loaded without errors, and I've closed the browser.\"",
-    "Took full page screenshot — screenshot captured showing the complete conversation with agent response mentioning \"Example Domain\""
+    "Navigated to http://localhost:47891 — Page loaded successfully showing the Gamut agent interface with the sidebar displaying available agents including \"QA-20261027-001309-8k2w\"",
+    "Clicked on the \"QA-20261027-001309-8k2w\" agent in the sidebar — Agent page opened successfully, showing agent settings and message input field",
+    "Clicked on the message input field and typed \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully entered in the input field",
+    "Clicked the \"Send message\" button — Message was sent successfully, creating a new session titled \"Check Example.com Page Title\" with the agent status showing \"working\"",
+    "Waited up to 3 minutes for the agent response — Agent completed the task in approximately 8 seconds and provided the response: \"The page title is \"Example Domain\". I've closed the browser now that it's no longer needed.\"",
+    "Verified the response mentions \"Example Domain\" and took a screenshot — Response verified successfully. The screenshot shows the complete agent response including the exact page title \"Example Domain\" extracted from https://example.com"
   ],
   "bugs": [],
-  "durationMs": 88048,
-  "sessionId": "0ae3936a-3973-452f-9c88-f0c9122e7efe",
+  "durationMs": 107146,
+  "sessionId": "3be22e3e-e6ee-43e7-9864-c88379c3dc41",
   "cost": {
-    "inputTokens": 326,
-    "outputTokens": 8913,
-    "cacheCreationTokens": 65029,
-    "cacheReadTokens": 881016,
+    "inputTokens": 416,
+    "outputTokens": 12606,
+    "cacheCreationTokens": 80251,
+    "cacheReadTokens": 1210422,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.214279
+    "totalCostUsd": 0.284802
   }
 }
