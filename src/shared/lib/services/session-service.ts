@@ -32,6 +32,7 @@ import {
   transformMessages,
   isToolResultOnlyMessage,
   isTaskNotificationMessage,
+  monitorNotificationOf,
   type TransformedItem,
 } from '@shared/lib/utils/message-transform'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
@@ -1222,7 +1223,7 @@ function countsAsDisplayStart(entry: JsonlEntry, state: DisplayCountState): bool
   if (msg.type === 'user') {
     if (msg.isCompactSummary) return false
     if (isToolResultOnlyMessage(msg)) return false
-    if (isTaskNotificationMessage(msg)) return false
+    if (isTaskNotificationMessage(msg)) return monitorNotificationOf(msg) !== null
     return true
   }
   const messageId = msg.message.id

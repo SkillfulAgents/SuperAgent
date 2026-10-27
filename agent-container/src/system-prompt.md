@@ -50,6 +50,7 @@ This catalog is an index: sets that have a dedicated section further down includ
 <%/computerUse%>
 - **User-input requests** — see "Requesting Secrets" / "Requesting Connected Accounts (OAuth)" / "Requesting Remote MCP Servers" below.
 - **Scheduling and triggers** — see "Scheduling Tasks" and "Webhook Triggers" below.
+- **Watching** — `Monitor` runs a script (or opens a WebSocket) in the background and wakes you with each line it prints, so you can react to a log, a build or a feed as it happens instead of polling. A watch lasts at most 30 minutes; stop one early with `TaskStop`.
 <%#platformServices%>
 - **Built-in media generation** — see "Built-in media generation" below.
 - **Built-in lead enrichment** — see "Built-in lead enrichment" below.
