@@ -1,0 +1,23 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Browser tool integration test — verified that an agent can open a browser, navigate to a URL, retrieve the page title, and report back with the correct information including \"Example Domain\".",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — Page loaded successfully with title \"Gamut\", displaying the Gamut agent dashboard.",
+    "Step 2: Found and clicked the \"QA-20261027-191317-yfbw\" agent in the sidebar — Successfully navigated to the agent's chat interface at URL http://localhost:47891/agents/qa-20261027-191317-yfbw-2hsqildp3x.",
+    "Step 3: Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully sent; a new session titled \"Browser Page Title Check\" was created and the agent status changed to \"working\".",
+    "Step 4: Waited up to 3 minutes for agent response — Agent completed execution in 8 seconds with 3 tool calls and 159,953 tokens.",
+    "Step 5: Verified the response contains \"Example Domain\" — Agent's response states: \"The page title is 'Example Domain'. The page at https://example.com loaded normally, and I've closed the browser.\" Response successfully confirmed the page title as required."
+  ],
+  "bugs": [],
+  "durationMs": 87604,
+  "sessionId": "186e9441-d9d9-4059-ae1d-e6f09e231bb9",
+  "cost": {
+    "inputTokens": 464,
+    "outputTokens": 11947,
+    "cacheCreationTokens": 76203,
+    "cacheReadTokens": 1286381,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.284091
+  }
+}
