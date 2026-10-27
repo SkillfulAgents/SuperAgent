@@ -25,7 +25,8 @@ export function TeamBrainSyncSummaries({
   /** The summaries' folder couldn't be read, so none showing doesn't mean none ran. */
   unreadable?: boolean
   onOpenFile: OpenFile
-  onOpenSession: (sessionId: string) => void
+  /** Opens the session a sync ran in; without it, a sync's title is plain. */
+  onOpenSession?: (sessionId: string) => void
 }) {
 
   // A page opens from the drive in the drawer, a web link in the browser.
@@ -88,10 +89,10 @@ export function TeamBrainSyncSummaries({
                 />
                 <header className="flex flex-wrap items-center gap-2.5">
                   <h3 className="text-base font-normal tracking-[-0.0075em]">
-                    {sync.session ? (
+                    {sync.session && onOpenSession ? (
                       <button
                         type="button"
-                        onClick={() => sync.session && onOpenSession(sync.session)}
+                        onClick={() => sync.session && onOpenSession?.(sync.session)}
                         className="rounded-[2px] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         data-testid={`team-brain-sync-session-${sync.id}`}
                       >

@@ -50,6 +50,7 @@ import {
   type FirewallFixUiState,
 } from '@renderer/components/runtime/runtime-status-banners'
 import { useFirewallStatus, useFixFirewall } from '@renderer/hooks/use-firewall-status'
+import { useCloudConnection } from '@renderer/lib/team-brain/team-brain-cloud'
 import { useAgents, useListedAgents, useRouteAgentId, useStartAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
@@ -862,6 +863,8 @@ function findTeamBrainAgent(agents: ApiAgent[]): ApiAgent | undefined {
 function TeamBrainMenuButton() {
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const { data: brainAgent } = useAgents({ select: findTeamBrainAgent, poll: false })
+  // On the desktop, connected to the cloud's Team Brain counts as set up.
+  const connected = !!useCloudConnection().state.connected
   const visited = pathname === '/team-brain' || (!!brainAgent && pathname.startsWith(`/agents/${brainAgent.displaySlug}`))
   const [seen] = useState(() => localStorage.getItem(TEAM_BRAIN_SEEN_KEY) === '1')
   useEffect(() => {
@@ -872,7 +875,7 @@ function TeamBrainMenuButton() {
     <>
       <Brain className="h-4 w-4" />
       <span>Team Brain</span>
-      {!seen && !visited && !brainAgent && (
+      {!seen && !visited && !brainAgent && !connected && (
         <span className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-white">
           New
         </span>

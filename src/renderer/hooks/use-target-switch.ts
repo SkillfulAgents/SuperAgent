@@ -47,6 +47,11 @@ function bannerFor(workspace: CloudWorkspaceResponse | undefined): Banner | null
   return (workspace.status && STATUS_BANNERS[workspace.status]) || null
 }
 
+/** Platform's Cloud Agents page for the account's org, where a workspace is set up, woken and fixed. */
+export function cloudAgentsPageUrl(platform: { platformBaseUrl?: string; orgId?: string | null } | undefined): string | null {
+  return platform?.platformBaseUrl && platform.orgId ? `${platform.platformBaseUrl}/dashboard/organizations/${platform.orgId}?tab=cloud` : null
+}
+
 /**
  * State for the Local/Cloud control: which Superagent this window is driving,
  * and how to move.
@@ -101,10 +106,7 @@ export function useTargetSwitch() {
           : undefined
         if (!workspace?.found || !workspace.hasValidToken) {
           setSwitching(false)
-          const cloudAgentsPage =
-            platform?.platformBaseUrl && platform.orgId
-              ? `${platform.platformBaseUrl}/dashboard/organizations/${platform.orgId}?tab=cloud`
-              : null
+          const cloudAgentsPage = cloudAgentsPageUrl(platform)
           const openPlatform = () => {
             if (cloudAgentsPage) void openExternalUrl(cloudAgentsPage)
           }

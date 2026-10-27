@@ -81,8 +81,19 @@ vi.mock('@renderer/context/user-context', () => ({ useUser: () => user }))
 vi.mock('@renderer/context/onboarding-context', () => ({ useOnboarding: () => ({ setOnboarding: vi.fn() }) }))
 vi.mock('@renderer/components/ui/app-link', () => ({ AppLink: ({ children }: { children: unknown }) => <span>{children as string}</span> }))
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), info: vi.fn() }) }))
+// On the desktop set-up first asks how; the cloud's Team Brain is still being looked for. Its steps have their own tests.
+const { desktop } = vi.hoisted(() => ({ desktop: { on: false } }))
+vi.mock('@renderer/hooks/use-cloud-team-brain', () => ({
+  useOffersCloudTeamBrain: () => desktop.on,
+  useCloudTeamBrain: () => ({ state: 'checking', checkAgain: () => {} }),
+}))
+vi.mock('@renderer/hooks/use-target-switch', () => ({ useTargetSwitch: () => ({ switching: false, switchTo: vi.fn() }) }))
+vi.mock('@renderer/context/dialog-context', () => ({ useDialogs: () => ({ openSettings: vi.fn() }) }))
 // The home page has its own tests; here it only needs to show up, for the right agent.
-vi.mock('./team-brain-overview', () => ({ TeamBrainOverview: ({ agent }: { agent: { slug: string } }) => <div data-testid="team-brain-home">{agent.slug}</div> }))
+vi.mock('./team-brain-overview', () => ({
+  TeamBrainOverview: ({ agent }: { agent: { slug: string } }) => <div data-testid="team-brain-home">{agent.slug}</div>,
+  TeamBrainCloudOverview: ({ brain }: { brain: { workspace: string } }) => <div data-testid="team-brain-cloud-home">{brain.workspace}</div>,
+}))
 // The drive's own set-up, reduced to its save.
 vi.mock('@renderer/components/volumes/volume-setup-registry', async (importOriginal) => {
   const { volumeSetupRegistry } = await importOriginal<typeof import('@renderer/components/volumes/volume-setup-registry')>()
@@ -100,11 +111,15 @@ import { TeamBrainPage } from './team-brain-page'
 import { volumeSetupRegistry } from '@renderer/components/volumes/volume-setup-registry'
 import { getTeamBrainState, resetTeamBrainState } from '@renderer/lib/team-brain/team-brain-store'
 import { TEAM_BRAIN_INITIAL_STATE } from '@renderer/lib/team-brain/team-brain-schema'
+import { resetCloudConnection, setCloudConnection } from '@renderer/lib/team-brain/team-brain-cloud'
+import { cloudTeamBrain } from '@renderer/lib/team-brain/team-brain-cloud-fixture'
 
 const agent = (slug: string) => ({ slug, displaySlug: slug, name: slug[0].toUpperCase() + slug.slice(1), status: 'stopped', avatar: null })
 
 beforeEach(() => {
   resetTeamBrainState()
+  resetCloudConnection()
+  desktop.on = false
   app.calls.length = 0
   app.agents = [agent('writer'), agent('planner')]
   app.record = undefined
@@ -343,5 +358,27 @@ describe('TeamBrainPage', () => {
     render(<TeamBrainPage />)
     expect(screen.queryByTestId('team-brain-start')).toBeNull()
     expect(screen.getByTestId('team-brain-ask-admin')).toHaveTextContent('Ask an admin to set up Team Brain.')
+  })
+
+  it('on the desktop, one Set up opens set-up at how', async () => {
+    desktop.on = true
+    render(<TeamBrainPage />)
+    expect(screen.getByTestId('team-brain-start')).toHaveTextContent('Set up Team Brain')
+    await userEvent.click(screen.getByTestId('team-brain-start'))
+    expect(screen.getByTestId('team-brain-onboarding-step')).toHaveAttribute('data-step', 'how')
+  })
+
+  it('on the desktop, shows the cloud’s Team Brain’s home once connected', () => {
+    desktop.on = true
+    setCloudConnection({ connected: { brain: cloudTeamBrain('acme.gamut.cloud'), at: new Date().toISOString() }, agents: {}, everyAgent: false })
+    render(<TeamBrainPage />)
+    expect(screen.getByTestId('team-brain-cloud-home')).toHaveTextContent('acme.gamut.cloud')
+  })
+
+  it('on the desktop, keeps the home page of a Team Brain set up here before', () => {
+    desktop.on = true
+    app.agents = [agent('writer'), { ...agent('team-brain'), teamBrain: { volumeId: 'vol-1' } }]
+    render(<TeamBrainPage />)
+    expect(screen.getByTestId('team-brain-home')).toHaveTextContent('team-brain')
   })
 })

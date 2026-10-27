@@ -104,6 +104,16 @@ export function useTeamBrainSetup() {
     return true
   }
 
+  /** Drop what was prepared and stay in set-up: on the desktop, someone turned back to connect to the cloud's instead. */
+  const discardPrepared = async () => {
+    const { prepared } = getTeamBrainState()
+    if (!prepared) return
+    tb.setPrepared(null)
+    await discard(prepared).catch((error: unknown) => {
+      toast.error('Could not remove the Team Brain agent', { description: error instanceof Error ? error.message : undefined })
+    })
+  }
+
   const cancel = () => {
     attempt.current++
     const { prepared } = getTeamBrainState()
@@ -202,5 +212,5 @@ export function useTeamBrainSetup() {
     }
   }, [])
 
-  return { agentSlug: setUpSlug, prepare, cancel, startChat }
+  return { agentSlug: setUpSlug, prepare, discardPrepared, cancel, startChat }
 }

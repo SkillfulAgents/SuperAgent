@@ -2,6 +2,7 @@ import { useMemo, useSyncExternalStore } from 'react'
 import {
   TEAM_BRAIN_INITIAL_STATE,
   type TeamBrainLocationId,
+  type TeamBrainPath,
   type TeamBrainPrepared,
   type TeamBrainSchedule,
   type TeamBrainState,
@@ -66,6 +67,9 @@ export function usePreparedTeamBrainSlug(): string | undefined {
 export interface TeamBrainActions {
   /** Opt in: open the set-up modal at its first step, nothing preselected. */
   start(): void
+  /** Opt in on the desktop: the modal opens at how, connecting or setting up here. */
+  startOnDesktop(): void
+  choosePath(path: TeamBrainPath): void
   /** Leave set-up. Nothing is kept; the caller discards what was prepared. */
   cancelSetup(): void
   goToStep(step: TeamBrainStep): void
@@ -85,7 +89,9 @@ export interface TeamBrainStore extends TeamBrainActions {
 }
 
 const actions: TeamBrainActions = {
-  start: () => patch({ status: 'onboarding', step: 'location', location: null, prepared: null }),
+  start: () => patch({ status: 'onboarding', step: 'location', path: null, location: null, prepared: null }),
+  startOnDesktop: () => patch({ status: 'onboarding', step: 'how', path: null, location: null, prepared: null }),
+  choosePath: (path) => patch({ path }),
   cancelSetup: () => write(TEAM_BRAIN_INITIAL_STATE),
   goToStep: (step) => patch({ step }),
   setLocation: (location) => patch({ location }),

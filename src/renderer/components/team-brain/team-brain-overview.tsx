@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
-import { AlertCircle, AlertTriangle, ChevronDown, ChevronRight, Plus, Settings2 } from 'lucide-react'
+import { AlertCircle, AlertTriangle, ChevronDown, ChevronRight, Cloud, Plus, Settings2 } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
 import { Switch } from '@renderer/components/ui/switch'
@@ -22,7 +22,12 @@ import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avat
 import { useMinuteClock } from '@renderer/hooks/use-minute-clock'
 import type { TeamBrainNode } from '@renderer/lib/team-brain/team-brain-structure'
 import { useTeamBrainDrive } from '@renderer/hooks/use-team-brain-drive'
-import { splitFrontPages, TEAM_RECORD_FOLDER, teamRecordView } from '@renderer/lib/team-brain/team-brain-drive'
+import { driveTree, splitFrontPages, TEAM_RECORD_FOLDER, teamRecordParts, teamRecordView, withoutTeamRecord, withTeamRecordParts } from '@renderer/lib/team-brain/team-brain-drive'
+import { readsCloudBrain, useCloudConnection, type CloudTeamBrain } from '@renderer/lib/team-brain/team-brain-cloud'
+import { cloudBrainListing, cloudBrainPage, sampleSyncs } from '@renderer/lib/team-brain/team-brain-cloud-fixture'
+import { teamBrainSource } from '@renderer/lib/team-brain/team-brain-sources'
+import type { TeamBrainSync } from '@renderer/lib/team-brain/team-brain-syncs'
+import { useTargetSwitch } from '@renderer/hooks/use-target-switch'
 import type { FolderEntry } from '@renderer/hooks/use-folder-entries'
 import { useTeamBrainSyncs } from '@renderer/hooks/use-team-brain-syncs'
 import { getApiBaseUrl } from '@renderer/lib/env'
@@ -50,7 +55,8 @@ import { TeamBrainSyncSummaries } from './team-brain-sync-summaries'
 import { TeamBrainHomeComposer } from './team-brain-home-composer'
 import { AgentAccessList, EveryAgentRow } from './team-brain-agent-access'
 import { useTeamBrainAccess } from '@renderer/hooks/use-team-brain-access'
-import { teamBrainLocation } from './team-brain-locations'
+import { teamBrainLocation, type TeamBrainLocation } from './team-brain-locations'
+import { TeamBrainSourceIcon } from './team-brain-source-icon'
 
 /** The drawer's tabs are keyed by agent; Team Brain's pages are no agent's, so they get their own key. */
 const PREVIEW_SLUG = 'team-brain'
@@ -64,10 +70,75 @@ const PREVIEW_SLUG = 'team-brain'
  * agents its drive is on.
  */
 export function TeamBrainOverview({ agent }: { agent: ApiAgent }) {
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  // The views of the team record the tree shows (`teamRecordView`), switched on in the settings' Views; none by default.
-  // When the last one is switched off, the parts that were showing stay in the tree while they draw back in, then go.
+  const record = useRecordViews()
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
+  const brain = useAgentBrain(agent, expanded, record)
+  return (
+    <HomeFrame>
+      <OverviewBody
+        brain={brain}
+        expanded={expanded}
+        onExpandedChange={setExpanded}
+        record={record}
+        composer={<TeamBrainHomeComposer agent={agent} />}
+        settings={(panel) => <AgentSettingsPanel agent={agent} {...panel} />}
+      />
+    </HomeFrame>
+  )
+}
+
+/**
+ * The organization's Team Brain on the desktop, read from its cloud workspace (team-brain-cloud.ts): the same home
+ * page with nothing on it that changes the brain. No composer, and settings that show how it is kept rather than
+ * change it, with which agents here read it, a way into the cloud workspace to change it there, and Disconnect.
+ */
+export function TeamBrainCloudOverview({ brain: cloud }: { brain: CloudTeamBrain }) {
+  const record = useRecordViews()
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
+  const brain = useCloudBrain(cloud, record)
+  return (
+    <HomeFrame>
+      <OverviewBody
+        brain={brain}
+        expanded={expanded}
+        onExpandedChange={setExpanded}
+        record={record}
+        settings={(panel) => <CloudSettingsPanel brain={cloud} {...panel} />}
+      />
+    </HomeFrame>
+  )
+}
+
+/** The page's frame: the app's file drawer beside it, set up as on Agent Home, so a page opens like any other file. */
+function HomeFrame({ children }: { children: ReactNode }) {
+  return (
+    <FilePreviewProvider sessionId="team-brain" commentsEnabled={false}>
+      <WorkflowProvider sessionId="team-brain">
+        <div className="file-preview-container relative flex min-h-0 min-w-0 flex-1" data-testid="file-preview-container">
+          {children}
+          <TrayManager agentSlug={PREVIEW_SLUG} sessionId="team-brain" browserActive={false} filePreviewWideLayout="overlay" />
+        </div>
+      </WorkflowProvider>
+    </FilePreviewProvider>
+  )
+}
+
+/** The views of the team record the tree shows (`teamRecordView`), switched on in the settings' Views. */
+interface RecordViews {
+  /** Switched on; none by default. */
+  views: ReadonlySet<string>
+  /** What the tree shows: those, or while the last is drawing back in, the ones that were. */
+  shown: ReadonlySet<string>
+  /** The last was switched off, and what was showing is drawing back in. */
+  leaving: boolean
+  switchView: (view: string, on: boolean) => void
+  /** What was showing has drawn back in, and can go. */
+  onLeft: () => void
+}
+
+function useRecordViews(): RecordViews {
   const [views, setViews] = useState<ReadonlySet<string>>(() => new Set())
+  // When the last one is switched off, the parts that were showing stay in the tree while they draw back in, then go.
   const [leaving, setLeaving] = useState<ReadonlySet<string> | null>(null)
   const switchView = (view: string, on: boolean) => {
     const next = new Set(views)
@@ -76,25 +147,96 @@ export function TeamBrainOverview({ agent }: { agent: ApiAgent }) {
     setViews(next)
     setLeaving(next.size === 0 && views.size > 0 ? views : null)
   }
-  return (
-    <FilePreviewProvider sessionId="team-brain" commentsEnabled={false}>
-      <WorkflowProvider sessionId="team-brain">
-        <div className="file-preview-container relative flex min-h-0 min-w-0 flex-1" data-testid="file-preview-container">
-          <OverviewBody
-            agent={agent}
-            settingsOpen={settingsOpen}
-            onSettingsOpenChange={setSettingsOpen}
-            views={views}
-            record={views.size > 0 ? views : (leaving ?? views)}
-            recordLeaving={views.size === 0 && leaving !== null}
-            onViewChange={switchView}
-            onRecordLeft={() => setLeaving(null)}
-          />
-          <TrayManager agentSlug={PREVIEW_SLUG} sessionId="team-brain" browserActive={false} filePreviewWideLayout="overlay" />
-        </div>
-      </WorkflowProvider>
-    </FilePreviewProvider>
+  return {
+    views,
+    shown: views.size > 0 ? views : (leaving ?? views),
+    leaving: views.size === 0 && leaving !== null,
+    switchView,
+    onLeft: () => setLeaving(null),
+  }
+}
+
+/** What the home page shows of a brain, wherever it is kept. */
+interface BrainHome {
+  /** The tree's nodes, as far as they are read. */
+  drive: TeamBrainNode[]
+  /** The first view is read. */
+  ready: boolean
+  /** What could not be read, if anything. */
+  error: string | null
+  /** The team record's parts there are. */
+  recordParts: readonly FolderEntry[]
+  /** It has no drive to read. */
+  noDrive: boolean
+  /** Where it is kept, which the loading middle names; none while it has no drive. */
+  location: TeamBrainLocation | null
+  syncs: TeamBrainSync[]
+  /** The summaries couldn't be read, so none showing doesn't mean none ran. */
+  syncsUnreadable: boolean
+  /** How it is doing, in the status row, and whether its dot is lit. */
+  status: { line: string; live: boolean }
+  /** Where a page opens from, or null when there is nothing to open pages from yet. */
+  pageUrls: ((file: TeamBrainNode) => { inlineUrl: string; downloadUrl: string }) | null
+  /** Opens the session a sync ran in, where there are sessions to open. */
+  onOpenSession?: (sessionId: string) => void
+}
+
+/** The Team Brain agent's brain: the drive its record names, read as far as the tree shows and further as folders open, and its tasks. */
+function useAgentBrain(agent: ApiAgent, expanded: ReadonlySet<string>, record: RecordViews): BrainHome {
+  const agentSlug = agent.slug
+  const volumeId = agent.teamBrain?.volumeId
+  const { data: mounts } = useAgentMounts(agentSlug)
+  const { drive, ready, error, recordParts } = useTeamBrainDrive(agentSlug, volumeId, expanded, record.shown, record.leaving)
+  const location = useTeamBrainLocation(agent)
+  const tasks = useBrainTasks(agentSlug)
+  const active = tasks.some((task) => task.status === 'pending')
+  const { data: syncs = [], isError: syncsUnreadable } = useTeamBrainSyncs(agentSlug, volumeId)
+  const navigate = useNavigate()
+  return {
+    drive,
+    ready,
+    error,
+    recordParts,
+    noDrive: !!mounts && !mounts.some((mount) => mount.volumeId === volumeId),
+    location,
+    syncs,
+    syncsUnreadable,
+    status: { line: syncLine(active, tasks), live: active },
+    // A page opens from the drive, as the drive's own file browser opens it.
+    pageUrls: volumeId
+      ? (file) => {
+          const url = `${getApiBaseUrl()}/api/volume-definitions/${encodeURIComponent(volumeId)}/file?${new URLSearchParams({ path: file.id })}`
+          return { inlineUrl: `${url}&inline=true`, downloadUrl: url }
+        }
+      : null,
+    onOpenSession: (sessionId) => void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId } }),
+  }
+}
+
+/** The cloud's Team Brain, from its stand-ins until the cloud workspace can be asked (team-brain-cloud-fixture.ts). */
+function useCloudBrain(brain: CloudTeamBrain, record: RecordViews): BrainHome {
+  const listing = useMemo(() => cloudBrainListing(Date.now()), [])
+  const recordParts = useMemo(() => teamRecordParts(listing), [listing])
+  const drive = useMemo(
+    () => driveTree(record.shown.size > 0 ? withTeamRecordParts(listing, record.shown) : withoutTeamRecord(listing), Date.now()),
+    [listing, record.shown],
   )
+  const syncs = useMemo(() => sampleSyncs(), [])
+  return {
+    drive,
+    ready: true,
+    error: null,
+    recordParts,
+    noDrive: false,
+    location: teamBrainLocation(brain.location),
+    syncs,
+    syncsUnreadable: false,
+    status: { line: `Read only · ${syncs[0] ? `Synced ${formatSince(syncs[0].at)}` : 'Not synced yet'}`, live: true },
+    pageUrls: (file) => {
+      const url = cloudBrainPage(file.id)
+      return { inlineUrl: url, downloadUrl: url }
+    },
+  }
 }
 
 /** The Team Brain agent's attachment of the drive its record names. */
@@ -128,58 +270,42 @@ function syncLine(active: boolean, tasks: ApiScheduledTask[]) {
  * settings panel, which makes the page two columns.
  */
 function OverviewBody({
-  agent,
-  settingsOpen,
-  onSettingsOpenChange,
-  views,
+  brain,
+  expanded,
+  onExpandedChange,
   record,
-  recordLeaving,
-  onViewChange,
-  onRecordLeft,
+  composer,
+  settings,
 }: {
-  agent: ApiAgent
-  settingsOpen: boolean
-  onSettingsOpenChange: (open: boolean) => void
-  /** The record's views switched on in Views. */
-  views: ReadonlySet<string>
-  /** The views the tree shows: those, or while the last is drawing back in, the ones that were. */
-  record: ReadonlySet<string>
-  recordLeaving: boolean
-  onViewChange: (view: string, on: boolean) => void
-  onRecordLeft: () => void
+  brain: BrainHome
+  expanded: ReadonlySet<string>
+  onExpandedChange: (expanded: ReadonlySet<string>) => void
+  record: RecordViews
+  /** Talking to it, under the status row. None where the brain is read only. */
+  composer?: ReactNode
+  /** The settings panel, placed and opened as the page says. */
+  settings: (panel: PanelProps) => ReactNode
 }) {
-  const agentSlug = agent.slug
   useMinuteClock()
-
-  // The Team Brain agent's drive, read as far as the tree shows and further as folders open.
-  const volumeId = agent.teamBrain?.volumeId
-  const { data: mounts } = useAgentMounts(agentSlug)
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
-  const { drive, ready, error, recordParts } = useTeamBrainDrive(agentSlug, volumeId, expanded, record, recordLeaving)
+  const [settingsOpen, onSettingsOpenChange] = useState(false)
+  const { drive, ready, error, noDrive, recordParts, syncs, location } = brain
   // Opened on the loading middle: the tree then grows from it rather than popping its middle in again.
   const [openedLoading] = useState(() => !ready)
   // The loading middle stays until its line has gone back out, so the tree starts after it rather than over it.
   const [loadingDone, setLoadingDone] = useState(() => ready)
   const finishLoading = useCallback(() => setLoadingDone(true), [])
-  const location = useTeamBrainLocation(agent)
-  const noDrive = !!mounts && !mounts.some((mount) => mount.volumeId === volumeId)
   const { front, index, rest } = useMemo(() => splitFrontPages(drive), [drive])
-  const tasks = useBrainTasks(agentSlug)
-  const active = tasks.some((task) => task.status === 'pending')
-  const { data: syncs = [], isError: syncsUnreadable } = useTeamBrainSyncs(agentSlug, volumeId)
-  const navigate = useNavigate()
-  // A page opens in the file drawer from the drive, as the drive's own file browser opens it. A "+N more" past what
-  // even an opened folder shows opens as a list of the pages it stands for.
+  // A page opens in the file drawer. A "+N more" past what even an opened folder shows opens as a list of the pages it
+  // stands for.
   const { openFile, close: closeFiles, isOpen: filesOpen } = useFilePreview()
   const openPage = (file: TeamBrainNode, { path, folder }: { path: string; folder?: TeamBrainNode }) => {
-    if (!volumeId) return
+    if (!brain.pageUrls) return
     onSettingsOpenChange(false)
     if (file.more) {
       const list = `data:text/markdown;charset=utf-8,${encodeURIComponent(`# ${folder?.name ?? 'More pages'}\n\n${file.more.map((name) => `- ${name.replace(/\.md$/, '')}`).join('\n')}`)}`
       return openFile(`/Team Brain${path}.md`, PREVIEW_SLUG, undefined, { inlineUrl: list, downloadUrl: list })
     }
-    const url = `${getApiBaseUrl()}/api/volume-definitions/${encodeURIComponent(volumeId)}/file?${new URLSearchParams({ path: file.id })}`
-    openFile(`/Team Brain${path}`, PREVIEW_SLUG, undefined, { inlineUrl: `${url}&inline=true`, downloadUrl: url })
+    openFile(`/Team Brain${path}`, PREVIEW_SLUG, undefined, brain.pageUrls(file))
   }
   const toggleSettings = () => {
     if (!settingsOpen) closeFiles()
@@ -235,12 +361,12 @@ function OverviewBody({
             <TeamBrainRadial
               drive={rest}
               expanded={expanded}
-              onExpandedChange={setExpanded}
+              onExpandedChange={onExpandedChange}
               onOpenFile={openPage}
               onOpenCentre={front && (() => openPage(front, { path: `/${front.name}` }))}
               onOpenIndex={index && (() => openPage(index, { path: `/${index.name}` }))}
-              retracting={recordLeaving ? RECORD_SECTIONS : undefined}
-              onRetracted={onRecordLeft}
+              retracting={record.leaving ? RECORD_SECTIONS : undefined}
+              onRetracted={record.onLeft}
               height={treeHeight}
               centreShown={openedLoading}
             />
@@ -276,8 +402,8 @@ function OverviewBody({
               <div aria-hidden="true" className="team-brain-dock-cover pointer-events-none absolute -inset-x-6 -bottom-7 -z-10 bg-background" style={{ top: -treeTop }} />
               {/* On the page's glass, with the composer's buttons' corners, so it reads over the tree as it passes behind. */}
               <p className={cn('flex items-center gap-1.5 rounded-md px-3 py-1 text-sm text-muted-foreground', GLASS_SURFACE)} data-testid="team-brain-status">
-                <span className={cn('inline-block h-1.5 w-1.5 rounded-full', active ? 'bg-green-500' : 'bg-muted-foreground')} aria-hidden="true" />
-                {syncLine(active, tasks)}
+                <span className={cn('inline-block h-1.5 w-1.5 rounded-full', brain.status.live ? 'bg-green-500' : 'bg-muted-foreground')} aria-hidden="true" />
+                {brain.status.line}
               </p>
               {/* Opens the settings panel: where it lives, the schedule, sources, agents, turning it off. */}
               <Button
@@ -296,7 +422,7 @@ function OverviewBody({
             </header>
             {/* Talk to it, as on Agent Home: a message starts a session with the Team Brain agent. Glass, as the session's
                 composer is, so the tree shows through it as it passes over. */}
-            <TeamBrainHomeComposer agent={agent} />
+            {composer}
           </div>
 
           {/* What each sync filed, read like a changelog, on a glass sheet like the composer's and as wide as it: the tree
@@ -304,9 +430,9 @@ function OverviewBody({
           <div className={cn('relative z-10 mx-auto w-full max-w-[720px] rounded-3xl px-6 pb-8 pt-8', GLASS_SURFACE)}>
             <TeamBrainSyncSummaries
               syncs={syncs}
-              unreadable={syncsUnreadable}
+              unreadable={brain.syncsUnreadable}
               onOpenFile={openPage}
-              onOpenSession={(sessionId) => void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId } })}
+              onOpenSession={brain.onOpenSession}
             />
           </div>
 
@@ -314,20 +440,19 @@ function OverviewBody({
             // Beside the page, in the room the column makes: level with the status row, it scrolls with the column and
             // then sticks at the top, and slides out from behind the column's glass (it sits beneath it).
             <div className="pointer-events-none absolute inset-y-0 right-0 z-0 !mt-0 w-[360px]">
-              <SettingsPanel
-                agent={agent}
-                placement="beside"
-                open={settingsOpen}
-                onClose={() => onSettingsOpenChange(false)}
-                onClosed={settingsClosed}
-                views={views}
-                recordParts={recordParts}
-                onViewChange={onViewChange}
-                onHeightChange={setPanelHeight}
+              {settings({
+                placement: 'beside',
+                open: settingsOpen,
+                onClose: () => onSettingsOpenChange(false),
+                onClosed: settingsClosed,
+                views: record.views,
+                recordParts,
+                onViewChange: record.switchView,
+                onHeightChange: setPanelHeight,
                 // Its box reaches PANEL_INSET past its cards, so it sticks that much higher, and is twice that taller,
                 // for the cards to stick level with the status row and stop 24px above the foot of the view.
-                style={{ top: treeTop - PANEL_INSET, maxHeight: Math.max(viewHeight - treeTop - 24, 320) + 2 * PANEL_INSET }}
-              />
+                style: { top: treeTop - PANEL_INSET, maxHeight: Math.max(viewHeight - treeTop - 24, 320) + 2 * PANEL_INSET },
+              })}
             </div>
           )}
         </div>
@@ -337,16 +462,15 @@ function OverviewBody({
         // put as the page scrolls and the tree shows through its glass.
         <div className="pointer-events-none absolute inset-0 z-30">
           <div className={cn('mx-auto flex h-full w-full justify-end px-6 pb-6 pt-10', PAGE_WIDTH)}>
-            <SettingsPanel
-              agent={agent}
-              placement="over"
-              open={settingsOpen}
-              onClose={() => onSettingsOpenChange(false)}
-              onClosed={settingsClosed}
-              views={views}
-              recordParts={recordParts}
-              onViewChange={onViewChange}
-            />
+            {settings({
+              placement: 'over',
+              open: settingsOpen,
+              onClose: () => onSettingsOpenChange(false),
+              onClosed: settingsClosed,
+              views: record.views,
+              recordParts,
+              onViewChange: record.switchView,
+            })}
           </div>
         </div>
       )}
@@ -466,18 +590,8 @@ function useStuck(scrollRef: RefObject<HTMLDivElement | null>, top: number) {
 /** How long the panel takes to slide out (see its classes), after which it is taken away. */
 const PANEL_FADE_MS = 300
 
-/**
- * Where Team Brain lives, how it syncs, what it reads and which agents share
- * it: a floating glass panel at the page's right, as tall as its cards (its
- * cards scroll inside it when the view is shorter). Beside the page it slides
- * out from behind the page's column and back in under it; floating over the
- * page it slides in from the right edge and back out. Either way it eases to a
- * stop, and is then taken away (`onClosed`). It has no close button of its own: the settings button beside
- * the status line toggles it, Escape closes it, and where it floats over the
- * page (narrower than xl) so does a click off it.
- */
-function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recordParts, onViewChange, onHeightChange, style }: {
-  agent: ApiAgent
+/** What the page hands its settings panel: where it sits, how it opens and closes, and the team record's views. */
+interface PanelProps {
   /** Beside the page, in its column (sticky; `style` gives where it sticks and its tallest), or floating over it. */
   placement: 'beside' | 'over'
   open: boolean
@@ -491,10 +605,22 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
   /** How tall it is, as it changes (sections opening and closing). */
   onHeightChange?: (height: number) => void
   style?: CSSProperties
+}
+
+/**
+ * The settings: a floating glass panel at the page's right, as tall as its
+ * cards (its cards scroll inside it when the view is shorter). Beside the page
+ * it slides out from behind the page's column and back in under it; floating
+ * over the page it slides in from the right edge and back out. Either way it
+ * eases to a stop, and is then taken away (`onClosed`). It has no close button
+ * of its own: the settings button beside the status line toggles it, Escape
+ * closes it (unless `holdEscape`, while a confirmation in it takes its own),
+ * and where it floats over the page (narrower than xl) so does a click off it.
+ */
+function SettingsPanel({ placement, open, onClose, onClosed, onHeightChange, style, holdEscape, children }: Omit<PanelProps, 'views' | 'recordParts' | 'onViewChange'> & {
+  holdEscape: boolean
+  children: ReactNode
 }) {
-  // Turning it off and changing who uses it are an admin's, as setting it up is.
-  const { isAuthMode, isAdmin } = useUser()
-  const canManage = !isAuthMode || isAdmin
   const panelRef = useRef<HTMLElement>(null)
   useLayoutEffect(() => {
     const panel = panelRef.current
@@ -503,15 +629,6 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
     observer.observe(panel)
     return () => observer.disconnect()
   }, [onHeightChange])
-  const { data: agents = [] } = useListedAgents()
-  const deleteAgent = useDeleteAgent()
-  const [confirmOff, setConfirmOff] = useState(false)
-  // Turning it off deletes the Team Brain agent; the server drops the workspace record with it, and the page
-  // goes back to the pitch once the agent list no longer has it. Its drive and files stay.
-  const turnOff = () =>
-    deleteAgent.mutate(agent.slug, {
-      onError: (error) => toast.error('Could not turn off Team Brain', { description: error instanceof Error ? error.message : undefined }),
-    })
   // Gone once it has faded: on a timer rather than transitionend, which never comes under reduced motion.
   useEffect(() => {
     if (open) return
@@ -521,12 +638,11 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
   useEffect(() => {
     if (!open) return
     const onKeyDown = (event: KeyboardEvent) => {
-      // The turn-off confirmation takes its own Escape.
-      if (event.key === 'Escape' && !event.defaultPrevented && !confirmOff) onClose()
+      if (event.key === 'Escape' && !event.defaultPrevented && !holdEscape) onClose()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [open, onClose, confirmOff])
+  }, [open, onClose, holdEscape])
   return (
     <aside
       ref={panelRef}
@@ -545,29 +661,50 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
       )}
       data-testid="team-brain-settings"
     >
-      {/* Laid out as Agent Home's side panel: the pickers in one card, the sections as rows of another, then Turn off.
+      {/* Laid out as Agent Home's side panel: the pickers in one card, the sections as rows of another, then the way out.
           It scrolls when taller than the view, which clips it; the 32px inset (undone by the -m-8 above) puts that clip
           past the reach of the cards' soft shadows. */}
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-8" data-testid="team-brain-details">
-        <SyncCard agentSlug={agent.slug} />
-        <div className={SECTIONS_CARD_CLASS}>
-          <StorageSection agent={agent} />
-          <SourcesSection agentSlug={agent.slug} />
-          <AgentsSection brainSlug={agent.slug} volumeId={agent.teamBrain?.volumeId} agents={agents} canManage={canManage} />
-          <SessionsSection agentSlug={agent.slug} />
-        </div>
-        <ViewsCard parts={recordParts} views={views} onViewChange={onViewChange} />
-        {/* Last, on a glass row of its own: red only in its words until hovered. */}
-        {canManage && <Button
-          variant="ghost"
-          className={cn('h-12 w-full rounded-2xl text-destructive hover:bg-destructive/10 hover:text-destructive', GLASS_SURFACE)}
-          onClick={() => setConfirmOff(true)}
-          disabled={deleteAgent.isPending}
-          data-testid="team-brain-turn-off"
-        >
-          Turn off Team Brain
-        </Button>}
+        {children}
       </div>
+    </aside>
+  )
+}
+
+/** The Team Brain agent's settings: where it lives, how it syncs, what it reads and which agents share it, then Turn off. */
+function AgentSettingsPanel({ agent, views, recordParts, onViewChange, ...panel }: PanelProps & { agent: ApiAgent }) {
+  // Turning it off and changing who uses it are an admin's, as setting it up is.
+  const { isAuthMode, isAdmin } = useUser()
+  const canManage = !isAuthMode || isAdmin
+  const { data: agents = [] } = useListedAgents()
+  const deleteAgent = useDeleteAgent()
+  const [confirmOff, setConfirmOff] = useState(false)
+  // Turning it off deletes the Team Brain agent; the server drops the workspace record with it, and the page
+  // goes back to the pitch once the agent list no longer has it. Its drive and files stay.
+  const turnOff = () =>
+    deleteAgent.mutate(agent.slug, {
+      onError: (error) => toast.error('Could not turn off Team Brain', { description: error instanceof Error ? error.message : undefined }),
+    })
+  return (
+    <SettingsPanel {...panel} holdEscape={confirmOff}>
+      <SyncCard agentSlug={agent.slug} />
+      <div className={SECTIONS_CARD_CLASS}>
+        <StorageSection agent={agent} />
+        <SourcesSection agentSlug={agent.slug} />
+        <AgentsSection brainSlug={agent.slug} volumeId={agent.teamBrain?.volumeId} agents={agents} canManage={canManage} />
+        <SessionsSection agentSlug={agent.slug} />
+      </div>
+      <ViewsCard parts={recordParts} views={views} onViewChange={onViewChange} />
+      {/* Last, on a glass row of its own: red only in its words until hovered. */}
+      {canManage && <Button
+        variant="ghost"
+        className={cn('h-12 w-full rounded-2xl text-destructive hover:bg-destructive/10 hover:text-destructive', GLASS_SURFACE)}
+        onClick={() => setConfirmOff(true)}
+        disabled={deleteAgent.isPending}
+        data-testid="team-brain-turn-off"
+      >
+        Turn off Team Brain
+      </Button>}
       <AlertDialog open={confirmOff} onOpenChange={setConfirmOff}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -585,7 +722,144 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </aside>
+    </SettingsPanel>
+  )
+}
+
+/**
+ * The cloud's Team Brain, read from the desktop: how it is kept, shown rather than changed (that happens in the cloud
+ * workspace, a press of Open in Cloud away), which agents here read it, and Disconnect.
+ */
+function CloudSettingsPanel({ brain, views, recordParts, onViewChange, ...panel }: PanelProps & { brain: CloudTeamBrain }) {
+  const cloud = useCloudConnection()
+  const target = useTargetSwitch()
+  const { data: agents = [] } = useListedAgents()
+  const [confirmOff, setConfirmOff] = useState(false)
+  const location = teamBrainLocation(brain.location)
+  const LocationIcon = location.Icon
+  const reading = agents.filter((agent) => readsCloudBrain(cloud.state, agent.slug))
+  return (
+    <SettingsPanel {...panel} holdEscape={confirmOff}>
+      <div className={cn('overflow-hidden rounded-2xl', GLASS_SURFACE)}>
+        <div className="flex min-h-12 items-center justify-between gap-2 px-4 py-2" data-testid="team-brain-sync">
+          <span className="min-w-0">
+            <span className={cn('block', PANEL_LABEL_CLASS)}>Sync schedule</span>
+            <span className="block truncate text-[11px] text-muted-foreground" data-testid="team-brain-sync-note">
+              In your cloud workspace · last ran {formatSince(brain.lastSyncAt)}
+            </span>
+          </span>
+          <span className={SECTION_COUNT_CLASS} data-testid="team-brain-schedule">{SCHEDULE_LABELS[brain.schedule].title}</span>
+        </div>
+      </div>
+      <div className={SECTIONS_CARD_CLASS}>
+        <PanelSection
+          title="Storage location"
+          summary={
+            <>
+              <LocationIcon className="size-3.5 shrink-0" aria-hidden="true" />
+              <span className={SECTION_COUNT_CLASS}>{location.name}</span>
+            </>
+          }
+          testId="team-brain-storage-section"
+        >
+          <div className="-mt-1">
+            <IntegrationRow
+              icon={<LocationIcon className="h-4 w-4" />}
+              name={location.name}
+              className="py-2 hover:bg-transparent"
+              data-testid="team-brain-storage"
+              subtitle={<span className="min-w-0 truncate" data-testid="team-brain-location">{brain.place}</span>}
+            />
+          </div>
+        </PanelSection>
+        <PanelSection
+          title="Sources"
+          summary={
+            <StackSummary
+              marks={brain.sources.map((id) => (
+                <span key={id} className="grid size-[18px] place-items-center rounded-full bg-background ring-2 ring-background">
+                  <TeamBrainSourceIcon id={id} className="size-3" />
+                </span>
+              ))}
+              count={brain.sources.length}
+            />
+          }
+          testId="team-brain-sources"
+        >
+          <div className="mt-2">
+            {brain.sources.map((id) => (
+              <IntegrationRow key={id} className="hover:bg-transparent" icon={<TeamBrainSourceIcon id={id} className="h-4 w-4" />} name={teamBrainSource(id).name} />
+            ))}
+          </div>
+          <p className="mt-3 px-4 pb-1 text-xs text-muted-foreground">Connected in your cloud workspace.</p>
+        </PanelSection>
+        <PanelSection
+          title="Agents"
+          summary={
+            <StackSummary
+              marks={reading.map((agent) => (
+                <span key={agent.slug} className="rounded-full ring-2 ring-background">
+                  <AgentAvatar agent={agent} size={18} />
+                </span>
+              ))}
+              count={reading.length}
+            />
+          }
+          testId="team-brain-agents"
+        >
+          <EveryAgentRow checked={cloud.state.everyAgent} canGoGlobal onCheckedChange={cloud.setEveryAgent} className="px-4 pb-3 pt-2" />
+          {agents.length > 0 ? (
+            <AgentAccessList
+              agents={agents}
+              everyAgent={cloud.state.everyAgent}
+              isOn={(slug) => readsCloudBrain(cloud.state, slug)}
+              onToggle={cloud.setReads}
+              className="border-y border-border/50"
+              rowClassName="px-4"
+            />
+          ) : (
+            <p className="px-4 text-xs text-muted-foreground">No agents on this computer yet.</p>
+          )}
+          <p className="mt-3 px-4 pb-1 text-xs text-muted-foreground">An agent that uses it reads Team Brain. It can’t change it.</p>
+        </PanelSection>
+      </div>
+      <ViewsCard parts={recordParts} views={views} onViewChange={onViewChange} />
+      {/* Its sources, schedule and agents are changed where it is kept. */}
+      <Button
+        variant="ghost"
+        className={cn('h-12 w-full rounded-2xl hover:bg-background/80', GLASS_SURFACE)}
+        onClick={() => void target.switchTo('cloud')}
+        disabled={target.switching}
+        data-testid="team-brain-open-cloud"
+      >
+        <Cloud />
+        Open in Cloud
+      </Button>
+      <Button
+        variant="ghost"
+        className={cn('h-12 w-full rounded-2xl text-destructive hover:bg-destructive/10 hover:text-destructive', GLASS_SURFACE)}
+        onClick={() => setConfirmOff(true)}
+        data-testid="team-brain-disconnect"
+      >
+        Disconnect Team Brain
+      </Button>
+      <AlertDialog open={confirmOff} onOpenChange={setConfirmOff}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Disconnect Team Brain?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Agents on this computer stop reading it from their next start. Team Brain stays in your cloud workspace, and you can connect again any time.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Stay connected</AlertDialogCancel>
+            <AlertDialogAction onClick={cloud.disconnect} className="bg-destructive text-destructive-foreground hover:bg-destructive/90" data-testid="team-brain-disconnect-confirm">
+              Disconnect
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </SettingsPanel>
   )
 }
 
