@@ -2,6 +2,8 @@ import { CodexSubscriptionLlmProvider } from './codex-subscription-provider'
 import { GrokSubscriptionLlmProvider } from './grok-subscription-provider'
 import { KimiSubscriptionLlmProvider } from './kimi-subscription-provider'
 import { MinimaxSubscriptionLlmProvider } from './minimax-subscription-provider'
+import { QwenSubscriptionLlmProvider } from './qwen-subscription-provider'
+import { DoubaoSubscriptionLlmProvider } from './doubao-subscription-provider'
 export { BaseLlmProvider } from './base-llm-provider'
 export { LLM_PROVIDER_IDS } from './provider-types'
 export type { LlmProviderId } from './provider-types'
@@ -74,6 +76,8 @@ const providers: Record<LlmProviderId, BaseLlmProvider> = {
   'grok-subscription': new GrokSubscriptionLlmProvider(),
   'kimi-subscription': new KimiSubscriptionLlmProvider(),
   'minimax-subscription': new MinimaxSubscriptionLlmProvider(),
+  'qwen-subscription': new QwenSubscriptionLlmProvider(),
+  'doubao-subscription': new DoubaoSubscriptionLlmProvider(),
   openrouter: new OpenRouterLlmProvider(),
   bedrock: new BedrockLlmProvider(),
   platform: new PlatformLlmProvider(),
@@ -90,6 +94,8 @@ export function createLlmProvider(id: LlmProviderId, configuration: ProviderConf
     case 'grok-subscription': return new GrokSubscriptionLlmProvider(configuration)
     case 'kimi-subscription': return new KimiSubscriptionLlmProvider(configuration)
     case 'minimax-subscription': return new MinimaxSubscriptionLlmProvider(configuration)
+    case 'qwen-subscription': return new QwenSubscriptionLlmProvider(configuration)
+    case 'doubao-subscription': return new DoubaoSubscriptionLlmProvider(configuration)
     case 'openrouter': return new OpenRouterLlmProvider(configuration)
     case 'bedrock': return new BedrockLlmProvider(configuration)
     case 'ollama': return new OllamaLlmProvider(configuration)
