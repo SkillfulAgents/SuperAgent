@@ -1,23 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "QA agent successfully opened a browser, navigated to https://example.com, retrieved the page title, and returned a response mentioning \"Example Domain\"",
+  "reason": "Agent successfully executed browser navigation to example.com and returned the correct page title \"Example Domain\" in the response.",
   "steps": [
-    "Step 1: Navigate to http://localhost:47891 — Application loaded successfully, showing \"Your Agents\" page with Gamut interface",
-    "Step 2: Find and click the agent \"QA-20261026-231818-b6mt\" in the sidebar — Agent page opened successfully, displaying agent configuration and message input field",
-    "Step 3: Send message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message typed into input field and sent successfully; session created with title \"Browser Page Title Check\" and agent status changed to \"working\"",
-    "Step 4: Wait up to 3 minutes for response — Agent completed the task in 11 seconds, response received and displayed on page showing \"Worked for 11s · 3 tool calls · 156,194 tokens\"",
-    "Step 5: Verify response mentions \"Example Domain\" — VERIFIED: Response clearly states \"The page title is 'Example Domain'\" and confirms the page at https://example.com loaded normally (HTTP 200) and the browser was closed"
+    "Navigate to http://localhost:47891 — Application loaded successfully with agents visible in sidebar",
+    "Click QA-20261027-021324-cqr7 agent in sidebar — Agent page opened and chat interface ready",
+    "Type and send message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message sent successfully and new session created with title \"Browser Page Title Check\"",
+    "Wait for agent response (up to 3 minutes) — Agent completed work in 12 seconds using 3 tool calls",
+    "Verify response contains \"Example Domain\" — Response received: \"The page title at https://example.com is \"Example Domain\". I closed the browser afterwards.\"",
+    "Take screenshot of response — Screenshot captured showing the complete conversation with agent response clearly visible"
   ],
   "bugs": [],
-  "durationMs": 79351,
-  "sessionId": "ea36e8ff-751b-4f67-a5b3-4a96279422cc",
+  "durationMs": 67618,
+  "sessionId": "05949f23-10e2-40a0-a8e0-e975b1976f6a",
   "cost": {
-    "inputTokens": 500,
-    "outputTokens": 14824,
-    "cacheCreationTokens": 136886,
-    "cacheReadTokens": 1556039,
+    "inputTokens": 310,
+    "outputTokens": 11119,
+    "cacheCreationTokens": 66673,
+    "cacheReadTokens": 840434,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.401331
+    "totalCostUsd": 0.22329
   }
 }
