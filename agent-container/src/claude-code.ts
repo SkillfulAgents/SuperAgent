@@ -85,6 +85,7 @@ import {
   isUnsupportedCommand,
   mergeCanonicalSlashCommands,
   unsupportedBuiltinCommands,
+  withPushedCommandNames,
 } from './slash-commands';
 
 // Prefix for system-injected user messages that should be hidden in the UI.
@@ -1719,15 +1720,18 @@ export class ClaudeCodeProcess extends EventEmitter {
             ? message.slash_commands.filter((name): name is string => typeof name === 'string')
             : [];
           await this.loadCliCommands();
-          const unsupported = unsupportedBuiltinCommands(this.cliCommands, this.runnableCommandNames);
-          const menuNames = this.runnableCommandNames.filter((name) => !unsupported.has(name));
-          this.slashCommands = mergeCanonicalSlashCommands(
-            menuNames,
-            (this.cliCommands ?? []).filter((command) => !unsupported.has(command.name)),
-          );
           // The host rebuilds a live session's menu from this frame's list.
-          message.slash_commands = menuNames;
+          message.slash_commands = this.rebuildSlashCommands();
           this.emit('init-complete');
+        }
+
+        // A skill the agent writes mid-turn: the CLI pushes the new list now,
+        // while the next system/init comes only with the next turn.
+        if (message.type === 'system' && message.subtype === 'commands_changed') {
+          this.cliCommands = message.commands;
+          this.runnableCommandNames = withPushedCommandNames(this.runnableCommandNames ?? [], message.commands);
+          this.rebuildSlashCommands();
+          message.commands = this.slashCommands;
         }
 
         // Emit the SDK message
@@ -1808,6 +1812,18 @@ export class ClaudeCodeProcess extends EventEmitter {
       }
       this.emit('exit', 0);
     }
+  }
+
+  /** Rebuilds the menu without the unsupported built-ins; returns its runnable names. */
+  private rebuildSlashCommands(): string[] {
+    const runnable = this.runnableCommandNames ?? [];
+    const unsupported = unsupportedBuiltinCommands(this.cliCommands, runnable);
+    const menuNames = runnable.filter((name) => !unsupported.has(name));
+    this.slashCommands = mergeCanonicalSlashCommands(
+      menuNames,
+      (this.cliCommands ?? []).filter((command) => !unsupported.has(command.name)),
+    );
+    return menuNames;
   }
 
   // supportedCommands() answers from the initialize response, which the CLI

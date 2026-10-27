@@ -178,6 +178,37 @@ describe('ClaudeCodeProcess unsupported CLI built-ins', () => {
     ])
   })
 
+  it('adds a skill written mid-turn from commands_changed, still without the unsupported built-ins', async () => {
+    proc = new ClaudeCodeProcess({ sessionId: 's2c', workingDirectory: '/tmp' })
+    const forwarded: Frame[] = []
+    proc.on('message', (message: Frame) => forwarded.push(message))
+    await proc.start()
+    queries[0].push(initFrame(['weekly-report', 'reset', 'clear', 'compact', 'model']))
+    await tick()
+
+    queries[0].push({
+      type: 'system', subtype: 'commands_changed', session_id: 'sess-1',
+      commands: [
+        ...CLI_COMMANDS,
+        { name: 'say-banana', description: 'Reply with the word BANANA-OK', argumentHint: '' },
+        { name: 'Fetch Weather', description: 'Fetch the weather', argumentHint: '' },
+      ],
+    })
+    await tick()
+
+    const menu = ['weekly-report', 'reset', 'compact', 'say-banana']
+    expect(proc.slashCommands.map((command) => command.name)).toEqual(menu)
+    const changed = forwarded.find((message) => message.type === 'system' && message.subtype === 'commands_changed')
+    expect((changed?.commands as SlashCommand[]).map((command) => command.name)).toEqual(menu)
+
+    await proc.sendMessage('/say-banana')
+    await proc.sendMessage('/clear')
+    expect(sent(queries[0])).toEqual([
+      { text: '/say-banana', clientComposed: false },
+      { text: '/clear', clientComposed: true },
+    ])
+  })
+
   it('follows the latest system/init when that skill goes away', async () => {
     proc = new ClaudeCodeProcess({ sessionId: 's3', workingDirectory: '/tmp' })
     await proc.start()
