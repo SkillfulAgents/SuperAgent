@@ -44,11 +44,10 @@ const { upkeep } = vi.hoisted(() => ({
 const task = (id: string, name: string, status: string) => ({
   id, name, status, scheduleExpression: '0 0 * * *', nextExecutionAt: new Date(Date.now() + 3_600_000).toISOString(), lastExecutedAt: new Date(Date.now() - 7_200_000).toISOString(),
 })
-// Its sessions: chats from the agent's list, and runs of its scheduled tasks.
-const { sessions } = vi.hoisted(() => ({ sessions: { chats: [] as unknown[], runs: [] as unknown[] } }))
+// One server-visible list, including promoted automations and their original source.
+const { sessions } = vi.hoisted(() => ({ sessions: { chats: [] as unknown[] } }))
 vi.mock('@renderer/hooks/use-scheduled-tasks', () => ({
   useScheduledTasks: () => ({ data: upkeep.tasks }),
-  useScheduledTasksSessions: () => sessions.runs,
 }))
 // Sources are the Team Brain agent's own connections; they open on its Connections page.
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }))
@@ -136,7 +135,6 @@ const BRAIN: ApiAgent = {
 
 beforeEach(() => {
   sessions.chats = []
-  sessions.runs = []
   resetTeamBrainState()
   upkeep.tasks = [task('t1', 'Nightly digest', 'pending'), task('t2', 'Weekly people check', 'paused')]
   screenSize.wide = true
@@ -421,14 +419,14 @@ describe('TeamBrainOverview', () => {
   it('shows the latest sessions a person started under the composer, and See all opens the rest in place', async () => {
     const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString()
     const chat = (id: string, h: number, extra = {}) => ({ id, agentSlug: 'team-brain', name: `Chat ${id}`, createdAt: hoursAgo(h + 1), lastActivityAt: hoursAgo(h), ...extra })
-    sessions.chats = [chat('1', 1), chat('2', 2), chat('3', 3), chat('4', 4), chat('5', 5), chat('agent', 0, { invokedByAgentSlug: 'writer' })]
-    sessions.runs = [
-      { id: 'sync-waiting', name: 'Brain upkeep asks', createdAt: hoursAgo(9), lastActivityAt: hoursAgo(8), isAwaitingInput: true },
-      { id: 'sync-done', name: 'Brain upkeep', createdAt: hoursAgo(1), lastActivityAt: hoursAgo(0) },
+    sessions.chats = [
+      chat('1', 1), chat('2', 2), chat('3', 3), chat('4', 4), chat('5', 5), chat('agent', 0, { origin: 'agent' }),
+      chat('sync-waiting', 8, { name: 'Brain upkeep asks', origin: 'scheduled', isAwaitingInput: true }),
+      chat('sync-done', 0, { name: 'Brain upkeep', origin: 'scheduled' }),
     ]
     render(<TeamBrainOverview agent={BRAIN} />)
     const recent = screen.getByTestId('team-brain-recent-sessions')
-    const rows = () => within(recent).getAllByText(/^(Chat|Brain upkeep)/).map((row) => row.textContent).sort()
+    const rows = () => within(recent).getAllByText(/^(Chat|Brain upkeep)/).map((row) => row.textContent)
     // The run waiting on someone, then the two newest chats; not other agents' messages or a finished sync.
     expect(rows()).toEqual(['Brain upkeep asks', 'Chat 1', 'Chat 2'])
     // It sits between the composer and the sync summaries.
@@ -438,8 +436,8 @@ describe('TeamBrainOverview', () => {
     expect(recent.compareDocumentPosition(summaries) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
     await userEvent.click(within(recent).getByTestId('team-brain-see-all-sessions'))
-    // All six, five a page, newest first: the run waiting since eight hours ago is on the second.
-    expect(rows()).toEqual(['Chat 1', 'Chat 2', 'Chat 3', 'Chat 4', 'Chat 5'])
+    // Waiting stays first in the expanded list too.
+    expect(rows()).toEqual(['Brain upkeep asks', 'Chat 1', 'Chat 2', 'Chat 3', 'Chat 4'])
     expect(within(recent).getByText('Page 1 of 2')).toBeInTheDocument()
     expect(screen.queryByTestId('team-brain-settings')).toBeNull()
     await userEvent.click(within(recent).getByTestId('team-brain-see-all-sessions'))
@@ -470,5 +468,10 @@ describe('TeamBrainOverview', () => {
     await userEvent.click(within(recent).getByRole('button', { name: 'Next page' }))
     await userEvent.click(within(recent).getByRole('button', { name: 'Next page' }))
     expect(within(recent).getAllByText(/^Chat /)).toHaveLength(4)
+    await userEvent.click(within(recent).getByTestId('team-brain-see-all-sessions'))
+    expect(within(recent).getAllByText(/^Chat /).map((row) => row.textContent)).toEqual(['Chat 1', 'Chat 2', 'Chat 3'])
+    expect(within(recent).queryByText(/^Page /)).toBeNull()
+    await userEvent.click(within(recent).getByTestId('team-brain-see-all-sessions'))
+    expect(within(recent).getByText('Page 1 of 3')).toBeInTheDocument()
   })
 })

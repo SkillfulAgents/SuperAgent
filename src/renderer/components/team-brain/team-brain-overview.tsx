@@ -34,8 +34,8 @@ import { IntegrationRow, RowHoverChevron } from '@renderer/components/connection
 import { useNavigate } from '@tanstack/react-router'
 import { formatDistanceToNow } from 'date-fns'
 import { useSessions } from '@renderer/hooks/use-sessions'
-import { recentSessions, RECENT_SESSIONS } from '@renderer/lib/team-brain/team-brain-sessions'
-import { RelatedSessions } from '@renderer/components/sessions/related-sessions'
+import { teamBrainSessions } from '@renderer/lib/team-brain/team-brain-sessions'
+import { RelatedSessions, toSessionItem } from '@renderer/components/sessions/related-sessions'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { AccountStatusBadge } from '@renderer/components/connections/account-status-badge'
 import { useAgentConnectedAccounts } from '@renderer/hooks/use-connected-accounts'
@@ -45,7 +45,7 @@ import { toast } from 'sonner'
 import { formatSince, formatUntil, SCHEDULE_LABELS } from '@renderer/lib/team-brain/team-brain-format'
 import { scheduleOfCron } from '@renderer/lib/team-brain/team-brain-setup-block'
 import { useHumanizedCron } from '@renderer/hooks/use-humanized-cron'
-import { useScheduledTasks, useScheduledTasksSessions, type ApiScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
+import { useScheduledTasks, type ApiScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { TeamBrainRadial, TeamBrainRadialLoading } from './team-brain-radial'
 import { TeamBrainSyncSummaries } from './team-brain-sync-summaries'
 import { TeamBrainHomeComposer } from './team-brain-home-composer'
@@ -169,11 +169,9 @@ function OverviewBody({
   const active = tasks.some((task) => task.status === 'pending')
   const { data: syncs = [], isError: syncsUnreadable } = useTeamBrainSyncs(agentSlug, volumeId)
   // Recent sessions: what a person started here, and any scheduled run waiting on someone.
-  const { data: chats } = useSessions(agentSlug)
-  const runs = useScheduledTasksSessions(tasks.map((task) => task.id))
+  const { data: sessions } = useSessions(agentSlug)
   const [allSessions, setAllSessions] = useState(false)
-  const everySession = useMemo(() => recentSessions(chats ?? [], runs, Infinity), [chats, runs])
-  const recent = allSessions ? everySession : everySession.slice(0, RECENT_SESSIONS)
+  const everySession = useMemo(() => teamBrainSessions(sessions ?? []).map(toSessionItem), [sessions])
   const navigate = useNavigate()
   // A page opens in the file drawer from the drive, as the drive's own file browser opens it. A "+N more" past what
   // even an opened folder shows opens as a list of the pages it stands for.
@@ -308,7 +306,7 @@ function OverviewBody({
 
           {/* The latest few sessions, on the composer's glass and at its width, as Agent Home has them; See all sessions
               opens the rest in place, a page at a time. */}
-          {recent.length > 0 && (
+          {everySession.length > 0 && (
             <section
               aria-labelledby="team-brain-recent-title"
               className={cn('relative z-10 mx-auto w-full max-w-[720px] rounded-3xl px-5 pb-3 pt-4', GLASS_SURFACE)}
@@ -318,12 +316,14 @@ function OverviewBody({
                 Recent sessions
               </h2>
               <RelatedSessions
-                sessions={recent}
+                sessions={everySession}
                 agentSlug={agentSlug}
                 formatDate={formatSessionDate}
                 showIcon={false}
                 showHeader={false}
                 pageSize={allSessions ? ALL_SESSIONS_PAGE : RECENT_SESSIONS}
+                limit={allSessions ? undefined : RECENT_SESSIONS}
+                awaitingFirst
                 className="mt-1"
                 // Right under the last row, its text lined up with the rows'.
                 afterRows={everySession.length > RECENT_SESSIONS && (
@@ -954,6 +954,7 @@ function ViewsCard({ parts, views, onViewChange }: { parts: readonly FolderEntry
   )
 }
 
+const RECENT_SESSIONS = 3
 /** How many of all its sessions show at once, opened in place. */
 const ALL_SESSIONS_PAGE = 5
 

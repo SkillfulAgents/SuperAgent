@@ -28,6 +28,7 @@ import {
 import { promptUpdateSchema } from './trigger-prompt-schema'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentRegistry } from '@shared/lib/agent-actor'
+import { withSessionStatus } from '@shared/lib/session-status'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
@@ -66,15 +67,7 @@ scheduledTasksRouter.get('/:taskId/sessions', TaskAgentRole('viewer'), async (c)
     const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
     const actor = agentRegistry.get(task!.agentSlug)
     const sessions = await actor.sessions.byScheduledTask(task!.id)
-    const live = await actor.live()
-    const active = new Set(live.activeSessionIds)
-    const awaiting = new Set(live.awaitingSessionIds)
-    const sessionsWithStatus = sessions.map((session) => ({
-      ...session,
-      isActive: active.has(session.id),
-      isAwaitingInput: awaiting.has(session.id),
-    }))
-    return c.json(sessionsWithStatus)
+    return c.json(withSessionStatus(sessions, await actor.live()))
   } catch (error) {
     console.error('Failed to fetch sessions for scheduled task:', error)
     return c.json({ error: 'Failed to fetch sessions' }, 500)

@@ -58,6 +58,9 @@ interface RelatedSessionsProps {
   dateAsTitle?: boolean
   formatSubtext?: (date: string) => string
   pageSize?: number
+  /** Cap the ordered results before pagination (for a recent-sessions preview). */
+  limit?: number
+  awaitingFirst?: boolean
   /** Shown right under the last row, above the page controls. */
   afterRows?: ReactNode
 }
@@ -66,7 +69,7 @@ export type SortOrder = SessionSortOrder
 
 const DEFAULT_PAGE_SIZE = 10
 
-export function RelatedSessions({ sessions, formatDate, className, showIcon = true, title, showHeader = true, agentSlug, searchQuery, sortOrder: sortOrderProp, dateAsTitle = false, formatSubtext, pageSize = DEFAULT_PAGE_SIZE, afterRows }: RelatedSessionsProps) {
+export function RelatedSessions({ sessions, formatDate, className, showIcon = true, title, showHeader = true, agentSlug, searchQuery, sortOrder: sortOrderProp, dateAsTitle = false, formatSubtext, pageSize = DEFAULT_PAGE_SIZE, limit, awaitingFirst = false, afterRows }: RelatedSessionsProps) {
   const [page, setPage] = useState(0)
   const [sortOrderInternal, setSortOrder] = useState<SortOrder>('newest')
   const sortOrder = sortOrderProp ?? sortOrderInternal
@@ -77,17 +80,19 @@ export function RelatedSessions({ sessions, formatDate, className, showIcon = tr
     return sessions.filter((s) => s.name.toLowerCase().includes(q))
   }, [sessions, searchQuery])
 
-  const sorted = useMemo(() => sortSessionsByActivity(filtered, sortOrder), [filtered, sortOrder])
-
-  // Reset page when search query changes
-  const prevQuery = useRef(searchQuery)
-  if (prevQuery.current !== searchQuery) {
-    prevQuery.current = searchQuery
-    if (page !== 0) setPage(0)
-  }
-
+  const sorted = useMemo(
+    () => sortSessionsByActivity(filtered, sortOrder, { awaitingFirst }).slice(0, limit),
+    [filtered, sortOrder, awaitingFirst, limit],
+  )
   const totalPages = Math.ceil(sorted.length / pageSize)
-  const paginated = sorted.slice(page * pageSize, (page + 1) * pageSize)
+  // A changed view starts on its first page; deleting/settling rows can also remove the current page.
+  const previous = useRef({ searchQuery, sortOrder, pageSize, limit, awaitingFirst })
+  const viewChanged = previous.current.searchQuery !== searchQuery || previous.current.sortOrder !== sortOrder
+    || previous.current.pageSize !== pageSize || previous.current.limit !== limit || previous.current.awaitingFirst !== awaitingFirst
+  previous.current = { searchQuery, sortOrder, pageSize, limit, awaitingFirst }
+  const currentPage = viewChanged ? 0 : Math.min(page, Math.max(0, totalPages - 1))
+  if (page !== currentPage) setPage(currentPage)
+  const paginated = sorted.slice(currentPage * pageSize, (currentPage + 1) * pageSize)
 
   if (sessions.length === 0) return null
 
@@ -98,7 +103,7 @@ export function RelatedSessions({ sessions, formatDate, className, showIcon = tr
           <h3 className="text-sm font-medium text-muted-foreground">
             {title ?? 'Related Sessions'}
           </h3>
-          <Select value={sortOrder} onValueChange={(v) => { setSortOrder(v as SortOrder); setPage(0) }}>
+          <Select value={sortOrder} onValueChange={(v) => setSortOrder(v as SortOrder)}>
             <SelectTrigger className="h-7 w-[130px]">
               <SelectValue />
             </SelectTrigger>
@@ -127,7 +132,7 @@ export function RelatedSessions({ sessions, formatDate, className, showIcon = tr
       {totalPages > 1 && (
         <div className="flex items-center justify-between mt-3">
           <span className="text-xs text-muted-foreground">
-            Page {page + 1} of {totalPages}
+            Page {currentPage + 1} of {totalPages}
           </span>
           <div className="flex items-center gap-2">
             <Button
@@ -135,7 +140,7 @@ export function RelatedSessions({ sessions, formatDate, className, showIcon = tr
               size="icon"
               className="h-7 w-7"
               onClick={() => setPage((p) => p - 1)}
-              disabled={page === 0}
+              disabled={currentPage === 0}
               aria-label="Previous page"
             >
               <ChevronLeft className="h-3.5 w-3.5" />
@@ -145,7 +150,7 @@ export function RelatedSessions({ sessions, formatDate, className, showIcon = tr
               size="icon"
               className="h-7 w-7"
               onClick={() => setPage((p) => p + 1)}
-              disabled={page >= totalPages - 1}
+              disabled={currentPage >= totalPages - 1}
               aria-label="Next page"
             >
               <ChevronRight className="h-3.5 w-3.5" />

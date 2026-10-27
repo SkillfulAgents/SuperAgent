@@ -44,7 +44,7 @@ import {
 } from '@shared/lib/session-ordering'
 import { replaceInlineMediaWithRefs } from './session-media'
 import { sessionMetadataHolds } from './session-metadata-holds'
-import { isHiddenAutomatedSession } from './session-visibility'
+import { isHiddenAutomatedSession, sessionOrigin } from './session-visibility'
 import type { SlashCommandInfo } from '@shared/lib/container/types'
 import {
   SessionInfo,
@@ -471,6 +471,7 @@ function sessionFromTranscriptStat(
     name: meta?.name || 'New Session',
     createdAt: resolveSessionCreatedAt(meta, stat),
     lastActivityAt: new Date(stat.mtimeMs),
+    origin: sessionOrigin(meta),
   }
 }
 
@@ -495,6 +496,7 @@ function emptySessionFromMetadata(
     name: meta.name || 'New Session',
     createdAt,
     lastActivityAt: createdAt,
+    origin: sessionOrigin(meta),
   }
 }
 

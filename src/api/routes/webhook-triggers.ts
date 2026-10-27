@@ -19,6 +19,7 @@ import {
 import { promptUpdateSchema } from './trigger-prompt-schema'
 import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options'
 import { agentRegistry } from '@shared/lib/agent-actor'
+import { withSessionStatus } from '@shared/lib/session-status'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { toPublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
@@ -52,12 +53,7 @@ webhookTriggersRouter.get('/:triggerId/sessions', TriggerAgentRole('viewer'), as
     const trigger = c.get('webhookTrigger' as never) as Awaited<ReturnType<typeof getWebhookTrigger>>
     const actor = agentRegistry.get(trigger!.agentSlug)
     const sessions = await actor.sessions.byWebhookTrigger(trigger!.id)
-    const active = new Set((await actor.live()).activeSessionIds)
-    const sessionsWithStatus = sessions.map((session) => ({
-      ...session,
-      isActive: active.has(session.id),
-    }))
-    return c.json(sessionsWithStatus)
+    return c.json(withSessionStatus(sessions, await actor.live()))
   } catch (error) {
     console.error('Failed to fetch sessions for webhook trigger:', error)
     return c.json({ error: 'Failed to fetch sessions' }, 500)

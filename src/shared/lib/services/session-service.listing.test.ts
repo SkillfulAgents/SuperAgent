@@ -18,9 +18,13 @@ import { SAMPLE_JSONL_ENTRIES, toJsonl } from './__fixtures__/test-data'
 import {
   listSessions,
   listSessionsFromSummary,
+  getSession,
+  listSessionsByIds,
   getSessionMessagesPage,
 } from './session-service'
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
+import { sessionMetadataMapSchema } from './session-metadata-schema'
+import type { SessionMetadata, SessionOrigin } from '@shared/lib/types/agent'
 
 // Both implementations must satisfy the same contract: listSessions stats
 // every transcript; listSessionsFromSummary reads the summary cache. Each
@@ -74,7 +78,7 @@ describe.each([
     await fs.promises.mkdir(workspaceDir(slug), { recursive: true })
     await fs.promises.writeFile(
       path.join(workspaceDir(slug), 'session-metadata.json'),
-      JSON.stringify(metadata),
+      JSON.stringify(sessionMetadataMapSchema.parse(metadata)),
     )
   }
 
@@ -140,6 +144,32 @@ describe.each([
     })
 
     expect(ids(latest)).toEqual(['promoted-new'])
+  })
+
+  it.each([true, false])('preserves original source after promotion, with transcript=%s', async (withTranscript) => {
+    nowIs('2026-10-27T12:00:00.000Z')
+    const origins: [SessionOrigin, SessionMetadata][] = [
+      ['user', { forkedFromSessionId: 'original' }],
+      ['scheduled', { isScheduledExecution: true, scheduledTaskId: 'task' }],
+      ['webhook', { isWebhookExecution: true, webhookTriggerId: 'trigger' }],
+      ['integration', { isChatIntegrationSession: true, chatIntegrationId: 'legacy' }],
+      ['agent', { invokedByAgentSlug: 'writer' }],
+      ['widget-repair', { isWidgetRepair: true }],
+    ]
+    await writeMetadata('agent-a', Object.fromEntries(origins.map(([origin, meta]) => [origin, {
+      ...meta, createdAt: '2026-10-27T11:59:00.000Z', promotedToInteractive: true,
+    }])))
+    if (withTranscript) {
+      for (const [origin] of origins) await writeTranscript('agent-a', origin)
+    }
+    const store = createLocalSessionStore('agent-a')
+    const visible = await list(store, { excludeAutomated: true })
+    const expected = Object.fromEntries(origins.map(([origin]) => [origin, origin]))
+    expect(Object.fromEntries(visible.map((s) => [s.id, s.origin]))).toEqual(expected)
+    // The notable and detail paths carry the same source as the full list.
+    const notable = await listSessionsByIds(store, origins.map(([origin]) => origin), { excludeAutomated: true })
+    expect(Object.fromEntries(notable.map((s) => [s.id, s.origin]))).toEqual(expected)
+    expect((await getSession(store, 'scheduled'))?.origin).toBe('scheduled')
   })
 
   it('ranks a newer metadata-only session above an older transcript, with createdAt as its activity', async () => {

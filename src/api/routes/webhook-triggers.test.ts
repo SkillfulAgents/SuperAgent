@@ -10,6 +10,14 @@ const mockUpdateWebhookTriggerPrompt = vi.fn()
 const mockUpdateWebhookTriggerRuntimeOptions = vi.fn()
 const mockCancelWebhookTriggerWithCleanup = vi.fn()
 
+const { mockActor } = vi.hoisted(() => ({
+  mockActor: {
+    sessions: { byWebhookTrigger: vi.fn() },
+    live: vi.fn(),
+  },
+}))
+vi.mock('@shared/lib/agent-actor', () => ({ agentRegistry: { get: () => mockActor } }))
+
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   getWebhookTrigger: (...args: unknown[]) => mockGetWebhookTrigger(...args),
   pauseWebhookTrigger: (...args: unknown[]) => mockPauseWebhookTrigger(...args),
@@ -97,6 +105,23 @@ beforeEach(() => {
 })
 
 describe('webhook trigger response access', () => {
+  it('uses the shared live status projection for its run history', async () => {
+    mockActor.sessions.byWebhookTrigger.mockResolvedValue([
+      { id: 'waiting', name: 'Needs input' },
+      { id: 'working', name: 'Working' },
+      { id: 'done', name: 'Done' },
+    ])
+    mockActor.live.mockResolvedValue({ activeSessionIds: ['waiting', 'working'], awaitingSessionIds: ['waiting'] })
+    const res = await createApp().request('http://localhost/api/webhook-triggers/trigger-1/sessions')
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual([
+      { id: 'waiting', name: 'Needs input', isActive: true, isAwaitingInput: true },
+      { id: 'working', name: 'Working', isActive: true, isAwaitingInput: false },
+      { id: 'done', name: 'Done', isActive: false, isAwaitingInput: false },
+    ])
+    expect(mockActor.sessions.byWebhookTrigger).toHaveBeenCalledWith('trigger-1')
+  })
+
   it.each(['viewer', 'user'] as const)('redacts the detail response for %s members', async (role) => {
     authState.role = role
 

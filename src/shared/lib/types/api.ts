@@ -7,7 +7,7 @@
 
 import type { EffortLevel, HealthCheckResult , SpeedLevel } from '@shared/lib/container/types'
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
-import type { SessionUsage } from '@shared/lib/types/agent'
+import type { SessionOrigin, SessionUsage } from '@shared/lib/types/agent'
 import type { ApiAgentWidget } from '@shared/lib/widgets/widget-schema'
 import type { IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
 import type { AgentAvatar } from './agent-avatar'
@@ -140,6 +140,8 @@ export interface ApiSession {
   name: string
   createdAt: Date
   lastActivityAt: Date
+  /** Original source; older servers may omit it. Promotion does not change it. */
+  origin?: SessionOrigin
   isActive?: boolean
   isAwaitingInput?: boolean
   hasUnreadNotifications?: boolean
