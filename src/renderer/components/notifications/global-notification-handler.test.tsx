@@ -993,6 +993,17 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(queryClient.getQueryState(['agents', 'agent-a'])?.isInvalidated).toBe(true)
   })
 
+  it("volume_attention_changed refreshes every agent's drives and the drive list, so a status pill follows sync", () => {
+    queryClient.setQueryData(['mounts', 'agent-a'], [])
+    queryClient.setQueryData(['mounts', 'agent-b'], [])
+    queryClient.setQueryData(['volume-definitions'], [])
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    simulateSSEMessage(getLatestEventSource(), { type: 'volume_attention_changed' })
+    for (const key of [['mounts', 'agent-a'], ['mounts', 'agent-b'], ['volume-definitions']]) {
+      expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true)
+    }
+  })
+
   it('agent_created invalidates visible agents and personal roles together', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
@@ -1012,7 +1023,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
   })
 
-  it('only refreshes collaboration queries on reconnect, not first open', () => {
+  it('only refreshes collaboration and drive queries on reconnect, not first open', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
     render(
@@ -1027,6 +1038,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
     expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['agent-members'] })
     expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['agent-invite-candidates'] })
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['mounts'] })
 
     invalidateSpy.mockClear()
     es.onerror?.()
@@ -1035,6 +1047,9 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agent-members'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agent-invite-candidates'] })
+    // A drive's status change sent during the gap is not sent again.
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['mounts'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['volume-definitions'] })
     // Mount and a browser-handled reconnect are not outages.
     expect(invalidateSpy).not.toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
   })

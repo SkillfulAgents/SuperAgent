@@ -8,6 +8,8 @@ import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/cr
 import { agents, agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
 import { addMount, attachMount, getMounts, getMountsWithHealth, listVolumes, removeMount, resolveVolume, setMountReadOnly, volumeSummary } from './mount-service'
 import { updateVolumeDefinition } from './volume-service'
+import { volumeHealth } from '@shared/lib/volumes/volume-health'
+import { BaseMountableVolume } from '@shared/lib/volumes/base-mountable-volume'
 
 let handle: TestDatabase
 let tmpDir: string
@@ -168,6 +170,32 @@ describe('volume health and stored configuration', () => {
       notMounted: [{ name: 'gone', reason: 'not found' }, { name: 'bad', reason: 'unreadable' }, { name: '', reason: 'invalid name' }],
     })
     expect((await getMountsWithHealth('test-agent')).map(m => m.health)).toEqual(['ok', 'missing', 'missing', 'missing'])
+  })
+  it('waits for a drive making its first copy before listing what to mount, for 20 s at most', async () => {
+    await add(folder('notes'))
+    let copied!: () => void
+    const ready = vi.spyOn(BaseMountableVolume.prototype, 'whenReady').mockReturnValueOnce(new Promise<void>(resolve => { copied = resolve }))
+    let listed = false
+    const listing = listVolumes('test-agent').then(result => { listed = true; return result })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(listed).toBe(false)
+    copied()
+    expect((await listing).volumes).toHaveLength(1)
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      ready.mockReturnValueOnce(new Promise<void>(() => {}))
+      const stuck = listVolumes('test-agent')
+      await vi.advanceTimersByTimeAsync(20_000)
+      expect((await stuck).volumes).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+      ready.mockRestore()
+    }
+  })
+  it('shows a first copy in progress as preparing, and a failed one as missing', () => {
+    expect([volumeHealth(null), volumeHealth('preparing'), volumeHealth('preparing: GitHub refused access'), volumeHealth('not found')])
+      .toEqual(['ok', 'preparing', 'missing', 'missing'])
   })
   it('reports a deleted folder or a root replaced by a symlink as missing', async () => {
     const dir = folder('replaced')

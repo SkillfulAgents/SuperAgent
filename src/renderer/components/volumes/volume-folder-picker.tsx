@@ -47,7 +47,8 @@ export function FolderLocationField({ location, onClick, disabled }: { location:
  * The folder field of a remote drive's set-up and the browser it opens. A
  * click on a folder selects it and › (or a double-click) opens it; with none
  * selected, the confirm button takes the folder you are in. Either way the
- * button names the folder it will use.
+ * button names the folder it will use. A folder the source can't use (a GitHub
+ * repository before its branch) can only be opened.
  */
 export function VolumeFolderPicker<Cursor>({ source, accountId, initial, selected, onChange, disabled }: {
   source: VolumeFolderSource<Cursor>
@@ -78,8 +79,9 @@ export function VolumeFolderPicker<Cursor>({ source, accountId, initial, selecte
   }, [entering, folders.data, folders.isFetching, source, cursor])
 
   const open = (to: Cursor) => { setCursor(to); setHighlighted(null) }
-  const target = highlighted ? highlighted.cursor : source.confirmLabel(cursor) !== null ? cursor : null
-  const confirmLabel = highlighted ? `Use “${highlighted.name}”` : source.confirmLabel(cursor)
+  const choice = highlighted && source.confirmLabel(highlighted.cursor) !== null ? highlighted : null
+  const target = choice ? choice.cursor : source.confirmLabel(cursor) !== null ? cursor : null
+  const confirmLabel = choice ? `Use “${choice.name}”` : source.confirmLabel(cursor)
   const loading = folders.isFetching || entering
 
   return <>
