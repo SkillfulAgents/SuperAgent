@@ -14,8 +14,8 @@ const { app, openExternalUrl, screenSize } = vi.hoisted(() => ({
       { slug: 'planner', displaySlug: 'planner', name: 'Planner', status: 'stopped', avatar: null },
     ],
     deleteAgent: vi.fn(),
-    /** Team Brain's drive: still making its first copy, or not read yet; and whether the drive list's last poll failed. */
-    mount: 'ready' as 'ready' | 'copying' | 'loading',
+    /** Team Brain's drive: still making its first copy, read-only when another workspace keeps it, or not read yet; and whether the drive list's last poll failed. */
+    mount: 'ready' as 'ready' | 'copying' | 'read-only' | 'loading',
     pollFailed: false,
     /** The drive the page last handed the tree and the syncs to read. */
     read: { drive: undefined as string | undefined, syncs: undefined as string | undefined },
@@ -28,7 +28,7 @@ vi.mock('@renderer/hooks/use-agents', () => ({
 // The Team Brain agent's own drive, in Dropbox.
 vi.mock('@renderer/hooks/use-mounts', () => ({
   useAgentMounts: () => ({
-    data: app.mount === 'loading' ? undefined : [{ id: 'm1', volumeId: 'vol1', name: 'Team Brain', volumeName: 'Team Brain', type: 'dropbox', hostPath: null, sourceLabel: 'Dropbox › Team Brain', health: app.mount === 'copying' ? 'preparing' : 'ok' }],
+    data: app.mount === 'loading' ? undefined : [{ id: 'm1', volumeId: 'vol1', name: 'Team Brain', volumeName: 'Team Brain', type: 'dropbox', hostPath: null, sourceLabel: 'Dropbox › Team Brain', health: app.mount === 'copying' ? 'preparing' : 'ok', readOnly: app.mount === 'read-only' }],
     isError: app.pollFailed,
   }),
 }))
@@ -511,5 +511,23 @@ describe('TeamBrainOverview', () => {
     expect(within(recent).queryByText(/^Page /)).toBeNull()
     await userEvent.click(within(recent).getByTestId('team-brain-see-all-sessions'))
     expect(within(recent).getByText('Page 1 of 3')).toBeInTheDocument()
+  })
+
+  it('reads another workspace’s Team Brain: the writer’s settings, no syncs, an ask-only status, and Disconnect', async () => {
+    app.mount = 'read-only'
+    render(<TeamBrainOverview agent={BRAIN} />)
+    expect(screen.getByTestId('team-brain-status')).toHaveTextContent(/^Read-only$/)
+    expect(screen.queryByTestId('team-brain-syncs')).toBeNull()
+    await userEvent.click(screen.getByTestId('team-brain-menu'))
+    // Its own scheduled tasks stay manageable here, as for any Team Brain.
+    expect(within(screen.getByTestId('team-brain-details')).getAllByTestId('team-brain-sync').length).toBeGreaterThan(0)
+    expect(await screen.findByTestId('team-brain-turn-off')).toHaveTextContent('Disconnect Team Brain')
+  })
+
+  it('shows neither status nor syncs until its drive is read, so read-only never flashes the writer’s', () => {
+    app.mount = 'loading'
+    render(<TeamBrainOverview agent={BRAIN} />)
+    expect(screen.getByTestId('team-brain-status')).toHaveTextContent(/^$/)
+    expect(screen.queryByTestId('team-brain-syncs')).toBeNull()
   })
 })

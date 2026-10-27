@@ -1,6 +1,7 @@
-import { useState, type ReactNode } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { Brain, Folder, Loader2, X } from 'lucide-react'
 import { useAgents } from '@renderer/hooks/use-agents'
+import { useTargetSwitch } from '@renderer/hooks/use-target-switch'
 import { usePreparedDriveHealth } from '@renderer/hooks/use-team-brain-setup'
 import { Button } from '@renderer/components/ui/button'
 import { volumeSetupRegistry } from '@renderer/components/volumes/volume-setup-registry'
@@ -21,22 +22,27 @@ import {
 } from '@renderer/components/ui/alert-dialog'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@renderer/components/ui/dialog'
 import { usesTeamBrain, useTeamBrain, type TeamBrainStore } from '@renderer/lib/team-brain/team-brain-store'
-import { TEAM_BRAIN_STEPS, type TeamBrainLocationId, type TeamBrainSourceId, type TeamBrainStep } from '@renderer/lib/team-brain/team-brain-schema'
+import { ALL_TEAM_BRAIN_STEPS, teamBrainSteps, type TeamBrainLocationId, type TeamBrainSourceId, type TeamBrainStep } from '@renderer/lib/team-brain/team-brain-schema'
 import { TeamBrainSourceIcon } from './team-brain-source-icon'
-import { LocationChoices, ScheduleChoices } from './team-brain-choices'
+import { LocationChoices, PathChoices, ScheduleChoices } from './team-brain-choices'
 import { teamBrainLocation } from './team-brain-locations'
 import { AgentAccessList, EveryAgentRow } from './team-brain-agent-access'
 
 /** The rail's names for each step. */
 const STEP_LABELS: Record<TeamBrainStep, string> = {
+  how: 'Choose how',
   location: 'Choose where it lives',
   agents: 'Choose its agents',
   schedule: 'Set a schedule',
   intake: 'Context ingestion',
 }
 
+/** The desktop's steps on both of its paths, which the rail shows from the start. */
+const SHARED_STEPS: readonly TeamBrainStep[] = ['how', 'location', 'agents']
+
 /** How a "Next: …" button names the step it goes to. */
 const NEXT_LABELS: Record<TeamBrainStep, string> = {
+  how: 'How',
   location: 'Location',
   agents: 'Agents',
   schedule: 'Schedule',
@@ -50,6 +56,10 @@ const BUTTON_BASE =
 const PRIMARY = cn(BUTTON_BASE, 'bg-brand font-medium text-white hover:bg-brand/90')
 const SECONDARY = cn(BUTTON_BASE, 'border bg-background hover:bg-muted')
 
+/** A rail step's row (44px and the 2px under it), and how far apart steps start growing in or folding away. */
+const RAIL_ROW = 46
+const RAIL_STAGGER_MS = 40
+
 /**
  * Set-up as one mid-size modal, laid out like Figma's Dev Mode welcome: a
  * dark rail with the brain glyph, the title and the numbered steps, the
@@ -58,22 +68,33 @@ const SECONDARY = cn(BUTTON_BASE, 'border bg-background hover:bg-muted')
  *
  * It asks what a form asks best (where it lives, what each agent may do, how
  * often it syncs), then hands over to `onStartChat`: a chat with Team Brain
- * for the team's context. Saving the drive on step 01 calls `onPrepare`.
+ * for the team's context. Saving the drive calls `onPrepare`.
+ *
+ * On the `desktop` it first asks how: set it up in Cloud, connect a folder
+ * managed elsewhere (read-only), or set one up on this computer. The rail shows
+ * the steps the two local paths share from the start and grows the rest in.
  */
 export function TeamBrainOnboarding({
   open,
+  desktop = false,
   onPrepare,
+  onDiscard,
   onStartChat,
   onCancel,
 }: {
   open: boolean
+  desktop?: boolean
   onPrepare: (source: VolumeSource, details: VolumeDetails) => Promise<boolean>
+  /** Drop what was prepared, staying in set-up: the desktop turned to the other path. True once nothing is left. */
+  onDiscard: () => Promise<boolean>
   onStartChat: () => Promise<void>
   onCancel: () => void
 }) {
   const tb = useTeamBrain()
+  const target = useTargetSwitch()
   const waiting = driveWait(usePreparedDriveHealth(tb.state.prepared))
-  const steps = TEAM_BRAIN_STEPS
+  const path = tb.state.path
+  const steps = teamBrainSteps(desktop, path)
   const index = Math.max(steps.indexOf(tb.state.step), 0)
   const step = steps[index]
   const nav: StepNav = {
@@ -82,10 +103,37 @@ export function TeamBrainOnboarding({
     next: () => steps[index + 1] && tb.goToStep(steps[index + 1]),
   }
   const [confirmCancel, setConfirmCancel] = useState(false)
+  // Nothing is made before where it lives, so closing on how just closes.
+  const close = () => (!tb.state.prepared && step === 'how' ? onCancel() : setConfirmCancel(true))
+  // One removal at a time: a second Next while the first is removing the draft does nothing.
+  const leaving = useRef(false)
+  const leaveHow = async () => {
+    if (!path || leaving.current) return
+    leaving.current = true
+    try {
+      // A drive saved for another path was made read-only or not to suit it, so it goes first; if it can't, set-up stays here.
+      const mismatched = tb.state.prepared && (path === 'cloud' || tb.state.prepared.readOnly !== (path === 'team'))
+      if (mismatched && !(await onDiscard())) return
+      if (path !== 'cloud') return nav.next()
+      // The cloud's Team Brain is set up in the cloud workspace. Set-up closes first: when the switch can't go yet it
+      // says why, in a toast or Settings, which set-up would cover.
+      onCancel()
+      void target.switchTo('cloud')
+    } finally {
+      leaving.current = false
+    }
+  }
+  // The rail keeps every desktop step and folds away the ones this path doesn't take. Before a choice, the steps both
+  // paths share show greyed; the rest grow in once "on this computer" is chosen.
+  const rail = (desktop ? ALL_TEAM_BRAIN_STEPS : steps).map((s) => ({
+    id: s,
+    hidden: desktop && !(path ? steps : SHARED_STEPS).includes(s),
+    pending: desktop && !path && s !== 'how',
+  }))
 
   return (
     <>
-      <Dialog open={open} onOpenChange={(next) => { if (!next) setConfirmCancel(true) }}>
+      <Dialog open={open} onOpenChange={(next) => { if (!next) close() }}>
         <DialogContent
           hideClose
           className="flex h-[min(600px,calc(100vh-2rem))] w-[min(900px,calc(100vw-2rem))] max-w-none gap-0 overflow-hidden border-0 p-0 shadow-2xl sm:rounded-2xl"
@@ -100,22 +148,47 @@ export function TeamBrainOnboarding({
                 <span className="block">Team Brain</span>
               </DialogTitle>
             </div>
-            <ol className="space-y-0.5 px-5" aria-label="Set-up steps">
-              {steps.map((s, i) => (
-                <li
-                  key={s}
-                  aria-current={i === index ? 'step' : undefined}
-                  className={cn(
-                    'flex h-11 items-center gap-4 rounded-md px-3.5 text-[14px] text-white transition-colors',
-                    i === index && 'bg-brand',
-                  )}
-                >
-                  <span className={cn('min-w-[26px] text-[19px]/none font-light tabular-nums', i !== index && 'text-white/40')}>
-                    {String(i + 1).padStart(2, '0')}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate">{STEP_LABELS[s]}</span>
-                </li>
-              ))}
+            {/* As tall as every step, so steps grow in below the ones shown and nothing above them moves. */}
+            <ol className="px-5" style={{ minHeight: rail.length * RAIL_ROW }} aria-label="Set-up steps">
+              {rail.map(({ id, hidden, pending }, i) => {
+                const at = steps.indexOf(id)
+                // One after another, top down as they grow in and bottom up as they fold away.
+                const delay = (hidden ? rail.length - 1 - i : i) * RAIL_STAGGER_MS
+                return (
+                  <li
+                    key={id}
+                    aria-current={at === index ? 'step' : undefined}
+                    aria-hidden={hidden || undefined}
+                    data-pending={pending || undefined}
+                    className={cn(
+                      'grid transition-[grid-template-rows,opacity] duration-[220ms] ease-out motion-reduce:transition-none',
+                      hidden ? 'grid-rows-[0fr] opacity-0' : 'grid-rows-[1fr] opacity-100',
+                    )}
+                    style={{ transitionDelay: `${delay}ms` }}
+                  >
+                    <div className="min-h-0 overflow-hidden">
+                      <div
+                        className={cn(
+                          'mb-0.5 flex h-11 items-center gap-4 rounded-md px-3.5 text-[14px] text-white transition-[background-color,transform] duration-[220ms] ease-out motion-reduce:transition-none',
+                          at === index && 'bg-brand',
+                          hidden && '-translate-y-1',
+                        )}
+                        style={{ transitionDelay: `${delay}ms` }}
+                      >
+                        <span className={cn('min-w-[26px] text-[19px]/none font-light tabular-nums', at !== index && 'text-white/40')}>
+                          {String((at < 0 ? i : at) + 1).padStart(2, '0')}
+                        </span>
+                        <span
+                          className={cn('min-w-0 flex-1 truncate transition-colors duration-[220ms] ease-out motion-reduce:transition-none', pending && 'text-white/40')}
+                          style={{ transitionDelay: `${delay}ms` }}
+                        >
+                          {STEP_LABELS[id]}
+                        </span>
+                      </div>
+                    </div>
+                  </li>
+                )
+              })}
             </ol>
           </aside>
 
@@ -125,15 +198,18 @@ export function TeamBrainOnboarding({
             </DialogDescription>
             <button
               type="button"
-              onClick={() => setConfirmCancel(true)}
+              onClick={close}
               className="absolute right-3 top-3 z-10 grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               aria-label="Close set-up"
               data-testid="team-brain-cancel"
             >
               <X className="size-4" aria-hidden="true" />
             </button>
+            {step === 'how' && (
+              <HowStep tb={tb} nav={nav} onNext={() => void leaveHow()} />
+            )}
             {step === 'location' && <LocationStep tb={tb} nav={nav} onPrepare={onPrepare} />}
-            {step === 'agents' && <AgentsStep tb={tb} nav={nav} />}
+            {step === 'agents' && <AgentsStep tb={tb} nav={nav} onFinish={onStartChat} />}
             {step === 'schedule' && <SyncStep tb={tb} nav={nav} />}
             {step === 'intake' && <IntakeStep nav={nav} waiting={waiting} onStart={onStartChat} />}
           </section>
@@ -206,6 +282,25 @@ function StepPanel({
         )}
       </footer>
     </>
+  )
+}
+
+// ── How (desktop) ───────────────────────────────────────────────────────────
+
+/**
+ * Set it up in the cloud workspace, connect a folder another workspace manages (read-only), or set one up on this
+ * computer. The last two can each start from a folder that already exists: reading never changes it, setting up takes it over.
+ */
+function HowStep({ tb, nav, onNext }: { tb: TeamBrainStore; nav: StepNav; onNext: () => void }) {
+  const path = tb.state.path
+  return (
+    <StepPanel
+      title="How do you want to use Team Brain?"
+      subtitle="Set it up in Cloud, connect a folder managed elsewhere, or start one on this computer."
+      next={{ label: path === 'cloud' ? 'Switch to Cloud' : path ? nav.nextLabel : 'Next', onClick: onNext, disabled: !path }}
+    >
+      <PathChoices value={path} onChoose={tb.choosePath} />
+    </StepPanel>
   )
 }
 
@@ -288,8 +383,11 @@ function LocationStep({
   const ready = !!tb.state.prepared && picked === tb.state.location
   return (
     <StepPanel
-      title="Choose where Team Brain knowledge is stored"
-      subtitle="Every agent you connect to Team Brain will read and add to the knowledge in this storage. It is possible to migrate later if needed."
+      title={tb.state.path === 'team' ? 'Choose where the folder lives' : 'Choose where Team Brain knowledge is stored'}
+      subtitle={tb.state.path === 'team'
+        ? 'Pick the folder to connect. Team Brain reads it here and never changes it.'
+        : 'Every agent you connect to Team Brain will read and add to the knowledge in this storage. It is possible to migrate later if needed.'}
+      back={nav.back}
       next={{
         label: ready || !picked ? nav.nextLabel : `Next: Set up ${teamBrainLocation(picked).name}`,
         disabled: !picked,
@@ -346,16 +444,29 @@ function DriveProblem({ waiting }: { waiting: DriveWait }) {
   return <div className="mt-4"><p role="alert" className="text-sm text-destructive">{waiting.problem}</p><Button type="button" variant="ghost" size="sm" onClick={waiting.recheck}>Try again</Button></div>
 }
 
-/** Every agent (a global drive, as in Settings → Drives), or the agents switched on below. */
-function AgentsStep({ tb, nav }: { tb: TeamBrainStore; nav: StepNav }) {
+/**
+ * Every agent (a global drive, as in Settings → Drives), or the agents switched on below. Read-only, it is the last
+ * step: Finish launches it, with no schedule and no chat.
+ */
+function AgentsStep({ tb, nav, onFinish }: { tb: TeamBrainStore; nav: StepNav; onFinish: () => Promise<void> }) {
   const { data = [] } = useAgents()
   const agents = data.filter((agent) => agent.slug !== tb.state.prepared?.agentSlug)
+  const readOnly = !!tb.state.prepared?.readOnly
+  const [finishing, setFinishing] = useState(false)
+  const finish = async () => {
+    setFinishing(true)
+    try { await onFinish() } finally { setFinishing(false) }
+  }
   return (
     <StepPanel
       title="Give your agents access to Team Brain"
-      subtitle="Each agent reads your team’s context and can message Team Brain to add what it learns. You can change this later."
+      subtitle={readOnly
+        ? 'Each agent reads it and can ask Team Brain questions. It stays up to date where it’s managed. You can change this later.'
+        : 'Each agent reads your team’s context and can message Team Brain to add what it learns. You can change this later.'}
       back={nav.back}
-      next={{ label: nav.nextLabel, onClick: nav.next }}
+      next={readOnly
+        ? { label: 'Finish', onClick: () => void finish(), disabled: finishing, testId: 'team-brain-finish' }
+        : { label: nav.nextLabel, onClick: nav.next }}
     >
       <EveryAgentRow checked={tb.state.everyAgent} canGoGlobal onCheckedChange={tb.setEveryAgent} className="pb-3" />
       {agents.length > 0 ? (

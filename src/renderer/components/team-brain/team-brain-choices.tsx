@@ -1,6 +1,6 @@
-import { CalendarDays, Clock, Sunrise, type LucideIcon } from 'lucide-react'
+import { CalendarDays, Clock, Cloud, FolderSymlink, Laptop, Sunrise, type LucideIcon } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
-import { TEAM_BRAIN_SCHEDULES, type TeamBrainLocationId, type TeamBrainSchedule } from '@renderer/lib/team-brain/team-brain-schema'
+import { TEAM_BRAIN_PATHS, TEAM_BRAIN_SCHEDULES, type TeamBrainLocationId, type TeamBrainPath, type TeamBrainSchedule } from '@renderer/lib/team-brain/team-brain-schema'
 import { SCHEDULE_LABELS } from '@renderer/lib/team-brain/team-brain-format'
 import { TEAM_BRAIN_LOCATIONS, type TeamBrainLocation } from './team-brain-locations'
 
@@ -156,6 +156,57 @@ export function ScheduleChoices({
               <Meter label="Freshness" level={SCHEDULE_TRADEOFF[option].freshness} />
               <Meter label="Cost" level={SCHEDULE_TRADEOFF[option].cost} />
             </span>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+/** The desktop’s ways to get a Team Brain. */
+const PATH_CHOICES: Record<TeamBrainPath, { icon: LucideIcon; title: string; detail: string }> = {
+  cloud: {
+    icon: Cloud,
+    title: 'Set up in Cloud',
+    detail: 'A Team Brain lives best in the cloud: always on and shared by everyone. Set it up or manage it there, then connect it here.',
+  },
+  team: {
+    icon: FolderSymlink,
+    title: 'Connect a folder managed elsewhere',
+    detail: 'Any folder works, like a Team Brain from another workspace or a shared folder of docs. Agents here read it but never change it.',
+  },
+  here: {
+    icon: Laptop,
+    title: 'Set up Team Brain on this computer',
+    detail: 'Start fresh or bring in a folder you have. Team Brain builds it, keeps it up to date, and shares it with the agents you choose.',
+  },
+}
+
+export function PathChoices({ value, onChoose }: { value: TeamBrainPath | null; onChoose: (path: TeamBrainPath) => void }) {
+  return (
+    <div role="radiogroup" aria-label="How to use Team Brain" className="space-y-3">
+      {TEAM_BRAIN_PATHS.map((option) => {
+        const { icon: Icon, title, detail } = PATH_CHOICES[option]
+        const on = option === value
+        return (
+          <button
+            key={option}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            onClick={() => onChoose(option)}
+            data-testid={`team-brain-how-${option}`}
+            className={cn(CHOICE, on ? CHOICE_ON : CHOICE_OFF, 'flex w-full items-center gap-3 px-4 py-3')}
+          >
+            <Icon className="size-6 shrink-0" strokeWidth={1.5} aria-hidden="true" />
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-2 text-[14px] font-medium">
+                {title}
+                {option === 'cloud' && <Recommended />}
+              </span>
+              <span className="mt-0.5 block text-[13px] text-muted-foreground">{detail}</span>
+            </span>
+            <RadioDot checked={on} />
           </button>
         )
       })}
