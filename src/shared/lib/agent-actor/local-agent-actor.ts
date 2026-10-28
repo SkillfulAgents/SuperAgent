@@ -20,6 +20,7 @@ import { background } from '@shared/lib/background'
 import { createMemoryOps } from './memory-ops'
 import { matchesTranscriptQuery } from './transcript-query'
 import { createSessionDelivery, notAcceptedError, type SessionDelivery } from './delivery'
+import { recoverFromContainer } from './recover-from-container'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import { createAgentState, releaseAgentState, type AgentState } from './agent-state'
 import { createLocalSessionStore } from './local-session-store'
@@ -78,6 +79,12 @@ export interface LocalActorDeps {
   readonly loadSessionUsageTotals: typeof loadSessionUsageTotals
   /** The host this agent asks for host tools, machine work and side effects. */
   readonly host: HostPort
+  /**
+   * Where the agent's files, config documents and transcripts are, when the
+   * deployment keeps them somewhere other than a directory on this machine
+   * (see `createSwitchingSessionStore`). Omitted: the local workspace.
+   */
+  readonly createSessionStore?: (slug: AgentSlug, hooks: Pick<SessionStore, 'onActivity'>) => SessionStore
 }
 
 // Dev-only capture of the sessions' frames for fixture replays: one per
@@ -130,7 +137,7 @@ export class LocalAgentActor implements AgentActor {
       state ??
       createAgentState(slug, {
         sessions: {
-          store: createLocalSessionStore(slug, deps, {
+          store: (deps.createSessionStore ?? ((s, hooks) => createLocalSessionStore(s, deps, hooks)))(slug, {
             onActivity: (at) => deps.containerHost.runtime(slug).noteSessionActivity(at),
           }),
           host: deps.host,
@@ -303,6 +310,16 @@ function createSessionOps(
     grantCapability: async (sessionId, capability) => live.grantCapability(sessionId, capability),
 
     attach: (sessionId, options) => delivery.attach(sessionId, options),
+    recover: () => recoverFromContainer({
+      containerStatus: async () => deps.containerHost.runtime(slug).getCachedInfo().status,
+      fetch: (path) => client().fetch(path),
+      attach: (sessionId) => delivery.attach(sessionId),
+      recoverAwaitingInput: (sessionId, unresolved) => live.recoverAwaitingInput(sessionId, unresolved),
+      takeStoredCoalesced: () => live.takeStoredCoalesced(),
+      sendHeld: (sessionId, message) => live.inDeliveryTurn(sessionId, async () => {
+        await client().sendMessage(sessionId, message.text, message.uuid, { shouldQuery: message.shouldQuery ?? true })
+      }),
+    }),
 
     deferNaming: async (sessionId) => {
       state.deferredNaming.add(sessionId)
