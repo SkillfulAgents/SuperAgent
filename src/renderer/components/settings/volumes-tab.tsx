@@ -32,7 +32,7 @@ export function VolumesTab() {
   const backToList = () => { void navigate({ to: '/settings/$tab', params: { tab: 'volumes' }, search: prev => ({ ...prev, volume: undefined, source: undefined }) }) }
   const openVolume = (id: string) => { void navigate({ to: '/settings/$tab', params: { tab: 'volumes' }, search: prev => ({ ...prev, volume: id, source: undefined }) }) }
   const agentPath = agentBackPath(source, from)
-  const homeAgent = agents.data?.find(agent => agentPath?.split('?')[0] === `/agents/${encodeURIComponent(agent.slug)}`)
+  const homeAgent = agents.data?.find(agent => [agent.slug, agent.displaySlug].some(slug => agentPath?.split('?')[0] === `/agents/${encodeURIComponent(slug)}`))
   const back = agentPath
     ? { onBack: () => router.history.push(agentPath), label: homeAgent?.name ?? 'Agent' }
     : { onBack: backToList, label: undefined }

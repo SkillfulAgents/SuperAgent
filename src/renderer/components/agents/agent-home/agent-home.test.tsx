@@ -40,7 +40,7 @@ const mockDeleteAgentMutate = vi.fn()
 // The cards read the page's search; these tests render Agent Home without a router.
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tanstack/react-router')>()),
-  useSearch: () => ({}),
+  useRouterState: ({ select }: { select: (s: { location: { href: string } }) => unknown }) => select({ location: { href: '/agents/test-agent' } }),
 }))
 vi.mock('@renderer/context/analytics-context', () => ({
   useAnalyticsTracking: () => ({ track: vi.fn() }),
