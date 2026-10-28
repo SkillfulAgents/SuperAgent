@@ -130,7 +130,6 @@ export async function listConnections(
       apiFormat: config.apiFormat,
       chatTokenLimitField: config.chatTokenLimitField,
       region: config.apiKeys.bedrockRegion ?? config.oauth?.region,
-      fallbackToPlatform: config.fallbackToPlatform,
       customEnvVarKeys: canManage ? Object.keys(config.runtimeEnv) : [],
       canManage,
       deletionBlockedReason,
@@ -485,8 +484,8 @@ export async function resolveSelectionHierarchy(
 
 /**
  * Where a subscription's turn continues once its plan hits a usage limit: the
- * same model on Platform, else Platform's own default. Null when the
- * connection has not opted in or Platform is not signed in.
+ * same model on Platform, else Platform's own default. Null when the setting
+ * is off or Platform is not signed in.
  */
 export async function platformFallbackSelection(
   connectionId: string,
@@ -494,7 +493,7 @@ export async function platformFallbackSelection(
 ): Promise<{ from: ConnectionRow; to: ResolvedConnection } | null> {
   const from = await getConnection(connectionId)
   if (!from || !isSubscriptionProvider(from.provider)) return null
-  if (!parseConnectionJson(connectionConfigSchema, from.config).fallbackToPlatform) return null
+  if (!getSettings().fallbackToPlatform) return null
   const platform = await db.select().from(llmConnections)
     .where(and(eq(llmConnections.provider, 'platform'), isNull(llmConnections.userId))).get()
   if (!platform || !providerForConnection(platform).getApiKeyStatus().isConfigured) return null

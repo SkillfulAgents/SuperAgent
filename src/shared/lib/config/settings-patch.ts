@@ -209,6 +209,7 @@ export const generalSettingsPatchSchema = z.object({
   analyticsTargets: z.array(analyticsTargetSchema),
   shareErrorReports: z.boolean(),
   enableToolSearch: z.boolean(),
+  fallbackToPlatform: z.boolean(),
   agentCapabilities: agentCapabilitySettingsPatchSchema.strict(),
   globalInstructions: globalInstructionsSchema,
   teamBrain: teamBrainRecordSchema,
@@ -492,6 +493,10 @@ export const generalSettingsComponent = {
         patch.enableToolSearch !== undefined
           ? patch.enableToolSearch
           : before.enableToolSearch,
+      fallbackToPlatform:
+        patch.fallbackToPlatform !== undefined
+          ? patch.fallbackToPlatform
+          : before.fallbackToPlatform,
       agentCapabilities:
         patch.agentCapabilities !== undefined
           ? {
@@ -542,6 +547,7 @@ function pickGeneralPatch(patch: SettingsPatch): GeneralSettingsPatch {
     analyticsTargets: patch.analyticsTargets,
     shareErrorReports: patch.shareErrorReports,
     enableToolSearch: patch.enableToolSearch,
+    fallbackToPlatform: patch.fallbackToPlatform,
     agentCapabilities: patch.agentCapabilities,
     globalInstructions: patch.globalInstructions,
     teamBrain: patch.teamBrain,

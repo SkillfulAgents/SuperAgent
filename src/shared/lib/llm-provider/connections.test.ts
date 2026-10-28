@@ -995,16 +995,17 @@ describe('a model an agent names for an automation', () => {
 })
 
 describe('platformFallbackSelection', () => {
-  const subscription = (name: string, fallbackToPlatform?: boolean) => saveConnection({
+  const subscription = (name: string) => saveConnection({
     name,
     provider: 'claude-subscription',
-    config: { apiKeys: { claudeSubscriptionToken: 'sk-ant-oat01-test' }, ...(fallbackToPlatform === undefined ? {} : { fallbackToPlatform }) },
+    config: { apiKeys: { claudeSubscriptionToken: 'sk-ant-oat01-test' } },
   }, admin)
 
-  it('continues an opted-in subscription on the same model, else on the Platform default', async () => {
+  it('continues a subscription on the same Platform model, else on the Platform default', async () => {
+    state.settings.fallbackToPlatform = true
     state.platformToken = 'platform-test-token'
     await ensureManagedPlatformConnection()
-    const id = await subscription('Personal Claude Max', true)
+    const id = await subscription('Personal Claude Max')
     const platform = (await listConnections(admin)).find(connection => connection.provider === 'platform')!
 
     const same = await platformFallbackSelection(id, 'sonnet')
@@ -1014,20 +1015,15 @@ describe('platformFallbackSelection', () => {
       .toMatchObject({ llmProviderId: platform.id, model: platform.defaultModel })
   })
 
-  it('keeps the toggle on a later save that leaves it out', async () => {
+  it('does nothing when the setting is off, Platform is signed out, or the connection is not a subscription', async () => {
     state.platformToken = 'platform-test-token'
     await ensureManagedPlatformConnection()
-    const id = await subscription('Personal Claude Max', true)
-    await saveConnection({ name: 'Renamed', provider: 'claude-subscription', config: { apiKeys: {} } }, admin, id)
-    expect(await platformFallbackSelection(id, 'sonnet')).not.toBeNull()
-  })
+    const id = await subscription('Personal Claude Max')
+    expect(await platformFallbackSelection(id, 'sonnet')).toBeNull()
 
-  it('does nothing when the subscription has not opted in or Platform is signed out', async () => {
-    state.platformToken = 'platform-test-token'
-    await ensureManagedPlatformConnection()
-    expect(await platformFallbackSelection(await subscription('Off'), 'sonnet')).toBeNull()
-    const optedIn = await subscription('On', true)
+    state.settings.fallbackToPlatform = true
+    expect(await platformFallbackSelection(await add('Keyed'), 'model-a')).toBeNull()
     state.platformToken = undefined
-    expect(await platformFallbackSelection(optedIn, 'sonnet')).toBeNull()
+    expect(await platformFallbackSelection(id, 'sonnet')).toBeNull()
   })
 })

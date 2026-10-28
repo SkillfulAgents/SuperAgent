@@ -331,6 +331,8 @@ export interface AppSettings {
    * expand deferred tools (see BaseLlmProvider.toolSearchEnv).
    */
   enableToolSearch?: boolean
+  /** A subscription that hits its usage limit continues on Platform (when Platform is signed in). */
+  fallbackToPlatform?: boolean
   /** Launch policies for subagents (Task/Agent) and workflows (Workflow tool). */
   agentCapabilities?: AgentCapabilitySettings
   /**
@@ -430,6 +432,7 @@ export interface GlobalSettingsResponse {
   analyticsTargets?: AnalyticsTarget[]
   shareErrorReports: boolean
   enableToolSearch: boolean
+  fallbackToPlatform: boolean
   agentCapabilities: AgentCapabilitySettings
   teamBrain?: TeamBrainRecord
 }
@@ -443,7 +446,7 @@ export interface GlobalSettingsResponse {
  */
 export type ModelPickerSettingsResponse = Pick<
   GlobalSettingsResponse,
-  'llmProvider' | 'llmProviderStatus' | 'models' | 'webProvider' | 'enableToolSearch' | 'modelPricing'
+  'llmProvider' | 'llmProviderStatus' | 'models' | 'webProvider' | 'enableToolSearch' | 'fallbackToPlatform' | 'modelPricing'
 > & {
   connections?: import('../llm-provider/connection-schema').ConnectionInfo[]
   defaultSelection?: import('../llm-provider/connection-schema').ModelSelection
@@ -493,6 +496,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     agentEffort: 'medium',
   },
   enableToolSearch: true,
+  fallbackToPlatform: false,
   agentCapabilities: DEFAULT_AGENT_CAPABILITIES,
   skillsets: [DEFAULT_PUBLIC_SKILLSET],
 }
@@ -641,6 +645,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     apiTarget: coerceApiTarget(loaded.apiTarget),
     platformNotifications: loaded.platformNotifications,
     enableToolSearch: loaded.enableToolSearch ?? DEFAULT_SETTINGS.enableToolSearch,
+    fallbackToPlatform: loaded.fallbackToPlatform ?? DEFAULT_SETTINGS.fallbackToPlatform,
     // Sanitize per-field: an unknown tier (hand-edited file, future version)
     // falls back to that field's default instead of poisoning the section —
     // resetting the whole section would silently lift a valid 'block'.

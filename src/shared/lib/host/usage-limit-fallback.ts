@@ -10,8 +10,8 @@ export const USAGE_LIMIT_CONTINUE_MESSAGE =
 
 /**
  * A subscription session that hit its plan's usage limit continues on
- * Platform when its connection opted in: the running turn stops, and a
- * hidden message starts the next one on Platform's model.
+ * Platform when the setting is on: the running turn stops, and a hidden
+ * message starts the next one on Platform's model.
  */
 export async function continueOnPlatform({ agentSlug, sessionId, turnRunning }: HostEvents['usageLimit']): Promise<void> {
   const actor = agentRegistry.get(agentSlug)
