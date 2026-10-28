@@ -25,14 +25,15 @@ import * as path from 'path'
 import { Readable } from 'stream'
 import { isPathWithinDir } from '@shared/lib/utils/path-safety'
 import { writeFileAtomicStream } from '@shared/lib/utils/file-storage'
-import type { ByteRange, FileEntry, FileOps, FileStat, OpenFile, WriteOptions } from './types'
+import type { ByteRange, FileEntry, FileStat, OpenFile, StoreFileOps, WriteOptions } from './types'
+import { readSized } from './read-sized'
 import { WorkspaceFileError, normalizeWorkspacePath } from './workspace-path'
 
 export interface LocalFileOpsDeps {
   getAgentWorkspaceDir: (slug: string) => string
 }
 
-export function createLocalFileOps(slug: string, deps: LocalFileOpsDeps): FileOps {
+export function createLocalFileOps(slug: string, deps: LocalFileOpsDeps): StoreFileOps {
   // Read at call time: tests and embedded deployments change the data dir in-process.
   return new LocalFileOps(() => deps.getAgentWorkspaceDir(slug))
 }
@@ -192,8 +193,19 @@ class LocalOpenFile implements OpenFile {
     return buffer.subarray(0, filled)
   }
 
-  stream(range?: { start: number; end?: number }): ReadableStream<Uint8Array> {
-    const source = this.handle.createReadStream(range ? { start: range.start, end: range.end } : undefined)
+  stream(range?: { start: number; end?: number }, options?: { chunkBytes?: number }): ReadableStream<Uint8Array> {
+    // The read stream's high-water mark is the size of each `read` it issues
+    // (or what is left of the range). Node treats an undefined start, end or
+    // highWaterMark as absent, so the optionals pass straight through — but a
+    // hint of 0 would make every read ask for 0 bytes, which fs reports as
+    // EOF (an empty stream, no error), and a fraction is rejected outright;
+    // the hint is a size, so it is rounded up to a whole byte at least.
+    const chunkBytes = options?.chunkBytes
+    const source = this.handle.createReadStream({
+      start: range?.start,
+      end: range?.end,
+      highWaterMark: chunkBytes === undefined ? undefined : Math.max(1, Math.ceil(chunkBytes)),
+    })
     return Readable.toWeb(source) as ReadableStream<Uint8Array>
   }
 
@@ -214,7 +226,15 @@ async function ensureDirectory(dir: string): Promise<void> {
   }
 }
 
-export class LocalFileOps implements FileOps {
+/** A filesystem write's options: the shared ones and the hooks only a host path has. */
+export interface LocalWriteOptions extends WriteOptions {
+  /** A lock held around the final publish and a failed write's cleanup, not while content is written. It also turns on the check that the staged file is still this write's. */
+  lock?: (fn: () => Promise<void>) => Promise<void>
+  /** Called under `lock` just before the destination is published; throwing refuses it. */
+  beforePublish?: (destination: string) => Promise<void>
+}
+
+export class LocalFileOps implements StoreFileOps {
   /** The root's real location, kept for `resolve`: the same string for the life of the workspace. */
   private realRootCache: { root: string; real: string } | null = null
 
@@ -321,7 +341,7 @@ export class LocalFileOps implements FileOps {
 
   /**
    * Copy a file from this machine into the workspace in one filesystem copy,
-   * keeping its mode. Not part of `FileOps`: the source is a host path, which
+   * keeping its mode. Not part of `StoreFileOps`: the source is a host path, which
    * only a workspace on this machine can reach directly. A bulk import (a
    * folder upload, a skillset install, a template checkout) uses it instead
    * of streaming each file through `write`; the caller creates the
@@ -337,7 +357,7 @@ export class LocalFileOps implements FileOps {
   /**
    * Move a file from this machine into the workspace: one rename when the
    * two are on the same filesystem, a copy and a delete otherwise. Not part
-   * of `FileOps` for the same reason as `copyHostFile`. An assembled chunked
+   * of `StoreFileOps` for the same reason as `copyHostFile`. An assembled chunked
    * upload arrives this way: the temp dir usually shares the data dir's
    * filesystem, so a file that was already written in full is not written a
    * second time.
@@ -407,6 +427,10 @@ export class LocalFileOps implements FileOps {
     }
   }
 
+  readSized(workspacePath: string, options?: { confined?: boolean }): Promise<{ size: number; stream: ReadableStream<Uint8Array> }> {
+    return readSized(this.open(workspacePath, options))
+  }
+
   async read(workspacePath: string, range?: ByteRange): Promise<ReadableStream<Uint8Array>> {
     const { abs } = this.absolute(workspacePath)
     const stat = await fs.promises.stat(abs).catch(fromFsError)
@@ -431,7 +455,7 @@ export class LocalFileOps implements FileOps {
   }
 
   async putDoc(workspacePath: string, bytes: Uint8Array | string, options?: WriteOptions): Promise<void> {
-    if (options?.confined || options?.overwrite === false || options?.signal) {
+    if (options?.confined || options?.overwrite === false) {
       await this.write(workspacePath, typeof bytes === 'string' ? Buffer.from(bytes) : bytes, { ...options, flush: true })
       return
     }
@@ -443,7 +467,7 @@ export class LocalFileOps implements FileOps {
   async write(
     workspacePath: string,
     body: ReadableStream<Uint8Array> | Uint8Array,
-    options?: WriteOptions,
+    options?: LocalWriteOptions,
   ): Promise<{ size: number }> {
     let target: { rel: string; abs: string; root?: string }
     try {
@@ -456,7 +480,7 @@ export class LocalFileOps implements FileOps {
     }
     const source = body instanceof Uint8Array
       ? null
-      : Readable.fromWeb(body as import('stream/web').ReadableStream<Uint8Array>, { signal: options?.signal })
+      : Readable.fromWeb(body as import('stream/web').ReadableStream<Uint8Array>)
     // The source can fail before the writer reads it: a zip entry that
     // inflates past its declared size is failed by the reader at once, while
     // the writer is still opening its temp file. A stream failing with no
@@ -465,7 +489,6 @@ export class LocalFileOps implements FileOps {
     source?.on('error', () => {})
     const chunks = source ?? [asBuffer(body as Uint8Array)]
     try {
-      options?.signal?.throwIfAborted()
       const attempt = () => writeFileAtomicStream(target.abs, chunks, {
         ...atomicWriteOptions(options),
         fsync: options?.flush === true,
@@ -473,7 +496,6 @@ export class LocalFileOps implements FileOps {
         lock: options?.lock,
         beforePublish: options?.beforePublish,
         validate: async (handle, temporaryPath) => {
-          options?.signal?.throwIfAborted()
           if (target.root) {
             await this.assertConfinedHandle(handle, temporaryPath, target.root)
             const parent = path.dirname(target.abs)

@@ -199,3 +199,24 @@ describe('SessionChatColumn composer swap', () => {
     expect(screen.getByTestId('stale-toast')).toBeInTheDocument()
   })
 })
+
+describe('SessionChatColumn before the first send', () => {
+  it('renders the shared composer without session messages', () => {
+    renderWithProviders(<SessionChatColumn {...baseProps} sessionId={null} />)
+    expect(screen.getByTestId('message-input-mock')).toBeVisible()
+    expect(screen.queryByTestId('message-list')).not.toBeInTheDocument()
+  })
+
+  it('keeps the exact composer node when the draft adopts its session id', () => {
+    const { rerender } = renderWithProviders(<SessionChatColumn {...baseProps} sessionId={null} />)
+    const composer = screen.getByTestId('message-input-mock')
+    rerender(<SessionChatColumn {...baseProps} sessionId="created-session" />)
+    expect(screen.getByTestId('message-input-mock')).toBe(composer)
+    expect(screen.getByTestId('message-list')).toBeVisible()
+  })
+
+  it('hides the composer for view-only members', () => {
+    renderWithProviders(<SessionChatColumn {...baseProps} sessionId={null} isViewOnly />)
+    expect(screen.queryByTestId('message-input-mock')).not.toBeInTheDocument()
+  })
+})

@@ -81,6 +81,8 @@ vi.mock('./mcp-server', () => ({
   createWidgetsMcpServer: () => ({}),
   createAgentsMcpServer: (_getCallerSessionId: () => string) => ({}),
   createChatMcpServer: () => ({}),
+  createMeetingsMcpServer: () => ({}),
+  createRulesMcpServer: () => ({}),
 }))
 
 vi.mock('./tools/browser', () => ({
@@ -100,6 +102,7 @@ vi.mock('./tools/computer-use', () => ({
 vi.mock('./file-hooks', () => ({
   fileHooks: {},
   resolveToolFilePath: () => '',
+  mountIndexCommandHint: (command: string) => (command === 'rm /mounts/notes/a.md' ? 'index hint' : undefined),
 }))
 
 vi.mock('./input-manager', () => ({
@@ -477,18 +480,20 @@ describe('ClaudeCodeProcess agent-browser Bash hook', () => {
     await process.start()
     const hooks = calls[0].options.hooks as {
       PreToolUse: Array<{
-        matcher: string
+        matcher?: string
         hooks: Array<(input: unknown) => Promise<Record<string, unknown>>>
       }>
     }
-    const bashHook = hooks.PreToolUse.find((hook) => hook.matcher === 'Bash')
+    const bashHook = hooks.PreToolUse.find((hook) => hook.matcher?.startsWith('^(') && new RegExp(hook.matcher).test('Bash'))
     expect(bashHook).toBeDefined()
 
     const directResult = await bashHook!.hooks[0]({
+      hook_event_name: 'PreToolUse',
       tool_name: 'Bash',
       tool_input: { command: 'agent-browser open https://example.com' },
     })
     const discoveryResult = await bashHook!.hooks[0]({
+      hook_event_name: 'PreToolUse',
       tool_name: 'Bash',
       tool_input: { command: 'which agent-browser; agent-browser --help' },
     })
@@ -512,12 +517,13 @@ describe('ClaudeCodeProcess agent-browser Bash hook', () => {
     await process.start()
     const hooks = calls[0].options.hooks as {
       PreToolUse: Array<{
-        matcher: string
+        matcher?: string
         hooks: Array<(input: unknown) => Promise<Record<string, unknown>>>
       }>
     }
-    const bashHook = hooks.PreToolUse.find((hook) => hook.matcher === 'Bash')!
+    const bashHook = hooks.PreToolUse.find((hook) => hook.matcher?.startsWith('^(') && new RegExp(hook.matcher).test('Bash'))!
     await expect(bashHook.hooks[0]({
+      hook_event_name: 'PreToolUse',
       tool_name: 'Bash',
       tool_input: { command: 'rg browser src' },
     })).resolves.toEqual({})
@@ -560,5 +566,42 @@ describe('ClaudeCodeProcess dashboard browser tools', () => {
     expect(tools).toContain('mcp__browser__browser_get_state')
     expect(tools).toContain('mcp__browser__browser_click')
     expect(tools).toContain('mcp__browser__browser_close')
+  })
+})
+
+describe('ClaudeCodeProcess web browser tools', () => {
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  it('lets the web browser list workspace files before uploading them', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-web-browser-glob',
+      workingDirectory: '/tmp',
+    })
+
+    await process.start()
+    const agents = calls[0].options.agents as Record<string, { tools: string[] }>
+    const tools = agents['web-browser'].tools
+    expect(tools).toContain('Glob')
+  })
+})
+
+describe('ClaudeCodeProcess mount index Bash hook', () => {
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  it('returns the mount index hint after a matching command', async () => {
+    const process = new ClaudeCodeProcess({ sessionId: 'test-mount-index-hook', workingDirectory: '/tmp' })
+    await process.start()
+    const hooks = calls[0].options.hooks as {
+      PostToolUse: Array<{ matcher: string; hooks: Array<(input: unknown) => Promise<Record<string, unknown>>> }>
+    }
+    const bashHook = hooks.PostToolUse.find((hook) => hook.matcher === 'Bash')!
+    await expect(bashHook.hooks[0]({ tool_name: 'Bash', tool_input: { command: 'rm /mounts/notes/a.md' } })).resolves.toEqual({
+      hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'index hint' },
+    })
+    await expect(bashHook.hooks[0]({ tool_name: 'Bash', tool_input: { command: 'ls' } })).resolves.toEqual({})
   })
 })

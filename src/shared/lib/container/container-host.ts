@@ -11,6 +11,7 @@
  */
 import { ContainerRuntime, type RuntimeHost } from './container-runtime'
 import type { AgentWorkspaceAccess } from './agent-workspace-access'
+import type { AgentSessionsAccess } from './agent-sessions-access'
 import {
   checkAllRunnersAvailability,
   checkImageExists,
@@ -30,11 +31,13 @@ import {
 } from './client-factory'
 import { ensureLimaReady } from './lima-container-client'
 import type { ImagePullProgress, RuntimeReadiness } from './types'
-import { messagePersister } from './message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
+import { WEBHOOK_RELAY_CHANGED_EVENT, watchWebhookRelay, type WebhookRelayService } from '@shared/lib/webhook-relay'
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import path from 'path'
 import { getAgentWorkspaceDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 
 /** Interval for syncing container status with reality (in ms). Default: 300 seconds */
 const STATUS_SYNC_INTERVAL_MS = parseInt(
@@ -66,6 +69,18 @@ export class ContainerHost {
     this.agentWorkspaces = access
   }
 
+  /** The agents' live sessions, attached by the agent registry when it is created. */
+  private agentSessions: AgentSessionsAccess | null = null
+
+  /**
+   * Give runtimes the way to their agents' live sessions. Called once by the
+   * agent registry; before that (only in a test without a registry) a runtime
+   * sees no live sessions.
+   */
+  attachAgentSessions(access: AgentSessionsAccess | null): void {
+    this.agentSessions = access
+  }
+
   /** Optional callback invoked before a container is stopped (e.g. to close host browser) */
   onBeforeContainerStop: ((agentId: string) => Promise<void>) | null = null
 
@@ -81,6 +96,9 @@ export class ContainerHost {
       // Getters, so what is attached after the first runtime exists still applies.
       get agentWorkspaces() {
         return self.agentWorkspaces
+      },
+      get agentSessions() {
+        return self.agentSessions
       },
       get onBeforeContainerStop() {
         return self.onBeforeContainerStop
@@ -178,23 +196,29 @@ export class ContainerHost {
     for (const slug of this.getRunningAgentIds()) this.runtime(slug).markStale()
   }
 
+  /** Record as stale every running agent whose webhook tools no longer match availability. */
+  reconcileWebhookRelay(available: boolean): void {
+    for (const slug of this.getRunningAgentIds()) this.runtime(slug).reconcileWebhookRelay(available)
+  }
+
+  /**
+   * Publishes the webhook relay's status to clients, and keeps running
+   * agents' webhook tools in step with it (their env says whether webhooks
+   * can be received).
+   */
+  watchWebhookRelay(relay: WebhookRelayService): () => void {
+    return watchWebhookRelay(relay, {
+      broadcast: (status) => globalFeed.publish({ type: WEBHOOK_RELAY_CHANGED_EVENT, status }),
+      reconcileAgents: (available) => this.reconcileWebhookRelay(available),
+    })
+  }
+
   /**
    * Create runtimes for the given agent slugs and sync their statuses.
    * Call this on app startup with the list of all agent slugs.
    */
   async initializeAgents(agentSlugs: string[]): Promise<void> {
     console.log(`[ContainerHost] Initializing ${agentSlugs.length} agents...`)
-
-    // Register callback so message-persister can request container stops on fatal errors (e.g., OOM)
-    messagePersister.setStopContainerCallback((agentSlug) => {
-      console.log(`[ContainerHost] Stopping container for ${agentSlug} due to fatal error`)
-      this.runtime(agentSlug).stopContainer().catch((err) => {
-        console.error(`[ContainerHost] Failed to stop container for ${agentSlug}:`, err)
-      })
-    })
-    messagePersister.setUnexpectedDeathCallback((agentSlug, sessionId) => {
-      this.runtime(agentSlug).handleUnexpectedDeath(sessionId ? [sessionId] : undefined)
-    })
 
     // Create clients for all agents (this registers them for sync)
     for (const slug of agentSlugs) {
@@ -255,9 +279,9 @@ export class ContainerHost {
 
     // Set up periodic sync (initial sync is done by initializeAgents)
     this.syncIntervalId = setInterval(() => {
-      this.syncAllStatuses().catch((error) => {
+      background(this.syncAllStatuses().catch((error) => {
         console.error('[ContainerHost] Periodic sync failed:', error)
-      })
+      }), { name: 'container-host.sync-statuses' })
     }, STATUS_SYNC_INTERVAL_MS)
   }
 
@@ -283,9 +307,9 @@ export class ContainerHost {
     console.log(`[ContainerHost] Starting health monitor (interval: ${HEALTH_CHECK_INTERVAL_MS / 1000}s)`)
 
     this.healthCheckIntervalId = setInterval(() => {
-      this.runHealthChecks().catch((error) => {
+      background(this.runHealthChecks().catch((error) => {
         console.error('[ContainerHost] Health check failed:', error)
-      })
+      }), { name: 'container-host.run-health-checks' })
     }, HEALTH_CHECK_INTERVAL_MS)
   }
 
@@ -323,8 +347,8 @@ export class ContainerHost {
     const runningIds = this.getRunningAgentIds()
     if (runningIds.length > 0) {
       // Timeout must accommodate the full escalation chain:
-      // nerdctl stop (10s) + nerdctl kill (5s) + forceStop (10s) = 25s max
-      const STOP_TIMEOUT_MS = 30000
+      // Volume preparation (20s), then the existing stop/kill/force chain (25s).
+      const STOP_TIMEOUT_MS = 50000
       const stopPromises = runningIds.map(async (slug) => {
         try {
           await Promise.race([
@@ -362,8 +386,8 @@ export class ContainerHost {
     for (const otherId of this.getRunningAgentIds()) {
       if (otherId === slug) continue
       this.runtime(otherId).markAsStopped()
-      messagePersister.markAllSessionsInactiveForAgent(otherId, { settleRecovering: true })
-      messagePersister.broadcastGlobal({
+      this.runtime(otherId).sessions().markAllInactive({ settleRecovering: true })
+      globalFeed.publish({
         type: 'agent_status_changed',
         agentSlug: otherId,
         status: 'stopped',
@@ -371,7 +395,7 @@ export class ContainerHost {
     }
 
     // Alert the user that we had to kill the VM
-    messagePersister.broadcastGlobal({
+    globalFeed.publish({
       type: 'system_alert',
       level: 'warning',
       title: 'Container runtime restarting',
@@ -380,9 +404,9 @@ export class ContainerHost {
 
     clearRunnerAvailabilityCache()
 
-    this.ensureImageReady().catch((err) => {
+    background(this.ensureImageReady().catch((err) => {
       console.error('[ContainerHost] Failed to re-check readiness after force stop:', err)
-    })
+    }), { name: 'container-host.ensure-image-ready' })
   }
 
   /** Get the current runtime readiness state. */
@@ -445,7 +469,7 @@ export class ContainerHost {
   /** Update readiness state and broadcast change via SSE. */
   private setReadiness(readiness: RuntimeReadiness): void {
     this._readiness = readiness
-    messagePersister.broadcastGlobal({
+    globalFeed.publish({
       type: 'runtime_readiness_changed',
       readiness,
     })
@@ -703,9 +727,9 @@ export class ContainerHost {
           const registry = image.substring(0, lastColon)
           const currentTag = image.substring(lastColon + 1)
           const ClientClass = getContainerClientClass(effectiveRunner)
-          ClientClass.removeOldImages(getCliCommand(effectiveRunner), registry, currentTag).catch((error: unknown) => {
+          background(ClientClass.removeOldImages(getCliCommand(effectiveRunner), registry, currentTag).catch((error: unknown) => {
             console.warn('[ContainerHost] Image cleanup failed:', error)
-          })
+          }), { name: 'container-host.remove-old-images' })
         }
         return
       } catch (error) {

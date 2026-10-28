@@ -6,6 +6,7 @@ import { IntegrationRowActions } from '@renderer/components/connections/integrat
 import { ConnectionUsageCard } from '@renderer/components/connections/connection-usage-card'
 import { ScopePolicySection } from '@renderer/components/settings/scope-policy-editor'
 import { ToolPolicyEditorBody } from '@renderer/components/settings/tool-policy-editor'
+import { ProxyRulesSection } from '@renderer/components/connections/proxy-rules-section'
 import {
   useHideSettingsHeader,
   useFullWidthSettingsContent,
@@ -22,13 +23,15 @@ interface ConnectionDetailPageProps {
    */
   backLabel?: string
   onViewLogs: () => void
+  /** The agent whose connections this was opened from (absent in global settings). */
+  agentSlug?: string
 }
 
 /**
  * Detail view for a single connection: two columns showing which agents have
  * access and the per-scope / per-tool permissions for the connection.
  */
-export function ConnectionDetailPage({ row, onBack, onViewLogs, backLabel = 'Connections' }: ConnectionDetailPageProps) {
+export function ConnectionDetailPage({ row, onBack, onViewLogs, backLabel = 'Connections', agentSlug }: ConnectionDetailPageProps) {
   // Hide the default SettingsPage header — the detail page owns its own — and
   // use the full inset width so the two columns can lay out like the agent home.
   useHideSettingsHeader(true)
@@ -115,6 +118,15 @@ export function ConnectionDetailPage({ row, onBack, onViewLogs, backLabel = 'Con
                 )}
               </div>
             </section>
+          )}
+
+          {(row.type === 'oauth' || row.type === 'mcp') && (
+            <ProxyRulesSection
+              kind={row.type === 'oauth' ? 'api' : 'mcp'}
+              targetId={row.id}
+              targetName={row.name}
+              agentSlug={agentSlug}
+            />
           )}
         </div>
       </div>

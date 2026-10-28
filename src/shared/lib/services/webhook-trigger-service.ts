@@ -17,12 +17,13 @@ import {
 } from '@shared/lib/db/schema'
 import { eq, and, inArray, isNotNull, sql, count, desc } from 'drizzle-orm'
 import { captureException, captureMessage } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { trackServerEvent } from '../analytics/server-analytics'
 import { deleteComposioTrigger } from '@shared/lib/composio/triggers'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
 import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
 import { getWebhookRelay } from '@shared/lib/webhook-relay'
-import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
+import { getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
 
 const PLATFORM_PROVIDER_ID = 'platform'
 
@@ -148,14 +149,14 @@ export type { WebhookTrigger, NewWebhookTrigger }
  * path ran; webhook-trigger-service.coldstart.test.ts asserts on it.
  */
 function notifyWebhookTriggersChanged(reason: string): void {
-  void import('@shared/lib/scheduler/trigger-manager')
+  background(import('@shared/lib/scheduler/trigger-manager')
     .then(async ({ triggerManager }) => {
       await triggerManager.syncRegistrations()
       console.log(`[webhook-triggers] relay registrations synced (${reason})`)
     })
     .catch((err) => {
       console.warn('[webhook-triggers] relay registration sync failed:', err)
-    })
+    }), { name: 'webhook-trigger.sync-relay-registrations' })
 }
 
 // ============================================================================
@@ -501,9 +502,12 @@ export async function cancelWebhookTriggerWithCleanup(
 }
 
 // Custom endpoints live on the webhook relay regardless of Composio key mode,
-// so gate on platform auth or a user-supplied Composio key leaves the URL live.
+// so gate on the relay or a user-supplied Composio key leaves the URL live. A
+// relay that hasn't started yet can still take one down.
 function canReachUpstream(kind: WebhookTrigger['kind']): boolean {
-  return kind === 'custom' ? Boolean(getPlatformAccessToken()) : isPlatformComposioActive()
+  if (kind !== 'custom') return isPlatformComposioActive()
+  const { unavailableReason } = getWebhookRelay().snapshot()
+  return unavailableReason === null || unavailableReason === 'stopped'
 }
 
 // One place that speaks both upstream vocabularies (relay endpoint disable

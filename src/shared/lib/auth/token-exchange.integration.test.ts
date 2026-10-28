@@ -499,6 +499,41 @@ describe('provisioning and identity mapping', () => {
     expect(accounts.map((a) => a.provider_id)).toEqual(['credential', 'platform'])
   })
 
+  it('keeps the subject owner when the grant email belongs to another local user', async () => {
+    expect((await exchangeRequest(await signGrant())).status).toBe(200)
+    const original = sqlite.prepare('SELECT user_id FROM account WHERE provider_id = ?').get('platform') as { user_id: string }
+    const { getAuth } = await import('./index')
+    await getAuth().api.signUpEmail({
+      body: { email: 'other@example.com', password: 'AnotherPassword123!', name: 'Other User' },
+    })
+    const response = await exchangeRequest(await signGrant({ payload: { email: 'other@example.com' } }))
+    expect(response.status).toBe(200)
+    const { access_token: token } = await response.json()
+    const authenticated = await app.request('/api/protected', { headers: { authorization: `Bearer ${token}` } })
+    expect(await authenticated.json()).toEqual({ userId: original.user_id })
+    expect(countRows('user')).toBe(2)
+    expect(sqlite.prepare('SELECT user_id FROM account WHERE provider_id = ?').get('platform')).toEqual(original)
+  })
+
+  it('rejects an orphaned subject mapping without linking it to the grant email', async () => {
+    expect((await exchangeRequest(await signGrant())).status).toBe(200)
+    // Reproduce a damaged legacy account row without changing the real auth
+    // adapter. The new ownership API reports this separately from no mapping.
+    sqlite.pragma('foreign_keys = OFF')
+    try {
+      sqlite.prepare('UPDATE account SET user_id = ? WHERE provider_id = ?').run('deleted-owner', 'platform')
+    } finally {
+      sqlite.pragma('foreign_keys = ON')
+    }
+    const response = await exchangeRequest(await signGrant())
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({ error: 'invalid_grant' })
+    expect(countRows('user')).toBe(1)
+    expect(countRows('session')).toBe(1)
+    expect(sqlite.prepare('SELECT user_id FROM account WHERE provider_id = ?').get('platform'))
+      .toEqual({ user_id: 'deleted-owner' })
+  })
+
   it('creates one user and one mapping for concurrent first exchanges', async () => {
     const [a, b] = await Promise.all([
       exchangeRequest(await signGrant()),
@@ -511,6 +546,18 @@ describe('provisioning and identity mapping', () => {
       .prepare(`SELECT count(*) AS n FROM account WHERE provider_id = 'platform'`)
       .get() as { n: number }
     expect(mappings.n).toBe(1)
+    expect(countRows('session')).toBe(2)
+  })
+
+  it('persists both subject mappings when concurrent first exchanges share a verified email', async () => {
+    const [a, b] = await Promise.all([
+      exchangeRequest(await signGrant({ payload: { sub: 'sub_first' } })),
+      exchangeRequest(await signGrant({ payload: { sub: 'sub_second' } })),
+    ])
+    expect([a.status, b.status]).toEqual([200, 200])
+    expect(countRows('user')).toBe(1)
+    expect(sqlite.prepare('SELECT account_id FROM account ORDER BY account_id').all())
+      .toEqual([{ account_id: 'sub_first' }, { account_id: 'sub_second' }])
     expect(countRows('session')).toBe(2)
   })
 })

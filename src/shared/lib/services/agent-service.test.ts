@@ -6,6 +6,7 @@ import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import * as schema from '@shared/lib/db/schema'
+import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import {
   SAMPLE_INSTRUCTIONS,
   SAMPLE_INSTRUCTIONS_MINIMAL,
@@ -59,12 +60,15 @@ import {
   listAgents,
   listAgentsWithStatus,
   createAgent,
+  createAgentFromExistingWorkspace,
+  updateAgentAvatar,
   updateAgent,
   deleteAgent,
   agentExists,
   getAgentInstructionsContent,
   setAgentInstructionsContent,
   adoptAgentIdentityFromWorkspace,
+  syncAgentIdentityFromWorkspace,
   writeAgentIdentityProjection,
 } from './agent-service'
 import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
@@ -411,6 +415,21 @@ Instructions`
   // ============================================================================
 
   describe('createAgent', () => {
+    it('assigns stored avatars through both direct creation and the import/install entry point', async () => {
+      for (const create of [() => createAgent({ name: 'Direct' }), () => createAgentFromExistingWorkspace('Imported')]) {
+        const agent = await create()
+        expect(agent.avatar).toEqual((await getAgentRecord(agent.slug))?.avatar)
+        expect(agentAvatarSchema.safeParse(agent.avatar).success).toBe(true)
+        const before = await getAgentInstructionsContent(agent.slug)
+        const chosen = { color: 'duo-red-amber', shape: 'bloom' } as const
+        expect(await updateAgentAvatar(agent.slug, chosen)).toEqual(chosen)
+        expect((await getAgentWithStatus(agent.slug))?.avatar).toEqual(chosen)
+        expect(await getAgentInstructionsContent(agent.slug)).toBe(before)
+        await updateAgent(agent.slug, { name: 'Renamed' })
+        expect((await getAgentRecord(agent.slug))?.avatar).toEqual(chosen)
+      }
+    })
+
     it('creates agent with name only', async () => {
       const agent = await createAgent({ name: 'New Agent' })
 
@@ -671,6 +690,43 @@ Instructions`
     })
   })
 
+  describe('syncAgentIdentityFromWorkspace', () => {
+    it('takes the name and description the agent wrote, and a later user rename wins', async () => {
+      const created = await createAgent({ name: 'Untitled' })
+      await setAgentInstructionsContent(created.slug, '---\nname: Inbox Bot\ndescription: Triages Gmail and drafts replies.\n---\nBody\n')
+
+      expect(await syncAgentIdentityFromWorkspace(created.slug)).toEqual(['name', 'description'])
+
+      expect(await getAgentRecord(created.slug)).toMatchObject({ name: 'Inbox Bot', description: 'Triages Gmail and drafts replies.' })
+      await updateAgent(created.slug, { name: 'Mail Helper' })
+      const content = await getAgentInstructionsContent(created.slug)
+      expect(content).toContain('name: Mail Helper')
+      expect(content).toContain('description: Triages Gmail and drafts replies.')
+      expect(await syncAgentIdentityFromWorkspace(created.slug)).toEqual([])
+    })
+
+    it('leaves blank or missing fields alone', async () => {
+      const created = await createAgent({ name: 'Inbox Helper', description: 'Triages Gmail.' })
+      await setAgentInstructionsContent(created.slug, '---\nname: "  "\n---\nBody\n')
+
+      expect(await syncAgentIdentityFromWorkspace(created.slug)).toEqual([])
+      expect(await syncAgentIdentityFromWorkspace('nonexistent')).toEqual([])
+
+      expect(await getAgentRecord(created.slug)).toMatchObject({ name: 'Inbox Helper' })
+      expect((await getAgentRecord(created.slug))?.description).toBe('Triages Gmail.')
+    })
+
+    it('leaves a field alone when the value is too long or a YAML block indicator', async () => {
+      const created = await createAgent({ name: 'Inbox Helper', description: 'Triages Gmail.' })
+      await setAgentInstructionsContent(created.slug, `---\nname: ${'n'.repeat(81)}\ndescription: >-\n  Triages Gmail.\n---\nBody\n`)
+      expect(await syncAgentIdentityFromWorkspace(created.slug)).toEqual([])
+
+      await setAgentInstructionsContent(created.slug, `---\nname: Mail Helper\ndescription: ${'d'.repeat(201)}\n---\nBody\n`)
+      expect(await syncAgentIdentityFromWorkspace(created.slug)).toEqual(['name'])
+      expect(await getAgentRecord(created.slug)).toMatchObject({ name: 'Mail Helper', description: 'Triages Gmail.' })
+    })
+  })
+
   describe('deleteAgent', () => {
     it('returns false for non-existent agent', async () => {
       const result = await deleteAgent('nonexistent')
@@ -693,6 +749,31 @@ Instructions`
       await deleteAgent('test-agent')
 
       expect(mockStopContainer).toHaveBeenCalledWith('test-agent')
+    })
+
+    it('drops what the host kept for the agent: locks, widget refreshes, proxy sessions, uploads, deferred namings', async () => {
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
+      const actor = agentRegistry.get('test-agent')
+      expect(await actor.locks.tryAcquire('wake:task-1')).not.toBeNull()
+      const waiting = actor.locks.acquire('wake:task-1')
+      expect(await actor.widgets.beginRefresh('macros')).not.toBeNull()
+      const joined = actor.widgets.beginOrJoinRefresh('macros')
+      const proxySession = await actor.mcpSessions.open('mcp-1', '2025-06-18')
+      await actor.volumeUploads.end('notes.txt', await actor.volumeUploads.begin('notes.txt'), 'failed')
+      await actor.sessions.deferNaming('session-1')
+
+      await deleteAgent('test-agent')
+
+      // Whoever waited on it hears the end of it…
+      await expect(waiting).rejects.toThrow(/no longer held/)
+      await expect(joined).resolves.toMatchObject({ outcome: { ok: false } })
+      // …and none of it reaches the next handle for the slug.
+      const fresh = agentRegistry.get('test-agent')
+      expect(await fresh.locks.tryAcquire('wake:task-1')).not.toBeNull()
+      expect(await fresh.widgets.refreshing()).toEqual([])
+      expect(await fresh.mcpSessions.get('mcp-1', proxySession)).toBeNull()
+      expect(await fresh.volumeUploads.allowDelete('notes.txt')).toBe(true)
+      expect(await fresh.sessions.takeDeferredNaming('session-1')).toBe(false)
     })
   })
 

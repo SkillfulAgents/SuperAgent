@@ -34,7 +34,7 @@ vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn(), addEr
 // output here (that's the builder's concern), we only verify the runtime
 // delivers the agent's own config.envVars through runHookPayload.
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: () => ({ getContainerEnvVars: () => ({}) }),
+  getActiveLlmProvider: () => ({ getContainerEnvVars: () => ({}), toolSearchEnv: () => 'false' }),
 }))
 
 const autoSleepTimeoutMinutes = vi.fn((): number | undefined => 30)
@@ -269,6 +269,13 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(payload.mount).toBeUndefined() // no mount configured here
     // The full env is stashed host-side for the VM to fetch at boot.
     expect(readBootstrapEnv('agent-xyz')).toMatchObject({ FOO: 'bar' })
+  })
+
+  it('mounts volumes: no run flags, and the volume list reaches the VM in its boot env', async () => {
+    const client = newClient()
+    expect(client.volumeRunFlags()).not.toBeNull()
+    await client.start({ volumes: [{ volumeId: 'v1', name: 'notes' }] })
+    expect(readBootstrapEnv('agent-xyz')).toMatchObject({ SUPERAGENT_VOLUMES: '[{"volumeId":"v1","name":"notes"}]' })
   })
 
   it('routes MicroVM ops through the security service (not the SDK) when MICROVM_PROXY_URL + TOKEN are set', async () => {

@@ -109,6 +109,11 @@ is deliberately **fully defensive — it never throws**; any failure degrades to
 - Maintenance runs on boot, on connect, on Account-tab view, **and** on a
   low-frequency background poll in `PlatformService`, so a long-lived app stays
   valid without an Account visit.
+- **The deployment's server facts ride along.** `refreshCloudWorkspace()` (boot,
+  connect, the poll) asks the deployment's `GET /api/server-facts` once a token
+  is held and keeps the answer in settings (`cloud-server-facts.ts`), so a
+  renderer driving the workspace reads them at boot without a request of its
+  own. See [docs/facts.md](facts.md).
 - **Failures are reported once per process, from the service only.** Because
   maintenance re-runs every 30 minutes and the things that break it are usually
   persistent (offline, a token that isn't member-bound, a deployment too old to
@@ -464,7 +469,7 @@ regression — so the distinction is worth holding precisely.
 | --- | --- | --- |
 | `isElectron()` (`renderer/lib/env.ts`) | native window + preload bridge present | Is there a *window* of ours here? |
 | `targetIsRemote()` (`renderer/lib/api-target.ts`) | the settled target is `cloud` | Is the API a machine other than this one? |
-| `canUseHostFeatures()` (`renderer/lib/host-features.ts`) | `isElectron() && !targetIsRemote()` | May this window act on *this* computer on the agents' behalf? |
+| `canUseHostFeatures()` (`renderer/lib/capabilities.ts`) | `isElectron() && !targetIsRemote()` | May this window act on *this* computer on the agents' behalf? |
 
 Only three configurations are reachable. A browser never has a cloud target:
 `initApiBaseUrl()` settles every web renderer to `local`, because there is no
@@ -501,12 +506,16 @@ somewhere else.
 
 | Site | Why |
 | --- | --- |
-| Create a local volume (`volume-settings-dialog.tsx`, `home-volumes.tsx`, `volumes-tab.tsx`) | Uses the existing OS folder picker on this computer. Attaching an existing saved volume works against any API target |
+| Create a local volume (`volume-settings-dialog.tsx`, `use-mounts.ts`) | Uses the existing OS folder picker on this computer. Dropbox creation and attaching an existing saved volume work against any API target |
 | Open-a-mount in Finder/Explorer (`home-volumes.tsx`) | `hostPath` belongs to the agent's machine |
 | Reveal a workspace file (`folder-file-context-menu.tsx`) | The deployment returns *its* host path; opening it here lands nowhere, or on a same-named folder of yours |
 | Reveal a workspace folder in Finder/Explorer (`folder-host-actions.tsx`) | The folder panel's header action. Same reasoning as revealing a file: the deployment returns *its* host path. The Copy-path action beside it stays everywhere, since a path is just text |
-| Computer Use — the settings tab and the System Settings recovery link (`global-settings-page.tsx`, `computer-use-request-item.tsx`) | It drives the machine the agent runs on, and its whole UI is written for that being yours. The missing-permission *list* still shows remotely; only the button that would fix the wrong computer is withdrawn |
-| Dropped/picked folder paths (`file-utils.ts`, `use-message-composer.ts`) | A `folderPath` exists only to be mounted or read by the agent's machine. Remotely, the web route — enumerate and upload the bytes — is the only one that works, and the mount/upload choice is not offered |
+| Computer Use — the settings tab (`global-settings-page.tsx`, through `offersComputerUseSettings()`) and the System Settings recovery link (`computer-use-request-item.tsx`) | It drives the machine the agent runs on, and its whole UI is written for that being yours. The missing-permission *list* still shows remotely; only the button that would fix the wrong computer is withdrawn |
+| Dropped/picked folder paths (`file-utils.ts`, `use-message-composer.ts`, `todo-draft-dialog.tsx`), through `usesHostFolderPaths()` | A `folderPath` exists only to be mounted or read by the agent's machine. Remotely, the web route — enumerate and upload the bytes — is the only one that works, and the mount/upload choice is not offered |
+
+The ones marked "through" ask a narrower capability built on this one, which
+also withholds the feature from the Mac App Store build: see
+[docs/facts.md § What the Mac App Store build leaves out](facts.md#what-the-mac-app-store-build-leaves-out).
 
 #### Acts on the API's machine → `!targetIsRemote()`
 
@@ -669,7 +678,7 @@ These are injected at build time as `__PLATFORM_*__` globals (see `vite.config.t
 | `renderer/lib/cloud-session.ts` | Carries a cloud 401 into the session store, since signing out is not an option |
 | `renderer/hooks/use-target-switch.ts` | Which target, whether the other is reachable, and how to move |
 | `renderer/components/layout/target-switcher.tsx` | The segmented Local/Cloud control |
-| `renderer/lib/host-features.ts` | Whether this window may act on the computer it runs on |
+| `renderer/lib/capabilities.ts` | What this window may offer; `canUseHostFeatures()` is whether it may act on the computer it runs on |
 | `api/polyfill-api-prefix.ts` | Keeps dashboard-shim API calls on whichever API served the document |
 | `services/platform-service.ts` | Boot/connect refresh + the background maintenance poll |
 | `services/platform-auth-service.ts` | Clears the record on disconnect / identity change |

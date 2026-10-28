@@ -51,13 +51,19 @@ export interface RelayConsumer {
   /**
    * Receives claimed events for this consumer's endpoints, oldest first.
    * Returns one result for all of them, or a result per event id (a missing
-   * id is a retry). A throw is a retry.
+   * id is a retry). A throw is a retry. Each retried event waits out its own
+   * backoff, so the others keep flowing.
    */
   accept(events: readonly RelayEvent[]): Promise<RelayAcceptResult | ReadonlyMap<string, RelayAcceptResult>>
 }
 
 export interface RelayConsumerHandle {
   update(changes: { scope?: RelayScope; endpointIds?: readonly string[] }): void
+  /**
+   * Offers events waiting out a `retry` backoff again now, e.g. because the
+   * consumer just reconnected and can take them.
+   */
+  retryNow(): void
   /**
    * Lets go of the endpoints: nothing more is claimed for this consumer.
    * Events already claimed for it are still delivered to `accept`, then the
@@ -93,10 +99,12 @@ export interface RelayEndpointEvents {
 export type WebhookRelayUnavailableReason =
   /** This build has no relay to connect to. */
   | 'not_configured'
+  /** The relay isn't running: startup hasn't reached it yet, or the host is shutting down. */
+  | 'stopped'
   | 'platform_disconnected'
 
 /**
- * - idle: nothing is registered, so nothing is fetched
+ * - idle: nothing is registered that this identity can claim, so nothing is fetched
  * - connecting: registered, no claim has completed yet
  * - realtime: claims succeed and the realtime wake-up channel is open
  * - polling: claims succeed, realtime is down, so the relay polls on a timer

@@ -93,17 +93,17 @@ export function SubAgentBlock({
   // Fetch subagent messages — poll while running so concurrent background agents stay updated
   const { data: subMessages } = useSubagentMessages(sessionId, agentSlug, subagentId)
 
-  // Extract streaming state from activeSubagent (only if this block is the active one)
-  const isActiveSubagent = activeSubagent?.parentToolId === toolCall.id
-  const subagentStreamingMessage = isActiveSubagent ? activeSubagent?.streamingMessage : null
-  const subagentStreamingToolUse = isActiveSubagent ? activeSubagent?.streamingToolUse : null
+  // The parent selects this block's original or resumed run. A SendMessage
+  // run has a different tool id but still streams into the same Agent block.
+  const subagentStreamingMessage = activeSubagent?.streamingMessage ?? null
+  const subagentStreamingToolUse = activeSubagent?.streamingToolUse ?? null
 
   // Auto-expand when streaming content arrives
   useEffect(() => {
-    if (isActiveSubagent && (subagentStreamingMessage || subagentStreamingToolUse)) {
+    if (subagentStreamingMessage || subagentStreamingToolUse) {
       setExpanded(true)
     }
-  }, [isActiveSubagent, subagentStreamingMessage, subagentStreamingToolUse])
+  }, [subagentStreamingMessage, subagentStreamingToolUse])
 
   // Check if streaming text is already persisted (same dedup pattern as main agent)
   const isStreamingMessagePersisted = useMemo(() => {
@@ -135,17 +135,20 @@ export function SubAgentBlock({
   const subagentDisplayType = displaySubagentType(subagentType)
   const description = activeSubagent?.description || input.description || ''
 
-  // Extract summary text — prefer persisted tool_result, fall back to SSE-delivered resultText
+  // Extract summary text — prefer persisted tool_result, fall back to SSE-delivered resultText.
+  // A background launch's tool_result is its launch acknowledgement ("Async
+  // agent launched successfully…"), not what the agent reported.
+  const isLaunchAck = toolCall.subagent?.status === 'async_launched'
   const resultText = useMemo(() => {
-    if (toolCall.result != null) {
+    if (toolCall.result != null && !isLaunchAck) {
       const parsed = parseToolResult(toolCall.result)
       return parsed.text
     }
-    if (isActiveSubagent && activeSubagent?.resultText) {
+    if (activeSubagent?.resultText) {
       return activeSubagent.resultText
     }
     return null
-  }, [toolCall.result, isActiveSubagent, activeSubagent?.resultText])
+  }, [toolCall.result, isLaunchAck, activeSubagent?.resultText])
 
   // Stats from completed subagent
   const stats = toolCall.subagent
@@ -266,7 +269,7 @@ export function SubAgentBlock({
               )}
             </div>
           )}
-          {isRunning && isActiveSubagent && activeSubagent?.usage && (
+          {isRunning && activeSubagent?.usage && (
             <div className="mt-2 text-xs text-muted-foreground italic">
               {formatElapsed(activeSubagent.usage.duration_ms)}
               {' · '}{formatTokens(activeSubagent.usage.total_tokens)} tokens

@@ -4,6 +4,7 @@ import { chatIntegrations } from '../db/schema'
 import { getAgentIntegration } from '../services/agent-integration-service'
 import { EMAIL_HISTORY_THREAD_LIMIT } from './directory'
 import { captureException } from '../error-reporting'
+import { background } from '../background'
 import { createHash } from 'node:crypto'
 import { platformConnected } from './policy'
 import { watchEmail } from './live'
@@ -12,10 +13,21 @@ import { EmailAgentIntegration, emailDefinition } from './email-agent-integratio
 import { parseEmailConfig, emailConfigSchema, emailMessageSchema, type EmailSend } from './config-schema'
 import { clientFor, emailEventsSchema, mailboxSchema } from './gateway-client'
 import { emailThreadRoute } from './routing'
+import { emailRelays, ensureEmailWebhook, type EmailRelays, type EmailWebhook } from './webhooks'
+import { IntegrationSetupError } from '../agent-integrations/setup-types'
+import type { IntegrationRelayAttachment } from '../agent-integrations/transport'
 import type { AgentIntegrationRecord } from '../agent-integrations/types'
 
-/** Standalone gateway transport; credentials are resolved from Platform for each request. */
+/**
+ * Standalone gateway transport; credentials are resolved from Platform for each request.
+ *
+ * The cursor poll is the source of truth: it runs on connect, every 30s and on
+ * each wake-up. Wake-ups come through the webhook relay when the host has one
+ * as this connection starts, and then no stream is opened; otherwise they come
+ * from the member's shared SSE stream (live.ts). See webhooks.ts.
+ */
 export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
+  static override isAvailable() { return platformConnected() }
   readonly provider = 'platform-email'
   protected isAvailable() { return platformConnected() }
   readonly definition = emailDefinition
@@ -23,30 +35,78 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
   private readonly client
   private connected = false
   private stopped = true
+  /** Bumped by each connect and disconnect; a connect that was overtaken stands down. */
+  private generation = 0
+  /** How this connection is woken, chosen as it connects. */
+  private mode: 'stream' | 'webhooks' | null = null
+  private relayAttachment?: IntegrationRelayAttachment
   private timer?: ReturnType<typeof setTimeout>
   private pending?: Promise<void>
   private uploads = new Map<string, string>()
   private unwatch?: () => void
-  constructor(record: AgentIntegrationRecord) { super(record); this.config = parseEmailConfig(record.config); this.client = clientFor(record) }
+  constructor(record: AgentIntegrationRecord, private readonly relays: EmailRelays = emailRelays) { super(record); this.config = parseEmailConfig(record.config); this.client = clientFor(record) }
   private get base() { return `/mailboxes/${encodeURIComponent(this.config.mailboxId)}` }
   async connect() {
+    const generation = ++this.generation
     const identity = await this.client.json('/me', z.object({ orgId: z.string(), memberId: z.string() }))
     if (identity.orgId !== this.config.platformOrgId || identity.memberId !== this.config.platformMemberId) throw new Error('Reconnect the Platform account that owns this inbox')
     const mailbox = await this.client.json(this.base, mailboxSchema)
     if (mailbox.status === 'disabled') throw new Error('This inbox has been disabled')
+    if (mailbox.domain?.status === 'failed') throw new Error(`Email domain setup failed${mailbox.domain.error ? ` (${mailbox.domain.error})` : ''}. Contact support.`)
+    // Webhooks whenever the host has a relay as this connection starts; the
+    // stream otherwise, or if webhooks can't be set up right now.
+    const webhook = this.host.relay ? await this.registerWebhook() : null
+    if (generation !== this.generation) return
     this.stopped = false
     this.connected = mailbox.domain?.status === 'ready'
-    this.unwatch = watchEmail(this.record.createdByUserId, this.config.platformMemberId, this.record.id, this.config.mailboxId, () => {
-      if (!this.stopped && !this.pending) { clearTimeout(this.timer); this.schedule(0) }
-    })
+    this.mode = webhook ? 'webhooks' : 'stream'
+    if (webhook) this.relayAttachment = this.relays.attach(webhook, this.config.mailboxId, cursor => this.catchUp(cursor))
+    else this.unwatch = watchEmail(this.record.createdByUserId, this.config.platformMemberId, this.record.id, this.config.mailboxId, () => { background(this.pollNow(), { name: 'platform-email.poll' }) })
     this.schedule(0)
+  }
+  /** Registers the relay endpoint as this mailbox's gateway webhook. Null leaves this connection to the stream. */
+  private async registerWebhook(): Promise<EmailWebhook | null> {
+    try {
+      const webhook = await ensureEmailWebhook(this.record)
+      if (!webhook) return null
+      // Every connect: the gateway deletes a webhook whose endpoint answered
+      // 404/410 or failed for 72 hours, and an identical one changes nothing.
+      await this.client.json(`${this.base}/webhook`, z.object({ webhook: z.object({ url: z.string() }).loose() }), { url: webhook.relay.url, secret: webhook.secret }, 'PUT')
+      return webhook
+    } catch (error) {
+      if (error instanceof IntegrationSetupError) console.warn(`[PlatformEmailAgentIntegration] Using the stream for ${this.record.id}: ${error.message}`)
+      else captureException(error, { tags: { component: 'email-integration', operation: 'webhooks' }, extra: { integrationId: this.record.id } })
+      return null
+    }
+  }
+  /** Runs a poll now, or joins the one running; the next timed poll is 30s after it ends. */
+  private pollNow(): Promise<void> {
+    if (this.stopped) return Promise.resolve()
+    if (this.pending) return this.pending
+    clearTimeout(this.timer)
+    this.pending = this.poll()
+      .catch(error => { this.connected = false; captureException(error, { tags: { component: 'email-integration', operation: 'poll' } }) })
+      .finally(() => { this.pending = undefined; this.schedule(30000) })
+    return this.pending
   }
   private schedule(ms: number) {
     if (this.stopped) return
-    this.timer = setTimeout(() => {
-      this.pending = this.poll().catch(error => { this.connected = false; captureException(error, { tags: { component: 'email-integration', operation: 'poll' } }) }).finally(() => { this.pending = undefined; this.schedule(30000) })
-    }, ms)
+    clearTimeout(this.timer)
+    this.timer = setTimeout(() => { background(this.pollNow(), { name: 'platform-email.poll' }) }, ms)
     this.timer.unref?.()
+  }
+  /** A relayed pointer: polls until the stored cursor reaches it, at most twice (a running poll may predate it). */
+  private async catchUp(cursor: number): Promise<number> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const reached = await this.storedCursor()
+      if (reached >= cursor || this.stopped) return reached
+      await this.pollNow()
+    }
+    return this.storedCursor()
+  }
+  private async storedCursor() {
+    const current = await getAgentIntegration(this.record.id)
+    return current ? parseEmailConfig(current.config).eventCursor : -1
   }
   private async poll() {
     if (!this.connected) {
@@ -64,7 +124,11 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
         if (event.type === 'message.received' && event.messageId) {
           const message = await this.getMessage(event.messageId)
           if (this.stopped) return
-          await this.emitEvent({ type: 'input', id: message.id, externalId: await this.threadRoute(message.threadId), timestamp: new Date(message.createdAt), payload: message })
+          const handoff = await this.emitEvent({ type: 'input', id: message.id, externalId: await this.threadRoute(message.threadId), timestamp: new Date(message.createdAt), payload: message })
+          // Not taken: this connection was replaced or stopped while it polled.
+          // Leave the cursor here so the connection that replaces it reads this
+          // message again, instead of skipping it for good.
+          if (handoff === 'retry') return
         }
         // The shared manager durably accepts input before this provider advances its cursor.
         const checkpoint = emailConfigSchema.shape.eventCursor.parse(event.cursor)
@@ -77,8 +141,18 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
     }
   }
   private threadRoute(id: string) { return emailThreadRoute(this.record, id) }
-  async disconnect() { this.stopped = true; this.connected = false; this.unwatch?.(); clearTimeout(this.timer); await this.pending }
+  async disconnect() {
+    this.generation++
+    this.stopped = true; this.connected = false; this.mode = null
+    this.unwatch?.(); this.unwatch = undefined
+    this.relayAttachment?.detach(); this.relayAttachment = undefined
+    clearTimeout(this.timer); await this.pending
+  }
   isConnected() { return this.connected }
+  activeTransport() {
+    if (!this.connected) return null
+    return this.mode === 'webhooks' ? 'relay' as const : this.mode === 'stream' ? 'direct' as const : null
+  }
   protected getMessage(id: string) { return this.client.message(this.config.mailboxId, id) }
   protected getThread(id: string) { return this.client.thread(this.config.mailboxId, id) }
   protected async recentHistory() {

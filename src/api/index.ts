@@ -3,17 +3,22 @@ import { cors } from 'hono/cors'
 import agents from './routes/agents'
 import xAgent from './routes/x-agent'
 import xAgentChat from './routes/x-agent-chat'
+import xAgentRules from './routes/x-agent-rules'
 import xAgentIntegrations from './routes/x-agent-integrations'
+import xAgentMeetings from './routes/x-agent-meetings'
 import webSearch from './routes/web-search'
 import volumes from './routes/volumes'
 import volumeDefinitions from './routes/volume-definitions'
+import volumeTypes from './routes/volume-types'
 import webFetch from './routes/web-fetch'
 import connectedAccounts from './routes/connected-accounts'
+import browserAccounts from './routes/browser-accounts'
 import settings from './routes/settings'
 import providers from './routes/providers'
 import scheduledTasks from './routes/scheduled-tasks'
 import webhookTriggers from './routes/webhook-triggers'
 import agentIntegrationsRouter from './routes/agent-integrations'
+import meetingParticipantRouter from './routes/meeting-participant'
 import notifications from './routes/notifications'
 import pushRouter from './routes/push'
 import platformNotifications from './routes/platform-notifications'
@@ -31,13 +36,16 @@ import profileRouter from './routes/profile'
 import homeGraph from './routes/home-graph'
 import homeCardHealth from './routes/home-card-health'
 import policies from './routes/policies'
+import proxyRulesRoutes from './routes/proxy-rules'
 import runtimeStatusRouter from './routes/runtime-status'
+import webhookRelayRouter from './routes/webhook-relay'
 import firewallRouter from './routes/firewall'
 import voiceRouter from './routes/voice'
 import llmRouter from './routes/llm'
 import llmRuntimeRouter from './routes/llm-runtime'
 import llmConnectionsRouter from './routes/llm-connections'
 import faviconRouter from './routes/favicon'
+import serverFactsRouter from './routes/server-facts'
 import { getPolyfillJs } from './speech-recognition-polyfill'
 import { getLlmPolyfillJs } from './llm-polyfill'
 import adminUsersRouter from './routes/admin-users'
@@ -61,6 +69,7 @@ import { getPublicAuthProviders } from '@shared/lib/auth/provider-config'
 import { LocalModeAuth, isContainerFacingPath } from './middleware/local-mode-auth'
 import { armAbortSignal } from './middleware/arm-abort-signal'
 import { defaultCacheControl } from './middleware/default-cache-control'
+import { apiErrorHandler } from './error-handler'
 
 const app = new Hono()
 
@@ -171,8 +180,8 @@ if (isAuthMode()) {
 // Mount Better Auth handler (only when AUTH_MODE is enabled)
 if (isAuthMode()) {
   app.on(['POST', 'GET'], '/api/auth/*', async (c) => {
-    const { getAuth } = await import('@shared/lib/auth/index')
-    return getAuth().handler(c.req.raw)
+    const { handleAuthRequest } = await import('@shared/lib/auth/handler')
+    return handleAuthRequest(c.req.raw)
   })
 }
 
@@ -235,9 +244,12 @@ app.route('/api/activity', activityRouter)
 app.route('/api/x-agent', xAgent)
 app.route('/api/x-agent/chat', xAgentChat)
 app.route('/api/x-agent/integrations', xAgentIntegrations)
+app.route('/api/x-agent/meetings', xAgentMeetings)
+app.route('/api/x-agent/rules', xAgentRules)
 app.route('/api/web-search', webSearch)
 app.route('/api/web-fetch', webFetch)
 app.route('/api/connected-accounts', connectedAccounts)
+app.route('/api/browser-accounts', browserAccounts)
 app.route('/api/settings', settings)
 app.route('/api/providers', providers)
 app.route('/api/scheduled-tasks', scheduledTasks)
@@ -245,12 +257,15 @@ app.route('/api/webhook-triggers', webhookTriggers)
 // TODO(2026-12-01): Delete this legacy alias; use /api/agent-integrations.
 app.route('/api/chat-integrations', agentIntegrationsRouter)
 app.route('/api/agent-integrations', agentIntegrationsRouter)
+// Token-gated: loaded by the meeting bot's browser, which has no app session.
+app.route('/api/meeting-participant', meetingParticipantRouter)
 app.route('/api/notifications', notifications)
 app.route('/api/push', pushRouter)
 app.route('/api/platform-notifications', platformNotifications)
 app.route('/api/proxy', proxy)
 app.route('/api/volumes', volumes)
 app.route('/api/volume-definitions', volumeDefinitions)
+app.route('/api/volume-types', volumeTypes)
 app.route('/api/agent-bootstrap', agentBootstrap)
 app.route('/api/mcp-proxy', mcpProxy)
 app.route('/api/browser', browser)
@@ -264,7 +279,9 @@ app.route('/api/profile', profileRouter)
 app.route('/api/home-graph', homeGraph)
 app.route('/api/home-card-health', homeCardHealth)
 app.route('/api/policies', policies)
+app.route('/api/proxy-rules', proxyRulesRoutes)
 app.route('/api/runtime-status', runtimeStatusRouter)
+app.route('/api/webhook-relay', webhookRelayRouter)
 app.route('/api/firewall', firewallRouter)
 app.route('/api/admin/users', adminUsersRouter)
 app.route('/api/audit-log', auditLogRouter)
@@ -284,6 +301,7 @@ app.route('/api/llm', llmRouter)
 app.route('/api/llm-runtime', llmRuntimeRouter)
 app.route('/api/llm-connections', llmConnectionsRouter)
 app.route('/api/favicon', faviconRouter)
+app.route('/api/server-facts', serverFactsRouter)
 app.route('/api/debug', debugRouter)
 
 // Desktop → cloud-workspace forwarding. Mounted outside `/api` on purpose: it
@@ -296,10 +314,7 @@ if (isCloudProxyEnabled()) {
 }
 
 // Global error handler
-app.onError((err, c) => {
-  console.error('API Error:', err)
-  return c.json({ error: 'Internal server error' }, 500)
-})
+app.onError(apiErrorHandler)
 
 // 404 handler
 app.notFound((c) => {

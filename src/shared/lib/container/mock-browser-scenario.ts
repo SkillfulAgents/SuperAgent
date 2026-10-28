@@ -14,6 +14,7 @@ import { WebSocketServer, WebSocket } from 'ws'
 import http from 'http'
 import net from 'net'
 import type { MockScenario, MockContainerClient } from './mock-container-client'
+import { background } from '../background'
 
 interface BrowserState {
   httpServer: http.Server
@@ -61,13 +62,13 @@ export class BrowserScenario implements MockScenario {
       content: { type: 'stream_event', event: { type: 'message_start' } },
     })
 
-    this.launchBrowser(sessionId, client, url).catch((err) => {
+    background(this.launchBrowser(sessionId, client, url).catch((err) => {
       console.error('[BrowserScenario] Failed to launch browser:', err)
       client.emitStreamMessage(sessionId, {
         type: 'result',
         content: { type: 'result', subtype: 'error', error: String(err) },
       })
-    })
+    }), { name: 'mock-browser-scenario.launch-browser' })
   }
 
   private async launchBrowser(

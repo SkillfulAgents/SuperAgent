@@ -10,6 +10,7 @@ import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connec
  */
 
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
@@ -174,7 +175,7 @@ class TriggerManager {
     this.resyncTimer = setTimeout(() => {
       this.resyncTimer = null
       // A failure schedules its own retry.
-      this.syncRegistrations().catch(() => {})
+      background(this.syncRegistrations().catch(() => {}), { name: 'trigger-manager.sync-registrations' })
     }, delayMs)
     this.resyncTimer.unref?.()
   }
@@ -326,32 +327,27 @@ class TriggerManager {
       agentPrefs,
       models,
     )
-    const containerSession = await actor.sessions.create({
-      availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-      initialMessage: prompt,
-      model: resolved.model,
-      llmProviderId: resolved.llmProviderId,
-      browserModel: models.browserModel,
-      dashboardBuilderModel: models.dashboardBuilderModel,
-      metadata: { isAutomated: true },
-      effort: resolved.effort,
-      ...(resolved.speed ? { speed: resolved.speed } : {}),
+    const { id: sessionId } = await actor.sessions.start({
+      create: {
+        availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
+        initialMessage: prompt,
+        model: resolved.model,
+        llmProviderId: resolved.llmProviderId,
+        browserModel: models.browserModel,
+        dashboardBuilderModel: models.dashboardBuilderModel,
+        metadata: { isAutomated: true },
+        effort: resolved.effort,
+        ...(resolved.speed ? { speed: resolved.speed } : {}),
+      },
+      name: trigger.name || `Webhook: ${trigger.triggerType}`,
+      metadata: {
+        isWebhookExecution: true,
+        webhookTriggerId: trigger.id,
+        webhookTriggerName: trigger.name || undefined,
+        webhookInvocationCount: events.length,
+        automationStatus: 'running',
+      },
     })
-
-    const sessionId = containerSession.id
-    const sessionName = trigger.name || `Webhook: ${trigger.triggerType}`
-
-    await actor.sessions.register(sessionId, sessionName, {
-      isWebhookExecution: true,
-      webhookTriggerId: trigger.id,
-      webhookTriggerName: trigger.name || undefined,
-      webhookInvocationCount: events.length,
-      automationStatus: 'running',
-    })
-
-    // createSession already started the turn; replay may finish it during attachment.
-    actor.sessions.markActive(sessionId)
-    await actor.sessions.subscribeStream(sessionId, sessionId)
 
     // Update trigger tracking
     await markTriggerFired(trigger.id, sessionId)
@@ -361,11 +357,11 @@ class TriggerManager {
     )
 
     // Notification
-    notificationManager
+    background(notificationManager
       .triggerWebhookSessionStarted(sessionId, trigger.agentSlug, trigger.id, trigger.name || undefined)
       .catch((err) => {
         console.error('[TriggerManager] Failed to trigger notification:', err)
-      })
+      }), { name: 'trigger-manager.notify-session-started' })
   }
 }
 

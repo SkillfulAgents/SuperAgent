@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
+import { captureException } from '@shared/lib/error-reporting'
 import { writeFileAtomic } from '@shared/lib/utils/file-storage'
 import {
   ProfileSyncManifestSchema,
@@ -42,6 +43,29 @@ export interface ProfileSyncDestination {
    * simply will not include it.
    */
   copyFile(sourcePath: string, relativePath: string): Promise<void>
+}
+
+/**
+ * The selected Chrome profile is there, but this app may not read it: macOS
+ * keeps one app out of another's data until the person grants it Full Disk
+ * Access, and plain file permissions can do the same. The sync stops without
+ * writing its manifest, so the next one starts over. Callers decide whether
+ * to go on without the profile.
+ */
+export class ChromeProfileAccessError extends Error {
+  constructor(readonly profileId: string, options: { cause: unknown }) {
+    super(`Not permitted to read Chrome profile "${profileId}"`, options)
+    this.name = 'ChromeProfileAccessError'
+  }
+}
+
+let accessErrorReported = false
+
+/** Report an unreadable profile once per run: every agent start would send the same one. */
+export function reportChromeProfileAccessError(error: ChromeProfileAccessError): void {
+  if (accessErrorReported) return
+  accessErrorReported = true
+  captureException(error, { level: 'warning', tags: { area: 'browser-profile' } })
 }
 
 /**
@@ -102,6 +126,7 @@ export function listChromeProfiles(): ChromeProfile[] {
  * @param profileId - Chrome profile directory name (e.g. "Default", "Profile 1")
  * @param destination - A directory on this machine, or a `ProfileSyncDestination`
  * @returns true if the source profile exists, false otherwise
+ * @throws ChromeProfileAccessError when this app may not read the source profile
  */
 export async function copyChromeProfileData(
   profileId: string,
@@ -118,13 +143,15 @@ export async function copyChromeProfileData(
     if (!(await fs.promises.stat(profileSourceDir)).isDirectory()) return false
   } catch (error) {
     if (isNotFound(error)) return false
-    throw error
+    throw sourceReadError(profileId, error)
   }
 
   const target = typeof destination === 'string' ? hostDirectoryDestination(destination) : destination
   const [previousManifest, sourceFiles] = await Promise.all([
     readProfileSyncManifest(target),
-    collectSourceFiles(profileSourceDir),
+    collectSourceFiles(profileSourceDir).catch((error: unknown) => {
+      throw sourceReadError(profileId, error)
+    }),
   ])
   const previousFiles = previousManifest?.profileId === profileId
     ? previousManifest.files
@@ -136,7 +163,15 @@ export async function copyChromeProfileData(
     if (unchanged && await target.hasFile(relativePath)) {
       return
     }
-    await target.copyFile(path.join(profileSourceDir, relativePath), relativePath)
+    const sourcePath = path.join(profileSourceDir, relativePath)
+    try {
+      await target.copyFile(sourcePath, relativePath)
+    } catch (error) {
+      // A destination reports a source it may not read in its own terms (a
+      // workspace says not-accessible for either side), so ask the source.
+      if (await isUnreadable(sourcePath)) throw new ChromeProfileAccessError(profileId, { cause: error })
+      throw error
+    }
   })
 
   const nextManifest: ProfileSyncManifest = {
@@ -188,6 +223,25 @@ export function hostDirectoryDestination(destDir: string): ProfileSyncDestinatio
 
 function isNotFound(error: unknown): boolean {
   return (error as NodeJS.ErrnoException).code === 'ENOENT'
+}
+
+function isAccessDenied(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException)?.code
+  return code === 'EPERM' || code === 'EACCES'
+}
+
+/** A failed read of the source profile, as what callers can act on when it was a denial. */
+function sourceReadError(profileId: string, error: unknown): unknown {
+  return isAccessDenied(error) ? new ChromeProfileAccessError(profileId, { cause: error }) : error
+}
+
+async function isUnreadable(sourcePath: string): Promise<boolean> {
+  try {
+    await (await fs.promises.open(sourcePath, 'r')).close()
+    return false
+  } catch (error) {
+    return isAccessDenied(error)
+  }
 }
 
 /** Relative paths of the source files, in posix form so a destination of any kind can take them. */

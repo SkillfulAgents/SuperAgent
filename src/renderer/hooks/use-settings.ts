@@ -83,12 +83,21 @@ export function useModelSettings(agentSlug?: string, llmProviderId?: string | nu
   return useQuery<ModelPickerSettingsResponse>({
     queryKey: ['settings', 'models', ...(agentSlug ? [agentSlug, llmProviderId] : [])],
     queryFn: async () => {
-      const res = await apiFetch('/api/settings/models')
+      // The two reads are independent, so both start now. They are still
+      // checked in order, so a failed settings read wins as it did when the
+      // reads ran back to back; the catch only keeps an abandoned connection
+      // read from surfacing as an unhandled rejection.
+      const query = llmProviderId ? `?llmProviderId=${encodeURIComponent(llmProviderId)}` : ''
+      const settingsRequest = apiFetch('/api/settings/models')
+      const connectionRequest = agentSlug
+        ? apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/llm-connections${query}`)
+        : undefined
+      void connectionRequest?.catch(() => {})
+      const res = await settingsRequest
       if (!res.ok) throw new Error('Failed to fetch model settings')
       const data: ModelPickerSettingsResponse = await res.json()
-      if (agentSlug) {
-        const query = llmProviderId ? `?llmProviderId=${encodeURIComponent(llmProviderId)}` : ''
-        const response = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/llm-connections${query}`)
+      if (connectionRequest) {
+        const response = await connectionRequest
         if (!response.ok) throw new Error('Failed to fetch saved model connection')
         data.connections = (await response.json()).connections
       }
@@ -127,6 +136,7 @@ export type UpdateSettingsParams = SettingsPatch
 export interface UpdateSettingsError {
   error: string
   runningAgents?: string[]
+  status: number
 }
 
 export function useUpdateSettings() {
@@ -141,7 +151,7 @@ export function useUpdateSettings() {
       })
 
       if (!res.ok) {
-        const error = await res.json()
+        const error: UpdateSettingsError = { ...(await res.json()), status: res.status }
         throw error
       }
 

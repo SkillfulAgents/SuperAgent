@@ -1,4 +1,7 @@
 vi.mock('@shared/lib/agent-integrations/mcp', () => ({ integrationMcpProjection: vi.fn(async () => []) }))
+vi.mock('@shared/lib/account-providers/provider-factory', () => ({
+  getDefaultAccountProvider: () => ({ name: 'composio' }),
+}))
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // ============================================================================
@@ -17,6 +20,7 @@ const mockClearRunnerAvailabilityCache = vi.fn()
 const FUSE_FLAGS = '--device /dev/fuse --cap-add SYS_ADMIN'
 const mockVolumeRunFlags = vi.fn((): string | null => FUSE_FLAGS)
 const mockHealth = vi.fn()
+const mockVolumeStop = vi.fn(async () => Response.json({ drained: true, recovered: 0, recoveryErrors: 0 }))
 
 vi.mock('./client-factory', () => ({
   createContainerClient: () => ({
@@ -29,7 +33,7 @@ vi.mock('./client-factory', () => ({
     onFatalResult: () => 'settle',
     observeUnexpectedDeath: async () => ({ action: 'settle' as const }),
     getRuntimeGenerationId: () => null,
-    fetch: vi.fn(),
+    fetch: mockVolumeStop,
     getHostApiBaseUrl: () => `http://${mockGetContainerHostUrl()}:${mockGetAppPort()}`,
     health: (port?: number) => mockHealth(port),
     volumeRunFlags: () => mockVolumeRunFlags(),
@@ -147,21 +151,8 @@ vi.mock('@shared/lib/config/data-dir', () => ({
   getAgentWorkspaceDir: (id: string) => `/workspace/${id}`,
 }))
 
-vi.mock('./message-persister', () => ({
-  messagePersister: {
-    broadcastGlobal: vi.fn(),
-    setStopContainerCallback: vi.fn(),
-    setUnexpectedDeathCallback: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(),
-    snapshotMidTurnSessions: vi.fn(() => []),
-    consumeLastFatal: vi.fn(() => null),
-    settleRecoveringSessions: vi.fn(),
-    markRecovered: vi.fn(),
-    takeCoalescedUserMessages: vi.fn(() => []),
-    isSessionRecovering: vi.fn(() => false),
-    isSubscribed: vi.fn(() => false),
-    subscribeToSession: vi.fn(),
-  },
+vi.mock('@shared/lib/notifications/global-feed', () => ({
+  globalFeed: { publish: vi.fn(), subscribe: vi.fn(() => () => {}) },
 }))
 
 vi.mock('./health-monitor', () => ({
@@ -199,8 +190,12 @@ vi.mock('@shared/lib/services/timezone-resolver', () => ({
 }))
 
 const mockListVolumes = vi.fn()
+const mockFirstCopies = vi.fn()
+const mockRemounted = vi.fn()
 vi.mock('@shared/lib/services/mount-service', () => ({
   listVolumes: (...args: unknown[]) => mockListVolumes(...args),
+  firstCopies: (...args: unknown[]) => mockFirstCopies(...args),
+  remounted: (...args: unknown[]) => mockRemounted(...args),
 }))
 
 import { containerHost } from './container-host'
@@ -500,7 +495,7 @@ describe('ContainerRuntime.ensureRunning — env var construction', () => {
 
 describe('ContainerRuntime.ensureRunning — mount volumes', () => {
   // The folder list of every mount banner broadcast, in order.
-  const mountWarnings = () => vi.mocked(messagePersister.broadcastGlobal).mock.calls
+  const mountWarnings = () => vi.mocked(globalFeed.publish).mock.calls
     .filter(([msg]: any) => msg.type === 'mount_health_warning')
     .map(([msg]: any) => msg.notMounted)
 
@@ -531,6 +526,9 @@ describe('ContainerRuntime.ensureRunning — mount volumes', () => {
     expect(mockStart.mock.calls[0][0].volumes).toEqual([])
     expect(mountWarnings()).toEqual([[]])
     expect(mockHealth).not.toHaveBeenCalled()
+    mockStop.mockResolvedValueOnce({ forceStopUsed: false, stopped: true })
+    await containerHost.runtime('test-agent').stopContainer()
+    expect(mockVolumeStop).not.toHaveBeenCalled()
   })
 
   // A later banner replaces an earlier one, so the one banner lists every folder left out.
@@ -549,6 +547,36 @@ describe('ContainerRuntime.ensureRunning — mount volumes', () => {
     expect(mockHealth).toHaveBeenCalledWith(8080)
     expect(mountWarnings()).toEqual([[{ name: 'gone', reason: 'not found' }, { name: 'stuck', reason: 'failed in the agent' }]])
     expect(mockCaptureMessage).toHaveBeenCalledWith('Agent container could not mount folders', expect.objectContaining({ extra: { agentId: 'test-agent', count: 1 } }))
+    // Its drives start with empty caches, so they forget what earlier mounts held.
+    expect(mockRemounted).toHaveBeenCalledExactlyOnceWith('test-agent')
+  })
+
+  it.each(['preparing', 'preparing: GitHub is busy'])('marks the agent stale once a drive that missed its start (%s) can mount', async (reason) => {
+    let copied!: () => void
+    mockFirstCopies.mockReturnValueOnce(new Promise<void>((resolve) => { copied = resolve }))
+    mockListVolumes.mockResolvedValueOnce({ volumes: [], notMounted: [{ name: 'repo', reason }] })
+      .mockResolvedValueOnce({ volumes: [{ volumeId: 'm1', name: 'repo' }], notMounted: [] })
+    const runtime = containerHost.runtime('test-agent')
+
+    await runtime.ensureRunning()
+    expect(mountWarnings()).toEqual([[{ name: 'repo', reason }]])
+    expect(runtime.isStale()).toBe(false)
+    copied()
+
+    await vi.waitFor(() => expect(runtime.isStale()).toBe(true))
+    expect(globalFeed.publish).toHaveBeenCalledWith({ type: 'agent_updated', agentSlug: 'test-agent' })
+  })
+
+  it('leaves the agent as it is when a drive that missed its start fails its first copy', async () => {
+    mockFirstCopies.mockResolvedValueOnce(undefined)
+    mockListVolumes.mockResolvedValueOnce({ volumes: [], notMounted: [{ name: 'repo', reason: 'preparing' }] })
+      .mockResolvedValueOnce({ volumes: [], notMounted: [{ name: 'repo', reason: 'preparing: GitHub is busy' }] })
+    const runtime = containerHost.runtime('test-agent')
+
+    await runtime.ensureRunning()
+    await vi.waitFor(() => expect(mockListVolumes).toHaveBeenCalledTimes(2))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(runtime.isStale()).toBe(false)
   })
 
   it.each([
@@ -606,12 +634,12 @@ describe('ContainerRuntime.ensureRunning — mount volumes', () => {
     const started = runtime.ensureRunning()
     await vi.waitFor(() => expect(mockStart).toHaveBeenCalled())
     await runtime.stopContainer()
-    vi.mocked(messagePersister.broadcastGlobal).mockClear()
+    vi.mocked(globalFeed.publish).mockClear()
     release()
     await expect(started).rejects.toThrow(/overtook/)
 
     expect(runtime.getCachedInfo().status).toBe('stopped')
-    expect(messagePersister.broadcastGlobal).not.toHaveBeenCalled()
+    expect(globalFeed.publish).not.toHaveBeenCalled()
   })
 
   // The stop left the container running, so the alarm is what tries again.
@@ -670,6 +698,7 @@ describe('ContainerRuntime.ensureRunning — mount volumes', () => {
 
     expect(mockHealth).not.toHaveBeenCalled()
     expect(mountWarnings()).toEqual([])
+    expect(mockRemounted).not.toHaveBeenCalled()
   })
 
   it('leaves every volume out when the runtime refused the flags', async () => {
@@ -983,7 +1012,15 @@ describe('ContainerHost.clearRuntimes', () => {
 // ============================================================================
 
 import { healthMonitor } from './health-monitor'
-import { messagePersister } from './message-persister'
+import { NO_LIVE_SESSIONS } from './agent-sessions-access'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
+
+// The agents' live sessions, as the runtimes mark them when a container stops:
+// every agent's marks land on one mock, under the agent's slug.
+const markAllInactive = vi.fn()
+containerHost.attachAgentSessions({
+  peek: (slug) => ({ ...NO_LIVE_SESSIONS, markAllInactive: (...args) => markAllInactive(slug, ...args) }),
+})
 
 describe('ContainerRuntime — health warnings', () => {
   beforeEach(() => {
@@ -1228,7 +1265,7 @@ describe('ContainerHost.ensureImageReady — state machine', () => {
     await containerHost.ensureImageReady()
 
     // Should have broadcasted at least: CHECKING and READY
-    const broadcasts = vi.mocked(messagePersister.broadcastGlobal).mock.calls
+    const broadcasts = vi.mocked(globalFeed.publish).mock.calls
     const readinessEvents = broadcasts
       .filter(([msg]: any) => msg.type === 'runtime_readiness_changed')
       .map(([msg]: any) => msg.readiness.status)
@@ -1283,7 +1320,7 @@ describe('ContainerHost.ensureImageReady — state machine', () => {
     await containerHost.ensureImageReady()
 
     // Broadcasts should include PULLING_IMAGE with progress
-    const broadcasts = vi.mocked(messagePersister.broadcastGlobal).mock.calls
+    const broadcasts = vi.mocked(globalFeed.publish).mock.calls
     const pullEvents = broadcasts
       .filter(([msg]: any) => msg.type === 'runtime_readiness_changed' && msg.readiness.status === 'PULLING_IMAGE')
 
@@ -1401,7 +1438,7 @@ describe('ContainerRuntime.syncAgentStatus', () => {
 
     await containerHost.runtime('sync-agent').syncAgentStatus()
 
-    expect(messagePersister.broadcastGlobal).toHaveBeenCalledWith({
+    expect(globalFeed.publish).toHaveBeenCalledWith({
       type: 'agent_status_changed',
       agentSlug: 'sync-agent',
       status: 'stopped',
@@ -1415,7 +1452,7 @@ describe('ContainerRuntime.syncAgentStatus', () => {
 
     await containerHost.runtime('sync-agent').syncAgentStatus()
 
-    expect(messagePersister.broadcastGlobal).not.toHaveBeenCalled()
+    expect(globalFeed.publish).not.toHaveBeenCalled()
   })
 
   it('marks sessions inactive when container transitions to stopped', async () => {
@@ -1425,7 +1462,7 @@ describe('ContainerRuntime.syncAgentStatus', () => {
 
     await containerHost.runtime('sync-agent').syncAgentStatus()
 
-    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('sync-agent')
+    expect(markAllInactive).toHaveBeenCalledWith('sync-agent')
   })
 })
 
@@ -1602,8 +1639,8 @@ describe('ContainerHost.stopAll', () => {
     mockGetInfoFromRuntime.mockResolvedValue({ status: 'stopped', port: null })
 
     const promise = containerHost.stopAll()
-    // Advance past the 30s timeout (full escalation chain)
-    await vi.advanceTimersByTimeAsync(31000)
+    // Preparation plus the existing runtime escalation chain.
+    await vi.advanceTimersByTimeAsync(51000)
     await promise
 
     // Both were attempted
@@ -1619,6 +1656,18 @@ describe('ContainerRuntime.stopContainer force stop recovery', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     containerHost.clearRuntimes()
+  })
+
+  it('reports unfinished uploads and still stops the runtime', async () => {
+    const runtime = containerHost.runtime('pending-agent')
+    runtime.updateCachedStatus('running', 4001)
+    mockVolumeStop.mockResolvedValueOnce(Response.json({ drained: false, recovered: 1, recoveryErrors: 0 }))
+    mockStop.mockResolvedValueOnce({ forceStopUsed: false, stopped: true })
+    await runtime.stopContainer()
+    expect(mockStop).toHaveBeenCalledOnce()
+    expect(mockVolumeStop.mock.invocationCallOrder[0]).toBeLessThan(mockStop.mock.invocationCallOrder[0])
+    expect(mockCaptureMessage).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ tags: { component: 'volumes', operation: 'stop-recovery' } }))
+    expect(runtime.getCachedInfo().status).toBe('stopped')
   })
 
   it('marks all other running agents as stopped when forceStopUsed', async () => {
@@ -1642,13 +1691,13 @@ describe('ContainerRuntime.stopContainer force stop recovery', () => {
     expect(containerHost.runtime('other-agent-2').getCachedInfo()).toEqual({ status: 'stopped', port: null })
 
     // Sessions should be marked inactive for all agents
-    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('stuck-agent', {
+    expect(markAllInactive).toHaveBeenCalledWith('stuck-agent', {
       settleRecovering: true,
     })
-    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('other-agent-1', {
+    expect(markAllInactive).toHaveBeenCalledWith('other-agent-1', {
       settleRecovering: true,
     })
-    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('other-agent-2', {
+    expect(markAllInactive).toHaveBeenCalledWith('other-agent-2', {
       settleRecovering: true,
     })
   })
@@ -1663,7 +1712,7 @@ describe('ContainerRuntime.stopContainer force stop recovery', () => {
 
     await containerHost.runtime('stuck-agent').stopContainer()
 
-    const broadcasts = vi.mocked(messagePersister.broadcastGlobal).mock.calls
+    const broadcasts = vi.mocked(globalFeed.publish).mock.calls
     const statusEvents = broadcasts
       .filter(([msg]: any) => msg.type === 'agent_status_changed')
       .map(([msg]: any) => ({ agentSlug: msg.agentSlug, status: msg.status }))
@@ -1680,7 +1729,7 @@ describe('ContainerRuntime.stopContainer force stop recovery', () => {
 
     await containerHost.runtime('stuck-agent').stopContainer()
 
-    const broadcasts = vi.mocked(messagePersister.broadcastGlobal).mock.calls
+    const broadcasts = vi.mocked(globalFeed.publish).mock.calls
     const alertEvents = broadcasts.filter(([msg]: any) => msg.type === 'system_alert')
 
     expect(alertEvents).toHaveLength(1)
@@ -1716,7 +1765,7 @@ describe('ContainerRuntime.stopContainer force stop recovery', () => {
     expect(containerHost.runtime('other-agent').getCachedInfo()).toEqual({ status: 'running', port: 4002 })
 
     // No system_alert
-    const broadcasts = vi.mocked(messagePersister.broadcastGlobal).mock.calls
+    const broadcasts = vi.mocked(globalFeed.publish).mock.calls
     const alertEvents = broadcasts.filter(([msg]: any) => msg.type === 'system_alert')
     expect(alertEvents).toHaveLength(0)
 
@@ -1742,13 +1791,13 @@ describe('ContainerRuntime.stopContainer force stop recovery', () => {
     expect(containerHost.runtime('other-agent').getCachedInfo()).toEqual({ status: 'running', port: 4002 })
 
     // No stopped broadcast for the stuck agent, no system_alert, no recovery
-    const broadcasts = vi.mocked(messagePersister.broadcastGlobal).mock.calls
+    const broadcasts = vi.mocked(globalFeed.publish).mock.calls
     const stoppedEvents = broadcasts.filter(
       ([msg]: any) => msg.type === 'agent_status_changed' && msg.status === 'stopped'
     )
     expect(stoppedEvents).toHaveLength(0)
     expect(broadcasts.filter(([msg]: any) => msg.type === 'system_alert')).toHaveLength(0)
-    expect(messagePersister.markAllSessionsInactiveForAgent).not.toHaveBeenCalledWith('stuck-agent')
+    expect(markAllInactive).not.toHaveBeenCalledWith('stuck-agent')
     expect(mockClearRunnerAvailabilityCache).not.toHaveBeenCalled()
   })
 
@@ -1762,7 +1811,7 @@ describe('ContainerRuntime.stopContainer force stop recovery', () => {
 
     // Should still be marked as stopped despite the error
     expect(containerHost.runtime('error-agent').getCachedInfo()).toEqual({ status: 'stopped', port: null })
-    expect(messagePersister.markAllSessionsInactiveForAgent).toHaveBeenCalledWith('error-agent', {
+    expect(markAllInactive).toHaveBeenCalledWith('error-agent', {
       settleRecovering: true,
     })
   })

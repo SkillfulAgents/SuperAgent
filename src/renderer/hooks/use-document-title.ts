@@ -55,7 +55,8 @@ const SETTINGS_TAB_TITLES = {
   notifications: 'Notifications',
   platform: 'Account',
   connections: 'Connections',
-  volumes: 'Volumes',
+  volumes: 'Drives',
+  logins: 'Logins',
   usage: 'Usage',
   llm: 'Model Provider',
   runtime: 'Container Runtime',
@@ -133,6 +134,8 @@ function titleForAgentView(view: AgentView, input: DocumentTitleInput): string {
   switch (view.kind) {
     case 'home':
       return input.location.selectedAgentSlug ? joinWithBrand(agentTitle) : APP_TITLE
+    case 'newSession':
+      return `New Session${VIEW_SEPARATOR}${agentTitle}`
     case 'session':
       return `${cleanTitlePart(input.sessionName) ?? 'Session'}${VIEW_SEPARATOR}${agentTitle}`
     case 'task':
@@ -237,7 +240,7 @@ export function useDocumentTitle() {
 
   const { data: agent } = useAgent(agentSlug)
   const { data: session } = useSession(sessionId, agentSlug)
-  const { isStreaming } = useMessageStream(sessionId, agentSlug)
+  const { isStreaming } = useMessageStream(sessionId, agentSlug, ['isStreaming'])
 
   const dashboardName = useMemo(() => {
     if (location.view.kind !== 'dashboard') return null

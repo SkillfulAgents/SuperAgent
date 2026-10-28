@@ -1,6 +1,11 @@
 import type { QueryClient } from '@tanstack/react-query'
 import type { ApiAgent, ApiAgentWidget, ApiSession } from '@shared/lib/types/api'
 import type { ArtifactInfo } from '@renderer/hooks/use-artifacts'
+import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
+
+export function updateAgentAvatarCache(queryClient: QueryClient, slug: string, avatar: AgentAvatar): void {
+  updateMatchingAgents(queryClient, slug, (agent) => ({ ...agent, avatar }))
+}
 
 function matchesAgent(agent: ApiAgent, slug: string): boolean {
   return agent.slug === slug || agent.displaySlug === slug
@@ -109,10 +114,11 @@ const SESSION_ROLLUP_FLAGS = [
   ['isActive', 'hasActiveSessions'],
   ['isAwaitingInput', 'hasSessionsAwaitingInput'],
   ['hasUnreadNotifications', 'hasUnreadNotifications'],
+  ['hasUnreadMention', 'hasUnreadMention'],
 ] as const
 
 export type SessionStatusPatch = Partial<
-  Pick<ApiSession, 'isActive' | 'isAwaitingInput' | 'hasUnreadNotifications'>
+  Pick<ApiSession, 'isActive' | 'isAwaitingInput' | 'hasUnreadNotifications' | 'hasUnreadMention'>
 >
 
 // Identity-preserving apply. Change detection iterates the PATCH's own keys —
@@ -280,11 +286,14 @@ export function applySessionActivityStatus(
     // an already-working agent — the common case) must return the same agent
     // reference, or every event rebuilds the agents array and pays a full
     // deep-compare in structural sharing.
+    // Only the flags that change are written, so a clear adds no `false` an agent never carried.
     updateMatchingAgents(queryClient, agentSlug, (agent) => {
-      const agentChanged = (Object.keys(agentPatch) as (keyof ApiAgent)[]).some((key) => (
+      const changedKeys = (Object.keys(agentPatch) as (keyof ApiAgent)[]).filter((key) => (
         (agent[key] ?? false) !== agentPatch[key]
       ))
-      return agentChanged ? { ...agent, ...agentPatch } : agent
+      return changedKeys.length > 0
+        ? { ...agent, ...Object.fromEntries(changedKeys.map((key) => [key, agentPatch[key]])) }
+        : agent
     })
   }
   return changed

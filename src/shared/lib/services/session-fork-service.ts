@@ -3,8 +3,9 @@
  *
  * Lives next to register/delete rather than in the route so the rollback
  * (register fails → host delete + container delete) is one call. Kept out of
- * session-service.ts because this path talks to the container and the
- * persister, and session-service is already in that import graph.
+ * session-service.ts because this path talks to the container and the live
+ * sessions through the agent's actor, and session-service is already in that
+ * import graph.
  */
 
 import { and, eq, inArray } from 'drizzle-orm'
@@ -15,18 +16,8 @@ import { db } from '@shared/lib/db'
 import { messageAuthor } from '@shared/lib/db/schema'
 import type { SessionInfo, SessionMetadata } from '@shared/lib/types/agent'
 import { insertMessageAuthorsBestEffort } from '@/api/routes/message-author'
-import { forkedUserLineSchema } from '@/api/routes/fork-attribution-schema'
 import { hasIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
-
-export class ForkSessionError extends Error {
-  constructor(
-    readonly status: 404 | 409 | 500,
-    message: string,
-  ) {
-    super(message)
-    this.name = 'ForkSessionError'
-  }
-}
+import { SessionForkFailedError } from '@shared/lib/agent-runtime-errors/session-fork-failed/session-fork-failed-error'
 
 export type ForkSessionOpts = {
   createdByUserId?: string
@@ -61,8 +52,8 @@ export async function forkSession(
   opts: ForkSessionOpts = {},
 ): Promise<ForkedSession> {
   const actor = agentRegistry.get(slug)
-  if (actor.sessions.isActive(sourceId)) {
-    throw new ForkSessionError(409, 'Session is currently running')
+  if ((await actor.sessions.live(sourceId)).isActive) {
+    throw new SessionForkFailedError(409, 'Session is currently running')
   }
 
   const [known, metadataMap] = await Promise.all([
@@ -71,7 +62,7 @@ export async function forkSession(
   ])
   const metadata = Object.hasOwn(metadataMap, sourceId) ? metadataMap[sourceId] : null
   if (!known) {
-    throw new ForkSessionError(404, 'Session not found')
+    throw new SessionForkFailedError(404, 'Session not found')
   }
 
   const [source] = await Promise.all([
@@ -79,7 +70,7 @@ export async function forkSession(
     actor.container.start(),
   ])
   if (!source) {
-    throw new ForkSessionError(404, 'Session not found')
+    throw new SessionForkFailedError(404, 'Session not found')
   }
 
   let forked: { id: string } | null
@@ -87,15 +78,15 @@ export async function forkSession(
     forked = await actor.sessions.fork(sourceId)
   } catch (error) {
     if (error instanceof ContainerConflictError) {
-      throw new ForkSessionError(409, error.message)
+      throw new SessionForkFailedError(409, error.message)
     }
     if (error instanceof ContainerNotFoundError) {
-      throw new ForkSessionError(404, error.message)
+      throw new SessionForkFailedError(404, error.message)
     }
     throw error
   }
   if (!forked) {
-    throw new ForkSessionError(
+    throw new SessionForkFailedError(
       500,
       'Container does not support fork; restart the agent to pull the latest image',
     )
@@ -107,7 +98,6 @@ export async function forkSession(
   const initialMetadata: Partial<SessionMetadata> = {
     forkedFromSessionId: sourceId,
     ...choices,
-    ...(metadata?.slashCommands ? { slashCommands: metadata.slashCommands } : {}),
     ...(opts.createdByUserId ? { createdByUserId: opts.createdByUserId } : {}),
     ...(opts.createdByDeviceId ? { createdByDeviceId: opts.createdByDeviceId } : {}),
   }
@@ -140,7 +130,6 @@ export async function forkSession(
     name,
     createdAt: new Date(),
     lastActivityAt: new Date(),
-    messageCount: source.messageCount,
     isActive: false,
     forkedFromSessionId: sourceId,
     forkedFromSessionName: source.name,
@@ -158,11 +147,7 @@ export async function forkSession(
 async function copyForkAttribution(actor: AgentActor, sourceId: string, newId: string, opts: { authors: boolean }): Promise<void> {
   const slug = actor.slug
   if (!opts.authors && !(await hasIntegrationMessages(slug, sourceId))) return
-  const pairs: { newUuid: string; oldUuid: string }[] = []
-  for await (const raw of actor.messages.rawEntries(newId)) {
-    const parsed = forkedUserLineSchema.safeParse(raw)
-    if (parsed.success) pairs.push({ newUuid: parsed.data.uuid, oldUuid: parsed.data.forkedFrom.messageUuid })
-  }
+  const pairs = await actor.messages.forkedUserUuids(newId)
   if (pairs.length === 0) return
 
   const rows = await db

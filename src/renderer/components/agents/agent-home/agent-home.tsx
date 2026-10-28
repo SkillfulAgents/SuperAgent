@@ -6,14 +6,18 @@ import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { ArrowUp, Loader2, Eye, Maximize2, Minimize2, MoreVertical, Search } from 'lucide-react'
-import { useCreateSession, useSessions } from '@renderer/hooks/use-sessions'
+import { useSessions } from '@renderer/hooks/use-sessions'
+import { agentAvatarState } from '@shared/lib/types/agent-activity-status'
+import { AgentAvatarPicker } from '@renderer/components/agents/agent-avatar/agent-avatar-picker'
+import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { useScheduledTasks } from '@renderer/hooks/use-scheduled-tasks'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { VoiceModeButton } from '@renderer/components/ui/voice-mode-button'
 import { readAloud } from '@renderer/lib/voice/services/read-aloud'
 import { VOICE_MODE_ENTERED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
 import { UploadError } from '@renderer/components/ui/upload-error'
-import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/related-sessions'
+import { AgentRuntimeErrorView } from '@shared/lib/agent-runtime-errors/agent-runtime-error-view'
+import { RelatedSessions, toSessionItem, type SortOrder } from '@renderer/components/sessions/related-sessions'
 import { SortPopover } from '@renderer/components/sessions/sort-popover'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { useNavTransient } from '@renderer/context/nav-transient-context'
@@ -25,14 +29,12 @@ import { AgentSharePopover, type AgentSharePopoverHandle } from '@renderer/compo
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SystemPromptDialog } from '@renderer/components/agents/system-prompt-dialog'
 import { toast } from 'sonner'
-import { apiFetch } from '@renderer/lib/api'
-import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
-import { useMessageComposer } from '@renderer/hooks/use-message-composer'
+import { useNewSessionComposer } from '@renderer/hooks/use-new-session-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
 import { useIsMobile } from '@renderer/hooks/use-mobile'
-import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
+import { ComposerOptions } from '@renderer/components/messages/composer-options'
 import { AgentDefaultFooter } from '@renderer/components/messages/agent-default-footer'
 import { InlineEditableTitle, type InlineEditableTitleHandle } from '@renderer/components/ui/inline-editable-title'
 import { HomeTriggers } from './home-triggers'
@@ -46,7 +48,6 @@ import { HomeBookmarks } from './home-bookmarks'
 import { DashboardCard } from '@renderer/components/home/dashboard-card'
 import { HomeWidgets } from './home-widgets'
 import { useUpdateAgent, useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
-import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
 import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
 import {
@@ -110,21 +111,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const [sessionSearch, setSessionSearch] = useState('')
   const [sessionSort, setSessionSort] = useState<SortOrder>('newest')
   const { data: sessionsData } = useSessions(agent.slug)
-  const { data: agentPrefs } = useAgentPreferences(agent.slug)
   const carryover = useNewSessionCarryover(agent.slug)
-  const composerOptions = useComposerOptions({
-    initialModel: carryover?.model,
-    initialEffort: carryover?.effort,
-    initialSpeed: carryover?.speed,
-    agentDefaultModel: agentPrefs?.defaultModel,
-    agentDefaultLlmProviderId: agentPrefs?.defaultLlmProviderId,
-    agentDefaultEffort: agentPrefs?.defaultEffort,
-    agentDefaultSpeed: agentPrefs?.defaultSpeed,
-    agentKey: agent.slug,
-    // The default-model card sits next to this composer; an untouched selection
-    // must visibly track it, including a reset back to the global default.
-    followDefaults: true,
-  })
   const sessionSearchRef = useRef<HTMLInputElement>(null)
   const composerTextareaRef = useRef<HTMLDivElement>(null)
   const isMobile = useIsMobile()
@@ -132,7 +119,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   // Tracks an explicit user collapse so the auto-expand effect doesn't fight it.
   // Reset when the message clears (e.g. after submit).
   const userCollapsedRef = useRef(false)
-  const createSession = useCreateSession()
   const updateAgent = useUpdateAgent()
   const deleteAgent = useDeleteAgent()
   const renameUntitledAgent = useRenameUntitledAgent()
@@ -176,17 +162,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   }, [])
   const sessions = useMemo(() => {
     if (!Array.isArray(sessionsData)) return []
-    return sessionsData.map((s) => ({
-      id: s.id,
-      name: s.name,
-      createdAt: typeof s.createdAt === 'string' ? s.createdAt : new Date(s.createdAt).toISOString(),
-      lastActivityAt: typeof s.lastActivityAt === 'string'
-        ? s.lastActivityAt
-        : new Date(s.lastActivityAt).toISOString(),
-      isActive: s.isActive,
-      isAwaitingInput: s.isAwaitingInput,
-      hasUnreadNotifications: s.hasUnreadNotifications,
-    }))
+    return sessionsData.map(toSessionItem)
   }, [sessionsData])
 
   const { data: scheduledTasksData } = useScheduledTasks(agent.slug, 'pending')
@@ -198,42 +174,27 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   const isPulling = readiness?.status === 'PULLING_IMAGE'
   const apiKeyConfigured = runtimeStatus?.apiKeyConfigured !== false
 
-  const composer = useMessageComposer({
+  const { composer, composerOptions, createSession, isDisabled } = useNewSessionComposer({
     agentSlug: agent.slug,
-    uploadFile: useCallback(({ file, onProgress, signal, stallMs }: { file: File; onProgress?: (p: UploadProgress) => void; signal?: AbortSignal; stallMs?: number }) => {
-      return uploadFileChunked<{ path: string }>({ url: `/api/agents/${agent.slug}/upload-file`, file, onProgress, signal, stallMs })
-    }, [agent.slug]),
-    uploadFolder: useCallback(async ({ sourcePath }: { sourcePath: string }) => {
-      const res = await apiFetch(
-        `/api/agents/${agent.slug}/upload-folder`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sourcePath }),
-        }
-      )
-      if (!res.ok) throw new Error('Failed to upload folder')
-      return res.json() as Promise<{ path: string }>
-    }, [agent.slug]),
-    onSubmit: useCallback(async (content: string) => {
-      const shouldRename = agent.name === UNTITLED_AGENT_NAME && sessions.length === 0
-      const session = await createSession.mutateAsync({
-        agentSlug: agent.slug,
-        message: content,
-        ...composerOptions.toRuntimeOptions(),
-      })
-      // The server assigns the initial message's uuid and returns it; the
-      // optimistic pending copy is materialized by exact id match.
-      onSessionCreated(session.id, content, session.initialMessageUuid)
-      // Fire rename after the session is created + navigated — the mutation
-      // survives AgentHome unmounting since the queryClient is app-scoped.
-      if (shouldRename) renameUntitledAgent.mutate({ slug: agent.slug, prompt: content })
-    }, [createSession, agent.slug, agent.name, onSessionCreated, composerOptions, sessions.length, renameUntitledAgent]),
-    submitDisabled: createSession.isPending || !isRuntimeReady,
-    keepMessageUntilComplete: true,
     draftKey: `agent:${agent.slug}`,
     initialAttachments: carryover?.attachments,
-    initialSecuredSecrets: carryover?.securedSecrets,
+    initialOptions: {
+      initialModel: carryover?.model,
+      initialEffort: carryover?.effort,
+      initialSpeed: carryover?.speed,
+    },
+    // The default-model card sits next to this composer; untouched selections track its edits.
+    followDefaults: true,
+    submitDisabled: !isRuntimeReady,
+    agentRuntimeErrorsShownInline: true,
+    onSessionCreated: ({ session, content }) => {
+      // Preserve the server's message identity for the optimistic pending copy.
+      onSessionCreated(session.id, content, session.initialMessageUuid)
+      // This mutation survives navigation because its query client is app-scoped.
+      if (agent.name === UNTITLED_AGENT_NAME && sessions.length === 0) {
+        renameUntitledAgent.mutate({ slug: agent.slug, prompt: content })
+      }
+    },
   })
 
   const warmStartEnabled = useWarmStartOnTypeEnabled()
@@ -266,8 +227,6 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
       void composer.handleSubmit(e)
     }
   }
-
-  const isDisabled = createSession.isPending || composer.isUploading || !isRuntimeReady
 
   // Voice mode from the home page: the session opens with the voice-mode
   // notice as its first message, and its composer comes up listening. The
@@ -362,6 +321,9 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
         {/* Left Column — Chat composer + Sessions */}
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
           <ScrollAwarePageTitle className="flex items-center justify-between gap-2 intro-step intro-step-1">
+            {isOwner
+              ? <AgentAvatarPicker agent={agent} state={agentAvatarState(agent, sessionsData)} size={39} />
+              : <AgentAvatar agent={agent} state={agentAvatarState(agent, sessionsData)} size={39} />}
             <AgentContextMenu
               agent={agent}
               onRename={() => titleRef.current?.startEditing()}
@@ -462,6 +424,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                 onChoice={composer.mountDialog.onChoice}
                 folderName={composer.mountDialog.folderName}
               />
+              {composer.chipDialog}
               <form
                 onSubmit={composer.handleSubmit}
                 className={cn('intro-step intro-step-2', composer.isDragOver && 'rounded-2xl ring-2 ring-primary ring-inset')}
@@ -484,11 +447,10 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                   secureSecrets={{
                     agentSlug: agent.slug,
                     potentialSecrets: composer.potentialSecrets,
-                    securedSecrets: composer.securedSecrets,
                     onDismiss: composer.dismissPotentialSecret,
                     onSecure: composer.securePotentialSecret,
-                    onRemove: composer.removeSecuredSecrets,
                   }}
+                  chipContext={composer.chipContext}
                   textareaClassName={`transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh] max-h-[50vh]' : 'min-h-[60px] max-h-[120px]'}`}
                   leftActions={(
                     <>
@@ -572,6 +534,7 @@ export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
                     <>
                       <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2 justify-center" />
                       <UploadError error={composer.uploadError} onDismiss={composer.clearUploadError} className="mt-2 justify-center" />
+                      <AgentRuntimeErrorView error={createSession.error} className="mt-2" />
                     </>
                   )}
                 />

@@ -4,6 +4,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 // references a `vi.fn()` must define it inside `vi.hoisted` to be available.
 const mocks = vi.hoisted(() => ({
   createNotification: vi.fn(async () => 'notif-id'),
+  deleteMessageNotifications: vi.fn(async (_messageUuid: string): Promise<Array<{ recipientUserId: string; agentSlug: string; sessionId: string }>> => []),
   getAgentAccessUserIds: vi.fn(async (_agentSlug: string) => ['user-a']),
   getSessionMetadata: vi.fn(),
   findLastSessionEntry: vi.fn(async () => null),
@@ -20,8 +21,8 @@ const mocks = vi.hoisted(() => ({
       sessionScheduled: true,
     },
   })),
-  broadcastGlobal: vi.fn(),
-  promoteAutomatedSession: vi.fn(async () => {}),
+  publishGlobal: vi.fn(),
+  promoteAutomated: vi.fn(async (_agentSlug: string, _sessionId: string) => null),
   isAuthMode: vi.fn(() => false),
   captureException: vi.fn(),
   getAgentOwnerUserId: vi.fn((_agentSlug: string): string | null => null),
@@ -29,6 +30,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@shared/lib/services/notification-service', () => ({
   createNotification: mocks.createNotification,
+  deleteMessageNotifications: mocks.deleteMessageNotifications,
   getAgentAccessUserIds: mocks.getAgentAccessUserIds,
 }))
 vi.mock('@shared/lib/services/session-service', () => ({
@@ -60,15 +62,18 @@ vi.mock('@shared/lib/error-reporting', () => ({
 vi.mock('@shared/lib/services/agent-owner', () => ({
   getAgentOwnerUserId: mocks.getAgentOwnerUserId,
 }))
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    broadcastGlobal: mocks.broadcastGlobal,
-    promoteAutomatedSession: mocks.promoteAutomatedSession,
-  },
+vi.mock('@shared/lib/notifications/global-feed', () => ({
+  globalFeed: { publish: mocks.publishGlobal, subscribe: () => () => {} },
+}))
+
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    promoteAutomated: (agentSlug, sessionId) => mocks.promoteAutomated(agentSlug, sessionId),
+  }),
 }))
 // The web-push channel reads real push-subscription rows on deliver; stub it
 // so these tests never open a database. The client-broadcast channel stays
-// real — the broadcastGlobal assertions below are its contract.
+// real — the global-feed publish assertions below are its contract.
 vi.mock('./channels/web-push-channel', () => ({
   WebPushChannel: class {
     id = 'web_push'
@@ -78,8 +83,8 @@ vi.mock('./channels/web-push-channel', () => ({
 
 const mockCreateNotification = mocks.createNotification
 const mockGetSessionMetadata = mocks.getSessionMetadata
-const mockBroadcastGlobal = mocks.broadcastGlobal
-const mockPromoteAutomatedSession = mocks.promoteAutomatedSession
+const mockPublishGlobal = mocks.publishGlobal
+const mockPromoteAutomated = mocks.promoteAutomated
 
 import { notificationManager } from './notification-manager'
 import { getRequestUserId } from '@shared/lib/platform-attribution/request-context'
@@ -114,7 +119,7 @@ describe('triggerSessionComplete — automated-session gating', () => {
       title: 'Demo Agent finished',
       body: 'Done. The report is ready.',
     })
-    expect(mockBroadcastGlobal).toHaveBeenCalledWith(
+    expect(mockPublishGlobal).toHaveBeenCalledWith(
       expect.objectContaining({
         type: 'os_notification',
         title: 'Demo Agent finished',
@@ -310,7 +315,7 @@ describe('triggerSessionComplete — automated-session gating', () => {
         agentSlug: 'agent-x',
       })
     )
-    expect(mockBroadcastGlobal).toHaveBeenCalledTimes(1)
+    expect(mockPublishGlobal).toHaveBeenCalledTimes(1)
   })
 
   it('creates a notification when no metadata exists (treat as user session)', async () => {
@@ -323,7 +328,7 @@ describe('triggerSessionComplete — automated-session gating', () => {
     mockGetSessionMetadata.mockResolvedValue({ isScheduledExecution: true })
     await notificationManager.triggerSessionComplete('sess-1', 'agent-x')
     expect(mockCreateNotification).not.toHaveBeenCalled()
-    expect(mockBroadcastGlobal).not.toHaveBeenCalled()
+    expect(mockPublishGlobal).not.toHaveBeenCalled()
     expect(mocks.createSummarizerText).not.toHaveBeenCalled()
   })
 
@@ -436,9 +441,9 @@ describe('session_waiting promotes automated sessions to interactive', () => {
   it('triggerSessionWaitingInput promotes before creating the notification', async () => {
     await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', { kind: 'secret', payload: {} })
 
-    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('agent-x', 'sess-1')
+    expect(mockPromoteAutomated).toHaveBeenCalledWith('agent-x', 'sess-1')
     expect(mockCreateNotification).toHaveBeenCalledTimes(1)
-    expect(mockPromoteAutomatedSession.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(mockPromoteAutomated.mock.invocationCallOrder[0]).toBeLessThan(
       mockCreateNotification.mock.invocationCallOrder[0],
     )
   })
@@ -446,17 +451,17 @@ describe('session_waiting promotes automated sessions to interactive', () => {
   it('triggerSessionApiReviewWaiting promotes too — the proxy-review path was the original gap', async () => {
     await notificationManager.triggerSessionApiReviewWaiting('sess-1', 'agent-x', 'review-1', 'Allow?')
 
-    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('agent-x', 'sess-1')
+    expect(mockPromoteAutomated).toHaveBeenCalledWith('agent-x', 'sess-1')
     expect(mockCreateNotification).toHaveBeenCalledTimes(1)
   })
 
   it('triggerSessionComplete does not promote', async () => {
     await notificationManager.triggerSessionComplete('sess-1', 'agent-x')
-    expect(mockPromoteAutomatedSession).not.toHaveBeenCalled()
+    expect(mockPromoteAutomated).not.toHaveBeenCalled()
   })
 
   it('a promotion failure does not block the notification', async () => {
-    mockPromoteAutomatedSession.mockRejectedValueOnce(new Error('disk full'))
+    mockPromoteAutomated.mockRejectedValueOnce(new Error('disk full'))
     await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', { kind: 'question', payload: {} })
     expect(mockCreateNotification).toHaveBeenCalledTimes(1)
   })
@@ -471,7 +476,7 @@ describe('session_waiting promotes automated sessions to interactive', () => {
       },
     })
     await notificationManager.triggerSessionWaitingInput('sess-1', 'agent-x', { kind: 'secret', payload: {} })
-    expect(mockPromoteAutomatedSession).toHaveBeenCalledWith('agent-x', 'sess-1')
+    expect(mockPromoteAutomated).toHaveBeenCalledWith('agent-x', 'sess-1')
     expect(mockCreateNotification).not.toHaveBeenCalled()
   })
 })
@@ -485,8 +490,8 @@ describe('triggerSessionApiReviewWaiting — broadcast payload contract', () => 
       'Allow GET request to Gmail?',
     )
 
-    expect(mockBroadcastGlobal).toHaveBeenCalledTimes(1)
-    const payload = mockBroadcastGlobal.mock.calls[0][0]
+    expect(mockPublishGlobal).toHaveBeenCalledTimes(1)
+    const payload = mockPublishGlobal.mock.calls[0][0]
     expect(payload).toMatchObject({
       type: 'os_notification',
       notificationType: 'session_waiting',
@@ -515,7 +520,7 @@ describe('triggerSessionApiReviewWaiting — broadcast payload contract', () => 
       'review-1',
       'Allow?',
     )
-    const payload = mockBroadcastGlobal.mock.calls[0][0]
+    const payload = mockPublishGlobal.mock.calls[0][0]
     expect(payload.actionContext.notificationId).toBe('notif-abc')
   })
 
@@ -526,7 +531,7 @@ describe('triggerSessionApiReviewWaiting — broadcast payload contract', () => 
       'review-1',
       'Allow?',
     )
-    const payload = mockBroadcastGlobal.mock.calls[0][0]
+    const payload = mockPublishGlobal.mock.calls[0][0]
     expect(payload.title).toContain('API Request Review')
   })
 
@@ -542,8 +547,72 @@ describe('triggerSessionApiReviewWaiting — broadcast payload contract', () => 
       undefined,
       'agent_action',
     )
-    const payload = mockBroadcastGlobal.mock.calls[0][0]
+    const payload = mockPublishGlobal.mock.calls[0][0]
     expect(payload.title).toContain('Agent Action Review')
     expect(payload.title).not.toContain('API Request Review')
+  })
+})
+
+describe('triggerSessionMention', () => {
+  it('writes a row for the person tagged and broadcasts it to them alone', async () => {
+    mocks.isAuthMode.mockReturnValue(true)
+    await notificationManager.triggerSessionMention({
+      sessionId: 'sess-1',
+      agentSlug: 'agent-x',
+      messageUuid: 'msg-1',
+      recipientUserId: 'user-b',
+      senderName: 'Dana Lee',
+      text: '@Mike Smith look at this',
+    })
+
+    expect(mockCreateNotification).toHaveBeenCalledWith({
+      type: 'session_mention',
+      sessionId: 'sess-1',
+      agentSlug: 'agent-x',
+      title: 'Dana Lee mentioned you',
+      body: '@Mike Smith look at this',
+      recipientUserId: 'user-b',
+      messageUuid: 'msg-1',
+    })
+    expect(mockPublishGlobal).toHaveBeenCalledWith(expect.objectContaining({
+      notificationType: 'session_mention',
+      recipientUserId: 'user-b',
+    }))
+  })
+
+  it('cuts a long message to a preview', async () => {
+    await notificationManager.triggerSessionMention({
+      sessionId: 'sess-1',
+      agentSlug: 'agent-x',
+      messageUuid: 'msg-1',
+      recipientUserId: 'user-b',
+      senderName: 'Dana Lee',
+      text: 'x'.repeat(1000),
+    })
+    const [{ body }] = mockCreateNotification.mock.calls[0] as unknown as [{ body: string }]
+    expect(body).toHaveLength(280)
+    expect(body.endsWith('…')).toBe(true)
+  })
+})
+
+describe('withdrawSessionMentions', () => {
+  it('deletes the rows of a message and tells each recipient', async () => {
+    mocks.deleteMessageNotifications.mockResolvedValueOnce([
+      { recipientUserId: 'user-b', agentSlug: 'agent-x', sessionId: 'sess-1' },
+    ])
+    await notificationManager.withdrawSessionMentions('msg-1')
+
+    expect(mocks.deleteMessageNotifications).toHaveBeenCalledWith('msg-1')
+    expect(mockPublishGlobal).toHaveBeenCalledWith({
+      type: 'session_mention_withdrawn',
+      recipientUserId: 'user-b',
+      agentSlug: 'agent-x',
+      sessionId: 'sess-1',
+    })
+  })
+
+  it('broadcasts nothing for a message that tagged no one', async () => {
+    await notificationManager.withdrawSessionMentions('msg-2')
+    expect(mockPublishGlobal).not.toHaveBeenCalled()
   })
 })

@@ -572,5 +572,91 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1791587287364,
     "hash": "ccb3ac557a4bd7f0eef3ed27cf5565d1aef1081f89551803b42299e6e31ee1a6"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `agents` ADD `avatar_color` text DEFAULT 'tonal-blue' NOT NULL;",
+      "\nALTER TABLE `agents` ADD `avatar_shape` text DEFAULT 'circle' NOT NULL;",
+      "\n-- Backfill once in the same atomic migration as the column additions. Keep\n-- this historical palette fixed: later palette edits must not reassign agents.\n-- Applying abs after the remainder avoids SQLite's minimum-integer overflow.\nUPDATE `agents` SET\n  `avatar_color` = CASE abs(random() % 12)\n    WHEN 0 THEN 'tonal-red'\n    WHEN 1 THEN 'tonal-orange'\n    WHEN 2 THEN 'tonal-amber'\n    WHEN 3 THEN 'tonal-green'\n    WHEN 4 THEN 'tonal-forest'\n    WHEN 5 THEN 'tonal-teal'\n    WHEN 6 THEN 'tonal-blue'\n    WHEN 7 THEN 'tonal-cobalt'\n    WHEN 8 THEN 'tonal-purple'\n    WHEN 9 THEN 'tonal-blush'\n    WHEN 10 THEN 'tonal-pink'\n    ELSE 'tonal-brown'\n  END,\n  `avatar_shape` = CASE abs(random() % 8)\n    WHEN 0 THEN 'circle'\n    WHEN 1 THEN 'squircle'\n    WHEN 2 THEN 'triangle'\n    WHEN 3 THEN 'diamond'\n    WHEN 4 THEN 'hexagon'\n    WHEN 5 THEN 'pill'\n    WHEN 6 THEN 'arch'\n    ELSE 'bloom'\n  END;\n"
+    ],
+    "bps": true,
+    "folderMillis": 1791852666500,
+    "hash": "509e144ec0676c120491a0a92af8f5d94780b0930658d88b80472d1748f89f0b"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `todos` ADD `attachments` text DEFAULT '[]' NOT NULL;"
+    ],
+    "bps": true,
+    "folderMillis": 1791910293234,
+    "hash": "9d13dd97eda5eafbcfce764cef25fd88b30999af8969a83b62999e392ce56f21"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `agent_volumes` ADD `read_only` integer DEFAULT false NOT NULL;"
+    ],
+    "bps": true,
+    "folderMillis": 1791924124387,
+    "hash": "51ec4cbbcee73557e8d2840d2d286a03279a78dd6b5d29e7d51f23ed7e943b98"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `agent_integration_meetings` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`integration_id` text NOT NULL,\n\t`agent_slug` text NOT NULL,\n\t`meeting_url` text NOT NULL,\n\t`platform` text NOT NULL,\n\t`bot_name` text NOT NULL,\n\t`mode` text DEFAULT 'voice' NOT NULL,\n\t`bot_id` text,\n\t`status` text DEFAULT 'requested' NOT NULL,\n\t`status_detail` text,\n\t`session_id` text,\n\t`context` text,\n\t`participant_token_hash` text NOT NULL,\n\t`created_by_user_id` text,\n\t`requested_at` integer NOT NULL,\n\t`joined_at` integer,\n\t`ended_at` integer,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`integration_id`) REFERENCES `chat_integrations`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE INDEX `agent_integration_meetings_integration_idx` ON `agent_integration_meetings` (`integration_id`);",
+      "\nCREATE INDEX `agent_integration_meetings_session_idx` ON `agent_integration_meetings` (`agent_slug`,`session_id`);",
+      "\nCREATE INDEX `agent_integration_meetings_status_idx` ON `agent_integration_meetings` (`status`);"
+    ],
+    "bps": true,
+    "folderMillis": 1792093164911,
+    "hash": "3a227888890cbbc01667d8ecaed1a7604e1830fb29d0148e6e92dc5a5ba5b3de"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `proxy_rule_versions` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`rule_id` text NOT NULL,\n\t`version` integer NOT NULL,\n\t`name` text NOT NULL,\n\t`effect` text NOT NULL,\n\t`description` text NOT NULL,\n\t`restatement` text NOT NULL,\n\t`patterns` text NOT NULL,\n\t`code` text NOT NULL,\n\t`tests` text NOT NULL,\n\t`warnings` text NOT NULL,\n\t`tool_schema_hash` text,\n\t`created_at` integer NOT NULL,\n\tFOREIGN KEY (`rule_id`) REFERENCES `proxy_rules`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE UNIQUE INDEX `proxy_rule_versions_unique` ON `proxy_rule_versions` (`rule_id`,`version`);",
+      "\nCREATE TABLE `proxy_rules` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`kind` text NOT NULL,\n\t`account_id` text,\n\t`mcp_id` text,\n\t`agent_slug` text,\n\t`created_by` text NOT NULL,\n\t`created_by_agent_slug` text,\n\t`current_version_id` text NOT NULL,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\t`deleted_at` integer,\n\tFOREIGN KEY (`account_id`) REFERENCES `connected_accounts`(`id`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`mcp_id`) REFERENCES `remote_mcp_servers`(`id`) ON UPDATE no action ON DELETE cascade,\n\tCONSTRAINT \"proxy_rules_target_check\" CHECK((\"proxy_rules\".\"kind\" = 'api' and \"proxy_rules\".\"account_id\" is not null and \"proxy_rules\".\"mcp_id\" is null) or (\"proxy_rules\".\"kind\" = 'mcp' and \"proxy_rules\".\"mcp_id\" is not null and \"proxy_rules\".\"account_id\" is null))\n);\n",
+      "\nCREATE INDEX `proxy_rules_account_idx` ON `proxy_rules` (`account_id`);",
+      "\nCREATE INDEX `proxy_rules_mcp_idx` ON `proxy_rules` (`mcp_id`);",
+      "\nALTER TABLE `mcp_audit_log` ADD `rule_version_id` text;",
+      "\nALTER TABLE `mcp_audit_log` ADD `rule_outcomes` text;",
+      "\nALTER TABLE `proxy_audit_log` ADD `rule_version_id` text;",
+      "\nALTER TABLE `proxy_audit_log` ADD `rule_outcomes` text;"
+    ],
+    "bps": true,
+    "folderMillis": 1792098812435,
+    "hash": "e5fea3fe1d8a068040f3db42f3826bc027eef61e032a262fbdfe88b8f05c3c36"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `notifications` ADD `recipient_user_id` text;",
+      "\nALTER TABLE `notifications` ADD `message_uuid` text;",
+      "\nCREATE UNIQUE INDEX `notifications_message_recipient_unique` ON `notifications` (`message_uuid`,`recipient_user_id`);"
+    ],
+    "bps": true,
+    "folderMillis": 1792435823425,
+    "hash": "2839f95efe6f7fdd06bbf0e4dd0f5c1570fc0466f32ae73c26d59851f12a3ee2"
+  },
+  {
+    "sql": [
+      "ALTER TABLE `volume_definitions` ADD `global_access` text;"
+    ],
+    "bps": true,
+    "folderMillis": 1792530753728,
+    "hash": "120b750015a5321de599a2ce92bb3160d57bdfa308b901568816b27a503ff0ff"
+  },
+  {
+    "sql": [
+      "CREATE TABLE `agent_browser_accounts` (\n\t`agent_slug` text NOT NULL,\n\t`account_id` text NOT NULL,\n\t`granted_by` text,\n\t`applied_session_version` integer,\n\t`created_at` integer NOT NULL,\n\t`last_used_at` integer,\n\tPRIMARY KEY(`agent_slug`, `account_id`),\n\tFOREIGN KEY (`agent_slug`) REFERENCES `agents`(`slug`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`account_id`) REFERENCES `browser_accounts`(`id`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`granted_by`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE set null\n);\n",
+      "\nCREATE INDEX `agent_browser_accounts_account_idx` ON `agent_browser_accounts` (`account_id`);",
+      "\nCREATE TABLE `browser_account_sessions` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`account_id` text NOT NULL,\n\t`browser_type` text NOT NULL,\n\t`bundle` text NOT NULL,\n\t`version` integer DEFAULT 1 NOT NULL,\n\t`captured_at` integer NOT NULL,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\tFOREIGN KEY (`account_id`) REFERENCES `browser_accounts`(`id`) ON UPDATE no action ON DELETE cascade\n);\n",
+      "\nCREATE UNIQUE INDEX `browser_account_sessions_account_type_unique` ON `browser_account_sessions` (`account_id`,`browser_type`);",
+      "\nCREATE TABLE `browser_accounts` (\n\t`id` text PRIMARY KEY NOT NULL,\n\t`user_id` text,\n\t`site` text NOT NULL,\n\t`username` text NOT NULL,\n\t`username_key` text NOT NULL,\n\t`label` text,\n\t`origin` text NOT NULL,\n\t`via_account_id` text,\n\t`secrets` text,\n\t`parts` text DEFAULT '[]' NOT NULL,\n\t`revision` integer DEFAULT 1 NOT NULL,\n\t`rejected_at` integer,\n\t`created_at` integer NOT NULL,\n\t`updated_at` integer NOT NULL,\n\t`last_used_at` integer,\n\tFOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade,\n\tFOREIGN KEY (`via_account_id`) REFERENCES `browser_accounts`(`id`) ON UPDATE no action ON DELETE set null\n);\n",
+      "\nCREATE UNIQUE INDEX `browser_accounts_owner_site_username_unique` ON `browser_accounts` (coalesce(`user_id`, ''),`site`,`username_key`);",
+      "\nCREATE INDEX `browser_accounts_user_site_idx` ON `browser_accounts` (`user_id`,`site`);",
+      "\nCREATE INDEX `browser_accounts_via_idx` ON `browser_accounts` (`via_account_id`);"
+    ],
+    "bps": true,
+    "folderMillis": 1792781899070,
+    "hash": "01e2b1213c3ad5da13957a52c4656cfb11eddcd8ea9347b9b3252697db96790d"
   }
 ]

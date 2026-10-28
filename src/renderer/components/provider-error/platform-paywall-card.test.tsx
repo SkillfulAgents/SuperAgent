@@ -1,15 +1,16 @@
 // @vitest-environment jsdom
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useState, type ComponentProps, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schema'
-import type { BillingInfoResponse } from '@renderer/hooks/use-billing-info'
+import { platformBillingQueryKey, type BillingInfoResponse } from '@renderer/hooks/use-billing-info'
+import type { PlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 
 import { FRAME_READY_TIMEOUT_MS } from './billing-embed-frame'
-import { PlatformPaywallCard } from './platform-paywall-card'
+import { HANDOFF_CHECKING_MS, PlatformPaywallCard } from './platform-paywall-card'
 import { PAYWALL_RECHECK_INTERVAL_MS } from './use-platform-paywall-billing'
 
 const PLATFORM_ORIGIN = 'https://platform.example.com'
@@ -28,6 +29,7 @@ const platformAuth = {
   platformControlled: undefined as boolean | undefined,
   platformBaseUrl: PLATFORM_BASE_URL as string | null,
 }
+const billingKey = () => platformBillingQueryKey(platformAuth as PlatformAuthStatus)
 vi.mock('@renderer/hooks/use-platform-auth', () => ({
   usePlatformAuthStatus: () => ({ data: platformAuth }),
 }))
@@ -174,9 +176,10 @@ function Slot(props: Omit<ComponentProps<typeof PlatformPaywallCard>, 'onDisplac
   )
 }
 
-function clickRecheck(ctaName: string) {
+// Opens billing elsewhere, then comes back to the window (the card's refresh-on-return signal).
+function handOffAndReturn(ctaName: string) {
   act(() => { screen.getByRole('button', { name: ctaName }).click() })
-  act(() => { screen.getByRole('button', { name: 'Recheck' }).click() })
+  act(() => { window.dispatchEvent(new Event('focus')) })
 }
 
 describe('PlatformPaywallCard', () => {
@@ -242,6 +245,7 @@ describe('PlatformPaywallCard', () => {
     expect(mocks.track).toHaveBeenCalledWith('paywall_shown', expect.objectContaining({
       paywallId: expect.any(String), entryPoint: 'platform_paywall', ctaKind: 'ask_admin',
       blocked: true, placement: 'composer', role: 'member', live: true,
+      session_id: 's', credential_source: 'platform',
     }))
     expect(mocks.track).toHaveBeenCalledTimes(1)
     act(() => { screen.getByRole('button', { name: 'Go to billing' }).click() })
@@ -361,12 +365,12 @@ describe('PlatformPaywallCard', () => {
       expect(mocks.track).toHaveBeenCalledWith('paywall_shown', expect.objectContaining({ ctaKind: 'ask_admin', blocked: true, placement: 'composer' }))
     })
 
-    it('describes the plan\'s usage as shared when a pooled org is asked to subscribe', async () => {
+    it('names no usage amount when a pooled org is asked to subscribe; plans differ', async () => {
       platformAuth.role = 'owner'
       fetchBilling.mockResolvedValue(billing({ subscription: { ...POOLED, status: 'cancelled' } }))
       renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
       await screen.findByRole('button', { name: 'Upgrade to Pro' })
-      expect(screen.getByText('A shared pool of monthly usage: $200 for every seat on your plan. Pay-as-you-go past that.')).toBeInTheDocument()
+      expect(screen.queryByText(/\$200/)).not.toBeInTheDocument()
       expect(screen.queryByText(/per seat/)).not.toBeInTheDocument()
     })
 
@@ -379,7 +383,7 @@ describe('PlatformPaywallCard', () => {
     })
   })
 
-  it('opens the platform on Add usage, then that button becomes Recheck', async () => {
+  it('opens the platform on Add usage, then shows a checking status until billing clears', async () => {
     platformAuth.role = 'owner'
     renderCard()
     const button = await screen.findByRole('button', { name: 'Add usage' })
@@ -392,12 +396,36 @@ describe('PlatformPaywallCard', () => {
     expect(url.searchParams.get('tab')).toBe('billing')
     expect(url.searchParams.get('intent')).toBe('topup')
     expect(url.searchParams.has('return_app')).toBe(false)
-    const recheck = screen.getByRole('button', { name: 'Recheck' })
+    expect(screen.getByRole('status')).toHaveTextContent('Checking billing…')
     expect(screen.queryByRole('button', { name: 'Add usage' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Recheck' })).not.toBeInTheDocument()
     fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
-    act(() => { recheck.click() })
+    act(() => { window.dispatchEvent(new Event('focus')) })
     await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
     expect(screen.getByTestId('composer')).toBeVisible()
+    expect(toastSuccess).toHaveBeenCalledWith('Billing updated. You can continue.')
+  })
+
+  it('offers the CTA again when billing has not cleared two minutes after the hand-off', async () => {
+    platformAuth.role = 'owner'
+    renderCard()
+    const button = await screen.findByRole('button', { name: 'Add usage' })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      act(() => { button.click() })
+      expect(screen.getByRole('status')).toHaveTextContent('Checking billing…')
+      act(() => { vi.advanceTimersByTime(HANDOFF_CHECKING_MS - 1) })
+      expect(screen.getByRole('status')).toBeInTheDocument()
+      act(() => { vi.advanceTimersByTime(1) })
+      expect(screen.queryByRole('status')).not.toBeInTheDocument()
+      expect(screen.getByText("Didn't finish? Open billing again.")).toBeInTheDocument()
+      act(() => { screen.getByRole('button', { name: 'Add usage' }).click() })
+      expect(openExternalUrl).toHaveBeenCalledTimes(2)
+      expect(screen.getByRole('status')).toHaveTextContent('Checking billing…')
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(toastSuccess).not.toHaveBeenCalled()
   })
 
   it('disables the CTA when the provider attached no href', async () => {
@@ -513,7 +541,7 @@ describe('PlatformPaywallCard', () => {
   })
 
   it('does not clear a live 402 on an allowed snapshot cached before it appeared', async () => {
-    client.setQueryData(['platform-billing'], billing({ access: ALLOWED }))
+    client.setQueryData(billingKey(), billing({ access: ALLOWED }))
     fetchBilling.mockReturnValue(new Promise(() => {}))
     renderCard()
     await act(async () => {})
@@ -522,7 +550,7 @@ describe('PlatformPaywallCard', () => {
   })
 
   it('clears a persisted 402 from the current allowed snapshot (session switch after top-up)', async () => {
-    client.setQueryData(['platform-billing'], billing({ access: ALLOWED }))
+    client.setQueryData(billingKey(), billing({ access: ALLOWED }))
     fetchBilling.mockReturnValue(new Promise(() => {}))
     renderCard('API Error: 402 {"error":"insufficient_balance"}', false)
     await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
@@ -533,7 +561,7 @@ describe('PlatformPaywallCard', () => {
     renderCard()
     await screen.findByText('Workspace billing needs attention')
     fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
-    clickRecheck('Go to billing')
+    handOffAndReturn('Go to billing')
     await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
     expect(screen.getByTestId('composer')).toBeVisible()
   })
@@ -543,7 +571,7 @@ describe('PlatformPaywallCard', () => {
     await screen.findByText('Workspace billing needs attention')
     const before = fetchBilling.mock.calls.length
     fetchBilling.mockResolvedValue({ ...billing({ access: ALLOWED }), stale: true })
-    clickRecheck('Go to billing')
+    handOffAndReturn('Go to billing')
     await waitFor(() => expect(fetchBilling.mock.calls.length).toBeGreaterThan(before))
     await waitFor(() => expect(screen.getByTestId('paywall-card')).toHaveAttribute('data-blocked', 'false'))
     expect(screen.getByTestId('composer')).toBeVisible()
@@ -659,12 +687,61 @@ describe('PlatformPaywallCard', () => {
       postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Upgrade to Pro', hint: '', seats: 2, seatPriceCents: 20000 })
       expect(screen.getByTestId('paywall-plan')).toHaveTextContent('$400/mo')
       expect(screen.getByTestId('paywall-plan')).toHaveTextContent(/2 seats\s*×\s*\$200\/mo/)
+      // A platform before plans names none.
+      expect(screen.queryByTestId('paywall-plan-name')).not.toBeInTheDocument()
       expect(screen.queryByTestId('billing-cta-hint')).not.toBeInTheDocument()
       expect(screen.getByTestId('billing-cta-size-reference')).toHaveClass('w-full')
       fetchBilling.mockResolvedValue(billing({ access: ALLOWED }))
       postEmbedMessage(PLATFORM_ORIGIN, 'billing-updated')
       await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith('Billing updated. You can continue.'))
       expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument()
+    })
+
+    it('names the plan the subscribe quote is for, and drops an id that is not a plan slug (SUP-1143)', async () => {
+      renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
+      await screen.findByTestId('billing-cta-frame')
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Upgrade to Pro', hint: '', seats: 1, seatPriceCents: 20000, planId: 'pro-200' })
+      expect(screen.getByTestId('paywall-plan-name')).toHaveTextContent('Pro 200')
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Upgrade to Pro', hint: '', seats: 1, seatPriceCents: 3000, planId: '<b>Pro</b>' })
+      expect(screen.getByTestId('paywall-plan')).toHaveTextContent('$30/mo')
+      expect(screen.queryByTestId('paywall-plan-name')).not.toBeInTheDocument()
+    })
+
+    it('draws the plans the platform offers and sends the pick to the frame', async () => {
+      renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
+      await screen.findByTestId('billing-cta-frame')
+      const post = vi.spyOn(frameWindow(), 'postMessage')
+      postEmbedMessage(PLATFORM_ORIGIN, 'ready')
+      const plans = [
+        { id: 'pro-30', name: 'Pro 30', priceCents: 3000, grantCents: 3000, deniedModels: ['claude-fable'] },
+        { id: 'pro-100', name: 'Pro 100', priceCents: 10000, grantCents: 10000, deniedModels: [] },
+        { id: 'pro-200', name: 'Pro 200', priceCents: 20000, grantCents: 20000, deniedModels: [] },
+      ]
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Upgrade to Pro', hint: '', seats: 1, seatPriceCents: 20000, planId: 'pro-200', plans })
+      const tiles = within(screen.getByTestId('paywall-plan-options')).getAllByRole('radio')
+      expect(tiles.map((t) => t.textContent)).toEqual([
+        'Pro 30$30 usage / seatExcludes premium models',
+        'Pro 100$100 usage / seatAll models',
+        'Pro 200$200 usage / seatAll models',
+      ])
+      expect(tiles[2]).toHaveAttribute('aria-checked', 'true')
+      fireEvent.click(tiles[0])
+      expect(tiles[0]).toHaveAttribute('aria-checked', 'true')
+      expect(post).toHaveBeenLastCalledWith({ type: 'gamut-billing-select-plan', orgId: 'org_123', planId: 'pro-30' }, PLATFORM_ORIGIN)
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', { label: 'Upgrade to Pro', hint: '', seats: 1, seatPriceCents: 3000, planId: 'pro-30', plans })
+      expect(screen.getByTestId('paywall-plan-name')).toHaveTextContent('Pro 30')
+      expect(screen.getByTestId('paywall-plan')).toHaveTextContent('$30/mo')
+    })
+
+    it('keeps the single quote when the plan list is malformed', async () => {
+      renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}')
+      await screen.findByTestId('billing-cta-frame')
+      postEmbedMessage(PLATFORM_ORIGIN, 'cta-state', {
+        label: 'Upgrade to Pro', hint: '', seats: 1, seatPriceCents: 20000, planId: 'pro-200',
+        plans: [{ id: 'pro-30', name: 'Pro 30', priceCents: 3000, grantCents: 3000 }, { id: '<b>x</b>', name: 'X', priceCents: 1, grantCents: 1 }],
+      })
+      expect(screen.queryByTestId('paywall-plan-options')).not.toBeInTheDocument()
+      expect(screen.getByTestId('paywall-plan')).toHaveTextContent('$200/mo')
     })
 
     it('sizes the subscribe CTA box for the promo line the platform draws under the button', async () => {
@@ -850,7 +927,7 @@ describe('PlatformPaywallCard', () => {
       await waitFor(() => expect(screen.queryByTestId('paywall-card')).not.toBeInTheDocument())
       expect(screen.getByTestId('composer')).toBeVisible()
       expect(toastSuccess).toHaveBeenCalledWith('Billing updated. You can continue.')
-      act(() => { client.setQueryData(['platform-billing'], billing({ access: ALLOWED, hasPaymentMethod: false })) })
+      act(() => { client.setQueryData(billingKey(), billing({ access: ALLOWED, hasPaymentMethod: false })) })
       await act(async () => {})
       expect(mocks.track.mock.calls.filter(([event]) => event === 'paywall_cleared')).toHaveLength(1)
     })
@@ -1023,7 +1100,7 @@ describe('PlatformPaywallCard', () => {
       expect(screen.queryByText('Add usage credit to resume this answer.')).not.toBeInTheDocument()
     })
 
-    it('falls back to opening billing externally when the workspace has no org id, then offers a recheck', async () => {
+    it('falls back to opening billing externally when the workspace has no org id, then checks billing', async () => {
       platformAuth.orgId = null
       renderCard()
       const fallback = await screen.findByRole('button', { name: 'Open billing in a new tab' })
@@ -1034,7 +1111,7 @@ describe('PlatformPaywallCard', () => {
       act(() => { fallback.click() })
       expect(openExternalUrl).toHaveBeenCalledTimes(1)
       expect(new URL(openExternalUrl.mock.calls[0][0]).searchParams.get('intent')).toBe('topup')
-      expect(screen.getByRole('button', { name: 'Recheck' })).toBeInTheDocument()
+      expect(screen.getByRole('status')).toHaveTextContent('Checking billing…')
     })
 
     it('falls back when platform base URL is missing', async () => {
@@ -1123,7 +1200,7 @@ describe('PlatformPaywallCard', () => {
       expect(screen.queryByTestId('billing-embed-body')).not.toBeInTheDocument()
       act(() => { button.click() })
       expect(openExternalUrl).toHaveBeenCalledTimes(1)
-      expect(screen.getByRole('button', { name: 'Recheck' })).toBeInTheDocument()
+      expect(screen.getByRole('status')).toHaveTextContent('Checking billing…')
     })
 
     it('hands off the subscribe card in Electron with the blue button and no quote', async () => {
@@ -1135,7 +1212,7 @@ describe('PlatformPaywallCard', () => {
       expect(screen.queryByTestId('paywall-plan')).not.toBeInTheDocument()
       act(() => { button.click() })
       expect(openExternalUrl).toHaveBeenCalledWith(BILLING_URL)
-      expect(screen.getByRole('button', { name: 'Recheck' })).toBeInTheDocument()
+      expect(screen.getByRole('status')).toHaveTextContent('Checking billing…')
     })
 
     it('keeps the system-browser hand-off on web when the workspace is not platform-controlled', async () => {

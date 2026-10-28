@@ -6,6 +6,7 @@ import { isHostOrSubdomain, tryParseUrl } from '../utils/url-safety'
 import { formatSenderPrefix } from '../utils/sender-prefix'
 import { agentRegistry } from '../agent-actor'
 import { captureException } from '../error-reporting'
+import { heicUploadAsJpeg } from '@/api/routes/heic-jpeg'
 const MAX_FILE_DOWNLOAD_SIZE = 50 * 1024 * 1024
 const reportError = (err: unknown, operation: string, extra?: Record<string, unknown>, level?: 'error' | 'warning') =>
   captureException(err, { tags: { component: 'chat-integration', operation }, extra, level })
@@ -88,7 +89,7 @@ export class ChatInputBuilder {
       )
       if (!config) return null
 
-      if (integration.provider === 'slack' && 'botToken' in config) {
+      if (integration.provider === 'slack' && 'botToken' in config && config.botToken) {
         return await this.downloadSlackFile(config.botToken, fileUrl)
       }
 
@@ -204,9 +205,10 @@ export class ChatInputBuilder {
     // basename so `../` segments cannot leave the uploads directory. The
     // actor's containment keeps the write inside the workspace, but it does
     // not stop a name from landing one level up, so the basename is still ours.
-    const safeName = sanitizeUploadFilename(filename)
+    const jpeg = await heicUploadAsJpeg(filename, data)
+    const safeName = sanitizeUploadFilename(jpeg?.name ?? filename)
     const uploadName = withUploadTimestamp(safeName)
-    await agentRegistry.get(agentSlug).files.putDoc(`uploads/${uploadName}`, data)
+    await agentRegistry.get(agentSlug).files.putDoc(`uploads/${uploadName}`, jpeg?.data ?? data)
 
     return `/workspace/uploads/${uploadName}`
   }

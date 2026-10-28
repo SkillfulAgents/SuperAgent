@@ -8,7 +8,7 @@ import type { z } from 'zod'
 import { agentPreferencesSchema } from '@shared/lib/types/agent-preferences'
 import { claudeSettingsWithHooksSchema } from '@shared/lib/services/agent-hooks-schema'
 import { InstalledAgentMetadataSchema } from '@shared/lib/types/skillset-schema'
-import { sessionMetadataMapSchema } from '@shared/lib/services/session-metadata-schema'
+import { sessionMetadataMapSchema, slashCommandListSchema } from '@shared/lib/services/session-metadata-schema'
 
 /**
  * Which skillset template an agent was installed from. Strict on the fields
@@ -60,6 +60,8 @@ export const CONFIG_DOCS = {
    * never rewrites a document it cannot parse.
    */
   sessionMetadata: { kind: 'json', path: 'session-metadata.json', shared: false, schema: sessionMetadataMapSchema },
+  /** The slash commands the agent's container last listed: one copy for every session's composer. */
+  slashCommands: { kind: 'json', path: '.slash-commands.json', shared: false, schema: slashCommandListSchema },
   /** Claude Code settings, which is where hooks live. Unknown keys pass through. */
   claudeSettings: { kind: 'json', path: '.claude/settings.json', shared: false, schema: claudeSettingsWithHooksSchema },
   /** Which skillset template this agent came from and the hash of what was installed. Absent for a local agent. */
@@ -84,13 +86,13 @@ export type ConfigDoc<K extends ConfigDocId> = (typeof CONFIG_DOCS)[K] extends {
   ? T
   : string
 
-export type ConfigDocErrorCode = 'corrupt' | 'invalid'
+export type ConfigDocErrorCode = 'corrupt' | 'invalid' | 'conflict'
 
 /**
  * A JSON document that cannot be used: `corrupt` when what is stored does not
  * parse or does not fit its schema (a read-modify-write must abort rather than
  * overwrite it), `invalid` when a caller tries to store something that does not
- * fit.
+ * fit, `conflict` when a read-modify-write kept losing to other writers.
  */
 export class ConfigDocError extends Error {
   constructor(
@@ -102,7 +104,9 @@ export class ConfigDocError extends Error {
     super(
       code === 'corrupt'
         ? `Refusing to use corrupt ${docId} document: ${reason}`
-        : `Invalid ${docId} document: ${reason}`,
+        : code === 'conflict'
+          ? `The ${docId} document ${reason}`
+          : `Invalid ${docId} document: ${reason}`,
       options,
     )
     this.name = 'ConfigDocError'

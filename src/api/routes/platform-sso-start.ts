@@ -74,9 +74,9 @@ platformSsoStart.get('/platform/start', async (c) => {
       return c.redirect(target, 302)
     }
 
-    const { headers, response } = await auth.api.signInWithOAuth2({
+    const { headers, response } = await auth.api.signInSocial({
       body: {
-        providerId,
+        provider: providerId,
         callbackURL: target,
         errorCallbackURL: '/',
       },

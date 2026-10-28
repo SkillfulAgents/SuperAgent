@@ -11,7 +11,7 @@
  * behaviour being protected, and `tags` so it can be selected with --only.
  */
 
-import { messageText, buttonActionIds, buttonLabels } from './conversation.mjs'
+import { messageText, buttonActionIds, buttonLabels, buttonValues } from './conversation.mjs'
 
 /** Distinct per run so an assertion can never match an earlier run's message. */
 export function nonce() {
@@ -207,11 +207,20 @@ export const CHECKS = [
       if (labels.length !== 2 || !labels.includes('Red') || !labels.includes('Blue')) {
         throw new Error(`Expected Red/Blue buttons, got: ${JSON.stringify(labels)}`)
       }
-      if (!actionIds.every((a) => /^cb_\d+$/.test(a))) {
-        throw new Error(`Button action_ids must be the connector's registered callbacks: ${actionIds.join(', ')}`)
+      if (!actionIds.every((a) => /^answer_\d+$/.test(a))) {
+        throw new Error(`Button action_ids must be the connector's answer buttons: ${actionIds.join(', ')}`)
       }
       const request = await awaitRegistryKind(ctx, 'question')
-      return `${actionIds.length} buttons, request ${request.id}`
+      // Each button carries its answer, so a click resolves on any connection, even after a restart.
+      // The question is the registry's, as the model worded it ("Pick a color?" is the same ask).
+      const question = request.payload?.questions?.[0]?.question
+      if (!/pick a color/i.test(question ?? '')) throw new Error(`Unexpected question in the registry: ${JSON.stringify(question)}`)
+      const answers = buttonValues(card).map((value) => { try { return JSON.parse(value) } catch { return null } })
+      const carried = answers.map((answer) => answer?.t === request.id && answer?.n === 1 && answer?.q === question ? answer.a : null)
+      if (carried.join() !== labels.join()) {
+        throw new Error(`Button values must carry request ${request.id}'s question and their own label: ${JSON.stringify(answers)}`)
+      }
+      return `${actionIds.length} buttons carrying request ${request.id}`
     },
   },
 

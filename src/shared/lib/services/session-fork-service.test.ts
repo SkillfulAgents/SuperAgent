@@ -34,7 +34,10 @@ const { copyDirectoryFiltered, streamJsonlFile } = vi.hoisted(() => ({
 vi.mock('@shared/lib/agent-actor/local-transcript-ops', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@shared/lib/agent-actor/local-transcript-ops')>()),
   copyDerivedSessionFiles: (...args: unknown[]) => copyDirectoryFiltered(...args),
-  streamRawEntries: () => streamJsonlFile(),
+}))
+vi.mock('@shared/lib/agent-actor/jsonl-files', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/agent-actor/jsonl-files')>()),
+  streamJsonl: () => streamJsonlFile(),
 }))
 
 const { insertMessageAuthorsBestEffort, dbSelectFrom } = vi.hoisted(() => ({
@@ -64,8 +67,10 @@ vi.mock('@shared/lib/container/container-host', async () => {
   }
 })
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: { isSessionActive },
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    isActive: (slug, sessionId) => isSessionActive(slug, sessionId),
+  }),
 }))
 
 vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
@@ -110,7 +115,6 @@ const source = {
   name: 'Pricing',
   createdAt: new Date('2026-01-01T00:00:00Z'),
   lastActivityAt: new Date('2026-01-01T00:00:00Z'),
-  messageCount: 2,
 }
 
 const sourceMeta = {
@@ -237,7 +241,7 @@ describe('forkSession', () => {
   it('throws 409 without reading or booting when the source is mid-turn', async () => {
     isSessionActive.mockReturnValue(true)
     await expect(forkSession('test-agent', 'src-1')).rejects.toMatchObject({
-      name: 'ForkSessionError',
+      name: 'SessionForkFailedError',
       status: 409,
     })
     expect(readSessionMetadata).not.toHaveBeenCalled()
@@ -247,7 +251,7 @@ describe('forkSession', () => {
   it('throws 404 without booting when the source is unknown', async () => {
     sessionIsKnown.mockResolvedValue(false)
     await expect(forkSession('test-agent', 'src-1')).rejects.toMatchObject({
-      name: 'ForkSessionError',
+      name: 'SessionForkFailedError',
       status: 404,
     })
     expect(ensureRunning).not.toHaveBeenCalled()

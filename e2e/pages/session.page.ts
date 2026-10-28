@@ -33,7 +33,10 @@ export class SessionPage {
         const candidate = locator.nth(index)
         const isVisible = await candidate.isVisible().catch(() => false)
         if (!isVisible) continue
-        const isEnabled = await candidate.isEnabled().catch(() => false)
+        // isEnabled (unlike isVisible) waits for the element, with no timeout by
+        // default: a candidate unmounted since the count (the home composer as a
+        // send navigates to the session) would hang the caller's whole poll.
+        const isEnabled = await candidate.isEnabled({ timeout: 1000 }).catch(() => false)
         if (options.enabled && !isEnabled) continue
         return candidate
       }
@@ -74,17 +77,16 @@ export class SessionPage {
   }
 
   private async clickEnabledSendButton(timeout = 10000) {
+    let button: Locator | undefined
     await expect.poll(async () => {
-      const button = await this.findMatchingLocator(this.getSendButtonLocators(), { enabled: true })
-      if (!button) return 'waiting'
+      button = await this.findMatchingLocator(this.getSendButtonLocators(), { enabled: true })
+      return !!button
+    }, { timeout }).toBe(true)
 
-      try {
-        await button.click({ timeout: 1000 })
-        return 'clicked'
-      } catch {
-        return 'retry'
-      }
-    }, { timeout }).toBe('clicked')
+    // A click can submit successfully before its navigation wait times out.
+    // Poll only for readiness; retrying the click after submission either
+    // waits forever on the cleared composer or sends a duplicate message.
+    await button!.click({ timeout })
   }
 
   /**
@@ -508,9 +510,7 @@ export class SessionPage {
   async allowProxyReview(reviewId?: string) {
     const container = this.getProxyReviewRequests(reviewId).first()
     await this.paginateToCard(container)
-    // The Allow button is now a popover — click it to open, then click "Allow Once"
-    await container.locator('[data-testid="proxy-review-always-allow-btn"]').click()
-    await this.page.locator('[data-testid="proxy-review-allow-once-menu-btn"]').click()
+    await container.locator('[data-testid="proxy-review-allow-once-btn"]').click()
   }
 
   async denyProxyReview(reviewId?: string) {
@@ -525,30 +525,12 @@ export class SessionPage {
     ).toBeVisible({ timeout })
   }
 
-  async alwaysAllowScope(scope: string, reviewId?: string) {
-    const container = this.getProxyReviewRequests(reviewId).first()
-    await this.paginateToCard(container)
-    // Open the Allow popover, expand the per-scope disclosure, then click "Always allow <scope>"
-    await container.locator('[data-testid="proxy-review-always-allow-btn"]').click()
-    await this.page.locator('[data-testid="proxy-review-specific-scope-toggle"]').click()
-    await this.page.locator(`[data-testid="proxy-review-always-allow-${scope}"]`).click()
-  }
-
   async alwaysAllowLabelGroup(label: 'read' | 'write' | 'destructive', reviewId?: string) {
     const container = this.getProxyReviewRequests(reviewId).first()
     await this.paginateToCard(container)
     // Open the Allow popover, then click the minimal risk-group "Allow all <label>" option
     await container.locator('[data-testid="proxy-review-always-allow-btn"]').click()
     await this.page.locator(`[data-testid="proxy-review-allow-label-${label}"]`).click()
-  }
-
-  async alwaysDenyScope(scope: string, reviewId?: string) {
-    const container = this.getProxyReviewRequests(reviewId).first()
-    await this.paginateToCard(container)
-    // The "Always deny <scope>" options live inside the Deny chevron popover —
-    // open it first, otherwise the portaled content isn't mounted yet.
-    await container.locator('[data-testid="proxy-review-deny-btn-chevron"]').click()
-    await this.page.locator(`[data-testid="proxy-review-always-deny-${scope}"]`).click()
   }
 
   async denyWithReason(reason: string, reviewId?: string) {

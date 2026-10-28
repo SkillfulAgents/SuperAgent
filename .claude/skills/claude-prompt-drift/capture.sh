@@ -10,7 +10,14 @@
 #              [--pr <number>] \
 #              [--snapshots-dir <path>] \
 #              [--anthropic-api-key <key>] \
-#              [--superagent-path <abs-path>]
+#              [--superagent-path <abs-path>] \
+#              [--tool-search true|false]
+#
+# --tool-search sets ENABLE_TOOL_SEARCH on the superagent axis (default true,
+# what the Anthropic, Platform and subscription providers send). The capture
+# goes through a proxy base URL, where an unset variable means ON since CLI
+# 2.1.304 and OFF before it, so it is always pinned. The pure-claude axis runs
+# with it off so every preset tool's description is on the wire for triage.
 #
 # Snapshots are local-only build artifacts. Default location is `./snapshots/`
 # right next to this script (gitignored). Override precedence:
@@ -58,8 +65,9 @@ API_KEY="dummy-for-capture"
 SUPERAGENT_PATH=""
 PR_WORKTREE=""
 SNAPSHOTS_DIR_FLAG=""
+TOOL_SEARCH="true"
 
-usage() { sed -n '2,33p' "$0" | sed -E 's/^# ?//'; }
+usage() { sed -n '2,40p' "$0" | sed -E 's/^# ?//'; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -71,6 +79,7 @@ while [[ $# -gt 0 ]]; do
     --snapshots-dir)      SNAPSHOTS_DIR_FLAG="$2"; shift 2 ;;
     --anthropic-api-key)  API_KEY="$2"; shift 2 ;;
     --superagent-path)    SUPERAGENT_PATH="$2"; shift 2 ;;
+    --tool-search)        TOOL_SEARCH="$2"; shift 2 ;;
     -h|--help)            usage; exit 0 ;;
     *) echo "unknown flag: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -163,6 +172,7 @@ echo "[capture] SA commit    : $SA_COMMIT (dirty=$SA_DIRTY)"
 echo "[capture] snapshots    : $SNAPSHOTS_DIR"
 echo "[capture] model        : $MODEL"
 echo "[capture] axis         : $AXIS"
+echo "[capture] tool search  : $TOOL_SEARCH (superagent axis; pure-claude runs with it off)"
 echo "[capture] pure-claude  : $PURE_ROOT"
 echo "[capture] superagent   : $SA_ROOT"
 
@@ -271,6 +281,7 @@ write_sa_meta() {
   "superagent_commit": "$SA_COMMIT",
   "superagent_dirty": $SA_DIRTY,
   "source": $source_json,
+  "tool_search": "$TOOL_SEARCH",
   "model": "$MODEL",
   "captured_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
@@ -293,6 +304,7 @@ capture_superagent() {
     --network "$NET_NAME" \
     -e ANTHROPIC_API_KEY="$API_KEY" \
     -e ANTHROPIC_BASE_URL="http://$PROXY_NAME:9876" \
+    -e ENABLE_TOOL_SEARCH="$TOOL_SEARCH" \
     -p 3099:3000 \
     "$IMAGE_TAG" >/dev/null
 
@@ -347,6 +359,7 @@ capture_pure_claude() {
     -v "$(hostpath "$SKILL_DIR/pure-baseline/run.mjs"):/app/baseline-driver.mjs:ro" \
     -e ANTHROPIC_API_KEY="$API_KEY" \
     -e ANTHROPIC_BASE_URL="http://$PROXY_NAME:9876" \
+    -e ENABLE_TOOL_SEARCH=false \
     -e DRIFT_MODEL="$MODEL" \
     --entrypoint node \
     "$IMAGE_TAG" \

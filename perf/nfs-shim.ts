@@ -21,9 +21,12 @@
  * the code under test only.
  *
  * Coverage:
- *   - `fs.promises.*` and `FileHandle#read/stat/readFile` (which includes
- *     `fileHandle.createReadStream()`, reading via `FileHandle#read`): counted
- *     AND delayed. This is everything the storage layer uses today.
+ *   - `fs.promises.*` and `FileHandle#read/stat/readFile/write/sync` (which
+ *     includes `fileHandle.createReadStream()`, reading via `FileHandle#read`):
+ *     counted AND delayed. This is everything the storage layer uses today;
+ *     `write` and `sync` are the data and fsync round trips of an atomic
+ *     write. `FileHandle#close` is not: it pairs with the `open` that made the
+ *     handle, which is counted already.
  *   - Sync entry points (`fs.statSync`, `fs.readFileSync`, …) and
  *     `fs.createReadStream(path)`: counted, not delayed (a sync call cannot
  *     be suspended). They exist so that a route rewritten onto the sync API
@@ -34,6 +37,9 @@
  *     to push the wrapped functions into every namespace import as well.
  *   - Not covered: the callback API (`fs.stat(path, cb)`), `readline` over a
  *     path. Nothing in `src/` uses them on a request path.
+ *
+ * `NFS_SIM_TRACE=1` prints every counted operation with its path as it
+ * happens, to find out which call a count belongs to.
  */
 import type * as FsModule from 'fs'
 import { createRequire, syncBuiltinESMExports } from 'node:module'
@@ -62,7 +68,7 @@ const PROMISE_OPS = [
   'appendFile',
 ] as const
 
-const HANDLE_OPS = ['handle.read', 'handle.stat', 'handle.readFile'] as const
+const HANDLE_OPS = ['handle.read', 'handle.stat', 'handle.readFile', 'handle.write', 'handle.sync'] as const
 
 const SYNC_OPS = [
   'sync.statSync',
@@ -120,8 +126,12 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function record(op: FsOp): void {
+const trace = process.env.NFS_SIM_TRACE === '1'
+
+/** `path` is the call's first argument; a handle method has none. */
+function record(op: FsOp, path?: unknown): void {
   state.counts.set(op, (state.counts.get(op) ?? 0) + 1)
+  if (trace) process.stdout.write(`  [nfs] ${op}${typeof path === 'string' ? ` ${path}` : ''}\n`)
 }
 
 type AnyFn = (...args: unknown[]) => unknown
@@ -145,7 +155,7 @@ function wrapAsync<T extends object>(target: T, method: string, op: FsOp): void 
   const fn = original(target, method) as AnyAsyncFn
   install(target, method, async function (this: unknown, ...args: unknown[]): Promise<unknown> {
     if (!state.enabled) return fn.apply(this, args)
-    record(op)
+    record(op, args[0])
     if (state.latencyMs > 0) await sleep(state.latencyMs)
     const result = await fn.apply(this, args)
     if (op === 'handle.read' && result && typeof result === 'object' && 'bytesRead' in result) {
@@ -159,7 +169,7 @@ function wrapAsync<T extends object>(target: T, method: string, op: FsOp): void 
 function wrapSync<T extends object>(target: T, method: string, op: FsOp): void {
   const fn = original(target, method)
   install(target, method, function (this: unknown, ...args: unknown[]): unknown {
-    if (state.enabled) record(op)
+    if (state.enabled) record(op, args[0])
     return fn.apply(this, args)
   }, fn.name)
 }
@@ -187,6 +197,8 @@ export async function installNfsShim(): Promise<void> {
     wrapAsync(proto, 'read', 'handle.read')
     wrapAsync(proto, 'stat', 'handle.stat')
     wrapAsync(proto, 'readFile', 'handle.readFile')
+    wrapAsync(proto, 'write', 'handle.write')
+    wrapAsync(proto, 'sync', 'handle.sync')
   } finally {
     state.enabled = wasEnabled
   }

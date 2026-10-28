@@ -1,6 +1,10 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest'
 
 import { ReviewManager, humanizeActionName, generateReviewDisplayText } from './review-manager'
+import { getScopeDescriptors } from './scope-catalog'
+import { pendingUserInputRequestSchema } from '@shared/lib/tools/requests/request-schema'
+import { requestBodyPreview } from './review-display'
+import { awaitReview } from './review-request'
 import {
   userInputRequestManager,
   type UserInputRequestTransition,
@@ -9,6 +13,7 @@ import {
   attachInMemoryAgentState,
   type InMemoryAgentStateDirectory,
 } from '@shared/lib/agent-actor/testing/in-memory-agent-state'
+import { LiveSessions } from '@shared/lib/agent-actor/live/live-sessions'
 
 // The reviews live on the agents' actors; the manager under test is a router
 // over them. These build the actors' stores in memory, attached to the
@@ -22,18 +27,16 @@ function attachAgents(manager: ReviewManager) {
 
 /**
  * What the UI actually sees when a review opens or settles: the registry
- * transition, which the persister turns into user_request_created /
+ * transition, which the agent's live sessions turn into user_request_created /
  * user_request_resolved. ReviewManager has no announcement channel of its own.
  */
-const transitions: UserInputRequestTransition[] = []
-let stopRecording: (() => void) | undefined
+let reported: MockInstance<(transition: UserInputRequestTransition) => void>
 function recordTransitions() {
-  transitions.length = 0
-  stopRecording?.()
-  stopRecording = userInputRequestManager.onTransition((t) => transitions.push(t))
+  reported = vi.spyOn(LiveSessions.prototype, 'requestTransition')
 }
-const created = () => transitions.filter((t) => t.type === 'created')
-const resolved = () => transitions.filter((t) => t.type === 'resolved')
+const transitions = () => reported.mock.calls.map(([t]) => t)
+const created = () => transitions().filter((t) => t.type === 'created')
+const resolved = () => transitions().filter((t) => t.type === 'resolved')
 
 describe('ReviewManager', () => {
   let manager: ReviewManager
@@ -49,7 +52,7 @@ describe('ReviewManager', () => {
   afterEach(() => {
     manager.rejectAll()
     agents.reset()
-    stopRecording?.()
+    vi.restoreAllMocks()
     vi.useRealTimers()
   })
 
@@ -69,9 +72,9 @@ describe('ReviewManager', () => {
     expect(pending.length).toBe(1)
     const reviewId = pending[0].id
 
-    manager.submitDecision(reviewId, 'allow')
+    manager.submitDecision('agent-1', reviewId, 'allow')
     const result = await promise
-    expect(result).toBe('allow')
+    expect(result).toEqual({ decision: 'allow' })
   })
 
   it('requestReview → submitDecision("deny") resolves to "deny"', async () => {
@@ -88,14 +91,66 @@ describe('ReviewManager', () => {
     const pending = manager.getPendingReviewsForAgent('agent-1')
     const reviewId = pending[0].id
 
-    manager.submitDecision(reviewId, 'deny')
+    manager.submitDecision('agent-1', reviewId, 'deny')
     const result = await promise
-    expect(result).toBe('deny')
+    expect(result).toEqual({ decision: 'deny' })
+  })
+
+  it('raises a tied review with the generic headline', async () => {
+    const promise = manager.requestReview({
+      agentSlug: 'agent-1',
+      accountId: 'acc-1',
+      toolkit: 'linear',
+      method: 'POST',
+      targetPath: '/graphql',
+      matchedScopes: ['read', 'write'],
+      scopeDescriptions: { read: "Read access to the user's account" },
+      endpointAmbiguous: true,
+    })
+    const [entry] = userInputRequestManager.getAgentScopedRequests('agent-1')
+    expect(entry.kind).toBe('proxy_review')
+    if (entry.kind !== 'proxy_review') return
+    expect(entry.payload.displayText).toBe('Allow POST request to Linear?')
+    expect(entry.payload).toHaveProperty('endpointAmbiguous', true)
+    manager.submitDecision('agent-1', entry.id, 'deny')
+    await promise
   })
 
   it('submitDecision returns false for unknown reviewId', () => {
-    const result = manager.submitDecision('nonexistent-id', 'allow')
+    const result = manager.submitDecision('agent-1', 'nonexistent-id', 'allow')
     expect(result).toBe(false)
+  })
+
+  it('streams and replays authoritative metadata for matched API scopes only', async () => {
+    const promise = manager.requestReview({
+      agentSlug: 'agent-1', accountId: 'github-1', reviewType: 'api', toolkit: 'github',
+      method: 'POST', targetPath: '/user/repos',
+      matchedScopes: ['administration:write', 'future.scope'],
+      scopeDescriptions: { 'administration:write': 'stale description', 'future.scope': 'New capability' },
+    })
+    const [entry] = userInputRequestManager.getAgentScopedRequests('agent-1')
+    const expected = getScopeDescriptors('github', ['administration:write', 'future.scope'], { 'future.scope': 'New capability' })
+    expect(entry.payload.scopeMetadata).toEqual(expected)
+    const replay = pendingUserInputRequestSchema.parse(JSON.parse(JSON.stringify(entry)))
+    expect(replay.payload.scopeMetadata).toEqual(expected)
+    expect(created()[0].request.payload.scopeMetadata).toEqual(expected)
+    expect(manager.getPendingReviewsForAgent('agent-1')[0].scopeMetadata).toEqual(expected)
+    expect(expected[0].label).toBe('destructive')
+    expect(expected[1]).toEqual({ scope: 'future.scope', description: 'New capability', label: 'other' })
+    manager.submitDecision('agent-1', entry.id, 'deny')
+    await promise
+  })
+
+  it('does not apply API metadata to an MCP tool with the same name', async () => {
+    const promise = manager.requestReview({
+      agentSlug: 'agent-1', accountId: 'mcp-1', reviewType: 'mcp', toolkit: 'github',
+      method: 'POST', targetPath: 'subscriptions/listen',
+      matchedScopes: ['administration:write'], scopeDescriptions: {},
+    })
+    const [entry] = userInputRequestManager.getAgentScopedRequests('agent-1')
+    expect(entry.payload.scopeMetadata).toBeUndefined()
+    manager.submitDecision('agent-1', entry.id, 'deny')
+    await promise
   })
 
   it('registers the review envelope with the full details plus the derived displayText', async () => {
@@ -107,6 +162,7 @@ describe('ReviewManager', () => {
       targetPath: '/gmail/v1/users/me/messages',
       matchedScopes: ['gmail.readonly'],
       scopeDescriptions: { 'gmail.readonly': 'Read email' },
+      requestBody: 'q=from:ada',
     })
 
     // The unified wire renders review cards from this envelope alone — it must
@@ -117,10 +173,11 @@ describe('ReviewManager', () => {
     expect(payload.toolkit).toBe('gmail')
     expect(payload.targetPath).toBe('/gmail/v1/users/me/messages')
     expect(payload.scopeDescriptions).toEqual({ 'gmail.readonly': 'Read email' })
+    expect(payload.requestBody).toBe('q=from:ada')
     expect(typeof payload.displayText).toBe('string')
     expect((payload.displayText as string).length).toBeGreaterThan(0)
 
-    manager.submitDecision(entry.id, 'deny')
+    manager.submitDecision('agent-1', entry.id, 'deny')
     await promise
   })
 
@@ -142,8 +199,8 @@ describe('ReviewManager', () => {
 
     // "Allow all write" → both write reviews resolve; the read review is untouched.
     manager.resolveMatchingPendingByLabel('agent-1', 'write', 'allow')
-    await expect(send).resolves.toBe('allow')
-    await expect(compose).resolves.toBe('allow')
+    await expect(send).resolves.toEqual({ decision: 'allow' })
+    await expect(compose).resolves.toEqual({ decision: 'allow' })
     expect(manager.getPendingReviewsForAgent('agent-1').length).toBe(1)
 
     // does not cross agents
@@ -151,8 +208,8 @@ describe('ReviewManager', () => {
     expect(manager.getPendingReviewsForAgent('agent-1').length).toBe(1)
 
     // resolve the lingering read review so afterEach's rejectAll doesn't reject it
-    manager.submitDecision(manager.getPendingReviewsForAgent('agent-1')[0].id, 'allow')
-    await expect(read).resolves.toBe('allow')
+    manager.submitDecision('agent-1', manager.getPendingReviewsForAgent('agent-1')[0].id, 'allow')
+    await expect(read).resolves.toEqual({ decision: 'allow' })
   })
 
   it('submitDecision returns true for valid reviewId', async () => {
@@ -169,9 +226,44 @@ describe('ReviewManager', () => {
     const pending = manager.getPendingReviewsForAgent('agent-1')
     const reviewId = pending[0].id
 
-    const result = manager.submitDecision(reviewId, 'allow')
+    const result = manager.submitDecision('agent-1', reviewId, 'allow')
     expect(result).toBe(true)
     await promise
+  })
+
+  it('an id asked again replaces the call parked on it, whose timer then times out nothing', async () => {
+    const reviews = agents.get('agent-1').reviews
+    const details = { accountId: 'acc-1', toolkit: 'gmail', method: 'GET', targetPath: '/path', matchedScopes: [], scopeDescriptions: {} }
+    const first = reviews.request(details, { id: 'r1' })
+    vi.advanceTimersByTime(3 * 60 * 1000)
+    const second = reviews.request(details, { id: 'r1' })
+    await expect(first).resolves.toBe('withdrawn')
+
+    // Past the first call's timeout: the second is still parked.
+    vi.advanceTimersByTime(2 * 60 * 1000 + 1)
+    expect(manager.submitDecision('agent-1', 'r1', 'allow')).toBe(true)
+    await expect(second).resolves.toBe('allow')
+  })
+
+  it('rechecks again for an allow sweep that lands while it rechecks, instead of parking under the older policy', async () => {
+    const reviews = agents.get('agent-1').reviews
+    const details = { accountId: 'acc-1', toolkit: 'gmail', method: 'GET', targetPath: '/path', matchedScopes: ['gmail.readonly'], scopeDescriptions: {} }
+    let readPolicy!: (decision: 'review') => void
+    const reevaluate = vi.fn<() => Promise<'review' | 'allow' | 'deny'>>()
+      // The first recheck reads the policy before the second change lands ...
+      .mockImplementationOnce(() => new Promise((resolve) => { readPolicy = resolve }))
+      // ... the next one sees it.
+      .mockResolvedValueOnce('allow')
+    const decision = awaitReview(reviews, (options) => reviews.request(details, options), { reevaluate })
+    await vi.waitFor(() => expect(manager.getPendingReviewsForAgent('agent-1')).toHaveLength(1))
+
+    reviews.resolveMatching('gmail.readonly', 'allow')
+    await vi.waitFor(() => expect(reevaluate).toHaveBeenCalledOnce())
+    reviews.resolveMatching('gmail.readonly', 'allow')
+    readPolicy('review')
+
+    await expect(decision).resolves.toEqual({ decision: 'allow' })
+    expect(reevaluate).toHaveBeenCalledTimes(2)
   })
 
   it('timeout after 5 minutes rejects with Error("Review timeout")', async () => {
@@ -207,7 +299,7 @@ describe('ReviewManager', () => {
     vi.advanceTimersByTime(5 * 60 * 1000 + 1)
     await promise.catch(() => {}) // consume rejection
 
-    expect(manager.submitDecision(reviewId, 'allow')).toBe(false)
+    expect(manager.submitDecision('agent-1', reviewId, 'allow')).toBe(false)
   })
 
   it('submitDecision clears timeout (advancing past 5min after submit does not reject)', async () => {
@@ -224,9 +316,9 @@ describe('ReviewManager', () => {
     const pending = manager.getPendingReviewsForAgent('agent-1')
     const reviewId = pending[0].id
 
-    manager.submitDecision(reviewId, 'allow')
+    manager.submitDecision('agent-1', reviewId, 'allow')
     const result = await promise
-    expect(result).toBe('allow')
+    expect(result).toEqual({ decision: 'allow' })
 
     // Advancing time should NOT cause any rejection
     vi.advanceTimersByTime(10 * 60 * 1000)
@@ -258,8 +350,8 @@ describe('ReviewManager', () => {
 
     const result1 = await promise1
     const result2 = await promise2
-    expect(result1).toBe('allow')
-    expect(result2).toBe('allow')
+    expect(result1).toEqual({ decision: 'allow' })
+    expect(result2).toEqual({ decision: 'allow' })
   })
 
   it('resolveMatchingPending does NOT resolve reviews with non-matching scopes', async () => {
@@ -281,7 +373,7 @@ describe('ReviewManager', () => {
 
     // Clean up
     const reviewId = pending[0].id
-    manager.submitDecision(reviewId, 'deny')
+    manager.submitDecision('agent-1', reviewId, 'deny')
     await promise
   })
 
@@ -336,7 +428,7 @@ describe('ReviewManager', () => {
 
     // Clean up
     const pending = manager.getPendingReviewsForAgent('agent-1')
-    manager.submitDecision(pending[0].id, 'allow')
+    manager.submitDecision('agent-1', pending[0].id, 'allow')
     await promise
   })
 
@@ -352,7 +444,7 @@ describe('ReviewManager', () => {
     })
 
     const pending = manager.getPendingReviewsForAgent('agent-1')
-    manager.submitDecision(pending[0].id, 'allow')
+    manager.submitDecision('agent-1', pending[0].id, 'allow')
     await promise
 
     expect(resolved()).toHaveLength(1)
@@ -395,7 +487,7 @@ describe('ReviewManager', () => {
   // agent B's review by guessing/leaking B's reviewId. submitDecision must
   // refuse to mutate the review when the caller's expected agent doesn't
   // match the review's stored agent.
-  it('SECURITY: submitDecision rejects when expectedAgentSlug does not match review agent', async () => {
+  it('SECURITY: submitDecision finds nothing for a review another agent holds', async () => {
     const promise = manager.requestReview({
       agentSlug: 'agent-victim',
       accountId: 'acc-1',
@@ -411,33 +503,15 @@ describe('ReviewManager', () => {
 
     // Attacker has role only on agent-attacker, calls
     // POST /api/agents/agent-attacker/proxy-review/<victim's reviewId>
-    const success = manager.submitDecision(reviewId, 'allow', 'agent-attacker')
+    const success = manager.submitDecision('agent-attacker', reviewId, 'allow')
     expect(success).toBe(false)
 
     // Victim's review is still pending — not resolved
     expect(manager.getPendingReviewsForAgent('agent-victim').length).toBe(1)
 
     // Legit owner still resolves cleanly
-    expect(manager.submitDecision(reviewId, 'deny', 'agent-victim')).toBe(true)
-    expect(await promise).toBe('deny')
-  })
-
-  // Security: same shape for the omitted-arg call path. We keep the optional
-  // arg backwards-compatible for internal callers (resolveMatchingPending
-  // already filters by agentSlug), but any HTTP-facing caller must pass it.
-  it('SECURITY: submitDecision still works when expectedAgentSlug is omitted (internal callers)', async () => {
-    const promise = manager.requestReview({
-      agentSlug: 'agent-1',
-      accountId: 'acc-1',
-      toolkit: 'gmail',
-      method: 'GET',
-      targetPath: '/path',
-      matchedScopes: [],
-      scopeDescriptions: {},
-    })
-    const reviewId = manager.getPendingReviewsForAgent('agent-1')[0].id
-    expect(manager.submitDecision(reviewId, 'allow')).toBe(true)
-    expect(await promise).toBe('allow')
+    expect(manager.submitDecision('agent-victim', reviewId, 'deny')).toBe(true)
+    expect(await promise).toEqual({ decision: 'deny' })
   })
 
   it('double submitDecision for same id: second returns false', async () => {
@@ -454,14 +528,14 @@ describe('ReviewManager', () => {
     const pending = manager.getPendingReviewsForAgent('agent-1')
     const reviewId = pending[0].id
 
-    const first = manager.submitDecision(reviewId, 'allow')
-    const second = manager.submitDecision(reviewId, 'deny')
+    const first = manager.submitDecision('agent-1', reviewId, 'allow')
+    const second = manager.submitDecision('agent-1', reviewId, 'deny')
 
     expect(first).toBe(true)
     expect(second).toBe(false)
 
     const result = await promise
-    expect(result).toBe('allow')
+    expect(result).toEqual({ decision: 'allow' })
   })
 
   it('abort signal cleans up orphaned review and rejects promise', async () => {
@@ -487,6 +561,25 @@ describe('ReviewManager', () => {
 
     // Review should be cleaned up
     expect(manager.getPendingReviewsForAgent('agent-1').length).toBe(0)
+  })
+
+  it('raises no review for a caller that is already gone', async () => {
+    const controller = new AbortController()
+    controller.abort()
+
+    const promise = manager.requestReview({
+      agentSlug: 'agent-1',
+      accountId: 'acc-1',
+      toolkit: 'gmail',
+      method: 'GET',
+      targetPath: '/path',
+      matchedScopes: [],
+      scopeDescriptions: {},
+    }, controller.signal)
+
+    await expect(promise).rejects.toThrow('Request aborted')
+    expect(manager.getPendingReviewsForAgent('agent-1')).toHaveLength(0)
+    expect(created()).toHaveLength(0)
   })
 
   it('abort settles the entry so every surface drops the prompt', async () => {
@@ -568,6 +661,36 @@ describe('ReviewManager', () => {
       expect(result).toBe('Allow sending message via Slack?')
     })
 
+    it('previews what a request sends: a GraphQL query with its variables, other JSON readable, nothing for blank', () => {
+      const bytes = (text: string) => new TextEncoder().encode(text).buffer as ArrayBuffer
+      expect(requestBodyPreview(bytes('{"query":"mutation($id: String!) { issueDelete(id: $id) { success } }","variables":{"id":"LIN-1"}}')))
+        .toBe('mutation($id: String!) { issueDelete(id: $id) { success } }\n\n{\n  "id": "LIN-1"\n}')
+      // A search body with a `query` field is not GraphQL: every field stays visible.
+      expect(requestBodyPreview(bytes('{"query":"x","filter":{"a":1}}'))).toContain('"filter"')
+      expect(requestBodyPreview(bytes('channel=C1&text=hi'))).toBe('channel=C1&text=hi')
+      expect(requestBodyPreview(bytes('<Invoice/>'))).toBe('<Invoice/>')
+      expect(requestBodyPreview(bytes('{"operationName":"Del","query":"mutation Del { issueDelete }"}')))
+        .toBe('operation: Del\n\nmutation Del { issueDelete }')
+      expect(requestBodyPreview(bytes('  \n'))).toBeUndefined()
+      expect(requestBodyPreview(bytes('{"query":"  "}'))).toBeUndefined()
+      // Past 64 KB the body is shown from its start, not parsed and reformatted.
+      const big = `{"a":"${'x'.repeat(70_000)}"}`
+      expect(requestBodyPreview(bytes(big))).toBe(`${big.slice(0, 64_000)}…`)
+      expect(requestBodyPreview(null)).toBeUndefined()
+      expect(requestBodyPreview(bytes('x'.repeat(70_000)))).toHaveLength(64_001)
+    })
+
+    it('names a GraphQL operation by its action, not its root-field key', () => {
+      expect(generateReviewDisplayText('linear', 'POST', '/graphql', {}, 'Mutation: issueDelete - Delete an issue')).toBe('Allow delete an issue?')
+    })
+
+    it('uses generic text when several endpoints match and disagree', () => {
+      const result = generateReviewDisplayText('linear', 'POST', '/graphql', {
+        read: "Read access to the user's account",
+      }, undefined, true)
+      expect(result).toBe('Allow POST request to Linear?')
+    })
+
     it('falls back to generic text when no scope descriptions or MCP path', () => {
       const result = generateReviewDisplayText('gmail', 'GET', '/api/endpoint', {})
       expect(result).toBe('Allow GET request to Gmail?')
@@ -616,9 +739,9 @@ describe('ReviewManager', () => {
     }, controller.signal)
 
     const pending = manager.getPendingReviewsForAgent('agent-1')
-    manager.submitDecision(pending[0].id, 'allow')
+    manager.submitDecision('agent-1', pending[0].id, 'allow')
     const result = await promise
-    expect(result).toBe('allow')
+    expect(result).toEqual({ decision: 'allow' })
 
     // Aborting after resolution must not settle anything a second time
     const settledBefore = resolved().length
@@ -662,9 +785,9 @@ describe('ReviewManager', () => {
       expect(pending[0].xAgent?.fileTransfer).toEqual({ kind: 'send', paths: ['/workspace/report.pdf'] })
       expect(pending[0].accountId).toBe('target')
 
-      manager.submitDecision(pending[0].id, 'allow')
+      manager.submitDecision('caller', pending[0].id, 'allow')
       const result = await promise
-      expect(result).toBe('allow')
+      expect(result).toEqual({ decision: 'allow' })
     })
 
     it('uses scope=list for list operations (no per-target row)', () => {
@@ -689,8 +812,8 @@ describe('ReviewManager', () => {
     it('deny resolves with "deny"', async () => {
       const promise = manager.requestXAgentReview('caller', 'target', 'Target', 'read')
       const pending = manager.getPendingReviewsForAgent('caller')
-      manager.submitDecision(pending[0].id, 'deny')
-      expect(await promise).toBe('deny')
+      manager.submitDecision('caller', pending[0].id, 'deny')
+      expect(await promise).toEqual({ decision: 'deny' })
     })
 
     it('message-policy allow sweeps leave attachment reviews pending', async () => {
@@ -706,12 +829,12 @@ describe('ReviewManager', () => {
 
       manager.resolveMatchingPending('caller', 'invoke:target', 'allow')
 
-      await expect(plain).resolves.toBe('allow')
+      await expect(plain).resolves.toEqual({ decision: 'allow' })
       const pending = manager.getPendingReviewsForAgent('caller')
       expect(pending).toHaveLength(1)
       expect(pending[0].xAgent?.fileTransfer).toEqual({ kind: 'send', paths: ['/workspace/report.pdf'] })
-      manager.submitDecision(pending[0].id, 'allow')
-      await expect(attachment).resolves.toBe('allow')
+      manager.submitDecision('caller', pending[0].id, 'allow')
+      await expect(attachment).resolves.toEqual({ decision: 'allow' })
     })
 
     it.each(['scope', 'operation'] as const)('deny sweeps settle file reviews through %s', async (sweep) => {
@@ -721,8 +844,8 @@ describe('ReviewManager', () => {
         if (sweep === 'scope') manager.resolveMatchingPending('caller', `${operation}:target`, 'deny')
         else manager.resolveMatchingXAgentByOperation('caller', operation, 'deny')
       }
-      await expect(sent).resolves.toBe('deny')
-      await expect(downloaded).resolves.toBe('deny')
+      await expect(sent).resolves.toEqual({ decision: 'deny' })
+      await expect(downloaded).resolves.toEqual({ decision: 'deny' })
       expect(manager.getPendingReviewsForAgent('caller')).toHaveLength(0)
     })
 
@@ -795,7 +918,7 @@ describe('ReviewManager shadow registry write-through (Phase 2)', () => {
     const promise = manager.requestReview(DETAILS)
     const reviewId = manager.getPendingReviewsForAgent('shadow-agent')[0].id
 
-    manager.submitDecision(reviewId, 'allow')
+    manager.submitDecision('shadow-agent', reviewId, 'allow')
     await promise
     expect(userInputRequestManager.getAgentScopedRequests('shadow-agent')).toHaveLength(0)
     expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
@@ -918,13 +1041,19 @@ describe('ReviewManager as registry adapter (Phase 5)', () => {
 
   it('submitDecision settles a registry-only review entry', () => {
     registerRegistryOnlyReview('registry-review-2')
-    expect(manager.submitDecision('registry-review-2', 'allow')).toBe(true)
+    expect(manager.submitDecision('adapter-agent', 'registry-review-2', 'allow')).toBe(true)
     expect(userInputRequestManager.getAgentScopedRequests('adapter-agent')).toHaveLength(0)
     expect(userInputRequestManager.stats.recentResolutions.at(-1)).toMatchObject({
       id: 'registry-review-2',
       kind: 'proxy_review',
       outcome: 'answered',
     })
+  })
+
+  it('keeps no reason for a deny on a review nobody waits on', async () => {
+    registerRegistryOnlyReview('registry-review-5')
+    expect(manager.submitDecision('adapter-agent', 'registry-review-5', 'deny', 'Not that inbox')).toBe(true)
+    await expect(manager.takeDenyReason('adapter-agent', 'registry-review-5')).resolves.toBeUndefined()
   })
 
   it('denyAllForAgent sweeps registry-only review entries', () => {
@@ -947,13 +1076,13 @@ describe('ReviewManager as registry adapter (Phase 5)', () => {
       autoApproved: false,
       payload: { secretName: 'API_KEY' },
     })
-    expect(manager.submitDecision('stream-tool-1', 'allow')).toBe(false)
+    expect(manager.submitDecision('adapter-agent', 'stream-tool-1', 'allow')).toBe(false)
     expect(userInputRequestManager.getOpenRequestsForSession('adapter-agent', 'session-1')).toHaveLength(1)
   })
 
   it('SECURITY: expectedAgentSlug still gates registry-only entries', () => {
     registerRegistryOnlyReview('registry-review-5')
-    expect(manager.submitDecision('registry-review-5', 'allow', 'other-agent')).toBe(false)
+    expect(manager.submitDecision('other-agent', 'registry-review-5', 'allow')).toBe(false)
     expect(userInputRequestManager.getAgentScopedRequests('adapter-agent')).toHaveLength(1)
   })
 })

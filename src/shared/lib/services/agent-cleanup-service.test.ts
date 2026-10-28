@@ -246,6 +246,29 @@ describe('agent-cleanup-service', () => {
   // ── Tests ────────────────────────────────────────────────────────────────
 
   describe('cleanupAgentData', () => {
+    it('deletes and audits the agent\'s own proxy rules, keeping account-wide ones', async () => {
+      insertConnectedAccount('acct-1')
+      const now = new Date()
+      for (const [id, agentSlug] of [['rule-own', AGENT_SLUG], ['rule-shared', null]] as const) {
+        testDb.insert(schema.proxyRules).values({
+          id, kind: 'api', accountId: 'acct-1', mcpId: null, agentSlug, createdBy: 'user', createdByAgentSlug: null,
+          currentVersionId: `${id}-v1`, createdAt: now, updatedAt: now,
+        }).run()
+        testDb.insert(schema.proxyRuleVersions).values({
+          id: `${id}-v1`, ruleId: id, version: 1, name: `Name ${id}`, effect: 'allow', description: 'd', restatement: 'r',
+          patterns: '[]', code: '() => true', tests: '[]', warnings: '[]', toolSchemaHash: null, createdAt: now,
+        }).run()
+      }
+
+      await cleanupAgentData(AGENT_SLUG)
+
+      expect(testDb.select().from(schema.proxyRules).all().map((r) => r.id)).toEqual(['rule-shared'])
+      const audit = testDb.select().from(schema.auditLog).all().filter((row) => row.object === 'proxy_rule')
+      expect(audit).toHaveLength(1)
+      expect(audit[0]).toMatchObject({ action: 'deleted', objectId: 'acct-1' })
+      expect(JSON.parse(audit[0].details ?? '{}')).toMatchObject({ ruleId: 'rule-own', name: 'Name rule-own', by: 'system', reason: 'agent_deleted' })
+    })
+
     it('deletes agent connected account mappings', async () => {
       insertConnectedAccount('acct-1')
       insertAgentConnectedAccount(AGENT_SLUG, 'acct-1')

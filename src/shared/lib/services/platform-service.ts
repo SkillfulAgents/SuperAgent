@@ -1,5 +1,6 @@
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import {
   getPlatformAuthStatus,
   refreshStoredPlatformAccount,
@@ -9,6 +10,9 @@ import {
 } from '@shared/lib/services/platform-billing-service'
 import { refreshCloudWorkspace } from '@shared/lib/services/cloud-workspace-service'
 import type { ParsedPlatformBillingInfo } from '@shared/lib/types/skillset-schema'
+import { platformPlanCache } from '@shared/lib/llm-provider/platform-plan-cache'
+import { actingPlanCacheKey } from '@shared/lib/llm-provider/platform-plan-account'
+import { billingPlanPolicy } from '@shared/lib/llm-provider/platform-plan-policy'
 
 /**
  * Boot-time service that keeps the connected platform account's info + billing
@@ -43,13 +47,13 @@ class PlatformService {
     // refresh() is self-guarding (no-op when disconnected) and never rejects.
     this.startupTimeoutId = setTimeout(() => {
       this.startupTimeoutId = null
-      void this.refresh()
+      background(this.refresh(), { name: 'platform-service.refresh-snapshot' })
     }, this.startupDelayMs)
     // Keep the cloud-workspace deployment token fresh even when the app is left
     // running and the Account tab is never opened. Self-gates (Electron +
     // connected) and never throws.
     this.cloudWorkspaceTimer = setInterval(() => {
-      void refreshCloudWorkspace()
+      background(refreshCloudWorkspace(), { name: 'platform-service.refresh-cloud-workspace' })
     }, this.cloudWorkspaceIntervalMs)
     // Positive start signal — every service launched by startup.ts logs one
     // so a silent-dead service is distinguishable from a healthy idle one.
@@ -68,9 +72,10 @@ class PlatformService {
     this.isRunning = false
   }
 
-  /** Connect → refresh; disconnect → clear the cache. */
+  /** Connect → refresh; disconnect → clear the cache. Either way the account changed. */
   onAuthChanged(connected: boolean): void {
-    if (connected) void this.refresh()
+    platformPlanCache.clear()
+    if (connected) background(this.refresh(), { name: 'platform-service.refresh-snapshot' })
     else this.clearCache()
   }
 
@@ -99,6 +104,10 @@ class PlatformService {
       this.cachedBilling = billing
       this.lastRefreshedAt = new Date().toISOString()
     }
+    // The snapshot carries the acting account's plan policy too: a billing
+    // view after an upgrade unlocks models without waiting for the cache.
+    const policy = billingPlanPolicy(billing)
+    if (policy) platformPlanCache.remember(await actingPlanCacheKey(), policy)
     return billing
   }
 

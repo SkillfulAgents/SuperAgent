@@ -1,5 +1,5 @@
 import { createAuthClient } from 'better-auth/react'
-import { adminClient, genericOAuthClient } from 'better-auth/client/plugins'
+import { adminClient } from 'better-auth/client/plugins'
 import { getApiBaseUrl } from './env'
 import { targetIsRemote } from './api-target'
 
@@ -73,7 +73,7 @@ function buildClient() {
   return createAuthClient({
     baseURL: resolveBaseUrl(),
     fetchOptions: { credentials: credentialsMode() },
-    plugins: [adminClient(), genericOAuthClient()],
+    plugins: [adminClient()],
   })
 }
 

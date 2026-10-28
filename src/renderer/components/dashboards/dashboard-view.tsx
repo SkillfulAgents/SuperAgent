@@ -5,7 +5,8 @@ import { useAgent, useStartAgent, useStopAgent } from '@renderer/hooks/use-agent
 import { useKeepAlive } from '@renderer/hooks/use-keep-alive'
 import { useArtifacts } from '@renderer/hooks/use-artifacts'
 import { useUser } from '@renderer/context/user-context'
-import { getApiBaseUrl, isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
+import { getApiBaseUrl, openDashboardExternal } from '@renderer/lib/env'
+import { addsToDock } from '@renderer/lib/capabilities'
 import { apiFetch } from '@renderer/lib/api'
 import { getRemoteDeploymentUrl } from '@renderer/lib/api-target'
 import { buildDashboardArtifactPath } from '@shared/lib/dashboard-url'
@@ -244,7 +245,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
       ? {
           onOpenExternal: handlePopOut,
           onRefresh: handleRefresh,
-          ...(isElectron() && getPlatform() === 'darwin' ? { onAddToDock: handleAddToDock } : {}),
+          ...(addsToDock() ? { onAddToDock: handleAddToDock } : {}),
           refreshState: refreshing ? 'refreshing' as const : frameLoading ? 'loading' as const : 'idle' as const,
         }
       : null,

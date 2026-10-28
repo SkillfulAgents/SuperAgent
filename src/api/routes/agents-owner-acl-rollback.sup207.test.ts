@@ -167,17 +167,6 @@ vi.mock('@shared/lib/container/container-host', async () => {
   }
 })
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    broadcastGlobal: vi.fn(), broadcastSessionUpdate: vi.fn(), persistMessage: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(), isSessionActive: vi.fn(() => false),
-    isSessionAwaitingInput: vi.fn(() => false), hasActiveSessionsForAgent: vi.fn(() => false),
-    hasSessionsAwaitingInputForAgent: vi.fn(() => false), isSubscribed: vi.fn(() => true),
-    subscribeToSession: vi.fn(), unsubscribeFromSession: vi.fn(), markSessionActive: vi.fn(),
-    broadcastSessionEvent: vi.fn(),
-  },
-}))
-
 vi.mock('@shared/lib/services/session-service', () => ({
   listSessions: vi.fn(), listSessionsFromSummary: vi.fn(), updateSessionName: vi.fn(), registerSession: vi.fn(),
   getSessionMessagesWithCompact: vi.fn(), getSession: vi.fn(), getSessionMetadata: vi.fn(),
@@ -214,6 +203,8 @@ vi.mock('@shared/lib/services/agent-integration-service', () => ({
 
 vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadNotifications: vi.fn(() => Promise.resolve(new Set())),
+  getSessionIdsWithUnreadMentions: vi.fn(() => Promise.resolve(new Set())),
+  getUnreadMentionsByAgents: vi.fn(() => Promise.resolve(new Map())),
   getUnreadNotificationsByAgents: vi.fn(() => Promise.resolve(new Map())),
 }))
 
@@ -249,6 +240,7 @@ vi.mock('hono/streaming', () => ({ streamSSE: vi.fn() }))
 
 // Import the router after all mocks are registered.
 import agents from './agents'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 
 function appWithAgents() {
   const app = new Hono()
@@ -417,5 +409,60 @@ describe('SUP-207: regression — successful creation does not roll back', () =>
     }))
     expect(mockGetAgentTemplatePrompt).toHaveBeenCalledWith('installed-agent')
     expect(mockDeleteAgent).not.toHaveBeenCalled()
+  })
+})
+
+describe('agent_created on the global feed (AUTH_MODE)', () => {
+  // The creator's notification streams admit the new agent by loading their
+  // agents again on this event, so it must come after the row that grants it.
+  function recordCreation() {
+    const order: string[] = []
+    mockDbInsertValues.mockImplementation(() => {
+      order.push('owner-acl')
+    })
+    const stop = globalFeed.subscribe((event) => {
+      if (event.type === 'agent_created') order.push(`agent_created:${event.agentSlug}`)
+    })
+    return { order, stop }
+  }
+
+  async function createAgent() {
+    mockCreateAgent.mockResolvedValue({ slug: 'new-agent', name: 'New', status: 'stopped', containerPort: null })
+    return appWithAgents().request('http://localhost/api/agents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'New' }),
+    })
+  }
+
+  it('is published after the owner ACL row is written', async () => {
+    const { order, stop } = recordCreation()
+    const res = await createAgent()
+    stop()
+
+    expect(res.status).toBe(201)
+    expect(order).toEqual(['owner-acl', 'agent_created:new-agent'])
+  })
+
+  it('is not published when the owner ACL insert fails', async () => {
+    const { order, stop } = recordCreation()
+    mockDbInsertValues.mockImplementation(() => {
+      throw new Error('ACL insert failed')
+    })
+    const res = await createAgent()
+    stop()
+
+    expect(res.status).toBe(500)
+    expect(order).toEqual([])
+  })
+
+  it('is not published in non-auth mode, where there is no access to load', async () => {
+    mockIsAuthMode.mockReturnValue(false)
+    const { order, stop } = recordCreation()
+    const res = await createAgent()
+    stop()
+
+    expect(res.status).toBe(201)
+    expect(order).toEqual([])
   })
 })

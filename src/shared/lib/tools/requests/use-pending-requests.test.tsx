@@ -732,6 +732,96 @@ describe('usePendingRequests', () => {
     expect(matches[0].requirements).toEqual([])
   })
 
+  it('draws no sign-in card from the transcript until the server holds the request', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = [
+      createAssistantMessage({
+        content: { text: '' },
+        toolCalls: [
+          createToolCall({
+            id: 'tc-login',
+            name: 'mcp__user-input__request_login',
+            input: { message: 'Sign in to GitHub.', fields: [{ ref: '@e3', kind: 'username', label: 'Email' }] },
+            result: undefined,
+          }),
+        ],
+      }),
+    ]
+
+    // The host is still deciding: it may sign in from the vault without the user.
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+    expect(ofKind(result.current.items, 'login')).toHaveLength(0)
+  })
+
+  it('carries how the host left a sign-in request to the card', () => {
+    mockStreamState.isActive = true
+    mockUnified.data = [unified('login', 'tu-login', {
+      message: 'Sign in to GitHub.',
+      fields: [{ kind: 'password', label: 'Password' }],
+      vault: { mode: 'complete', username: 'octocat', accountId: 'acc-1', covered: [0] },
+    })]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    expect(ofKind(result.current.items, 'login')[0]).toMatchObject({
+      toolUseId: 'tu-login',
+      vault: { mode: 'complete', username: 'octocat', accountId: 'acc-1', covered: [0] },
+    })
+  })
+
+  it('projects a sign-in request the server recovered from the transcript, with its normalized fields', () => {
+    mockStreamState.isActive = true
+    mockUnified.data = [unified('login', 'tc-login', { recovered: true })]
+    mockMessagesData.data = [
+      createAssistantMessage({
+        content: { text: '' },
+        toolCalls: [
+          createToolCall({
+            id: 'tc-login',
+            name: 'mcp__user-input__request_login',
+            input: { message: 'Sign in to GitHub.', fields: [{ ref: '@e3', kind: 'username', label: 'Email' }, { kind: 'bogus' }, 'junk'] },
+            result: undefined,
+          }),
+        ],
+      }),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    const matches = ofKind(result.current.items, 'login')
+    expect(matches).toHaveLength(1)
+    expect(matches[0]).toMatchObject({ toolUseId: 'tc-login', message: 'Sign in to GitHub.', fields: [{ kind: 'username', label: 'Email' }] })
+  })
+
+  it('draws no sign-in card from the stream without a reason or a field list, as the server parks none', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = [
+      createAssistantMessage({
+        content: { text: '' },
+        toolCalls: [
+          createToolCall({ id: 'tc-blank', name: 'mcp__user-input__request_login', input: { message: '  ', fields: [] }, result: undefined }),
+          createToolCall({ id: 'tc-nofields', name: 'mcp__user-input__request_login', input: { message: 'Sign in.' }, result: undefined }),
+        ],
+      }),
+    ]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    expect(ofKind(result.current.items, 'login')).toEqual([])
+  })
+
+  it('projects a sign-in request from a unified envelope, ignoring a malformed field list', () => {
+    mockStreamState.isActive = true
+    mockMessagesData.data = []
+    mockUnified.data = [unified('login', 'tu-login', { message: 'Sign in.', fields: 'not-an-array' })]
+
+    const { result } = renderHook(() => usePendingRequests(defaultArgs))
+
+    const matches = ofKind(result.current.items, 'login')
+    expect(matches).toHaveLength(1)
+    expect(matches[0].fields).toEqual([])
+  })
+
   it('skips message-based requests when subsequent user message exists', () => {
     mockStreamState.isActive = true
     mockMessagesData.data = [
@@ -883,6 +973,8 @@ describe('usePendingRequests', () => {
           matchedScopes: ['repo:write'],
           scopeDescriptions: { 'repo:write': 'Write to repos' },
           displayText: 'Push to private repo',
+          endpointDescription: 'Push to a repository',
+          requestBody: '{"ref":"main"}',
         },
         { agentScoped: true },
       ),
@@ -897,6 +989,8 @@ describe('usePendingRequests', () => {
     expect(matches[0].reviewType).toBe('api')
     expect(matches[0].displayText).toBe('Push to private repo')
     expect(matches[0].scopeDescriptions).toEqual({ 'repo:write': 'Write to repos' })
+    expect(matches[0].endpointDescription).toBe('Push to a repository')
+    expect(matches[0].requestBody).toBe('{"ref":"main"}')
   })
 
   it('carries the mcp review stamp through to the card and drops an unknown one', () => {

@@ -6,6 +6,7 @@
  * Opt-in: needs Docker with /dev/fuse. Uses the app's FUSE permissions,
  * including its AppArmor override on Linux. Builds the image first.
  *   RUN_VOLUMES_E2E=1 npx vitest run src/volume-mounts.e2e.test.ts
+ * Set VOLUMES_E2E_IMAGE to test an already-built image without rebuilding.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync, spawnSync } from 'child_process';
@@ -13,9 +14,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import { createHash } from 'crypto';
 
 const ENABLED = process.env.RUN_VOLUMES_E2E === '1';
-const IMAGE = 'superagent-volumes-e2e';
+const PREBUILT_IMAGE = process.env.VOLUMES_E2E_IMAGE;
+const IMAGE = PREBUILT_IMAGE || 'superagent-volumes-e2e';
 const CONTEXT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const containers: string[] = [];
 
@@ -31,7 +34,7 @@ function sh(container: string, script: string): string {
 // Starts the agent through the image's start script after a 1s head start for
 // `server` (a shell command for the test's app on :8080). As root, /dev/fuse is
 // first made root-only, as on Apple Container, and the script opens it and drops to claude.
-function startAgent(server: string, volumes: { volumeId: string; name: string; cacheMode?: 'local' | 'remote' }[], user = 'claude', runArgs: string[] = []): string {
+function startAgent(server: string, volumes: { volumeId: string; name: string; cacheMode?: 'local' | 'remote'; caseInsensitive?: boolean }[], user = 'claude', runArgs: string[] = []): string {
   const rootOnlyDevice = user === 'root' ? 'chmod 600 /dev/fuse; ' : '';
   const container = docker(
     'run', '-d', '--user', user, '--device', '/dev/fuse', '--cap-add', 'SYS_ADMIN', '--security-opt', 'apparmor=unconfined', ...runArgs,
@@ -56,6 +59,13 @@ function healthVolumes(container: string): string[] {
   return JSON.parse(sh(container, 'curl -s localhost:3000/health')).volumes;
 }
 
+async function waitForUploadQueueToDrain(container: string, volumeId: string): Promise<void> {
+  await waitFor(() => {
+    const reply = sh(container, `curl -sf --unix-socket /tmp/rclone-${volumeId}.sock -X POST -H "Content-Type: application/json" -d '{}' http://rc/vfs/queue`);
+    return JSON.parse(reply).queue.length === 0;
+  }, 5_000);
+}
+
 // Every /health status seen until it answers 200.
 async function healthUntilOk(container: string): Promise<Set<string>> {
   const seen = new Set<string>();
@@ -69,20 +79,29 @@ async function healthUntilOk(container: string): Promise<Set<string>> {
 
 describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
   beforeAll(() => {
-    execFileSync('docker', ['build', '-t', IMAGE, CONTEXT], { stdio: 'ignore', timeout: 900_000 });
+    if (!PREBUILT_IMAGE) {
+      execFileSync('docker', ['build', '-t', IMAGE, CONTEXT], { stdio: 'ignore', timeout: 900_000 });
+    }
   }, 900_000);
 
   afterAll(() => {
     spawnSync('docker', ['rm', '-f', ...containers], { stdio: 'ignore', timeout: 60_000 });
   }, 60_000);
 
-  it.each(['claude', 'root'])('started as %s, mounts a served volume, and every file operation reaches the source', async (user) => {
+  // no-new-privs is the Lambda MicroVM: the setuid fusermount3 cannot mount there, so start.sh puts its root helper in front.
+  it.each([
+    ['claude', []],
+    ['root', []],
+    ['root under no-new-privs', ['--security-opt', 'no-new-privileges']],
+  ])('started as %s, mounts a served volume, and every file operation reaches the source', async (label, runArgs) => {
+    const user = label.split(' ')[0]
     const source = '/tmp/src/v_good';
     const mount = '/mounts/docs';
     const container = startAgent(
       `mkdir -p ${source} && echo hello > ${source}/a.txt && chmod -R a+rwX /tmp/src && rclone serve webdav /tmp/src --addr 127.0.0.1:8080 --baseurl /api/volumes --dir-cache-time 0s`,
       [{ volumeId: 'v_good', name: 'docs' }],
       user,
+      runArgs,
     );
     await healthUntilOk(container);
     expect(sh(container, 'stat -c %U /proc/1')).toBe('claude');
@@ -113,6 +132,9 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
 
     sh(container, `echo outside > ${source}/new.txt`);
     await waitFor(() => sh(container, `cat ${mount}/new.txt 2>/dev/null || true`) === 'outside', 2_000);
+
+    sh(container, `fusermount3 -uz ${mount}`);
+    expect(sh(container, `findmnt -n ${mount} || true`)).toBe('');
   }, 60_000);
 
   it('reads what the host wrote over a file the agent wrote, at the same size and after a resize', async () => {
@@ -183,6 +205,69 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
     expect(sh(container, 'cat /mounts/cloud/new.txt')).toBe('own-write');
     await waitFor(() => sh(container, `cat ${source}/new.txt 2>/dev/null || true`) === 'own-write', 5_000);
   }, 340_000);
+
+  it('remote mounts resolve newly created children after a directory rename and refresh', async () => {
+    const source = '/tmp/src/cloud';
+    const mount = '/mounts/cloud';
+    const container = startAgent(
+      `mkdir -p ${source} && chmod -R a+rwX /tmp/src && rclone serve webdav /tmp/src --addr 127.0.0.1:8080 --baseurl /api/volumes --dir-cache-time 0s`,
+      [{ volumeId: 'cloud', name: 'cloud', cacheMode: 'remote' }],
+    );
+    await healthUntilOk(container);
+    sh(container, `mkdir -p ${mount}/tree/a/b && echo original > ${mount}/tree/a/b/file`);
+    await waitFor(() => sh(container, `cat ${source}/tree/a/b/file 2>/dev/null || true`) === 'original', 5_000);
+    // Source bytes appear before rclone finishes upload verification. Wait for
+    // that upload before testing a rename or an external edit of the same file.
+    await waitForUploadQueueToDrain(container, 'cloud');
+    sh(container, `mv ${mount}/tree/a ${mount}/tree/moved`);
+    expect(sh(container, `cat ${mount}/tree/moved/b/file`)).toBe('original');
+    sh(container, `rm ${mount}/tree/moved/b/file`);
+    expect(sh(container, `test ! -f ${source}/tree/moved/b/file && echo removed`)).toBe('removed');
+
+    sh(container, `echo initial > ${mount}/fresh`);
+    await waitFor(() => sh(container, `cat ${source}/fresh 2>/dev/null || true`) === 'initial', 5_000);
+    await waitForUploadQueueToDrain(container, 'cloud');
+    expect(sh(container, `cat ${mount}/fresh`)).toBe('initial');
+    await new Promise(resolve => setTimeout(resolve, 1_100));
+    sh(container, `echo replaced-and-longer > ${source}/fresh`);
+    sh(container, 'curl -sf --unix-socket /tmp/rclone-cloud.sock -X POST -H "Content-Type: application/json" -d "{}" http://rc/vfs/refresh');
+    expect(sh(container, `cat ${mount}/fresh`)).toBe('replaced-and-longer');
+  }, 60_000);
+
+  it('case-only rename retains the file when WebDAV resolves case aliases', async () => {
+    // Emulate Dropbox's case-insensitive lookup over a real filesystem server.
+    // Leave Destination untouched so MOVE preserves the requested spelling.
+    const proxy = `
+      const http = require('http'), fs = require('fs'), path = require('path');
+      http.createServer((req, res) => {
+        const parts = decodeURIComponent(req.url.split('?')[0]).split('/').filter(Boolean).slice(2);
+        let current = '/tmp/src';
+        const canonical = parts.map(part => {
+          const entries = fs.existsSync(current) ? fs.readdirSync(current) : [];
+          const match = entries.find(name => name === part) || entries.find(name => name.toLowerCase() === part.toLowerCase()) || part;
+          current = path.join(current, match);
+          return encodeURIComponent(match);
+        });
+        const target = '/api/volumes/' + canonical.join('/') + (req.url.endsWith('/') ? '/' : '');
+        const upstream = http.request({ hostname: '127.0.0.1', port: 8081, path: target, method: req.method, headers: req.headers }, response => {
+          res.writeHead(response.statusCode, response.headers); response.pipe(res);
+        });
+        upstream.on('error', () => { res.statusCode = 502; res.end(); });
+        req.pipe(upstream);
+      }).listen(8080, '127.0.0.1');
+    `;
+    const quoted = "'" + proxy.replace(/'/g, "'\\''") + "'";
+    const container = startAgent(
+      `mkdir -p /tmp/src/cloud && chmod -R a+rwX /tmp/src && (rclone serve webdav /tmp/src --addr 127.0.0.1:8081 --baseurl /api/volumes --dir-cache-time 0s & node -e ${quoted})`,
+      [{ volumeId: 'cloud', name: 'cloud', cacheMode: 'remote', caseInsensitive: true }],
+    );
+    await healthUntilOk(container);
+    sh(container, 'echo case-test > /mounts/cloud/lower.txt');
+    await waitFor(() => sh(container, 'cat /tmp/src/cloud/lower.txt 2>/dev/null || true') === 'case-test', 5_000);
+    sh(container, 'mv /mounts/cloud/lower.txt /mounts/cloud/LOWER.txt');
+    expect(sh(container, 'ls /tmp/src/cloud')).toBe('LOWER.txt');
+    expect(sh(container, 'cat /tmp/src/cloud/LOWER.txt')).toBe('case-test');
+  }, 60_000);
 
   it('git sees no mode change in a mounted repo, and keeps the executable bit outside /mounts', async () => {
     // The repo is made on the source side, as on the host: a repo made through the mount would detect
@@ -262,4 +347,37 @@ describe.skipIf(!ENABLED)('volume mounts in the agent image', () => {
     expect(fs.readFileSync(path.join(source, 'late.txt'), 'utf8')).toBe('late\n');
     fs.rmSync(source, { recursive: true });
   }, 60_000);
+
+  it.each(['local', 'remote', 'dead-rclone'] as const)('preserves unfinished %s uploads in the workspace after the container is removed', async mode => {
+    const source = fs.mkdtempSync(path.join(os.tmpdir(), 'volume-preserve-source-'));
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'volume-preserve-workspace-'));
+    for (const dir of [source, workspace]) fs.chmodSync(dir, 0o777);
+    try {
+      const container = startAgent(
+        'rclone serve webdav /srv --addr 127.0.0.1:8080 --baseurl /api/volumes --bwlimit 1M',
+        [{ volumeId: 'v_preserve', name: 'docs', cacheMode: mode === 'local' ? 'local' : 'remote' }],
+        'claude', ['-v', `${source}:/srv/v_preserve`, '-v', `${workspace}:/workspace`],
+      );
+      await healthUntilOk(container);
+      sh(container, 'head -c 40000000 /dev/urandom > /mounts/docs/pending.bin');
+      const expected = sh(container, 'sha256sum /mounts/docs/pending.bin').split(' ')[0];
+      if (mode === 'dead-rclone') sh(container, "pkill -KILL -f '^rclone mount(2)? '");
+      const started = Date.now();
+      const result = JSON.parse(sh(container, 'curl -sf -X POST localhost:3000/volumes/prepare-stop'));
+      expect(result).toEqual({ drained: false, recovered: 1, recoveryErrors: 0 });
+      expect(Date.now() - started).toBeLessThan(20_000);
+      docker('stop', '-t', '5', container);
+      docker('rm', container);
+      const root = path.join(workspace, 'recovered-volume-uploads');
+      const files = fs.readdirSync(root, { recursive: true, encoding: 'utf8' });
+      const saved = files.find(file => file.includes('/vfs/') && file.endsWith('/pending.bin'))!;
+      const bytes = fs.readFileSync(path.join(root, saved));
+      expect(bytes.length).toBe(40_000_000);
+      expect(createHash('sha256').update(bytes).digest('hex')).toBe(expected);
+      expect(files.some(file => file.includes('/vfsMeta/') && file.endsWith('/pending.bin'))).toBe(true);
+    } finally {
+      fs.rmSync(source, { recursive: true, force: true });
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  }, 90_000);
 });

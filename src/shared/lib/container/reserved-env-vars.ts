@@ -33,6 +33,7 @@ export const RESERVED_ENV_VAR_KEYS: ReadonlySet<string> = new Set([
   'SUPERAGENT_AGENT_NAME',
   // Account + MCP metadata
   'CONNECTED_ACCOUNTS',
+  'CONNECTED_ACCOUNT_TOOLKITS',
   'REMOTE_MCPS',
   // The agent's volumes, mounted by the image
   'SUPERAGENT_VOLUMES',
@@ -43,8 +44,11 @@ export const RESERVED_ENV_VAR_KEYS: ReadonlySet<string> = new Set([
   // Runtime environment
   'TZ',
   'HOST_PLATFORM',
+  'HOST_COMPUTER_USE',
+  'HOST_APP_SANDBOX',
   'COMPOSIO_PLATFORM_MODE',
   'PLATFORM_AUTH_ACTIVE',
+  'WEBHOOK_RELAY_AVAILABLE',
   'CLAUDE_CODE_ATTRIBUTION_HEADER',
 ])
 

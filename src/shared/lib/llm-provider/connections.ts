@@ -5,6 +5,7 @@ import { withGlobalModelPricing } from './global-pricing'
 import { findAdminOnlyProviderEnvVars, isProviderEnvVar } from './provider-env'
 import { connectionModelOverridesSchema, normalizeConnectionModelOverrides } from './connection-schema'
 import { mergeCatalog } from './catalog-merge'
+import { bestAllowedModel } from './model-availability'
 import { parseConnectionJson } from './connection-schema'
 import { randomUUID } from 'node:crypto'
 import { legacyLlmProviderId, providerCredentialFields } from './provider-settings'
@@ -30,8 +31,12 @@ import {
   connectionInputSchema,
   mergeConnectionConfig,
   modelSelectionSchema,
+  globalSelectionStateSchema,
   resolveSelection,
   type ConnectionInfo,
+  type ModelSelection,
+  type GlobalSelectionState,
+  type GlobalSelectionChange,
 } from './connection-schema'
 
 export type ConnectionRow = typeof llmConnections.$inferSelect
@@ -114,6 +119,8 @@ export async function listConnections(
       isConfigured: provider.getApiKeyStatus().isConfigured,
       supportsDirectApi: provider.supportsDirectApi,
       supportsUsage: provider.supportsUsage,
+      supportsModelAvailability: provider.supportsModelAvailability,
+      modelAvailabilityRevision: provider.getModelAvailabilityRevision(),
       catalog: connectionCatalog(row),
       defaultModel: defaultSelectionForConnection(row)?.model ?? null,
       modelOverrides: connectionModelOverrides(row),
@@ -248,6 +255,24 @@ export async function saveConnection(
   })
 }
 
+export async function shareConnection(id: string, viewer: ConnectionViewer): Promise<void> {
+  await mutateConnections(async () => {
+    const row = await getConnection(id)
+    if (!row) throw new Error('Connection not found')
+    assertManageConnection(row, viewer)
+    if (row.userId === null) return
+    if (!viewer.admin) throw new Error('Only administrators can share connections with everyone')
+    // Ownership does not change credentials. Rotating their generation here
+    // would discard a concurrent OAuth refresh's newly issued token pair.
+    const updated = await db
+      .update(llmConnections)
+      .set({ userId: null, updatedAt: new Date() })
+      .where(and(eq(llmConnections.id, id), eq(llmConnections.userId, row.userId)))
+      .run()
+    if (!changesOf(updated)) throw new Error('Connection changed while saving. Please retry.')
+  })
+}
+
 export async function deleteConnection(id: string, viewer: ConnectionViewer): Promise<void> {
   await mutateConnections(async () => {
     const row = await getConnection(id)
@@ -268,34 +293,73 @@ export async function deleteConnection(id: string, viewer: ConnectionViewer): Pr
   })
 }
 
+async function applyGlobalSelection(
+  purpose: 'default' | 'summarizer',
+  selection: ModelSelection | null,
+  restore?: { summarizerSelection: ModelSelection | null },
+): Promise<void> {
+  const resolved = await resolveConnectionSelection(selection)
+  if (selection && (!resolved || resolved.connection.userId !== null))
+    throw new Error('Select a model from a global connection')
+  if (purpose === 'summarizer' && resolved && !resolved.provider.supportsDirectApi)
+    throw new Error('This provider cannot be used as a summarizer. Choose an API-capable provider.')
+  let summarizerSelection = purpose === 'summarizer' ? selection : getSettings().llmSummarizer
+  const root = purpose === 'default' ? resolved : await resolveGlobalSelection()
+  if (root?.provider.supportsDirectApi === false) {
+    const summarizer = purpose === 'summarizer' ? resolved : await resolveSummarizerSelection()
+    if (!isHelperSelection(summarizer)) {
+      // A subscription default still needs the API-capable helper used by the previous default.
+      const inherited = purpose === 'default' ? await resolveGlobalSelection() : null
+      if (!isHelperSelection(inherited))
+        throw new Error('Choose a separate API-capable summarizer before using this app default.')
+      summarizerSelection = { llmProviderId: inherited.llmProviderId, model: inherited.model }
+    }
+  }
+  if (restore) summarizerSelection = restore.summarizerSelection
+  mutateSettings((s) => {
+    if (purpose === 'default' && selection) s.llmDefault = selection
+    s.llmSummarizer = summarizerSelection
+  })
+}
+
+export async function globalSelectionState(): Promise<GlobalSelectionState> {
+  const root = await resolveGlobalSelection()
+  const summarizer = await resolveSummarizerSelection()
+  return {
+    defaultSelection: root ? { llmProviderId: root.llmProviderId, model: root.model } : null,
+    summarizerSelection: isHelperSelection(summarizer) ? { llmProviderId: summarizer.llmProviderId, model: summarizer.model } : null,
+  }
+}
+
 export async function setGlobalSelection(
   purpose: 'default' | 'summarizer',
   raw: unknown
-): Promise<void> {
-  const selection =
-    raw === null && purpose === 'summarizer' ? null : modelSelectionSchema.parse(raw)
-  await mutateConnections(async () => {
-    const resolved = await resolveConnectionSelection(selection)
-    if (selection && (!resolved || resolved.connection.userId !== null))
-      throw new Error('Select a model from a global connection')
-    if (purpose === 'summarizer' && resolved && !resolved.provider.supportsDirectApi)
-      throw new Error('This provider cannot be used as a summarizer. Choose an API-capable provider.')
-    let summarizerSelection = purpose === 'summarizer' ? selection : getSettings().llmSummarizer
-    const root = purpose === 'default' ? resolved : await resolveGlobalSelection()
-    if (root?.provider.supportsDirectApi === false) {
-      const summarizer = purpose === 'summarizer' ? resolved : await resolveSummarizerSelection()
-      if (!isHelperSelection(summarizer)) {
-        // Preserve the API helper already in use when switching to a subscription.
-        const inherited = purpose === 'default' ? await resolveGlobalSelection() : null
-        if (!isHelperSelection(inherited))
-          throw new Error('Choose a separate API-capable summarizer before using this app default.')
-        summarizerSelection = { llmProviderId: inherited.llmProviderId, model: inherited.model }
-      }
-    }
-    mutateSettings((s) => {
-      if (purpose === 'default' && selection) s.llmDefault = selection
-      s.llmSummarizer = summarizerSelection
-    })
+): Promise<GlobalSelectionChange> {
+  const selection = raw === null && purpose === 'summarizer' ? null : modelSelectionSchema.parse(raw)
+  return mutateConnections(async () => {
+    // Capture the rollback state in the same queue as the write, never from a client's cache.
+    const before = await globalSelectionState()
+    await applyGlobalSelection(purpose, selection)
+    return { before, after: await globalSelectionState() }
+  })
+}
+
+/** Restore a previous app default and summarizer only if nothing changed them since `expected` was observed. */
+export async function compareAndSetGlobalDefault(expectedRaw: unknown, restoreRaw: unknown): Promise<boolean> {
+  const expected = globalSelectionStateSchema.parse(expectedRaw)
+  const restore = globalSelectionStateSchema.parse(restoreRaw)
+  if (!expected.defaultSelection || !restore.defaultSelection)
+    throw new Error('Select a model from a global connection')
+  return mutateConnections(async () => {
+    const current = await globalSelectionState()
+    if (JSON.stringify(current) !== JSON.stringify(expected)) return false
+    if (restore.summarizerSelection && !isHelperSelection(await resolveConnectionSelection(restore.summarizerSelection)))
+      throw new Error('Select an API-capable global summarizer')
+    const root = await resolveConnectionSelection(restore.defaultSelection)
+    if (root?.provider.supportsDirectApi === false && !restore.summarizerSelection)
+      throw new Error('Choose a separate API-capable summarizer before using this app default.')
+    await applyGlobalSelection('default', restore.defaultSelection, { summarizerSelection: restore.summarizerSelection })
+    return true
   })
 }
 
@@ -337,6 +401,8 @@ export type ResolvedConnection = NonNullable<Awaited<ReturnType<typeof resolveCo
 
 const legacySelections = new WeakSet<StoredModelSelection>()
 
+type SelectionCandidate = StoredModelSelection | null | undefined
+
 /** Undefined ID is legacy data. Explicit NULL is a cleared/deleted binding. */
 export function storedSelection(
   model?: string | null,
@@ -370,16 +436,50 @@ export async function resolveGlobalSelection(): Promise<ResolvedConnection | nul
   return null
 }
 
+// Catalog ids the connection's provider says cannot run now (e.g. the acting
+// account's plan excludes them). Execution only: settings show saved values.
+async function unavailableModelIds(row: ConnectionRow): Promise<Set<string>> {
+  const availability = await providerForConnection(row).getModelAvailability(connectionCatalog(row))
+  return new Set(availability?.unavailable.map(entry => entry.modelId))
+}
+
+async function isRunnable(resolved: ResolvedConnection): Promise<boolean> {
+  return !(await unavailableModelIds(resolved.connection)).has(resolved.wireModel)
+}
+
+// The connection's default for this purpose when it can run, else the best
+// model it can run; null when it can run nothing.
+async function runnableDefaultForConnection(row: ConnectionRow, purpose: 'agent' | 'summarizer' = 'agent') {
+  const preferred = defaultSelectionForConnection(row, purpose)
+  const unavailable = await unavailableModelIds(row)
+  if (!preferred || !unavailable.has(preferred.wireModel)) return preferred
+  const model = bestAllowedModel(connectionCatalog(row), m => unavailable.has(m.id))
+  return model ? { llmProviderId: row.id, model: model.id, wireModel: model.id, connection: row, provider: preferred.provider } : null
+}
+
+/**
+ * The model a run uses: the first candidate that resolves (an explicit pick,
+ * the trigger's or session's model, the agent default), then the global
+ * default, then the global connection's own default. A model the provider
+ * says cannot run now counts as unset, like a retired one, so the list keeps
+ * going. With nothing runnable the global default stands, and the provider's
+ * refusal says why.
+ *
+ * A candidate may be a function, called only when every candidate before it
+ * fell through: one that costs a read (the agent's preferences) is then paid
+ * for only by the runs that need it.
+ */
 export async function resolveSelectionHierarchy(
-  ...candidates: (StoredModelSelection | null | undefined)[]
+  ...candidates: (SelectionCandidate | (() => Promise<SelectionCandidate>))[]
 ): Promise<ResolvedConnection> {
   for (const candidate of candidates) {
-    const resolved = await resolveConnectionSelection(candidate, true)
-    if (resolved) return resolved
+    const resolved = await resolveConnectionSelection(typeof candidate === 'function' ? await candidate() : candidate, true)
+    if (resolved && await isRunnable(resolved)) return resolved
   }
   const root = await resolveGlobalSelection()
   if (!root) throw new Error('Configure a global default connection and model in Settings → LLM')
-  return root
+  if (await isRunnable(root)) return root
+  return (await runnableDefaultForConnection(root.connection)) ?? root
 }
 
 export const resolveExecutionSelection = resolveSelectionHierarchy
@@ -410,11 +510,17 @@ export async function resolveSummarizerSelection(): Promise<ResolvedConnection |
   return defaultSelectionForConnection(row, 'summarizer')
 }
 
+// A helper the provider says cannot run now falls back to its connection's summarizer default.
+async function runnableHelper(selection: ResolvedConnection): Promise<ResolvedConnection> {
+  if (await isRunnable(selection)) return selection
+  return (await runnableDefaultForConnection(selection.connection, 'summarizer')) ?? selection
+}
+
 export async function resolveHelperSelection(): Promise<ResolvedConnection> {
   const override = await resolveSummarizerSelection()
-  if (isHelperSelection(override)) return override
+  if (isHelperSelection(override)) return runnableHelper(override)
   const root = await resolveGlobalSelection()
-  if (isHelperSelection(root)) return root
+  if (isHelperSelection(root)) return runnableHelper(root)
   if (!root) throw new HelperConfigurationError('Configure a global default provider and model in Settings → Model Providers')
   throw new HelperConfigurationError()
 }

@@ -40,7 +40,10 @@ test.describe('composer Markdown blocks', () => {
     await expect(input.locator('h2')).toHaveText('Hello')
     await expect(input.locator('ul').first().locator(':scope > li')).toHaveCount(2)
 
-    await input.fill('')
+    // Clear through the editor so the synthetic paste sees an empty document.
+    await input.press('ControlOrMeta+A')
+    await input.press('Backspace')
+    await expect(input).toHaveText('')
     await input.evaluate((element) => {
       const clipboardData = new DataTransfer()
       clipboardData.setData(
@@ -133,10 +136,11 @@ test.describe('composer Markdown blocks', () => {
     await expect.poll(() => input.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
   })
 
-  test('keeps contextual ligatures enabled in the editor', async ({ page }) => {
+  test('keeps ligatures and the arrow set enabled in the editor', async ({ page }) => {
     const input = page.locator('[data-testid="home-message-input"]')
-    // prosemirror-view's stylesheet disables ligatures on .ProseMirror, which
-    // would also kill Inter's -> / => arrow substitutions; globals.css must win.
+    // prosemirror-view's stylesheet sets `font-feature-settings: "liga" 0` on
+    // .ProseMirror, which would replace the inherited "ss08" (Slussen's arrow
+    // set, drawing -> as an arrow); globals.css must win.
     await expect(input).toHaveClass(/ProseMirror/)
     const styles = await input.evaluate((element) => {
       const computed = window.getComputedStyle(element)
@@ -146,7 +150,7 @@ test.describe('composer Markdown blocks', () => {
       }
     })
     expect(styles.ligatures).toBe('normal')
-    expect(styles.features).toBe('normal')
+    expect(styles.features).toBe('"ss08"')
   })
 
   test('creates a code block before session Enter-to-send', async ({ page }) => {

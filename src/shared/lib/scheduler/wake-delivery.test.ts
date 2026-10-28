@@ -33,24 +33,26 @@ const mockMarkSessionActive = vi.fn()
 const mockMarkSessionIdle = vi.fn()
 const mockIsSubscribed = vi.fn()
 const mockCancelAwaitingInput = vi.fn()
-const mockBroadcastGlobal = vi.fn()
-const mockBroadcastSessionUpdate = vi.fn()
+const mockPublishGlobal = vi.fn()
+const mockEmit = vi.fn()
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    withSessionSend: async (agentSlug: string, sessionId: string, _client: unknown, send: () => Promise<unknown>) => {
+vi.mock('@shared/lib/notifications/global-feed', () => ({
+  globalFeed: { publish: (...args: unknown[]) => mockPublishGlobal(...args), subscribe: () => () => {} },
+}))
+
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    markSending: (agentSlug, sessionId) => {
       mockMarkSessionActive(agentSlug, sessionId)
-      try { return await send() }
-      catch (error) { mockMarkSessionIdle(agentSlug, sessionId); throw error }
+      return { queued: false, rollback: () => mockMarkSessionIdle(agentSlug, sessionId) }
     },
-    subscribeToSession: (...args: unknown[]) => mockSubscribeToSession(...args),
-    markSessionActive: (...args: unknown[]) => mockMarkSessionActive(...args),
-    markSessionIdle: (...args: unknown[]) => mockMarkSessionIdle(...args),
-    isSubscribed: (...args: unknown[]) => mockIsSubscribed(...args),
-    cancelAwaitingInput: (...args: unknown[]) => mockCancelAwaitingInput(...args),
-    broadcastGlobal: (...args: unknown[]) => mockBroadcastGlobal(...args),
-    broadcastSessionUpdate: (...args: unknown[]) => mockBroadcastSessionUpdate(...args),
-  },
+    subscribe: (...args) => mockSubscribeToSession(...args),
+    markActive: (...args) => mockMarkSessionActive(...args),
+    markIdle: (...args) => mockMarkSessionIdle(...args),
+    isSubscribed: (...args) => mockIsSubscribed(...args),
+    cancelAwaitingInput: (...args) => mockCancelAwaitingInput(...args),
+    emit: (...args) => mockEmit(...args),
+  }),
 }))
 
 const mockTriggerScheduledSessionResumed = vi.fn()
@@ -77,6 +79,7 @@ vi.mock('@shared/lib/services/agent-service', () => ({
 }))
 
 import { deliverSessionWake } from './wake-delivery'
+import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 
 const wakeExecutionAt = new Date('2026-06-26T17:00:00.000Z')
 
@@ -117,7 +120,7 @@ describe('deliverSessionWake', () => {
     mockGetScheduledTask.mockImplementation(async () => createWakeTask())
     mockMarkTaskExecuted.mockResolvedValue(undefined)
     mockEnsureRunning.mockResolvedValue({ sendMessage: mockSendMessage })
-    mockSendMessage.mockResolvedValue(undefined)
+    mockSendMessage.mockResolvedValue({})
     mockSubscribeToSession.mockResolvedValue(undefined)
     mockIsSubscribed.mockReturnValue(false)
     mockCancelAwaitingInput.mockResolvedValue(undefined)
@@ -135,7 +138,9 @@ describe('deliverSessionWake', () => {
     const [sessionId, content, , options] = mockSendMessage.mock.calls[0]
     expect(sessionId).toBe('sleeping-session-1')
     expect(content.startsWith('[SYSTEM] ')).toBe(true)
-    expect(options).toEqual({ shouldQuery: true })
+    expect(options).toMatchObject({ shouldQuery: true })
+    expect(options).not.toHaveProperty('preserveRuntime')
+    expect(mockCancelAwaitingInput).toHaveBeenCalledWith('agent-one', 'sleeping-session-1')
     expect(mockUpdateSessionMetadata).toHaveBeenCalledWith(
       expect.objectContaining({ slug: 'agent-one' }),
       'sleeping-session-1',
@@ -143,7 +148,7 @@ describe('deliverSessionWake', () => {
     )
     expect(mockMarkTaskExecuted).toHaveBeenCalledWith('wake-task-1', 'sleeping-session-1')
     expect(mockTriggerScheduledSessionResumed).toHaveBeenCalled()
-    expect(mockBroadcastGlobal).toHaveBeenCalledWith(
+    expect(mockPublishGlobal).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'session_updated', sessionId: 'sleeping-session-1' })
     )
   })
@@ -160,7 +165,7 @@ describe('deliverSessionWake', () => {
     // Slow send: both callers are inside deliverSessionWake at the same time
     let releaseSend!: () => void
     mockSendMessage.mockImplementation(
-      () => new Promise<void>((resolve) => { releaseSend = () => resolve() })
+      () => new Promise((resolve) => { releaseSend = () => resolve({}) })
     )
 
     const task = createWakeTask()
@@ -222,8 +227,8 @@ describe('deliverSessionWake', () => {
     expect(mockSendMessage).not.toHaveBeenCalled()
   })
 
-  it('reverts the optimistic active flag when the send fails, then rethrows', async () => {
-    mockSendMessage.mockRejectedValue(new Error('container is restarting'))
+  it('reverts the optimistic active flag when the container refuses the send, then rethrows', async () => {
+    mockSendMessage.mockRejectedValue(new MessageNotAcceptedError('unavailable', 'container is restarting'))
 
     await expect(deliverSessionWake(createWakeTask(), 'scheduled')).rejects.toThrow(
       'container is restarting'

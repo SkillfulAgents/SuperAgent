@@ -1,10 +1,11 @@
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type ComponentProps, type KeyboardEvent, type ReactNode } from 'react'
 import { Check, ChevronDown, Plus, Search } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
 import type { ApiAgent } from '@shared/lib/types/api'
 import { Button } from '@renderer/components/ui/button'
 import { HighlightMatch } from '@renderer/components/ui/highlight-match'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { useAgents } from '@renderer/hooks/use-agents'
 import { useUserSettings } from '@renderer/hooks/use-user-settings'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
@@ -66,7 +67,13 @@ export interface AgentDropdownProps {
   onSelectNew?: () => void
   /** "New Agent" is the current choice. */
   newSelected?: boolean
+  /** Shows the search and list in place, with no trigger or popover, for a dialog that only asks for an agent. */
+  inline?: boolean
 }
+
+// Inline, the popover's parts become a plain bordered box around the same list.
+const InlineRoot = ({ children }: ComponentProps<typeof Popover>) => <>{children}</>
+const InlineContent = ({ children }: ComponentProps<typeof PopoverContent>) => <div className="overflow-hidden rounded-md border">{children}</div>
 
 /**
  * Pick an agent: a searchable list in the sidebar's order, with its folders
@@ -85,6 +92,7 @@ export function AgentDropdown({
   testId = 'agent-dropdown',
   onSelectNew,
   newSelected = false,
+  inline = false,
 }: AgentDropdownProps) {
   const { data: allAgents } = useAgents()
   const { data: settings } = useUserSettings()
@@ -138,9 +146,11 @@ export function AgentDropdown({
   }
 
   let index = -1
+  const Root = inline ? InlineRoot : Popover
+  const Content = inline ? InlineContent : PopoverContent
   return (
-    <Popover open={open} onOpenChange={(o) => (o ? setOpen(true) : close())} modal>
-      <PopoverTrigger asChild disabled={disabled}>
+    <Root open={open} onOpenChange={(o) => (o ? setOpen(true) : close())} modal>
+      {!inline && <PopoverTrigger asChild disabled={disabled}>
         {trigger ?? (
           <Button
             variant="outline"
@@ -149,12 +159,13 @@ export function AgentDropdown({
             className={cn('h-8 justify-between gap-1.5 font-normal', !selected && !newSelected && 'text-muted-foreground', className)}
             data-testid={testId}
           >
-            <span className="truncate">{selected ? selected.name : newSelected ? 'New Agent' : placeholder}</span>
+            {selected && <AgentAvatar agent={selected} size={16} />}
+            <span className="mr-auto truncate">{selected ? selected.name : newSelected ? 'New Agent' : placeholder}</span>
             <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-60" />
           </Button>
         )}
-      </PopoverTrigger>
-      <PopoverContent align={align} className="w-64 overflow-hidden p-0" onWheel={(e) => e.stopPropagation()}>
+      </PopoverTrigger>}
+      <Content align={align} className="w-64 overflow-hidden p-0" onWheel={(e) => e.stopPropagation()}>
         <div className="flex items-center border-b px-3">
           <Search className="mr-2 h-4 w-4 shrink-0 opacity-50" />
           <input
@@ -175,7 +186,7 @@ export function AgentDropdown({
         <div ref={listRef} id={listId} role="listbox" aria-label="Agents" className="max-h-72 overflow-y-auto overscroll-contain p-1">
           {options.length === 0 && !onSelectNew && (
             <div className="px-3 py-6 text-center text-sm text-muted-foreground">
-              {agents.length === 0 ? 'No agents yet.' : 'No agents found.'}
+              {allAgents === undefined ? 'Loading agents…' : agents.length === 0 ? 'No agents yet.' : 'No agents found.'}
             </div>
           )}
           {sections.map(({ folder, agents: inSection }) => (
@@ -208,10 +219,11 @@ export function AgentDropdown({
                     )}
                     data-testid={`${testId}-option-${agent.slug}`}
                   >
-                    <Check className={cn('h-4 w-4 shrink-0', isSelected ? 'opacity-100' : 'opacity-0')} />
+                    <AgentAvatar agent={agent} size={18} />
                     <span className="truncate">
                       <HighlightMatch text={agent.name} query={query.trim()} />
                     </span>
+                    {isSelected && <Check className="ml-auto h-4 w-4 shrink-0" />}
                   </div>
                 )
               })}
@@ -234,12 +246,14 @@ export function AgentDropdown({
               )}
               data-testid={`${testId}-new`}
             >
-              {newSelected ? <Check className="h-4 w-4 shrink-0" /> : <Plus className="h-4 w-4 shrink-0 text-muted-foreground" />}
+              {/* The plus sits where the agents' avatars do, so the names line up. */}
+              <Plus className="h-[18px] w-[18px] shrink-0 p-px text-muted-foreground" />
               <span className="truncate">New Agent</span>
+              {newSelected && <Check className="ml-auto h-4 w-4 shrink-0" />}
             </div>
           )}
         </div>
-      </PopoverContent>
-    </Popover>
+      </Content>
+    </Root>
   )
 }

@@ -16,13 +16,17 @@ export interface BackgroundTaskRef {
   taskType?: string
   /** The runtime's own description — the label when the transcript has no launching call. */
   description?: string
+  /** A subagent task's type, from the runtime's task list (SDK >= 0.3.293). */
+  subagentType?: string
 }
 
 export interface BackgroundTaskLabel {
-  /** What kind of work: the subagent type, "Background command", "Background workflow". */
+  /** What kind of work: the subagent type, "Background command", "Background workflow", "Monitor". */
   title: string
   /** The command or description, when the transcript has it. */
   detail: string | null
+  /** A Monitor watch: its output wakes the agent until it ends. */
+  isMonitor?: boolean
 }
 
 export interface LabeledBackgroundTask extends BackgroundTaskRef, BackgroundTaskLabel {}
@@ -47,11 +51,15 @@ function resultText(result: unknown): string {
 }
 
 // A task with no launching call in this transcript — a subagent launched it,
-// or the call predates what is loaded — still has the runtime's description.
+// the call predates what is loaded, or its result has not arrived yet — still
+// has the runtime's description, and a subagent its type.
 function genericLabel(task: BackgroundTaskRef): BackgroundTaskLabel {
   const detail = task.description || null
   if (task.isWorkflow) return { title: 'Background workflow', detail }
-  if (task.isSubagent) return { title: 'Background agent', detail }
+  if (task.isSubagent) return { title: task.subagentType || 'Background agent', detail }
+  // A WebSocket watch has a type of its own; a command watch is a shell task,
+  // known only from its launching call.
+  if (task.taskType?.startsWith('monitor_')) return { title: 'Monitor', detail, isMonitor: true }
   return { title: 'Background command', detail }
 }
 
@@ -73,6 +81,12 @@ export function labelBackgroundTasks(
         if (!taskId) continue
         const command = typeof call.input.command === 'string' ? call.input.command : null
         byTaskId.set(taskId, { title: 'Background command', detail: command })
+      } else if (call.name === 'Monitor' && call.backgroundTaskId) {
+        const input = call.input as { description?: unknown; command?: unknown; ws?: { url?: unknown } }
+        const detail = typeof input.description === 'string' && input.description
+          ? input.description
+          : typeof input.ws?.url === 'string' ? input.ws.url : typeof input.command === 'string' ? input.command : null
+        byTaskId.set(call.backgroundTaskId, { title: 'Monitor', detail, isMonitor: true })
       } else if ((call.name === 'Agent' || call.name === 'Task') && call.subagent?.agentId) {
         const input = call.input as { subagent_type?: unknown; description?: unknown }
         byTaskId.set(call.subagent.agentId, {

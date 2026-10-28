@@ -113,6 +113,64 @@ describe('lost-update protection (serialized read-modify-write)', () => {
   })
 })
 
+describe('no-op updates', () => {
+  // A write replaces the file through a rename, so a new inode is the mark of one.
+  const fileIdentity = (slug: string) => {
+    const stat = fs.statSync(metadataPath(slug))
+    return { ino: stat.ino, mtimeMs: stat.mtimeMs }
+  }
+
+  it('writes nothing when every value is already stored', async () => {
+    const { registerSession, updateSessionMetadata } = await importService()
+    makeAgent('agent')
+    await registerSession(createLocalSessionStore('agent'), 's1', 'Original')
+    await updateSessionMetadata(createLocalSessionStore('agent'), 's1', {
+      model: 'opus',
+      effort: 'high',
+      alertDeviceId: null,
+      lastWake: { taskId: 't1', executionAt: '2026-01-01T00:00:00.000Z' },
+    })
+    const before = fileIdentity('agent')
+
+    const store = createLocalSessionStore('agent')
+    const previous = await updateSessionMetadata(store, 's1', { model: 'opus', effort: 'high' })
+    await updateSessionMetadata(store, 's1', { alertDeviceId: null })
+    // Equal by value, not by reference.
+    await updateSessionMetadata(store, 's1', { lastWake: { taskId: 't1', executionAt: '2026-01-01T00:00:00.000Z' } })
+    // An undefined value is the absent key it would serialize to.
+    await updateSessionMetadata(store, 's1', { starred: undefined })
+    await updateSessionMetadata(store, 's1', {})
+
+    expect(fileIdentity('agent')).toEqual(before)
+    expect(previous).toMatchObject({ name: 'Original', model: 'opus', effort: 'high' })
+    expect(fs.readdirSync(workspaceDir('agent')).filter((f) => f.includes('.tmp'))).toEqual([])
+  })
+
+  it('writes when any one value differs, null against absent included', async () => {
+    const { registerSession, updateSessionMetadata, getSessionMetadata } = await importService()
+    makeAgent('agent')
+    await registerSession(createLocalSessionStore('agent'), 's1', 'Original')
+    await updateSessionMetadata(createLocalSessionStore('agent'), 's1', { model: 'opus' })
+    const before = fileIdentity('agent')
+
+    // Explicit null clears the alert claim; absent falls back to the creation stamp.
+    await updateSessionMetadata(createLocalSessionStore('agent'), 's1', { model: 'opus', alertDeviceId: null })
+
+    expect(fileIdentity('agent').ino).not.toBe(before.ino)
+    const meta = await getSessionMetadata(createLocalSessionStore('agent'), 's1')
+    expect(meta).toMatchObject({ name: 'Original', model: 'opus', alertDeviceId: null })
+  })
+
+  it('creates the entry of a session that has none, however little the update says', async () => {
+    const { registerSession, updateSessionMetadata, isSessionRegistered } = await importService()
+    makeAgent('agent')
+    await registerSession(createLocalSessionStore('agent'), 'other', 'Other')
+
+    expect(await updateSessionMetadata(createLocalSessionStore('agent'), 'fresh', {})).toBeUndefined()
+    expect(await isSessionRegistered(createLocalSessionStore('agent'), 'fresh')).toBe(true)
+  })
+})
+
 describe('atomic writes', () => {
   it('writes valid JSON and leaves no temp file behind', async () => {
     const { registerSession } = await importService()
@@ -271,5 +329,96 @@ describe('finalizeAutomationStatus guards', () => {
 
     await expect(finalizeAutomationStatus(createLocalSessionStore('agent'), 's0', 'succeeded')).rejects.toThrow()
     expect(fs.readFileSync(metadataPath('agent'), 'utf-8')).toBe(corrupt)
+  })
+})
+
+describe('slash commands stored in session entries by earlier builds', () => {
+  const older = [{ name: 'deploy', description: 'Ship it', argumentHint: '' }]
+  const newer = [{ name: 'deploy', description: 'Ship it', argumentHint: '' }, { name: 'review', description: 'Review it', argumentHint: '' }]
+  const agentCopyPath = () => path.join(workspaceDir('agent'), '.slash-commands.json')
+
+  it('drops every copy on the next write and keeps the newest as the agent copy', async () => {
+    const { registerSession, readSessionMetadata, readAgentSlashCommands } = await importService()
+    makeAgent('agent')
+    fs.writeFileSync(metadataPath('agent'), JSON.stringify({
+      'webhook-run': { name: 'Webhook run', createdAt: '2026-10-01T00:00:00Z', isWebhookExecution: true, slashCommands: older },
+      'user-chat': { name: 'User chat', createdAt: '2026-10-20T00:00:00Z', slashCommands: newer },
+      'promoted-run': { name: 'Promoted run', createdAt: '2026-10-10T00:00:00Z', isWebhookExecution: true, promotedToInteractive: true, slashCommands: older },
+    }, null, 2))
+
+    await registerSession(createLocalSessionStore('agent'), 'new-chat', 'New chat')
+
+    const meta = await readSessionMetadata(createLocalSessionStore('agent'))
+    expect(Object.values(meta).some((entry) => entry.slashCommands)).toBe(false)
+    expect(meta['user-chat']).toEqual({ name: 'User chat', createdAt: '2026-10-20T00:00:00Z' })
+    expect(meta['new-chat'].name).toBe('New chat')
+    expect(await readAgentSlashCommands(createLocalSessionStore('agent'))).toEqual(newer)
+  })
+
+  it('keeps an agent copy that already exists', async () => {
+    const { updateSessionMetadata, storeAgentSlashCommands, readAgentSlashCommands } = await importService()
+    makeAgent('agent')
+    await storeAgentSlashCommands(createLocalSessionStore('agent'), newer)
+    fs.writeFileSync(metadataPath('agent'), JSON.stringify({
+      'user-chat': { name: 'User chat', createdAt: '2026-10-20T00:00:00Z', slashCommands: older },
+    }, null, 2))
+
+    await updateSessionMetadata(createLocalSessionStore('agent'), 'user-chat', { starred: true })
+
+    expect(await readAgentSlashCommands(createLocalSessionStore('agent'))).toEqual(newer)
+  })
+
+  it('writes a no-op update when it has copies to drop, and skips it once there are none', async () => {
+    const { updateSessionMetadata } = await importService()
+    makeAgent('agent')
+    fs.writeFileSync(metadataPath('agent'), JSON.stringify({
+      'webhook-run': { name: 'Webhook run', isWebhookExecution: true, slashCommands: older },
+    }, null, 2))
+
+    await updateSessionMetadata(createLocalSessionStore('agent'), 'webhook-run', { name: 'Webhook run' })
+    const cleaned = fs.readFileSync(metadataPath('agent'), 'utf-8')
+    expect(JSON.parse(cleaned)['webhook-run'].slashCommands).toBeUndefined()
+
+    const mtime = fs.statSync(metadataPath('agent')).mtimeMs
+    await updateSessionMetadata(createLocalSessionStore('agent'), 'webhook-run', { name: 'Webhook run' })
+    expect(fs.statSync(metadataPath('agent')).mtimeMs).toBe(mtime)
+    expect(fs.readFileSync(metadataPath('agent'), 'utf-8')).toBe(cleaned)
+  })
+
+  it('rewrites the agent copy only when the list changes', async () => {
+    const { storeAgentSlashCommands } = await importService()
+    makeAgent('agent')
+    await storeAgentSlashCommands(createLocalSessionStore('agent'), older)
+    const mtime = fs.statSync(agentCopyPath()).mtimeMs
+
+    await storeAgentSlashCommands(createLocalSessionStore('agent'), older)
+    expect(fs.statSync(agentCopyPath()).mtimeMs).toBe(mtime)
+
+    await storeAgentSlashCommands(createLocalSessionStore('agent'), newer)
+    expect(JSON.parse(fs.readFileSync(agentCopyPath(), 'utf-8'))).toEqual(newer)
+  })
+
+  it('reads the newest session copy when the agent has none, whichever session is opened', async () => {
+    const { readAgentSlashCommands } = await importService()
+    makeAgent('agent')
+    fs.writeFileSync(metadataPath('agent'), JSON.stringify({
+      'old-chat': { name: 'Old chat', createdAt: '2026-10-01T00:00:00Z', slashCommands: older },
+      'user-chat': { name: 'User chat', createdAt: '2026-10-20T00:00:00Z', slashCommands: newer },
+    }, null, 2))
+
+    expect(await readAgentSlashCommands(createLocalSessionStore('agent'))).toEqual(newer)
+  })
+
+  it('reads the session copies when the agent copy is corrupt, and leaves the file alone', async () => {
+    const { readAgentSlashCommands } = await importService()
+    makeAgent('agent')
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    fs.writeFileSync(metadataPath('agent'), JSON.stringify({
+      'user-chat': { name: 'User chat', createdAt: '2026-10-20T00:00:00Z', slashCommands: older },
+    }, null, 2))
+    fs.writeFileSync(agentCopyPath(), '[{')
+
+    expect(await readAgentSlashCommands(createLocalSessionStore('agent'))).toEqual(older)
+    expect(fs.readFileSync(agentCopyPath(), 'utf-8')).toBe('[{')
   })
 })

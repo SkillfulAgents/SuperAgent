@@ -77,7 +77,7 @@ vi.mock('@renderer/hooks/use-start-onboarding-session', () => ({
 }))
 
 vi.mock('@renderer/lib/derive-agent-name', () => ({
-  deriveAgentName: vi.fn().mockResolvedValue('Derived Name'),
+  deriveAgentName: vi.fn().mockResolvedValue({ name: 'Derived Name' }),
 }))
 
 vi.mock('@renderer/context/analytics-context', () => ({

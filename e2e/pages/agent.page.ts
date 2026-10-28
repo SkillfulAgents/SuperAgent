@@ -1,3 +1,4 @@
+import { slideToConfirm } from '../helpers/slide-to-confirm'
 import { Page, expect } from '@playwright/test'
 
 export type AgentActivityStatus = 'sleeping' | 'idle' | 'working' | 'awaiting_input'
@@ -163,8 +164,8 @@ export class AgentPage {
     // Click delete item
     await this.page.locator('[data-testid="delete-agent-item"]').click()
 
-    // Confirm deletion - use a longer timeout since deletion may take time
-    await this.page.locator('[data-testid="confirm-delete-agent-button"]').click()
+    // Confirm deletion by sliding the handle across its track
+    await slideToConfirm(this.page, 'confirm-delete-agent-button')
 
     // Wait for the confirm dialog to close (with longer timeout for deletion to complete)
     await expect(this.page.locator('[data-testid="confirm-delete-agent-button"]')).not.toBeVisible({ timeout: 10000 })
@@ -193,4 +194,10 @@ export class AgentPage {
     const statusElement = this.getStatus()
     await expect(statusElement).toHaveAttribute('data-status', status, { timeout })
   }
+}
+
+export function getCurrentAgentSlug(page: Page) {
+  const match = page.url().match(/\/agents\/([^/?#]+)/)
+  expect(match).toBeTruthy()
+  return match![1]
 }

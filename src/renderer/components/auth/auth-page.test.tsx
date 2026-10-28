@@ -20,7 +20,7 @@ import { signIn } from '@renderer/lib/auth-client'
 describe('AuthPage', () => {
   beforeEach(() => {
     vi.resetAllMocks()
-    vi.mocked(signIn.oauth2).mockResolvedValue(undefined as never)
+    vi.mocked(signIn.social).mockResolvedValue(undefined as never)
     apiFetch.mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -100,8 +100,8 @@ describe('AuthPage', () => {
     fireEvent.click(screen.getByTestId('auth-provider-platform'))
 
     await waitFor(() => {
-      expect(signIn.oauth2).toHaveBeenCalledWith({
-        providerId: 'platform',
+      expect(signIn.social).toHaveBeenCalledWith({
+        provider: 'platform',
         callbackURL: '/',
         errorCallbackURL: '/',
       })
@@ -109,7 +109,7 @@ describe('AuthPage', () => {
   })
 
   it('only shows provider loading state on the clicked provider', async () => {
-    vi.mocked(signIn.oauth2).mockReturnValue(new Promise(() => {}) as never)
+    vi.mocked(signIn.social).mockReturnValue(new Promise(() => {}) as never)
     apiFetch.mockResolvedValue({
       ok: true,
       json: async () => ({

@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { isSafeInternalPath } from '@renderer/lib/api'
+import { isSafeInternalPath } from '@renderer/lib/safe-internal-path'
 import { TEMPLATE_SLUG_RE } from '@shared/lib/signup-handoff-params'
 import { SUPPORTED_PROVIDERS } from '@shared/lib/account-providers/service-catalog'
 
@@ -26,15 +26,23 @@ export const chatSearchSchema = z.object({
 // route and the global settings connections tab, so the two can't drift.
 const connectionDetailKey = z.string().regex(/^(account|mcp)-.+$/)
 
+// Open-redirect-safe internal path. ONE definition for the whole app: the same
+// `isSafeInternalPath` (safe-internal-path.ts, re-exported by api.ts) applied on
+// the stash/redirect path (rejects `//host`, `/\host`, and a leading encoded
+// `/%2f`/`/%5c`), so the schema gate and the sanitizer can't drift. Shared by
+// the post-login `redirect` and the settings and connection-detail `from` close-targets.
+const internalPath = z.string().refine(isSafeInternalPath, { message: 'must be a safe internal path' })
+
 // Connections detail overlay on the list. `detail` is the unified-row key;
 // `source` decides the breadcrumb + back-target. They travel together — today
 // both live inside one optional `detail` object on the `connections` AgentView
-// variant.
+// variant. `from` overrides the back-target with the page that opened the detail.
 export const connectionsSearchSchema = z
   .object({
     detail: connectionDetailKey.optional(),
     source: z.enum(['home', 'list']).optional(),
     connectionView: z.literal('logs').optional(),
+    from: internalPath.optional(),
   })
   .refine((s) => (s.detail == null) === (s.source == null), {
     message: 'detail and source must be set together',
@@ -42,13 +50,6 @@ export const connectionsSearchSchema = z
   .refine((s) => !s.connectionView || !!s.detail, {
     message: 'a connection subview requires detail',
   })
-
-// Open-redirect-safe internal path. ONE definition for the whole app: the same
-// `isSafeInternalPath` backstop applied on the actual stash/redirect path in
-// api.ts (rejects `//host`, `/\host`, and a leading encoded `/%2f`/`/%5c`), so
-// the schema gate and the sanitizer can't drift. Shared by the post-login
-// `redirect` and the settings `from` close-target.
-const internalPath = z.string().refine(isSafeInternalPath, { message: 'must be a safe internal path' })
 
 // Deep-link-through-login target.
 export const rootSearchSchema = z.object({
@@ -86,13 +87,18 @@ const arrivalParams = Object.fromEntries(
 // `detail` is the open connection-detail overlay on the Connections tab,
 // URL-driven for parity with the agent connections route (deep-linkable +
 // reload-durable). Only the Connections tab reads it; `lenient()` drops it on
-// other tabs. No `source` here — settings detail always returns to its own list.
+// other tabs. Connection detail always returns to its own list. A drive
+// detail opened from an agent home carries `source: 'home'` so Back returns there.
 export const settingsSearchSchema = z
   .object({
     // The account a provider's install hands back, under its catalog `arrivalParam`.
     ...arrivalParams,
     from: internalPath.optional(),
     detail: connectionDetailKey.optional(),
+    volume: z.string().min(1).max(255).optional(),
+    // A saved login open in Settings → Logins.
+    login: z.string().min(1).max(64).optional(),
+    source: z.enum(['home', 'list']).optional(),
     connectionView: z.literal('logs').optional(),
   })
   .refine((s) => !s.connectionView || !!s.detail, {
@@ -116,6 +122,7 @@ export const SETTINGS_TABS = [
   'browser',
   'web',
   'volumes',
+  'logins',
   'capabilities',
   'global-guidance',
   'computer-use',

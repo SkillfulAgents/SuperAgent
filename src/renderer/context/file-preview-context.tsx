@@ -1,33 +1,28 @@
 import { createContext, useContext, useState, useCallback, useEffect, useMemo, type ReactNode } from 'react'
+import { z } from 'zod'
 import { getPathName } from '@shared/lib/utils/workspace-path'
 import { useRouteLocation } from '@renderer/router/use-route-location'
+import { useFilePreviewTabs, nextFileVersion, type PreviewFileTab, type PreviewFolderTab } from '@renderer/hooks/use-file-preview-tabs'
 import type { CommentAnchor } from '@renderer/components/file-preview/comments/kinds'
+import { RELOADING_EVENT } from '@renderer/lib/lazy-with-reload'
 
-export interface FileTab {
-  kind: 'file'
-  filePath: string
+/**
+ * Where a file's bytes come from when it is not in the agent's workspace: a
+ * shared drive's file, say, served from somewhere other than the agent files
+ * API. Without one, the drawer reads `agentSlug`'s copy of the path.
+ * HTTP(S) URLs must accept a `v` cache-busting parameter on each open;
+ * data: and blob: URLs identify fixed bytes and are used unchanged.
+ */
+const previewSourceSchema = z.object({ inlineUrl: z.string(), downloadUrl: z.string().optional() })
+export type PreviewSource = z.infer<typeof previewSourceSchema>
+
+export interface FileTab extends PreviewFileTab {
   agentSlug: string
-  displayName: string
-  description?: string
-  /**
-   * Cache-busting token for this tab's file URL, bumped every time the file is
-   * (re)delivered or renamed. Seeded from the clock rather than 0 so a reload
-   * never reuses a URL an intermediary may still be serving a stale body for —
-   * the agent rewrites these files in place, so path alone is not an identity.
-   */
-  version: number
-  /** 1-based page currently shown when this tab contains a PDF. */
-  pdfPage: number
+  source?: PreviewSource
 }
 
-export interface FolderTab {
-  kind: 'folder'
-  rootPath: string
+export interface FolderTab extends PreviewFolderTab {
   agentSlug: string
-  displayName: string
-  expandedPaths: string[]
-  selectedPath?: string
-  query: string
 }
 
 export type PreviewTab = FileTab | FolderTab
@@ -59,11 +54,6 @@ export function getWorkspaceFileKey(agentSlug: string, filePath: string): string
   return `${agentSlug}:${filePath}`
 }
 
-/** Does this tab hold that agent's copy of that path? */
-function isFileTabFor(tab: PreviewTab, agentSlug: string, filePath: string): boolean {
-  return tab.kind === 'file' && tab.agentSlug === agentSlug && tab.filePath === filePath
-}
-
 /** The folder equivalent: two agents can have a browser open on the same root. */
 function isFolderTabFor(tab: PreviewTab, agentSlug: string, rootPath: string): tab is FolderTab {
   return tab.kind === 'folder' && tab.agentSlug === agentSlug && tab.rootPath === rootPath
@@ -85,7 +75,7 @@ interface FilePreviewContextType {
   isOpen: boolean
   commentsEnabled: boolean
 
-  openFile: (filePath: string, agentSlug: string, description?: string) => void
+  openFile: (filePath: string, agentSlug: string, description?: string, source?: PreviewSource) => void
   openFolder: (folderPath: string, agentSlug: string) => void
   toggleFolder: (rootPath: string, agentSlug: string, folderPath: string) => void
   setFolderQuery: (rootPath: string, agentSlug: string, query: string) => void
@@ -108,14 +98,6 @@ interface FilePreviewContextType {
 
 const FilePreviewContext = createContext<FilePreviewContextType | null>(null)
 
-let lastFileVersion = 0
-
-/** Strictly increasing cache-busting token; clock-seeded, monotonic within a session. */
-function nextFileVersion(): number {
-  lastFileVersion = Math.max(Date.now(), lastFileVersion + 1)
-  return lastFileVersion
-}
-
 /** Tab and title label for a path. */
 function getDisplayName(filePath: string): string {
   return getPathName(filePath)
@@ -137,13 +119,31 @@ function replacePathPrefix(candidatePath: string, oldPath: string, newPath: stri
 
 let commentIdCounter = 0
 
+const REOPEN_KEY = 'file-preview:reopen'
+const ReopenFile = z.object({
+  scope: z.string().nullable(), filePath: z.string(), agentSlug: z.string(),
+  source: previewSourceSchema.optional(),
+})
+
+/** Read and clear the file a preview was opening when its tab reloaded onto a new build. */
+function takeReopenFile(): z.infer<typeof ReopenFile> | null {
+  const raw = sessionStorage.getItem(REOPEN_KEY)
+  sessionStorage.removeItem(REOPEN_KEY)
+  if (!raw) return null
+  try {
+    return ReopenFile.parse(JSON.parse(raw))
+  } catch {
+    return null
+  }
+}
+
 /** One shared empty array: a fresh [] per call would change every consumer's deps. */
 const EMPTY_COMMENTS: FileComment[] = []
 
 export function FilePreviewProvider({
   children,
   sessionId: sessionIdProp,
-  commentsEnabled = true,
+  commentsEnabled = false,
 }: {
   children: ReactNode
   sessionId?: string | null
@@ -154,8 +154,10 @@ export function FilePreviewProvider({
   // state clears when switching sessions; otherwise derive from the active route.
   const sessionId = sessionIdProp !== undefined ? sessionIdProp : (view.kind === 'session' ? view.id : null)
 
-  const [openTabs, setOpenTabs] = useState<PreviewTab[]>([])
-  const [activeTabIndex, setActiveTabIndex] = useState(0)
+  const {
+    openTabs, setOpenTabs, activeTabIndex, setActiveTabIndex, openTab,
+    closeTab: closePreviewTab, setPdfPage: setPreviewPdfPage,
+  } = useFilePreviewTabs<PreviewTab>(getPreviewTabKey)
   // Keyed by getWorkspaceFileKey, not by path: see the note on that function.
   const [comments, setComments] = useState<Map<string, FileComment[]>>(new Map())
   const [isOpen, setIsOpen] = useState(false)
@@ -166,62 +168,43 @@ export function FilePreviewProvider({
     setActiveTabIndex(0)
     setComments(new Map())
     setIsOpen(false)
-  }, [sessionId])
+  }, [sessionId, setOpenTabs, setActiveTabIndex])
 
-  const openFile = useCallback((filePath: string, agentSlug: string, description?: string) => {
-    // Minted outside the updater: React may invoke an updater more than once per
-    // commit, and a token that changes between passes is a different file URL.
+  const openFile = useCallback((filePath: string, agentSlug: string, description?: string, source?: PreviewSource) => {
     const version = nextFileVersion()
-    setOpenTabs(prev => {
-      const existingIndex = prev.findIndex(tab => isFileTabFor(tab, agentSlug, filePath))
-      if (existingIndex >= 0) {
-        setActiveTabIndex(existingIndex)
-        setIsOpen(true)
-        const next = [...prev]
-        const existing = next[existingIndex] as FileTab
-        next[existingIndex] = { ...existing, version }
-        return next
-      }
-      const newTab: FileTab = {
-        kind: 'file',
-        filePath,
-        agentSlug,
-        displayName: getDisplayName(filePath),
-        description,
-        version,
-        pdfPage: 1,
-      }
-      const next = [...prev, newTab]
-      setActiveTabIndex(next.length - 1)
-      setIsOpen(true)
-      return next
-    })
-  }, [])
+    openTab({
+      kind: 'file', filePath, agentSlug, displayName: getDisplayName(filePath),
+      description, version, pdfPage: 1, source,
+    }, existing => ({ ...existing, version, source }))
+    setIsOpen(true)
+  }, [openTab])
+
+  // A stale tab reloads itself when a view's files are gone after an upgrade. The file it
+  // was opening is saved across that reload and opened again, so one click still opens it.
+  const activeTab = isOpen ? openTabs[activeTabIndex] : undefined
+  useEffect(() => {
+    if (activeTab?.kind !== 'file') return
+    const save = () => sessionStorage.setItem(REOPEN_KEY, JSON.stringify({
+      scope: sessionId, filePath: activeTab.filePath, agentSlug: activeTab.agentSlug, source: activeTab.source,
+    }))
+    window.addEventListener(RELOADING_EVENT, save)
+    return () => window.removeEventListener(RELOADING_EVENT, save)
+  }, [activeTab, sessionId])
+
+  // The first preview to mount after the reload takes the entry. Only the one that saved it reopens the file.
+  useEffect(() => {
+    const file = takeReopenFile()
+    if (file?.scope === sessionId) openFile(file.filePath, file.agentSlug, undefined, file.source)
+  }, [sessionId, openFile])
 
   const openFolder = useCallback((folderPath: string, agentSlug: string) => {
     const rootPath = normalizeFolderPath(folderPath)
-    setOpenTabs(prev => {
-      const existingIndex = prev.findIndex(tab => isFolderTabFor(tab, agentSlug, rootPath))
-      if (existingIndex >= 0) {
-        setActiveTabIndex(existingIndex)
-        setIsOpen(true)
-        return prev
-      }
-
-      const newTab: FolderTab = {
-        kind: 'folder',
-        rootPath,
-        agentSlug,
-        displayName: getDisplayName(rootPath),
-        expandedPaths: [rootPath],
-        query: '',
-      }
-      const next = [...prev, newTab]
-      setActiveTabIndex(next.length - 1)
-      setIsOpen(true)
-      return next
+    openTab({
+      kind: 'folder', rootPath, agentSlug, displayName: getDisplayName(rootPath),
+      expandedPaths: [rootPath], query: '',
     })
-  }, [])
+    setIsOpen(true)
+  }, [openTab])
 
   const toggleFolder = useCallback((rootPath: string, agentSlug: string, folderPath: string) => {
     setOpenTabs(prev => prev.map(tab => {
@@ -231,24 +214,24 @@ export function FilePreviewProvider({
       else expanded.add(folderPath)
       return { ...tab, expandedPaths: Array.from(expanded) }
     }))
-  }, [])
+  }, [setOpenTabs])
 
   const setFolderQuery = useCallback((rootPath: string, agentSlug: string, query: string) => {
     setOpenTabs(prev => prev.map(tab => (
       isFolderTabFor(tab, agentSlug, rootPath) ? { ...tab, query } : tab
     )))
-  }, [])
+  }, [setOpenTabs])
 
   const selectFolderEntry = useCallback((rootPath: string, agentSlug: string, entryPath: string) => {
     setOpenTabs(prev => prev.map(tab => (
       isFolderTabFor(tab, agentSlug, rootPath) ? { ...tab, selectedPath: entryPath } : tab
     )))
-  }, [])
+  }, [setOpenTabs])
 
   const renameFilePath = useCallback((oldPath: string, newPath: string, agentSlug: string) => {
     const version = nextFileVersion()
     setOpenTabs(prev => prev.map(tab => {
-      if (isFileTabFor(tab, agentSlug, oldPath)) {
+      if (tab.kind === 'file' && tab.agentSlug === agentSlug && tab.filePath === oldPath) {
         return {
           ...tab,
           filePath: newPath,
@@ -273,16 +256,10 @@ export function FilePreviewProvider({
       )
       return next
     })
-  }, [])
+  }, [setOpenTabs])
 
   const closeTab = useCallback((tabKey: string) => {
-    setOpenTabs(prev => {
-      const idx = prev.findIndex(tab => getPreviewTabKey(tab) === tabKey)
-      if (idx < 0) return prev
-      // The path comes off the tab rather than back out of the key: a key is an
-      // identity, not a container, and it stopped being parseable the moment
-      // the agent slug joined it.
-      const closed = prev[idx]
+    closePreviewTab(tabKey, (closed, remaining) => {
       if (closed.kind === 'file') {
         const commentKey = getWorkspaceFileKey(closed.agentSlug, closed.filePath)
         setComments(current => {
@@ -292,20 +269,9 @@ export function FilePreviewProvider({
           return next
         })
       }
-      const next = prev.filter((_, i) => i !== idx)
-      if (next.length === 0) {
-        setIsOpen(false)
-        setActiveTabIndex(0)
-      } else {
-        setActiveTabIndex(curr => {
-          if (curr >= next.length) return next.length - 1
-          if (curr > idx) return curr - 1
-          return curr
-        })
-      }
-      return next
+      if (remaining.length === 0) setIsOpen(false)
     })
-  }, [])
+  }, [closePreviewTab])
 
   const removeFilePath = useCallback((filePath: string, agentSlug: string) => {
     closeTab(`file:${getWorkspaceFileKey(agentSlug, filePath)}`)
@@ -314,7 +280,7 @@ export function FilePreviewProvider({
         ? { ...tab, selectedPath: undefined }
         : tab
     )))
-  }, [closeTab])
+  }, [closeTab, setOpenTabs])
 
   const renameDirectoryPath = useCallback((oldPath: string, newPath: string, agentSlug: string) => {
     const version = nextFileVersion()
@@ -365,7 +331,7 @@ export function FilePreviewProvider({
       }
       return changed ? next : prev
     })
-  }, [])
+  }, [setOpenTabs])
 
   const removeDirectoryPath = useCallback((directoryPath: string, agentSlug: string) => {
     setOpenTabs(prev => {
@@ -412,26 +378,15 @@ export function FilePreviewProvider({
       }
       return changed ? next : prev
     })
-  }, [])
+  }, [setOpenTabs, setActiveTabIndex])
 
   const setActiveTab = useCallback((index: number) => {
     setActiveTabIndex(index)
-  }, [])
+  }, [setActiveTabIndex])
 
   const setPdfPage = useCallback((filePath: string, agentSlug: string, page: number) => {
-    const nextPage = Number.isFinite(page) ? Math.max(1, Math.floor(page)) : 1
-    setOpenTabs(prev => {
-      const index = prev.findIndex(tab => isFileTabFor(tab, agentSlug, filePath))
-      if (index < 0) return prev
-
-      const file = prev[index] as FileTab
-      if (file.pdfPage === nextPage) return prev
-
-      const next = [...prev]
-      next[index] = { ...file, pdfPage: nextPage }
-      return next
-    })
-  }, [])
+    setPreviewPdfPage(`file:${getWorkspaceFileKey(agentSlug, filePath)}`, page)
+  }, [setPreviewPdfPage])
 
   const close = useCallback(() => {
     setIsOpen(false)

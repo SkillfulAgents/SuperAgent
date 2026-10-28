@@ -1,4 +1,5 @@
 import { getToolDefinition } from '../registry'
+import { parseRuleOutcomes, parseRuleProposal, type ReviewRuleOutcomeView, type RuleProposalReview } from '@shared/lib/proxy/rules/proposal-schema'
 import type { PendingRequestDescriptor, Question } from './types'
 export type { PendingRequestDescriptor } from './types'
 import { xAgentFileTransferSchema, type XAgentReview } from '@shared/lib/proxy/x-agent-review'
@@ -12,9 +13,10 @@ import { isTurnStartingUserMessage, type PendingMessage } from '@renderer/compon
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp } from '@shared/lib/computer-use/types'
 import { askUserQuestionDef } from '../ask-user-question/definition'
 import { PARKED_CALL_KINDS, type PendingUserInputRequest } from './request-schema'
+import { loginVaultPayloadSchema, summarizeLoginFields, type LoginFieldSummary, type LoginVaultPayload } from '../request-login/login-request'
 
 interface UsePendingRequestsArgs {
-  sessionId: string
+  sessionId: string | null
   agentSlug: string
   pendingUserMessages?: PendingMessage[]
 }
@@ -26,6 +28,7 @@ type PendingRequestBuckets = {
   fileRequests: { toolUseId: string; description: string; fileTypes?: string }[]
   remoteMcpRequests: { toolUseId: string; url: string; name?: string; reason?: string; authHint?: 'oauth' | 'bearer'; clientId?: string; clientName?: string }[]
   browserInputRequests: { toolUseId: string; message: string; requirements: string[] }[]
+  loginRequests: { toolUseId: string; message: string; fields: LoginFieldSummary[]; vault?: LoginVaultPayload }[]
   scriptRunRequests: { toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell' }[]
   computerUseRequests: { toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string }[]
 }
@@ -50,6 +53,7 @@ function createPendingRequestBuckets(): PendingRequestBuckets {
     fileRequests: [],
     remoteMcpRequests: [],
     browserInputRequests: [],
+    loginRequests: [],
     scriptRunRequests: [],
     computerUseRequests: [],
   }
@@ -162,6 +166,15 @@ function addPendingRequestFromToolCall(buckets: PendingRequestBuckets, toolCall:
         requirements: Array.isArray(input.requirements) ? input.requirements : [],
       })
     }
+  } else if (kind === 'login') {
+    // The same rule as the server's request registry: no card without a reason.
+    if (typeof input.message === 'string' && input.message.trim() && (input.fields === undefined || Array.isArray(input.fields))) {
+      buckets.loginRequests.push({
+        toolUseId: toolCall.id,
+        message: input.message,
+        fields: summarizeLoginFields(input.fields),
+      })
+    }
   } else if (kind === 'script_run') {
     if (typeof input.script === 'string' && isScriptType(input.scriptType)) {
       buckets.scriptRunRequests.push({
@@ -233,7 +246,11 @@ export interface PendingReview {
   matchedScopes: string[]
   scopeDescriptions: Record<string, string>
   displayText?: string
+  endpointDescription?: string
+  requestBody?: string
   xAgent?: XAgentReview
+  ruleOutcomes?: ReviewRuleOutcomeView[]
+  ruleProposal?: RuleProposalReview
 }
 
 export interface PendingAccountReauth {
@@ -357,7 +374,11 @@ export function reviewFromEnvelope(
         ? (payload.scopeDescriptions as Record<string, string>)
         : {},
     displayText: typeof payload.displayText === 'string' ? payload.displayText : undefined,
+    ...(typeof payload.endpointDescription === 'string' ? { endpointDescription: payload.endpointDescription } : {}),
+    ...(typeof payload.requestBody === 'string' ? { requestBody: payload.requestBody } : {}),
     ...(xAgent ? { xAgent } : {}),
+    ...(parseRuleOutcomes(payload.ruleOutcomes) ? { ruleOutcomes: parseRuleOutcomes(payload.ruleOutcomes) } : {}),
+    ...(parseRuleProposal(payload.ruleProposal) ? { ruleProposal: parseRuleProposal(payload.ruleProposal) } : {}),
   }
 }
 
@@ -440,6 +461,19 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
           })
         }
         break
+      case 'login': {
+        if (typeof payload.message === 'string') {
+          // How the host left the request: absent on a request recovered after a restart.
+          const vault = loginVaultPayloadSchema.safeParse(payload.vault)
+          buckets.loginRequests.push({
+            toolUseId: request.id,
+            message: payload.message,
+            fields: summarizeLoginFields(payload.fields),
+            ...(vault.success ? { vault: vault.data } : {}),
+          })
+        }
+        break
+      }
       case 'script_run':
         // Auto-approved scripts are already executing server-side; the entry
         // exists so recovery paths can tell "granted" from "waiting".
@@ -564,7 +598,7 @@ export function usePendingRequests({
     streamingToolUses,
     autoApprovedScriptRunIds,
     autoApprovedComputerUseIds,
-  } = useMessageStream(sessionId, agentSlug)
+  } = useMessageStream(sessionId, agentSlug, ['isActive', 'streamingToolUses', 'autoApprovedScriptRunIds', 'autoApprovedComputerUseIds'])
 
   // The snapshot is the only source for reviews and capability reviews, and
   // the primary one for every other kind. The streaming/message-history
@@ -573,7 +607,7 @@ export function usePendingRequests({
   // the transcript is what renders them.
   const { data: unifiedRequestsData } = usePendingUserRequests(agentSlug, sessionId)
   const unified = useMemo(() => {
-    const requests = unifiedRequestsData ?? []
+    const requests = sessionId ? unifiedRequestsData ?? [] : []
     // Session-scoped waits die with the turn for DISPLAY purposes — the legacy
     // arrays were cleared on session_idle, and e.g. an abandoned computer-use
     // approval deliberately survives the idle boundary server-side for
@@ -585,7 +619,12 @@ export function usePendingRequests({
     return projectUnifiedRequests(
       isActive ? requests : requests.filter((r) => r.scope.sessionId === undefined || PARKED_CALL_KINDS.has(r.kind)),
     )
-  }, [unifiedRequestsData, isActive])
+  }, [sessionId, unifiedRequestsData, isActive])
+  // Requests the server holds open for this session, registered or recovered.
+  const openRequestIds = useMemo(
+    () => new Set((sessionId ? unifiedRequestsData ?? [] : []).map((request) => request.id)),
+    [sessionId, unifiedRequestsData],
+  )
   const pendingProxyReviews = unified.reviews
   const pendingAccountReauthRequests = unified.accountReauthRequests
   const pendingMcpReauthRequests = unified.mcpReauthRequests
@@ -687,13 +726,20 @@ export function usePendingRequests({
           : kind === 'computerUseRequests'
             ? suppressedComputerUseIds
             : undefined
+      // A sign-in request has no card until the host decides it needs the
+      // user (it may sign in from the vault instead): its fallbacks only
+      // fill in requests the server holds, such as one recovered after a
+      // restart, which carries no payload.
+      const fallback = (requests: PendingRequestBuckets[typeof kind]) => (kind === 'loginRequests'
+        ? (requests as Array<{ toolUseId: string }>).filter((request) => openRequestIds.has(request.toolUseId))
+        : requests) as PendingRequestBuckets[typeof kind]
       mergeBucket(
         target,
         kind,
         // The fallbacks recover only ACTIVE turns — an idle session's
         // unanswered tool calls are history, not open requests.
         isActive
-          ? [unified.buckets[kind], streamingBasedPendingRequests[kind], messagesBasedPendingRequests[kind]]
+          ? [unified.buckets[kind], fallback(streamingBasedPendingRequests[kind]), fallback(messagesBasedPendingRequests[kind])]
           : [unified.buckets[kind]],
         dismissedRequestIds,
         suppressed,
@@ -702,7 +748,7 @@ export function usePendingRequests({
     return target
   }, [
     unified.buckets, streamingBasedPendingRequests, messagesBasedPendingRequests,
-    isActive, suppressedScriptRunIds, suppressedComputerUseIds, dismissedRequestIds,
+    isActive, suppressedScriptRunIds, suppressedComputerUseIds, dismissedRequestIds, openRequestIds,
   ])
 
   // Capability reviews come from the unified store only — no message-history
@@ -729,6 +775,7 @@ export function usePendingRequests({
       merged.questionRequests,
       merged.fileRequests,
       merged.browserInputRequests,
+      merged.loginRequests,
       merged.scriptRunRequests,
       merged.computerUseRequests,
       pendingCapabilityReviewRequests,
@@ -741,7 +788,7 @@ export function usePendingRequests({
     return ids
   }, [
     merged.secretRequests, merged.connectedAccountRequests, merged.remoteMcpRequests,
-    merged.questionRequests, merged.fileRequests, merged.browserInputRequests,
+    merged.questionRequests, merged.fileRequests, merged.browserInputRequests, merged.loginRequests,
     merged.scriptRunRequests, merged.computerUseRequests, pendingCapabilityReviewRequests, pendingProxyReviews,
     pendingAccountReauthRequests,
     pendingMcpReauthRequests,
@@ -841,6 +888,17 @@ export function usePendingRequests({
         onComplete: () => handleRequestComplete(r.toolUseId),
       })
     }
+    for (const r of merged.loginRequests) {
+      all.push({
+        kind: 'login',
+        key: r.toolUseId,
+        toolUseId: r.toolUseId,
+        message: r.message,
+        fields: r.fields,
+        ...(r.vault ? { vault: r.vault } : {}),
+        onComplete: () => handleRequestComplete(r.toolUseId),
+      })
+    }
     for (const r of merged.scriptRunRequests) {
       all.push({
         kind: 'script_run',
@@ -897,6 +955,10 @@ export function usePendingRequests({
           matchedScopes: review.matchedScopes,
           scopeDescriptions: review.scopeDescriptions,
           displayText: review.displayText,
+          endpointDescription: review.endpointDescription,
+          requestBody: review.requestBody,
+          ruleOutcomes: review.ruleOutcomes,
+          ruleProposal: review.ruleProposal,
           onComplete: handleProxyReviewComplete,
         })
       }
@@ -926,7 +988,7 @@ export function usePendingRequests({
     return all.sort((a, b) => getArrivalOrder(a.key) - getArrivalOrder(b.key))
   }, [
     merged.secretRequests, merged.connectedAccountRequests, merged.remoteMcpRequests,
-    merged.questionRequests, merged.fileRequests, merged.browserInputRequests,
+    merged.questionRequests, merged.fileRequests, merged.browserInputRequests, merged.loginRequests,
     merged.scriptRunRequests, merged.computerUseRequests, pendingCapabilityReviewRequests, pendingProxyReviews,
     pendingAccountReauthRequests,
     pendingMcpReauthRequests,

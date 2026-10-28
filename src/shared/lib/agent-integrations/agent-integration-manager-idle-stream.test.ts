@@ -10,15 +10,20 @@ import type { IncomingMessage } from '../chat-integrations/chat-agent-integratio
 
 const mocks = vi.hoisted(() => ({
   send: vi.fn(),
-  withSessionSend: vi.fn(),
+  inDeliveryTurn: vi.fn(),
   notice: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
     isSubscribed: () => true,
-    withSessionSend: (...args: unknown[]) => mocks.withSessionSend(...args),
-  },
+    inDeliveryTurn: (...args) => mocks.inDeliveryTurn(...args),
+  }),
+}))
+vi.mock('@shared/lib/services/session-service', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/services/session-service')>()),
+  getSessionMetadata: async () => null,
+  updateSessionMetadata: async () => undefined,
 }))
 vi.mock('@shared/lib/container/container-host', async () => {
   const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
@@ -62,8 +67,8 @@ const connector = mockChatIntegration({ sendMessage: mocks.notice })
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mocks.withSessionSend.mockImplementation((_slug, _session, _client, send: () => Promise<void>) => send())
-  mocks.send.mockResolvedValue(undefined)
+  mocks.inDeliveryTurn.mockImplementation((_slug, _session, work: () => Promise<unknown>) => work())
+  mocks.send.mockResolvedValue({})
   manager.connections.set('integration', { connector, integration: integration('slack') })
   vi.spyOn(manager, 'subscribeChatSession').mockImplementation(() => {})
   vi.spyOn(connector, 'prepareInput').mockResolvedValue({ text: 'continue' })
@@ -77,10 +82,8 @@ afterEach(() => {
 describe('chat session delivery', () => {
   it.each(['slack', 'telegram', 'imessage'] as const)('uses the shared send lifecycle for the same %s session', async (provider) => {
     await manager.handleIncomingMessageInner('integration', inputEvent(message), integration(provider), connector.resolveRoute(inputEvent(message)), testDeliveryAttempt)
-    expect(mocks.withSessionSend).toHaveBeenCalledExactlyOnceWith(
-      'agent', 'existing-session', expect.objectContaining({ sendMessage: mocks.send }), expect.any(Function),
-    )
-    expect(mocks.send).toHaveBeenCalledExactlyOnceWith('existing-session', 'continue', 'delivery-uuid')
+    expect(mocks.inDeliveryTurn).toHaveBeenCalledExactlyOnceWith('agent', 'existing-session', expect.any(Function))
+    expect(mocks.send).toHaveBeenCalledExactlyOnceWith('existing-session', 'continue', 'delivery-uuid', expect.objectContaining({ sessionMetadata: null }))
   })
 
   it('enters the shared send lifecycle after attachment preparation', async () => {
@@ -89,16 +92,16 @@ describe('chat session delivery', () => {
       prepared = true
       return { text: 'continue' }
     })
-    mocks.withSessionSend.mockImplementation(async (_slug, _session, _client, send: () => Promise<void>) => {
+    mocks.inDeliveryTurn.mockImplementation(async (_slug, _session, work: () => Promise<unknown>) => {
       expect(prepared).toBe(true)
-      await send()
+      return work()
     })
     await manager.handleIncomingMessageInner('integration', inputEvent(message), integration('slack'), connector.resolveRoute(inputEvent(message)), testDeliveryAttempt)
     expect(mocks.send).toHaveBeenCalledOnce()
   })
 
   it('propagates a shared reconnect failure to the durable scheduler without sending', async () => {
-    mocks.withSessionSend.mockRejectedValueOnce(new Error('connection unavailable'))
+    mocks.inDeliveryTurn.mockRejectedValueOnce(new Error('connection unavailable'))
     await expect(manager.handleIncomingMessageInner('integration', inputEvent(message), integration('slack'), connector.resolveRoute(inputEvent(message)), testDeliveryAttempt)).rejects.toThrow('connection unavailable')
     expect(mocks.send).not.toHaveBeenCalled()
     expect(mocks.notice).not.toHaveBeenCalled()

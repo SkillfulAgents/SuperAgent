@@ -1,4 +1,5 @@
 import { getModelContextWindowMap } from './model-catalog'
+import { LlmProviderNotFoundError } from '../agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
 import { getContainerModelPromptHints } from '../container/resolve-model'
 import { parseConnectionJson } from './connection-schema'
 import { getSettings } from '../config/settings'
@@ -35,11 +36,45 @@ export async function resolveConnectionRuntimeInherit(
   return { ...knobs, model: resolved.model, llmProviderId: resolved.llmProviderId }
 }
 
+/**
+ * Bind a model an agent names for an automation (a catalog id or a family
+ * alias such as `sonnet`) to the connection the agent runs on. The name is
+ * saved as given, so a family alias keeps following the family's latest model.
+ * Throws with the valid ids when the connection has no such model, so the
+ * agent can retry instead of the automation silently running on a default.
+ */
+export async function bindAgentModelChoice(
+  model: string | undefined,
+  agent: Partial<AgentPreferences> | null | undefined
+): Promise<{ model?: string; llmProviderId?: string }> {
+  if (!model || !getSettings().llmDefault) return { model }
+  const { connection } = await resolveSelectionHierarchy(
+    storedSelection(agent?.defaultModel, agent?.defaultLlmProviderId)
+  )
+  const catalog = connectionCatalog(connection)
+  const picked = resolveSelection({ llmProviderId: connection.id, model }, [{ id: connection.id, catalog }])
+  if (!picked) {
+    const ids = catalog.map((m) => m.id)
+    throw new Error(`Unknown model "${model}". Models available to this agent: ${ids.join(', ')}. Leave out model to use the agent's default.`)
+  }
+  return { model, llmProviderId: connection.id }
+}
+
 /** Enforce selection access only for an explicit new binding. An attached
  * personal connection can be continued by every existing session collaborator.
  */
-export class LlmSelectionAccessError extends Error {
-  constructor() { super('LLM provider not found') }
+/**
+ * A session send's provider check, made before the session's stored binding
+ * is known: whether the caller may bind `llmProviderId` only because the
+ * session already holds it (another member's personal connection). The
+ * delivery then refuses it unless the session still does. Throws when the
+ * connection does not exist.
+ */
+export async function connectionNeedsAttachment(llmProviderId: string | null | undefined): Promise<boolean> {
+  if (!llmProviderId) return false
+  const row = await getConnection(llmProviderId)
+  if (!row) throw new LlmProviderNotFoundError()
+  return !canSelectConnection(row, { userId: getRequestUserId() ?? null, admin: false })
 }
 
 export async function assertConnectionSelectionAccess(
@@ -48,7 +83,7 @@ export async function assertConnectionSelectionAccess(
 ) {
   if (!llmProviderId) return
   const row = await getConnection(llmProviderId)
-  if (!row) throw new LlmSelectionAccessError()
+  if (!row) throw new LlmProviderNotFoundError()
   if (
     !canSelectConnection(
       row,
@@ -56,7 +91,7 @@ export async function assertConnectionSelectionAccess(
       currentId ?? undefined
     )
   ) {
-    throw new LlmSelectionAccessError()
+    throw new LlmProviderNotFoundError()
   }
 }
 
@@ -78,9 +113,14 @@ export const LLM_ENV_KEYS = [
 export async function connectionRuntime(resolved: ResolvedConnection, agentId: string) {
   const { connection, provider, wireModel } = resolved
   const catalog = connectionCatalog(connection)
+  // Models the provider says cannot run now (e.g. the plan excludes them) count
+  // as unset: a helper model falls back to the main one, and subagents are not offered them.
+  const availability = await provider.getModelAvailability(catalog)
+  const unavailable = new Set(availability?.unavailable.map(entry => entry.modelId))
+  const runnableCatalog = catalog.filter(model => !unavailable.has(model.id))
   const subagent = (selection: string | null) =>
     resolveSelection(selection ? { llmProviderId: connection.id, model: selection } : null, [
-      { id: connection.id, catalog },
+      { id: connection.id, catalog: runnableCatalog },
     ])?.wireModel ?? wireModel
   const env = Object.fromEntries(LLM_ENV_KEYS.map((key) => [key, '']))
   for (const [key, value] of Object.entries(await provider.getContainerEnvVars({ id: agentId }))) {
@@ -89,7 +129,7 @@ export async function connectionRuntime(resolved: ResolvedConnection, agentId: s
   const runtimeEnv = parseConnectionJson(connectionConfigSchema, connection.config).runtimeEnv
   Object.assign(env, runtimeEnv)
   env.ENABLE_TOOL_SEARCH =
-    getSettings().enableToolSearch === false ? 'false' : (runtimeEnv.ENABLE_TOOL_SEARCH ?? provider.toolSearchEnv ?? '')
+    getSettings().enableToolSearch === false ? 'false' : (runtimeEnv.ENABLE_TOOL_SEARCH ?? provider.toolSearchEnv(wireModel))
   const configuredProxy = await provider.getContainerProxyConfig()
   // Static keys rotate with the connection row. Refreshable credentials carry
   // their own generation, which may be newer than this connection snapshot.
@@ -105,40 +145,14 @@ export async function connectionRuntime(resolved: ResolvedConnection, agentId: s
     browserModel: subagent(connection.browserModel),
     dashboardBuilderModel: subagent(connection.dashboardModel),
     modelPromptHints: [...getContainerModelPromptHints(wireModel, catalog), ...(provider.mediaPrompt ? [provider.mediaPrompt] : [])],
-    subagentModels: getSubagentModelCatalog(catalog),
+    subagentModels: getSubagentModelCatalog(runnableCatalog),
     modelContextWindows: getModelContextWindowMap(catalog),
     env,
   }
 }
 export type ConnectionRuntime = Awaited<ReturnType<typeof connectionRuntime>>
 
-const sessionRuntimes = new Map<string, ConnectionRuntime>()
-export function rememberSessionRuntime(
-  agentId: string,
-  sessionId: string,
-  runtime: ConnectionRuntime
-): void {
-  // Retain only non-secret execution facts for presentation/accounting.
-  sessionRuntimes.set(`${agentId}:${sessionId}`, { ...runtime, env: {}, proxy: undefined })
-  if (sessionRuntimes.size > 500) sessionRuntimes.delete(sessionRuntimes.keys().next().value!)
-}
-export function sessionRuntime(agentId: string, sessionId: string): ConnectionRuntime | undefined {
-  return sessionRuntimes.get(`${agentId}:${sessionId}`)
-}
-
-const selectionTurns = new Map<string, Promise<unknown>>()
-export async function withSessionSelection<T>(
-  agentId: string,
-  sessionId: string,
-  work: () => Promise<T>
-): Promise<T> {
-  const key = `${agentId}:${sessionId}`
-  const previous = selectionTurns.get(key) ?? Promise.resolve()
-  const current = previous.catch(() => undefined).then(work)
-  selectionTurns.set(key, current)
-  try {
-    return await current
-  } finally {
-    if (selectionTurns.get(key) === current) selectionTurns.delete(key)
-  }
+export function credentialSource(provider: string | undefined): string {
+  if (!provider) return 'unknown'
+  return provider === 'platform' ? 'platform' : `byo:${provider}`
 }

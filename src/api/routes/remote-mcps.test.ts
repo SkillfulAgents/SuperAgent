@@ -66,12 +66,8 @@ vi.mock('@shared/lib/services/connection-sync-service', () => ({
     mockSyncAgentsAssignedRemoteMcp(...args),
   syncRemoteMcpAgents: (...args: unknown[]) =>
     mockSyncRemoteMcpAgents(...args),
-}))
-
-vi.mock('@shared/lib/proxy/mcp-reauth-manager', () => ({
-  mcpReauthManager: {
-    completeMcp: (...args: unknown[]) => mockCompleteMcpReauth(...args),
-  },
+  // Each assigned agent's parked calls on the MCP go on.
+  resumeMcpReauthWaits: (...args: unknown[]) => mockCompleteMcpReauth(...args),
 }))
 
 // Mock DB with chainable query builder

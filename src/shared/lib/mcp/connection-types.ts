@@ -1,4 +1,5 @@
 import type { McpToolInfo } from './types'
+import type { ReportedRule } from '../proxy/rules/gate'
 
 export interface McpConnectionDescriptor {
   id: string
@@ -12,15 +13,23 @@ export interface McpInvocation {
   method: string
   requestPath: string
   toolName: string | null
+  /** tools/call `arguments`, for proxy rules. */
+  args?: unknown
   isProtocolMethod: boolean
   signal: AbortSignal
   /** The session the call came from, when the request named one. */
   callerSessionId?: string
 }
 
+/** Audit fields for proxy rules that ran on the invocation. */
+export interface McpRuleAudit {
+  ruleVersionId?: string
+  ruleOutcomes?: string
+}
+
 export type McpAccessResult =
-  | { ok: true; policyDecision: string }
-  | { ok: false; reason: 'blocked' | 'denied' | 'review_timeout' }
+  | ({ ok: true; policyDecision: string } & McpRuleAudit)
+  | ({ ok: false; reason: 'blocked' | 'denied' | 'review_timeout' | 'rules_unavailable'; rules?: ReportedRule[]; denyReason?: string } & McpRuleAudit)
 
 export type McpAuthorization =
   | { ok: true; accessToken: string | null }

@@ -16,6 +16,7 @@ export const USER_INPUT_REQUEST_KINDS = [
   'file',
   'remote_mcp',
   'browser_input',
+  'login',
   'script_run',
   'capability_review',
   'computer_use',
@@ -110,6 +111,18 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
     }),
   }),
   baseRequest.extend({
+    kind: z.literal('login'),
+    payload: z.looseObject({
+      message: lenientString,
+      // Model input: each mapped field's kind and label (refs stay in the
+      // container). Normalized by the card, which never trusts its shape.
+      fields: z.unknown().optional(),
+      // Host context, read from the container once it located the fields:
+      // the frame origin the values may go to. Never model input.
+      login: z.unknown().optional(),
+    }),
+  }),
+  baseRequest.extend({
     kind: z.literal('script_run'),
     payload: z.looseObject({
       script: lenientString,
@@ -144,7 +157,27 @@ export const pendingUserInputRequestSchema = z.discriminatedUnion('kind', [
       targetPath: lenientString,
       matchedScopes: z.array(z.string()).optional().catch(undefined),
       scopeDescriptions: z.record(z.string(), z.string()).optional().catch(undefined),
+      scopeMetadata: z.array(z.object({
+        scope: z.string(),
+        description: z.string(),
+        label: z.enum(['read', 'write', 'destructive', 'other']),
+      })).optional().catch(undefined),
       endpointDescription: lenientString,
+      endpointAmbiguous: z.boolean().optional().catch(undefined),
+      requestBody: lenientString,
+      ruleOutcomes: z
+        .array(z.looseObject({
+          ruleId: z.string(),
+          version: z.number(),
+          effect: lenientString,
+          name: lenientString,
+          restatement: z.string(),
+          result: z.string(),
+          detail: lenientString,
+        }))
+        .optional()
+        .catch(undefined),
+      ruleProposal: z.looseObject({}).optional().catch(undefined),
     }),
   }),
   baseRequest.extend({

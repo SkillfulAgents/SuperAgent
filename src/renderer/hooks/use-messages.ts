@@ -1,5 +1,7 @@
 import { apiFetch } from '@renderer/lib/api'
+import { readAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-request-error'
 import { captureRendererException } from '@renderer/lib/error-reporting'
+import { HttpError } from '@renderer/lib/http-error'
 import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -299,10 +301,12 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
 export function useSendMessage(options: {
   /** No error toast: the caller handles (or accepts) a failed send. */
   quiet?: boolean
+  /** The caller renders AgentRuntimeErrors that have a preview, so skip their toast. */
+  agentRuntimeErrorsShownInline?: boolean
 } = {}) {
   const queryClient = useQueryClient()
   return useMutation({
-    ...(options.quiet ? { meta: { skipGlobalErrorToast: true } } : {}),
+    meta: { skipGlobalErrorToast: options.quiet, agentRuntimeErrorsShownInline: options.agentRuntimeErrorsShownInline },
     mutationFn: async (data: {
       sessionId: string
       agentSlug: string
@@ -329,10 +333,10 @@ export function useSendMessage(options: {
           ...(data.shouldQuery === false ? { shouldQuery: false } : {}),
         }),
       })
-      if (!res.ok) throw new Error('Failed to send message')
+      if (!res.ok) throw await readAgentRuntimeError(res, 'Failed to send message')
       // uuid is the server-assigned message id, used to materialize the
       // optimistic pending copy by exact id match.
-      return res.json() as Promise<{ success: boolean; uuid: string; queued: boolean }>
+      return res.json() as Promise<{ success: boolean; uuid: string; queued: boolean; credentialSource?: string }>
     },
     onSuccess: (result, variables) => {
       if (variables.shouldQuery === false) {
@@ -384,7 +388,7 @@ export function useCancelQueuedMessage() {
 export function useUploadFile() {
   return useMutation({
     mutationFn: async (data: {
-      sessionId: string
+      sessionId?: string
       agentSlug: string
       file: File
       relativePath?: string
@@ -393,7 +397,9 @@ export function useUploadFile() {
       stallMs?: number
     }) => {
       return uploadFileChunked<{ path: string; filename: string; size: number }>({
-        url: `/api/agents/${data.agentSlug}/sessions/${data.sessionId}/upload-file`,
+        url: data.sessionId
+          ? `/api/agents/${data.agentSlug}/sessions/${data.sessionId}/upload-file`
+          : `/api/agents/${data.agentSlug}/upload-file`,
         file: data.file,
         fields: data.relativePath ? { relativePath: data.relativePath } : undefined,
         onProgress: data.onProgress,
@@ -415,7 +421,7 @@ export function useUploadFolder() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sourcePath: data.sourcePath }),
       })
-      if (!res.ok) throw new Error('Failed to upload folder')
+      if (!res.ok) throw new HttpError(res.status, 'Failed to upload folder')
       return res.json() as Promise<{ path: string; folderName: string }>
     },
   })

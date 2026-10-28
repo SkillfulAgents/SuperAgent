@@ -8,7 +8,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { HomeEmptyClouds } from '@renderer/components/home/home-empty-clouds'
 import { Button } from '@renderer/components/ui/button'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
-import type { BillingEmbedView } from '@renderer/lib/billing-embed'
+import { planNameFromId, type BillingEmbedView } from '@renderer/lib/billing-embed'
 import { isElectron } from '@renderer/lib/env'
 import { openExternalUrl } from '@renderer/lib/open-external'
 
@@ -69,6 +69,9 @@ const CTA_LABELS: Record<PaywallCta['kind'], string> = {
 // The two CTAs that buy something are brand blue; the rest stay neutral.
 const BRAND_CTAS = new Set<PaywallCta['kind']>(['topup', 'subscribe'])
 
+// Long enough to finish a Stripe checkout; after it the CTA comes back in case the billing tab was closed.
+export const HANDOFF_CHECKING_MS = 120_000
+
 function ctaHref(cta: PaywallCta): string | null {
   if (cta.kind === 'topup') return buildTopupHandoffUrl(cta.href)
   return cta.href
@@ -90,13 +93,6 @@ const EMBED_VIEW: Record<PaywallCta['kind'], BillingEmbedView | undefined> = {
 const PRO_BENEFITS = [
   'Unlimited agents, agentic apps and account connections',
   'Team cloud + private desktop workspaces',
-  '$200 of monthly usage included per seat. Pay-as-you-go past that.',
-]
-// Same plan for an org whose monthly credit is pooled: the seats fund one shared allowance.
-const PRO_BENEFITS_POOLED = [
-  PRO_BENEFITS[0],
-  PRO_BENEFITS[1],
-  'A shared pool of monthly usage: $200 for every seat on your plan. Pay-as-you-go past that.',
 ]
 
 function formatDollars(cents: number): string {
@@ -107,18 +103,21 @@ function formatDollars(cents: number): string {
 function PaywallActions({
   cta,
   loading,
-  handedOff,
+  checking,
+  retry,
   expanded,
   stretch,
   dismissible,
   embeddedAction,
   onDismiss,
   onHandOff,
-  onRecheck,
 }: {
   cta: PaywallCta | null
   loading: boolean
-  handedOff: boolean
+  // Billing is open elsewhere; the card's own refresh signals pick up the result.
+  checking: boolean
+  // The hand-off timed out without a result: offer the CTA again.
+  retry: boolean
   // The embedded frame is showing a panel: give it the full row, Dismiss drops below it.
   expanded: boolean
   // Fill the column (the subscribe price block) instead of hugging the right edge.
@@ -127,7 +126,6 @@ function PaywallActions({
   embeddedAction: ReactNode
   onDismiss: (ctaKind: string) => void
   onHandOff: (ctaKind: string) => void
-  onRecheck: (ctaKind: string) => void
 }) {
   if (loading) {
     return (
@@ -151,17 +149,14 @@ function PaywallActions({
           Dismiss
         </Button>
       )}
-      {handedOff ? (
-        <Button
-          size="sm"
-          className={stretch ? 'flex-1' : undefined}
-          onClick={(event) => {
-            event.stopPropagation()
-            onRecheck(ctaKind)
-          }}
-        >
-          Recheck
-        </Button>
+      {retry && !checking && (
+        <span className="self-center text-xs text-muted-foreground">Didn&apos;t finish? Open billing again.</span>
+      )}
+      {checking ? (
+        <div className="flex h-8 items-center gap-1.5 self-center text-xs text-muted-foreground" role="status" data-testid="paywall-handoff-checking">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+          Checking billing…
+        </div>
       ) : embeddedAction ?? (cta ? (
         <Button
           size="sm"
@@ -186,20 +181,55 @@ function PaywallActions({
 // below `sm` the quote stacks under the benefits. The quote comes from the platform CTA
 // (seat count and per-seat price), so it is absent until that arrives and on Electron.
 // An expanded CTA panel (promo code) drops below both columns at full width.
-function SubscribeBody({ plan, hint, actions, expanded, pooled }: { plan: SubscribePlan | null; hint: string; actions: ReactNode; expanded: boolean; pooled: boolean }) {
+function SubscribeBody({ plan, hint, actions, expanded, selectedPlanId, onSelectPlan }: {
+  plan: SubscribePlan | null
+  hint: string
+  actions: ReactNode
+  expanded: boolean
+  selectedPlanId: string | null
+  onSelectPlan: (planId: string) => void
+}) {
+  const chosenId = selectedPlanId ?? plan?.planId
   return (
     <div className="flex flex-col gap-4 py-1.5 sm:flex-row sm:flex-wrap sm:items-center sm:gap-6" data-testid="paywall-subscribe">
       <div className="min-w-0 flex-1">
         <p className="text-base font-medium leading-6 text-muted-foreground">Your trial has ended.</p>
         <p className="text-base font-medium leading-6 text-foreground">Upgrade to Pro to keep going.</p>
         <ul className="mt-4 flex flex-col gap-1.5 text-[13px] leading-[18px] text-muted-foreground">
-          {(pooled ? PRO_BENEFITS_POOLED : PRO_BENEFITS).map((benefit) => (
+          {PRO_BENEFITS.map((benefit) => (
             <li key={benefit} className="flex items-start gap-2">
               <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand" aria-hidden="true" />
               {benefit}
             </li>
           ))}
         </ul>
+        {plan?.options && (
+          <div role="radiogroup" aria-label="Choose a plan" className="mt-4 grid grid-cols-3 gap-2" data-testid="paywall-plan-options">
+            {plan.options.map((option) => {
+              const selected = option.id === chosenId
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  onClick={() => onSelectPlan(option.id)}
+                  className={cn(
+                    'rounded-lg border px-2.5 py-2 text-left transition-colors',
+                    selected ? 'border-brand bg-brand/5' : 'border-border/70 hover:bg-muted/50',
+                  )}
+                >
+                  <span className="flex items-center justify-between gap-1 text-[13px] font-medium leading-[18px] text-foreground">
+                    {option.name}
+                    {selected && <Check className="h-3.5 w-3.5 shrink-0 text-brand" aria-hidden="true" />}
+                  </span>
+                  <span className="block text-[11px] leading-4 text-muted-foreground">{formatDollars(option.grantCents)} usage / seat</span>
+                  <span className="block text-[11px] leading-4 text-muted-foreground">{option.deniedModels.length > 0 ? 'Excludes premium models' : 'All models'}</span>
+                </button>
+              )
+            })}
+          </div>
+        )}
         {hint && <p className="mt-3 text-[11px] leading-4 text-muted-foreground" data-testid="billing-cta-hint">{hint}</p>}
       </div>
       <div
@@ -216,6 +246,11 @@ function SubscribeBody({ plan, hint, actions, expanded, pooled }: { plan: Subscr
       >
         {plan && (
           <div data-testid="paywall-plan">
+            {plan.planId && (
+              <p className="mb-1 text-[11px] font-medium leading-4 text-muted-foreground" data-testid="paywall-plan-name">
+                {plan.options?.find((o) => o.id === plan.planId)?.name ?? planNameFromId(plan.planId)}
+              </p>
+            )}
             <p className="text-xl font-medium leading-6 text-foreground">
               {formatDollars(plan.seats * plan.seatPriceCents)}
               <span className="text-sm font-normal leading-[18px] text-muted-foreground">/mo</span>
@@ -245,6 +280,12 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
     return () => { mounted.current = false }
   }, [])
   const [handedOff, setHandedOff] = useState(false)
+  const [checking, setChecking] = useState(false)
+  useEffect(() => {
+    if (!checking) return
+    const id = setTimeout(() => setChecking(false), HANDOFF_CHECKING_MS)
+    return () => clearTimeout(id)
+  }, [checking])
   const [expanded, setExpanded] = useState(false)
   // An open panel's outcome is unknown until the platform reports it: a background poll
   // can see the charge before the panel finishes saving settings, so only a settled
@@ -252,6 +293,7 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
   const [panelHold, setPanelHold] = useState(false)
   const [ctaHint, setCtaHint] = useState('')
   const [plan, setPlan] = useState<SubscribePlan | null>(null)
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null)
   const billingChanged = useRef(false)
   const successShown = useRef(false)
   const { data: platformAuth } = usePlatformAuthStatus()
@@ -287,10 +329,11 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
     collapse()
   }, [view, collapse])
   useEffect(() => {
-    if (!billing.cleared || holding || !inApp || !billingChanged.current || successShown.current) return
+    if (!billing.cleared || holding || successShown.current) return
+    if (!(inApp && billingChanged.current) && !handedOff) return
     successShown.current = true
     toast.success('Billing updated. You can continue.')
-  }, [billing.cleared, holding, inApp])
+  }, [billing.cleared, holding, inApp, handedOff])
 
   const ctaKind = billing.cta?.kind ?? 'none'
   const analytics = useMemo<PaywallAnalyticsContext>(() => ({
@@ -305,8 +348,12 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
   useEffect(() => {
     if (shownRef.current || billing.loading || billing.cleared || dismissed) return
     shownRef.current = true
-    track('paywall_shown', { ...analytics, blocked: billing.blocked, live, role: platformAuth?.role ?? 'unknown' })
-  }, [billing.loading, billing.cleared, billing.blocked, dismissed, analytics, live, platformAuth?.role, track])
+    // Only Platform-served turns reach the platform billing gate.
+    track('paywall_shown', {
+      ...analytics, blocked: billing.blocked, live, role: platformAuth?.role ?? 'unknown',
+      session_id: session?.sessionId ?? null, credential_source: 'platform',
+    })
+  }, [billing.loading, billing.cleared, billing.blocked, dismissed, analytics, live, platformAuth?.role, session?.sessionId, track])
   useEffect(() => {
     if (!shownRef.current || clearedRef.current || !billing.cleared || holding) return
     clearedRef.current = true
@@ -345,7 +392,8 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
     <PaywallActions
       cta={billing.cta}
       loading={billing.loading}
-      handedOff={handedOff}
+      checking={checking}
+      retry={handedOff}
       expanded={embedded && expanded}
       stretch={subscribeLayout}
       dismissible={dismissible}
@@ -361,6 +409,7 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
           label={CTA_LABELS[billing.cta.kind]}
           onHintChange={setCtaHint}
           onPlanChange={setPlan}
+          selectedPlanId={selectedPlanId ?? undefined}
           cta={billing.cta.kind === 'add_card' ? 'add_card' : undefined}
           intent={billing.cta.kind === 'topup' ? 'topup' : undefined}
           view={view}
@@ -382,6 +431,7 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
             track('paywall_cta_clicked', { ...analytics, surface: 'external', action: 'embed_fallback' })
             collapse()
             setHandedOff(true)
+            setChecking(true)
           }}
         />
       ) : null}
@@ -392,10 +442,7 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
       onHandOff={(kind) => {
         track('paywall_cta_clicked', { ...analytics, ctaKind: kind, surface: 'external', action: 'open_billing' })
         setHandedOff(true)
-      }}
-      onRecheck={(kind) => {
-        track('paywall_recheck_clicked', { ...analytics, ctaKind: kind })
-        billing.recheck()
+        setChecking(true)
       }}
     />
   )
@@ -428,7 +475,7 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
           )}
         >
           {subscribeLayout ? (
-            <SubscribeBody plan={plan} hint={hint} actions={actions} expanded={panelOpen} pooled={billing.creditScope === 'org'} />
+            <SubscribeBody plan={plan} hint={hint} actions={actions} expanded={panelOpen} selectedPlanId={selectedPlanId} onSelectPlan={setSelectedPlanId} />
           ) : (
             <div className={cn('flex flex-wrap items-center gap-x-6 gap-y-3', !showHeader && 'justify-end')}>
               {showHeader && (

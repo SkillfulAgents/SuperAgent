@@ -17,7 +17,7 @@ import type {
   GetMicrovmCommandOutput,
   RunMicrovmCommandOutput,
 } from '@aws-sdk/client-lambda-microvms'
-import { BaseContainerClient, CONTAINER_INTERNAL_PORT } from './base-container-client'
+import { BaseContainerClient, CONTAINER_INTERNAL_PORT, withVolumesEnv } from './base-container-client'
 import type {
   ContainerConfig,
   ContainerInfo,
@@ -30,6 +30,7 @@ import type {
 } from './types'
 import { getSettings, isAutoResumeOnUnexpectedDeathEnabled } from '@shared/lib/config/settings'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { setBootstrapEnv, clearBootstrapEnv } from './agent-bootstrap-env-store'
 import {
   classifyMicrovmDeath,
@@ -265,8 +266,10 @@ export class LocalAuthForwardProxy {
 
   async start(): Promise<number> {
     if (this.port !== null) return this.port
-    const server = http.createServer((req, res) => this.handleRequest(req, res))
-    server.on('upgrade', (req, socket, head) => this.handleUpgrade(req, socket as net.Socket, head))
+    const server = http.createServer((req, res) => background(this.handleRequest(req, res), { name: 'microvm-proxy.forward-request' }))
+    server.on('upgrade', (req, socket, head) =>
+      background(this.handleUpgrade(req, socket as net.Socket, head), { name: 'microvm-proxy.forward-upgrade' }),
+    )
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject)
       server.listen(0, '127.0.0.1', () => resolve())
@@ -902,7 +905,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   }
 
   onFatalResult(kind: MicrovmFatalResult): 'settle' | 'defer_for_recovery' {
-    // The persister records the fatal and runtime-recovery hands it back via
+    // The container runtime records the fatal and runtime-recovery hands it back via
     // ObserveUnexpectedDeathInput; keeping a second copy here would go stale.
     return kind === 'oom_sigkill' ? 'defer_for_recovery' : 'settle'
   }
@@ -996,7 +999,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const config = getMicrovmRuntimeConfig()
     // Full env exceeds the 4096-byte payload cap, so stash it host-side and pass the
     // VM only a small bootstrap credential to fetch it at boot via /api/agent-bootstrap.
-    const env = await this.buildAgentEnv(options?.envVars, options?.agentName)
+    const env = await this.buildAgentEnv(withVolumesEnv(options?.envVars, options?.volumes), options?.agentName)
     const hasEnv = Object.keys(env).length > 0
     // Mount the same per-agent workspace path the k8s runtime uses.
     const mount = config.fsId && config.accessPoint && config.mountTargetIp
@@ -1175,9 +1178,9 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     return null
   }
 
-  /** FUSE in the microVM is unverified, so it mounts no volumes. */
+  /** No run flags: under no-new-privs the image's start.sh puts a root mount helper behind fusermount3. */
   public volumeRunFlags(): string | null {
-    return null
+    return ''
   }
 
   public getHostApiBaseUrl(): Promise<string> {

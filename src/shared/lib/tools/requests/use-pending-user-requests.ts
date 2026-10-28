@@ -20,7 +20,7 @@ const snapshotSchema = z.object({ requests: z.array(pendingUserInputRequestSchem
  * that drives the awaiting-input status. The interval refetch is the safety
  * net for a missed event (matching the legacy proxy-review poll).
  */
-export function usePendingUserRequests(agentSlug: string, sessionId?: string) {
+export function usePendingUserRequests(agentSlug: string, sessionId?: string | null) {
   // Key on the CANONICAL agent id: the URL carries the display slug, but SSE
   // invalidations are broad (['pending-user-requests']) and the snapshot URL
   // must hit one stable cache entry per agent regardless of the slug form the
@@ -41,6 +41,8 @@ export function usePendingUserRequests(agentSlug: string, sessionId?: string) {
       }
       return snapshotSchema.parse(await res.json()).requests
     },
+    // Null is an unsent session; undefined deliberately queries agent-wide requests.
+    enabled: sessionId !== null,
     refetchInterval: 30000,
   })
 }

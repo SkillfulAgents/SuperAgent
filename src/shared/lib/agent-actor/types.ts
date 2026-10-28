@@ -4,7 +4,7 @@
  * `agentRegistry.get(slug)` returns an `AgentActor`: a handle with typed method
  * groups (`container`, `sessions`, `messages`, `inputs`, `files`, `memories`). Consumers
  * outside `src/shared/lib/container/**` and this package talk to an agent only
- * through this handle; the container manager, message persister, and the
+ * through this handle; the container manager, the live sessions, and the
  * input/review/permission stores are internal to it.
  *
  * Runtime methods delegate to the underlying call named by their comments.
@@ -17,27 +17,27 @@
  * evicts it. The process-wide managers of those names are routers over the
  * actors' stores, for callers that hold an id or a slug but no handle.
  *
- * Two methods are synchronous snapshots of in-memory state —
- * `container.status()` and `sessions.activity()` — alongside the other
- * synchronous persister reads. Everything that does I/O returns a Promise.
+ * Every op returns a Promise and takes and returns data, so the same callers
+ * work whether the actor is an object in this process or one behind a
+ * transport; only `agentRegistry.get()` and `actor.slug` are synchronous. What
+ * the agent and one of its sessions are doing is read as one snapshot
+ * (`live()`, `sessions.live()`): reads consumed together are taken together,
+ * and a read → decide → write is one op, so no state changes between them.
  */
 import type { XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
+import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
 import type {
   ContainerInfo,
   ContainerSession,
-  ContainerStats,
   CreateSessionOptions,
   HealthCheckResult,
   HostPortProbeResult,
-  InterruptSessionOptions,
   InterruptSessionResult,
-  SendMessageOptions,
-  SlashCommandInfo,
   StopOptions,
 } from '@shared/lib/container/types'
-import type { CoalescedUserMessage } from '@shared/lib/container/runtime-death'
-import type { ActiveBackgroundTaskSnapshot, ActiveSubagentSnapshot } from '@shared/lib/container/message-persister'
-import type { WebSocket } from 'ws'
+import type { RuntimeOptions } from '@shared/lib/container/runtime-options'
+import type { SessionModelRuntime } from './live/live-sessions'
+import type { SessionEvent, WireFrame } from './live/session-channel'
 import type { ConnectionRuntimeKind } from '@shared/lib/container/connection-runtime-sync'
 import type { CommonLoadOptions, DailyUsageData } from '@shared/lib/services/usage-service'
 import type { SessionUsageTotals } from '@shared/lib/types/usage'
@@ -55,7 +55,6 @@ import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
 import type { ConfigDoc, ConfigDocId } from './config-schema'
 import type { AgentMemoryDocument, AgentMemoryEntry } from '@shared/lib/types/memory'
 import type {
-  AutomationStatusResult,
   ListSessionsOptions,
   SessionMessagesDelta,
   SessionMessagesPage,
@@ -66,11 +65,16 @@ import type {
   UserInputRequestOutcome,
 } from '@shared/lib/tools/requests/request-schema'
 import type { SettledUserInputRequest } from '@shared/lib/tools/requests/agent-input-requests'
-import type { ReviewDetails, ReviewRequest } from '@shared/lib/proxy/review-manager'
+import type { ReviewDetails, ReviewOutcome, ReviewRequest } from '@shared/lib/proxy/review-manager'
 import type { AccountReauthDetails } from '@shared/lib/proxy/account-reauth-manager'
 import type { McpReauthDetails } from '@shared/lib/proxy/mcp-reauth-manager'
+import type { ReauthOutcome } from '@shared/lib/proxy/reauth-waits'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 import type { ComputerUsePermissionLevel, PermissionGrantType } from '@shared/lib/computer-use/types'
+import type { ComputerUseRun, HostRunOutcome, ScriptRun } from './host-runs'
+import type { WidgetRefreshOutcome } from '@shared/lib/widgets/agent-widget-refreshes'
+import type { McpProxySession } from '@shared/lib/mcp/agent-mcp-sessions'
+import type { VolumeUploadOutcome } from '@shared/lib/volumes/volume-upload-guard'
 
 /** The agent's directory-name slug. Not the URL `displaySlug`. */
 export type AgentSlug = string
@@ -78,26 +82,40 @@ export type AgentSlug = string
 export interface AgentRegistry {
   /** Never fails and never does I/O; creates the handle on first use. */
   get(slug: AgentSlug): AgentActor
-  /** The handle if `get` has been called for this slug and it was not evicted. */
-  peek(slug: AgentSlug): AgentActor | undefined
-  /**
-   * Handles for the agents whose container is currently running. Not "every
-   * agent": a cross-agent read that wants all agents iterates the agent list.
-   */
-  running(): AgentActor[]
   /**
    * Drop the handle and forget its container runtime, releasing everything
    * the handle owns: parked reviews and re-auth waits are rejected, open
    * input requests are settled as invalidated, in-memory grants and the
    * summary cache are gone. Does not stop the container.
    */
-  evict(slug: AgentSlug): void
-  /** `evict` for every handle. Does not stop containers. */
-  evictAll(): void
+  evict(slug: AgentSlug): Promise<void>
+  /** `evict` for every handle, at shutdown: parked callers are let go. Does not stop containers. */
+  evictAll(): Promise<void>
 }
+
+/**
+ * The keys of `AgentActor` that hold op groups, for a transport that wraps
+ * them (`serializingActor`). The type test checks the list is complete.
+ */
+export const ACTOR_GROUPS = [
+  'container',
+  'sessions',
+  'messages',
+  'inputs',
+  'usage',
+  'files',
+  'memories',
+  'config',
+  'locks',
+  'widgets',
+  'mcpSessions',
+  'volumeUploads',
+] as const
 
 export interface AgentActor {
   readonly slug: AgentSlug
+  /** What the agent is doing as of now: its container, busy sessions, open asks. */
+  live(): Promise<AgentLiveSummary>
   readonly container: ContainerOps
   readonly sessions: SessionOps
   readonly messages: MessageOps
@@ -106,6 +124,75 @@ export interface AgentActor {
   readonly files: FileOps
   readonly memories: MemoryOps
   readonly config: ConfigOps
+  readonly locks: LockOps
+  readonly widgets: WidgetOps
+  readonly mcpSessions: McpSessionOps
+  readonly volumeUploads: VolumeUploadOps
+}
+
+/**
+ * Named locks over the agent, for host work that must not run twice at once
+ * for it. A key is the caller's own, prefixed with what it guards
+ * (`wake:<taskId>`, `x-agent-invoke:<sessionId>`). Releasing with a token
+ * that no longer holds the lock does nothing. Evicting the agent lets go of
+ * every lock and rejects every `acquire` still waiting.
+ */
+export interface LockOps {
+  /** Take `key` unless it is held: the token that releases it, or null. */
+  tryAcquire(key: string): Promise<string | null>
+  /** Take `key` once every earlier holder and waiter has let it go. */
+  acquire(key: string): Promise<string>
+  release(key: string, token: string): Promise<void>
+}
+
+/**
+ * What the host's widget refresh service remembers about the agent's
+ * widgets (see `AgentWidgetRefreshes`). The service runs the refreshes.
+ */
+export interface WidgetOps {
+  /** Start refreshing a widget unless a refresh of it is in flight: the token that finishes it, or null. */
+  beginRefresh(widgetSlug: string): Promise<string | null>
+  /**
+   * Start refreshing a widget, or join the refresh in flight: the token that
+   * finishes the new one, or the joined one's outcome once it ends. Decided in
+   * one step, so a refresh ending in between cannot make the caller run another.
+   */
+  beginOrJoinRefresh(widgetSlug: string): Promise<{ token: string } | { outcome: WidgetRefreshOutcome }>
+  /** The refresh `token` began is over: hand its outcome to whoever joined it, and note when it ended. */
+  finishRefresh(widgetSlug: string, token: string, outcome: WidgetRefreshOutcome): Promise<void>
+  /** The widgets with a refresh in flight. */
+  refreshing(): Promise<string[]>
+  /** When each widget's last refresh ended, epoch ms by widget slug. */
+  refreshedAt(): Promise<Record<string, number>>
+  /** True, and noted, unless a stale sweep ran within `throttleMs`. */
+  claimStaleSweep(throttleMs: number): Promise<boolean>
+  /** One of the agent's runs ended: the stamp a post-run sweep is due for. */
+  notePostRun(): Promise<number>
+  /** Whether no run has ended since the one `stamp` noted. */
+  isLatestPostRun(stamp: number): Promise<boolean>
+}
+
+/** The MCP sessions the proxy opened on the agent's behalf (see `AgentMcpSessions`). */
+export interface McpSessionOps {
+  /** Open a session for `mcpId`: the id the client sends back. */
+  open(mcpId: string, protocolVersion: string): Promise<string>
+  /** The session `id` if it is this MCP's and still in use; reading it counts as use. */
+  get(mcpId: string, id: string): Promise<McpProxySession | null>
+  /** The upstream session `id` now speaks for (null: the upstream is stateless). */
+  bind(id: string, upstreamSessionId: string | null): Promise<void>
+  /** Forget the upstream session `upstreamSessionId` (one a request found dead); a binding made since is kept. */
+  unbind(id: string, upstreamSessionId: string | null): Promise<void>
+  close(id: string): Promise<void>
+}
+
+/** The agent's volume uploads, as the delete that may follow one needs them (see `VolumeUploadGuard`). */
+export interface VolumeUploadOps {
+  /** An upload of `key` starts: its number, for `end`. */
+  begin(key: string): Promise<number>
+  /** The upload `begin` numbered is over. */
+  end(key: string, upload: number, outcome: VolumeUploadOutcome): Promise<void>
+  /** Whether a delete of `key` may go ahead. A refusal consumes what one unfinished upload left. */
+  allowDelete(key: string): Promise<boolean>
 }
 
 /** The agent's persistent memories. Paths are relative to its memory directory. */
@@ -130,6 +217,7 @@ export interface AgentPlacement {
 export interface AgentRecord {
   slug: AgentSlug
   name: string
+  avatar: AgentAvatar
   description?: string
   createdAt: Date
   placement: AgentPlacement
@@ -137,6 +225,7 @@ export interface AgentRecord {
 
 export interface AgentIdentityChanges {
   name?: string
+  avatar?: AgentAvatar
   /** Null clears the description. */
   description?: string | null
 }
@@ -165,7 +254,7 @@ export interface AgentCatalog {
   mint(): Promise<AgentSlug>
   /** Record a new local agent. The caller has written its workspace already. */
   insert(record: { slug: AgentSlug; name: string; description?: string; createdAt: Date }): Promise<AgentRecord>
-  /** Change an agent's name or description; null when there is no such agent. */
+  /** Change an agent's identity or appearance; null when there is no such agent. */
   update(slug: AgentSlug, changes: AgentIdentityChanges): Promise<AgentRecord | null>
   /** The agent slug for a display slug or a slug, or null when there is no such agent. */
   resolve(input: string): Promise<AgentSlug | null>
@@ -178,48 +267,24 @@ export interface ContainerOps {
   start(): Promise<void>
   /** `containerManager.stopContainer` */
   stop(options?: StopOptions): Promise<void>
-  /** `containerManager.restartContainer` */
-  restart(): Promise<void>
   /** `containerManager.keepAlive` */
-  keepAlive(): void
-  /** `containerManager.getCachedInfo` — synchronous snapshot of the cached status. */
-  status(): ContainerInfo
-  /** `containerManager.syncAgentStatus` — refresh the cache from the runtime. */
-  syncStatus(): Promise<ContainerInfo>
-  /** `containerManager.getHealthWarnings` */
-  health(): HealthCheckResult[]
-  /** `ContainerRuntime.isStale` — running on a container env that a setting change replaced. */
-  stale(): boolean
+  keepAlive(): Promise<void>
+  /** `containerManager.getCachedInfo` — the cached status; no runtime is queried. */
+  status(): Promise<ContainerInfo>
   /**
-   * When this agent last stopped being busy, as epoch ms, or `null` while it
-   * is busy or its idleness is unknown. Busy is any session active or
-   * awaiting input. Otherwise it is the latest of the container start, the
-   * last `keepAlive()` and the last session activity (a message sent, a frame
-   * received, a transcript write), and `null` when none has been recorded
-   * since the container last stopped.
-   *
-   * The actor puts itself to sleep: each of those events re-arms its own
-   * alarm for the auto-sleep timeout, and the alarm sleeps the container
-   * once `idleSince() !== null && now - idleSince() > timeout`. A local actor
-   * uses a timer on the runtime; a remote one uses its host's alarm. This op
-   * is the clock the alarm reads, answered from memory, exposed so a status
-   * view or a fallback sweep can read it too.
+   * The container's environment or drives changed: a running container keeps
+   * the old ones until it restarts. `restart` restarts it now; otherwise it is
+   * marked stale (`AgentLiveSummary.container.stale`) for the user to restart.
    */
-  idleSince(): number | null
-  /** `client.getStats` */
-  stats(): Promise<ContainerStats | null>
+  invalidate(options?: { restart?: boolean }): Promise<'not-running' | 'marked-stale' | 'restarted'>
   /** `client.getInfo` — queries the runtime; prefer `status()` unless freshness matters. */
   info(): Promise<ContainerInfo>
-  /** `updateConnectedAccountsEnvironment` (connection-runtime-sync) with this agent's client. */
-  updateConnectedAccountsEnvironment(): Promise<Response>
-  /** `updateRemoteMcpEnvironment` (connection-runtime-sync) with this agent's client. */
-  updateRemoteMcpEnvironment(): Promise<Response>
   /**
    * `syncAgentConnectionEnvironment` (connection-runtime-sync) — push one
    * projection to a running container. True when it was applied or when the
    * container is stopped (startup rebuilds it); false on a failed push.
    */
-  syncConnectionEnvironment(kind: ConnectionRuntimeKind): Promise<boolean>
+  syncConnectionEnvironment(kind: ConnectionRuntimeKind, options?: { confirm?: boolean }): Promise<boolean>
 
   // Transport to the container API. These are honest for any runtime: a
   // remote actor answers them over the network the same way.
@@ -227,20 +292,27 @@ export interface ContainerOps {
   /** `client.fetch` — an HTTP request to the container API. Counted by the lint fence until its direct callers move inward. */
   fetch(path: string, init?: RequestInit): Promise<Response>
   /**
-   * A WebSocket to the container API at `path`, authenticated the way `fetch`
-   * is. Returned before it opens so the caller attaches its own listeners.
-   * Throws when the container is not running.
+   * Where to open a WebSocket to the container API at `path`, authenticated
+   * the way `fetch` is: the URL, the subprotocols to offer and the headers
+   * (`init.headers` with the container's auth headers added after, which
+   * win). The caller opens the socket. Null when the container is not running.
    */
-  openWebSocket(path: string, init?: OpenWebSocketInit): WebSocket
+  webSocketTarget(path: string, init?: OpenWebSocketInit): Promise<WebSocketTarget | null>
 
   // Host capabilities. These describe the machine running the API, not the
   // container's transport: an actor whose container is elsewhere answers
   // null / 'unknown', and callers gate on that.
 
   /** `client.getHostBridgeIp` — the address the container reaches this host on, if any. */
-  hostBridgeIp(): string | null
+  hostBridgeIp(): Promise<string | null>
   /** `client.probeHostPortFromRunner` — whether the container's network can reach a port on this host. */
   probeHostPort(host: string, port: number): Promise<HostPortProbeResult>
+}
+
+export interface WebSocketTarget {
+  url: string
+  protocols?: string | string[]
+  headers: Record<string, string>
 }
 
 export interface OpenWebSocketInit {
@@ -277,7 +349,10 @@ export interface SessionOps {
   rename(sessionId: string, name: string): Promise<void>
   /** `deleteSession` — the files are the authority. */
   delete(sessionId: string): Promise<boolean>
-  /** `deleteSessionsBatch` */
+  /**
+   * `deleteSessionsBatch` over the sessions not running now: one that is
+   * (the caller's view of what is idle may be stale) is kept. Returns the ids deleted.
+   */
   deleteMany(sessionIds: string[]): Promise<string[]>
   /** `getSessionMetadata` */
   metadata(sessionId: string): Promise<SessionMetadata | null>
@@ -285,10 +360,6 @@ export interface SessionOps {
   readMetadata(): Promise<SessionMetadataMap>
   /** `updateSessionMetadata` */
   updateMetadata(sessionId: string, updates: Partial<SessionMetadata>): Promise<SessionMetadata | undefined>
-  /** `finalizeAutomationStatus` */
-  finalizeAutomationStatus(sessionId: string, status: 'succeeded' | 'failed'): Promise<AutomationStatusResult>
-  /** `ensureSessionsDirectory` */
-  ensureDirectory(): Promise<void>
   /** `sessionFileRealPathWithinAgent` — the transcript's real location is inside the workspace, links followed. */
   fileRealPathWithinAgent(sessionId: string): Promise<boolean>
   /** `loadSessionUsageTotals` (usage-service) over this session's transcript and the files beside it. */
@@ -300,7 +371,9 @@ export interface SessionOps {
   /** `getSessionForScheduledExecution` */
   forScheduledExecution(scheduledTaskId: string, scheduledExecutionAt: Date): Promise<SessionInfo | null>
   /** `recordSessionActivity` (session-summary-cache) — a transcript write happened that no stream frame will report. */
-  recordActivity(sessionId: string, activityAt?: Date | number): void
+  recordActivity(sessionId: string, activityAt?: Date | number): Promise<void>
+  /** The model runtime the session's turns now run on (the llm-runtime callback resolved it), for its errors' presentation. */
+  recordRuntime(sessionId: string, runtime: SessionModelRuntime): Promise<void>
 
   // Files derived from a session's transcript: subagent and workflow
   // transcripts live beside it. Read by the routes that render them.
@@ -323,102 +396,163 @@ export interface SessionOps {
 
   // Live sessions — ContainerClient. Needs the container.
 
-  /** Inspect the running container session, including whether a send was accepted. */
-  getLive(sessionId: string): Promise<ContainerSession | null>
-  /** `client.createSession` */
+  /**
+   * `client.createSession` alone: the container creates the session and
+   * starts its turn with the first message. Nothing is marked, attached or
+   * registered; `start` does all of that.
+   */
   create(options: CreateSessionOptions): Promise<ContainerSession>
+  /**
+   * Create a session and take it live: the container creates it with its
+   * first message, then the session is marked active, its stream attached
+   * and its metadata registered with the commands the container listed. A
+   * step after create that fails, or a create that lands after `notAfter`,
+   * revokes the container's session; `StartError` says where it stopped.
+   */
+  start(request: StartSessionRequest): Promise<ContainerSession>
   /** `client.forkSession` */
   fork(sessionId: string): Promise<{ id: string } | null>
   /** `client.deleteSession` — the container's copy, not the stored files. */
   deleteLive(sessionId: string): Promise<boolean>
+  /** `client.warmSession` — resume the session's CLI ahead of its next message. Best-effort; never throws. */
+  warm(sessionId: string): Promise<boolean>
 
-  // Activity — messagePersister. Synchronous reads of in-memory state.
+  // Activity — the agent's `LiveSessions`.
 
-  /** `messagePersister.getSessionActivity` — synchronous snapshot. */
-  activity(sessionId: string): SessionActivity
-  /** `messagePersister.isSessionActive` */
-  isActive(sessionId: string): boolean
-  /** `messagePersister.isSessionAwaitingInput` */
-  isAwaitingInput(sessionId: string): boolean
-  /** `messagePersister.markSessionActive` */
-  markActive(sessionId: string): void
-  /** Mark active for stream recovery; undo only if no new send, turn, or output took ownership. */
-  markProvisionalActive(sessionId: string): () => void
-  /** `messagePersister.markSessionIdle` */
-  markIdle(sessionId: string): void
-  /** `messagePersister.markSessionInterrupted`, then dismisses the calls parked on the session's own re-auth cards. */
-  markInterrupted(sessionId: string, options?: { processKept?: boolean; turnGenerationBefore?: number }): Promise<void>
-  /** `messagePersister.getTurnGeneration` — bumps per turn; read before an interrupt to tell a stale turn from the next one. */
-  turnGeneration(sessionId: string): number
-  /** `messagePersister.isSessionWaitingBackground` */
-  isWaitingBackground(sessionId: string): boolean
-  /** `messagePersister.hasOnlyUntrackedBackgroundWork` */
-  hasOnlyUntrackedBackgroundWork(sessionId: string): boolean
+  /** What the session is doing as of now. */
+  live(sessionId: string): Promise<SessionLiveState>
+  /** `LiveSessions.markActive` */
+  markActive(sessionId: string): Promise<void>
+  /** `LiveSessions.markIdle` */
+  markIdle(sessionId: string): Promise<void>
   /** `client.stopTask` — stop one background task by its SDK task id. */
   stopTask(sessionId: string, taskId: string): Promise<boolean>
-  /** `messagePersister.waitForIdle` */
-  waitForIdle(
-    sessionId: string,
-    opts?: { timeoutMs?: number; signal?: AbortSignal; requireActiveFirst?: boolean; observeMs?: number },
-  ): Promise<void>
-  /** `messagePersister.getActiveSessionIdsForAgent` */
-  activeIds(): string[]
-  /** `messagePersister.hasActiveSessionsForAgent` */
-  hasActive(): boolean
-  /** `messagePersister.hasSessionsAwaitingInputForAgent` */
-  hasAwaitingInput(): boolean
-  /** `messagePersister.markAllSessionsInactiveForAgent` */
-  markAllInactive(options?: { settleRecovering?: boolean }): void
-  /** `messagePersister.syncAgentSessionsAwaiting` */
-  syncAwaiting(): void
   /**
-   * `messagePersister.broadcastSessionUpdate`: tell the session's stream
+   * `LiveSessions.waitForIdle`: `'idle'` once the session is not active (at
+   * once when it is not running), `'timeout'` when it still is after `timeoutMs`.
+   */
+  waitForIdle(sessionId: string, opts?: { timeoutMs?: number }): Promise<'idle' | 'timeout'>
+  /**
+   * Emit `session_updated`: tell the session's stream
    * listeners that its metadata changed (a rename, a model or effort change)
    * so they refetch before their next send.
    */
-  broadcastUpdate(sessionId: string): void
-  /** `messagePersister.recoverSessionAwaitingInput` */
-  recoverAwaitingInput(sessionId: string, unresolved: Array<{ toolUseId: string; toolName: string }>): void
-  /** `messagePersister.promoteAutomatedSession` */
-  promoteAutomated(sessionId: string): Promise<void>
-  /** `messagePersister.grantSessionCapability` */
-  grantCapability(sessionId: string, capability: 'subagents' | 'workflows'): void
-  /** `messagePersister.getSlashCommands` */
-  slashCommands(sessionId: string): SlashCommandInfo[]
-  /** `messagePersister.setSlashCommands` */
-  setSlashCommands(sessionId: string, commands: SlashCommandInfo[]): void
-  /** `messagePersister.getActiveBackgroundTasks` */
-  backgroundTasks(sessionId: string): ActiveBackgroundTaskSnapshot[]
-  /** `messagePersister.getActiveSubagents` — running and completed subagents for the current turn. */
-  activeSubagents(sessionId: string): ActiveSubagentSnapshot[]
+  broadcastUpdate(sessionId: string): Promise<void>
+  /**
+   * Square the transcript's open tool calls with the session's requests, in
+   * one turn: the outcome of each the user already decided, and, while the
+   * session runs, the asks (`awaitsInput`) nobody decided are parked again
+   * (the stream event that opened them may have been missed).
+   */
+  reconcileTranscript(sessionId: string, toolCalls: TranscriptToolCall[]): Promise<{ settled: Record<string, UserInputRequestOutcome> }>
+  /**
+   * `LiveSessions.promoteAutomated`. `metadata` is the session's
+   * entry as the caller just read it; resolves to the entry as it now stands.
+   */
+  promoteAutomated(sessionId: string, metadata?: SessionMetadata | null): Promise<SessionMetadata | null>
+  /** `LiveSessions.grantCapability` */
+  grantCapability(sessionId: string, capability: 'subagents' | 'workflows'): Promise<void>
 
-  // Container stream attachment — messagePersister follows the container's
-  // stream for a session and persists what arrives.
+  // Container stream attachment — the agent's `LiveSessions` follows the
+  // container's stream for a session and persists what arrives.
 
-  /** `messagePersister.subscribeToSession` with this agent's client. */
-  subscribeStream(sessionId: string, containerSessionId: string): Promise<void>
-  /** `messagePersister.unsubscribeFromSession` */
-  unsubscribeStream(sessionId: string): void
-  /** `messagePersister.isSubscribed` */
-  isStreamSubscribed(sessionId: string): boolean
+  /**
+   * Follow the session's container stream; resolves once it is attached and
+   * the container has replayed the last turn's terminal frames. A no-op when
+   * the stream is attached already. `metadata` is the session's entry as the
+   * caller just read it (null: none).
+   *
+   * `replayTerminal` is for a caller that lost track of the session (a
+   * restart, a dropped connector): it attaches again even when attached and
+   * idle, so the replay reaches it, and marks an idle session active around
+   * the attach, so the replay is not discarded as already settled. That mark
+   * and its undo are tagged `provisional: true` on the session's events.
+   * Attached and busy, the live stream already carries what it needs.
+   */
+  attach(sessionId: string, options?: { metadata?: SessionMetadata | null; replayTerminal?: boolean }): Promise<void>
+
+  /**
+   * The session was opened by a notice, not by a person (voice mode started
+   * from the agent home): it is named from the first message a person sends.
+   * In memory: a restart leaves such a session with its placeholder name.
+   */
+  deferNaming(sessionId: string): Promise<void>
+  /** True once for a session whose naming was deferred: the caller names it now. */
+  takeDeferredNaming(sessionId: string): Promise<boolean>
+}
+
+/** The agent's live state as of one moment (`actor.live()`). */
+export interface AgentLiveSummary {
+  /** The container's cached status: no runtime is queried. */
+  container: ContainerInfo & {
+    healthWarnings: HealthCheckResult[]
+    /** Running on a container environment or drives that a change replaced (`invalidate`). */
+    stale: boolean
+    /**
+     * When the agent last stopped being busy, as epoch ms, or `null` while it
+     * is busy or its idleness is unknown. Busy is any session active or
+     * awaiting input. Otherwise it is the latest of the container start, the
+     * last `keepAlive()` and the last session activity, and `null` when none
+     * has been recorded since the container last stopped. The actor's own
+     * auto-sleep alarm reads the same clock.
+     */
+    idleSince: number | null
+  }
+  /** Sessions running a turn (or holding background work). */
+  activeSessionIds: string[]
+  /** Sessions waiting on the user. */
+  awaitingSessionIds: string[]
+  /** Every open request, session-scoped and agent-scoped, without payloads. */
+  openRequests: Array<Pick<PendingUserInputRequest, 'id' | 'kind' | 'blocking' | 'autoApproved'> & { sessionId?: string }>
+  /** Proxy reviews waiting on the user, sessions or not. */
+  pendingReviews: Array<{ id: string; displayText: string }>
+}
+
+/** One session's live state as of one moment (`sessions.live()`). */
+export interface SessionLiveState {
+  activity: SessionActivity
+  isActive: boolean
+  isAwaitingInput: boolean
+  /** The session's container stream is attached. */
+  streamAttached: boolean
+  /** Its open requests, payloads included. */
+  openRequests: PendingUserInputRequest[]
+  /** What `recordRuntime` last recorded for it. */
+  runtime: SessionModelRuntime | null
+}
+
+/** A tool call the transcript shows with no result (`sessions.reconcileTranscript`). */
+export interface TranscriptToolCall {
+  toolUseId: string
+  toolName: string
+  /** A blocking ask of the turn still running: parked again while nobody decided it. */
+  awaitsInput: boolean
 }
 
 export interface MessageOps {
   // Live — ContainerClient.
 
-  /** `client.sendMessage` */
-  send(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void>
-  /** `client.cancelQueuedMessage` */
+  /**
+   * The one way a message reaches a session (see `DeliverRequest`). In one
+   * turn of the actor, after the session's earlier deliveries: start the
+   * container and attach the stream, cancel what the session waits on if
+   * asked, decide whether the message joins a running turn (`queued`), mark
+   * the session active, show the echo, send it, and store the session's
+   * runtime selection. A send that is not accepted rolls back only its own
+   * mark. Failures throw `DeliveryError`.
+   */
+  deliver(request: DeliverRequest): Promise<DeliverResult>
+  /** Cancel a queued (not yet picked up) message, the copy held while recovering included. False: too late. */
   cancelQueued(sessionId: string, uuid: string): Promise<boolean>
-  /** `client.interruptSession` */
-  interrupt(sessionId: string, options?: InterruptSessionOptions): Promise<InterruptSessionResult>
-  /** `messagePersister.withSessionSend` with this agent's client — brackets a send so a fast reply cannot land before the active mark. */
-  withSend<T>(sessionId: string, send: () => Promise<T>): Promise<T>
+  /**
+   * Stop the session's turn and mark it interrupted, in one turn of the
+   * actor: the container is asked when it runs, and the session is marked
+   * locally when it does not or when the interrupt throws.
+   */
+  stop(sessionId: string, options: StopSessionOptions): Promise<StopSessionResult>
 
   // Transcript reads and edits — session-service.
 
-  /** `getSessionMessages` */
-  list(sessionId: string): Promise<JsonlMessageEntry[]>
   /** `getSessionMessagesWithCompact` */
   withCompact(sessionId: string): Promise<(JsonlMessageEntry | JsonlSystemEntry)[]>
   /** `getSessionMessagesPage` */
@@ -428,37 +562,152 @@ export interface MessageOps {
   ): Promise<SessionMessagesPage>
   /** `getSessionMessagesDelta` */
   delta(sessionId: string, opts: { after: string; signal?: AbortSignal; media?: 'ref' }): Promise<SessionMessagesDelta>
-  /** `findLastSessionEntry` */
+  /**
+   * `findLastSessionEntry`: the last transcript entry `query` names, read
+   * from the tail. `endOffset` stops the search at that byte of the transcript.
+   */
   findLastEntry(
     sessionId: string,
-    predicate: (entry: JsonlMessageEntry | JsonlSystemEntry) => boolean,
+    query: TranscriptEntryQuery,
     options?: { endOffset?: number | null },
   ): Promise<JsonlMessageEntry | JsonlSystemEntry | null>
   /** `removeMessage` */
   remove(sessionId: string, messageUuid: string): Promise<boolean>
   /** `removeToolCall` */
   removeToolCall(sessionId: string, toolCallId: string): Promise<boolean>
-  /** `appendInformationalEntry` (session-transcript-append) */
-  appendInformational(sessionId: string, entry: { uuid: string; content: string; level?: string }): Promise<void>
   /** `appendAssistantEntry` (session-transcript-append) — an assistant message delivered out of band, recorded so the transcript shows it. */
   appendAssistant(sessionId: string, text: string): Promise<void>
-  /** `streamJsonlFile` over the transcript — every raw entry, in order. */
-  rawEntries(sessionId: string): AsyncIterable<unknown>
+  /** Each user message of a forked transcript: its uuid in the fork and the one it had in the source. */
+  forkedUserUuids(sessionId: string): Promise<Array<{ newUuid: string; oldUuid: string }>>
   /** The transcript file's bytes for the debug view, or null when there is no transcript. */
   rawLog(sessionId: string): Promise<{ size: number; stream: ReadableStream<Uint8Array> } | null>
   /** `openMediaBlob` (session-media) — one media item referenced from the transcript, or undefined when it is gone. */
   media(sessionId: string, ref: MediaRef, signal?: AbortSignal): Promise<MediaBlob | undefined>
 
-  // Fan-out and recovery — messagePersister.
+  // Fan-out and recovery — the agent's `LiveSessions`.
 
-  /** `messagePersister.addSSEClient` — returns the unsubscribe function. */
-  subscribe(sessionId: string, listener: (data: unknown) => void): () => void
-  /** `messagePersister.broadcastSessionEvent` */
-  broadcastEvent(sessionId: string, data: unknown): void
-  /** `messagePersister.coalesceIfRecovering` */
-  coalesceIfRecovering(sessionId: string, message: CoalescedUserMessage): boolean
-  /** `messagePersister.dropCoalescedUserMessage` */
-  dropCoalescedUserMessage(sessionId: string, uuid: string): boolean
+  /**
+   * `LiveSessions.listen` — every event of the session from now on, for the
+   * app's own consumers. Resolves once listening; cancel the stream to stop.
+   */
+  subscribe(sessionId: string): Promise<ReadableStream<SessionEvent>>
+  /**
+   * `LiveSessions.follow` — a viewer's wire: the frames it missed since
+   * `after` (the last frame id it got), or a snapshot, then every event, each
+   * frame with its id, and a `ping` every 30s. A viewer that falls far behind
+   * finds the stream ended and comes back with its last id. Resolves once
+   * attached; cancel the stream to stop.
+   */
+  follow(sessionId: string, options: { after?: string }): Promise<ReadableStream<WireFrame>>
+  /** `LiveSessions.emit` */
+  broadcastEvent(sessionId: string, data: unknown): Promise<void>
+}
+
+/** Which transcript entry `messages.findLastEntry` looks for. */
+export type TranscriptEntryQuery =
+  /** The user message sent with this uuid. */
+  | { kind: 'user'; uuid: string }
+  /** The last assistant message. */
+  | { kind: 'assistant' }
+  /** The last message a person wrote (see `userRequestText`). */
+  | { kind: 'user-request' }
+
+/** A message for a session, as `messages.deliver` takes it. */
+export interface DeliverRequest {
+  sessionId: string
+  content: string
+  /** The message's id, which the transcript entry takes. */
+  uuid?: string
+  /**
+   * The turn's runtime options. A message that joins a running turn drops
+   * model, provider, effort and speed: the container would restart the turn
+   * for them. `shouldQuery: false` appends the message to the transcript
+   * and starts no turn: nothing is cancelled or marked, and the running
+   * turn's runtime is kept.
+   */
+  options?: RuntimeOptions & { isAutomated?: boolean }
+  /** Stored with the session when the message is sent, besides the runtime selection. */
+  metadataUpdates?: Partial<SessionMetadata>
+  /** A person sent it: a hidden automation becomes a regular session first. */
+  promote?: boolean
+  /**
+   * The caller may bind `options.llmProviderId` only because the session
+   * holds it (another member's connection): refused with
+   * `provider-not-attached` once the session holds another. An append
+   * (`shouldQuery: false`) never uses it.
+   */
+  requireStoredProvider?: boolean
+  /** Cancel what the session waits on first, so the message starts a fresh turn. */
+  cancelAwaiting?: boolean
+  /** Hold the message while the session recovers from a runtime death; the recovery sends it. */
+  coalesce?: boolean
+  /** The `user_message` the session's viewers see, sent once it is known whether the message is queued. */
+  echo?: UserMessageEcho
+}
+
+export type DeliverResult = (
+  | { status: 'sent'; queued: boolean }
+  /** Held for the recovery to send. */
+  | { status: 'coalesced' }
+) & {
+  /** The provider the session's turns run on, once the container resolved it (the credential that served it). */
+  provider?: string
+}
+
+/** What a `user_message` echo shows besides the delivery's uuid and queued flag. */
+export interface UserMessageEcho {
+  content: string
+  /** Who sent it, where several people share the agent. */
+  sender?: { id: string; name: string; image?: string | null }
+  /** The integration card the message arrived with. */
+  integration?: unknown
+}
+
+/** A session to create and take live, as `sessions.start` takes it. */
+export interface StartSessionRequest {
+  create: CreateSessionOptions
+  name: string
+  /** Registered with the session, and read for the stream's lifecycle. */
+  metadata?: Partial<SessionMetadata>
+  /** Epoch ms. A create that lands later was not wanted any more: it is revoked (`created-late`). */
+  notAfter?: number
+  /** Bound on the stream attach; a stall past it fails the start (`attach-failed`). */
+  attachTimeoutMs?: number
+}
+
+export interface StopSessionOptions {
+  scope: 'turn' | 'all'
+  /** Only a session that is running: an idle one is left alone (`skipped-idle`). */
+  ifActive?: boolean
+  /**
+   * A turn stop that would leave only untracked background work open (the
+   * runtime lists it, the session's task list does not) stops everything
+   * instead: nothing would be left to stop it with.
+   */
+  escalateUntracked?: boolean
+  /**
+   * The user stopped the session: deny the API reviews it shows (its own and
+   * the agent-wide ones) and dismiss the calls parked on its own re-auth cards.
+   */
+  denyReviews?: boolean
+  /**
+   * Mark the session stopped only once the container confirms the interrupt:
+   * a failed or empty one leaves it to its stream. Without it the session is
+   * marked stopped either way (the user asked).
+   */
+  onlyIfConfirmed?: boolean
+}
+
+export interface StopSessionResult extends InterruptSessionResult {
+  /**
+   * - `interrupted`: the container was asked (`interrupted` says whether it did);
+   * - `not-running`: the container is not running, so the session was marked locally;
+   * - `interrupt-failed`: the interrupt threw, and the session was marked locally (unless `onlyIfConfirmed`);
+   * - `skipped-idle`: `ifActive` and the session was idle.
+   */
+  path: 'interrupted' | 'not-running' | 'interrupt-failed' | 'skipped-idle'
+  /** The turn stop became a full stop (`escalateUntracked`). */
+  escalated: boolean
 }
 
 export interface InputOps {
@@ -468,37 +717,48 @@ export interface InputOps {
   // agent holds: another agent's request is not found (null, false, or a
   // no-op) because it is not here, not because a filter hid it.
 
-  /** `AgentInputRequests.register` with `scope.agentSlug` set to this agent. */
-  register(input: PendingUserInputRequestInput): PendingUserInputRequest | null
-  /** `AgentInputRequests.getOpenRequestsForSession` */
-  open(sessionId: string): PendingUserInputRequest[]
-  /** `AgentInputRequests.getOpenRequests` — session-scoped and agent-scoped entries. */
-  openForAgent(): PendingUserInputRequest[]
+  /**
+   * `AgentInputRequests.register` with `scope.agentSlug` set to this agent.
+   * `unlessRecentlyResolved`: null when the request settled lately, so one
+   * recovered from the container is not parked again after its decision.
+   */
+  register(input: PendingUserInputRequestInput, options?: { unlessRecentlyResolved?: boolean }): Promise<PendingUserInputRequest | null>
   /** `AgentInputRequests.getOpenRequest` */
-  get(id: string): PendingUserInputRequest | null
-  /** `AgentInputRequests.claimRequest` */
-  claim(id: string): PendingUserInputRequest | null
-  /** `AgentInputRequests.releaseClaim` */
-  releaseClaim(id: string): void
-  /** `AgentInputRequests.resolve` */
-  resolve(id: string, outcome: UserInputRequestOutcome): PendingUserInputRequest | null
+  get(id: string): Promise<PendingUserInputRequest | null>
+  /**
+   * `AgentInputRequests.claimRequest`: reserve an open request for a
+   * decision. The first caller gets the request and a token, every other one
+   * null, until the claim is released, the request settles or the lease
+   * (`leaseMs`, default `CLAIM_LEASE_MS`) runs out.
+   */
+  claim(id: string, options?: { leaseMs?: number }): Promise<{ token: string; request: PendingUserInputRequest } | null>
+  /** `AgentInputRequests.releaseClaim`: give back the claim this token holds. */
+  releaseClaim(id: string, token: string): Promise<void>
+  /**
+   * Answer an open request with `value`, in one turn: claim it, start the
+   * container, check it is still open, hand the value to the container's
+   * pending input and settle it. `not-open`: nothing open by that id;
+   * `claimed`: another decision holds it; `undeliverable`: the container
+   * would not take it (the request stays open).
+   */
+  answer(id: string, value: unknown): Promise<'answered' | 'not-open' | 'claimed' | 'undeliverable'>
+  /** `AgentInputRequests.resolve`; the sessions' awaiting state follows. */
+  resolve(id: string, outcome: UserInputRequestOutcome): Promise<PendingUserInputRequest | null>
   /** `AgentInputRequests.getRecentResolution` */
-  recentResolution(id: string): SettledUserInputRequest | undefined
+  recentResolution(id: string): Promise<SettledUserInputRequest | undefined>
   /** `AgentInputRequests.getSnapshotForScope` */
-  snapshot(sessionId?: string): PendingUserInputRequest[]
+  snapshot(sessionId?: string): Promise<PendingUserInputRequest[]>
   /** `AgentInputRequests.enrichOpenRequestPayload` */
-  enrich(id: string, kind: PendingUserInputRequest['kind'], enrichment: Record<string, unknown>): boolean
+  enrich(id: string, kind: PendingUserInputRequest['kind'], enrichment: Record<string, unknown>): Promise<boolean>
 
-  // Settlement — messagePersister.
+  // Settlement — the agent's `LiveSessions`.
 
-  /** `messagePersister.completeInputRequest`. `sessionId` undefined = take it from the request's scope. */
-  complete(sessionId: string | undefined, toolUseId: string, outcome: UserInputRequestOutcome): void
-  /** `messagePersister.completeCapabilityReview` */
-  completeCapabilityReview(sessionId: string, toolUseId: string, outcome?: UserInputRequestOutcome): void
-  /** `messagePersister.cancelAwaitingInput` */
+  /** `LiveSessions.completeRequest`. `sessionId` undefined = take it from the request's scope. */
+  complete(sessionId: string | undefined, toolUseId: string, outcome: UserInputRequestOutcome): Promise<void>
+  /** `LiveSessions.completeCapabilityReview` */
+  completeCapabilityReview(sessionId: string, toolUseId: string, outcome?: UserInputRequestOutcome): Promise<void>
+  /** `LiveSessions.cancelAwaitingInput` */
   cancelAwaiting(sessionId: string): Promise<void>
-  /** `messagePersister.getSettledInputRequests` */
-  settled(sessionId: string): Map<string, UserInputRequestOutcome>
 
   readonly reviews: ReviewOps
   readonly computerUse: ComputerUseOps
@@ -508,67 +768,104 @@ export interface InputOps {
 
 /** Proxy scope reviews — the agent's own `AgentReviews`, owned by the actor. */
 export interface ReviewOps {
-  /** `AgentReviews.pending` */
-  pending(): Array<{ id: string; displayText: string } & ReviewDetails>
+  /** One review waiting on the user, or null when this agent holds none by that id. */
+  get(id: string): Promise<({ id: string; displayText: string } & ReviewDetails) | null>
   /** `AgentReviews.submit` — only a review this agent holds can be found. */
-  submit(id: string, decision: 'allow' | 'deny'): boolean
-  /** `AgentReviews.denyAll` */
-  denyAll(sessionId?: string): void
+  submit(id: string, decision: 'allow' | 'deny', reason?: string): Promise<boolean>
   /** `AgentReviews.resolveMatching` */
-  resolveMatching(scope: string, decision: 'allow' | 'deny'): void
+  resolveMatching(scope: string, decision: 'allow' | 'deny'): Promise<void>
   /** `AgentReviews.resolveMatchingByLabel` */
-  resolveMatchingByLabel(label: ScopeLabel, decision: 'allow' | 'deny'): void
+  resolveMatchingByLabel(label: ScopeLabel, decision: 'allow' | 'deny'): Promise<void>
   /** `AgentReviews.resolveMatchingXAgent` */
-  resolveMatchingXAgent(operation: 'list' | 'read' | 'invoke' | 'create', decision: 'allow' | 'deny'): void
-  /** `AgentReviews.request` — the review is this agent's. */
-  request(details: ReviewRequest, signal?: AbortSignal): Promise<'allow' | 'deny'>
+  resolveMatchingXAgent(operation: 'list' | 'read' | 'invoke' | 'create', decision: 'allow' | 'deny'): Promise<void>
+  /**
+   * `AgentReviews.request`: park a call on a review card of this agent until
+   * its outcome. The caller names the review (`options.id`) to withdraw it
+   * (its request was aborted), or to resume or settle it after a `recheck`.
+   * `awaitReview` (proxy/review-request) is the host's way to wait for one.
+   */
+  request(details: ReviewRequest, options: { id: string; recheck?: boolean }): Promise<ReviewOutcome>
   /** `AgentReviews.requestXAgent` with this agent as the caller. */
   requestXAgent(
-    targetAgentSlug: string,
-    targetAgentName: string,
-    operation: 'list' | 'read' | 'invoke' | 'create',
-    preview?: string,
-    fileTransfer?: XAgentFileTransfer,
-    signal?: AbortSignal,
-  ): Promise<'allow' | 'deny'>
+    request: {
+      targetAgentSlug: string
+      targetAgentName: string
+      operation: 'list' | 'read' | 'invoke' | 'create'
+      preview?: string
+      fileTransfer?: XAgentFileTransfer
+    },
+    options: { id: string },
+  ): Promise<ReviewOutcome>
+  /** `AgentReviews.withdraw`: the caller is gone; close the card. */
+  withdraw(id: string): Promise<void>
+  /** `AgentReviews.resume`: after a recheck that still needs the person, wait for the next outcome. */
+  resume(id: string): Promise<ReviewOutcome>
+  /** `AgentReviews.settle`: after a recheck that decided the review, settle it. */
+  settle(id: string, decision: 'allow' | 'deny'): Promise<ReviewOutcome>
+  /** `AgentReviews.takeDenyReason`: what the person typed with a deny, once. */
+  takeDenyReason(id: string): Promise<string | undefined>
 }
 
 /** Computer-use permission grants and the grabbed app — the agent's own `AgentComputerUse`, owned by the actor. */
 export interface ComputerUseOps {
-  /** `AgentComputerUse.grabbed` */
-  grabbedApp(): string | undefined
+  /**
+   * The user let go of the app the agent had grabbed: forget the grab, revoke
+   * the agent's grant for that app and tell the session's viewers, in one turn.
+   */
+  releaseGrab(sessionId: string): Promise<{ appName: string | undefined }>
   /** `AgentComputerUse.setGrabbed` */
-  setGrabbedApp(appName: string): void
+  setGrabbedApp(appName: string): Promise<void>
   /** `AgentComputerUse.clearGrabbed` */
-  clearGrabbedApp(): void
+  clearGrabbedApp(): Promise<void>
   /** `AgentComputerUse.grant` */
-  grant(level: ComputerUsePermissionLevel, grantType: PermissionGrantType, appName?: string): void
+  grant(level: ComputerUsePermissionLevel, grantType: PermissionGrantType, appName?: string): Promise<void>
   /** `AgentComputerUse.consumeOnce` */
-  consumeOnce(level: ComputerUsePermissionLevel, appName?: string): void
-  /** `AgentComputerUse.revoke` */
-  revokeGrant(level: ComputerUsePermissionLevel, appName?: string): void
-  /** `messagePersister.clearPendingComputerUseRequest` */
-  clearPending(sessionId: string, toolUseId: string, outcome?: UserInputRequestOutcome): void
+  consumeOnce(level: ComputerUsePermissionLevel, appName?: string): Promise<void>
+  /** `LiveSessions.clearComputerUseRequest` */
+  clearPending(sessionId: string, toolUseId: string, outcome?: UserInputRequestOutcome): Promise<void>
+  /**
+   * Run an approved computer-use request: claim it, run the command on the
+   * host, record the grab, deliver the result and settle it. See `host-runs`.
+   */
+  run(run: ComputerUseRun): Promise<HostRunOutcome>
+  /** Run an approved host-script request the same way. */
+  runScript(run: ScriptRun): Promise<HostRunOutcome>
 }
 
 /** Remote MCP re-authentication prompts — the agent's own `AgentReauthWaits`, owned by the actor. */
 export interface McpReauthOps {
-  /** `AgentReauthWaits.request` — the wait is this agent's. */
-  request(details: Omit<McpReauthDetails, 'agentSlug'>, signal?: AbortSignal): Promise<void>
+  /**
+   * `AgentReauthWaits.request`: park a call on this agent's re-auth card
+   * until the MCP is re-authorized, replaced or dismissed (`ReauthOutcome`).
+   * The caller names the wait (`waitId`) to withdraw it; `awaitReauth`
+   * (proxy/reauth-request) is the host's way to wait for one.
+   */
+  request(details: Omit<McpReauthDetails, 'agentSlug'>, options: { waitId: string }): Promise<ReauthOutcome>
+  /** `AgentReauthWaits.withdraw`: the caller is gone. */
+  withdraw(waitId: string): Promise<void>
   /** `AgentReauthWaits.dismiss` — false when this agent holds no such card. */
-  dismiss(entryId: string, reason?: string): boolean
-  /** `AgentReauthWaits.replace` — settle the wait with a different connection. */
-  replace(entryId: string, replacementMcpId: string): boolean
+  dismiss(entryId: string, reason?: string): Promise<boolean>
+  /**
+   * The card was answered with a different connection: its parked calls go on
+   * with it (`released`), or, with none parked, the request is settled (`resolved`).
+   */
+  settleReplaced(entryId: string, replacementMcpId: string): Promise<'released' | 'resolved'>
+  /** The MCP was re-authorized: this agent's calls waiting on it go on. Resolves to how many. */
+  completeConnection(mcpId: string): Promise<number>
 }
 
 /** Connected-account re-authentication prompts — the agent's own `AgentReauthWaits`, owned by the actor. */
 export interface AccountReauthOps {
-  /** `AgentReauthWaits.request` — the wait is this agent's. */
-  request(details: Omit<AccountReauthDetails, 'agentSlug'>, signal?: AbortSignal): Promise<void>
+  /** `AgentReauthWaits.request`, as `McpReauthOps.request` for a connected account. */
+  request(details: Omit<AccountReauthDetails, 'agentSlug'>, options: { waitId: string }): Promise<ReauthOutcome>
+  /** `AgentReauthWaits.withdraw`: the caller is gone. */
+  withdraw(waitId: string): Promise<void>
   /** `AgentReauthWaits.dismiss` — false when this agent holds no such card. */
-  dismiss(entryId: string, reason?: string): boolean
-  /** `AgentReauthWaits.replace` — release only this agent's calls; other agents still use the old account. */
-  replace(entryId: string, replacementAccountId: string): boolean
+  dismiss(entryId: string, reason?: string): Promise<boolean>
+  /** As `McpReauthOps.settleReplaced`; only this agent's calls go on, other agents still use the old account. */
+  settleReplaced(entryId: string, replacementAccountId: string): Promise<'released' | 'resolved'>
+  /** The account was reconnected: this agent's calls waiting on it go on. Resolves to how many. */
+  completeAccount(accountId: string): Promise<number>
 }
 
 /** Model usage read from this agent's transcripts — usage-service. */
@@ -630,13 +927,8 @@ export interface WriteOptions {
   existingParent?: boolean
   /** With `confined`: refuse a root that no longer resolves to itself, so nothing is staged where a link leads. */
   exactRoot?: boolean
-  /** Filesystem only: a lock held around the final publish and a failed write's cleanup, not while content is written. It also turns on the check that the staged file is still this write's. */
-  lock?: (fn: () => Promise<void>) => Promise<void>
-  /** Filesystem only: called under `lock` just before the destination is published; throwing refuses it. */
-  beforePublish?: (destination: string) => Promise<void>
   /** Publish only if no destination exists, including racing writers. */
   overwrite?: boolean
-  signal?: AbortSignal
   /**
    * File mode to apply. Advisory: a filesystem implementation applies it (the
    * container must be able to read `.env`), anything else ignores it.
@@ -655,14 +947,32 @@ export interface WriteOptions {
 /**
  * The agent's configuration documents (see `config-schema.ts`), typed and
  * validated. A JSON document that does not parse or fit its schema is
- * `corrupt`: `get` throws `ConfigDocError` and an `update` aborts before
- * writing, so a broken file is never silently replaced.
+ * `corrupt`: `get` and `read` throw `ConfigDocError`, so a read-modify-write
+ * stops before writing and a broken file is never silently replaced.
+ *
+ * A read-modify-write is a compare-and-set: `read` gives the document's
+ * revision and `put` with `ifRevision` stores only while it is still that one
+ * (`updateConfigDoc` loops over it). The comparison runs under the lock the
+ * container honours for a document it also writes (`.env`).
  */
 export interface ConfigOps {
   /** The document, or null when it does not exist yet. */
   get<K extends ConfigDocId>(id: K): Promise<ConfigDoc<K> | null>
-  /** Validate and store a whole document atomically. */
-  put<K extends ConfigDocId>(id: K, doc: ConfigDoc<K>): Promise<void>
+  /** The document and its revision; both null when it does not exist yet. */
+  read<K extends ConfigDocId>(id: K): Promise<{ doc: ConfigDoc<K> | null; revision: string | null }>
+  /**
+   * Validate and store a whole document atomically. With `ifRevision`, only
+   * while the stored one is still that revision (null: still absent); false
+   * when it is not, and nothing is written.
+   */
+  put<K extends ConfigDocId>(id: K, doc: ConfigDoc<K>, options?: { ifRevision?: string | null }): Promise<boolean>
+}
+
+/**
+ * `ConfigOps` as the actor's own storage reaches it: with a serialized
+ * read-modify-write that takes a function, which cannot cross a transport.
+ */
+export interface StoreConfigOps extends ConfigOps {
   /**
    * Read-modify-write, serialized per document: no two updates interleave,
    * and for a document another process also writes, neither do theirs. A
@@ -704,7 +1014,11 @@ export interface FileOps {
   getDoc(path: string): Promise<Uint8Array | null>
   /** Replace a whole file atomically; missing parent directories are created. */
   putDoc(path: string, bytes: Uint8Array | string, options?: WriteOptions): Promise<void>
-  /** Write a file of any size from a stream; parents are created; nothing is left behind on failure. */
+  /**
+   * Write a file of any size from a stream; parents are created; nothing is
+   * left behind on failure. A caller that gives up errors or cancels the
+   * stream, which fails the write.
+   */
   write(path: string, body: ReadableStream<Uint8Array> | Uint8Array, options?: WriteOptions): Promise<{ size: number }>
   /** Remove a file, or a directory tree with `recursive`. An absent path is a no-op. */
   delete(path: string, options?: { recursive?: boolean; confined?: boolean }): Promise<void>
@@ -716,6 +1030,20 @@ export interface FileOps {
    * directory → `not-a-file`.
    */
   append(path: string, bytes: Uint8Array | string): Promise<void>
+  /**
+   * A whole file's size and its bytes from one open, the stream bounded to
+   * that size even while the file grows. With `confined`, a path that leads
+   * out of the workspace through a link is refused. Absent → `not-found`; a
+   * directory → `not-a-file`. A caller that does not read the stream cancels it.
+   */
+  readSized(path: string, options?: { confined?: boolean }): Promise<{ size: number; stream: ReadableStream<Uint8Array> }>
+}
+
+/**
+ * `FileOps` as the actor's own storage reaches it, never handed out: an open
+ * file for reads at byte offsets is a handle, and one cannot cross a transport.
+ */
+export interface StoreFileOps extends FileOps {
   /**
    * Open a file for reads at byte offsets: what a transcript reader that
    * pages backward from the end, or serves one span out of the middle, needs
@@ -746,8 +1074,12 @@ export interface OpenFile {
    * the end stops at the end. The last use of the handle: the open is
    * released when the stream ends, so a caller that hands the stream on (an
    * HTTP response) has nothing left to close.
+   *
+   * `chunkBytes` is the preferred size of each underlying read — a hint: a
+   * reader that knows how much it will consume asks for it in fewer, larger
+   * reads. Omitted, the implementation's default applies.
    */
-  stream(range?: { start: number; end?: number }): ReadableStream<Uint8Array>
+  stream(range?: { start: number; end?: number }, options?: { chunkBytes?: number }): ReadableStream<Uint8Array>
   /** Release what the open holds. Safe to call more than once, and after `stream`. */
   close(): Promise<void>
 }

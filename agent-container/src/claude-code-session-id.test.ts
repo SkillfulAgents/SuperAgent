@@ -63,6 +63,8 @@ vi.mock('./mcp-server', () => ({
   createWidgetsMcpServer: () => ({}),
   createAgentsMcpServer: (_getCallerSessionId: () => string) => ({}),
   createChatMcpServer: () => ({}),
+  createMeetingsMcpServer: () => ({}),
+  createRulesMcpServer: () => ({}),
 }))
 
 vi.mock('./tools/browser', () => ({
@@ -218,5 +220,16 @@ describe('ClaudeCodeProcess CLI feature opt-outs', () => {
     expect(options.settings).toMatchObject({ autoDreamEnabled: false, enableArtifact: false })
     expect(options.disallowedTools).toContain('Artifact')
     expect((options.env as Record<string, string>).CLAUDE_CODE_DISABLE_ARTIFACT).toBe('1')
+  })
+
+  it('turns off the CLI request-replay transcript lines, even against custom env vars', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'request-replay',
+      workingDirectory: '/tmp',
+      customEnvVars: { CLAUDE_CODE_ELEGANT_MEADOW: '1' },
+    })
+    await process.start()
+
+    expect((calls[0].options.env as Record<string, string>).CLAUDE_CODE_ELEGANT_MEADOW).toBe('0')
   })
 })

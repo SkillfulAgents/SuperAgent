@@ -25,16 +25,17 @@ beforeEach(() => {
 })
 
 describe('getProviderCatalog', () => {
-  it('exposes provider-owned onboarding options and uses Grok as the Platform agent fallback', () => {
+  it('exposes provider-owned onboarding options and uses Sonnet as the Platform agent fallback', () => {
     const platform = getAllProviderInfo().find((provider) => provider.id === 'platform')!
 
     expect(platform.defaultModelOptions.map((option) => option.model)).toEqual([
       'opus',
+      'sonnet',
       'gpt-sol',
       'grok',
     ])
-    expect(platform.defaultModels.agent).toBe('grok')
-    expect(getLlmProvider('platform').getDefaultModel('agent')).toBe('grok')
+    expect(platform.defaultModels.agent).toBe('sonnet')
+    expect(getLlmProvider('platform').getDefaultModel('agent')).toBe('sonnet')
   })
 
   it('declares one concrete picker default for every built-in model vendor', () => {
@@ -60,8 +61,9 @@ describe('getProviderCatalog', () => {
       ['anthropic', 'claude-opus-5-5'],
       ['openai', 'gpt-6.1-sol'],
       ['xai', 'grok-4.7'],
+      ['gemini', 'gemini-4-argon'],
       ['kimi', 'kimi-k3'],
-      ['meta', 'muse-spark-1.3'],
+      ['meta', 'muse-wonder-1.0'],
       ['zai', 'glm-5.3-flash'],
       ['deepseek', 'deepseek-v4.1-flash'],
     ])
@@ -137,10 +139,13 @@ describe('getProviderCatalog', () => {
     ['gpt-6-luna', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['gpt-6-sol', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['gpt-6.1-sol', ['low', 'medium', 'high', 'xhigh', 'max']],
+    ['gpt-6.1-terra', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['gpt-6-astra', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['grok-4.7', ['low', 'medium', 'high', 'xhigh']],
     ['grok-4.6', ['low', 'medium', 'high', 'xhigh']],
     ['grok-4.5', ['low', 'medium', 'high']],
+    ['gemini-4-argon', ['low', 'medium', 'high']],
+    ['muse-wonder-1.0', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['muse-spark-1.3', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['muse-spark-1.2', ['low', 'medium', 'high', 'xhigh']],
     ['muse-spark-1.3-contributor', ['low', 'medium', 'high', 'xhigh']],
@@ -298,6 +303,13 @@ describe('getProviderCatalog', () => {
       pricing: { inputPerMtok: 2, outputPerMtok: 10, cacheReadPerMtok: 0.1 },
       contextWindow: 1_050_000,
     })
+    expect(catalog.find((m) => m.id === 'gpt-6.1-terra')).toMatchObject({
+      family: 'gpt-terra',
+      supportsWebSearch: true,
+      supportsWebFetch: false,
+      pricing: { inputPerMtok: 1, outputPerMtok: 5, cacheReadPerMtok: 0.05 },
+      contextWindow: 1_050_000,
+    })
     expect(catalog.find((m) => m.id === 'gpt-6-astra')).toMatchObject({
       family: 'gpt-astra',
       supportsWebSearch: true,
@@ -309,7 +321,7 @@ describe('getProviderCatalog', () => {
     const gptLatest = catalog.filter((m) => m.family?.startsWith('gpt-') && m.isLatest)
     expect(gptLatest.map((m) => [m.family, m.id])).toEqual([
       ['gpt-luna', 'gpt-6-luna'],
-      ['gpt-terra', 'gpt-5.6-terra'],
+      ['gpt-terra', 'gpt-6.1-terra'],
       ['gpt-sol', 'gpt-6.1-sol'],
       ['gpt-astra', 'gpt-6-astra'],
     ])
@@ -387,7 +399,7 @@ describe('getProviderCatalog', () => {
       supportsWebFetch: false,
       supportsImageInput: true,
       contextWindow: 1_040_000,
-      pricing: { inputPerMtok: 0.22, outputPerMtok: 0.66, cacheReadPerMtok: 0.007 },
+      pricing: { inputPerMtok: 0.3, outputPerMtok: 1.2, cacheReadPerMtok: 0.006 },
     })
     expect(catalog.find((m) => m.id === 'deepseek-v4.1-flash')!.supportedSpeeds).toBeUndefined()
     // Platform keys off bare ids, never the OpenRouter vendor-prefixed slugs.
@@ -609,6 +621,7 @@ describe('getModelContextWindow', () => {
     expect(getModelContextWindow('gpt-5.6-sol', 'platform')).toBe(1_050_000)
     expect(getModelContextWindow('gpt-6-sol', 'platform')).toBe(1_050_000)
     expect(getModelContextWindow('gpt-6.1-sol', 'platform')).toBe(1_050_000)
+    expect(getModelContextWindow('gpt-6.1-terra', 'platform')).toBe(1_050_000)
     expect(getModelContextWindow('gpt-6-luna', 'platform')).toBe(1_050_000)
   })
 
@@ -711,6 +724,12 @@ describe('resolveModelForProvider', () => {
   it('resolves the default haiku summarizer to Haiku 5.5 on every Claude-catalog provider', () => {
     for (const provider of ['anthropic', 'claude-subscription', 'platform'] as const) {
       expect(resolveModelForProvider('haiku', provider, 'summarizer')).toBe('claude-haiku-5-5')
+    }
+  })
+
+  it('defaults the browser model to Haiku 5.5 on every Claude-catalog provider', () => {
+    for (const provider of ['anthropic', 'claude-subscription', 'openrouter', 'platform'] as const) {
+      expect(resolveModelForProvider('mystery', provider, 'browser')).toBe('claude-haiku-5-5')
     }
   })
 

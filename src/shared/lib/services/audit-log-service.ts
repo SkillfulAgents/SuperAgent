@@ -9,16 +9,20 @@ export const AUDIT_EVENT_MAP = {
   agent_access:     ['granted', 'revoked', 'changed'],
   account:          ['connected', 'disconnected', 'assigned', 'unassigned'],
   mcp:              ['created', 'updated', 'deleted', 'assigned', 'unassigned'],
+  // Browser Vault accounts: `used` is an agent signing in with one (never the
+  // values); `rejected`, an agent saying the site turned it down.
+  browser_account:  ['created', 'updated', 'deleted', 'assigned', 'unassigned', 'used', 'rejected'],
   trigger:          ['created', 'updated', 'deleted', 'paused', 'resumed'],
   task:             ['created', 'updated', 'deleted', 'paused', 'resumed'],
   chat_integration: ['created', 'updated', 'deleted'],
   skill:            ['created', 'updated', 'deleted', 'exported'],
   secret:           ['created', 'updated', 'deleted', 'revealed'],
   file:             ['uploaded'],
-  mount:            ['created', 'deleted'],
+  mount:            ['created', 'updated', 'deleted'],
   volume:           ['created', 'updated', 'deleted'],
   settings:         ['updated', 'factory_reset'],
   policy:           ['updated'],
+  proxy_rule:       ['created', 'updated', 'deleted', 'approved', 'rejected'],
   user:             ['invited', 'reset_password'],
   // Authentication events. Every path that mints a session records `created`
   // with a `method` detail — see auth/session-audit.ts. `revoked` currently

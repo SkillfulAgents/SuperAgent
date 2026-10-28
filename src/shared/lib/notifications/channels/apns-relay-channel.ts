@@ -27,12 +27,13 @@ import type { NotificationEvent } from '../notification-event'
  * Typed against the union so a renamed or mistyped member fails typecheck
  * instead of silently never pushing.
  */
-const VISIBLE_TYPES = new Set<NotificationType>(['session_complete', 'session_waiting'])
+const VISIBLE_TYPES = new Set<NotificationType>(['session_complete', 'session_waiting', 'session_mention'])
 const SILENT_TYPES = new Set<NotificationType>([
   'session_complete',
   'session_waiting',
   'session_scheduled',
   'session_webhook',
+  'session_mention',
 ])
 
 /** Relay wire contract: 1..50 pushes per request. */
@@ -158,6 +159,10 @@ export class ApnsRelayChannel implements NotificationChannel {
       if (!device.userId) {
         return []
       }
+      // A mention is for the person tagged: nobody else's device hears of it.
+      if (event.recipientUserId && device.userId !== event.recipientUserId) {
+        return []
+      }
       let access = accessCache.get(device.userId)
       if (!access) {
         access = getAccessibleAgentSlugs(device.userId)
@@ -171,7 +176,8 @@ export class ApnsRelayChannel implements NotificationChannel {
     }
 
     const isOrigin = device.mobileDeviceId != null && device.mobileDeviceId === originDeviceId
-    if (isOrigin && VISIBLE_TYPES.has(event.type)) {
+    // A mention alerts every device of its recipient: they did not start the session.
+    if ((isOrigin || event.recipientUserId !== undefined) && VISIBLE_TYPES.has(event.type)) {
       // In local mode the single local user's settings govern every device —
       // including rows that retain a userId from a previous auth-mode life of
       // this database (that user's old per-user settings row is stale there).

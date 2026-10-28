@@ -6,6 +6,7 @@
  */
 
 import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
+import { createApiRuleTool, createMcpRuleTool, deleteProxyRuleTool, listProxyRulesTool } from './tools/rules/proxy-rules'
 import { webSearchTool } from './tools/web/web-search'
 import { webFetchTool } from './tools/web/web-fetch'
 import { requestSecretTool } from './tools/request-secret'
@@ -22,6 +23,8 @@ import {
   resumeScheduledTaskTool,
 } from './tools/schedule-task'
 import { scheduleResumeTool } from './tools/schedule-resume'
+import { webhookRelayAvailable } from './webhook-relay-env'
+import { isComputerUseHost } from './host-desktop-env'
 import {
   getAvailableTriggersTool,
   listTriggersTool,
@@ -36,6 +39,7 @@ import { deliverFileTool } from './tools/deliver-file'
 import { deliverSessionTool } from './tools/deliver-session'
 import { requestFileTool } from './tools/request-file'
 import { requestBrowserInputTool } from './tools/request-browser-input'
+import { createRequestLoginTool } from './tools/request-login'
 import { requestScriptRunTool } from './tools/request-script-run'
 import { createBrowserTools } from './tools/browser'
 import { computerUseTools } from './tools/computer-use'
@@ -58,6 +62,7 @@ import { listChatUsersTool } from './tools/chat/list-chat-users'
 import { listChatChannelsTool } from './tools/chat/list-chat-channels'
 import { addChatIntegrationTool } from './tools/chat/add-chat-integration'
 import { makeSendChatMessageTool } from './tools/chat/send-chat-message'
+import { meetingTools } from './tools/meetings/meeting-tools'
 
 // TODO: refactor - every MCP should be exported from its own file instead of having one giant factory with conditional logic for which tools to include. This will make it easier to maintain and add new MCPs in the future without modifying existing code.
 
@@ -67,17 +72,21 @@ import { makeSendChatMessageTool } from './tools/chat/send-chat-message'
  * one transport connection per server at a time. Reusing singletons across
  * sessions causes "Already connected to a transport" errors.
  */
-export function createUserInputMcpServer(getProcess: () => RemoteMcpInjectionTarget | null = () => null) {
-  // Only expose script execution tool on supported host platforms (macOS/Windows)
-  const hostPlatform = process.env.HOST_PLATFORM
-  const includeScriptRun = hostPlatform === 'darwin' || hostPlatform === 'win32'
+export function createUserInputMcpServer(
+  getProcess: () => RemoteMcpInjectionTarget | null = () => null,
+  // request_login prepares its fields through the browser, which checks the
+  // calling session owns it — read at call time, since the id changes on restart.
+  getSessionId: () => string | null = () => null,
+) {
+  // Scripts run on the host's desktop, so they come with computer use.
+  const includeScriptRun = isComputerUseHost()
 
-  // Composio-catalog trigger tools need platform Composio; custom webhook
-  // endpoints only need platform auth (they live on the platform proxy, so a
-  // personal Composio key must not hide them). list/cancel work on local
-  // trigger rows and are useful in either mode.
-  const includeComposioTriggers = process.env.COMPOSIO_PLATFORM_MODE === 'true'
-  const includeWebhookEndpoints = process.env.PLATFORM_AUTH_ACTIVE === 'true'
+  // Every webhook tool needs the host's webhook relay. Composio-catalog
+  // triggers also need platform Composio; custom webhook endpoints don't (they
+  // live on the relay, so a personal Composio key must not hide them).
+  // list/cancel work on local trigger rows and are useful in either mode.
+  const includeWebhookEndpoints = webhookRelayAvailable()
+  const includeComposioTriggers = includeWebhookEndpoints && process.env.COMPOSIO_PLATFORM_MODE === 'true'
 
   return createSdkMcpServer({
     name: 'user-input',
@@ -89,6 +98,7 @@ export function createUserInputMcpServer(getProcess: () => RemoteMcpInjectionTar
       cancelScheduledTaskTool,
       pauseScheduledTaskTool, resumeScheduledTaskTool,
       deliverFileTool, deliverSessionTool, requestFileTool, requestBrowserInputTool,
+      createRequestLoginTool(getSessionId),
       ...(includeScriptRun ? [requestScriptRunTool] : []),
       ...(includeComposioTriggers ? [getAvailableTriggersTool, setupTriggerTool] : []),
       ...(includeComposioTriggers || includeWebhookEndpoints
@@ -178,6 +188,33 @@ export function createChatMcpServer(getCallerSessionId: () => string) {
       addChatIntegrationTool,
       makeSendChatMessageTool(getCallerSessionId),
     ],
+  })
+}
+
+/**
+ * Meetings (server name 'meetings' → mcp__meetings__join_meeting and friends).
+ * The tools call the host's /api/x-agent/meetings routes, which set the agent's
+ * meeting integration up on first use. Registered only when the host reports
+ * the meeting family as available (`availableIntegrationFamilies` on the
+ * session), so a tool whose route would refuse is never listed.
+ */
+export function createMeetingsMcpServer() {
+  return createSdkMcpServer({
+    name: 'meetings',
+    version: '1.0.0',
+    tools: meetingTools,
+  })
+}
+
+/**
+ * Proxy rules: propose (with user approval), list and delete the rules that
+ * let specific API / MCP requests skip the user's review.
+ */
+export function createRulesMcpServer() {
+  return createSdkMcpServer({
+    name: 'rules',
+    version: '1.0.0',
+    tools: [createApiRuleTool, createMcpRuleTool, listProxyRulesTool, deleteProxyRuleTool],
   })
 }
 

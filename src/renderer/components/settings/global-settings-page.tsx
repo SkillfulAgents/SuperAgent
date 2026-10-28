@@ -1,10 +1,10 @@
 import { Suspense, type ReactNode } from 'react'
-import { Bolt, Cuboid, Bell, FlaskConical, Layers, BarChart3, Blocks, Users, Shield, Route, Mic, Activity, Mouse, BadgeCheck, Logs, MousePointer2, ScrollText, Search, Smartphone, Sparkle, Workflow, FolderOpen } from 'lucide-react'
+import { Bolt, Cuboid, Bell, FlaskConical, Layers, BarChart3, Blocks, Users, Shield, Route, Mic, Activity, Mouse, BadgeCheck, Logs, MousePointer2, ScrollText, Search, Smartphone, Sparkle, Workflow, FolderOpen, KeyRound } from 'lucide-react'
 import { SettingsPage, type SettingsPageSection, type SettingsPageSectionGroup } from '@renderer/components/settings/settings-page'
 import { lazyRouteComponent, type LinkProps } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { offersComputerUseSettings } from '@renderer/lib/capabilities'
 
 // Each settings pane is a separate on-demand boundary. The navigation shell is
 // immediately usable, while only the active pane (and its dependency graph) is
@@ -37,6 +37,7 @@ const GlobalInstructionsTab = lazyRouteComponent(() => import('./global-instruct
 const AuditLogTab = lazyRouteComponent(() => import('./audit-log-tab'), 'AuditLogTab')
 const ExperimentsTab = lazyRouteComponent(() => import('./experiments-tab'), 'ExperimentsTab')
 const VolumesTab = lazyRouteComponent(() => import('./volumes-tab'), 'VolumesTab')
+const LoginsTab = lazyRouteComponent(() => import('./logins-tab'), 'LoginsTab')
 
 function deferredTab(content: ReactNode): ReactNode {
   return (
@@ -131,7 +132,9 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
       render: () => deferredTab(<ConnectionsTab />),
       headerActions: <Suspense fallback={null}><NewIntegrationButton /></Suspense>,
     },
-    { id: 'volumes', label: 'Volumes', icon: <FolderOpen className="h-4 w-4" />, render: () => deferredTab(<VolumesTab />) },
+    { id: 'volumes', label: 'Drives', icon: <FolderOpen className="h-4 w-4" />, render: () => deferredTab(<VolumesTab />) },
+    // Everyone: each user's vault is their own.
+    { id: 'logins', label: 'Logins', icon: <KeyRound className="h-4 w-4" />, render: () => deferredTab(<LoginsTab />) },
     ...(showAdminSettings
       ? [
           { id: 'skillsets', label: 'Skillsets', icon: <Layers className="h-4 w-4" />, render: () => deferredTab(<SkillsetsTab />) },
@@ -141,8 +144,9 @@ export function GlobalSettingsPage({ onClose, onOpenWizard, initialSection, onSe
           // UI — permission grants, the recovery link into System Settings — is
           // written for that machine being yours. `isElectron()` stays true in
           // cloud mode while execution moves to the deployment, so the tab would
-          // describe your laptop and govern someone else's.
-          ...(canUseHostFeatures() ? [{ id: 'computer-use', label: 'Computer Use', icon: <Mouse className="h-4 w-4" />, render: () => deferredTab(<ComputerUseTab />) }] : []),
+          // describe your laptop and govern someone else's. A sandboxed build
+          // has no computer use to govern.
+          ...(offersComputerUseSettings() ? [{ id: 'computer-use', label: 'Computer Use', icon: <Mouse className="h-4 w-4" />, render: () => deferredTab(<ComputerUseTab />) }] : []),
           { id: 'capabilities', label: 'Subagents', icon: <Workflow className="h-4 w-4" />, render: () => deferredTab(<CapabilitiesTab />) },
         ]
       : []),

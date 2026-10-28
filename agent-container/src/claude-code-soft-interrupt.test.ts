@@ -98,6 +98,8 @@ vi.mock('./mcp-server', () => ({
   createDashboardsMcpServer: () => ({}),
   createAgentsMcpServer: () => ({}),
   createChatMcpServer: () => ({}),
+  createMeetingsMcpServer: () => ({}),
+  createRulesMcpServer: () => ({}),
   createWidgetsMcpServer: () => ({}),
 }))
 vi.mock('./tools/browser', () => ({ createBrowserTools: () => [] }))

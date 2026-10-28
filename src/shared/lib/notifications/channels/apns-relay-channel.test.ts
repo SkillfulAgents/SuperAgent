@@ -328,6 +328,22 @@ describe('auth-mode agent access gate', () => {
 
     expect(mocks.fetch).not.toHaveBeenCalled()
   })
+
+  it('a mention alerts every device of its recipient, and nobody else hears of it', async () => {
+    mocks.listDeliverableApnsDevices.mockReturnValue([
+      makeDevice({ userId: 'user-a' }),
+      makeDevice({ id: 'dev-row-2', token: TOKEN_B, userId: 'user-b', mobileDeviceId: 'family-2' }),
+    ])
+    mocks.getAccessibleAgentSlugs.mockResolvedValue(['agent-x'])
+    // user-a's phone started the session; the mention is for user-b.
+    mocks.getSessionMetadata.mockResolvedValue({ createdByDeviceId: 'family-1' })
+
+    await channel.deliver(makeEvent({ type: 'session_mention', title: 'Dana mentioned you', recipientUserId: 'user-b' }))
+
+    const pushes = sentPushes()
+    expect(pushes.every((p) => p.deviceToken === TOKEN_B)).toBe(true)
+    expect(pushes.map((p) => p.kind).sort()).toEqual(['alert', 'background'])
+  })
 })
 
 describe('relay result handling', () => {

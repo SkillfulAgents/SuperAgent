@@ -165,12 +165,8 @@ vi.mock('@shared/lib/services/connection-sync-service', () => ({
     mockSyncAgentsAssignedConnectedAccount(...args),
   syncConnectedAccountAgents: (...args: unknown[]) =>
     mockSyncConnectedAccountAgents(...args),
-}))
-
-vi.mock('@shared/lib/proxy/account-reauth-manager', () => ({
-  accountReauthManager: {
-    completeAccount: (...args: unknown[]) => mockCompleteReauthAccount(...args),
-  },
+  // Each assigned agent's parked calls on the account go on.
+  resumeAccountReauthWaits: (...args: unknown[]) => mockCompleteReauthAccount(...args),
 }))
 
 import connectedAccountsRouter from './connected-accounts'

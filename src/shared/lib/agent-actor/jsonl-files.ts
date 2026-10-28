@@ -1,5 +1,5 @@
 /**
- * Line and JSONL readers over `FileOps`, for transcripts.
+ * Line and JSONL readers over `StoreFileOps`, for transcripts.
  *
  * Each reader is the one it replaces with the file operations in place of the
  * filesystem calls: an open, a size, positional reads or a stream over the
@@ -9,11 +9,33 @@
  * below 0x80, so a multi-byte UTF-8 sequence is never split.
  */
 import { parseJsonlLine } from '@shared/lib/utils/file-storage'
-import type { FileOps, OpenFile } from './types'
+import type { StoreFileOps, OpenFile } from './types'
 import { WorkspaceFileError } from './workspace-path'
 
 const NEWLINE_BYTE = 0x0a
-const TAIL_READ_CHUNK = 64 * 1024
+/**
+ * First (and smallest) read: a short tail — a page of a few recent items, a
+ * fresh session, the live delta's last lines — costs one small read, as it
+ * did when this was the only size.
+ */
+export const READ_CHUNK_MIN = 64 * 1024
+/**
+ * Largest read. Backward walks double their read from READ_CHUNK_MIN up to
+ * this, so walking N bytes takes about log2(N / 64 KiB) dependent reads up to
+ * 1 MiB, then N / 1 MiB, instead of N / 64 KiB — each one a round trip on a
+ * network volume, where reading backward also defeats the client's readahead
+ * — while never reading more than about twice what the walk consumes. 1 MiB is
+ * one NFS READ at EFS's rsize: a larger buffer would be split into more RPCs
+ * anyway, so it would cost memory per request without saving round trips.
+ * Whatever the size, a walk holds one chunk (plus the row that straddles it),
+ * never the span it has walked.
+ */
+export const READ_CHUNK_MAX = 1024 * 1024
+
+/** A read size for `bytes` of expected data, clamped into [READ_CHUNK_MIN, READ_CHUNK_MAX]. */
+export function readChunkFor(bytes: number): number {
+  return Math.min(READ_CHUNK_MAX, Math.max(READ_CHUNK_MIN, Math.ceil(bytes)))
+}
 
 /** True when the error says the file is not there. */
 export function isAbsentFile(error: unknown): boolean {
@@ -54,12 +76,16 @@ export async function* chunksOf(stream: ReadableStream<Uint8Array>): AsyncGenera
  * `signal` aborts between chunks (throws the abort reason): a per-line check
  * in the consumer is not enough, because a multi-MB row spans many chunks
  * before it ever yields. An absent file throws `not-found`.
+ *
+ * `chunkBytes` sizes each read (see `OpenFile.stream`); omitted, the file
+ * operations' default applies.
  */
 export async function* streamLines(
-  files: FileOps,
+  files: StoreFileOps,
   path: string,
   range?: { start?: number; end?: number },
   signal?: AbortSignal,
+  chunkBytes?: number,
 ): AsyncIterable<Buffer> {
   signal?.throwIfAborted()
   if (range?.end !== undefined && range.end <= (range.start ?? 0)) return
@@ -67,11 +93,12 @@ export async function* streamLines(
   try {
     // The stream is the handle's last use and releases it when it ends; the
     // close below covers a consumer that stops early.
-    const stream = file.stream(
+    const streamRange =
       range?.start !== undefined || range?.end !== undefined
         ? { start: range.start ?? 0, ...(range.end !== undefined ? { end: range.end - 1 } : {}) }
-        : undefined,
-    )
+        : undefined
+    const stream =
+      chunkBytes !== undefined ? file.stream(streamRange, { chunkBytes }) : file.stream(streamRange)
     // Chunks holding the trailing, not-yet-terminated line. Concatenated only
     // once its newline arrives, so a row spanning many chunks is joined once.
     let pending: Buffer[] = []
@@ -113,7 +140,7 @@ export async function* streamLines(
 }
 
 /** Parsed JSONL entries in file order; blank and malformed lines are skipped. An absent file throws `not-found`. */
-export async function* streamJsonl<T = unknown>(files: FileOps, path: string): AsyncIterable<T> {
+export async function* streamJsonl<T = unknown>(files: StoreFileOps, path: string): AsyncIterable<T> {
   for await (const line of streamLines(files, path)) {
     const parsed = parseJsonlLine<T>(line)
     if (parsed !== undefined) yield parsed
@@ -121,7 +148,7 @@ export async function* streamJsonl<T = unknown>(files: FileOps, path: string): A
 }
 
 /** Every entry of a JSONL file, or `[]` when it is absent. */
-export async function readJsonl<T = unknown>(files: FileOps, path: string): Promise<T[]> {
+export async function readJsonl<T = unknown>(files: StoreFileOps, path: string): Promise<T[]> {
   const results: T[] = []
   try {
     for await (const item of streamJsonl<T>(files, path)) results.push(item)
@@ -136,7 +163,7 @@ export async function readJsonl<T = unknown>(files: FileOps, path: string): Prom
  * Open a file for the backward readers below: null when it is absent, which
  * they answer with "nothing", and the handle otherwise.
  */
-async function openOrNull(files: FileOps, path: string): Promise<OpenFile | null> {
+async function openOrNull(files: StoreFileOps, path: string): Promise<OpenFile | null> {
   try {
     return await files.open(path)
   } catch (error) {
@@ -152,9 +179,11 @@ async function openOrNull(files: FileOps, path: string): Promise<OpenFile | null
  * `signal` aborts the backward walk between chunk reads: transcripts run to
  * tens of MB and a caller whose HTTP client already hung up must be able to
  * stop paying for the rest of the file. Throws the abort reason.
+ *
+ * Reads start at READ_CHUNK_MIN and double up to READ_CHUNK_MAX.
  */
 export async function readTailLines(
-  files: FileOps,
+  files: StoreFileOps,
   path: string,
   maxLines: number,
   signal?: AbortSignal,
@@ -173,6 +202,7 @@ export async function readTailLines(
     const parts: Buffer[] = []
     let newlineCount = 0
     let truncated = false
+    let chunk = READ_CHUNK_MIN
 
     while (pos > 0 && newlineCount <= maxLines) {
       // Check BEFORE each read (an abort landing during open or a prior
@@ -180,7 +210,8 @@ export async function readTailLines(
       // landing while the FINAL chunk is in flight has no next iteration to
       // observe it, and would otherwise still pay for the line scan).
       signal?.throwIfAborted()
-      const chunkSize = Math.min(TAIL_READ_CHUNK, pos)
+      const chunkSize = Math.min(chunk, pos)
+      chunk = Math.min(chunk * 2, READ_CHUNK_MAX)
       const chunkStart = pos - chunkSize
       const buf = asBuffer(await file.readAt(chunkStart, chunkSize, signal))
       signal?.throwIfAborted()
@@ -191,13 +222,25 @@ export async function readTailLines(
         truncated = true
         break
       }
+      // Scan backward so the read can be trimmed where the walk is satisfied.
+      // A doubled read can overshoot by most of a chunk; without the trim the
+      // tail would hold, concatenate and re-scan bytes it then discards. Keep
+      // maxLines + 1 complete lines (the trim below drops one trailing blank
+      // line, and the slice at the end takes the last maxLines), starting at
+      // the newline that ends the sacrificial first line: the bytes below it
+      // cannot change the result, so a trimmed read yields exactly what an
+      // untrimmed one would.
+      let keepFrom = 0
+      for (let i = buf.length - 1; i >= 0; i--) {
+        if (buf[i] === NEWLINE_BYTE && ++newlineCount > maxLines + 1) {
+          keepFrom = i
+          break
+        }
+      }
       // Only once the chunk is in hand: `pos` is the file offset that `parts`
       // starts at, and every returned offset is derived from it.
-      pos = chunkStart
-      parts.unshift(buf)
-      for (let i = 0; i < buf.length; i++) {
-        if (buf[i] === NEWLINE_BYTE) newlineCount++
-      }
+      pos = chunkStart + keepFrom
+      parts.unshift(keepFrom === 0 ? buf : buf.subarray(keepFrom))
     }
 
     const combined = parts.length === 1 ? parts[0]! : Buffer.concat(parts)
@@ -248,9 +291,13 @@ export async function readTailLines(
  *
  * An absent file yields nothing. `signal` aborts between chunk reads (throws
  * the abort reason), the same contract as `readTailLines`.
+ *
+ * Reads start at READ_CHUNK_MIN and double up to READ_CHUNK_MAX, so a walk
+ * that stops early costs what it did with fixed small reads, and a long one
+ * takes far fewer.
  */
 export async function* iterateLinesBackward(
-  files: FileOps,
+  files: StoreFileOps,
   path: string,
   signal?: AbortSignal,
 ): AsyncGenerator<{ line: Buffer; offset: number }> {
@@ -260,6 +307,7 @@ export async function* iterateLinesBackward(
 
   try {
     let pos = await file.size()
+    let chunk = READ_CHUNK_MIN
     // Fragments (in file order) of the line whose start lies in a chunk not
     // yet read — the bytes below the lowest newline processed so far. Kept as
     // an array and concatenated ONCE at the line boundary: re-concatenating
@@ -274,7 +322,8 @@ export async function* iterateLinesBackward(
 
     while (pos > 0) {
       signal?.throwIfAborted()
-      const chunkSize = Math.min(TAIL_READ_CHUNK, pos)
+      const chunkSize = Math.min(chunk, pos)
+      chunk = Math.min(chunk * 2, READ_CHUNK_MAX)
       pos -= chunkSize
       const buf = asBuffer(await file.readAt(pos, chunkSize, signal))
       signal?.throwIfAborted()

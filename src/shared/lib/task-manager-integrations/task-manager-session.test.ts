@@ -6,7 +6,7 @@ import { AgentIntegrationRegistry } from '../agent-integrations/registry'
 import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import type { TaskEvent } from './types'
 const runtime = vi.hoisted(() => ({
-  create: vi.fn(async () => ({ id: 'session' })), send: vi.fn(async () => {}),
+  create: vi.fn(async () => ({ id: 'session' })), send: vi.fn(async (..._args: unknown[]) => ({})),
   mapping: undefined as { id: string; integrationId: string; externalChatId: string; sessionId: string; displayName?: string } | undefined,
   row: { id: 'integration', agentSlug: 'agent', provider: 'tasks', config: '{}', status: 'active', name: null,
     errorMessage: null, model: null, llmProviderId: null, effort: null, speed: null, createdByUserId: null, createdAt: new Date(), updatedAt: new Date() } as AgentIntegrationRecord,
@@ -20,14 +20,20 @@ vi.mock('../services/agent-integration-session-service', () => ({
 vi.mock('../agent-actor', () => ({ agentRegistry: { get: () => ({
   container: { start: async () => {} },
   sessions: { create: runtime.create, register: async () => {}, updateMetadata: async () => {}, markActive: () => {},
-    subscribeStream: async () => {}, isStreamSubscribed: () => true, activity: () => 'working' },
-  messages: { send: runtime.send, subscribe: () => () => {}, withSend: (_id: string, send: () => Promise<void>) => send() },
+    attach: async () => {},
+    live: async () => ({ activity: 'working', isActive: true, isAwaitingInput: false, streamAttached: true, openRequests: [], runtime: null }) },
+  messages: {
+    subscribe: async () => new ReadableStream(),
+    deliver: async (request: { sessionId: string; content: string; uuid?: string }) => {
+      await runtime.send(request.sessionId, request.content, request.uuid)
+      return { status: 'sent', queued: true }
+    },
+  },
 }) } }))
 vi.mock('../services/agent-service', () => ({ agentExists: async () => true }))
 vi.mock('../config/settings', () => ({ getSettings: () => ({}), getEffectiveModels: () => ({ agentModel: 'test-model' }) }))
 vi.mock('../services/agent-preferences-service', () => ({ readAgentPreferences: async () => ({}) }))
 vi.mock('../services/secrets-service', () => ({ getSecretEnvVars: async () => [] }))
-vi.mock('../container/message-persister', () => ({ messagePersister: { addGlobalNotificationClient: () => () => {} } }))
 vi.mock('../notifications/notification-manager', () => ({ notificationManager: { triggerChatIntegrationEvent: async () => {} } }))
 vi.mock('../error-reporting', () => ({ captureException: vi.fn(), addErrorBreadcrumb: vi.fn() }))
 vi.mock('../agent-integrations/lifecycle', () => ({ onIntegrationAuthorizationLost: () => () => {} }))

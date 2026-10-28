@@ -4,6 +4,9 @@ import path from 'path'
 import fs from 'fs'
 import { getSettings } from '@shared/lib/config/settings'
 import { ensureDirectory } from '@shared/lib/utils/file-storage'
+import { withLoginShellPath } from '@shared/lib/utils/login-shell-path'
+import { runsHostGit } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import {
   BaseSkillsetProvider,
   type SkillsetProviderRef,
@@ -133,19 +136,24 @@ export class GithubSkillsetProvider extends BaseSkillsetProvider {
   }
 
   async ensurePublishPreconditions(ref?: SkillsetProviderRef): Promise<void> {
+    // Publishing commits and opens pull requests with git and gh on the host.
+    if (!runsHostGit(getServerFacts())) {
+      throw new Error('Publishing to GitHub needs git and the GitHub CLI, which the Mac App Store edition can’t run.')
+    }
     await this.ensureAuthenticated(ref)
   }
 
   private async ensureAuthenticated(ref?: SkillsetProviderRef): Promise<void> {
     const repositoryToken = ref ? this.getToken(ref) : undefined
+    const hostEnvironment = await withLoginShellPath()
     try {
-      await execFileAsync('gh', ['--version'], { timeout: 5000 })
+      await execFileAsync('gh', ['--version'], { timeout: 5000, env: hostEnvironment })
     } catch {
       throw new Error('GitHub CLI (gh) is not installed. Install it from https://cli.github.com')
     }
 
     try {
-      const env = ref ? this.getCliEnvironment(ref, process.env) : process.env
+      const env = ref ? this.getCliEnvironment(ref, hostEnvironment) : hostEnvironment
       await execFileAsync('gh', ['auth', 'status'], { timeout: 5000, env })
     } catch {
       if (repositoryToken) {
@@ -192,7 +200,7 @@ export class GithubSkillsetProvider extends BaseSkillsetProvider {
   ): Promise<ForkBranchContext> {
     const repoDir = input.repoDir
     const gitEnvironment = this.getGitEnvironment(input, BASE_GIT_ENV)
-    const cliEnvironment = this.getCliEnvironment(input, process.env)
+    const cliEnvironment = this.getCliEnvironment(input, await withLoginShellPath())
     await execFileAsync('git', ['checkout', '.'], {
       cwd: repoDir, timeout: 5000, env: gitEnvironment,
     }).catch(() => { /* ignore */ })

@@ -6,6 +6,7 @@ import { RemoteMcpRequestItem } from '../request-remote-mcp/request'
 import { QuestionRequestItem } from '../ask-user-question/request'
 import { FileRequestItem } from '../request-file/request'
 import { BrowserInputRequestItem } from '../request-browser-input/request'
+import { LoginRequestItem } from '../request-login/request'
 import { ScriptRunRequestItem } from '../request-script-run/request'
 import { ComputerUseRequestItem } from '../computer-use/request'
 import { CapabilityReviewRequestItem } from '../capability-review/request'
@@ -30,6 +31,7 @@ const requestRenderers = {
   question: QuestionRequestItem,
   file: FileRequestItem,
   browser_input: BrowserInputRequestItem,
+  login: LoginRequestItem,
   script_run: ScriptRunRequestItem,
   computer_use: ComputerUseRequestItem,
   capability_review: CapabilityReviewRequestItem,

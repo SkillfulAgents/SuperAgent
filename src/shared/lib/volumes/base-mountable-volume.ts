@@ -1,5 +1,5 @@
 import type { ByteRange, FileKind } from '@shared/lib/agent-actor/types'
-import type { VolumeCacheMode, VolumeType } from '@shared/lib/types/mount'
+import type { VolumeAttention, VolumeCacheMode, VolumeType } from '@shared/lib/types/mount'
 
 /** One entry of a volume, with what a WebDAV listing reports. `name` is '' for the volume root. */
 export interface VolumeEntry {
@@ -11,11 +11,12 @@ export interface VolumeEntry {
 
 /**
  * A file opened for reading: its size and bytes come from the same open. Call `stream` once, which
- * releases the open when it ends, or `close` when sending no body.
+ * releases the open when it ends, or `close` when sending no body. Await stream
+ * establishment before sending HTTP headers so remote failures retain their status.
  */
 export interface VolumeFile {
   size: number
-  stream(range?: ByteRange): ReadableStream<Uint8Array>
+  stream(range?: ByteRange): ReadableStream<Uint8Array> | Promise<ReadableStream<Uint8Array>>
   close(): Promise<void>
 }
 
@@ -36,6 +37,13 @@ export function mountPathOf(name: string): string {
 export abstract class BaseMountableVolume<C> {
   abstract readonly type: VolumeType
   abstract readonly cacheMode: VolumeCacheMode
+  /** Case semantics belong to the source, independently of its cache policy. */
+  readonly caseInsensitive: boolean = false
+  /** Whether the source can store an upload at a size other than the bytes sent. */
+  readonly ignoreSize: boolean = false
+  readonly readOnly: boolean = false
+  /** How long the mount trusts a folder listing, when the cache policy's default is wrong for the source. */
+  readonly dirCacheSeconds: number | null = null
 
   constructor(readonly id: string, readonly name: string, readonly config: C) {}
 
@@ -48,11 +56,27 @@ export abstract class BaseMountableVolume<C> {
     return null
   }
 
+  /** What the card shows for a remote source, or null for a source whose host path says it. */
+  get sourceLabel(): string | null {
+    return null
+  }
+
+  /** Changes that have not reached the source, or null. */
+  get attention(): VolumeAttention | null {
+    return null
+  }
+
   abstract list(path: string): Promise<VolumeEntry[]>
   abstract stat(path: string): Promise<VolumeEntry>
+  /** Advisory root health for settings and mount status. Remote drivers may cache it. */
+  health(): Promise<VolumeEntry> { return this.stat('') }
+  /** Settles once the volume can be mounted, or once its attempt to get there ends. Only a source copied first waits. */
+  whenReady(): Promise<void> { return Promise.resolve() }
+  /** The agent's container just mounted this volume afresh, holding nothing from its earlier mounts. */
+  remounted(): void {}
   abstract read(path: string): Promise<VolumeFile>
-  /** Replace a whole file. */
-  abstract write(path: string, body: ReadableStream<Uint8Array>): Promise<void>
+  /** Replace a whole file. `signal` aborts when the client stops waiting for the write. */
+  abstract write(path: string, body: ReadableStream<Uint8Array>, signal?: AbortSignal): Promise<void>
   /** Remove a file or an empty folder. */
   abstract delete(path: string): Promise<void>
   abstract mkdir(path: string): Promise<void>

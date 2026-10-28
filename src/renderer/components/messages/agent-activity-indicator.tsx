@@ -20,40 +20,15 @@ interface AgentActivityIndicatorProps {
   agentSlug: string
 }
 
-function extractResumedAgentId(result: unknown): string | null {
-  if (typeof result === 'string') {
-    try {
-      return extractResumedAgentId(JSON.parse(result))
-    } catch {
-      return null
-    }
-  }
-
-  if (Array.isArray(result)) {
-    for (const block of result) {
-      const agentId = extractResumedAgentId(block)
-      if (agentId) return agentId
-    }
-    return null
-  }
-
-  if (!result || typeof result !== 'object') return null
-
-  const resumedAgentId = (result as { resumedAgentId?: unknown }).resumedAgentId
-  if (typeof resumedAgentId === 'string' && resumedAgentId.length > 0) {
-    return resumedAgentId
-  }
-
-  const text = (result as { text?: unknown }).text
-  return typeof text === 'string' ? extractResumedAgentId(text) : null
-}
-
 export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIndicatorProps) {
   const {
     isActive, error, apiErrorCode, errorPresentation, activeStartTime, isCompacting, activeSubagents, completedSubagents,
     apiRetry, computerUseApp, computerUseAppIcon, backgroundTasks,
     isThinking,
-  } = useMessageStream(sessionId, agentSlug)
+  } = useMessageStream(sessionId, agentSlug, [
+    'isActive', 'error', 'apiErrorCode', 'errorPresentation', 'activeStartTime', 'isCompacting', 'activeSubagents',
+    'completedSubagents', 'apiRetry', 'computerUseApp', 'computerUseAppIcon', 'backgroundTasks', 'isThinking',
+  ])
   const { data: pendingUserRequests } = usePendingUserRequests(agentSlug, sessionId)
 
   const [revoking, setRevoking] = useState(false)
@@ -119,63 +94,32 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
       description: string
       completedFromResult: boolean
     }
-    type ResumeMetadata = {
-      agentId: string | null
-    }
     const launchByToolId = new Map<string, LaunchMetadata>()
     const launchByAgentId = new Map<string, LaunchMetadata>()
-    const launches: LaunchMetadata[] = []
-    const resumeByToolId = new Map<string, ResumeMetadata>()
 
     for (const msg of messages) {
       if (msg.type !== 'user' && msg.type !== 'assistant') continue
       for (const tc of msg.toolCalls || []) {
-        if (tc.name === 'Agent' || tc.name === 'Task') {
-          if (tc.isError) continue
-          const input = tc.input as { subagent_type?: string; description?: string }
-          const isAsyncLaunched = tc.subagent?.status === 'async_launched'
-          const metadata = {
-            agentId: tc.subagent?.agentId ?? null,
-            name: input.subagent_type || tc.name,
-            description: input.description || '',
-            completedFromResult: !isAsyncLaunched && tc.result != null,
-          }
-          launchByToolId.set(tc.id, metadata)
-          launches.push(metadata)
-          if (tc.subagent?.agentId) {
-            launchByAgentId.set(tc.subagent.agentId, metadata)
-          }
-        } else if (tc.name === 'SendMessage') {
-          const input = tc.input as { to?: string; recipient?: string }
-          const target = input.to ?? input.recipient ?? null
-          const resultAgentId = extractResumedAgentId(tc.result)
-          resumeByToolId.set(tc.id, {
-            agentId: resultAgentId ?? (target && launchByAgentId.has(target) ? target : null),
-          })
+        if (tc.name !== 'Agent' && tc.name !== 'Task') continue
+        if (tc.isError) continue
+        const input = tc.input as { subagent_type?: string; description?: string }
+        const isAsyncLaunched = tc.subagent?.status === 'async_launched'
+        const metadata = {
+          agentId: tc.subagent?.agentId ?? null,
+          name: input.subagent_type || tc.name,
+          description: input.description || '',
+          completedFromResult: !isAsyncLaunched && tc.result != null,
+        }
+        launchByToolId.set(tc.id, metadata)
+        if (tc.subagent?.agentId) {
+          launchByAgentId.set(tc.subagent.agentId, metadata)
         }
       }
     }
 
-    const findMatchingLaunchAgentId = (sub: (typeof activeSubagents)[number]) => {
-      const hasName = !!sub.subagentType
-      const hasDescription = !!sub.description
-      if (!hasName && !hasDescription) return null
-
-      // Before the SendMessage result persists, its name target is not a stable
-      // agent ID. Join only when the lifecycle metadata identifies exactly one
-      // prior launch; ambiguous matches remain separate until the ID arrives.
-      const matches = new Set(
-        launches
-          .filter((launch) =>
-            launch.agentId &&
-            (!hasName || launch.name === sub.subagentType) &&
-            (!hasDescription || launch.description === sub.description)
-          )
-          .map((launch) => launch.agentId!)
-      )
-      return matches.size === 1 ? [...matches][0] : null
-    }
-
+    // Every live run names its agent: the host stamps the agentId (the
+    // task_started task_id, or the frame's agent_id) on the first event of a
+    // run, including a SendMessage run, whose own call is not an Agent launch.
     const groups = new Map<string, typeof activeSubagents>()
     for (const sub of activeSubagents) {
       const directLaunch = sub.parentToolId
@@ -184,20 +128,13 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
       const originalLaunch = sub.agentId
         ? launchByAgentId.get(sub.agentId)
         : undefined
-      const resume = sub.parentToolId
-        ? resumeByToolId.get(sub.parentToolId)
-        : undefined
-      const isSendMessageRun = resume !== undefined
       const isLifecycleAgent = !!sub.subagentType
       // local_workflow also emits subagent lifecycle events, but it has its own
       // activity UI. A lifecycle-identified Agent may originate in a Skill
       // sidechain and therefore have no launch call in the main transcript.
-      if (!directLaunch && !originalLaunch && !isSendMessageRun && !isLifecycleAgent) continue
+      if (!directLaunch && !originalLaunch && !isLifecycleAgent) continue
 
-      const stableAgentId = sub.agentId
-        ?? directLaunch?.agentId
-        ?? resume?.agentId
-        ?? (isSendMessageRun ? findMatchingLaunchAgentId(sub) : null)
+      const stableAgentId = sub.agentId ?? directLaunch?.agentId ?? null
       if (!stableAgentId && !sub.parentToolId) continue
       const key = stableAgentId
         ? `agent:${stableAgentId}`
@@ -225,12 +162,7 @@ export function AgentActivityIndicator({ sessionId, agentSlug }: AgentActivityIn
       const directLaunch = selected.parentToolId
         ? launchByToolId.get(selected.parentToolId)
         : undefined
-      const selectedAgentId = selected.agentId
-        ?? directLaunch?.agentId
-        ?? (selected.parentToolId ? resumeByToolId.get(selected.parentToolId)?.agentId : undefined)
-        ?? (selected.parentToolId && resumeByToolId.has(selected.parentToolId)
-          ? findMatchingLaunchAgentId(selected)
-          : null)
+      const selectedAgentId = selected.agentId ?? directLaunch?.agentId ?? null
       const originalLaunch = selectedAgentId
         ? launchByAgentId.get(selectedAgentId)
         : undefined

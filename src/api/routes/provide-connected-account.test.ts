@@ -18,6 +18,7 @@ vi.mock('../middleware/auth', () => ({
 
 // Container host
 const mockContainerFetch = vi.fn()
+const mockCachedStatus = vi.fn(() => 'running')
 vi.mock('@shared/lib/container/container-host', async () => {
   const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
   return {
@@ -28,20 +29,10 @@ vi.mock('@shared/lib/container/container-host', async () => {
         stop: vi.fn(),
       }),
       ensureRunning: vi.fn(),
-      getCachedInfo: () => ({ status: 'running', port: 8080 }),
+      getCachedInfo: () => ({ status: mockCachedStatus(), port: 8080 }),
     }),
   }
 })
-
-// Message persister
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    broadcastGlobal: vi.fn(),
-    persistMessage: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(),
-    completeInputRequest: vi.fn(),
-  },
-}))
 
 // DB mocks
 const mockSelectFrom = vi.fn()
@@ -424,6 +415,27 @@ describe('provide-connected-account handler', () => {
     // Verify resolve call
     const [resolvePath] = mockContainerFetch.mock.calls[1]
     expect(resolvePath).toBe('/inputs/tu-happy/resolve')
+  })
+
+  it('updates the container /env even when its cached status says stopped (a waiting session means it runs)', async () => {
+    mockCachedStatus.mockReturnValueOnce('stopped')
+    mockSelectFrom.mockReturnValueOnce({ where: mockSelectWhere })
+    mockSelectWhere.mockResolvedValueOnce([
+      { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'user@gmail.com', status: 'active' },
+    ])
+    mockInsertValues.mockResolvedValue(undefined)
+    mockSelectFrom.mockReturnValueOnce({ innerJoin: mockInnerJoin })
+    mockInnerJoin.mockReturnValue({ where: mockInnerJoinWhere })
+    mockInnerJoinWhere.mockResolvedValue([
+      { account: { id: 'acc-1', toolkitSlug: 'gmail', displayName: 'user@gmail.com', status: 'active' } },
+    ])
+    mockContainerFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ success: true }) })
+    mockContainerFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ success: true }) })
+
+    const res = await postJson({ toolUseId: 'tu-happy', toolkit: 'gmail', accountIds: ['acc-1'] })
+
+    expect(res.status).toBe(200)
+    expect(mockContainerFetch.mock.calls[0][0]).toBe('/env')
   })
 
   it('duplicate mapping insert errors are silently ignored', async () => {

@@ -19,6 +19,7 @@ vi.mock('@tanstack/react-router', () => ({ useParams: () => ({}) }))
 import { useAgent, useAgents, useStartAgent } from './use-agents'
 
 const stoppedAgent: ApiAgent = {
+  avatar: { color: 'tonal-blue', shape: 'circle' } as const,
   slug: 'agent-a',
   displaySlug: 'agent-a',
   name: 'Agent A',

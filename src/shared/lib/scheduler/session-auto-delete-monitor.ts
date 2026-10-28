@@ -6,6 +6,7 @@ import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { listSessionIdsWithPendingWakes } from '@shared/lib/services/scheduled-task-service'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { getSettings } from '@shared/lib/config/settings'
+import { background } from '@shared/lib/background'
 import { db } from '@shared/lib/db'
 import { messageAuthor } from '@shared/lib/db/schema'
 import { inArray } from 'drizzle-orm'
@@ -29,14 +30,14 @@ class SessionAutoDeleteMonitor {
 
     this.startupTimeoutId = setTimeout(() => {
       this.startupTimeoutId = null
-      this.cleanupAllAgents().catch((error) => {
+      background(this.cleanupAllAgents().catch((error) => {
         console.error('[SessionAutoDeleteMonitor] Error in initial cleanup:', error)
-      })
+      }), { name: 'session-auto-delete-monitor.cleanup-all-agents' })
 
       this.intervalId = setInterval(() => {
-        this.cleanupAllAgents().catch((error) => {
+        background(this.cleanupAllAgents().catch((error) => {
           console.error('[SessionAutoDeleteMonitor] Error in cleanup cycle:', error)
-        })
+        }), { name: 'session-auto-delete-monitor.cleanup-all-agents' })
       }, this.pollIntervalMs)
     }, this.startupDelayMs)
 
@@ -99,11 +100,12 @@ class SessionAutoDeleteMonitor {
     // deleting it would silently destroy the very session its wake resumes.
     const pendingWakeSessionIds = await listSessionIdsWithPendingWakes(agentSlug)
 
+    const active = new Set((await actor.live()).activeSessionIds)
     const toDelete = sessions
       .filter((s) => {
         if (s.lastActivityAt.getTime() >= cutoff) return false
         if (metadata[s.id]?.starred) return false
-        if (actor.sessions.isActive(s.id)) return false
+        if (active.has(s.id)) return false
         if (pendingWakeSessionIds.has(s.id)) return false
         return true
       })
@@ -111,11 +113,8 @@ class SessionAutoDeleteMonitor {
 
     if (toDelete.length === 0) return
 
+    // Lets go of each deleted session's stream too.
     const deletedIds = await actor.sessions.deleteMany(toDelete)
-
-    for (const sessionId of deletedIds) {
-      actor.sessions.unsubscribeStream(sessionId)
-    }
 
     // People (auth mode) and integrations (every mode) author messages.
     if (deletedIds.length > 0) {

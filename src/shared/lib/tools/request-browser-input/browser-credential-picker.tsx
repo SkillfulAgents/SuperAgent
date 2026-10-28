@@ -39,6 +39,16 @@ interface BrowserCredentialPickerProps {
   sessionId: string
   toolUseId: string
   disabled?: boolean
+  /**
+   * 'login': a sign-in form (request_login) — the saved login goes into the
+   * fields the agent mapped, through the same origin-checked fill as typed
+   * values. 'browser_input' (default): a hand-off, filled by the page heuristic.
+   */
+  kind?: 'browser_input' | 'login'
+  /** 'login': what goes with the pick — the card's "Save for later", and that the user saw who else can use it. */
+  loginOptions?: { save?: boolean; sharedAgentAcknowledged?: boolean }
+  /** Called with the route's answer once a saved login was filled into the page. */
+  onFilled?: (result: unknown) => void
 }
 
 export function BrowserCredentialPicker({
@@ -46,6 +56,9 @@ export function BrowserCredentialPicker({
   sessionId,
   toolUseId,
   disabled,
+  kind = 'browser_input',
+  loginOptions,
+  onFilled,
 }: BrowserCredentialPickerProps) {
   const { openSettings } = useDialogs()
   const { isAuthMode, isAdmin } = useUser()
@@ -64,6 +77,8 @@ export function BrowserCredentialPicker({
   const [copiedField, setCopiedField] = useState<'username' | 'password' | null>(null)
   const [copyError, setCopyError] = useState<string | null>(null)
   const copiedResetTimer = useRef<number | null>(null)
+  const onFilledRef = useRef(onFilled)
+  onFilledRef.current = onFilled
 
   const clearCopiedResetTimer = useCallback(() => {
     if (copiedResetTimer.current !== null) {
@@ -115,11 +130,11 @@ export function BrowserCredentialPicker({
     try {
       const response = await apiFetch(
         `/api/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId)}` +
-          '/autofill-browser-credential',
+          (kind === 'login' ? '/fill-login-credential' : '/autofill-browser-credential'),
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ toolUseId, credentialId }),
+          body: JSON.stringify({ toolUseId, credentialId, ...(kind === 'login' ? loginOptions : {}) }),
         },
       )
       const result = await response.json() as {
@@ -133,12 +148,13 @@ export function BrowserCredentialPicker({
       }
       if (!response.ok) throw new Error(result.error || 'Credential autofill failed')
       setFilled(true)
+      onFilledRef.current?.(result)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Credential autofill failed')
     } finally {
       setFillingId(null)
     }
-  }, [agentSlug, sessionId, toolUseId])
+  }, [agentSlug, kind, loginOptions, sessionId, toolUseId])
 
   const copyManualCredential = useCallback(async (field: 'username' | 'password') => {
     if (!manualCredential) return

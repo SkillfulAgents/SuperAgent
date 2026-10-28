@@ -137,6 +137,28 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     Reflect.deleteProperty(document, 'visibilityState')
   })
 
+  it('runtime_readiness_changed patches same-status progress and refetches only on a status change', () => {
+    const pulling = (percent: number) => ({
+      status: 'PULLING_IMAGE',
+      message: 'Pulling agent image',
+      pullProgress: { status: `Pulling image... ${percent}%`, percent, completedLayers: 3, totalLayers: 7 },
+    })
+    queryClient.setQueryData(['runtime-status'], { runtimeReadiness: pulling(44), hasRunningAgents: false })
+    queryClient.setQueryData(['settings'], { runtimeReadiness: pulling(44), app: { theme: 'dark' } })
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+
+    simulateSSEMessage(getLatestEventSource(), { type: 'runtime_readiness_changed', readiness: pulling(45) })
+    expect(invalidate).not.toHaveBeenCalled()
+    expect(queryClient.getQueryData(['runtime-status'])).toEqual({ runtimeReadiness: pulling(45), hasRunningAgents: false })
+    expect(queryClient.getQueryData(['settings'])).toEqual({ runtimeReadiness: pulling(45), app: { theme: 'dark' } })
+
+    const ready = { status: 'READY', message: 'Ready', pullProgress: null }
+    simulateSSEMessage(getLatestEventSource(), { type: 'runtime_readiness_changed', readiness: ready })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['settings'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['runtime-status'] })
+  })
+
   it('invalidates the current roster on changes and rejects malformed hints', () => {
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
@@ -444,7 +466,6 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       name: 'S',
       createdAt: new Date(),
       lastActivityAt: new Date(),
-      messageCount: 1,
       isActive: true,
     }
     queryClient.setQueryData(['sessions', 'my-agent'], [
@@ -487,7 +508,6 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       name: 'S',
       createdAt: new Date(),
       lastActivityAt: new Date(),
-      messageCount: 1,
       isActive: true,
     }
     queryClient.setQueryData(['sessions', 'my-agent'], [{ ...sessionBase, id: 'sess-1' }])
@@ -547,7 +567,6 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
       name: 'S',
       createdAt: new Date(),
       lastActivityAt: new Date(),
-      messageCount: 1,
     }
     queryClient.setQueryData(['sessions', 'my-agent'], [
       { ...sessionBase, id: 'sess-1', isActive: true, isAwaitingInput: true },
@@ -590,7 +609,6 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
         name: 'S',
         createdAt: new Date(),
         lastActivityAt: new Date(),
-        messageCount: 1,
         isActive: false,
       },
     ])
@@ -639,7 +657,6 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
         name: 'S',
         createdAt: new Date(),
         lastActivityAt: new Date(),
-        messageCount: 1,
         isActive: false,
       },
     ])
@@ -684,7 +701,6 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
         name: 'S',
         createdAt: new Date(),
         lastActivityAt: new Date(),
-        messageCount: 1,
         isActive: false,
         hasUnreadNotifications: true,
       },
@@ -730,6 +746,37 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     simulateSSEMessage(getLatestEventSource(), { type: 'platform_notifications_changed' })
 
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['platform-notifications'] })
+  })
+
+  it('session_mention_withdrawn refreshes the inbox, the session list and the agent rows', () => {
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'session_mention_withdrawn', agentSlug: 'agent-x', sessionId: 'sess-1', recipientUserId: 'user-b',
+    })
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['notifications'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['sessions', 'agent-x'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
+  })
+
+  it('webhook_relay_changed replaces the cached relay status', () => {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+    const status = { available: false, unavailableReason: 'platform_disconnected', transport: 'idle', lastClaimAt: null }
+
+    simulateSSEMessage(getLatestEventSource(), { type: 'webhook_relay_changed', status })
+
+    expect(queryClient.getQueryData(['webhook-relay'])).toEqual(status)
   })
 
   it('platform_notification pops an OS notification whose click opens the detail route', async () => {
@@ -841,6 +888,62 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['agents'] })
   })
 
+  describe('session lifecycle refetches', () => {
+    beforeEach(() => vi.useFakeTimers())
+    afterEach(() => vi.useRealTimers())
+
+    const callsWith = (spy: { mock: { calls: unknown[][] } }, queryKey: unknown[]) =>
+      spy.mock.calls.filter(([filters]) => JSON.stringify(filters) === JSON.stringify({ queryKey })).length
+
+    it('refreshes the event\'s own agent at once and confirms list-wide state once per burst', () => {
+      queryClient.setQueryData(['artifacts', 'agent-a'], [])
+      queryClient.setQueryData(['artifacts', 'agent-c'], [])
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+      render(
+        <QueryClientProvider client={queryClient}>
+          <GlobalNotificationHandler />
+        </QueryClientProvider>
+      )
+      const es = getLatestEventSource()
+      simulateSSEMessage(es, { type: 'session_active', agentSlug: 'agent-a', sessionId: 's1' })
+      simulateSSEMessage(es, { type: 'session_active', agentSlug: 'agent-b', sessionId: 's2' })
+      simulateSSEMessage(es, { type: 'session_idle', agentSlug: 'agent-a', sessionId: 's1' })
+
+      // The event's own agent: its sessions, its detail, its artifacts.
+      expect(callsWith(invalidateSpy, ['sessions', 'agent-a'])).toBe(2)
+      expect(callsWith(invalidateSpy, ['agents', 'agent-a'])).toBe(2)
+      expect(queryClient.getQueryState(['artifacts', 'agent-a'])?.isInvalidated).toBe(true)
+      expect(queryClient.getQueryState(['artifacts', 'agent-c'])?.isInvalidated).toBe(false)
+
+      // The full list, todos and automation lists only confirm the echo: they
+      // wait for the batch, then run once for the whole burst.
+      expect(callsWith(invalidateSpy, ['agents'])).toBe(0)
+      expect(callsWith(invalidateSpy, ['todos'])).toBe(0)
+      act(() => {
+        vi.advanceTimersByTime(500)
+      })
+      expect(callsWith(invalidateSpy, ['agents'])).toBe(1)
+      expect(callsWith(invalidateSpy, ['todos'])).toBe(1)
+      expect(callsWith(invalidateSpy, ['webhook-trigger-sessions'])).toBe(1)
+      expect(callsWith(invalidateSpy, ['scheduled-task-sessions'])).toBe(1)
+    })
+
+    it('runs queued confirmations when the stream is torn down', () => {
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+      const { unmount } = render(
+        <QueryClientProvider client={queryClient}>
+          <GlobalNotificationHandler />
+        </QueryClientProvider>
+      )
+      simulateSSEMessage(getLatestEventSource(), { type: 'session_idle', agentSlug: 'agent-a', sessionId: 's1' })
+      expect(callsWith(invalidateSpy, ['agents'])).toBe(0)
+
+      unmount()
+      expect(callsWith(invalidateSpy, ['agents'])).toBe(1)
+    })
+  })
+
   it('marks only the announced dashboard thumbnail ready without a refetch', () => {
     queryClient.setQueryData(['agents'], [{
       slug: 'agent-a',
@@ -909,6 +1012,26 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(queryClient.getQueryState(['artifacts', 'agent-a'])?.isInvalidated).toBe(true)
   })
 
+  it('agent_updated refreshes saved appearance in list and detail queries on other clients', () => {
+    queryClient.setQueryData(['agents'], [])
+    queryClient.setQueryData(['agents', 'agent-a'], {})
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    simulateSSEMessage(getLatestEventSource(), { type: 'agent_updated', agentSlug: 'agent-a' })
+    expect(queryClient.getQueryState(['agents'])?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(['agents', 'agent-a'])?.isInvalidated).toBe(true)
+  })
+
+  it("volume_attention_changed refreshes every agent's drives and the drive list, so a status pill follows sync", () => {
+    queryClient.setQueryData(['mounts', 'agent-a'], [])
+    queryClient.setQueryData(['mounts', 'agent-b'], [])
+    queryClient.setQueryData(['volume-definitions'], [])
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    simulateSSEMessage(getLatestEventSource(), { type: 'volume_attention_changed' })
+    for (const key of [['mounts', 'agent-a'], ['mounts', 'agent-b'], ['volume-definitions']]) {
+      expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true)
+    }
+  })
+
   it('agent_created invalidates visible agents and personal roles together', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
@@ -928,7 +1051,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
   })
 
-  it('only refreshes collaboration queries on reconnect, not first open', () => {
+  it('only refreshes collaboration and drive queries on reconnect, not first open', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
     render(
@@ -943,6 +1066,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
     expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['agent-members'] })
     expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['agent-invite-candidates'] })
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['mounts'] })
 
     invalidateSpy.mockClear()
     es.onerror?.()
@@ -951,6 +1075,9 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agent-members'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agent-invite-candidates'] })
+    // A drive's status change sent during the gap is not sent again.
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['mounts'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['volume-definitions'] })
     // Mount and a browser-handled reconnect are not outages.
     expect(invalidateSpy).not.toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
   })

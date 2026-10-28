@@ -1,10 +1,10 @@
 /**
  * Session ownership: a session id only ever "belongs to" the agent that owns it.
  *
- * The process-global registries keyed by session id alone (the message
- * persister, above all) have no agent dimension, so any route that reaches them
- * has to establish ownership itself. `sessionIsKnown` is that check, and
- * these tests pin the three properties it has to hold:
+ * A process-wide registry keyed by session id alone has no agent dimension,
+ * so any route that reaches one has to establish ownership itself.
+ * `sessionIsKnown` is that check, and these tests pin the three properties it
+ * has to hold:
  *
  *   1. a session of ANOTHER agent never passes;
  *   2. a session that exists only on disk, or only in metadata, still passes
@@ -134,14 +134,14 @@ describe('sessionIsKnown', () => {
   // writes a file named after someone else's session gets `true` — for its own,
   // empty, same-named session. What that buys the forger is nothing: every
   // registry it could then reach is keyed by agent AND session, so it lands in
-  // the forger's own namespace.
+  // the forger's own namespace. Live sessions are isolated by construction:
+  // each agent's `LiveSessions` (src/shared/lib/agent-actor/live/live-sessions.ts)
+  // holds only that agent's sessions.
   //
   // The property that used to be enforced here is now proven where it actually
-  // matters, end to end, against real routes and a real persister:
+  // matters, end to end, against real routes and real live sessions:
   //   src/api/routes/session-scope.integration.test.ts
   //     — "a forged transcript does not buy access to another agent's live session"
-  //   src/shared/lib/container/message-persister.test.ts
-  //     — "cross-agent isolation"
   //   e2e/auth/specs/session-scope-roles.spec.ts
   it('answers for this agent\u2019s own directory, so a forged id names only the forger\u2019s own session', async () => {
     const { sessionIsKnown } = await importService()

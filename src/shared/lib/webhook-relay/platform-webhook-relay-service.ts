@@ -18,6 +18,7 @@
 
 import pLimit from 'p-limit'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import type { RealtimeConfig } from '@shared/lib/services/supabase-realtime-client'
 import type {
   VerificationProfile,
@@ -121,6 +122,9 @@ interface QueuedEvent {
   event: RelayEvent
   /** The scope that claimed it, which is the one that must acknowledge it. */
   scope: RelayScope
+  /** Times the consumer answered `retry`, and when it may be offered again. */
+  attempt: number
+  retryAt: number
 }
 
 interface ConsumerState {
@@ -131,8 +135,8 @@ interface ConsumerState {
   queue: QueuedEvent[]
   queuedIds: Set<string>
   offering: boolean
+  /** Wakes delivery when the earliest waiting retry is due. */
   retryTimer: NodeJS.Timeout | null
-  retryAttempt: number
   /** A claim skipped this consumer's endpoints because its queue was full. */
   heldBack: boolean
   /** Disposed, but still delivering events claimed before that. */
@@ -236,7 +240,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     if (!this.online) {
       return {
         available: false,
-        unavailableReason: 'platform_disconnected',
+        unavailableReason: this.started ? 'platform_disconnected' : 'stopped',
         transport: 'idle',
         lastClaimAt: this.lastClaimAt,
         lastError: null,
@@ -257,7 +261,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   }
 
   private transport(): WebhookRelayTransport {
-    if (!this.hasEndpoints()) return 'idle'
+    if (!this.hasClaimableEndpoints()) return 'idle'
     if (this.health === 'unknown') return 'connecting'
     if (this.health === 'failed') return 'unreachable'
     return this.realtime?.isActive() ? 'realtime' : 'polling'
@@ -281,8 +285,11 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   // Endpoints
   // ==========================================================================
 
+  // The same answer the snapshot gives, so nothing mints a URL whose events
+  // would never be claimed (before start(), after stop(), or offline).
   private requireAvailable(): void {
-    if (!this.deps.getToken()) throw new WebhookRelayUnavailableError('platform_disconnected')
+    const { unavailableReason } = this.snapshot()
+    if (unavailableReason) throw new WebhookRelayUnavailableError(unavailableReason)
   }
 
   async createEndpoint(scope: RelayScope, spec: RelayEndpointSpec): Promise<RelayEndpoint> {
@@ -303,8 +310,10 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     })
   }
 
+  // Only minting needs a running relay (a URL nobody claims from is the
+  // problem); taking one down just needs the platform.
   async disableEndpoint(scope: RelayScope, endpointId: string): Promise<void> {
-    this.requireAvailable()
+    if (!this.deps.getToken()) throw new WebhookRelayUnavailableError('platform_disconnected')
     await this.deps.endpoints.disable(scope, endpointId)
   }
 
@@ -340,7 +349,6 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
       queuedIds: new Set(),
       offering: false,
       retryTimer: null,
-      retryAttempt: 0,
       heldBack: false,
       draining: false,
       claimsInFlight: 0,
@@ -367,6 +375,14 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
         }
         this.wake()
         this.emit()
+      },
+      retryNow: () => {
+        if (state.disposed) return
+        for (const queued of state.queue) {
+          queued.attempt = 0
+          queued.retryAt = 0
+        }
+        this.pump(state)
       },
       dispose: () => {
         if (state.disposed || state.draining) return
@@ -435,6 +451,15 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
 
   private hasEndpoints(): boolean {
     for (const state of this.consumers.values()) if (state.endpointIds.size > 0) return true
+    return false
+  }
+
+  /** Registered endpoints in a scope this token can claim. */
+  private hasClaimableEndpoints(): boolean {
+    const orgToken = this.deps.requiresMemberScope()
+    for (const state of this.consumers.values()) {
+      if (state.endpointIds.size > 0 && !(orgToken && state.scope === LOCAL_RELAY_SCOPE)) return true
+    }
     return false
   }
 
@@ -560,12 +585,12 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     lifecycle.addEventListener('abort', onStop, { once: true })
     if (lifecycle.aborted) onStop()
     const run = new Promise<T>((resolve) => resolve(fn(controller.signal)))
-    void run.catch(() => {}).finally(() => lifecycle.removeEventListener('abort', onStop))
+    run.catch(() => {}).finally(() => lifecycle.removeEventListener('abort', onStop))
 
     let timer: NodeJS.Timeout | undefined
     const deadline = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
-        if (late) void run.then(late.result, late.failure)
+        if (late) background(run.then(late.result, late.failure), { name: 'webhook-relay.late-claim' })
         else controller.abort(new Error('deadline'))
         reject(new RequestDeadlineError(this.requestTimeoutMs))
       }, this.requestTimeoutMs)
@@ -587,7 +612,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     if (this.draining) return
     this.draining = true
     this.deps.detach(() => {
-      void this.drain()
+      background(this.drain(), { name: 'webhook-relay.drain' })
     })
   }
 
@@ -746,7 +771,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
       if (owner.queuedIds.has(event.id)) continue
       // Settled here, but the platform re-leased it because the ack is late.
       if (this.pendingAcks.get(scope)?.has(event.id)) continue
-      owner.queue.push({ event, scope })
+      owner.queue.push({ event, scope, attempt: 0, retryAt: 0 })
       owner.queuedIds.add(event.id)
       touched.add(owner)
     }
@@ -760,10 +785,20 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   }
 
   private pump(state: ConsumerState): void {
-    if (!this.started || state.offering || state.retryTimer || state.disposed || state.queue.length === 0) return
+    if (!this.started || state.offering || state.disposed || state.queue.length === 0) return
+    // Retries wait out their own backoff; everything else goes now, so one
+    // event that keeps retrying never holds up the rest.
+    const dueAt = Math.min(...state.queue.map((queued) => queued.retryAt))
+    const now = Date.now()
+    if (dueAt > now) {
+      this.scheduleRetry(state, dueAt - now)
+      return
+    }
+    if (state.retryTimer) clearTimeout(state.retryTimer)
+    state.retryTimer = null
     state.offering = true
     this.deps.detach(() => {
-      void this.limit(() => this.offer(state))
+      background(this.limit(() => this.offer(state))
         .catch((error: unknown) => {
           captureException(error, { tags: { area: 'webhook-relay', op: 'offer' }, extra: { consumerId: state.id } })
         })
@@ -771,14 +806,16 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
           state.offering = false
           this.finishIfDrained(state)
           this.pump(state)
-        })
+        }), { name: 'webhook-relay.offer' })
     })
   }
 
   private async offer(state: ConsumerState): Promise<void> {
     // stop() may have landed while this offer waited for a concurrency slot.
     if (!this.started || state.disposed) return
-    const batch = state.queue.slice(0, CLAIM_BATCH_SIZE)
+    const now = Date.now()
+    const batch = state.queue.filter((queued) => queued.retryAt <= now).slice(0, CLAIM_BATCH_SIZE)
+    if (batch.length === 0) return
 
     let outcome: RelayAcceptResult | ReadonlyMap<string, RelayAcceptResult>
     try {
@@ -790,11 +827,14 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     }
 
     const settled: QueuedEvent[] = []
-    let retrying = false
     for (const queued of batch) {
       const result = typeof outcome === 'string' ? outcome : (outcome.get(queued.event.id) ?? 'retry')
-      if (result === 'retry') retrying = true
-      else settled.push(queued)
+      if (result !== 'retry') {
+        settled.push(queued)
+        continue
+      }
+      queued.retryAt = Date.now() + this.retryDelaysMs[Math.min(queued.attempt, this.retryDelaysMs.length - 1)]
+      queued.attempt++
     }
     // Settled work is done even if the consumer let go meanwhile.
     for (const queued of settled) this.queueAck(queued.scope, queued.event.id)
@@ -807,9 +847,6 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
       for (const id of settledIds) state.queuedIds.delete(id)
     }
 
-    if (retrying) this.scheduleRetry(state)
-    else state.retryAttempt = 0
-
     if (state.draining) return
     // A round skipped this consumer's endpoints while it was full.
     if (state.heldBack && state.queue.length < this.maxConsumerBacklog) {
@@ -818,11 +855,10 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     }
   }
 
-  private scheduleRetry(state: ConsumerState): void {
+  private scheduleRetry(state: ConsumerState, delay: number): void {
     // After stop(), start() resumes delivery instead.
     if (!this.started || state.disposed) return
-    const delay = this.retryDelaysMs[Math.min(state.retryAttempt, this.retryDelaysMs.length - 1)]
-    state.retryAttempt++
+    if (state.retryTimer) clearTimeout(state.retryTimer)
     this.deps.detach(() => {
       state.retryTimer = setTimeout(() => {
         state.retryTimer = null
@@ -849,7 +885,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     if (this.acking || !this.online || this.pendingAcks.size === 0) return
     this.acking = true
     this.deps.detach(() => {
-      void this.runAcks()
+      background(this.runAcks(), { name: 'webhook-relay.ack' })
     })
   }
 
@@ -928,9 +964,9 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     if (current?.isActive()) {
       if (now - this.realtimeTokenAt >= this.realtimeTokenRefreshMs) {
         this.realtimeTokenAt = now
-        current.updateToken(config.jwt).catch((error: unknown) => {
+        background(current.updateToken(config.jwt).catch((error: unknown) => {
           console.warn(`[WebhookRelay] Realtime token refresh failed: ${errorMessage(error)}`)
-        })
+        }), { name: 'webhook-relay.refresh-realtime-token' })
       }
       return
     }
@@ -943,7 +979,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     this.realtime = client
     this.realtimeConnecting = true
     this.realtimeTokenAt = now
-    client
+    background(client
       .connect(
         config,
         (record) => this.onRealtimeInsert(record),
@@ -969,7 +1005,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
       .finally(() => {
         if (this.realtime === client) this.realtimeConnecting = false
         this.emit()
-      })
+      }), { name: 'webhook-relay.connect-realtime' })
   }
 
   private onRealtimeInsert(raw: unknown): void {

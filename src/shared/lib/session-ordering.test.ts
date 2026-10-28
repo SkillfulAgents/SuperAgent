@@ -41,4 +41,20 @@ describe('sortSessionsByActivity', () => {
 
     expect(tied.map(({ id }) => id)).toEqual(['a-session', 'z-session'])
   })
+
+  it('can prioritize waiting while preserving date fallback and tie-breaking within each group', () => {
+    const waiting = [
+      { id: 'z-waiting', createdAt: '2026-08-20', lastActivityAt: 'invalid', isAwaitingInput: true },
+      { id: 'a-waiting', createdAt: '2026-08-20', isAwaitingInput: true },
+      { id: 'new-waiting', createdAt: '2026-08-21', isAwaitingInput: true },
+    ]
+    const all = [...sessions, ...waiting]
+    expect(sortSessionsByActivity(all, 'newest', { awaitingFirst: true }).map(({ id }) => id)).toEqual([
+      'new-waiting', 'a-waiting', 'z-waiting', 'recently-active', 'newer-created', 'created-fallback',
+    ])
+    expect(sortSessionsByActivity(all, 'oldest', { awaitingFirst: true }).map(({ id }) => id)).toEqual([
+      'a-waiting', 'z-waiting', 'new-waiting', 'created-fallback', 'newer-created', 'recently-active',
+    ])
+    expect(sortSessionsByActivity(all)[0].id).toBe('recently-active')
+  })
 })

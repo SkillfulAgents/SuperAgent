@@ -23,7 +23,7 @@ vi.mock('electron', () => ({
   nativeImage: { createFromPath: vi.fn(() => ({})) },
 }))
 
-import { createAppMenu, destroyAppMenu, flushPendingMenuCommands } from './app-menu'
+import { createAppMenu, destroyAppMenu, flushPendingMenuCommands, sendMenuCommand, updateAppMenuWindow } from './app-menu'
 
 interface TemplateItem {
   label?: string
@@ -111,5 +111,49 @@ describe('SUP-264: menu commands queue while the window is closed', () => {
       { channel: 'open-create-agent' },
       { channel: 'navigate-to-agent', agentSlug: 'beta' },
     ])
+  })
+})
+
+describe('sendMenuCommand', () => {
+  beforeEach(() => {
+    appEmit.mockClear()
+    flushPendingMenuCommands()
+  })
+
+  afterEach(() => {
+    destroyAppMenu()
+  })
+
+  it('queues a target switch and a session navigation while the window is closed', () => {
+    updateAppMenuWindow(null)
+    sendMenuCommand({ channel: 'switch-target', target: 'cloud' })
+    sendMenuCommand({ channel: 'navigate-to-agent', agentSlug: 'alpha', sessionId: 's1' })
+
+    expect(appEmit).toHaveBeenCalledWith('activate')
+    expect(flushPendingMenuCommands()).toEqual([
+      { channel: 'switch-target', target: 'cloud' },
+      { channel: 'navigate-to-agent', agentSlug: 'alpha', sessionId: 's1' },
+    ])
+  })
+
+  it('queues while the window is still loading, and sends live once it has loaded', () => {
+    const send = vi.fn()
+    let loading = true
+    const win = {
+      isDestroyed: () => false,
+      show: vi.fn(),
+      focus: vi.fn(),
+      webContents: { isLoading: () => loading, send },
+    }
+    updateAppMenuWindow(win as unknown as Parameters<typeof updateAppMenuWindow>[0])
+
+    sendMenuCommand({ channel: 'switch-target', target: 'local' })
+    expect(send).not.toHaveBeenCalled()
+    expect(flushPendingMenuCommands()).toEqual([{ channel: 'switch-target', target: 'local' }])
+
+    loading = false
+    sendMenuCommand({ channel: 'navigate-to-agent', agentSlug: 'alpha', sessionId: null })
+    expect(send).toHaveBeenCalledWith('navigate-to-agent', 'alpha', null)
+    expect(flushPendingMenuCommands()).toEqual([])
   })
 })

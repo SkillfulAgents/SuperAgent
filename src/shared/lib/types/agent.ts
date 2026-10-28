@@ -5,6 +5,7 @@
  */
 
 import type { EffortLevel, SlashCommandInfo, SpeedLevel } from '../container/types'
+import type { LlmProviderId } from '../llm-provider/provider-types'
 
 // ============================================================================
 // Agent Roles
@@ -127,6 +128,9 @@ export interface SessionMetadata {
   // Stored as the provider's pinned ID, not the family.
   model?: string
   llmProviderId?: string | null
+  // Provider that produced each API-error message, keyed by transcript uuid,
+  // so the error keeps its own provider's copy after the session switches.
+  errorProviders?: Record<string, LlmProviderId>
   // X-Agent: present when this session was created by another agent invoking this one.
   // Such sessions are hidden as automated until promoted for human input.
   invokedByAgentSlug?: string
@@ -152,6 +156,8 @@ export interface SessionMetadataMap {
   [sessionId: string]: SessionMetadata
 }
 
+export type SessionOrigin = 'user' | 'scheduled' | 'webhook' | 'integration' | 'agent' | 'widget-repair'
+
 /**
  * Session info derived from JSONL file + metadata
  */
@@ -161,8 +167,9 @@ export interface SessionInfo {
   name: string
   createdAt: Date
   lastActivityAt: Date
-  messageCount: number
   isActive?: boolean
+  /** Original source, preserved when an automated session becomes interactive. */
+  origin?: SessionOrigin
 }
 
 /**
@@ -197,6 +204,8 @@ export interface JsonlMessageEntry {
     interrupted: boolean
     isImage: boolean
     backgroundTaskId?: string
+    // Monitor's result: the id of the watch it started
+    taskId?: string
     // Subagent-specific (present only on Task tool results)
     agentId?: string
     status?: string

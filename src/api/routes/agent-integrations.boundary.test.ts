@@ -16,7 +16,7 @@ vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 vi.mock('@shared/lib/proxy/token-store', () => ({ validateProxyToken: vi.fn(async (token: string) => token === 'agent-token' ? 'agent' : null) }))
 vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({ agentIntegrationManager: {
-  pauseIntegration: vi.fn(async () => {}), isIntegrationConnected: () => false,
+  pauseIntegration: vi.fn(async () => {}), isIntegrationConnected: () => false, integrationTransport: () => null,
 } }))
 vi.mock('../middleware/auth', () => ({
   getAuthorizedAgentRole: () => auth.role,

@@ -4,6 +4,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui
 import { Paperclip, FileIcon, FolderOpen, Loader2 } from 'lucide-react'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 import { readLocalFileAsFile } from '@renderer/lib/read-local-file'
+import { listsRecentFiles } from '@renderer/lib/capabilities'
 
 interface RecentFile {
   name: string
@@ -18,6 +19,9 @@ interface AttachmentPickerProps {
   disabled?: boolean
   buttonClassName?: string
   popoverAlign?: 'start' | 'center' | 'end'
+  /** Controls the menu, for a caller that opens it itself. */
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
 }
 
 // Cache recent files for 30s to avoid re-fetching on rapid open/close (#7)
@@ -31,17 +35,21 @@ export function AttachmentPicker({
   disabled,
   buttonClassName = 'h-[34px] w-[34px] shrink-0 p-0',
   popoverAlign = 'start',
+  open: openProp,
+  onOpenChange,
 }: AttachmentPickerProps) {
-  const [open, setOpen] = useState(false)
+  const [openState, setOpenState] = useState(false)
+  const open = openProp ?? openState
+  const setOpen = onOpenChange ?? setOpenState
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>(recentFilesCache?.files ?? [])
   const [loadingPath, setLoadingPath] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
-  const isElectron = !!window.electronAPI?.getRecentFiles
+  const recentFilesListed = listsRecentFiles()
 
   // Fetch recent files when the popover opens, with short cache (#7)
   useEffect(() => {
-    if (!open || !isElectron) return
+    if (!open || !recentFilesListed) return
     if (recentFilesCache && Date.now() - recentFilesCache.fetchedAt < CACHE_TTL) {
       setRecentFiles(recentFilesCache.files)
       return
@@ -53,7 +61,7 @@ export function AttachmentPicker({
       setRecentFiles(files)
     }).catch(() => {})
     return () => { cancelled = true }
-  }, [open, isElectron])
+  }, [open, recentFilesListed])
 
   const handleRecentClick = useCallback(async (filePath: string) => {
     if (!onRecentFileAttach) return
@@ -76,9 +84,9 @@ export function AttachmentPicker({
       setLoadingPath(null)
       setOpen(false)
     }
-  }, [onRecentFileAttach])
+  }, [onRecentFileAttach, setOpen])
 
-  const showRecent = isElectron && recentFiles.length > 0 && onRecentFileAttach
+  const showRecent = recentFilesListed && recentFiles.length > 0 && onRecentFileAttach
 
   return (
     <>

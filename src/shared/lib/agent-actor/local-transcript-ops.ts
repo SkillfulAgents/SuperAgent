@@ -149,10 +149,96 @@ export async function copyDerivedSessionFiles(store: SessionStore, sourceSession
   if (real !== source) return
   if ((await store.files.stat(source))?.kind !== 'directory') return
   await copyTree(store, source, target)
+  await repointForkContextRefs(store, sourceSessionId, targetSessionId)
 }
 
-export function streamRawEntries(store: SessionStore, sessionId: string): AsyncIterable<unknown> {
-  return streamJsonl(store.files, transcriptPath(store, sessionId))
+/** The first line of a fork subagent's transcript (CLI 2.1.302+). */
+const forkContextRefSchema = z.object({
+  type: z.literal('fork-context-ref'),
+  parentSessionId: z.string(),
+  parentLastUuid: z.string(),
+}).loose()
+
+/** A copied transcript entry: the copy re-ids it and names the entry it came from. */
+const forkedEntrySchema = z.object({
+  uuid: z.string(),
+  forkedFrom: z.object({ sessionId: z.string(), messageUuid: z.string() }),
+}).loose()
+
+/**
+ * A fork subagent rebuilds the context it inherited from the session its
+ * `fork-context-ref` names. Copied verbatim, a fork in the copy reads that
+ * context from the SOURCE session and loses it once the source is deleted
+ * (CLI 2.1.303: resumed after an eviction, it answered from no inherited
+ * context). Repoint each ref at the copy, whose transcript re-ids every entry
+ * and records the source uuid in `forkedFrom.messageUuid`. A ref with no
+ * copied counterpart is left as is.
+ */
+async function repointForkContextRefs(store: SessionStore, sourceSessionId: string, targetSessionId: string): Promise<void> {
+  const subagentsDir = sessionFilePath(store, targetSessionId, 'subagents')
+  let entries: FileEntry[]
+  try {
+    entries = await store.files.list(subagentsDir)
+  } catch {
+    return // No subagents directory
+  }
+  let copiedUuids: Map<string, string> | undefined
+  for (const entry of entries) {
+    if (entry.kind !== 'file' || !/^agent-[\w-]+\.jsonl$/.test(entry.name)) continue
+    const raw = await store.files.getDoc(entry.path)
+    if (raw === null) continue
+    const text = Buffer.from(raw).toString('utf8')
+    const newline = text.indexOf('\n')
+    const firstLine = newline === -1 ? text : text.slice(0, newline)
+    let ref: z.infer<typeof forkContextRefSchema>
+    try {
+      const parsed = forkContextRefSchema.safeParse(JSON.parse(firstLine))
+      if (!parsed.success) continue
+      ref = parsed.data
+    } catch {
+      continue
+    }
+    if (ref.parentSessionId !== sourceSessionId) continue
+    copiedUuids ??= await copiedEntryUuids(store, sourceSessionId, targetSessionId)
+    const parentLastUuid = copiedUuids.get(ref.parentLastUuid)
+    if (!parentLastUuid) continue
+    const repointed = JSON.stringify(forkContextRefSchema.parse({ ...ref, parentSessionId: targetSessionId, parentLastUuid }))
+    const stat = await store.files.stat(entry.path)
+    await store.files.write(
+      entry.path,
+      Buffer.from(repointed + (newline === -1 ? '' : text.slice(newline)), 'utf8'),
+      stat?.mode === undefined ? undefined : { mode: stat.mode },
+    )
+  }
+}
+
+/** Source uuid → its copy's uuid, from the copied transcript. */
+async function copiedEntryUuids(store: SessionStore, sourceSessionId: string, targetSessionId: string): Promise<Map<string, string>> {
+  const uuids = new Map<string, string>()
+  for (const entry of await readJsonl<unknown>(store.files, transcriptPath(store, targetSessionId))) {
+    const parsed = forkedEntrySchema.safeParse(entry)
+    if (parsed.success && parsed.data.forkedFrom.sessionId === sourceSessionId) {
+      uuids.set(parsed.data.forkedFrom.messageUuid, parsed.data.uuid)
+    }
+  }
+  return uuids
+}
+
+/** A user line in a forked transcript: the SDK stamps the old uuid on every copied line. */
+const forkedUserLineSchema = z.object({
+  type: z.literal('user'),
+  uuid: z.string().min(1),
+  forkedFrom: z.object({ sessionId: z.string(), messageUuid: z.string().min(1) }),
+}).loose()
+
+/** Each user message of a forked transcript: its uuid in the fork and the one it had in the source. */
+export async function forkedUserUuids(store: SessionStore, sessionId: string): Promise<Array<{ newUuid: string; oldUuid: string }>> {
+  const pairs: Array<{ newUuid: string; oldUuid: string }> = []
+  for await (const raw of streamJsonl(store.files, transcriptPath(store, sessionId))) {
+    const parsed = forkedUserLineSchema.safeParse(raw)
+    if (parsed.success) pairs.push({ newUuid: parsed.data.uuid, oldUuid: parsed.data.forkedFrom.messageUuid })
+  }
+  return pairs
 }
 
 function isBenignStreamError(error: unknown): boolean {

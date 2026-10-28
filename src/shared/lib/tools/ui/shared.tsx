@@ -1,5 +1,6 @@
 import { cn } from '@shared/lib/utils/cn'
 import { formatCompactDistance } from '@renderer/components/connections/utils'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import type { ReactNode } from 'react'
 
 // Shared building blocks for tool-call renderers. Keeps the card typography
@@ -106,4 +107,24 @@ export function TaskStatusIcon({ status }: { status?: string }) {
   if (status === 'completed') return <span className="text-green-600 dark:text-green-400">✓</span>
   if (status === 'in_progress') return <span className="text-blue-500">→</span>
   return <span className="text-muted-foreground">○</span>
+}
+
+/** A site icon that names its host on hover. Radix rather than a native `title`: this window doesn't reliably surface native tooltips. */
+export function HostTooltip({ host, children }: { host: string | null; children: ReactNode }) {
+  const icon = (
+    <span aria-hidden className="flex shrink-0 items-center">
+      {children}
+    </span>
+  )
+  if (!host) return icon
+  return (
+    <TooltipProvider delayDuration={300}>
+      <Tooltip>
+        <TooltipTrigger asChild>{icon}</TooltipTrigger>
+        <TooltipContent side="top" className="px-2 py-1">
+          {host}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  )
 }

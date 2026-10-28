@@ -1,11 +1,12 @@
 import { apiFetch, apiJson } from '@renderer/lib/api'
+import { readAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-request-error'
 import { useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { useDraftsStore, snapshotSessionDraft, seedSessionDraft } from '@renderer/context/drafts-context'
 import { useSendMessage } from '@renderer/hooks/use-messages'
-import { useAgents, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useResolvedAgentId, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import { applySessionActivityStatus, patchSessionInCaches } from '@renderer/lib/agent-cache'
 import type { ApiSession } from '@shared/lib/types/api'
 import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
@@ -20,12 +21,11 @@ export type { ApiSession }
 // (`{name}-{id}`) while the sidebar, mutations and SSE invalidations all key on
 // the bare id. Resolving every slug form through the loaded agents list before it
 // reaches a query key is what stops the same session list/entry from splitting in
-// two (one stale half that invalidations never reach). `useAgents` is shared
-// (deduped) so this adds no real fetch cost.
+// two (one stale half that invalidations never reach). The agents query is
+// shared (deduped) so this adds no real fetch cost, and the resolution is a
+// narrow subscription: every sidebar row calls `useSessions`, collapsed or not.
 function useResolvedAgentSlug(agentSlug: string | null): string | null {
-  const { data: agents } = useAgents()
-  if (!agentSlug) return null
-  return resolveRouteAgentId(agentSlug, agents) ?? agentSlug
+  return useResolvedAgentId(agentSlug ?? undefined) ?? null
 }
 
 /** One-shot resolution for mutation invalidations, reading the cached agents list. */
@@ -86,11 +86,15 @@ export function useSession(id: string | null, agentSlug: string | null = null) {
   })
 }
 
-export function useCreateSession() {
+export function useCreateSession(options: {
+  /** The caller renders AgentRuntimeErrors that have a preview, so skip their toast. */
+  agentRuntimeErrorsShownInline?: boolean
+} = {}) {
   const queryClient = useQueryClient()
   const { track } = useAnalyticsTracking()
 
   return useMutation({
+    meta: { agentRuntimeErrorsShownInline: options.agentRuntimeErrorsShownInline },
     mutationFn: async (data: {
       agentSlug: string
       message: string
@@ -100,9 +104,9 @@ export function useCreateSession() {
       model?: string
       // Provenance for sessions confirmed via a dashboard's dispatch dialog.
       dashboardDispatch?: SessionDashboardDispatch
-      // Analytics-only: distinguishes auto-started sessions (template onboarding)
-      // from user-typed ones. Not sent to the server.
-      origin?: 'user' | 'onboarding'
+      // Analytics-only: distinguishes auto-started sessions (template onboarding,
+      // todo dispatch) from user-typed ones. Not sent to the server.
+      origin?: 'user' | 'onboarding' | 'todo'
       // Analytics-only: the session was started from a voice entry point.
       inputMode?: 'voice'
     }) => {
@@ -118,19 +122,21 @@ export function useCreateSession() {
           ...(data.dashboardDispatch ? { dashboardDispatch: data.dashboardDispatch } : {}),
         }),
       })
-      if (!res.ok) throw new Error('Failed to create session')
+      if (!res.ok) throw await readAgentRuntimeError(res, 'Failed to create session')
       // initialMessageUuid is the server-assigned id of the initial message,
       // used to materialize the optimistic pending copy by exact id match.
-      return res.json() as Promise<ApiSession & { initialMessageUuid: string }>
+      return res.json() as Promise<ApiSession & { initialMessageUuid: string; credentialSource?: string }>
     },
     onSuccess: (created, variables) => {
       const origin = variables.origin ?? 'user'
-      // Onboarding auto-sends are neither typed nor spoken, so they stay unstamped.
+      // Onboarding and todo auto-sends are neither typed nor spoken, so they stay unstamped.
       const inputMode = variables.inputMode ?? (origin === 'user' ? 'text' : undefined)
       track('session_created', { origin, ...(inputMode ? { input_mode: inputMode } : {}) })
       // A voice-started session's first message is the entry marker, not something the person said.
       track('message_sent', {
         origin,
+        session_id: created.id,
+        credential_source: created.credentialSource ?? 'unknown',
         ...(inputMode ? { input_mode: inputMode === 'voice' ? 'voice_notice' : inputMode } : {}),
       })
       const resolvedSlug = resolveAgentSlugFromCache(queryClient, variables.agentSlug)
@@ -266,6 +272,7 @@ export function clearSessionUnreadInCache(
 ): boolean {
   return applySessionActivityStatus(queryClient, agentSlug, sessionId, {
     hasUnreadNotifications: false,
+    hasUnreadMention: false,
   })
 }
 

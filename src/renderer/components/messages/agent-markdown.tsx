@@ -1,11 +1,13 @@
 import { cn } from '@shared/lib/utils/cn'
 import { useCallback, useRef, memo, lazy, Suspense, type ReactNode } from 'react'
 import type { Components } from 'react-markdown'
-import type { ElementContent } from 'hast'
+import type { Element, ElementContent } from 'hast'
 import { Markdown, MarkdownLink, type MarkdownProps } from '@renderer/components/ui/markdown'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import type { EmbeddedImageAliases } from '@renderer/lib/parse-tool-result'
+import { MENTION_TAG, mentionOf } from '@renderer/lib/rehype-mentions'
 import { CodeCopyButton } from './code-copy-button'
+import { MentionChip } from './mention-chip'
 import { HtmlBlock } from './html-block'
 import { useBlockBreakout } from './use-block-breakout'
 
@@ -23,6 +25,12 @@ function CodeBlock({ children }: { children: ReactNode }) {
       {children}
     </pre>
   )
+}
+
+/** Source lines the drawer stamps for comments (rehype-comment-lines). Chat never stamps them. */
+function commentLines(node: Element | undefined): string | undefined {
+  const lines = node?.properties.dataCommentLines
+  return typeof lines === 'string' ? lines : undefined
 }
 
 function extractText(node: ReactNode): string {
@@ -51,7 +59,15 @@ function ExpandingTable({ children }: { children: ReactNode }) {
   )
 }
 
+/** A `@Name` that rehypeMentions lifted out of a sent message. */
+function MentionElement({ node, children }: { node?: Element; children?: ReactNode }) {
+  const lifted = mentionOf(node)
+  return lifted ? <MentionChip mention={lifted.mention} agentSlug={lifted.agentSlug} /> : <>{children}</>
+}
+
 const STREAMING_COMPONENTS: Components = {
+  // Element names react-markdown does not know are drawn by name too.
+  ...({ [MENTION_TAG]: MentionElement } as Components),
   // Style code blocks
   pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
   code: ({ children, className }) => {
@@ -74,16 +90,16 @@ const STREAMING_COMPONENTS: Components = {
   table: ({ children }) => <ExpandingTable>{children}</ExpandingTable>,
   // Cap individual cell width so prose-heavy cells wrap instead of stretching the
   // table to one giant line, while many short columns still drive the breakout.
-  th: ({ children }) => (
-    <th className={cn(
+  th: ({ children, node }) => (
+    <th data-comment-lines={commentLines(node)} className={cn(
       'border-b-2 px-3 py-1.5 text-left font-medium align-top',
       'border-border'
     )}>
       <div className="max-w-[32rem]">{children}</div>
     </th>
   ),
-  td: ({ children }) => (
-    <td className={cn(
+  td: ({ children, node }) => (
+    <td data-comment-lines={commentLines(node)} className={cn(
       'border-b px-3 py-1.5 align-top',
       'border-border'
     )}>
@@ -127,6 +143,13 @@ const RENDERED_FENCES = [
 // tail would re-render incomplete output on every delta, so it stays a code block.
 const settledPre = (htmlPreview: boolean): Components['pre'] =>
   function SettledPre({ children, node }) {
+  // A wrapper carries the lines: a scrolling pre would clip a comment pin on its corner.
+  const lines = commentLines(node)
+  const block = settledFence(htmlPreview, children, node)
+  return lines ? <div data-comment-lines={lines}>{block}</div> : block
+}
+
+function settledFence(htmlPreview: boolean, children: ReactNode, node: ElementContent | undefined): ReactNode {
   const codeBlock = <CodeBlock>{children}</CodeBlock>
   const html = htmlPreview ? fenceSource(node, ['language-html', 'language-htm']) : null
   if (html !== null) return <HtmlBlock source={html} fallback={codeBlock} />

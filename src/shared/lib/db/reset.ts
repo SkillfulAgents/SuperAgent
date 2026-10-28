@@ -4,6 +4,9 @@ import {
   proxyAuditLog,
   proxyTokens,
   agentConnectedAccounts,
+  agentBrowserAccounts,
+  browserAccountSessions,
+  browserAccounts,
   scheduledTasks,
   notifications,
   sessionUnreadMarks,
@@ -19,6 +22,8 @@ import {
   agentRemoteMcps,
   mcpAuditLog,
   mcpToolPolicies,
+  proxyRules,
+  proxyRuleVersions,
   agentAcl,
   agentVolumes,
   volumeDefinitions,
@@ -61,6 +66,10 @@ function factoryResetTables(): SQLiteTable[] { return [
   agentAcl,
   xAgentPolicies,
   webhookTriggers,
+  // Browser Vault grants point at agents; sessions and grants at accounts
+  agentBrowserAccounts,
+  browserAccountSessions,
+  browserAccounts,
   // attachments precede both their saved source and their agent
   agentVolumes,
   volumeDefinitions,
@@ -76,6 +85,9 @@ function factoryResetTables(): SQLiteTable[] { return [
   integrationDeliveries,
   chatIntegrations,
   llmConnections,
+  // proxy rules point at connected accounts or remote MCP servers
+  proxyRuleVersions,
+  proxyRules,
   // connected accounts + dependents (api scope policies + agent mappings cascade)
   agentConnectedAccounts,
   apiScopePolicies,

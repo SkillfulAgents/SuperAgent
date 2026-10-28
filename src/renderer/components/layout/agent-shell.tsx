@@ -1,6 +1,7 @@
 import { Outlet, useParams, useNavigate } from '@tanstack/react-router'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useUser } from '@renderer/context/user-context'
+import { getUserImage } from '@shared/lib/user-profile-schema'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { requestVoiceMode } from '@renderer/lib/voice-mode-handoff'
 import { useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
@@ -67,7 +68,7 @@ export function AgentShell() {
         const arr = [
           {
             ...seeded,
-            sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email } : seeded.sender,
+            sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email, image: getUserImage(user) } : seeded.sender,
           },
         ]
         pendingMessagesRef.current.set(sessionId, arr)
@@ -97,7 +98,7 @@ export function AgentShell() {
           text: content,
           sentAt: Date.now(),
           queued,
-          sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email } : undefined,
+          sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email, image: getUserImage(user) } : undefined,
         },
       ])
       forceUpdate((n) => n + 1)
@@ -145,7 +146,7 @@ export function AgentShell() {
   // stays mounted across that navigation, so the ghost is intact when the leaf
   // reads it via getPendingMessages.
   const onSessionCreated = useCallback(
-    (newSessionId: string, initialMessage: string, messageUuid: string, options?: { voiceMode?: boolean }) => {
+    (newSessionId: string, initialMessage: string, messageUuid: string, options?: { voiceMode?: boolean; replace?: boolean }) => {
       if (options?.voiceMode) {
         // A session started by voice opens with the voice-mode notice, which
         // draws as a boundary once fetched — no ghost bubble for it. The
@@ -158,7 +159,7 @@ export function AgentShell() {
             uuid: messageUuid,
             text: initialMessage,
             sentAt: Date.now(),
-            sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email } : undefined,
+            sender: isAuthMode && user ? { id: user.id, name: user.name, email: user.email, image: getUserImage(user) } : undefined,
           },
         ])
       }
@@ -166,6 +167,7 @@ export function AgentShell() {
         void navigate({
           to: '/agents/$slug/sessions/$sessionId',
           params: { slug, sessionId: newSessionId },
+          ...(options?.replace ? { replace: true } : {}),
         })
       }
     },
@@ -179,7 +181,7 @@ export function AgentShell() {
 
   // Holder #1 of the two-holder EventSource pattern: keeps the stream ref-counted
   // open across leaf changes (SessionChatColumn is holder #2).
-  const { contextUsage: streamContextUsage, isStreaming } = useMessageStream(activeSessionId, slug)
+  const { contextUsage: streamContextUsage, isStreaming } = useMessageStream(activeSessionId, slug, ['contextUsage', 'isStreaming'])
 
   const value: PendingMessagesContextValue = {
     getPendingMessages,

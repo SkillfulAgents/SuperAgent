@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { sqliteTable, text, integer, real, uniqueIndex, index, check, primaryKey } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, real, uniqueIndex, index, check, primaryKey, type AnySQLiteColumn } from 'drizzle-orm/sqlite-core'
 import { AGENT_INTEGRATION_PROVIDERS } from '@shared/lib/agent-integrations/provider-types'
 
 // =============================================================================
@@ -217,6 +217,67 @@ export const agentConnectedAccounts = sqliteTable(
   })
 )
 
+// Browser Vault - accounts the owner signs in to websites with, saved from the
+// sign-in form (request_login). An account is a site and a username; each
+// sign-in step can add parts. See src/shared/lib/browser-vault/.
+export const browserAccounts = sqliteTable('browser_accounts', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }), // Owner in auth mode, null in non-auth mode
+  site: text('site').notNull(), // Host of the frame holding the fields, without a leading www, e.g. 'github.com', 'acme.okta.com'
+  username: text('username').notNull(), // The identifier the site knows the account by, as entered
+  usernameKey: text('username_key').notNull(), // `username` trimmed and lowercased: what makes two saves one account
+  label: text('label'), // The owner's name for it; null shows the username
+  origin: text('origin').notNull(), // Where its password was last typed (else where it was first saved), e.g. 'https://acme.okta.com'
+  // The account it signs in with on another site ("Continue with Google"):
+  // this site's row points at the provider's.
+  viaAccountId: text('via_account_id').references((): AnySQLiteColumn => browserAccounts.id, { onDelete: 'set null' }),
+  secrets: text('secrets'), // Sealed JSON (vault-crypto, accountSecretsSchema); null until a secret part is saved
+  parts: text('parts').notNull().default('[]'), // JSON list of the part keys `secrets` holds ('password', 'text:…'), never values
+  revision: integer('revision').notNull().default(1), // Bumped on every write: the compare-and-set guard for `secrets`
+  // An agent said the site rejected what the vault filled: the user is asked
+  // until they enter its password again. Null while it signs in fine.
+  rejectedAt: integer('rejected_at', { mode: 'timestamp_ms' }),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  lastUsedAt: integer('last_used_at', { mode: 'timestamp_ms' }),
+}, (table) => ({
+  // coalesce: non-auth mode's NULL owner counts as one owner.
+  ownerSiteUsernameUnique: uniqueIndex('browser_accounts_owner_site_username_unique')
+    .on(sql`coalesce(user_id, '')`, table.site, table.usernameKey),
+  userSiteIdx: index('browser_accounts_user_site_idx').on(table.userId, table.site),
+  viaIdx: index('browser_accounts_via_idx').on(table.viaAccountId),
+}))
+
+// Browser Vault grants - which agents may sign in with an account.
+export const agentBrowserAccounts = sqliteTable('agent_browser_accounts', {
+  agentSlug: text('agent_slug').notNull().references(() => agents.slug, { onDelete: 'cascade' }),
+  accountId: text('account_id').notNull().references(() => browserAccounts.id, { onDelete: 'cascade' }),
+  grantedBy: text('granted_by').references(() => user.id, { onDelete: 'set null' }), // Who granted it (auth mode)
+  // Part 3: the version of the account's saved session this agent's browser holds.
+  appliedSessionVersion: integer('applied_session_version'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  lastUsedAt: integer('last_used_at', { mode: 'timestamp_ms' }),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.agentSlug, table.accountId] }),
+  accountIdx: index('agent_browser_accounts_account_idx').on(table.accountId),
+}))
+
+// Browser Vault saved sessions (part 3) - an account's cookies and web
+// storage, captured after a sign-in. They restore only into the browser type
+// they came from.
+export const browserAccountSessions = sqliteTable('browser_account_sessions', {
+  id: text('id').primaryKey(),
+  accountId: text('account_id').notNull().references(() => browserAccounts.id, { onDelete: 'cascade' }),
+  browserType: text('browser_type', { enum: ['container', 'chrome', 'browserbase', 'platform'] }).notNull(),
+  bundle: text('bundle').notNull(), // Sealed JSON (vault-crypto, sessionBundleSchema)
+  version: integer('version').notNull().default(1), // Bumped on every capture
+  capturedAt: integer('captured_at', { mode: 'timestamp_ms' }).notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  accountTypeUnique: uniqueIndex('browser_account_sessions_account_type_unique').on(table.accountId, table.browserType),
+}))
+
 // Scheduled tasks - tasks scheduled by agents for future execution
 export const scheduledTasks = sqliteTable('scheduled_tasks', {
   id: text('id').primaryKey(),
@@ -284,28 +345,34 @@ export const scheduledTasks = sqliteTable('scheduled_tasks', {
 // Notifications - user notifications for session events
 export const notifications = sqliteTable('notifications', {
   id: text('id').primaryKey(),
-  type: text('type', { enum: ['session_complete', 'session_waiting', 'session_scheduled', 'session_webhook', 'session_chat_integration'] }).notNull(),
+  type: text('type', { enum: ['session_complete', 'session_waiting', 'session_scheduled', 'session_webhook', 'session_chat_integration', 'session_mention'] }).notNull(),
   sessionId: text('session_id').notNull(),
   agentSlug: text('agent_slug').notNull(),
   title: text('title').notNull(),
   body: text('body').notNull(),
   isRead: integer('is_read', { mode: 'boolean' }).notNull().default(false),
-  // NOTE: notifications are intentionally agent/session-scoped, NOT per-user.
-  // Read state is shared across everyone with access to the agent (a teammate
+  // NOTE: most notifications are agent/session-scoped, NOT per-user. Read state
+  // is shared across everyone with access to the agent (a teammate
   // acknowledging a "session waiting"/"session complete" item clears it for the
-  // team). There is deliberately no per-user owner column here: cross-agent
-  // isolation is enforced by getAccessibleAgentSlugs() in the service layer and
-  // by HasNotificationAccess on the by-id routes. A previously-speculative
-  // `user_id` column was dropped (SUP-227, never wired up — always NULL). Do not
-  // re-add a per-user owner unless a *targeted* notification type lands (e.g. an
-  // @-mention or per-approver request), which needs a recipient + split read
-  // state, not a single shared isRead bit.
+  // team), and those rows leave `recipient_user_id` null. Cross-agent isolation
+  // is enforced by getAccessibleAgentSlugs() in the service layer and by
+  // HasNotificationAccess on the by-id routes.
+  //
+  // A targeted row (`session_mention`: one per person tagged in a message) names
+  // its recipient, so its read state is that person's alone and nobody else
+  // sees it. Every read applies `recipient_user_id IS NULL OR = me`. Plain text
+  // with no FK, like `session_unread_marks.user_id`.
+  recipientUserId: text('recipient_user_id'),
+  /** The transcript message a targeted row points at (the mention). */
+  messageUuid: text('message_uuid'),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   readAt: integer('read_at', { mode: 'timestamp_ms' }),
 }, (table) => ({
   agentSlugIsReadIdx: index('notifications_agent_slug_is_read_idx').on(table.agentSlug, table.isRead),
   sessionIdIdx: index('notifications_session_id_idx').on(table.sessionId),
   createdAtIdx: index('notifications_created_at_idx').on(table.createdAt),
+  // One mention row per person per message, so a retried insert is a no-op.
+  messageRecipientUnique: uniqueIndex('notifications_message_recipient_unique').on(table.messageUuid, table.recipientUserId),
 }))
 
 /**
@@ -435,8 +502,10 @@ export const proxyAuditLog = sqliteTable('proxy_audit_log', {
   statusCode: integer('status_code'),
   errorMessage: text('error_message'),
   durationMs: integer('duration_ms'),
-  policyDecision: text('policy_decision'), // allow, block, review, denied_by_user, review_timeout
+  policyDecision: text('policy_decision'), // allow, block, review, denied_by_user, review_timeout, allowed_by_rule
   matchedScopes: text('matched_scopes'), // JSON array string of matched scope names
+  ruleVersionId: text('rule_version_id'), // proxy rule version that allowed the request
+  ruleOutcomes: text('rule_outcomes'), // JSON RuleEvaluation[] for every rule that ran
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
   agentSlugCreatedAtIdx: index('proxy_audit_log_agent_slug_created_at_idx').on(table.agentSlug, table.createdAt),
@@ -498,8 +567,10 @@ export const mcpAuditLog = sqliteTable('mcp_audit_log', {
   statusCode: integer('status_code'),
   errorMessage: text('error_message'),
   durationMs: integer('duration_ms'),
-  policyDecision: text('policy_decision'), // allow, block, review, denied_by_user, review_timeout
+  policyDecision: text('policy_decision'), // allow, block, review, denied_by_user, review_timeout, allowed_by_rule
   matchedTool: text('matched_tool'), // tool name for tools/call requests
+  ruleVersionId: text('rule_version_id'), // proxy rule version that allowed the request
+  ruleOutcomes: text('rule_outcomes'), // JSON RuleEvaluation[] for every rule that ran
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
   agentSlugCreatedAtIdx: index('mcp_audit_log_agent_slug_created_at_idx').on(table.agentSlug, table.createdAt),
@@ -528,6 +599,11 @@ export const agents = sqliteTable('agents', {
   slug: text('slug').primaryKey(),
   name: text('name').notNull(),
   description: text('description'),
+  // Constant SQL defaults permit SQLite's non-null column upgrade without
+  // rebuilding this referenced table. The migration backfills random values;
+  // every runtime insert supplies a random pair through the agent catalog.
+  avatarColor: text('avatar_color').notNull().default('tonal-blue'),
+  avatarShape: text('avatar_shape').notNull().default('circle'),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   runtime: text('runtime').notNull().default('local'),
   workspaceHandle: text('workspace_handle'),
@@ -540,6 +616,8 @@ export const volumeDefinitions = sqliteTable('volume_definitions', {
   name: text('name').notNull(),
   type: text('type').notNull(),
   config: text('config').notNull(),
+  // Set on a public drive: every agent mounts it at this level, on top of its own drives.
+  globalAccess: text('global_access', { enum: ['read', 'write'] }),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 }, table => ({ ownerIdx: index('volume_definitions_owner_idx').on(table.userId) }))
@@ -551,6 +629,7 @@ export const agentVolumes = sqliteTable('agent_volumes', {
   agentSlug: text('agent_slug').notNull().references(() => agents.slug, { onDelete: 'cascade' }),
   volumeId: text('volume_id').notNull().references(() => volumeDefinitions.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
+  readOnly: integer('read_only', { mode: 'boolean' }).notNull().default(false),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
 }, table => ({
   pk: primaryKey({ columns: [table.agentSlug, table.id] }),
@@ -648,6 +727,49 @@ export const mcpToolPolicies = sqliteTable('mcp_tool_policies', {
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
   mcpToolUnique: uniqueIndex('mcp_tool_policies_unique').on(table.mcpId, table.toolName),
+}))
+
+// Proxy rules - JS predicates that can move a request the scope/tool policy
+// sends to review to allow. A rule targets one connected account (kind 'api')
+// or one remote MCP server (kind 'mcp'), optionally only one agent's calls.
+// Deleting a rule is soft so audit rows keep resolving its versions.
+export const proxyRules = sqliteTable('proxy_rules', {
+  id: text('id').primaryKey(),
+  kind: text('kind', { enum: ['api', 'mcp'] }).notNull(),
+  accountId: text('account_id').references(() => connectedAccounts.id, { onDelete: 'cascade' }),
+  mcpId: text('mcp_id').references(() => remoteMcpServers.id, { onDelete: 'cascade' }),
+  agentSlug: text('agent_slug'), // null = every agent mapped to the account/MCP
+  createdBy: text('created_by', { enum: ['user', 'agent'] }).notNull(),
+  createdByAgentSlug: text('created_by_agent_slug'),
+  currentVersionId: text('current_version_id').notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  deletedAt: integer('deleted_at', { mode: 'timestamp_ms' }),
+}, (table) => ({
+  accountIdx: index('proxy_rules_account_idx').on(table.accountId),
+  mcpIdx: index('proxy_rules_mcp_idx').on(table.mcpId),
+  targetCheck: check('proxy_rules_target_check', sql`(${table.kind} = 'api' and ${table.accountId} is not null and ${table.mcpId} is null) or (${table.kind} = 'mcp' and ${table.mcpId} is not null and ${table.accountId} is null)`),
+}))
+
+// Proxy rule versions - immutable; an edit writes a new version. Audit rows
+// point at the version that ran.
+export const proxyRuleVersions = sqliteTable('proxy_rule_versions', {
+  id: text('id').primaryKey(),
+  ruleId: text('rule_id').notNull()
+    .references(() => proxyRules.id, { onDelete: 'cascade' }),
+  version: integer('version').notNull(),
+  name: text('name').notNull(), // short label, written with the restatement
+  effect: text('effect', { enum: ['allow', 'require'] }).notNull(), // allow: can lift review; require: can force it
+  description: text('description').notNull(), // the request the rule was written from
+  restatement: text('restatement').notNull(), // what the code does, written from the code alone
+  patterns: text('patterns').notNull(), // JSON string[]: 'METHOD /path' (api) or tool-name globs (mcp)
+  code: text('code').notNull(),
+  tests: text('tests').notNull(), // JSON RuleTestCase[]
+  warnings: text('warnings').notNull(), // JSON string[]
+  toolSchemaHash: text('tool_schema_hash'), // mcp: hash of matched tools' input schemas at authoring time
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  ruleVersionUnique: uniqueIndex('proxy_rule_versions_unique').on(table.ruleId, table.version),
 }))
 
 // Webhook triggers - Composio trigger subscriptions and custom webhook
@@ -780,6 +902,41 @@ export const chatIntegrationSessions = sqliteTable('chat_integration_sessions', 
   integrationIdIdx: index('chat_integration_sessions_integration_id_idx').on(table.integrationId),
 }))
 
+// Meetings an agent was asked to attend (meeting integration family). The
+// session mapping stays in chat_integration_sessions (externalChatId = meeting
+// id); this row carries the bot lifecycle the participant page and UI follow.
+export const agentIntegrationMeetings = sqliteTable('agent_integration_meetings', {
+  id: text('id').primaryKey(),
+  integrationId: text('integration_id').notNull()
+    .references(() => chatIntegrations.id, { onDelete: 'cascade' }),
+  agentSlug: text('agent_slug').notNull(),
+  meetingUrl: text('meeting_url').notNull(),
+  platform: text('platform').notNull(),
+  botName: text('bot_name').notNull(),
+  // How the agent takes part: 'voice' | 'silent' | 'listen' (see meeting-integrations/schemas.ts).
+  mode: text('mode').notNull().default('voice'),
+  // Provider's bot handle; null until the host accepted the join.
+  botId: text('bot_id'),
+  status: text('status').notNull().default('requested'),
+  statusDetail: text('status_detail'),
+  sessionId: text('session_id'),
+  // The person's brief for this meeting, as given at join time.
+  context: text('context'),
+  // sha256 of the one-time participant page token; the token itself is only in the page URL.
+  participantTokenHash: text('participant_token_hash').notNull(),
+  createdByUserId: text('created_by_user_id'),
+  requestedAt: integer('requested_at', { mode: 'timestamp_ms' }).notNull(),
+  joinedAt: integer('joined_at', { mode: 'timestamp_ms' }),
+  endedAt: integer('ended_at', { mode: 'timestamp_ms' }),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => ({
+  integrationIdx: index('agent_integration_meetings_integration_idx').on(table.integrationId),
+  sessionIdx: index('agent_integration_meetings_session_idx').on(table.agentSlug, table.sessionId),
+  statusIdx: index('agent_integration_meetings_status_idx').on(table.status),
+}))
+export type AgentIntegrationMeeting = typeof agentIntegrationMeetings.$inferSelect
+export type NewAgentIntegrationMeeting = typeof agentIntegrationMeetings.$inferInsert
+
 // Slack participation is independent of session routing: multiple threads can
 // share one channel session. Keep the bounded, least-recently-used thread list
 // across connector recreation, scoped to the installation and bot identity.
@@ -878,6 +1035,8 @@ export const todos = sqliteTable('todos', {
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
   startedAt: integer('started_at', { mode: 'timestamp_ms' }),
   completedAt: integer('completed_at', { mode: 'timestamp_ms' }),
+  // Files held with the item. A JSON list, validated when read.
+  attachments: text('attachments').notNull().default('[]'),
 }, (table) => ({
   userIdx: index('todos_user_idx').on(table.userId),
   // Session and agent deletion find the rows that point at them.
@@ -892,6 +1051,10 @@ export type ConnectedAccount = typeof connectedAccounts.$inferSelect
 export type NewConnectedAccount = typeof connectedAccounts.$inferInsert
 export type AgentConnectedAccount = typeof agentConnectedAccounts.$inferSelect
 export type NewAgentConnectedAccount = typeof agentConnectedAccounts.$inferInsert
+export type BrowserAccount = typeof browserAccounts.$inferSelect
+export type NewBrowserAccount = typeof browserAccounts.$inferInsert
+export type AgentBrowserAccount = typeof agentBrowserAccounts.$inferSelect
+export type BrowserAccountSession = typeof browserAccountSessions.$inferSelect
 export type ScheduledTask = typeof scheduledTasks.$inferSelect
 export type NewScheduledTask = typeof scheduledTasks.$inferInsert
 export type Notification = typeof notifications.$inferSelect
@@ -925,6 +1088,10 @@ export type ApiScopePolicy = typeof apiScopePolicies.$inferSelect
 export type NewApiScopePolicy = typeof apiScopePolicies.$inferInsert
 export type McpToolPolicy = typeof mcpToolPolicies.$inferSelect
 export type NewMcpToolPolicy = typeof mcpToolPolicies.$inferInsert
+export type ProxyRule = typeof proxyRules.$inferSelect
+export type NewProxyRule = typeof proxyRules.$inferInsert
+export type ProxyRuleVersion = typeof proxyRuleVersions.$inferSelect
+export type NewProxyRuleVersion = typeof proxyRuleVersions.$inferInsert
 export type XAgentPolicy = typeof xAgentPolicies.$inferSelect
 export type NewXAgentPolicy = typeof xAgentPolicies.$inferInsert
 export type WebhookTrigger = typeof webhookTriggers.$inferSelect

@@ -1,0 +1,135 @@
+name: Agent Container Image
+
+# The agent container image (agent-container/) for linux/amd64 and linux/arm64.
+# Each architecture builds on a runner of its own, not under QEMU (a cold arm64
+# build there took ~12 min against ~2 min for amd64), and pushes its image by
+# digest; a last job joins the two under the tags. Two workflows call it:
+#   build-container.yml, for every push to main
+#   release.yml, for a release tag (the macOS builds bundle the image, so they
+#       wait for it)
+on:
+  workflow_call:
+    inputs:
+      tags:
+        description: 'docker/metadata-action tag rules'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # Lowercase: an image reference must be, and github.repository_owner is not.
+  IMAGE: ghcr.io/skillfulagents/superagent-agent-container-base
+
+jobs:
+  build:
+    name: build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The same rules as the merge job, so the image's labels match its tags.
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          tags: ${{ inputs.tags }}
+
+      - name: Build and push the image by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: ./agent-container
+          platforms: linux/${{ matrix.arch }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          # Registry-backed build cache, one per architecture (two jobs writing
+          # one ref would each drop the other's layers), shared by main and
+          # releases so a release reuses main's layers and keeps their digests:
+          # clients then pull only the changed top layers between versions.
+          # The GHA cache caps at 10GB per repo, which these layers exceed.
+          # `buildcache` is the cache from when one job built both
+          # architectures: it seeds the first per-architecture builds, so their
+          # layers keep the digests clients already have.
+          cache-from: |
+            type=registry,ref=${{ env.IMAGE }}:buildcache-${{ matrix.arch }}
+            type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache-${{ matrix.arch }},mode=max,image-manifest=true,oci-mediatypes=true
+
+      - name: Export the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+
+      - name: Upload the digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-image-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: agent-image-digest-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/digests
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          tags: ${{ inputs.tags }}
+
+      - name: Tag the multi-platform image
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          tags=()
+          while IFS= read -r tag; do tags+=(-t "$tag"); done < <(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          sources=()
+          for digest in *; do sources+=("$IMAGE@sha256:$digest"); done
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+
+      - name: Inspect the image
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: docker buildx imagetools inspect "$IMAGE:$VERSION"

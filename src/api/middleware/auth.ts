@@ -24,9 +24,46 @@ async function getAuthLazy() {
 // Re-export from shared types so existing consumers (webhook-triggers.ts etc.) keep working
 export { type AgentRole, ROLE_HIERARCHY, hasMinRole } from '@shared/lib/types/agent'
 import { type AgentRole, hasMinRole } from '@shared/lib/types/agent'
+import type { MeetingParticipantPrincipal } from '@shared/lib/meeting-integrations/participant-credential'
 
 const AUTHORIZED_AGENT_ROLE_CONTEXT_KEY = 'authorizedAgentRole'
 const REQUEST_SESSION_CONTEXT_KEY = 'requestSession'
+const MEETING_PARTICIPANT_CONTEXT_KEY = 'meetingParticipant'
+
+/**
+ * The meeting bot's page acting for the person who started the meeting (see
+ * meeting-integrations/participant-credential.ts). Set by Authenticated() when
+ * the request carries the participant cookie instead of a session, and only
+ * on the routes the page needs; the agent role middlewares then confine it to
+ * the meeting's agent and session, and the account-based middlewares refuse it.
+ */
+export function getMeetingParticipant(c: Context): MeetingParticipantPrincipal | null {
+  return (c.get(MEETING_PARTICIPANT_CONTEXT_KEY as never) as MeetingParticipantPrincipal | undefined) ?? null
+}
+
+/** Grants decided by the account rather than an agent role are never the participant's to use. */
+function refuseMeetingParticipant(c: Context): Response | undefined {
+  return getMeetingParticipant(c) ? c.json({ error: 'Forbidden' }, 403) : undefined
+}
+
+/**
+ * What a participant credential may touch: its own agent, its own session
+ * when the route names one, and never owner-level operations. The agent slug
+ * is the canonical id ResolveAgent() produced; the credential stores the same.
+ */
+export function meetingParticipantMayAccess(participant: MeetingParticipantPrincipal, agentSlug: string, sessionId: string | undefined, minRole: AgentRole): boolean {
+  if (participant.agentSlug !== agentSlug) return false
+  if (sessionId !== undefined && sessionId !== participant.sessionId) return false
+  return minRole !== 'owner'
+}
+
+function participantAgentGate(c: Context, minRole: AgentRole, next: Next): Promise<Response | void> | Response | undefined {
+  const participant = getMeetingParticipant(c)
+  if (!participant) return undefined
+  if (!meetingParticipantMayAccess(participant, resolvedAgentSlug(c), c.req.param('sessionId'), minRole)) return c.json({ error: 'Forbidden' }, 403)
+  setAuthorizedAgentRole(c, 'user')
+  return next()
+}
 
 /**
  * The shape of the Better Auth session row we consume. `deviceId` is a
@@ -76,7 +113,17 @@ export function Authenticated(): MiddlewareHandler {
 
     const auth = await getAuthLazy()
     const session = await auth.api.getSession({ headers: c.req.raw.headers })
-    if (!session) return c.json({ error: 'Unauthorized' }, 401, { 'WWW-Authenticate': SESSION_CHALLENGE })
+    if (!session) {
+      // A meeting bot's page has no account; its cookie stands for the person who
+      // started the meeting, on the routes the page needs and nowhere else.
+      const { authenticateMeetingParticipant, meetingParticipantMayRequest } = await import('@shared/lib/meeting-integrations/participant-credential')
+      const participant = await authenticateMeetingParticipant(c.req.header('cookie'))
+      if (!participant) return c.json({ error: 'Unauthorized' }, 401, { 'WWW-Authenticate': SESSION_CHALLENGE })
+      if (!meetingParticipantMayRequest(c.req.method, c.req.path)) return c.json({ error: 'Forbidden' }, 403)
+      c.set('user' as never, { id: participant.userId } as never)
+      c.set(MEETING_PARTICIPANT_CONTEXT_KEY as never, participant as never)
+      return runWithRequestUser(participant.userId, () => next())
+    }
 
     c.set('user' as never, session.user as never)
     c.set(REQUEST_SESSION_CONTEXT_KEY as never, session.session as never)
@@ -164,6 +211,8 @@ export function AgentRead(): MiddlewareHandler {
       setAuthorizedAgentRole(c, 'owner')
       return next()
     }
+    const scoped = participantAgentGate(c, 'viewer', next)
+    if (scoped !== undefined) return scoped
 
     const user = getUser(c)
     if (isAdmin(user)) {
@@ -190,6 +239,8 @@ export function AgentUser(): MiddlewareHandler {
       setAuthorizedAgentRole(c, 'owner')
       return next()
     }
+    const scoped = participantAgentGate(c, 'user', next)
+    if (scoped !== undefined) return scoped
 
     const user = getUser(c)
     if (isAdmin(user)) {
@@ -216,6 +267,8 @@ export function AgentAdmin(): MiddlewareHandler {
       setAuthorizedAgentRole(c, 'owner')
       return next()
     }
+    const scoped = participantAgentGate(c, 'owner', next)
+    if (scoped !== undefined) return scoped
 
     const user = getUser(c)
     if (isAdmin(user)) {
@@ -239,6 +292,8 @@ export function IsAdmin(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
     if (!isAuthMode()) return next()
 
+    const refused = refuseMeetingParticipant(c)
+    if (refused) return refused
     const user = getUser(c)
     if (!isAdmin(user)) {
       return c.json({ error: 'Forbidden' }, 403)
@@ -285,6 +340,8 @@ export function EntityAgentRole<T extends { agentSlug: string }>(opts: {
         return next()
       }
 
+      const refused = refuseMeetingParticipant(c)
+      if (refused) return refused
       const user = getUser(c)
       const role = await getUserAgentRole(user.id, entity.agentSlug)
       if (!role || !hasMinRole(role, minRole)) {
@@ -309,6 +366,8 @@ export function OwnsAccount(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
     if (!isAuthMode()) return next()
 
+    const refused = refuseMeetingParticipant(c)
+    if (refused) return refused
     const user = getUser(c)
     const accountId = c.req.param('id')!
     const row = await db
@@ -332,6 +391,8 @@ export function UsersMcpServer(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
     if (!isAuthMode()) return next()
 
+    const refused = refuseMeetingParticipant(c)
+    if (refused) return refused
     const user = getUser(c)
     const mcpId = c.req.param('id')!
     const row = await db
@@ -356,6 +417,8 @@ export function OwnsAccountByParam(param: string): MiddlewareHandler {
   return async (c: Context, next: Next) => {
     if (!isAuthMode()) return next()
 
+    const refused = refuseMeetingParticipant(c)
+    if (refused) return refused
     const user = getUser(c)
     if (isAdmin(user)) return next()
 
@@ -383,6 +446,8 @@ export function OwnsMcpByParam(param: string): MiddlewareHandler {
   return async (c: Context, next: Next) => {
     if (!isAuthMode()) return next()
 
+    const refused = refuseMeetingParticipant(c)
+    if (refused) return refused
     const user = getUser(c)
     if (isAdmin(user)) return next()
 
@@ -404,23 +469,28 @@ export function OwnsMcpByParam(param: string): MiddlewareHandler {
 /**
  * HasNotificationAccess — user has access to the notification's agent.
  * Admins can access any notification. Regular users need an agentAcl entry
- * for the notification's agentSlug. Expects `:id` route param.
+ * for the notification's agentSlug. A targeted row (a mention) is its
+ * recipient's alone, admins included. Expects `:id` route param.
  */
 export function HasNotificationAccess(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
     if (!isAuthMode()) return next()
 
+    const refused = refuseMeetingParticipant(c)
+    if (refused) return refused
     const user = getUser(c)
-    if (isAdmin(user)) return next()
 
     const notificationId = c.req.param('id')!
     const row = await db
-      .select({ agentSlug: notifications.agentSlug })
+      .select({ agentSlug: notifications.agentSlug, recipientUserId: notifications.recipientUserId })
       .from(notifications)
       .where(eq(notifications.id, notificationId))
       .limit(1)
 
-    if (!row[0]) return c.json({ error: 'Not found' }, 404)
+    if (!row[0] || (row[0].recipientUserId && row[0].recipientUserId !== user.id)) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+    if (isAdmin(user)) return next()
 
     const role = await getUserAgentRole(user.id, row[0].agentSlug)
     if (!role) return c.json({ error: 'Forbidden' }, 403)

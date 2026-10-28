@@ -57,7 +57,7 @@ export function ForkedFromIndicator({ agentSlug, sourceSessionId, sourceSessionN
         <button
           type="button"
           aria-label="Branched conversation"
-          className="ml-1.5 inline-flex items-center align-middle text-muted-foreground transition-colors hover:text-foreground app-no-drag"
+          className="ml-1.5 inline-flex h-5 items-center align-top text-muted-foreground transition-colors hover:text-foreground app-no-drag"
           onPointerEnter={onPointerEnter}
           onPointerLeave={onPointerLeave}
           onClick={(e) => {

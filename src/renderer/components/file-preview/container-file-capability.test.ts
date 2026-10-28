@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest'
  * the apt package(s) that provide the binary must appear in the Dockerfile.
  */
 const CONTAINER_CAPABILITY: Record<string, string[]> = {
+  archive: ['unzip'],
   audio: ['ffmpeg'],
   csv: [],
   html: [],

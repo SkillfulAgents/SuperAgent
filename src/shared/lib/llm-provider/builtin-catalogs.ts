@@ -99,7 +99,7 @@ export const CLAUDE_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption[]
   },
 ]
 
-/** Platform-specific default-model shortlist. The provider default is Grok. */
+/** Platform-specific default-model shortlist. The provider default is Sonnet. */
 export const PLATFORM_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption[] = [
   {
     model: 'opus',
@@ -107,6 +107,14 @@ export const PLATFORM_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption
     tag: 'Deep reasoning',
     description: 'Best for complex, multi-step tasks.',
     subdescription: 'A premium choice for the hardest agent work.',
+  },
+  {
+    model: 'sonnet',
+    label: 'Sonnet',
+    resolveLabelFromCatalog: true,
+    tag: 'Recommended',
+    description: 'Fast, capable, and efficient for everyday agent work.',
+    subdescription: 'The default model for Gamut Platform.',
   },
   {
     model: 'gpt-sol',
@@ -120,9 +128,9 @@ export const PLATFORM_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption
     model: 'grok',
     label: 'Grok',
     resolveLabelFromCatalog: true,
-    tag: 'Recommended',
-    description: 'Fast, capable, and efficient for everyday agent work.',
-    subdescription: 'The default model for Gamut Platform.',
+    tag: 'xAI flagship',
+    description: 'Fast and capable for everyday agent work.',
+    subdescription: 'An efficient alternative to Sonnet.',
   },
 ]
 
@@ -543,9 +551,8 @@ const MUSE_SPARK_MODELS: ModelDefinition[] = [
     id: 'muse-spark-1.3',
     pricing: pricingFor('muse-spark-1.3'),
     label: 'Muse Spark 1.3',
-    blurb: 'Meta flagship, served via Platform',
+    blurb: 'Meta, served via Platform',
     isLatest: true,
-    isDefault: true,
     supportedEfforts: ALL_EFFORTS,
   },
   // Labels carry the full family name so the picker's version chips strip to
@@ -564,6 +571,26 @@ const MUSE_SPARK_MODELS: ModelDefinition[] = [
     label: 'Muse Spark Contributor 1.3',
     blurb: 'Meta contributor tier, served via Platform',
     isLatest: true,
+  },
+]
+
+/**
+ * Meta's frontier tier, on the same api.meta.ai route and traits as Spark.
+ * Efforts and window are from Meta's model page (dev.meta.ai/models/muse-wonder);
+ * Meta has no contributor tier for it.
+ */
+const MUSE_WONDER_MODELS: ModelDefinition[] = [
+  {
+    ...MUSE_SPARK_SHARED,
+    family: 'muse-wonder',
+    id: 'muse-wonder-1.0',
+    pricing: pricingFor('muse-wonder-1.0'),
+    label: 'Muse Wonder 1.0',
+    blurb: 'Meta flagship, served via Platform',
+    isLatest: true,
+    isDefault: true,
+    supportedEfforts: ALL_EFFORTS,
+    contextWindow: 1_048_576,
   },
 ]
 
@@ -612,12 +639,26 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     label: 'GPT-5.6 Terra',
     blurb: 'OpenAI balanced tier, served via Platform',
     ...GPT_TERRA,
-    isLatest: true,
     supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
     pricing: pricingFor('gpt-5.6-terra'),
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.6-terra).
+    contextWindow: 1_050_000,
+    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
+    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
+  },
+  {
+    id: 'gpt-6.1-terra',
+    label: 'GPT-6.1 Terra',
+    blurb: 'OpenAI balanced tier, served via Platform',
+    ...GPT_TERRA,
+    isLatest: true,
+    supportedEfforts: ALL_EFFORTS,
+    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
+    ...PLATFORM_RESPONSES_WEB,
+    pricing: pricingFor('gpt-6.1-terra'),
+    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-6.1-terra).
     contextWindow: 1_050_000,
     longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,
@@ -728,6 +769,28 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     promptHints: GROK_BROWSER_TOOL_PROMPT_HINTS,
   },
   {
+    // Bare id matches the platform proxy's gemini-* → gemini route (Gemini API
+    // OpenAI-compatible chat). Measured against gemini-4-argon on 2026-10-14:
+    // efforts are low/medium/high only (xhigh/max 400, so the proxy caps them);
+    // no speed tier is offered; the proxy drops server tools, so search and
+    // fetch need a Settings → Web vendor; images and PDFs are read.
+    id: 'gemini-4-argon',
+    label: 'Gemini 4 Argon',
+    blurb: 'Google flagship, served via Platform',
+    family: 'gemini-argon',
+    isLatest: true,
+    isDefault: true,
+    icon: 'gemini',
+    supportedEfforts: STANDARD_EFFORTS,
+    supportsWebSearch: false,
+    supportsWebFetch: false,
+    supportsImageInput: true,
+    // Google intro rates through 2026-11-30 ($2 / $10, cache read 95% off).
+    pricing: pricingFor('gemini-4-argon'),
+    // Unified input + output limit (ai.google.dev/gemini-api/docs/models/gemini-4-argon).
+    contextWindow: 1_048_576,
+  },
+  {
     // Bare id matches the platform proxy's kimi-* → fireworks route.
     id: 'kimi-k3',
     label: 'Kimi K3',
@@ -750,6 +813,7 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     contextWindow: 1_048_576,
     supportsImageInput: true,
   },
+  ...MUSE_WONDER_MODELS,
   ...MUSE_SPARK_MODELS,
   {
     // Bare id matches the platform proxy's glm-5.3-flash → cloudflare route.
