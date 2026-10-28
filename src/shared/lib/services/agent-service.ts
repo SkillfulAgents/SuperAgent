@@ -410,6 +410,14 @@ export async function syncAgentIdentityFromWorkspace(slug: string): Promise<Arra
   })
 }
 
+/** A caller-chosen agent id that cannot be used: malformed, or already in use. */
+export class AgentIdError extends Error {
+  constructor(readonly code: 'invalid' | 'taken', message: string) {
+    super(message)
+    this.name = 'AgentIdError'
+  }
+}
+
 /**
  * Thrown by {@link deleteAgent} when the agent's container cannot be stopped.
  *
@@ -419,14 +427,6 @@ export async function syncAgentIdentityFromWorkspace(slug: string): Promise<Arra
  * agent is preserved and the operation is retryable. The DELETE route catches
  * this to surface an actionable message instead of a generic 500.
  */
-/** A caller-chosen agent id that cannot be used: malformed, or already in use. */
-export class AgentIdError extends Error {
-  constructor(readonly code: 'invalid' | 'taken', message: string) {
-    super(message)
-    this.name = 'AgentIdError'
-  }
-}
-
 export class AgentContainerStopError extends Error {
   readonly slug: string
   constructor(slug: string, cause: unknown) {
