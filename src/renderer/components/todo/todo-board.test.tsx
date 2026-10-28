@@ -168,6 +168,7 @@ describe('TodoBoard', () => {
     expect(screen.queryByTestId('todo-card-menu')).not.toBeInTheDocument()
 
     fireEvent.contextMenu(screen.getByText('Summarize the weekly sales numbers'))
+    expect(screen.queryByTestId('todo-action-reopen')).not.toBeInTheDocument()
     fireEvent.click(await screen.findByTestId('todo-rename-item'))
     const input = await screen.findByTestId('todo-rename-input')
     expect(input).toHaveValue('Summarize the weekly sales numbers')
@@ -261,6 +262,41 @@ describe('TodoBoard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show Done, 1 items' }))
     fireEvent.click(screen.getByTestId('todo-action-archive'))
     expect(state.setStatus).toHaveBeenCalledWith({ id: 'e', status: 'archived' })
+  })
+
+  it('reopens done work from its right-click menu or with R', async () => {
+    state.todos = [todo({ id: 'e', column: 'done' }), todo({ id: 'gone', column: 'done', sessionId: null })]
+    renderWithProviders(<TodoBoard />)
+    const show = screen.queryByRole('button', { name: /^Show Done/ })
+    if (show) fireEvent.click(show)
+    fireEvent.contextMenu(screen.getByText('Task e'))
+    fireEvent.click(await screen.findByTestId('todo-action-reopen'))
+    expect(state.setStatus).toHaveBeenCalledWith({ id: 'e', status: 'active' })
+
+    state.setStatus.mockReset()
+    fireEvent.mouseEnter(document.querySelector('[data-todo-id="e"]')!)
+    fireEvent.keyDown(window, { key: 'r' })
+    expect(state.setStatus).toHaveBeenCalledWith({ id: 'e', status: 'active' })
+
+    // Work whose session was deleted can't be reopened.
+    state.setStatus.mockReset()
+    fireEvent.mouseEnter(document.querySelector('[data-todo-id="gone"]')!)
+    fireEvent.keyDown(window, { key: 'r' })
+    fireEvent.contextMenu(screen.getByText('Task gone'))
+    await screen.findByTestId('todo-card-menu')
+    expect(screen.queryByTestId('todo-action-reopen')).not.toBeInTheDocument()
+    expect(state.setStatus).not.toHaveBeenCalled()
+  })
+
+  it('a key typed in a card menu does not run the board shortcut', async () => {
+    state.todos = [todo({ id: 'e', column: 'done' })]
+    renderWithProviders(<TodoBoard />)
+    const show = screen.queryByRole('button', { name: /^Show Done/ })
+    if (show) fireEvent.click(show)
+    fireEvent.mouseEnter(screen.getByTestId('todo-card'))
+    fireEvent.contextMenu(screen.getByText('Task e'))
+    fireEvent.keyDown(await screen.findByTestId('todo-card-menu'), { key: 'r' })
+    expect(state.setStatus).not.toHaveBeenCalled()
   })
 
   it('starts a draft that has an agent from its card', () => {
