@@ -1,7 +1,8 @@
 import { addRendererBreadcrumb } from '@renderer/lib/error-reporting'
+import { getPreferredMicrophoneDeviceId } from './microphone-device'
 import { float32ToInt16 } from './pcm'
 
-/** Where captured audio goes: an STT or voice-agent adapter. */
+/** Where captured audio goes: an STT adapter. */
 export interface AudioSink {
   sendAudio(chunk: ArrayBuffer): void
 }
@@ -108,19 +109,32 @@ async function createCaptureNode(audioContext: AudioContext, onChunk: (samples: 
  * (created at the provider's required rate) does the actual resampling.
  */
 export async function acquireMicStream(): Promise<MediaStream> {
-  return navigator.mediaDevices.getUserMedia({
-    audio: {
-      channelCount: 1,
-      echoCancellation: true,
-      noiseSuppression: true,
-    },
-  })
+  const preferredDeviceId = getPreferredMicrophoneDeviceId()
+  const audio: MediaTrackConstraints = {
+    channelCount: 1,
+    echoCancellation: true,
+    noiseSuppression: true,
+    ...(preferredDeviceId ? { deviceId: { exact: preferredDeviceId } } : {}),
+  }
+
+  try {
+    return await navigator.mediaDevices.getUserMedia({ audio })
+  } catch (error) {
+    const name = error instanceof Error ? error.name : ''
+    if (!preferredDeviceId || (name !== 'NotFoundError' && name !== 'OverconstrainedError')) throw error
+    return navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+      },
+    })
+  }
 }
 
 /**
- * Set up microphone capture and pipe 16-bit PCM chunks to `sink` (an STT or
- * voice-agent adapter), at the sink's sample rate (16 kHz unless it says
- * otherwise). Returns handles for the resources and a cleanup function. The
+ * Set up microphone capture and pipe 16-bit PCM chunks to `sink` (an STT
+ * adapter), at the sink's sample rate (16 kHz unless it says otherwise). Returns handles for the resources and a cleanup function. The
  * caller owns the passed-in stream (acquire via acquireMicStream) and is
  * responsible for releasing it if this rejects; on success the returned
  * cleanup() stops it.

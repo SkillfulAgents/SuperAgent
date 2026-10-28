@@ -1,11 +1,14 @@
 import { fetchWithIdleTimeout } from './streaming-fetch'
 import { VoiceProviderError } from './provider-error'
 import { OPENAI_TTS_VOICES } from './openai-voices'
+import { OPENAI_LIVE_VOICES, resolveOpenAILiveVoice } from './openai-live-voices'
+import type { TtsVoiceInfo } from './tts-preferences'
 import type { TtsSynthesisInput, TtsSynthesisProvider } from './tts-types'
 import { BaseVoiceProvider } from './voice-provider'
 import { getEffectiveModels, type VoiceProvider } from '../config/settings'
 import { getConfiguredLlmClient, createSummarizerText } from '../llm-provider/helpers'
 import { resolveActiveProviderModel } from '../llm-provider'
+import { background } from '../background'
 import { liveRequestSchema, type LiveAgentContext, type LiveConversationProvider, type LiveMappingInput, type LiveSessionAnswer, type VoiceHistory } from './live-types'
 import { buildLiveConversationPrompt, LIVE_REPLY_PROMPT, LIVE_REQUEST_PROMPT } from '../../prompts/voice-live'
 import { windowVoiceHistory } from './voice-history-window'
@@ -67,7 +70,7 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
         speed: input.speed, response_format: 'pcm' }),
     })
     if (!response.ok || !response.body) {
-      void response.body?.cancel().catch(() => {})
+      if (response.body) background(response.body.cancel().catch(() => {}), { name: 'openai-voice-provider.cancel-response-body' })
       throw new VoiceProviderError(this.failureMessage(response.status,
         `${this.name} speech synthesis failed (${response.status}). Please try again.`))
     }
@@ -82,12 +85,15 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
     return this
   }
 
+  getLiveVoices(): readonly TtsVoiceInfo[] { return OPENAI_LIVE_VOICES }
+  resolveLiveVoice(requested?: string | null): string { return resolveOpenAILiveVoice(requested ?? undefined) }
+
   /** The project key stays on the host; the renderer receives only an SDP answer. */
   async createLiveSession(sdp: string, history: VoiceHistory, agent?: LiveAgentContext): Promise<LiveSessionAnswer> {
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) throw new VoiceProviderError(this.messages().missingKey, 400)
     // Check the mapping dependency before creating a billable voice session.
-    getConfiguredLlmClient()
+    await getConfiguredLlmClient()
     const input = windowVoiceHistory(history).map((message) => ({
       role: message.role,
       content: [{ type: message.role === 'user' ? 'input_text' : 'text', text: message.content }],
@@ -101,7 +107,8 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
           model: 'gpt-live-1',
           instructions: buildLiveConversationPrompt(agent),
           delegation: { type: 'client' },
-          audio: { output: { voice: 'marin' } },
+          // The setting (a meeting) may ask for a voice; a person alone with the app gets the default.
+          audio: { output: { voice: this.resolveLiveVoice(agent?.setting?.voice) } },
           store: false,
           client: { data_channel: { allowed_client_events: [
             'session.commentary.append', 'session.thinking.append', 'session.instructions.append',
@@ -113,7 +120,7 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
       }),
     })
     if (!res.ok) {
-      void res.body?.cancel().catch(() => {})
+      if (res.body) background(res.body.cancel().catch(() => {}), { name: 'openai-voice-provider.cancel-response-body' })
       throw new Error(this.failureMessage(res.status,
         `${this.name} Live session failed (${res.status}). ${this.messages().liveSessionHint}`))
     }
@@ -125,7 +132,8 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
   async closeLiveSession(id: string, apiKey = this.getEffectiveApiKey()): Promise<void> {
     if (!apiKey) throw new Error(`Could not close ${this.name} Live session.`)
     const response = await fetch(`${this.apiBaseUrl()}/live/sessions/${encodeURIComponent(id)}/hangup`, {
-      method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(5000),
+      // OpenAI answers a hangup for an already-ended session with a 404 after ~6 s.
+      method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(15_000),
     })
     if (!response.ok && response.status !== 404) throw new Error(`Could not close ${this.name} Live session.`)
   }
@@ -134,7 +142,7 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
   async mapLiveConversation(input: LiveMappingInput, signal?: AbortSignal) {
     const deadline = AbortSignal.timeout(12_000)
     const bounded = input.kind === 'request' ? { ...input, history: windowVoiceHistory(input.history) } : input
-    const text = await createSummarizerText(getConfiguredLlmClient(), {
+    const text = await createSummarizerText(await getConfiguredLlmClient(), {
       model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
       system: input.kind === 'request' ? LIVE_REQUEST_PROMPT : LIVE_REPLY_PROMPT,
       messages: [{ role: 'user', content: JSON.stringify(bounded) }],
@@ -179,15 +187,23 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
   }
 
   async mintEphemeralToken(apiKey: string): Promise<string> {
-    return this.mintClientSecret(apiKey, { session: { type: 'transcription' } })
-  }
-
-  override supportsVoiceAgent(): boolean {
-    return true
-  }
-
-  override async mintVoiceAgentToken(apiKey: string): Promise<string> {
-    return this.mintClientSecret(apiKey, { session: { type: 'realtime' } })
+    const res = await fetch(`${this.apiBaseUrl()}/realtime/client_secrets`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ session: { type: 'transcription' } }),
+    })
+    if (!res.ok) {
+      if (res.body) background(res.body.cancel().catch(() => {}), { name: 'openai-voice-provider.cancel-response-body' })
+      throw new Error(this.failureMessage(res.status, `${this.name} API error (${res.status}). Please try again.`))
+    }
+    const data = await res.json()
+    if (!data.value || typeof data.value !== 'string') {
+      throw new Error(`${this.name} returned an unexpected response: missing client secret value`)
+    }
+    return data.value
   }
 
   override supportsTranscription(): boolean {
@@ -219,25 +235,5 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
     if (status === 401 || status === 403) return this.messages().authFailed
     if (status === 402 || status === 429) return this.messages().quotaExceeded
     return fallback
-  }
-
-  protected async mintClientSecret(apiKey: string, body: Record<string, unknown>): Promise<string> {
-    const res = await fetch(`${this.apiBaseUrl()}/realtime/client_secrets`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    })
-    if (!res.ok) {
-      void res.body?.cancel().catch(() => {})
-      throw new Error(this.failureMessage(res.status, `${this.name} API error (${res.status}). Please try again.`))
-    }
-    const data = await res.json()
-    if (!data.value || typeof data.value !== 'string') {
-      throw new Error(`${this.name} returned an unexpected response: missing client secret value`)
-    }
-    return data.value
   }
 }

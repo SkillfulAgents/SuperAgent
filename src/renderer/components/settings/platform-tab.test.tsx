@@ -1,10 +1,16 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+
+const openPlanUpgradeMock = vi.hoisted(() => vi.fn())
+vi.mock('@renderer/hooks/use-platform-plan', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/hooks/use-platform-plan')>()),
+  usePlatformPlanUpgrade: () => openPlanUpgradeMock,
+}))
 
 const useUserMock = vi.fn()
 const platformConnectMock = vi.fn()
-const billingInfoMock = vi.fn()
 
 vi.mock('@renderer/context/user-context', () => ({
   useUser: () => useUserMock(),
@@ -15,6 +21,7 @@ vi.mock('@renderer/hooks/use-platform-auth', () => ({
   useSavePlatformAccessKey: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
 }))
 
+const billingInfoMock = vi.fn(() => ({ data: undefined as unknown, isLoading: false, isFetching: false, error: null, refetch: vi.fn() }))
 vi.mock('@renderer/hooks/use-billing-info', () => ({
   useBillingInfo: () => billingInfoMock(),
 }))
@@ -47,46 +54,6 @@ function disconnected() {
     isLoadingPlatformAuth: false,
   }
 }
-
-function connectedAuth(role: string | null) {
-  return {
-    ...disconnected(),
-    isConnected: true,
-    platformAuth: {
-      connected: true,
-      email: 'a@example.com',
-      orgId: 'org_1',
-      orgName: 'Acme',
-      role,
-      updatedAt: null,
-      platformBaseUrl: 'https://platform.example.com',
-    },
-  }
-}
-
-const configuredBilling = {
-  billing: {
-    configured: true,
-    subscription: { status: 'active', paymentStatus: 'ok' },
-    seat: null,
-    orgPool: { poolBalanceCents: 0 },
-  },
-}
-
-const unconfiguredBilling = {
-  billing: { configured: false },
-}
-
-beforeEach(() => {
-  useUserMock.mockReturnValue(localUser)
-  billingInfoMock.mockReturnValue({
-    data: undefined,
-    isLoading: false,
-    isFetching: false,
-    error: null,
-    refetch: vi.fn(),
-  })
-})
 
 describe('PlatformTab profile section', () => {
   beforeEach(() => {
@@ -135,6 +102,66 @@ describe('PlatformTab profile section', () => {
   })
 })
 
+describe('PlatformTab billing card', () => {
+  const connected = () => ({
+    ...disconnected(),
+    isConnected: true,
+    platformAuth: { connected: true, platformControlled: false, orgName: 'Example workspace', orgId: 'org_1', platformBaseUrl: 'https://platform.example.com' },
+  })
+  const snapshot = (creditScope?: 'seat' | 'org') => ({
+    connected: true,
+    billing: {
+      configured: true,
+      subscription: { status: 'active', paymentStatus: 'current', currentPeriodEnd: '2026-10-27T16:00:00Z', creditScope: creditScope ?? 'seat' },
+      seat: { balanceCents: 15000, startingBalanceCents: 40000 },
+      orgPool: { poolBalanceCents: 500 },
+    },
+  })
+
+  beforeEach(() => {
+    useUserMock.mockReturnValue(localUser)
+    platformConnectMock.mockReturnValue(connected())
+  })
+
+  afterEach(() => {
+    billingInfoMock.mockReset()
+    billingInfoMock.mockReturnValue({ data: undefined, isLoading: false, isFetching: false, error: null, refetch: vi.fn() })
+  })
+
+  it('shows a per-seat org exactly as before', () => {
+    billingInfoMock.mockReturnValue({ data: snapshot('seat'), isLoading: false, isFetching: false, error: null, refetch: vi.fn() })
+    render(<PlatformTab />)
+    const row = screen.getByTestId('subscription-credits-row')
+    expect(row).toHaveAttribute('data-scope', 'seat')
+    expect(row).toHaveTextContent('Seat credits')
+    expect(row).toHaveTextContent('38% remaining')
+    expect(row).toHaveTextContent('$150.00 of $400.00')
+    expect(row).not.toHaveTextContent(/shared|resets/)
+    expect(screen.getByText('Shared pool used after your seat quota')).toBeInTheDocument()
+    expect(screen.queryByText(/Team plan/)).not.toBeInTheDocument()
+  })
+
+  it('calls a pooled org\'s bar the shared team plan credit and says when it resets', () => {
+    billingInfoMock.mockReturnValue({ data: snapshot('org'), isLoading: false, isFetching: false, error: null, refetch: vi.fn() })
+    render(<PlatformTab />)
+    const row = screen.getByTestId('subscription-credits-row')
+    expect(row).toHaveAttribute('data-scope', 'org')
+    expect(row).toHaveTextContent('Team plan credits')
+    expect(row).toHaveTextContent('38% remaining')
+    expect(row).toHaveTextContent(/\$150\.00 of \$400\.00 · shared by your whole organization, resets Oct 2[78]/)
+    expect(row).not.toHaveTextContent('Seat credits')
+    expect(screen.getByText('Shared pool used after your team plan credits')).toBeInTheDocument()
+  })
+
+  it('names the unsubscribed row by scope too', () => {
+    const data = snapshot('org')
+    billingInfoMock.mockReturnValue({ data: { ...data, billing: { ...data.billing, seat: null } }, isLoading: false, isFetching: false, error: null, refetch: vi.fn() })
+    render(<PlatformTab />)
+    expect(screen.getByText('Team plan credits')).toBeInTheDocument()
+    expect(screen.getByText('Not subscribed')).toBeInTheDocument()
+  })
+})
+
 describe('PlatformTab after connect', () => {
   it('shows the green Connected line and mounts the stale-agents notice beneath it', () => {
     useUserMock.mockReturnValue(localUser)
@@ -150,66 +177,143 @@ describe('PlatformTab after connect', () => {
   })
 })
 
-describe('PlatformTab billing role gate', () => {
+describe('PlatformTab plan (SUP-1143)', () => {
+  const connected = (role: string | null = 'owner') => ({
+    ...disconnected(),
+    isConnected: true,
+    platformAuth: { connected: true, platformControlled: false, orgName: 'Example workspace', orgId: 'org_1', role, platformBaseUrl: 'https://platform.example.com' },
+  })
+  // `excludedModels` is the server's wording; the tab shows it and never reads the denylist.
+  const snapshot = (extra: Record<string, unknown>, excludedModels: string | null = null) => ({
+    data: {
+      connected: true,
+      excludedModels,
+      billing: {
+        configured: true,
+        subscription: { status: 'active', paymentStatus: 'current', currentPeriodEnd: '2026-10-27T16:00:00Z', creditScope: 'seat' },
+        seat: { balanceCents: 15000, startingBalanceCents: 40000 },
+        orgPool: { poolBalanceCents: 500 },
+        plan: null,
+        pendingPlanChange: null,
+        ...extra,
+      },
+    },
+    isLoading: false, isFetching: false, error: null, refetch: vi.fn(),
+  })
+
   beforeEach(() => {
-    billingInfoMock.mockReturnValue({
-      data: configuredBilling,
-      isLoading: false,
-      isFetching: false,
-      error: null,
-      refetch: vi.fn(),
-    })
+    useUserMock.mockReturnValue(localUser)
+    platformConnectMock.mockReturnValue(connected())
+    openPlanUpgradeMock.mockReset()
   })
 
-  it('shows Manage billing for owners', () => {
-    platformConnectMock.mockReturnValue(connectedAuth('owner'))
-    render(<PlatformTab />)
-    expect(screen.getByRole('button', { name: /Manage/ })).toBeInTheDocument()
+  afterEach(() => {
+    billingInfoMock.mockReset()
+    billingInfoMock.mockReturnValue({ data: undefined, isLoading: false, isFetching: false, error: null, refetch: vi.fn() })
   })
 
-  it('shows Manage billing for admins', () => {
-    platformConnectMock.mockReturnValue(connectedAuth('admin'))
+  it('names a Pro 30 workspace\'s plan and the models it excludes, beside the workspace too', async () => {
+    billingInfoMock.mockReturnValue(snapshot({ plan: { id: 'pro-30', name: 'Pro 30', deniedModels: ['claude-fable-', 'gpt-6-astra'] } }, 'Claude Fable and GPT Astra'))
     render(<PlatformTab />)
-    expect(screen.getByRole('button', { name: /Manage/ })).toBeInTheDocument()
+    expect(screen.getByTestId('billing-plan-name')).toHaveTextContent('Pro 30')
+    expect(screen.getByTestId('billing-plan-excludes')).toHaveTextContent('Excludes Claude Fable and GPT Astra')
+    expect(screen.getByTestId('workspace-plan-badge')).toHaveTextContent('Pro 30')
+    await userEvent.setup().click(screen.getByTestId('billing-change-plan'))
+    expect(openPlanUpgradeMock).toHaveBeenCalledWith()
   })
 
-  it('shows Manage billing when the role is unknown (platform enforces access)', () => {
-    platformConnectMock.mockReturnValue(connectedAuth(null))
+  it('shows a scheduled downgrade with its date', () => {
+    billingInfoMock.mockReturnValue(snapshot({
+      plan: { id: 'pro-200', name: 'Pro 200', deniedModels: [] },
+      pendingPlanChange: { toPlan: { id: 'pro-30', name: 'Pro 30' }, effectiveAt: '2026-11-13T12:00:00Z' },
+    }))
     render(<PlatformTab />)
-    expect(screen.getByRole('button', { name: /Manage/ })).toBeInTheDocument()
+    expect(screen.getByTestId('billing-plan-name')).toHaveTextContent('Pro 200')
+    expect(screen.queryByTestId('billing-plan-excludes')).not.toBeInTheDocument()
+    expect(screen.getByTestId('billing-plan-pending')).toHaveTextContent(/^Switching to Pro 30 on Nov 13$/)
   })
 
-  it('hides Manage billing for members', () => {
-    platformConnectMock.mockReturnValue(connectedAuth('member'))
+  it('keeps the subscription state on the plan\'s name when it is not plainly active', () => {
+    billingInfoMock.mockReturnValue(snapshot({
+      subscription: { status: 'cancellation_scheduled', paymentStatus: 'current', currentPeriodEnd: null, creditScope: 'seat' },
+      plan: { id: 'pro-100', name: 'Pro 100', deniedModels: [] },
+    }))
     render(<PlatformTab />)
+    expect(screen.getByTestId('billing-plan-name')).toHaveTextContent('Pro 100 · Cancelling')
+  })
+
+  it('offers Change plan only to owners and admins', () => {
+    platformConnectMock.mockReturnValue(connected('member'))
+    billingInfoMock.mockReturnValue(snapshot({ plan: { id: 'pro-30', name: 'Pro 30', deniedModels: ['claude-fable-'] } }))
+    render(<PlatformTab />)
+    expect(screen.getByTestId('billing-plan-name')).toHaveTextContent('Pro 30')
+    expect(screen.queryByTestId('billing-change-plan')).not.toBeInTheDocument()
+  })
+
+  it('keeps the plain subscription row for an unsubscribed workspace', () => {
+    billingInfoMock.mockReturnValue(snapshot({ subscription: { status: 'none', paymentStatus: null, currentPeriodEnd: null, creditScope: 'seat' } }))
+    render(<PlatformTab />)
+    expect(screen.queryByTestId('billing-plan-name')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('workspace-plan-badge')).not.toBeInTheDocument()
+    expect(screen.getByText('Subscription')).toBeInTheDocument()
+  })
+})
+
+// The platform's billing tab is owner/admin only: a member sent to ?tab=billing lands on General.
+describe('PlatformTab billing links', () => {
+  const connected = (role: string | null) => ({
+    ...disconnected(),
+    isConnected: true,
+    platformAuth: { connected: true, platformControlled: false, orgName: 'Example workspace', orgId: 'org_1', role, platformBaseUrl: 'https://platform.example.com' },
+  })
+  const billing = (b: Record<string, unknown>) => ({ data: { connected: true, billing: b }, isLoading: false, isFetching: false, error: null, refetch: vi.fn() })
+  const configured = billing({
+    configured: true,
+    subscription: { status: 'active', paymentStatus: 'current', currentPeriodEnd: null, creditScope: 'seat' },
+    seat: null,
+    orgPool: { poolBalanceCents: 0 },
+  })
+  const unconfigured = billing({ configured: false })
+
+  beforeEach(() => {
+    useUserMock.mockReturnValue(localUser)
+  })
+
+  afterEach(() => {
+    billingInfoMock.mockReset()
+    billingInfoMock.mockReturnValue({ data: undefined, isLoading: false, isFetching: false, error: null, refetch: vi.fn() })
+  })
+
+  it.each(['owner', 'admin', null])('offers Manage billing to role %s', (role) => {
+    platformConnectMock.mockReturnValue(connected(role))
+    billingInfoMock.mockReturnValue(configured)
+    render(<PlatformTab />)
+    expect(screen.getByText('Manage billing on the web')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Manage' })).toBeEnabled()
+  })
+
+  it('hides Manage billing from members', () => {
+    platformConnectMock.mockReturnValue(connected('member'))
+    billingInfoMock.mockReturnValue(configured)
+    render(<PlatformTab />)
+    expect(screen.getByText('Subscription')).toBeInTheDocument()
     expect(screen.queryByText('Manage billing on the web')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Manage/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Manage' })).not.toBeInTheDocument()
   })
 
-  it('hides Set up for members when billing is unconfigured', () => {
-    billingInfoMock.mockReturnValue({
-      data: unconfiguredBilling,
-      isLoading: false,
-      isFetching: false,
-      error: null,
-      refetch: vi.fn(),
-    })
-    platformConnectMock.mockReturnValue(connectedAuth('member'))
+  it('offers Set up to an owner of an org without billing', () => {
+    platformConnectMock.mockReturnValue(connected('owner'))
+    billingInfoMock.mockReturnValue(unconfigured)
+    render(<PlatformTab />)
+    expect(screen.getByRole('button', { name: 'Set up' })).toBeEnabled()
+    expect(screen.queryByTestId('billing-ask-admin')).not.toBeInTheDocument()
+  })
+
+  it('points a member of an org without billing to an owner or admin instead of Set up', () => {
+    platformConnectMock.mockReturnValue(connected('member'))
+    billingInfoMock.mockReturnValue(unconfigured)
     render(<PlatformTab />)
     expect(screen.queryByRole('button', { name: 'Set up' })).not.toBeInTheDocument()
-    expect(screen.getByText('Managed by workspace admins')).toBeInTheDocument()
-  })
-
-  it('shows Set up for owners when billing is unconfigured', () => {
-    billingInfoMock.mockReturnValue({
-      data: unconfiguredBilling,
-      isLoading: false,
-      isFetching: false,
-      error: null,
-      refetch: vi.fn(),
-    })
-    platformConnectMock.mockReturnValue(connectedAuth('owner'))
-    render(<PlatformTab />)
-    expect(screen.getByRole('button', { name: 'Set up' })).toBeInTheDocument()
+    expect(screen.getByTestId('billing-ask-admin')).toHaveTextContent('Ask a workspace owner or admin')
   })
 })

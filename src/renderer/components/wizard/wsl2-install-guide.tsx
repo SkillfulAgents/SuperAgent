@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { Button } from '@renderer/components/ui/button'
-import { RequestError } from '@renderer/components/messages/request-error'
+import { RequestError } from '@shared/lib/tools/requests/request-error'
 import { RefreshCw, MoveRight } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
+import { canUseHostFeatures } from '@renderer/lib/capabilities'
 
 interface Wsl2InstallGuideProps {
   onRefresh: () => void
@@ -11,7 +12,12 @@ interface Wsl2InstallGuideProps {
 
 const WSL_INSTALL_COMMAND = 'wsl --install'
 
+/** Shown when the computer that runs the API is Windows without WSL2, which may not be this one. */
 export function Wsl2InstallGuide({ onRefresh, isRefreshing }: Wsl2InstallGuideProps) {
+  // The PowerShell button opens PowerShell on this computer, so it is offered
+  // only when this is the computer that needs WSL2. A browser, or a desktop app
+  // driving another machine, gets the steps to run there by hand.
+  const onThisComputer = canUseHostFeatures()
   const [copied, setCopied] = useState(false)
   const [launchError, setLaunchError] = useState<string | null>(null)
 
@@ -47,31 +53,39 @@ export function Wsl2InstallGuide({ onRefresh, isRefreshing }: Wsl2InstallGuidePr
     <div className="space-y-3">
       <hr className="border-border" />
       <p className="text-sm text-foreground/70">
-        WSL2 required. Follow these steps to set up.
+        {onThisComputer
+          ? 'WSL2 required. Follow these steps to set up.'
+          : 'WSL2 required on the computer that runs Gamut. Follow these steps on that computer.'}
       </p>
 
       <ol className="list-decimal list-inside space-y-2 text-sm text-muted-foreground">
-        <li>
-          Click this <MoveRight className="h-3 w-3 inline -mt-0.5" />{' '}
-          <TooltipProvider delayDuration={0}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-6 text-xs"
-                  onClick={handleLaunchInstall}
-                >
-                  Open PowerShell
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>Opens PowerShell in admin mode</p>
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-        </li>
-        <li>If prompted by Windows Security, click Yes to allow.</li>
+        {onThisComputer ? (
+          <>
+            <li>
+              Click this <MoveRight className="h-3 w-3 inline -mt-0.5" />{' '}
+              <TooltipProvider delayDuration={0}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-6 text-xs"
+                      onClick={handleLaunchInstall}
+                    >
+                      Open PowerShell
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>Opens PowerShell in admin mode</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            </li>
+            <li>If prompted by Windows Security, click Yes to allow.</li>
+          </>
+        ) : (
+          <li>Open PowerShell as administrator.</li>
+        )}
         <li>
           Paste this <MoveRight className="h-3 w-3 inline -mt-0.5" />{' '}
           <TooltipProvider delayDuration={0}>
@@ -92,7 +106,11 @@ export function Wsl2InstallGuide({ onRefresh, isRefreshing }: Wsl2InstallGuidePr
           </TooltipProvider>
           {' '}into PowerShell. Then press Enter.
         </li>
-        <li>Restart your computer, then reopen Gamut.</li>
+        <li>
+          {onThisComputer
+            ? 'Restart your computer, then reopen Gamut.'
+            : 'Restart that computer, then start Gamut on it again.'}
+        </li>
       </ol>
 
       <RequestError message={launchError ?? null} />

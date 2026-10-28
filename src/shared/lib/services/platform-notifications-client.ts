@@ -2,8 +2,8 @@
  * Platform Notifications Client
  *
  * Calls the platform proxy's /v1/notifications endpoints: live inbox reads,
- * Realtime credential minting, and mark-read write-through. Modeled on
- * webhook-events-client; responses are Zod-parsed at this boundary.
+ * Realtime credential minting, and mark-read write-through. Responses are
+ * Zod-parsed at this boundary.
  */
 
 import { decodeOrgIdFromToken } from '@shared/lib/platform-attribution'
@@ -15,7 +15,7 @@ import {
   platformNotificationsListSchema,
   type PlatformNotificationsList,
 } from '@shared/lib/services/platform-notifications-schema'
-import type { RealtimeConfig } from '@shared/lib/services/webhook-events-client'
+import type { RealtimeConfig } from '@shared/lib/services/supabase-realtime-client'
 
 // Org JWTs encode the acting member as `<token>::<memberId>`; opaque keys ignore it.
 function buildBearer(memberId: string): string {

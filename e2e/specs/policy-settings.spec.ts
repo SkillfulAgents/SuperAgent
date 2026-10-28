@@ -93,7 +93,7 @@ test.describe('Policy Settings', () => {
 
     // The scope policy editor renders inline in the Permissions column.
     await expect(page.getByRole('heading', { name: account.name })).toBeVisible()
-    await expect(page.getByText('Permissions')).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Permissions', exact: true })).toBeVisible()
     await expect(page.locator('[data-testid="scope-group-write"]')).toBeVisible({ timeout: 5000 })
     await expect(page.locator('[data-testid="scope-policy-save"]')).toBeVisible()
   })

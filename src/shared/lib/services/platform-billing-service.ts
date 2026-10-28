@@ -13,9 +13,10 @@ import { PlatformBillingInfoSchema, type ParsedPlatformBillingInfo } from '@shar
  * Throws {@link PlatformRequestError} on failure (401/403 = unavailable for this
  * account; 5xx = transient).
  */
-export async function fetchPlatformBillingInfo(): Promise<ParsedPlatformBillingInfo> {
+export async function fetchPlatformBillingInfo(options: { signal?: AbortSignal; reportErrors?: boolean } = {}): Promise<ParsedPlatformBillingInfo> {
   return fetchPlatformJson({
     path: '/v1/billing',
+    ...options,
     token: getPlatformAccessToken(),
     schema: PlatformBillingInfoSchema,
     area: 'platform-billing',

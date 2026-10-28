@@ -17,10 +17,14 @@ import {
   markSessionNotificationsRead,
   deleteNotification,
   getAccessibleAgentSlugs,
+  getUnreadMentionCount,
 } from '@shared/lib/services/notification-service'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { globalFeed, type GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
+import { background } from '@shared/lib/background'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { Authenticated, HasNotificationAccess } from '../middleware/auth'
+import { waitForClientGone } from '../lib/wait-for-client-gone'
+import { createAgentAccessGate, type AgentAccessGate } from '../lib/agent-access-gate'
 
 const notificationsRouter = new Hono()
 
@@ -42,39 +46,53 @@ function getScopedUserId(c: { get: (key: never) => unknown }): string | undefine
 
 // GET /api/notifications/stream - SSE stream for global notifications (used by Electron main process)
 notificationsRouter.get('/stream', async (c) => {
+  const clientSignal = c.req.raw.signal
   const user = isAuthMode()
     ? (c.get('user' as never) as { id: string; role?: string } | undefined)
     : undefined
 
   return streamSSE(c, async (stream) => {
+    // The client left during the middleware: nothing to set up for it.
+    if (clientSignal.aborted) return
+    const clientGone = waitForClientGone(clientSignal, stream)
     let pingInterval: ReturnType<typeof setInterval> | null = null
     let unsubscribe: (() => void) | null = null
     let unsubscribeCollaboration: (() => void) | undefined
+    let gate: AgentAccessGate | null = null
+
+    const write = (event: GlobalFeedEvent): void => {
+      background(stream.writeSSE({ data: JSON.stringify(event), event: 'message' }).catch((error) => {
+        console.error('Error sending global notification SSE:', error)
+      }), { name: 'notifications-route.write-event' })
+    }
 
     try {
-      // Subscribe to global notifications
-      unsubscribe = messagePersister.addGlobalNotificationClient(async (data) => {
-        try {
-          // In auth mode, filter events by agent access (admins included)
-          if (isAuthMode() && user) {
-            const agentSlug = (data as Record<string, unknown>)?.agentSlug as string | undefined
-            if (agentSlug) {
-              const accessible = await getAccessibleAgentSlugs(user.id)
-              if (!accessible.includes(agentSlug)) return
-            }
-          }
-
-          await stream.writeSSE({
-            data: JSON.stringify(data),
-            event: 'message',
-          })
-        } catch (error) {
-          console.error('Error sending global notification SSE:', error)
-        }
+      // In auth mode the stream carries only the agents the user can access
+      // (admins included). Without a user there is nothing to scope by.
+      if (isAuthMode() && user) {
+        gate = createAgentAccessGate({
+          load: () => getAccessibleAgentSlugs(user.id),
+          deliver: write,
+          onLoadError: (error) => {
+            // Without the list nothing about an agent can be judged; the
+            // client reconnects and the next stream loads it again.
+            console.error('Failed to load accessible agents for the notifications stream:', error)
+            stream.abort()
+          },
+        })
+      }
+      const scoped = gate
+      unsubscribe = globalFeed.subscribe((event) => {
+        // A targeted frame (a mention) goes to its recipient alone.
+        if (user && event.recipientUserId !== undefined && event.recipientUserId !== user.id) return
+        if (scoped) scoped.push(event)
+        else write(event)
       })
 
       if (user) {
         unsubscribeCollaboration = subscribeCollaborationEvents(user.id, async (data) => {
+          // A membership change can grant or revoke this user's access.
+          scoped?.refresh()
           await stream.writeSSE({ data: JSON.stringify(data), event: 'message' })
         })
       }
@@ -86,7 +104,7 @@ notificationsRouter.get('/stream', async (c) => {
       })
 
       // Keep-alive ping every 30 seconds
-      pingInterval = setInterval(async () => {
+      pingInterval = setInterval(() => background(async () => {
         try {
           await stream.writeSSE({
             data: JSON.stringify({ type: 'ping' }),
@@ -95,22 +113,14 @@ notificationsRouter.get('/stream', async (c) => {
         } catch {
           if (pingInterval) clearInterval(pingInterval)
         }
-      }, 30000)
+      }, { name: 'notifications-route.write-ping' }), 30000)
 
-      // Wait for abort signal. onAbort only registers a listener — it does
-      // not replay an abort that already happened (abort() sets `aborted`
-      // before notifying), so check the flag after registering to cover a
-      // client that vanished during the setup writes above.
-      await new Promise<void>((resolve) => {
-        stream.onAbort(() => {
-          resolve()
-        })
-        if (stream.aborted) resolve()
-      })
+      await clientGone
     } finally {
       if (pingInterval) clearInterval(pingInterval)
       if (unsubscribe) unsubscribe()
       unsubscribeCollaboration?.()
+      gate?.dispose()
     }
   })
 })
@@ -139,8 +149,12 @@ notificationsRouter.get('/', async (c) => {
 notificationsRouter.get('/unread-count', async (c) => {
   try {
     const userId = getScopedUserId(c)
-    const count = await getUnreadCount(userId)
-    return c.json({ count })
+    const [count, mentions] = await Promise.all([
+      getUnreadCount(userId),
+      // Mentions exist in auth mode only, for a signed-in recipient.
+      userId ? getUnreadMentionCount(userId) : 0,
+    ])
+    return c.json({ count, mentions })
   } catch (error) {
     console.error('Failed to fetch unread count:', error)
     return c.json({ error: 'Failed to fetch unread count' }, 500)

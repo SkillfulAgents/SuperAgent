@@ -33,6 +33,8 @@ const slashCommandInfoSchema = z
   })
   .loose()
 
+export const slashCommandListSchema = z.array(slashCommandInfoSchema)
+
 export const sessionMetadataSchema = z
   .object({
     name: z.string().optional(),
@@ -58,6 +60,8 @@ export const sessionMetadataSchema = z
     // of use (see normalizeAutomationStatus in activity-aggregation).
     automationStatus: z.string().optional(),
     webhookInvocationCount: z.number().optional(),
+    isAgentIntegrationSession: z.boolean().optional(),
+    agentIntegrationId: z.string().optional(),
     isChatIntegrationSession: z.boolean().optional(),
     chatIntegrationId: z.string().optional(),
     promotedToInteractive: z.boolean().optional(),
@@ -70,6 +74,8 @@ export const sessionMetadataSchema = z
     effort: z.string().optional(),
     speed: z.string().optional(),
     model: z.string().optional(),
+    llmProviderId: z.string().nullish(),
+    errorProviders: z.record(z.string(), z.string()).optional(),
     invokedByAgentSlug: z.string().optional(),
     // Widget repair session: automated, and the slug is the dedupe key that
     // stops a permanently broken widget opening one session per refresh.

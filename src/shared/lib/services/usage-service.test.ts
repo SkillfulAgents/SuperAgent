@@ -263,6 +263,32 @@ describe('usage-service', () => {
       }
     })
 
+    it("does not bill a fork subagent's copy of the parent's launching response", async () => {
+      // A fork transcript (CLI 2.1.302+) opens with a copy of the parent's
+      // assistant entry that launched it: same requestId and message id, a
+      // partial usage snapshot, isSidechain. Real capture: sdk303-fork-subagent.
+      const fixture = path.resolve(__dirname, '../container/__fixtures__/sdk303-fork-subagent')
+      const forkName = (await fsPromises.readdir(path.join(fixture, 'fs-snapshot'))).find((n) => n.endsWith('.jsonl'))!
+      const forkLines = (await fsPromises.readFile(path.join(fixture, 'fs-snapshot', forkName), 'utf8')).trim().split('\n')
+      const launchCopy = forkLines.findIndex((line) => JSON.parse(line).type === 'assistant')
+      const totalsWith = async (fork: string[]) => {
+        const dir = mkdtempSync(path.join(tmpdir(), 'usage-fork-'))
+        try {
+          await fsPromises.copyFile(path.join(fixture, 'lead-transcript.jsonl'), path.join(dir, 'session.jsonl'))
+          mkdirSync(path.join(dir, 'session', 'subagents'), { recursive: true })
+          writeFileSync(path.join(dir, 'session', 'subagents', forkName), fork.join('\n') + '\n')
+          return await loadSessionUsageTotals({ ...sessionOptions(path.join(dir, 'session.jsonl')) })
+        } finally {
+          rmSync(dir, { recursive: true, force: true })
+        }
+      }
+
+      const withCopy = await totalsWith(forkLines)
+      const withoutCopy = await totalsWith(forkLines.filter((_, i) => i !== launchCopy))
+      expect(withCopy).toEqual(withoutCopy)
+      expect(withCopy.totalTokens).toBeGreaterThan(0)
+    })
+
     it('deduplicates snapshots when requestId presence differs', async () => {
       const dir = mkdtempSync(path.join(tmpdir(), 'usage-mixed-request-id-'))
       const transcript = path.join(dir, 'mixed-request-id.jsonl')
@@ -788,6 +814,14 @@ describe('usage-service', () => {
       )
     })
 
+    it('bills the whole claude-haiku-5-5 request at 5x once the prompt passes 100K', () => {
+      // 50K fresh + 60K cache writes = 110K prompt → over 100K.
+      expect(calculateCost('claude-haiku-5-5', 50_000, 1_000, 60_000, 0)).toBeCloseTo(
+        (50_000 * 0.5 + 1_000 * 2.5 + 60_000 * 0.625) / 1_000_000,
+        9,
+      )
+    })
+
     it('Claude models have no cliff — large prompts stay linear', () => {
       expect(calculateCost('claude-opus-4-6', 500_000, 10_000, 0, 0)).toBeCloseTo(
         (500_000 * 5 + 10_000 * 25) / 1_000_000,
@@ -895,8 +929,10 @@ describe('usage-service', () => {
     it.each([
       // Anthropic API canonical ids and pre-4.6 convenience aliases.
       ['claude-sonnet-5', 2, 10],
+      ['claude-sonnet-5-5', 2, 10],
       ['claude-haiku-4-5-20251001', 1, 5],
       ['claude-haiku-4-5', 1, 5],
+      ['claude-haiku-5-5', 0.1, 0.5],
       // Provider-translated runtime ids observed in sanitized transcripts.
       ['anthropic/claude-sonnet-5-20260630', 2, 10],
       ['anthropic/claude-4.6-sonnet-20260217', 3, 15],
@@ -911,6 +947,13 @@ describe('usage-service', () => {
       // OpenAI canonical ids, official snapshots, proxy snapshots, and aliases.
       ['gpt-5.5', 5, 30],
       ['gpt-5.6-sol', 5, 30],
+      ['gpt-6-sol', 2, 10],
+      ['gpt-6.1-sol', 2, 10],
+      ['gpt-6.1-terra', 1, 5],
+      ['gpt-6-luna', 0.1, 0.5],
+      ['openai/gpt-6-sol', 2, 10],
+      ['openai/gpt-6.1-sol', 2, 10],
+      ['openai/gpt-6.1-terra', 1, 5],
       ['openai/gpt-5.5-20260423', 5, 30],
       ['gpt-5.5-2026-04-23', 5, 30],
       ['openai/gpt-5.5-2026-04-23', 5, 30],
@@ -1220,6 +1263,16 @@ describe('usage-service', () => {
       expect(await costOf('grok-4.7', { speed: 'fast' })).toBeCloseTo(grokBase * 2, 9)
     })
 
+    it('bills claude-opus-5-5 at its cut 4/20 card, doubled in fast mode', async () => {
+      const opus55Base = (100_000 * 4 + 1_000 * 20) / 1_000_000
+      expect(await costOf('claude-opus-5-5', {})).toBeCloseTo(opus55Base, 9)
+      expect(await costOf('claude-opus-5-5', { speed: 'fast' })).toBeCloseTo(opus55Base * 2, 9)
+      expect(calculateCost('claude-opus-5-5', 0, 0, 100_000, 100_000)).toBeCloseTo(
+        (100_000 * 5 + 100_000 * 0.2) / 1_000_000,
+        9,
+      )
+    })
+
     it('bills kimi-k3 on the Fireworks fast router at 1.5x', async () => {
       const kimiBase = (100_000 * 3 + 1_000 * 15) / 1_000_000
       expect(await costOf('kimi-k3', {})).toBeCloseTo(kimiBase, 9)
@@ -1235,7 +1288,7 @@ describe('usage-service', () => {
     })
 
     it('bills platform DeepSeek V4.1 Flash at Fireworks list rates with no speed tier', async () => {
-      const deepseekBase = (100_000 * 0.22 + 1_000 * 0.66) / 1_000_000
+      const deepseekBase = (100_000 * 0.3 + 1_000 * 1.2) / 1_000_000
       expect(await costOf('deepseek-v4.1-flash', {})).toBeCloseTo(deepseekBase, 9)
       expect(await costOf('deepseek-v4.1-flash', { speed: 'fast' })).toBeCloseTo(
         deepseekBase,

@@ -5,8 +5,13 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import { readBootstrapEnv } from '@shared/lib/container/agent-bootstrap-env-store'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { agentRegistry } from '@shared/lib/agent-actor'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { widgetSnapshotReadyEventSchema } from '@shared/lib/widgets/widget-schema'
+import { captureException } from '@shared/lib/error-reporting'
+import { getSettings } from '@shared/lib/config/settings'
+import { syncAgentIdentityFromWorkspace } from '@shared/lib/services/agent-service'
+import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 
 const agentBootstrap = new Hono()
 const DASHBOARD_SLUG_REGEX = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
@@ -17,6 +22,19 @@ const DashboardStatusChangedSchema = z.object({
   dashboardSlug: z.string().regex(DASHBOARD_SLUG_REGEX),
   // Terminal startup transitions only — intermediate states stay poll-only.
   status: z.enum(['running', 'crashed']),
+})
+// Capped: any container holding a valid token controls this body.
+const UndeliveredTurnSchema = z.object({
+  sessionId: z.string().min(1).max(200),
+  resultSubtype: z.string().max(64).optional(),
+  closeCode: z.number().int(),
+  closeReason: z.string().max(500),
+  msSinceClose: z.number().int().nonnegative(),
+  // Optional: the agent image can be older than the app.
+  closedAt: z.string().max(64).optional(),
+  socketAgeMs: z.number().int().nonnegative().optional(),
+  idleMsBeforeClose: z.number().int().nonnegative().optional(),
+  socketError: z.string().max(200).optional(),
 })
 
 agentBootstrap.get('/:agentSlug/env', async (c) => {
@@ -54,7 +72,7 @@ agentBootstrap.post('/:agentSlug/events/dashboard-screenshot-ready', async (c) =
   const parsed = DashboardScreenshotReadySchema.safeParse(await c.req.json().catch(() => null))
   if (!parsed.success) return c.json({ error: 'Invalid dashboard screenshot event' }, 400)
 
-  messagePersister.broadcastGlobal({
+  globalFeed.publish({
     type: 'dashboard_screenshot_ready',
     agentSlug,
     dashboardSlug: parsed.data.dashboardSlug,
@@ -76,7 +94,7 @@ agentBootstrap.post('/:agentSlug/events/dashboard-status-changed', async (c) => 
   const parsed = DashboardStatusChangedSchema.safeParse(await c.req.json().catch(() => null))
   if (!parsed.success) return c.json({ error: 'Invalid dashboard status event' }, 400)
 
-  messagePersister.broadcastGlobal({
+  globalFeed.publish({
     type: 'dashboard_status_changed',
     agentSlug,
     dashboardSlug: parsed.data.dashboardSlug,
@@ -99,10 +117,62 @@ agentBootstrap.post('/:agentSlug/events/widget-snapshot-ready', async (c) => {
   const parsed = widgetSnapshotReadyEventSchema.safeParse(await c.req.json().catch(() => null))
   if (!parsed.success) return c.json({ error: 'Invalid widget snapshot event' }, 400)
 
-  messagePersister.broadcastGlobal({
+  globalFeed.publish({
     type: 'widget_snapshot_ready',
     agentSlug,
     ...parsed.data,
+  })
+  return c.body(null, 204)
+})
+
+// The agent changed the name or description in its instructions frontmatter
+// with Write or Edit. A signal only: the identity comes from the file, read
+// under the identity lock, so a user rename that landed since still wins.
+agentBootstrap.post('/:agentSlug/events/agent-identity-changed', async (c) => {
+  const agentSlug = c.req.param('agentSlug')
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token) return c.json({ error: 'Unauthorized' }, 401)
+  const callerSlug = await validateProxyToken(token)
+  if (!callerSlug) return c.json({ error: 'Unauthorized' }, 401)
+  if (callerSlug !== agentSlug) return c.json({ error: 'Token does not match agent' }, 403)
+
+  const fields = await syncAgentIdentityFromWorkspace(agentSlug)
+  if (fields.length > 0) {
+    globalFeed.publish({ type: 'agent_updated', agentSlug })
+    await logAuditEvent({ userId: null, object: 'agent', objectId: agentSlug, action: 'updated', details: { fields, source: 'agent' } })
+  }
+  return c.body(null, 204)
+})
+
+// A turn ended after the session's stream socket dropped on the container
+// side. The host's end may still read as open, so this is the only way the
+// stuck "working" session (SUP-991) reaches Sentry.
+agentBootstrap.post('/:agentSlug/events/undelivered-turn', async (c) => {
+  const agentSlug = c.req.param('agentSlug')
+  const token = c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!token) return c.json({ error: 'Unauthorized' }, 401)
+  const callerSlug = await validateProxyToken(token)
+  if (!callerSlug) return c.json({ error: 'Unauthorized' }, 401)
+  if (callerSlug !== agentSlug) return c.json({ error: 'Token does not match agent' }, 403)
+
+  const parsed = UndeliveredTurnSchema.safeParse(await c.req.json().catch(() => null))
+  if (!parsed.success) return c.json({ error: 'Invalid undelivered turn event' }, 400)
+
+  const { closeCode, ...report } = parsed.data
+  const containerRunner = getSettings().container?.containerRunner ?? 'unknown'
+  // Only a host that still shows the turn as working on a socket it thinks is
+  // open is stuck; anything else already settled or detached on purpose.
+  const live = await agentRegistry.get(agentSlug).sessions.live(report.sessionId)
+  const hostStuck = live.isActive && live.streamAttached
+  console.warn(
+    `[AgentBootstrap] Session ${report.sessionId} (${agentSlug}) ended a turn with no stream subscriber ` +
+    `(runner=${containerRunner}, closeCode=${closeCode}, hostStuck=${hostStuck})`,
+  )
+  if (!hostStuck) return c.body(null, 204)
+
+  captureException(new Error('Session turn ended after its stream socket dropped'), {
+    tags: { component: 'container', operation: 'undelivered-turn', containerRunner, closeCode: String(closeCode) },
+    extra: { agentId: agentSlug, ...report },
   })
   return c.body(null, 204)
 })

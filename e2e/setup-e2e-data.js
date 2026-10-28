@@ -147,7 +147,7 @@ This skill is seeded from a public provider for end-to-end tests.
 const PUBLIC_AGENT_DIR = path.join(PUBLIC_SKILLSET_DIR, 'agents', 'e2e-onboarding-template')
 fs.mkdirSync(path.join(PUBLIC_AGENT_DIR, '.claude', 'skills', 'agent-onboarding'), { recursive: true })
 fs.writeFileSync(
-  path.join(PUBLIC_AGENT_DIR, 'CLAUDE.md'),
+  path.join(PUBLIC_AGENT_DIR, 'AGENTS.md'),
   `---
 name: E2E Onboarding Template
 description: An agent template that exercises the onboarding handoff
@@ -199,6 +199,7 @@ const settings = {
       overrides: [
         { id: 'claude-opus-4-8', supportedSpeeds: ['slow', 'normal', 'fast'] },
         { id: 'claude-opus-5', supportedSpeeds: ['slow', 'normal', 'fast'] },
+        { id: 'claude-opus-5-5', supportedSpeeds: ['slow', 'normal', 'fast'] },
       ],
     },
   },

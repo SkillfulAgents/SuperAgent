@@ -1,23 +1,28 @@
 #!/bin/bash
-# Downloads Lima (limactl) binary, guest agent, and a fresh Alpine cloud image
-# for bundling into the Electron app.
+# Downloads Lima (limactl) binary and guest agent, and adds the VM image and
+# first-boot packages, for bundling into the Electron app.
 #
-# Packages (containerd, nerdctl, etc.) are installed on first VM boot via
-# Lima's provision script — no pre-baking needed.
+# The VM image is Alpine's cloud image with sudo and the packages a new VM
+# needs (containerd, nerdctl, etc.; src/shared/lib/container/lima-packages.json)
+# installed; the packages also ship as a local apk repository, to repair an
+# install. build-lima-image.sh builds both, which needs Docker. CI builds them
+# in a Linux job and points LIMA_IMAGE_DIR at its output, since its macOS
+# runners have no Docker.
 #
-# Usage: ./scripts/download-lima.sh [arm64|x86_64]
+# Usage: [LIMA_IMAGE_DIR=dir] ./scripts/download-lima.sh [arm64|x86_64]
 #
 # Output:
 #   build/lima/bin/limactl                              - Lima CLI binary
+#   build/lima/bin/lima-nerdctl                         - nerdctl wrapper (scripts/lima-nerdctl)
 #   build/lima/share/lima/lima-guestagent.Linux-*.gz     - Guest agent for the VM
-#   build/lima/alpine.qcow2                             - Fresh Alpine cloud image
+#   build/lima/alpine.qcow2                             - Alpine cloud image, packages installed
+#   build/lima/packages/                                - First-boot packages (local apk repository)
 #
 # electron-builder picks these up via the extraResources config in package.json.
 
 set -euo pipefail
 
 LIMA_VERSION="2.1.3"
-ALPINE_VERSION="3.23.3"
 ARCH="${1:-$(uname -m)}"
 
 # Normalize to match Lima release naming (arm64, x86_64)
@@ -87,17 +92,25 @@ else
   exit 1
 fi
 
-# ── 2. Download fresh Alpine cloud image ──────────────────────────────────────
+# The nerdctl wrapper ships next to limactl, which it finds through its own path.
+install -m 755 "$(dirname "$0")/lima-nerdctl" "${BIN_DIR}/lima-nerdctl"
+echo "  lima-nerdctl: installed"
 
-ALPINE_IMAGE_NAME="nocloud_alpine-${ALPINE_VERSION}-${GUEST_ARCH}-uefi-cloudinit-r0.qcow2"
-ALPINE_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION%.*}/releases/cloud/${ALPINE_IMAGE_NAME}"
-VM_IMAGE="${OUTPUT_DIR}/alpine.qcow2"
+# ── 2. VM image and first-boot packages ───────────────────────────────────────
 
 echo ""
-echo "Downloading Alpine ${ALPINE_VERSION} cloud image..."
-curl -fSL "$ALPINE_URL" -o "$VM_IMAGE"
-
-echo "  alpine-image: $(du -h "$VM_IMAGE" | cut -f1)"
+if [ -n "${LIMA_IMAGE_DIR:-}" ]; then
+  echo "Using the VM image and packages from ${LIMA_IMAGE_DIR}..."
+  if [ ! -f "${LIMA_IMAGE_DIR}/alpine.qcow2" ] || [ ! -f "${LIMA_IMAGE_DIR}/packages/packages.txt" ]; then
+    echo "ERROR: ${LIMA_IMAGE_DIR} has no alpine.qcow2 or packages/ (scripts/build-lima-image.sh makes them)"
+    exit 1
+  fi
+  cp "${LIMA_IMAGE_DIR}/alpine.qcow2" "${OUTPUT_DIR}/alpine.qcow2"
+  cp -R "${LIMA_IMAGE_DIR}/packages" "${OUTPUT_DIR}/packages"
+  echo "  alpine-image: $(du -h "${OUTPUT_DIR}/alpine.qcow2" | cut -f1)"
+else
+  bash "$(dirname "$0")/build-lima-image.sh" "$GUEST_ARCH" "$OUTPUT_DIR"
+fi
 
 echo ""
 echo "Total bundle size: $(du -sh "$OUTPUT_DIR" | cut -f1)"

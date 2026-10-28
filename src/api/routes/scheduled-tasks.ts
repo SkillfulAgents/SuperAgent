@@ -1,3 +1,6 @@
+import { assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
+import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
+import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * Scheduled Tasks API Routes
  *
@@ -25,11 +28,12 @@ import {
 import { promptUpdateSchema } from './trigger-prompt-schema'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { withSessionStatus } from '@shared/lib/session-status'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { validateCronExpression, getFrequencyWarning } from '@shared/lib/services/schedule-parser'
-import { RuntimeOptionsPatchSchema, resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
+import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { deliverSessionWake } from '@shared/lib/scheduler/wake-delivery'
@@ -63,11 +67,7 @@ scheduledTasksRouter.get('/:taskId/sessions', TaskAgentRole('viewer'), async (c)
     const task = c.get('scheduledTask' as never) as Awaited<ReturnType<typeof getScheduledTask>>
     const actor = agentRegistry.get(task!.agentSlug)
     const sessions = await actor.sessions.byScheduledTask(task!.id)
-    const sessionsWithStatus = sessions.map((session) => ({
-      ...session,
-      isActive: actor.sessions.isActive(session.id),
-    }))
-    return c.json(sessionsWithStatus)
+    return c.json(withSessionStatus(sessions, await actor.live()))
   } catch (error) {
     console.error('Failed to fetch sessions for scheduled task:', error)
     return c.json({ error: 'Failed to fetch sessions' }, 500)
@@ -88,12 +88,12 @@ scheduledTasksRouter.delete('/:taskId', TaskAgentRole('user'), async (c) => {
 
     // Cancelling a session wake changes that session's list/badge state.
     if (task!.resumeSessionId) {
-      messagePersister.broadcastGlobal({
+      globalFeed.publish({
         type: 'session_updated',
         sessionId: task!.resumeSessionId,
         agentSlug: task!.agentSlug,
       })
-      agentRegistry.get(task!.agentSlug).sessions.broadcastUpdate(task!.resumeSessionId)
+      await agentRegistry.get(task!.agentSlug).sessions.broadcastUpdate(task!.resumeSessionId)
     }
 
     return c.body(null, 204)
@@ -250,11 +250,13 @@ scheduledTasksRouter.patch('/:taskId/runtime-options', TaskAgentRole('user'), as
       return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid runtime options' }, 400)
     }
 
-    const updates: { model?: string | null; effort?: string | null; speed?: string | null } = {}
+    const updates: { llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null } = {}
+    if ('llmProviderId' in body) updates.llmProviderId = parsed.data.llmProviderId ?? null
     if ('model' in body) updates.model = parsed.data.model ?? null
     if ('effort' in body) updates.effort = parsed.data.effort ?? null
     if ('speed' in body) updates.speed = parsed.data.speed ?? null
 
+    await assertConnectionSelectionAccess(parsed.data.llmProviderId, task?.llmProviderId)
     const updated = await updateTaskRuntimeOptions(task!.id, updates)
     if (!updated) {
       return c.json({ error: 'Task not found or not editable' }, 404)
@@ -264,6 +266,8 @@ scheduledTasksRouter.patch('/:taskId/runtime-options', TaskAgentRole('user'), as
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'task', objectId: task!.id, action: 'updated', details: { field: 'runtime-options' } })
     return c.json(refreshed)
   } catch (error) {
+    const runtimeError = findAgentRuntimeError(error)
+    if (runtimeError) return runtimeError.toHttpResponse()
     console.error('Failed to update scheduled task runtime options:', error)
     return c.json({ error: 'Failed to update runtime options' }, 500)
   }
@@ -306,35 +310,31 @@ scheduledTasksRouter.post('/:taskId/run-now', TaskAgentRole('user'), async (c) =
     // Model/effort/speed preference order: task override > agent default > global default.
     const models = getEffectiveModels()
     const agentPrefs = await readAgentPreferences(task.agentSlug)
-    const resolved = resolveRuntimeInherit(
-      { model: task.model, effort: task.effort, speed: task.speed },
+    const resolved = await resolveConnectionRuntimeInherit(
+      { model: task.model,
+      llmProviderId: task.llmProviderId, effort: task.effort, speed: task.speed },
       agentPrefs,
       models,
     )
 
-    const containerSession = await actor.sessions.create({
-      availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-      initialMessage: task.prompt,
-      model: resolved.model,
-      browserModel: models.browserModel,
-      dashboardBuilderModel: models.dashboardBuilderModel,
-      effort: resolved.effort,
-      ...(resolved.speed ? { speed: resolved.speed } : {}),
+    const { id: sessionId } = await actor.sessions.start({
+      create: {
+        availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
+        initialMessage: task.prompt,
+        model: resolved.model,
+        llmProviderId: resolved.llmProviderId,
+        browserModel: models.browserModel,
+        dashboardBuilderModel: models.dashboardBuilderModel,
+        effort: resolved.effort,
+        ...(resolved.speed ? { speed: resolved.speed } : {}),
+      },
+      name: task.name || 'Scheduled Task (Run Now)',
+      metadata: {
+        isScheduledExecution: true,
+        scheduledTaskId: task.id,
+        scheduledTaskName: task.name || undefined,
+      },
     })
-
-    const sessionId = containerSession.id
-    const sessionName = task.name || 'Scheduled Task (Run Now)'
-
-    await actor.sessions.register(sessionId, sessionName)
-    await actor.sessions.updateMetadata(sessionId, {
-      isScheduledExecution: true,
-      scheduledTaskId: task.id,
-      scheduledTaskName: task.name || undefined,
-    })
-
-    // createSession already started the turn; replay may finish it during attachment.
-    actor.sessions.markActive(sessionId)
-    await actor.sessions.subscribeStream(sessionId, sessionId)
 
     if (task.isRecurring) {
       // Recurring: keep schedule, just record the manual execution
@@ -364,7 +364,7 @@ scheduledTasksRouter.post('/:taskId/describe-schedule', TaskAgentRole('viewer'),
       return c.json({ error: 'Task is not a recurring cron task' }, 400)
     }
 
-    const client = getConfiguredLlmClient()
+    const client = await getConfiguredLlmClient()
     const description = await createSummarizerText(client, {
       model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
       messages: [
@@ -406,7 +406,7 @@ scheduledTasksRouter.post('/:taskId/parse-schedule', TaskAgentRole('user'), asyn
       return c.json({ error: 'description is required' }, 400)
     }
 
-    const client = getConfiguredLlmClient()
+    const client = await getConfiguredLlmClient()
     const expression = await createSummarizerText(client, {
       model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
       messages: [

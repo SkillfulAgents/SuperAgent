@@ -91,6 +91,8 @@ class ReadAloudController {
   private snapshot: ReadAloudSnapshot = READ_ALOUD_IDLE
   private readonly listeners = new Set<() => void>()
   private player: SpeechPlayer | null = null
+  /** Voice mode's speaker mute: silent playback, timing intact. */
+  private muted = false
   /** What is playing, so a restart (speed change) can pick it back up. */
   private current: { id: string; markdown: string } | null = null
   private stream: StreamReading | null = null
@@ -111,6 +113,8 @@ class ReadAloudController {
     const owner = Symbol()
     this.outputOwners.add(owner)
     this.stop()
+    // Live brings its own output: an unlocked one would sit open, unused.
+    this.releaseUnlockedAudio()
     for (const listener of this.listeners) listener()
     return () => {
       if (!this.outputOwners.delete(owner)) return
@@ -234,7 +238,10 @@ class ReadAloudController {
     }
     const current = this.current
     const player = this.player
-    if (!current || !player) return
+    if (!current || !player) {
+      this.releaseUnlockedAudio()
+      return
+    }
     const fromWord = Math.max(0, Math.floor(player.getWordCursor()))
     void this.speak(current.id, current.markdown, fromWord, { paused: player.status === 'paused' })
   }
@@ -287,6 +294,17 @@ class ReadAloudController {
   unlockAudio(): void {
     if (this.unlockedContext && this.unlockedContext.state !== 'closed') return
     this.unlockedContext = createUnlockedAudioContext()
+  }
+
+  /**
+   * Close an unlocked output nothing adopted. A running context (and, in
+   * Safari, the media element behind it) keeps the tab marked as playing
+   * audio for as long as it is open.
+   */
+  releaseUnlockedAudio(): void {
+    const ctx = this.unlockedContext
+    this.unlockedContext = null
+    if (ctx && ctx.state !== 'closed') void ctx.close().catch(() => {})
   }
 
   /**
@@ -355,7 +373,18 @@ class ReadAloudController {
     const stream = this.stream
     if (!stream || stream.id !== id) return
     stream.ducked = ducked
-    this.player?.setVolume(ducked ? DUCKED_VOLUME : 1)
+    this.player?.setVolume(this.volumeFor(stream))
+  }
+
+  /** Silence playback without stopping it, so the reply still runs to its end on time. */
+  setMuted(muted: boolean): void {
+    this.muted = muted
+    this.player?.setVolume(this.volumeFor(this.stream))
+  }
+
+  private volumeFor(stream: { ducked: boolean } | null | undefined): number {
+    if (this.muted) return 0
+    return stream?.ducked ? DUCKED_VOLUME : 1
   }
 
   /** The turn is over: say what is left, then finish. */
@@ -484,7 +513,7 @@ class ReadAloudController {
     })
     stream.opening = false
     this.player = player
-    if (stream.ducked) player.setVolume(DUCKED_VOLUME)
+    if (stream.ducked || this.muted) player.setVolume(this.volumeFor(stream))
     player.start()
     this.flushStreamWords()
     if (stream.ended) player.end()

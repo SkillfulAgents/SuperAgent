@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
+import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
 import { AgentIntegrationView } from './agent-integration-view'
 
 const DEFAULT_SESSIONS = [
@@ -40,7 +41,7 @@ vi.mock('@renderer/context/user-context', () => ({
   }),
 }))
 const integrationMock = vi.hoisted(() => ({
-  current: { id: 'int-1', agentSlug: 'a', provider: 'telegram', name: 'Bot', status: 'active', errorMessage: null },
+  current: { id: 'int-1', agentSlug: 'a', provider: 'telegram', name: 'Bot', status: 'active', errorMessage: null } as Partial<PublicAgentIntegration>,
 }))
 const clearAsync = vi.fn<(args: unknown) => Promise<unknown>>().mockResolvedValue(undefined)
 const updateAsync = vi.fn<(args: unknown) => Promise<unknown>>().mockResolvedValue({})
@@ -82,11 +83,29 @@ async function confirmNewConversation() {
 }
 
 describe('AgentIntegrationView', () => {
+  it('uses the same page and history for Linear while preserving one session per ticket', () => {
+    integrationMock.current = { ...integrationMock.current, provider: 'linear', capabilities: [], managementAccess: 'owner' }
+    render(<AgentIntegrationView integrationId="int-1" agentSlug="a" chatSessionId="sess-1" chatNewConvId={null} />)
+    expect(screen.getByText('Linear')).toBeInTheDocument()
+    expect(screen.getByTestId('inbox')).toHaveTextContent('route:sess-1')
+    expect(screen.getByTestId('panel')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /new conversation/i })).toBeNull()
+  })
+  it('keeps Linear management owner-only while allowing shared history to viewers', () => {
+    integrationMock.current = { ...integrationMock.current, provider: 'linear', capabilities: [], managementAccess: 'owner' }
+    userState.canAdminAgent = false
+    render(<AgentIntegrationView integrationId="int-1" agentSlug="a" chatSessionId={null} chatNewConvId={null} />)
+    expect(screen.getByTestId('inbox')).toBeInTheDocument()
+    expect(screen.queryByTestId('panel')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Rename integration' })).toBeNull()
+    expect(screen.queryByText('delete')).toBeNull()
+  })
+
   it('renders the integration name (when set) and provider tag', () => {
     render(<AgentIntegrationView integrationId="int-1" agentSlug="a" chatSessionId={null} chatNewConvId={null} />)
     expect(screen.getByText('Bot')).toBeInTheDocument()
     expect(screen.getByText('Telegram')).toBeInTheDocument()
-    expect(screen.getByText('Remote Chat')).toBeInTheDocument()
+    expect(screen.getByText('Integration')).toBeInTheDocument()
   })
 
   it('falls back to the agent name when the integration has no custom name (matches the agent-home row list)', () => {

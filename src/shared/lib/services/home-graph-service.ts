@@ -25,9 +25,9 @@ import {
 } from '@shared/lib/db/schema'
 import type { HomeGraphData } from '@shared/lib/types/home-graph-schema'
 import {
-  listChatIntegrationsByAgents,
+  listAgentIntegrationsByAgents,
   countSessionsPerIntegration,
-} from './chat-integration-service'
+} from './agent-integration-service'
 import { listActiveWebhookTriggersByAgents } from './webhook-trigger-service'
 import { listPendingScheduledTasksByAgents } from './scheduled-task-service'
 
@@ -174,7 +174,7 @@ export async function buildHomeGraph(scope: HomeGraphScope): Promise<HomeGraphDa
       mcpUsageCounts(agentSlugs, userId),
     ])
 
-  const chatsByAgent = await listChatIntegrationsByAgents(agentSlugs, { allStatuses: true })
+  const chatsByAgent = await listAgentIntegrationsByAgents(agentSlugs, { allStatuses: true })
   const sessionCounts = await countSessionsPerIntegration(agentSlugs)
 
   const chats: HomeGraphData['chats'] = [...chatsByAgent.values()].flat().map((chat) => ({

@@ -1,15 +1,47 @@
+import { captureException } from '../error-reporting'
+import { platformEmailProvider } from '../email-integrations/provider'
+import type { IntegrationProviderSetup } from './setup-types'
+import type { SQLiteTable } from 'drizzle-orm/sqlite-core'
+import type { PublicAgentIntegration } from './public'
 import type { IntegrationMcpConnection } from './mcp-types'
 import type { AgentIntegration } from './agent-integration'
 import type { AgentIntegrationDefinition, AgentIntegrationRecord, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy } from './types'
+import type { LiveConversationSetting } from '../voice/live-types'
+import { taskManagerProviders } from '../task-manager-integrations/providers'
+import { meetingProviders } from '../meeting-integrations/providers'
 import { chatProviders } from '../chat-integrations/providers'
+import { formatProviderName } from './presentation'
 
 export interface IntegrationProvider {
+  /** Delegate to the integration class without constructing a live connection. */
+  isAvailable?(): boolean | Promise<boolean>
+  setup?: IntegrationProviderSetup
   definition: AgentIntegrationDefinition
+  /** Child tables, in deletion order, owned by this provider/family. */
+  storage?(): readonly SQLiteTable[]
+  serialize?(record: AgentIntegrationRecord): PublicAgentIntegration
+  /** Resolves `{ reconnect: true }` when the change needs a fresh connection (e.g. a new transport). */
+  updateSettings?(record: AgentIntegrationRecord, input: Record<string, unknown>): Promise<void | { reconnect?: boolean }>
+  configuration?: {
+    identityLabel?: string
+    identityPaths: readonly string[]
+    uniqueKey(input: unknown): string | null
+    merge(stored: string, patch: Record<string, unknown>): Record<string, unknown>
+  }
   /** Access and session policy must be available independently of a live connection. */
   policy: Pick<AgentIntegration, 'isAllowed' | 'sessionPolicy'>
+  /**
+   * How a voice conversation in one of this provider's sessions differs from
+   * a person alone with the app (a meeting room). Absent for providers whose
+   * sessions are ordinary conversations.
+   */
+  liveSetting?(record: AgentIntegrationRecord, externalId: string): Promise<LiveConversationSetting | undefined>
   create(record: AgentIntegrationRecord): Promise<AgentIntegration>
   mcp?(record: AgentIntegrationRecord): Promise<IntegrationMcpConnection | null>
+  cleanup?(record: AgentIntegrationRecord): Promise<void>
   describeTarget?(externalId: string): Promise<{ type?: string }>
+  /** Safe identity the agent may quote. Credentials stay out. */
+  agentDiscovery?(record: AgentIntegrationRecord): { address?: string }
 }
 
 /** The composition root is the only application module that enumerates families. */
@@ -25,12 +57,40 @@ export class AgentIntegrationRegistry {
     this.providers.set(provider.definition.provider, provider)
   }
 
+  storageTables(): SQLiteTable[] { return [...new Set([...this.providers.values()].flatMap(provider => provider.storage?.() ?? []))] }
+
+  getProvider(provider: string): IntegrationProvider {
+    const implementation = this.providers.get(provider)
+    if (!implementation) throw new Error(`Unknown integration provider: ${provider}`)
+    return implementation
+  }
+
   getDefinition(provider: string): AgentIntegrationDefinition | undefined {
     return this.providers.get(provider)?.definition
   }
 
   listDefinitions(): AgentIntegrationDefinition[] {
     return [...this.providers.values()].map(provider => provider.definition)
+  }
+
+  async isAvailable(provider: string): Promise<boolean> {
+    const implementation = this.providers.get(provider)
+    if (!implementation) return false
+    try { return await implementation.isAvailable?.() ?? true }
+    catch (error) {
+      captureException(error, { tags: { component: 'agent-integration', operation: 'availability' }, extra: { provider } })
+      return false
+    }
+  }
+
+  async listAvailableDefinitions(): Promise<AgentIntegrationDefinition[]> {
+    const definitions = this.listDefinitions()
+    const available = await Promise.all(definitions.map(definition => this.isAvailable(definition.provider)))
+    return definitions.filter((_, index) => available[index])
+  }
+
+  async liveSetting(record: AgentIntegrationRecord, externalId: string): Promise<LiveConversationSetting | undefined> {
+    return this.providers.get(record.provider)?.liveSetting?.(record, externalId)
   }
 
   async isAllowed(context: IntegrationSessionContext): Promise<boolean> {
@@ -43,8 +103,24 @@ export class AgentIntegrationRegistry {
     return provider.policy.sessionPolicy(record, route)
   }
 
+  /** The installation's name as the integration UI shows it, else the provider's. */
+  displayName(record: AgentIntegrationRecord): string {
+    const provider = this.providers.get(record.provider)
+    let name: string | null | undefined
+    try { name = provider?.serialize?.(record).name } catch { /* invalid stored config: fall through */ }
+    return name?.trim() || record.name?.trim() || provider?.definition.name || formatProviderName(record.provider)
+  }
+
   async describeTarget(provider: string, externalId: string): Promise<{ type?: string }> {
     return this.providers.get(provider)?.describeTarget?.(externalId) ?? {}
+  }
+
+  agentDiscovery(record: AgentIntegrationRecord): { address?: string } {
+    return this.providers.get(record.provider)?.agentDiscovery?.(record) ?? {}
+  }
+
+  async cleanup(record: AgentIntegrationRecord): Promise<void> {
+    await this.providers.get(record.provider)?.cleanup?.(record)
   }
 
   async getMcpConnection(record: AgentIntegrationRecord): Promise<IntegrationMcpConnection | null> {
@@ -58,4 +134,4 @@ export class AgentIntegrationRegistry {
   }
 }
 
-export const agentIntegrationRegistry = new AgentIntegrationRegistry(chatProviders)
+export const agentIntegrationRegistry = new AgentIntegrationRegistry([...chatProviders, ...taskManagerProviders, ...meetingProviders, platformEmailProvider])

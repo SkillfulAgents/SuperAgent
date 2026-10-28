@@ -246,17 +246,19 @@ describe('OpenRouterLlmProvider.searchModels — error paths', () => {
 })
 
 describe('OpenRouterLlmProvider — capabilities and defaults', () => {
-  // OpenRouter 400s deferred custom tools for every non-Anthropic model, so
-  // the var stays unset and the CLI's own guard turns tool search off.
-  it('declares no ENABLE_TOOL_SEARCH value', () => {
-    expect(provider.toolSearchEnv).toBeUndefined()
+  // OpenRouter 400s deferred custom tools for every non-Anthropic model.
+  it('turns ENABLE_TOOL_SEARCH on for Claude models only', () => {
+    expect(provider.toolSearchEnv('anthropic/claude-opus-5.5')).toBe('true')
+    expect(provider.toolSearchEnv('claude-sonnet-5-5')).toBe('true')
+    expect(provider.toolSearchEnv('openai/gpt-6.1')).toBe('false')
+    expect(provider.toolSearchEnv()).toBe('false')
   })
 
   it('opts into model search and exposes bare-alias purpose defaults', () => {
     expect(provider.supportsModelSearch).toBe(true)
     expect(provider.getDefaultModel('summarizer')).toBe('haiku')
     expect(provider.getDefaultModel('agent')).toBe('sonnet')
-    expect(provider.getDefaultModel('browser')).toBe('sonnet')
+    expect(provider.getDefaultModel('browser')).toBe('haiku')
     expect(provider.getDefaultModel('dashboard')).toBe('opus')
   })
 })

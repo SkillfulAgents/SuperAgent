@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { VoiceAgentCoordinator, VOICE_TURN_START_TIMEOUT_MS, VOICE_INTERRUPT_TIMEOUT_MS } from './coordinator'
 import type { VoiceAgentEvent, VoiceAgentSnapshot } from '../contracts/conversation'
+import type { SessionTurnOutcome } from '@shared/lib/container/session-turn-outcome-schema'
+
+function outcome(status: SessionTurnOutcome['status'], id = 'turn-1'): SessionTurnOutcome {
+  return { id, status, responseText: '', error: null }
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -29,6 +34,80 @@ beforeEach(() => vi.useFakeTimers())
 afterEach(() => vi.useRealTimers())
 
 describe('shared voice agent coordinator', () => {
+  it('does not announce an earlier completion recovered during a running turn', () => {
+    const { coordinator, update, events } = setup({ active: true })
+    update({ turnOutcome: outcome('completed', 'earlier'), text: 'New work.' })
+    update({ active: false }) // A text boundary is not a new backend outcome.
+    expect(events.filter(e => e.type === 'turn-ended')).toEqual([])
+    update({ turnOutcome: outcome('completed', 'new'), text: 'New result.' })
+    expect(events.filter(e => e.type === 'turn-ended')).toEqual([
+      { type: 'turn-ended', turnId: 'new', outcome: 'completed' },
+    ])
+    coordinator.close()
+  })
+
+  it('delivers one outcome per empty turn, even when running frames were missed', async () => {
+    const { coordinator, update, events, dependencies } = setup()
+    for (const turnId of ['one', 'two']) {
+      await coordinator.command({ type: 'submit', text: 'Check again.' })
+      update({ turnOutcome: outcome('completed', turnId) })
+      update({ turnOutcome: outcome('completed', turnId) })
+    }
+    expect(events.filter(e => e.type === 'turn-ended')).toEqual([
+      { type: 'turn-ended', turnId: 'one', outcome: 'completed' },
+      { type: 'turn-ended', turnId: 'two', outcome: 'completed' },
+    ])
+    expect(dependencies.interrupt).not.toHaveBeenCalled()
+    coordinator.close()
+  })
+
+  it('recovers a final response once, before the outcome, without requiring an active frame', async () => {
+    const { coordinator, update, events } = setup()
+    await coordinator.command({ type: 'submit', text: 'Send invoice 42.' })
+    update({ text: 'Invoice 42 sent.', turnOutcome: outcome('completed') })
+    update({ text: 'Invoice 42 sent.', turnOutcome: outcome('completed') })
+    expect(events.filter(e => e.type === 'reply' || e.type === 'turn-ended')).toEqual([
+      { type: 'reply', segment: 1, text: 'Invoice 42 sent.', complete: true },
+      { type: 'turn-ended', turnId: 'turn-1', outcome: 'completed' },
+    ])
+    coordinator.close()
+  })
+
+  it('acknowledges an empty result for a follow-up sent during background waiting when active frames are missed', async () => {
+    const { coordinator, update, events, dependencies } = setup({ background: true })
+    await coordinator.command({ type: 'submit', text: 'Also check this.' })
+    update({ background: false, turnOutcome: outcome('completed') })
+    expect(events.filter(e => e.type === 'turn-ended')).toHaveLength(1)
+    expect(dependencies.interrupt).not.toHaveBeenCalled()
+    coordinator.close()
+  })
+
+  it('does not replay an old outcome on entry, but recovers an explicitly expected handoff', () => {
+    const lateHistory = setup()
+    lateHistory.update({ text: 'Done earlier.', turnOutcome: outcome('completed') })
+    expect(lateHistory.events.filter(e => e.type === 'reply' || e.type === 'turn-ended')).toEqual([])
+    lateHistory.coordinator.close()
+    const old = setup({ text: 'Done earlier.', turnOutcome: outcome('completed') })
+    expect(old.events.filter(e => e.type === 'turn-ended')).toEqual([])
+    old.coordinator.close()
+    const handoff = setup({ text: 'Done just now.', turnOutcome: outcome('completed') }, true)
+    expect(handoff.events.filter(e => e.type === 'turn-ended')).toHaveLength(1)
+    expect(handoff.replies().at(-1)?.text).toBe('Done just now.')
+    handoff.coordinator.close()
+  })
+
+  it('delivers cancellation separately, and can follow a subsequent background wake', () => {
+    const { coordinator, update, events } = setup({ active: true })
+    update({ active: false, turnOutcome: outcome('cancelled'), text: 'Partial work.' })
+    update({ active: true, text: 'Background result.' })
+    update({ active: false, turnOutcome: outcome('completed', 'wake') })
+    expect(events.filter(e => e.type === 'turn-ended')).toEqual([
+      { type: 'turn-ended', turnId: 'turn-1', outcome: 'cancelled' },
+      { type: 'turn-ended', turnId: 'wake', outcome: 'completed' },
+    ])
+    coordinator.close()
+  })
+
   it('serializes a replacement behind successful cancellation and suppresses old output in flight', async () => {
     const { coordinator, dependencies, update, replies } = setup({ active: true, startedAt: 1, text: 'Old answer' })
     const stop = deferred<void>()
@@ -193,7 +272,7 @@ describe('shared voice agent coordinator', () => {
     update({ active: false, text: 'Finished while paused' })
     coordinator.setPaused(false)
     await vi.advanceTimersByTimeAsync(VOICE_TURN_START_TIMEOUT_MS)
-    expect(dependencies.onState).toHaveBeenLastCalledWith({ active: false, awaiting: false, toolsUsed: false })
+    expect(dependencies.onState).toHaveBeenLastCalledWith({ active: false, awaiting: false, toolsUsed: false, background: false })
     expect(dependencies.onIssue).not.toHaveBeenCalledWith(expect.any(String))
     expect(replies()).toEqual([])
     coordinator.close()

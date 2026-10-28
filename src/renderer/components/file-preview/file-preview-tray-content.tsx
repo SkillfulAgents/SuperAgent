@@ -1,17 +1,11 @@
-import { useCallback, useState } from 'react'
-import { ArrowDownToLine, PanelRight, X } from 'lucide-react'
-import { useFilePreview } from '@renderer/context/file-preview-context'
-import { CopyFileButton } from './copy-file-button'
-import { FileTabBar } from './file-tab-bar'
-import { isCopyableTextFile } from '@renderer/lib/file-types'
-import { FileRenderer } from './renderers/file-renderer'
+import { PanelRight, X } from 'lucide-react'
+import { getPreviewTabKey, useFilePreview } from '@renderer/context/file-preview-context'
+import { TabbedFilePreview } from './tabbed-file-preview'
 import { FolderBrowser } from './folder-browser'
 import { FolderHostActions } from './folder-host-actions'
 import { CommentBar } from './comments/comment-bar'
 import { describeWorkspaceFile } from '@renderer/lib/workspace-file'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
-import { cn } from '@shared/lib/utils/cn'
-import { formatFileSize } from '@shared/lib/utils/format-file-size'
+import { withPreviewVersion } from '@renderer/lib/file-preview-url'
 import { useFileSize } from '@renderer/hooks/use-file-size'
 
 interface FilePreviewTrayContentProps {
@@ -21,33 +15,33 @@ interface FilePreviewTrayContentProps {
 
 export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayContentProps) {
   const { openTabs, activeTabIndex, setActiveTab, setPdfPage, closeTab, commentsFor } = useFilePreview()
-  // The body card squares off its top-left corner only while the active tab sits
-  // directly above it; the strip is the only thing that knows when that is.
-  const [leadingTabFlush, setLeadingTabFlush] = useState(false)
-  const onLeadingTabFlush = useCallback((flush: boolean) => setLeadingTabFlush(flush), [])
-
   const activeTab = openTabs[activeTabIndex]
   const activeFile = activeTab?.kind === 'file' ? activeTab : null
-  // The tab is the only surface with a cache-busting token, so it is the only
-  // one that hands the descriptor a version.
+  // A tab with its own source (a file outside the agent's workspace) is shown from there, as no agent's file: nothing in
+  // it resolves against a workspace, and it takes no comments.
   const file = activeFile
-    ? describeWorkspaceFile(activeFile.filePath, activeFile.agentSlug, { version: activeFile.version })
+    ? activeFile.source
+      ? {
+        path: activeFile.filePath, apiPath: null,
+        inlineUrl: withPreviewVersion(activeFile.source.inlineUrl, activeFile.version),
+        downloadUrl: activeFile.source.downloadUrl === undefined ? undefined : withPreviewVersion(activeFile.source.downloadUrl, activeFile.version),
+      }
+      : describeWorkspaceFile(activeFile.filePath, activeFile.agentSlug, { version: activeFile.version })
     : null
-  // Hooks run before the early return so their order is stable across renders.
   const { data: fileSize } = useFileSize(file?.apiPath ?? null, activeFile?.version ?? 0)
   if (!activeTab) return null
 
-  const activeComments = file ? commentsFor(file.path, file.agentSlug) : []
+  const activeComments = file && 'agentSlug' in file ? commentsFor(file.path, file.agentSlug) : []
 
   return (
     <div className="contents" data-testid="file-preview-tray">
-      {/* File tabs */}
-      <FileTabBar
-        tabs={openTabs}
-        activeIndex={activeTabIndex}
-        onTabClick={setActiveTab}
-        onCloseTab={closeTab}
-        onLeadingTabFlush={onLeadingTabFlush}
+      <TabbedFilePreview
+        tabs={openTabs} getTabKey={getPreviewTabKey} activeTabIndex={activeTabIndex}
+        onSelectTab={setActiveTab} onCloseTab={closeTab}
+        file={file ? { ...file, size: fileSize } : null}
+        folderContent={activeTab.kind === 'folder' && <FolderBrowser folder={activeTab} />}
+        folderActions={activeTab.kind === 'folder' && <FolderHostActions folder={activeTab} />}
+        onPdfPageChange={page => { if (activeFile) setPdfPage(activeFile.filePath, activeFile.agentSlug, page) }}
         trailing={
           // The drawer's own controls. Compact layouts show the close button;
           // wide layouts show the panel-hide button (see globals.css).
@@ -70,87 +64,15 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
             </button>
           </div>
         }
-      />
-
-      {/* File content: a card inset 16px on every side, on the same gray as the tab rail. */}
-      <div className="flex flex-1 min-h-0 flex-col bg-muted/60 px-4 pb-4">
-      <div
-        className={cn(
-          'flex flex-1 min-h-0 flex-col overflow-hidden rounded-lg border border-black/5 bg-background dark:border-white/5',
-          // Square only where a tab actually meets the corner. Under an inactive
-          // tab — or a strip scrolled away from its first tab — the square edge
-          // would be a corner cut for no one.
-          leadingTabFlush && 'rounded-tl-none',
+        footer={activeFile && !activeFile.source && (
+          <CommentBar
+            comments={activeComments}
+            filePath={activeFile.filePath}
+            agentSlug={activeFile.agentSlug}
+            sessionId={sessionId}
+          />
         )}
-      >
-        <div className="flex shrink-0 items-center gap-2 px-4 pt-4 pb-2" data-testid="file-preview-title">
-          <div className="flex min-w-0 flex-1 items-baseline gap-2">
-            <h2 className="truncate text-sm font-medium text-foreground">{activeTab.displayName}</h2>
-            {file && typeof fileSize === 'number' && (
-              <span className="shrink-0 text-xs font-normal text-muted-foreground" data-testid="file-preview-size">
-                {formatFileSize(fileSize)}
-              </span>
-            )}
-          </div>
-          {/* A tab's own actions live with its name, not in the panel header —
-              the folder's host actions for the same reason as the file's. One
-              provider for the row, so moving between them skips the second
-              tooltip's open delay. */}
-          <TooltipProvider delayDuration={300}>
-          <div className="flex shrink-0 items-center gap-1 text-muted-foreground">
-            {activeTab.kind === 'folder' && <FolderHostActions folder={activeTab} />}
-            {file?.inlineUrl && isCopyableTextFile(file.path) && (
-              <CopyFileButton fileUrl={file.inlineUrl} displayName={activeTab.displayName} />
-            )}
-            {file?.downloadUrl && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <a
-                    href={file.downloadUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="p-0.5 rounded hover:bg-muted transition-colors"
-                    aria-label="Download file"
-                  >
-                    <ArrowDownToLine className="h-4 w-4" />
-                  </a>
-                </TooltipTrigger>
-                <TooltipContent>Download file</TooltipContent>
-              </Tooltip>
-            )}
-          </div>
-          </TooltipProvider>
-        </div>
-        <div
-          className={cn(
-            'flex-1 min-h-0',
-            activeTab.kind === 'folder' ? 'overflow-hidden' : 'overflow-auto',
-          )}
-        >
-          {activeTab.kind === 'folder' ? (
-            <FolderBrowser folder={activeTab} />
-          ) : activeFile && file?.inlineUrl ? (
-            <FileRenderer
-              filePath={file.path}
-              fileUrl={file.inlineUrl}
-              agentSlug={file.agentSlug}
-              pdfPage={activeFile.pdfPage}
-              onPdfPageChange={(page) => setPdfPage(file.path, file.agentSlug, page)}
-            />
-          ) : null}
-        </div>
-      </div>
-      </div>
-
-      {/* Comment bar */}
-      {activeFile && (
-        <CommentBar
-          comments={activeComments}
-          filePath={activeFile.filePath}
-          agentSlug={activeFile.agentSlug}
-          sessionId={sessionId}
-        />
-      )}
+      />
     </div>
   )
 }

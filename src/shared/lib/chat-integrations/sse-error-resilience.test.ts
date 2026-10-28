@@ -7,8 +7,8 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, type ManagedConnector } from './chat-integration-manager'
-import { MockChatClientConnector } from './mock-connector'
+import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, type ManagedConnector } from './chat-delivery'
+import { MockChatAgentIntegration } from './mock-connector'
 import { createdEvent } from './user-request-fixtures'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 
@@ -24,7 +24,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 function createManagedConnector(overrides?: Partial<ManagedConnector>): ManagedConnector {
-  const connector = new MockChatClientConnector()
+  const connector = new MockChatAgentIntegration()
   return {
     connector,
     integration: {
@@ -52,8 +52,8 @@ function createManagedConnector(overrides?: Partial<ManagedConnector>): ManagedC
   }
 }
 
-function getMock(managed: ManagedConnector): MockChatClientConnector {
-  return managed.connector as MockChatClientConnector
+function getMock(managed: ManagedConnector): MockChatAgentIntegration {
+  return managed.connector as MockChatAgentIntegration
 }
 
 // ── stream_delta: sendStreamingUpdate throws ────────────────────────────

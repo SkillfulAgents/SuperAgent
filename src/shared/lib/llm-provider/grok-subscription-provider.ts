@@ -1,0 +1,131 @@
+import { parseGrokUsage } from './usage-schema'
+import type { EffortLevel } from '../container/types'
+import { GROK_DEFAULT_MODELS } from './model-catalog-defaults'
+export { GROK_DEFAULT_MODELS } from './model-catalog-defaults'
+import Anthropic from '@anthropic-ai/sdk'
+import { z } from 'zod'
+import { BaseLlmProvider } from './base-llm-provider'
+import { PLATFORM_CATALOG } from './builtin-catalogs'
+import { normalizeGrokResponses, withGrokClientVersion } from '../../../../agent-container/src/llm-proxy-grok'
+import { translatedMessagesFetch } from './translated-messages-fetch'
+import type { LlmProxyConfig, ProxyCredential } from '../../../../agent-container/src/llm-proxy-schema'
+import { inferErrorStatus, extractErrorMessage } from './error-presentation'
+
+export const GROK_SUBSCRIPTION_BASE_URL = 'https://cli-chat-proxy.grok.com'
+export const GROK_CLIENT_HEADERS = { 'x-grok-client-mode': 'cli', 'x-grok-client-version': '1.0.13' }
+// Grok raises its minimum client version over time and names it in a 426;
+// remember the latest one so new sessions and host calls start with it.
+const grokClientVersion = { current: GROK_CLIENT_HEADERS['x-grok-client-version'] }
+export function grokClientHeaders(): Record<string, string> {
+  return { ...GROK_CLIENT_HEADERS, 'x-grok-client-version': grokClientVersion.current }
+}
+function grokFetch(url: string | URL | Request, init: RequestInit = {}): Promise<Response> {
+  return withGrokClientVersion(grokClientVersion, version => {
+    const headers = new Headers(init.headers)
+    headers.set('x-grok-client-version', version)
+    return fetch(url, { ...init, headers })
+  })
+}
+// Media must use the subscription proxy: api.x.ai bills the developer account
+// and rejects subscribers with a 403 spending limit (CLIProxyAPI #5335).
+const GROK_MEDIA_BASE_URL = `${GROK_SUBSCRIPTION_BASE_URL}/v1`
+const GROK_MEDIA_PROMPT = `Grok Imagine image and video generation is available in this session through the connected Grok subscription; it uses that subscription's allowance. There are no dedicated tools: write Bash scripts (Node or Python) that follow these steps. Never print tokens, credentials, base64 or full responses.
+Credential: POST process.env.SUPERAGENT_HOST_API_URL (remove its trailing slash) + "/llm-runtime/resolve" with Authorization: Bearer <process.env.PROXY_TOKEN>, Content-Type: application/json and body {"sessionId": <process.env.GAMUT_SESSION_ID>}. Use proxy.credential.accessToken and proxy.credential.generation from the response.
+Send every Grok request to ${GROK_MEDIA_BASE_URL} (never api.x.ai) with headers Authorization: Bearer <accessToken>, ${Object.entries(GROK_CLIENT_HEADERS).map(([name, value]) => `${name}: ${value}`).join(', ')}, Content-Type: application/json. If a request returns 401, resolve again with {"sessionId": ..., "rejectedGeneration": <generation>} and retry once. If a request returns 426 asking for a newer client version, resend it once with that version in x-grok-client-version. Do not retry image generation or video creation after a timeout or network failure: the first request may already have used allowance. For other errors, report the provider's error message.
+Images: POST ${GROK_MEDIA_BASE_URL}/images/generations with {"model":"grok-imagine-image-2.0","prompt":"A red square on a white background","n":1,"response_format":"b64_json"}. Optional: "aspect_ratio" (auto, 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3, 2:1, 1:2, 21:9) and "resolution" (1k, 2k). To edit or use reference images, POST the same body plus "images":[{"type":"image_url","url":"data:image/png;base64,..."}] (up to 5 PNG, JPEG or WebP data URLs encoded from local files) to ${GROK_MEDIA_BASE_URL}/images/edits. The response is {"data":[...]}; each item has b64_json or a url (optionally mime_type). Download a url without the Authorization header.
+Videos: POST ${GROK_MEDIA_BASE_URL}/videos/generations with {"model":"grok-imagine-video-1.5","prompt":"Ocean waves moving gently"}. Optional: "duration" (integer 1-15 seconds), "aspect_ratio" (1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3), "resolution" (480p, 720p, 1080p), "image":{"url":"<data URL for the first frame>"}. The response is {"request_id":"..."}; save it to a uniquely named file under /workspace/media/ and print it BEFORE polling. Poll GET ${GROK_MEDIA_BASE_URL}/videos/<request_id> every 5 seconds. A done/succeeded/completed status comes with video.url; failed/error/expired/cancelled is a failure; video.respect_moderation false means moderation withheld it. Download video.url without the Authorization header. After about 4 minutes, return the saved request_id and resume polling in a later Bash call; on polling or download errors keep polling the saved request_id instead of starting another video.
+Save each result under /workspace/media/ with a unique filename and an extension matching its bytes (.mp4 for video), print only the saved paths, and deliver them with the existing file-delivery tool. Reuse saved files instead of regenerating.`
+
+export class GrokSubscriptionLlmProvider extends BaseLlmProvider {
+  readonly id = 'grok-subscription' as const
+  readonly name = 'Grok Subscription'
+  readonly defaultModelOptions = []
+  readonly catalogDefaultModels = GROK_DEFAULT_MODELS
+  protected readonly settingsKeyField = undefined
+  protected readonly envVarName = ''
+  override toolSearchEnv() { return 'true' as const }
+  override readonly mediaPrompt = GROK_MEDIA_PROMPT
+  override readonly supportsModelSearch = true
+
+  override getEffectiveApiKey() { return this.configuration?.oauth?.accessToken }
+  override getApiKeyStatus() {
+    return this.getEffectiveApiKey() ? { isConfigured: true, source: 'settings' as const } : { isConfigured: false, source: 'none' as const }
+  }
+  private async credential(rejectedGeneration?: number) {
+    if (!this.configuration?.resolveCredential) throw new Error('Reconnect Grok in Settings → Model Providers')
+    return this.configuration.resolveCredential(rejectedGeneration)
+  }
+  getBuiltinCatalog() {
+    return PLATFORM_CATALOG.filter(model => model.family === 'grok').map(model => ({
+      ...model, supportedSpeeds: undefined, longContextPriceCliff: undefined, blurb: 'Uses your Grok subscription', supportsWebSearch: true,
+    }))
+  }
+  async getContainerEnvVars() { return {} }
+  override async getContainerProxyConfig(): Promise<LlmProxyConfig> {
+    const { accessToken, expiresAt, generation, accountId } = await this.credential()
+    return { adapter: 'grok', format: 'responses', baseUrl: `${GROK_SUBSCRIPTION_BASE_URL}/v1`,
+      headers: grokClientHeaders(), credential: { accessToken, expiresAt, generation, accountId }, maxOutputTokens: 32768 }
+  }
+  private async withCredential(send: (credential: ProxyCredential) => Promise<Response>): Promise<Response> {
+    let credential = await this.credential()
+    let response = await send(credential)
+    if (response.status === 401) {
+      await response.body?.cancel()
+      credential = await this.credential(credential.generation)
+      response = await send(credential)
+    }
+    return response
+  }
+  private async fetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
+    return this.withCredential(credential => {
+      const headers = new Headers(init?.headers)
+      headers.set('authorization', `Bearer ${credential.accessToken}`)
+      headers.delete('x-api-key')
+      for (const [key, value] of Object.entries(grokClientHeaders())) headers.set(key, value)
+      return grokFetch(input, { ...init, headers, redirect: 'error' })
+    })
+  }
+  createClient(): Anthropic {
+    return new Anthropic({ authToken: 'app-managed', baseURL: GROK_SUBSCRIPTION_BASE_URL,
+      // Rebuild translation after an auth retry so reasoning replay is scoped
+      // to the credential actually used, including reconnects to another account.
+      fetch: (input, init) => this.withCredential(credential => translatedMessagesFetch(
+        `${GROK_SUBSCRIPTION_BASE_URL}/v1`, credential.accessToken, 'responses', 'max_completion_tokens',
+        { headers: grokClientHeaders(), upstreamRequest: normalizeGrokResponses, fetch: grokFetch },
+      )(input, init)),
+    })
+  }
+  override readonly supportsUsage = true
+
+  override async getUsage() {
+    // Optional usage reporting must never drive OAuth refresh or block sessions.
+    const accessToken = this.configuration?.oauth?.accessToken
+    if (!accessToken) throw new Error('Grok usage credentials unavailable')
+    const response = await grokFetch(`${GROK_SUBSCRIPTION_BASE_URL}/v1/billing?format=credits`, {
+      headers: { ...grokClientHeaders(), authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(10_000), redirect: 'error',
+    })
+    if (!response.ok) { await response.body?.cancel(); throw new Error('Could not load Grok usage') }
+    return parseGrokUsage(await response.json())
+  }
+  async validateKey() {
+    try { await this.searchModels(''); return { valid: true } }
+    catch { return { valid: false, error: 'Reconnect Grok in Settings → Model Providers' } }
+  }
+  override async searchModels(query: string) {
+    const response = await this.fetch(`${GROK_SUBSCRIPTION_BASE_URL}/v1/models`, { signal: AbortSignal.timeout(15_000) })
+    if (!response.ok) throw new Error(`Grok model discovery failed (${response.status})`)
+    const schema = z.object({ data: z.array(z.object({ id: z.string(), name: z.string().optional(), context_window: z.number().optional() })) })
+    const body = schema.parse(await response.json())
+    return body.data.filter(model => model.id.toLowerCase().includes(query.toLowerCase())).map(model => ({
+      id: model.id, label: model.name ?? model.id, contextWindow: model.context_window,
+      supportedEfforts: ['low', 'medium', 'high'] as EffortLevel[], supportsWebSearch: true,
+    }))
+  }
+  protected override parseErrorResponseOverride(status: number | undefined, body: unknown) {
+    const actual = status ?? inferErrorStatus(extractErrorMessage(body))
+    if (actual === 401) return { severity: 'error' as const, icon: 'info' as const, message: '**Grok sign-in expired or invalid.** Reconnect in Settings → Model Providers.' }
+    if (actual === 402 || actual === 403) return { severity: 'error' as const, icon: 'info' as const, message: '**Grok subscription access was denied.** Check the connected account’s subscription and entitlement.' }
+    return null
+  }
+}

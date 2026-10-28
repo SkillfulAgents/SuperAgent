@@ -2,8 +2,8 @@
  * Test fixtures based on real data from ~/.superagent/
  */
 
-// Sample CLAUDE.md content
-export const SAMPLE_CLAUDE_MD = `---
+// Sample AGENTS.md content
+export const SAMPLE_INSTRUCTIONS = `---
 name: Github Agent
 createdAt: "2026-01-24T01:30:50.090Z"
 description: An agent that helps with GitHub tasks
@@ -22,7 +22,7 @@ You are a helpful AI assistant.
 <!-- The agent can add notes as it learns about the project -->
 `
 
-export const SAMPLE_CLAUDE_MD_MINIMAL = `---
+export const SAMPLE_INSTRUCTIONS_MINIMAL = `---
 name: Minimal Agent
 createdAt: "2026-01-20T00:00:00.000Z"
 ---
@@ -30,7 +30,7 @@ createdAt: "2026-01-20T00:00:00.000Z"
 Basic instructions here.
 `
 
-export const SAMPLE_CLAUDE_MD_NO_FRONTMATTER = `# Just Instructions
+export const SAMPLE_INSTRUCTIONS_NO_FRONTMATTER = `# Just Instructions
 
 No frontmatter in this file.
 `

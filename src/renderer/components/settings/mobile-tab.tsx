@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import QRCode from 'react-qr-code'
-import { Loader2, QrCode, RefreshCw, Smartphone, Trash2 } from 'lucide-react'
+import { ExternalLink, Loader2, QrCode, RefreshCw, Smartphone, Trash2 } from 'lucide-react'
 import { apiFetch } from '@renderer/lib/api'
+import { getRemoteDeploymentUrl, targetIsRemote } from '@renderer/lib/api-target'
+import { openExternalUrl } from '@renderer/lib/open-external'
 import { Button, buttonVariants } from '@renderer/components/ui/button'
 import { cn } from '@shared/lib/utils'
 import { Label } from '@renderer/components/ui/label'
@@ -182,6 +184,36 @@ function ConnectAppButton() {
   )
 }
 
+// --- Cloud workspace: pair from the browser ---
+
+/**
+ * The desktop app drives a cloud workspace on a session minted by token
+ * exchange, and the deployment mints pairing tokens only for sessions a person
+ * signed in to (password or OIDC) — a minted credential must not fan out into
+ * more of them. So pairing happens where the user can sign in: the workspace
+ * itself, in a browser.
+ */
+function PairInBrowserCard() {
+  const deploymentUrl = getRemoteDeploymentUrl()
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-muted-foreground">
+        Pairing a phone needs you to sign in to the cloud workspace directly. Open it in your
+        browser and pair from Settings → Mobile there.
+      </p>
+      {deploymentUrl && (
+        <Button
+          onClick={() => void openExternalUrl(`${deploymentUrl}/settings/mobile`)}
+          data-testid="mobile-pairing-open-browser"
+        >
+          <ExternalLink className="h-4 w-4 mr-2" />
+          Open in browser
+        </Button>
+      )}
+    </div>
+  )
+}
+
 // --- Paired devices list ---
 
 function formatDate(iso: string): string {
@@ -309,8 +341,14 @@ export function MobileTab() {
     <div className="space-y-6">
       <div className="space-y-4">
         <Label className="text-base">Pair the mobile app</Label>
-        <PairingQrCard />
-        <ConnectAppButton />
+        {targetIsRemote() ? (
+          <PairInBrowserCard />
+        ) : (
+          <>
+            <PairingQrCard />
+            <ConnectAppButton />
+          </>
+        )}
       </div>
 
       <div className="pt-4 border-t space-y-4">

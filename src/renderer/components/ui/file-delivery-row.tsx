@@ -3,6 +3,7 @@ import { buttonVariants } from './button'
 import { FileIconTile } from './file-icon-tile'
 import { useFilePreview } from '@renderer/context/file-preview-context'
 import { openableProps } from '@renderer/lib/openable'
+import { MAX_ZIP_BYTES } from '@renderer/lib/file-types'
 import { describeWorkspaceFile } from '@renderer/lib/workspace-file'
 import { cn } from '@shared/lib/utils/cn'
 import { formatFileSize } from '@shared/lib/utils/format-file-size'
@@ -23,7 +24,7 @@ interface FileDeliveryRowProps {
  * The whole row opens the preview drawer. What sits at its right end says what
  * that will get you: a chevron when the drawer can render the file, pointing at
  * the panel it opens, and a Download button when it cannot, since for a .xlsx or
- * a .zip saving it is the only thing the user can do with it. Files that preview
+ * a .pptx saving it is the only thing the user can do with it. Files that preview
  * can still be downloaded from inside the drawer.
  */
 export function FileDeliveryRow({ filePath, agentSlug, description, sizeBytes, className }: FileDeliveryRowProps) {
@@ -31,18 +32,21 @@ export function FileDeliveryRow({ filePath, agentSlug, description, sizeBytes, c
   const file = describeWorkspaceFile(filePath, agentSlug)
   const detail = description?.trim() || (file.relativePath !== file.name ? file.relativePath : null)
   const metadata = [detail, sizeBytes !== undefined ? formatFileSize(sizeBytes) : null].filter(Boolean)
+  // Past the limit the drawer only says so, so the row keeps the one-click download.
+  const previewable = file.previewable && !(file.preview === 'archive' && (sizeBytes ?? 0) > MAX_ZIP_BYTES)
 
   return (
     <div
       {...openableProps(() => openFile(file.path, file.agentSlug, description))}
       className={cn(
-        'group flex w-full items-center gap-3 rounded-lg border bg-background px-3 py-2 text-left cursor-pointer',
+        // The row is the size container the Download label collapses on.
+        'group flex w-full items-center gap-3 rounded-lg border bg-background px-3 py-2 text-left cursor-pointer [container-type:inline-size]',
         'hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring transition-colors',
         className,
       )}
       data-testid="file-delivery-row"
       data-file-name={file.name}
-      data-file-action={file.previewable ? 'preview' : 'download'}
+      data-file-action={previewable ? 'preview' : 'download'}
     >
       <FileIconTile filename={file.name} />
       <div className="min-w-0 flex-1">
@@ -53,7 +57,7 @@ export function FileDeliveryRow({ filePath, agentSlug, description, sizeBytes, c
           </div>
         )}
       </div>
-      {file.previewable || !file.downloadUrl ? (
+      {previewable || !file.downloadUrl ? (
         <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" aria-hidden="true" />
       ) : (
         <a
@@ -67,7 +71,9 @@ export function FileDeliveryRow({ filePath, agentSlug, description, sizeBytes, c
           className={cn(buttonVariants({ variant: 'outline', size: 'xs' }), 'shrink-0')}
         >
           <ArrowDownToLine className="h-3.5 w-3.5" />
-          Download
+          {/* In a row narrower than 240px the button keeps only its icon, leaving the file name the room.
+              The query sees the row's inside: 240px less its 26px of padding and border. */}
+          <span className="[@container(max-width:213px)]:hidden">Download</span>
         </a>
       )}
     </div>

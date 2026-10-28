@@ -72,7 +72,7 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   agentExists: vi.fn(async () => true),
   getAgent: (...args: unknown[]) => mockGetAgent(...args),
   // The policy routes read identity from the catalog record; project the
-  // CLAUDE.md-shaped fixtures the tests hand getAgent.
+  // AGENTS.md-shaped fixtures the tests hand getAgent.
   getAgentRecord: async (...args: unknown[]) => {
     const agent = (await mockGetAgent(...args)) as { slug: string; frontmatter: { name: string } } | null
     return agent ? { slug: agent.slug, name: agent.frontmatter.name, createdAt: new Date(0), placement: { runtime: 'local', workspaceHandle: null } } : null
@@ -83,8 +83,8 @@ vi.mock('@shared/lib/services/agent-service', () => ({
   updateAgent: vi.fn(),
   deleteAgent: vi.fn(),
   createAgentFromExistingWorkspace: vi.fn(),
-  setAgentClaudeMdContent: vi.fn(),
-  getAgentClaudeMdContent: vi.fn(),
+  setAgentInstructionsContent: vi.fn(),
+  getAgentInstructionsContent: vi.fn(),
 }))
 
 vi.mock('@shared/lib/container/container-host', async () => {
@@ -99,26 +99,6 @@ vi.mock('@shared/lib/container/container-host', async () => {
     }),
   }
 })
-
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    withSessionSend: async (_agentSlug: string, _sessionId: string, _client: unknown, send: () => Promise<unknown>) => {
-      return send()
-    },
-    isSessionActive: vi.fn(() => false),
-    isSessionAwaitingInput: vi.fn(() => false),
-    hasActiveSessionsForAgent: vi.fn(() => false),
-    hasSessionsAwaitingInputForAgent: vi.fn(() => false),
-    isSubscribed: vi.fn(() => true),
-    subscribeToSession: vi.fn(),
-    markSessionActive: vi.fn(),
-    setSlashCommands: vi.fn(),
-    broadcastGlobal: vi.fn(),
-    broadcastSessionUpdate: vi.fn(),
-    broadcastSessionEvent: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(),
-  },
-}))
 
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: { getPendingReviewsForAgent: vi.fn(() => []) },
@@ -494,6 +474,25 @@ describe('atomic single invoke policy endpoints', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ ok: true, removed: 1 })
     expect((await getPolicy(CALLER, 'invoke', TARGET_A))).toBeNull()
+  })
+
+  it('sets and removes a read grant the same way, apart from the invoke one', async () => {
+    const readUrl = `/api/agents/${CALLER}/x-agent-policies/read/${TARGET_A}`
+    await setPolicy(CALLER, 'invoke', TARGET_A, 'allow')
+    await app.request(readUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'allow' }) })
+    expect((await getPolicy(CALLER, 'read', TARGET_A))?.decision).toBe('allow')
+    await app.request(readUrl, { method: 'DELETE' })
+    expect(await getPolicy(CALLER, 'read', TARGET_A)).toBeNull()
+    expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
+  })
+
+  it('rejects any operation but invoke and read, so a near-miss never writes an invoke row', async () => {
+    for (const operation of ['list', 'XXread', 'invokeZZ']) {
+      const url = `/api/agents/${CALLER}/x-agent-policies/${operation}/${TARGET_A}`
+      expect((await app.request(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'allow' }) })).status).toBe(400)
+      expect((await app.request(url, { method: 'DELETE' })).status).toBe(400)
+    }
+    expect(await listPoliciesForCaller(CALLER)).toEqual([])
   })
 
   it('DELETE PRESERVES an explicit block (no silent escalation)', async () => {

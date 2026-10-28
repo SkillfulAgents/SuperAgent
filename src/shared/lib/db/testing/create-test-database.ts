@@ -13,6 +13,7 @@ import { betterSqlite3 } from '../drivers/better-sqlite3'
 import { libsql } from '../drivers/libsql'
 import type { AppDatabase, DatabaseDriver } from '../drivers/types'
 import { migrateFromBundle } from '../open-database'
+import type { MigrationMeta } from 'drizzle-orm/migrator'
 
 export type TestDriverName = 'better-sqlite3' | 'libsql'
 
@@ -36,10 +37,10 @@ export interface TestDatabase {
   close(): Promise<void>
 }
 
-export async function createTestDatabase(): Promise<TestDatabase> {
+export async function createTestDatabase(options: { migrations?: readonly MigrationMeta[] } = {}): Promise<TestDatabase> {
   const driver = testDriverName()
   const handle = await TEST_DRIVERS[driver]().open()
-  await migrateFromBundle(handle.db)
+  await migrateFromBundle(handle.db, options.migrations)
   return {
     db: handle.db,
     driver,

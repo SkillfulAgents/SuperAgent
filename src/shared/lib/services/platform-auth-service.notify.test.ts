@@ -48,4 +48,15 @@ describe('platform-service auth-change notify (unmocked)', () => {
 
     logSpy.mockRestore()
   })
+
+  it('tells the webhook relay on disconnect', async () => {
+    const { getWebhookRelay } = await import('../webhook-relay')
+    const onAuthChanged = vi.spyOn(getWebhookRelay(), 'onAuthChanged')
+    const { revokePlatformToken } = await import('./platform-auth-service')
+
+    await revokePlatformToken()
+
+    await vi.waitFor(() => expect(onAuthChanged).toHaveBeenCalled(), { timeout: 10000, interval: 50 })
+    onAuthChanged.mockRestore()
+  })
 })

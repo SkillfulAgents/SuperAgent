@@ -1,8 +1,10 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-memory-session-store'
+import { attachLiveSessionsHarness, createStreamClient } from '@shared/lib/agent-actor/testing/live-sessions-harness'
+import { localHostPort } from '@shared/lib/host/local-host-port'
+import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import * as path from 'path'
 import { promises as fs } from 'fs'
-import type { ContainerClient, StreamMessage } from './types'
+import type { StreamMessage } from './types'
 
 // Replay of the real premature-idle-on-queued-message capture (session
 // d6ca7b70, 2026-06-11). The user queued a follow-up while the agent streamed
@@ -13,14 +15,14 @@ import type { ContainerClient, StreamMessage } from './types'
 // session. The container then started a continuation run for the queued
 // message 73ms later.
 //
-// The bug: the persister discovered state-event support by observing a state
+// The bug: the session discovered state-event support by observing a state
 // event — but the first one a session can ever produce arrives only at the
 // final idle, so the first result was handled by the legacy result-driven
 // path and the session flipped idle (working indicator off, completion
 // notification fired) BEFORE the queued message's turn ran.
 //
 // The fix: the container announces `capabilities` (session_state_events) on
-// WebSocket connect, before any relayed SDK message, so the persister treats
+// WebSocket connect, before any relayed SDK message, so the session treats
 // state events as the idle authority from the session's very first turn.
 
 // ----- Mocks for external dependencies (mirrors subagent-task-events-replay) -----
@@ -107,60 +109,29 @@ async function loadFixture(): Promise<{ sessionId: string; agentSlug: string; en
   return { sessionId: meta.sessionId, agentSlug: meta.agentSlug, entries }
 }
 
-function createReplayClient(): { client: ContainerClient; send: (message: StreamMessage) => void } {
-  let callback: ((message: StreamMessage) => void) | null = null
-  const client = {
-    subscribeToStream: vi.fn((_sid: string, cb: (message: StreamMessage) => void) => {
-      callback = cb
-      return { unsubscribe: vi.fn(), ready: Promise.resolve() }
-    }),
-    start: vi.fn(),
-    stop: vi.fn(),
-    stopSync: vi.fn(),
-    getInfoFromRuntime: vi.fn(),
-    getInfo: vi.fn(),
-    fetch: vi.fn(),
-    waitForHealthy: vi.fn(),
-    isHealthy: vi.fn(),
-    getStats: vi.fn(),
-    createSession: vi.fn(),
-    getSession: vi.fn(() => Promise.resolve(null)),
-    deleteSession: vi.fn(),
-    sendMessage: vi.fn(),
-    interruptSession: vi.fn(),
-    on: vi.fn(),
-    off: vi.fn(),
-  } as unknown as ContainerClient
-  return { client, send: (m) => callback?.(m) }
-}
+// The completion notification goes out through the host port to the real
+// local handlers, i.e. to the mocked notification manager.
+const live = attachLiveSessionsHarness({ fallback: localHostPort })
 
 async function setUpReplay(entries: FixtureEntry[], sessionId: string, agentSlug: string) {
-  vi.resetModules()
-  const { messagePersister } = await import('./message-persister')
-  // The registry attaches the real stores; this test drives the persister alone.
-  messagePersister.attachSessionStores(createInMemorySessionStore)
-  const { notificationManager } = await import('@shared/lib/notifications/notification-manager')
-  const { client, send } = createReplayClient()
+  const sessions = live.sessions(agentSlug)
+  const client = createStreamClient()
+  const { events: sseEvents, stop: cleanup } = live.collect(agentSlug, sessionId)
 
-  const sseEvents: Array<Record<string, unknown>> = []
-  const cleanup = messagePersister.addSSEClient(agentSlug, sessionId, (data) => {
-    sseEvents.push(data as Record<string, unknown>)
-  })
-
-  await messagePersister.subscribeToSession(agentSlug, sessionId, client, sessionId)
+  await sessions.subscribe(sessionId, client, sessionId)
   // The POST /messages route marks the session active when the first user
   // message is sent.
-  messagePersister.markSessionActive(agentSlug, sessionId)
+  sessions.markActive(sessionId)
 
   const firstResultIdx = entries.findIndex((e) => e.message.content?.type === 'result')
   const sendRange = async (from: number, to: number) => {
     for (const entry of entries.slice(from, to)) {
-      send(entry.message)
+      client.emit(entry.message.content)
       await new Promise((r) => setImmediate(r))
     }
   }
 
-  return { messagePersister, notificationManager, sseEvents, cleanup, firstResultIdx, sendRange }
+  return { sessions, sseEvents, cleanup, firstResultIdx, sendRange }
 }
 
 const countIdle = (events: Array<Record<string, unknown>>) =>
@@ -172,18 +143,19 @@ const countIdle = (events: Array<Record<string, unknown>>) =>
 
 describe('queued-message-during-final-response replay (real capture, session d6ca7b70)', () => {
   afterEach(() => {
+    live.reset()
     vi.clearAllMocks()
   })
 
   it('does not flip idle at the first result while the queued message is still pending', async () => {
     const { sessionId, agentSlug, entries } = await loadFixture()
-    const { messagePersister, notificationManager, sseEvents, cleanup, firstResultIdx, sendRange } =
+    const { sessions, sseEvents, cleanup, firstResultIdx, sendRange } =
       await setUpReplay(entries, sessionId, agentSlug)
 
     // Replay turn 1 up to (but not including) its result. The queued POST
     // landed mid-stream — the route re-marks the session active (no-op).
     await sendRange(0, firstResultIdx)
-    messagePersister.markSessionActive(agentSlug, sessionId)
+    sessions.markActive(sessionId)
 
     // Deliver turn 1's result. In the real capture the CLI emits NO state
     // event here — the queued message keeps the runtime going, and the
@@ -192,8 +164,10 @@ describe('queued-message-during-final-response replay (real capture, session d6c
 
     // THE BUG: the legacy result-driven path finalized idle here.
     expect(countIdle(sseEvents)).toBe(0)
-    expect(messagePersister.isSessionActive(agentSlug, sessionId)).toBe(true)
-    // The premature completion notification was part of the same bug.
+    expect(sessions.isActive(sessionId)).toBe(true)
+    // The premature completion notification was part of the same bug. (It
+    // goes out once the transcript's end is read, so let that settle first.)
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(notificationManager.triggerSessionComplete).not.toHaveBeenCalled()
     // The turn's output is still announced so the renderer can reconcile the
     // just-streamed text against the transcript.
@@ -204,20 +178,20 @@ describe('queued-message-during-final-response replay (real capture, session d6c
 
     // Exactly one idle, at the authoritative session_state_changed:'idle'.
     expect(countIdle(sseEvents)).toBe(1)
-    expect(messagePersister.isSessionActive(agentSlug, sessionId)).toBe(false)
-    expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1)
+    expect(sessions.isActive(sessionId)).toBe(false)
+    await vi.waitFor(() => expect(notificationManager.triggerSessionComplete).toHaveBeenCalledTimes(1))
     expect(notificationManager.triggerSessionComplete).toHaveBeenCalledWith(
       sessionId,
       agentSlug,
       {
         responseText:
           '"Color" is the name physicists gave to a kind of charge that quarks carry — like electric charge, but with three varieties.',
-        responseTranscriptEndOffset: expect.any(Promise),
+        responseTranscriptEndOffset: null,
       },
     )
 
     cleanup()
-    messagePersister.unsubscribeFromSession(agentSlug, sessionId)
+    sessions.unsubscribe(sessionId)
   })
 
   it('legacy containers (no capabilities hello, no state events) keep result-driven idle', async () => {
@@ -227,28 +201,29 @@ describe('queued-message-during-final-response replay (real capture, session d6c
         e.message.content?.subtype !== 'capabilities' &&
         e.message.content?.subtype !== 'session_state_changed'
     )
-    const { messagePersister, notificationManager, sseEvents, cleanup, sendRange } =
+    const { sessions, sseEvents, cleanup, sendRange } =
       await setUpReplay(legacyEntries, sessionId, agentSlug)
 
     await sendRange(0, legacyEntries.length)
 
-    // Without the capability announcement the persister cannot know the
+    // Without the capability announcement the session cannot know the
     // runtime will continue, so each result finalizes idle (the original
     // pre-state-events behavior — premature for queued messages, but the
     // session is never left stuck).
     expect(countIdle(sseEvents)).toBeGreaterThanOrEqual(1)
-    expect(messagePersister.isSessionActive(agentSlug, sessionId)).toBe(false)
+    expect(sessions.isActive(sessionId)).toBe(false)
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(notificationManager.triggerSessionComplete).toHaveBeenLastCalledWith(
       sessionId,
       agentSlug,
       {
         responseText:
           '"Color" is the name physicists gave to a kind of charge that quarks carry — like electric charge, but with three varieties.',
-        responseTranscriptEndOffset: expect.any(Promise),
+        responseTranscriptEndOffset: null,
       },
     )
 
     cleanup()
-    messagePersister.unsubscribeFromSession(agentSlug, sessionId)
+    sessions.unsubscribe(sessionId)
   })
 })

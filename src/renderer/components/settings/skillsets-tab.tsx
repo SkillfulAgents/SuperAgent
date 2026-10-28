@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Input } from '@renderer/components/ui/input'
 import { Button } from '@renderer/components/ui/button'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
+import { offersPrivateSkillsets } from '@renderer/lib/capabilities'
 import {
   useSkillsets,
   useValidateSkillset,
@@ -28,6 +29,8 @@ export function SkillsetsTab() {
   const removeSkillset = useRemoveSkillset()
   const refreshSkillset = useRefreshSkillset()
   const updateCredential = useUpdateSkillsetCredential()
+  // A private repository clones on the server, which a sandboxed build can't do.
+  const privateSkillsets = offersPrivateSkillsets()
   const [urlInput, setUrlInput] = useState('')
   const [tokenInput, setTokenInput] = useState('')
   const [editingCredentialId, setEditingCredentialId] = useState<string | null>(null)
@@ -139,62 +142,66 @@ export function SkillsetsTab() {
           </Button>
         </div>
 
-        <Input
-          type="password"
-          autoComplete="off"
-          aria-label="Repository token (optional)"
-          placeholder="Repository token (optional, for private GitHub repositories)"
-          value={tokenInput}
-          onChange={(e) => {
-            setTokenInput(e.target.value)
-            setValidationResult(null)
-          }}
-          disabled={isBusy}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault()
-              handleValidateAndAdd()
-            }
-          }}
-        />
+        {privateSkillsets && (
+          <>
+            <Input
+              type="password"
+              autoComplete="off"
+              aria-label="Repository token (optional)"
+              placeholder="Repository token (optional, for private GitHub repositories)"
+              value={tokenInput}
+              onChange={(e) => {
+                setTokenInput(e.target.value)
+                setValidationResult(null)
+              }}
+              disabled={isBusy}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  handleValidateAndAdd()
+                }
+              }}
+            />
 
-        <div className="rounded-md border bg-muted/30 p-3 text-xs">
-          <p className="font-medium">Private GitHub repository token</p>
-          <ol className="mt-1.5 list-decimal space-y-1 pl-4 text-muted-foreground">
-            <li>
-              <a
-                href="https://github.com/settings/personal-access-tokens/new"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 text-primary hover:underline"
-              >
-                Create a fine-grained personal access token
-                <ExternalLink className="h-3 w-3" aria-hidden="true" />
-              </a>{' '}
-              and choose the repository owner.
-            </li>
-            <li>
-              Under <span className="font-medium text-foreground">Repository access</span>, choose{' '}
-              <span className="font-medium text-foreground">Only select repositories</span> and
-              select this skillset repository.
-            </li>
-            <li>
-              Under <span className="font-medium text-foreground">Repository permissions</span>,
-              set <span className="font-medium text-foreground">Contents</span> to{' '}
-              <span className="font-medium text-foreground">Read-only</span>. GitHub adds Metadata
-              read access automatically.
-            </li>
-            <li>Generate the token and paste it above.</li>
-          </ol>
-          <p className="mt-2 text-muted-foreground">
-            This minimum permission supports discovering, installing, and refreshing skills. A
-            classic token also works with the broader{' '}
-            <code className="rounded bg-muted px-1 py-0.5 text-foreground">repo</code> scope, but a
-            fine-grained token is recommended. Publishing pull requests requires additional write
-            and fork permissions. If GitHub marks an organization token as pending, an organization
-            owner must approve it before it can read private repositories.
-          </p>
-        </div>
+            <div className="rounded-md border bg-muted/30 p-3 text-xs">
+              <p className="font-medium">Private GitHub repository token</p>
+              <ol className="mt-1.5 list-decimal space-y-1 pl-4 text-muted-foreground">
+                <li>
+                  <a
+                    href="https://github.com/settings/personal-access-tokens/new"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-primary hover:underline"
+                  >
+                    Create a fine-grained personal access token
+                    <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                  </a>{' '}
+                  and choose the repository owner.
+                </li>
+                <li>
+                  Under <span className="font-medium text-foreground">Repository access</span>, choose{' '}
+                  <span className="font-medium text-foreground">Only select repositories</span> and
+                  select this skillset repository.
+                </li>
+                <li>
+                  Under <span className="font-medium text-foreground">Repository permissions</span>,
+                  set <span className="font-medium text-foreground">Contents</span> to{' '}
+                  <span className="font-medium text-foreground">Read-only</span>. GitHub adds Metadata
+                  read access automatically.
+                </li>
+                <li>Generate the token and paste it above.</li>
+              </ol>
+              <p className="mt-2 text-muted-foreground">
+                This minimum permission supports discovering, installing, and refreshing skills. A
+                classic token also works with the broader{' '}
+                <code className="rounded bg-muted px-1 py-0.5 text-foreground">repo</code> scope, but a
+                fine-grained token is recommended. Publishing pull requests requires additional write
+                and fork permissions. If GitHub marks an organization token as pending, an organization
+                owner must approve it before it can read private repositories.
+              </p>
+            </div>
+          </>
+        )}
 
         {validationResult && !validationResult.valid && (
           <Alert variant="destructive">
@@ -318,21 +325,23 @@ export function SkillsetsTab() {
                 )}
               </div>
               <div className="flex gap-1 shrink-0">
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="h-7 w-7"
-                  onClick={() => {
-                    const nextId = editingCredentialId === ss.id ? null : ss.id
-                    setEditingCredentialId(nextId)
-                    setReplacementToken('')
-                    setCredentialError(null)
-                  }}
-                  disabled={updateCredential.isPending || (ss.provider ?? 'github') !== 'github'}
-                  title={ss.credential ? 'Replace or remove repository token' : 'Add repository token'}
-                >
-                  {editingCredentialId === ss.id ? <X className="h-3.5 w-3.5" /> : <KeyRound className="h-3.5 w-3.5" />}
-                </Button>
+                {privateSkillsets && (
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-7 w-7"
+                    onClick={() => {
+                      const nextId = editingCredentialId === ss.id ? null : ss.id
+                      setEditingCredentialId(nextId)
+                      setReplacementToken('')
+                      setCredentialError(null)
+                    }}
+                    disabled={updateCredential.isPending || (ss.provider ?? 'github') !== 'github'}
+                    title={ss.credential ? 'Replace or remove repository token' : 'Add repository token'}
+                  >
+                    {editingCredentialId === ss.id ? <X className="h-3.5 w-3.5" /> : <KeyRound className="h-3.5 w-3.5" />}
+                  </Button>
+                )}
                 <Button
                   size="icon"
                   variant="ghost"

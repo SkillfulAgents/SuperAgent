@@ -17,7 +17,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { getAgentActivityStatus, type AgentActivityStatus } from '@shared/lib/types/agent-activity-status'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
-import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
+import { WorkingDots, AwaitingDot, UnreadDot } from '@renderer/components/agents/status-indicators'
 import { useNotableSessions } from '@renderer/hooks/use-sessions'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { useAgentActivityStats } from '@renderer/hooks/use-activity-stats'
@@ -179,11 +179,11 @@ function AgentToolbar({ data, selected }: { data: AgentNodeData; selected: boole
               ) : isWorking ? (
                 <WorkingDots />
               ) : (
-                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500" />
+                <UnreadDot mention={session.hasUnreadMention} />
               )}
               <span className="min-w-0 truncate">{session.name}</span>
               <span className="ml-auto shrink-0 text-muted-foreground">
-                {isAwaiting ? 'needs input' : isWorking ? 'working' : 'new message'}
+                {isAwaiting ? 'needs input' : isWorking ? 'working' : session.hasUnreadMention ? 'mentioned you' : 'new message'}
               </span>
             </button>
           )

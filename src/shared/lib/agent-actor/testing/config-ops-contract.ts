@@ -3,10 +3,11 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConfigDocError } from '../config-schema'
-import type { ConfigOps, FileOps } from '../types'
+import type { FileOps, StoreConfigOps } from '../types'
+import { updateConfigDoc } from '../update-config-doc'
 
 export interface ConfigOpsHarness {
-  config: ConfigOps
+  config: StoreConfigOps
   /** The same workspace, to inspect what was stored. */
   files: FileOps
   dispose?: () => Promise<void> | void
@@ -17,7 +18,7 @@ const decode = (bytes: Uint8Array | null) => (bytes ? new TextDecoder().decode(b
 export function describeConfigOpsContract(name: string, make: () => Promise<ConfigOpsHarness> | ConfigOpsHarness): void {
   describe(`${name} — ConfigOps contract`, () => {
     let harness: ConfigOpsHarness
-    let config: ConfigOps
+    let config: StoreConfigOps
     let files: FileOps
 
     beforeEach(async () => {
@@ -38,10 +39,24 @@ export function describeConfigOpsContract(name: string, make: () => Promise<Conf
     it('text documents round-trip verbatim at their workspace path', async () => {
       await config.put('instructions', '---\nname: A\n---\nBe kind.\n')
       expect(await config.get('instructions')).toBe('---\nname: A\n---\nBe kind.\n')
-      expect(decode(await files.getDoc('CLAUDE.md'))).toBe('---\nname: A\n---\nBe kind.\n')
+      expect(decode(await files.getDoc('AGENTS.md'))).toBe('---\nname: A\n---\nBe kind.\n')
 
       await config.put('secrets', 'API_KEY=x\n')
       expect(decode(await files.getDoc('.env'))).toBe('API_KEY=x\n')
+    })
+
+    it('instructions use CLAUDE.md while it exists, AGENTS.md otherwise', async () => {
+      await files.putDoc('AGENTS.md', 'from agents\n')
+      expect(await config.get('instructions')).toBe('from agents\n')
+      await config.put('instructions', 'edited\n')
+      expect(decode(await files.getDoc('AGENTS.md'))).toBe('edited\n')
+      expect(await files.getDoc('CLAUDE.md')).toBeNull()
+
+      await files.putDoc('CLAUDE.md', 'from claude\n')
+      expect(await config.get('instructions')).toBe('from claude\n')
+      await config.put('instructions', 'edited again\n')
+      expect(decode(await files.getDoc('CLAUDE.md'))).toBe('edited again\n')
+      expect(decode(await files.getDoc('AGENTS.md'))).toBe('edited\n')
     })
 
     it('JSON documents are validated on write, stored pretty-printed, and validated on read', async () => {
@@ -95,6 +110,42 @@ export function describeConfigOpsContract(name: string, make: () => Promise<Conf
       )
       const lines = ((await config.get('secrets')) ?? '').trim().split('\n').sort()
       expect(lines).toEqual(Array.from({ length: 8 }, (_, i) => `K${i}=v`).sort())
+    })
+
+    it('read gives a revision that put checks: a stale one stores nothing', async () => {
+      expect(await config.read('secrets')).toEqual({ doc: null, revision: null })
+      // Create-only: a null revision stores only while there is nothing.
+      expect(await config.put('secrets', 'A=1\n', { ifRevision: null })).toBe(true)
+      expect(await config.put('secrets', 'B=2\n', { ifRevision: null })).toBe(false)
+
+      const first = await config.read('secrets')
+      expect(first.doc).toBe('A=1\n')
+      expect(first.revision).toEqual(expect.any(String))
+      expect(await config.put('secrets', 'A=2\n', { ifRevision: first.revision })).toBe(true)
+      // The revision moved with the write: the first one is stale now.
+      expect(await config.put('secrets', 'A=3\n', { ifRevision: first.revision })).toBe(false)
+      expect(await config.get('secrets')).toBe('A=2\n')
+      expect((await config.read('secrets')).revision).not.toBe(first.revision)
+    })
+
+    it('updateConfigDoc is a compare-and-set loop: concurrent updates all land, a no-op writes nothing', async () => {
+      await config.put('secrets', '')
+      await Promise.all(
+        Array.from({ length: 8 }, (_, i) => updateConfigDoc(config, 'secrets', (current) => `${current ?? ''}K${i}=v\n`)),
+      )
+      const lines = ((await config.get('secrets')) ?? '').trim().split('\n').sort()
+      expect(lines).toEqual(Array.from({ length: 8 }, (_, i) => `K${i}=v`).sort())
+
+      const writes = vi.spyOn(files, 'putDoc')
+      expect(await updateConfigDoc(config, 'secrets', (current) => current)).toBe(await config.get('secrets'))
+      expect(writes).not.toHaveBeenCalled()
+      writes.mockRestore()
+    })
+
+    it('updateConfigDoc stops before writing over a corrupt document', async () => {
+      await files.putDoc('agent-preferences.json', '{not json')
+      await expect(updateConfigDoc(config, 'preferences', () => ({}))).rejects.toMatchObject({ code: 'corrupt' })
+      expect(decode(await files.getDoc('agent-preferences.json'))).toBe('{not json')
     })
 
     it('settings pass unknown keys through and hooks fit their schema', async () => {

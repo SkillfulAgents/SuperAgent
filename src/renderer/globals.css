@@ -2,6 +2,28 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+  Slussen (Blaze Type, licensed) ships two weights. Each face claims a weight
+  RANGE so every weight the app asks for lands on a real face: anything up to
+  400 (font-light included) renders Regular, and 500 and up renders Medium —
+  the app's ceiling — instead of the browser faux-bolding Medium for a stray
+  font-semibold/font-bold.
+*/
+@font-face {
+  font-family: 'Slussen';
+  src: url('./assets/fonts/slussen-regular.woff2') format('woff2');
+  font-weight: 100 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Slussen';
+  src: url('./assets/fonts/slussen-medium.woff2') format('woff2');
+  font-weight: 500 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 @layer base {
   :root {
     --background: 0 0% 100%;
@@ -83,7 +105,7 @@
   }
   html, body {
     @apply bg-background text-foreground h-screen;
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: theme('fontFamily.sans');
     /* The app is a fixed full-height shell — scrolling lives in inner regions,
        never the document. Lock it so iOS Safari can't rubber-band or scroll-chain
        the whole page when an inner scroller reaches its boundary. */
@@ -176,16 +198,18 @@ html[data-keyboard-open] [data-composer-footer] {
   overflow-wrap: anywhere;
 }
 
-/* prosemirror-view's own stylesheet sets `font-variant-ligatures: none` on
-   .ProseMirror, which also disables Inter's contextual alternates — the calt
-   substitutions that draw ->, --> and => as arrows. That stylesheet is imported
-   by the editor component, so it lands after this file in the bundle and a
-   same-specificity override loses the cascade. Double the class so this rule
-   wins regardless of import order. */
+/* prosemirror-view's own stylesheet sets `font-variant-ligatures: none` and
+   `font-feature-settings: "liga" 0` on .ProseMirror. The latter replaces the
+   inherited "ss08" — Slussen's arrow set, which draws -> and --> as arrows
+   (tailwind.config.ts) — so the composer would show a bare -> while the sent
+   message shows an arrow. That stylesheet is imported by the editor component,
+   so it lands after this file in the bundle and a same-specificity override
+   loses the cascade. Double the class so this rule wins regardless of import
+   order. */
 .markdown-composer-editor.markdown-composer-editor {
   -webkit-font-variant-ligatures: normal;
   font-variant-ligatures: normal;
-  font-feature-settings: normal;
+  font-feature-settings: inherit;
 }
 
 .markdown-composer-editor[contenteditable="false"] {
@@ -198,6 +222,42 @@ html[data-keyboard-open] [data-composer-footer] {
   color: hsl(var(--muted-foreground));
   content: attr(data-placeholder);
   pointer-events: none;
+}
+
+/* Live status text on a working Todo card: a slow light sweep across muted
+   text, so "still going" reads without a spinner. */
+.todo-shimmer {
+  color: transparent;
+  background: linear-gradient(
+    90deg,
+    hsl(var(--muted-foreground)) 0%,
+    hsl(var(--muted-foreground)) 40%,
+    hsl(var(--foreground)) 50%,
+    hsl(var(--muted-foreground)) 60%,
+    hsl(var(--muted-foreground)) 100%
+  );
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: todo-shimmer 2.4s linear infinite;
+}
+
+@keyframes todo-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: 0% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .todo-shimmer {
+    animation: none;
+    background: none;
+    color: hsl(var(--muted-foreground));
+  }
+}
+
+/* The Todo draft dialog wants its empty-state hint quieter than chat's. */
+.todo-draft-editor .markdown-composer-editor[data-empty="true"]::before {
+  color: hsl(var(--muted-foreground) / 0.6);
 }
 
 .markdown-composer-editor p,
@@ -261,13 +321,6 @@ html[data-keyboard-open] [data-composer-footer] {
 .markdown-composer-editor ol { list-style: decimal; }
 .markdown-composer-editor li > p { min-height: auto; }
 .markdown-composer-editor li::marker { color: hsl(var(--muted-foreground)); }
-
-.markdown-composer-editor a {
-  color: hsl(var(--foreground));
-  text-decoration: underline;
-  text-decoration-color: hsl(var(--muted-foreground) / .6);
-  text-underline-offset: 2px;
-}
 
 .markdown-composer-editor hr {
   margin: .45rem 0;
@@ -710,48 +763,6 @@ html[data-keyboard-open] [data-composer-footer] {
   will-change: transform;
 }
 
-/* Voice agent orb — glowing sphere with radial depth and amp-driven reactivity.
-   --orb-amp (0..1) is set on the element via JS, driven by the active analyser
-   when speaking or a slow sinusoidal breath when idle. */
-.voice-agent-orb {
-  --orb-amp: 0.15;
-  background:
-    radial-gradient(
-      circle at 30% 28%,
-      rgba(219, 234, 254, 0.95) 0%,
-      rgba(96, 165, 250, 0.55) 42%,
-      rgba(37, 99, 235, 0.4) 78%,
-      rgba(30, 58, 138, 0.45) 100%
-    );
-  box-shadow:
-    0 0 calc(20px + var(--orb-amp) * 80px) rgba(59, 130, 246, calc(0.25 + var(--orb-amp) * 0.55)),
-    inset 0 -14px 30px rgba(30, 64, 175, 0.3),
-    inset 0 12px 24px rgba(255, 255, 255, 0.4);
-  transform: scale(calc(1 + var(--orb-amp) * 0.09));
-  will-change: transform, box-shadow;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .voice-agent-orb {
-    transform: none;
-  }
-}
-
-.dark .voice-agent-orb {
-  background:
-    radial-gradient(
-      circle at 30% 28%,
-      rgba(147, 197, 253, 0.75) 0%,
-      rgba(59, 130, 246, 0.4) 42%,
-      rgba(30, 64, 175, 0.4) 78%,
-      rgba(15, 23, 42, 0.6) 100%
-    );
-  box-shadow:
-    0 0 calc(20px + var(--orb-amp) * 80px) rgba(96, 165, 250, calc(0.3 + var(--orb-amp) * 0.6)),
-    inset 0 -14px 30px rgba(15, 23, 42, 0.5),
-    inset 0 12px 24px rgba(147, 197, 253, 0.25);
-}
-
 /* Create-agent screen intro: items fade down from the top with a brief blur.
    Transition-based so enter/exit are symmetric and don't flicker on class swap. */
 .create-agent-item {
@@ -819,6 +830,11 @@ html[data-keyboard-open] [data-composer-footer] {
 .dark ::highlight(session-search-current) {
   background-color: rgb(249 115 22); /* orange-500 */
   color: black;
+}
+
+/* Commented text in the file drawer (CSS Custom Highlight API) */
+::highlight(file-comment) {
+  background-color: hsl(var(--primary) / 0.12);
 }
 
 /*
@@ -1021,6 +1037,7 @@ html[data-keyboard-open] [data-composer-footer] {
   position: absolute;
   inset: 0;
   width: 100% !important;
+  transition-property: width; /* a slide-over margin snaps to 0 with the edge instead of gliding after it */
   z-index: 30;
   border-left-width: 0;
   box-shadow: none;
@@ -1037,6 +1054,7 @@ html[data-keyboard-open] [data-composer-footer] {
     z-index: 30;
     left: 0;
     width: 100% !important; /* overrides the persisted inline drawer width */
+    margin-left: 0 !important; /* and the slide-over margin */
     border-left-width: 0;
     box-shadow: none;
     transform: translateX(0);
@@ -1049,6 +1067,10 @@ html[data-keyboard-open] [data-composer-footer] {
   }
 
   .file-preview-responsive-resize-handle {
+    display: none;
+  }
+
+  .file-preview-responsive-scrim {
     display: none;
   }
 
@@ -1248,50 +1270,27 @@ html[data-keyboard-open] [data-composer-footer] {
   }
 }
 
-/* Voice mode: the mic button's ring follows the person's voice while it is
-   their turn (--voice-level is set per frame from the mic's analyser) and
-   breathes on its own between words; while the reply is read it glows warm
-   instead. The ring is a sibling span so the icon never scales. */
-.voice-mic-ring {
-  transition: opacity 120ms ease-out;
+/* Composer swap (text <-> voice): AnimatedHeight glides the frame between
+   the two heights while the frame itself stays solid; only its rows fade
+   and settle in, one after another. */
+.composer-enter-contents > * {
+  animation: composer-enter 280ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.composer-enter-contents > *:nth-child(2) { animation-delay: 40ms; }
+.composer-enter-contents > *:nth-child(3) { animation-delay: 80ms; }
+.composer-enter-contents > *:nth-child(n + 4) { animation-delay: 120ms; }
+
+@keyframes composer-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
 }
 
-.voice-mic-listening .voice-mic-ring {
-  background: radial-gradient(circle, rgba(56, 189, 248, 0.45) 0%, rgba(56, 189, 248, 0.12) 55%, transparent 72%);
-  transform: scale(calc(1.08 + var(--voice-level, 0) * 0.55));
-  opacity: calc(0.55 + var(--voice-level, 0) * 0.45);
-  animation: voice-mic-breathe 2.4s ease-in-out infinite;
-}
-
-.voice-mic-speaking {
-  box-shadow: 0 0 0 6px rgba(249, 115, 22, 0.12), 0 0 28px 6px rgba(249, 115, 22, 0.28);
-  animation: voice-mic-glow 1.8s ease-in-out infinite;
-}
-
-.voice-mic-thinking .voice-mic-ring {
-  border: 2px dashed hsl(var(--muted-foreground) / 0.35);
-  inset: -6px;
-  animation: voice-mic-spin 6s linear infinite;
-}
-
-@keyframes voice-mic-breathe {
-  0%, 100% { filter: brightness(1); }
-  50% { filter: brightness(1.25); }
-}
-
-@keyframes voice-mic-glow {
-  0%, 100% { box-shadow: 0 0 0 6px rgba(249, 115, 22, 0.10), 0 0 24px 4px rgba(249, 115, 22, 0.22); }
-  50% { box-shadow: 0 0 0 10px rgba(249, 115, 22, 0.16), 0 0 36px 10px rgba(249, 115, 22, 0.34); }
-}
-
-@keyframes voice-mic-spin {
-  to { transform: rotate(360deg); }
+/* The voice transcript column arrives after the orb has slid aside for it. */
+.voice-strip-enter {
+  animation: composer-enter 320ms cubic-bezier(0.22, 1, 0.36, 1) 260ms both;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .voice-mic-listening .voice-mic-ring,
-  .voice-mic-speaking,
-  .voice-mic-thinking .voice-mic-ring {
-    animation: none;
-  }
+  .composer-enter-contents > * { animation: none; }
+  .voice-strip-enter { animation: none; }
 }

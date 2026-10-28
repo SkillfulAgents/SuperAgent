@@ -31,14 +31,18 @@ itself important.
 - `session-history.md`
 - `scheduling-and-resuming.md`
 - `webhooks.md`
+- `hooks.md`
 - `media-generation.md`
 - `lead-enrichment.md`
 - `chat-integrations.md`
 - `browser-use.md`
 - `computer-use.md`
 - `x.md`
+- `gohighlevel.md`
 - `audio.md`
 - `exa.md`
+- `in-app-links.md`
+- `agent-and-skill-packages.md`
 
 `session-history.md` is the one guide with executable companions: the two
 readers under `agent-container/bin/`, installed at `/opt/gamut/bin/`. Keep the

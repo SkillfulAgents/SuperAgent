@@ -1,163 +1,168 @@
-import path from 'path'
-import os from 'os'
-import fs from 'fs'
-import crypto from 'crypto'
-import {
-  readJsonFileStrict,
-  writeJsonFileAtomic,
-  withFileLock,
-  directoryExists,
-  CorruptFileError,
-} from '@shared/lib/utils/file-storage'
-import { containerHost } from '@shared/lib/agent-actor'
-import { isPathWithinDir } from '@shared/lib/utils/path-safety'
-import { captureException } from '@shared/lib/error-reporting'
-import type { AgentMount, AgentMountWithHealth } from '@shared/lib/types/mount'
-import { agentMountsSchema } from './mount-schema'
+import { randomUUID } from 'node:crypto'
+import { and, asc, eq, exists, isNotNull, isNull, sql } from 'drizzle-orm'
+import { db } from '@shared/lib/db'
+import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
+import { agents, agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
+import type { ContainerVolume, MountedVolume, MountSummaryWithHealth, NotMountedVolume } from '@shared/lib/types/mount'
+import { instantiateVolume } from '@shared/lib/volumes/volume-factory'
+import { volumeHealth, volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
+import { prepareVolumeDefinition, selectableVolumes, storedDefinition, VolumeError, type VolumeViewer } from './volume-service'
 
-// Mounts are host folders bind-mounted into the container — a host-only feature,
-// so the file sits at the agent's host path (from the container host, not the actor).
-function getMountsFilePath(slug: string): string {
-  return path.join(containerHost.agentHostPath(slug), 'mounts.json')
+export { volumeSummary } from '@shared/lib/volumes/volume-health'
+
+/** How long a container start waits for drives still making their first copy. Past it, the start goes on without them. */
+const FIRST_COPY_WAIT_MS = 20_000
+
+/** Allocate inside the INSERT so concurrent attachments cannot claim the same
+ * name. With N existing mounts, N+1 candidate suffixes always suffice. */
+function availableMountName(slug: string, base: string) {
+  return sql<string>`(with recursive candidates(n) as (
+    select 1 union all select n + 1 from candidates
+    where n <= (select count(*) from ${agentVolumes} where ${agentVolumes.agentSlug} = ${slug})
+  ) select case when n = 1 then ${base} else ${base} || '-' || n end from candidates
+    where not exists (select 1 from ${agentVolumes}
+      where ${agentVolumes.agentSlug} = ${slug}
+      and ${agentVolumes.name} = case when n = 1 then ${base} else ${base} || '-' || n end)
+    order by n limit 1)`
 }
 
-/**
- * Strict read for the read-modify-write paths (addMount/removeMount): an absent
- * file is `[]`, but a corrupt/torn `mounts.json` or IO error THROWS so the write
- * aborts instead of clobbering the file with just the new/remaining mount (the
- * previous catch-all swallowed bad reads, so the next write dropped every prior
- * mount). Do NOT use this on read-only display paths — use {@link getMounts}.
- */
-function readMountsStrict(slug: string): Promise<AgentMount[]> {
-  return readJsonFileStrict(getMountsFilePath(slug), agentMountsSchema, [])
-}
-
-/**
- * Read the agent's mounts for READ-ONLY consumers (the mounts UI, health checks,
- * and CONTAINER START). Tolerant: an absent file is `[]`, and a corrupt/unreadable
- * file degrades to `[]` (logged + captured) rather than throwing — a bad
- * mounts.json must not brick `getMountsWithHealth` (which runs on every container
- * start) or 500 the mounts route. This never writes, so degrading to `[]` is safe;
- * writes go through addMount/removeMount, which use the strict read and abort on
- * corruption instead of overwriting.
- */
-export async function getMounts(slug: string): Promise<AgentMount[]> {
-  try {
-    return await readMountsStrict(slug)
-  } catch (error) {
-    if (error instanceof CorruptFileError) {
-      console.error(`Corrupt mounts.json for agent ${slug}; treating as no mounts (NOT overwriting)`, error)
-      captureException(error, { tags: { area: 'mounts', op: 'read' }, extra: { agentSlug: slug } })
-      return []
-    }
-    throw error
-  }
-}
-
-/**
- * Cloud-synced directories that macOS File Providers manage (iCloud Drive,
- * Dropbox, OneDrive, Google Drive, etc.). The Electron app can read these
- * because it has the user's TCC grant, but the Lima VM helper process does
- * NOT — macOS denies it with EPERM when the container runtime stats the path,
- * so the mount can't be shared into the agent sandbox. A host accessSync still
- * passes for the app, so we detect these by path prefix instead.
- */
-function getCloudStoragePrefixes(): string[] {
-  const home = os.homedir()
-  return [
-    // iCloud Drive
-    path.join(home, 'Library', 'Mobile Documents'),
-    // Third-party File Provider storage (Dropbox, OneDrive, Google Drive, …)
-    path.join(home, 'Library', 'CloudStorage'),
-  ]
-}
-
-/**
- * Detect whether a host path lives inside a cloud-synced directory that can't
- * be shared into the agent sandbox. Returns true on macOS for iCloud Drive and
- * `~/Library/CloudStorage/...` File Provider paths.
- */
-export function isCloudStoragePath(hostPath: string): boolean {
-  if (process.platform !== 'darwin') return false
-  const normalized = path.resolve(hostPath)
-  return getCloudStoragePrefixes().some((prefix) => isPathWithinDir(prefix, normalized))
-}
-
-/** User-facing message shown when a cloud-synced folder is rejected as a mount. */
-export const CLOUD_MOUNT_MESSAGE =
-  'This folder is in iCloud Drive or a cloud-synced location (Dropbox, OneDrive, Google Drive), ' +
-  'which can’t be shared into the agent sandbox. Please copy it to a regular local folder ' +
-  '(e.g. somewhere under your home directory) and mount that instead.'
-
-async function writeMounts(slug: string, mounts: AgentMount[]): Promise<void> {
-  const filePath = getMountsFilePath(slug)
-  await fs.promises.mkdir(path.dirname(filePath), { recursive: true })
-  // Atomic temp-file + rename: an interrupted write can never truncate
-  // mounts.json into the half-state the old reader would have swallowed.
-  await writeJsonFileAtomic(filePath, agentMountsSchema.parse(mounts))
-}
-
-export async function addMount(slug: string, hostPath: string): Promise<AgentMount> {
-  if (!path.isAbsolute(hostPath)) {
-    throw new Error('hostPath must be an absolute path')
-  }
-  // Reject cloud-synced folders before the user hits a cryptic run-time failure:
-  // the Lima VM helper can't stat File Provider paths even though the app can.
-  // Check the user-supplied path AND its realpath — iCloud aliases can resolve
-  // out of the cloud prefix, but the cloud prefix itself is the reliable signal.
-  if (isCloudStoragePath(hostPath)) {
-    throw new Error(CLOUD_MOUNT_MESSAGE)
-  }
-  const resolved = await fs.promises.realpath(hostPath)
-  if (isCloudStoragePath(resolved)) {
-    throw new Error(CLOUD_MOUNT_MESSAGE)
-  }
-  if (!(await fs.promises.stat(resolved)).isDirectory()) {
-    throw new Error('hostPath must be a directory')
-  }
-
-  // The read-modify-write must not interleave with a concurrent add/remove for
-  // the same agent (the old sync code got this for free by never yielding).
-  return withFileLock(getMountsFilePath(slug), async () => {
-    const mounts = await readMountsStrict(slug)
-    const baseName = path.basename(resolved)
-
-    // Pick container path, append -2, -3, etc. on collision
-    let containerName = baseName
-    let suffix = 2
-    while (mounts.some((m) => m.containerPath === `/mounts/${containerName}`)) {
-      containerName = `${baseName}-${suffix}`
-      suffix++
-    }
-
-    const mount: AgentMount = {
-      id: crypto.randomUUID(),
-      hostPath: resolved,
-      containerPath: `/mounts/${containerName}`,
-      folderName: baseName,
-      addedAt: new Date().toISOString(),
-    }
-
-    mounts.push(mount)
-    await writeMounts(slug, mounts)
-    return mount
+/** The agent's own drives, then every global drive it does not already have. Its own access wins. */
+export async function getMounts(slug: string): Promise<MountedVolume[]> {
+  const rows = await db.select({ volume: volumeDefinitions, mount: agentVolumes })
+    .from(agentVolumes).innerJoin(volumeDefinitions, eq(agentVolumes.volumeId, volumeDefinitions.id))
+    .where(eq(agentVolumes.agentSlug, slug)).orderBy(asc(agentVolumes.createdAt), asc(agentVolumes.id)).all()
+  const own: MountedVolume[] = rows.flatMap(({ volume, mount }) => {
+    const stored = storedDefinition(volume)
+    return stored ? [{ ...stored, id: mount.id, name: mount.name, volumeId: volume.id, volumeName: volume.name, readOnly: mount.readOnly }] : []
   })
-}
-
-export function removeMount(slug: string, mountId: string): Promise<void> {
-  return withFileLock(getMountsFilePath(slug), async () => {
-    const mounts = await readMountsStrict(slug)
-    const filtered = mounts.filter((m) => m.id !== mountId)
-    await writeMounts(slug, filtered)
+  const globals = await db.select().from(volumeDefinitions)
+    .where(and(isNotNull(volumeDefinitions.globalAccess), isNull(volumeDefinitions.userId)))
+    .orderBy(asc(volumeDefinitions.createdAt), asc(volumeDefinitions.id)).all()
+  const names = new Set(own.map(mount => mount.name))
+  const global: MountedVolume[] = globals.flatMap(volume => {
+    const stored = own.some(mount => mount.volumeId === volume.id) ? null : storedDefinition(volume)
+    if (!stored) return []
+    const name = uniqueName(volume.name, names)
+    names.add(name)
+    // One id per agent, as with attachment rows: providers keep upload state per mount id.
+    return [{ ...stored, id: `global-${slug}-${volume.id}`, name, volumeId: volume.id, volumeName: volume.name, readOnly: volume.globalAccess !== 'write', global: true }]
   })
+  return [...own, ...global]
 }
 
-export async function getMountsWithHealth(slug: string): Promise<AgentMountWithHealth[]> {
-  const mounts = await getMounts(slug)
-  return Promise.all(
-    mounts.map(async (m) => ({
-      ...m,
-      health: (await directoryExists(m.hostPath)) ? ('ok' as const) : ('missing' as const),
-    }))
-  )
+/** The agents `getMounts` gives this drive: those it is attached to, or every agent while it is global. */
+export async function agentsWithVolume(volumeId: string): Promise<string[]> {
+  const global = await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions)
+    .where(and(eq(volumeDefinitions.id, volumeId), isNotNull(volumeDefinitions.globalAccess), isNull(volumeDefinitions.userId))).get()
+  const rows = global
+    ? await db.select({ agentSlug: agents.slug }).from(agents).all()
+    : await db.select({ agentSlug: agentVolumes.agentSlug }).from(agentVolumes).where(eq(agentVolumes.volumeId, volumeId)).all()
+  return [...new Set(rows.map(row => row.agentSlug))]
+}
+
+function uniqueName(base: string, taken: Set<string>): string {
+  if (!taken.has(base)) return base
+  let n = 2
+  while (taken.has(`${base}-${n}`)) n++
+  return `${base}-${n}`
+}
+
+/** The folder picker creates a source and attaches it atomically. */
+export async function addMount(
+  slug: string, type: string, config: unknown, viewer: VolumeViewer,
+  options: { name?: string; visibility?: 'public' | 'private' } = {},
+): Promise<MountedVolume> {
+  const row = await prepareVolumeDefinition({ type, config, ...options }, viewer)
+  const id = randomUUID()
+  await batch([
+    db.insert(volumeDefinitions).values(row),
+    db.insert(agentVolumes).values({ id, agentSlug: slug, volumeId: row.id, name: availableMountName(slug, row.name), createdAt: new Date() }),
+  ])
+  const mount = (await getMounts(slug)).find(m => m.id === id)
+  if (!mount) throw new VolumeError('Drive could not be loaded', 404)
+  return mount
+}
+
+/** An existing source is referenced, never copied. Visibility is checked in the
+ * INSERT itself, so a concurrent access change cannot be bypassed. */
+export async function attachMount(slug: string, volumeId: string, viewer: VolumeViewer, { readOnly = false } = {}): Promise<MountedVolume> {
+  const selection = and(eq(volumeDefinitions.id, volumeId), selectableVolumes(viewer))
+  const source = await db.select().from(volumeDefinitions).where(selection).get()
+  if (!source) throw new VolumeError('Drive not found', 404)
+  const stored = storedDefinition(source)
+  if (!stored || !instantiateVolume(stored)) throw new VolumeError('Drive configuration is unavailable', 400)
+  const result = await insertWhere(agentVolumes, {
+    id: randomUUID(), agentSlug: slug, volumeId, name: availableMountName(slug, source.name), readOnly, createdAt: new Date(),
+  }, exists(db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(selection)))
+    // Asked for read-only, an attachment the agent already had becomes read-only too. It never becomes writable here.
+    .onConflictDoUpdate({ target: [agentVolumes.agentSlug, agentVolumes.volumeId], set: { readOnly: sql`${agentVolumes.readOnly} OR excluded.read_only` } }).run()
+  // Idempotent attachment still requires current visibility.
+  if (changesOf(result) === 0 && !await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(selection).get()) {
+    throw new VolumeError('Drive not found', 404)
+  }
+  const mount = (await getMounts(slug)).find(m => m.volumeId === volumeId)
+  if (!mount) throw new VolumeError('Drive could not be loaded', 404)
+  return mount
+}
+
+/** False when the agent has no such mount. Like attach and remove, the mount takes the change on the next start. */
+export async function setMountReadOnly(slug: string, mountId: string, readOnly: boolean): Promise<boolean> {
+  const result = await db.update(agentVolumes).set({ readOnly })
+    .where(and(eq(agentVolumes.agentSlug, slug), eq(agentVolumes.id, mountId))).run()
+  return changesOf(result) > 0
+}
+
+/** False when the agent has no such attachment, including a global drive. */
+export async function removeMount(slug: string, mountId: string): Promise<boolean> {
+  const result = await db.delete(agentVolumes).where(and(eq(agentVolumes.agentSlug, slug), eq(agentVolumes.id, mountId))).run()
+  return changesOf(result) > 0
+}
+
+/** The agent's own attachment or a global drive is the grant; knowing a shared definition's id grants no access. */
+export async function resolveVolume(slug: string, mountId: string) {
+  const row = (await getMounts(slug)).find(m => m.id === mountId)
+  if (!row) return null
+  const ops = instantiateVolume(row, slug)
+  return ops && { ops, readOnly: row.readOnly }
+}
+
+async function judgeVolumes(slug: string) {
+  return Promise.all((await getMounts(slug)).map(async row => ({ row, reason: await volumeProblem(row, slug) })))
+}
+
+/** The agent's container just started, so each of its drives is mounted with an empty cache. */
+export async function remounted(slug: string): Promise<void> {
+  for (const row of await getMounts(slug)) instantiateVolume(row, slug)?.remounted()
+}
+
+/** Settles once each of the agent's drives that is copied first has a copy, or has stopped trying for now. */
+export async function firstCopies(slug: string): Promise<void> {
+  await Promise.all((await getMounts(slug)).map(row => instantiateVolume(row, slug)?.whenReady()))
+}
+
+export async function listVolumes(slug: string): Promise<{ volumes: ContainerVolume[]; notMounted: NotMountedVolume[] }> {
+  // A drive joins the container only when it starts, so a start right after adding one waits for its first copy.
+  let timer: ReturnType<typeof setTimeout> | undefined
+  await Promise.race([firstCopies(slug), new Promise<void>(resolve => { timer = setTimeout(resolve, FIRST_COPY_WAIT_MS) })])
+  clearTimeout(timer)
+  const judged = await judgeVolumes(slug)
+  return {
+    volumes: judged.flatMap(({ row, reason }) => {
+      if (reason !== null) return []
+      const driver = instantiateVolume(row)
+      return [{ volumeId: row.id, name: row.name, volumeName: row.volumeName, cacheMode: driver?.cacheMode ?? 'local',
+        ...(driver?.caseInsensitive ? { caseInsensitive: true } : {}),
+        ...(driver?.ignoreSize ? { ignoreSize: true } : {}),
+        ...(driver?.dirCacheSeconds ? { dirCacheSeconds: driver.dirCacheSeconds } : {}),
+        ...(row.readOnly || driver?.readOnly ? { readOnly: true } : {}) }]
+    }),
+    notMounted: judged.flatMap(({ row, reason }) => reason === null ? [] : [{ name: row.name, reason }]),
+  }
+}
+
+export async function getMountsWithHealth(slug: string): Promise<MountSummaryWithHealth[]> {
+  return (await judgeVolumes(slug)).map(({ row, reason }) => ({
+    ...volumeSummary(row), volumeId: row.volumeId, volumeName: row.volumeName, readOnly: row.readOnly, health: volumeHealth(reason),
+    ...(row.global ? { global: true as const } : {}),
+  }))
 }

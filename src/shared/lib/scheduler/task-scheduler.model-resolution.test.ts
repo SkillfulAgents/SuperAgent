@@ -34,6 +34,7 @@ vi.mock('@shared/lib/container/container-host', async () => {
 })
 
 vi.mock('@shared/lib/config/settings', () => ({
+  getSettings: () => ({}),
   getEffectiveModels: () => ({
     agentModel: 'claude-sonnet-4-20250514',
     browserModel: 'claude-browser',
@@ -51,11 +52,11 @@ vi.mock('@shared/lib/services/agent-preferences-service', () => ({
 const mockSubscribeToSession = vi.fn()
 const mockMarkSessionActive = vi.fn()
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    subscribeToSession: (...args: unknown[]) => mockSubscribeToSession(...args),
-    markSessionActive: (...args: unknown[]) => mockMarkSessionActive(...args),
-  },
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    subscribe: (...args) => mockSubscribeToSession(...args),
+    markActive: (...args) => mockMarkSessionActive(...args),
+  }),
 }))
 
 const mockTriggerScheduledSessionStarted = vi.fn()
@@ -120,11 +121,14 @@ function createTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     lastExecutedAt: null,
     isRecurring: false,
     executionCount: 0,
+    consecutiveSkips: 0,
+    lastSkippedAt: null,
     lastSessionId: null,
     createdBySessionId: null,
     createdByUserId: 'user-1',
     timezone: 'America/Los_Angeles',
     model: null,
+  llmProviderId: null,
     effort: null,
     speed: null,
     resumeSessionId: null,

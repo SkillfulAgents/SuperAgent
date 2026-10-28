@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { providerEnvVarsError } from '../llm-provider/provider-env'
 
 /**
  * Reserved environment variable keys that ContainerManager.doStartContainer()
@@ -32,8 +33,10 @@ export const RESERVED_ENV_VAR_KEYS: ReadonlySet<string> = new Set([
   'SUPERAGENT_AGENT_NAME',
   // Account + MCP metadata
   'CONNECTED_ACCOUNTS',
+  'CONNECTED_ACCOUNT_TOOLKITS',
   'REMOTE_MCPS',
-  'SUPERAGENT_MOUNTS',
+  // The agent's volumes, mounted by the image
+  'SUPERAGENT_VOLUMES',
   // Host browser
   'AGENT_BROWSER_USE_HOST',
   'HOST_APP_URL',
@@ -41,8 +44,11 @@ export const RESERVED_ENV_VAR_KEYS: ReadonlySet<string> = new Set([
   // Runtime environment
   'TZ',
   'HOST_PLATFORM',
+  'HOST_COMPUTER_USE',
+  'HOST_APP_SANDBOX',
   'COMPOSIO_PLATFORM_MODE',
   'PLATFORM_AUTH_ACTIVE',
+  'WEBHOOK_RELAY_AVAILABLE',
   'CLAUDE_CODE_ATTRIBUTION_HEADER',
 ])
 
@@ -87,7 +93,7 @@ export function findReservedEnvVarKeys(
 
 /**
  * Zod schema for the `customEnvVars` map at the settings write boundary.
- * Defense-in-depth (per CLAUDE.md's validate-at-boundary rule): rejects any
+ * Defense-in-depth (per AGENTS.md's validate-at-boundary rule): rejects any
  * payload that tries to set a reserved runtime key so it never even reaches
  * persisted settings. The container merge (mergeCustomEnvVars) is the primary
  * guard; this stops the bad config at the door.
@@ -95,6 +101,8 @@ export function findReservedEnvVarKeys(
 export const customEnvVarsSchema = z
   .record(z.string(), z.string())
   .superRefine((vars, ctx) => {
+    const providerError = providerEnvVarsError(vars)
+    if (providerError) ctx.addIssue({ code: 'custom', message: providerError })
     const reserved = findReservedEnvVarKeys(vars)
     if (reserved.length > 0) {
       ctx.addIssue({

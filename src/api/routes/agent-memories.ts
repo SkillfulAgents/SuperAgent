@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { HTTPException } from 'hono/http-exception'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { agentRegistry, WorkspaceFileError, MemoryError, MAX_MEMORY_BYTES } from '@shared/lib/agent-actor'
@@ -10,6 +11,9 @@ agentMemoryRoutes.onError((error, c) => {
   if (error instanceof MemoryError || error instanceof WorkspaceFileError) {
     return c.json({ error: error.message }, error.status)
   }
+  // Hono's own refusals (the validator's 400 for malformed JSON) keep their
+  // status: the global API error handler answers them.
+  if (error instanceof HTTPException) throw error
   console.error('Memory operation failed:', error)
   return c.json({ error: 'Unable to access agent memories' }, 500)
 })

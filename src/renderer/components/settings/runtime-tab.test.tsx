@@ -392,3 +392,16 @@ describe('RuntimeTab', () => {
     })
   })
 })
+
+
+it('directs LLM-specific variables to the provider editor instead of saving globally', async () => {
+  mockUpdateSettings.mutateAsync.mockClear()
+  mockSettings.data.customEnvVars = {}
+  renderWithProviders(<RuntimeTab />)
+  await userEvent.click(screen.getByRole('button', { name: 'Add Variable' }))
+  await userEvent.type(screen.getByLabelText('Variable Name'), 'ANTHROPIC_AUTH_TOKEN')
+  await userEvent.type(screen.getByLabelText('Value', { exact: true }), 'unused-secret')
+  await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Add Variable' }))
+  expect(mockUpdateSettings.mutateAsync).not.toHaveBeenCalled()
+  expect(screen.getByText(/Set LLM provider variables in Settings/)).toBeInTheDocument()
+})

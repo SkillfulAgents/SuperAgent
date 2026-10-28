@@ -1,17 +1,21 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
+import type { ApiTarget } from '@renderer/lib/api-target'
 import { useDialogs } from '../context/dialog-context'
 import { useCreateUntitledAgent } from '../hooks/use-create-untitled-agent'
+import { useTargetSwitch } from '../hooks/use-target-switch'
 
 /**
- * A command from the native application menu / tray / deep links. The
- * navigate-to-agent channel also carries an optional sessionId (live deep
- * links); menu items and window-closed replays only supply the agent slug.
+ * A command from the native application menu / tray / deep links / Spotlight.
+ * The navigate-to-agent channel also carries an optional sessionId (deep links,
+ * Spotlight); menu items only supply the agent slug. switch-target comes from a
+ * Spotlight result that belongs to the other Superagent.
  */
 type MenuCommand =
   | { channel: 'navigate-to-agent'; agentSlug: string; sessionId?: string | null }
   | { channel: 'open-settings' }
   | { channel: 'open-create-agent' }
+  | { channel: 'switch-target'; target: ApiTarget }
 
 /**
  * Single source of truth for what each menu command DOES in the renderer. Both
@@ -27,6 +31,20 @@ function useMenuCommandDispatch(): (command: MenuCommand) => void {
   const navigate = useNavigate()
   const { openSettings } = useDialogs()
   const { createUntitledAgent } = useCreateUntitledAgent()
+  const { switchTo, ready: canSwitch } = useTargetSwitch()
+
+  // The same path as pressing Local/Cloud, checks and banners included. A
+  // request replayed on a fresh window's mount arrives before the platform
+  // status that Cloud is judged on, so it waits for that. A switch that does
+  // not happen is reported, so main drops the result it was going to open.
+  const [requestedTarget, setRequestedTarget] = useState<ApiTarget | null>(null)
+  useEffect(() => {
+    if (!requestedTarget || !canSwitch) return
+    setRequestedTarget(null)
+    void switchTo(requestedTarget).then((switched) => {
+      if (!switched) window.electronAPI?.declineTargetSwitch?.()
+    })
+  }, [requestedTarget, canSwitch, switchTo])
 
   return useCallback(
     (command: MenuCommand) => {
@@ -45,7 +63,10 @@ function useMenuCommandDispatch(): (command: MenuCommand) => void {
           openSettings()
           break
         case 'open-create-agent':
-          void createUntitledAgent()
+          void createUntitledAgent({ surface: 'app_menu' })
+          break
+        case 'switch-target':
+          setRequestedTarget(command.target)
           break
       }
     },
@@ -76,6 +97,7 @@ export function MenuCommandHandler() {
       ),
       api.onOpenSettings?.(() => dispatch({ channel: 'open-settings' })),
       api.onOpenCreateAgent?.(() => dispatch({ channel: 'open-create-agent' })),
+      api.onSwitchTarget?.((target) => dispatch({ channel: 'switch-target', target })),
     ]
     return () => unsubscribers.forEach((unsubscribe) => unsubscribe?.())
   }, [dispatch])

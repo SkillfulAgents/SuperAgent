@@ -1,11 +1,12 @@
 
-import { Bell, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, SquareMousePointer, LogOut, Compass, MoonStar } from 'lucide-react'
+import { Bell, Brain, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, ListTodo, SquareMousePointer, LogOut, Compass, MoonStar, SquarePen } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { AppLink } from '@renderer/components/ui/app-link'
+import { UnreadDot } from '@renderer/components/agents/status-indicators'
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
 import { openExternalUrl } from '@renderer/lib/open-external'
@@ -49,17 +50,23 @@ import {
   type FirewallFixUiState,
 } from '@renderer/components/runtime/runtime-status-banners'
 import { useFirewallStatus, useFixFirewall } from '@renderer/hooks/use-firewall-status'
-import { useAgents, useRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
+import { useAgents, useListedAgents, useRouteAgentId, useStartAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useSettings, useModelSettings, useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
+import { useExperiment } from '@renderer/hooks/use-experiment'
+import { useTodos } from '@renderer/hooks/use-todos'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
 import { SidebarMemberIndicator } from '@renderer/components/agents/sidebar-member-indicator'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
+import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
+import { agentActivity, agentAvatarState } from '@shared/lib/types/agent-activity-status'
+import { useMinuteClock } from '@renderer/hooks/use-minute-clock'
+import { formatLastRun } from '@renderer/lib/last-run'
 import { SIDEBAR_TREE_CONNECTORS } from '@renderer/components/ui/tree-connectors'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
@@ -106,8 +113,15 @@ import {
 } from '@dnd-kit/sortable'
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
 import { SortableAgentMenuItem } from './sortable-agent-item'
+import { AGENT_AVATAR_LEFT, AGENT_AVATAR_SIZE, SIDEBAR_FOLLOW_REGION } from './sidebar-avatar'
 import { SidebarDragProvider, useSidebarDragActive } from './sidebar-drag-context'
-import { AgentDragOverlayRow, AgentFolderBlock, agentDropAnimation } from './agent-folder-block'
+import {
+  AgentDragOverlayRow,
+  AgentFolderBlock,
+  SECTION_ICON_CLASS,
+  SECTION_ROW_CLASS,
+  agentDropAnimation,
+} from './agent-folder-block'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
 import {
   containerIdForFolder,
@@ -133,8 +147,8 @@ import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import { useRememberedFlag } from '@renderer/hooks/use-remembered-flag'
 import { useSidebarFileDrop } from './use-sidebar-file-drop'
 
-/** Set once Explore has been opened, which retires its "New" badge. */
-const EXPLORE_SEEN_KEY = 'explore.seen'
+/** Set once Team Brain has been opened, which retires its "New" badge: the badge invites a first look, then goes away. */
+const TEAM_BRAIN_SEEN_KEY = 'team-brain.seen'
 
 function VersionBehindDot({
   wayBehind,
@@ -196,7 +210,7 @@ function SessionSubItem({
   const { sessionId: routeSessionId } = useParams({ strict: false }) as { sessionId?: string }
   const routeAgentId = useRouteAgentId()
   const isSelected = routeAgentId === agentSlug && routeSessionId === session.id
-  const { isStreaming } = useMessageStream(isSelected ? session.id : null, isSelected ? agentSlug : null)
+  const { isStreaming } = useMessageStream(isSelected ? session.id : null, isSelected ? agentSlug : null, ['isStreaming'])
   const isWorking = (session.isActive || isStreaming) && !session.isAwaitingInput
   const isAwaitingInput = session.isAwaitingInput
   const hasUnread = !session.isActive && !session.isAwaitingInput && session.hasUnreadNotifications
@@ -267,7 +281,7 @@ function SessionSubItem({
                 ) : isWorking ? (
                   <WorkingDots />
                 ) : hasUnread ? (
-                  <span className="h-1.5 w-1.5 rounded-full bg-blue-500" role="img" aria-label="unread notifications" />
+                  <UnreadDot mention={session.hasUnreadMention} />
                 ) : null}
               </span>
             )}
@@ -416,6 +430,16 @@ function SessionsSkeleton() {
   )
 }
 
+// Only this label subscribes to the clock; the expensive agent row stays memoized.
+function AgentLastRun({ date }: { date: ApiAgent['lastActivityAt'] }) {
+  useMinuteClock()
+  return (
+    <span className="block truncate text-[11px] leading-tight text-muted-foreground/60">
+      {formatLastRun(date) ?? 'Last run never'}
+    </span>
+  )
+}
+
 // Right-side indicator on the agent row.
 // Awaiting / working aggregate across sessions regardless of expansion, with
 // the same formula as the agent header's AgentStatus (fresh sessions data
@@ -434,13 +458,12 @@ function AgentRowIndicator({
   sessions: ApiSession[] | undefined
   isOpen: boolean
 }) {
-  const isAwaiting = sessions?.some((s) => s.isAwaitingInput) || (agent.hasSessionsAwaitingInput ?? false)
-  const isWorking = !isAwaiting && (sessions?.some((s) => s.isActive) || (agent.hasActiveSessions ?? false))
+  const { isAwaiting, isWorking } = agentActivity(agent, sessions)
   const isUnread = !isOpen && !isAwaiting && !isWorking && (agent.hasUnreadNotifications ?? false)
   if (isUnread) {
     return (
-      <span className="flex items-center w-4 justify-center" role="img" aria-label="unread notifications">
-        <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+      <span className="flex items-center w-4 justify-center">
+        <UnreadDot mention={agent.hasUnreadMention} />
       </span>
     )
   }
@@ -461,7 +484,7 @@ const AgentMenuItemInner = React.forwardRef<
 >(({ agent, style, ...rest }, ref) => {
   useRenderTracker('AgentMenuItem')
   const { view } = useRouteLocation()
-  const { isAuthMode, agentMemberCount } = useUser()
+  const { isAuthMode, agentMemberCount, canUseAgent } = useUser()
   const queryClient = useQueryClient()
   // Route-derived selection (URL is authoritative — correct on a cold reload,
   // and inherently false on the global notifications/home views since they carry
@@ -508,6 +531,7 @@ const AgentMenuItemInner = React.forwardRef<
   const visibleSessions = showAll ? sessions : sessions?.slice(0, 5)
   const hasMore = (sessions?.length ?? 0) > 5
   const dashboards = Array.isArray(artifacts) ? artifacts : []
+  const avatarState = agentAvatarState(agent, sessions)
 
   // Use pre-aggregated counts to determine if the chevron should show.
   // Also show when isOpen (agent selected) since sessions may have been
@@ -548,6 +572,17 @@ const AgentMenuItemInner = React.forwardRef<
   }
 
   const { ref: hintRef, hint } = useCmdHintTarget()
+  // View-only members can't send, so they get no new-session control; nor
+  // does the slot while it shows the ⌘-number hint.
+  const canStartSession = hint === null && canUseAgent(agent.slug)
+  const warmStartEnabled = useWarmStartOnTypeEnabled()
+  const startAgent = useStartAgent()
+  const { data: runtimeStatus } = useRuntimeStatus()
+  const warmStart = () => {
+    if (warmStartEnabled && canStartSession && runtimeStatus?.runtimeReadiness.status === 'READY') {
+      startAgent.mutate({ slug: agent.slug, source: 'warm-start' })
+    }
+  }
   const dragHandlers = useSidebarFileDrop({
     kind: 'agent',
     agentSlug: agent.slug,
@@ -573,7 +608,7 @@ const AgentMenuItemInner = React.forwardRef<
           <SidebarMenuButton
             asChild
             isActive={isSelected}
-            className={cn('relative gap-1.5 overflow-visible pl-7', SIDEBAR_FILE_DROP_CUE)}
+            className={cn('group/agent-row relative h-10 gap-1.5 overflow-visible pl-[42px]', SIDEBAR_FILE_DROP_CUE)}
           >
             <div {...dragHandlers}>
               {/* Stretch the native link across the row; the roster and
@@ -587,38 +622,81 @@ const AgentMenuItemInner = React.forwardRef<
                 className="min-w-0 outline-none after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
               >
                 <span className="block truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
+                <AgentLastRun date={agent.lastActivityAt} />
               </AppLink>
               {isShared && <SidebarMemberIndicator agentSlug={agent.slug} agentName={agent.name} memberCount={memberCount} selected={isSelected} />}
-              {/* Expose the status title above the stretched link while keeping
-                  clicks (including modifier clicks) native agent navigation. */}
-              <AppLink
-                to="/agents/$slug"
-                params={{ slug: agent.displaySlug }}
-                tabIndex={-1}
-                aria-label={`Open ${agent.name}`}
-                className="relative z-10 ml-auto flex shrink-0 items-center"
-              >
-                {hint !== null ? (
-                  <CmdHintBadge hint={hint} />
-                ) : (
-                  <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
+              {/* The status slot doubles as the new-session control: hovering
+                  the row (or focusing the button) swaps the status for a pen
+                  opening the session view with an empty composer. */}
+              <span className="group/status-slot relative z-10 ml-auto flex shrink-0 items-center">
+                {/* Expose the status title above the stretched link while keeping
+                    clicks (including modifier clicks) native agent navigation. */}
+                <AppLink
+                  to="/agents/$slug"
+                  params={{ slug: agent.displaySlug }}
+                  tabIndex={-1}
+                  aria-label={`Open ${agent.name}`}
+                  className={cn(
+                    'flex items-center transition-opacity',
+                    canStartSession && 'group-hover/agent-row:opacity-0 group-focus-within/status-slot:opacity-0'
+                  )}
+                >
+                  {hint !== null ? (
+                    <CmdHintBadge hint={hint} />
+                  ) : (
+                    <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
+                  )}
+                </AppLink>
+                {canStartSession && (
+                  <TooltipProvider delayDuration={200}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <AppLink
+                          to="/agents/$slug/sessions/new"
+                          params={{ slug: agent.displaySlug }}
+                          onPointerDown={(event) => { if (event.button === 0) warmStart() }}
+                          onClick={(event) => { if (event.detail === 0) warmStart() }}
+                          aria-label={`New session with ${agent.name}`}
+                          data-testid={`agent-new-session-${agent.slug}`}
+                          className="absolute left-1/2 top-1/2 flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded text-muted-foreground opacity-0 outline-none transition-opacity hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-sidebar-ring group-hover/agent-row:opacity-100"
+                        >
+                          <SquarePen className="h-3.5 w-3.5" />
+                        </AppLink>
+                      </TooltipTrigger>
+                      <TooltipContent side="right">New session</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
                 )}
-              </AppLink>
-              {hasExpandableContent && (
+              </span>
+              {/* The avatar holds the expand slot; hovering it (or focusing
+                  the toggle) swaps in the chevron, Notion-style. */}
+              {hasExpandableContent ? (
                 <button
                   type="button"
                   onClick={handleChevronClick}
                   aria-label={isOpen ? 'Collapse' : 'Expand'}
                   aria-expanded={isOpen}
-                  className="absolute left-1.5 top-1/2 z-10 -translate-y-1/2 p-0.5 rounded focus-visible:ring-2 focus-visible:ring-sidebar-ring outline-none"
+                  className="group/avatar absolute left-1 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
                 >
+                  <AgentAvatar
+                    agent={agent}
+                    state={avatarState}
+                    size={AGENT_AVATAR_SIZE}
+                    followPointer={SIDEBAR_FOLLOW_REGION}
+                    className="transition-opacity group-hover/avatar:opacity-0 group-focus-visible/avatar:opacity-0"
+                  />
                   <ChevronRight
                     className={cn(
-                      'h-3.5 w-3.5 text-muted-foreground/60 transition-[color,transform] group-hover/menu-item:text-sidebar-foreground',
+                      'absolute h-3.5 w-3.5 text-sidebar-foreground transition-[opacity,transform]',
+                      agent.avatar && 'opacity-0 group-hover/avatar:opacity-100 group-focus-visible/avatar:opacity-100',
                       isOpen && !isDragActive && 'rotate-90'
                     )}
                   />
                 </button>
+              ) : (
+                <span className="pointer-events-none absolute left-1 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center">
+                  <AgentAvatar agent={agent} state={avatarState} size={AGENT_AVATAR_SIZE} followPointer={SIDEBAR_FOLLOW_REGION} />
+                </span>
               )}
             </div>
           </SidebarMenuButton>
@@ -626,7 +704,7 @@ const AgentMenuItemInner = React.forwardRef<
         {hasExpandableContent ? (
           <>
             <CollapsibleContent>
-              <SidebarMenuSub className={cn('pb-2', SIDEBAR_TREE_CONNECTORS)}>
+              <SidebarMenuSub className={cn('pb-2 pl-[25px]', SIDEBAR_TREE_CONNECTORS)}>
                 {isOpen && sessionsLoading && showSkeleton ? (
                   <SessionsSkeleton />
                 ) : (
@@ -696,10 +774,35 @@ if (__RENDER_TRACKING__) {
   (AgentMenuItem as any).whyDidYouRender = true
 }
 
+/**
+ * `ids`, keeping the previous array's identity while the ids and their order
+ * are unchanged. dnd-kit's SortableContext keys its context value on the
+ * identity of `items`, and a new value re-renders every `useSortable` row
+ * beneath it — on each agents refetch, every row in the section, since the
+ * list is rebuilt whenever any agent changes.
+ */
+function useSortableIds(ids: string[]): string[] {
+  const key = ids.join('\n')
+  return useMemo(() => (key ? key.split('\n') : []), [key])
+}
+
+/** One section's sortable member list. */
+function SectionAgentList({ agents }: { agents: ApiAgent[] }) {
+  const items = useSortableIds(agents.map((a) => a.slug))
+  return (
+    <SortableContext items={items} strategy={verticalListSortingStrategy}>
+      {agents.map((agent) => (
+        <SortableAgentMenuItem key={agent.slug} agent={agent} />
+      ))}
+    </SortableContext>
+  )
+}
+
 function NotificationsMenuButton() {
   const { data: countData } = useUnreadNotificationCount()
   const { data: platformCountData } = usePlatformUnreadCount()
   const unreadCount = (countData?.count ?? 0) + (platformCountData?.count ?? 0)
+  const unreadMentions = countData?.mentions ?? 0
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const isActive = pathname === '/notifications'
 
@@ -708,7 +811,9 @@ function NotificationsMenuButton() {
       <AppLink to="/notifications">
         <Bell className="h-4 w-4" />
         <span>Notifications</span>
-        {unreadCount > 0 && (
+        {unreadMentions > 0 ? (
+          <UnreadDot mention className="ml-auto" />
+        ) : unreadCount > 0 && (
           <span
             className="ml-auto h-1.5 w-1.5 rounded-full bg-blue-500"
             aria-label={`${unreadCount} unread`}
@@ -719,50 +824,150 @@ function NotificationsMenuButton() {
   )
 }
 
-function UserMenu() {
+/**
+ * The Todo board (the `todo-board` experiment). Like Notifications, it
+ * carries a dot when something wants you — here, an agent waiting on your
+ * input — so it is visible from anywhere.
+ */
+function TodoMenuButton() {
+  const { data: todos } = useTodos()
+  const needsInput = todos?.filter((t) => t.column === 'needs_input').length ?? 0
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+
+  return (
+    <SidebarMenuButton asChild data-testid="todo-button" isActive={pathname === '/todo'}>
+      <AppLink to="/todo">
+        <ListTodo className="h-4 w-4" />
+        <span>Todo</span>
+        {needsInput > 0 && (
+          <span
+            className="ml-auto h-1.5 w-1.5 rounded-full bg-orange-500"
+            aria-label={`${needsInput} waiting on your input`}
+          />
+        )}
+      </AppLink>
+    </SidebarMenuButton>
+  )
+}
+
+function findTeamBrainAgent(agents: ApiAgent[]): ApiAgent | undefined {
+  return agents.find((agent) => agent.teamBrain)
+}
+
+/**
+ * Team Brain (the `team-brain` experiment): its page, the pitch and set-up or,
+ * once set up, its home page; lit there and in its agent's sessions. The row
+ * carries Explore's "New" badge until opened or set up.
+ */
+function TeamBrainMenuButton() {
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const { data: brainAgent } = useAgents({ select: findTeamBrainAgent, poll: false })
+  const visited = pathname === '/team-brain' || (!!brainAgent && pathname.startsWith(`/agents/${brainAgent.displaySlug}`))
+  const [seen] = useState(() => localStorage.getItem(TEAM_BRAIN_SEEN_KEY) === '1')
+  useEffect(() => {
+    if (visited) localStorage.setItem(TEAM_BRAIN_SEEN_KEY, '1')
+  }, [visited])
+
+  const label = (
+    <>
+      <Brain className="h-4 w-4" />
+      <span>Team Brain</span>
+      {!seen && !visited && !brainAgent && (
+        <span className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-white">
+          New
+        </span>
+      )}
+    </>
+  )
+  return (
+    <SidebarMenuButton asChild data-testid="team-brain-button" isActive={visited}>
+      <AppLink to="/team-brain">{label}</AppLink>
+    </SidebarMenuButton>
+  )
+}
+
+const userMenuItemClassName =
+  'flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors disabled:opacity-60'
+
+/**
+ * The footer's primary button. With a signed-in user it is their avatar and
+ * name, opening a popover that holds Settings and sign out; without one (local
+ * mode) it is the plain Settings button.
+ */
+function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
   const { isAuthMode, user, signOut } = useUser()
   // Go through the same switch path as the sidebar's control rather than
   // calling switchTarget directly: it owns the failure handling, so a switch
   // that cannot be recorded reports itself instead of rejecting into nothing.
   const { switching, switchTo } = useTargetSwitch()
-  if (!isAuthMode || !user) return null
+  const [open, setOpen] = useState(false)
+  if (!isAuthMode || !user) {
+    return (
+      <SidebarMenuButton
+        onClick={onOpenSettings}
+        className="w-auto"
+        style={{ paddingLeft: AGENT_AVATAR_LEFT }}
+        data-testid="settings-button"
+      >
+        <Settings className="h-4 w-4" />
+        <span>Settings</span>
+      </SidebarMenuButton>
+    )
+  }
   return (
-    <div className="px-2">
-      <Popover>
-        <PopoverTrigger asChild>
-          <button className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors" data-testid="user-menu-trigger">
-            <UserAvatar user={user} size={22} />
-            <span className="truncate max-w-[140px]">{user.name}</span>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <SidebarMenuButton
+          className="w-auto min-w-0"
+          style={{ paddingLeft: AGENT_AVATAR_LEFT }}
+          data-testid="user-menu-trigger"
+        >
+          <UserAvatar user={user} size={20} />
+          <span className="truncate">{user.name || user.email}</span>
+        </SidebarMenuButton>
+      </PopoverTrigger>
+      <PopoverContent side="top" align="start" className="w-48 p-1">
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(false)
+            onOpenSettings()
+          }}
+          className={userMenuItemClassName}
+          data-testid="settings-button"
+        >
+          <Settings className="h-4 w-4" />
+          Settings
+        </button>
+        <div className="-mx-1 my-1 h-px bg-border" role="separator" />
+        {hasInteractiveLogin() ? (
+          <button
+            type="button"
+            onClick={signOut}
+            className={userMenuItemClassName}
+            data-testid="sign-out-button"
+          >
+            <LogOut className="h-4 w-4" />
+            Sign out
           </button>
-        </PopoverTrigger>
-        <PopoverContent align="start" className="w-48 p-1">
-          {hasInteractiveLogin() ? (
-            <button
-              onClick={signOut}
-              className="flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors"
-              data-testid="sign-out-button"
-            >
-              <LogOut className="h-4 w-4" />
-              Sign out
-            </button>
-          ) : (
-            // Cloud workspace: signing out would revoke the deployment session
-            // the desktop's grant is bound to — disruptive, and pointless since
-            // main still holds the platform connection and would just mint
-            // another. Offer the action that actually means something here.
-            <button
-              onClick={() => void switchTo('local')}
-              disabled={switching}
-              className="flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors disabled:opacity-60"
-              data-testid="switch-to-local-button"
-            >
-              <LogOut className="h-4 w-4" />
-              Use this computer
-            </button>
-          )}
-        </PopoverContent>
-      </Popover>
-    </div>
+        ) : (
+          // Cloud workspace: signing out would revoke the deployment session
+          // the desktop's grant is bound to — disruptive, and pointless since
+          // main still holds the platform connection and would just mint
+          // another. Offer the action that actually means something here.
+          <button
+            type="button"
+            onClick={() => void switchTo('local')}
+            disabled={switching}
+            className={userMenuItemClassName}
+            data-testid="switch-to-local-button"
+          >
+            <LogOut className="h-4 w-4" />
+            Use this computer
+          </button>
+        )}
+      </PopoverContent>
+    </Popover>
   )
 }
 
@@ -774,10 +979,14 @@ function ApiKeyWarning({ onOpenSettings }: { onOpenSettings: () => void }) {
   const { isAuthMode, isAdmin } = useUser()
   const showAdminInfo = !isAuthMode || isAdmin
   const { data: settings } = useSettings({ enabled: showAdminInfo })
+  const { data: modelSettings } = useModelSettings()
+  const selectedConnection = modelSettings?.connections?.find(
+    connection => connection.id === modelSettings.defaultSelection?.llmProviderId
+  )
 
   const activeProviderId = settings?.llmProvider ?? 'anthropic'
-  const activeKeyStatus = settings?.apiKeyStatus?.[activeProviderId as keyof typeof settings.apiKeyStatus]
-  if (!activeKeyStatus || activeKeyStatus.isConfigured) return null
+  const activeKeyStatus = selectedConnection ?? settings?.apiKeyStatus?.[activeProviderId as keyof typeof settings.apiKeyStatus]
+  if (!showAdminInfo || !activeKeyStatus || activeKeyStatus.isConfigured) return null
 
   return (
     <div className="px-2 pb-2">
@@ -859,7 +1068,7 @@ export function AppSidebar() {
   useEffect(() => {
     if (isMobile) setOpenMobile(false)
   }, [locationHref, isMobile, setOpenMobile])
-  const { data: agents, isLoading, error } = useAgents()
+  const { data: agents, isLoading, error } = useListedAgents()
   // Whether to offer Explore is two round trips deep — skillsets, and only then
   // the discoverable agents they contain — so the item arrives after the rest of
   // the nav and pushes it down on the way in. Remember the last answer for this
@@ -876,13 +1085,9 @@ export function AppSidebar() {
           ? null
           : discoverableAgents.length > 0
   const hasMarketplace = useRememberedFlag('marketplace', marketplaceAnswer)
+  const todoBoardEnabled = useExperiment('todo-board')
+  const teamBrainEnabled = useExperiment('team-brain')
   const exploreVisited = pathname === '/explore' || pathname.startsWith('/explore/')
-  // Sticky across reloads, and read once at mount so the badge doesn't vanish
-  // out from under the pointer mid-click.
-  const [seenExplore] = useState(() => localStorage.getItem(EXPLORE_SEEN_KEY) === '1')
-  useEffect(() => {
-    if (exploreVisited) localStorage.setItem(EXPLORE_SEEN_KEY, '1')
-  }, [exploreVisited])
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
   const { data: runtimeStatus } = useRuntimeStatus()
@@ -969,6 +1174,7 @@ export function AppSidebar() {
     () => buildFolderSections(orderedAgents, effectiveFolders, effectiveAssignments, effectiveListOrder),
     [orderedAgents, effectiveFolders, effectiveAssignments, effectiveListOrder]
   )
+  const sectionSortableIds = useSortableIds(sections.map((s) => sortableIdForFolder(s.folder.id)))
   const hasFolders = (effectiveFolders?.length ?? 0) > 0
 
   // Drag handlers fire between renders, so they read the sections through a
@@ -1180,7 +1386,7 @@ export function AppSidebar() {
       const section = sectionsRef.current.find((s) => s.folder.id === data.folderId)
       setActiveDrag({
         type: 'folder',
-        label: section?.folder.name ?? 'Folder',
+        label: section?.folder.name ?? 'Section',
         folderId: String(data.folderId),
       })
       return
@@ -1322,26 +1528,21 @@ export function AppSidebar() {
   // click time would revert whatever folder write was still in flight.
   const handleCreateFolder = useCallback(() => {
     const id = newFolderId()
-    // The + lives on the default folder's header, so the new folder goes
-    // directly ABOVE that folder — in view next to the button that made it,
-    // where the row's rename input mounts. Ranking it last put it below the
-    // scroll fold on a long list, which read as the button doing nothing.
+    // Created from "Add section" at the end of the list, so the new one goes
+    // last — right above the button, where its rename input opens.
     setPendingRenameFolderId(id)
     updateSettings.mutate((current) => {
       const folders = sanitizeFolders(current?.agentFolders)
       const marker = sortableIdForFolder(id)
-      const rootMarker = sortableIdForFolder(ROOT_FOLDER_ID)
       const order = (current?.agentListOrder ?? []).filter((key) => key !== marker)
-      const rootIndex = order.indexOf(rootMarker)
+      // An untouched install has no stored places yet; write the default
+      // folder's too, or it would keep defaulting ahead of everything (-1)
+      // regardless of where it was shown.
+      const rootMarker = sortableIdForFolder(ROOT_FOLDER_ID)
+      const withRoot = order.includes(rootMarker) ? order : [rootMarker, ...order]
       return {
         agentFolders: [...folders, { id, name: uniqueFolderName(folders) }],
-        // Splice in just above the default folder wherever the user keeps it;
-        // an untouched install has no stored places yet, so root's marker is
-        // written too — without one it would default ahead (place -1).
-        agentListOrder:
-          rootIndex >= 0
-            ? [...order.slice(0, rootIndex), marker, ...order.slice(rootIndex)]
-            : [marker, rootMarker, ...order],
+        agentListOrder: [...withRoot, marker],
       }
     })
   }, [updateSettings])
@@ -1390,6 +1591,15 @@ export function AppSidebar() {
       }
     )
   }, [collapsedFolders, updateSettings])
+
+  // A folder's own +: the new agent is filed into it, and a collapsed folder
+  // opens so the new row is in view when the list refetches. Two settings
+  // writes (expand, then the filing inside the hook), serialized by scope.
+  const handleCreateAgentInFolder = useCallback((folderId: string) => {
+    if (isCreatingAgent) return
+    if ((collapsedFolders ?? []).includes(folderId)) handleToggleFolder(folderId)
+    void createUntitledAgent({ surface: 'section_plus', folderId })
+  }, [isCreatingAgent, collapsedFolders, handleToggleFolder, createUntitledAgent])
 
   const isOnline = useIsOnline()
 
@@ -1489,7 +1699,7 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <ErrorBoundary compact>
-        <SidebarContent className="overflow-visible">
+        <SidebarContent className="gap-0 overflow-visible">
           <SidebarGroup className="shrink-0 p-0">
             {/* Status banners — render under the title bar so they sit inside the
                 sidebar's content area rather than pushing the header down. The
@@ -1524,7 +1734,7 @@ export function AppSidebar() {
 
             <ApiKeyWarning onOpenSettings={() => openSettings('llm')} />
             <SidebarGroupContent>
-              <SidebarMenu className="gap-0.5 py-2 pt-0">
+              <SidebarMenu className="gap-0.5 pt-2 pb-0">
                 <SidebarMenuItem>
                   <SidebarMenuButton
                     asChild
@@ -1542,6 +1752,16 @@ export function AppSidebar() {
                 <SidebarMenuItem>
                   <NotificationsMenuButton />
                 </SidebarMenuItem>
+                {todoBoardEnabled && (
+                  <SidebarMenuItem>
+                    <TodoMenuButton />
+                  </SidebarMenuItem>
+                )}
+                {teamBrainEnabled && (
+                  <SidebarMenuItem>
+                    <TeamBrainMenuButton />
+                  </SidebarMenuItem>
+                )}
                 {hasMarketplace && (
                   <SidebarMenuItem>
                     <SidebarMenuButton
@@ -1553,20 +1773,13 @@ export function AppSidebar() {
                       <AppLink to="/explore">
                         <Compass className="h-4 w-4" />
                         <span>Discover New Agents</span>
-                        {/* Retires itself the first time the page is opened —
-                            a badge that says "New" forever says nothing. */}
-                        {!seenExplore && (
-                          <span className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-white">
-                            New
-                          </span>
-                        )}
                       </AppLink>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 )}
                 <SidebarMenuItem>
                   <SidebarMenuButton
-                    onClick={() => { void createUntitledAgent() }}
+                    onClick={() => { void createUntitledAgent({ surface: 'nav' }) }}
                     disabled={isCreatingAgent}
                     data-testid="new-agent-button"
                   >
@@ -1619,7 +1832,7 @@ export function AppSidebar() {
                         list of their own.
                       */}
                       <SortableContext
-                        items={sections.map((s) => sortableIdForFolder(s.folder.id))}
+                        items={sectionSortableIds}
                         strategy={topLevelStrategy}
                       >
                         {sections.map((section) => (
@@ -1641,16 +1854,9 @@ export function AppSidebar() {
                             onRename={(name) => handleRenameFolder(section.folder.id, name)}
                             onRenameEnd={() => setPendingRenameFolderId(null)}
                             onDelete={() => handleDeleteFolder(section.folder.id)}
-                            onCreateFolder={section.isRoot ? handleCreateFolder : undefined}
+                            onCreateAgent={() => handleCreateAgentInFolder(section.folder.id)}
                           >
-                            <SortableContext
-                              items={section.agents.map((a) => a.slug)}
-                              strategy={verticalListSortingStrategy}
-                            >
-                              {section.agents.map((agent) => (
-                                <SortableAgentMenuItem key={agent.slug} agent={agent} />
-                              ))}
-                            </SortableContext>
+                            <SectionAgentList agents={section.agents} />
                           </AgentFolderBlock>
                         ))}
                       </SortableContext>
@@ -1665,26 +1871,48 @@ export function AppSidebar() {
                     </DndContext>
                   </SidebarDragProvider>
                 )}
+                {/*
+                  Always the last thing in the list, under the sections it
+                  adds to, and styled as one of them: a section header's text
+                  and chevron-sized icon, spaced like one (mt-2, as on each
+                  section's block) so the gaps down the list stay uniform.
+                  Unlike a header it is a plain action, so it keeps the menu
+                  button's hover fill (the Electron vibrancy rules supply the
+                  translucent one there) and its text and + darken on hover.
+                */}
+                {(agents?.length ?? 0) > 0 && (
+                  <SidebarMenuItem className="mt-2">
+                    <SidebarMenuButton
+                      onClick={handleCreateFolder}
+                      className={cn(
+                        SECTION_ROW_CLASS,
+                        'group/add-section hover:bg-sidebar-accent hover:text-sidebar-foreground active:bg-sidebar-accent active:text-sidebar-foreground'
+                      )}
+                      data-testid="add-section-button"
+                    >
+                      <span className="flex shrink-0 items-center">
+                        <Plus className={cn(SECTION_ICON_CLASS, 'group-hover/add-section:text-sidebar-foreground')} />
+                      </span>
+                      <span>Add section</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                )}
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
       </ErrorBoundary>
 
-      <SidebarFooter className="border-t p-0 px-2 pt-1 pb-[env(safe-area-inset-bottom)]">
-        <UserMenu />
+      {/* Full width like the agent rows, so its ends can line up with
+          theirs: the user's avatar starts where the agent avatars do (in
+          UserMenu), and the version ends 12px in, where the rows' status
+          icons end (a 10px icon centred in a 16px slot 8px in). */}
+      <SidebarFooter className="border-t p-0 pt-1 pb-[env(safe-area-inset-bottom)]">
         <div className="flex items-center justify-between gap-2">
-          <SidebarMenuButton
-            onClick={() => openSettings()}
-            className="w-auto"
-            data-testid="settings-button"
-          >
-            <Settings className="h-4 w-4" />
-            <span>Settings</span>
-          </SidebarMenuButton>
+          <UserMenu onOpenSettings={() => openSettings()} />
           {isCloud && versionState.showPair && versionState.cloudVersion ? (
             <div
-              className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0"
+              className="flex items-center gap-1.5 pl-2 pr-3 text-xs text-muted-foreground shrink-0"
               data-testid="sidebar-version"
             >
               <button
@@ -1732,7 +1960,7 @@ export function AppSidebar() {
             <button
               type="button"
               onClick={() => openSettings('general')}
-              className="inline-flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0 hover:text-foreground"
+              className="inline-flex items-center gap-1.5 pl-2 pr-3 text-xs text-muted-foreground shrink-0 hover:text-foreground"
               title={updateAvailable ? `${isCloud ? 'Desktop update available' : 'Update available'}: v${updateStatus.version}` : undefined}
               data-testid="sidebar-version"
             >

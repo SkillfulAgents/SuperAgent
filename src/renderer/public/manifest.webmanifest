@@ -1,7 +1,7 @@
 {
   "name": "Gamut",
   "short_name": "Gamut",
-  "description": "Run sophisticated AI code agents powered by Claude Code",
+  "description": "Run sophisticated AI agents",
   "display": "standalone",
   "start_url": "/",
   "scope": "/",

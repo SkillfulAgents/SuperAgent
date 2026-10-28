@@ -1,7 +1,7 @@
 import type { ComponentType, ReactNode } from 'react'
 import type { ApiMessage } from '@shared/lib/types/api'
 
-export type UserMessageKind = 'system' | 'connection-replacement' | 'voice-mode' | 'interrupt' | 'compact' | 'slash' | 'plain'
+export type UserMessageKind = 'integration' | 'system' | 'connection-replacement' | 'voice-mode' | 'interrupt' | 'compact' | 'slash' | 'plain'
 
 export interface UserMessageRenderProps {
   /** Bubble text after the structured blocks (sender, files, folders) are peeled. */
@@ -26,6 +26,12 @@ export interface UserMessageKindSpec {
    * test a prefix before falling through to a regex.
    */
   match: (text: string) => boolean
+  /**
+   * Check on host-written message fields, run before any text match. A kind
+   * that must not be spoofable (an integration card) matches here only and
+   * returns false from `match`, so no text can select it.
+   */
+  matchMessage?: (message: Pick<ApiMessage, 'integration'>) => boolean
   /** Hidden entries are dropped before windowing so they never consume a slot. */
   hidden: boolean
   /** Custom bubble body. Absent means the default Markdown rendering. */

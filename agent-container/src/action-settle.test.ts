@@ -4,10 +4,13 @@ import {
   ACTION_POLICIES,
   diffObservations,
   effectHasChange,
+  effectWantsTree,
   formatActionEffect,
   observeAction,
   pressPolicy,
+  sameDocument,
 } from './action-settle'
+import { parseTreeRefs, type TreeDiff } from './tree-diff'
 
 const base: PageObservation = {
   ...EMPTY_OBSERVATION, url: 'https://a.com', readyState: 'complete', interactive: 40, textChars: 500, contentChars: 500, contentHash: 1, stateHash: 7, focus: 'nothing focused', focusId: 'body@-1',
@@ -29,6 +32,8 @@ describe('diffObservations', () => {
       closed: [{ kind: 'dialog', name: 'Cart' }],
       interactiveDelta: 12,
       stateChanged: false,
+      labelsChanged: false,
+      blockerAppeared: '',
       announced: ['Tags updated'],
       textChanged: true,
       textDelta: 120,
@@ -37,7 +42,32 @@ describe('diffObservations', () => {
       focusValueChanged: false,
       focusValue: '',
       focusValueChars: 0,
+      busyRose: false,
+      textReplaced: false,
+      unreadFrames: 0,
     })
+  })
+
+  it('names the cross-origin frames it could not read when it saw nothing', () => {
+    const e = diffObservations(base, { ...base, iframes: [{ title: 'Card', host: 'js.stripe.com', sameOrigin: false }, { title: 'Demo', host: 'a.com', sameOrigin: true }] })
+    expect(formatActionEffect(e, { settleMs: 1200, verb: 'click' })).toBe('\nEffect: none observed within 1200ms (dialogs, live regions, page text, control state, focus; not read: 1 cross-origin frame)')
+  })
+
+  it('says when a challenge wall came up with the action, before anything else', () => {
+    const e = diffObservations(base, { ...base, blocker: 'PerimeterX', interactive: 41 })
+    expect(e.blockerAppeared).toBe('PerimeterX')
+    expect(formatActionEffect(e, { settleMs: 300, verb: 'click' })).toBe('\nEffect: PerimeterX challenge page now showing · +1 interactive elements')
+    expect(diffObservations({ ...base, blocker: 'PerimeterX' }, { ...base, blocker: 'PerimeterX' }).blockerAppeared).toBe('')
+  })
+
+  it('reports a view swapped in place: same count of controls, different labels', () => {
+    const e = diffObservations({ ...base, labelHash: 11 }, { ...base, labelHash: 12 })
+    expect(e.labelsChanged).toBe(true)
+    expect(effectWantsTree(e, 'click')).toBe(true)
+    expect(effectWantsTree(e, 'hover')).toBe(false)
+    expect(formatActionEffect(e, { settleMs: 300, verb: 'click' })).toBe('\nEffect: labels of visible controls changed')
+    // A different count is the census's to report, not this.
+    expect(diffObservations({ ...base, labelHash: 11 }, { ...base, interactive: 41, labelHash: 12 }).labelsChanged).toBe(false)
   })
 
   it('reports a control state change, and ignores a same-length text change (a clock, a counter)', () => {
@@ -119,8 +149,9 @@ function harness(reads: Array<PageObservation | null>) {
   const evals: number[] = []
   return {
     evals,
-    run: (policy = ACTION_POLICIES.click, fail = false) => observeAction({
+    run: (policy = ACTION_POLICIES.click, fail = false, network?: Parameters<typeof observeAction>[0]['network']) => observeAction({
       exec: async () => ({ exitCode: fail ? 1 : 0 }),
+      network,
       isFailure: r => r.exitCode !== 0,
       evalScript: async () => {
         evals.push(t)
@@ -135,6 +166,18 @@ function harness(reads: Array<PageObservation | null>) {
 }
 
 describe('observeAction', () => {
+  it('hands the action its before-read, so how to act can depend on the page', async () => {
+    let seen: PageObservation | null | undefined
+    await observeAction({
+      exec: async (before) => { seen = before; return { exitCode: 0 } },
+      isFailure: r => r.exitCode !== 0,
+      evalScript: async () => JSON.stringify({ ...base, blocker: 'Cloudflare' }),
+      policy: ACTION_POLICIES.hover,
+      sleep: async () => {},
+    })
+    expect(seen?.blocker).toBe('Cloudflare')
+  })
+
   it('reads a baseline, acts, settles, and reports a change found at the settle', async () => {
     const h = harness([base, { ...base, interactive: 52, top: [{ kind: 'dialog', name: 'Filters' }] }])
     const out = await h.run()
@@ -149,6 +192,16 @@ describe('observeAction', () => {
     expect(out.effect?.interactiveDelta).toBe(12)
     expect(out.waitedMs).toBe(1200)
     expect(h.evals).toEqual([0, 300, 1200])
+  })
+
+  it('keeps the effect across a same-document URL change (pushState), not across a new document', async () => {
+    const spa = await harness([{ ...base, docStart: 1700.5 }, { ...base, url: 'https://a.com/#/filters', docStart: 1700.5, interactive: 52 }]).run()
+    expect(spa.effect?.interactiveDelta).toBe(12)
+    expect(sameDocument({ ...base, docStart: 1700.5 }, { ...base, docStart: 1700.5 })).toBe(true)
+    const reload = await harness([{ ...base, docStart: 1700.5 }, { ...base, url: 'https://a.com/next', docStart: 1800.25 }]).run()
+    expect(reload.effect).toBeNull()
+    // Unknown load start (0): a URL change is a navigation, as before.
+    expect(sameDocument({ ...base, docStart: 0 }, { ...base, docStart: 0 })).toBe(false)
   })
 
   it('reports nothing across a navigation, after a failed action, or when the page cannot be read', async () => {
@@ -179,6 +232,65 @@ describe('observeAction', () => {
     expect(out2.effect?.opened).toEqual([{ kind: 'dialog', name: 'Cart' }])
   })
 
+  it('rechecks a click whose only change is the control\'s own state: the results it filters land later (bench, toolshop)', async () => {
+    const h = harness([base, { ...base, stateHash: 8 }, { ...base, stateHash: 8, interactive: 56, contentChars: 900, contentHash: 2 }])
+    const out = await h.run(ACTION_POLICIES.click)
+    expect(h.evals).toEqual([0, 300, 1200])
+    expect(out.effect?.interactiveDelta).toBe(16)
+  })
+
+  it('rechecks a fill that announced something and changed no more text than the announcement', async () => {
+    // Live: the content grew by 21 chars for a 20-char announcement.
+    const loading = { ...base, liveRegions: ['Loading suggestions…'], contentChars: 521, contentHash: 2 }
+    const h = harness([base, loading, { ...loading, interactive: 44, liveRegions: ['3 suggestions'] }])
+    const out = await h.run(ACTION_POLICIES.fill)
+    expect(h.evals).toEqual([0, 200, 1200])
+    expect(out.effect?.interactiveDelta).toBe(4)
+    // No announcement: a fill does not wait for more.
+    const quiet = harness([base, { ...base }])
+    await quiet.run(ACTION_POLICIES.fill)
+    expect(quiet.evals).toEqual([0, 200])
+  })
+
+  it('rechecks a click into a field that announced loading, though a label flipped with it (MUI async autocomplete)', async () => {
+    const loading = { ...base, liveRegions: ['Loading…'], labelHash: 9, focus: 'combobox "Asynchronous"', focusId: 'input@3' }
+    const h = harness([base, loading, { ...loading, liveRegions: [], interactive: 72 }])
+    const out = await h.run(ACTION_POLICIES.click)
+    expect(h.evals).toEqual([0, 300, 1200])
+    expect(out.effect?.interactiveDelta).toBe(32)
+    expect(out.effect?.announced).toEqual(['Loading…'])
+  })
+
+  it('rechecks a click or Enter whose only effect so far is controls going away (a suggestion list closing)', async () => {
+    const h = harness([base, { ...base, interactive: 28 }, { ...base, interactive: 28, contentChars: 900, contentHash: 5 }])
+    const out = await h.run(pressPolicy('Enter'))
+    expect(h.evals).toEqual([0, 300, 1200])
+    expect(out.effect?.textChanged).toBe(true)
+  })
+
+  it('times the second look by what the action asked the server for', async () => {
+    const ticked = { ...base, stateHash: 8 }
+    // Nothing issued (a radio in a form): one short second look.
+    const quiet = harness([base, ticked, ticked])
+    const q = await quiet.run(ACTION_POLICIES.click, false, { start: async () => true, since: async () => ({ issued: 0, pending: 0 }) })
+    expect(quiet.evals).toEqual([0, 300, 600])
+    expect(q.waitedMs).toBe(600)
+    // A request issued and still pending: the full recheck, then reads while it is pending.
+    const pending = [{ issued: 1, pending: 1 }, { issued: 1, pending: 1 }, { issued: 1, pending: 0 }]
+    const busy = harness([base, ticked, ticked, { ...ticked, interactive: 56, contentChars: 900, contentHash: 2 }])
+    const b = await busy.run(ACTION_POLICIES.click, false, { start: async () => true, since: async () => pending.shift() ?? { issued: 1, pending: 0 } })
+    expect(busy.evals).toEqual([0, 300, 1200, 1800])
+    expect(b.effect?.interactiveDelta).toBe(16)
+    // Nothing issued, but the page said it is loading: the full recheck.
+    const said = harness([base, { ...ticked, liveRegions: ['Loading…'] }, ticked])
+    await said.run(ACTION_POLICIES.click, false, { start: async () => true, since: async () => ({ issued: 0, pending: 0 }) })
+    expect(said.evals).toEqual([0, 300, 1200])
+    // The log could not be cleared or read: the full recheck, as without it.
+    const blind = harness([base, ticked, ticked])
+    await blind.run(ACTION_POLICIES.click, false, { start: async () => false, since: async () => ({ issued: 0, pending: 0 }) })
+    expect(blind.evals).toEqual([0, 300, 1200])
+  })
+
   it('never rechecks a hover', async () => {
     const h = harness([base, { ...base }])
     const out = await h.run(ACTION_POLICIES.hover)
@@ -193,12 +305,87 @@ describe('observeAction', () => {
       expect(h.evals).toEqual([0, 300, 1200])
       expect(out.effect?.interactiveDelta).toBe(12)
     }
-    for (const key of ['Tab', 'Escape', 'ArrowDown', 'Control+a', 'a']) {
+    for (const key of ['Tab', 'ArrowDown', 'Control+a', 'a']) {
       const h = harness([base, { ...base, focus: 'link "Next"' }])
       const out = await h.run(pressPolicy(key))
       expect(out.waitedMs).toBe(50)
       expect(out.effect?.focusChanged).toBe(true)
       expect(h.evals).toEqual([0, 50])
     }
+    // Escape waits out a closing animation (MUI's dialog: ~200 ms), without a recheck.
+    const esc = harness([base, { ...base, top: [] }])
+    await esc.run(pressPolicy('Escape'))
+    expect(esc.evals).toEqual([0, 300])
+  })
+
+  it('keeps reading while a spinner the action raised is up, up to 3 s (DuckDuckGo "More results")', async () => {
+    const spinning = { ...base, busy: 1, labelHash: 4, stateHash: 9 }
+    const h = harness([base, spinning, spinning, spinning, { ...base, interactive: 55, contentChars: 900, contentHash: 3 }])
+    const out = await h.run(ACTION_POLICIES.click)
+    expect(h.evals).toEqual([0, 300, 1200, 1800, 2400])
+    expect(out.effect?.interactiveDelta).toBe(15)
+    // A spinner that never goes away: the reads stop at 3 s.
+    const stuck = harness([base, spinning, spinning, spinning, spinning, spinning, spinning])
+    await stuck.run(ACTION_POLICIES.click)
+    expect(stuck.evals).toEqual([0, 300, 1200, 1800, 2400, 3000])
+  })
+})
+
+describe('effectWantsTree', () => {
+  it('reads the tree for structural changes, and for in-place text changes only after verbs that load results', () => {
+    expect(effectWantsTree(diffObservations(base, { ...base, interactive: 41 }), 'hover')).toBe(true)
+    expect(effectWantsTree(diffObservations(base, { ...base, stateHash: 8 }), 'fill')).toBe(true)
+    expect(effectWantsTree(diffObservations(base, { ...base, top: [{ kind: 'dialog', name: 'Cart' }] }), 'press')).toBe(true)
+    const text = diffObservations(base, { ...base, contentHash: 2, contentChars: 640 })
+    expect(effectWantsTree(text, 'click')).toBe(true)
+    expect(effectWantsTree(text, 'select')).toBe(true)
+    expect(effectWantsTree(text, 'hover')).toBe(false)
+    expect(effectWantsTree(text, 'fill')).toBe(false)
+    expect(effectWantsTree(diffObservations(base, { ...base, liveRegions: ['Saved'], focus: 'button "x"' }), 'click')).toBe(false)
+  })
+})
+
+describe('formatActionEffect with a tree diff', () => {
+  const diff = (over: Partial<TreeDiff> = {}): TreeDiff => ({ added: [], returned: [], rerendered: [], changed: [], removed: [], ...over })
+  const tree = (d: TreeDiff) => ({ diff: d, baselineAgeMs: 2000, baselineSource: 'snapshot' as const })
+  const opened = parseTreeRefs('- link "Menu A" [ref=e18]\n- link "Menu B" [ref=e19]')
+
+  it('lists the elements in place of the census and state counts', () => {
+    const effect = diffObservations(base, { ...base, interactive: 42, stateHash: 8, focus: 'button "Open menu"', focusId: 'button@3' })
+    expect(formatActionEffect(effect, { settleMs: 300, verb: 'click', treeDiff: tree(diff({ added: [...opened.lines.values()] })) })).toBe(
+      '\nEffect: focus: button "Open menu"\nTree changes since your snapshot 2s ago (2 added):\n+ link "Menu A" [ref=e18]\n+ link "Menu B" [ref=e19]',
+    )
+    const quiet = diffObservations(base, { ...base, interactive: 42 })
+    expect(formatActionEffect(quiet, { settleMs: 300, verb: 'hover', treeDiff: tree(diff({ added: [...opened.lines.values()] })) }))
+      .toBe('\nEffect: tree changes since your snapshot 2s ago (2 added):\n+ link "Menu A" [ref=e18]\n+ link "Menu B" [ref=e19]')
+  })
+
+  it('keeps the counts when the tree read found nothing, and keeps dialogs and announcements first', () => {
+    const effect = diffObservations(base, { ...base, stateHash: 8 })
+    expect(formatActionEffect(effect, { settleMs: 300, verb: 'click', treeDiff: tree(diff()) })).toBe('\nEffect: control state changed (checked/pressed/expanded/selected)')
+    const dialog = diffObservations(base, { ...base, interactive: 3, top: [{ kind: 'dialog', name: 'Cart' }], liveRegions: ['Added'] })
+    const page = parseTreeRefs('- button "A" [ref=e1]\n- button "B" [ref=e2]')
+    expect(formatActionEffect(dialog, { settleMs: 300, verb: 'click', treeDiff: tree(diff({ added: [...parseTreeRefs('- button "Close" [ref=e9]').lines.values()], removed: [...page.lines.values()] })) })).toBe(
+      '\nEffect: dialog "Cart" opened · announced: "Added"\nTree changes since your snapshot 2s ago (1 added, 2 removed):\n+ button "Close" [ref=e9]\n− 2 other elements are not in the tree while the dialog is open',
+    )
+  })
+
+  it('with the target read back, says nothing when only the target changed', () => {
+    const effect = diffObservations(base, { ...base, stateHash: 8, interactive: 41 })
+    expect(formatActionEffect(effect, { settleMs: 300, verb: 'select', valueReadBack: true, treeDiff: tree(diff()) })).toBe('')
+    expect(formatActionEffect(diffObservations(base, { ...base }), { settleMs: 200, verb: 'fill', valueReadBack: true })).toBe('')
+    // No tree read (no baseline): the counts stay.
+    expect(formatActionEffect(effect, { settleMs: 300, verb: 'select', valueReadBack: true })).toBe('\nEffect: +1 interactive elements')
+  })
+
+  it('reports a select that re-sorted the page: same elements, labels moved (toolshop)', () => {
+    const resort = diffObservations(base, { ...base, stateHash: 8, labelHash: 3 })
+    expect(formatActionEffect(resort, { settleMs: 300, verb: 'select', valueReadBack: true, treeDiff: tree(diff()) }))
+      .toBe('\nEffect: labels of visible controls changed; the tree has the same elements as before')
+  })
+
+  it('does not call a census change a state change', () => {
+    const grew = diffObservations(base, { ...base, stateHash: 8, interactive: 45 })
+    expect(formatActionEffect(grew, { settleMs: 300, verb: 'click' })).toBe('\nEffect: +5 interactive elements')
   })
 })

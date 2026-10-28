@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   // Reports whether a dot was actually showing; defaults to the common no-op open.
   clearUnread: vi.fn(() => false),
   session: {} as Record<string, unknown>,
+  canUseAgent: true,
+  commentsEnabled: [] as Array<boolean | undefined>,
 }))
 
 vi.mock('@tanstack/react-router', () => ({
@@ -45,7 +47,7 @@ vi.mock('@renderer/context/pending-messages-context', () => ({
 }))
 
 vi.mock('@renderer/context/user-context', () => ({
-  useUser: () => ({ canUseAgent: () => true }),
+  useUser: () => ({ canUseAgent: () => mocks.canUseAgent }),
 }))
 
 vi.mock('@renderer/lib/perf', () => ({ useRenderTracker: () => {} }))
@@ -55,7 +57,10 @@ vi.mock('@renderer/components/messages/session-search-bar', () => ({
 }))
 vi.mock('./session-chat-column', () => ({ SessionChatColumn: () => null }))
 vi.mock('@renderer/context/file-preview-context', () => ({
-  FilePreviewProvider: ({ children }: { children: ReactNode }) => children,
+  FilePreviewProvider: ({ children, commentsEnabled }: { children: ReactNode; commentsEnabled?: boolean }) => {
+    mocks.commentsEnabled.push(commentsEnabled)
+    return children
+  },
 }))
 vi.mock('@renderer/context/workflow-context', () => ({
   WorkflowProvider: ({ children }: { children: ReactNode }) => children,
@@ -152,5 +157,36 @@ describe('SessionView fork provenance', () => {
     render(<SessionView agentSlug="agent-a" sessionId="fork-1" />)
 
     expect(screen.queryByTestId('fork-session-banner')).toBeNull()
+  })
+})
+
+it('does not clear unread state before a session exists', () => {
+  vi.clearAllMocks()
+  render(<SessionView agentSlug="target-agent" sessionId={null} />)
+  fireEvent(document, new Event('visibilitychange'))
+  expect(mocks.clearUnread).not.toHaveBeenCalled()
+  expect(mocks.markRead).not.toHaveBeenCalled()
+  expect(mocks.setMarkedUnread).not.toHaveBeenCalled()
+})
+
+describe('SessionView file comments', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.session = {}
+    mocks.canUseAgent = true
+    mocks.commentsEnabled = []
+  })
+
+  it('turns file comments off for a member who can only view the agent', () => {
+    mocks.canUseAgent = false
+    render(<SessionView agentSlug="target-agent" sessionId="s1" />)
+
+    expect(mocks.commentsEnabled.at(-1)).toBe(false)
+  })
+
+  it('keeps file comments on for a member who can use the agent', () => {
+    render(<SessionView agentSlug="target-agent" sessionId="s1" />)
+
+    expect(mocks.commentsEnabled.at(-1)).toBe(true)
   })
 })

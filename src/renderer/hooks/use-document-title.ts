@@ -55,18 +55,22 @@ const SETTINGS_TAB_TITLES = {
   notifications: 'Notifications',
   platform: 'Account',
   connections: 'Connections',
+  volumes: 'Drives',
+  logins: 'Logins',
   usage: 'Usage',
   llm: 'Model Provider',
   runtime: 'Container Runtime',
   browser: 'Browser Use',
   web: 'Web Search',
   capabilities: 'Subagents',
+  'global-guidance': 'Global Guidance',
   'computer-use': 'Computer Use',
   'account-provider': 'Account Provider',
   voice: 'Voice',
   skillsets: 'Skillsets',
   analytics: 'Analytics',
   'audit-log': 'Audit Log',
+  experiments: 'Experiments',
   admin: 'Admin',
   users: 'Users',
   auth: 'Auth',
@@ -130,6 +134,8 @@ function titleForAgentView(view: AgentView, input: DocumentTitleInput): string {
   switch (view.kind) {
     case 'home':
       return input.location.selectedAgentSlug ? joinWithBrand(agentTitle) : APP_TITLE
+    case 'newSession':
+      return `New Session${VIEW_SEPARATOR}${agentTitle}`
     case 'session':
       return `${cleanTitlePart(input.sessionName) ?? 'Session'}${VIEW_SEPARATOR}${agentTitle}`
     case 'task':
@@ -141,7 +147,7 @@ function titleForAgentView(view: AgentView, input: DocumentTitleInput): string {
     case 'completedTasks':
       return joinView(agentTitle, 'Completed One-time Tasks')
     case 'chat':
-      return joinView(agentTitle, 'Remote Chat')
+      return joinView(agentTitle, 'Integration')
     case 'dashboard':
       return joinView(agentTitle, cleanTitlePart(input.dashboardName) ?? humanizeIdentifier(view.slug) ?? 'Dashboard')
     case 'apiLogs':
@@ -234,7 +240,7 @@ export function useDocumentTitle() {
 
   const { data: agent } = useAgent(agentSlug)
   const { data: session } = useSession(sessionId, agentSlug)
-  const { isStreaming } = useMessageStream(sessionId, agentSlug)
+  const { isStreaming } = useMessageStream(sessionId, agentSlug, ['isStreaming'])
 
   const dashboardName = useMemo(() => {
     if (location.view.kind !== 'dashboard') return null

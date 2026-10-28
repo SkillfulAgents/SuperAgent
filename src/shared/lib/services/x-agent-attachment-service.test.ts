@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as nodeFs from 'fs'
 import * as fs from 'fs/promises'
 import * as os from 'os'
 import * as path from 'path'
 import { LocalFileOps } from '@shared/lib/agent-actor/local-file-ops'
-import type { FileOps, OpenFile } from '@shared/lib/agent-actor/types'
+import type { OpenFile } from '@shared/lib/agent-actor/types'
 import { normalizeXAgentAttachmentPaths, transferXAgentAttachments, transferError, XAgentAttachmentError } from './x-agent-attachment-service'
 import { MAX_X_AGENT_ATTACHMENT_BYTES } from './x-agent-attachment-schema'
 
@@ -37,8 +38,8 @@ describe('normalizeXAgentAttachmentPaths', () => {
 
 describe('transferXAgentAttachments through local FileOps', () => {
   let root: string
-  let source: FileOps
-  let target: FileOps
+  let source: LocalFileOps
+  let target: LocalFileOps
   const targetDirectory = '/workspace/uploads/x-agent/test-transfer'
   beforeEach(async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), 'xagent-fileops-'))
@@ -54,7 +55,11 @@ describe('transferXAgentAttachments through local FileOps', () => {
   const transfer = (paths: string[], signal?: AbortSignal) => transferXAgentAttachments({
     sourceFiles: source, targetFiles: target, sourcePaths: paths, transferId: 'test-transfer', signal,
   })
-  it('copies binary, empty and URL-special names to isolated paths without decoding', async () => {
+  it('copies binary, empty and URL-special names to isolated paths without decoding or hard links', async () => {
+    // S3 Files (cloud /workspace) rejects every link() with EMLINK.
+    const link = vi.spyOn(nodeFs.promises, 'link').mockRejectedValue(
+      Object.assign(new Error('EMLINK: too many links, link'), { code: 'EMLINK' }),
+    )
     const bytes = Uint8Array.from([0, 255, 128, 1])
     await source.putDoc('a/report.bin', bytes)
     await source.putDoc('b/report.bin', 'second')
@@ -66,6 +71,8 @@ describe('transferXAgentAttachments through local FileOps', () => {
     expect(await target.getDoc(result.attachments[0].targetPath)).toEqual(Buffer.from(bytes))
     expect(Buffer.from((await target.getDoc(result.attachments[1].targetPath))!).toString()).toBe('second')
     expect(await target.getDoc(result.attachments[2].targetPath)).toHaveLength(0)
+    expect(await fs.readdir(path.join(root, 'target/uploads/x-agent/test-transfer/0'))).toEqual(['report.bin'])
+    expect(link).not.toHaveBeenCalled()
   })
   it('cleans completed files when a later source is absent', async () => {
     await source.putDoc('first', 'bytes')
@@ -83,12 +90,18 @@ describe('transferXAgentAttachments through local FileOps', () => {
     const cause = new XAgentAttachmentError('File changed', 409)
     expect(transferError(new TypeError('fetch failed', { cause }))).toBe(cause)
   })
-  it('closes an oversized source before reading it', async () => {
-    const file: OpenFile = { size: async () => MAX_X_AGENT_ATTACHMENT_BYTES + 1, stream: vi.fn(), close: vi.fn(async () => {}), readAt: vi.fn() }
+  it('releases an oversized source and writes none of it', async () => {
+    const close = vi.fn(async () => {})
+    const file: OpenFile = {
+      size: async () => MAX_X_AGENT_ATTACHMENT_BYTES + 1,
+      stream: () => new ReadableStream({ cancel: close }),
+      close,
+      readAt: vi.fn(),
+    }
     vi.spyOn(source, 'open').mockResolvedValue(file)
     await expect(transfer(['large'])).rejects.toMatchObject({ status: 413 })
-    expect(file.close).toHaveBeenCalledOnce()
-    expect(file.stream).not.toHaveBeenCalled()
+    expect(close).toHaveBeenCalledOnce()
+    expect(await target.stat(targetDirectory)).toBeNull()
   })
   it('refuses symlink escapes when reading, writing, and cleaning up', async () => {
     const outside = path.join(root, 'outside')
@@ -109,17 +122,32 @@ describe('transferXAgentAttachments through local FileOps', () => {
   })
   it('does not overwrite a racing destination', async () => {
     await source.putDoc('safe', 'new')
-    const link = fs.link
-    // Inject the race at publication, after all preflight checks.
-    const nodeFs = await import('fs')
-    vi.spyOn(nodeFs.promises, 'link').mockImplementationOnce(async (from, to) => {
-      await fs.writeFile(to, 'existing')
-      return link(from, to)
+    const writeFile = fs.writeFile
+    // Inject the race at the publication claim, after all preflight checks.
+    vi.spyOn(nodeFs.promises, 'writeFile').mockImplementationOnce(async (to, data, options) => {
+      expect(options).toMatchObject({ flag: 'wx' })
+      // Empty, so a cleanup that mistook it for our claim would remove it.
+      await writeFile(to, '')
+      return writeFile(to, data, options)
     })
     await expect(target.write('race', new TextEncoder().encode('new'), { confined: true, overwrite: false }))
       .rejects.toMatchObject({ code: 'already-exists' })
-    expect(Buffer.from((await target.getDoc('race'))!).toString()).toBe('existing')
+    expect(Buffer.from((await target.getDoc('race'))!).toString()).toBe('')
     expect(await fs.readdir(path.join(root, 'target'))).toEqual(['race'])
+  })
+  it.each([
+    ['removes an empty claim', '', []],
+    ['keeps a claim another writer filled', 'existing', ['race']],
+  ])('%s when publication fails', async (_case, racing, remaining) => {
+    vi.spyOn(nodeFs.promises, 'rename').mockImplementationOnce(async (_from, to) => {
+      expect(await fs.readFile(to, 'utf8')).toBe('')
+      if (racing) await fs.writeFile(to, racing)
+      throw Object.assign(new Error('EIO: i/o error, rename'), { code: 'EIO' })
+    })
+    await expect(target.write('race', new TextEncoder().encode('new'), { confined: true, overwrite: false }))
+      .rejects.toMatchObject({ code: 'EIO' })
+    expect(await fs.readdir(path.join(root, 'target'))).toEqual(remaining)
+    if (racing) expect(await fs.readFile(path.join(root, 'target', 'race'), 'utf8')).toBe(racing)
   })
   it('cancels an interrupted transfer and removes partial data', async () => {
     const abort = new AbortController()

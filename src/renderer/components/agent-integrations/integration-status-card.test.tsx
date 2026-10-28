@@ -25,6 +25,12 @@ describe('IntegrationStatusCard', () => {
     expect(screen.getByLabelText(expectedSwitch)).toBeInTheDocument()
   })
 
+  it('shows reconnect needed instead of offering to resume revoked credentials', () => {
+    render(<IntegrationStatusCard integration={makeIntegration({ status: 'disconnected', hasCredentials: false, reconnectRequired: true })} connected={false} />)
+    expect(screen.getByText('Reconnect needed')).toBeInTheDocument()
+    expect(screen.getByRole('switch')).toBeDisabled()
+  })
+
   it('pauses when toggled off', async () => {
     const user = userEvent.setup()
     render(<IntegrationStatusCard integration={makeIntegration({ status: 'active' })} connected />)
@@ -38,4 +44,13 @@ describe('IntegrationStatusCard', () => {
     await user.click(screen.getByLabelText(/resume integration/i))
     expect(updateMock).toHaveBeenCalledWith({ id: 'int-1', status: 'active' })
   })
+  it('allows pausing damaged credentials but prevents resuming them', async () => {
+    const user = userEvent.setup()
+    const { rerender } = render(<IntegrationStatusCard integration={makeIntegration({ status: 'error', hasCredentials: false })} />)
+    await user.click(screen.getByLabelText(/pause integration/i))
+    expect(updateMock).toHaveBeenCalledWith({ id: 'int-1', status: 'paused' })
+    rerender(<IntegrationStatusCard integration={makeIntegration({ status: 'paused', hasCredentials: false })} />)
+    expect(screen.getByRole('switch')).toBeDisabled()
+  })
+
 })

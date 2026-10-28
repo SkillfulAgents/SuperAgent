@@ -1,6 +1,6 @@
 import { Loader2, Pause, Play, Square, Volume2 } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select'
+import { SpeedSelect } from '@renderer/components/ui/speed-select'
 import { useIsTtsConfigured } from '@renderer/hooks/use-voice-input'
 import { readAloud, type ReadAloudStatus } from '@renderer/lib/voice/services/read-aloud'
 import { useReadAloud } from '@renderer/hooks/use-read-aloud'
@@ -58,36 +58,22 @@ export function ReadAloudSpeedSelect({ testId = 'read-aloud-speed', align = 'sta
   const updateUserSettings = useUpdateUserSettings()
   const stored = ttsSpeedSchema.safeParse(userSettings?.voice?.ttsSpeed)
   const speed = stored.success ? stored.data : DEFAULT_TTS_SPEED
-  const preset = TTS_SPEEDS.find((s) => s.value === speed)
 
   return (
-    <Select
-      value={String(speed)}
-      onValueChange={(v) => {
-        const ttsSpeed = Number(v)
+    <SpeedSelect
+      value={speed}
+      options={TTS_SPEEDS}
+      label="Reading speed"
+      testId={testId}
+      align={align}
+      onChange={(ttsSpeed) => {
         if (ttsSpeed === speed) return
         // The restart comes after the save round-trip, outside this gesture:
         // give it an audio output made inside it.
         readAloud.unlockAudio()
         updateUserSettings.mutate({ voice: { ttsSpeed } }, { onSuccess: () => readAloud.restart() })
       }}
-    >
-      <SelectTrigger
-        aria-label="Reading speed"
-        data-testid={testId}
-        className={cn(
-          'h-6 w-auto gap-1 border-0 bg-transparent px-1.5 text-xs text-muted-foreground shadow-none',
-          'hover:bg-black/[0.06] hover:text-foreground dark:hover:bg-white/[0.1] [&>svg]:h-3 [&>svg]:w-3',
-        )}
-      >
-        <SelectValue>{preset?.value === 1 ? '1×' : (preset?.label ?? `${speed}×`)}</SelectValue>
-      </SelectTrigger>
-      <SelectContent align={align}>
-        {TTS_SPEEDS.map((s) => (
-          <SelectItem key={s.value} value={String(s.value)}>{s.label}</SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+    />
   )
 }
 

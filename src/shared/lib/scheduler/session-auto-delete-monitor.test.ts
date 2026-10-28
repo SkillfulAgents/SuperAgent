@@ -13,7 +13,7 @@ const mockDeleteSessionsBatch = vi.fn()
 const mockReadAgentPreferences = vi.fn()
 const mockGetSettings = vi.fn()
 const mockIsAuthMode = vi.fn(() => false)
-const mockIsSessionActive = vi.fn((_agentSlug: string, _id: string) => false)
+const mockActiveIds = vi.fn((_agentSlug: string): string[] => [])
 const mockUnsubscribeFromSession = vi.fn()
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockDbDelete = vi.fn((..._args: any[]) => ({ where: vi.fn(() => ({ changes: 0 })) }))
@@ -40,11 +40,11 @@ vi.mock('@shared/lib/auth/mode', () => ({
   isAuthMode: () => mockIsAuthMode(),
 }))
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    isSessionActive: (agentSlug: string, id: string) => mockIsSessionActive(agentSlug, id),
-    unsubscribeFromSession: (agentSlug: string, id: string) => mockUnsubscribeFromSession(agentSlug, id),
-  },
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    activeIds: (agentSlug) => mockActiveIds(agentSlug),
+    unsubscribe: (agentSlug, id) => mockUnsubscribeFromSession(agentSlug, id),
+  }),
 }))
 
 const mockListSessionIdsWithPendingWakes = vi.fn((_slug: string) =>
@@ -73,6 +73,7 @@ vi.mock('drizzle-orm', () => ({
 
 // Import after mocks are set up
 import { sessionAutoDeleteMonitor } from './session-auto-delete-monitor'
+import { inArray } from 'drizzle-orm'
 
 // ============================================================================
 // Helpers
@@ -89,7 +90,6 @@ function makeSession(
     name: `Session ${id}`,
     createdAt: new Date('2026-01-01'),
     lastActivityAt,
-    messageCount: 5,
   }
 }
 
@@ -117,7 +117,7 @@ describe('SessionAutoDeleteMonitor', () => {
       Promise.resolve(ids)
     )
     mockReadSessionMetadata.mockResolvedValue({})
-    mockIsSessionActive.mockReturnValue(false)
+    mockActiveIds.mockReturnValue([])
     mockIsAuthMode.mockReturnValue(false)
   })
 
@@ -129,6 +129,8 @@ describe('SessionAutoDeleteMonitor', () => {
   async function startAndTrigger() {
     await sessionAutoDeleteMonitor.start()
     await vi.advanceTimersByTimeAsync(30_000)
+    // The run the timer started ends when its agents' ops have answered, as any I/O.
+    await vi.waitFor(() => expect(Reflect.get(sessionAutoDeleteMonitor, 'isProcessing')).toBe(false))
   }
 
   // --------------------------------------------------------------------------
@@ -251,9 +253,7 @@ describe('SessionAutoDeleteMonitor', () => {
     mockReadAgentPreferences.mockResolvedValue({})
     mockListSessions.mockResolvedValue([oldActive, oldInactive])
     mockReadSessionMetadata.mockResolvedValue({})
-    mockIsSessionActive.mockImplementation(
-      (_agentSlug: string, id: string) => id === 'active'
-    )
+    mockActiveIds.mockReturnValue(['active'])
 
     await startAndTrigger()
 
@@ -343,11 +343,15 @@ describe('SessionAutoDeleteMonitor', () => {
     await startAndTrigger()
 
     expect(mockDbDelete).toHaveBeenCalled()
+    // The records go only for what was deleted.
+    expect(vi.mocked(inArray)).toHaveBeenCalled()
+    expect(vi.mocked(inArray).mock.calls.every(([, ids]) => JSON.stringify(ids) === '["ok"]')).toBe(true)
+    // Every stream lets go before the delete, as a single delete's does.
     expect(mockUnsubscribeFromSession).toHaveBeenCalledWith('test-agent', 'ok')
-    expect(mockUnsubscribeFromSession).not.toHaveBeenCalledWith('test-agent', 'failed')
+    expect(mockUnsubscribeFromSession).toHaveBeenCalledWith('test-agent', 'failed')
   })
 
-  it('cleans notifications but not messageAuthor when not in auth mode', async () => {
+  it('cleans notifications and message authors when not in auth mode (integrations author messages too)', async () => {
     const now = Date.now()
     const old = makeSession('old', new Date(now - 60 * 86_400_000))
 
@@ -360,11 +364,11 @@ describe('SessionAutoDeleteMonitor', () => {
 
     await startAndTrigger()
 
-    // Notification cleanup is unconditional (notifications exist in both modes);
-    // messageAuthor cleanup stays gated on auth mode.
+    // Both are unconditional: notifications exist in both modes, and an
+    // integration's message_author rows exist without auth.
     const deletedTables = mockDbDelete.mock.calls.map((call) => call[0])
     expect(deletedTables).toContainEqual({ sessionId: 'notifications_session_id' })
-    expect(deletedTables).not.toContainEqual({ sessionId: 'message_author_session_id' })
+    expect(deletedTables).toContainEqual(expect.objectContaining({ sessionId: 'message_author_session_id' }))
   })
 
   // --------------------------------------------------------------------------

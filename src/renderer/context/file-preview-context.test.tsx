@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { createElement, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { FilePreviewProvider, getPreviewTabKey, getWorkspaceFileKey, useFilePreview, type FileTab } from './file-preview-context'
+import { RELOADING_EVENT } from '@renderer/lib/lazy-with-reload'
 
 // Mock the route-derived location — FilePreviewProvider reads useRouteLocation and
 // watches view.kind/view.id for session changes.
@@ -12,7 +13,7 @@ vi.mock('@renderer/router/use-route-location', () => ({
 }))
 
 function wrapper({ children }: { children: ReactNode }) {
-  return createElement(FilePreviewProvider, null, children)
+  return <FilePreviewProvider commentsEnabled>{children}</FilePreviewProvider>
 }
 
 function readOnlyWrapper({ children }: { children: ReactNode }) {
@@ -198,7 +199,7 @@ describe('FilePreviewContext', () => {
       act(() => result.current.openFolder('/workspace/reports', 'agent-1'))
       act(() => result.current.selectFolderEntry('/workspace/reports', 'agent-1', oldPath))
       act(() => result.current.openFile(oldPath, 'agent-1'))
-      act(() => result.current.addComment({ filePath: oldPath, agentSlug: 'agent-1', text: 'keep me' }))
+      act(() => result.current.addComment({ filePath: oldPath, agentSlug: 'agent-1', text: 'keep me', anchor: { kind: 'file' } }))
       act(() => result.current.renameFilePath(oldPath, newPath, 'agent-1'))
 
       expect(result.current.openTabs[0]).toMatchObject({ selectedPath: newPath })
@@ -221,7 +222,7 @@ describe('FilePreviewContext', () => {
       act(() => result.current.openFolder('/workspace/reports', 'agent-1'))
       act(() => result.current.selectFolderEntry('/workspace/reports', 'agent-1', filePath))
       act(() => result.current.openFile(filePath, 'agent-1'))
-      act(() => result.current.addComment({ filePath, agentSlug: 'agent-1', text: 'remove me' }))
+      act(() => result.current.addComment({ filePath, agentSlug: 'agent-1', text: 'remove me', anchor: { kind: 'file' } }))
       act(() => result.current.setActiveTab(0))
       act(() => result.current.removeFilePath(filePath, 'agent-1'))
 
@@ -241,7 +242,7 @@ describe('FilePreviewContext', () => {
       act(() => result.current.toggleFolder('/workspace/reports', 'agent-1', oldPath))
       act(() => result.current.selectFolderEntry('/workspace/reports', 'agent-1', filePath))
       act(() => result.current.openFile(filePath, 'agent-1'))
-      act(() => result.current.addComment({ filePath, agentSlug: 'agent-1', text: 'move me' }))
+      act(() => result.current.addComment({ filePath, agentSlug: 'agent-1', text: 'move me', anchor: { kind: 'file' } }))
       act(() => result.current.openFolder(oldPath, 'agent-1'))
       act(() => result.current.renameDirectoryPath(oldPath, newPath, 'agent-1'))
 
@@ -276,7 +277,7 @@ describe('FilePreviewContext', () => {
       act(() => result.current.toggleFolder('/workspace/reports', 'agent-1', directoryPath))
       act(() => result.current.selectFolderEntry('/workspace/reports', 'agent-1', filePath))
       act(() => result.current.openFile(filePath, 'agent-1'))
-      act(() => result.current.addComment({ filePath, agentSlug: 'agent-1', text: 'remove me' }))
+      act(() => result.current.addComment({ filePath, agentSlug: 'agent-1', text: 'remove me', anchor: { kind: 'file' } }))
       act(() => result.current.openFolder(directoryPath, 'agent-1'))
       act(() => result.current.removeDirectoryPath(directoryPath, 'agent-1'))
 
@@ -342,7 +343,7 @@ describe('FilePreviewContext', () => {
     it('clears comments for the closed file', () => {
       const { result } = renderHook(() => useFilePreview(), { wrapper })
       act(() => result.current.openFile('/workspace/a.md', 'agent-1'))
-      act(() => result.current.addComment({ filePath: '/workspace/a.md', agentSlug: 'agent-1', text: 'test' }))
+      act(() => result.current.addComment({ filePath: '/workspace/a.md', agentSlug: 'agent-1', text: 'test', anchor: { kind: 'file' } }))
       expect(result.current.comments.get(getWorkspaceFileKey('agent-1', '/workspace/a.md'))).toHaveLength(1)
 
       act(() => result.current.closeTab(getPreviewTabKey(result.current.openTabs[0])))
@@ -354,7 +355,7 @@ describe('FilePreviewContext', () => {
     it('clears all state when session changes', () => {
       const { result, rerender } = renderHook(() => useFilePreview(), { wrapper })
       act(() => result.current.openFile('/workspace/a.md', 'agent-1'))
-      act(() => result.current.addComment({ filePath: '/workspace/a.md', agentSlug: 'agent-1', text: 'note' }))
+      act(() => result.current.addComment({ filePath: '/workspace/a.md', agentSlug: 'agent-1', text: 'note', anchor: { kind: 'file' } }))
 
       expect(result.current.openTabs).toHaveLength(1)
       expect(result.current.isOpen).toBe(true)
@@ -379,7 +380,7 @@ describe('FilePreviewContext', () => {
       act(() => result.current.openFile(filePath, 'agent-1'))
       act(() => result.current.openFile(filePath, 'agent-2'))
 
-      act(() => result.current.addComment({ filePath, agentSlug: 'agent-1', text: 'only on one' }))
+      act(() => result.current.addComment({ filePath, agentSlug: 'agent-1', text: 'only on one', anchor: { kind: 'file' } }))
 
       expect(result.current.commentsFor(filePath, 'agent-1')).toHaveLength(1)
       expect(result.current.commentsFor(filePath, 'agent-2')).toHaveLength(0)
@@ -390,8 +391,8 @@ describe('FilePreviewContext', () => {
       const filePath = '/workspace/report.md'
       act(() => result.current.openFile(filePath, 'agent-1'))
       act(() => result.current.openFile(filePath, 'agent-2'))
-      act(() => result.current.addComment({ filePath, agentSlug: 'agent-1', text: 'keep me' }))
-      act(() => result.current.addComment({ filePath, agentSlug: 'agent-2', text: 'and me' }))
+      act(() => result.current.addComment({ filePath, agentSlug: 'agent-1', text: 'keep me', anchor: { kind: 'file' } }))
+      act(() => result.current.addComment({ filePath, agentSlug: 'agent-2', text: 'and me', anchor: { kind: 'file' } }))
 
       act(() => result.current.closeTab(getPreviewTabKey(result.current.openTabs[0])))
 
@@ -404,8 +405,8 @@ describe('FilePreviewContext', () => {
       const filePath = '/workspace/drafts/report.md'
       act(() => result.current.openFile(filePath, 'agent-1'))
       act(() => result.current.openFile(filePath, 'agent-2'))
-      act(() => result.current.addComment({ filePath, agentSlug: 'agent-1', text: 'mine' }))
-      act(() => result.current.addComment({ filePath, agentSlug: 'agent-2', text: 'theirs' }))
+      act(() => result.current.addComment({ filePath, agentSlug: 'agent-1', text: 'mine', anchor: { kind: 'file' } }))
+      act(() => result.current.addComment({ filePath, agentSlug: 'agent-2', text: 'theirs', anchor: { kind: 'file' } }))
 
       act(() => result.current.renameFilePath(filePath, '/workspace/drafts/final.md', 'agent-1'))
       expect(result.current.commentsFor('/workspace/drafts/final.md', 'agent-1')[0])
@@ -422,46 +423,52 @@ describe('FilePreviewContext', () => {
     it('reports comments for the agent that owns them', () => {
       const { result } = renderHook(() => useFilePreview(), { wrapper })
       act(() => result.current.addComment({
-        filePath: '/workspace/a.md', agentSlug: 'agent-2', text: 'theirs',
+        filePath: '/workspace/a.md', agentSlug: 'agent-2', text: 'theirs', anchor: { kind: 'file' },
       }))
       expect(result.current.commentsFor('/workspace/a.md', 'agent-1')).toEqual([])
       expect(result.current.commentsFor('/workspace/a.md', 'agent-2')[0])
-        .toMatchObject({ agentSlug: 'agent-2', text: 'theirs' })
+        .toMatchObject({ agentSlug: 'agent-2', text: 'theirs', anchor: { kind: 'file' } })
+    })
+
+    it('keeps comments off unless the view turns them on', () => {
+      const { result } = renderHook(() => useFilePreview(), {
+        wrapper: ({ children }: { children: ReactNode }) => <FilePreviewProvider>{children}</FilePreviewProvider>,
+      })
+      expect(result.current.commentsEnabled).toBe(false)
     })
 
     it('ignores comments when the preview is read-only', () => {
       const { result } = renderHook(() => useFilePreview(), { wrapper: readOnlyWrapper })
 
       expect(result.current.commentsEnabled).toBe(false)
-      act(() => result.current.addComment({ filePath: '/workspace/a.md', agentSlug: 'agent-1', text: 'fix this' }))
+      act(() => result.current.addComment({ filePath: '/workspace/a.md', agentSlug: 'agent-1', text: 'fix this', anchor: { kind: 'file' } }))
 
       expect(result.current.comments.size).toBe(0)
     })
 
     it('adds a comment with generated id', () => {
       const { result } = renderHook(() => useFilePreview(), { wrapper })
-      act(() => result.current.addComment({ filePath: '/workspace/a.md', agentSlug: 'agent-1', text: 'fix this', selectedText: 'broken code' }))
+      act(() => result.current.addComment({ filePath: '/workspace/a.md', agentSlug: 'agent-1', text: 'fix this', anchor: { kind: 'text', quote: 'broken code' } }))
 
       const comments = result.current.comments.get(getWorkspaceFileKey('agent-1', '/workspace/a.md'))!
       expect(comments).toHaveLength(1)
       expect(comments[0].text).toBe('fix this')
-      expect(comments[0].selectedText).toBe('broken code')
+      expect(comments[0].anchor).toEqual({ kind: 'text', quote: 'broken code' })
       expect(comments[0].id).toMatch(/^comment-/)
     })
 
     it('adds image annotation comment with coordinates', () => {
       const { result } = renderHook(() => useFilePreview(), { wrapper })
-      act(() => result.current.addComment({ filePath: '/workspace/img.png', agentSlug: 'agent-1', text: 'misaligned', x: 45, y: 72 }))
+      act(() => result.current.addComment({ filePath: '/workspace/img.png', agentSlug: 'agent-1', text: 'misaligned', anchor: { kind: 'point', x: 45, y: 72 } }))
 
       const comments = result.current.comments.get(getWorkspaceFileKey('agent-1', '/workspace/img.png'))!
-      expect(comments[0].x).toBe(45)
-      expect(comments[0].y).toBe(72)
+      expect(comments[0].anchor).toEqual({ kind: 'point', x: 45, y: 72 })
     })
 
     it('removes a specific comment', () => {
       const { result } = renderHook(() => useFilePreview(), { wrapper })
-      act(() => result.current.addComment({ filePath: '/workspace/a.md', agentSlug: 'agent-1', text: 'first' }))
-      act(() => result.current.addComment({ filePath: '/workspace/a.md', agentSlug: 'agent-1', text: 'second' }))
+      act(() => result.current.addComment({ filePath: '/workspace/a.md', agentSlug: 'agent-1', text: 'first', anchor: { kind: 'file' } }))
+      act(() => result.current.addComment({ filePath: '/workspace/a.md', agentSlug: 'agent-1', text: 'second', anchor: { kind: 'file' } }))
 
       const id = result.current.comments.get(getWorkspaceFileKey('agent-1', '/workspace/a.md'))![0].id
       act(() => result.current.removeComment('/workspace/a.md', 'agent-1', id))
@@ -473,8 +480,8 @@ describe('FilePreviewContext', () => {
 
     it('clears all comments for a file', () => {
       const { result } = renderHook(() => useFilePreview(), { wrapper })
-      act(() => result.current.addComment({ filePath: '/workspace/a.md', agentSlug: 'agent-1', text: 'first' }))
-      act(() => result.current.addComment({ filePath: '/workspace/a.md', agentSlug: 'agent-1', text: 'second' }))
+      act(() => result.current.addComment({ filePath: '/workspace/a.md', agentSlug: 'agent-1', text: 'first', anchor: { kind: 'file' } }))
+      act(() => result.current.addComment({ filePath: '/workspace/a.md', agentSlug: 'agent-1', text: 'second', anchor: { kind: 'file' } }))
       act(() => result.current.clearComments('/workspace/a.md', 'agent-1'))
 
       expect(result.current.comments.get(getWorkspaceFileKey('agent-1', '/workspace/a.md'))).toBeUndefined()
@@ -483,5 +490,73 @@ describe('FilePreviewContext', () => {
 
   it('throws when used outside provider', () => {
     expect(() => renderHook(() => useFilePreview())).toThrow(/FilePreviewProvider/)
+  })
+})
+
+describe('reopening a file after a stale tab reloads itself', () => {
+  beforeEach(() => sessionStorage.clear())
+
+  it('opens the file again after the reload', () => {
+    const before = renderHook(() => useFilePreview(), { wrapper })
+    act(() => before.result.current.openFile('/workspace/report.pdf', 'agent-1'))
+    act(() => { window.dispatchEvent(new Event(RELOADING_EVENT)) })
+    before.unmount()
+
+    const after = renderHook(() => useFilePreview(), { wrapper })
+    expect(after.result.current.isOpen).toBe(true)
+    expect(after.result.current.openTabs).toHaveLength(1)
+    expect(after.result.current.openTabs[0]).toMatchObject({ kind: 'file', filePath: '/workspace/report.pdf', agentSlug: 'agent-1' })
+    after.unmount()
+
+    const { result } = renderHook(() => useFilePreview(), { wrapper })
+    expect(result.current.isOpen).toBe(false)
+  })
+
+  it('opens a tab that brought its own source from that source again', () => {
+    const source = { inlineUrl: '/api/volume-definitions/v1/file?path=README.md&inline=true', downloadUrl: '/api/volume-definitions/v1/file?path=README.md' }
+    const before = renderHook(() => useFilePreview(), { wrapper })
+    act(() => before.result.current.openFile('/Team Brain/README.md', 'agent-1', undefined, source))
+    act(() => { window.dispatchEvent(new Event(RELOADING_EVENT)) })
+    before.unmount()
+
+    const after = renderHook(() => useFilePreview(), { wrapper })
+    expect(after.result.current.openTabs[0]).toMatchObject({ kind: 'file', filePath: '/Team Brain/README.md', source })
+  })
+
+  it('discards the file when a different preview mounts first', () => {
+    const before = renderHook(() => useFilePreview(), { wrapper })
+    act(() => before.result.current.openFile('/workspace/report.pdf', 'agent-1'))
+    act(() => { window.dispatchEvent(new Event(RELOADING_EVENT)) })
+    before.unmount()
+
+    mockView = { kind: 'session', id: 'session-2' }
+    const other = renderHook(() => useFilePreview(), { wrapper })
+    expect(other.result.current.isOpen).toBe(false)
+    other.unmount()
+
+    mockView = { kind: 'session', id: 'session-1' }
+    const { result } = renderHook(() => useFilePreview(), { wrapper })
+    expect(result.current.isOpen).toBe(false)
+  })
+
+  it('does not reopen a preview that was closed before the reload', () => {
+    const before = renderHook(() => useFilePreview(), { wrapper })
+    act(() => before.result.current.openFile('/workspace/report.pdf', 'agent-1'))
+    act(() => before.result.current.close())
+    act(() => { window.dispatchEvent(new Event(RELOADING_EVENT)) })
+    before.unmount()
+
+    const { result } = renderHook(() => useFilePreview(), { wrapper })
+    expect(result.current.isOpen).toBe(false)
+  })
+
+  it('does not reopen anything after an ordinary remount', () => {
+    const before = renderHook(() => useFilePreview(), { wrapper })
+    act(() => before.result.current.openFile('/workspace/report.pdf', 'agent-1'))
+    before.unmount()
+
+    const { result } = renderHook(() => useFilePreview(), { wrapper })
+    expect(result.current.isOpen).toBe(false)
+    expect(result.current.openTabs).toHaveLength(0)
   })
 })

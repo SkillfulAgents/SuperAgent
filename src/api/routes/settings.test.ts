@@ -1,3 +1,11 @@
+import * as llmProviders from '@shared/lib/llm-provider'
+import { syncProviderSettings } from '@shared/lib/llm-provider/connection-settings'
+vi.mock('@shared/lib/llm-provider/connections', () => ({ listConnections: vi.fn(async () => []) }))
+vi.mock('@shared/lib/llm-provider/connection-settings', () => ({ syncProviderSettings: vi.fn(async () => {}) }))
+const { addAgentUsers } = vi.hoisted(() => ({ addAgentUsers: vi.fn(async () => {}) }))
+vi.mock('@shared/lib/services/agent-members-service', () => ({ addAgentUsers }))
+const { isPublicVolume } = vi.hoisted(() => ({ isPublicVolume: vi.fn(async (_id: string) => true) }))
+vi.mock('@shared/lib/services/volume-service', () => ({ isPublicVolume }))
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Hono } from 'hono'
 
@@ -60,6 +68,7 @@ vi.mock('@shared/lib/config/settings', () => ({
   getEffectiveAgentLimits: (...args: unknown[]) => mockGetEffectiveAgentLimits(...args),
   getModelCatalogSettings: () => mockGetSettings().modelCatalog ?? {},
   getCustomEnvVars: (...args: unknown[]) => mockGetCustomEnvVars(...args),
+  getGlobalInstructions: () => mockGetSettings().globalInstructions ?? '',
   getVoiceSettings: (...args: unknown[]) => mockGetVoiceSettings(...args),
   getBrowserbaseApiKeyStatus: (...args: unknown[]) => mockGetBrowserbaseApiKeyStatus(...args),
   getNangoApiKeyStatus: (...args: unknown[]) => mockGetNangoApiKeyStatus(...args),
@@ -177,6 +186,7 @@ vi.mock('@shared/lib/db/schema', () => ({
   auditLog: {},
   webhookTriggers: {},
   chatIntegrations: {},
+  llmConnections: {},
   chatIntegrationSessions: {},
   chatIntegrationAccess: {},
   slackThreadState: {},
@@ -332,6 +342,54 @@ describe('settings route', () => {
       body: JSON.stringify(body),
     })
   }
+
+  describe('Team Brain record', () => {
+    // Each write is what the next request reads, so a repeated write meets the record it left.
+    const persistWrites = () => mockUpdateSettings.mockImplementation((next: unknown) => { mockGetSettings.mockReturnValue(next) })
+
+    it('gives every member the agent on each write of the record, and on no other write', async () => {
+      persistWrites()
+      expect((await putSettings({ teamBrain: { agentSlug: 'team-brain', volumeId: 'vol-1' } })).status).toBe(200)
+      expect((await putSettings({ teamBrain: { agentSlug: 'team-brain', volumeId: 'vol-1' } })).status).toBe(200)
+      expect(addAgentUsers.mock.calls).toEqual([['team-brain'], ['team-brain']])
+      addAgentUsers.mockClear()
+      expect((await putSettings({ shareAnalytics: false })).status).toBe(200)
+      expect(addAgentUsers).not.toHaveBeenCalled()
+    })
+
+    it('fails a write whose grant fails, keeps the record, and the same write again grants it', async () => {
+      persistWrites()
+      addAgentUsers.mockRejectedValueOnce(new Error('database busy'))
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      expect((await putSettings({ teamBrain: { agentSlug: 'team-brain', volumeId: 'vol-1' } })).status).toBe(500)
+      expect(mockGetSettings().teamBrain).toEqual({ agentSlug: 'team-brain', volumeId: 'vol-1' })
+      expect((await putSettings({ teamBrain: { agentSlug: 'team-brain', volumeId: 'vol-1' } })).status).toBe(200)
+      expect(addAgentUsers).toHaveBeenCalledTimes(2)
+    })
+
+    it('refuses a different record once one is set up, so a later set-up cannot replace the first', async () => {
+      persistWrites()
+      expect((await putSettings({ teamBrain: { agentSlug: 'team-brain', volumeId: 'vol-1' } })).status).toBe(200)
+      expect((await putSettings({ teamBrain: { agentSlug: 'other-brain', volumeId: 'vol-2' } })).status).toBe(409)
+      expect(mockGetSettings().teamBrain).toEqual({ agentSlug: 'team-brain', volumeId: 'vol-1' })
+      expect(addAgentUsers.mock.calls).toEqual([['team-brain']])
+    })
+
+    it('refuses a record whose drive not every member can add', async () => {
+      isPublicVolume.mockResolvedValueOnce(false)
+      expect((await putSettings({ teamBrain: { agentSlug: 'team-brain', volumeId: 'vol-private' } })).status).toBe(400)
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+      expect(addAgentUsers).not.toHaveBeenCalled()
+    })
+
+    it('gives no one the agent when the write is refused', async () => {
+      // Refused inside the route, after the record is in the patch: a runner that manages its own agent image.
+      const res = await putSettings({ teamBrain: { agentSlug: 'team-brain', volumeId: 'vol-1' }, container: { containerRunner: 'lambda-microvm', agentImage: 'ghcr.io/custom/image:v9' } })
+      expect(res.status).toBe(400)
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+      expect(addAgentUsers).not.toHaveBeenCalled()
+    })
+  })
 
   // =========================================================================
   // PUT request boundary validation
@@ -1059,15 +1117,15 @@ describe('settings route', () => {
       })
     })
 
-    it('resets the global agent model to Grok when switching to Platform', async () => {
+    it('resets the global agent model to Sonnet when switching to Platform', async () => {
       const res = await putSettings({ llmProvider: 'platform' })
 
       expect(res.status).toBe(200)
       const saved = mockUpdateSettings.mock.calls[0][0]
       expect(saved.models).toEqual({
         summarizerModel: 'haiku',
-        agentModel: 'grok',
-        browserModel: 'sonnet',
+        agentModel: 'sonnet',
+        browserModel: 'haiku',
         dashboardBuilderModel: 'opus',
       })
     })
@@ -1129,6 +1187,15 @@ describe('settings route', () => {
       const body = await res.json()
       expect(body.error).toContain('PROXY_TOKEN')
       expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+
+    it('directs global LLM overrides to the connection editor without storing them', async () => {
+      const res = await app.request('/api/settings', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customEnvVars: { ANTHROPIC_BASE_URL: 'https://wrong-scope.example' } }),
+      })
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toContain('Edit connection')
     })
 
     it('accepts customEnvVars with only non-reserved keys (200)', async () => {
@@ -1789,6 +1856,26 @@ describe('settings route', () => {
   // Settings merge — llmProvider
   // =========================================================================
   describe('llmProvider handling', () => {
+    it.each([false, true])('rejects an agent-only legacy choice before saving (existing default: %s)', async existingDefault => {
+      mockGetSettings.mockReturnValue({ ...defaultSettings(),
+        ...(existingDefault ? { llmDefault: { llmProviderId: 'existing', model: 'sonnet' } } : {}),
+      })
+      class AgentOnlyProvider extends llmProviders.GenericLlmProvider {
+        override readonly supportsDirectApi = false
+      }
+      const provider = vi.spyOn(llmProviders, 'getLlmProvider').mockReturnValueOnce(new AgentOnlyProvider())
+      try {
+        const res = await putSettings({ llmProvider: 'generic', apiKeys: { genericApiKey: 'test-key', genericBaseUrl: 'https://test.example' } })
+        expect(res.status).toBe(400)
+        expect((await res.json()).error).toContain('Settings → Model Providers')
+        expect(mockUpdateSettings).not.toHaveBeenCalled()
+        expect(mockMutateSettings).not.toHaveBeenCalled()
+        expect(syncProviderSettings).not.toHaveBeenCalled()
+      } finally {
+        provider.mockRestore()
+      }
+    })
+
     it('updates llmProvider when provided', async () => {
       const res = await putSettings({ llmProvider: 'openrouter' })
       expect(res.status).toBe(200)
@@ -1854,6 +1941,39 @@ describe('settings route', () => {
   // =========================================================================
   // Settings merge — shareAnalytics
   // =========================================================================
+  describe('global instructions', () => {
+    it('lets any signed-in user read them, without the admin gate', async () => {
+      mockGetSettings.mockReturnValue({ ...defaultSettings(), globalInstructions: 'Be kind' })
+
+      const res = await app.request('http://localhost/api/settings/global-instructions')
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ globalInstructions: 'Be kind' })
+      expect(mockAuthenticatedMiddleware).toHaveBeenCalled()
+      expect(mockIsAdminMiddleware).not.toHaveBeenCalled()
+    })
+
+    it('reads as empty when none are set', async () => {
+      const res = await app.request('http://localhost/api/settings/global-instructions')
+      expect(await res.json()).toEqual({ globalInstructions: '' })
+    })
+
+    it('stores them through the admin-gated PUT', async () => {
+      const res = await putSettings({ globalInstructions: 'Cite sources' })
+
+      expect(res.status).toBe(200)
+      expect(mockIsAdminMiddleware).toHaveBeenCalled()
+      expect(mockUpdateSettings.mock.calls[0][0].globalInstructions).toBe('Cite sources')
+    })
+
+    it('rejects guidance past the length bound without writing', async () => {
+      const res = await putSettings({ globalInstructions: 'x'.repeat(20_001) })
+
+      expect(res.status).toBe(400)
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+  })
+
   describe('shareAnalytics handling', () => {
     it('updates shareAnalytics when provided', async () => {
       const res = await putSettings({ shareAnalytics: true })

@@ -1,8 +1,9 @@
+vi.mock('./host-token-store', () => ({ getOrCreateHostToken: () => 'host-test-token' }))
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { writeEnvFile, parseMemoryValue, shellQuote, isConnectionError, getEnhancedPath, BaseContainerClient } from './base-container-client'
+import { writeEnvFile, parseMemoryValue, shellQuote, isConnectionError, getEnhancedPath, BaseContainerClient, refusedVolumeFlags, execWithPath, shellEscape, spawnWithPath } from './base-container-client'
 import type { ContainerInfo, ContainerConfig, StreamMessage } from './types'
 
 const enableToolSearch = vi.fn((): boolean | undefined => true)
@@ -17,9 +18,9 @@ vi.mock('../platform-attribution/container-token', () => ({
 vi.mock('../platform-auth/config', () => ({
   getPlatformProxyBaseUrl: () => 'http://localhost:8080',
 }))
-const toolSearchEnv = vi.fn((): 'true' | undefined => 'true')
+const toolSearchEnv = vi.fn((): 'true' | 'false' => 'true')
 vi.mock('@shared/lib/llm-provider', () => ({
-  getActiveLlmProvider: () => ({ getContainerEnvVars, toolSearchEnv: toolSearchEnv() }),
+  getActiveLlmProvider: () => ({ getContainerEnvVars, toolSearchEnv }),
 }))
 
 /** Minimal concrete subclass to exercise protected run-error classification. */
@@ -30,9 +31,6 @@ class TestContainerClient extends BaseContainerClient {
   // Expose protected predicates for testing.
   public testIsPortConflictError(error: unknown): boolean {
     return this.isPortConflictError(error)
-  }
-  public testExtractInaccessibleMountPath(error: unknown): string | null {
-    return this.extractInaccessibleMountPath(error)
   }
   public testBuildAgentEnv(extra?: Record<string, string>): Promise<Record<string, string>> {
     return this.buildAgentEnv(extra)
@@ -92,17 +90,19 @@ describe('buildAgentEnv', () => {
     expect(env.ENABLE_TOOL_SEARCH).toBe('false')
   })
 
-  it('leaves ENABLE_TOOL_SEARCH unset when the provider does not declare one', async () => {
-    toolSearchEnv.mockReturnValue(undefined)
+  // Unset reads as on behind any custom base URL (CLI 2.1.304+), so a
+  // provider's 'false' must reach the container as an explicit value.
+  it("passes a provider's 'false' through", async () => {
+    toolSearchEnv.mockReturnValue('false')
     const env = await new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
-    expect('ENABLE_TOOL_SEARCH' in env).toBe(false)
+    expect(env.ENABLE_TOOL_SEARCH).toBe('false')
   })
 
   // The setting is a master switch, not a way to force tool search onto an
   // endpoint that rejects deferred tools.
   it('keeps ENABLE_TOOL_SEARCH=false over the provider value when the setting is off', async () => {
     enableToolSearch.mockReturnValue(false)
-    toolSearchEnv.mockReturnValue(undefined)
+    toolSearchEnv.mockReturnValue('true')
     const env = await new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
     expect(env.ENABLE_TOOL_SEARCH).toBe('false')
   })
@@ -525,6 +525,55 @@ describe('parseMemoryValue', () => {
 // shellQuote
 // ============================================================================
 
+describe('shellEscape', () => {
+  // The workspace -v value runs through a real shell, so its path must stay one literal word.
+  it.skipIf(process.platform === 'win32')('keeps a path with shell syntax literal through a real shell', async () => {
+    const { stdout } = await execWithPath(`printf %s ${shellEscape("/tmp/a$(echo pwned) b'c")}`)
+    expect(stdout).toBe("/tmp/a$(echo pwned) b'c")
+  })
+})
+
+describe('spawnWithPath', () => {
+  it.skipIf(process.platform === 'win32')('spawns an unquoted path that contains a space', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'spawn path '))
+    const bin = path.join(dir, 'print args')
+    fs.writeFileSync(bin, '#!/bin/sh\nfor a in "$@"; do echo "$a"; done\n', { mode: 0o755 })
+    try {
+      const proc = spawnWithPath(bin, ['a b', 'c'])
+      const out = await new Promise<string>((resolve, reject) => {
+        let s = ''
+        proc.stdout!.on('data', (d) => { s += d })
+        proc.on('error', reject)
+        proc.on('close', () => resolve(s))
+      })
+      expect(out).toBe('a b\nc\n')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('quotes a path with a space on Windows, where spawn goes through a shell', async () => {
+    const spawn = vi.fn(() => ({}))
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+    vi.resetModules()
+    vi.doMock('child_process', async (importOriginal) => ({ ...(await importOriginal<typeof import('child_process')>()), spawn }))
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    try {
+      const { spawnWithPath: spawnOnWindows } = await import('./base-container-client')
+      spawnOnWindows('C:\\Users\\John Doe\\.superagent\\bin\\wsl-nerdctl.cmd', ['ps'])
+      expect(spawn).toHaveBeenCalledWith(
+        '"C:\\Users\\John Doe\\.superagent\\bin\\wsl-nerdctl.cmd"',
+        ['ps'],
+        expect.objectContaining({ shell: true }),
+      )
+    } finally {
+      Object.defineProperty(process, 'platform', platform)
+      vi.doUnmock('child_process')
+      vi.resetModules()
+    }
+  })
+})
+
 describe('shellQuote', () => {
   // Note: shellQuote checks the module-level `isWindows` constant which is
   // set at module load time from process.platform. On macOS/Linux this will
@@ -710,7 +759,7 @@ describe('subscribeToStream failure handling', () => {
     // No 'error' listener registered — a bare emit('error') would throw here.
     const { ready } = client.subscribeToStream('sess-1', () => {})
 
-    // The discarded-promise scenario from MessagePersister: only catch `ready`.
+    // The discarded-promise scenario from the live sessions' reattach: only catch `ready`.
     await expect(ready).rejects.toThrow('Container is not running')
   })
 
@@ -850,10 +899,6 @@ describe('BaseContainerClient.isPortConflictError', () => {
 
   it('does not match unrelated errors', () => {
     expect(client.testIsPortConflictError(new Error('no such image'))).toBe(false)
-  })
-
-  it('base extractInaccessibleMountPath returns null (no VM filesystem)', () => {
-    expect(client.testExtractInaccessibleMountPath(new Error('operation not permitted'))).toBe(null)
   })
 })
 
@@ -1012,5 +1057,26 @@ describe('BaseContainerClient.observeUnexpectedDeath', () => {
       action: 'ignore',
       liveSessionIds: ['live'],
     })
+  })
+})
+
+describe('refusedVolumeFlags', () => {
+  const flags = '--device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined'
+
+  it('is true when the runtime names a volume flag in stderr, and never reads the command line', () => {
+    expect(refusedVolumeFlags({ stderr: 'error gathering device information while adding custom device "/dev/fuse": no such file' }, flags)).toBe(true)
+    expect(refusedVolumeFlags({ stderr: 'unknown flag: --security-opt' }, flags)).toBe(true)
+    // Node's exec error: the message repeats the command with the flags, stderr holds the runtime's words.
+    const pullDenied = Object.assign(new Error(`Command failed: docker run ${flags} img`), { stderr: 'pull access denied for img' })
+    expect(refusedVolumeFlags(pullDenied, flags)).toBe(false)
+    expect(refusedVolumeFlags({ stderr: '' }, flags)).toBe(false)
+    // Apple's flags carry the short word root, which any stderr can contain.
+    expect(refusedVolumeFlags({ stderr: 'process running as root exited' }, '--user root --cap-add CAP_SYS_ADMIN')).toBe(false)
+  })
+
+  // WSL writes UTF-16LE, so its stderr arrives with a null between every character.
+  it('matches a runtime error execWithPath read with nulls in it', async () => {
+    const error = await execWithPath(`printf 'u\\0n\\0k\\0n\\0o\\0w\\0n\\0 \\0f\\0l\\0a\\0g\\0:\\0 \\0-\\0-\\0d\\0e\\0v\\0i\\0c\\0e' >&2; exit 1`).catch((e) => e)
+    expect(refusedVolumeFlags(error, flags)).toBe(true)
   })
 })

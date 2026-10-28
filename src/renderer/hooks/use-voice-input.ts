@@ -123,6 +123,8 @@ function reportNoTranscript(session: DictationSession): void {
 
 interface UseVoiceInputOptions {
   onTranscriptUpdate: (text: string) => void
+  /** Fires when a recording ends having transcribed some words, after its final text is applied. */
+  onDictated?: () => void
 }
 
 type SttCredentials = VoiceTokenResponse
@@ -130,40 +132,43 @@ type SttCredentials = VoiceTokenResponse
 interface VoiceConfiguredStatus {
   conversationEngine?: VoiceConversationEngine | null
   configured: boolean
-  supportsVoiceAgent: boolean
   supportsTts: boolean
   /** Read-aloud voices the configured provider offers; empty when it cannot speak. */
   voices: TtsVoiceInfo[]
   /** The deployment's default among them (for anyone without their own pick). */
   defaultVoice?: string
+  /** Voices a Live conversation (a meeting bot) can speak with; empty when the provider has no Live engine. */
+  liveVoices?: TtsVoiceInfo[]
+  liveDefaultVoice?: string
 }
 
-const NOT_CONFIGURED: VoiceConfiguredStatus = { configured: false, supportsVoiceAgent: false, supportsTts: false, voices: [] }
+const NOT_CONFIGURED: VoiceConfiguredStatus = { configured: false, supportsTts: false, voices: [] }
+const NO_VOICES: TtsVoiceInfo[] = []
 
-function useVoiceConfiguredStatus(): VoiceConfiguredStatus {
-  const { data } = useQuery<VoiceConfiguredStatus>({
+function useVoiceConfiguredQuery() {
+  return useQuery<VoiceConfiguredStatus>({
     queryKey: ['voice-configured'],
     queryFn: async () => {
       const res = await apiFetch('/api/voice/configured')
-      if (!res.ok) return NOT_CONFIGURED
+      if (!res.ok) throw new Error(`Voice settings could not be loaded (${res.status}).`)
       return res.json() as Promise<VoiceConfiguredStatus>
     },
     staleTime: 60_000,
   })
-  return data ?? NOT_CONFIGURED
+}
+
+/** Until the status is in, or when it cannot be loaded, voice counts as not configured. */
+function useVoiceConfiguredStatus(): VoiceConfiguredStatus {
+  return useVoiceConfiguredQuery().data ?? NOT_CONFIGURED
+}
+
+function conversationEngineOf(status: VoiceConfiguredStatus): VoiceConversationEngine | null {
+  return status.conversationEngine ?? (status.configured && status.supportsTts ? 'chained' : null)
 }
 
 /** Hook to check whether voice input is fully configured (provider + API key). */
 export function useIsVoiceConfigured(): boolean {
   return useVoiceConfiguredStatus().configured
-}
-
-/**
- * Hook to check whether the configured STT provider supports Voice Agent (S2S)
- * sessions. Returns false if STT is not configured at all.
- */
-export function useIsVoiceAgentConfigured(): boolean {
-  return useVoiceConfiguredStatus().supportsVoiceAgent
 }
 
 /**
@@ -184,6 +189,12 @@ export function useTtsVoices(): { voices: TtsVoiceInfo[]; defaultVoice: string |
   return { voices, defaultVoice }
 }
 
+/** The voices a Live conversation can speak with, as the configured provider offers them; empty without a Live engine. */
+export function useLiveVoices(): { voices: TtsVoiceInfo[]; defaultVoice: string | undefined } {
+  const { liveVoices, liveDefaultVoice } = useVoiceConfiguredStatus()
+  return { voices: liveVoices ?? NO_VOICES, defaultVoice: liveDefaultVoice }
+}
+
 /**
  * Whether voice mode (talk, and hear the replies) can be offered here: the
  * configured provider supports a chained or Live conversation, and this
@@ -197,11 +208,21 @@ export function useCanUseVoiceMode(): boolean {
 
 /** The transport for in-session voice, separate from dictation and read-aloud. */
 export function useVoiceConversationEngine(): VoiceConversationEngine | null {
-  const status = useVoiceConfiguredStatus()
-  return status.conversationEngine ?? (status.configured && status.supportsTts ? 'chained' : null)
+  return conversationEngineOf(useVoiceConfiguredStatus())
 }
 
-export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
+/**
+ * Why a voice conversation cannot start here, for a surface that runs voice
+ * mode without offering it first (the meeting bot's page): null while the
+ * status loads and once an engine is available.
+ */
+export function useVoiceConversationProblem(): string | null {
+  const { data, error } = useVoiceConfiguredQuery()
+  if (data) return conversationEngineOf(data) ? null : 'Voice is not set up on this host (Settings → Voice).'
+  return error?.message ?? null
+}
+
+export function useVoiceInput({ onTranscriptUpdate, onDictated }: UseVoiceInputOptions) {
   const [state, setState] = useState<VoiceInputState>('idle')
   const [error, setError] = useState<string | null>(null)
   const { track } = useAnalyticsTracking()
@@ -290,11 +311,12 @@ export function useVoiceInput({ onTranscriptUpdate }: UseVoiceInputOptions) {
     onTranscriptUpdate(finalText)
     if (transcribed) {
       track('dictation_used', { length: transcribed.length })
+      onDictated?.()
     }
     setState('idle')
     stoppingRef.current = false
     return finalText
-  }, [onTranscriptUpdate, track])
+  }, [onTranscriptUpdate, onDictated, track])
 
   const startRecording = useCallback(async (existingText: string) => {
     if (stateRef.current !== 'idle') return

@@ -45,6 +45,9 @@ vi.mock('@shared/lib/db/schema', () => ({
   mcpAuditLog: {},
 }))
 
+// No proxy rules exist in these tests; the rule paths have their own suite.
+vi.mock('@shared/lib/proxy/rules/store', () => ({ listActiveRules: async () => [] }))
+
 vi.mock('drizzle-orm', () => ({
   eq: (col: string, val: string) => ({ col, val }),
   and: (...args: unknown[]) => args,
@@ -59,17 +62,29 @@ vi.mock('@shared/lib/proxy/policy-resolver', () => ({
   resolveMcpPolicy: (...args: unknown[]) => mockResolveMcpPolicy(...args),
 }))
 
+// The agent's reviews, as its router answers the actor's review ops: a
+// request resolves to its outcome.
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
-    requestReview: (...args: unknown[]) => mockRequestReview(...args),
+    request: (agentSlug: string, details: object, options: unknown) => mockRequestReview({ ...details, agentSlug }, options),
+    withdraw: vi.fn(),
+    takeDenyReason: vi.fn(),
   },
 }))
 
+// The agent's MCP re-auth waits, as its router answers the actor's ops: a
+// request resolves to how the wait ended.
 vi.mock('@shared/lib/proxy/mcp-reauth-manager', () => ({
   mcpReauthManager: {
-    requestReauth: (...args: unknown[]) => mockRequestMcpReauth(...args),
-    completeMcp: vi.fn(),
+    request: (agentSlug: string, details: object, options: unknown) => mockRequestMcpReauth({ ...details, agentSlug }, options),
+    withdraw: vi.fn(),
   },
+}))
+// A refreshed token resumes the MCP's parked calls in every agent it is assigned to.
+const mockResumeMcpReauthWaits = vi.hoisted(() => vi.fn(async (_mcpId: string) => {}))
+vi.mock('@shared/lib/services/connection-sync-service', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/services/connection-sync-service')>()),
+  resumeMcpReauthWaits: (mcpId: string) => mockResumeMcpReauthWaits(mcpId),
 }))
 
 // Mock fetch for forwarded requests
@@ -176,7 +191,7 @@ describe('mcp-proxy route', () => {
       scopeDescriptions: {},
       resolvedFrom: 'global_default',
     })
-    mockRequestMcpReauth.mockResolvedValue(undefined)
+    mockRequestMcpReauth.mockResolvedValue({ outcome: 'resumed' })
   })
 
   afterEach(() => {
@@ -291,6 +306,25 @@ describe('mcp-proxy route', () => {
       })
       expect(res.headers.get('Mcp-Session-Id')).toBeTruthy()
       expect(mockRequestMcpReauth).not.toHaveBeenCalled()
+      expect(mockFetch).not.toHaveBeenCalled()
+    })
+
+    it('answers the 2026-07-28 era probe locally with "method not found" for an MCP marked auth_required', async () => {
+      mockValidateProxyToken.mockResolvedValue('my-agent')
+      setupDbMocks(buildMcp({ status: 'auth_required' }))
+
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'server/discover', params: {} }),
+      })
+
+      // The client treats -32601 as "pre-2026-07-28 server" and falls back to
+      // the classic initialize handshake — which the stub above completes.
+      expect(res.status).toBe(200)
+      expect(await res.json()).toMatchObject({ jsonrpc: '2.0', id: 3, error: { code: -32601 } })
+      expect(mockRequestMcpReauth).not.toHaveBeenCalled()
+      expect(mockRequestReview).not.toHaveBeenCalled()
       expect(mockFetch).not.toHaveBeenCalled()
     })
 
@@ -462,7 +496,7 @@ describe('mcp-proxy route', () => {
         mcpId: 'mcp-1',
         mcpName: 'Test MCP',
         authType: 'oauth',
-      }, expect.any(AbortSignal))
+      }, { waitId: expect.any(String) })
       const [, proxyInit] = mockFetch.mock.calls[0]
       expect((proxyInit.headers as Headers).get('Authorization')).toBe('Bearer fresh-token')
     })
@@ -559,7 +593,7 @@ describe('mcp-proxy route', () => {
     it('requires reconnect without persisting a malformed token refresh response', async () => {
       setupSuccessPath({ mcpOverrides: { tokenExpiresAt: new Date(1) } })
       mockFetch.mockResolvedValueOnce(Response.json({ access_token: 123, expires_in: 3600 }))
-      mockRequestMcpReauth.mockRejectedValueOnce(new Error('Reconnect timed out'))
+      mockRequestMcpReauth.mockResolvedValueOnce({ outcome: 'timeout' })
 
       const response = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
         method: 'POST', headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
@@ -706,7 +740,7 @@ describe('mcp-proxy route', () => {
         mcpId: 'mcp-1',
         mcpName: 'Test MCP',
         authType: 'oauth',
-      }, expect.any(AbortSignal))
+      }, { waitId: expect.any(String) })
 
       const [, proxyInit] = mockFetch.mock.calls[1]
       expect((proxyInit.headers as Headers).get('Authorization')).toBe('Bearer reauthorized-access-token')
@@ -728,7 +762,7 @@ describe('mcp-proxy route', () => {
         accessToken: null, // expired, effectively null
       })
       setupDbMocks(mcp)
-      mockRequestMcpReauth.mockRejectedValueOnce(new Error('MCP re-authentication timed out'))
+      mockRequestMcpReauth.mockResolvedValueOnce({ outcome: 'timeout' })
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -851,7 +885,7 @@ describe('mcp-proxy route', () => {
         accessToken: null,
       })
       setupDbMocks(mcp)
-      mockRequestMcpReauth.mockRejectedValueOnce(new Error('MCP re-authentication timed out'))
+      mockRequestMcpReauth.mockResolvedValueOnce({ outcome: 'timeout' })
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -869,7 +903,7 @@ describe('mcp-proxy route', () => {
         accessToken: null,
       })
       setupDbMocks(mcp)
-      mockRequestMcpReauth.mockRejectedValueOnce(new Error('MCP re-authentication timed out'))
+      mockRequestMcpReauth.mockResolvedValueOnce({ outcome: 'timeout' })
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -886,7 +920,7 @@ describe('mcp-proxy route', () => {
 
       // Refresh fetch throws a network error
       mockFetch.mockRejectedValueOnce(new Error('ECONNREFUSED'))
-      mockRequestMcpReauth.mockRejectedValueOnce(new Error('MCP re-authentication timed out'))
+      mockRequestMcpReauth.mockResolvedValueOnce({ outcome: 'timeout' })
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -1705,7 +1739,7 @@ describe('mcp-proxy route', () => {
       mockFetch.mockResolvedValueOnce(
         new Response('{"error":"invalid"}', { status: 400 })
       )
-      mockRequestMcpReauth.mockRejectedValueOnce(new Error('MCP re-authentication timed out'))
+      mockRequestMcpReauth.mockResolvedValueOnce({ outcome: 'timeout' })
 
       await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -1842,7 +1876,7 @@ describe('mcp-proxy route', () => {
         refreshToken: null,
       })
       setupDbMocks(mcp)
-      mockRequestMcpReauth.mockRejectedValueOnce(new Error('MCP re-authentication timed out'))
+      mockRequestMcpReauth.mockResolvedValueOnce({ outcome: 'timeout' })
 
       const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1/path', {
         headers: { Authorization: 'Bearer synth_valid' },
@@ -1854,7 +1888,7 @@ describe('mcp-proxy route', () => {
       expect(mockRequestMcpReauth).toHaveBeenCalledWith(expect.objectContaining({
         mcpId: 'mcp-1',
         authType: 'bearer',
-      }), expect.any(AbortSignal))
+      }), { waitId: expect.any(String) })
     })
 
     it('handles concurrent requests to different MCP servers', async () => {
@@ -1997,6 +2031,40 @@ describe('mcp-proxy route', () => {
       })
       expect(res.status).toBe(200)
       expect(mockRequestReview).toHaveBeenCalledOnce()
+      // The review is stamped as an MCP review so "always allow" lands in
+      // mcpToolPolicies no matter what the request path looks like.
+      expect(mockRequestReview).toHaveBeenCalledWith(
+        expect.objectContaining({ reviewType: 'mcp', accountId: 'mcp-1', targetPath: 'tools/call: search' }),
+        { id: expect.any(String), recheck: true },
+      )
+    })
+
+    it('a non-protocol method that is not tools/call still raises an MCP-stamped review', async () => {
+      // Regression: a reviewed non-tools/call method has no tool name, so the
+      // review's path is the bare method and used to be mistaken for an API
+      // review downstream (FOREIGN KEY failure on "always allow").
+      setupSuccessPath()
+      mockResolveMcpPolicy.mockResolvedValue({
+        decision: 'review',
+        matchedScopes: [],
+        scopeDescriptions: {},
+        resolvedFrom: 'global_default',
+      })
+      mockRequestReview.mockResolvedValue('allow')
+
+      const body = JSON.stringify({ jsonrpc: '2.0', method: 'resources/read', params: { uri: 'file://a.txt' }, id: 1 })
+      const res = await makeRequest('/api/mcp-proxy/my-agent/mcp-1', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer synth_valid', 'Content-Type': 'application/json' },
+        body,
+      })
+      expect(res.status).toBe(200)
+      expect(mockResolveMcpPolicy).toHaveBeenCalledWith('mcp-1', null, expect.anything())
+      expect(mockRequestReview).toHaveBeenCalledOnce()
+      expect(mockRequestReview).toHaveBeenCalledWith(
+        expect.objectContaining({ reviewType: 'mcp', accountId: 'mcp-1', targetPath: 'resources/read', matchedScopes: [] }),
+        { id: expect.any(String), recheck: true },
+      )
     })
 
     it('protocol methods (tools/list, initialize, etc.) skip policy enforcement', async () => {
@@ -2027,6 +2095,10 @@ describe('mcp-proxy route', () => {
       'completion/complete',
       'roots/list',
       'ping',
+      // MCP 2026-07-28 era probe, sent by CLI 2.1.274+ before `initialize`.
+      'server/discover',
+      // MCP 2026-07-28 notification stream (Railway sends it).
+      'subscriptions/listen',
     ])('discovery/protocol method "%s" skips policy enforcement and review', async (method) => {
       setupSuccessPath()
       // Force policy to "review" — if the method weren't whitelisted, requestReview would fire.

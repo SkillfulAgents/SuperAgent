@@ -1,3 +1,4 @@
+const availability = vi.hoisted(() => ({ providers: ['telegram', 'slack', 'imessage', 'linear', 'platform-email'] as string[] | undefined }))
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen } from '@testing-library/react'
@@ -15,10 +16,12 @@ const mockUseChatIntegrations = vi.fn()
 const mockUseChatIntegrationAccess = vi.fn()
 
 vi.mock('@renderer/hooks/use-agent-integrations', () => ({
+  useAvailableAgentIntegrationProviders: () => ({ data: availability.providers?.map(provider => ({ provider })) }),
   useAgentIntegrations: (...args: unknown[]) => mockUseChatIntegrations(...args),
   useAgentIntegrationAccess: (...args: unknown[]) => mockUseChatIntegrationAccess(...args),
 }))
 
+const mockCanManage = vi.fn(() => true)
 const mockNavigate = vi.fn()
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tanstack/react-router')>()),
@@ -27,8 +30,8 @@ vi.mock('@tanstack/react-router', async (importOriginal) => ({
 
 vi.mock('@renderer/context/user-context', () => ({
   useUser: () => ({
-    canAdminAgent: () => true,
-    canUseAgent: () => true,
+    canAdminAgent: () => mockCanManage(),
+    canUseAgent: () => mockCanManage(),
   }),
   UserProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
@@ -51,6 +54,7 @@ const INTEGRATION: ListItem = {
   requireApproval: false,
   sessionTimeout: null,
   model: null,
+  llmProviderId: null,
   effort: null,
   speed: null,
   status: 'active',
@@ -64,10 +68,28 @@ const INTEGRATION: ListItem = {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('HomeAgentIntegrations', () => {
+  it('puts Linear and chat providers in the same list with the same navigation', async () => {
+    mockUseChatIntegrations.mockReturnValue({ data: [INTEGRATION, { ...INTEGRATION, id: 'linear-1', name: 'Linear Agent', provider: 'linear' }] })
+    renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+    expect(screen.getByText('External Integrations')).toBeInTheDocument()
+    expect(screen.getByText('Test Bot')).toBeInTheDocument()
+    expect(screen.queryByText('Task Platforms')).toBeNull()
+    await userEvent.setup().click(screen.getByText('Linear Agent'))
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/agents/$slug/chat/$integrationId', params: { slug: 'test-agent', integrationId: 'linear-1' } })
+  })
+
   beforeEach(() => {
+  availability.providers = ['telegram', 'slack', 'imessage', 'linear', 'platform-email']
     vi.clearAllMocks()
+    mockCanManage.mockReturnValue(true)
     mockUseChatIntegrations.mockReturnValue({ data: [INTEGRATION] })
     mockUseChatIntegrationAccess.mockReturnValue({ data: [] })
+  })
+
+  it('shows reconnect needed on the shared home card', () => {
+    mockUseChatIntegrations.mockReturnValue({ data: [{ ...INTEGRATION, provider: 'linear', status: 'disconnected', connected: false, reconnectRequired: true }] })
+    renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+    expect(screen.getByText('Reconnect needed')).toBeInTheDocument()
   })
 
   it('does NOT render a per-row settings/actions kebab', () => {
@@ -133,4 +155,34 @@ describe('HomeAgentIntegrations', () => {
     renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
     expect(screen.getByText(label)).toBeInTheDocument()
   })
+})
+
+it('does not invite viewers to configure providers or render an empty setup grid', () => {
+  mockCanManage.mockReturnValue(false)
+  mockUseChatIntegrations.mockReturnValue({ data: [] })
+  const { container } = renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+  expect(screen.getByText('No external integrations have been configured for this agent.')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /connect via/i })).not.toBeInTheDocument()
+  expect(container.querySelector('.grid')).toBeNull()
+})
+
+it('offers only the providers the host makes available', () => {
+  mockCanManage.mockReturnValue(true)
+  mockUseChatIntegrations.mockReturnValue({ data: [] })
+  availability.providers = ['slack']
+  const { rerender } = renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+  expect(screen.getByRole('button', { name: 'Connect via Slack' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Connect via Email' })).not.toBeInTheDocument()
+  availability.providers = ['platform-email']
+  rerender(<HomeAgentIntegrations agentSlug="test-agent" />)
+  expect(screen.getByRole('button', { name: 'Connect via Email' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Connect via Slack' })).not.toBeInTheDocument()
+})
+
+it('offers nothing until host availability is known and preserves installed rows', () => {
+  availability.providers = undefined
+  mockUseChatIntegrations.mockReturnValue({ data: [INTEGRATION] })
+  renderWithProviders(<HomeAgentIntegrations agentSlug="test-agent" />)
+  expect(screen.getByText('Test Bot')).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /Add Integration/ })).not.toBeInTheDocument()
 })

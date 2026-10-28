@@ -1,3 +1,6 @@
+vi.mock('@shared/lib/account-providers/provider-factory', () => ({
+  getDefaultAccountProvider: () => ({ name: 'composio' }),
+}))
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ContainerConfig } from './types'
 
@@ -22,7 +25,6 @@ vi.mock('./client-factory', () => ({
       getStats: vi.fn(),
       fetch: vi.fn(),
       getHostApiBaseUrl: () => 'http://127.0.0.1:3000',
-      buildVolumeFlag: (hostPath: string, containerPath: string) => `"${hostPath}:${containerPath}"`,
       createSession: vi.fn(),
       onFatalResult: () => 'settle',
       observeUnexpectedDeath: async () => ({ action: 'settle' as const }),
@@ -83,23 +85,6 @@ vi.mock('@shared/lib/config/data-dir', () => ({
   getAgentWorkspaceDir: (id: string) => `/workspace/${id}`,
 }))
 
-vi.mock('./message-persister', () => ({
-  messagePersister: {
-    broadcastGlobal: vi.fn(),
-    setStopContainerCallback: vi.fn(),
-    setUnexpectedDeathCallback: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(),
-    snapshotMidTurnSessions: vi.fn(() => []),
-    consumeLastFatal: vi.fn(() => null),
-    settleRecoveringSessions: vi.fn(),
-    markRecovered: vi.fn(),
-    takeCoalescedUserMessages: vi.fn(() => []),
-    isSessionRecovering: vi.fn(() => false),
-    isSubscribed: vi.fn(() => false),
-    subscribeToSession: vi.fn(),
-  },
-}))
-
 vi.mock('./health-monitor', () => ({
   healthMonitor: { checkAll: vi.fn().mockReturnValue([]) },
 }))
@@ -119,7 +104,8 @@ vi.mock('@shared/lib/services/timezone-resolver', () => ({
 }))
 
 vi.mock('@shared/lib/services/mount-service', () => ({
-  getMountsWithHealth: () => [],
+  listVolumes: async () => ({ volumes: [], notMounted: [] }),
+  remounted: async () => {},
 }))
 
 import { containerHost } from './container-host'
@@ -127,8 +113,9 @@ import { containerHost } from './container-host'
 // ============================================================================
 // A dropped runtime is inert
 //
-// The persister keeps the client a runtime handed out (stream subscriptions,
-// input settlement) and the client keeps calling the runtime's callbacks.
+// The agent's live sessions keep the client a runtime handed out (stream
+// subscriptions, input settlement) and the client keeps calling the runtime's
+// callbacks.
 // Dropping the runtime used to reset its `stopping`/`starting` guards, so a
 // container dying after an eviction — the delete route stops it through a
 // fresh runtime — ran unexpected-death recovery through the dropped one.

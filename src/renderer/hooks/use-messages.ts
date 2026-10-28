@@ -1,5 +1,7 @@
 import { apiFetch } from '@renderer/lib/api'
+import { readAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-request-error'
 import { captureRendererException } from '@renderer/lib/error-reporting'
+import { HttpError } from '@renderer/lib/http-error'
 import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -299,16 +301,19 @@ export function useMessages(sessionId: string | null, agentSlug: string | null) 
 export function useSendMessage(options: {
   /** No error toast: the caller handles (or accepts) a failed send. */
   quiet?: boolean
+  /** The caller renders AgentRuntimeErrors that have a preview, so skip their toast. */
+  agentRuntimeErrorsShownInline?: boolean
 } = {}) {
   const queryClient = useQueryClient()
   return useMutation({
-    ...(options.quiet ? { meta: { skipGlobalErrorToast: true } } : {}),
+    meta: { skipGlobalErrorToast: options.quiet, agentRuntimeErrorsShownInline: options.agentRuntimeErrorsShownInline },
     mutationFn: async (data: {
       sessionId: string
       agentSlug: string
       content: string
       effort?: EffortLevel
       speed?: SpeedLevel
+      llmProviderId?: string | null
       model?: string
       /**
        * false appends the message to the transcript for the agent to read
@@ -324,13 +329,14 @@ export function useSendMessage(options: {
           ...(data.effort ? { effort: data.effort } : {}),
           ...(data.speed ? { speed: data.speed } : {}),
           ...(data.model ? { model: data.model } : {}),
+          ...(data.llmProviderId !== undefined ? { llmProviderId: data.llmProviderId } : {}),
           ...(data.shouldQuery === false ? { shouldQuery: false } : {}),
         }),
       })
-      if (!res.ok) throw new Error('Failed to send message')
+      if (!res.ok) throw await readAgentRuntimeError(res, 'Failed to send message')
       // uuid is the server-assigned message id, used to materialize the
       // optimistic pending copy by exact id match.
-      return res.json() as Promise<{ success: boolean; uuid: string; queued: boolean }>
+      return res.json() as Promise<{ success: boolean; uuid: string; queued: boolean; credentialSource?: string }>
     },
     onSuccess: (result, variables) => {
       if (variables.shouldQuery === false) {
@@ -353,6 +359,7 @@ export function useSendMessage(options: {
         ...(variables.effort !== undefined ? { effort: variables.effort } : {}),
         ...(variables.speed !== undefined ? { speed: variables.speed } : {}),
         ...(variables.model !== undefined ? { model: variables.model } : {}),
+        ...(variables.llmProviderId !== undefined ? { llmProviderId: variables.llmProviderId } : {}),
       }
       if (Object.keys(patch).length === 0) return
       queryClient.setQueriesData<ApiSession>(
@@ -381,7 +388,7 @@ export function useCancelQueuedMessage() {
 export function useUploadFile() {
   return useMutation({
     mutationFn: async (data: {
-      sessionId: string
+      sessionId?: string
       agentSlug: string
       file: File
       relativePath?: string
@@ -390,7 +397,9 @@ export function useUploadFile() {
       stallMs?: number
     }) => {
       return uploadFileChunked<{ path: string; filename: string; size: number }>({
-        url: `/api/agents/${data.agentSlug}/sessions/${data.sessionId}/upload-file`,
+        url: data.sessionId
+          ? `/api/agents/${data.agentSlug}/sessions/${data.sessionId}/upload-file`
+          : `/api/agents/${data.agentSlug}/upload-file`,
         file: data.file,
         fields: data.relativePath ? { relativePath: data.relativePath } : undefined,
         onProgress: data.onProgress,
@@ -412,7 +421,7 @@ export function useUploadFolder() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sourcePath: data.sourcePath }),
       })
-      if (!res.ok) throw new Error('Failed to upload folder')
+      if (!res.ok) throw new HttpError(res.status, 'Failed to upload folder')
       return res.json() as Promise<{ path: string; folderName: string }>
     },
   })
@@ -492,37 +501,35 @@ export function useSubagentMessages(
 /**
  * The per-agent tree (phases + agent status/label/result) for a dynamic-workflow
  * run, joined host-side from on-disk artifacts. Disk is the source of truth (so
- * this survives reload); the drawer overlays live SSE status patches and triggers
- * a refetch via the returned `refetch` when a workflow_agent_updated arrives.
+ * this survives reload). Live agents render independently; disk reconciliation
+ * runs less often once they arrive, and the drawer refetches on completion.
  */
 export function useWorkflowTree(
   sessionId: string | null,
   agentSlug: string | null,
   runId: string | null,
-  opts?: { active?: boolean }
+  opts?: { active?: boolean; hasLiveAgents?: boolean }
 ) {
   return useQuery<WorkflowTree>({
     queryKey: ['workflow-tree', sessionId, agentSlug, runId],
     queryFn: async ({ signal }) => {
       const res = await apiFetch(
         `/api/agents/${agentSlug}/sessions/${sessionId}/workflows/${runId}/tree`,
-        // The route answers in milliseconds from local disk; a request that hangs
-        // (stalled connection, host busy) must fail fast so the poll below retries
-        // it instead of pinning the drawer on "Loading…".
+        // Reconstruction can be slow for large transcripts. Bound the request;
+        // live events keep the preview usable while disk details are unavailable.
         { signal: AbortSignal.any([signal, AbortSignal.timeout(WORKFLOW_TREE_TIMEOUT_MS)]) }
       )
       if (!res.ok) throw new Error('Failed to fetch workflow tree')
       return res.json()
     },
     enabled: !!sessionId && !!agentSlug && !!runId,
-    // While the run is active, poll: right after launch the on-disk dir doesn't exist yet
-    // (the tree route 404s), and new agents/labels appear as the run progresses. Stops once
-    // the workflow completes (SSE-driven refetch handles the final state).
-    refetchInterval: opts?.active ? 2000 : false,
+    // Before live agents arrive, poll for launch/reload recovery. Once they do,
+    // reconcile at a much lower rate: this route scans every agent transcript.
+    refetchInterval: opts?.active ? (opts.hasLiveAgents ? 30_000 : 2000) : false,
     // No built-in retries: the poll IS the retry. Query retries back off
     // exponentially (1s, 2s, 4s, 8s, 16s) and the whole sequence renders as the
     // initial "Loading…" state, so a launch-window 404 would hide behind a
-    // half-minute spinner instead of surfacing as "Starting workflow…" at once.
+    // half-minute spinner instead of surfacing the unavailable details.
     retry: false,
   })
 }

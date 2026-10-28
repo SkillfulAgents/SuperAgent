@@ -16,19 +16,23 @@ const send = vi.fn()
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => true }))
 vi.mock('@shared/lib/auth/config', () => ({ getCurrentUserId: () => currentUserId }))
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    syncAgentSessionsAwaiting: vi.fn(), getActiveSessionIdsForAgent: () => activeSessions(),
-    isSessionActive: () => true, getTurnGeneration: () => 3, markSessionInterrupted: vi.fn(),
-    withSessionSend: async (_agent: string, _session: string, _client: unknown, deliver: () => Promise<void>) => deliver(),
-  },
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    activeIds: () => activeSessions(), isActive: () => true, turnGeneration: () => 3,
+  }),
 }))
 vi.mock('@shared/lib/container/container-host', () => ({
   containerHost: {
     attachAgentWorkspaces: () => {},
+    attachAgentSessions: () => {},
+    clearRuntimes: () => {},
     runtime: () => ({
       slug: 'shared-agent',
       getCachedInfo: () => ({ status: 'running' }),
+      getHealthWarnings: () => [],
+      isStale: () => false,
+      idleSince: () => null,
+      ensureRunning: async () => {},
       getClient: () => ({ interruptSession: interrupt, sendMessage: send }),
     }),
   },
@@ -37,14 +41,20 @@ vi.mock('@shared/lib/container/connection-runtime-sync', () => ({
   syncAgentConnectionEnvironment: (...args: unknown[]) => syncEnvironment(...args),
 }))
 vi.mock('@shared/lib/services/audit-log-service', () => ({ logAuditEvent: vi.fn() }))
+// The replacement notice's delivery reads the session; this agent has no files.
+vi.mock('@shared/lib/services/session-service', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/services/session-service')>()),
+  getSessionMetadata: async () => null,
+  updateSessionMetadata: async () => undefined,
+}))
 vi.mock('@shared/lib/platform-attribution', () => ({}))
 vi.mock('@shared/lib/utils/file-storage', () => ({ resolveAgentId: vi.fn() }))
 vi.mock('@shared/lib/proxy/token-store', () => ({ validateProxyToken: vi.fn() }))
 
 import mcpReauth from './mcp-reauth'
 import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
-import { getReplacementMcpId } from '@shared/lib/proxy/mcp-replacement'
+import { agentRegistry } from '@shared/lib/agent-actor'
+import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 
 type TestEnv = { Variables: { user: { id: string }; agentId: string } }
 let app: Hono<TestEnv>
@@ -89,7 +99,7 @@ beforeEach(() => {
   syncEnvironment.mockReset().mockResolvedValue(true)
   activeSessions.mockReset().mockReturnValue([])
   interrupt.mockReset().mockResolvedValue({ interrupted: true, processKept: true })
-  send.mockReset().mockResolvedValue(undefined)
+  send.mockReset().mockResolvedValue({})
   userInputRequestManager.reset()
   for (const id of ['owner', 'member', 'viewer', 'stranger']) {
     testDb.insert(schema.user).values({ id, name: id, email: `${id}@test.example` }).run()
@@ -113,8 +123,8 @@ beforeEach(() => {
   })
   app.route('/api/agents', mcpReauth)
 })
-afterEach(() => {
-  mcpReauthManager.rejectAll()
+afterEach(async () => {
+  await agentRegistry.evictAll()
   userInputRequestManager.reset()
   sqlite.close()
 })
@@ -128,7 +138,7 @@ describe('MCP connection replacement', () => {
     expect(interrupt).toHaveBeenCalledWith('running-session', { scope: 'turn' })
     expect(send).toHaveBeenCalledWith('running-session',
       expect.stringContaining('[SYSTEM] Connection to "Custom MCP" was replaced.'),
-      expect.any(String), { shouldQuery: true })
+      expect.any(String), expect.objectContaining({ shouldQuery: true }))
     expect(send.mock.calls[0][1]).toContain('ID: mine.')
   })
 
@@ -138,15 +148,15 @@ describe('MCP connection replacement', () => {
     const other = park('other-agent')
     syncEnvironment.mockImplementation(async () => {
       expect(mapped('shared-agent')).toEqual(['mine'])
-      expect(userInputRequestManager.getOpenRequest(request.id)).not.toBeNull()
+      expect(userInputRequestManager.getOpenRequest('shared-agent', request.id)).not.toBeNull()
       return true
     })
     expect((await replace(request.id)).status).toBe(200)
-    expect(getReplacementMcpId(await request.settled)).toBe('mine')
+    expect(await request.settled).toEqual({ outcome: 'replaced', replacementId: 'mine' })
     expect(mapped('other-agent')).toEqual(['old'])
     expect(testDb.select().from(schema.remoteMcpServers).where(eq(schema.remoteMcpServers.id, 'old')).get()).toEqual(original)
-    expect(userInputRequestManager.getOpenRequest(other.id)).not.toBeNull()
-    expect(syncEnvironment).toHaveBeenCalledWith('shared-agent', 'remote-mcps', expect.objectContaining({ slug: 'shared-agent' }))
+    expect(userInputRequestManager.getOpenRequest('other-agent', other.id)).not.toBeNull()
+    expect(syncEnvironment).toHaveBeenCalledWith('shared-agent', 'remote-mcps', expect.objectContaining({ slug: 'shared-agent' }), undefined)
   })
 
   it('prefills with the member URL and never returns the original private URL', async () => {
@@ -182,7 +192,7 @@ describe('MCP connection replacement', () => {
     const request = park()
     expect((await replace(request.id, ['invalid'])).status).toBe(expected)
     expect(mapped('shared-agent')).toEqual(['old'])
-    expect(userInputRequestManager.getOpenRequest(request.id)).not.toBeNull()
+    expect(userInputRequestManager.getOpenRequest('shared-agent', request.id)).not.toBeNull()
   })
 
   it('rejects stale cards and multiple replacements', async () => {
@@ -213,7 +223,7 @@ describe('MCP connection replacement', () => {
     const request = park()
     expect((await replace(request.id)).status).toBe(500)
     expect(mapped('shared-agent')).toEqual(['old'])
-    expect(userInputRequestManager.getOpenRequest(request.id)).not.toBeNull()
+    expect(userInputRequestManager.getOpenRequest('shared-agent', request.id)).not.toBeNull()
     expect(syncEnvironment).not.toHaveBeenCalled()
   })
 })

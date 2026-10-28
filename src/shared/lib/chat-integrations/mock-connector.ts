@@ -1,15 +1,16 @@
 /**
- * MockChatClientConnector — test double for chat integration testing.
+ * MockChatAgentIntegration — test double for chat integration testing.
  *
  * Records all sent messages and events for assertion,
  * and provides simulation methods for incoming messages and interactive responses.
  */
 
-import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
+import type { UserRequestEvent } from '@shared/lib/tools/types'
+import { background } from '@shared/lib/background'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import { ChatAgentIntegration, type OutgoingMessage } from './chat-agent-integration'
 
-export class MockChatClientConnector extends ChatAgentIntegration {
+export class MockChatAgentIntegration extends ChatAgentIntegration {
   readonly provider = 'telegram' as const // Arbitrary, just needs a valid value
 
   private connected = false
@@ -31,7 +32,7 @@ export class MockChatClientConnector extends ChatAgentIntegration {
 
   /** Simulate an incoming message from an external user. */
   simulateIncomingMessage(text: string, chatId = 'mock-chat-1', userId = 'mock-user-1', opts?: { userName?: string; chatName?: string }): void {
-    this.emitMessage({
+    background(this.emitMessage({
       externalMessageId: `mock-msg-${this.nextMessageId++}`,
       text,
       chatId,
@@ -39,7 +40,7 @@ export class MockChatClientConnector extends ChatAgentIntegration {
       userName: opts?.userName,
       chatName: opts?.chatName,
       timestamp: new Date(),
-    })
+    }), { name: 'mock-connector.incoming-message' })
   }
 
   /**

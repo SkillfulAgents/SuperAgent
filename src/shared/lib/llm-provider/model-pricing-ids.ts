@@ -10,6 +10,12 @@ const MODEL_PRICING_ALIASES: Record<string, string> = {
   // xAI documents both aliases as pointers to Grok 4.5.
   'grok-4.5-latest': 'grok-4.5',
   'grok-build-latest': 'grok-4.5',
+  // Subscription Messages replies report these concrete deployments (live verified).
+  'grok-4.6-build': 'grok-4.6',
+  'grok-4.7-build': 'grok-4.7',
+  // Kimi Code subscription slugs for K3 (live verified; the reply echoes the slug).
+  k3: 'kimi-k3',
+  'k3-256k': 'kimi-k3',
 }
 
 /**

@@ -3,13 +3,13 @@
 Read this guide before configuring or using an external chat integration.
 
 Chat integrations connect this agent directly to supported chat providers such
-as Telegram, Slack, or iMessage. They are separate from OAuth connected
+as Email, Telegram, Slack, or iMessage. They are separate from OAuth connected
 accounts and remote MCP servers; use the `mcp__chat__*` tools for chat setup and
 delivery.
 
 ## Discover and Configure
 
-1. Call `mcp__chat__list_chat_integrations` to inspect configured integrations,
+1. Call `mcp__chat__list_agent_integrations` to inspect configured integrations,
    status, capabilities, and active chats.
 2. If a provider is not configured, call
    `mcp__chat__list_available_chat_providers` to learn its required fields.
@@ -21,7 +21,47 @@ delivery.
 
 Do not use `request_connected_account` or remote-MCP discovery for this flow.
 
-## Resolve the Destination
+## Email
+
+Email integrations send from the agent’s own inbox. They do not require Gmail or
+Outlook OAuth. Inspect `list_agent_integrations` first and follow its instructions;
+`CONNECTED_ACCOUNTS` contains only OAuth accounts, not agent integrations.
+
+For a **new email**, call `send_chat_message` with:
+
+```json
+{
+  "integration_id": "<email integration ID>",
+  "message": "Hello, world!",
+  "email": {
+    "to": ["recipient@example.com"],
+    "subject": "Hello, world!",
+    "idempotency_key": "hello-world-unique-send-1"
+  }
+}
+```
+
+Use an address provided by the user, or call `list_chat_users` if you need to
+identify the recipient. Its permitted contacts are bounded and may be incomplete.
+Do not call `list_chat_channels` for a new email: no existing thread is required.
+Do not use `user_id` or `chat_id` for email.
+
+To reply to an existing email, find its `reply_to_message_id` with
+`list_chat_channels` and pass it as `email.reply_to_message_id` with a new
+idempotency key. Up to 20 recent conversations are listed. Optional email fields
+include `cc`, `bcc`, `reply_all`, and `attachment_paths` (workspace file paths).
+Every recipient must pass the current access policy.
+
+In a session started by incoming email, your response is sent back automatically;
+do not also send it with the tool. Use `deliver_file` to attach files to that reply.
+
+Reuse the same idempotency key and identical payload when retrying a send.
+A queued response means accepted, not delivered. If the tool schema has no
+`email` parameter, report that the agent runtime needs updating; do not try chat
+IDs as a workaround. Inbox creation is owner-managed through the agent’s Email
+setup in the app; `add_chat_integration` cannot create an inbox.
+
+## Resolve the Destination for Other Chat Providers
 
 `mcp__chat__send_chat_message` accepts exactly one destination:
 

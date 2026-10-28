@@ -4,12 +4,21 @@ import path from 'path'
 import net from 'net'
 import os from 'os'
 import { getDataDir } from '@shared/lib/config/data-dir'
-import { listChromeProfiles, copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
+import { drivesUserChrome } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
+import {
+  ChromeProfileAccessError,
+  listChromeProfiles,
+  copyChromeProfileData,
+  reportChromeProfileAccessError,
+} from '@shared/lib/browser/chrome-profile'
 import { agentRegistry, containerHost } from '@shared/lib/agent-actor'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo } from './types'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { readJsonFileStrictSync, writeFileAtomicSync, CorruptFileError } from '@shared/lib/utils/file-storage'
 import { waitForBrowserProfileCleanup, markProfileInUse, unmarkProfileInUse } from './profile-maintenance'
+import { GooglePasskeyRecovery } from './google-passkey-recovery'
+import { requestChromeClose } from './chrome-cdp-close'
 import { z } from 'zod'
 
 // Chrome's DevTools Protocol has no auth token: any host/process that can reach
@@ -22,6 +31,9 @@ import { z } from 'zod'
 // Loopback-forwarding runners (Docker Desktop, user-mode Lima, rootless Podman)
 // need no proxy.
 const CDP_LOOPBACK_ADDRESS = '127.0.0.1'
+const CDP_VERSION_TIMEOUT_MS = 2000
+const GRACEFUL_CLOSE_TIMEOUT_MS = 5000
+const cdpVersionSchema = z.object({ webSocketDebuggerUrl: z.string().min(1) })
 
 /** True if `ip` is assigned to a local network interface (i.e. bindable by this host). */
 function isLocalInterfaceAddress(ip: string): boolean {
@@ -220,10 +232,15 @@ export class ChromeProvider implements HostBrowserProvider {
 
   private instances: Map<string, BrowserInstance> = new Map()
   private detectedPath: string | null = null
+  private passkeyRecovery = new GooglePasskeyRecovery()
 
   onExternalClose: ((instanceId: string) => void) | null = null
 
   detect(): HostBrowserProviderStatus {
+    // Unavailable rather than absent, so Settings says why.
+    if (!drivesUserChrome(getServerFacts())) {
+      return { id: this.id, name: this.name, available: false, reason: 'Not available in the Mac App Store edition' }
+    }
     const candidate = BROWSER_CANDIDATES[process.platform]
     if (!candidate) {
       return { id: this.id, name: this.name, available: false, reason: 'Unsupported platform' }
@@ -250,6 +267,7 @@ export class ChromeProvider implements HostBrowserProvider {
     // Check if an instance already exists and its port is still open
     const existing = this.instances.get(instanceId)
     if (existing && await this.isPortOpen(existing.port)) {
+      await this.watchPasskeyRecovery(instanceId, existing.port)
       return { port: existing.proxyPort ?? existing.port }
     }
 
@@ -322,8 +340,16 @@ export class ChromeProvider implements HostBrowserProvider {
       // should keep the session data (cookies, local storage, etc.) that the
       // agent accumulated during its browsing sessions.
       const alreadyHasProfile = fs.existsSync(path.join(destProfileDir, 'Cookies'))
-      if (!alreadyHasProfile && await copyChromeProfileData(profileId, destProfileDir)) {
-        console.log(`[ChromeProvider] Copied Chrome profile "${profileId}" for instance ${instanceId}`)
+      try {
+        if (!alreadyHasProfile && await copyChromeProfileData(profileId, destProfileDir)) {
+          console.log(`[ChromeProvider] Copied Chrome profile "${profileId}" for instance ${instanceId}`)
+        }
+      } catch (error) {
+        // A profile this app may not read: launch without its logins rather
+        // than not at all.
+        if (!(error instanceof ChromeProfileAccessError)) throw error
+        console.warn(`[ChromeProvider] Launching instance ${instanceId} without Chrome profile "${profileId}":`, error)
+        reportChromeProfileAccessError(error)
       }
     }
 
@@ -542,7 +568,7 @@ export class ChromeProvider implements HostBrowserProvider {
     let proxyPort: number | null = null
     let proxyServer: net.Server | null = null
     let proxyHost: string | null = null
-    const bridgeIp = this.getHostBridgeIp(instanceId)
+    const bridgeIp = await this.getHostBridgeIp(instanceId)
     if (bridgeIp) {
       try {
         proxyPort = await this.findFreePort()
@@ -591,6 +617,7 @@ export class ChromeProvider implements HostBrowserProvider {
     const handleExit = (reason: string) => {
       console.log(`[ChromeProvider] Browser for instance ${instanceId} exited (${reason})`)
       const wasIntentional = instance.stoppingIntentionally
+      this.passkeyRecovery.stop(instanceId)
       instance.proxyServer?.close()
       if (instance.externalCloseWatcher) {
         clearInterval(instance.externalCloseWatcher)
@@ -692,12 +719,31 @@ export class ChromeProvider implements HostBrowserProvider {
     }
 
     const exposedPort = proxyPort ?? port
+    await this.watchPasskeyRecovery(instanceId, port)
 
     console.log(`[ChromeProvider] Chrome CDP on ${CDP_LOOPBACK_ADDRESS}:${port}${proxyPort ? `, proxy on ${proxyHost}:${proxyPort}` : ''} for instance ${instanceId} (pid ${chromePid})`)
     return { port: exposedPort, downloadDir }
   }
 
+  // Google's passkey prompt opens a native WebAuthn dialog that swallows the viewer's CDP clicks.
+  private async watchPasskeyRecovery(instanceId: string, port: number): Promise<void> {
+    try {
+      const response = await fetch(`http://${CDP_LOOPBACK_ADDRESS}:${port}/json/version`, {
+        signal: AbortSignal.timeout(CDP_VERSION_TIMEOUT_MS),
+      })
+      const { webSocketDebuggerUrl } = cdpVersionSchema.parse(await response.json())
+      this.passkeyRecovery.watch(instanceId, webSocketDebuggerUrl)
+    } catch (err) {
+      console.warn('[ChromeProvider] Google passkey recovery unavailable:', err)
+      captureException(err, {
+        tags: { component: 'browser', operation: 'passkey-recovery-watch' },
+        extra: { instanceId, port },
+      })
+    }
+  }
+
   async stop(instanceId: string): Promise<void> {
+    this.passkeyRecovery.stop(instanceId)
     const instance = this.instances.get(instanceId)
     if (instance) {
       instance.stoppingIntentionally = true
@@ -707,7 +753,14 @@ export class ChromeProvider implements HostBrowserProvider {
         instance.externalCloseWatcher = null
       }
 
-      if (instance.process && !instance.process.killed) {
+      // Browser.close first: a signal skips Chrome's cookie flush, losing
+      // logins from the last ~30s. Signals below only handle a Chrome that
+      // did not exit on its own.
+      if (await requestChromeClose(`http://${CDP_LOOPBACK_ADDRESS}:${instance.port}`)) {
+        await this.waitForExit(instance, GRACEFUL_CLOSE_TIMEOUT_MS)
+      }
+
+      if (instance.process && !instance.process.killed && !this.hasExited(instance.process)) {
         // linux/win32: we own the child process. Kill via the ChildProcess
         // and wait for the 'exit' event so the next launch() doesn't race
         // with a still-dying Chrome.
@@ -805,6 +858,23 @@ export class ChromeProvider implements HostBrowserProvider {
     try { process.kill(pid, 0); return true } catch { return false }
   }
 
+  private hasExited(child: ChildProcess): boolean {
+    return (child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null
+  }
+
+  private async waitForExit(instance: BrowserInstance, timeoutMs: number): Promise<void> {
+    const child = instance.process
+    if (!child) return this.waitForPidExit(instance.pid, timeoutMs)
+    if (this.hasExited(child)) return
+    await new Promise<void>((resolve) => {
+      const timeout = setTimeout(resolve, timeoutMs)
+      child.once('exit', () => {
+        clearTimeout(timeout)
+        resolve()
+      })
+    })
+  }
+
   private async waitForPidExit(pid: number, timeoutMs: number): Promise<void> {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
@@ -857,10 +927,10 @@ export class ChromeProvider implements HostBrowserProvider {
     }
   }
 
-  private getHostBridgeIp(instanceId: string): string | null {
+  private async getHostBridgeIp(instanceId: string): Promise<string | null> {
     let ip: string | null = null
     try {
-      ip = agentRegistry.get(instanceId).container.hostBridgeIp()
+      ip = await agentRegistry.get(instanceId).container.hostBridgeIp()
     } catch (error) {
       console.warn('[ChromeProvider] Could not resolve host bridge IP for CDP proxy:', error)
       return null

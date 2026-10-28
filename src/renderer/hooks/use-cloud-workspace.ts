@@ -16,6 +16,8 @@ export interface CloudWorkspaceResponse {
    * isn't one". Show a retry, never the create-a-workspace CTA.
    */
   discoveryFailed: boolean
+  /** Platform's status for the org's workspace, or null when it has none. */
+  status: string | null
 }
 
 /**

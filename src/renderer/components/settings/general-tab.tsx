@@ -18,6 +18,8 @@ import { ShortcutsSection } from './shortcuts-section'
 import { AutoDeleteSelect } from './auto-delete-select'
 import { ApiLogAutoDeleteSelect } from './api-log-auto-delete-select'
 import { applyWebFavicon, getWebFaviconHref } from '@renderer/lib/favicon'
+import { agentsRunInAppSandbox, appUpdatesItself, keepsMacAwake } from '@renderer/lib/capabilities'
+import { SandboxNotice } from './sandbox-notice'
 import {
   Wand2,
   TriangleAlert,
@@ -212,7 +214,9 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
 
   return (
     <div className="space-y-6">
-      {isElectronApp && (
+      {agentsRunInAppSandbox() && <SandboxNotice />}
+
+      {appUpdatesItself() && (
         <div className="space-y-2">
           <h3 className={SECTION_HEADING}>Updates</h3>
           <UpdatesCard />
@@ -302,7 +306,7 @@ export function GeneralTab({ onOpenWizard }: GeneralTabProps) {
               }
             />
           )}
-          {isMacElectron && (
+          {keepsMacAwake() && (
             <KeepAwakeRow
               enabled={userSettings?.keepAwakeEnabled === true}
               onToggle={handleKeepAwakeToggle}

@@ -12,9 +12,12 @@
  *    delivers (deliberate v1 scope).
  */
 
+import { getRequestDefinition } from '@shared/lib/tools/registry'
+import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import {
   createNotification,
+  deleteMessageNotifications,
   getAgentAccessUserIds,
   type NotificationType,
 } from '@shared/lib/services/notification-service'
@@ -23,19 +26,24 @@ import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAgentRecord } from '@shared/lib/services/agent-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
 import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
 import { getNotificationChannels } from './channels'
+import { broadcastMentionWithdrawn } from './channels/client-broadcast-channel'
 import { isNotificationTypeEnabled } from './notification-preferences'
 import type { NotificationEvent } from './notification-event'
 import { buildSessionCompleteBody } from './session-complete-summary'
 
 interface SessionCompleteNotificationOptions {
-  /** Final top-level assistant text, already selected by MessagePersister. */
+  /** Final top-level assistant text, already selected by the agent's session. */
   responseText?: string | null
-  /** In-flight same-file byte-boundary snapshot for this completed turn. */
-  responseTranscriptEndOffset?: Promise<number | null>
+  /** Where the transcript ended when this turn did: the byte bound for the body's context lookup. */
+  responseTranscriptEndOffset?: number | null
 }
+
+/** A mention's inbox body is its message, cut to a preview. */
+const MENTION_BODY_MAX = 280
 
 type NotificationBody = string | {
   fallback: string
@@ -118,8 +126,10 @@ class NotificationManager {
     actions?: Array<{ text: string }>
     actionContext?: Record<string, unknown>
     extra?: Omit<Record<string, unknown>, 'type' | 'notificationType' | 'notificationId' | 'sessionId' | 'agentSlug' | 'title' | 'body' | 'actions' | 'actionContext'>
+    /** A targeted notification: only this user gets it. */
+    recipient?: { userId: string; messageUuid: string }
   }): Promise<void> {
-    const { type, sessionId, agentSlug, title, body, actions, actionContext, extra } = params
+    const { type, sessionId, agentSlug, title, body, actions, actionContext, extra, recipient } = params
 
     // A blocked automated session must become visible: session lists exclude
     // non-promoted automated sessions, so a session_waiting notification on one
@@ -155,6 +165,7 @@ class NotificationManager {
       agentSlug,
       title,
       body: resolvedBody,
+      ...(recipient ? { recipientUserId: recipient.userId, messageUuid: recipient.messageUuid } : {}),
     })
 
     // Stamp the actionContext with notificationId so the renderer dispatcher
@@ -176,14 +187,15 @@ class NotificationManager {
       ...(actions ? { actions } : {}),
       ...(stampedActionContext ? { actionContext: stampedActionContext } : {}),
       ...(extra ? { extra } : {}),
+      ...(recipient ? { recipientUserId: recipient.userId } : {}),
     }
 
     // Fire-and-forget per channel: delivery to one backend (a slow push POST,
     // a dead endpoint) must never block the trigger path or another channel.
     for (const channel of getNotificationChannels()) {
-      void channel.deliver(event).catch((error) => {
+      background(channel.deliver(event).catch((error) => {
         console.error(`[NotificationManager] ${channel.id} delivery failed:`, error)
-      })
+      }), { name: 'notification-manager.deliver-to-channel' })
     }
   }
 
@@ -245,8 +257,7 @@ class NotificationManager {
                 sessionId,
                 agentSlug,
                 responseText: options.responseText,
-                responseTranscriptEndOffset:
-                  await options.responseTranscriptEndOffset,
+                responseTranscriptEndOffset: options.responseTranscriptEndOffset,
                 fallbackBody,
               }),
             )
@@ -271,53 +282,18 @@ class NotificationManager {
   async triggerSessionWaitingInput(
     sessionId: string,
     agentSlug: string,
-    waitingFor: 'secret' | 'connected_account' | 'question' | 'file' | 'remote_mcp' | 'browser_input' | 'script_run' | 'computer_use' | 'capability_review_subagents' | 'capability_review_workflows',
+    request: Pick<PendingUserInputRequest, 'kind' | 'payload'>,
     agentName?: string
   ): Promise<void> {
     const displayName = agentName || await this.getAgentDisplayName(agentSlug)
-    let waitingMessage: string
-    switch (waitingFor) {
-      case 'secret':
-        waitingMessage = 'needs a secret value'
-        break
-      case 'connected_account':
-        waitingMessage = 'needs account access'
-        break
-      case 'question':
-        waitingMessage = 'has a question for you'
-        break
-      case 'file':
-        waitingMessage = 'needs a file from you'
-        break
-      case 'remote_mcp':
-        waitingMessage = 'needs access to an MCP server'
-        break
-      case 'browser_input':
-        waitingMessage = 'needs your browser input'
-        break
-      case 'script_run':
-        waitingMessage = 'wants to run a script on your machine'
-        break
-      case 'computer_use':
-        waitingMessage = 'wants to control your computer'
-        break
-      // Mirror the review card's terminology ("Run this workflow?" /
-      // "Launch a subagent?") so the notification names what actually needs
-      // approving.
-      case 'capability_review_subagents':
-        waitingMessage = 'wants to launch a subagent'
-        break
-      case 'capability_review_workflows':
-        waitingMessage = 'wants to run a workflow'
-        break
-    }
+    const notification = getRequestDefinition(request.kind).getNotification(displayName, request.payload)
+    if (!notification) return
 
     await this.triggerNotification({
       type: 'session_waiting',
       sessionId,
       agentSlug,
-      title: 'Action Required',
-      body: `${displayName} ${waitingMessage}`,
+      ...notification,
     })
   }
 
@@ -339,7 +315,10 @@ class NotificationManager {
     kind: 'api_request' | 'agent_action' = 'api_request',
   ): Promise<void> {
     const displayName = agentName || await this.getAgentDisplayName(agentSlug)
-    const titleSuffix = kind === 'agent_action' ? 'Agent Action Review' : 'API Request Review'
+    const notification = getRequestDefinition(
+      kind === 'agent_action' ? 'x_agent_review' : 'proxy_review',
+    ).getNotification(displayName, { displayText })
+    if (!notification) return
     // Decisions are index-aligned with `actions`. Carrying them in the
     // context decouples the renderer's dispatch from button order — see
     // notification-action-schema for the contract. (Review S6.)
@@ -349,8 +328,7 @@ class NotificationManager {
       type: 'session_waiting',
       sessionId,
       agentSlug,
-      title: `${displayName} — ${titleSuffix}`,
-      body: displayText,
+      ...notification,
       actions,
       actionContext: {
         kind: 'proxy_review',
@@ -448,6 +426,42 @@ class NotificationManager {
       title,
       body,
     })
+  }
+
+  /**
+   * Trigger the notification for one person tagged in a session message.
+   * Only they get it, it always notifies (there is no setting for it), and it
+   * points at the message.
+   */
+  async triggerSessionMention(params: {
+    sessionId: string
+    agentSlug: string
+    messageUuid: string
+    recipientUserId: string
+    senderName: string
+    /** The message as the bubble shows it. */
+    text: string
+  }): Promise<void> {
+    const body = params.text.length > MENTION_BODY_MAX
+      ? `${params.text.slice(0, MENTION_BODY_MAX - 1).trimEnd()}…`
+      : params.text
+    await this.triggerNotification({
+      type: 'session_mention',
+      sessionId: params.sessionId,
+      agentSlug: params.agentSlug,
+      title: `${params.senderName} mentioned you`,
+      body,
+      recipient: { userId: params.recipientUserId, messageUuid: params.messageUuid },
+    })
+  }
+
+  /**
+   * Take back the mentions of a message that never reached the transcript
+   * (cancelled while queued, or discarded by a Stop): the inbox row and the @
+   * go. A push already shown stays shown.
+   */
+  async withdrawSessionMentions(messageUuid: string): Promise<void> {
+    for (const row of await deleteMessageNotifications(messageUuid)) broadcastMentionWithdrawn(row)
   }
 
   /**

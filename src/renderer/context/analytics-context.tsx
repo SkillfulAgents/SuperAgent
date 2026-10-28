@@ -4,13 +4,14 @@ import { useSettings } from '@renderer/hooks/use-settings'
 import { useUser } from '@renderer/context/user-context'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { createAnalyticsInstance, getAnalyticsMetadata, hasActivePlugins } from '@renderer/lib/analytics'
+import { captureRendererException } from '@renderer/lib/error-reporting'
 
 interface AnalyticsContextValue {
   track: (event: string, properties?: Record<string, unknown>) => void
   identify: () => void
 }
 
-const AnalyticsContext = createContext<AnalyticsContextValue | null>(null)
+export const AnalyticsContext = createContext<AnalyticsContextValue | null>(null)
 
 // Singleton reference so the analytics instance persists across re-renders
 // but can be replaced when settings change
@@ -48,7 +49,14 @@ export function AnalyticsProvider({ children }: { children: ReactNode }) {
       return null
     }
 
-    currentInstance = createAnalyticsInstance(shareAnalytics, analyticsTargets)
+    try {
+      currentInstance = createAnalyticsInstance(shareAnalytics, analyticsTargets)
+    } catch (error) {
+      // Runs during render: a bad analytics config must not unmount the app.
+      console.warn('[Analytics] Failed to initialize, analytics disabled:', error)
+      captureRendererException(error, { tags: { area: 'analytics', op: 'create-instance' } })
+      currentInstance = null
+    }
     currentConfigKey = configKey
     identifiedAsRef.current = null
     return currentInstance

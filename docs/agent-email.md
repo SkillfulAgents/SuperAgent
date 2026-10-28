@@ -1,0 +1,86 @@
+# Agent email (SUP-877)
+
+An agent owner can add **Email** from the agent's **External Integrations** section when the deployment is connected to Platform. Choose the sender display name, a unique inbox name, and an access level. The gateway provisions `<inbox>@<company>.ongamut.so` and configures the company domain on first use. DNS verification can take several minutes. Renaming changes the sender display name; the address and mailbox binding remain fixed. Deleting disables the gateway mailbox; addresses remain reserved.
+
+| Access level | Who can initiate email | Who the agent can email |
+| --- | --- | --- |
+| Agent users only | Verified agent users/owners and deployment administrators | The same users |
+| Agent users + replies (default) | Agent users, plus recipients replying in a thread the agent previously emailed | Anyone |
+| Allowed domains only | Addresses in the configured exact domains | The same domains |
+| Anyone | Anyone | Anyone |
+
+Protected modes require DMARC `pass` from the provider's API attestation. Sender-supplied headers do not count. Subdomains must be listed explicitly. A valid email is not an authenticated app session: email can answer a single clarification question, but privileged approvals and multi-question forms require the app. Requests are emailed only into threads whose replies would reach agent users alone, as an HTML email with numbered options and, on a deployment with a public URL, a link to the session. A request in any other thread waits in the app. Only an agent user's reply answers a question: an option number or label becomes that option, anything else is taken as their own answer, and anyone else's mail waits behind the request as an ordinary message. Every outbound To/Cc/Bcc and Reply-To destination is checked against the current policy. Narrowing access or pausing stops subsequent replies.
+
+Anyone mode admits unsolicited mail under the same integration lifecycle. There is no separate held-mail review queue. Bodies, quoted history and attachments are framed as untrusted input, and email cannot approve privileged actions.
+
+## Architecture and identity
+
+`EmailAgentIntegration` implements generic admission, thread sessions, input framing, questions, final-response delivery and attachments. `PlatformEmailAgentIntegration` supplies Platform availability, the standalone gateway transport and mailbox identity checks. The existing integration registry and manager own lifecycle/session orchestration; there is no Platform-side mail adapter.
+
+The gateway origin is fixed. Credentials are resolved server-side for every request and SSE reconnect, with the creating Platform member's attribution. Neither bearer credentials nor provider keys are saved in integration configuration or exposed to the renderer. The gateway verifies organization/member ownership on every mailbox operation. Atomic local duplicate checks and gateway address reservations prevent two agents from sharing an inbox.
+
+Domain preview and enrollment use the same Platform credential as mailbox operations: an organization runtime JWT with the acting member in auth mode, or the connected member's `plat_sa_` access key in non-auth mode. The gateway resolves only that authenticated organization's deployments through Platform's `/v1/org/deployments`; no saved member OAuth token, refresh token, or extra consent is required. A bare organization token without an acting member remains unsupported. The read-only gateway `/v1/domain/setup` endpoint shares hostname validation with enrollment and never reserves an inbox or provisions DNS.
+
+Roll out the Platform organization-discovery endpoint first, then the gateway's updated discovery and preview endpoints, then this app. The gateway ignores legacy `X-Platform-Discovery-Token` headers, so older app clients cannot override the organization credential used for enrollment. No database migration is needed for this change. Gateway migration `0003_sender_authentication.sql` remains required for sender attestation; older inbound messages without provider attestation fail closed in protected modes.
+
+## Consumption and delivery
+
+Per-integration polling with a durable cursor is authoritative and recovers missed events after reconnect. It runs on connect, every 30 seconds, and on each wake-up. Wake-ups come one of two ways, chosen each time a mailbox connects:
+
+- **Webhooks, when the host has a webhook relay.** No stream is opened. The gateway posts a pointer (`{type, id, cursor, mailboxId, messageId, data, createdAt}`, Standard Webhooks-signed) to the mailbox's registered webhook for each new event that no open stream covers. The gateway's cron sends these, so a pointer arrives within about a minute; the 30-second poll is usually sooner. A pointer runs the mailbox's poll and is acknowledged once the cursor has passed it; otherwise the relay offers it again. Mail that arrived while the host was offline waits on the relay and in the gateway's event log.
+- **SSE, otherwise.** One shared, authenticated subscription per Platform member wakes that member's mailboxes. This is also the fallback when the endpoint can't be minted (for example, the org's endpoint quota is full) or the gateway refuses the webhook.
+
+Webhooks set themselves up, so existing installations switch on their next connect with no step from the user. The first connect with a relay takes the endpoint of another mailbox claimed under the same relay scope (the creator's Platform member), or mints one with a Standard Webhooks verification profile and a generated `whsec_` secret. That keeps a member's mailboxes on one endpoint, inside the platform's 100-endpoint-per-org quota. Every such connect `PUT`s `{url, secret}` as the mailbox's gateway webhook. An identical `PUT` changes nothing, and the gateway deletes a webhook whose endpoint answered 404/410 or failed for 72 hours, so the next connect restores it. One relay registration per endpoint (`EmailRelays`) hands each pointer to its mailbox's connection after checking the signature with that mailbox's secret. Pointers for a mailbox that isn't connected are dropped, because its next connect polls from the cursor anyway. Disabling a mailbox deletes its gateway webhook on the gateway's side, and the shared endpoint is disabled once no installation uses it. Without a relay, a registered webhook stays in place: the gateway posts nothing while the stream is open, and what it posts while the host is down waits on the relay for a later connect that has one.
+
+A mail thread has one persistent agent session, without chat-style idle rotation. Gateway thread redirects are resolved against existing shared session mappings, retaining an inbound route when the canonical thread has no session. If both threads already have histories, subsequent messages follow the canonical thread; existing transcripts are not merged.
+
+Inbound attachments are fetched through the authorized gateway into the agent workspace. At turn completion, the configured summarizer model composes a complete plain-text email from all assistant text blocks and a bounded email-chain window. This preserves an answer that precedes a monitor acknowledgment. It can suppress monitor-only or already-sent follow-ups. Thinking and tool results are excluded. A malformed or unavailable model response is reported through the integration error path; it never falls back to sending the last monitor acknowledgment. `deliver_file` adds attachments to that response. The gateway handles sender names, MIME, quoting and RFC threading. Automatic replies target the sender/Reply-To; explicit reply-all adds checked To/Cc, never inherited Bcc.
+
+For proactive sends, `list_agent_integrations` advertises `send_email`, `list_users`, and `list_channels`; `send_chat_message` accepts:
+
+```json
+{
+  "integration_id": "<integration id>",
+  "message": "Here is the report.",
+  "email": {
+    "to": ["colleague@example.com"],
+    "cc": [],
+    "bcc": [],
+    "subject": "Weekly report",
+    "attachment_paths": ["/workspace/report.pdf"],
+    "idempotency_key": "weekly-report-2026-09-22"
+  }
+}
+```
+
+Use `reply_to_message_id` for a reply. Keys contain letters, numbers, dots, underscores, colons or hyphens. A bounded process-local cache reuses attachment IDs for recent retries and rejects changed content under the same key. The gateway enforces send idempotency. After a restart or cache eviction, attachment reuploads can cause the gateway to reject reuse of an earlier key; inspect the gateway result before initiating a new send. The result exposes message/thread IDs and queued status; acceptance is not proof of delivery. A session's final response already replies to its own email thread, so the tool rejects an explicit duplicate reply there. Automated integration provisioning is not exposed to agents.
+
+## Email messages in the app
+
+New inbound emails use the shared integration-message display framework. The transcript shows the subject, sender and time in an email card, with expandable From/To/Cc/Reply-To headers and an attachment count. Existing file chips retain their preview/download behavior. Bcc and gateway attachment URLs are not included in display metadata.
+
+A trailing plain-text quote block is collapsed under **Quoted history**; inline replies remain visible. Body and quote previews are bounded to 4,000 characters each and render as plain text without loading email HTML or remote images. **Agent input** reveals the original model-facing text, which is unchanged. The shared `message_author` metadata path supplies both live and reloaded cards; emails received before metadata support retain their original text view.
+
+## Contact and conversation discovery
+
+`list_chat_users` returns up to 100 deduplicated email contacts, labeled `workspace` or `previous-correspondence`. Workspace contacts are verified, non-banned members (the connected owner in single-user mode). Both sources are filtered by the current outbound policy and exclude the agent's own address. Historical contacts come only from this mailbox. Use the returned `email` in `send_chat_message.email.to`, not `user_id`.
+
+`list_chat_channels` returns at most **20** eligible email conversations with subject, allowed participants and `replyToMessageId`. Use that ID as `email.reply_to_message_id`, not `chat_id`. Results are ordered by the latest eligible message found. Discovery scans up to 50 recently created gateway threads and the first 100 messages per thread, plus up to 1,000 workspace members. A `truncated` result signals that the listing is incomplete. This is bounded discovery, not a full-mailbox search; an old thread with new activity may fall outside the window. The send path always checks current policy again, including every reply-all recipient.
+
+## Persistence and known boundary
+
+Email adds no tables or migrations. Its polling cursor is stored in the existing integration configuration; only that JSON field is updated, preserving concurrent settings edits. The relay endpoint (`relay`) and webhook secret (`webhookSecret`) live there too. They are written together, once, by a conditional update that leaves the other fields alone. Settings patches and setup input can't set them. Shared integration sessions own the agent/thread mapping, and the gateway owns messages, attachments, thread redirects and outbound send jobs. Slack persistence is unchanged.
+
+Inbound acceptance uses the shared durable delivery engine introduced in SUP-922. The provider advances its cursor only after the manager persists the event; retries use stable message IDs. The shared engine owns inbound deduplication, retries and recovery. Thread-reconciliation notifications do not enqueue the same message a second time: a reply denied before late threading information arrives is not automatically reconsidered. The sender can send a new reply after reconciliation.
+
+Assistant text is buffered in memory until completion and composed once. Email has no separate outbound recovery queue, saved drafts or delivery receipts. A host restart can lose the current output buffer; composer or gateway submission failures are reported but are not automatically retried by the inbound queue. Once the gateway accepts an email, its existing send jobs own provider delivery. Durable recovery of agent output before gateway acceptance belongs in a shared integration-framework follow-up, not an email-specific persistence layer. Runtime execution cannot be claimed to be exactly once across external side effects.
+
+Gateway retention remains indefinite. Shared input receipts use the existing framework's retention policy.
+
+## Validation
+
+Focused tests cover all four policies, spoofed authentication, current ACLs, immutable/duplicate inboxes, owner-only configuration, CC/BCC/Reply-To, final-only delivery, attachments and process-local retry idempotency, questions versus approvals, multi-block email composition, monitor-only suppression, failure reporting, policy-filtered contact discovery, capped conversations, polling recovery, concurrent settings updates, gateway thread redirects, shared SSE and fresh credentials. Database tests also run with `DB_DRIVER=libsql`. UI setup/settings are reviewed in light and dark themes.
+
+A controlled live test on 2026-09-22 exercised the concrete integration against the deployed gateway using owned pilot mailboxes: send + CC, authenticated receive, attachment download, default-policy reply admission, live/poll notification, a bounded Haiku call and a threaded reply with duplicate-delivery suppression. This tested the integration transport with model output, not a full agent-container session. Gateway 0.2.2 was deployed after a verified private R2 backup.
+
+The composer was additionally checked with three live configured-model calls: preserving an answer before a monitor acknowledgment, suppressing a monitor-only follow-up, and retaining a later correction plus an attachment reference. These checks did not send email.

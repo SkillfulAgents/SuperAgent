@@ -4,8 +4,9 @@ import { eq, and, desc } from 'drizzle-orm'
 import { getSettings, mutateSettings, type PlatformAuthSettings } from '@shared/lib/config/settings'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { fetchPlatformJson } from '@shared/lib/platform-auth/platform-fetch'
-import { PlatformAuthSettingsSchema, PlatformAccountInfoSchema } from '@shared/lib/types/skillset-schema'
+import { PlatformAuthSettingsSchema, PlatformAccountInfoSchema, type ParsedPlatformAccountInfo } from '@shared/lib/types/skillset-schema'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAuthProviderIssuer } from '@shared/lib/auth/provider-config'
 import { verifyOidcJwt } from '@shared/lib/auth/oidc-jwt'
@@ -14,6 +15,8 @@ import { authAccount } from '@shared/lib/db/schema'
 import { runWithRequestUser } from '@shared/lib/platform-attribution/request-context'
 import { clearCloudWorkspaceRecord } from '@shared/lib/platform-auth/cloud-workspace-record'
 import { isPrivateHost, tryParseUrl } from '@shared/lib/utils/url-safety'
+import { platformPlanCache } from '@shared/lib/llm-provider/platform-plan-cache'
+import { accountPlanPolicy } from '@shared/lib/llm-provider/platform-plan-policy'
 
 export type PlatformAuthRecord = PlatformAuthSettings
 
@@ -109,7 +112,7 @@ interface SavePlatformAuthInput {
  * (status 400) on an invalid/revoked key or (5xx) an unreachable platform.
  */
 async function fetchPlatformAccountInfo(token: string) {
-  return fetchPlatformJson({
+  return rememberAccountPolicy(await fetchPlatformJson({
     path: '/v1/account',
     token,
     schema: PlatformAccountInfoSchema,
@@ -119,7 +122,32 @@ async function fetchPlatformAccountInfo(token: string) {
       status === 400 || status === 401 || status === 403
         ? { message: 'This access key is invalid or has been revoked.', status: 400 }
         : { message: 'Could not validate this access key right now. Please try again.', status: 502 },
-  })
+  }))
+}
+
+// Every account read carries the account's plan policy (SUP-1124): keep it for
+// model selection, keyed by the account it describes.
+function rememberAccountPolicy<T extends ParsedPlatformAccountInfo>(account: T): T {
+  platformPlanCache.remember(platformPlanCache.key(account.orgId, account.memberId), accountPlanPolicy(account))
+  return account
+}
+
+/**
+ * The account behind the connected platform token, as the current request or
+ * run is attributed (the fetch interceptor adds the acting member). Feeds the
+ * plan policy cache like every account read. Throws on a platform failure.
+ */
+export async function fetchActingPlatformAccount(): Promise<ParsedPlatformAccountInfo> {
+  const token = getPlatformAccessToken()
+  if (!token) throw new Error('Platform is not connected')
+  return rememberAccountPolicy(await fetchPlatformJson({
+    path: '/v1/account',
+    token,
+    schema: PlatformAccountInfoSchema,
+    area: 'platform-auth',
+    reportErrors: false,
+    mapStatusError: (status) => ({ message: 'Account read failed', status }),
+  }))
 }
 
 function buildTokenPreview(token: string): string {
@@ -248,15 +276,15 @@ async function reconcileAfterAuthChange(): Promise<void> {
 function notifyPlatformServiceAuthChanged(connected: boolean): void {
   // The success log is the only positive signal this fire-and-forget path ran;
   // platform-auth-service.notify.test.ts asserts on it.
-  void import('./platform-service')
+  background(import('./platform-service')
     .then((mod) => {
       mod.platformService.onAuthChanged(connected)
       console.log(`[platform-auth] platform-service notified of auth change (connected=${connected})`)
     })
-    .catch((error) => captureException(error, { tags: { area: 'platform-auth', op: 'notify-service' } }))
+    .catch((error) => captureException(error, { tags: { area: 'platform-auth', op: 'notify-service' } })), { name: 'platform-auth.notify-platform-service' })
   // The desktop notifications subscription follows platform connectivity:
   // start on connect (self-gates on auth mode), tear down on disconnect.
-  void import('../scheduler/platform-notifications-manager')
+  background(import('../scheduler/platform-notifications-manager')
     .then((mod) =>
       connected
         ? mod.platformNotificationsManager.start()
@@ -264,7 +292,27 @@ function notifyPlatformServiceAuthChanged(connected: boolean): void {
     )
     .catch((error) =>
       captureException(error, { tags: { area: 'platform-auth', op: 'notify-notifications' } }),
-    )
+    ), { name: 'platform-auth.notify-platform-notifications' })
+  // Gamut drive keys were issued to the previous member.
+  background(import('../volumes/platform-mountable-volume')
+    .then((mod) => mod.dropPlatformVolumeKeys())
+    .catch((error) =>
+      captureException(error, { tags: { area: 'platform-auth', op: 'notify-volume-keys' } }),
+    ), { name: 'platform-auth.drop-volume-keys' })
+  // The webhook relay goes (un)available with the connection, and starts over
+  // when the token changes.
+  background(import('../webhook-relay')
+    .then((mod) => mod.getWebhookRelay().onAuthChanged())
+    .catch((error) =>
+      captureException(error, { tags: { area: 'platform-auth', op: 'notify-webhook-relay' } }),
+    ), { name: 'platform-auth.notify-webhook-relay' })
+  // Which members claim trigger events depends on the connection: an org
+  // token claims per member, an opaque key as itself.
+  background(import('../scheduler/trigger-manager')
+    .then((mod) => mod.triggerManager.syncRegistrations())
+    .catch((error) =>
+      captureException(error, { tags: { area: 'platform-auth', op: 'notify-trigger-manager' } }),
+    ), { name: 'platform-auth.notify-trigger-manager' })
 }
 
 function getEnvManagedStatus(): PlatformAuthStatus | null {
@@ -405,7 +453,7 @@ async function introspectEnvManagedAccount(userId: string): Promise<EnrichedEnvA
   const token = getPlatformAccessToken()
   if (!token) return null
   try {
-    const account = await runWithRequestUser(userId, () =>
+    const account = rememberAccountPolicy(await runWithRequestUser(userId, () =>
       fetchPlatformJson({
         path: '/v1/account',
         token,
@@ -413,7 +461,7 @@ async function introspectEnvManagedAccount(userId: string): Promise<EnrichedEnvA
         area: 'platform-auth',
         mapStatusError: (status) => ({ message: 'Account introspection failed', status }),
       }),
-    )
+    ))
     return {
       email: account.email,
       orgName: account.orgName,
@@ -518,6 +566,8 @@ export async function savePlatformAuth(_userId: string, input: SavePlatformAuthI
     updatedAt: now,
   })
   writeRecord(record)
+  const { ensureManagedPlatformConnection } = await import('@shared/lib/llm-provider/connection-settings')
+  await ensureManagedPlatformConnection()
 
   if (existing?.token !== trimmedToken) {
     // Running containers baked the previous token into their env at start.

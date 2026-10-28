@@ -78,6 +78,60 @@ describe('labelBackgroundTasks', () => {
     expect(tasks.every((t) => t.detail === null)).toBe(true)
   })
 
+  it("uses the runtime's description when the transcript has no launch", () => {
+    // A subagent launched it, or its launch predates the loaded transcript.
+    const [task] = labelBackgroundTasks(
+      [{ taskId: 'nested-1', startedAt: 1, taskType: 'local_bash', description: 'Serve local assets' }],
+      [message([])] as never,
+    )
+    expect(task).toMatchObject({ title: 'Background command', detail: 'Serve local assets' })
+  })
+
+  it("names a subagent after the runtime's subagent type when the transcript has no launch", () => {
+    // The launch's tool_result (which carries the agentId the transcript join
+    // needs) lands after the task is already listed.
+    const [task] = labelBackgroundTasks(
+      [{ taskId: 'agent-2', startedAt: 1, isSubagent: true, subagentType: 'web-browser', description: 'Check prices' }],
+      [message([])] as never,
+    )
+    expect(task).toMatchObject({ title: 'web-browser', detail: 'Check prices' })
+  })
+
+  it('prefers the launching call over the runtime description', () => {
+    const [task] = labelBackgroundTasks(
+      [{ taskId: 'agent-1', startedAt: 1, isSubagent: true, description: 'Runtime wording' }],
+      [message([{
+        id: 'tc1',
+        name: 'Agent',
+        input: { subagent_type: 'Explore', description: 'Find the config loader' },
+        subagent: { agentId: 'agent-1', status: 'async_launched' },
+      }])] as never,
+    )
+    expect(task).toMatchObject({ title: 'Explore', detail: 'Find the config loader' })
+  })
+
+  it('names a command Monitor after its description, though the runtime lists it as a shell task', () => {
+    const [task] = labelBackgroundTasks(
+      [{ taskId: 'b8ezoj4kh', startedAt: 1, taskType: 'local_bash', description: 'probe ticks' }],
+      [message([{
+        id: 'tc1',
+        name: 'Monitor',
+        input: { description: 'Errors in deploy.log', command: 'tail -f deploy.log | grep --line-buffered ERROR', timeout_ms: 1800000 },
+        result: 'Monitor started (task b8ezoj4kh, expires in 30m unless the source ends first).',
+        backgroundTaskId: 'b8ezoj4kh',
+      }])] as never,
+    )
+    expect(task).toMatchObject({ title: 'Monitor', detail: 'Errors in deploy.log', isMonitor: true })
+  })
+
+  it('names a WebSocket Monitor from its runtime type when the transcript has no launch', () => {
+    const [task] = labelBackgroundTasks(
+      [{ taskId: 'sgnf3ofuc', startedAt: 1, taskType: 'monitor_ws', description: 'deploy events' }],
+      [message([])] as never,
+    )
+    expect(task).toMatchObject({ title: 'Monitor', detail: 'deploy events', isMonitor: true })
+  })
+
   it('returns nothing for no tasks without touching the transcript', () => {
     expect(labelBackgroundTasks([], [message([])] as never)).toEqual([])
   })

@@ -17,6 +17,9 @@ export class PlatformRequestError extends Error {
 interface FetchPlatformJsonOptions<T> {
   /** Proxy path, e.g. `/v1/account`. */
   path: string
+  signal?: AbortSignal
+  /** Optional reads use their caller's throttled diagnostics instead of Sentry. */
+  reportErrors?: boolean
   /** Bearer token to send. In a request scope the fetch interceptor overrides it. */
   token: string | null
   /** Zod schema validated at the boundary before the value is returned. */
@@ -47,9 +50,10 @@ export async function fetchPlatformJson<T>(opts: FetchPlatformJsonOptions<T>): P
   try {
     res = await fetch(`${proxyBase}${opts.path}`, {
       headers: { Authorization: `Bearer ${opts.token}` },
+      ...(opts.signal ? { signal: opts.signal } : {}),
     })
   } catch (error) {
-    captureException(error, { tags: { area: opts.area, op: 'fetch' } })
+    if (opts.reportErrors !== false) captureException(error, { tags: { area: opts.area, op: 'fetch' } })
     throw new PlatformRequestError('Could not reach the platform. Please try again.', 502)
   }
 
@@ -61,7 +65,7 @@ export async function fetchPlatformJson<T>(opts: FetchPlatformJsonOptions<T>): P
   const data = await res.json().catch(() => null)
   const parsed = opts.schema.safeParse(data)
   if (!parsed.success) {
-    captureException(parsed.error, { tags: { area: opts.area, op: 'parse' } })
+    if (opts.reportErrors !== false) captureException(parsed.error, { tags: { area: opts.area, op: 'parse' } })
     throw new PlatformRequestError('The platform returned an unexpected response.', 502)
   }
   return parsed.data

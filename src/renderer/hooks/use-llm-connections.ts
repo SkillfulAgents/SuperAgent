@@ -1,0 +1,78 @@
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { apiFetch } from '@renderer/lib/api'
+import type { ConnectionInfo, ModelSelection } from '@shared/lib/llm-provider/connection-schema'
+
+export interface ConnectionsResponse {
+  legacyLlmProviderId?: string
+  connections: ConnectionInfo[]
+  defaultSelection: ModelSelection | null
+  summarizerSelection: ModelSelection | null
+}
+export function useLlmConnections(
+  agentSlug?: string,
+  sessionId?: string,
+  currentLlmProviderId?: string | null
+) {
+  return useQuery<ConnectionsResponse>({
+    queryKey: ['settings', 'llm-connections', agentSlug, sessionId, currentLlmProviderId],
+    queryFn: async () => {
+      // The two reads are independent, so both start now. They are still
+      // checked in order, so a failed root read wins as it did when the
+      // reads ran back to back; the catch only keeps an abandoned scoped
+      // read from surfacing as an unhandled rejection.
+      const rootRequest = apiFetch('/api/llm-connections')
+      const scopedRequest = agentSlug
+        ? apiFetch(
+            sessionId
+              ? `/api/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId)}/llm-connections`
+              : `/api/agents/${encodeURIComponent(agentSlug)}/llm-connections`
+          )
+        : undefined
+      void scopedRequest?.catch(() => {})
+      const root = await rootRequest
+      if (!root.ok) throw new Error('Could not load model connections')
+      const data: ConnectionsResponse = await root.json()
+      if (scopedRequest) {
+        const response = await scopedRequest
+        if (!response.ok) throw new Error('Could not load session connection')
+        const current: { connections: ConnectionInfo[] } = await response.json()
+        data.connections = current.connections
+      }
+      return data
+    },
+    staleTime: 10_000,
+  })
+}
+export function useConnectionMutation(options?: { onSaved?: () => void }) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async ({
+      path = '',
+      method = 'POST',
+      body,
+    }: {
+      path?: string
+      method?: string
+      body?: unknown
+    }) => {
+      const response = await apiFetch(`/api/llm-connections${path}`, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error ?? 'Could not update connection')
+      // Report the durable write before awaiting cache refreshes. Navigating
+      // away during those refreshes must not lose a successful save event.
+      if ((method === 'POST' && path === '') || (method === 'PUT' && /^\/[^/]+$/.test(path))) {
+        options?.onSaved?.()
+      }
+      return result
+    },
+    onSuccess: (_result, { path }) => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['settings'] }),
+      ...(path && /^\/[^/]+$/.test(path) ? [queryClient.invalidateQueries({ queryKey: ['llm-provider-usage', path.slice(1)] })] : []),
+      queryClient.invalidateQueries({ queryKey: ['runtime-status'] }),
+    ]),
+  })
+}

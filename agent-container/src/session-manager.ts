@@ -1,10 +1,13 @@
+import { SessionInputNotAcceptedError } from './session-creation-error';
+import { connectionRuntimeSchema, rememberConnectionRuntime, cachedConnectionRuntime, runtimeFingerprint, resolvePrewarmRuntime, type ConnectionRuntime } from './connection-runtime';
 import { v4 as uuidv4 } from 'uuid';
 import type { UUID } from 'crypto';
 import { forkSession as sdkForkSession, deleteSession as sdkDeleteSession } from '@anthropic-ai/claude-agent-sdk';
 import { Session, SDKMessage, CreateSessionRequest, EffortLevel, SpeedLevel, AgentCapabilityPolicies } from './types';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
+import { globalInstructionsSchema } from './global-instructions';
 import { ClaudeCodeProcess, type InterruptScope } from './claude-code';
-import { SessionPersistence } from './session-persistence';
+import { SessionPersistence, type SessionUpdate } from './session-persistence';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import { releaseBrowserLock } from './browser-state';
@@ -27,6 +30,9 @@ interface SessionData {
   // completion-wake window) — the only state a subprocess may be stopped in.
   settlement: SessionSettlementTracker;
   eviction: Promise<void> | null;
+  // Speculative typing keeps even threshold-0 sessions alive briefly, without
+  // promoting an automated session or marking it busy. Never persisted.
+  warmUntil?: number;
   // Identity of the CLI process currently backing this session, re-minted on
   // every replacement. The host mirrors our background-task bookkeeping and
   // needs to know when its copy belongs to a process that no longer exists;
@@ -34,11 +40,43 @@ interface SessionData {
   // one my snapshot came from?", and it must survive SessionData being rebuilt
   // on a cold resume.
   processInstanceId: string;
+  // Last stream subscriber left mid-turn; cleared when one attaches again.
+  streamDroppedMidTurn?: StreamCloseInfo & { at: number };
+  // Pending undelivered-turn report; cancelled if a subscriber comes back.
+  undeliveredTurnTimer?: ReturnType<typeof setTimeout>;
 }
 
+export interface StreamCloseInfo {
+  code: number;
+  reason: string;
+  socketAgeMs: number;
+  // Time since the last frame went out before the close: a steady value across
+  // reports points at an idle timeout somewhere on the path.
+  idleMsBeforeClose: number;
+  socketError?: string;
+}
+
+export interface UndeliveredTurnReport {
+  sessionId: string;
+  resultSubtype: string | undefined;
+  closeCode: number;
+  closeReason: string;
+  closedAt: string;
+  msSinceClose: number;
+  socketAgeMs: number;
+  idleMsBeforeClose: number;
+  socketError?: string;
+}
+
+// A host that saw the close reconnects within seconds and gets the result by
+// replay. Only one that never comes back is stuck showing "working".
+const DEFAULT_UNDELIVERED_TURN_GRACE_MS = 60_000;
 const DEFAULT_INTERACTIVE_IDLE_EVICTION_MINUTES = 5;
 const DEFAULT_AUTOMATED_IDLE_EVICTION_MINUTES = 0;
 const IDLE_EVICTION_POLL_MS = 30_000;
+// Covers the composer's 60s repeat interval, with room for a pause in typing.
+// No further warm request means the ordinary idle policy resumes after this.
+const DEFAULT_SESSION_WARM_GRACE_MS = 2 * 60_000;
 
 // Minutes → ms. < 0 disables that class; 0 = evict as soon as idle.
 // Parsed once at startup so misconfiguration is loud.
@@ -89,6 +127,7 @@ export class SessionManager extends EventEmitter {
   private persistence: SessionPersistence;
   private readonly idleEvictionMs: number;
   private readonly automatedIdleEvictionMs: number;
+  private readonly warmGraceMs: number;
   private readonly wakeGraceMs: number | undefined;
   private evictionTimer: ReturnType<typeof setInterval> | null = null;
   // A CLI subprocess spawned ahead of demand, parked past its initialize
@@ -110,15 +149,18 @@ export class SessionManager extends EventEmitter {
   // Kill switch for the parked subprocess, so a container can fall back to
   // cold starts (SESSION_PREWARM=0) without a redeploy.
   private readonly prewarmEnabled: boolean;
+  private readonly undeliveredTurnGraceMs: number;
 
   constructor(
     baseWorkingDirectory: string = '/workspace',
     options?: {
       idleEvictionMs?: number;
       automatedIdleEvictionMs?: number;
+      warmGraceMs?: number;
       wakeGraceMs?: number;
       evictionPollMs?: number;
       prewarmEnabled?: boolean;
+      undeliveredTurnGraceMs?: number;
     }
   ) {
     super();
@@ -128,6 +170,8 @@ export class SessionManager extends EventEmitter {
     this.prewarmEnabled =
       options?.prewarmEnabled ?? !['0', 'false'].includes((process.env.SESSION_PREWARM ?? '').trim().toLowerCase());
     this.wakeGraceMs = options?.wakeGraceMs;
+    this.warmGraceMs = options?.warmGraceMs ?? DEFAULT_SESSION_WARM_GRACE_MS;
+    this.undeliveredTurnGraceMs = options?.undeliveredTurnGraceMs ?? DEFAULT_UNDELIVERED_TURN_GRACE_MS;
     this.idleEvictionMs =
       options?.idleEvictionMs ??
       idleEvictionMsFromEnv(
@@ -216,6 +260,17 @@ export class SessionManager extends EventEmitter {
    * This ensures the session ID matches Claude's JSONL file name.
    */
   async createSession(request: CreateSessionRequest): Promise<Session> {
+    let submitted = false;
+    try {
+      return await this.createSessionWithInput(request, () => { submitted = true; });
+    } catch (error) {
+      if (error instanceof SessionInputNotAcceptedError) throw error;
+      if (!submitted) throw new SessionInputNotAcceptedError(error);
+      throw error;
+    }
+  }
+
+  private async createSessionWithInput(request: CreateSessionRequest, beforeSend: () => void): Promise<Session> {
     if (!request.initialMessage) {
       throw new Error('initialMessage is required for createSession');
     }
@@ -228,6 +283,7 @@ export class SessionManager extends EventEmitter {
     // never silently degrade a block to allow. Speed likewise — it ends up
     // interpolated into the ANTHROPIC_CUSTOM_HEADERS string.
     const capabilityPolicies = agentCapabilityPoliciesSchema.parse(request.capabilityPolicies);
+    const globalInstructions = globalInstructionsSchema.parse(request.globalInstructions);
     const speed = speedLevelSchema.parse(request.speed);
     const subagentModels = subagentModelCatalogSchema.parse(request.subagentModels);
     const modelContextWindows = modelContextWindowsSchema.parse(request.modelContextWindows);
@@ -242,10 +298,19 @@ export class SessionManager extends EventEmitter {
     // default must not look like two different profiles). The session's own
     // shape decides whether a parked process fits; the host's default shape
     // decides what to warm next.
+    if (request.llmRuntime) {
+      request.llmRuntime = connectionRuntimeSchema.parse(request.llmRuntime);
+      rememberConnectionRuntime(request.llmRuntime);
+    }
+    if (request.prewarmDefaults?.llmRuntime) {
+      request.prewarmDefaults.llmRuntime = connectionRuntimeSchema.parse(request.prewarmDefaults.llmRuntime);
+      rememberConnectionRuntime(request.prewarmDefaults.llmRuntime);
+    }
     const normalized = {
       ...request,
       speed,
       capabilityPolicies,
+      globalInstructions,
       subagentModels,
       modelContextWindows,
       workingDirectory,
@@ -260,6 +325,7 @@ export class SessionManager extends EventEmitter {
         userSystemPrompt: request.systemPrompt,
         modelPromptHints: request.modelPromptHints,
         availableEnvVars: request.availableEnvVars,
+        llmRuntime: request.llmRuntime,
         model: request.model,
         browserModel: request.browserModel,
         dashboardBuilderModel: request.dashboardBuilderModel,
@@ -267,6 +333,7 @@ export class SessionManager extends EventEmitter {
         modelContextWindows,
         webSearchProvider: request.webSearchProvider,
         webFetchProvider: request.webFetchProvider,
+        availableIntegrationFamilies: request.availableIntegrationFamilies,
         maxOutputTokens: request.maxOutputTokens,
         maxThinkingTokens: request.maxThinkingTokens,
         maxTurns: request.maxTurns,
@@ -275,15 +342,18 @@ export class SessionManager extends EventEmitter {
         effort: request.effort,
         speed,
         capabilityPolicies,
+        globalInstructions,
       });
 
     // Promise to capture Claude's session ID and slash commands (emitted after first message is sent)
+    let cancelInitWait = () => {};
     const initCompletePromise = new Promise<string>((resolve, reject) => {
       let claudeSessionId: string | null = null;
       const timeout = setTimeout(() => {
         if (claudeSessionId) resolve(claudeSessionId);
         else reject(new Error('Timeout waiting for Claude session ID'));
       }, 30000);
+      cancelInitWait = () => clearTimeout(timeout);
 
       process.once('claude-session-id', (id: string) => {
         claudeSessionId = id;
@@ -301,6 +371,9 @@ export class SessionManager extends EventEmitter {
       });
     });
 
+    // start/send may fail before the handshake is awaited.
+    void initCompletePromise.catch(() => {});
+
     // Start the process and wait for the init handshake. On ANY failure the
     // started process must be torn down here: it has no session entry yet, so
     // nothing else — not the reaper, not a delete — could ever reach it.
@@ -308,6 +381,8 @@ export class SessionManager extends EventEmitter {
     try {
       await process.start();
 
+      // From here a rejection may come after the runtime queued the input.
+      beforeSend();
       // Send the initial message - this triggers Claude to emit the session ID
       await process.sendMessage(request.initialMessage, request.initialMessageUuid);
 
@@ -315,7 +390,14 @@ export class SessionManager extends EventEmitter {
       claudeSessionId = await initCompletePromise;
     } catch (error) {
       await process.dispose().catch(() => undefined);
+      // The SDK can queue stdin before discovering that the executable could
+      // not launch. Its explicit launch error still proves no agent ran.
+      if (error && typeof error === 'object' && 'errorClass' in error && error.errorClass === 'executable_launch_failed') {
+        throw new SessionInputNotAcceptedError(error);
+      }
       throw error;
+    } finally {
+      cancelInitWait();
     }
     console.log(`Got Claude session ID: ${claudeSessionId}`);
 
@@ -397,6 +479,7 @@ export class SessionManager extends EventEmitter {
       systemPrompt: request.systemPrompt,
       modelPromptHints: request.modelPromptHints,
       availableEnvVars: request.availableEnvVars,
+      llmProviderId: request.llmProviderId,
       model: request.model,
       browserModel: request.browserModel,
       dashboardBuilderModel: request.dashboardBuilderModel,
@@ -404,6 +487,7 @@ export class SessionManager extends EventEmitter {
       modelContextWindows,
       webSearchProvider: request.webSearchProvider,
       webFetchProvider: request.webFetchProvider,
+      availableIntegrationFamilies: request.availableIntegrationFamilies,
       maxOutputTokens: request.maxOutputTokens,
       maxThinkingTokens: request.maxThinkingTokens,
       maxTurns: request.maxTurns,
@@ -412,6 +496,7 @@ export class SessionManager extends EventEmitter {
       effort: request.effort,
       speed,
       capabilityPolicies,
+      globalInstructions,
       metadata: request.metadata,
     });
 
@@ -466,6 +551,7 @@ export class SessionManager extends EventEmitter {
    */
   async prewarm(profile: WarmProfile): Promise<void> {
     if (!this.prewarmEnabled || this.shuttingDown) return;
+    if (profile.llmProviderId && !cachedConnectionRuntime(profile.llmProviderId, profile.credentialGeneration, profile.model, profile.runtimeFingerprint)) return;
 
     const key = warmProfileKey(profile);
     // Recorded even when a warm-up is already in flight, so that one can see
@@ -494,6 +580,7 @@ export class SessionManager extends EventEmitter {
         userSystemPrompt: profile.systemPrompt,
         modelPromptHints: profile.modelPromptHints,
         availableEnvVars: profile.availableEnvVars,
+        llmRuntime: cachedConnectionRuntime(profile.llmProviderId, profile.credentialGeneration, profile.model, profile.runtimeFingerprint),
         model: profile.model,
         browserModel: profile.browserModel,
         dashboardBuilderModel: profile.dashboardBuilderModel,
@@ -501,6 +588,7 @@ export class SessionManager extends EventEmitter {
         modelContextWindows: profile.modelContextWindows,
         webSearchProvider: profile.webSearchProvider,
         webFetchProvider: profile.webFetchProvider,
+        availableIntegrationFamilies: profile.availableIntegrationFamilies,
         maxOutputTokens: profile.maxOutputTokens,
         maxThinkingTokens: profile.maxThinkingTokens,
         maxTurns: profile.maxTurns,
@@ -509,6 +597,7 @@ export class SessionManager extends EventEmitter {
         effort: profile.effort,
         speed: profile.speed,
         capabilityPolicies: profile.capabilityPolicies,
+        globalInstructions: profile.globalInstructions,
       });
       try {
         await process.prewarm();
@@ -549,7 +638,21 @@ export class SessionManager extends EventEmitter {
   prewarmFromLastProfile(): void {
     const profile = this.warmProfileStore.read();
     if (!profile) return;
-    void this.prewarm(profile);
+    if (!profile.llmProviderId) {
+      void this.prewarm(profile);
+      return;
+    }
+    // Credentials are never persisted. Refresh the agent default from the host
+    // on boot, before a session exists, then warm using the current generation.
+    void resolvePrewarmRuntime().then(runtime => {
+      // A real request supersedes the boot hint while the callback is in flight.
+      if (this.desiredWarmKey !== null || this.shuttingDown) return;
+      return this.prewarm({ ...profile, llmProviderId: runtime.llmProviderId,
+        credentialGeneration: runtime.generation, runtimeFingerprint: runtimeFingerprint(runtime),
+        model: runtime.model, browserModel: runtime.browserModel,
+        dashboardBuilderModel: runtime.dashboardBuilderModel, modelPromptHints: runtime.modelPromptHints,
+        subagentModels: runtime.subagentModels, modelContextWindows: runtime.modelContextWindows });
+    }).catch(error => console.warn('[SessionManager] Boot prewarm could not resolve the provider:', error));
   }
 
   /**
@@ -600,6 +703,11 @@ export class SessionManager extends EventEmitter {
     console.log(`Attempting to resume session ${sessionId} with Claude session ID ${persisted.claudeSessionId}`);
 
     try {
+      // Reading a persisted session must not depend on the credential service.
+      // Defer the subprocess until the first send, which carries fresh runtime
+      // credentials from the host (or resolves them for an internal send).
+      const requiresConnectionRuntime = !!(persisted.llmProviderId ||
+        (globalThis.process.env.SUPERAGENT_HOST_API_URL && globalThis.process.env.PROXY_TOKEN));
       // Create a new Claude Code process with resume
       const process = new ClaudeCodeProcess({
         sessionId,
@@ -608,6 +716,7 @@ export class SessionManager extends EventEmitter {
         userSystemPrompt: persisted.systemPrompt,
         modelPromptHints: persisted.modelPromptHints,
         availableEnvVars: persisted.availableEnvVars,
+        requiresConnectionRuntime,
         model: persisted.model,
         browserModel: persisted.browserModel,
         dashboardBuilderModel: persisted.dashboardBuilderModel,
@@ -615,6 +724,7 @@ export class SessionManager extends EventEmitter {
         modelContextWindows: persisted.modelContextWindows,
         webSearchProvider: persisted.webSearchProvider,
         webFetchProvider: persisted.webFetchProvider,
+        availableIntegrationFamilies: persisted.availableIntegrationFamilies,
         maxOutputTokens: persisted.maxOutputTokens,
         maxThinkingTokens: persisted.maxThinkingTokens,
         maxTurns: persisted.maxTurns,
@@ -624,6 +734,7 @@ export class SessionManager extends EventEmitter {
         speed: persisted.speed,
         capabilityPolicies: persisted.capabilityPolicies,
         sessionCapabilityGrants: persisted.sessionCapabilityGrants,
+        globalInstructions: persisted.globalInstructions,
       });
 
       const session: Session = {
@@ -686,7 +797,7 @@ export class SessionManager extends EventEmitter {
 
       // Start the process (which will resume the Claude session)
       // Note: slash commands are captured later when init event fires via WebSocket
-      await process.start();
+      if (!requiresConnectionRuntime) await process.start();
 
       // Publish only once fully started — concurrent callers wait on the
       // resuming promise, never on a half-initialized entry. A failed start
@@ -841,7 +952,7 @@ export class SessionManager extends EventEmitter {
     sessionId: string,
     content: string,
     uuid?: UUID,
-    options?: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; isAutomated?: boolean; capabilityPolicies?: AgentCapabilityPolicies }
+    options?: { llmRuntime?: ConnectionRuntime; effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; isAutomated?: boolean; capabilityPolicies?: AgentCapabilityPolicies; globalInstructions?: string }
   ): Promise<void> {
     let sessionData = this.sessions.get(sessionId);
 
@@ -867,32 +978,76 @@ export class SessionManager extends EventEmitter {
     // host explicitly marks it as another automated turn (x-agent follow-up).
     // Human input promotes the session to the interactive eviction class so
     // the conversation doesn't pay a cold restart after every turn.
+    const persisted: SessionUpdate = {};
     if (expectsResponse && !options?.isAutomated && sessionData.session.metadata?.isAutomated) {
       console.log(`[Session ${sessionId}] Promoting automated session to interactive (human message)`);
       sessionData.session.metadata = { ...sessionData.session.metadata, isAutomated: false };
-      this.persistence.updateMetadata(sessionId, sessionData.session.metadata);
+      persisted.metadata = sessionData.session.metadata;
     }
 
     // Update last activity
     sessionData.session.lastActivity = new Date();
-    this.persistence.updateLastActivity(sessionId);
+    persisted.lastActivity = sessionData.session.lastActivity.toISOString();
 
+    if (options?.llmRuntime) {
+      rememberConnectionRuntime(options.llmRuntime);
+      persisted.llmProviderId = options.llmRuntime.llmProviderId;
+    }
     // Persist runtime-options changes so resume after eviction uses the latest values
-    if (options?.effort !== undefined) {
-      this.persistence.updateEffort(sessionId, options.effort);
-    }
-    if (options?.speed !== undefined) {
-      this.persistence.updateSpeed(sessionId, options.speed);
-    }
-    if (options?.model !== undefined) {
-      this.persistence.updateModel(sessionId, options.model);
-    }
-    if (options?.capabilityPolicies !== undefined) {
-      this.persistence.updateCapabilityPolicies(sessionId, options.capabilityPolicies);
-    }
+    if (options?.effort !== undefined) persisted.effort = options.effort;
+    if (options?.speed !== undefined) persisted.speed = options.speed;
+    if (options?.model !== undefined) persisted.model = options.model;
+    if (options?.capabilityPolicies !== undefined) persisted.capabilityPolicies = options.capabilityPolicies;
+    if (options?.globalInstructions !== undefined) persisted.globalInstructions = options.globalInstructions;
+    this.persistence.updateSession(sessionId, persisted);
 
     // Send to Claude Code process (messages are stored via handleMessage)
     await sessionData.process.sendMessage(content, uuid, options);
+  }
+
+  /** Whether this container knows the session: live in memory, or persisted and resumable. */
+  hasSession(sessionId: string): boolean {
+    return this.sessions.has(sessionId) || this.persistence.getSession(sessionId) !== null;
+  }
+
+  /**
+   * Pre-resume a session's CLI ahead of its next message: the host asks for
+   * this when a person starts typing into the session. A session that is not
+   * in memory is resumed from persistence; a cold process (idle-evicted, or a
+   * resume whose start waits for the first send) is restarted the way a cold
+   * send restarts it, but with no message queued, so that send skips the CLI
+   * spawn and `--resume`.
+   *
+   * Never marks the session busy or promotes an automated session. It
+   * restarts the idle clock and grants a bounded eviction grace period, even
+   * for threshold-0 sessions. If no message comes, normal idle eviction
+   * reclaims the process after the grace expires.
+   *
+   * - 'unknown': no such session
+   * - 'busy': a turn (or background work) is in flight; left alone
+   * - 'running': the process was already live (idle clock and grace renewed)
+   * - 'resumed': the process was cold and has been restarted
+   * - 'skipped': deleted or shutting down meanwhile, or a send took over
+   */
+  async warmSession(sessionId: string): Promise<'unknown' | 'busy' | 'running' | 'resumed' | 'skipped'> {
+    if (this.shuttingDown) return 'skipped';
+    let data = this.sessions.get(sessionId);
+    // Shared with a racing send through the resume dedup, like every resume.
+    const fromDisk = !data;
+    data ??= await this.resumeSession(sessionId);
+    if (!data) return 'unknown';
+    // A racing idle eviction may be closing the process: let it finish, then
+    // resume — the order a send into the same session takes.
+    if (data.eviction) await data.eviction;
+    if (this.shuttingDown || this.sessions.get(sessionId) !== data) return 'skipped';
+    if (!data.settlement.isSettled()) return 'busy';
+    // In memory only: the reaper reads this clock. The persisted timestamp is
+    // conversation activity, and a keystroke is not that.
+    data.session.lastActivity = new Date();
+    data.warmUntil = data.session.lastActivity.getTime() + this.warmGraceMs;
+    // A resume that needs no host credentials starts its process right away.
+    if (data.process.isRunning()) return fromDisk ? 'resumed' : 'running';
+    return (await data.process.warm()) ? 'resumed' : 'skipped';
   }
 
   /**
@@ -913,11 +1068,26 @@ export class SessionManager extends EventEmitter {
     }
 
     sessionData.subscribers.add(callback);
+    sessionData.streamDroppedMidTurn = undefined;
+    clearTimeout(sessionData.undeliveredTurnTimer);
+    sessionData.undeliveredTurnTimer = undefined;
 
     // Return unsubscribe function
     return () => {
       sessionData.subscribers.delete(callback);
     };
+  }
+
+  noteStreamClosed(sessionId: string, close: StreamCloseInfo): void {
+    const sessionData = this.sessions.get(sessionId);
+    if (!sessionData || sessionData.subscribers.size > 0 || !this.isTurnInFlight(sessionId)) return;
+    sessionData.streamDroppedMidTurn = { ...close, at: Date.now() };
+  }
+
+  // Busy from the send until the turn's final idle. process.isRunning() is not
+  // this: the query loop stays up between turns and is down mid cold restart.
+  isTurnInFlight(sessionId: string): boolean {
+    return this.sessions.get(sessionId)?.settlement.getState().runtime === 'busy';
   }
 
   // Broadcast an arbitrary message to all subscribers of a session
@@ -969,6 +1139,7 @@ export class SessionManager extends EventEmitter {
     const sessionData = this.sessions.get(sessionId);
     if (!sessionData) return;
 
+    const wasBusy = sessionData.settlement.getState().runtime === 'busy';
     sessionData.settlement.handleMessage(message);
 
     // Release browser lock when an automated session's turn completes.
@@ -980,6 +1151,35 @@ export class SessionManager extends EventEmitter {
       if (released) {
         console.log(`[Session ${sessionId}] Released browser lock (automated session turn completed)`);
       }
+    }
+
+    // A subscriber that left mid-turn, including between the result and the
+    // final idle, and never came back means the host is still showing the turn
+    // as working (SUP-991). The turn ends when the settlement tracker leaves
+    // busy, not on any result or idle frame: a queued message's result and a
+    // stale idle both arrive mid-turn.
+    const dropped = sessionData.streamDroppedMidTurn;
+    const endsTurn = wasBusy && sessionData.settlement.getState().runtime !== 'busy';
+    if (endsTurn && dropped && sessionData.subscribers.size === 0) {
+      sessionData.streamDroppedMidTurn = undefined;
+      const report: UndeliveredTurnReport = {
+        sessionId,
+        resultSubtype: sessionData.settlement.getState().lastResultSubtype ?? undefined,
+        closeCode: dropped.code,
+        closeReason: dropped.reason,
+        closedAt: new Date(dropped.at).toISOString(),
+        msSinceClose: Date.now() - dropped.at,
+        socketAgeMs: dropped.socketAgeMs,
+        idleMsBeforeClose: dropped.idleMsBeforeClose,
+        socketError: dropped.socketError,
+      };
+      clearTimeout(sessionData.undeliveredTurnTimer);
+      sessionData.undeliveredTurnTimer = setTimeout(() => {
+        sessionData.undeliveredTurnTimer = undefined;
+        if (this.sessions.get(sessionId) !== sessionData || sessionData.subscribers.size > 0) return;
+        this.emit('undelivered-turn', report);
+      }, this.undeliveredTurnGraceMs);
+      sessionData.undeliveredTurnTimer.unref?.();
     }
 
     // Notify all subscribers
@@ -1012,6 +1212,7 @@ export class SessionManager extends EventEmitter {
       if (data.eviction) continue; // already evicting
       if (!data.settlement.isSettled(now)) continue;
       if (!data.process.isRunning()) continue; // already cold
+      if (data.warmUntil !== undefined && now < data.warmUntil) continue;
       const thresholdMs = this.idleThresholdMs(data);
       if (thresholdMs < 0) continue; // disabled for this class
       if (now - data.session.lastActivity.getTime() < thresholdMs) continue;

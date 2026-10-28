@@ -88,6 +88,8 @@ const PINNED_CALL_SITES: Record<string, string> = {
     'prebuilt `url` prop; composed by lib/workspace-file-url.ts from getApiBaseUrl()',
   'components/file-preview/renderers/audio-renderer.tsx::AudioRenderer.decodeWaveform::fetch(url)':
     'prebuilt `url` prop; same origin as use-file-content.ts above',
+  'components/file-preview/renderers/zip-archive.ts::downloadZip.load::fetch(url)':
+    'prebuilt `url` prop; same origin as use-file-content.ts above',
   'components/file-preview/copy-file-button.tsx::fetchText::fetch(url)':
     'the same prebuilt `fileUrl` the renderer loads, refetched only when the ' +
     'file-content cache is cold; same origin as use-file-content.ts above',
@@ -106,10 +108,6 @@ const PINNED_CALL_SITES: Record<string, string> = {
     'third-party Deepgram STT endpoint, not this API — must NOT follow the API origin',
   'lib/voice/providers/openai/transcription.ts::OpenAISttAdapter.createSocket::WebSocket(url)':
     'third-party OpenAI STT endpoint, not this API — must NOT follow the API origin',
-  'lib/voice/providers/deepgram/voice-agent.ts::DeepgramVoiceAgentAdapter.connect::WebSocket(url)':
-    'third-party Deepgram voice-agent socket — must NOT follow the API origin',
-  'lib/voice/providers/openai/voice-agent.ts::OpenAIVoiceAgentAdapter.connect::WebSocket(url)':
-    'third-party OpenAI realtime socket — must NOT follow the API origin',
   'lib/voice/providers/deepgram/tts.ts::DeepgramTtsAdapter.connect::WebSocket(url)':
     'third-party Deepgram text-to-speech socket — must NOT follow the API origin',
 }
@@ -123,8 +121,6 @@ const EXTERNAL_ENDPOINT_MODULES = [
   'lib/voice/providers/deepgram/transcription.ts',
   'lib/voice/providers/openai/transcription.ts',
   'lib/voice/providers/deepgram/tts.ts',
-  'lib/voice/providers/deepgram/voice-agent.ts',
-  'lib/voice/providers/openai/voice-agent.ts',
 ]
 
 /**
@@ -148,6 +144,10 @@ const DIRECT_BASE_URL_CONSUMERS: Record<string, string> = {
   'components/ui/user-avatar.tsx': '<img src> — authenticated workspace photo, including the desktop cloud prefix',
   'components/home/dashboard-card.tsx': '<img src> — dashboard screenshot',
   'components/dashboards/dashboard-view.tsx': '<iframe src> — embedded dashboard',
+  'components/volumes/volume-file-browser.tsx':
+    'volume preview and download URLs — handed to the shared file renderers and media/link elements, so they need a URL rather than apiFetch; getApiBaseUrl() preserves the desktop cloud prefix',
+  'components/team-brain/team-brain-overview.tsx':
+    'Team Brain page preview and download URLs — the drive file a tree page opens, handed to the file drawer as volume-file-browser does; getApiBaseUrl() preserves the desktop cloud prefix',
   'lib/workspace-file-url.ts':
     'getAgentFileUrl() — the one place a workspace-file URL is composed. Every file surface reaches it through describeWorkspaceFile() in lib/workspace-file.ts rather than directly: the preview tray\'s previewers, the unsupported renderer\'s and delivered-file row\'s download links, a sent message\'s image chip, and file:///workspace Markdown images resolved to the authenticated route. None of those can carry a request header, and building the URL once here is what keeps their encoding and cache-busting from drifting apart',
   'components/messages/message-input.tsx': 'fire-and-forget typing ping (deliberately not awaited)',
@@ -155,6 +155,8 @@ const DIRECT_BASE_URL_CONSUMERS: Record<string, string> = {
     'EventSource — global notification stream',
   'hooks/use-message-stream.ts': 'EventSource — per-session message stream',
   'hooks/use-browser-stream.ts': 'WebSocket — browser view frames',
+  'components/meeting/meeting-participant-page.tsx':
+    'EventSource — the meeting bot\'s roster stream, token-gated by query because the bot\'s browser has no session',
 }
 
 // ---------------------------------------------------------------------------

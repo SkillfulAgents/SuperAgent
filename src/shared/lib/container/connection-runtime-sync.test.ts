@@ -212,4 +212,19 @@ describe('connection runtime synchronization', () => {
     ).resolves.toBe(true)
     expect(mockFetch).not.toHaveBeenCalled()
   })
+
+  it('pushes anyway when asked to confirm: a cached "stopped" may be stale, and only an applied update counts', async () => {
+    mockGetCachedInfo.mockReturnValue({ status: 'stopped', port: null })
+    mockWhere.mockResolvedValue([])
+    mockFetch.mockResolvedValueOnce(new Response('{}', { status: 200 }))
+    await expect(
+      syncAgentConnectionEnvironment('agent-1', 'connected-accounts', runtime, { confirm: true }),
+    ).resolves.toBe(true)
+    expect(mockFetch).toHaveBeenCalledWith('/env', expect.objectContaining({ method: 'POST' }))
+
+    mockFetch.mockRejectedValueOnce(new Error('connect ECONNREFUSED'))
+    await expect(
+      syncAgentConnectionEnvironment('agent-1', 'connected-accounts', runtime, { confirm: true }),
+    ).resolves.toBe(false)
+  })
 })

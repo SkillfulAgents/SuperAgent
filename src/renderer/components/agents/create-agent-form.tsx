@@ -9,7 +9,8 @@ import { CreateAgentTemplates } from '@renderer/components/agents/create-agent-t
 import { ImportAgentDialog } from '@renderer/components/agents/import-agent-dialog'
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
 import { TemplateInstallDialog } from '@renderer/components/agents/template-install-dialog'
-import { useCreateAgent, useDeleteAgent, useUpdateAgent } from '@renderer/hooks/use-agents'
+import { useCreateAgent, useDeleteAgent } from '@renderer/hooks/use-agents'
+import { useCreateAgentForPrompt } from '@renderer/hooks/use-create-agent-for-prompt'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
 import { useNavigate } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
@@ -20,7 +21,6 @@ import {
   useTypewriterPlaceholder,
   DEFAULT_AGENT_PROMPT_EXAMPLES,
 } from '@renderer/hooks/use-typewriter-placeholder'
-import { deriveAgentName } from '@renderer/lib/derive-agent-name'
 import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
 import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
 import { useDraftsStore } from '@renderer/context/drafts-context'
@@ -50,11 +50,11 @@ import type { ApiAgentTemplateInstallResult, ApiDiscoverableAgent } from '@share
 const HANDOFF_TEMPLATE_WAIT_MS = 10000
 
 /**
- * Soft edges for the template roster's scroll viewport, same recipe as the
- * voice-agent transcript: cards dissolve over 32px instead of clipping at the
- * top of the composer above and the footer below. Top padding (the measured
- * composer overlap plus this gap) keeps at-rest content clear of the bands,
- * so nothing looks faded until it is actually leaving.
+ * Soft edges for the template roster's scroll viewport: cards dissolve over
+ * 32px instead of clipping at the top of the composer above and the footer
+ * below. Top padding (the measured composer overlap plus this gap) keeps
+ * at-rest content clear of the bands, so nothing looks faded until it is
+ * actually leaving.
  */
 const ROSTER_FADE_MASK =
   'linear-gradient(to bottom, transparent 0, black 32px, black calc(100% - 32px), transparent 100%)'
@@ -110,7 +110,7 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
   const displayedPlaceholder = useTypewriterPlaceholder(DEFAULT_AGENT_PROMPT_EXAMPLES)
 
   const createAgent = useCreateAgent()
-  const updateAgent = useUpdateAgent()
+  const createAgentForPrompt = useCreateAgentForPrompt()
   const deleteAgent = useDeleteAgent()
   const createSession = useCreateSession()
   const navigate = useNavigate()
@@ -251,11 +251,8 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
         // retrying creates a duplicate agent and session.
         const { newAgent, session } = await (async () => {
           try {
-            const agentName = await deriveAgentName(content)
             const warmSlug = await awaitWarmStartRef.current()
-            const newAgent = warmSlug
-              ? await updateAgent.mutateAsync({ slug: warmSlug, name: agentName })
-              : await createAgent.mutateAsync({ name: agentName })
+            const newAgent = await createAgentForPrompt(content, warmSlug)
             if (warmSlug) warmConsumedRef.current = true
             const session = await createSession.mutateAsync({
               agentSlug: newAgent.slug,
@@ -296,7 +293,7 @@ export function CreateAgentForm({ header, onAgentCreated, onNavigateAway, classN
       } finally {
         setIsSubmitting(false)
       }
-    }, [createAgent, updateAgent, createSession, navigate, track, onAgentCreated, composerOptions]),
+    }, [createAgentForPrompt, createSession, navigate, track, onAgentCreated, composerOptions]),
   })
 
   const { awaitWarmStart, noteProgrammaticChange } = useWarmStartOnType({

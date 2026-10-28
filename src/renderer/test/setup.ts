@@ -2,6 +2,7 @@ import '@testing-library/jest-dom/vitest'
 import { beforeEach, vi } from 'vitest'
 import { createElement } from 'react'
 import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
+import { _setFactsForTest } from '@renderer/lib/facts'
 
 // Auth mode is now derived from the resolved API target, and reading it before
 // boot settles that target throws by design (a wrong guess routes cloud traffic
@@ -9,9 +10,17 @@ import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-targe
 // local target here so everything that renders UserProvider behaves exactly as
 // it did when auth mode was a build-time constant. A test that needs the cloud
 // target resets and re-sets it in its own `beforeEach`, which runs after this.
+//
+// The facts are settled alongside it, and also throw if read before boot. Tests
+// have no `window.electronAPI`, so the default is a browser driving a web
+// deployment; a test that needs other facts sets them in its own `beforeEach`.
 beforeEach(() => {
   _resetApiTargetForTest()
   setActiveTarget('local', null)
+  _setFactsForTest({
+    client: { shell: 'browser', os: null, distribution: null },
+    server: { os: 'linux', distribution: 'deployment' },
+  })
 })
 
 // jsdom has no matchMedia; components read it via useIsMobile() and
@@ -49,7 +58,7 @@ if (typeof HTMLCanvasElement !== 'undefined') {
 
 const signIn = {
   email: vi.fn(),
-  oauth2: vi.fn(),
+  social: vi.fn(),
 }
 
 const signUp = {
@@ -76,10 +85,15 @@ vi.mock('@shared/lib/analytics/server-analytics', () => ({
 
 // Mock analytics context globally — components use useAnalyticsTracking
 // which requires an AnalyticsProvider that depends on settings/user context.
-vi.mock('@renderer/context/analytics-context', () => ({
-  useAnalyticsTracking: () => ({ track: vi.fn(), identify: vi.fn() }),
-  AnalyticsProvider: ({ children }: { children: React.ReactNode }) => children,
-}))
+// Direct context consumers such as useExperiment stay silent without a provider.
+vi.mock('@renderer/context/analytics-context', async () => {
+  const { createContext } = await import('react')
+  return {
+    AnalyticsContext: createContext(null),
+    useAnalyticsTracking: () => ({ track: vi.fn(), identify: vi.fn() }),
+    AnalyticsProvider: ({ children }: { children: React.ReactNode }) => children,
+  }
+})
 
 // Many components call useNavigate() for router-driven navigation. Renderer
 // unit tests render leaf components WITHOUT a RouterProvider, so stub navigation

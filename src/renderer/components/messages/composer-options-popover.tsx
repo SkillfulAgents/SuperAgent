@@ -1,3 +1,4 @@
+import { ProviderSelect } from '@renderer/components/settings/provider-select'
 import { memo, type ReactNode } from 'react'
 import { ChevronDown, Settings2 } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
@@ -8,6 +9,7 @@ import { type ComposerOptionsState } from './composer-options'
 import { ModelFamilyList, findCatalogModel } from './model-family-list'
 import { EFFORT_LABELS, EffortSection, useEffortClamp } from './effort-slider'
 import { SPEED_LABELS, SpeedSection, availableSpeeds, useSpeedClamp } from './speed-section'
+import { ModelTooltip } from './model-tooltip'
 
 interface ComposerOptionsPopoverProps {
   state: ComposerOptionsState
@@ -56,28 +58,37 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, foo
     // Uncontrolled: nothing closes the popover programmatically anymore (picks
     // never dismiss), so Radix owns the open state.
     <Popover>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={disabled}
-          className="h-[34px] min-w-0 gap-1.5 px-2 text-xs font-medium max-[420px]:w-[34px] max-[420px]:shrink-0 max-[420px]:justify-center max-[420px]:px-0"
-          aria-label={`${includeEffort ? 'Model and effort' : 'Model'}: ${triggerAriaLabel}. Click to change.`}
-          data-testid="composer-options-trigger"
-        >
-          <Settings2 className="hidden h-3.5 w-3.5 max-[420px]:block" aria-hidden="true" />
-          <span className="max-[420px]:hidden">
-            {selectedModelLabel}
-            {includeEffort && (
-              <span className="text-muted-foreground">
-                {selectedModelLabel ? ' · ' : ''}{effortLabel}{speedSuffix}
-              </span>
-            )}
-          </span>
-          <ChevronDown className="h-3.5 w-3.5 max-[420px]:hidden" />
-        </Button>
-      </PopoverTrigger>
+      <ModelTooltip line={selectedModel ? triggerAriaLabel : undefined} connection={state.connections?.find(c => c.id === state.llmProviderId)}>
+        <PopoverTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            // `aria-disabled`, not `disabled`: a disabled button emits no pointer events, so
+            // its tooltip could not open while the agent runs. Cancelling the click keeps Radix
+            // from toggling the popover.
+            aria-disabled={disabled || undefined}
+            onClick={disabled ? e => e.preventDefault() : undefined}
+            // Collapses on the width the composer row leaves for it, not the window's: a drawer
+            // can squeeze the row in a wide window. Under 160px the label is cut into the model
+            // name, so the icon reads better.
+            className="h-[34px] min-w-0 gap-1.5 px-2 text-xs font-medium aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-background aria-disabled:hover:text-foreground [@container(max-width:160px)]:w-[34px] [@container(max-width:160px)]:shrink-0 [@container(max-width:160px)]:px-0"
+            aria-label={`${includeEffort ? 'Model and effort' : 'Model'}: ${triggerAriaLabel}. Click to change.`}
+            data-testid="composer-options-trigger"
+          >
+            <Settings2 className="hidden h-3.5 w-3.5 [@container(max-width:160px)]:block" aria-hidden="true" />
+            <span className="truncate [@container(max-width:160px)]:hidden">
+              {selectedModelLabel}
+              {includeEffort && (
+                <span className="text-muted-foreground">
+                  {selectedModelLabel ? ' · ' : ''}{effortLabel}{speedSuffix}
+                </span>
+              )}
+            </span>
+            <ChevronDown className="h-3.5 w-3.5 [@container(max-width:160px)]:hidden" />
+          </Button>
+        </PopoverTrigger>
+      </ModelTooltip>
       <PopoverContent
         // Fixed reading order Model → Effort → Speed in both open directions —
         // no col-reverse (unlike the settings picker, which flips to keep Effort
@@ -88,6 +99,7 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, foo
         // it pops its name tooltip instantly. Keyboard users can Tab in.
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
+        <ProviderSelect connections={state.connections ?? []} value={state.llmProviderId} onChange={id => state.setConnection?.(id)} disabled={disabled} />
         {selectedModel && (
           <>
             {/* Flat list, no "latest" — per-message picks a concrete version.
@@ -98,6 +110,7 @@ function ComposerOptionsPopoverImpl({ state, disabled, includeEffort = true, foo
               value={model}
               onPick={setModel}
               webProvider={webProvider}
+              modelLock={state.modelLock}
             />
             {includeEffort && <Separator className="my-2 bg-border/50" />}
           </>

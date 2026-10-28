@@ -11,12 +11,12 @@
  *
  * Fix: a dedicated `(await getSubscribedComposioTriggerIds())` helper returns the
  * distinct composio IDs for rows still subscribed (status IN active/paused),
- * and `pollAndClaimEvents` uses it to scope the poll. `processEventGroup` then
+ * and the trigger manager registers it with the webhook relay. `processEventGroup` then
  * acks/discards events for paused-only IDs (no active local trigger).
  *
  * These tests reproduce the bug:
  *   - the helper must include paused IDs (currently absent → throws / wrong)
- *   - the real poll body must include the paused Composio ID
+ *   - the trigger manager's relay registration must include the paused Composio ID
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
@@ -41,17 +41,24 @@ vi.mock('../analytics/server-analytics', () => ({
   trackServerEvent: vi.fn(),
 }))
 
-// Platform deps required by webhook-events-client's real poll path.
+// Platform deps of the trigger manager's real registration path.
 vi.mock('@shared/lib/platform-auth/config', () => ({
   getPlatformProxyBaseUrl: () => 'https://proxy.test',
 }))
 vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAccessToken: () => 'test-token',
+  getStoredPlatformMemberId: () => 'member_1',
 }))
 vi.mock('@shared/lib/platform-attribution', () => ({
-  // Opaque (non-org) token → buildBearer returns the bare token.
   decodeOrgIdFromToken: () => null,
+  runWithOptionalUser: (_userId: string | null | undefined, fn: () => unknown) => fn(),
+  attribution: { requiresActingMember: () => false },
 }))
+vi.mock('@shared/lib/webhook-relay', async () => {
+  const { createFakeWebhookRelay } = await import('@shared/lib/webhook-relay/testing/fake-webhook-relay')
+  const relay = createFakeWebhookRelay()
+  return { getWebhookRelay: () => relay, LOCAL_RELAY_SCOPE: 'local' }
+})
 
 import {
   createWebhookTrigger,
@@ -61,7 +68,8 @@ import {
   // New helper introduced by the SUP-225 fix.
   getSubscribedComposioTriggerIds,
 } from './webhook-trigger-service'
-import { pollAndClaimEvents } from './webhook-events-client'
+import { getWebhookRelay } from '@shared/lib/webhook-relay'
+import type { FakeWebhookRelay } from '@shared/lib/webhook-relay/testing/fake-webhook-relay'
 
 describe('SUP-225: paused webhook triggers stay pollable', () => {
   beforeEach(async () => {
@@ -137,26 +145,21 @@ describe('SUP-225: paused webhook triggers stay pollable', () => {
     })
   })
 
-  describe('pollAndClaimEvents poll scope', () => {
-    it('posts trigger_ids including the paused Composio ID so paused-period events get claimed', async () => {
+  describe('trigger manager relay registration', () => {
+    it('registers the paused Composio ID so paused-period events get claimed', async () => {
       await seedActiveAndPaused()
+      const relay = getWebhookRelay() as FakeWebhookRelay
+      relay.reset()
+      const { triggerManager } = await import('@shared/lib/scheduler/trigger-manager')
 
-      const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => ({
-        ok: true,
-        status: 200,
-        json: async () => ({ events: [], realtime: null }),
-        text: async () => '',
-      }))
-      vi.stubGlobal('fetch', fetchMock)
-
-      await pollAndClaimEvents('member_1')
-
-      expect(fetchMock).toHaveBeenCalledTimes(1)
-      const [, init] = fetchMock.mock.calls[0]
-      const body = JSON.parse(init.body as string) as { trigger_ids: string[] }
-      // Before the fix the poll scope is active-only and excludes 'ti_paused',
-      // so those events are never claimed/acked while paused.
-      expect(body.trigger_ids.sort()).toEqual(['ti_active', 'ti_paused'])
+      await triggerManager.start()
+      try {
+        // An active-only scope would exclude 'ti_paused', so its events would
+        // never be claimed and discarded while paused.
+        expect([...relay.consumers.values()].map((c) => c.endpointIds)).toEqual([['ti_active', 'ti_paused']])
+      } finally {
+        triggerManager.stop()
+      }
     })
   })
 })

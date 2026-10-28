@@ -1,15 +1,12 @@
+import { eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { messageAuthor } from '@shared/lib/db/schema'
 
-type AuthorRow = {
-  id: string
-  sessionId: string
-  agentSlug: string
-  userId: string
-}
+type AuthorRow = Pick<typeof messageAuthor.$inferInsert, 'id' | 'sessionId' | 'agentSlug' | 'userId' | 'integrationId' | 'display'>
 
 /**
- * Record who authored a user message (auth mode). Best-effort: a stale userId
+ * Record who authored a user message: a person (auth mode) or an integration
+ * (its card rides along). Best-effort: a stale userId
  * whose user row is gone throws on the FK; the session stays usable and only
  * the sender badge is lost.
  */
@@ -43,5 +40,17 @@ async function insertOne(params: AuthorRow): Promise<boolean> {
       error: error instanceof Error ? error.message : String(error),
     })
     return false
+  }
+}
+
+/** Remove the attribution of a message that never reached the agent. Best-effort. */
+export async function deleteMessageAuthorBestEffort(messageUuid: string): Promise<void> {
+  try {
+    await db.delete(messageAuthor).where(eq(messageAuthor.id, messageUuid))
+  } catch (error) {
+    console.warn('failed to remove the attribution of an undelivered message', {
+      messageUuid,
+      error: error instanceof Error ? error.message : String(error),
+    })
   }
 }

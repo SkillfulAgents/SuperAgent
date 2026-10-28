@@ -109,6 +109,11 @@ is deliberately **fully defensive — it never throws**; any failure degrades to
 - Maintenance runs on boot, on connect, on Account-tab view, **and** on a
   low-frequency background poll in `PlatformService`, so a long-lived app stays
   valid without an Account visit.
+- **The deployment's server facts ride along.** `refreshCloudWorkspace()` (boot,
+  connect, the poll) asks the deployment's `GET /api/server-facts` once a token
+  is held and keeps the answer in settings (`cloud-server-facts.ts`), so a
+  renderer driving the workspace reads them at boot without a request of its
+  own. See [docs/facts.md](facts.md).
 - **Failures are reported once per process, from the service only.** Because
   maintenance re-runs every 30 minutes and the things that break it are usually
   persistent (offline, a token that isn't member-bound, a deployment too old to
@@ -168,14 +173,14 @@ Other properties worth not regressing:
   `cloud-proxy.integration.test.ts` is for.
 - **Only `/api` paths are forwarded**; anything else 404s, as does a bad key
   (a prober learns nothing either way).
-- **Documents served through the proxy don't inherit its prefix.** A dashboard
-  iframe is loaded from the keyed URL, but the HTML comes back unchanged, and a
-  root-relative `/api/...` inside it resolves against the *loopback* origin. The
-  LLM and speech shims injected into dashboards therefore derive their prefix
-  from `location` at runtime (`api/polyfill-api-prefix.ts`) instead of
-  hardcoding it — otherwise a cloud dashboard's LLM calls would silently run on
-  the laptop's credentials and settings. Anything else injected into a proxied
-  document has the same obligation.
+- **Documents served through the proxy don't inherit its prefix.** A document
+  loaded from the keyed URL comes back unchanged, and a root-relative
+  `/api/...` inside it resolves against the *loopback* origin. The LLM and
+  speech shims injected into dashboards derive their prefix from `location` at
+  runtime (`api/polyfill-api-prefix.ts`) for that reason. Cloud dashboards no
+  longer load through the proxy (see Cloud dashboards below), so on the desktop
+  that prefix is always empty, but anything injected into a document the proxy
+  does serve still has to derive it.
 
 **WebSocket upgrades are forwarded too**, by a second handler
 (`main/cloud-stream-proxy.ts`) on the server's `upgrade` event. They have to be:
@@ -356,14 +361,26 @@ with the macOS traffic lights, so the control shows icons only and reveals its
 labels on hover (and on focus, for keyboard users), pushing the buttons after it
 past the right edge while open.
 
-- **Hidden unless there is somewhere to go.** A single-machine user never sees a
-  control with one real option.
-- **Availability is asked only from the local side.** This is the trap:
+- **Always shown in the desktop app**, so it is how a user without cloud agents
+  finds them. A Cloud press never acts on the cached answer:
+
+  ```
+  not connected                       → Settings → Account
+  offline, check failed, no token     → "Couldn't connect" banner
+  deployed, token held                → switch (below)
+  no workspace, or an unknown status  → platform's Cloud Agents page
+  pending/deploying, destroying,
+  destroyed, error                    → banner naming the state, [Platform ↗]
+  ```
+
+  Waking and fixing happen on platform's page. Banners don't update; the user
+  presses Cloud again. Only a `deployed` workspace is minted against. Platform
+  says `deployed` until a pause finishes, so a press mid-pause still switches in.
+- **The workspace is asked about only from the local side.** This is the trap:
   `GET /api/platform-auth/deployments` goes through `apiFetch`, so *in cloud mode
   it travels through the proxy to the deployment* — and `getCloudWorkspace`
   self-gates off the Electron main process, so the deployment answers
-  "no workspace" about itself. Believing that would hide the control exactly when
-  the user needs it to get back. Being in cloud mode is its own proof of
+  "no workspace" about itself. Being in cloud mode is its own proof of
   reachability, so the query is disabled there.
 - **Switching reloads onto `/`, never in place.** Agent ids are per-deployment,
   so the route you are standing on almost certainly does not exist on the other
@@ -452,7 +469,7 @@ regression — so the distinction is worth holding precisely.
 | --- | --- | --- |
 | `isElectron()` (`renderer/lib/env.ts`) | native window + preload bridge present | Is there a *window* of ours here? |
 | `targetIsRemote()` (`renderer/lib/api-target.ts`) | the settled target is `cloud` | Is the API a machine other than this one? |
-| `canUseHostFeatures()` (`renderer/lib/host-features.ts`) | `isElectron() && !targetIsRemote()` | May this window act on *this* computer on the agents' behalf? |
+| `canUseHostFeatures()` (`renderer/lib/capabilities.ts`) | `isElectron() && !targetIsRemote()` | May this window act on *this* computer on the agents' behalf? |
 
 Only three configurations are reachable. A browser never has a cloud target:
 `initApiBaseUrl()` settles every web renderer to `local`, because there is no
@@ -489,12 +506,16 @@ somewhere else.
 
 | Site | Why |
 | --- | --- |
-| Add-a-mount, and the Volumes section when empty (`use-mounts.ts`, `home-volumes.tsx`) | The picker browses this computer; the path is handed to the agent's |
+| Create a local volume (`volume-settings-dialog.tsx`, `use-mounts.ts`) | Uses the existing OS folder picker on this computer. Dropbox creation and attaching an existing saved volume work against any API target |
 | Open-a-mount in Finder/Explorer (`home-volumes.tsx`) | `hostPath` belongs to the agent's machine |
 | Reveal a workspace file (`folder-file-context-menu.tsx`) | The deployment returns *its* host path; opening it here lands nowhere, or on a same-named folder of yours |
 | Reveal a workspace folder in Finder/Explorer (`folder-host-actions.tsx`) | The folder panel's header action. Same reasoning as revealing a file: the deployment returns *its* host path. The Copy-path action beside it stays everywhere, since a path is just text |
-| Computer Use — the settings tab and the System Settings recovery link (`global-settings-page.tsx`, `computer-use-request-item.tsx`) | It drives the machine the agent runs on, and its whole UI is written for that being yours. The missing-permission *list* still shows remotely; only the button that would fix the wrong computer is withdrawn |
-| Dropped/picked folder paths (`file-utils.ts`, `use-message-composer.ts`) | A `folderPath` exists only to be mounted or read by the agent's machine. Remotely, the web route — enumerate and upload the bytes — is the only one that works, and the mount/upload choice is not offered |
+| Computer Use — the settings tab (`global-settings-page.tsx`, through `offersComputerUseSettings()`) and the System Settings recovery link (`computer-use-request-item.tsx`) | It drives the machine the agent runs on, and its whole UI is written for that being yours. The missing-permission *list* still shows remotely; only the button that would fix the wrong computer is withdrawn |
+| Dropped/picked folder paths (`file-utils.ts`, `use-message-composer.ts`, `todo-draft-dialog.tsx`), through `usesHostFolderPaths()` | A `folderPath` exists only to be mounted or read by the agent's machine. Remotely, the web route — enumerate and upload the bytes — is the only one that works, and the mount/upload choice is not offered |
+
+The ones marked "through" ask a narrower capability built on this one, which
+also withholds the feature from the Mac App Store build: see
+[docs/facts.md § What the Mac App Store build leaves out](facts.md#what-the-mac-app-store-build-leaves-out).
 
 #### Acts on the API's machine → `!targetIsRemote()`
 
@@ -524,8 +545,9 @@ it.
 | `quick-dispatch.tsx` | The launcher's own ring + strip — the one window with no switcher to read |
 | `auth-gate.tsx` | `WorkspaceReconnect` instead of a login form |
 | `auth-mode.ts` | `isAuthMode()` is `__AUTH_MODE__ \|\| targetIsRemote()` — a cloud workspace *is* an auth-mode deployment |
-| `main/dashboard-window.ts` | Proxy confinement, base-URL-scoped identity, and the "Cloud workspace — " title prefix |
+| `main/dashboard-window.ts` | Workspace-token signing for cloud dashboards, base-URL-scoped identity, and the "Cloud workspace — " title prefix |
 | `main/api-target.ts` | Tears down the launcher and all popouts on a switch |
+| `mobile-tab.tsx` | Pairing links out to `{deploymentUrl}/settings/mobile` instead of minting. The proxy's session is a `token-exchange` one, and `POST /api/auth/mobile/pairing-token` admits only `password`/`oidc` sessions, so a minted credential can't fan out into device credentials. The URL is `ResolvedApiTarget.deploymentUrl` (`getRemoteDeploymentUrl()`) |
 
 **Not gated at all, deliberately.** Where the answer comes from the *server* it
 already comes from the machine that owns it: the host-browser providers and their
@@ -541,9 +563,6 @@ None of this is enforced. There is no lint rule, roughly a hundred raw
 `window.electronAPI` reads and ~47 `isElectron()` sites, and nothing stops the
 next feature from asking the old question. Specifically, and unfixed:
 
-- **`handleAddMount` (`use-mounts.ts`) is itself ungated** — only the button that
-  calls it consults `canAddMount`. A second caller reintroduces the host-path
-  leak.
 - **Dock shortcuts carry no target.** `create-dock-shortcut` stores
   `agentSlug`/`dashboardSlug` only, and the deep-link handler opens them against
   whatever target is active at click time. A shortcut made for a cloud dashboard
@@ -554,28 +573,27 @@ next feature from asking the old question. Specifically, and unfixed:
   browser file picker does — but it reads like the oversights above, so leave the
   reasoning attached to it.
 
-### Dashboard popouts
+### Cloud dashboards (pane and popouts)
 
-Corrected rather than hidden, and they need three separate things because the
-window is built in main, where there is no renderer to ask.
+A cloud dashboard loads at the workspace's own address
+(`{deploymentUrl}/api/agents/{slug}/artifacts/{dash}/`), as in a browser, not
+through the proxy. Under `/cloud/{key}`, a dashboard that loads its files from
+the root or routes against its startup address rendered blank.
 
-1. **The document URL.** `openDashboardWindow` used to hard-code
-   `http://localhost:<port>`; it now takes `activeApiTarget().baseUrl`, so a
-   popout follows the window it was opened from.
-2. **Everything the document then requests.** Only that outer URL carries the
-   proxy prefix. The `/view` wrapper the deployment serves back builds its status
-   poll, its start-the-agent POST and its iframe from a root-relative
-   `/api/agents/{slug}` — which resolves against the laptop's own API. So the
-   popout's own session (a per-window partition, never the default one) carries
-   an `onBeforeRequest` rewrite that puts unprefixed `/api/` calls back through
-   the proxy. Done here rather than in the wrapper because the wrapper is
-   generated by the *deployment*: a fix there only reaches workspaces new enough
-   to have it, and this has to hold against whatever version an organization is
-   running.
-3. **Identity and lifetime.** The dedup key includes the base URL — two
-   deployments can hold an agent of the same slug — and `applyPreferredApiTarget`
-   closes all popouts on a switch, since each already loaded a URL built from the
-   old base.
+Main signs these requests in place of the browser's cookie
+(`installCloudDashboardAuth`): only to the workspace origin, only from the main
+window or a cloud popout, only when every frame up to the window is the app or
+the workspace (or where a browser would send the workspace's Lax cookie: a frame
+returning from a same-site page, a popout's top-level GET), and only while the
+target is cloud. Local dashboards share the
+session and never get the token. As with the proxy, signed responses lose
+`set-cookie` and `set-auth-token`. A 401 carrying the workspace's session
+challenge (`Bearer realm="workspace"`) re-mints and retries once. A dashboard's
+own 401 is returned as-is.
+
+Popouts open at `deploymentUrl` in cloud mode. The dedup key includes the base
+URL (two deployments can hold an agent of the same slug), and
+`applyPreferredApiTarget` closes all popouts on a switch.
 
 They also carry the cloud marker, as the "every window" rule requires: main
 intercepts `page-title-updated` and prefixes "Cloud workspace — ". The title is
@@ -660,7 +678,7 @@ These are injected at build time as `__PLATFORM_*__` globals (see `vite.config.t
 | `renderer/lib/cloud-session.ts` | Carries a cloud 401 into the session store, since signing out is not an option |
 | `renderer/hooks/use-target-switch.ts` | Which target, whether the other is reachable, and how to move |
 | `renderer/components/layout/target-switcher.tsx` | The segmented Local/Cloud control |
-| `renderer/lib/host-features.ts` | Whether this window may act on the computer it runs on |
+| `renderer/lib/capabilities.ts` | What this window may offer; `canUseHostFeatures()` is whether it may act on the computer it runs on |
 | `api/polyfill-api-prefix.ts` | Keeps dashboard-shim API calls on whichever API served the document |
 | `services/platform-service.ts` | Boot/connect refresh + the background maintenance poll |
 | `services/platform-auth-service.ts` | Clears the record on disconnect / identity change |

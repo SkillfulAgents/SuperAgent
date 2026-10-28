@@ -1,4 +1,4 @@
-import type { ChatIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
+import type { AgentIntegrationSession, ChatIntegrationAccess } from '@shared/lib/db/schema'
 import type { PublicChatIntegration } from '@shared/lib/chat-integrations/public'
 
 /** Schema-complete PublicChatIntegration for component tests; override any field. */
@@ -27,8 +27,8 @@ export function makeChatIntegration(overrides: Partial<PublicChatIntegration> = 
 
 /** Schema-complete conversation window; `externalChatId`/`sessionId` are required. */
 export function makeSession(
-  over: Partial<ChatIntegrationSession> & { externalChatId: string; sessionId: string },
-): ChatIntegrationSession {
+  over: Partial<AgentIntegrationSession> & { externalChatId: string; sessionId: string },
+): AgentIntegrationSession {
   const now = new Date('2026-06-20T12:00:00Z')
   return {
     id: `sess-row-${over.sessionId}`,

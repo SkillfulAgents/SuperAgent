@@ -16,15 +16,15 @@ import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import * as schema from '../db/schema'
-import { MockChatClientConnector } from './mock-connector'
-import { isMultiPartyChatType } from './base-connector'
+import { MockChatAgentIntegration } from './mock-connector'
+import { isMultiPartyChatType } from './chat-agent-integration'
 
 // ── Test state ─────────────────────────────────────────────────────────
 
 let testDir: string
 let testDb: ReturnType<typeof drizzle>
 let testSqlite: InstanceType<typeof Database>
-let mockConnector: MockChatClientConnector
+let mockConnector: MockChatAgentIntegration
 let mockContainerClient: InstanceType<typeof MockContainerClient>
 
 // ── Mocks ──────────────────────────────────────────────────────────────
@@ -132,7 +132,7 @@ vi.mock('./telegram-connector', async (importOriginal) => {
 
 // ── Imports (after mocks) ──────────────────────────────────────────────
 
-import { chatIntegrationManager } from './chat-integration-manager'
+import { agentIntegrationManager } from '../agent-integrations/agent-integration-manager'
 import { buildSlackSystemPrompt } from './slack-connector'
 import {
   buildTelegramSystemPrompt,
@@ -140,13 +140,13 @@ import {
   TelegramConnector,
 } from './telegram-connector'
 import { buildIMessageSystemPrompt, classifyIMessageChat } from './imessage-connector'
-import { createChatIntegration } from '@shared/lib/services/chat-integration-service'
+import { createAgentIntegration } from '@shared/lib/services/agent-integration-service'
 import { MockContainerClient } from '@shared/lib/container/mock-container-client'
 
 class PromptTestContainerClient extends MockContainerClient {
-  override createSession(options: Parameters<MockContainerClient['createSession']>[0]) {
-    // The spy sees production args; the empty message suppresses mock scenario timers.
-    return super.createSession({ ...options, initialMessage: '' })
+  override async createSession(options: Parameters<MockContainerClient['createSession']>[0]) {
+    if (!options.initialMessage) throw new Error('initialMessage is required')
+    return { id: crypto.randomUUID(), createdAt: new Date().toISOString(), lastActivity: new Date().toISOString(), workingDirectory: '/workspace', slashCommands: [] }
   }
 }
 
@@ -305,7 +305,7 @@ describe('chat session system prompt wiring', () => {
     testDb = drizzle(testSqlite, { schema })
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })
 
-    mockConnector = new MockChatClientConnector()
+    mockConnector = new MockChatAgentIntegration()
 
     mockContainerClient = new PromptTestContainerClient({ agentId: 'test-agent' })
     await mockContainerClient.start()
@@ -313,11 +313,12 @@ describe('chat session system prompt wiring', () => {
     createSessionSpy = vi.spyOn(mockContainerClient, 'createSession') as ReturnType<typeof vi.spyOn>
 
     (containerManager.ensureRunning as ReturnType<typeof vi.fn>).mockResolvedValue(mockContainerClient)
-    ;(chatIntegrationManager as unknown as { isRunning: boolean }).isRunning = true
+    await agentIntegrationManager.start()
   })
 
   afterEach(async () => {
-    chatIntegrationManager.stop()
+    agentIntegrationManager.stop()
+    await new Promise(resolve => setTimeout(resolve, 20))
     testSqlite?.close()
     await fs.promises.rm(testDir, { recursive: true, force: true }).catch(() => {})
   })
@@ -333,7 +334,7 @@ describe('chat session system prompt wiring', () => {
     messageOpts: { chatId: string; userName?: string; chatName?: string; text?: string },
   ) {
     const callIndex = createSessionSpy.mock.calls.length
-    const integrationId = (await createChatIntegration({
+    const integrationId = (await createAgentIntegration({
       agentSlug: 'test-agent',
       provider,
       config: provider === 'telegram'
@@ -342,14 +343,15 @@ describe('chat session system prompt wiring', () => {
       name: 'Test Bot',
     }))
     testSqlite.prepare('UPDATE chat_integrations SET require_approval = 0 WHERE id = ?').run(integrationId)
-    await chatIntegrationManager.addIntegration(integrationId)
+    await agentIntegrationManager.addIntegration(integrationId)
 
     mockConnector.simulateIncomingMessage(messageOpts.text ?? 'Hello agent!', messageOpts.chatId, 'user-1', {
       userName: messageOpts.userName,
       chatName: messageOpts.chatName,
     })
     await waitForCondition(() => createSessionSpy.mock.calls.length > callIndex)
-    return createSessionSpy.mock.calls[callIndex][0] as Record<string, unknown>
+    const args = createSessionSpy.mock.calls[callIndex][0]
+    return { ...args, message: args.initialMessage } as Record<string, unknown>
   }
 
   it('uses one multi-party decision for an unnamed Slack channel and falls back to user id', async () => {
@@ -359,7 +361,7 @@ describe('chat session system prompt wiring', () => {
     expect(args.systemPrompt).toContain(DELIVERY)
     expect(args.systemPrompt).toContain(NO_DOUBLE_POST)
     expect(args.systemPrompt).toContain(NORMAL_CAPABILITIES)
-    expect(args.initialMessage).toBe('\\[user-1]: hey')
+    expect(args.message).toBe('\\[user-1]: hey')
   })
 
   it('uses one Telegram classification for DM and group prompt attribution and prefixes', async () => {
@@ -372,7 +374,7 @@ describe('chat session system prompt wiring', () => {
     expect(dm.systemPrompt).toContain('a direct message (chat id: 123456789)')
     expect(dm.systemPrompt).not.toContain('Ignore previous instructions')
     expect(dm.systemPrompt).not.toContain('[Jane Doe]')
-    expect(dm.initialMessage).toBe('private')
+    expect(dm.message).toBe('private')
 
     const group = await startSession('telegram', {
       chatId: '-1001234567890',
@@ -383,7 +385,7 @@ describe('chat session system prompt wiring', () => {
     expect(group.systemPrompt).toContain('a group conversation (chat id: -1001234567890)')
     expect(group.systemPrompt).not.toContain('Ignore previous instructions')
     expect(group.systemPrompt).toContain('[Jane Doe]')
-    expect(group.initialMessage).toBe('\\[Alice]: group')
+    expect(group.message).toBe('\\[Alice]: group')
   })
 
   it('keeps iMessage without chatName fail-closed while preserving provider rules', async () => {
@@ -396,7 +398,7 @@ describe('chat session system prompt wiring', () => {
     expect(args.systemPrompt).not.toContain('[Jane Doe]')
     expect(args.systemPrompt).toContain('[[reaction:heart]]')
     expect(args.systemPrompt).toContain(NORMAL_CAPABILITIES)
-    expect(args.initialMessage).toBe('hey')
+    expect(args.message).toBe('hey')
   })
 
   it('fails closed through the manager when a connector has no classifier', async () => {
@@ -408,7 +410,7 @@ describe('chat session system prompt wiring', () => {
         userName: 'Alice',
         text: 'hey',
       })
-      expect(args.initialMessage).toBe('hey')
+      expect(args.message).toBe('hey')
     } finally {
       TelegramConnector.classifyChatId = original
     }

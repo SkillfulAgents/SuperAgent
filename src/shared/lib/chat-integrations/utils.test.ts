@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
+import type { UserRequestEvent } from '@shared/lib/tools/types'
 import type { AppLinkContext } from '../agent-integrations/app-link'
 import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
 
@@ -29,6 +29,12 @@ describe('isUnsupportedInChat / describeUnsupportedRequest', () => {
     expect(isUnsupportedInChat(event)).toBe(true)
     expect(describeUnsupportedRequest(event, desktopContext)).toContain('OPENAI_API_KEY')
     expect(describeUnsupportedRequest(event, desktopContext)).toContain('desktop')
+  })
+
+  it('flags login_request as unsupported: credentials never go through chat', () => {
+    const event = { type: 'login_request', toolUseId: 't', message: 'Sign in to GitHub.', fields: [] } as const
+    expect(isUnsupportedInChat(event)).toBe(true)
+    expect(describeUnsupportedRequest(event)).toBe("The agent needs you to sign in to a website, which isn't safe to do in chat. Open Gamut on your desktop to continue.")
   })
 
   it('flags file_request as unsupported and mentions uploading', () => {

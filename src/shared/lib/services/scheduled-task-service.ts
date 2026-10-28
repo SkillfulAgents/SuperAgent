@@ -1,3 +1,4 @@
+import { getSettings } from '@shared/lib/config/settings'
 /**
  * Scheduled Task Service
  *
@@ -8,7 +9,7 @@
 import { db } from '@shared/lib/db'
 import { batch, changesOf } from '@shared/lib/db/batch'
 import { scheduledTasks, type ScheduledTask, type NewScheduledTask } from '@shared/lib/db/schema'
-import { eq, and, lte, inArray, isNotNull, isNull, desc } from 'drizzle-orm'
+import { eq, and, lte, inArray, isNotNull, isNull, desc, sql } from 'drizzle-orm'
 import { getNextCronTime, parseAtSyntax } from './schedule-parser'
 import { trackServerEvent } from '../analytics/server-analytics'
 import { serializeByKey } from '@shared/lib/utils/keyed-queue'
@@ -29,6 +30,7 @@ export interface CreateScheduledTaskParams {
   createdBySessionId?: string
   createdByUserId?: string
   timezone?: string
+  llmProviderId?: string | null
   model?: string
   effort?: string
   speed?: string
@@ -98,6 +100,7 @@ export async function createScheduledTask(
     createdBySessionId: params.createdBySessionId,
     createdByUserId: params.createdByUserId,
     timezone: params.timezone || null,
+    llmProviderId: params.model ? (params.llmProviderId === undefined ? getSettings().llmDefault?.llmProviderId : params.llmProviderId) : null,
     model: params.model || null,
     effort: params.effort || null,
     speed: params.speed || null,
@@ -455,6 +458,9 @@ export async function resumeScheduledTask(taskId: string): Promise<boolean> {
       status: 'pending',
       nextExecutionAt,
       pausedAt: null,
+      // Re-anchoring abandons any held fire, so the streak counting it goes too.
+      consecutiveSkips: 0,
+      lastSkippedAt: null,
     })
     .where(eq(scheduledTasks.id, taskId))
 
@@ -497,7 +503,38 @@ export async function updateNextExecution(
       lastExecutedAt: new Date(),
       lastSessionId: sessionId,
       executionCount: task.executionCount + 1,
+      consecutiveSkips: 0,
+      lastSkippedAt: null,
     })
+    .where(eq(scheduledTasks.id, taskId))
+}
+
+/**
+ * Record that a recurring task's fire was held this cycle because its previous
+ * run is still busy (the scheduler's overlap guard). Leaves nextExecutionAt
+ * alone so the task stays due and fires on the first poll after the run
+ * settles; updateNextExecution clears the streak on that fire.
+ */
+export async function recordTaskSkip(taskId: string): Promise<void> {
+  await db
+    .update(scheduledTasks)
+    .set({
+      consecutiveSkips: sql`${scheduledTasks.consecutiveSkips} + 1`,
+      lastSkippedAt: new Date(),
+    })
+    .where(eq(scheduledTasks.id, taskId))
+}
+
+/**
+ * Advance a recurring task past a failed fire attempt without recording an
+ * execution. lastSessionId stays pointing at the previous run — blanking it
+ * would disarm the overlap guard — and the hold streak survives, since a
+ * failure is not a fire.
+ */
+export async function rescheduleAfterFailure(taskId: string, nextTime: Date): Promise<void> {
+  await db
+    .update(scheduledTasks)
+    .set({ nextExecutionAt: nextTime })
     .where(eq(scheduledTasks.id, taskId))
 }
 
@@ -536,6 +573,8 @@ export async function resetScheduledTask(taskId: string): Promise<boolean> {
     .set({
       status: 'pending',
       nextExecutionAt,
+      consecutiveSkips: 0,
+      lastSkippedAt: null,
     })
     .where(eq(scheduledTasks.id, taskId))
 
@@ -663,6 +702,9 @@ export async function recordManualExecution(
       lastExecutedAt: new Date(),
       lastSessionId: sessionId,
       executionCount: task.executionCount + 1,
+      // The manual run is now the previous run the guard watches.
+      consecutiveSkips: 0,
+      lastSkippedAt: null,
     })
     .where(eq(scheduledTasks.id, taskId))
 }
@@ -673,13 +715,18 @@ export async function recordManualExecution(
  */
 export async function updateTaskRuntimeOptions(
   taskId: string,
-  options: { model?: string | null; effort?: string | null; speed?: string | null },
+  options: { llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null },
 ): Promise<boolean> {
   const task = await getScheduledTask(taskId)
   if (!task || (task.status !== 'pending' && task.status !== 'paused')) return false
 
   const updates: Record<string, string | null> = {}
-  if ('model' in options) updates.model = options.model ?? null
+  if ('llmProviderId' in options) updates.llmProviderId = options.llmProviderId ?? null
+  if ('model' in options) {
+    updates.model = options.model ?? null
+    if (!options.model) updates.llmProviderId = null
+    else if (options.llmProviderId === undefined && getSettings().llmDefault) updates.llmProviderId = task.llmProviderId ?? getSettings().llmDefault!.llmProviderId
+  }
   if ('effort' in options) updates.effort = options.effort ?? null
   if ('speed' in options) updates.speed = options.speed ?? null
 

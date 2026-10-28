@@ -1,14 +1,14 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { v4 as uuid } from 'uuid'
 import { ArrowRight, Check, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { extractSubscriptionRequired } from '@shared/lib/llm-provider/platform-error-presentation'
 import { cn } from '@shared/lib/utils/cn'
-import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { HomeEmptyClouds } from '@renderer/components/home/home-empty-clouds'
 import { Button } from '@renderer/components/ui/button'
 import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
-import type { BillingEmbedView } from '@renderer/lib/billing-embed'
+import { planNameFromId, type BillingEmbedView } from '@renderer/lib/billing-embed'
 import { isElectron } from '@renderer/lib/env'
 import { openExternalUrl } from '@renderer/lib/open-external'
 
@@ -16,6 +16,8 @@ import { BillingEmbedFrame, BRAND_BUTTON_CLASS, type SubscribePlan } from './bil
 import { buildTopupHandoffUrl, type PaywallCta } from './platform-paywall-cta'
 import type { ProviderErrorComponentProps } from './provider-error-registry'
 import { usePlatformPaywallBilling } from './use-platform-paywall-billing'
+import { PaywallSubscriptionOptions } from './paywall-subscription-options'
+import { usePaywallTracking, type PaywallAnalyticsContext, type SubscriptionRecovery } from './paywall-analytics'
 
 // The session composer's glass (FLOATING_COMPOSER_CLASS in chat-composer-box.tsx), a touch
 // more opaque so the card's copy stays readable over the colour bloom behind it.
@@ -29,19 +31,28 @@ function splitMessage(markdown: string): { title: string; body: string } {
   return { title: markdown, body: '' }
 }
 
-function title(cta: PaywallCta | null, fallback: string): string {
+// The CTAs that mean "out of credit" (as opposed to no plan or a payment problem).
+// For a pooled org that credit is the team's shared monthly pool, never "your seat".
+const OUT_OF_CREDIT_CTAS = new Set<PaywallCta['kind']>(['topup', 'ask_admin', 'go_to_billing'])
+
+function title(cta: PaywallCta | null, fallback: string, pooledExhausted: boolean): string {
   if (cta?.kind === 'subscribe') return 'Subscribe to keep going'
   if (cta?.kind === 'add_card') return 'Add a payment method'
   if (cta?.kind === 'manage_payment') return 'Payment needs attention'
+  if (pooledExhausted && cta && OUT_OF_CREDIT_CTAS.has(cta.kind)) return "Your team's shared credit is used up"
   if (cta?.kind === 'ask_admin') return 'Workspace billing needs attention'
   return fallback
 }
 
-function subtitle(cta: PaywallCta | null, fallback: string): string {
+function subtitle(cta: PaywallCta | null, fallback: string, pooledExhausted: boolean): string {
   if (cta?.kind === 'subscribe') return 'An active subscription lets your agents pick this back up.'
   if (cta?.kind === 'add_card') return 'Add a payment method before purchasing more usage credit.'
-  if (cta?.kind === 'topup') return 'Add usage credit to resume this answer.'
   if (cta?.kind === 'manage_payment') return 'Your payment needs attention before agents can continue.'
+  if (pooledExhausted && cta && OUT_OF_CREDIT_CTAS.has(cta.kind)) {
+    if (cta.kind === 'ask_admin') return 'Your team has used its shared monthly credit. Ask a workspace admin to add usage credit.'
+    return 'Your team has used its shared monthly credit. Add usage credit so everyone can keep going.'
+  }
+  if (cta?.kind === 'topup') return 'Add usage credit to resume this answer.'
   if (cta?.kind === 'ask_admin') return 'Ask a workspace admin to add usage credit to this organization.'
   return fallback
 }
@@ -57,6 +68,9 @@ const CTA_LABELS: Record<PaywallCta['kind'], string> = {
 
 // The two CTAs that buy something are brand blue; the rest stay neutral.
 const BRAND_CTAS = new Set<PaywallCta['kind']>(['topup', 'subscribe'])
+
+// Long enough to finish a Stripe checkout; after it the CTA comes back in case the billing tab was closed.
+export const HANDOFF_CHECKING_MS = 120_000
 
 function ctaHref(cta: PaywallCta): string | null {
   if (cta.kind === 'topup') return buildTopupHandoffUrl(cta.href)
@@ -79,7 +93,6 @@ const EMBED_VIEW: Record<PaywallCta['kind'], BillingEmbedView | undefined> = {
 const PRO_BENEFITS = [
   'Unlimited agents, agentic apps and account connections',
   'Team cloud + private desktop workspaces',
-  '$200 of monthly usage included per seat. Pay-as-you-go past that.',
 ]
 
 function formatDollars(cents: number): string {
@@ -90,18 +103,21 @@ function formatDollars(cents: number): string {
 function PaywallActions({
   cta,
   loading,
-  handedOff,
+  checking,
+  retry,
   expanded,
   stretch,
   dismissible,
   embeddedAction,
   onDismiss,
   onHandOff,
-  onRecheck,
 }: {
   cta: PaywallCta | null
   loading: boolean
-  handedOff: boolean
+  // Billing is open elsewhere; the card's own refresh signals pick up the result.
+  checking: boolean
+  // The hand-off timed out without a result: offer the CTA again.
+  retry: boolean
   // The embedded frame is showing a panel: give it the full row, Dismiss drops below it.
   expanded: boolean
   // Fill the column (the subscribe price block) instead of hugging the right edge.
@@ -110,7 +126,6 @@ function PaywallActions({
   embeddedAction: ReactNode
   onDismiss: (ctaKind: string) => void
   onHandOff: (ctaKind: string) => void
-  onRecheck: (ctaKind: string) => void
 }) {
   if (loading) {
     return (
@@ -134,17 +149,14 @@ function PaywallActions({
           Dismiss
         </Button>
       )}
-      {handedOff ? (
-        <Button
-          size="sm"
-          className={stretch ? 'flex-1' : undefined}
-          onClick={(event) => {
-            event.stopPropagation()
-            onRecheck(ctaKind)
-          }}
-        >
-          Recheck
-        </Button>
+      {retry && !checking && (
+        <span className="self-center text-xs text-muted-foreground">Didn&apos;t finish? Open billing again.</span>
+      )}
+      {checking ? (
+        <div className="flex h-8 items-center gap-1.5 self-center text-xs text-muted-foreground" role="status" data-testid="paywall-handoff-checking">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+          Checking billing…
+        </div>
       ) : embeddedAction ?? (cta ? (
         <Button
           size="sm"
@@ -169,7 +181,15 @@ function PaywallActions({
 // below `sm` the quote stacks under the benefits. The quote comes from the platform CTA
 // (seat count and per-seat price), so it is absent until that arrives and on Electron.
 // An expanded CTA panel (promo code) drops below both columns at full width.
-function SubscribeBody({ plan, hint, actions, expanded }: { plan: SubscribePlan | null; hint: string; actions: ReactNode; expanded: boolean }) {
+function SubscribeBody({ plan, hint, actions, expanded, selectedPlanId, onSelectPlan }: {
+  plan: SubscribePlan | null
+  hint: string
+  actions: ReactNode
+  expanded: boolean
+  selectedPlanId: string | null
+  onSelectPlan: (planId: string) => void
+}) {
+  const chosenId = selectedPlanId ?? plan?.planId
   return (
     <div className="flex flex-col gap-4 py-1.5 sm:flex-row sm:flex-wrap sm:items-center sm:gap-6" data-testid="paywall-subscribe">
       <div className="min-w-0 flex-1">
@@ -183,6 +203,33 @@ function SubscribeBody({ plan, hint, actions, expanded }: { plan: SubscribePlan 
             </li>
           ))}
         </ul>
+        {plan?.options && (
+          <div role="radiogroup" aria-label="Choose a plan" className="mt-4 grid grid-cols-3 gap-2" data-testid="paywall-plan-options">
+            {plan.options.map((option) => {
+              const selected = option.id === chosenId
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  onClick={() => onSelectPlan(option.id)}
+                  className={cn(
+                    'rounded-lg border px-2.5 py-2 text-left transition-colors',
+                    selected ? 'border-brand bg-brand/5' : 'border-border/70 hover:bg-muted/50',
+                  )}
+                >
+                  <span className="flex items-center justify-between gap-1 text-[13px] font-medium leading-[18px] text-foreground">
+                    {option.name}
+                    {selected && <Check className="h-3.5 w-3.5 shrink-0 text-brand" aria-hidden="true" />}
+                  </span>
+                  <span className="block text-[11px] leading-4 text-muted-foreground">{formatDollars(option.grantCents)} usage / seat</span>
+                  <span className="block text-[11px] leading-4 text-muted-foreground">{option.deniedModels.length > 0 ? 'Excludes premium models' : 'All models'}</span>
+                </button>
+              )
+            })}
+          </div>
+        )}
         {hint && <p className="mt-3 text-[11px] leading-4 text-muted-foreground" data-testid="billing-cta-hint">{hint}</p>}
       </div>
       <div
@@ -199,6 +246,11 @@ function SubscribeBody({ plan, hint, actions, expanded }: { plan: SubscribePlan 
       >
         {plan && (
           <div data-testid="paywall-plan">
+            {plan.planId && (
+              <p className="mb-1 text-[11px] font-medium leading-4 text-muted-foreground" data-testid="paywall-plan-name">
+                {plan.options?.find((o) => o.id === plan.planId)?.name ?? planNameFromId(plan.planId)}
+              </p>
+            )}
             <p className="text-xl font-medium leading-6 text-foreground">
               {formatDollars(plan.seats * plan.seatPriceCents)}
               <span className="text-sm font-normal leading-[18px] text-muted-foreground">/mo</span>
@@ -219,9 +271,21 @@ function SubscribeBody({ plan, hint, actions, expanded }: { plan: SubscribePlan 
 // Platform 402. An invitation, not a failure: neutral card, title + muted subtitle, one
 // role/billing-aware CTA. Fails open: the composer is withheld only while a fresh billing
 // snapshot positively denies access; otherwise the card sits above it.
-export function PlatformPaywallCard({ message, presentation, onDisplaceChildren, live = true, dismissible = false }: ProviderErrorComponentProps) {
+export function PlatformPaywallCard({ message, presentation, onDisplaceChildren, live = true, dismissible = false, session }: ProviderErrorComponentProps) {
   const [dismissed, setDismissed] = useState(false)
+  const [paywallId] = useState(() => uuid())
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
   const [handedOff, setHandedOff] = useState(false)
+  const [checking, setChecking] = useState(false)
+  useEffect(() => {
+    if (!checking) return
+    const id = setTimeout(() => setChecking(false), HANDOFF_CHECKING_MS)
+    return () => clearTimeout(id)
+  }, [checking])
   const [expanded, setExpanded] = useState(false)
   // An open panel's outcome is unknown until the platform reports it: a background poll
   // can see the charge before the panel finishes saving settings, so only a settled
@@ -229,10 +293,11 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
   const [panelHold, setPanelHold] = useState(false)
   const [ctaHint, setCtaHint] = useState('')
   const [plan, setPlan] = useState<SubscribePlan | null>(null)
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null)
   const billingChanged = useRef(false)
   const successShown = useRef(false)
   const { data: platformAuth } = usePlatformAuthStatus()
-  const { track } = useAnalyticsTracking()
+  const track = usePaywallTracking()
   const billing = usePlatformPaywallBilling(
     extractSubscriptionRequired(message),
     presentation?.href ?? null,
@@ -264,22 +329,45 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
     collapse()
   }, [view, collapse])
   useEffect(() => {
-    if (!billing.cleared || holding || !inApp || !billingChanged.current || successShown.current) return
+    if (!billing.cleared || holding || successShown.current) return
+    if (!(inApp && billingChanged.current) && !handedOff) return
     successShown.current = true
     toast.success('Billing updated. You can continue.')
-  }, [billing.cleared, holding, inApp])
+  }, [billing.cleared, holding, inApp, handedOff])
 
   const ctaKind = billing.cta?.kind ?? 'none'
+  const analytics = useMemo<PaywallAnalyticsContext>(() => ({
+    paywallId,
+    entryPoint: 'platform_paywall',
+    paywallType: billing.subscriptionRequired ? 'subscription' : ctaKind,
+    ctaKind,
+    placement: presentation?.placement ?? 'unknown',
+  }), [paywallId, billing.subscriptionRequired, ctaKind, presentation?.placement])
   const shownRef = useRef(false)
+  const clearedRef = useRef(false)
   useEffect(() => {
     if (shownRef.current || billing.loading || billing.cleared || dismissed) return
     shownRef.current = true
-    track('paywall_shown', { ctaKind, blocked: billing.blocked, placement: presentation?.placement ?? 'unknown' })
-  }, [billing.loading, billing.cleared, billing.blocked, dismissed, ctaKind, presentation?.placement, track])
+    // Only Platform-served turns reach the platform billing gate.
+    track('paywall_shown', {
+      ...analytics, blocked: billing.blocked, live, role: platformAuth?.role ?? 'unknown',
+      session_id: session?.sessionId ?? null, credential_source: 'platform',
+    })
+  }, [billing.loading, billing.cleared, billing.blocked, dismissed, analytics, live, platformAuth?.role, session?.sessionId, track])
   useEffect(() => {
-    if (!shownRef.current || !billing.cleared || holding) return
-    track('paywall_cleared', { ctaKind, handedOff })
-  }, [billing.cleared, holding, ctaKind, handedOff, track])
+    if (!shownRef.current || clearedRef.current || !billing.cleared || holding) return
+    clearedRef.current = true
+    track('paywall_cleared', { ...analytics, handedOff, resolution: 'billing' })
+  }, [billing.cleared, holding, analytics, handedOff, track])
+  const handleSubscriptionResumed = useCallback((recovery: SubscriptionRecovery) => {
+    if (!clearedRef.current) {
+      clearedRef.current = true
+      track('paywall_cleared', { ...analytics, ...recovery, handedOff, resolution: 'subscription' })
+    }
+    // Streaming can unmount this wall before the send request resolves. The
+    // recovery outcome still belongs to this paywall, without a stale UI update.
+    if (mounted.current) setDismissed(true)
+  }, [analytics, handedOff, track])
 
   const resolved = (billing.cleared && !holding) || dismissed
   const displaced = !resolved && billing.blocked
@@ -295,8 +383,8 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
   const fallback = splitMessage(presentation?.message ?? message)
   const panelOpen = embedded && expanded
   const subscribeLayout = billing.cta?.kind === 'subscribe'
-  const heading = billing.loading ? 'Checking billing' : title(billing.cta, fallback.title)
-  const detail = billing.loading ? 'Checking your workspace billing status.' : subtitle(billing.cta, fallback.body)
+  const heading = billing.loading ? 'Checking billing' : title(billing.cta, fallback.title, billing.pooledExhausted)
+  const detail = billing.loading ? 'Checking your workspace billing status.' : subtitle(billing.cta, fallback.body, billing.pooledExhausted)
   const hint = embedded && !panelOpen ? ctaHint : ''
   const showHeader = !panelOpen && Boolean(heading || detail || hint)
 
@@ -304,7 +392,8 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
     <PaywallActions
       cta={billing.cta}
       loading={billing.loading}
-      handedOff={handedOff}
+      checking={checking}
+      retry={handedOff}
       expanded={embedded && expanded}
       stretch={subscribeLayout}
       dismissible={dismissible}
@@ -320,6 +409,7 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
           label={CTA_LABELS[billing.cta.kind]}
           onHintChange={setCtaHint}
           onPlanChange={setPlan}
+          selectedPlanId={selectedPlanId ?? undefined}
           cta={billing.cta.kind === 'add_card' ? 'add_card' : undefined}
           intent={billing.cta.kind === 'topup' ? 'topup' : undefined}
           view={view}
@@ -327,22 +417,32 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
           platformBaseUrl={platformAuth?.platformBaseUrl ?? null}
           fallbackHref={ctaHref(billing.cta)}
           onBillingUpdated={handleBillingUpdated}
-          onOpenBilling={expand}
-          onClose={collapse}
-          onOpenExternal={() => { collapse(); setHandedOff(true) }}
+          onOpenBilling={() => {
+            // The iframe reports opening its promo/top-up panel, not every
+            // checkout click. Keep that observed action explicit in analytics.
+            track('paywall_cta_clicked', { ...analytics, surface: 'embedded', action: 'open_panel' })
+            expand()
+          }}
+          onClose={() => {
+            track('paywall_billing_closed', { ...analytics, surface: 'embedded' })
+            collapse()
+          }}
+          onOpenExternal={() => {
+            track('paywall_cta_clicked', { ...analytics, surface: 'external', action: 'embed_fallback' })
+            collapse()
+            setHandedOff(true)
+            setChecking(true)
+          }}
         />
       ) : null}
       onDismiss={(kind) => {
-        track('paywall_dismissed', { ctaKind: kind, handedOff })
+        track('paywall_dismissed', { ...analytics, ctaKind: kind, handedOff })
         setDismissed(true)
       }}
       onHandOff={(kind) => {
-        track('paywall_cta_clicked', { ctaKind: kind })
+        track('paywall_cta_clicked', { ...analytics, ctaKind: kind, surface: 'external', action: 'open_billing' })
         setHandedOff(true)
-      }}
-      onRecheck={(kind) => {
-        track('paywall_recheck_clicked', { ctaKind: kind })
-        billing.recheck()
+        setChecking(true)
       }}
     />
   )
@@ -375,7 +475,7 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
           )}
         >
           {subscribeLayout ? (
-            <SubscribeBody plan={plan} hint={hint} actions={actions} expanded={panelOpen} />
+            <SubscribeBody plan={plan} hint={hint} actions={actions} expanded={panelOpen} selectedPlanId={selectedPlanId} onSelectPlan={setSelectedPlanId} />
           ) : (
             <div className={cn('flex flex-wrap items-center gap-x-6 gap-y-3', !showHeader && 'justify-end')}>
               {showHeader && (
@@ -389,6 +489,13 @@ export function PlatformPaywallCard({ message, presentation, onDisplaceChildren,
             </div>
           )}
         </div>
+        {billing.subscriptionRequired && session && (
+          <PaywallSubscriptionOptions
+            session={session}
+            analytics={analytics}
+            onResumed={handleSubscriptionResumed}
+          />
+        )}
       </div>
     </>
   )

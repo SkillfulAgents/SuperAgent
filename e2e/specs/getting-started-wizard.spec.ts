@@ -228,9 +228,16 @@ test.describe('Getting Started Wizard', () => {
     // installs it in place (no marketplace detour, no naming step — the agent
     // takes the template's own name) and finishing the install completes the
     // wizard.
+    const installed = page.waitForResponse(response =>
+      response.request().method() === 'POST' && response.url().endsWith('/api/agents/install-from-skillset'),
+    )
     await page
       .locator('[data-testid="explore-template-card"]', { hasText: 'E2E Onboarding Template' })
       .click()
+
+    const installResponse = await installed
+    expect(installResponse.ok()).toBe(true)
+    const result = await installResponse.json()
 
     // Both assertions have to be things the wizard itself cannot satisfy: the
     // install navigates to the new agent's page and the name appears in the
@@ -239,7 +246,7 @@ test.describe('Getting Started Wizard', () => {
     await wizardPage.expectNotVisible()
     await expect(
       page
-        .locator('[data-testid="app-sidebar"]')
+        .getByTestId(`agent-item-${result.slug}`)
         .getByText('E2E Onboarding Template', { exact: true }),
     ).toBeVisible()
 

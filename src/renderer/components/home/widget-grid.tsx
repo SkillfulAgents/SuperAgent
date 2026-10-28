@@ -405,6 +405,28 @@ export function WidgetBoard({
   )
 }
 
+/** One-shot action row for the card-options popover, sized to match WidgetToggleRow. */
+export function WidgetActionRow({
+  label,
+  icon,
+  onClick,
+}: {
+  label: string
+  icon: ReactNode
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex w-full items-center justify-between gap-3 rounded-sm px-1 py-1 text-xs transition-colors hover:bg-muted [&_svg]:size-3.5 [&_svg]:text-muted-foreground"
+    >
+      <span>{label}</span>
+      {icon}
+    </button>
+  )
+}
+
 /** Label + small switch row for the card-options popover (size + per-card toggles). */
 export function WidgetToggleRow({
   label,

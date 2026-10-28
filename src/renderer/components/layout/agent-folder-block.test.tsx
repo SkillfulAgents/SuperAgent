@@ -36,11 +36,16 @@ vi.mock('@renderer/components/ui/context-menu', () => ({
   ),
 }))
 
-vi.mock('@renderer/components/ui/sidebar', () => ({
-  SidebarMenuButton: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
-    <button type="button" {...props}>{children}</button>
-  ),
-}))
+vi.mock('@renderer/components/ui/sidebar', async () => {
+  const { forwardRef } = await import('react')
+  return {
+    SidebarMenuButton: forwardRef<HTMLButtonElement, React.ButtonHTMLAttributes<HTMLButtonElement>>(
+      ({ children, ...props }, ref) => (
+        <button ref={ref} type="button" {...props}>{children}</button>
+      )
+    ),
+  }
+})
 
 import { AgentDragOverlayRow, AgentFolderBlock, overlayDropKeyframes } from './agent-folder-block'
 import type { DropAnimationKeyframeResolver } from '@dnd-kit/core'
@@ -98,29 +103,46 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('AgentFolderBlock', () => {
-  it('shows the folder name, and how many agents it holds only while collapsed', () => {
-    // Expanded, the rows underneath already say how many there are, so the
-    // header drops the count; collapsed, the count is the only hint.
-    renderBlock({ isCollapsed: true })
-    const row = screen.getByTestId('agent-folder-f1')
-    expect(row).toHaveTextContent('Work')
-    expect(screen.getByTestId('agent-folder-count-f1')).toHaveTextContent('2')
-    cleanup()
-    renderBlock({ isCollapsed: false })
-    expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent('Work')
-    expect(screen.queryByTestId('agent-folder-count-f1')).not.toBeInTheDocument()
+  it('puts the chevron right after the label, not at the row end', () => {
+    renderBlock()
+    const header = screen.getByTestId('agent-folder-f1')
+    expect(header.className).not.toContain('justify-between')
+    const [label, trailing] = Array.from(header.children)
+    expect(label).toHaveTextContent('Work')
+    expect(trailing).toContainElement(screen.getByTestId('agent-folder-chevron-f1'))
   })
 
-  it('reveals the chevron only on hover, in the count’s slot', () => {
-    // The header reads as a section label at rest (name + count, no icon);
-    // hovering swaps the count for the expand/collapse affordance.
-    renderBlock({ isCollapsed: true })
-    expect(screen.getByTestId('agent-folder-count-f1').className).toContain(
-      'group-hover/folder-header:hidden'
-    )
-    const chevron = screen.getByTestId('agent-folder-chevron-f1')
-    expect(chevron.getAttribute('class')).toContain('hidden')
-    expect(chevron.getAttribute('class')).toContain('group-hover/folder-header:block')
+  it('shows the folder name and no member count, open or collapsed', () => {
+    for (const isCollapsed of [true, false]) {
+      renderBlock({ isCollapsed })
+      const header = screen.getByTestId('agent-folder-f1')
+      expect(header).toHaveTextContent(/^Work$/)
+      cleanup()
+    }
+  })
+
+  it('shows the chevron only while the header row is hovered or focused, open or collapsed', () => {
+    for (const isCollapsed of [true, false]) {
+      renderBlock({ isCollapsed, onCreateAgent: vi.fn() })
+      const cls = screen.getByTestId('agent-folder-chevron-f1').getAttribute('class') ?? ''
+      expect(cls).toContain('opacity-0')
+      expect(cls).toContain('group-has-[[data-header-zone]:hover]/folder-block:opacity-100')
+      expect(cls).toContain('group-has-[[data-header-zone]_:focus-visible]/folder-block:opacity-100')
+      // The header row is the header plus its ⋯ and +, so moving onto either
+      // keeps the chevron up.
+      expect(nodes.activator).toHaveAttribute('data-header-zone')
+      expect(screen.getByTestId('section-menu-f1')).toHaveAttribute('data-header-zone')
+      expect(screen.getByTestId('new-agent-in-folder-f1')).toHaveAttribute('data-header-zone')
+      cleanup()
+    }
+  })
+
+  it('shows the chevron while an agent is dragged over the header', () => {
+    mockUseSortable.mockImplementation((args) => sortableState(args, true))
+    renderBlock({ activeDragType: 'agent' })
+    const cls = screen.getByTestId('agent-folder-chevron-f1').getAttribute('class') ?? ''
+    expect(cls).toContain('opacity-100')
+    expect(cls).not.toContain('opacity-0')
   })
 
   it('points the chevron down while expanded and right while collapsed', () => {
@@ -199,9 +221,26 @@ describe('AgentFolderBlock', () => {
     expect(props.onToggle).toHaveBeenCalledTimes(1)
   })
 
-  it('invites a drop when it holds nothing', () => {
+  it('invites a drop when it holds nothing, as the ghost of an agent row', () => {
     renderBlock({ agentCount: 0, children: null })
-    expect(screen.getByTestId('agent-folder-empty-f1')).toBeInTheDocument()
+    const empty = screen.getByTestId('agent-folder-empty-f1')
+    expect(empty).toHaveTextContent('No agents in here yet')
+    expect(empty).toHaveTextContent('Drag in or click + to add')
+    expect(empty.className).not.toContain('border')
+    // An agent row's height and avatar inset, so it lines up with real rows.
+    expect(empty.className).toContain('h-10')
+    expect(empty.className).toContain('pl-[42px]')
+    // A ghost avatar sits in the avatar slot, decorative and dimmed.
+    const ghost = screen.getByTestId('section-ghost-f1')
+    expect(empty).toContainElement(ghost)
+    expect(ghost).toHaveAttribute('aria-hidden')
+    expect(ghost.className).toContain('opacity-45')
+  })
+
+  it('firms up the ghost while an agent is dragged over the empty section', () => {
+    mockUseDroppable.mockReturnValue({ setNodeRef: vi.fn(), isOver: true })
+    renderBlock({ agentCount: 0, children: null, activeDragType: 'agent' })
+    expect(screen.getByTestId('section-ghost-f1').className).toContain('opacity-80')
   })
 
   it('shows no placeholder once it holds something', () => {
@@ -231,12 +270,18 @@ describe('AgentFolderBlock', () => {
     expect(screen.queryByTestId('folder-name-input')).not.toBeInTheDocument()
   })
 
-  it('commits a rename on blur, the way the dashboard rename does', async () => {
+  it('commits a rename when focus leaves the input and its actions', async () => {
     const props = renderBlock()
     await userEvent.click(screen.getByTestId('rename-folder-item'))
     const input = screen.getByTestId('folder-name-input')
     await userEvent.clear(input)
     await userEvent.type(input, 'Clients')
+    await userEvent.tab()
+    expect(screen.getByTestId('folder-name-save')).toHaveFocus()
+    expect(props.onRename).not.toHaveBeenCalled()
+    await userEvent.tab()
+    expect(screen.getByTestId('folder-name-cancel')).toHaveFocus()
+    expect(props.onRename).not.toHaveBeenCalled()
     await userEvent.tab()
 
     expect(props.onRename).toHaveBeenCalledWith('Clients')
@@ -299,9 +344,71 @@ describe('AgentFolderBlock', () => {
     expect(mockUseSortable).toHaveBeenLastCalledWith(expect.objectContaining({ disabled: true }))
   })
 
-  it('opens straight into rename mode for a freshly created folder', () => {
+  it('opens a freshly added section empty, with a placeholder and the caret at the start', () => {
     renderBlock({ initialRenaming: true })
-    expect(screen.getByTestId('folder-name-input')).toBeInTheDocument()
+    const input = screen.getByTestId('folder-name-input') as HTMLInputElement
+    expect(input).toHaveValue('')
+    expect(input).toHaveAttribute('placeholder', 'Section name')
+    expect(input).toHaveFocus()
+    // A blinking caret, not a selection.
+    expect(input.selectionStart).toBe(0)
+    expect(input.selectionEnd).toBe(0)
+  })
+
+  it('keeps the default name when a fresh section is left empty', async () => {
+    const props = renderBlock({ initialRenaming: true })
+    await userEvent.type(screen.getByTestId('folder-name-input'), '{Enter}')
+    expect(props.onRename).not.toHaveBeenCalled()
+    expect(props.onRenameEnd).toHaveBeenCalled()
+  })
+
+  it('starts a rename of an existing section from its name, caret at the end', async () => {
+    renderBlock()
+    await userEvent.click(screen.getByTestId('rename-folder-item'))
+    const input = screen.getByTestId('folder-name-input') as HTMLInputElement
+    expect(input).toHaveValue('Work')
+    expect(input.selectionStart).toBe(4)
+    expect(input.selectionEnd).toBe(4)
+  })
+
+  it('draws the name box light: transparent fill, a faint 1px border', () => {
+    renderBlock({ initialRenaming: true })
+    const cls = screen.getByTestId('folder-name-input').className
+    expect(cls).toContain('bg-transparent')
+    expect(cls).toMatch(/(^|\s)border(\s|$)/)
+    expect(cls).toContain('border-black/10')
+    expect(cls).not.toContain('bg-background')
+  })
+
+  it('saves with ✓, beside the box rather than inside it', async () => {
+    const props = renderBlock({ initialRenaming: true })
+    const input = screen.getByTestId('folder-name-input')
+    await userEvent.type(input, 'Clients')
+    const save = screen.getByTestId('folder-name-save')
+    expect(input.contains(save)).toBe(false)
+    await userEvent.click(save)
+    expect(props.onRename).toHaveBeenCalledTimes(1)
+    expect(props.onRename).toHaveBeenCalledWith('Clients')
+  })
+
+  it('cancels with ✕ without the blur committing first', async () => {
+    const props = renderBlock()
+    await userEvent.click(screen.getByTestId('rename-folder-item'))
+    await userEvent.type(screen.getByTestId('folder-name-input'), ' Stuff')
+    await userEvent.click(screen.getByTestId('folder-name-cancel'))
+    expect(props.onRename).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('folder-name-input')).not.toBeInTheDocument()
+  })
+
+  it('lets keyboard users reach Cancel without saving the draft', async () => {
+    const props = renderBlock({ initialRenaming: true })
+    await userEvent.type(screen.getByTestId('folder-name-input'), 'Discard this')
+    await userEvent.tab()
+    await userEvent.tab()
+    expect(screen.getByTestId('folder-name-cancel')).toHaveFocus()
+    await userEvent.keyboard('{Enter}')
+    expect(props.onRename).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('folder-name-input')).not.toBeInTheDocument()
   })
 
   it('deletes on request', async () => {
@@ -310,10 +417,104 @@ describe('AgentFolderBlock', () => {
     expect(props.onDelete).toHaveBeenCalledTimes(1)
   })
 
+  it('creates an agent in the folder from the header +', async () => {
+    const props = renderBlock({ onCreateAgent: vi.fn() })
+    const plus = screen.getByTestId('new-agent-in-folder-f1')
+    expect(plus).toHaveAttribute('aria-label', 'New agent in Work')
+    await userEvent.click(plus)
+    expect(props.onCreateAgent).toHaveBeenCalledTimes(1)
+    // Pressing + must neither toggle the folder nor begin its drag.
+    expect(props.onToggle).not.toHaveBeenCalled()
+  })
+
+  it('shows the new-agent button at rest, not only on hover', () => {
+    renderBlock({ onCreateAgent: vi.fn() })
+    expect(screen.getByTestId('new-agent-in-folder-f1').className).not.toContain('opacity-0')
+  })
+
+  it('keeps the new-agent button outside the header button', () => {
+    // A button cannot nest inside a button, and pressing + must not begin the
+    // folder's drag — so it overlays as a sibling of the drag activator.
+    renderBlock({ onCreateAgent: vi.fn() })
+    const plus = screen.getByTestId('new-agent-in-folder-f1')
+    expect(plus.closest('button')).toBe(plus)
+    expect(screen.getByTestId('agent-folder-f1').contains(plus)).toBe(false)
+    expect(nodes.activator?.contains(plus)).toBe(false)
+    // Part of the header row, so moving onto it keeps the chevron up.
+    expect(plus).toHaveAttribute('data-header-zone')
+  })
+
+  it('renders no new-agent button without a handler, or while renaming', () => {
+    renderBlock()
+    expect(screen.queryByTestId('new-agent-in-folder-f1')).not.toBeInTheDocument()
+    cleanup()
+
+    renderBlock({ onCreateAgent: vi.fn(), initialRenaming: true })
+    expect(screen.queryByTestId('new-agent-in-folder-f1')).not.toBeInTheDocument()
+  })
+
+  it('offers a ⋯ menu left of the +, revealed on hover', () => {
+    renderBlock({ onCreateAgent: vi.fn() })
+    const dots = screen.getByTestId('section-menu-f1')
+    expect(dots).toHaveAttribute('aria-label', 'Actions for Work')
+    expect(dots).toHaveAttribute('aria-haspopup', 'menu')
+    // One slot in from the + at the header's edge.
+    expect(dots.className).toContain('right-8')
+    expect(screen.getByTestId('new-agent-in-folder-f1').className).toContain('right-[7px]')
+    expect(dots.className).toContain('opacity-0')
+    expect(dots.className).toContain('group-hover/folder-block:opacity-100')
+    // Lighter than the + until hovered itself.
+    expect(dots.className).toContain('text-sidebar-foreground/40')
+    expect(dots.className).not.toContain('text-sidebar-foreground/80')
+    expect(dots.className).toContain('hover:text-sidebar-foreground')
+    // Like the +, outside the header button and its drag activator.
+    expect(screen.getByTestId('agent-folder-f1').contains(dots)).toBe(false)
+    expect(nodes.activator?.contains(dots)).toBe(false)
+  })
+
+  it('opens the menu from the keyboard and returns focus on Escape without toggling', async () => {
+    const props = renderBlock()
+    const trigger = screen.getByTestId('section-menu-f1')
+    trigger.focus()
+    await userEvent.keyboard('{ArrowDown}')
+    expect(trigger).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('menu')).toHaveTextContent('Rename Section')
+    expect(screen.getByRole('menu')).toHaveTextContent('Delete Section')
+    await userEvent.keyboard('{Escape}')
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    expect(trigger).toHaveFocus()
+    expect(props.onToggle).not.toHaveBeenCalled()
+  })
+
+  it('has no ⋯ while renaming', () => {
+    renderBlock({ initialRenaming: true })
+    expect(screen.queryByTestId('section-menu-f1')).not.toBeInTheDocument()
+  })
+
+  it('clears room for the ⋯ and + on a section header', () => {
+    renderBlock()
+    expect(screen.getByTestId('agent-folder-f1').className).toContain('pr-14')
+  })
+
   it('highlights as a drop target when an agent is dragged over it', () => {
     mockUseSortable.mockImplementation((args) => sortableState(args, true))
     renderBlock({ activeDragType: 'agent' })
-    expect(screen.getByTestId('agent-folder-f1').className).toContain('ring-1')
+    const header = screen.getByTestId('agent-folder-f1')
+    expect(header.className).toContain('ring-1')
+    // The pointer is over the header mid-drag, so the fill must hold on hover.
+    expect(header.className).toContain('hover:bg-sidebar-accent')
+    expect(header.className).not.toContain('hover:bg-transparent')
+  })
+
+  it('has no hover or press fill at rest: it is a label, not a row', () => {
+    renderBlock()
+    const header = screen.getByTestId('agent-folder-f1')
+    expect(header.className).toContain('hover:bg-transparent')
+    expect(header.className).toContain('active:bg-transparent')
+    expect(header.className).not.toContain('hover:bg-sidebar-accent')
+    expect(header.className).not.toContain('active:bg-sidebar-accent')
+    // Out of reach of the vibrancy hover rules keyed on menu buttons.
+    expect(header).toHaveAttribute('data-sidebar', 'folder-header')
   })
 
   it('draws the insert line on the edge the drop will use', () => {
@@ -351,7 +552,6 @@ describe('AgentFolderBlock — the default folder', () => {
       onRename: vi.fn(),
       onRenameEnd: vi.fn(),
       onDelete: vi.fn(),
-      onCreateFolder: vi.fn(),
       children: <li data-testid="member-row">member</li>,
       ...overrides,
     } satisfies React.ComponentProps<typeof AgentFolderBlock>
@@ -362,8 +562,7 @@ describe('AgentFolderBlock — the default folder', () => {
   it('renders like any folder header', () => {
     renderRoot({ isCollapsed: true })
     const row = screen.getByTestId('agent-folder-root')
-    expect(row).toHaveTextContent('Your Agents')
-    expect(screen.getByTestId('agent-folder-count-root')).toHaveTextContent('2')
+    expect(row).toHaveTextContent(/^Your Agents$/)
   })
 
   it('offers no rename or delete — it is the fallback bucket', () => {
@@ -372,24 +571,25 @@ describe('AgentFolderBlock — the default folder', () => {
     expect(screen.queryByTestId('delete-folder-item')).not.toBeInTheDocument()
   })
 
-  it('hosts the new-folder button', async () => {
-    const props = renderRoot()
-    await userEvent.click(screen.getByTestId('new-folder-button'))
-    expect(props.onCreateFolder).toHaveBeenCalledTimes(1)
+  it('has no ⋯ menu: it cannot be renamed or deleted', () => {
+    renderRoot({ onCreateAgent: vi.fn() })
+    expect(screen.queryByTestId('section-menu-root')).not.toBeInTheDocument()
+    // Only the + to clear room for.
+    expect(screen.getByTestId('agent-folder-root').className).toContain('pr-8')
   })
 
-  it('keeps the new-folder button outside the header button', () => {
-    // A button cannot nest inside a button, and pressing + must not begin the
-    // folder's drag — so it overlays as a sibling of the drag activator.
-    renderRoot()
-    const plus = screen.getByTestId('new-folder-button')
-    expect(plus.closest('button')).toBe(plus)
-    expect(screen.getByTestId('agent-folder-root').contains(plus)).toBe(false)
-  })
-
-  it('does not render the new-folder button on ordinary folders', () => {
-    renderBlock()
+  it('has no new-section button: sections are made from Add section', () => {
+    renderRoot({ onCreateAgent: vi.fn() })
     expect(screen.queryByTestId('new-folder-button')).not.toBeInTheDocument()
+  })
+
+  it('hosts the new-agent button like any folder', async () => {
+    const props = renderRoot({ onCreateAgent: vi.fn() })
+    const plus = screen.getByTestId('new-agent-in-folder-root')
+    await userEvent.click(plus)
+    expect(props.onCreateAgent).toHaveBeenCalledTimes(1)
+    // Overlays the header's right edge, in the rows' status-icon column.
+    expect(plus.className).toContain('right-[7px]')
   })
 
   it('still collapses like any folder', async () => {

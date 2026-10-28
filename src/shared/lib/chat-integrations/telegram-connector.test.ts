@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { TelegramConnector } from './telegram-connector'
-import type { IncomingMessage } from './base-connector'
+import type { IncomingMessage } from './chat-agent-integration'
 import type { IntegrationResponseEvent } from '../agent-integrations/types'
 
 // ── grammY mock ────────────────────────────────────────────────────────────────

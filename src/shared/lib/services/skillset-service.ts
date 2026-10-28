@@ -15,6 +15,8 @@ import yaml from 'js-yaml'
 import pLimit from 'p-limit'
 import { getCacheDir } from '@shared/lib/config/data-dir'
 import { getEffectiveModels } from '@shared/lib/config/settings'
+import { runsHostGit } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { getConfiguredLlmClient, createSummarizerText } from '@shared/lib/llm-provider/helpers'
 import { resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import {
@@ -767,7 +769,13 @@ async function getOriginalFromGitHistory(
 // Skillset Cache Management
 // ============================================================================
 
+/** Why a skillset that needs git can't be used in the Mac App Store edition. */
+export const HOST_GIT_UNAVAILABLE = 'This needs git, which the Mac App Store edition can’t run. Public GitHub skillsets work without it.'
+
 export async function isGitAvailable(): Promise<boolean> {
+  // Not even probed in the sandbox, where macOS's git stub would offer to
+  // install the developer tools.
+  if (!runsHostGit(getServerFacts())) return false
   try {
     await execFileAsync('git', ['--version'], { timeout: 5000 })
     return true
@@ -777,6 +785,9 @@ export async function isGitAvailable(): Promise<boolean> {
 }
 
 export async function ensureGitInstalled(): Promise<void> {
+  if (!runsHostGit(getServerFacts())) {
+    throw new Error(HOST_GIT_UNAVAILABLE)
+  }
   if (!(await isGitAvailable())) {
     throw new Error(
       'Git is not installed. Install it from https://git-scm.com/install/mac'
@@ -934,17 +945,35 @@ export async function validateSkillsetUrl(
   }
 }
 
+// Background refreshes (opening an agent) reuse a cache refreshed this recently.
+// Each public-skillset refresh spends one of GitHub's 60 unauthenticated API
+// calls per hour, shared by everyone behind the same IP.
+export const BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS = 15 * 60_000
+const lastSkillsetRefreshAt = new Map<string, number>()
+
 /**
  * Refresh a cached skillset repo (git pull) and return the updated index.
+ * With `maxAgeMs`, a cache refreshed within that window is returned as is.
  */
-export async function refreshSkillset(ref: SkillsetRef): Promise<SkillsetIndex> {
+export async function refreshSkillset(
+  ref: SkillsetRef,
+  options: { maxAgeMs?: number } = {},
+): Promise<SkillsetIndex> {
   const hostingProvider = getSkillsetProvider(ref.provider)
   const repoDir = getSkillsetRepoDir(hostingProvider.getEffectiveRepoId(ref))
+
+  const refreshedAt = lastSkillsetRefreshAt.get(repoDir)
+  if (options.maxAgeMs !== undefined && refreshedAt !== undefined && Date.now() - refreshedAt < options.maxAgeMs) {
+    return readIndexJson(repoDir)
+  }
 
   const inFlight = activeSkillsetRefreshes.get(repoDir)
   if (inFlight) return inFlight
 
-  const refresh = refreshSkillsetCache(ref, hostingProvider, repoDir)
+  const refresh = refreshSkillsetCache(ref, hostingProvider, repoDir).then((index) => {
+    lastSkillsetRefreshAt.set(repoDir, Date.now())
+    return index
+  })
   activeSkillsetRefreshes.set(repoDir, refresh)
   try {
     return await refresh
@@ -1052,6 +1081,7 @@ export async function getSkillsetIndex(
  */
 export async function removeSkillsetCache(ref: Pick<SkillsetRef, 'skillsetId' | 'provider' | 'providerData'>): Promise<void> {
   const repoDir = getSkillsetRepoDirForRef(ref)
+  lastSkillsetRefreshAt.delete(repoDir)
   if (await directoryExists(repoDir)) {
     await fs.promises.rm(repoDir, { recursive: true, force: true })
   }
@@ -1365,13 +1395,15 @@ export async function getAgentSkillsWithStatus(
 export async function refreshAgentSkills(
   agentSlug: string,
   skillsets: SkillsetConfig[],
+  options: { background?: boolean } = {},
 ): Promise<void> {
   const configMap = new Map<string, SkillsetConfig>()
   for (const ss of skillsets) configMap.set(ss.id, ss)
+  const maxAgeMs = options.background ? BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS : undefined
 
   for (const ss of skillsets) {
     try {
-      await refreshSkillset(toSkillsetRefFromConfig(ss))
+      await refreshSkillset(toSkillsetRefFromConfig(ss), { maxAgeMs })
     } catch (error) {
       console.warn(`Failed to refresh skillset ${ss.id}:`, error)
       const msg = error instanceof Error ? error.message : String(error)
@@ -1587,7 +1619,7 @@ async function generatePRSuggestions(
 
   let client
   try {
-    client = getConfiguredLlmClient()
+    client = await getConfiguredLlmClient()
   } catch {
     console.warn('[PR suggestions] No LLM API key configured')
     return fallback
@@ -1811,7 +1843,7 @@ async function generatePublishSuggestions(
 
   let client
   try {
-    client = getConfiguredLlmClient()
+    client = await getConfiguredLlmClient()
   } catch {
     console.warn('[Publish suggestions] No LLM API key configured')
     return fallback

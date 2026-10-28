@@ -1,6 +1,11 @@
+import type { ProviderUsage } from './usage-schema'
+import type { LlmProxyConfig } from '../../../../agent-container/src/llm-proxy-schema'
+import type { OAuthCredential } from './oauth-schema'
 import Anthropic from '@anthropic-ai/sdk'
 import { getSettings, type ApiKeySettings, type ApiKeyStatus } from '../config/settings'
+import type { ConnectionConfig } from './connection-schema'
 import type { ModelDefinition, ModelSearchResult } from './model-catalog-schema'
+import type { ModelAvailability } from './model-availability-schema'
 import type { CatalogDefaultModels } from './model-catalog-defaults'
 import type { LlmProviderId } from './provider-types'
 import { defaultParseErrorResponse, type ProviderErrorPresentation } from './error-presentation'
@@ -40,42 +45,84 @@ export interface AgentIdentity {
   name?: string
 }
 
+export interface ProviderConfiguration {
+  apiFormat?: ConnectionConfig['apiFormat']
+  chatTokenLimitField?: ConnectionConfig['chatTokenLimitField']
+  oauth?: OAuthCredential
+  resolveCredential?: (rejectedGeneration?: number) => Promise<OAuthCredential & { generation: number }>
+  runtimeEnv?: Record<string, string>
+  apiKeys: ApiKeySettings & ConnectionConfig['apiKeys']
+  env: Record<string, string | undefined>
+}
+
 export abstract class BaseLlmProvider {
+  constructor(protected readonly configuration?: ProviderConfiguration) {}
+
+  protected configuredKeys(): ProviderConfiguration['apiKeys'] {
+    return this.configuration?.apiKeys ?? getSettings().apiKeys ?? {}
+  }
+
+  protected envValue(name: string): string | undefined {
+    return this.configuration ? this.configuration.runtimeEnv?.[name] ?? this.configuration.env[name] : process.env[name]
+  }
+
   abstract readonly id: LlmProviderId
   abstract readonly name: string
   abstract readonly defaultModelOptions: readonly ProviderDefaultModelOption[]
   abstract readonly catalogDefaultModels: CatalogDefaultModels
 
-  /** Which field in ApiKeySettings stores this provider's key. */
-  protected abstract readonly settingsKeyField: keyof ApiKeySettings
+  /** Which field in the provider credentials stores this provider's key. */
+  protected abstract readonly settingsKeyField: keyof ProviderConfiguration['apiKeys'] | undefined
   /** Environment variable name for this provider's key. */
   protected abstract readonly envVarName: string
   /** Whether this provider can discover remote catalog models by search query. */
   readonly supportsModelSearch: boolean = false
 
+  /** Whether this provider supports host-side Messages API calls (including summaries). */
+  readonly supportsDirectApi: boolean = true
+
+  readonly supportsUsage: boolean = false
+
+  /** Whether model availability may need a provider-backed policy request. */
+  readonly supportsModelAvailability: boolean = false
+
+  /** Read-only allowance snapshot; never gates inference or model selection. */
+  async getUsage(): Promise<ProviderUsage> {
+    return { status: 'unsupported', observedAt: new Date().toISOString(), limits: [] }
+  }
+
   /**
-   * Value of `ENABLE_TOOL_SEARCH` for containers on this provider, or
-   * undefined to leave the variable unset so the CLI decides for itself.
+   * Value of `ENABLE_TOOL_SEARCH` for a session on `model` (the provider-wide
+   * value when no model is given, as for the container-level env).
    *
    * Tool search omits tool definitions from the request and loads them back on
    * demand, which the endpoint has to expand: the CLI re-sends a loaded tool
    * with `defer_loading: true`, and since agent SDK 0.3.219 it also sends a
    * `DeferredToolPlaceholder` tool carrying that flag on EVERY request.
-   * Endpoints that don't understand the flag reject the whole request
-   * (OpenRouter 400s it for every non-Anthropic model), so only providers whose
-   * endpoint handles it turn this on. Left unset, the CLI disables tool search
-   * for any base URL that isn't a first-party Anthropic host — the right
-   * default for endpoints we can't vouch for.
+   * Endpoints that don't understand the flag reject the request (OpenRouter
+   * 400s it for every non-Anthropic model). Keeping tool definitions out of
+   * every request is a large share of a session's input tokens, so every
+   * endpoint that expands deferred tools must say 'true'.
+   *
+   * Every provider answers explicitly: since CLI 2.1.304 an unset variable
+   * means ON behind any custom base URL (a 400/422 is then retried without
+   * deferred tools), where it used to mean off for anything but
+   * api.anthropic.com.
    */
-  readonly toolSearchEnv: 'true' | undefined = undefined
+  toolSearchEnv(_model?: string): 'true' | 'false' {
+    return 'false'
+  }
+
+  /** Media-generation instructions for the agent, added only to sessions using this provider. */
+  readonly mediaPrompt: string | undefined = undefined
 
   /** Check whether an API key is configured and its source. */
   getApiKeyStatus(): ApiKeyStatus {
-    const settings = getSettings()
-    if (settings.apiKeys?.[this.settingsKeyField]) {
+    const settings = { apiKeys: this.configuredKeys() }
+    if ((this.settingsKeyField ? settings.apiKeys?.[this.settingsKeyField] : undefined)) {
       return { isConfigured: true, source: 'settings' }
     }
-    if (process.env[this.envVarName]) {
+    if (this.envValue(this.envVarName)) {
       return { isConfigured: true, source: 'env' }
     }
     return { isConfigured: false, source: 'none' }
@@ -83,10 +130,10 @@ export abstract class BaseLlmProvider {
 
   /** Get the effective API key (settings take precedence over env var). */
   getEffectiveApiKey(): string | undefined {
-    const settings = getSettings()
-    const fromSettings = settings.apiKeys?.[this.settingsKeyField]
+    const settings = { apiKeys: this.configuredKeys() }
+    const fromSettings = (this.settingsKeyField ? settings.apiKeys?.[this.settingsKeyField] : undefined)
     if (fromSettings) return fromSettings
-    return process.env[this.envVarName]
+    return this.envValue(this.envVarName)
   }
 
   /** Create an Anthropic-compatible SDK client configured for this provider. */
@@ -100,6 +147,24 @@ export abstract class BaseLlmProvider {
    * See ./model-catalog.ts for how a stored selection resolves against this.
    */
   abstract getBuiltinCatalog(): ModelDefinition[]
+
+  /**
+   * Current restrictions for a connection's catalog, for the account the
+   * current request or run is attributed to. Null means unrestricted. Model
+   * selection treats an unavailable model like an unset one. `fresh` re-reads
+   * the provider's source instead of its cache.
+   */
+  async getModelAvailability(_catalog: ModelDefinition[], _options: { fresh?: boolean } = {}): Promise<ModelAvailability | null> {
+    return null
+  }
+
+  /** A live turn failed with this error; a provider may drop state it proves stale. */
+  noteTurnError(_status: number | undefined, _body: unknown): void {}
+
+  /** Public cache identity for availability; changes when provider account context changes. */
+  getModelAvailabilityRevision(): string | null {
+    return null
+  }
 
   /**
    * Get the default model for a given purpose, as a bare family alias
@@ -137,6 +202,8 @@ export abstract class BaseLlmProvider {
     }
   }
 
+  async getContainerProxyConfig(): Promise<LlmProxyConfig | undefined> { return undefined }
+
   /** Get env vars to inject into agent containers. */
   abstract getContainerEnvVars(agent?: AgentIdentity): Promise<Record<string, string | undefined>>
 
@@ -168,7 +235,7 @@ export abstract class BaseLlmProvider {
     apiErrorCode: string | null | undefined,
   ): ProviderErrorPresentation | null {
     if (!isUpstreamApiErrorCode(apiErrorCode)) return null
-    const specialized = this.parseErrorResponseOverride(status, body)
+    const specialized = this.parseErrorResponseOverride(status, body, apiErrorCode)
     if (specialized) return specialized
     return PROVIDER_ERROR_CODES.has(apiErrorCode) ? defaultParseErrorResponse(status, body) : null
   }
@@ -181,6 +248,7 @@ export abstract class BaseLlmProvider {
   protected parseErrorResponseOverride(
     _status: number | undefined,
     _body: unknown,
+    _apiErrorCode?: string,
   ): ProviderErrorPresentation | null {
     return null
   }

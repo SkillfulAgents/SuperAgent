@@ -29,14 +29,22 @@ import {
   INDICATOR_TICK_MS,
   INDICATOR_SLEEP_MS,
   type ManagedConnector,
-} from './chat-integration-manager'
-import { MockChatClientConnector } from './mock-connector'
-import { messagePersister } from '@shared/lib/container/message-persister'
-import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-memory-session-store'
-
-// The registry attaches the real stores; these tests drive the persister alone.
-messagePersister.attachSessionStores(createInMemorySessionStore)
+} from './chat-delivery'
+import { MockChatAgentIntegration } from './mock-connector'
+import { agentRegistry, type SessionOps } from '@shared/lib/agent-actor'
+import type { SessionActivity } from '@shared/lib/types/agent'
 import type { ChatIntegration } from '@shared/lib/db/schema'
+
+/**
+ * Stand in for the session's live activity, which every tick reads through its
+ * actor (`sessions.live`): set what it answers with `mockReturnValue`.
+ */
+const spyActivity = () => {
+  const activity = vi.fn<() => SessionActivity>()
+  vi.spyOn(agentRegistry.get('sleep-agent').sessions, 'live').mockImplementation(async () =>
+    ({ activity: activity() }) as Awaited<ReturnType<SessionOps['live']>>)
+  return activity
+}
 
 function makeManaged(connector: ManagedConnector['connector'], chatId: string): ManagedConnector {
   return {
@@ -71,9 +79,9 @@ describe('startIndicatorTick: create-if-absent', () => {
   it('a second call while running does NOT restart the interval (no burst-starvation)', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-a')
-      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('working')
+      spyActivity().mockReturnValue('working')
 
       startIndicatorTick(managed, 'sess-a')             // interval scheduled to fire at t=1000
       await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS / 2)   // t=500
@@ -90,9 +98,9 @@ describe('startIndicatorTick: create-if-absent', () => {
   })
 
   it('does not create a second interval when one already runs', () => {
-    const connector = new MockChatClientConnector()
+    const connector = new MockChatAgentIntegration()
     const managed = makeManaged(connector, 'chat-a')
-    vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('working')
+    spyActivity().mockReturnValue('working')
 
     startIndicatorTick(managed, 'sess-a')
     const first = managed.indicatorTickTimer
@@ -108,9 +116,9 @@ describe('scheduleIndicatorSleep', () => {
   it('stops the tick after the debounce when the session is non-busy', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-s')
-      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('idle')
+      spyActivity().mockReturnValue('idle')
 
       startIndicatorTick(managed, 'sess-s')
       scheduleIndicatorSleep(managed)
@@ -127,11 +135,11 @@ describe('scheduleIndicatorSleep', () => {
   it('GUARD: never stops the tick if the session is still busy when the sleep fires', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-s')
       // The session is genuinely working (e.g. an auto-approved script run that showed a
       // card but never went 'awaiting'), so the debounce must NOT strand it.
-      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('working')
+      spyActivity().mockReturnValue('working')
       managed.sessionId = 'sess-s'
       // A non-firing tick handle so the sleep's fire-time guard is what's under test here,
       // isolated from the tick's own busy-cancel (which the tick-owner suite covers). The
@@ -149,7 +157,7 @@ describe('scheduleIndicatorSleep', () => {
   })
 
   it('is a no-op when no tick is running (nothing to sleep)', () => {
-    const connector = new MockChatClientConnector()
+    const connector = new MockChatAgentIntegration()
     const managed = makeManaged(connector, 'chat-s')
     scheduleIndicatorSleep(managed)
     expect(managed.sleepTimer).toBeFalsy() // no dangling timer
@@ -158,9 +166,9 @@ describe('scheduleIndicatorSleep', () => {
   it('a fresh event cancels the pending sleep (wake keeps the tick alive)', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-s')
-      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('working')
+      spyActivity().mockReturnValue('working')
 
       startIndicatorTick(managed, 'sess-s')
       scheduleIndicatorSleep(managed)
@@ -186,9 +194,9 @@ describe('the tick arms/cancels its own sleep', () => {
   it('arms a sleep on the first non-busy tick, then stops after the debounce', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-t')
-      const activity = vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('working')
+      const activity = spyActivity().mockReturnValue('working')
 
       startIndicatorTick(managed, 'sess-t')                  // armed mid-turn (busy)
       await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)   // a busy tick arms NO sleep
@@ -209,9 +217,9 @@ describe('the tick arms/cancels its own sleep', () => {
   it('a busy tick cancels a pending sleep — the window is CONTINUOUS, not cumulative', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-t')
-      const activity = vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('idle')
+      const activity = spyActivity().mockReturnValue('idle')
 
       startIndicatorTick(managed, 'sess-t')
       await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)   // non-busy tick → arms the sleep
@@ -242,9 +250,9 @@ describe('the tick arms/cancels its own sleep', () => {
   it('sleeps during a long pure-text stream, then RE-WAKES when work resumes (load-bearing exit)', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-st')
-      const activity = vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('streaming')
+      const activity = spyActivity().mockReturnValue('streaming')
 
       startIndicatorTick(managed, 'sess-st')                // armed; the session streams text (non-busy)
       await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)  // streaming tick → arms the sleep
@@ -267,9 +275,9 @@ describe('the tick arms/cancels its own sleep', () => {
   it('GUARD at the real t=N boundary: a busy resume in the last sub-tick keeps the tick (order-independent)', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-b')
-      const activity = vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('idle')
+      const activity = spyActivity().mockReturnValue('idle')
 
       startIndicatorTick(managed, 'sess-b')
       await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)   // arms the sleep (~t=1000, deadline ~t=11000)
@@ -289,9 +297,9 @@ describe('the tick arms/cancels its own sleep', () => {
   it('ARM-ONCE: a steady non-busy stream never resets the debounce (same timer, fires on time)', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-t')
-      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('idle')
+      spyActivity().mockReturnValue('idle')
 
       startIndicatorTick(managed, 'sess-t')
       await vi.advanceTimersByTimeAsync(INDICATOR_TICK_MS)   // arms the sleep (~t=1000)
@@ -316,9 +324,9 @@ describe('stopIndicatorTick clears the pending sleep', () => {
   it('an orphaned sleep from a torn-down subscription never fires to kill a new tick', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-o')
-      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('working')
+      spyActivity().mockReturnValue('working')
 
       startIndicatorTick(managed, 'sess-o')
       scheduleIndicatorSleep(managed)  // a sleep is now pending
@@ -342,10 +350,10 @@ describe('settle handlers clear instantly but defer the sleep to the tick', () =
   it('session_idle clears now and schedules NO sleep itself — the tick arms it next tick', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-i')
       managed.indicatorShown = true
-      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('idle')
+      spyActivity().mockReturnValue('idle')
 
       startIndicatorTick(managed, 'sess-i')                     // tick armed (mid-turn)
       await processSSEEvent(managed, { type: 'session_idle' })  // settle: clears, owns no sleep
@@ -364,10 +372,10 @@ describe('settle handlers clear instantly but defer the sleep to the tick', () =
   it('session_error clears now and schedules NO sleep itself — the tick arms it next tick', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-e')
       managed.indicatorShown = true
-      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('idle')
+      spyActivity().mockReturnValue('idle')
 
       startIndicatorTick(managed, 'sess-e')
       await processSSEEvent(managed, { type: 'session_error', apiErrorCode: null })
@@ -386,11 +394,11 @@ describe('settle handlers clear instantly but defer the sleep to the tick', () =
   it('an auto-approved script_run card never sleeps the still-working session (BLOCKER)', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-r')
       // Auto-approved host script: a card is broadcast but the session never goes
       // 'awaiting' — it stays 'working' while the script runs.
-      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('working')
+      spyActivity().mockReturnValue('working')
 
       startIndicatorTick(managed, 'sess-r')
       await processSSEEvent(managed, { type: 'script_run_request', toolUseId: 'tu-1', autoApproved: true, script: 'npm test' })
@@ -407,9 +415,9 @@ describe('settle handlers clear instantly but defer the sleep to the tick', () =
   it('a real awaiting card lets the tick sleep (parked on the user, nothing to show)', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-q')
-      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('awaiting')
+      spyActivity().mockReturnValue('awaiting')
 
       startIndicatorTick(managed, 'sess-q')
       await processSSEEvent(managed, { type: 'question_request', toolUseId: 'tu-1', questions: [{ question: 'Which DB?' }] })
@@ -427,7 +435,7 @@ describe('settle handlers clear instantly but defer the sleep to the tick', () =
 
 describe('cancelIndicatorSleep', () => {
   it('clears a pending sleep and is safe to call when none is pending', () => {
-    const connector = new MockChatClientConnector()
+    const connector = new MockChatAgentIntegration()
     const managed = makeManaged(connector, 'chat-c')
     cancelIndicatorSleep(managed) // no-op, no throw
     expect(managed.sleepTimer).toBeFalsy()
@@ -447,7 +455,7 @@ describe('cancelIndicatorSleep', () => {
 
 describe('armIndicatorIfBusy', () => {
   it('arms the tick AND paints immediately on a cold arm when busy (no ≤1s blank)', () => {
-    const connector = new MockChatClientConnector()
+    const connector = new MockChatAgentIntegration()
     const managed = makeManaged(connector, 'chat-arm')
     armIndicatorIfBusy(managed, 'sess-arm', 'working')
     expect(managed.indicatorTickTimer).toBeTruthy()           // armed
@@ -456,7 +464,7 @@ describe('armIndicatorIfBusy', () => {
   })
 
   it('does NOT arm a tick when the snapshot is non-busy (no stray-event leak)', () => {
-    const connector = new MockChatClientConnector()
+    const connector = new MockChatAgentIntegration()
     const managed = makeManaged(connector, 'chat-arm')
     armIndicatorIfBusy(managed, 'sess-arm', 'idle')
     armIndicatorIfBusy(managed, 'sess-arm', 'streaming')
@@ -468,9 +476,9 @@ describe('armIndicatorIfBusy', () => {
   it('a stray non-busy arm leaves a pending sleep intact (the tick still sleeps)', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-arm')
-      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('idle')
+      spyActivity().mockReturnValue('idle')
       startIndicatorTick(managed, 'sess-arm')
       scheduleIndicatorSleep(managed)
       expect(managed.sleepTimer).toBeTruthy()
@@ -486,7 +494,7 @@ describe('armIndicatorIfBusy', () => {
   })
 
   it('does not double-arm or repaint when a tick already runs', () => {
-    const connector = new MockChatClientConnector()
+    const connector = new MockChatAgentIntegration()
     const managed = makeManaged(connector, 'chat-arm')
     armIndicatorIfBusy(managed, 'sess-arm', 'working')
     const handle = managed.indicatorTickTimer
@@ -499,9 +507,9 @@ describe('armIndicatorIfBusy', () => {
   it('a busy arm cancels a pending sleep (re-activation keeps the tick alive)', async () => {
     vi.useFakeTimers()
     try {
-      const connector = new MockChatClientConnector()
+      const connector = new MockChatAgentIntegration()
       const managed = makeManaged(connector, 'chat-arm')
-      vi.spyOn(messagePersister, 'getSessionActivity').mockReturnValue('working')
+      spyActivity().mockReturnValue('working')
       startIndicatorTick(managed, 'sess-arm')
       scheduleIndicatorSleep(managed)
       expect(managed.sleepTimer).toBeTruthy()

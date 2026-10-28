@@ -6,10 +6,10 @@ import { pipeline } from 'stream/promises'
 
 export const WORKSPACE_ROOT = '/workspace'
 
-type WorkspaceFileStatus = 400 | 403 | 404 | 409
+type WorkspaceFileStatus = 400 | 403 | 404 | 409 | 416
 
 export class WorkspaceFileError extends Error {
-  constructor(message: string, readonly status: WorkspaceFileStatus) {
+  constructor(message: string, readonly status: WorkspaceFileStatus, readonly headers: Record<string, string> = {}) {
     super(message)
     this.name = 'WorkspaceFileError'
   }
@@ -23,7 +23,14 @@ export interface WorkspaceFileMetadata {
   modifiedAt: Date
 }
 
+export interface ByteRange {
+  start: number
+  end: number
+}
+
 export interface OpenWorkspaceFile extends WorkspaceFileMetadata {
+  /** Set when a byte range was served; the stream holds only those bytes. */
+  range?: ByteRange
   stream: Readable
 }
 
@@ -145,10 +152,34 @@ export async function resolveWorkspaceRegularFile(
   }
 }
 
+function unsatisfiable(size: number): WorkspaceFileError {
+  return new WorkspaceFileError('Requested range not satisfiable', 416, { 'Content-Range': `bytes */${size}` })
+}
+
+/**
+ * One `bytes=` range from a Range header, cut at the end of the file. Null
+ * serves the whole file: no header, or a form this server doesn't serve
+ * (several ranges, other units), which RFC 9110 allows a server to ignore.
+ */
+export function parseByteRange(header: string | undefined, size: number): ByteRange | null {
+  const match = header?.trim().match(/^bytes=(\d*)-(\d*)$/)
+  if (!match || (!match[1] && !match[2])) return null
+  if (!match[1]) {
+    const length = Number(match[2])
+    if (length === 0 || size === 0) throw unsatisfiable(size)
+    return { start: Math.max(0, size - length), end: size - 1 }
+  }
+  const start = Number(match[1])
+  if (match[2] && Number(match[2]) < start) return null
+  if (start >= size) throw unsatisfiable(size)
+  return { start, end: match[2] ? Math.min(Number(match[2]), size - 1) : size - 1 }
+}
+
 /** Open a confined regular file as bytes, with metadata from the opened handle. */
 export async function openWorkspaceFile(
   rawPath: string,
   workspaceRoot = WORKSPACE_ROOT,
+  rangeHeader?: string,
 ): Promise<OpenWorkspaceFile> {
   const resolved = await resolveWorkspaceRegularFile(rawPath, workspaceRoot)
   let handle: fs.promises.FileHandle | undefined
@@ -159,9 +190,10 @@ export async function openWorkspaceFile(
     if (!stats.isFile()) {
       throw new WorkspaceFileError('Path is not a regular file', 400)
     }
+    const range = parseByteRange(rangeHeader, stats.size) ?? undefined
     const stream = stats.size === 0
       ? Readable.from([])
-      : handle.createReadStream({ start: 0, end: stats.size - 1 })
+      : handle.createReadStream(range ?? { start: 0, end: stats.size - 1 })
     if (stats.size === 0) {
       await handle.close()
       handle = undefined
@@ -170,6 +202,7 @@ export async function openWorkspaceFile(
       ...resolved,
       size: stats.size,
       modifiedAt: stats.mtime,
+      range,
       // Bind the response to the opened snapshot size. A concurrently growing
       // file must not emit bytes beyond the advertised Content-Length.
       stream,
@@ -275,16 +308,25 @@ export async function writeWorkspaceFile(
         if (existing) await fs.promises.chmod(tempPath, existing.mode & 0o7777)
         await fs.promises.rename(tempPath, destination)
       } else {
-        // The atomic link is the collision check, including competing writers
-        // that do not use this helper. Never replace their destination.
+        // The exclusive create is the collision check, then the staged file
+        // replaces that empty claim. This needs no hard link, which S3 Files
+        // refuses. A competing writer that also creates exclusively is never
+        // replaced; one that writes the name between claim and rename is.
         try {
-          await fs.promises.link(tempPath, destination)
+          await fs.promises.writeFile(destination, '', { flag: 'wx' })
         } catch (error) {
           if (errorCode(error) !== 'EEXIST') throw error
           if (collisionSafe) continue
           throw new WorkspaceFileError('File already exists', 409)
         }
-        await fs.promises.unlink(tempPath)
+        try {
+          await fs.promises.rename(tempPath, destination)
+        } catch (error) {
+          // Remove the claim only while it is still empty.
+          const claim = await fs.promises.lstat(destination).catch(() => null)
+          if (claim?.size === 0) await fs.promises.unlink(destination).catch(() => {})
+          throw error
+        }
       }
       tempPath = undefined
       const stats = await fs.promises.stat(destination)

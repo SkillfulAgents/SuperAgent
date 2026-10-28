@@ -6,27 +6,30 @@
  */
 
 import { AgentIntegration } from '../agent-integrations/agent-integration'
-import type { AgentIntegrationRecord, AgentIntegrationDefinition, IntegrationInputEvent, IntegrationInputContext, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy, IntegrationOutput, IntegrationTool, PreparedIntegrationInput } from '../agent-integrations/types'
+import type { AgentIntegrationRecord, AgentIntegrationDefinition, IntegrationInputEvent, IntegrationInputContext, IntegrationInputResult, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy, IntegrationOutput, IntegrationTool, PreparedIntegrationInput } from '../agent-integrations/types'
 import { ChatInputBuilder } from './chat-input'
 import { BUSY_ACTIVITIES, armIndicatorIfBusy, clearIndicator, stopIndicatorTick, processSSEEvent, deriveDisplayName, isDisplayNameFallback, type ManagedConnector } from './chat-delivery'
-import { agentRegistry } from '../agent-actor'
 import { decideInboundAccess, getChatAccess, markNoticeSent } from '../services/chat-integration-access-service'
 import { consumeOrCancelAwaitingInput } from './resolve-awaiting-input'
 import { reviewCardFromRegistry } from './request-card'
 import { chatDefinitions } from './definitions'
 import { chatIntegrationPolicy, chatSettings } from './chat-policy'
 import { z } from 'zod'
-import type { UserRequestEvent } from '@shared/lib/tool-definitions/types'
+import type { UserRequestEvent } from '@shared/lib/tools/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
 import type { ChatProvider } from './config-schema'
+import { incomingMessageSchema } from './message-schema'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
+import {
+  INTEGRATION_MESSAGE_LIMITS, clampIntegrationText, integrationTimestamp, safeIntegrationLink,
+  type IntegrationMessagePresentation, type IntegrationMessageSource,
+} from '../agent-integrations/message-display-schema'
 
 // ── Types ───────────────────────────────────────────────────────────────
 
-export type ChatIntegrationStatus = 'active' | 'paused' | 'error' | 'disconnected'
-
 export interface IncomingMessage {
-  externalMessageId: string    // Platform-specific ID (Telegram update_id, Slack message ts)
+  externalMessageId: string    // Platform-specific ID (Telegram message_id, unique per chat; Slack message ts)
   text: string
   chatId: string               // Telegram chat_id or Slack channel_id
   userId: string               // Telegram user_id or Slack user_id
@@ -35,6 +38,18 @@ export interface IncomingMessage {
   chatName?: string            // Display name of the chat/channel (for session naming)
   files?: { name: string; url: string; mimeType?: string }[]
   timestamp: Date
+  /** Shown in the app only; never part of the agent's input. Links must be public https. */
+  display?: ChatMessageDisplayHints
+}
+
+/** Provider extras for the app's message card. */
+export interface ChatMessageDisplayHints {
+  /** What the person wrote, when `text` also carries injected context (earlier thread messages). */
+  requestText?: string
+  avatarUrl?: string
+  messageUrl?: string
+  conversationUrl?: string
+  workspace?: string
 }
 
 export interface OutgoingMessage {
@@ -100,6 +115,14 @@ export type ChatConnectorClass = Pick<
   'generateSystemPrompt' | 'discoveryCapabilities' | 'classifyChatId'
 >
 
+const CHAT_EVENT_LABELS: Record<IntegrationMessageSource['kind'], string> = {
+  direct: 'Direct message',
+  group: 'Group message',
+  channel: 'Channel message',
+  thread: 'Thread reply',
+  task: 'Message',
+}
+
 // ── Abstract class ──────────────────────────────────────────────────────
 
 export abstract class ChatAgentIntegration extends AgentIntegration {
@@ -118,7 +141,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
 
   /**
    * Discovery features this provider supports, advertised to agents via
-   * list_chat_integrations so tools that need a capability are only ever
+   * list_agent_integrations so tools that need a capability are only ever
    * suggested where it exists. Static (a property of the provider, not a
    * connection) so listings can label integrations without a live connector.
    * Undefined/empty means no discovery support — the graceful default.
@@ -234,7 +257,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
   }
 
   resolveRoute(event: IntegrationInputEvent): IntegrationRoute {
-    const message = event.payload as IncomingMessage
+    const message = incomingMessageSchema.parse(event.payload)
     let displayName = deriveDisplayName(message)
     if (message.chatId.includes('|')) {
       const date = message.timestamp.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
@@ -251,7 +274,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
   }
 
   async authorize(context: IntegrationSessionContext, event: IntegrationInputEvent): Promise<boolean> {
-    const message = event.payload as IncomingMessage
+    const message = incomingMessageSchema.parse(event.payload)
     const integrationId = context.integration.id
     const chatId = context.externalId
     const decision = await decideInboundAccess({ integrationId, externalChatId: chatId, chatType: message.chatType,
@@ -284,24 +307,50 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
   }
 
   async prepareInput(event: IntegrationInputEvent, context: IntegrationInputContext): Promise<PreparedIntegrationInput> {
-    const message = event.payload as IncomingMessage
-    const { text, failedFiles } = await this.inputBuilder.buildMessageContent(context.integration, message)
+    const message = incomingMessageSchema.parse(event.payload)
+    const { text, failedFiles, request } = await this.inputBuilder.buildMessageContent(context.integration, message)
     const skip = failedFiles.length > 0 && !text.trim()
     if (failedFiles.length && (await this.isAllowed(context))) {
       await this.sendMessage(context.externalId, { text: `Could not download file(s): ${failedFiles.join(', ')}. ${skip ? 'Message was not sent to the agent.' : 'Your text message will still be sent.'}\n\nIf this is a Slack bot, ensure the \`files:read\` scope is added and the app is reinstalled.` })
     }
-    return { text, skip, systemPrompt: (this.constructor as ChatConnectorClass).generateSystemPrompt?.(message) }
+    return { text, skip, systemPrompt: (this.constructor as ChatConnectorClass).generateSystemPrompt?.(message), display: this.describeMessage(message, request) }
+  }
+
+  /** The app's card for an incoming chat message: who wrote what, where. */
+  protected describeMessage(message: IncomingMessage, request: string): IntegrationMessagePresentation {
+    const conversation = (this.constructor as ChatConnectorClass).classifyChatId?.(message)
+    const kind = !conversation || conversation === 'dm' ? 'direct' : conversation
+    const hints = message.display
+    const author = message.userName || message.userId
+    return {
+      event: { type: 'message', label: CHAT_EVENT_LABELS[kind] },
+      request: {
+        text: clampIntegrationText(request, INTEGRATION_MESSAGE_LIMITS.requestText),
+        ...(author ? { author: { name: clampIntegrationText(author, INTEGRATION_MESSAGE_LIMITS.name), avatarUrl: safeIntegrationLink(hints?.avatarUrl) } } : {}),
+        sentAt: integrationTimestamp(message.timestamp),
+        url: safeIntegrationLink(hints?.messageUrl),
+      },
+      source: {
+        kind,
+        title: message.chatName ? clampIntegrationText(message.chatName, INTEGRATION_MESSAGE_LIMITS.label) : undefined,
+        url: safeIntegrationLink(hints?.conversationUrl),
+        workspace: hints?.workspace ? clampIntegrationText(hints.workspace, INTEGRATION_MESSAGE_LIMITS.label) : undefined,
+      },
+    }
   }
 
   async consumeInput(event: IntegrationInputEvent, context: IntegrationInputContext, input: PreparedIntegrationInput): Promise<boolean> {
     if (!context.sessionId) return false
-    const message = event.payload as IncomingMessage
+    const message = incomingMessageSchema.parse(event.payload)
     const { actor } = context
+    const { sessionId } = context
     return consumeOrCancelAwaitingInput({
-      sessionId: context.sessionId, agentSlug: context.integration.agentSlug, chatId: context.externalId,
-      messageText: input.text, answerText: message.text, hasFiles: !!message.files?.length,
-      persister: { isSessionAwaitingInput: (_slug, id) => actor.sessions.isAwaitingInput(id), cancelAwaitingInput: (_slug, id) => actor.inputs.cancelAwaiting(id) },
-      registry: { getOpenRequestsForSession: (_slug, id) => actor.inputs.open(id) }, connector: this,
+      chatId: context.externalId, messageText: input.text, answerText: message.text, hasFiles: !!message.files?.length,
+      session: {
+        live: () => actor.sessions.live(sessionId),
+        cancelAwaiting: () => actor.inputs.cancelAwaiting(sessionId),
+      },
+      connector: this,
     })
   }
 
@@ -326,7 +375,10 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     if (output.type === 'session-reset') { await this.sendMessage(context.externalId, { text: '🗑️ Session cleared. Your next message will start a fresh conversation.' }); return }
     if (output.type === 'access-approved') { await this.sendMessage(context.externalId, { text: "You're approved. Send a message to start." }); return }
     if (output.type === 'request-settled') { await this.sendMessage(context.externalId, { text: 'That request was already handled — this card is no longer waiting on you.' }); return }
-    if (output.type === 'request') {
+    if (output.type === 'request-opened') {
+      if (output.request.scope.sessionId) {
+        await processSSEEvent(this.deliveryState(context), { type: 'user_request_created', request: output.request }, chatSettings(context.integration).showToolCalls, context.sessionId)
+      }
       const card = reviewCardFromRegistry(output.request)
       if (card) await this.sendUserRequestCard(context.externalId, card, context.sessionId)
       return
@@ -337,10 +389,13 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     await processSSEEvent(state, output.event, chatSettings(context.integration).showToolCalls, context.sessionId ?? '')
   }
 
+  // The working indicator is armed from what the session is doing.
+  override readonly observesActivity = true
   observeSession(context: IntegrationSessionContext): void {
     if (!context.sessionId) return
     const state = this.deliveryState(context)
-    const activity = agentRegistry.get(context.integration.agentSlug).sessions.activity(context.sessionId)
+    const activity = context.activity
+    if (!activity || activity === 'unknown') return
     armIndicatorIfBusy(state, context.sessionId, activity)
     if (!BUSY_ACTIVITIES.has(activity)) clearIndicator(state)
   }
@@ -349,7 +404,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     const state = this.deliverySessions.get(context.externalId)
     if (!state || (context.sessionId && state.sessionId !== context.sessionId)) return
     stopIndicatorTick(state)
-    void this.stopWorking(context.externalId).catch(() => {})
+    background(this.stopWorking(context.externalId).catch(() => {}), { name: 'chat-integration.stop-working' })
     this.deliverySessions.delete(context.externalId)
   }
 
@@ -376,23 +431,30 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
 
   // ── Protected helpers for subclasses ────────────────────────────────
 
-  protected emitMessage(message: IncomingMessage): void {
-    void this.emitEvent({ type: 'input', id: message.externalMessageId, externalId: message.chatId, timestamp: message.timestamp, payload: message }).catch(error => this.emitError(error instanceof Error ? error : new Error(String(error))))
+  /**
+   * Hands a message to the host and resolves to what it did with it, for
+   * transports that acknowledge or redeliver. A handler failure resolves
+   * `retry`: the manager reports it, and it does not imply the provider
+   * transport is unhealthy (it must not flip its connection status).
+   */
+  protected emitMessage(message: IncomingMessage): Promise<IntegrationInputResult> {
+    return this.emitEvent({ type: 'input', id: message.externalMessageId, externalId: message.chatId, timestamp: message.timestamp, payload: message })
+      .catch((): IntegrationInputResult => 'retry')
   }
 
   protected emitInteractiveResponse(toolUseId: string, response: unknown, chatId?: string): void {
     const review = toolUseId.startsWith('review:')
     const value = response as { answer?: string; question?: string; answers?: Record<string, string> } | undefined
-    void this.emitEvent({
+    background(this.emitEvent({
       type: 'response', externalId: chatId ?? '',
       requestId: review ? toolUseId.split(':')[1] : toolUseId,
       requestKind: review ? 'review' : 'input',
       value: review ? (value?.answer?.toLowerCase().includes('allow') ? 'allow' : 'deny')
         : value?.question && value.answer !== undefined ? value.answers ?? { [value.question]: value.answer } : response,
-    }).catch(error => this.emitError(error instanceof Error ? error : new Error(String(error))))
+    }).catch(error => this.emitError(error instanceof Error ? error : new Error(String(error)))), { name: 'chat-integration.interactive-response' })
   }
 
   protected emitTypingHint(chatId: string): void {
-    void this.emitEvent({ type: 'hint', externalId: chatId }).catch(() => {})
+    background(this.emitEvent({ type: 'hint', externalId: chatId }).catch(() => {}), { name: 'chat-integration.typing-hint' })
   }
 }

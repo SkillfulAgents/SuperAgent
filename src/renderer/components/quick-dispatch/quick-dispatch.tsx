@@ -3,15 +3,11 @@ import { ArrowUp, AtSign, ChevronDown, Cloud, Loader2, Paperclip } from 'lucide-
 import { cn } from '@shared/lib/utils'
 import { targetIsRemote } from '@renderer/lib/api-target'
 import { Button } from '@renderer/components/ui/button'
-import { apiFetch } from '@renderer/lib/api'
-import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { readLocalFileAsFile } from '@renderer/lib/read-local-file'
 import { useAgents, type ApiAgent } from '@renderer/hooks/use-agents'
-import { useCreateSession } from '@renderer/hooks/use-sessions'
-import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
-import { useMessageComposer } from '@renderer/hooks/use-message-composer'
+import { useNewSessionComposer } from '@renderer/hooks/use-new-session-composer'
 import { AttachmentPreview } from '@renderer/components/messages/attachment-preview'
-import { findCatalogModel, useComposerOptions } from '@renderer/components/messages/composer-options'
+import { findCatalogModel } from '@renderer/components/messages/composer-options'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
 import { useIsVoiceConfigured } from '@renderer/hooks/use-voice-input'
 import { UploadError } from '@renderer/components/ui/upload-error'
@@ -19,6 +15,8 @@ import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { toast } from 'sonner'
 import { AgentMenu, AttachMenu, ModelEffortMenu } from './quick-dispatch-menus'
 import { EFFORT_LABELS } from '@renderer/components/messages/effort-slider'
+import { SPEED_LABELS } from '@renderer/components/messages/speed-section'
+import { ModelTooltip } from '@renderer/components/messages/model-tooltip'
 import {
   MarkdownComposerEditor,
   selectAllMarkdownComposer,
@@ -64,7 +62,7 @@ function TriggerButton({
 
 /**
  * The quick-dispatch launcher composer. Reuses the main app's composer logic —
- * useMessageComposer (uploads, voice, paste, mount dialog) + useComposerOptions
+ * useNewSessionComposer (uploads, voice, paste, mount dialog, model options)
  * — but renders its agent / model·effort / attachment pickers as INLINE,
  * full-width menus that grow the frameless window (Raycast-style) rather than
  * floating popovers, so the frosted panel is always filled. On submit it
@@ -88,78 +86,29 @@ export function QuickDispatch() {
 
   const selectedAgent = agentList.find((a) => a.slug === selectedSlug)
   const agentSlug = selectedSlug ?? ''
-  // An untouched model/effort selection follows the selected agent's defaults:
-  // agentKey re-adopts on switch, then adoption locks so background preference
-  // edits can't swap the selection while the user types.
-  const { data: agentPrefs, isFetched: agentPrefsFetched } = useAgentPreferences(agentSlug)
-  const composerOptions = useComposerOptions({
-    agentDefaultModel: agentPrefs?.defaultModel,
-    agentDefaultEffort: agentPrefs?.defaultEffort,
-    agentDefaultSpeed: agentPrefs?.defaultSpeed,
-    agentKey: agentSlug,
-    agentDefaultsReady: agentPrefsFetched,
-  })
-  const createSession = useCreateSession()
   const editorRef = useRef<HTMLDivElement | null>(null)
+  const { composer, composerOptions, isDisabled } = useNewSessionComposer({
+    agentSlug,
+    draftKey: 'quick-dispatch',
+    // Re-adopt defaults when the selected agent changes, then lock them while typing.
+    waitForAgentDefaults: true,
+    onSessionCreated: ({ agentSlug: dispatchedSlug, session }) => {
+      // Hide the launcher and raise the main window on the new session.
+      window.electronAPI?.quickDispatchDispatched?.({ agentSlug: dispatchedSlug, sessionId: session.id })
+    },
+    onError: (error) => {
+      toast.error('Failed to dispatch', {
+        description: error instanceof Error ? error.message : 'Please try again.',
+      })
+    },
+  })
 
   const selectedModel =
     findCatalogModel(composerOptions.model, composerOptions.catalog) ??
     findCatalogModel(composerOptions.defaultModel, composerOptions.catalog) ??
     composerOptions.catalog[0]
-
-  const composer = useMessageComposer({
-    agentSlug,
-    uploadFile: useCallback(
-      ({ file, onProgress, signal, stallMs }: { file: File; onProgress?: (p: UploadProgress) => void; signal?: AbortSignal; stallMs?: number }) => {
-        if (!agentSlug) return Promise.reject(new Error('No agent selected'))
-        return uploadFileChunked<{ path: string }>({ url: `/api/agents/${agentSlug}/upload-file`, file, onProgress, signal, stallMs })
-      },
-      [agentSlug],
-    ),
-    uploadFolder: useCallback(
-      async ({ sourcePath }: { sourcePath: string }) => {
-        if (!agentSlug) throw new Error('No agent selected')
-        const res = await apiFetch(`/api/agents/${agentSlug}/upload-folder`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sourcePath }),
-        })
-        if (!res.ok) throw new Error('Failed to upload folder')
-        return res.json() as Promise<{ path: string }>
-      },
-      [agentSlug],
-    ),
-    onSubmit: useCallback(
-      async (content: string) => {
-        if (!selectedSlug) return
-        try {
-          const session = await createSession.mutateAsync({
-            agentSlug: selectedSlug,
-            message: content,
-            ...composerOptions.toRuntimeOptions(),
-          })
-          // Hand off to the main process: hide the launcher and raise the main
-          // window on the brand-new session.
-          window.electronAPI?.quickDispatchDispatched?.({
-            agentSlug: selectedSlug,
-            sessionId: session.id,
-          })
-        } catch (error) {
-          toast.error('Failed to dispatch', {
-            description: error instanceof Error ? error.message : 'Please try again.',
-          })
-          throw error // let useMessageComposer restore the message
-        }
-      },
-      [selectedSlug, createSession, composerOptions],
-    ),
-    submitDisabled: createSession.isPending || !selectedSlug,
-    // Keep the typed message in the (disabled) input while the dispatch is in
-    // flight, instead of clearing it up front — seeing your text vanish mid-send
-    // is unnerving. It clears once the session is created, or stays on failure.
-    keepMessageUntilComplete: true,
-    draftKey: 'quick-dispatch',
-  })
+  const speedLabel: string | undefined = composerOptions.speed !== 'normal' ? SPEED_LABELS[composerOptions.speed] : undefined
+  const modelDetail = `${EFFORT_LABELS[composerOptions.effort]}${speedLabel ? ` · ${speedLabel}` : ''}`
 
   // Refocus + select the input each time the launcher is re-shown (autoFocus
   // only fires on the first mount; the window is hidden, not destroyed).
@@ -336,8 +285,6 @@ export function QuickDispatch() {
     }
   }
 
-  const isDisabled = createSession.isPending || composer.isUploading || !selectedSlug
-
   // The launcher resolves the same target as the main window, so a global-
   // shortcut dispatch can create a session on the organization's Superagent from
   // a panel that otherwise looks exactly like the local one. It needs its own
@@ -379,6 +326,7 @@ export function QuickDispatch() {
         onChoice={composer.mountDialog.onChoice}
         folderName={composer.mountDialog.folderName}
       />
+      {composer.chipDialog}
       <form onSubmit={composer.handleSubmit}>
         {/* Input row — large, borderless, full-width like Raycast's search
             field. File drops are handled at the panel root (any file dragged
@@ -397,6 +345,9 @@ export function QuickDispatch() {
             value={composer.message}
             onChange={composer.setMessage}
             onKeyDown={handleKeyDown}
+            chipContext={composer.chipContext}
+            // The launcher grows its own inline menus; a picker would open outside the window.
+            pickers={false}
             placeholder={selectedAgent ? `Dispatch ${selectedAgent.name}…` : 'Dispatch an agent…'}
             disabled={isDisabled}
             minRows={1}
@@ -419,15 +370,20 @@ export function QuickDispatch() {
           <TriggerButton active={openMenu === 'attach'} onClick={() => toggleMenu('attach')} testId="quick-dispatch-attach-trigger">
             <Paperclip className="h-3.5 w-3.5 shrink-0" />
           </TriggerButton>
-          <TriggerButton active={openMenu === 'model'} onClick={() => toggleMenu('model')} testId="composer-options-trigger">
-            <span className="truncate">
-              {selectedModel?.label}
-              <span className="text-muted-foreground">
-                {selectedModel?.label ? ' · ' : ''}{EFFORT_LABELS[composerOptions.effort]}
-              </span>
+          <ModelTooltip line={selectedModel ? `${selectedModel.label} · ${modelDetail}` : undefined} connection={composerOptions.connections?.find(c => c.id === composerOptions.llmProviderId)}>
+            {/* TriggerButton does not forward a ref, so the tooltip anchors to this wrapper. */}
+            <span className="inline-flex min-w-0">
+              <TriggerButton active={openMenu === 'model'} onClick={() => toggleMenu('model')} testId="composer-options-trigger">
+                <span className="truncate">
+                  {selectedModel?.label}
+                  <span className="text-muted-foreground">
+                    {selectedModel?.label ? ' · ' : ''}{modelDetail}
+                  </span>
+                </span>
+                <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+              </TriggerButton>
             </span>
-            <ChevronDown className="h-3.5 w-3.5 shrink-0" />
-          </TriggerButton>
+          </ModelTooltip>
           <div className="ml-auto flex items-center gap-2">
             <span className="inline-flex">
               <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} />

@@ -1,12 +1,17 @@
 import { execSync } from 'child_process'
+import { randomBytes } from 'crypto'
 import * as fs from 'fs'
 import * as path from 'path'
-import { BaseContainerClient, checkCommandAvailable, execWithPath, writeEnvFile } from './base-container-client'
+import { BaseContainerClient, checkCommandAvailable, execWithPath, shellEscape, writeEnvFile } from './base-container-client'
+import { getDataDir } from '@shared/lib/config/data-dir'
 import { getSettings } from '@shared/lib/config/settings'
 import { DEFAULT_LIMA_VM_MEMORY } from './types'
 import type { ContainerConfig } from './types'
+import limaPackages from './lima-packages.json'
 import os from 'os'
 import { captureException, captureMessage, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { mayDownloadCode, runsInAppSandbox } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 
 /**
  * Collect diagnostic data about the Lima environment at the moment of failure.
@@ -31,12 +36,12 @@ function collectLimaDiagnostics(): Record<string, unknown> {
 
     // limactl version
     try {
-      diag.limactl_version = execSync(`LIMA_HOME="${limaHome}" "${limactlPath}" --version 2>&1`, { encoding: 'utf-8', timeout: 5000 }).toString().trim()
+      diag.limactl_version = execSync(`${limactlCommand('--version')} 2>&1`, { encoding: 'utf-8', timeout: 5000 }).toString().trim()
     } catch { diag.limactl_version = 'check_failed' }
 
     // VM state from limactl list
     try {
-      const raw = execSync(`LIMA_HOME="${limaHome}" "${limactlPath}" list --json 2>&1`, { encoding: 'utf-8', timeout: 10000 }).trim()
+      const raw = execSync(`${limactlCommand('list --json')} 2>&1`, { encoding: 'utf-8', timeout: 10000 }).trim()
       const vms = raw.split('\n').filter(Boolean).map((l: string) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
       const vm = vms.find((v: any) => v.name === LIMA_VM_NAME)
       if (vm) {
@@ -70,6 +75,8 @@ function collectLimaDiagnostics(): Record<string, unknown> {
     // Nerdctl wrapper script state
     try {
       const wrapperPath = getNerdctlWrapperPath()
+      diag.nerdctl_wrapper_is_bundled = wrapperPath === getBundledNerdctlWrapperPath()
+      diag.packages_are_bundled = getBundledPackagesDir() !== null
       diag.nerdctl_wrapper_exists = fs.existsSync(wrapperPath)
       if (diag.nerdctl_wrapper_exists) {
         diag.nerdctl_wrapper_content = fs.readFileSync(wrapperPath, 'utf-8')
@@ -108,7 +115,9 @@ function collectLimaDiagnostics(): Record<string, unknown> {
   return diag
 }
 
-export const LIMA_VM_NAME = 'superagent'
+// Short in the App Sandbox, where Lima's sockets live under the container's long
+// home and must fit UNIX_PATH_MAX (see getLimaHome()).
+export const LIMA_VM_NAME = runsInAppSandbox(getServerFacts()) ? 'sa' : 'superagent'
 
 // Minimum Lima version that includes host-to-guest time sync (lima-vm/lima#4527).
 // VMs created with older versions have a guest agent that lacks the SyncTime gRPC
@@ -142,20 +151,44 @@ function getMacOSMajorVersion(): number | null {
  * Lima creates Unix domain sockets under LIMA_HOME which are subject to
  * UNIX_PATH_MAX (104 on macOS). The longer Application Support path can
  * exceed this limit for users with long usernames.
+ *
+ * In the App Sandbox the home is the container, `~/Library/Containers/<bundle
+ * id>/Data`. There this layout's longest socket, OpenSSH's temporary
+ * `ssh.sock.<16 chars>`, would be 98 characters plus the username with the
+ * Store bundle id `so.gamut.app`: too long for almost everyone. `~/l` with VM
+ * `sa` fits usernames up to 28 characters.
  */
 export function getLimaHome(): string {
+  if (runsInAppSandbox(getServerFacts())) return path.join(os.homedir(), 'l')
   return path.join(os.homedir(), '.superagent', 'lima')
+}
+
+// The bundled nerdctl wrapper (scripts/lima-nerdctl) reads these. Every spawn
+// of it inherits process.env, so it always targets this app's VM. Namespaced
+// so they never redirect a limactl the user runs themselves.
+process.env.SUPERAGENT_LIMA_HOME = getLimaHome()
+process.env.SUPERAGENT_LIMA_VM = LIMA_VM_NAME
+
+/** The nerdctl wrapper shipped next to the bundled limactl, if present. */
+function getBundledNerdctlWrapperPath(): string | null {
+  if (typeof process !== 'undefined' && process.resourcesPath) {
+    const bundled = path.join(process.resourcesPath, 'lima', 'bin', 'lima-nerdctl')
+    if (fs.existsSync(bundled)) return bundled
+  }
+  return null
 }
 
 /**
  * Get the path to the nerdctl wrapper script.
  * This shell script delegates to `limactl shell <vm> -- nerdctl`
  * and works as both an exec command string and a spawn binary.
+ *
+ * Packaged builds use the copy in the app bundle. Without one (dev), the
+ * wrapper is generated under ~/.superagent/bin by createNerdctlWrapper().
  */
 export function getNerdctlWrapperPath(): string {
-  // Use a path without spaces — the wrapper path is interpolated into shell
-  // command strings by BaseContainerClient, so spaces would break parsing.
-  // Also used as a spawn() binary, so must be a valid unquoted path.
+  const bundled = getBundledNerdctlWrapperPath()
+  if (bundled) return bundled
   const home = process.env.HOME
   if (!home) {
     throw new Error('HOME environment variable is not set — cannot determine Lima nerdctl wrapper path')
@@ -178,13 +211,28 @@ export function getLimactlPath(): string {
 }
 
 /**
- * Run a limactl command with LIMA_HOME set.
- * Uses shell env var prefix so it works with execWithPath.
+ * PATH for the bundled limactl and the tools it launches (ssh, ssh-keygen,
+ * qemu-img). The app's enhanced PATH puts Homebrew first, so Lima would run
+ * whatever Homebrew qemu-img or ssh a user happens to have instead of the
+ * system tools and its own disk-image converter.
  */
-function execLimactl(args: string, opts?: { timeoutMs?: number }): Promise<{ stdout: string; stderr: string }> {
-  const limaHome = getLimaHome()
+const LIMACTL_SYSTEM_PATH = '/usr/bin:/bin:/usr/sbin:/sbin'
+
+/**
+ * Shell command string that runs limactl against our Lima home. Every limactl
+ * call goes through here. The bundled limactl gets the system-only PATH; a
+ * limactl found on the user's PATH (dev) keeps the caller's PATH, so it finds
+ * the tools it was installed with.
+ */
+export function limactlCommand(args: string): string {
   const limactl = getLimactlPath()
-  return execWithPath(`LIMA_HOME="${limaHome}" "${limactl}" ${args}`, opts)
+  const pathPrefix = path.isAbsolute(limactl) ? `PATH=${LIMACTL_SYSTEM_PATH} ` : ''
+  return `${pathPrefix}LIMA_HOME="${getLimaHome()}" "${limactl}" ${args}`
+}
+
+/** Run a limactl command (see limactlCommand) through execWithPath. */
+function execLimactl(args: string, opts?: { timeoutMs?: number }): Promise<{ stdout: string; stderr: string }> {
+  return execWithPath(limactlCommand(args), opts)
 }
 
 /**
@@ -207,6 +255,22 @@ function getHostAgentPidPath(): string {
   return path.join(getLimaHome(), LIMA_VM_NAME, 'ha.pid')
 }
 
+/** The pid recorded in one of our VM's pid files, or null when it is missing or unparseable. */
+function readPidFile(name: 'ha.pid' | 'vz.pid'): number | null {
+  let pid: number
+  try {
+    pid = parseInt(fs.readFileSync(path.join(getLimaHome(), LIMA_VM_NAME, name), 'utf-8').trim(), 10)
+  } catch {
+    return null
+  }
+  return Number.isInteger(pid) && pid > 0 ? pid : null
+}
+
+/** The pid recorded in `ha.pid`, or null when it is missing or unparseable. */
+function readHostAgentPid(): number | null {
+  return readPidFile('ha.pid')
+}
+
 /**
  * Is the Lima host-agent process recorded in `ha.pid` still alive?
  *
@@ -217,16 +281,36 @@ function getHostAgentPidPath(): string {
  * them would orphan a live VM.
  *
  * Returns false when `ha.pid` is missing or unparseable (nothing known to be
- * alive). A surviving process (kill(pid, 0) succeeds, or fails EPERM) is alive.
+ * alive). A surviving process (kill(pid, 0) succeeds, or fails EPERM) is alive,
+ * unless ps shows it isn't limactl: the host agent died and its pid was reused.
  */
 function isHostAgentAlive(): boolean {
-  let pid: number
+  const pid = readHostAgentPid()
+  return pid !== null && isProcessAlive(pid) && !isUnrelatedProcess(pid)
+}
+
+/**
+ * Is this live pid something other than limactl? A host agent that died
+ * without cleaning up (crash, power loss) leaves ha.pid and vz.pid behind, and
+ * by now either pid may belong to an unrelated process of this user. vz.pid
+ * holds the host agent's own pid (the VZ driver runs inside it), so a live
+ * owner of either file that isn't limactl means the file is stale. False when
+ * ps can't tell (a sandbox may deny it).
+ *
+ * Only the executable is checked, not which VM the host agent serves: getting
+ * that wrong would orphan our own running VM on every stop.
+ */
+function isUnrelatedProcess(pid: number): boolean {
+  let executable: string
   try {
-    pid = parseInt(fs.readFileSync(getHostAgentPidPath(), 'utf-8').trim(), 10)
+    executable = execSync(`ps -o comm= -p ${pid}`, { encoding: 'utf-8', timeout: 3000 }).trim()
   } catch {
     return false
   }
-  if (!Number.isInteger(pid) || pid <= 0) return false
+  return !!executable && path.basename(executable) !== 'limactl'
+}
+
+function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
     return true
@@ -339,6 +423,72 @@ async function probeGuestReachable(timeoutMs = GUEST_PROBE_TIMEOUT_MS): Promise<
   return false
 }
 
+/** Host-agent pid of the VM boot whose data-folder mount was last verified. */
+let mountVerifiedForHostAgent: number | null = null
+let mountCheckInFlight: Promise<void> | null = null
+/** What the guest prints when it can't read the marker. */
+const MOUNT_MARKER_MISSING = 'superagent-mount-marker-missing'
+
+/**
+ * Refuse to run a container while the VM can't see the app's data folder,
+ * which holds every agent workspace. nerdctl creates a missing bind-mount
+ * source on the VM's own disk and runs anyway, so without the Lima mount the
+ * agent's files silently never reach the host. Lima drops a mount it can't
+ * share (e.g. a path with a space) without an error.
+ *
+ * Writes a uniquely named marker holding a random nonce into the data folder
+ * and reads it back from the guest; passes once per VM boot. A guest that
+ * can't be reached says nothing about the mount, so that case is left to the
+ * run's own failure handling and checked again next time.
+ */
+export function verifyDataDirVisibleInVm(): Promise<void> {
+  mountCheckInFlight ??= verifyDataDirVisibleInVmOnce().finally(() => { mountCheckInFlight = null })
+  return mountCheckInFlight
+}
+
+async function verifyDataDirVisibleInVmOnce(): Promise<void> {
+  const boot = readHostAgentPid()
+  if (boot !== null && boot === mountVerifiedForHostAgent) return
+
+  const dataDir = getDataDir()
+  const nonce = randomBytes(16).toString('hex')
+  const marker = path.join(dataDir, `.lima-mount-check-${nonce}`)
+  fs.writeFileSync(marker, nonce)
+  try {
+    let seen: string
+    try {
+      // The guest command always exits 0, so a failure here means the guest
+      // didn't answer: limactl exits 1 for a stopped VM, ssh 255, or a timeout.
+      const readMarker = `cat "$1" 2>/dev/null || echo ${MOUNT_MARKER_MISSING}`
+      ;({ stdout: seen } = await execLimactl(
+        `shell --workdir / ${LIMA_VM_NAME} -- sh -c ${shellEscape(readMarker)} sh ${shellEscape(marker)}`,
+        { timeoutMs: GUEST_PROBE_TIMEOUT_MS }
+      ))
+    } catch (error: any) {
+      addErrorBreadcrumb({ category: 'lima', message: 'Data folder mount check skipped: guest did not answer', level: 'warning', data: { error: String(error?.message ?? error).slice(0, 300) } })
+      return
+    }
+    if (seen.trim() === nonce) {
+      mountVerifiedForHostAgent = boot
+      return
+    }
+    captureMessage('Lima VM cannot see the app data folder; refusing to run a container', {
+      level: 'error',
+      tags: { component: 'lima', operation: 'mount-check' },
+      extra: { dataDir, markerSeen: seen.trim() === MOUNT_MARKER_MISSING ? 'missing' : 'other content', ...collectLimaDiagnostics() },
+    })
+    throw Object.assign(
+      new Error(
+        `Built-in runtime can't see the app's data folder (${dataDir}), so the agent's files would never reach this Mac. ` +
+        'Quit and reopen the app to restart the runtime.'
+      ),
+      { sentryCaptured: true }
+    )
+  } finally {
+    try { fs.unlinkSync(marker) } catch { /* best-effort */ }
+  }
+}
+
 /**
  * Lima + nerdctl implementation of ContainerClient.
  * Uses a Lima VM with Apple's Virtualization.framework to run containers
@@ -379,10 +529,8 @@ export class LimaContainerClient extends BaseContainerClient {
    */
   getHostBridgeIp(): string | null {
     try {
-      const limaHome = getLimaHome()
-      const limactl = getLimactlPath()
       const output = execSync(
-        `LIMA_HOME="${limaHome}" "${limactl}" shell ${LIMA_VM_NAME} -- ip route show default`,
+        limactlCommand(`shell ${LIMA_VM_NAME} -- ip route show default`),
         { timeout: 10000 }
       ).toString().trim()
       // Output: "default via 192.168.64.1 dev enp0s1 ..."
@@ -407,6 +555,11 @@ export class LimaContainerClient extends BaseContainerClient {
     return ''
   }
 
+  /** Refuse the run while the VM can't see the agent's workspace (see verifyDataDirVisibleInVm). */
+  protected async beforeRun(): Promise<void> {
+    await verifyDataDirVisibleInVm()
+  }
+
   /**
    * Override to write env files under ~ instead of /tmp.
    * Lima only mounts the home directory into the VM, so /var/folders/...
@@ -419,34 +572,6 @@ export class LimaContainerClient extends BaseContainerClient {
     }
     const tmpDir = path.join(home, '.superagent', 'tmp')
     return writeEnvFile(await this.buildAgentEnv(additionalEnvVars, agentName), this.config.agentId, tmpDir)
-  }
-
-  /**
-   * Parse the host path of a bind mount the Lima VM can't access. The VM helper
-   * (a separate process) is denied by macOS TCC + File Provider when nerdctl /
-   * containerd stats a cloud-synced mount (iCloud Drive, Dropbox, …), failing
-   * with EPERM ("operation not permitted") rather than ENOENT — even though the
-   * Electron app itself can read the path. start() uses this to drop that one
-   * mount and retry without it instead of aborting the whole container.
-   *
-   * Example stderr (nerdctl logs via logrus, which wraps the message in
-   * msg="..." and escapes the inner quotes as \"):
-   *   level=fatal msg="failed to stat \"/Users/x/Library/Mail\": stat
-   *   /Users/x/Library/Mail: operation not permitted"
-   */
-  protected extractInaccessibleMountPath(error: any): string | null {
-    const raw = error?.message || error?.stderr || String(error)
-    if (!/operation not permitted/i.test(raw)) return null
-    // nerdctl/containerd log via logrus, which escapes the inner quotes around
-    // the path as \". Unescape first — otherwise the captured path keeps its \"
-    // artifacts and the mount-drop filter (volumes.filter(v => v.includes(path)))
-    // never matches, so the inaccessible mount is never dropped.
-    const msg = raw.replace(/\\"/g, '"')
-    // Pull the host path out of `stat "<path>"` (handles spaces) / `stat <path>:`.
-    const m =
-      msg.match(/(?:failed to )?stat(?:\s+host\s+path)?\s+"([^"]+)"/i) ||
-      msg.match(/(?:failed to )?stat(?:\s+host\s+path)?\s+([^\s:"]+)/i)
-    return m ? m[1] : null
   }
 
   /**
@@ -468,18 +593,6 @@ export class LimaContainerClient extends BaseContainerClient {
   protected async handleRunError(error: any): Promise<boolean> {
     const msg = error.message || error.stderr || String(error)
     addErrorBreadcrumb({ category: 'lima', message: 'Container run error', data: { error: msg, agentId: this.config.agentId } })
-
-    // An inaccessible cloud-synced mount (EPERM-on-stat) is handled by start()
-    // dropping that mount and retrying — it must NOT trigger VM reprovisioning
-    // here, and it isn't a VM fault worth an error-level capture.
-    if (this.extractInaccessibleMountPath(error)) {
-      captureMessage('Container run failed: inaccessible bind mount (cloud-synced path)', {
-        level: 'warning',
-        tags: { component: 'lima', operation: 'mount-inaccessible' },
-        extra: { originalError: msg, agentId: this.config.agentId },
-      })
-      return false
-    }
 
     // Image create (pull/build) failures carry registry-level text ("ghcr.io/
     // x/y:z: not found") that would false-match the VM-issue patterns below —
@@ -590,16 +703,7 @@ export class LimaContainerClient extends BaseContainerClient {
    */
   protected async forceStop(): Promise<void> {
     console.warn('Force-stopping Lima VM (killing QEMU process)')
-    try {
-      await Promise.race([
-        execLimactl(`stop --force ${LIMA_VM_NAME}`),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Lima force-stop timed out')), 10000)
-        ),
-      ])
-    } catch {
-      console.error('Lima VM force-stop failed')
-    }
+    await forceStopLimaVm(10000)
   }
 
   /**
@@ -627,8 +731,8 @@ export class LimaContainerClient extends BaseContainerClient {
     try {
       const { state } = await probeLimaHealth()
       if (state === 'healthy') {
-        // Ensure the nerdctl wrapper points to the current limactl binary.
-        // The wrapper hardcodes the limactl path, which goes stale on app updates.
+        // A generated (dev) wrapper hardcodes the limactl path, which goes
+        // stale when limactl moves, so keep it current.
         createNerdctlWrapper()
         return true
       }
@@ -689,7 +793,24 @@ export async function ensureLimaReady(): Promise<void> {
   if (limaReadyPromise) {
     return limaReadyPromise
   }
-  limaReadyPromise = ensureLimaReadyImpl()
+  limaReadyPromise = ensureLimaReadyImpl().catch(async (error) => {
+    if (!(error instanceof ContainerdNeverRanError)) throw error
+    // containerd never ran in this VM, so it holds no images or containers:
+    // rebuilding it with this app's provisioning loses nothing.
+    const report = (message: string, level: 'warning' | 'error', provisionOutput: string) => captureMessage(message, {
+      level,
+      tags: { component: 'lima', operation: 'provision-check' },
+      extra: { output: provisionOutput.slice(-2000), packagesAreBundled: getBundledPackagesDir() !== null, ...collectLimaDiagnostics() },
+    })
+    report("Lima VM's containerd never ran, even after re-running its provisioning; rebuilding it", 'warning', error.provisionOutput)
+    try {
+      await ensureLimaReadyImpl({ rebuild: true })
+    } catch (retryError) {
+      if (!(retryError instanceof ContainerdNeverRanError)) throw retryError
+      report("Lima VM's containerd still never ran after a rebuild", 'error', retryError.provisionOutput)
+      throw Object.assign(retryError, { sentryCaptured: true })
+    }
+  })
   try {
     await limaReadyPromise
   } finally {
@@ -697,7 +818,7 @@ export async function ensureLimaReady(): Promise<void> {
   }
 }
 
-async function ensureLimaReadyImpl(): Promise<void> {
+async function ensureLimaReadyImpl(opts: { rebuild?: boolean } = {}): Promise<void> {
   const limaHome = getLimaHome()
   fs.mkdirSync(limaHome, { recursive: true })
 
@@ -710,6 +831,8 @@ async function ensureLimaReadyImpl(): Promise<void> {
   let vmExists = false
   let vmMemory: string | null = null
   let vmBroken = false
+  // Before any limactl command below reads the pid files.
+  dropStalePidFiles()
   try {
     const { stdout } = await execLimactl('list --json')
     const vms = parseLimaList(stdout)
@@ -724,8 +847,8 @@ async function ensureLimaReadyImpl(): Promise<void> {
   }
 
   // Check if existing VM was created with an older Lima that lacks time sync support
-  let needsRecreate = false
-  if (vmExists) {
+  let needsRecreate = vmExists && !!opts.rebuild
+  if (vmExists && !needsRecreate) {
     try {
       const versionFile = path.join(limaHome, LIMA_VM_NAME, 'lima-version')
       const vmVersion = fs.readFileSync(versionFile, 'utf-8').trim()
@@ -754,9 +877,8 @@ async function ensureLimaReadyImpl(): Promise<void> {
   }
 
   if (vmExists && needsRecreate) {
-    try {
-      await execLimactl(`stop ${LIMA_VM_NAME} --force`)
-    } catch { /* may not be running */ }
+    await stopLimaVm()
+    refuseToDeleteLiveVm('recreate')
     await execLimactl(`delete ${LIMA_VM_NAME} --force`)
     vmExists = false
   }
@@ -803,6 +925,7 @@ async function ensureLimaReadyImpl(): Promise<void> {
     // so `limactl start` succeeds instead of erroring on a missing ha.sock
     // forever (ELECTRON-4S). No-ops on a clean dir or a live VM (guardrail).
     cleanStaleHostAgentArtifacts()
+    restageBundledPackagesFor(path.join(limaHome, LIMA_VM_NAME, 'lima.yaml'))
 
     console.log('Starting Lima VM...')
     addErrorBreadcrumb({ category: 'lima', message: 'Starting Lima VM', data: { health: health.state } })
@@ -814,7 +937,7 @@ async function ensureLimaReadyImpl(): Promise<void> {
         extra: { limaHome, vmExists, explicitMemory, health: health.state, ...collectLimaDiagnostics() },
       })
       // If start fails on a freshly created VM, delete it to avoid a zombie
-      if (!vmExists) {
+      if (!vmExists && canSignalHostAgent()) {
         console.error('Lima VM start failed after creation, cleaning up zombie VM...')
         try {
           await execLimactl(`delete ${LIMA_VM_NAME} --force`)
@@ -836,22 +959,73 @@ async function ensureLimaReadyImpl(): Promise<void> {
     }
   }
 
+  await ensureContainerdProvisioned()
+
   // Create/update the nerdctl wrapper script
   createNerdctlWrapper()
   addErrorBreadcrumb({ category: 'lima', message: 'ensureLimaReady completed successfully' })
 }
 
 /**
- * Stop the Lima VM gracefully with a timeout.
- * Used during app shutdown — must not hang indefinitely.
- * If the graceful stop times out (e.g., VM CPU is pegged), escalates to
- * force-stop which kills the QEMU process directly.
+ * Stop the Lima VM, bounded so app shutdown never hangs.
+ *
+ * Powers the guest off over SSH first. That shuts it down cleanly (containerd
+ * stops, the disk syncs) and needs no signals, so it also stops a VM an
+ * earlier launch started; a sandboxed build may only signal its own launch's
+ * processes. The host agent exits by itself once the guest is down, in about
+ * 4-5s. Lima's own graceful `limactl stop` takes 20-25s (lima-vm/lima#254),
+ * which is why this path used to force-stop every time.
+ *
+ * Falls back to a force-stop when the guest doesn't power off within
+ * timeoutMs, and then only for a host agent this process can signal.
  */
 export async function stopLimaVm(timeoutMs = 10000): Promise<void> {
-  // Always use force-stop: graceful `limactl stop` takes 20-25s due to Lima's
-  // hostagent cleanup and VZ driver shutdown sequence (lima-vm/lima#254).
-  // Force-stop is safe here because all containers are already stopped before
-  // this is called, and the VM filesystem is journaled.
+  if (isHostAgentAlive() && await powerOffGuest(timeoutMs)) return
+  await forceStopLimaVm(timeoutMs)
+}
+
+/** `sudo poweroff` in the guest; true once the host agent has exited. */
+async function powerOffGuest(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  const hostAgent = readHostAgentPid()
+  try {
+    await execLimactl(`shell --workdir / ${LIMA_VM_NAME} -- sudo poweroff`, { timeoutMs: Math.min(timeoutMs, 5000) })
+  } catch {
+    // poweroff drops the SSH session, so a non-zero exit is expected
+  }
+  while (Date.now() < deadline) {
+    const exited = hostAgent === null ? !fs.existsSync(getHostAgentPidPath()) : !isProcessAlive(hostAgent)
+    if (exited) {
+      // After a guest poweroff, Lima's host agent exits through a fatal error
+      // ("vz: CanRequestStop is not supported") and leaves vz.pid behind. Lima
+      // drops a pid file whose process is gone whenever it lists the instance;
+      // do that now, while the pid is certainly dead. At the next start a
+      // reused pid would make the VM look Broken, which gets it rebuilt.
+      try {
+        await execLimactl('list --json', { timeoutMs: Math.max(deadline - Date.now(), 1000) })
+      } catch { /* the next start lists it again */ }
+      return true
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  return false
+}
+
+/**
+ * `limactl stop --force`, but only for a host agent this process can signal.
+ * Lima treats EPERM from kill() as "already stopped" and deletes ha.pid,
+ * ha.sock and ssh.sock, which orphans the running VM; every later start then
+ * fails with "The EFI variable store is already in use" until a reboot.
+ */
+async function forceStopLimaVm(timeoutMs: number): Promise<void> {
+  dropStalePidFiles()
+  if (!canSignalHostAgent()) {
+    captureMessage('Lima host agent belongs to another launch and the guest did not power off; leaving the VM running', {
+      level: 'warning',
+      tags: { component: 'lima', operation: 'stop-unsignalable' },
+    })
+    return
+  }
   try {
     await Promise.race([
       execLimactl(`stop --force ${LIMA_VM_NAME}`),
@@ -865,8 +1039,62 @@ export async function stopLimaVm(timeoutMs = 10000): Promise<void> {
 }
 
 /**
- * Get the bundled Alpine cloud image path if available.
- * Falls back to null (will download from Alpine CDN at runtime).
+ * `limactl stop --force` and `delete --force` SIGKILL the pids in ha.pid and
+ * vz.pid, and `limactl list` calls a VM with a live pid in either file Running
+ * or Broken (which gets it rebuilt). Lima drops a pid file whose process is
+ * gone by itself, but not one whose pid was reused: drop each file whose live
+ * owner is an unrelated process (isUnrelatedProcess).
+ */
+function dropStalePidFiles(): void {
+  for (const name of ['ha.pid', 'vz.pid'] as const) {
+    const pid = readPidFile(name)
+    if (pid === null || !isProcessAlive(pid) || !isUnrelatedProcess(pid)) continue
+    try {
+      fs.unlinkSync(path.join(getLimaHome(), LIMA_VM_NAME, name))
+    } catch {
+      continue
+    }
+    captureMessage(`Dropped a stale Lima ${name} that pointed at an unrelated process`, {
+      level: 'warning',
+      tags: { component: 'lima', operation: 'stale-pid-file' },
+      extra: { file: name },
+    })
+  }
+}
+
+/**
+ * `limactl delete --force` on a VM whose host agent is still alive deletes its
+ * files out from under it, orphaning it just like a force-stop that can't
+ * signal, so refuse instead.
+ */
+function refuseToDeleteLiveVm(operation: string): void {
+  if (!isHostAgentAlive()) return
+  captureMessage('Lima VM is still running after a stop; not deleting it', {
+    level: 'warning',
+    tags: { component: 'lima', operation: `${operation}-refused` },
+    extra: collectLimaDiagnostics(),
+  })
+  throw new Error('Built-in runtime could not be stopped to rebuild it. Quit and reopen the app, then try again.')
+}
+
+/** True when there is no live host agent, or this process may signal it. */
+function canSignalHostAgent(): boolean {
+  const pid = readHostAgentPid()
+  if (pid === null) return true
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e: any) {
+    return e?.code !== 'EPERM'
+  }
+}
+
+/**
+ * Get the bundled Alpine cloud image path if available: sudo and the
+ * first-boot packages are installed in it (scripts/build-lima-image.sh), and
+ * it has no user of its own, so the first boot neither downloads nor reboots.
+ * A build without Docker bundles the stock image instead.
+ * Falls back to null (will download the stock image from Alpine CDN at runtime).
  */
 function getBundledVmImagePath(): string | null {
   if (typeof process !== 'undefined' && process.resourcesPath) {
@@ -876,6 +1104,192 @@ function getBundledVmImagePath(): string | null {
     }
   }
   return null
+}
+
+/** The apk repository scripts/fetch-lima-packages.ts bundles next to limactl, if present. */
+function getBundledPackagesDir(): string | null {
+  if (typeof process !== 'undefined' && process.resourcesPath) {
+    const bundled = path.join(process.resourcesPath, 'lima', 'packages')
+    if (fs.existsSync(path.join(bundled, 'packages.txt'))) return bundled
+  }
+  return null
+}
+
+/** Where the guest links the staged packages from, for apk. */
+const STAGED_PACKAGES_IN_GUEST = '/run/superagent-lima-packages'
+
+/** Copy of the bundled packages inside the data folder, which the VM mounts; the app bundle usually isn't. */
+function getStagedPackagesDir(): string {
+  return path.join(getDataDir(), 'lima-packages')
+}
+
+/**
+ * Make the staged copy match the bundle (an APFS clone, so no extra disk on
+ * the same volume). Copied under a temporary name and renamed into place, so
+ * an interrupted copy never looks complete.
+ */
+function stageBundledPackages(bundled: string): string {
+  const staged = getStagedPackagesDir()
+  const manifest = (dir: string) => {
+    try { return fs.readFileSync(path.join(dir, 'packages.txt'), 'utf-8') } catch { return null }
+  }
+  if (manifest(staged) === manifest(bundled)) return staged
+  const partial = `${staged}.partial-${process.pid}`
+  fs.rmSync(partial, { recursive: true, force: true })
+  fs.cpSync(bundled, partial, { recursive: true, mode: fs.constants.COPYFILE_FICLONE })
+  fs.rmSync(staged, { recursive: true, force: true })
+  fs.renameSync(partial, staged)
+  return staged
+}
+
+/**
+ * Before starting a VM whose first-boot provisioning reads the staged
+ * packages, make sure they are there: a first boot cut short (e.g. the app
+ * quit mid-install) provisions again on the next start.
+ */
+function restageBundledPackagesFor(instanceConfig: string): void {
+  const bundled = getBundledPackagesDir()
+  if (!bundled) return
+  try {
+    if (!fs.readFileSync(instanceConfig, 'utf-8').includes(getStagedPackagesDir())) return
+    stageBundledPackages(bundled)
+  } catch (error) {
+    // Only a first boot that never finished needs the copy; never block a start on it.
+    addErrorBreadcrumb({ category: 'lima', message: 'Could not restage bundled packages', level: 'warning', data: { error: String(error) } })
+  }
+}
+
+/**
+ * First-boot provisioning, then containerd enabled and started on every boot.
+ *
+ * The bundled image has the packages installed already, so the install below
+ * only runs for a stock image, or to repair an install that lost them.
+ * With bundled packages, apk installs from the staged copy only (no network,
+ * no other repositories), checking Alpine's index signature and each package
+ * against it. It runs as a dependency script, which Lima runs inside its own
+ * package step and before it: Lima then finds rsync present instead of
+ * installing it from Alpine's CDN. Without bundled packages (dev), from the CDN.
+ */
+function provisionScript(stagedPackages: string | null): string[] {
+  const packages = limaPackages.packages.join(' ')
+  if (!stagedPackages) {
+    return [
+      'provision:',
+      '  - mode: system',
+      '    script: |',
+      '      #!/bin/sh',
+      '      set -e',
+      '      if ! command -v nerdctl >/dev/null 2>&1; then',
+      '        echo "Installing containerd + nerdctl..."',
+      '        apk update',
+      `        apk add --no-cache ${packages}`,
+      '        rc-update add containerd default',
+      '      fi',
+      '      service containerd start || true',
+    ]
+  }
+  const fromStaged = `--no-network --no-cache --repositories-file /dev/null --repository ${STAGED_PACKAGES_IN_GUEST}/main --repository ${STAGED_PACKAGES_IN_GUEST}/community`
+  const names = limaPackages.packages.map((spec) => spec.split('~')[0]).join(' ')
+  return [
+    'provision:',
+    '  - mode: dependency',
+    '    script: |',
+    '      #!/bin/sh',
+    '      set -e',
+    '      installed() { command -v containerd && command -v nerdctl && command -v rsync; } >/dev/null 2>&1',
+    '      installed && exit 0',
+    '      echo "Installing containerd + nerdctl from the packages bundled with the app..."',
+    // apk misreads a repository path with a space (the data folder has one), so use a link.
+    `      ln -sfn ${shellEscape(stagedPackages)} ${STAGED_PACKAGES_IN_GUEST}`,
+    `      apk add ${fromStaged} ${packages}`,
+    // apk add skips a package it lists as installed, even when its files are gone.
+    `      installed || apk fix ${fromStaged} ${names}`,
+    '  - mode: system',
+    '    script: |',
+    '      #!/bin/sh',
+    '      set -e',
+    '      rc-update show default | grep -q containerd || rc-update add containerd default',
+    '      service containerd start || true',
+  ]
+}
+
+/**
+ * containerd in the guest: answering; not answering, after it has run there
+ * (files under its state folders, so the VM may hold images and containers);
+ * or not answering, and it never ran there (no files), so the VM holds none.
+ * null when the guest didn't answer or couldn't look.
+ */
+async function guestContainerd(): Promise<'running' | 'not running' | 'never ran' | null> {
+  const probe = [
+    'if sudo nerdctl info >/dev/null 2>&1; then echo running',
+    // "No files" must come from a look that worked.
+    'elif ! sudo -n true; then exit 1',
+    'elif sudo -n find /var/lib/containerd /var/lib/nerdctl -type f 2>/dev/null | grep -q .; then echo "not running"',
+    'else echo "never ran"; fi',
+  ].join('; ')
+  try {
+    const { stdout } = await execLimactl(`shell --workdir / ${LIMA_VM_NAME} -- sh -c ${shellEscape(probe)}`, { timeoutMs: GUEST_PROBE_TIMEOUT_MS })
+    const state = stdout.trim()
+    return state === 'running' || state === 'not running' || state === 'never ran' ? state : null
+  } catch {
+    return null
+  }
+}
+
+/** containerd still doesn't answer after re-running the VM's provisioning, and it never ran there. */
+class ContainerdNeverRanError extends Error {
+  constructor(readonly provisionOutput: string) {
+    super("Built-in runtime couldn't set up its container engine. Quit and reopen the app to try again.")
+  }
+}
+
+/**
+ * Lima only logs a warning when a provision script fails and reports the VM
+ * ready anyway, without containerd installed or running: every pull then
+ * fails. After a start, re-run the VM's own provision scripts once if
+ * containerd doesn't answer. Still not answering and it never ran there:
+ * ContainerdNeverRanError (the VM holds no images or containers, so it can be
+ * rebuilt). Still not answering after it has run there, whatever is missing:
+ * a plain error, since that VM may hold images and containers.
+ */
+async function ensureContainerdProvisioned(): Promise<void> {
+  const before = await guestContainerd()
+  if (before === 'running' || before === null) return
+
+  let output = ''
+  try {
+    const rerun = 'for f in /mnt/lima-cidata/provision.dependency/* /mnt/lima-cidata/provision.system/*; do [ -e "$f" ] || continue; sh "$f" || exit 1; done'
+    ;({ stdout: output } = await execLimactl(
+      `shell --workdir / ${LIMA_VM_NAME} -- sudo sh -c ${shellEscape(rerun)}`,
+      { timeoutMs: 300_000 }
+    ))
+  } catch (error: any) {
+    output = String(error?.message ?? error)
+  }
+
+  const after = await guestContainerd()
+  if (after === 'never ran') throw new ContainerdNeverRanError(output)
+  if (after === null) {
+    addErrorBreadcrumb({ category: 'lima', message: 'Re-ran Lima provisioning; the guest did not answer the check after it', level: 'warning' })
+    return
+  }
+  const extra = { before, output: output.slice(-2000), packagesAreBundled: getBundledPackagesDir() !== null }
+  if (after === 'not running') {
+    captureMessage("Lima VM's containerd isn't answering, even after re-running its provisioning; it has run there, so not rebuilding the VM", {
+      level: 'error',
+      tags: { component: 'lima', operation: 'provision-check' },
+      extra: { ...extra, ...collectLimaDiagnostics() },
+    })
+    throw Object.assign(
+      new Error("Built-in runtime's container engine isn't working. Quit and reopen the app to try again."),
+      { sentryCaptured: true }
+    )
+  }
+  captureMessage('Lima VM came up without a working containerd; re-running its provisioning fixed it', {
+    level: 'warning',
+    tags: { component: 'lima', operation: 'provision-check' },
+    extra,
+  })
 }
 
 async function createLimaVm(): Promise<void> {
@@ -895,12 +1309,25 @@ async function createLimaVm(): Promise<void> {
     console.log(`Bundled image not found, will download from Alpine CDN`)
   }
 
+  const bundledPackages = getBundledPackagesDir()
+  const stagedPackages = bundledPackages ? stageBundledPackages(bundledPackages) : null
+  console.log(stagedPackages ? `Using bundled packages: ${stagedPackages}` : 'Bundled packages not found, first boot will download them from Alpine CDN')
+
+  // Refused rather than downloaded where the build must ship all the code it runs.
+  if (!mayDownloadCode(getServerFacts()) && (!bundledImage || !stagedPackages)) {
+    const missing = bundledImage ? 'Linux packages are' : 'VM image is'
+    throw new Error(`Built-in runtime can't be set up: the app's ${missing} missing. Reinstall the app to fix this.`)
+  }
+
   const lines = [
     '# Lima VM for Superagent container runtime',
     'vmType: vz',
     'mountType: virtiofs',
     'mounts:',
-    '  - location: "~"',
+    // Virtualization.framework refuses to share an App Sandbox container's root,
+    // so there the VM gets the data dir only: every workspace and env file the
+    // agent containers mount is under it.
+    `  - location: "${runsInAppSandbox(getServerFacts()) ? getDataDir() : '~'}"`,
     '    writable: true',
     'cpus: 4',
     `memory: ${vmMemory}`,
@@ -915,18 +1342,7 @@ async function createLimaVm(): Promise<void> {
     '  system: false',
     '  user: false',
     '',
-    '# Install containerd + nerdctl on first boot, then start containerd',
-    'provision:',
-    '  - mode: system',
-    '    script: |',
-    '      #!/bin/sh',
-    '      if ! command -v nerdctl >/dev/null 2>&1; then',
-    '        echo "Installing containerd + nerdctl..."',
-    '        apk update',
-    '        apk add --no-cache containerd~=2.2 containerd-openrc nerdctl~=2.1 buildkit~=0.25 cni-plugins',
-    '        rc-update add containerd default',
-    '      fi',
-    '      service containerd start || true',
+    ...provisionScript(stagedPackages),
   ]
 
   lines.push('')
@@ -943,14 +1359,16 @@ async function createLimaVm(): Promise<void> {
 }
 
 /**
- * Create/update the nerdctl wrapper shell script.
- * The script sets LIMA_HOME and delegates to limactl shell → nerdctl.
- * This works as both a command string (for exec) and a binary (for spawn).
+ * Create/update the nerdctl wrapper shell script when the app bundle doesn't
+ * ship one (dev). The script sets LIMA_HOME and delegates to limactl shell →
+ * nerdctl. This works as both a command string (for exec) and a binary (for
+ * spawn).
  *
- * Called from isRunning() (to keep the wrapper current across app updates)
+ * Called from isRunning() (to keep the wrapper current when limactl moves)
  * and from ensureLimaReady() (after VM provisioning).
  */
 function createNerdctlWrapper(): void {
+  if (getBundledNerdctlWrapperPath()) return
   const wrapperPath = getNerdctlWrapperPath()
   fs.mkdirSync(path.dirname(wrapperPath), { recursive: true })
 

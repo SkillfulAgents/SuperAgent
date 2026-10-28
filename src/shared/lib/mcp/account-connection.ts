@@ -1,14 +1,17 @@
 import { and, eq } from 'drizzle-orm'
 import { db } from '../db'
 import { agentRemoteMcps, remoteMcpServers, type RemoteMcpServer } from '../db/schema'
-import { agentRegistry, completeMcpReauth } from '../agent-actor'
+import { agentRegistry } from '../agent-actor'
+import { resumeMcpReauthWaits } from '../services/connection-sync-service'
 import { resolveMcpPolicy } from '../proxy/policy-resolver'
-import { getReplacementMcpId } from '../proxy/mcp-replacement'
-import { isReauthDismissed, reauthDismissalReason } from '../proxy/reauth-dismissal'
+import { awaitReauth } from '../proxy/reauth-request'
 import { mcpSafeFetch } from './mcp-safe-fetch'
 import { mcpRefreshResponseSchema, parseCachedMcpTools } from './connection-schema'
 import type { McpToolInfo } from './types'
 import type { McpAccessResult, McpAuthorization, McpConnection, McpInvocation, McpRecoveryResult } from './connection-types'
+import { auditRuleOutcomes, decidingRuleVersionId, evaluateRulesForRequest, reportedRules, reviewRuleOutcomes } from '../proxy/rules/gate'
+import { buildMcpRuleInput } from '../proxy/rules/input'
+import { awaitReview } from '@shared/lib/proxy/review-request'
 
 async function loadAssignedMcp(agentSlug: string, mcpId: string): Promise<RemoteMcpServer | null> {
   const [mapping] = await db.select({ mcp: remoteMcpServers }).from(agentRemoteMcps)
@@ -38,25 +41,59 @@ class AccountMcpConnection implements McpConnection {
 
   async authorizeInvocation(call: McpInvocation): Promise<McpAccessResult> {
     if (call.isProtocolMethod) return { ok: true, policyDecision: 'allow' }
-    let policy
-    try {
-      policy = await resolveMcpPolicy(this.row.id, call.toolName, this.row.userId ?? 'local')
-    } catch (error) {
-      console.error('[mcp-proxy] Policy enforcement failed, defaulting to review:', error)
-      policy = { decision: 'review' as const, matchedScopes: [] as string[], scopeDescriptions: {} as Record<string, string> }
+    const resolvePolicy = async () => {
+      try {
+        return await resolveMcpPolicy(this.row.id, call.toolName, this.row.userId ?? 'local')
+      } catch (error) {
+        console.error('[mcp-proxy] Policy enforcement failed, defaulting to review:', error)
+        return { decision: 'review' as const, matchedScopes: [] as string[], scopeDescriptions: {} as Record<string, string> }
+      }
     }
+    const policy = await resolvePolicy()
     if (policy.decision === 'block') return { ok: false, reason: 'blocked' }
-    if (policy.decision !== 'review') return { ok: true, policyDecision: policy.decision }
+    const policyOutcome = policy.decision === 'review' ? 'review' : 'allow'
+
+    // Proxy rules: a require rule can send an allowed call to review; an
+    // allow rule can move a reviewed call to allow.
+    const toolName = call.toolName
+    const runRules = (outcome: 'allow' | 'review') => toolName
+      ? evaluateRulesForRequest({ kind: 'mcp', targetId: this.row.id }, this.agentSlug, outcome,
+        { kind: 'mcp', tool: toolName }, () => buildMcpRuleInput({ tool: toolName, args: call.args }))
+      : Promise.resolve(null)
+    const gate = await runRules(policyOutcome)
+    const ruleOutcomes = gate ? auditRuleOutcomes(gate.evaluations) : undefined
+    const ruleVersionId = decidingRuleVersionId(gate)
+    // No one can tell whether a require rule would hold this call: answer now
+    // so the agent can retry, rather than parking an allowed call for minutes.
+    if (gate?.unavailable && policyOutcome === 'allow') return { ok: false, reason: 'rules_unavailable' }
+    if (gate?.allowedBy) return { ok: true, policyDecision: 'allowed_by_rule', ruleVersionId, ruleOutcomes }
+    if ((gate?.decision ?? policyOutcome) === 'allow') return { ok: true, policyDecision: policy.decision, ruleOutcomes }
+    const reviewOutcomes = gate ? reviewRuleOutcomes(gate.evaluations) : []
+    const rules = gate ? reportedRules(gate) : []
     try {
-      const decision = await agentRegistry.get(this.agentSlug).inputs.reviews.request({
-        accountId: this.row.id, toolkit: this.row.name, method: call.method,
+      const reviews = agentRegistry.get(this.agentSlug).inputs.reviews
+      const review = await awaitReview(reviews, (raise) => reviews.request({
+        accountId: this.row.id, reviewType: 'mcp', toolkit: this.row.name, method: call.method,
         targetPath: call.requestPath, matchedScopes: policy.matchedScopes,
         scopeDescriptions: policy.scopeDescriptions,
-      }, call.signal)
-      return decision === 'deny'
-        ? { ok: false, reason: 'denied' }
-        : { ok: true, policyDecision: 'approved_by_user' }
-    } catch { return { ok: false, reason: 'review_timeout' } }
+        ...(reviewOutcomes.length > 0 ? { ruleOutcomes: reviewOutcomes } : {}),
+      }, raise), {
+        signal: call.signal,
+        // When an "always" decision on another card changes the policy, this
+        // call is decided again rather than released.
+        reevaluate: async () => {
+          const current = await resolvePolicy()
+          if (current.decision === 'block') return 'deny'
+          const outcome = current.decision === 'review' ? 'review' : 'allow'
+          const again = await runRules(outcome)
+          if (!again) return outcome
+          return again.unavailable ? 'review' : again.decision
+        },
+      })
+      return review.decision === 'deny'
+        ? { ok: false, reason: 'denied', denyReason: review.reason, rules, ruleVersionId, ruleOutcomes }
+        : { ok: true, policyDecision: 'approved_by_user', ruleVersionId, ruleOutcomes }
+    } catch { return { ok: false, reason: 'review_timeout', rules, ruleVersionId, ruleOutcomes } }
   }
 
   async authorization(): Promise<McpAuthorization> {
@@ -86,16 +123,12 @@ class AccountMcpConnection implements McpConnection {
   }
 
   async recoverAuthorization(signal: AbortSignal): Promise<McpRecoveryResult> {
-    try {
-      await agentRegistry.get(this.agentSlug).inputs.mcpReauth.request({
-        mcpId: this.row.id, mcpName: this.row.name, authType: this.row.authType,
-      }, signal)
-    } catch (error) {
-      const replacementMcpId = getReplacementMcpId(error)
-      if (replacementMcpId) return { ok: false, reason: 'replaced', replacementMcpId }
-      if (isReauthDismissed(error)) return { ok: false, reason: 'dismissed', dismissReason: reauthDismissalReason(error) }
-      return { ok: false, reason: 'timeout' }
-    }
+    const wait = await awaitReauth(agentRegistry.get(this.agentSlug).inputs.mcpReauth, {
+      mcpId: this.row.id, mcpName: this.row.name, authType: this.row.authType,
+    }, signal)
+    if (wait.outcome === 'replaced') return { ok: false, reason: 'replaced', replacementMcpId: wait.replacementId }
+    if (wait.outcome === 'dismissed') return { ok: false, reason: 'dismissed', dismissReason: wait.reason }
+    if (wait.outcome !== 'resumed') return { ok: false, reason: 'timeout' }
     const refreshed = await loadAssignedMcp(this.agentSlug, this.row.id)
     if (!refreshed) return { ok: false, reason: 'missing' }
     if (refreshed.status !== 'active') return { ok: false, reason: 'inactive' }
@@ -164,7 +197,7 @@ async function tryRefreshToken(mcp: {
       })
       .where(eq(remoteMcpServers.id, mcp.id))
 
-    completeMcpReauth(mcp.id)
+    await resumeMcpReauthWaits(mcp.id)
 
     return data.access_token
   } catch {

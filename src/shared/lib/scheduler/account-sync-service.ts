@@ -5,9 +5,11 @@ import { getRegisteredProviders } from '@shared/lib/account-providers'
 import type { ProviderConnectionListItem } from '@shared/lib/account-providers'
 import type { BaseAccountProvider } from '@shared/lib/account-providers'
 import { getProvider } from '@shared/lib/account-providers/service-catalog'
+import { getServerAdapter } from '@shared/lib/account-providers/server-adapters'
 import { getAccountProviderUserId } from '@shared/lib/config/settings'
 import { attribution, runWithRequestUser } from '@shared/lib/platform-attribution'
 import { syncAgentsAssignedConnectedAccount } from '@shared/lib/services/connection-sync-service'
+import { background } from '@shared/lib/background'
 
 type LocalStatus = 'active' | 'revoked' | 'expired'
 
@@ -41,14 +43,14 @@ class AccountSyncService {
 
     this.startupTimeoutId = setTimeout(() => {
       this.startupTimeoutId = null
-      this.syncAll().catch((error) => {
+      background(this.syncAll().catch((error) => {
         console.error('[AccountSync] Error in initial sync:', error)
-      })
+      }), { name: 'account-sync.sync-all' })
 
       this.intervalId = setInterval(() => {
-        this.syncAll().catch((error) => {
+        background(this.syncAll().catch((error) => {
           console.error('[AccountSync] Error in sync cycle:', error)
-        })
+        }), { name: 'account-sync.sync-all' })
       }, this.pollIntervalMs)
     }, this.startupDelayMs)
 
@@ -194,6 +196,7 @@ class AccountSyncService {
     for (const remote of remoteConnections) {
       if (remote.status !== 'ACTIVE') continue
       if (localByConnectionId.has(remote.id)) continue
+      if (getServerAdapter(remote.toolkitSlug)?.syncImports === false) continue
 
       try {
         const serviceProvider = getProvider(remote.toolkitSlug)

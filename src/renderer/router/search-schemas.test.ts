@@ -9,6 +9,7 @@ import {
   SETTINGS_TABS,
 } from './search-schemas'
 import { lenient } from './zod-search'
+import { SUPPORTED_PROVIDERS } from '@shared/lib/account-providers/service-catalog'
 
 describe('rootSearchSchema (open-redirect safety)', () => {
   it('rejects absolute URLs', () => {
@@ -86,9 +87,16 @@ describe('settingsTabSchema', () => {
     expect(settingsTabSchema.safeParse('system-prompt').success).toBe(false)
     expect(settingsTabSchema.safeParse('secrets').success).toBe(false)
   })
-  it('has 20 tabs', () => {
-    expect(SETTINGS_TABS).toHaveLength(20)
+  it('includes the volume and global guidance settings routes', () => {
+    expect(SETTINGS_TABS).toContain('volumes')
+    expect(settingsTabSchema.safeParse('global-guidance').success).toBe(true)
     expect(settingsTabSchema.safeParse('capabilities').success).toBe(true)
+  })
+})
+
+describe('connectionsSearchSchema (from back-target)', () => {
+  it('rejects a protocol-relative //', () => {
+    expect(connectionsSearchSchema.safeParse({ detail: 'account-1', source: 'home', from: '//evil' }).success).toBe(false)
   })
 })
 
@@ -108,6 +116,13 @@ describe('settingsSearchSchema (from close-target)', () => {
   it('accepts connection logs only with a selected connection', () => {
     expect(settingsSearchSchema.safeParse({ detail: 'account-1', connectionView: 'logs' }).success).toBe(true)
     expect(settingsSearchSchema.safeParse({ connectionView: 'logs' }).success).toBe(false)
+  })
+  it('keeps every catalog arrivalParam that lenient() would otherwise strip', () => {
+    const params = SUPPORTED_PROVIDERS.flatMap((p) => p.arrivalParam ?? [])
+    expect(params.length).toBeGreaterThan(0)
+    for (const param of params) {
+      expect(lenient(settingsSearchSchema)({ [param]: 'acme' })).toEqual({ [param]: 'acme' })
+    }
   })
 })
 

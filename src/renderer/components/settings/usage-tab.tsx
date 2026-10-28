@@ -30,7 +30,7 @@ import {
   useHideSettingsHeader,
 } from '@renderer/components/settings/settings-page'
 import { useUser } from '@renderer/context/user-context'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useModelSettings } from '@renderer/hooks/use-settings'
 import { useUsageData } from '@renderer/hooks/use-usage'
 import type { LlmProviderId } from '@shared/lib/config/settings'
 import { cn } from '@shared/lib/utils/cn'
@@ -128,8 +128,10 @@ function modelProviderIcon(model: string): string | undefined {
   ) return 'openai'
   if (id.startsWith('x-ai/') || id.startsWith('xai/') || id.includes('grok')) return 'xai'
   if (id.startsWith('moonshot/') || id.includes('kimi')) return 'kimi'
+  if (id.includes('minimax')) return 'minimax'
   if (id.startsWith('z-ai/') || id.startsWith('zai/') || id.includes('glm')) return 'zai'
   if (id.startsWith('meta/') || id.includes('llama')) return 'meta'
+  if (id.startsWith('google/') || id.includes('gemini')) return 'gemini'
   return undefined
 }
 
@@ -138,7 +140,7 @@ export function UsageTab() {
   useHideSettingsHeader(true)
 
   const { isAuthMode, isAdmin } = useUser()
-  const { data: settings } = useSettings()
+  const { data: settings } = useModelSettings()
   const [days, setDays] = useState(7)
   const [globalView, setGlobalView] = useState(!isAuthMode || isAdmin)
   const [segmentation, setSegmentation] = useState<Segmentation>('byModel')

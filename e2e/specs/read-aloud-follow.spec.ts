@@ -92,7 +92,6 @@ test.describe('read-aloud at the live edge', () => {
         contentType: 'application/json',
         body: JSON.stringify({
           configured: true,
-          supportsVoiceAgent: false,
           supportsTts: true,
           voices: [{ id: 'aura-2-thalia-en', label: 'Thalia', description: 'Clear, confident, energetic' }],
           defaultVoice: 'aura-2-thalia-en',

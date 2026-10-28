@@ -1,11 +1,18 @@
 import { describe, it, expect } from 'vitest'
-import { agentFolderSettingsWriteSchema, userSettingsSchema, userVoiceSettingsWriteSchema } from './user-settings-service'
+import { agentFolderSettingsWriteSchema, teamBrainViewsWriteSchema, userSettingsSchema, userVoiceSettingsWriteSchema } from './user-settings-service'
 
 describe('userSettingsSchema voice', () => {
   it('defaults to undefined and stores a valid voice and speed', () => {
     expect(userSettingsSchema.parse({}).voice).toBeUndefined()
     expect(userSettingsSchema.parse({ voice: { ttsVoice: 'aura-2-luna-en', ttsSpeed: 1.2 } }).voice)
       .toEqual({ ttsVoice: 'aura-2-luna-en', ttsSpeed: 1.2 })
+  })
+
+  it('stores the hold-sound and user-music choices and drops what it cannot read', () => {
+    expect(userSettingsSchema.parse({ voice: { holdSound: false, userMusic: false } }).voice).toEqual({ holdSound: false, userMusic: false })
+    expect(userSettingsSchema.parse({ voice: { userMusic: 'yes' } }).voice).toEqual({ userMusic: undefined })
+    expect(userVoiceSettingsWriteSchema.safeParse({ voice: { userMusic: true } }).success).toBe(true)
+    expect(userVoiceSettingsWriteSchema.safeParse({ voice: { userMusic: 'yes' } }).success).toBe(false)
   })
 
   it('keeps a voice id as stored: which ids exist is the provider\'s business, not the schema\'s', () => {
@@ -270,5 +277,15 @@ describe('agentFolderSettingsWriteSchema', () => {
   it('rejects a non-object body', () => {
     expect(agentFolderSettingsWriteSchema.safeParse(null).success).toBe(false)
     expect(agentFolderSettingsWriteSchema.safeParse([1]).success).toBe(false)
+  })
+})
+
+describe('userSettingsSchema teamBrainViews', () => {
+  it('drops a bad stored group alone, and refuses a write the stored schema would only drop', () => {
+    expect(userSettingsSchema.parse({ teamBrainViews: ['about', null] }).teamBrainViews).toEqual(['about'])
+    expect(teamBrainViewsWriteSchema.safeParse({ teamBrainViews: ['about'] }).success).toBe(true)
+    expect(teamBrainViewsWriteSchema.safeParse({}).success).toBe(true)
+    expect(teamBrainViewsWriteSchema.safeParse({ teamBrainViews: null }).success).toBe(false)
+    expect(teamBrainViewsWriteSchema.safeParse({ teamBrainViews: 'about' }).success).toBe(false)
   })
 })

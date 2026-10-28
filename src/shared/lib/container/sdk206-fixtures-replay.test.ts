@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { createInMemorySessionStore } from '@shared/lib/agent-actor/testing/in-memory-session-store'
+import { attachLiveSessionsHarness, createStreamClient } from '@shared/lib/agent-actor/testing/live-sessions-harness'
 import * as path from 'path'
 import { promises as fs } from 'fs'
-import type { ContainerClient, StreamMessage } from './types'
+import type { StreamMessage } from './types'
 
 // Replay of real SUPERAGENT_CAPTURE_DIR captures taken on claude-agent-sdk
 // 0.3.206 / CLI 2.1.206 (the sdk206-* fixtures). These are the first captures
@@ -12,10 +12,10 @@ import type { ContainerClient, StreamMessage } from './types'
 //   - result.terminal_reason (present on EVERY result, success included)
 //   - the background-BY-DEFAULT subagent shape (Agent tool without run_in_background)
 //   - task_started/task_notification for FOREGROUND Bash too (new CLI behavior),
-//     which is why these tests derive "background" from the persister's own
+//     which is why these tests derive "background" from the live sessions' own
 //     background_task_started SSE rather than from raw task_* frames.
 //
-// The persister does not consume the new frames yet — these tests lock the
+// The sessions did not consume the new frames yet — these tests lock the
 // derived-SSE contract on the new stream shapes BEFORE the bookkeeping
 // refactors (background_tasks_changed authority swap, command_lifecycle ghost
 // states) so those changes must keep every assertion here green.
@@ -38,6 +38,8 @@ vi.mock('@shared/lib/notifications/notification-manager', () => ({
 }))
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: () => ({}),
+  getModelCatalogSettings: () => ({}),
+  getAgentCapabilitySettings: () => ({ subagents: 'allow', workflows: 'allow' }),
   VALID_SCRIPT_TYPES: { darwin: ['applescript', 'shell'], linux: ['shell'], win32: ['powershell'] },
 }))
 vi.mock('@shared/lib/computer-use/permission-manager', () => ({
@@ -117,40 +119,9 @@ async function loadFixture(fixtureName: string): Promise<{
   return { meta, streamEntries }
 }
 
-// ----- Mock container client -----
+// ----- The agent's live sessions, over test doubles -----
 
-function createReplayClient(): {
-  client: ContainerClient
-  send: (message: StreamMessage) => void
-} {
-  let callback: ((message: StreamMessage) => void) | null = null
-  const client = {
-    subscribeToStream: vi.fn((_sid: string, cb: (message: StreamMessage) => void) => {
-      callback = cb
-      return { unsubscribe: vi.fn(), ready: Promise.resolve() }
-    }),
-    start: vi.fn(),
-    stop: vi.fn(),
-    stopSync: vi.fn(),
-    getInfoFromRuntime: vi.fn(),
-    getInfo: vi.fn(),
-    fetch: vi.fn(),
-    waitForHealthy: vi.fn(),
-    isHealthy: vi.fn(),
-    getStats: vi.fn(),
-    createSession: vi.fn(),
-    getSession: vi.fn(() => Promise.resolve(null)),
-    deleteSession: vi.fn(),
-    sendMessage: vi.fn(),
-    interruptSession: vi.fn(),
-    on: vi.fn(),
-    off: vi.fn(),
-  } as unknown as ContainerClient
-  return {
-    client,
-    send: (m) => callback?.(m),
-  }
-}
+const live = attachLiveSessionsHarness()
 
 // ----- Tracked replay -----
 
@@ -178,28 +149,21 @@ async function replayTracked(fixtureName: string): Promise<{
 }> {
   const { meta, streamEntries } = await loadFixture(fixtureName)
 
-  vi.resetModules()
-  const { messagePersister } = await import('./message-persister')
-  // The registry attaches the real stores; this test drives the persister alone.
-  messagePersister.attachSessionStores(createInMemorySessionStore)
-  const { client, send } = createReplayClient()
-
-  const sseEvents: Array<Record<string, unknown>> = []
-  const cleanup = messagePersister.addSSEClient(meta.agentSlug, meta.sessionId, (data) => {
-    sseEvents.push(data as Record<string, unknown>)
-  })
+  const sessions = live.sessions(meta.agentSlug)
+  const client = createStreamClient()
+  const { events: sseEvents, stop } = live.collect(meta.agentSlug, meta.sessionId)
 
   // The turn-starting user message predates the capture window; the idle
   // handler's gates are keyed on isActive.
   if (meta.startActive) {
-    messagePersister.markSessionActive(meta.agentSlug, meta.sessionId)
+    sessions.markActive(meta.sessionId)
   }
-  await messagePersister.subscribeToSession(meta.agentSlug, meta.sessionId, client, meta.sessionId)
+  await sessions.subscribe(meta.sessionId, client, meta.sessionId)
 
   const timeline: ReplaySnapshot[] = []
   for (let i = 0; i < streamEntries.length; i++) {
     const entry = streamEntries[i]
-    send(entry.message)
+    client.emit(entry.message.content)
     await new Promise((r) => setImmediate(r))
 
     const c = (entry.message?.content ?? {}) as Record<string, unknown>
@@ -209,7 +173,7 @@ async function replayTracked(fixtureName: string): Promise<{
       type: c['type'] as string | undefined,
       subtype: c['subtype'] as string | undefined,
       state: c['state'] as string | undefined,
-      isActive: messagePersister.isSessionActive(meta.agentSlug, meta.sessionId),
+      isActive: sessions.isActive(meta.sessionId),
       bgStartedIds: sseEvents.filter((e) => e['type'] === 'background_task_started').map((e) => e['taskId'] as string),
       bgCompletedIds: sseEvents.filter((e) => e['type'] === 'background_task_completed').map((e) => e['taskId'] as string),
       sessionIdleCount: sseEvents.filter((e) => e['type'] === 'session_idle').length,
@@ -218,8 +182,8 @@ async function replayTracked(fixtureName: string): Promise<{
   }
 
   await new Promise((r) => setTimeout(r, 50))
-  cleanup()
-  messagePersister.unsubscribeFromSession(meta.agentSlug, meta.sessionId)
+  stop()
+  sessions.unsubscribe(meta.sessionId)
 
   return { meta, streamEntries, sseEvents, timeline }
 }
@@ -232,9 +196,21 @@ function assertBackgroundContract(timeline: ReplaySnapshot[], sseEvents: Array<R
   const started = sseEvents.filter((e) => e['type'] === 'background_task_started').map((e) => e['taskId'] as string)
   const completed = sseEvents.filter((e) => e['type'] === 'background_task_completed').map((e) => e['taskId'] as string)
 
-  // Every started background task completes exactly once, and nothing
-  // completes that never started.
-  expect([...completed].sort()).toEqual([...new Set(completed)].sort())
+  // Every start of a background task is closed by exactly one completion
+  // before the next start of the same id, and nothing completes that never
+  // started. A task_id can run more than once (a SendMessage resume, or a
+  // CLI 2.1.296+ re-run of a subagent whose own background work finished).
+  const runs = new Map<string, number>()
+  for (const e of sseEvents) {
+    const id = e['taskId'] as string
+    if (e['type'] === 'background_task_started') {
+      expect(runs.get(id) ?? 0, `${id} started again before it completed`).toBe(0)
+      runs.set(id, 1)
+    } else if (e['type'] === 'background_task_completed') {
+      expect(runs.get(id), `${id} completed while not running`).toBe(1)
+      runs.set(id, 0)
+    }
+  }
   expect([...completed].sort()).toEqual([...started].sort())
 
   // session_idle never fires while a background task is open, and the session
@@ -269,6 +245,7 @@ function prematureIdleSnapshots(timeline: ReplaySnapshot[]): ReplaySnapshot[] {
 
 describe('sdk 0.3.206 capture replays', () => {
   afterEach(() => {
+    live.reset()
     vi.clearAllMocks()
   })
 
@@ -282,7 +259,7 @@ describe('sdk 0.3.206 capture replays', () => {
       expect(started).toHaveLength(2)
 
       // The SDK fired idle at turn-end while both tasks were running; the
-      // persister must have answered with session_waiting_background, not
+      // session must have answered with session_waiting_background, not
       // finalization.
       expect(prematureIdleSnapshots(timeline).length).toBeGreaterThanOrEqual(1)
       const fin = finalSnapshot(timeline)
@@ -535,5 +512,252 @@ describe('sdk 0.3.206 capture replays', () => {
       expect(fin.isActive).toBe(false)
       expect(fin.sessionIdleCount).toBe(0)
     })
+  })
+})
+
+// SDK 0.3.296 / CLI 2.1.296 captures (capture-fixtures.mjs in the
+// update-claude-deps skill). Two shape changes the live sessions must absorb:
+//   - a finishing task leaves background_tasks_changed AFTER its task_updated
+//     and task_notification (it led them up to 2.1.284);
+//   - a subagent's own background Bash is listed in the lead snapshot with
+//     parent_task_id, the subagent leaves the snapshot when its turn ends, and
+//     the child's completion re-runs the subagent under the same task_id.
+// SDK 0.3.300 / CLI 2.1.300 re-captured the same scenarios with no protocol
+// change (same task bookend, snapshot and idle order), and so did SDK 0.3.303 /
+// CLI 2.1.303 and SDK 0.3.311 / CLI 2.1.311, so every assertion below runs
+// against all four generations.
+const SDK296_SCENARIOS = [
+  'bg-bash-premature-idle',
+  'bg-subagent-no-idle',
+  'bg-subagent-interrupt-noop',
+  'bg-subagent-nested-bg-bash',
+  'sendmessage-resumed-subagent',
+]
+
+describe.each(['sdk296', 'sdk300', 'sdk303', 'sdk311'])('%s capture replays', (sdk) => {
+  const SDK296_FIXTURES = SDK296_SCENARIOS.map((scenario) => `${sdk}-${scenario}`)
+
+  afterEach(() => {
+    live.reset()
+    vi.clearAllMocks()
+  })
+
+  it.each([
+    { host: 'reattached', phase: 'child-only' },
+    { host: 'cold', phase: 'child-only' },
+    { host: 'reattached', phase: 'rerun' },
+    { host: 'cold', phase: 'rerun' },
+  ] as const)('completes the automatic rerun with a $host host attached during $phase work', async ({ host, phase }) => {
+    const { meta, streamEntries } = await loadFixture(`${sdk}-bg-subagent-nested-bg-bash`)
+    const contents = streamEntries.map(entry => entry.message.content as Record<string, unknown>)
+    const child = contents.find(c => c['subtype'] === 'task_started' && typeof c['parent_task_id'] === 'string')!
+    const agentId = child['parent_task_id'] as string
+    const childId = child['task_id'] as string
+    const starts = contents.flatMap((c, index) =>
+      c['subtype'] === 'task_started' && c['task_id'] === agentId ? [index] : []
+    )
+    expect(starts).toHaveLength(2)
+    const parentToolId = contents[starts[1]]['tool_use_id'] as string
+    const childOnlyIndex = contents.findIndex(c =>
+      c['subtype'] === 'background_tasks_changed' &&
+      Array.isArray(c['tasks']) && c['tasks'].length === 1 && c['tasks'][0].task_id === childId
+    )
+    expect(childOnlyIndex).toBeGreaterThan(starts[0])
+    const attachIndex = phase === 'child-only' ? childOnlyIndex : starts[1]
+    const snapshotIndex = contents.findLastIndex((c, index) =>
+      index <= attachIndex && c['subtype'] === 'background_tasks_changed'
+    )
+    expect(snapshotIndex).toBeGreaterThanOrEqual(0)
+
+    const sessions = live.sessions(meta.agentSlug)
+    const client = createStreamClient()
+    const { events, stop } = live.collect(meta.agentSlug, meta.sessionId)
+    const deliver = async (message: StreamMessage) => {
+      client.emit(message.content)
+      await new Promise<void>(resolve => setImmediate(resolve))
+    }
+    try {
+      sessions.markActive(meta.sessionId)
+      if (host === 'reattached') {
+        await sessions.subscribe(meta.sessionId, client, meta.sessionId)
+        for (const entry of streamEntries.slice(0, attachIndex + 1)) await deliver(entry.message)
+      }
+      await sessions.subscribe(meta.sessionId, client, meta.sessionId)
+      // The real container handshake sends current background membership,
+      // not the old Agent launch, async ack, or task_started frames.
+      await deliver({
+        type: 'system',
+        content: { type: 'system', subtype: 'capabilities', session_state_events: true },
+        sessionId: meta.sessionId,
+        timestamp: new Date(),
+      })
+      await deliver(streamEntries[snapshotIndex].message)
+      events.length = 0
+
+      const endIndex = contents.findIndex((c, index) =>
+        index > starts[1] && c['subtype'] === 'task_notification' && c['task_id'] === agentId
+      )
+      expect(endIndex).toBeGreaterThan(attachIndex)
+      for (const entry of streamEntries.slice(attachIndex + 1, endIndex + 1)) await deliver(entry.message)
+
+      // Assert before the lead wakes/settles: session_idle must not be what
+      // finally makes a finished subagent disappear. The two terminal SDK
+      // signals must still produce exactly one completion for this run.
+      expect(events.filter(e => e['type'] === 'session_idle')).toHaveLength(0)
+      expect(events.filter(e => e['type'] === 'subagent_completed')).toEqual([
+        expect.objectContaining({ parentToolId, agentId }),
+      ])
+      expect(sessions.activeSubagents(meta.sessionId)).toContainEqual(
+        expect.objectContaining({ parentToolId, agentId, status: 'completed' })
+      )
+    } finally {
+      stop()
+      sessions.unsubscribe(meta.sessionId)
+    }
+  })
+
+  it.each(SDK296_FIXTURES)('%s: background contract holds and the session finalizes once', async (name) => {
+    const { sseEvents, timeline } = await replayTracked(name)
+
+    assertBackgroundContract(timeline, sseEvents)
+    // Every subagent run the UI was told about is also reported finished.
+    const subStarted = sseEvents.filter((e) => e['type'] === 'subagent_started').length
+    const subCompleted = sseEvents.filter((e) => e['type'] === 'subagent_completed').length
+    expect(subCompleted).toBe(subStarted)
+    const fin = finalSnapshot(timeline)
+    expect(fin.sessionIdleCount).toBe(1)
+    expect(fin.isActive).toBe(false)
+  })
+
+  it('a task the snapshot drops after its completed signal is retired by that snapshot', async () => {
+    // The trailing-snapshot order: completed arrives while the snapshot still
+    // lists the task (the sessions hold it), then the next frame drops it.
+    // The row must end by that frame, not linger to some later one.
+    const { streamEntries, sseEvents } = await replayTracked(`${sdk}-bg-bash-premature-idle`)
+    const contents = streamEntries.map((e) => e.message.content as Record<string, unknown>)
+    const completedIdx = contents.findIndex((c) => c['subtype'] === 'task_notification' && c['status'] === 'completed')
+    const trailingIdx = contents.findIndex(
+      (c, i) => i > completedIdx && c['subtype'] === 'background_tasks_changed'
+    )
+    expect(completedIdx).toBeGreaterThan(0)
+    expect(trailingIdx).toBeGreaterThan(completedIdx)
+    const taskId = contents[completedIdx]['task_id'] as string
+    expect((contents[trailingIdx]['tasks'] as Array<{ task_id: string }>).map((t) => t.task_id)).not.toContain(taskId)
+    expect(sseEvents.filter((e) => e['type'] === 'background_task_completed' && e['taskId'] === taskId)).toHaveLength(1)
+  })
+
+  it("carries the snapshot's subagent_type onto the background subagent's row", async () => {
+    const { sseEvents } = await replayTracked(`${sdk}-bg-subagent-no-idle`)
+    const rows = sseEvents
+      .filter((e) => e['type'] === 'background_task_started' || e['type'] === 'background_task_updated')
+      .filter((e) => e['isSubagent'] === true)
+    expect(rows.length).toBeGreaterThan(0)
+    expect(rows.at(-1)!['subagentType']).toBe('general-purpose')
+  })
+
+  it('streams a SendMessage-resumed run into its own entry, not the finished first run', async () => {
+    // The resumed run's frames still name the ORIGINAL Agent call in
+    // parent_tool_use_id; its task_started names the SendMessage call. The
+    // frames' agent_id routes them to the live run.
+    const { streamEntries, sseEvents } = await replayTracked(`${sdk}-sendmessage-resumed-subagent`)
+    const contents = streamEntries.map((e) => e.message.content as Record<string, unknown>)
+    const starts = contents.filter((c) => c['subtype'] === 'task_started' && c['task_type'] === 'local_agent')
+    expect(starts).toHaveLength(2)
+    const [launchToolId, resumeToolId] = starts.map((c) => c['tool_use_id'] as string)
+    expect(resumeToolId).not.toBe(launchToolId)
+
+    const resumeStart = sseEvents.findIndex((e) => e['type'] === 'subagent_started' && e['parentToolId'] === resumeToolId)
+    const resumeEnd = sseEvents.findIndex((e) => e['type'] === 'subagent_completed' && e['parentToolId'] === resumeToolId)
+    expect(resumeStart).toBeGreaterThan(0)
+    expect(resumeEnd).toBeGreaterThan(resumeStart)
+    const during = sseEvents
+      .slice(resumeStart + 1, resumeEnd)
+      .filter((e) => e['type'] === 'subagent_stream_delta' || e['type'] === 'subagent_updated')
+    expect(during.length).toBeGreaterThan(0)
+    expect(during.map((e) => e['parentToolId'])).toEqual(during.map(() => resumeToolId))
+  })
+
+  it("a subagent's background Bash keeps the session waiting after the subagent itself completes", async () => {
+    const { streamEntries, timeline, sseEvents } = await replayTracked(`${sdk}-bg-subagent-nested-bg-bash`)
+    const contents = streamEntries.map((e) => e.message.content as Record<string, unknown>)
+    const childStart = contents.find((c) => c['subtype'] === 'task_started' && typeof c['parent_task_id'] === 'string')
+    expect(childStart, 'capture has a task launched by the subagent').toBeDefined()
+    const childId = childStart!['task_id'] as string
+    const childEnd = contents.findIndex(
+      (c) => c['subtype'] === 'task_notification' && c['task_id'] === childId
+    )
+    expect(childEnd).toBeGreaterThan(0)
+    // The child is a background task of the session in its own right: started
+    // and ended once, and no session_idle while it ran.
+    expect(sseEvents.filter((e) => e['type'] === 'background_task_started' && e['taskId'] === childId)).toHaveLength(1)
+    for (const snap of timeline.slice(0, childEnd)) {
+      expect(snap.sessionIdleCount, `idle at t=${snap.t} while ${childId} ran`).toBe(0)
+    }
+  })
+})
+
+// CLI 2.1.302 turned on fork subagents (Agent subagent_type "fork"): a
+// background agent that inherits the parent's conversation. On the wire it is
+// a background subagent like any other (async_launched ack, task_started with
+// is_backgrounded, terminal task frames); only its transcript differs (see
+// subagentOwnEntries).
+describe.each(['sdk303', 'sdk311'])('%s fork captures replay', (sdk) => {
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it.each([`${sdk}-fork-subagent`, `${sdk}-fork-sendmessage-resumed`])(
+    '%s: background contract holds and the session finalizes once',
+    async (name) => {
+      const { sseEvents, timeline } = await replayTracked(name)
+
+      assertBackgroundContract(timeline, sseEvents)
+      const subStarted = sseEvents.filter((e) => e['type'] === 'subagent_started')
+      expect(subStarted.length).toBeGreaterThan(0)
+      expect(subStarted.map((e) => e['subagentType'])).toEqual(subStarted.map(() => 'fork'))
+      expect(sseEvents.filter((e) => e['type'] === 'subagent_completed')).toHaveLength(subStarted.length)
+      const fin = finalSnapshot(timeline)
+      expect(fin.sessionIdleCount).toBe(1)
+      expect(fin.isActive).toBe(false)
+    }
+  )
+
+  it('keeps the fork running past its launch ack, and completes it once at its task_notification', async () => {
+    const { streamEntries, sseEvents } = await replayTracked(`${sdk}-fork-subagent`)
+    const contents = streamEntries.map((e) => e.message.content as Record<string, unknown>)
+    const notification = contents.find((c) => c['subtype'] === 'task_notification')!
+    const ackIndex = contents.findIndex((c) =>
+      c['type'] === 'user' && (c['tool_use_result'] as { status?: string } | undefined)?.status === 'async_launched'
+    )
+    expect(ackIndex).toBeGreaterThan(0)
+
+    const completed = sseEvents.filter((e) => e['type'] === 'subagent_completed')
+    expect(completed).toEqual([
+      expect.objectContaining({ parentToolId: notification['tool_use_id'], agentId: notification['task_id'] }),
+    ])
+    // The fork's own frames stream into its entry after the lead's ack.
+    const firstDelta = sseEvents.findIndex((e) => e['type'] === 'subagent_stream_delta' || e['type'] === 'subagent_updated')
+    const completion = sseEvents.indexOf(completed[0])
+    expect(firstDelta).toBeGreaterThan(-1)
+    expect(firstDelta).toBeLessThan(completion)
+  })
+
+  it('streams a SendMessage-resumed fork into its own entry, not the finished first run', async () => {
+    const { streamEntries, sseEvents } = await replayTracked(`${sdk}-fork-sendmessage-resumed`)
+    const contents = streamEntries.map((e) => e.message.content as Record<string, unknown>)
+    const starts = contents.filter((c) => c['subtype'] === 'task_started' && c['task_type'] === 'local_agent')
+    expect(starts).toHaveLength(2)
+    const [launchToolId, resumeToolId] = starts.map((c) => c['tool_use_id'] as string)
+    expect(resumeToolId).not.toBe(launchToolId)
+
+    const resumeStart = sseEvents.findIndex((e) => e['type'] === 'subagent_started' && e['parentToolId'] === resumeToolId)
+    const resumeEnd = sseEvents.findIndex((e) => e['type'] === 'subagent_completed' && e['parentToolId'] === resumeToolId)
+    expect(resumeStart).toBeGreaterThan(0)
+    expect(resumeEnd).toBeGreaterThan(resumeStart)
+    const during = sseEvents
+      .slice(resumeStart + 1, resumeEnd)
+      .filter((e) => e['type'] === 'subagent_stream_delta' || e['type'] === 'subagent_updated')
+    expect(during.length).toBeGreaterThan(0)
+    expect(during.map((e) => e['parentToolId'])).toEqual(during.map(() => resumeToolId))
   })
 })

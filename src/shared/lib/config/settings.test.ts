@@ -85,10 +85,10 @@ const originalEnv = { ...process.env }
 beforeEach(() => {
   vi.clearAllMocks()
   clearSettingsCache()
-  // The auto-mocked fs.statSync returns undefined, which writeFileAtomicSync's
+  // The auto-mocked fs.lstatSync returns undefined, which writeFileAtomicSync's
   // ENOENT-scoped existingMode probe would rethrow as a TypeError. Simulate the
   // "target absent → create with mode" path the save tests assume.
-  mockedFs.statSync.mockImplementation(() => {
+  mockedFs.lstatSync.mockImplementation(() => {
     throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' })
   })
   // Reset env vars that could interfere
@@ -247,7 +247,7 @@ describe('loadSettings', () => {
 
       expect(result.models?.agentModel).toBe('claude-opus-4-7')
       expect(result.models?.summarizerModel).toBe('haiku') // default
-      expect(result.models?.browserModel).toBe('sonnet') // default
+      expect(result.models?.browserModel).toBe('haiku') // default
     })
 
     it('migrates legacy concrete model defaults to bare family aliases', () => {
@@ -1208,7 +1208,7 @@ describe('getEffectiveModels', () => {
     expect(models).toEqual({
       summarizerModel: 'haiku',
       agentModel: 'opus',
-      browserModel: 'sonnet',
+      browserModel: 'haiku',
       dashboardBuilderModel: 'opus',
       agentEffort: 'medium',
     })
@@ -1247,7 +1247,7 @@ describe('getEffectiveModels', () => {
 
     expect(models.agentModel).toBe('custom-agent')
     expect(models.summarizerModel).toBe('haiku')
-    expect(models.browserModel).toBe('sonnet')
+    expect(models.browserModel).toBe('haiku')
   })
 
   it('falls back to defaults when model values are empty strings', () => {
@@ -1266,7 +1266,7 @@ describe('getEffectiveModels', () => {
     // Empty strings are falsy, so || fallback triggers
     expect(models.summarizerModel).toBe('haiku')
     expect(models.agentModel).toBe('opus')
-    expect(models.browserModel).toBe('sonnet')
+    expect(models.browserModel).toBe('haiku')
   })
 
   it('handles models being undefined in settings', () => {
@@ -1277,7 +1277,7 @@ describe('getEffectiveModels', () => {
     expect(models).toEqual({
       summarizerModel: 'haiku',
       agentModel: 'opus',
-      browserModel: 'sonnet',
+      browserModel: 'haiku',
       dashboardBuilderModel: 'opus',
       agentEffort: 'medium',
     })
@@ -1288,8 +1288,8 @@ describe('getEffectiveModels', () => {
 
     expect(getEffectiveModels()).toEqual({
       summarizerModel: 'haiku',
-      agentModel: 'grok',
-      browserModel: 'sonnet',
+      agentModel: 'sonnet',
+      browserModel: 'haiku',
       dashboardBuilderModel: 'opus',
       agentEffort: 'medium',
     })
@@ -1303,7 +1303,7 @@ describe('getEffectiveModels', () => {
     expect(getEffectiveModels()).toEqual({
       summarizerModel: 'haiku',
       agentModel: 'opus',
-      browserModel: 'sonnet',
+      browserModel: 'haiku',
       dashboardBuilderModel: 'opus',
       agentEffort: 'medium',
     })
@@ -1438,7 +1438,7 @@ describe('DEFAULT_SETTINGS', () => {
     expect(DEFAULT_SETTINGS.models).toEqual({
       summarizerModel: 'haiku',
       agentModel: 'opus',
-      browserModel: 'sonnet',
+      browserModel: 'haiku',
       dashboardBuilderModel: 'opus',
       agentEffort: 'medium',
     })
@@ -1674,5 +1674,24 @@ describe('agentCapabilities', () => {
 
   it('DEFAULT_SETTINGS carries the section so new files persist it', () => {
     expect(DEFAULT_SETTINGS.agentCapabilities).toEqual({ subagents: 'allow', workflows: 'review' })
+  })
+})
+
+describe('globalInstructions', () => {
+  it('is absent when never set', () => {
+    mockNoSettingsFile()
+    expect(loadSettings().globalInstructions).toBeUndefined()
+  })
+
+  it('loads a stored string as-is', () => {
+    mockSettingsFile(JSON.stringify({ globalInstructions: 'Be concise.\n' }))
+    expect(loadSettings().globalInstructions).toBe('Be concise.\n')
+  })
+
+  it.each([42, { text: 'x' }, 'x'.repeat(20_001)])('drops an invalid stored value (%#) instead of prompting every agent with it', (value) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mockSettingsFile(JSON.stringify({ globalInstructions: value }))
+    expect(loadSettings().globalInstructions).toBeUndefined()
+    warn.mockRestore()
   })
 })

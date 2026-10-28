@@ -97,6 +97,24 @@ describe('pricingFor', () => {
     })
   })
 
+  it('exposes Opus 5.5 pricing: cheaper than Opus 5 with the same fast-mode multiplier', () => {
+    expect(pricingFor('claude-opus-5-5')).toEqual({
+      inputPerMtok: 4,
+      outputPerMtok: 20,
+      cacheCreationPerMtok: 5,
+      cacheCreation1hPerMtok: 8,
+      cacheReadPerMtok: 0.2,
+      speedMultipliers: { fast: 2 },
+    })
+  })
+
+  it('charges Sonnet 5.5 cache reads at $0.10 from 2026-10-07 and $0.20 before', () => {
+    const card = { inputPerMtok: 2, outputPerMtok: 10, cacheCreationPerMtok: 2.5, cacheCreation1hPerMtok: 4 }
+    expect(pricingFor('claude-sonnet-5-5')).toEqual({ ...card, cacheReadPerMtok: 0.1 })
+    expect(pricingFor('claude-sonnet-5-5', new Date('2026-10-07T00:00:00Z'))).toEqual({ ...card, cacheReadPerMtok: 0.1 })
+    expect(pricingFor('claude-sonnet-5-5', new Date('2026-10-06T23:59:59Z'))).toEqual({ ...card, cacheReadPerMtok: 0.2 })
+  })
+
   it.each(['claude-opus-4-6', 'claude-opus-4-6-20260205', 'claude-opus-4-7'])(
     'retains the historical 6x fast multiplier for %s',
     (id) => {

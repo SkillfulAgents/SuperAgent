@@ -20,7 +20,7 @@ beforeEach(() => {
   mocks.stream = { isActive: false, streamingMessage: null, activeStartTime: null, streamingToolUses: [], error: null }
   mocks.create.mockReset().mockImplementation(() => ({
     capabilities: { speechSpeed: false, spokenTranscript: false }, analyser: null,
-    start: vi.fn(async () => {}), close: vi.fn(), setPaused: vi.fn(), acceptAgentEvent: vi.fn(), pressMic: vi.fn(),
+    start: vi.fn(async () => {}), close: vi.fn(), setPaused: vi.fn(), setMicrophoneMuted: vi.fn(), setOutputMuted: vi.fn(), acceptAgentEvent: vi.fn(), pressMic: vi.fn(),
   }))
 })
 
@@ -69,7 +69,7 @@ describe('session voice engine selection', () => {
     expect(result.current.error).toBeNull()
     const latestEngine = mocks.create.mock.results.at(-1)!.value
     expect(latestEngine.acceptAgentEvent).toHaveBeenCalledWith({
-      type: 'state', state: { active: false, awaiting: false, toolsUsed: false },
+      type: 'state', state: { active: false, awaiting: false, toolsUsed: false, background: false },
     })
     unmount()
   })

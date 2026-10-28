@@ -34,7 +34,10 @@ const { copyDirectoryFiltered, streamJsonlFile } = vi.hoisted(() => ({
 vi.mock('@shared/lib/agent-actor/local-transcript-ops', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@shared/lib/agent-actor/local-transcript-ops')>()),
   copyDerivedSessionFiles: (...args: unknown[]) => copyDirectoryFiltered(...args),
-  streamRawEntries: () => streamJsonlFile(),
+}))
+vi.mock('@shared/lib/agent-actor/jsonl-files', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@shared/lib/agent-actor/jsonl-files')>()),
+  streamJsonl: () => streamJsonlFile(),
 }))
 
 const { insertMessageAuthorsBestEffort, dbSelectFrom } = vi.hoisted(() => ({
@@ -64,8 +67,10 @@ vi.mock('@shared/lib/container/container-host', async () => {
   }
 })
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: { isSessionActive },
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    isActive: (slug, sessionId) => isSessionActive(slug, sessionId),
+  }),
 }))
 
 vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
@@ -76,6 +81,11 @@ vi.mock('@shared/lib/utils/file-storage', async (importOriginal) => ({
 vi.mock('@/api/routes/message-author', () => ({
   insertMessageAuthorsBestEffort,
 }))
+
+const { hasIntegrationMessages } = vi.hoisted(() => ({
+  hasIntegrationMessages: vi.fn(async () => false),
+}))
+vi.mock('@shared/lib/services/agent-integration-message-service', () => ({ hasIntegrationMessages }))
 
 vi.mock('@shared/lib/db', () => ({
   db: {
@@ -88,7 +98,7 @@ vi.mock('@shared/lib/db', () => ({
 }))
 
 vi.mock('@shared/lib/db/schema', () => ({
-  messageAuthor: { id: 'id', sessionId: 'session_id', userId: 'user_id' },
+  messageAuthor: { id: 'id', sessionId: 'session_id', userId: 'user_id', integrationId: 'integration_id', display: 'display' },
 }))
 
 vi.mock('drizzle-orm', () => ({
@@ -105,7 +115,6 @@ const source = {
   name: 'Pricing',
   createdAt: new Date('2026-01-01T00:00:00Z'),
   lastActivityAt: new Date('2026-01-01T00:00:00Z'),
-  messageCount: 2,
 }
 
 const sourceMeta = {
@@ -195,6 +204,27 @@ describe('forkSession', () => {
     await pending
   })
 
+  it('re-keys integration authors in every mode, cards included', async () => {
+    hasIntegrationMessages.mockResolvedValueOnce(true)
+    streamJsonlFile.mockImplementation(async function* () {
+      yield { type: 'user', uuid: 'new-user', forkedFrom: { sessionId: 'src-1', messageUuid: 'old-user' } }
+      yield { type: 'assistant', uuid: 'new-assistant', forkedFrom: { sessionId: 'src-1', messageUuid: 'old-assistant' } }
+    })
+    dbSelectFrom.mockResolvedValueOnce([{ id: 'old-user', userId: null, integrationId: 'integration-1', display: '{"version":1}' }])
+
+    const fork = await forkSession('test-agent', 'src-1')
+
+    expect(insertMessageAuthorsBestEffort).toHaveBeenCalledExactlyOnceWith([
+      { id: 'new-user', sessionId: fork.id, agentSlug: 'test-agent', userId: null, integrationId: 'integration-1', display: '{"version":1}' },
+    ])
+  })
+
+  it('does not scan the fork without auth attribution or integration authors', async () => {
+    await forkSession('test-agent', 'src-1')
+    expect(streamJsonlFile).not.toHaveBeenCalled()
+    expect(insertMessageAuthorsBestEffort).not.toHaveBeenCalled()
+  })
+
   it('does not re-read metadata for runtime choices', async () => {
     await forkSession('test-agent', 'src-1')
     expect(readSessionMetadata).toHaveBeenCalledTimes(1)
@@ -211,7 +241,7 @@ describe('forkSession', () => {
   it('throws 409 without reading or booting when the source is mid-turn', async () => {
     isSessionActive.mockReturnValue(true)
     await expect(forkSession('test-agent', 'src-1')).rejects.toMatchObject({
-      name: 'ForkSessionError',
+      name: 'SessionForkFailedError',
       status: 409,
     })
     expect(readSessionMetadata).not.toHaveBeenCalled()
@@ -221,7 +251,7 @@ describe('forkSession', () => {
   it('throws 404 without booting when the source is unknown', async () => {
     sessionIsKnown.mockResolvedValue(false)
     await expect(forkSession('test-agent', 'src-1')).rejects.toMatchObject({
-      name: 'ForkSessionError',
+      name: 'SessionForkFailedError',
       status: 404,
     })
     expect(ensureRunning).not.toHaveBeenCalled()

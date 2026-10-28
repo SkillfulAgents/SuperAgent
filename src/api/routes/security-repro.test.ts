@@ -223,24 +223,6 @@ vi.mock('@shared/lib/container/container-host', async () => {
   }
 })
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    broadcastGlobal: vi.fn(),
-    broadcastSessionUpdate: vi.fn(),
-    persistMessage: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(),
-    isSessionActive: vi.fn(() => false),
-    isSessionAwaitingInput: vi.fn(() => false),
-    hasActiveSessionsForAgent: vi.fn(() => false),
-    hasSessionsAwaitingInputForAgent: vi.fn(() => false),
-    isSubscribed: vi.fn(() => true),
-    subscribeToSession: vi.fn(),
-    unsubscribeFromSession: vi.fn(),
-    markSessionActive: vi.fn(),
-    broadcastSessionEvent: vi.fn(),
-  },
-}))
-
 // agentExists gates `/:id/*` routes — must resolve true so the request reaches
 // the download handler.
 vi.mock('@shared/lib/services/agent-service', () => ({
@@ -279,12 +261,14 @@ vi.mock('@shared/lib/services/artifact-service', () => ({
   listArtifactsFromFilesystem: vi.fn(), deleteArtifactFromFilesystem: vi.fn(), renameArtifactOnFilesystem: vi.fn(),
 }))
 
-vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  listChatIntegrations: vi.fn(() => []), listChatIntegrationsByAgents: vi.fn(() => new Map()),
+vi.mock('@shared/lib/services/agent-integration-service', () => ({
+  listAgentIntegrations: vi.fn(() => []), listAgentIntegrationsByAgents: vi.fn(() => new Map()),
 }))
 
 vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadNotifications: vi.fn(() => Promise.resolve(new Set())),
+  getSessionIdsWithUnreadMentions: vi.fn(() => Promise.resolve(new Set())),
+  getUnreadMentionsByAgents: vi.fn(() => Promise.resolve(new Map())),
   getUnreadNotificationsByAgents: vi.fn(() => Promise.resolve(new Map())),
 }))
 
@@ -343,7 +327,7 @@ vi.mock('hono/streaming', () => ({ streamSSE: vi.fn() }))
 // Import routers after all mocks are set up.
 import connectedAccountsRouter from './connected-accounts'
 import agents from './agents'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import platformAuthRoute from './platform-auth'
 
 // ---------------------------------------------------------------------------

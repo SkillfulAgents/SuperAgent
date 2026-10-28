@@ -52,24 +52,26 @@ const mockMarkSessionActive = vi.fn()
 const mockMarkSessionIdle = vi.fn()
 const mockIsSubscribed = vi.fn()
 const mockCancelAwaitingInput = vi.fn()
-const mockBroadcastGlobal = vi.fn()
-const mockBroadcastSessionUpdate = vi.fn()
+const mockPublishGlobal = vi.fn()
+const mockEmit = vi.fn()
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    withSessionSend: async (agentSlug: string, sessionId: string, _client: unknown, send: () => Promise<unknown>) => {
+vi.mock('@shared/lib/notifications/global-feed', () => ({
+  globalFeed: { publish: (...args: unknown[]) => mockPublishGlobal(...args), subscribe: () => () => {} },
+}))
+
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    markSending: (agentSlug, sessionId) => {
       mockMarkSessionActive(agentSlug, sessionId)
-      try { return await send() }
-      catch (error) { mockMarkSessionIdle(agentSlug, sessionId); throw error }
+      return { queued: false, rollback: () => mockMarkSessionIdle(agentSlug, sessionId) }
     },
-    subscribeToSession: (...args: unknown[]) => mockSubscribeToSession(...args),
-    markSessionActive: (...args: unknown[]) => mockMarkSessionActive(...args),
-    markSessionIdle: (...args: unknown[]) => mockMarkSessionIdle(...args),
-    isSubscribed: (...args: unknown[]) => mockIsSubscribed(...args),
-    cancelAwaitingInput: (...args: unknown[]) => mockCancelAwaitingInput(...args),
-    broadcastGlobal: (...args: unknown[]) => mockBroadcastGlobal(...args),
-    broadcastSessionUpdate: (...args: unknown[]) => mockBroadcastSessionUpdate(...args),
-  },
+    subscribe: (...args) => mockSubscribeToSession(...args),
+    markActive: (...args) => mockMarkSessionActive(...args),
+    markIdle: (...args) => mockMarkSessionIdle(...args),
+    isSubscribed: (...args) => mockIsSubscribed(...args),
+    cancelAwaitingInput: (...args) => mockCancelAwaitingInput(...args),
+    emit: (...args) => mockEmit(...args),
+  }),
 }))
 
 const mockTriggerScheduledSessionStarted = vi.fn()
@@ -123,6 +125,7 @@ vi.mock('@shared/lib/error-reporting', () => ({
   captureException: vi.fn(),
 }))
 
+import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import { taskScheduler } from './task-scheduler'
 
 const wakeExecutionAt = new Date('2026-06-26T17:00:00.000Z')
@@ -140,11 +143,14 @@ function createWakeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     lastExecutedAt: null,
     isRecurring: false,
     executionCount: 0,
+    consecutiveSkips: 0,
+    lastSkippedAt: null,
     lastSessionId: null,
     createdBySessionId: 'sleeping-session-1',
     createdByUserId: 'user-1',
     timezone: 'America/Los_Angeles',
     model: null,
+  llmProviderId: null,
     effort: null,
     speed: null,
     resumeSessionId: 'sleeping-session-1',
@@ -178,7 +184,7 @@ describe('TaskScheduler session wake (resume) branch', () => {
       sendMessage: mockSendMessage,
     })
     mockCreateSession.mockResolvedValue({ id: 'new-session-should-not-happen' })
-    mockSendMessage.mockResolvedValue(undefined)
+    mockSendMessage.mockResolvedValue({})
     mockSubscribeToSession.mockResolvedValue(undefined)
     mockIsSubscribed.mockReturnValue(false)
     mockCancelAwaitingInput.mockResolvedValue(undefined)
@@ -219,7 +225,8 @@ describe('TaskScheduler session wake (resume) branch', () => {
     expect(content).toContain('resuming as scheduled')
     expect(content).toContain('Check whether Dana replied to the intro email')
     expect(typeof uuid).toBe('string')
-    expect(options).toEqual({ shouldQuery: true })
+    expect(options).toMatchObject({ shouldQuery: true })
+    expect(options).not.toHaveProperty('preserveRuntime')
 
     expect(mockMarkSessionActive).toHaveBeenCalledWith('agent-one', 'sleeping-session-1')
     expect(mockMarkTaskExecuted).toHaveBeenCalledWith('wake-task-1', 'sleeping-session-1')
@@ -231,7 +238,10 @@ describe('TaskScheduler session wake (resume) branch', () => {
 
     await taskScheduler.triggerExecution()
 
-    expect(mockSubscribeToSession).toHaveBeenCalledWith('agent-one', 'sleeping-session-1', expect.anything(), 'sleeping-session-1')
+    // The delivery's own metadata read is handed on, so the attach reads nothing.
+    expect(mockSubscribeToSession).toHaveBeenCalledWith(
+      'agent-one', 'sleeping-session-1', expect.anything(), 'sleeping-session-1', expect.objectContaining({ name: 'Email follow-up' }),
+    )
   })
 
   it('does not re-subscribe an already-subscribed session', async () => {
@@ -338,7 +348,7 @@ describe('TaskScheduler session wake (resume) branch', () => {
 
   it('leaves a recently-due wake pending on transient failure so the poll retries it', async () => {
     mockGetDueTasks.mockResolvedValue([createWakeTask()])
-    mockSendMessage.mockRejectedValue(new Error('container is restarting'))
+    mockSendMessage.mockRejectedValue(new MessageNotAcceptedError('unavailable', 'container is restarting'))
 
     await taskScheduler.triggerExecution()
 

@@ -1,0 +1,23 @@
+import { z } from 'zod'
+
+// Execution-only data. Never put this object in session or warm-profile files.
+export const proxyCredentialSchema = z.object({
+  accessToken: z.string().min(1),
+  accountId: z.string().optional(),
+  generation: z.number().int(),
+  expiresAt: z.number().optional(),
+})
+export const llmProxyConfigSchema = z.object({
+  adapter: z.enum(['grok', 'codex', 'kimi']).optional(),
+  format: z.enum(['messages', 'chat-completions', 'responses']),
+  baseUrl: z.url({ protocol: /^https?$/ }),
+  credential: proxyCredentialSchema,
+  headers: z.record(z.string(), z.string()).default({}),
+  // Also send the live credential in this header. Older images drop the field and forward headers as configured.
+  credentialHeader: z.literal('x-api-key').optional(),
+  maxOutputTokens: z.number().int().positive().optional(),
+  chatTokenLimitField: z.enum(['max_tokens', 'max_completion_tokens']).optional(),
+  omitReasoningEffort: z.boolean().optional(),
+})
+export type ProxyCredential = z.infer<typeof proxyCredentialSchema>
+export type LlmProxyConfig = z.infer<typeof llmProxyConfigSchema>

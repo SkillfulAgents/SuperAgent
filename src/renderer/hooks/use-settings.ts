@@ -32,6 +32,22 @@ export function useSettings(options?: { enabled?: boolean }) {
   })
 }
 
+/**
+ * The global guidance appended to every agent's system prompt. Readable by
+ * every signed-in user (unlike `useSettings()`); admins write it through
+ * `useUpdateSettings()`, whose `['settings']` invalidation refreshes this.
+ */
+export function useGlobalInstructions() {
+  return useQuery<{ globalInstructions: string }>({
+    queryKey: ['settings', 'global-instructions'],
+    queryFn: async () => {
+      const res = await apiFetch('/api/settings/global-instructions')
+      if (!res.ok) throw new Error('Failed to fetch global guidance')
+      return res.json()
+    },
+  })
+}
+
 /** Default-on preference; treat missing as enabled. */
 export function isWarmStartOnTypeEnabled(
   settings?: Pick<GlobalSettingsResponse, 'app'> | null,
@@ -63,13 +79,29 @@ export function useWarmStartOnTypeEnabled(): boolean {
  * catalog. The `['settings', …]` key keeps it refreshed by the same broad
  * invalidations the settings mutations already fire (e.g. a catalog edit).
  */
-export function useModelSettings() {
+export function useModelSettings(agentSlug?: string, llmProviderId?: string | null) {
   return useQuery<ModelPickerSettingsResponse>({
-    queryKey: ['settings', 'models'],
+    queryKey: ['settings', 'models', ...(agentSlug ? [agentSlug, llmProviderId] : [])],
     queryFn: async () => {
-      const res = await apiFetch('/api/settings/models')
+      // The two reads are independent, so both start now. They are still
+      // checked in order, so a failed settings read wins as it did when the
+      // reads ran back to back; the catch only keeps an abandoned connection
+      // read from surfacing as an unhandled rejection.
+      const query = llmProviderId ? `?llmProviderId=${encodeURIComponent(llmProviderId)}` : ''
+      const settingsRequest = apiFetch('/api/settings/models')
+      const connectionRequest = agentSlug
+        ? apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/llm-connections${query}`)
+        : undefined
+      void connectionRequest?.catch(() => {})
+      const res = await settingsRequest
       if (!res.ok) throw new Error('Failed to fetch model settings')
-      return res.json()
+      const data: ModelPickerSettingsResponse = await res.json()
+      if (connectionRequest) {
+        const response = await connectionRequest
+        if (!response.ok) throw new Error('Failed to fetch saved model connection')
+        data.connections = (await response.json()).connections
+      }
+      return data
     },
     staleTime: 60000,
   })
@@ -78,14 +110,16 @@ export function useModelSettings() {
 export function useProviderModelSearch(
   providerId: LlmProviderId,
   query: string,
-  options?: { enabled?: boolean },
+  options?: { enabled?: boolean; llmProviderId?: string },
 ) {
   const trimmedQuery = query.trim()
   return useQuery<ModelSearchResult[]>({
-    queryKey: ['settings', 'llm-provider-model-search', providerId, trimmedQuery],
+    queryKey: ['settings', 'llm-provider-model-search', providerId, options?.llmProviderId, trimmedQuery],
     queryFn: async () => {
       const res = await apiFetch(
-        `/api/settings/llm-providers/${providerId}/models/search?q=${encodeURIComponent(trimmedQuery)}`,
+        options?.llmProviderId
+          ? `/api/llm-connections/${encodeURIComponent(options.llmProviderId)}/models/search?q=${encodeURIComponent(trimmedQuery)}`
+          : `/api/settings/llm-providers/${providerId}/models/search?q=${encodeURIComponent(trimmedQuery)}`,
       )
       const body = await res.json().catch(() => ({})) as { data?: ModelSearchResult[]; error?: string }
       if (!res.ok) throw new Error(body.error || 'Failed to search provider models')
@@ -102,6 +136,7 @@ export type UpdateSettingsParams = SettingsPatch
 export interface UpdateSettingsError {
   error: string
   runningAgents?: string[]
+  status: number
 }
 
 export function useUpdateSettings() {
@@ -116,7 +151,7 @@ export function useUpdateSettings() {
       })
 
       if (!res.ok) {
-        const error = await res.json()
+        const error: UpdateSettingsError = { ...(await res.json()), status: res.status }
         throw error
       }
 
@@ -124,6 +159,7 @@ export function useUpdateSettings() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] })
+      queryClient.invalidateQueries({ queryKey: ['runtime-status'] })
       // Voice provider / key / default voice live in these settings, and the
       // speaker buttons and Voice tab gate on the derived status.
       queryClient.invalidateQueries({ queryKey: ['voice-configured'] })

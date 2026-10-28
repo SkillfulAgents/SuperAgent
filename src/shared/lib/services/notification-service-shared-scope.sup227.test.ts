@@ -7,7 +7,8 @@
  * session content that any ACL member can already see. So read state is
  * deliberately SHARED: one teammate acknowledging an item clears it for the
  * team. There is no per-user owner column (the speculative, never-wired
- * `notifications.user_id` was dropped in migration 0022).
+ * `notifications.user_id` was dropped in migration 0022). The one targeted
+ * type, a mention, names its recipient instead (notification-service-mentions.test.ts).
  *
  * These tests lock in the two invariants that must survive that decision:
  *   1. Cross-agent isolation (a user only sees / can mark notifications for

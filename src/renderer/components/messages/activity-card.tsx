@@ -3,7 +3,7 @@ import { ChevronDown, Circle, CircleCheckBig, Loader2, Monitor, X } from 'lucide
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
 
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
-import { RequestError } from './request-error'
+import { RequestError } from '@shared/lib/tools/requests/request-error'
 import { ACTIVITY_TREE_CONNECTORS, ACTIVITY_TREE_TRACER } from '@renderer/components/ui/tree-connectors'
 import { HoverScrollText } from '@renderer/components/ui/hover-scroll-text'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -33,8 +33,10 @@ export interface ActivityBackgroundTask {
   taskId: string
   startedAt: number
   isWorkflow?: boolean
-  /** Background subagents already render as named subagent rows — excluded here. */
+  /** A background subagent; folded into its named subagent row when one is shown. */
   isSubagent?: boolean
+  /** A Monitor watch; its detail is the watch's description, not a command. */
+  isMonitor?: boolean
   /** What kind of work ("Background command"); the generic noun when absent. */
   title?: string
   /** The command or description, when known. */
@@ -86,12 +88,19 @@ export function ActivityCard({
   const [isCollapsed, setIsCollapsed] = useState(false)
   const listRef = useRef<HTMLUListElement>(null)
 
-  // Background subagents are excluded: they already render as named subagent
-  // rows above, and counting them here would show the same work twice.
-  const visibleBackgroundTasks = backgroundTasks.filter((task) => !task.isSubagent)
+  // A background subagent with a named subagent row above is that row —
+  // listing it here too would show the same work twice. One without a row
+  // (launched in an earlier turn, or by another subagent) is still live work
+  // the runtime lists, so it gets a row of its own here.
+  const subagentRowTaskIds = new Set(subagents.map((item) => item.taskId).filter(Boolean))
+  const visibleBackgroundTasks = backgroundTasks.filter(
+    (task) => !task.isSubagent || !subagentRowTaskIds.has(task.taskId),
+  )
+  const backgroundAgentCount = visibleBackgroundTasks.filter((task) => task.isSubagent).length
   const backgroundWorkflowCount = visibleBackgroundTasks.filter((task) => task.isWorkflow).length
-  const backgroundProcessCount = visibleBackgroundTasks.length - backgroundWorkflowCount
-  const activeSubagentCount = subagents.filter((item) => item.status === 'running').length
+  const monitorCount = visibleBackgroundTasks.filter((task) => task.isMonitor).length
+  const backgroundProcessCount = visibleBackgroundTasks.length - backgroundWorkflowCount - backgroundAgentCount - monitorCount
+  const activeSubagentCount = subagents.filter((item) => item.status === 'running').length + backgroundAgentCount
   const pendingTaskCount = todos?.filter((todo) => todo.status !== 'completed').length ?? 0
   // The tree is live work only — things running right now, hanging off the orb.
   // The plan is a different kind of thing (intent, not activity), so it sits
@@ -106,6 +115,7 @@ export function ActivityCard({
     // track that the agent still has hold of one of their apps.
     computerUse ? `computer use: ${computerUse.app}` : '',
     formatActivityCount(backgroundProcessCount, 'background process', 'background processes'),
+    formatActivityCount(monitorCount, 'monitor', 'monitors'),
     formatActivityCount(backgroundWorkflowCount, 'background workflow', 'background workflows'),
     formatActivityCount(activeSubagentCount, 'subagent', 'subagents'),
     formatActivityCount(pendingTaskCount, 'pending task', 'pending tasks'),
@@ -535,7 +545,7 @@ function BackgroundTaskRow({ task, tracerRow, onStop }: {
         <span className="min-w-0 flex-1 truncate" title={fullText}>
           <span className="text-muted-foreground">{title}</span>
           {task.detail && (
-            <span className="font-mono text-muted-foreground/80">{' '}{task.detail}</span>
+            <span className={cn('text-muted-foreground/80', !task.isMonitor && 'font-mono')}>{' '}{task.detail}</span>
           )}
         </span>
         {elapsed && (

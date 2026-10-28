@@ -4,7 +4,6 @@ import { Hono } from 'hono'
 const mocks = vi.hoisted(() => ({
   currentMcp: null as Record<string, unknown> | null,
   safeFetch: vi.fn(),
-  syncAwaiting: vi.fn(),
 }))
 
 vi.mock('@shared/lib/proxy/token-store', () => ({
@@ -22,12 +21,6 @@ vi.mock('@shared/lib/proxy/policy-resolver', () => ({
 
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: { requestReview: vi.fn() },
-}))
-
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    syncAgentSessionsAwaiting: (...args: unknown[]) => mocks.syncAwaiting(...args),
-  },
 }))
 
 vi.mock('@shared/lib/mcp/mcp-safe-fetch', () => ({
@@ -52,6 +45,8 @@ vi.mock('@shared/lib/db', () => ({
   },
 }))
 
+// No proxy rules exist in this test; the rule paths have their own suite.
+vi.mock('@shared/lib/proxy/rules/store', () => ({ listActiveRules: async () => [] }))
 vi.mock('@shared/lib/db/schema', () => ({
   remoteMcpServers: { id: 'id' },
   agentRemoteMcps: { agentSlug: 'agent_slug', remoteMcpId: 'remote_mcp_id' },
@@ -65,7 +60,8 @@ vi.mock('drizzle-orm', () => ({
 
 import mcpProxy from './mcp-proxy'
 import { mcpReauthManager } from '@shared/lib/proxy/mcp-reauth-manager'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { agentRegistry } from '@shared/lib/agent-actor'
+import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 
 function mcp(status: 'active' | 'auth_required', accessToken: string) {
   return {
@@ -105,17 +101,16 @@ function rpcBody(init: RequestInit): { id?: number; method: string } {
 describe('MCP re-auth park → reconnect → resume integration', () => {
   let app: Hono
 
-  beforeEach(() => {
+  beforeEach(async () => {
     userInputRequestManager.reset()
-    mcpReauthManager.rejectAll()
+    await agentRegistry.evictAll()
     mocks.safeFetch.mockReset()
-    mocks.syncAwaiting.mockReset()
     mocks.currentMcp = mcp('auth_required', 'stale-token')
     app = new Hono().route('/api/mcp-proxy', mcpProxy)
   })
 
-  afterEach(() => {
-    mcpReauthManager.rejectAll()
+  afterEach(async () => {
+    await agentRegistry.evictAll()
     userInputRequestManager.reset()
   })
 
@@ -199,7 +194,7 @@ describe('MCP re-auth park → reconnect → resume integration', () => {
     expect(mocks.safeFetch).not.toHaveBeenCalled()
 
     mocks.currentMcp = mcp('active', 'fresh-token')
-    expect(mcpReauthManager.completeMcp('mcp-1')).toBe(2)
+    expect(mcpReauthManager.completeMcp('agent-1', 'mcp-1')).toBe(2)
 
     const responses = await Promise.all([first, second])
     const responseBodies = await Promise.all(responses.map((response) => response.clone().json()))

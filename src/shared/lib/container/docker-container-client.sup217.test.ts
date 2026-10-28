@@ -56,3 +56,10 @@ describe('DockerContainerClient.getHostBridgeIp (SUP-217)', () => {
     expect(client().getHostBridgeIp()).toBeNull()
   })
 })
+
+describe('DockerContainerClient.volumeRunFlags', () => {
+  // The daemon's host may run AppArmor whatever the app's own OS, and its default profile denies mount.
+  it('runs unconfined by AppArmor', () => {
+    expect(client().volumeRunFlags()).toBe('--device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined')
+  })
+})

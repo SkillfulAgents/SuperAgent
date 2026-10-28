@@ -90,7 +90,7 @@ describe('Slack thread participation across connector recreation (SUP-861)', () 
     const record: AgentIntegrationRecord = {
       id: 'first', agentSlug: 'test-agent', provider: 'slack', name: null, status: 'active',
       config: JSON.stringify({ botToken: 'xoxb-test', appToken: 'xapp-test', onlyMentioned: true, answerInThread: true }),
-      errorMessage: null, createdByUserId: null, model: null, effort: null, speed: null,
+      errorMessage: null, createdByUserId: null, model: null, llmProviderId: null, effort: null, speed: null,
       createdAt: new Date(), updatedAt: new Date(),
     }
     try {

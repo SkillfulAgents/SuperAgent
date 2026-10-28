@@ -5,6 +5,10 @@ import { SessionPage } from '../pages/session.page'
 
 
 test.describe('User Input Requests', () => {
+  // Agent creation in beforeEach alone takes ~25s under parallel CI load, which
+  // left these tests a few seconds of the default 30s budget.
+  test.describe.configure({ timeout: 60_000 })
+
   let appPage: AppPage
   let agentPage: AgentPage
   let sessionPage: SessionPage
@@ -20,7 +24,8 @@ test.describe('User Input Requests', () => {
 
     // Use unique agent name per test
     testAgentName = `Input Agent ${testInfo.workerIndex}-${Date.now()}`
-    await agentPage.createAgent(testAgentName)
+    // Nothing here re-selects the agent by name, so skip the sidebar wait.
+    await agentPage.createAgent(testAgentName, { waitForSidebarName: false })
   })
 
   test('secret request: provide a secret', async ({ page }) => {
@@ -326,7 +331,7 @@ test.describe('User Input Requests', () => {
     await sessionPage.waitForScriptRunRequest()
 
     // Verify content is shown. The mock scenario picks a platform-valid
-    // script type (persister auto-rejects mismatches), so assert per platform.
+    // script type (the live session auto-rejects mismatches), so assert per platform.
     const expectedScript = process.platform === 'win32' ? 'Get-ComputerInfo' : 'sw_vers'
     const request = sessionPage.getScriptRunRequests().first()
     await expect(request).toContainText(expectedScript)

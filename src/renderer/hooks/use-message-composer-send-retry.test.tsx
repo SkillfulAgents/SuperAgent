@@ -25,6 +25,11 @@ vi.mock('@renderer/hooks/use-voice-input', () => ({
 }))
 
 vi.mock('@renderer/lib/error-reporting', () => ({ captureRendererException: vi.fn() }))
+// No chips here: nothing to load for them, and nothing to check before a send.
+vi.mock('./use-composer-chips', () => {
+  const context = {}
+  return { useComposerChips: () => ({ context, check: async () => context, dialog: null }) }
+})
 
 function createWrapper() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })

@@ -1,11 +1,14 @@
 import { getTenantId } from './tenant-id'
+import { getServerFacts } from '../facts/server-facts'
 import { getSettings, type AnalyticsTarget } from '../config/settings'
 import { DEFAULT_AMPLITUDE_KEY } from './constants'
+import { background } from '../background'
 
 interface EventPayload {
   event_type: string
   user_id: string
   event_properties: Record<string, unknown>
+  user_properties?: { $set: Record<string, unknown> }
   app_version?: string
   platform?: string
   os_name?: string
@@ -24,6 +27,7 @@ function getBaseProperties(): Record<string, unknown> {
     versionId: appVersion ?? 'unknown',
     platform: 'server',
     tenantId: getTenantId(),
+    distribution: getServerFacts().distribution,
   }
 }
 
@@ -86,29 +90,30 @@ async function sendToGA(measurementId: string, event: string, properties: Record
   }
 }
 
-function dispatchToTargets(targets: AnalyticsTarget[], event: string, properties: Record<string, unknown>, userId: string) {
+function dispatchToTargets(targets: AnalyticsTarget[], event: string, properties: Record<string, unknown>, userId: string, userProperties?: Record<string, unknown>) {
   for (const target of targets) {
     if (!target.enabled) continue
     switch (target.type) {
       case 'amplitude':
         if (target.config.apiKey) {
-          void sendToAmplitude(target.config.apiKey, [{
+          background(sendToAmplitude(target.config.apiKey, [{
             event_type: event,
             user_id: userId,
             event_properties: properties,
+            ...(userProperties ? { user_properties: { $set: userProperties } } : {}),
             app_version: appVersion,
             platform: 'server',
-          }])
+          }]), { name: 'server-analytics.send-amplitude' })
         }
         break
       case 'mixpanel':
         if (target.config.token) {
-          void sendToMixpanel(target.config.token, event, { ...properties, user_id: userId })
+          background(sendToMixpanel(target.config.token, event, { ...properties, user_id: userId }), { name: 'server-analytics.send-mixpanel' })
         }
         break
       case 'google-analytics':
         if (target.config.measurementId) {
-          void sendToGA(target.config.measurementId, event, properties)
+          background(sendToGA(target.config.measurementId, event, properties), { name: 'server-analytics.send-ga' })
         }
         break
     }
@@ -119,11 +124,14 @@ function dispatchToTargets(targets: AnalyticsTarget[], event: string, properties
  * Track an analytics event from the server side.
  * Reads current settings to determine active targets.
  * userId defaults to tenantId for server-originated events.
+ * `userProperties` are set on the Amplitude user (e.g. the email an
+ * email tool keys on).
  */
 export function trackServerEvent(
   event: string,
   properties: Record<string, unknown> = {},
   userId?: string,
+  userProperties?: Record<string, unknown>,
 ) {
   if (process.env.E2E_MOCK === 'true') return
 
@@ -138,17 +146,18 @@ export function trackServerEvent(
 
   // Send to admin-configured analytics targets
   if (targets.length > 0) {
-    dispatchToTargets(targets, event, fullProperties, effectiveUserId)
+    dispatchToTargets(targets, event, fullProperties, effectiveUserId, userProperties)
   }
 
   // Send to hardcoded Amplitude (Datawizz) only if shareAnalytics is enabled
   if (DEFAULT_AMPLITUDE_KEY && settings.shareAnalytics) {
-    void sendToAmplitude(DEFAULT_AMPLITUDE_KEY, [{
+    background(sendToAmplitude(DEFAULT_AMPLITUDE_KEY, [{
       event_type: event,
       user_id: effectiveUserId,
       event_properties: fullProperties,
+      ...(userProperties ? { user_properties: { $set: userProperties } } : {}),
       app_version: appVersion,
       platform: 'server',
-    }])
+    }]), { name: 'server-analytics.send-amplitude' })
   }
 }

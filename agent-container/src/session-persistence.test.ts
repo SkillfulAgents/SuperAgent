@@ -36,6 +36,18 @@ describe('SessionPersistence', () => {
     };
   }
 
+  it('keeps connection references but removes provider secrets before persisting a session', async () => {
+    const persistence = await loadPersistence();
+    persistence.saveSession({ ...legacySession('bound'), llmProviderId: 'personal-account', customEnvVars: {
+      ANTHROPIC_API_KEY: 'old-key', ANTHROPIC_AUTH_TOKEN: 'access-token', CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token', AWS_SECRET_ACCESS_KEY: 'aws-secret', MY_TOOL_SETTING: 'retained',
+    } });
+    const file = fs.readFileSync(sessionsFile, 'utf8');
+    expect(file).toContain('personal-account');
+    expect(file).toContain('MY_TOOL_SETTING');
+    expect(persistence.getSession('bound')?.customEnvVars?.AWS_SECRET_ACCESS_KEY).toBe('aws-secret');
+    for (const secret of ['old-key', 'access-token', 'oauth-token']) expect(file).not.toContain(secret);
+  });
+
   it('loads pre-catalog session records with an empty subagent catalog', async () => {
     fs.writeFileSync(sessionsFile, JSON.stringify({ legacy: legacySession('legacy') }));
 
@@ -78,6 +90,39 @@ describe('SessionPersistence', () => {
     expect(persistence.getSession('anything')).toBeNull();
     expect(fs.existsSync(sessionsFile)).toBe(false);
     expect(fs.readdirSync(testDirectory).some((name) => name.startsWith('sessions.json.corrupt-'))).toBe(true);
+  });
+
+  it('applies a combined per-message update with one file write', async () => {
+    const atomicFile = await vi.importActual<typeof import('./atomic-file')>('./atomic-file');
+    const writes = vi.fn(atomicFile.writeFileAtomicSync);
+    vi.doMock('./atomic-file', () => ({ ...atomicFile, writeFileAtomicSync: writes }));
+    try {
+      const persistence = await loadPersistence();
+      persistence.saveSession(legacySession('turn'));
+      writes.mockClear();
+
+      persistence.updateSession('turn', {
+        lastActivity: '2026-01-02T00:00:00.000Z',
+        llmProviderId: 'personal-account',
+        effort: 'high',
+        model: 'claude-opus-5',
+        metadata: { isAutomated: false },
+        globalInstructions: 'Reply in plain English.',
+      });
+
+      expect(writes).toHaveBeenCalledTimes(1);
+      vi.resetModules();
+      expect((await loadPersistence()).getSession('turn')).toMatchObject({
+        lastActivity: '2026-01-02T00:00:00.000Z',
+        llmProviderId: 'personal-account',
+        effort: 'high',
+        model: 'claude-opus-5',
+        metadata: { isAutomated: false },
+        globalInstructions: 'Reply in plain English.',
+      });
+    } finally {
+      vi.doUnmock('./atomic-file');
+    }
   });
 
   describe('saveSessionChecked', () => {

@@ -1,6 +1,52 @@
 import { describe, it, expect } from 'vitest'
-import { matchScopes, isValidApiScope } from './scope-matcher'
-import { getScopeLabel } from './scope-metadata'
+import { matchScopes, isValidApiScope, describeTie, graphqlRootField } from './scope-matcher'
+import { SCOPE_MAPS } from './scope-maps'
+import { getScopeDescription, getScopeLabel } from './scope-metadata'
+
+describe('graphqlRootField', () => {
+  const field = (body: unknown) => graphqlRootField(new TextEncoder().encode(JSON.stringify(body)).buffer as ArrayBuffer)
+  const twoOps = 'query A { issues { nodes { id } } } mutation B { issueDelete(id: "1") { success } }'
+
+  it('reads the one root field the server runs, by its real name', () => {
+    expect(field({ query: 'mutation { issueDelete(id: "1") { success } }' })).toBe('Mutation: issueDelete')
+    expect(field({ query: '{ issues { nodes { id } } }' })).toBe('Query: issues')
+    // An alias names the result, not the operation the server runs.
+    expect(field({ query: 'mutation { issues: issueDelete(id: "1") { success } }' })).toBe('Mutation: issueDelete')
+    expect(field({ query: twoOps, operationName: 'B' })).toBe('Mutation: issueDelete')
+  })
+
+  it('names nothing unless one field of the operation the server runs is selected', () => {
+    expect(field({ query: twoOps })).toBeUndefined()
+    expect(field({ query: 'query A { issues { nodes { id } } } mutation A { issueDelete(id: "1") { success } }', operationName: 'A' })).toBeUndefined()
+    expect(field({ query: 'query A { issues { nodes { id } } }', operationName: 'B' })).toBeUndefined()
+    expect(field({ query: 'mutation { issueCreate(input: {}) { success } issueDelete(id: "1") { success } }' })).toBeUndefined()
+    expect(field({ query: 'mutation { ...F } fragment F on Mutation { issueDelete(id: "1") { success } }' })).toBeUndefined()
+    expect(field({ query: 'mutation { ... on Mutation { issueDelete(id: "1") { success } } }' })).toBeUndefined()
+    expect(field({ query: 'mutation { issueDelete(id: "1") { success } }', extensions: {} })).toBeUndefined()
+    expect(field([{ query: 'mutation { issueDelete(id: "1") { success } }' }])).toBeUndefined()
+    expect(field({ query: 'mutation {' })).toBeUndefined()
+    expect(field({ query: `{ issues(filter: "${'x'.repeat(64_000)}") { nodes { id } } }` })).toBeUndefined()
+  })
+})
+
+describe('describeTie', () => {
+  const entry = (pathPattern: string, description: string) => ({ method: 'GET', pathPattern, sufficientScopes: ['read'], description })
+
+  it('names the call when the endpoints agree', () => {
+    expect(describeTie([entry('/a/*', 'Get a thing'), entry('/a/*', 'Get a thing')])).toEqual({ endpointDescription: 'Get a thing' })
+  })
+
+  it('names the endpoint whose last segment is literal', () => {
+    expect(describeTie([entry('/a/x/*', 'Get x by id'), entry('/a/*/meta', 'Describe a thing')]))
+      .toEqual({ endpointDescription: 'Describe a thing' })
+  })
+
+  it('names nothing when the deciding endpoints disagree', () => {
+    const ambiguous = { endpointDescription: undefined, endpointAmbiguous: true }
+    expect(describeTie([entry('/graphql', 'Query: issues'), entry('/graphql', 'Mutation: issueDelete')])).toEqual(ambiguous)
+    expect(describeTie([entry('/a/*', 'Update'), entry('/a/*', 'Void')])).toEqual(ambiguous)
+  })
+})
 
 describe('matchScopes', () => {
   it('exact match: gmail GET /gmail/v1/users/me/messages returns correct scopes', () => {
@@ -235,6 +281,49 @@ describe('matchScopes', () => {
     )
   })
 
+  it('endpointDescription: undefined when equally specific endpoints disagree', () => {
+    const result = matchScopes('linear', 'POST', '/graphql')
+    expect(result.matched).toBe(true)
+    expect(result.endpointDescription).toBeUndefined()
+    expect(result.endpointAmbiguous).toBe(true)
+  })
+
+  it('narrows a GraphQL path to the root field the request runs', () => {
+    const graphql = (query: string) => new TextEncoder().encode(JSON.stringify({ query })).buffer as ArrayBuffer
+    const result = matchScopes('linear', 'POST', '/graphql', undefined, graphql('mutation { issueDelete(id: "1") { success } }'))
+    expect(result.endpointDescription).toBe('Mutation: issueDelete - Delete an issue')
+    expect(result.endpointAmbiguous).toBeUndefined()
+    expect(result.scopes).toEqual(['write'])
+    // A field the map does not list keeps the whole tie.
+    expect(matchScopes('linear', 'POST', '/graphql', undefined, graphql('mutation { notAMappedField }')).endpointAmbiguous).toBe(true)
+  })
+
+  it('endpointDescription: only GraphQL paths list operations that disagree', () => {
+    for (const [toolkit, map] of Object.entries(SCOPE_MAPS)) {
+      const byPath = new Map<string, Set<string>>()
+      for (const e of map.scopeMap) {
+        const key = `${e.method} ${e.pathPattern}`
+        byPath.set(key, (byPath.get(key) ?? new Set()).add(e.description ?? ''))
+      }
+      for (const [path, descriptions] of byPath) {
+        if (descriptions.size > 1) expect([...descriptions].every((d) => /^(Query|Mutation): /.test(d)), `${toolkit} ${path}`).toBe(true)
+      }
+    }
+    // Mailchimp's batch subscribe belongs to POST /lists/{id}, which the map does not list.
+    expect(matchScopes('mailchimp', 'POST', '/3.0/lists/list-1').matched).toBe(false)
+  })
+
+  it('endpointDescription: a literal last segment names a tie, and the scopes stay the union', () => {
+    const result = matchScopes('salesforce', 'GET', '/services/data/v59.0/sobjects/Account/describe')
+    expect(result.endpointDescription).toBe('Describe an SObject (metadata, fields, relationships)')
+    expect(result.endpointAmbiguous).toBeUndefined()
+    expect(result.scopes.sort()).toEqual(['api', 'metadata.read', 'sobjects.read'])
+  })
+
+  it('endpointDescription: kept when member and organization entries share one wording', () => {
+    expect(matchScopes('linkedin', 'DELETE', '/rest/posts/urn:li:share:1').endpointDescription).toBe('Delete a post')
+  })
+
   it('endpointDescription: undefined for unmatched requests', () => {
     const result = matchScopes('gmail', 'GET', '/gmail/v1/unknown/path')
     expect(result.endpointDescription).toBeUndefined()
@@ -273,5 +362,82 @@ describe('isValidApiScope', () => {
     expect(isValidApiScope('gmail', null as unknown as string)).toBe(false)
     expect(isValidApiScope('gmail', undefined as unknown as string)).toBe(false)
     expect(isValidApiScope('gmail', 123 as unknown as string)).toBe(false)
+  })
+})
+
+describe('scope fallbacks', () => {
+  const DRIVE_FILE = '/drive/v3/files/1bEkZcF74h0aByyTJRAGE8cxGwQrMOCWLsv3R7M6ANXE'
+  const GOOGLEAPIS = 'www.googleapis.com'
+
+  it('classifies a Drive file read made with a Gmail token as namespaced Drive scopes', () => {
+    const result = matchScopes('gmail', 'GET', DRIVE_FILE, GOOGLEAPIS)
+    expect(result.matched).toBe(true)
+    expect(result.scopes).toContain('googledrive:drive.readonly')
+    expect(result.scopes.every((s) => s.startsWith('googledrive:'))).toBe(true)
+    expect(Object.keys(result.descriptions).every((s) => s.startsWith('googledrive:'))).toBe(true)
+    expect(result.endpointDescription).toBeTruthy()
+  })
+
+  it.each(['googledocs', 'googlesheets', 'googleslides'])('%s falls back to Drive for exports', (toolkit) => {
+    const result = matchScopes(toolkit, 'GET', '/drive/v3/files/abc/export', GOOGLEAPIS)
+    expect(result.scopes).toContain('googledrive:drive.readonly')
+  })
+
+  it('does not fall back when the request host is not the fallback provider host', () => {
+    expect(matchScopes('gmail', 'GET', DRIVE_FILE, 'gmail.googleapis.com').matched).toBe(false)
+    expect(matchScopes('gmail', 'GET', DRIVE_FILE, 'evil.example.com').matched).toBe(false)
+  })
+
+  it('matches the fallback provider host in any case', () => {
+    expect(matchScopes('gmail', 'GET', DRIVE_FILE, 'WWW.GoogleApis.com').scopes)
+      .toContain('googledrive:drive.readonly')
+  })
+
+  it('does not fall back without a target host', () => {
+    expect(matchScopes('gmail', 'GET', DRIVE_FILE).matched).toBe(false)
+  })
+
+  it('does not fall back for a toolkit that declares no fallbacks, even on a shared host', () => {
+    expect(matchScopes('googlecalendar', 'GET', DRIVE_FILE, GOOGLEAPIS).matched).toBe(false)
+  })
+
+  it("prefers the toolkit's own map over a fallback", () => {
+    const result = matchScopes('gmail', 'GET', '/gmail/v1/users/me/messages', GOOGLEAPIS)
+    expect(result.scopes).toContain('gmail.readonly')
+    expect(result.scopes.some((s) => s.includes(':'))).toBe(false)
+  })
+
+  it("a borrowed scope inherits the fallback provider's risk label and description", () => {
+    expect(getScopeLabel('gmail', 'googledrive:drive.readonly')).toBe('read')
+    expect(getScopeLabel('gmail', 'googledrive:drive.file')).toBe('write')
+    expect(getScopeDescription('gmail', 'googledrive:drive.readonly')).toBe(
+      getScopeDescription('googledrive', 'drive.readonly'),
+    )
+  })
+
+  it('a borrowed key outside the declared fallbacks has no label', () => {
+    expect(getScopeLabel('googlecalendar', 'googledrive:drive.file')).toBeUndefined()
+  })
+
+  it('accepts a borrowed scope key only through a declared fallback', () => {
+    expect(isValidApiScope('gmail', 'googledrive:drive.readonly')).toBe(true)
+    expect(isValidApiScope('googlecalendar', 'googledrive:drive.readonly')).toBe(false)
+    expect(isValidApiScope('gmail', 'googledrive:gmail.send')).toBe(false)
+    expect(isValidApiScope('gmail', 'googledrive:not-a-scope')).toBe(false)
+    expect(isValidApiScope('gmail', 'drive.readonly')).toBe(false)
+  })
+
+  it('keeps native scopes that contain ":" valid', () => {
+    expect(isValidApiScope('slack', 'chat:write')).toBe(true)
+  })
+})
+
+describe('googledrive endpoint descriptions', () => {
+  it.each([
+    ['GET', '/drive/v3/files/abc', /file's metadata or content/],
+    ['DELETE', '/drive/v3/files/abc', /deletes a file/],
+    ['PATCH', '/drive/v3/files/abc', /Updates a file/],
+  ])('%s %s describes the file operation, not another method', (method, path, re) => {
+    expect(matchScopes('googledrive', method, path).endpointDescription).toMatch(re)
   })
 })

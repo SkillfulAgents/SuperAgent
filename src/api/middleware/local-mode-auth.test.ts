@@ -28,6 +28,7 @@ describe('isContainerFacingPath', () => {
     expect(isContainerFacingPath('/api/proxy/agent-1/foo')).toBe(true)
     expect(isContainerFacingPath('/api/mcp-proxy/agent-1/call')).toBe(true)
     expect(isContainerFacingPath('/api/browser/agent-1/screenshot')).toBe(true)
+    expect(isContainerFacingPath('/api/volumes/v_1/notes.txt')).toBe(true)
   })
 
   // Regression: cross-agent calls (list/invoke/get-sessions and x-agent/chat)
@@ -46,6 +47,14 @@ describe('isContainerFacingPath', () => {
   // like the other container→host routes.
   it('bypasses the web-search route', () => {
     expect(isContainerFacingPath('/api/web-search/search')).toBe(true)
+  })
+
+  // Regression: subscription credential refresh and media generation call
+  // /api/llm-runtime/resolve from the container; Apple container 403'd here.
+  it('bypasses the llm-runtime routes', () => {
+    expect(isContainerFacingPath('/api/llm-runtime/resolve')).toBe(true)
+    expect(isContainerFacingPath('/api/llm-runtime/prewarm')).toBe(true)
+    expect(isContainerFacingPath('/api/llm-runtimes')).toBe(false)
   })
 
   it('does NOT bypass browser-facing API routes', () => {

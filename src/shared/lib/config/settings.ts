@@ -1,3 +1,4 @@
+import { modelSelectionSchema } from '../llm-provider/connection-schema'
 import { parseStoredGlobalPricing, type GlobalModelPricing } from '../llm-provider/global-pricing-schema'
 import type { VoiceProvider } from '../voice/provider-types'
 import fs from 'fs'
@@ -12,7 +13,10 @@ import {
 } from '@shared/lib/utils/file-storage'
 import { captureException } from '@shared/lib/error-reporting'
 import { persistedSettingsSchema } from './settings-schema'
+import { globalInstructionsSchema } from './global-instructions-schema'
+import { teamBrainRecordSchema, type TeamBrainRecord } from './team-brain-schema'
 import { coerceApiTarget, type ApiTarget } from '@shared/lib/api-target'
+import type { CloudServerFactsRecord } from '@shared/lib/facts/facts-schema'
 import { DEFAULT_GLOBAL_DISPATCH_SHORTCUT } from './shortcuts'
 import { DEFAULT_API_LOG_AUTO_DELETE_DAYS } from './api-log-auto-delete'
 import type { SkillsetConfig, SkillsetCredential } from '@shared/lib/types/skillset'
@@ -203,7 +207,7 @@ export const DEFAULT_AUTH_SETTINGS: AuthSettings = {
 
 export type ScriptType = 'applescript' | 'shell' | 'powershell'
 
-/** Script types supported on each host platform. Used for validation in both message-persister and the run-script API endpoint. */
+/** Script types supported on each host platform. Used for validation in both the live sessions' tool calls and the run-script API endpoint. */
 export const VALID_SCRIPT_TYPES: Record<string, ScriptType[]> = {
   darwin: ['applescript', 'shell'],
   linux: ['shell'],
@@ -273,6 +277,12 @@ export interface PushSettings {
 export const DEFAULT_APNS_RELAY_URL = 'https://apn-relay.gamutagents.com'
 
 export interface AppSettings {
+  /** Connection selections; absent only before the legacy import. */
+  llmDefault?: import('../llm-provider/connection-schema').ModelSelection
+  llmSummarizer?: import('../llm-provider/connection-schema').ModelSelection | null
+  /** Binding for model-only preferences written before connections existed. */
+  llmLegacyProviderId?: string
+
   container: ContainerSettings
   apiKeys?: ApiKeySettings
   llmProvider?: LlmProviderId
@@ -302,6 +312,12 @@ export interface AppSettings {
    */
   cloudWorkspace?: CloudWorkspaceSettings
   /**
+   * Desktop-only: the cloud workspace's server facts as last heard, so a
+   * renderer driving it has them at boot without a request. Validated on read
+   * (`cloud-server-facts.ts`).
+   */
+  cloudServerFacts?: CloudServerFactsRecord
+  /**
    * Desktop platform-notifications state: the OS-notification dedup watermark
    * (newest created_at already OS-notified). Content is never mirrored locally
    * — the inbox reads live from the platform.
@@ -317,6 +333,13 @@ export interface AppSettings {
   enableToolSearch?: boolean
   /** Launch policies for subagents (Task/Agent) and workflows (Workflow tool). */
   agentCapabilities?: AgentCapabilitySettings
+  /**
+   * Guidance appended to every agent's system prompt (its "Global Guidance"
+   * section). Admin-edited; readable by every signed-in user.
+   */
+  globalInstructions?: string
+  /** The workspace's one Team Brain (team-brain experiment). Admin-written; readable by every signed-in user. */
+  teamBrain?: TeamBrainRecord
   /**
    * Desktop-only: whether the UI drives this machine or the org's cloud
    * workspace. Main-owned rather than per-renderer so the main window and the
@@ -408,6 +431,7 @@ export interface GlobalSettingsResponse {
   shareErrorReports: boolean
   enableToolSearch: boolean
   agentCapabilities: AgentCapabilitySettings
+  teamBrain?: TeamBrainRecord
 }
 
 /**
@@ -419,8 +443,12 @@ export interface GlobalSettingsResponse {
  */
 export type ModelPickerSettingsResponse = Pick<
   GlobalSettingsResponse,
-  'llmProvider' | 'llmProviderStatus' | 'models' | 'webProvider'
->
+  'llmProvider' | 'llmProviderStatus' | 'models' | 'webProvider' | 'enableToolSearch' | 'modelPricing'
+> & {
+  connections?: import('../llm-provider/connection-schema').ConnectionInfo[]
+  defaultSelection?: import('../llm-provider/connection-schema').ModelSelection
+  legacyLlmProviderId?: string
+}
 
 /**
  * Default container runner: Lima on macOS (bundled, no install needed),
@@ -551,6 +579,9 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     },
     apiKeys: loaded.apiKeys,
     llmProvider: loaded.llmProvider,
+    llmDefault: loaded.llmDefault === undefined ? undefined : modelSelectionSchema.parse(loaded.llmDefault),
+    llmSummarizer: loaded.llmSummarizer == null ? loaded.llmSummarizer : modelSelectionSchema.parse(loaded.llmSummarizer),
+    llmLegacyProviderId: loaded.llmLegacyProviderId,
     // Recover a pre-collapse selection: webSearchProvider shipped (v0.4.5-0.4.7) and the single
     // UI select wrote both old fields to the same value, so the legacy webSearchProvider is the
     // user's choice. Read-fallback (not a boot-time migration) keeps this merge pure; the next
@@ -602,6 +633,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     shareErrorReports: loaded.shareErrorReports,
     platformAuth: loaded.platformAuth,
     cloudWorkspace: loaded.cloudWorkspace,
+    cloudServerFacts: loaded.cloudServerFacts,
     push: loaded.push,
     // Narrowed on read: an unrecognized value (hand-edited file, a future
     // version's target) must resolve to local rather than to something that
@@ -622,6 +654,22 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
         else console.warn(`Invalid agentCapabilities.${key} in settings.json; using default:`, raw)
       }
       return out
+    })(),
+    // A hand-edited non-string (or one past the bound) must not reach every
+    // agent's prompt; drop it rather than failing the whole settings load.
+    globalInstructions: (() => {
+      if (loaded.globalInstructions === undefined) return undefined
+      const parsed = globalInstructionsSchema.safeParse(loaded.globalInstructions)
+      if (parsed.success) return parsed.data
+      console.warn('Invalid globalInstructions in settings.json; ignoring it')
+      return undefined
+    })(),
+    teamBrain: (() => {
+      if (loaded.teamBrain === undefined) return undefined
+      const parsed = teamBrainRecordSchema.safeParse(loaded.teamBrain)
+      if (parsed.success) return parsed.data
+      console.warn('Invalid teamBrain in settings.json; ignoring it')
+      return undefined
     })(),
   }
 }
@@ -970,6 +1018,16 @@ export function getApnsRelayConfig(): { url: string | null; enabled: boolean } {
 export function getAgentCapabilitySettings(): AgentCapabilitySettings {
   const settings = getSettings()
   return settings.agentCapabilities ?? DEFAULT_AGENT_CAPABILITIES
+}
+
+/** The global guidance every agent receives; '' when none is set. */
+export function getGlobalInstructions(): string {
+  return getSettings().globalInstructions ?? ''
+}
+
+/** The workspace's Team Brain, or null before one is set up. */
+export function getTeamBrain(): TeamBrainRecord | null {
+  return getSettings().teamBrain ?? null
 }
 
 export { DEFAULT_SETTINGS }

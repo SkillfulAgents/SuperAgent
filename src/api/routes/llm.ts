@@ -1,8 +1,10 @@
+import { HelperConfigurationError } from '@shared/lib/llm-provider/helper-error'
 import { Hono } from 'hono'
 import { Authenticated } from '../middleware/auth'
-import { getConfiguredLlmClient } from '@shared/lib/llm-provider/helpers'
+import { getConfiguredLlmClient, configuredHelperModel } from '@shared/lib/llm-provider/helpers'
 import { getActiveLlmProvider, resolveActiveProviderModel } from '@shared/lib/llm-provider'
-import { getEffectiveModels } from '@shared/lib/config/settings'
+import { resolveHelperSelection } from '@shared/lib/llm-provider/connections'
+import { getEffectiveModels, getSettings } from '@shared/lib/config/settings'
 
 const llm = new Hono()
 
@@ -42,13 +44,19 @@ function getDefaultModel(): string {
 }
 
 // GET /api/llm/config
-llm.get('/config', (c) => {
-  const provider = getActiveLlmProvider()
-  return c.json({
-    configured: provider.getApiKeyStatus().isConfigured,
-    defaultModel: getDefaultModel(),
-    provider: provider.id,
-  })
+llm.get('/config', async (c) => {
+  try {
+    const selected = getSettings().llmDefault ? await resolveHelperSelection() : null
+    const provider = selected?.provider ?? getActiveLlmProvider()
+    return c.json({
+      configured: provider.getApiKeyStatus().isConfigured,
+      defaultModel: selected?.wireModel ?? getDefaultModel(),
+      provider: provider.id,
+    })
+  } catch (error) {
+    if (error instanceof HelperConfigurationError) return c.json({ configured: false, error: error.message })
+    throw error
+  }
 })
 
 // POST /api/llm/v1/messages — matches the path the Anthropic SDK sends
@@ -72,19 +80,25 @@ llm.post('/v1/messages', async (c) => {
   delete body.api_key
   delete body.auth_token
   delete body.base_url
+  // API version 2026-10-21 rejects these even at their defaults, and Claude
+  // 4.7+ only ever sampled with the defaults; dashboard code may still pass them.
+  delete body.temperature
+  delete body.top_p
+  delete body.top_k
 
   if (!body.messages || !Array.isArray(body.messages)) {
     return c.json({ error: 'Missing required field: messages' }, 400)
   }
 
-  const model = (body.model as string) || getDefaultModel()
+  let model = (body.model as string) || getDefaultModel()
   const stream = !!body.stream
 
   let client
   try {
-    client = getConfiguredLlmClient()
-  } catch {
-    return c.json({ error: 'LLM provider not configured. Check Gamut settings.' }, 503)
+    client = await getConfiguredLlmClient()
+    if (!body.model) model = configuredHelperModel(client) ?? model
+  } catch (error) {
+    return c.json({ error: error instanceof HelperConfigurationError ? error.message : 'LLM provider not configured. Check Gamut settings.' }, 503)
   }
 
   try {

@@ -9,6 +9,7 @@ import {
   familyDisplayName,
   formatTokenThreshold,
   longContextWarningText,
+  splitVendorTabs,
   vendorDefault,
   webToolsWarning,
 } from './model-family-list'
@@ -43,6 +44,8 @@ describe('familyDisplayName', () => {
     expect(familyDisplayName('sonnet')).toBe('Sonnet')
     expect(familyDisplayName('gpt')).toBe('GPT')
     expect(familyDisplayName('glm')).toBe('GLM')
+    expect(familyDisplayName('muse-wonder')).toBe('Muse Wonder')
+    expect(familyDisplayName('gemini-argon')).toBe('Gemini Argon')
     expect(familyDisplayName('muse')).toBe('Muse Spark')
     expect(familyDisplayName('muse-contributor')).toBe('Muse Spark Contributor')
   })
@@ -310,12 +313,102 @@ describe('ModelFamilyList', () => {
     expect(onPick).toHaveBeenLastCalledWith('muse-spark-1.2')
   })
 
+  it('renders the GPT tiers as lineage rows, strongest first, with bare-version chips', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    // Mirrors the Platform catalog: one family per OpenAI tier.
+    const gptTiers: ModelDefinition[] = [
+      { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', family: 'gpt-luna', icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 1, outputPerMtok: 6 } },
+      { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', family: 'gpt-terra', isLatest: true, icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 2.5, outputPerMtok: 15 } },
+      { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', family: 'gpt-sol', familyAliases: ['gpt'], icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 5, outputPerMtok: 30 } },
+      { id: 'gpt-6-luna', label: 'GPT-6 Luna', family: 'gpt-luna', isLatest: true, icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 0.1, outputPerMtok: 0.5 } },
+      { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol', family: 'gpt-sol', familyAliases: ['gpt'], isLatest: true, icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 2, outputPerMtok: 10 } },
+      { id: 'gpt-6-astra', label: 'GPT-6 Astra', family: 'gpt-astra', isLatest: true, icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 10, outputPerMtok: 50 } },
+    ]
+    const { container } = render(<ModelFamilyList catalog={gptTiers} value="gpt-6.1-sol" onPick={onPick} />)
+    expect(testIds(container).filter((id) => /^model-family-gpt-[a-z]+$/.test(id))).toEqual([
+      'model-family-gpt-astra',
+      'model-family-gpt-sol',
+      'model-family-gpt-terra',
+      'model-family-gpt-luna',
+    ])
+    expect(screen.getByTestId('model-family-gpt-sol')).toHaveTextContent('GPT Sol')
+    expect(screen.getByTestId('model-pinned-gpt-6.1-sol')).toHaveTextContent(/^6\.1$/)
+    expect(screen.getByTestId('model-pinned-gpt-5.6-sol')).toHaveTextContent(/^5\.6$/)
+    await user.click(screen.getByTestId('model-family-gpt-luna'))
+    expect(onPick).toHaveBeenLastCalledWith('gpt-6-luna')
+  })
+
+  it('shows a stored legacy family alias as that family\'s latest', () => {
+    const catalog: ModelDefinition[] = [
+      { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', family: 'gpt-sol', familyAliases: ['gpt'], icon: 'openai', supportedEfforts: STD },
+      { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol', family: 'gpt-sol', familyAliases: ['gpt'], isLatest: true, icon: 'openai', supportedEfforts: STD },
+    ]
+    expect(findCatalogModel('gpt', catalog)?.id).toBe('gpt-6.1-sol')
+    render(<ModelFamilyList catalog={catalog} value="gpt" onPick={vi.fn()} offerLatest />)
+    expect(screen.getByTestId('model-latest-chip-gpt-sol').className).toContain('shadow-sm')
+    expect(screen.getByTestId('model-pinned-gpt-6.1-sol').className).not.toContain('shadow-sm')
+  })
+
   it('offers a per-family "latest" alias row in settings mode', async () => {
     const user = userEvent.setup()
     const onPick = vi.fn()
     render(<ModelFamilyList catalog={CATALOG} value="gpt-5.5" onPick={onPick} offerLatest />)
     await user.click(screen.getByTestId('model-latest-gpt'))
     expect(onPick).toHaveBeenCalledWith('gpt') // stores the bare alias (rides upgrades)
+  })
+
+  // Platform-shaped: eight labs, authored in catalog order (not tab order).
+  const EIGHT_LABS: ModelDefinition[] = [
+    ...CATALOG,
+    { id: 'grok-4.7', label: 'Grok 4.7', family: 'grok', isDefault: true, icon: 'xai', supportedEfforts: STD },
+    { id: 'gemini-4-argon', label: 'Gemini 4 Argon', family: 'gemini-argon', isDefault: true, icon: 'gemini', supportedEfforts: STD },
+    { id: 'kimi-k3', label: 'Kimi K3', family: 'kimi', isDefault: true, icon: 'kimi', supportedEfforts: STD },
+    { id: 'muse-wonder-1.0', label: 'Muse Wonder 1.0', family: 'muse-wonder', isDefault: true, icon: 'meta', supportedEfforts: STD },
+    { id: 'glm-5.3-flash', label: 'GLM-5.3 Flash', family: 'glm', isDefault: true, icon: 'zai', supportedEfforts: STD },
+    { id: 'deepseek-v4.1-flash', label: 'DeepSeek V4.1 Flash', family: 'deepseek', isDefault: true, icon: 'deepseek', supportedEfforts: STD },
+  ]
+
+  it('over six labs: five tabs in lab order, the open-model labs behind a More tab', () => {
+    render(<ModelFamilyList catalog={EIGHT_LABS} value="claude-opus-5" onPick={vi.fn()} />)
+    const tabs = Array.from(document.querySelectorAll('[data-testid^="model-vendor-tab-"]')).map((el) =>
+      el.getAttribute('data-testid'),
+    )
+    expect(tabs).toEqual([
+      'model-vendor-tab-anthropic',
+      'model-vendor-tab-openai',
+      'model-vendor-tab-xai',
+      'model-vendor-tab-gemini',
+      'model-vendor-tab-meta',
+      'model-vendor-tab-more',
+    ])
+    expect(screen.getByTestId('model-vendor-tab-gemini')).toHaveAccessibleName('Google')
+    expect(screen.getByTestId('model-vendor-tab-more')).toHaveAccessibleName('More')
+  })
+
+  it('More tab lists each extra lab as a section and picks nothing on its own', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    render(<ModelFamilyList catalog={EIGHT_LABS} value="claude-opus-5" onPick={onPick} />)
+    await user.click(screen.getByTestId('model-vendor-tab-more'))
+    expect(onPick).not.toHaveBeenCalled()
+    const sections = Array.from(document.querySelectorAll('[data-testid^="model-vendor-section-"]'))
+    expect(sections.map((el) => el.textContent)).toEqual(['Moonshot AI', 'Z.AI', 'DeepSeek'])
+    expect(screen.queryByTestId('model-pinned-claude-opus-5')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('model-pinned-glm-5.3-flash'))
+    expect(onPick).toHaveBeenLastCalledWith('glm-5.3-flash')
+  })
+
+  it('opens on the More tab when the selection lives there', () => {
+    render(<ModelFamilyList catalog={EIGHT_LABS} value="deepseek-v4.1-flash" onPick={vi.fn()} />)
+    expect(screen.getByTestId('model-vendor-tab-more')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('model-pinned-deepseek-v4.1-flash')).toBeInTheDocument()
+  })
+
+  it('splitVendorTabs keeps six labs as six tabs', () => {
+    const six = ['anthropic', 'openai', 'xai', 'gemini', 'meta', 'kimi']
+    expect(splitVendorTabs(six)).toEqual({ tabs: six, more: [] })
+    expect(splitVendorTabs([...six, 'zai'])).toEqual({ tabs: six.slice(0, 5), more: ['kimi', 'zai'] })
   })
 
   it('hides vendor tabs when the catalog has a single vendor', () => {

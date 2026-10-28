@@ -9,6 +9,8 @@ import type {
   ContainerSettings,
 } from './settings'
 import { agentCapabilitySettingsPatchSchema, DEFAULT_AGENT_CAPABILITIES } from './capability-policy-schema'
+import { globalInstructionsSchema } from './global-instructions-schema'
+import { teamBrainRecordSchema } from './team-brain-schema'
 import { validateFaviconDataUrl } from './favicon'
 import { isValidAccelerator } from './shortcuts'
 import {
@@ -208,6 +210,8 @@ export const generalSettingsPatchSchema = z.object({
   shareErrorReports: z.boolean(),
   enableToolSearch: z.boolean(),
   agentCapabilities: agentCapabilitySettingsPatchSchema.strict(),
+  globalInstructions: globalInstructionsSchema,
+  teamBrain: teamBrainRecordSchema,
 }).partial().strict()
 
 /** The complete, allowlisted patch accepted by PUT /api/settings. */
@@ -242,6 +246,8 @@ export interface SettingsTransitionContext {
   hasRunningAgents: boolean
   hostTotalMemoryBytes: number
   supportsCustomAgentImage(runner: ContainerRunner): boolean
+  /** Whether this server offers the runner at all (`offersRuntime()`), as opposed to it being installed. */
+  offersRuntime(runner: ContainerRunner): boolean
 }
 
 export interface SettingsProblem {
@@ -305,6 +311,16 @@ export const containerSettingsComponent = {
       after.container.resourceLimits.cpu !== before.container.resourceLimits.cpu ||
       after.container.resourceLimits.memory !== before.container.resourceLimits.memory
 
+    // First: the route reports only the first problem, and stopping agents won't
+    // make a runner this build doesn't offer available.
+    const effectiveRunner = after.container.containerRunner as ContainerRunner
+    if (runnerChanged && !context.offersRuntime(effectiveRunner)) {
+      problems.push({
+        status: 400,
+        message: `The ${effectiveRunner} container runner isn't available in this build of the app.`,
+      })
+    }
+
     if (context.hasRunningAgents && (runnerChanged || resourcesChanged)) {
       problems.push({
         status: 409,
@@ -315,7 +331,6 @@ export const containerSettingsComponent = {
     }
 
     const imageChanged = after.container.agentImage !== before.container.agentImage
-    const effectiveRunner = after.container.containerRunner as ContainerRunner
     if (imageChanged && !context.supportsCustomAgentImage(effectiveRunner)) {
       problems.push({
         status: 400,
@@ -485,10 +500,21 @@ export const generalSettingsComponent = {
               ...patch.agentCapabilities,
             }
           : before.agentCapabilities,
+      globalInstructions:
+        patch.globalInstructions !== undefined
+          ? patch.globalInstructions
+          : before.globalInstructions,
+      teamBrain: patch.teamBrain !== undefined ? patch.teamBrain : before.teamBrain,
     }
   },
 
-  validate(_args: ComponentValidateArgs<GeneralSettingsPatch>): SettingsProblem[] {
+  validate({ before, patch }: ComponentValidateArgs<GeneralSettingsPatch>): SettingsProblem[] {
+    // One Team Brain per workspace: a set-up that lost the race to another admin's is refused; a retry of the same record is not.
+    const current = before.teamBrain
+    const next = patch?.teamBrain
+    if (current && next && (current.agentSlug !== next.agentSlug || current.volumeId !== next.volumeId)) {
+      return [{ status: 409, message: 'Team Brain is already set up' }]
+    }
     return []
   },
 } satisfies SettingsComponent<typeof generalSettingsPatchSchema>
@@ -517,6 +543,8 @@ function pickGeneralPatch(patch: SettingsPatch): GeneralSettingsPatch {
     shareErrorReports: patch.shareErrorReports,
     enableToolSearch: patch.enableToolSearch,
     agentCapabilities: patch.agentCapabilities,
+    globalInstructions: patch.globalInstructions,
+    teamBrain: patch.teamBrain,
   }
 }
 

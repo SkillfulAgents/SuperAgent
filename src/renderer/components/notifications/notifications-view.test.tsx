@@ -211,6 +211,16 @@ describe('NotificationsView', () => {
     expect(screen.getByLabelText('Unread')).toBeTruthy()
   })
 
+  it('marks an unread mention with an @ instead of the dot', () => {
+    mockNotificationsData = {
+      items: [makeNotification({ id: '1', type: 'session_mention', title: 'Dana Lee mentioned you' })],
+      total: 1,
+    }
+    renderWithProviders(<NotificationsView />)
+    expect(screen.getByLabelText('mentioned you')).toBeTruthy()
+    expect(screen.queryByLabelText('Unread')).toBeNull()
+  })
+
   it('does not show unread indicator for read notifications', () => {
     mockNotificationsData = {
       items: [makeNotification({ id: '1', isRead: true })],
@@ -292,6 +302,16 @@ describe('NotificationsView', () => {
     renderWithProviders(<NotificationsView />)
     const button = screen.getByTestId('notifications-mark-all-read')
     expect(button).toBeDisabled()
+  })
+
+  it('enables mark-all-read when unread rows are types the badge count skips', () => {
+    mockUnreadCount = 0
+    mockNotificationsData = {
+      items: [makeNotification({ id: '1', type: 'session_scheduled', isRead: false })],
+      total: 1,
+    }
+    renderWithProviders(<NotificationsView />)
+    expect(screen.getByTestId('notifications-mark-all-read')).toBeEnabled()
   })
 
   // -----------------------------------------------------------------------

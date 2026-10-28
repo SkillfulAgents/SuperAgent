@@ -1,6 +1,6 @@
 import { cn } from '@shared/lib/utils/cn'
-import { useState, useCallback, useRef, useLayoutEffect, useMemo, memo, type ReactNode } from 'react'
-import { Check, Copy, Link2 } from 'lucide-react'
+import { useCallback, useRef, useMemo, memo } from 'react'
+import { AtSign, Link2 } from 'lucide-react'
 import { resolveProviderError } from '@renderer/components/provider-error/provider-error-registry'
 import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
 import { ToolCallItem } from './tool-call-item'
@@ -12,11 +12,12 @@ import { parseTaskNotifications } from '@shared/lib/utils/task-notifications'
 import { MessageContextMenu } from './message-context-menu'
 import { MessageErrorBoundary } from './message-error-boundary'
 import { parseUserMessageParts } from '@shared/lib/utils/user-message-parts'
-import { classifyUserText } from './user-message-kinds'
-import { SentAttachmentChip, imageSizeForCount } from './sent-attachment-chip'
+import { classifyUserMessage } from './user-message-kinds'
+import { SentAttachmentChip } from './sent-attachment-chip'
+import { AttachedImages } from './attached-images'
 import { isPreviewableImage } from '@renderer/lib/file-types'
-import { Markdown, type MarkdownProps } from '@renderer/components/ui/markdown'
-import type { Components } from 'react-markdown'
+import type { MarkdownProps } from '@renderer/components/ui/markdown'
+import { AgentMarkdown } from './agent-markdown'
 import { splitStreamingMarkdown } from './split-streaming-markdown'
 import { isProviderFacingError } from '@shared/lib/types/api'
 import type { ApiMessage, ApiToolCall } from '@shared/lib/types/api'
@@ -29,169 +30,13 @@ import { readAloud } from '@renderer/lib/voice/services/read-aloud'
 import { useIsReadAloudAvailable, useIsBeingRead, useSpokenWordHighlight } from '@renderer/hooks/use-read-aloud'
 import { useIsTtsConfigured } from '@renderer/hooks/use-voice-input'
 import { ReadAloudControls } from './read-aloud-controls'
+import { UserAvatar } from '@renderer/components/ui/user-avatar'
+import { rehypeMentions } from '@renderer/lib/rehype-mentions'
+import type { Mention } from '@shared/lib/utils/mentions'
 
 // Re-export for use by other components
 export type { ApiToolCall }
 
-function CodeBlock({ children }: { children: ReactNode }) {
-  const [copied, setCopied] = useState(false)
-
-  const handleCopy = useCallback(() => {
-    const text = extractText(children)
-    void navigator.clipboard.writeText(text)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }, [children])
-
-  return (
-    <pre className={cn(
-      'relative group rounded-md p-3 text-sm leading-relaxed border code-scrollbar',
-      'bg-black/[0.03] dark:bg-white/[0.06] border-border/60 text-foreground'
-    )}>
-      <button
-        onClick={handleCopy}
-        className={cn(
-          'absolute top-2 right-2 p-1 rounded',
-          'opacity-0 group-hover:opacity-100 touch:opacity-100 transition-opacity',
-          'hover:bg-black/[0.1] dark:hover:bg-white/[0.15]',
-          'text-muted-foreground'
-        )}
-      >
-        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-      </button>
-      {children}
-    </pre>
-  )
-}
-
-function extractText(node: ReactNode): string {
-  if (typeof node === 'string') return node
-  if (typeof node === 'number') return String(node)
-  if (!node) return ''
-  if (Array.isArray(node)) return node.map(extractText).join('')
-  if (typeof node === 'object' && 'props' in node) return extractText(node.props.children)
-  return ''
-}
-
-// Side breathing room kept between an expanded table and the chat edges.
-const TABLE_BREAKOUT_GUTTER = 16
-
-// A wide (many-column) table shouldn't be crammed into the narrow readable text
-// column. Like Notion, we let a table that's wider than the column break out and
-// centre itself across the available chat width, scrolling horizontally only
-// once it still exceeds that. Narrow tables are left untouched in the normal
-// text flow. The breakout is measured rather than pure-CSS because the table is
-// nested several constrained, off-centre ancestors deep, so there is no static
-// containing block to anchor a symmetric breakout to. Only assistant messages
-// opt in (via `data-allow-table-breakout`); elsewhere the table just scrolls
-// inside its own column.
-function ExpandingTable({ children }: { children: ReactNode }) {
-  const wrapperRef = useRef<HTMLDivElement>(null)
-  const scrollerRef = useRef<HTMLDivElement>(null)
-
-  useLayoutEffect(() => {
-    const wrapper = wrapperRef.current
-    const scroller = scrollerRef.current
-    if (!wrapper || !scroller) return
-
-    const contentArea = wrapper.closest('[data-message-content-area]') as HTMLElement | null
-    const canBreakOut = !!wrapper.closest('[data-allow-table-breakout]')
-
-    const measure = () => {
-      // Always start from the natural in-flow geometry before deciding.
-      wrapper.style.width = ''
-      wrapper.style.marginLeft = ''
-
-      if (!contentArea || !canBreakOut) return
-
-      const columnWidth = wrapper.clientWidth
-      const naturalWidth = scroller.scrollWidth
-      // Only break out when the table genuinely wants more than the column.
-      if (naturalWidth <= columnWidth + 1) return
-
-      const available = contentArea.clientWidth - TABLE_BREAKOUT_GUTTER * 2
-      if (available <= columnWidth) return // window too narrow to gain anything
-
-      const target = Math.min(naturalWidth, available)
-      const areaLeft = contentArea.getBoundingClientRect().left + TABLE_BREAKOUT_GUTTER
-      const currentLeft = wrapper.getBoundingClientRect().left
-      const desiredLeft = areaLeft + (available - target) / 2
-
-      wrapper.style.width = `${target}px`
-      wrapper.style.marginLeft = `${desiredLeft - currentLeft}px`
-    }
-
-    measure()
-
-    if (!contentArea || typeof ResizeObserver === 'undefined') return
-    // Re-centre when the chat area resizes. Content changes (e.g. a table still
-    // streaming) re-run this effect via the `children` dependency, so we don't
-    // observe the table itself — that would risk a resize-observer feedback loop.
-    const observer = new ResizeObserver(() => measure())
-    observer.observe(contentArea)
-    return () => observer.disconnect()
-  }, [children])
-
-  return (
-    <div ref={wrapperRef} className="my-3" data-testid="markdown-table">
-      <div ref={scrollerRef} className="code-scrollbar overflow-x-auto">
-        <table className="w-max min-w-full border-collapse text-sm">
-          {children}
-        </table>
-      </div>
-    </div>
-  )
-}
-
-// Hoisted to a stable module-level reference. The memoized <MarkdownBlock> below
-// must NOT be handed a fresh `components`/`remarkPlugins` object each render, or
-// its memo would never bail and every settled streaming block would re-parse.
-const MARKDOWN_COMPONENTS: Components = {
-  // Style code blocks
-  pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-  code: ({ children, className }) => {
-    const isInline = !className
-    return isInline ? (
-      <code className={cn(
-        'rounded px-1.5 py-0.5 text-sm font-medium',
-        'bg-black/[0.05] dark:bg-white/[0.08] text-foreground'
-      )}>
-        {children}
-      </code>
-    ) : (
-      <code className={cn(className, 'text-foreground')}>{children}</code>
-    )
-  },
-  // Wide tables expand beyond the readable column and scroll; see ExpandingTable.
-  table: ({ children }) => <ExpandingTable>{children}</ExpandingTable>,
-  // Cap individual cell width so prose-heavy cells wrap instead of stretching the
-  // table to one giant line, while many short columns still drive the breakout.
-  th: ({ children }) => (
-    <th className={cn(
-      'border-b-2 px-3 py-1.5 text-left font-medium align-top',
-      'border-border'
-    )}>
-      <div className="max-w-[32rem]">{children}</div>
-    </th>
-  ),
-  td: ({ children }) => (
-    <td className={cn(
-      'border-b px-3 py-1.5 align-top',
-      'border-border'
-    )}>
-      <div className="max-w-[32rem]">{children}</div>
-    </td>
-  ),
-  img: ({ alt, src }) => (
-    <img
-      src={src}
-      alt={alt ?? ''}
-      loading="lazy"
-      decoding="async"
-      className="h-auto max-w-full rounded-md"
-    />
-  ),
-}
 
 // A single markdown block. Memoized so that, while a response streams, each
 // already-settled block parses exactly once even though later deltas keep
@@ -206,23 +51,33 @@ interface MarkdownBlockProps {
   spoken?: boolean
   /** Index of this block's first spoken word within the whole message (a reply rendered block by block). */
   spokenOffset?: number
+  /** Render settled ```html fences as live previews (assistant replies only). */
+  htmlPreview?: boolean
+  /** The people and agents a sent message mentions, drawn as chips where their names stand. */
+  mentions?: readonly Mention[]
 }
 
 function spokenPlugins(spoken: boolean | undefined, offset: number | undefined): MarkdownProps['rehypePlugins'] {
   return spoken ? [[rehypeSpokenWords, { offset: offset ?? 0 }]] : undefined
 }
 
-export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAliases, agentSlug, spoken, spokenOffset }: MarkdownBlockProps) {
-  const rehypePlugins = useMemo(() => spokenPlugins(spoken, spokenOffset), [spoken, spokenOffset])
+const NO_MENTIONS: readonly Mention[] = []
+
+export const MarkdownBlock = memo(function MarkdownBlock({ text, embeddedImageAliases, agentSlug, spoken, spokenOffset, htmlPreview, mentions = NO_MENTIONS }: MarkdownBlockProps) {
+  const rehypePlugins = useMemo(() => {
+    const plugins = spokenPlugins(spoken, spokenOffset)
+    if (mentions.length === 0) return plugins
+    return [[rehypeMentions, { mentions, agentSlug }], ...(plugins ?? [])] as MarkdownProps['rehypePlugins']
+  }, [spoken, spokenOffset, mentions, agentSlug])
   return (
-    <Markdown
+    <AgentMarkdown
+      text={text}
+      mode="settled"
+      htmlPreview={htmlPreview}
       rehypePlugins={rehypePlugins}
-      components={MARKDOWN_COMPONENTS}
       imageAliases={embeddedImageAliases}
       agentSlug={agentSlug}
-    >
-      {text}
-    </Markdown>
+    />
   )
 })
 
@@ -252,14 +107,13 @@ const StreamingMarkdownBlock = memo(function StreamingMarkdownBlock({ text, embe
   ]
 
   return (
-    <Markdown
+    <AgentMarkdown
+      text={text}
+      mode="streaming"
       rehypePlugins={rehypePlugins}
-      components={MARKDOWN_COMPONENTS}
       imageAliases={embeddedImageAliases}
       agentSlug={agentSlug}
-    >
-      {text}
-    </Markdown>
+    />
   )
 })
 
@@ -279,9 +133,6 @@ interface MessageItemProps {
   completedSubagents?: Set<string> | null
   onRemoveMessage?: (messageId: string) => void
   onRemoveToolCall?: (toolCallId: string) => void
-  /** Read-only mirror (chat-integration replay): no edit actions; lift the
-   *  connector's inline sender prefix into the sender label. */
-  readOnly?: boolean
   /** Optional reveal animation for work restored on turn expansion. */
   workDetailClassName?: string
   /** Tool calls that were hidden while the containing work phase was collapsed. */
@@ -299,6 +150,17 @@ interface MessageItemProps {
    * the list, so the store's flips re-render one row rather than every one.
    */
   voiceReading?: boolean
+  /** The temporary row of a reply still streaming. Its persisted message replaces it, so HTML previews wait for that row and run once. */
+  isStreamingRow?: boolean
+}
+
+function isSubagentTool(name: string): boolean {
+  return name === 'Task' || name === 'Agent'
+}
+
+// The rows that read activeSubagents/completedSubagents: they draw a subagent or workflow card.
+export function readsSubagentState(message: ApiMessage): boolean {
+  return message.toolCalls?.some(tc => isSubagentTool(tc.name) || tc.name === 'Workflow') ?? false
 }
 
 function resolveSubagentRun(
@@ -323,17 +185,22 @@ function resolveSubagentRun(
   }
 }
 
-function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, readOnly, workDetailClassName, revealedToolCallIds, embeddedImageAliases, suppressInlineError, isLatestAssistant, voiceReading }: MessageItemProps) {
+function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSessionActive, activeSubagents, completedSubagents, onRemoveMessage, onRemoveToolCall, workDetailClassName, revealedToolCallIds, embeddedImageAliases, suppressInlineError, isLatestAssistant, voiceReading, isStreamingRow }: MessageItemProps) {
   useRenderTracker('MessageItem')
   const isUser = message.type === 'user'
   const isAssistant = message.type === 'assistant'
 
   const rawText = message.content.text
-  // User bubbles: lift the attached-files / mounted-folders blocks into pills
-  // (every session) and the read-only mirror's connector sender prefix into
-  // the sender label (mirrors only), leaving just the typed text.
-  const userParts = isUser ? parseUserMessageParts(rawText, { readOnly: !!readOnly }) : null
+  // User bubbles: lift the attached-files / mounted-folders blocks into pills,
+  // the sender prefix into the sender label and the mentions block into chips,
+  // leaving just the typed text. Memoized so the mentions keep their identity.
+  const userParts = useMemo(() => (isUser ? parseUserMessageParts(rawText) : null), [isUser, rawText])
+  const mentions = userParts?.mentions.length ? userParts.mentions : undefined
+  // A message that opened on a teammate only notified them: the agent did not run.
+  const silentMention = !!userParts?.silent
   const senderFromPrefix = userParts?.sender ?? null
+  // A mirror prefix carries only a name, so it hashes the name for an initials avatar.
+  const sender = message.sender ?? (senderFromPrefix ? { id: senderFromPrefix, name: senderFromPrefix } : null)
   const attachedFiles = userParts?.attachedFiles ?? []
   const mountedFolders = userParts?.mountedFolders ?? []
   const cleanText = userParts?.text ?? rawText
@@ -354,11 +221,14 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
       )
     : []
 
-  // Kinds with a custom bubble body (slash commands today) replace the
-  // Markdown rendering. Classified on the peeled text so a mirrored
-  // "\[sender]: /cmd" still draws as a command. They get the default body
-  // back as a callback so whatever they don't decorate renders as usual.
-  const userKind = isUser && hasText ? classifyUserText(text) : null
+  // Kinds with a custom bubble body (slash commands, integration cards)
+  // replace the Markdown rendering. Host metadata decides first; text kinds
+  // are classified on the peeled text so a mirrored "\[sender]: /cmd" still
+  // draws as a command. They get the default body back as a callback so
+  // whatever they don't decorate renders as usual.
+  const userKind = isUser ? classifyUserMessage(message, hasText ? text : '') : null
+  // An integration card names its own author and may carry only files.
+  const isIntegrationMessage = userKind?.kind === 'integration'
   const CustomUserRender = userKind?.Render
   const bareUserRender = CustomUserRender && userKind?.chrome === 'bare'
   const renderMarkdown = useCallback((markdown: string) => (
@@ -447,7 +317,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
   // - assistant provider errors routed to another placement
   // - user messages that only had attached files (text was fully stripped)
   const showMessageBubble = isUser
-    ? (hasText || attachedFiles.length === 0)
+    ? (hasText || attachedFiles.length === 0 || isIntegrationMessage)
     : (hasInlineText || isStreaming)
 
   return (
@@ -467,8 +337,11 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
         )}
       >
         {/* Sender name: shared agent sessions, or lifted from a read-only mirror prefix. */}
-        {isUser && (message.sender?.name ?? senderFromPrefix) && (
-          <span className="text-xs text-muted-foreground">{message.sender?.name ?? senderFromPrefix}</span>
+        {isUser && !isIntegrationMessage && sender?.name && (
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            {sender.name}
+            <UserAvatar user={sender} size={18} />
+          </span>
         )}
 
         {/* Persisted thinking — collapsed cards above the message text, one per
@@ -478,7 +351,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           <div className={cn('w-full space-y-2', workDetailClassName)}>
             {thinking.map((t, i) => (
               <MessageErrorBoundary key={i} kind="thinking block" raw={t} itemId={`${message.id}-thinking-${i}`}>
-                <ThinkingBlockItem text={t.text} durationMs={t.durationMs} active={false} />
+                <ThinkingBlockItem text={t.text} durationMs={t.durationMs} active={false} agentSlug={agentSlug} />
               </MessageErrorBoundary>
             ))}
           </div>
@@ -499,7 +372,9 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
               className={cn(
                 'rounded-lg max-w-full text-foreground',
                 !isAssistant && 'overflow-hidden',
-                isUser && 'bg-zinc-100 dark:bg-zinc-800/70 px-4 py-2',
+                isUser && 'px-4 py-2',
+                isUser && !silentMention && 'bg-zinc-100 dark:bg-zinc-800/70',
+                silentMention && 'border border-dashed border-violet-300 bg-violet-50/60 dark:border-violet-400/40 dark:bg-violet-400/10',
                 // Relative for the read-aloud controls, which overlay the
                 // gap under the bubble rather than adding a row to it.
                 isAssistant && 'relative py-1'
@@ -528,6 +403,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                           agentSlug={agentSlug}
                           spoken={isBeingRead}
                           spokenOffset={spokenOffsets?.[i]}
+                          htmlPreview={isAssistant && !isStreamingRow}
                         />
                       ))}
                       {streamingSplit.tail && (
@@ -547,6 +423,8 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                       embeddedImageAliases={embeddedImageAliases}
                       agentSlug={agentSlug}
                       spoken={isBeingRead}
+                      htmlPreview={isAssistant && !isStreamingRow}
+                      mentions={mentions}
                     />
                   )}
                   {isStreaming && (
@@ -571,6 +449,14 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           </MessageContextMenu>
         )}
 
+        {/* Who a notify-only message reached: the agent did not run for it */}
+        {silentMention && (
+          <span className="flex items-center gap-1 text-xs text-muted-foreground" data-testid="mention-notified">
+            <AtSign className="h-3 w-3 text-violet-500" aria-hidden />
+            Notified {userParts!.mentions.flatMap((mention) => mention.kind === 'user' ? [mention.name] : []).join(', ')}
+          </span>
+        )}
+
         {/* Attached file chips for user messages */}
         {isUser && attachedFiles.length > 0 && agentSlug && (() => {
           // Files and images are laid out separately so a tall picture never
@@ -590,26 +476,14 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                   ))}
                 </div>
               )}
-              {imageAttachments.length > 0 && (() => {
-                const imageSize = imageSizeForCount(imageAttachments.length)
-                return (
-                  <div
-                    className={cn(
-                      imageSize === 'grid'
-                        // more than three: a 3-column grid of squares, right-aligned and bounded
-                        ? 'ml-auto grid w-full max-w-md grid-cols-3 gap-2'
-                        // up to three: stacked, each at native aspect
-                        : 'flex flex-col items-end gap-2',
-                    )}
-                    data-testid="sent-images"
-                    data-image-layout={imageSize}
-                  >
-                    {imageAttachments.map((filePath, index) => (
-                      <SentAttachmentChip key={`${filePath}#${index}`} filePath={filePath} agentSlug={agentSlug} imageSize={imageSize} />
-                    ))}
-                  </div>
-                )
-              })()}
+              {imageAttachments.length > 0 && (
+                <AttachedImages
+                  images={imageAttachments.map((filePath, index) => ({ key: `${filePath}#${index}`, filePath }))}
+                  agentSlug={agentSlug}
+                  align="end"
+                  data-testid="sent-images"
+                />
+              )}
             </>
           )
         })()}
@@ -625,7 +499,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
               >
                 <Link2 className="h-3 w-3 text-blue-500" />
                 <span className="font-medium">{mount.containerPath}</span>
-                <span className="text-muted-foreground">mounted</span>
+                <span className="text-muted-foreground">drive</span>
               </div>
             ))}
           </div>
@@ -635,7 +509,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
         {isAssistant && workflowResults.length > 0 && (
           <div className="w-full space-y-2">
             {workflowResults.map((wf, idx) => (
-              <WorkflowResultCard key={wf.runId ?? idx} notification={wf} />
+              <WorkflowResultCard key={wf.runId ?? idx} notification={wf} agentSlug={agentSlug} />
             ))}
           </div>
         )}
@@ -655,7 +529,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
                     }
                   >
                     <MessageErrorBoundary kind="tool call" raw={toolCall} itemId={toolCall.id}>
-                      {(toolCall.name === 'Task' || toolCall.name === 'Agent') && sessionId ? (
+                      {isSubagentTool(toolCall.name) && sessionId ? (
                         <SubAgentBlock
                           toolCall={toolCall}
                           sessionId={sessionId}
@@ -688,10 +562,9 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
 // Memoized: on the 5s refetch React Query's structural sharing preserves the
 // object reference of any unchanged message, so the default shallow prop compare
 // skips re-rendering all but the items that actually changed. Handlers, agentSlug
-// and sessionId are referentially stable. Note: activeSubagents/completedSubagents
-// are passed to every item and change identity on each subagent SSE event, so the
-// memo gives no benefit while a subagent is actively streaming — it still pays off
-// for the common idle/refetch and plain-text-streaming cases.
+// and sessionId are referentially stable. activeSubagents/completedSubagents
+// change identity on each subagent SSE event, so MessageList passes them only to
+// rows with Task/Agent/Workflow calls; other rows skip re-rendering.
 export const MessageItem = memo(MessageItemComponent)
 
 if (__RENDER_TRACKING__) {

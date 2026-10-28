@@ -2,9 +2,9 @@ import { useState, useMemo, useEffect } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { useSettings, useStartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
-import { getPlatform } from '@renderer/lib/env'
+import { serverFacts } from '@renderer/lib/facts'
 import { Wsl2InstallGuide } from './wsl2-install-guide'
-import { RequestError } from '@renderer/components/messages/request-error'
+import { RequestError } from '@shared/lib/tools/requests/request-error'
 import { RunnerSetupErrorPanel, getRunnerSetupPayload } from '@renderer/components/settings/runner-setup-error-panel'
 import { RuntimeProvisionProgress } from '@renderer/components/runtime/runtime-provision-progress'
 import {
@@ -85,7 +85,12 @@ export function DockerSetupStep({ onCanProceedChange }: DockerSetupStepProps) {
 
   const effectiveSelected = selectedRunner ?? defaultRunner
 
-  const isWindows = getPlatform() === 'win32'
+  // Without a built-in runtime there is nothing to show collapsed, so list every option.
+  const hasBuiltin = runtimeStatuses.some((r) => r.runner === 'lima' || r.runner === 'wsl2')
+  const showAllOptions = showMoreOptions || !hasBuiltin
+
+  // The runtime is installed on the machine running the API, not necessarily this one.
+  const isWindows = serverFacts()?.os === 'win32'
   const wsl2Runtime = runtimeStatuses.find((r) => r.runner === 'wsl2')
   const showWsl2Guide = isWindows && wsl2Runtime && !wsl2Runtime.installed
 
@@ -127,7 +132,7 @@ export function DockerSetupStep({ onCanProceedChange }: DockerSetupStepProps) {
       <div className="space-y-3">
         {runtimeStatuses.map((runtime) => {
           const isBuiltin = runtime.runner === 'lima' || runtime.runner === 'wsl2'
-          if (!isBuiltin && !showMoreOptions) return null
+          if (!isBuiltin && !showAllOptions) return null
 
           const isSelected = effectiveSelected === runtime.runner
           const isStarting = isBuiltin && isBuiltinStarting && !runtime.available
@@ -252,7 +257,7 @@ export function DockerSetupStep({ onCanProceedChange }: DockerSetupStepProps) {
         })}
       </div>
 
-      {!showMoreOptions ? (
+      {!showAllOptions ? (
         <div className="flex justify-start">
           <button
             className="text-xs text-muted-foreground hover:text-foreground transition-colors"
@@ -263,14 +268,16 @@ export function DockerSetupStep({ onCanProceedChange }: DockerSetupStepProps) {
         </div>
       ) : (
         <div className="flex justify-between">
+          {hasBuiltin && (
+            <button
+              className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+              onClick={() => setShowMoreOptions(false)}
+            >
+              Show less
+            </button>
+          )}
           <button
-            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-            onClick={() => setShowMoreOptions(false)}
-          >
-            Show less
-          </button>
-          <button
-            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+            className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
             onClick={() => refreshAvailability.mutate()}
             disabled={refreshAvailability.isPending}
           >

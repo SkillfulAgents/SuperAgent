@@ -1,6 +1,7 @@
+import type { HTMLAttributes } from 'react'
 import { cn } from '@shared/lib/utils'
 
-interface ProgressProps {
+interface ProgressProps extends HTMLAttributes<HTMLDivElement> {
   /** Fill percentage, 0–100 (clamped). */
   percent: number
   /**
@@ -11,12 +12,14 @@ interface ProgressProps {
    */
   thresholds?: { warning: number; critical: number }
   className?: string
+  /** Fill color override for a bar without thresholds. */
+  fillClassName?: string
 }
 
-export function Progress({ percent, thresholds, className }: ProgressProps) {
+export function Progress({ percent, thresholds, className, fillClassName, ...props }: ProgressProps) {
   const pct = Math.max(0, Math.min(100, percent))
   const color = !thresholds
-    ? 'bg-primary'
+    ? fillClassName ?? 'bg-primary'
     : pct <= thresholds.critical
       ? 'bg-red-500'
       : pct <= thresholds.warning
@@ -24,7 +27,7 @@ export function Progress({ percent, thresholds, className }: ProgressProps) {
         : 'bg-primary'
 
   return (
-    <div className={cn('h-1.5 w-full overflow-hidden rounded-full bg-muted', className)}>
+    <div {...props} className={cn('h-1.5 w-full overflow-hidden rounded-full bg-muted', className)}>
       <div className={cn('h-full rounded-full transition-all', color)} style={{ width: `${pct}%` }} />
     </div>
   )

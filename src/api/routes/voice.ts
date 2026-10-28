@@ -8,11 +8,11 @@ import { Authenticated, ResolveAgent, AgentUser, getAgentId } from '../middlewar
 import { getVoiceSettings, getAgentCapabilitySettings, type VoiceProvider } from '@shared/lib/config/settings'
 import { getVoiceProvider } from '@shared/lib/voice'
 import { liveMappingSchema, voiceHistorySchema, type LiveAgentContext } from '@shared/lib/voice/live-types'
+import { resolveLiveConversationSetting } from '@shared/lib/agent-integrations/live-setting'
 import { VOICE_LIVE_BODY_MAX_BYTES } from '@shared/lib/voice/conversation-types'
 import { resolveTtsSpeed } from '@shared/lib/voice/tts-preferences'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
-import { getVoiceAgentPrompt, type VoiceAgentPromptName } from '@shared/prompts/voice-agent'
 import { captureException } from '@shared/lib/error-reporting'
 
 const voice = new Hono<LimitedJsonBodyEnv>()
@@ -26,18 +26,21 @@ voice.use('*', Authenticated())
 voice.get('/configured', (c) => {
   const voiceSettings = getVoiceSettings()
   const provider = voiceSettings.sttProvider
-  if (!provider) return c.json({ configured: false, supportsVoiceAgent: false, supportsTts: false, voices: [] })
+  if (!provider) return c.json({ configured: false, supportsTts: false, voices: [] })
   const sttProvider = getVoiceProvider(provider)
   const status = sttProvider.getApiKeyStatus()
   const configured = status.isConfigured
   const supportsTts = configured && sttProvider.supportsTts()
+  // Live sessions (meetings) speak with the provider's Live voices, a different list from read-aloud.
+  const live = configured ? sttProvider.getLiveConversation() : null
   return c.json({
     configured,
     conversationEngine: configured ? sttProvider.getConversationEngine() : null,
-    supportsVoiceAgent: configured && sttProvider.supportsVoiceAgent(),
     supportsTts,
     voices: supportsTts ? sttProvider.getTtsVoices() : [],
     defaultVoice: supportsTts ? sttProvider.resolveTtsVoice(voiceSettings.ttsVoice) : undefined,
+    liveVoices: live?.getLiveVoices() ?? [],
+    liveDefaultVoice: live?.resolveLiveVoice() ?? undefined,
   })
 })
 
@@ -68,7 +71,9 @@ function ttsError(c: Context<LimitedJsonBodyEnv>, error: unknown, fallback: stri
 // retries and expiry after the configured provider changes.
 const liveSessions = new LiveSessionRegistry()
 const pendingLiveStarts = new Map<string, number>()
-const liveSessionSchema = z.object({ sdp: z.string().min(1).max(64000), history: voiceHistorySchema })
+// `sessionId` lets the host look up where the conversation is taking place (a
+// meeting); it never carries instructions of its own.
+const liveSessionSchema = z.object({ sdp: z.string().min(1).max(64000), history: voiceHistorySchema, sessionId: z.string().min(1).max(200).optional() })
 async function createLiveSession(c: Context<LimitedJsonBodyEnv>) {
   const ready = requireLiveConversation(c, 'Live session creation')
   if (ready instanceof Response) return ready
@@ -94,6 +99,8 @@ async function createLiveSession(c: Context<LimitedJsonBodyEnv>) {
         description: agent.frontmatter.description,
         instructions: agent.instructions,
         capabilityPolicies: getAgentCapabilitySettings(),
+        // A session an integration owns (a meeting) changes when the model may speak.
+        setting: parsed.data.sessionId ? await resolveLiveConversationSetting(getAgentId(c), parsed.data.sessionId) : undefined,
       }
     }
     const apiKey = provider.getEffectiveApiKey()
@@ -129,7 +136,9 @@ voice.post('/live/map', async (c) => {
   if (!parsed.success) return c.json({ error: 'Invalid Live mapping request.' }, 400)
   try {
     return c.json(await ready.conversation.mapLiveConversation(parsed.data, c.req.raw.signal))
-  } catch {
+  } catch (error) {
+    // The renderer only sees the generic line; the reason belongs in the host log.
+    console.error('[voice] Live mapping failed:', error)
     return c.json({ error: 'Voice mapping failed. Please try again.' }, 502)
   }
 })
@@ -157,45 +166,6 @@ voice.get('/token', async (c) => {
     captureException(error, {
       tags: { component: 'voice', operation: 'stt-token', provider: provider ?? 'none' },
     })
-    return c.json({ error: message }, 500)
-  }
-})
-
-voice.get('/voice-agent-prompt', (c) => {
-  const name = c.req.query('name') as VoiceAgentPromptName | undefined
-  if (!name || !['create-agent', 'improve-agent'].includes(name)) {
-    return c.json({ error: 'Invalid prompt name. Use "create-agent" or "improve-agent".' }, 400)
-  }
-  try {
-    const prompt = getVoiceAgentPrompt(name)
-    return c.json({ prompt })
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Failed to load voice agent prompt'
-    return c.json({ error: message }, 500)
-  }
-})
-
-voice.get('/voice-agent-token', async (c) => {
-  try {
-    const providerParam = c.req.query('provider')
-    if (providerParam && providerParam !== 'deepgram' && providerParam !== 'openai' && providerParam !== 'platform') {
-      return c.json({ error: `Invalid voice provider: ${providerParam}` }, 400)
-    }
-
-    const voiceSettings = getVoiceSettings()
-    const provider: VoiceProvider | undefined = (providerParam as VoiceProvider) || voiceSettings.sttProvider
-
-    const sttProvider = requireConfiguredProvider(c, provider)
-    if (sttProvider instanceof Response) return sttProvider
-    if (!sttProvider.supportsVoiceAgent()) {
-      return c.json({ error: `Voice Agent not supported by ${provider}` }, 400)
-    }
-
-    const result = await sttProvider.getVoiceAgentToken()
-    return c.json(result)
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Failed to get Voice Agent credentials'
-    console.error('Failed to get Voice Agent credentials:', error)
     return c.json({ error: message }, 500)
   }
 })

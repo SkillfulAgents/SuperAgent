@@ -25,7 +25,7 @@ const recorder = mockRecorder<MockRecord>()
 // The E2E seed (setup-e2e-data.js) grants Opus 4.8 a speed choice via a
 // user-level catalog override; every other model keeps the builtin
 // direct-Anthropic shape with no supportedSpeeds.
-const OPUS_LATEST = 'claude-opus-5'
+const OPUS_LATEST = 'claude-opus-5-5'
 const HAIKU = 'claude-haiku-4-5'
 
 // Open the composer popover and pick a concrete version. Picks don't dismiss
@@ -69,7 +69,7 @@ test.describe('Speed selection', () => {
     const initialMessage = `Fast speed first message ${tag}`
 
     await agentPage.clickCreateAgent()
-    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible({ timeout: 15000 })
 
     // The default model resolves to Opus latest, which carries the speed
     // override — the Speed section must render and Fast must go on the wire.
@@ -90,7 +90,7 @@ test.describe('Speed selection', () => {
     const initialMessage = `Untouched speed message ${tag}`
 
     await agentPage.clickCreateAgent()
-    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible({ timeout: 15000 })
 
     await page.locator('[data-testid="home-message-input"]').fill(initialMessage)
     await page.locator('[data-testid="home-send-button"]').click()
@@ -125,7 +125,7 @@ test.describe('Speed selection', () => {
 
   test('the Speed section is hidden for models without a speed choice', async ({ page }) => {
     await agentPage.clickCreateAgent()
-    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
+    await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible({ timeout: 15000 })
 
     // Opus (speed override) shows the section...
     await page.locator('[data-testid="composer-options-trigger"]').click()

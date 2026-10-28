@@ -3,17 +3,17 @@ import { Hono } from 'hono'
 
 const mockGetAgentActivityStats = vi.fn()
 const mockGetConnectionActivityStats = vi.fn()
-const mockIsSessionActive = vi.fn()
+const mockActiveIds = vi.fn((_slug: string): string[] => [])
 
 vi.mock('@shared/lib/services/activity-stats-service', () => ({
   getAgentActivityStats: (...args: unknown[]) => mockGetAgentActivityStats(...args),
   getConnectionActivityStats: (...args: unknown[]) => mockGetConnectionActivityStats(...args),
 }))
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    isSessionActive: (...args: unknown[]) => mockIsSessionActive(...args),
-  },
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    activeIds: (slug) => mockActiveIds(slug),
+  }),
 }))
 
 vi.mock('../middleware/auth', () => ({
@@ -62,20 +62,18 @@ describe('activity API', () => {
     })
   })
 
-  it('probes execution liveness (isSessionActive, not subscription) through the message persister', async () => {
+  it("probes execution liveness (active, not subscribed) through the agent's live sessions", async () => {
+    mockActiveIds.mockReturnValueOnce(['session-1'])
     await createApp().request('http://localhost/api/activity/agents/agent-a')
 
     const { isSessionLive } = mockGetAgentActivityStats.mock.calls[0][1] as {
       isSessionLive: (agentSlug: string, sessionId: string) => boolean
     }
-    mockIsSessionActive.mockReturnValue(true)
-    expect(isSessionLive('agent-one', 'session-1')).toBe(true)
-    expect(mockIsSessionActive).toHaveBeenCalledWith('agent-one', 'session-1')
-
+    expect(mockActiveIds).toHaveBeenCalledWith('agent-a')
+    expect(isSessionLive('agent-a', 'session-1')).toBe(true)
     // An idle-but-still-subscribed session is NOT live — a persisted
     // 'running' for it must downgrade instead of pulsing forever.
-    mockIsSessionActive.mockReturnValue(false)
-    expect(isSessionLive('agent-one', 'session-1')).toBe(false)
+    expect(isSessionLive('agent-a', 'session-2')).toBe(false)
   })
 
   it.each([

@@ -1,3 +1,6 @@
+vi.mock('@shared/lib/account-providers/provider-factory', () => ({
+  getDefaultAccountProvider: () => ({ name: 'composio' }),
+}))
 vi.mock('@shared/lib/agent-integrations/mcp', () => ({ integrationMcpProjection: vi.fn(async () => []) }))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -18,7 +21,6 @@ vi.mock('./client-factory', () => ({
     getStats: vi.fn(),
     fetch: vi.fn(),
     getHostApiBaseUrl: () => 'http://127.0.0.1:3000',
-    buildVolumeFlag: (hostPath: string, containerPath: string) => `"${hostPath}:${containerPath}"`,
     createSession: vi.fn(),
     onFatalResult: () => 'settle',
     observeUnexpectedDeath: async () => ({ action: 'settle' as const }),
@@ -84,23 +86,6 @@ vi.mock('@shared/lib/config/data-dir', () => ({
 const mockHasActive = vi.fn(() => false)
 const mockHasAwaiting = vi.fn(() => false)
 
-vi.mock('./message-persister', () => ({
-  messagePersister: {
-    broadcastGlobal: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(),
-    hasActiveSessionsForAgent: () => mockHasActive(),
-    hasSessionsAwaitingInputForAgent: () => mockHasAwaiting(),
-    snapshotMidTurnSessions: vi.fn(() => []),
-    consumeLastFatal: vi.fn(() => null),
-    settleRecoveringSessions: vi.fn(),
-    markRecovered: vi.fn(),
-    takeCoalescedUserMessages: vi.fn(() => []),
-    isSessionRecovering: vi.fn(() => false),
-    isSubscribed: vi.fn(() => false),
-    subscribeToSession: vi.fn(),
-  },
-}))
-
 vi.mock('./health-monitor', () => ({
   healthMonitor: { checkAll: vi.fn().mockReturnValue([]) },
 }))
@@ -116,9 +101,15 @@ vi.mock('@shared/lib/computer-use/permission-manager', () => ({
 vi.mock('@shared/lib/services/agent-service', () => ({}))
 vi.mock('@shared/lib/composio/client', () => ({ isPlatformComposioActive: () => false }))
 vi.mock('@shared/lib/services/timezone-resolver', () => ({ resolveTimezoneForAgent: () => 'UTC' }))
-vi.mock('@shared/lib/services/mount-service', () => ({ getMountsWithHealth: () => [] }))
+vi.mock('@shared/lib/services/mount-service', () => ({ listVolumes: async () => ({ volumes: [], notMounted: [] }), remounted: async () => {} }))
 
 import { containerHost } from './container-host'
+import { NO_LIVE_SESSIONS } from './agent-sessions-access'
+
+// The agent's live sessions, as the runtime asks them whether it is busy.
+containerHost.attachAgentSessions({
+  peek: () => ({ ...NO_LIVE_SESSIONS, hasActive: () => mockHasActive(), hasAwaitingInput: () => mockHasAwaiting() }),
+})
 
 const MINUTE = 60_000
 const TIMEOUT = 30 * MINUTE

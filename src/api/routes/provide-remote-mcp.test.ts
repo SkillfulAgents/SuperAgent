@@ -33,15 +33,6 @@ vi.mock('@shared/lib/container/container-host', async () => {
   }
 })
 
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    broadcastGlobal: vi.fn(),
-    persistMessage: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(),
-    completeInputRequest: vi.fn(),
-  },
-}))
-
 const mockSelectFrom = vi.fn()
 const mockInsertValues = vi.fn()
 
@@ -245,9 +236,9 @@ vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   listCancelledWebhookTriggers: vi.fn(),
 }))
 
-vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  listChatIntegrations: vi.fn(),
-  listChatIntegrationsByAgents: vi.fn(),
+vi.mock('@shared/lib/services/agent-integration-service', () => ({
+  listAgentIntegrations: vi.fn(),
+  listAgentIntegrationsByAgents: vi.fn(),
 }))
 
 vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
@@ -256,6 +247,8 @@ vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({
 
 vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadNotifications: vi.fn(),
+  getSessionIdsWithUnreadMentions: vi.fn(),
+  getUnreadMentionsByAgents: vi.fn(),
   getUnreadNotificationsByAgents: vi.fn(),
   deleteNotificationsBySessionIds: vi.fn(),
 }))
@@ -317,7 +310,7 @@ vi.mock('@shared/lib/container/runtime-options', () => ({
   parseRuntimeOptions: vi.fn(),
 }))
 
-vi.mock('@shared/lib/tool-definitions/user-input-tools', () => ({
+vi.mock('@shared/lib/tools/user-input-tools', () => ({
   isBlockingUserInputToolName: vi.fn(),
 }))
 
@@ -360,7 +353,7 @@ vi.mock('../llm-polyfill', () => ({
 }))
 
 import agents from './agents'
-import { userInputRequestManager } from '@shared/lib/user-input/request-manager'
+import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 
 function createApp() {
   const app = new Hono()

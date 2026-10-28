@@ -1,3 +1,4 @@
+import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * Task Scheduler
  *
@@ -6,6 +7,7 @@
  */
 
 import { agentRegistry } from '@shared/lib/agent-actor'
+import type { AgentActor } from '@shared/lib/agent-actor'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
@@ -14,14 +16,16 @@ import {
   getDueTasks,
   markTaskExecuted,
   markTaskFailed,
+  recordTaskSkip,
+  rescheduleAfterFailure,
   updateNextExecution,
 } from '@shared/lib/services/scheduled-task-service'
 import type { ScheduledTask } from '@shared/lib/services/scheduled-task-service'
-import { resolveRuntimeInherit } from '@shared/lib/container/runtime-options'
 import { getNextCronTime } from '@shared/lib/services/schedule-parser'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { deliverSessionWake } from './wake-delivery'
 
 /**
@@ -31,6 +35,17 @@ import { deliverSessionWake } from './wake-delivery'
  * machine waking from sleep) must not permanently kill it.
  */
 const WAKE_RETRY_WINDOW_MS = 6 * 60 * 60 * 1000
+
+/**
+ * Whether a recurring task's previous run still occupies its slot: busy and not
+ * parked on user input. A parked run has nobody to answer it, so it frees the
+ * slot; a run whose turn ended with background work still going stays active
+ * and keeps it.
+ */
+async function isRunBusy(actor: AgentActor, sessionId: string): Promise<boolean> {
+  const live = await actor.sessions.live(sessionId)
+  return live.isActive && !live.isAwaitingInput
+}
 
 class TaskScheduler {
   private intervalId: NodeJS.Timeout | null = null
@@ -58,10 +73,10 @@ class TaskScheduler {
     // in getDueTasks — SUP-224) can no longer prevent polling from running, so
     // the scheduler self-heals on the next tick instead of wedging.
     this.intervalId = setInterval(() => {
-      this.executeOverdueTasks().catch((error) => {
+      background(this.executeOverdueTasks().catch((error) => {
         console.error('[TaskScheduler] Error in polling cycle:', error)
         captureException(error, { tags: { component: 'task-scheduler', phase: 'poll' } })
-      })
+      }), { name: 'task-scheduler.run-overdue' })
     }, this.pollIntervalMs)
 
     console.log(
@@ -133,8 +148,9 @@ class TaskScheduler {
             tags: { component: 'task-scheduler', phase: 'execute-task' },
             extra: { taskId: task.id, agentSlug: task.agentSlug, isRecurring: task.isRecurring },
           })
-          // For recurring tasks, schedule next execution even on failure
-          // For one-time tasks, mark as failed
+          // For recurring tasks, schedule the next attempt without recording an
+          // execution: lastSessionId keeps pointing at the previous run so the
+          // overlap guard stays armed. For one-time tasks, mark as failed.
           if (!task.isRecurring && task.resumeSessionId &&
               Date.now() - task.nextExecutionAt.getTime() < WAKE_RETRY_WINDOW_MS) {
             // Session wakes stay pending on transient failure so the poll loop
@@ -145,7 +161,7 @@ class TaskScheduler {
           } else if (task.isRecurring) {
             try {
               const nextTime = getNextCronTime(task.scheduleExpression, task.timezone || undefined)
-              await updateNextExecution(task.id, nextTime, '')
+              await rescheduleAfterFailure(task.id, nextTime)
               console.log(
                 `[TaskScheduler] Recurring task ${task.id} failed but scheduled next: ${nextTime.toISOString()}`
               )
@@ -196,6 +212,27 @@ class TaskScheduler {
       return
     }
 
+    // Overlap guard: while the previous run of this recurring task is still
+    // busy, hold this fire rather than start a second concurrent session.
+    // Holding leaves nextExecutionAt alone: the task stays due, each poll
+    // re-checks, and the first free poll fires once and re-anchors to the next
+    // cron boundary. One scalar means at most one pending fire per task.
+    if (task.isRecurring && task.lastSessionId && await isRunBusy(actor, task.lastSessionId)) {
+      console.log(
+        `[TaskScheduler] Task ${task.id} held: previous run ${task.lastSessionId} is still busy`
+      )
+      // A hold is not a failure: a failed skip write must not reach the failure
+      // path, which would advance the schedule and drop the held fire.
+      await recordTaskSkip(task.id).catch((error) => {
+        console.error(`[TaskScheduler] Failed to record skip for task ${task.id}:`, error)
+        captureException(error, {
+          tags: { component: 'task-scheduler', phase: 'record-skip' },
+          extra: { taskId: task.id, agentSlug: task.agentSlug },
+        })
+      })
+      return
+    }
+
     // Verify agent still exists
     if (!(await agentExists(task.agentSlug))) {
       console.error(
@@ -215,51 +252,48 @@ class TaskScheduler {
     // Model/effort/speed preference order: task override > agent default > global default.
     const models = getEffectiveModels()
     const agentPrefs = await readAgentPreferences(task.agentSlug)
-    const resolved = resolveRuntimeInherit(
-      { model: task.model, effort: task.effort, speed: task.speed },
+    const resolved = await resolveConnectionRuntimeInherit(
+      { model: task.model,
+      llmProviderId: task.llmProviderId, effort: task.effort, speed: task.speed },
       agentPrefs,
       models,
     )
-    const containerSession = await actor.sessions.create({
-      availableEnvVars:
-        availableEnvVars.length > 0 ? availableEnvVars : undefined,
-      initialMessage: task.prompt,
-      model: resolved.model,
-      browserModel: models.browserModel,
-      dashboardBuilderModel: models.dashboardBuilderModel,
-      metadata: { isAutomated: true },
-      effort: resolved.effort,
-      ...(resolved.speed ? { speed: resolved.speed } : {}),
+    const { id: sessionId } = await actor.sessions.start({
+      create: {
+        availableEnvVars:
+          availableEnvVars.length > 0 ? availableEnvVars : undefined,
+        initialMessage: task.prompt,
+        model: resolved.model,
+        llmProviderId: resolved.llmProviderId,
+        browserModel: models.browserModel,
+        dashboardBuilderModel: models.dashboardBuilderModel,
+        metadata: { isAutomated: true },
+        effort: resolved.effort,
+        ...(resolved.speed ? { speed: resolved.speed } : {}),
+      },
+      name: task.name || 'Scheduled Task',
+      metadata: {
+        isScheduledExecution: true,
+        scheduledTaskId: task.id,
+        scheduledTaskName: task.name || undefined,
+        scheduledExecutionAt: task.nextExecutionAt.toISOString(),
+        automationStatus: 'running',
+      },
     })
-
-    const sessionId = containerSession.id
-    const sessionName = task.name || 'Scheduled Task'
-
-    await actor.sessions.register(sessionId, sessionName, {
-      isScheduledExecution: true,
-      scheduledTaskId: task.id,
-      scheduledTaskName: task.name || undefined,
-      scheduledExecutionAt: task.nextExecutionAt.toISOString(),
-      automationStatus: 'running',
-    })
-
-    // createSession already started the turn; replay may finish it during attachment.
-    actor.sessions.markActive(sessionId)
-    await actor.sessions.subscribeStream(sessionId, sessionId)
 
     console.log(
       `[TaskScheduler] Task ${task.id} started, session: ${sessionId}`
     )
 
     // Trigger scheduled session started notification
-    notificationManager.triggerScheduledSessionStarted(
+    background(notificationManager.triggerScheduledSessionStarted(
       sessionId,
       task.agentSlug,
       task.id,
       task.name || undefined
     ).catch((err) => {
       console.error('[TaskScheduler] Failed to trigger scheduled notification:', err)
-    })
+    }), { name: 'task-scheduler.notify-session-started' })
 
     await this.recordTaskExecution(task, sessionId)
   }

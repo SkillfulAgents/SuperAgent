@@ -1,3 +1,5 @@
+import { assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
+import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 /**
  * Webhook Triggers API Routes
  *
@@ -17,6 +19,7 @@ import {
 import { promptUpdateSchema } from './trigger-prompt-schema'
 import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options'
 import { agentRegistry } from '@shared/lib/agent-actor'
+import { withSessionStatus } from '@shared/lib/session-status'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { toPublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
@@ -50,11 +53,7 @@ webhookTriggersRouter.get('/:triggerId/sessions', TriggerAgentRole('viewer'), as
     const trigger = c.get('webhookTrigger' as never) as Awaited<ReturnType<typeof getWebhookTrigger>>
     const actor = agentRegistry.get(trigger!.agentSlug)
     const sessions = await actor.sessions.byWebhookTrigger(trigger!.id)
-    const sessionsWithStatus = sessions.map((session) => ({
-      ...session,
-      isActive: actor.sessions.isActive(session.id),
-    }))
-    return c.json(sessionsWithStatus)
+    return c.json(withSessionStatus(sessions, await actor.live()))
   } catch (error) {
     console.error('Failed to fetch sessions for webhook trigger:', error)
     return c.json({ error: 'Failed to fetch sessions' }, 500)
@@ -132,11 +131,13 @@ webhookTriggersRouter.patch('/:triggerId/runtime-options', TriggerAgentRole('use
       return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid runtime options' }, 400)
     }
 
-    const updates: { model?: string | null; effort?: string | null; speed?: string | null } = {}
+    const updates: { llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null } = {}
+    if ('llmProviderId' in body) updates.llmProviderId = parsed.data.llmProviderId ?? null
     if ('model' in body) updates.model = parsed.data.model ?? null
     if ('effort' in body) updates.effort = parsed.data.effort ?? null
     if ('speed' in body) updates.speed = parsed.data.speed ?? null
 
+    await assertConnectionSelectionAccess(updates.llmProviderId, trigger?.llmProviderId)
     const updated = await updateWebhookTriggerRuntimeOptions(trigger!.id, updates)
     if (!updated) {
       return c.json({ error: 'Trigger not found or cancelled' }, 404)
@@ -147,6 +148,8 @@ webhookTriggersRouter.patch('/:triggerId/runtime-options', TriggerAgentRole('use
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'updated', details: { field: 'runtime-options' } })
     return c.json(toPublicWebhookTrigger(refreshed, getAuthorizedAgentRole(c)))
   } catch (error) {
+    const runtimeError = findAgentRuntimeError(error)
+    if (runtimeError) return runtimeError.toHttpResponse()
     console.error('Failed to update webhook trigger runtime options:', error)
     return c.json({ error: 'Failed to update runtime options' }, 500)
   }

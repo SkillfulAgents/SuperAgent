@@ -1,3 +1,5 @@
+import { captureException } from '@shared/lib/error-reporting'
+vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@shared/lib/platform-auth/config', () => ({
@@ -43,7 +45,68 @@ describe('fetchPlatformBillingInfo', () => {
       'http://proxy.test/v1/billing',
       expect.objectContaining({ headers: { Authorization: 'Bearer plat_sa_token' } }),
     )
-    expect(result).toEqual(VALID_SNAPSHOT)
+    // An older proxy sends no plan fields: no plan, nothing scheduled.
+    expect(result).toEqual({
+      ...VALID_SNAPSHOT,
+      subscription: { ...VALID_SNAPSHOT.subscription, creditScope: 'seat' },
+      plan: null,
+      deniedModels: null,
+      pendingPlanChange: null,
+    })
+  })
+
+  it('reads the workspace denylist for a workspace with no plan (free tier)', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(jsonResponse({
+      ...VALID_SNAPSHOT,
+      plan: null,
+      deniedModels: ['claude-fable-', 'gpt-6-astra'],
+    }))
+    const result = await fetchPlatformBillingInfo()
+    expect(result.plan).toBeNull()
+    expect(result.deniedModels).toEqual(['claude-fable-', 'gpt-6-astra'])
+  })
+
+  it('reads the plan and normalizes its denylist the way the proxy does (SUP-1143)', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(jsonResponse({
+      ...VALID_SNAPSHOT,
+      plan: { id: 'pro-30', name: 'Pro 30', deniedModels: ['claude-fable-', '  GPT-6-Astra ', 3, ''] },
+      pendingPlanChange: { toPlan: { id: 'pro-30', name: 'Pro 30' }, effectiveAt: '2026-11-13T00:00:00Z' },
+    }))
+    const result = await fetchPlatformBillingInfo()
+    expect(result.plan).toEqual({ id: 'pro-30', name: 'Pro 30', deniedModels: ['claude-fable-', 'gpt-6-astra'] })
+    expect(result.pendingPlanChange).toEqual({ toPlan: { id: 'pro-30', name: 'Pro 30' }, effectiveAt: '2026-11-13T00:00:00Z' })
+  })
+
+  it('reads a malformed plan as no plan instead of failing the snapshot', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(jsonResponse({
+      ...VALID_SNAPSHOT,
+      plan: { id: 7 },
+      pendingPlanChange: { toPlan: 'pro-30' },
+    }))
+    const result = await fetchPlatformBillingInfo()
+    expect(result.plan).toBeNull()
+    expect(result.pendingPlanChange).toBeNull()
+    expect(result.seat).toEqual(VALID_SNAPSHOT.seat)
+  })
+
+  it('treats a plan without a denylist as unrestricted', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(jsonResponse({ ...VALID_SNAPSHOT, plan: { id: 'pro-200', name: 'Pro 200' } }))
+    const result = await fetchPlatformBillingInfo()
+    expect(result.plan).toEqual({ id: 'pro-200', name: 'Pro 200', deniedModels: [] })
+  })
+
+  it.each([
+    ['missing', undefined, 'seat'],
+    ['null', null, 'seat'],
+    ['seat', 'seat', 'seat'],
+    ['org', 'org', 'org'],
+    ['unknown', 'department', 'seat'],
+  ])('reads subscription.creditScope %s as %s', async (_label, creditScope, expected) => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      jsonResponse({ ...VALID_SNAPSHOT, subscription: { ...VALID_SNAPSHOT.subscription, creditScope } }),
+    )
+    const result = await fetchPlatformBillingInfo()
+    expect(result.subscription.creditScope).toBe(expected)
   })
 
   it('keeps an optional hasPaymentMethod flag from newer proxies', async () => {
@@ -104,4 +167,16 @@ describe('fetchPlatformBillingInfo', () => {
     vi.spyOn(global, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'))
     await expect(fetchPlatformBillingInfo()).rejects.toMatchObject({ status: 502 })
   })
+})
+
+
+it('lets optional allowance reads use throttled diagnostics without changing normal billing reporting', async () => {
+  const reporting = vi.mocked(captureException)
+  reporting.mockClear()
+  vi.spyOn(global, 'fetch').mockRejectedValue(new Error('timeout'))
+  await expect(fetchPlatformBillingInfo({ reportErrors: false })).rejects.toThrow('Could not reach')
+  expect(reporting).not.toHaveBeenCalled()
+  await expect(fetchPlatformBillingInfo()).rejects.toThrow('Could not reach')
+  expect(reporting).toHaveBeenCalledTimes(1)
+  vi.restoreAllMocks()
 })

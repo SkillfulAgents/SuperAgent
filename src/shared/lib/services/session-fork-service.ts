@@ -3,8 +3,9 @@
  *
  * Lives next to register/delete rather than in the route so the rollback
  * (register fails → host delete + container delete) is one call. Kept out of
- * session-service.ts because this path talks to the container and the
- * persister, and session-service is already in that import graph.
+ * session-service.ts because this path talks to the container and the live
+ * sessions through the agent's actor, and session-service is already in that
+ * import graph.
  */
 
 import { and, eq, inArray } from 'drizzle-orm'
@@ -15,17 +16,8 @@ import { db } from '@shared/lib/db'
 import { messageAuthor } from '@shared/lib/db/schema'
 import type { SessionInfo, SessionMetadata } from '@shared/lib/types/agent'
 import { insertMessageAuthorsBestEffort } from '@/api/routes/message-author'
-import { forkedUserLineSchema } from '@/api/routes/fork-attribution-schema'
-
-export class ForkSessionError extends Error {
-  constructor(
-    readonly status: 404 | 409 | 500,
-    message: string,
-  ) {
-    super(message)
-    this.name = 'ForkSessionError'
-  }
-}
+import { hasIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
+import { SessionForkFailedError } from '@shared/lib/agent-runtime-errors/session-fork-failed/session-fork-failed-error'
 
 export type ForkSessionOpts = {
   createdByUserId?: string
@@ -44,9 +36,10 @@ export type ForkedSession = SessionInfo & {
 
 function runtimeChoices(metadata: SessionMetadata | null | undefined): Pick<
   SessionMetadata,
-  'model' | 'effort' | 'speed'
+  'model' | 'llmProviderId' | 'effort' | 'speed'
 > {
   return {
+    ...(metadata?.llmProviderId ? { llmProviderId: metadata.llmProviderId } : {}),
     ...(metadata?.model ? { model: metadata.model } : {}),
     ...(metadata?.effort ? { effort: metadata.effort } : {}),
     ...(metadata?.speed ? { speed: metadata.speed } : {}),
@@ -59,8 +52,8 @@ export async function forkSession(
   opts: ForkSessionOpts = {},
 ): Promise<ForkedSession> {
   const actor = agentRegistry.get(slug)
-  if (actor.sessions.isActive(sourceId)) {
-    throw new ForkSessionError(409, 'Session is currently running')
+  if ((await actor.sessions.live(sourceId)).isActive) {
+    throw new SessionForkFailedError(409, 'Session is currently running')
   }
 
   const [known, metadataMap] = await Promise.all([
@@ -69,7 +62,7 @@ export async function forkSession(
   ])
   const metadata = Object.hasOwn(metadataMap, sourceId) ? metadataMap[sourceId] : null
   if (!known) {
-    throw new ForkSessionError(404, 'Session not found')
+    throw new SessionForkFailedError(404, 'Session not found')
   }
 
   const [source] = await Promise.all([
@@ -77,7 +70,7 @@ export async function forkSession(
     actor.container.start(),
   ])
   if (!source) {
-    throw new ForkSessionError(404, 'Session not found')
+    throw new SessionForkFailedError(404, 'Session not found')
   }
 
   let forked: { id: string } | null
@@ -85,15 +78,15 @@ export async function forkSession(
     forked = await actor.sessions.fork(sourceId)
   } catch (error) {
     if (error instanceof ContainerConflictError) {
-      throw new ForkSessionError(409, error.message)
+      throw new SessionForkFailedError(409, error.message)
     }
     if (error instanceof ContainerNotFoundError) {
-      throw new ForkSessionError(404, error.message)
+      throw new SessionForkFailedError(404, error.message)
     }
     throw error
   }
   if (!forked) {
-    throw new ForkSessionError(
+    throw new SessionForkFailedError(
       500,
       'Container does not support fork; restart the agent to pull the latest image',
     )
@@ -105,7 +98,6 @@ export async function forkSession(
   const initialMetadata: Partial<SessionMetadata> = {
     forkedFromSessionId: sourceId,
     ...choices,
-    ...(metadata?.slashCommands ? { slashCommands: metadata.slashCommands } : {}),
     ...(opts.createdByUserId ? { createdByUserId: opts.createdByUserId } : {}),
     ...(opts.createdByDeviceId ? { createdByDeviceId: opts.createdByDeviceId } : {}),
   }
@@ -127,11 +119,9 @@ export async function forkSession(
     actor.sessions.copyDerivedFiles(sourceId, newId).catch((error) => {
       console.error(`fork: subagent/workflow copy for ${newId} failed (non-fatal)`, error)
     }),
-    opts.copyAttribution
-      ? copyForkAttribution(actor, sourceId, newId).catch((error) => {
-          console.error(`fork: attribution copy for ${newId} failed (non-fatal)`, error)
-        })
-      : Promise.resolve(),
+    copyForkAttribution(actor, sourceId, newId, { authors: !!opts.copyAttribution }).catch((error) => {
+      console.error(`fork: attribution copy for ${newId} failed (non-fatal)`, error)
+    }),
   ])
 
   return {
@@ -140,7 +130,6 @@ export async function forkSession(
     name,
     createdAt: new Date(),
     lastActivityAt: new Date(),
-    messageCount: source.messageCount,
     isActive: false,
     forkedFromSessionId: sourceId,
     forkedFromSessionName: source.name,
@@ -149,28 +138,27 @@ export async function forkSession(
 }
 
 /**
- * Auth mode: the SDK fork remaps every message uuid and stamps
- * `forkedFrom.messageUuid` (the old uuid) on each line. Attribution rows are
- * keyed by uuid, so re-key the source's rows onto the fork's user messages.
+ * The SDK fork remaps every user message uuid and stamps `forkedFrom.messageUuid`
+ * (the old uuid) on each line. Author rows — people (auth mode) and integrations
+ * (every mode) — are keyed by uuid, so re-key the source's rows onto the fork's
+ * user messages. A message queued mid-turn keeps its uuid in the fork, and a
+ * uuid keys one row, so a forked queued integration message shows as text.
  */
-async function copyForkAttribution(actor: AgentActor, sourceId: string, newId: string): Promise<void> {
+async function copyForkAttribution(actor: AgentActor, sourceId: string, newId: string, opts: { authors: boolean }): Promise<void> {
   const slug = actor.slug
-  const pairs: { newUuid: string; oldUuid: string }[] = []
-  for await (const raw of actor.messages.rawEntries(newId)) {
-    const parsed = forkedUserLineSchema.safeParse(raw)
-    if (parsed.success) pairs.push({ newUuid: parsed.data.uuid, oldUuid: parsed.data.forkedFrom.messageUuid })
-  }
+  if (!opts.authors && !(await hasIntegrationMessages(slug, sourceId))) return
+  const pairs = await actor.messages.forkedUserUuids(newId)
   if (pairs.length === 0) return
 
   const rows = await db
-    .select({ id: messageAuthor.id, userId: messageAuthor.userId })
+    .select({ id: messageAuthor.id, userId: messageAuthor.userId, integrationId: messageAuthor.integrationId, display: messageAuthor.display })
     .from(messageAuthor)
     .where(and(eq(messageAuthor.sessionId, sourceId), inArray(messageAuthor.id, pairs.map((p) => p.oldUuid))))
-  const userByOld = new Map(rows.map((r) => [r.id, r.userId]))
+  const byOld = new Map(rows.map((r) => [r.id, r]))
   await insertMessageAuthorsBestEffort(
     pairs.flatMap(({ newUuid, oldUuid }) => {
-      const userId = userByOld.get(oldUuid)
-      return userId ? [{ id: newUuid, sessionId: newId, agentSlug: slug, userId }] : []
+      const row = byOld.get(oldUuid)
+      return row ? [{ id: newUuid, sessionId: newId, agentSlug: slug, userId: row.userId, integrationId: row.integrationId, display: row.display }] : []
     }),
   )
 }

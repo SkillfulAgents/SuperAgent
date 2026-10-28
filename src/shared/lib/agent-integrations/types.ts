@@ -1,6 +1,9 @@
+import type { IntegrationRelayHost, IntegrationTransport } from './transport'
+import type { IntegrationCapability } from './public'
 import type { AgentActor } from '../agent-actor'
-import type { SessionMetadata } from '../types/agent'
-import type { PendingUserInputRequest } from '../user-input/request-schema'
+import type { SessionActivity, SessionMetadata } from '../types/agent'
+import type { PendingUserInputRequest, UserInputRequestKind, UserInputRequestOutcome, UserInputRequestScope } from '@shared/lib/tools/requests/request-schema'
+import type { IntegrationMessagePresentation } from './message-display-schema'
 
 export type IntegrationStatus = 'active' | 'paused' | 'error' | 'disconnected'
 
@@ -14,6 +17,7 @@ export interface AgentIntegrationRecord {
   status: IntegrationStatus
   errorMessage: string | null
   createdByUserId: string | null
+  llmProviderId: string | null
   model: string | null
   effort: string | null
   speed: string | null
@@ -32,17 +36,30 @@ export interface IntegrationInputEvent {
   payload: unknown
 }
 
+/**
+ * What the host did with an input event a provider handed it:
+ * - accepted: stored for delivery
+ * - duplicate: already stored (same integration, route, and event id)
+ * - rejected: will never be taken (the integration isn't taking input, or
+ *   the event has no route)
+ * - retry: not taken now because this connection was replaced or stopped;
+ *   whoever delivers the event should hand it over again
+ */
+export type IntegrationInputResult = 'accepted' | 'duplicate' | 'rejected' | 'retry'
+
 export interface IntegrationResponseEvent {
   type: 'response'
   externalId: string
   requestId: string
+  onAnswered?: () => void
   requestKind: 'input' | 'review'
   value: unknown
 }
 
 export type IntegrationEvent = IntegrationInputEvent | IntegrationResponseEvent | {
-  type: 'hint'
+  type: 'hint' | 'cancel'
   externalId: string
+  onInterrupted?: () => void
 }
 
 export interface IntegrationRoute {
@@ -56,9 +73,33 @@ export interface IntegrationRoute {
   notice?: string
 }
 
+/** Runtime observation is reconciled by the manager, never by a provider. */
+export interface IntegrationHost {
+  /** Attach/recover the mapped runtime stream before returning live session activity. */
+  session(externalId: string): Promise<IntegrationSessionContext | undefined>
+  /**
+   * The webhook relay, if the host had one when this connection started;
+   * absent otherwise. A provider that can use it (its webhooks are set up)
+   * should, and connect directly when it can't. Decided once per connection.
+   */
+  relay?: IntegrationRelayHost | null
+}
+
+export interface IntegrationSessionRecovery {
+  externalId: string
+  /** When present, do not attach a replacement session for an older work item. */
+  sessionId?: string
+}
+
 export interface IntegrationSessionContext {
   integration: AgentIntegrationRecord
   externalId: string
+  /**
+   * What the session was doing when the host handed this context over (an
+   * observation, or `IntegrationHost.session`). Unknown means recovery has not
+   * established state.
+   */
+  readonly activity?: SessionActivity | 'unknown'
   sessionId?: string
   interactionId?: string
   replyTarget?: Readonly<Record<string, string>>
@@ -69,29 +110,49 @@ export interface IntegrationInputContext extends IntegrationSessionContext {
 }
 
 export interface PreparedIntegrationInput {
+  /** Exactly what the agent receives. */
   text: string
   systemPrompt?: string
   /** An unusable input (e.g. every attachment failed) must not start a run. */
   skip?: boolean
+  /**
+   * How the app shows this message: the human request and its source, kept
+   * apart from the model-facing `text`. The host adds the integration identity
+   * and stores it beside the transcript; it never reaches the agent.
+   */
+  display?: IntegrationMessagePresentation
 }
 
 export type IntegrationOutput =
   | { type: 'runtime'; event: unknown }
   | { type: 'turn-completed'; event: unknown }
   | { type: 'turn-failed'; event: unknown }
-  | { type: 'message'; text: string }
-  | { type: 'request'; request: PendingUserInputRequest }
+  | { type: 'message'; text: string; inputId?: string; retryable?: boolean }
+  | { type: 'request-opened'; request: PendingUserInputRequest }
+  | { type: 'request-resolved'; requestId: string; kind: UserInputRequestKind; outcome: UserInputRequestOutcome; scope: UserInputRequestScope }
   | { type: 'turn-started' }
   | { type: 'session-reset' }
   | { type: 'access-approved' }
   | { type: 'request-settled' }
+
+/** Who is calling an integration tool: the agent through its runtime, or a person managing the installation. */
+export interface IntegrationToolInvocation {
+  source: 'agent' | 'management'
+  userId?: string
+}
 
 export interface IntegrationTool {
   name: string
   description: string
   /** JSON Schema for the tool's input; implementations also validate on execution. */
   inputSchema: Record<string, unknown>
-  execute(input: unknown): Promise<unknown>
+  /**
+   * Who may call it. Agent-only by default (the x-agent routes); `management`
+   * lets the integration page invoke it on the person's behalf, `both` serves
+   * the same operation to either caller.
+   */
+  exposure?: 'agent' | 'management' | 'both'
+  execute(input: unknown, invocation?: IntegrationToolInvocation): Promise<unknown>
 }
 
 export interface IntegrationSessionPolicy {
@@ -105,7 +166,18 @@ export interface AgentIntegrationDefinition {
   provider: string
   name: string
   family: string
+  /** Server-side management policy. Unknown providers default to owner-only. */
+  managementAccess?: 'user' | 'owner'
+  /** Operations available to the agent. UI controls are separate. */
   capabilities: readonly string[]
+  /** Provider-specific usage returned by agent integration discovery. */
+  agentInstructions?: string
+  managementCapabilities?: readonly IntegrationCapability[]
   settings: readonly { key: string; label: string; type: 'boolean' }[]
   setup: { kind: string; credentialFields: readonly string[] }
+  /**
+   * How it can receive events; `['direct']` when omitted. A provider without
+   * `direct` can't be set up while the host has no webhook relay.
+   */
+  transports?: readonly IntegrationTransport[]
 }

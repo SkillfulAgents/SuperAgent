@@ -1,10 +1,12 @@
-import type { AgentIntegrationRecord as ChatIntegration } from '../agent-integrations/types'
+import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import { isMultiPartyChatType, type ChatConnectorClass, type IncomingMessage } from './chat-agent-integration'
 import { parseChatIntegrationConfig, type ChatProvider } from './config-schema'
 import { sanitizeUploadFilename, withUploadTimestamp } from '../utils/path-safety'
 import { isHostOrSubdomain, tryParseUrl } from '../utils/url-safety'
+import { formatSenderPrefix } from '../utils/sender-prefix'
 import { agentRegistry } from '../agent-actor'
 import { captureException } from '../error-reporting'
+import { heicUploadAsJpeg } from '@/api/routes/heic-jpeg'
 const MAX_FILE_DOWNLOAD_SIZE = 50 * 1024 * 1024
 const reportError = (err: unknown, operation: string, extra?: Record<string, unknown>, level?: 'error' | 'warning') =>
   captureException(err, { tags: { component: 'chat-integration', operation }, extra, level })
@@ -15,9 +17,9 @@ function isTrustedSlackDownloadHost(u: URL): boolean {
 export class ChatInputBuilder {
   constructor(private readonly getConnectorClass: (provider: string) => Promise<ChatConnectorClass | undefined>) {}
   async buildMessageContent(
-    integration: ChatIntegration,
+    integration: AgentIntegrationRecord,
     message: IncomingMessage,
-  ): Promise<{ text: string; failedFiles: string[] }> {
+  ): Promise<{ text: string; failedFiles: string[]; request: string }> {
     // Attribution is best-effort metadata, so lookup failure falls back to no prefix.
     let connectorClass: ChatConnectorClass | undefined
     try {
@@ -26,12 +28,14 @@ export class ChatInputBuilder {
     const sender = message.userName || message.userId
     const prefix = sender
       && isMultiPartyChatType(connectorClass?.classifyChatId?.(message))
-      ? `\\[${sender}]: `
+      ? formatSenderPrefix(sender)
       : ''
     const text = prefix + (message.text || '')
+    // What the person wrote, for display: no attribution prefix, injected context or file block.
+    let request = message.display?.requestText ?? (message.text || '')
 
     if (!message.files || message.files.length === 0) {
-      return { text, failedFiles: [] }
+      return { text, failedFiles: [], request }
     }
 
     const { appendAttachedFiles } = await import('@shared/lib/utils/attached-files')
@@ -52,11 +56,15 @@ export class ChatInputBuilder {
           if (integration.provider === 'imessage' && file.mimeType?.startsWith('audio/')) {
             const transcript = await this.tryTranscribeAudio(data, file.mimeType)
             if (transcript) {
-              transcribedText = (transcribedText ? transcribedText + '\n' : '') + `[Voice note: "${transcript}"]`
+              const note = `[Voice note: "${transcript}"]`
+              transcribedText = (transcribedText ? transcribedText + '\n' : '') + note
+              request = (request ? request + '\n' : '') + note
               continue
             }
             // Transcription unavailable — fall through to file attachment
-            transcribedText = (transcribedText ? transcribedText + '\n' : '') + '[Voice note — transcription unavailable]'
+            const note = '[Voice note — transcription unavailable]'
+            transcribedText = (transcribedText ? transcribedText + '\n' : '') + note
+            request = (request ? request + '\n' : '') + note
           }
           const path = await this.writeToWorkspace(integration.agentSlug, file.name, data)
           uploadedPaths.push(path)
@@ -69,11 +77,11 @@ export class ChatInputBuilder {
       }
     }
 
-    return { text: appendAttachedFiles(transcribedText, uploadedPaths), failedFiles }
+    return { text: appendAttachedFiles(transcribedText, uploadedPaths), failedFiles, request }
   }
 
   /** Download a file from the chat platform, returning a Buffer. */
-  private async downloadFileBuffer(integration: ChatIntegration, fileUrl: string): Promise<Buffer | null> {
+  private async downloadFileBuffer(integration: AgentIntegrationRecord, fileUrl: string): Promise<Buffer | null> {
     try {
       const config = parseChatIntegrationConfig(
         integration.provider as ChatProvider,
@@ -81,7 +89,7 @@ export class ChatInputBuilder {
       )
       if (!config) return null
 
-      if (integration.provider === 'slack' && 'botToken' in config) {
+      if (integration.provider === 'slack' && 'botToken' in config && config.botToken) {
         return await this.downloadSlackFile(config.botToken, fileUrl)
       }
 
@@ -197,9 +205,10 @@ export class ChatInputBuilder {
     // basename so `../` segments cannot leave the uploads directory. The
     // actor's containment keeps the write inside the workspace, but it does
     // not stop a name from landing one level up, so the basename is still ours.
-    const safeName = sanitizeUploadFilename(filename)
+    const jpeg = await heicUploadAsJpeg(filename, data)
+    const safeName = sanitizeUploadFilename(jpeg?.name ?? filename)
     const uploadName = withUploadTimestamp(safeName)
-    await agentRegistry.get(agentSlug).files.putDoc(`uploads/${uploadName}`, data)
+    await agentRegistry.get(agentSlug).files.putDoc(`uploads/${uploadName}`, jpeg?.data ?? data)
 
     return `/workspace/uploads/${uploadName}`
   }

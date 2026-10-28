@@ -9,11 +9,11 @@ export const createAgentTool = tool(
 
 After creation, you can interact with the new agent using its returned slug via invoke_agent / get_sessions / get_session_transcript.
 
-Provide a short, descriptive name. Optionally provide a description (one line, what the agent is for) and instructions (the system prompt / CLAUDE.md body for the new agent).`,
+Provide a short, descriptive name. Optionally provide a description (one line, what the agent is for) and instructions (the system prompt / AGENTS.md body for the new agent).`,
   {
     name: z.string().min(1).describe('Short descriptive name for the new agent (e.g. "Email Triager")'),
     description: z.string().optional().describe('Optional one-line description of what the agent does'),
-    instructions: z.string().optional().describe("Optional system prompt / instructions for the new agent (becomes its CLAUDE.md body)"),
+    instructions: z.string().optional().describe("Optional system prompt / instructions for the new agent (becomes its AGENTS.md body)"),
   },
   async (args) => {
     try {

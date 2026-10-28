@@ -5,9 +5,10 @@
  * whether anything has to happen before a read (the local `.env` mode heal),
  * so both implementations are this function with different hooks.
  */
+import { createHash } from 'crypto'
 import { ZodError } from 'zod'
-import { CONFIG_DOCS, ConfigDocError, configDocMode, type ConfigDoc, type ConfigDocId } from './config-schema'
-import type { ConfigOps, FileOps } from './types'
+import { CONFIG_DOCS, ConfigDocError, configDocMode, configDocSpec, type ConfigDoc, type ConfigDocId } from './config-schema'
+import type { FileOps, StoreConfigOps } from './types'
 
 export interface ConfigOpsHooks {
   /** Run `fn` exclusively for this document. The default serializes within this process. */
@@ -30,7 +31,12 @@ export function inProcessSerializer(): NonNullable<ConfigOpsHooks['serialize']> 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
-export function createConfigOps(files: FileOps, hooks: ConfigOpsHooks = {}): ConfigOps {
+/** A document's revision: its stored bytes, hashed. */
+function revisionOf(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex')
+}
+
+export function createConfigOps(files: FileOps, hooks: ConfigOpsHooks = {}): StoreConfigOps {
   const serialize = hooks.serialize ?? inProcessSerializer()
 
   function decode<K extends ConfigDocId>(id: K, bytes: Uint8Array): ConfigDoc<K> {
@@ -65,20 +71,49 @@ export function createConfigOps(files: FileOps, hooks: ConfigOpsHooks = {}): Con
     return encoder.encode(JSON.stringify(validated, null, 2))
   }
 
-  const get = async <K extends ConfigDocId>(id: K): Promise<ConfigDoc<K> | null> => {
+  const pathOf = async (id: ConfigDocId): Promise<string> => {
+    const spec = configDocSpec(id)
+    if (spec.kind === 'text' && spec.legacyPath !== undefined && await files.stat(spec.legacyPath)) return spec.legacyPath
+    return spec.path
+  }
+
+  const stored = async (id: ConfigDocId): Promise<Uint8Array | null> => {
     await hooks.beforeGet?.(id)
-    const bytes = await files.getDoc(CONFIG_DOCS[id].path)
+    const spec = configDocSpec(id)
+    const legacy = spec.kind === 'text' && spec.legacyPath !== undefined
+      ? await files.getDoc(spec.legacyPath) : null
+    return legacy ?? await files.getDoc(spec.path)
+  }
+
+  const get = async <K extends ConfigDocId>(id: K): Promise<ConfigDoc<K> | null> => {
+    const bytes = await stored(id)
     return bytes === null ? null : decode(id, bytes)
   }
 
-  const put = async <K extends ConfigDocId>(id: K, doc: ConfigDoc<K>): Promise<void> => {
+  const write = async <K extends ConfigDocId>(id: K, doc: ConfigDoc<K>): Promise<void> => {
     const mode = configDocMode(id)
-    await files.putDoc(CONFIG_DOCS[id].path, encode(id, doc), mode === undefined ? undefined : { mode })
+    await files.putDoc(await pathOf(id), encode(id, doc), mode === undefined ? undefined : { mode })
   }
 
   return {
     get,
-    put,
+    read: async (id) => {
+      const bytes = await stored(id)
+      return bytes === null ? { doc: null, revision: null } : { doc: decode(id, bytes), revision: revisionOf(bytes) }
+    },
+    put: async (id, doc, options) => {
+      if (options?.ifRevision === undefined) {
+        await write(id, doc)
+        return true
+      }
+      const expected = options.ifRevision
+      return serialize(id, async () => {
+        const bytes = await stored(id)
+        if ((bytes === null ? null : revisionOf(bytes)) !== expected) return false
+        await write(id, doc)
+        return true
+      })
+    },
     update: (id, mutate) =>
       serialize(id, async () => {
         const current = await get(id)
@@ -88,7 +123,7 @@ export function createConfigOps(files: FileOps, hooks: ConfigOpsHooks = {}): Con
         // leaves the file untouched: no rewrite, no mtime bump, no mode
         // reset, and no empty file materialized for a no-op.
         if (next === null || Object.is(next, current)) return current
-        await put(id, next)
+        await write(id, next)
         return next
       }),
   }

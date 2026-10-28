@@ -5,7 +5,11 @@
 # Stage layout: `base` holds the agent's tool environment (apt packages,
 # runtimes, browser) and is shared by `builder` (dev deps + tsc, discarded)
 # and `runtime` (prod deps + dist, published).
-FROM ubuntu:22.04 AS base
+#
+# Pinned by digest: when Docker Hub moves the tag, every layer's cache key
+# changes, so the image rebuilds from scratch and every user re-pulls all of
+# it. Dependabot (.github/dependabot.yml) proposes the new digest as a PR.
+FROM ubuntu:22.04@sha256:e0f80c829509ef4df9e76bd8944eb7b8ec25cbb379b112a7f9448b2c77a77c9b AS base
 
 # Prevent interactive prompts during installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -13,7 +17,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install system dependencies. --no-install-recommends everywhere: Ubuntu
 # otherwise drags in recommended packages nobody uses; the tools named here
 # arrive via hard Depends.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     curl \
     wget \
     git \
@@ -44,39 +48,86 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Document/media reading (formats the product renders)
     poppler-utils \
     ffmpeg \
+    # FUSE for volumes at /mounts/<name> (fusermount3 lets the non-root user mount)
+    fuse3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Node.js 20.x
+# Keep the agent on the same Node 22 patch as the app image.
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
+    && apt-get install -y --no-install-recommends nodejs=22.23.4-1nodesource1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python 3.11 and pip
+# Jammy's python3.11 package is still a prerelease. Install the distro's
+# Python package, then provide stable 3.11 through uv below.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.11 \
-    python3-pip \
-    python3.11-venv \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
-    && ln -sf /usr/bin/python3 /usr/bin/python
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install UV (Universal Virtualenv)
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# Pin uv and the agent's Python. These install paths are build-only: agents
+# can still use uv to install another interpreter in their writable home.
+# This image owns the interpreter. Remove uv's external-management marker
+# so existing non-root pip --user workflows still work; the installation
+# itself stays root-owned. Workspace projects should continue using venvs.
+# Keep the conventional stdlib path for `python3 -m venv --copies` too.
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /bin/
+RUN UV_PYTHON_INSTALL_DIR=/opt/python UV_PYTHON_BIN_DIR=/usr/local/bin \
+    uv python install --default 3.11.17 && \
+    rm /opt/python/cpython-3.11.17-linux-*/lib/python3.11/EXTERNALLY-MANAGED && \
+    python3 -m ensurepip --upgrade --default-pip && \
+    bin="$(dirname "$(readlink -f /usr/local/bin/python3)")" && \
+    ln -s "$(dirname "$bin")/lib/python3.11" /usr/local/lib/python3.11 && \
+    ln -s "$bin/pip" /usr/local/bin/pip && \
+    ln -s "$bin/pip3" /usr/local/bin/pip3 && \
+    ln -s /usr/local/bin/python3.11 /usr/bin/python3.11 && \
+    ln -sf /usr/local/bin/python3.11 /usr/bin/python3 && \
+    ln -sf /usr/local/bin/python3.11 /usr/bin/python && \
+    python3 --version && python3 -m pip --version && pip3 --version && \
+    rm -rf /root/.cache
 
-# Install TypeScript and ts-node globally. npm's download cache must be
-# flushed in the SAME layer — anything left in /root/.npm ships in the image
-# (and, being pre-compressed tarballs, doesn't even gzip away on the wire).
-RUN npm install -g typescript ts-node && rm -rf /root/.npm
+# Preserve the historical /usr/bin/python{,3,3.11} paths above: persisted venvs
+# point to them and would silently switch to 3.10 if python3 were restored to
+# Ubuntu's default. The managed 3.11 tree is root-owned, including for the
+# isolated FUSE helper; the distro binary remains at /usr/bin/python3.10.
+
+# Lock the agent's TypeScript tools separately from the app/build dependencies.
+# ts-node 10.9.2's old Node16 default pairs module=Node16 with moduleResolution=node;
+# the scoped @tsconfig/node16 override fixes scripts without a tsconfig on TS 5.9.
+# Project configs and project-local compilers still take precedence normally.
+# Keep global CLI and npm-root module paths without changing NODE_PATH. Clear
+# npm's cache in this layer so downloaded tarballs do not ship in the image.
+COPY runtime-tools/package.json runtime-tools/package-lock.json /opt/gamut/runtime-tools/
+RUN npm ci --prefix /opt/gamut/runtime-tools --omit=dev --ignore-scripts && \
+    global_root="$(npm root -g)" && prefix="$(npm prefix -g)" && \
+    mkdir -p "$global_root" && \
+    ln -s /opt/gamut/runtime-tools/node_modules/typescript "$global_root/typescript" && \
+    ln -s /opt/gamut/runtime-tools/node_modules/ts-node "$global_root/ts-node" && \
+    for tool in tsc tsserver ts-node ts-node-cwd ts-node-esm ts-node-script ts-node-transpile-only ts-script; do \
+      ln -s "/opt/gamut/runtime-tools/node_modules/.bin/$tool" "$prefix/bin/$tool" || exit 1; \
+    done && \
+    rm -rf /root/.npm
 
 # Install Bun (for running dashboard servers)
 # Install as root then copy binary to /usr/local/bin so the claude user can access it
 # (symlinks to /root/.bun/bin/ won't work because /root/ is not readable by other users).
 # Remove the installer's /root/.bun copy in the same layer or the ~90MB binary ships twice.
-RUN curl -fsSL https://bun.sh/install | bash && \
+RUN curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.3" && \
     cp /root/.bun/bin/bun /usr/local/bin/bun && \
     ln -s /usr/local/bin/bun /usr/local/bin/bunx && \
     chmod 755 /usr/local/bin/bun && \
     rm -rf /root/.bun
+
+# Install rclone, the FUSE driver that mounts each volume from the app over WebDAV.
+# Checksums come from the release's SHA256SUMS for the two supported arches.
+RUN arch="$(dpkg --print-architecture)" && \
+    case "$arch" in \
+      amd64) sha256=efbfe852181f7191eb3c9043ed1ab49c9b2d0ba045c61c926a5da111c939ec5c ;; \
+      arm64) sha256=b8ba161d5c837206fad79ff1aabf0a81aa02a5fb164cdbc0ff5db4160aecd278 ;; \
+      *) echo "Unsupported rclone architecture: $arch" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL -o /tmp/rclone.deb "https://downloads.rclone.org/v1.75.2/rclone-v1.75.2-linux-${arch}.deb" && \
+    echo "$sha256  /tmp/rclone.deb" | sha256sum --check && \
+    dpkg -i /tmp/rclone.deb && \
+    rm /tmp/rclone.deb
 
 # Install Chromium dependencies (needed by agent-browser)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -94,8 +145,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # headless_shell — so only the shell is installed (--only-shell). The full
 # chromium build was ~640MB of never-launched weight.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
-RUN npm install -g agent-browser@0.27.2 && \
-    npx playwright install chromium --only-shell && \
+# Playwright 1.64.1 preserves the existing Chromium 156.0.8078.4 (revision
+# 1248). Pin the installer so refreshing unrelated runtimes cannot move it.
+# The npm package ships the CLI for every platform (~100MB); its postinstall
+# links agent-browser straight to this machine's binary, so the others are
+# dead weight. Pruned only when the link is that direct one.
+RUN npm install -g agent-browser@0.39.1 && \
+    keep="$(readlink -f "$(command -v agent-browser)")" && \
+    case "$keep" in \
+      */agent-browser-linux-*) \
+        for f in "$(npm root -g)"/agent-browser/bin/agent-browser-*; do \
+          [ "$(readlink -f "$f")" = "$keep" ] || rm -f "$f"; \
+        done ;; \
+    esac && \
+    agent-browser --version && \
+    npx --yes playwright@1.64.1 install chromium --only-shell && \
     chmod -R o+rx /opt/playwright-browsers && \
     rm -rf /root/.npm
 
@@ -122,7 +186,7 @@ RUN bin=$(find /opt/playwright-browsers -type f \( -name headless_shell -o -name
 # SAME layer that creates the files: a later `chown -R` (or `rm`) of a lower
 # layer copies up (or merely whiteouts) every file, shipping ~400MB twice.
 RUN useradd -m -s /bin/bash claude && \
-    install -d -o claude -g claude /app /workspace /home/claude/.claude
+    install -d -o claude -g claude /app /workspace /mounts /home/claude/.claude
 WORKDIR /app
 
 # ---- builder: dev install + TypeScript build ----
@@ -215,6 +279,20 @@ RUN chmod -R a-w /opt/gamut/docs
 COPY --chown=root:root bin/ /opt/gamut/bin/
 RUN chmod -R a-w /opt/gamut/bin && chmod a+rx /opt/gamut/bin/*.py
 
+# Volumes. Ubuntu 25.04+ hosts confine the program at /usr/bin/fusermount3 by
+# path, which reaches into containers too; a setuid copy earlier on PATH lets
+# claude mount FUSE there. start.sh drops to claude when a runtime starts the
+# image as root (Apple Container, whose /dev/fuse is root-only).
+RUN install -m 4755 /usr/bin/fusermount3 /usr/local/bin/fusermount3
+# Under no-new-privs that setuid copy cannot mount; start.sh binds this helper over it.
+COPY --chown=root:root --chmod=0755 fusermount-helper.py /usr/local/lib/gamut/fusermount-helper
+# fusermount3 unmounts for a non-root user only with /etc/mtab, which Docker
+# creates at run time and Apple Container does not.
+RUN ln -sf /proc/self/mounts /etc/mtab
+# Volumes show every file as executable, so git in a repo under /mounts ignores the executable bit.
+COPY --chown=root:root git.sh /usr/local/bin/git
+COPY --chown=root:root start.sh /usr/local/bin/gamut-start
+
 # Switch to non-root user
 USER claude
 
@@ -237,21 +315,29 @@ ENV AGENT_BROWSER_EXECUTABLE_PATH=/opt/playwright-browsers/chromium-current
 ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage,--disable-blink-features=AutomationControlled,--disable-features=AutomationControlled,--disable-infobars,--disable-background-timer-throttling,--disable-popup-blocking,--disable-backgrounding-occluded-windows,--disable-renderer-backgrounding,--disable-component-update"
 ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 ENV AGENT_BROWSER_PROFILE=/workspace/.browser-profile
+# agent-browser 0.33.1+ shuts its daemon (and Chrome) down after an hour
+# without a command. The browser's lifecycle is ours (browser_open/close, the
+# session lock, the live view), so never time out.
+ENV AGENT_BROWSER_IDLE_TIMEOUT_MS=0
+# agent-browser 0.36+ enables WebMCP (site-registered tools) and announces
+# page tools in the output of whatever command runs next — an observer eval
+# included. Off until the harness supports it (SUP-1265 §9); execBrowser also
+# strips any announcement that gets through.
+ENV AGENT_BROWSER_NO_WEBMCP=1
 ENV DISABLE_AUTOUPDATER=1
 # Keep bun's package cache on the persistent workspace mount. The default
 # ($HOME/.bun/install/cache) lives in the container's writable layer, which is
 # discarded on every restart (each start is `rm -f` + a fresh `run`), so any
 # dashboard dependency install after a wake re-downloaded every package.
 ENV BUN_INSTALL_CACHE_DIR=/workspace/.bun-cache
-# ENABLE_TOOL_SEARCH is deliberately NOT set here. The host passes it at
-# `docker run` only for providers whose endpoint expands deferred tools; for
-# the rest it must stay unset so the CLI applies its own guard (it disables
-# tool search for base URLs that aren't first-party Anthropic hosts). An image
-# default would make "unset" impossible to express.
+# ENABLE_TOOL_SEARCH is deliberately NOT set here. The host passes 'true' or
+# 'false' for every session, depending on whether the provider's endpoint
+# expands deferred tools (BaseLlmProvider.toolSearchEnv); unset would read as
+# on behind any custom base URL (CLI 2.1.304+).
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:3000/health || exit 1
 
 # Start the server
-CMD ["node", "dist/server.js"]
+CMD ["gamut-start"]

@@ -2,6 +2,7 @@ import { VoiceProviderError } from './provider-error'
 import { BaseVoiceProvider } from './voice-provider'
 import { DEEPGRAM_TTS_VOICES } from './deepgram-voices'
 import type { TtsVoiceInfo } from './tts-preferences'
+import { background } from '../background'
 
 export class DeepgramVoiceProvider extends BaseVoiceProvider {
   readonly id = 'deepgram' as const
@@ -47,15 +48,6 @@ export class DeepgramVoiceProvider extends BaseVoiceProvider {
     }
   }
 
-  override supportsVoiceAgent(): boolean {
-    return true
-  }
-
-  override async mintVoiceAgentToken(apiKey: string): Promise<string> {
-    // Same Deepgram token works for both STT and Voice Agent endpoints
-    return this.mintEphemeralToken(apiKey)
-  }
-
   override getTtsVoices(): readonly TtsVoiceInfo[] {
     return DEEPGRAM_TTS_VOICES
   }
@@ -99,10 +91,10 @@ export class DeepgramVoiceProvider extends BaseVoiceProvider {
     })
     if (!res.ok) {
       if (res.status === 403) {
-        void res.body?.cancel().catch(() => {})
+        if (res.body) background(res.body.cancel().catch(() => {}), { name: 'deepgram-voice-provider.cancel-response-body' })
         throw new VoiceProviderError('Deepgram API key lacks permission to create temporary tokens. Ensure the key has at least Member-level access.')
       }
-      void res.body?.cancel().catch(() => {})
+      if (res.body) background(res.body.cancel().catch(() => {}), { name: 'deepgram-voice-provider.cancel-response-body' })
       throw new VoiceProviderError(res.status === 401
         ? 'Deepgram rejected the API key. Update it in Settings > Voice.'
         : `Deepgram token grant failed (${res.status}). Please try again.`)

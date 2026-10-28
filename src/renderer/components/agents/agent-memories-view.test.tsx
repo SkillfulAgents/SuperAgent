@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
+import { beforeAll, beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor, cleanup } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -25,6 +25,12 @@ let doc = { ...initial }
 let conflict = false
 let validationError = false
 let client: QueryClient
+
+// The diagram is a lazy chunk. Load it up front so the diagram test's
+// findBy (1s) isn't racing a cold import on a busy CI worker.
+beforeAll(async () => {
+  await import('@renderer/components/messages/mermaid-diagram')
+})
 
 beforeEach(() => {
   doc = { ...initial }
@@ -138,4 +144,16 @@ describe('Memories page', () => {
     expect(await screen.findByText('Memory saved.')).toBeVisible()
   })
 
+
+  it('opens memory links in place, other schemes as shared links, and draws diagrams', async () => {
+    doc = { ...initial, body: '[Self](style.md) [Site](https://example.com) [Mail](mailto:a@example.com) [Gone](gone.md)\n\n```mermaid\ngraph LR\n  A --> B\n```' }
+    const events = setup()
+    await events.click(await screen.findByRole('button', { name: /Writing style/ }))
+
+    expect(await screen.findByRole('button', { name: 'Self' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Site' })).toHaveAttribute('target', '_blank')
+    expect(screen.getByRole('link', { name: 'Mail' })).toHaveAttribute('href', 'mailto:a@example.com')
+    expect(screen.getByText('Gone').tagName).toBe('SPAN')
+    expect(await screen.findByTestId('mermaid-diagram')).toBeInTheDocument()
+  })
 })

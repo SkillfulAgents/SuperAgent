@@ -1,4 +1,5 @@
 import type { NavigateOptions } from '@tanstack/react-router'
+import { isSafeInternalPath } from '@renderer/lib/safe-internal-path'
 
 /**
  * Discriminated union describing what is currently shown for the selected agent
@@ -8,6 +9,7 @@ import type { NavigateOptions } from '@tanstack/react-router'
  */
 export type AgentView =
   | { kind: 'home' }
+  | { kind: 'newSession' }
   | { kind: 'session'; id: string }
   | { kind: 'task'; id: string }
   | { kind: 'webhook'; id: string }
@@ -24,9 +26,10 @@ export type AgentView =
       /**
        * Open the connections page with this row's detail view shown. `source`
        * is where it was opened from — it decides the breadcrumb trail and where
-       * Back leads (agent home vs. the connections list).
+       * Back leads (agent home vs. the connections list). `from`, when set,
+       * overrides where Back leads.
        */
-      detail?: { rowKey: string; source: 'home' | 'list'; view?: 'logs' }
+      detail?: { rowKey: string; source: 'home' | 'list'; view?: 'logs'; from?: string }
     }
   | { kind: 'notifications' }
 
@@ -73,6 +76,8 @@ export function encodeLocation(loc: AppLocation): NavigateOptions {
   switch (view.kind) {
     case 'home':
       return { to: '/agents/$slug', params: { slug } }
+    case 'newSession':
+      return { to: '/agents/$slug/sessions/new', params: { slug } }
     case 'session':
       return { to: '/agents/$slug/sessions/$sessionId', params: { slug, sessionId: view.id } }
     case 'task':
@@ -108,6 +113,7 @@ export function encodeLocation(loc: AppLocation): NavigateOptions {
               detail: view.detail.rowKey,
               source: view.detail.source,
               ...(view.detail.view ? { connectionView: view.detail.view } : {}),
+              ...(view.detail.from ? { from: view.detail.from } : {}),
             }
           : {},
       }
@@ -132,6 +138,8 @@ export function decodeLocation(snap: RouteSnapshot): AppLocation {
       return { selectedAgentSlug: null, view: { kind: 'notifications' } }
     case '/agents/$slug':
       return { selectedAgentSlug: p.slug ?? null, view: { kind: 'home' } }
+    case '/agents/$slug/sessions/new':
+      return { selectedAgentSlug: p.slug ?? null, view: { kind: 'newSession' } }
     case '/agents/$slug/sessions/$sessionId':
       return { selectedAgentSlug: p.slug ?? null, view: { kind: 'session', id: p.sessionId ?? '' } }
     case '/agents/$slug/tasks/$taskId':
@@ -163,12 +171,13 @@ export function decodeLocation(snap: RouteSnapshot): AppLocation {
       const detail = typeof search.detail === 'string' ? search.detail : undefined
       const source = search.source === 'home' || search.source === 'list' ? search.source : undefined
       const detailView = search.connectionView === 'logs' ? 'logs' : undefined
+      const from = typeof search.from === 'string' && isSafeInternalPath(search.from) ? search.from : undefined
       return {
         selectedAgentSlug: p.slug ?? null,
         view: {
           kind: 'connections',
           ...(detail && source
-            ? { detail: { rowKey: detail, source, ...(detailView ? { view: detailView } : {}) } }
+            ? { detail: { rowKey: detail, source, ...(detailView ? { view: detailView } : {}), ...(from ? { from } : {}) } }
             : {}),
         },
       }

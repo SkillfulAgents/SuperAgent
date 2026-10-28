@@ -1,20 +1,18 @@
 import { UserAvatar } from '@renderer/components/ui/user-avatar'
 
 import { useMessages, useDeleteMessage, useDeleteToolCall, useCancelQueuedMessage, TranscriptNotFoundError } from '@renderer/hooks/use-messages'
-import { useAgent } from '@renderer/hooks/use-agents'
-import { useIsVoiceAgentConfigured } from '@renderer/hooks/use-voice-input'
 import { useIsVoiceReading } from '@renderer/hooks/use-read-aloud'
-import { VoiceAgentFeedbackDialog } from './voice-agent-feedback-dialog'
 import {
   useMessageStream,
   clearCompacting,
   removePeerUserMessage,
   clearPeerUserMessages,
   consumeDiscardedCommand,
+  consumeThinkingBlocks,
 } from '@renderer/hooks/use-message-stream'
 import { isTurnStartingUserMessage, type PendingMessage } from './pending-message'
 import { classifyUserMessage, classifyUserText } from './user-message-kinds'
-import { MessageItem } from './message-item'
+import { MessageItem, readsSubagentState } from './message-item'
 import { currentRoutedProviderError } from '@renderer/components/provider-error/provider-error-placement'
 import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
 import { ThinkingBlockItem } from './thinking-block-item'
@@ -22,17 +20,23 @@ import { SubAgentBlock } from './subagent-block'
 import { WorkflowBlock } from './workflow-block'
 import { CompactBoundaryItem } from './compact-boundary-item'
 import { MemoryRecallItem } from './memory-recall-item'
+import { MonitorEventItem } from './monitor-event-item'
 import { InformationalItem } from './informational-item'
 import { isSessionTimeGap, SessionTimeFlag } from './session-time-flag'
 import { ForkBoundaryItem, forkBoundaryIndex } from './fork-boundary'
 import { MessageErrorBoundary } from './message-error-boundary'
-import { ArrowDown, ChevronRight, FileX2, Loader2, MessageSquarePlus, WifiOff } from 'lucide-react'
+import { ArrowDown, ChevronRight, FileX2, Loader2, WifiOff } from 'lucide-react'
 import { FileDeliveryRow } from '@renderer/components/ui/file-delivery-row'
-import { deliverFileDef, getDeliveredFileSize } from '@shared/lib/tool-definitions/deliver-file'
+import { AttachedImages } from './attached-images'
+import { isPreviewableImage } from '@renderer/lib/file-types'
+import { deliverFileDef, getDeliveredFileSize } from '@shared/lib/tools/deliver-file/definition'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
-import { appendToSessionDraft, useDraft, useDraftsStore } from '@renderer/context/drafts-context'
+import { appendToSessionDraft, useDraftsStore } from '@renderer/context/drafts-context'
+import { useQueryClient } from '@tanstack/react-query'
+import { resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
+import { draftFromAgentText } from './composer-chips'
 import { useWorkflow } from '@renderer/context/workflow-context'
 import { useRenderTracker } from '@renderer/lib/perf'
 import {
@@ -45,8 +49,9 @@ import {
   type ReactNode,
 } from 'react'
 import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
-import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational } from '@shared/lib/types/api'
-import { isBlockingUserInputToolName } from '@shared/lib/tool-definitions/user-input-tools'
+import type { ApiMessage, ApiCompactBoundary, ApiMemoryRecall, ApiInformational, ApiMonitorEvent } from '@shared/lib/types/api'
+import { isBlockingUserInputToolName } from '@shared/lib/tools/user-input-tools'
+import { parseSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { useMessageListScroll } from './use-message-list-scroll'
 import {
   collectEmbeddedImageAliases,
@@ -59,8 +64,6 @@ const TURN_WORK_REVEAL_CLASS = 'animate-in fade-in-0 slide-in-from-top-2 duratio
 interface CompletedTurn {
   id: string
   startMessageId: string
-  /** Null during the brief idle window before the streamed final text persists. */
-  finalAssistantMessageId: string | null
   /** The final textual response for this visual work phase. */
   answerMessageIds: ReadonlySet<string>
   /** Tool cards on the answer message that appear only after expansion. */
@@ -75,47 +78,41 @@ function TurnSummaryRow({
   turn,
   expanded,
   onToggle,
-  onProvideFeedback,
 }: {
   turn: CompletedTurn
   expanded: boolean
   onToggle: () => void
-  onProvideFeedback?: () => void
 }) {
+  const pieces = [
+    `Worked for ${formatElapsed(turn.elapsedMs)}`,
+    `${turn.toolCallCount} ${turn.toolCallCount === 1 ? 'tool call' : 'tool calls'}`,
+    ...(turn.hasTokenUsage ? [`${turn.tokenCount.toLocaleString('en-US')} tokens`] : []),
+  ]
   return (
     <div className="flex items-center gap-3 border-b border-border text-muted-foreground">
       <button
         type="button"
-        className="flex min-w-0 flex-1 items-center gap-1.5 py-3 text-left text-sm tabular-nums transition-colors hover:text-foreground"
+        className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 py-3 text-left text-sm tabular-nums transition-colors hover:text-foreground"
         onClick={onToggle}
         aria-expanded={expanded}
         aria-label={expanded ? 'Collapse completed turn work' : 'Expand completed turn work'}
         data-testid="turn-summary"
       >
-        <span>Worked for {formatElapsed(turn.elapsedMs)}</span>
-        <span aria-hidden="true">·</span>
-        <span>{turn.toolCallCount} {turn.toolCallCount === 1 ? 'tool call' : 'tool calls'}</span>
-        {turn.hasTokenUsage && (
-          <>
-            <span aria-hidden="true">·</span>
-            <span>{turn.tokenCount.toLocaleString('en-US')} tokens</span>
-          </>
-        )}
-        <ChevronRight
-          className={`h-4 w-4 shrink-0 transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`}
-          aria-hidden="true"
-        />
+        {/* The dot and chevron ride inside their piece, so a wrapped line never starts with either. */}
+        {pieces.map((piece, i) => (
+          <span key={piece} className="flex items-center gap-1.5 whitespace-nowrap">
+            <span>{piece}</span>
+            {i < pieces.length - 1 ? (
+              <span aria-hidden="true">·</span>
+            ) : (
+              <ChevronRight
+                className={`h-4 w-4 shrink-0 transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`}
+                aria-hidden="true"
+              />
+            )}
+          </span>
+        ))}
       </button>
-      {onProvideFeedback && (
-        <button
-          type="button"
-          onClick={onProvideFeedback}
-          className="flex shrink-0 items-center gap-1 text-xs transition-colors hover:text-foreground"
-        >
-          <MessageSquarePlus className="h-3 w-3" />
-          <span>Voice feedback</span>
-        </button>
-      )}
     </div>
   )
 }
@@ -129,11 +126,15 @@ interface DeliveredFile {
 }
 
 function DeliveredFiles({ files, agentSlug }: { files: DeliveredFile[]; agentSlug: string }) {
+  // Pictures show as themselves, laid out exactly as a user's uploads are
+  // (only on the agent's side of the thread); everything else keeps its row.
+  const fileRows = files.filter((file) => !isPreviewableImage(file.filePath))
+  const images = files.filter((file) => isPreviewableImage(file.filePath))
   return (
     // max-w-[80%] matches the assistant column in MessageItem, so a row's right
     // edge lines up with the text of the answer it belongs to.
     <div className="flex max-w-[80%] flex-col gap-1.5 -mt-1 pb-1" data-testid="delivered-files">
-      {files.map((file) => (
+      {fileRows.map((file) => (
         <FileDeliveryRow
           key={file.id}
           filePath={file.filePath}
@@ -142,8 +143,22 @@ function DeliveredFiles({ files, agentSlug }: { files: DeliveredFile[]; agentSlu
           sizeBytes={file.sizeBytes}
         />
       ))}
+      {images.length > 0 && (
+        <AttachedImages
+          images={images.map((file) => ({ ...file, key: file.id, version: file.id }))}
+          agentSlug={agentSlug}
+          align="start"
+          data-testid="delivered-images"
+        />
+      )}
     </div>
   )
+}
+
+/** A transcript entry carries `sent` (trimmed) as typed, or behind the sender prefix a shared agent receives. */
+function isSentText(transcriptText: string | undefined, sent: string): boolean {
+  const text = transcriptText?.trim() ?? ''
+  return text === sent || parseSenderPrefix(text).cleanText.trim() === sent
 }
 
 interface MessageListProps {
@@ -153,8 +168,7 @@ interface MessageListProps {
   pendingRequestCount?: number
   /** The pending message materialized (or was restored to the composer) — remove it. */
   onPendingMessageAppeared?: (localId: string) => void
-  /** Read-only mirror (chat-integration replay): suppress edit/delete actions and
-   *  lift the connector's inline sender prefix into a label. */
+  /** Read-only mirror (chat-integration replay): suppress edit/delete actions. */
   readOnly?: boolean
   /** Hide the scroll affordance while a footer popover overlaps it. */
   suppressScrollToBottom?: boolean
@@ -165,8 +179,10 @@ interface MessageListProps {
 export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false, bottomInset = 0 }: MessageListProps) {
   useRenderTracker('MessageList')
   const { data: messages, isLoading, error, fetchOlder, hasOlder, isFetchingOlder } = useMessages(sessionId, agentSlug)
-  const deleteMessage = useDeleteMessage()
-  const deleteToolCall = useDeleteToolCall()
+  // useMutation returns a new object every render; only `mutate` is stable, and the
+  // row handlers must stay stable for MessageItem's memo.
+  const { mutate: deleteMessage } = useDeleteMessage()
+  const { mutate: deleteToolCall } = useDeleteToolCall()
   const cancelQueuedMessage = useCancelQueuedMessage()
   // Ghosts with a cancel request in flight (disables their Cancel button)
   const [cancellingIds, setCancellingIds] = useState<Set<string>>(new Set())
@@ -175,34 +191,29 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // materialize on the next refetch.
   const [pickedUpIds, setPickedUpIds] = useState<Set<string>>(new Set())
   const { user } = useUser()
-  const [, setSessionDraft] = useDraft<string>(`session:${sessionId}`)
-  // Imperative draft access for restoring undelivered messages at idle (must not
-  // re-render this list on every composer keystroke).
+  // Imperative draft access for returning a never-ran message's text to the
+  // composer (must not re-render this list on every composer keystroke).
   const draftsStore = useDraftsStore()
+  const queryClient = useQueryClient()
+  // A message that never ran goes back to the composer with its chips.
+  const asDraft = useCallback((text: string) => draftFromAgentText(text.trim(), (slug) =>
+    resolveRouteAgentId(slug, queryClient.getQueryData<ApiAgent[]>(['agents'])) ?? slug), [queryClient])
 
   const handleRemoveMessage = useCallback(
     (messageId: string) => {
-      deleteMessage.mutate({ sessionId, agentSlug, messageId })
+      deleteMessage({ sessionId, agentSlug, messageId })
     },
     [sessionId, agentSlug, deleteMessage]
   )
 
   const handleRemoveToolCall = useCallback(
     (toolCallId: string) => {
-      deleteToolCall.mutate({ sessionId, agentSlug, toolCallId })
+      deleteToolCall({ sessionId, agentSlug, toolCallId })
     },
     [sessionId, agentSlug, deleteToolCall]
   )
 
-  // Voice Agent feedback dialog state
-  const { data: agentData } = useAgent(agentSlug)
-  const hasVoiceConfigured = useIsVoiceAgentConfigured()
-  const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false)
   const [expandedTurnIds, setExpandedTurnIds] = useState<Set<string>>(new Set())
-
-  const handleProvideFeedback = useCallback(() => {
-    setFeedbackDialogOpen(true)
-  }, [])
 
   const toggleTurn = useCallback((turnId: string) => {
     setExpandedTurnIds((current) => {
@@ -212,24 +223,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       return next
     })
   }, [])
-
-  // Find the latest assistant response (for the voice feedback button).
-  const lastAssistantMessageId = useMemo(() => {
-    if (!messages) return null
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i]
-      if (m.type === 'assistant') return m.id
-    }
-    return null
-  }, [messages])
-
-  // Collect plain-text messages for the feedback dialog context
-  const plainMessages = useMemo(() => {
-    if (!messages) return []
-    return messages.filter(
-      (m): m is ApiMessage => (m.type === 'user' || m.type === 'assistant')
-    )
-  }, [messages])
 
   // Final answers commonly embed the container path reported by a screenshot
   // tool. Resolve only paths that were reported alongside a real image block;
@@ -314,7 +307,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         (m) =>
           m.type === 'user' &&
           !claimed.has(m.id) &&
-          (m.content as { text?: string }).text?.trim() === trimmed &&
+          isSentText((m.content as { text?: string }).text, trimmed) &&
           new Date(m.createdAt).getTime() >= notBefore
       )
     }
@@ -343,7 +336,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       // The server echoes user_message to the sender too; our own echo is
       // redundant with the local pending copy — drop it immediately so it
       // can't linger in stream state (it would suppress the typing indicator).
-      if (peer.sender.id === user?.id) {
+      if (peer.sender && peer.sender.id === user?.id) {
         removePeerUserMessage(sessionId, peer.uuid)
         continue
       }
@@ -359,18 +352,16 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   }, [messages, pendingUserMessages, peerUserMessages, onPendingMessageAppeared, sessionId, user?.id])
 
   // Deterministic ghost rescue: the runtime reported these queued messages
-  // dead via command_lifecycle discarded/cancelled (e.g. killed by Stop, or
-  // dropped by the interrupt-and-restart an MCP injection does). No grace
-  // race — the runtime named the uuid, so restore the ghost's text to the
-  // composer right away. Peer ghosts just drop (their own client restores
-  // their text). The idle-grace effect below stays as the fallback for
-  // runtimes that don't emit lifecycle frames.
+  // dead via command_lifecycle discarded (e.g. killed by Stop, or dropped by
+  // the interrupt-and-restart an MCP injection does). The runtime named the
+  // uuid, so restore the ghost's text to the composer right away. Peer ghosts
+  // just drop (their own client restores their text).
   useEffect(() => {
     if (discardedCommandUuids.length === 0) return
     const dead = new Set(discardedCommandUuids)
     const rescued = (pendingUserMessages ?? []).filter((p) => p.uuid && dead.has(p.uuid))
     if (rescued.length > 0) {
-      const restored = rescued.map((p) => p.text.trim()).filter(Boolean)
+      const restored = rescued.map((p) => asDraft(p.text)).filter(Boolean)
       appendToSessionDraft(draftsStore, sessionId, restored.join('\n\n'), { prepend: true })
       for (const pending of rescued) {
         onPendingMessageAppeared?.(pending.localId)
@@ -383,50 +374,30 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         consumeDiscardedCommand(sessionId, peer.uuid)
       }
     }
-  }, [discardedCommandUuids, pendingUserMessages, peerUserMessages, sessionId, draftsStore, onPendingMessageAppeared])
+  }, [discardedCommandUuids, pendingUserMessages, peerUserMessages, sessionId, draftsStore, onPendingMessageAppeared, asDraft])
 
-  // Once the session goes idle, our messages still showing as pending are
-  // treated as undelivered — the agent was interrupted before picking them
-  // up, or the turn ended without consuming them. Restore their text to the
-  // composer so the user can edit/resend, and remove the ghosts; drop peer
-  // ghosts (we can't restore another user's text into our composer — their
-  // own client restores it for them). Messages that WERE delivered clear via
-  // the materialize effect above, which prunes them from this list as the
-  // post-idle refetch lands. The short grace below gives that refetch a beat
-  // to settle so a just-answered message isn't yanked back into the composer.
-  // While the agent is active, queued ghosts may wait minutes.
+  // A pending message resolves only on proof: the transcript shows its id
+  // (materialize effect above), or the host says it never ran (discarded
+  // rescue above, a failed send, a confirmed take-back). Idle plus a transcript
+  // copy without it is not proof - the client's view of both can lag the
+  // host's - so it stays pending until one of those arrives.
   //
-  // EXCEPT: a non-queued pending without a uuid has its POST still in flight
-  // — commonly a send into a session whose container is waking, where the
-  // server can spend seconds before it accepts the message and broadcasts
-  // session_active. Its outcome already has owners (a failed POST restores
-  // the text via the composer's catch; a successful one assigns the uuid and
-  // materializes above), so restoring it here would yank back a message that
-  // is actually mid-delivery — it then lands in the transcript AND sits in
-  // the composer, baiting a duplicate resend. Leave those pending.
-  //
-  // Manual /compact is also not restorable user text. It persists as a compact
-  // boundary rather than a user message, and compact_complete can beat the
-  // boundary refetch by more than this grace period. Consume its ghost at idle
-  // without prepending the command over a draft typed during compaction.
+  // Idle still settles what is not a deliverable message: other viewers'
+  // ghosts (their own client resolves them), and a manual /compact, which
+  // persists as a compact boundary rather than a user message and whose
+  // compact_complete can beat the boundary refetch.
   useEffect(() => {
-    if (isActive || ((pendingUserMessages?.length ?? 0) === 0 && peerUserMessages.length === 0)) return
-    const undelivered = (pendingUserMessages ?? []).filter((p) => p.queued || p.uuid)
+    if (isActive) return
+    const compacts = (pendingUserMessages ?? []).filter(
+      (p) => (p.queued || p.uuid) && classifyUserText(p.text).kind === 'compact'
+    )
+    if (compacts.length === 0 && peerUserMessages.length === 0) return
     const timerId = setTimeout(() => {
-      if (undelivered.length > 0) {
-        const restored = undelivered
-          .filter((p) => classifyUserText(p.text).kind !== 'compact')
-          .map((p) => p.text.trim())
-          .filter(Boolean)
-        if (restored.length > 0) {
-          appendToSessionDraft(draftsStore, sessionId, restored.join('\n\n'), { prepend: true })
-        }
-        for (const pending of undelivered) onPendingMessageAppeared?.(pending.localId)
-      }
+      for (const pending of compacts) onPendingMessageAppeared?.(pending.localId)
       clearPeerUserMessages(sessionId)
     }, 1500)
     return () => clearTimeout(timerId)
-  }, [pendingUserMessages, peerUserMessages, isActive, onPendingMessageAppeared, sessionId, draftsStore])
+  }, [pendingUserMessages, peerUserMessages, isActive, onPendingMessageAppeared, sessionId])
 
   // Hidden system messages and redundant interrupt markers must not consume
   // window slots: windowing operates on what the user can see.
@@ -557,9 +528,24 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // takes over and the ephemeral one must not double-render. Modern runtimes
   // match by stable message-id + content-index identity. Text-prefix matching
   // remains only when either side predates that identity.
-  // Only the current turn's persisted thinking is compared — live blocks are
-  // reset on session_active, so a match against an older turn can only be a
-  // false positive (the model reusing a stock opener suppresses the live card).
+  // Stable IDs can match anywhere in the loaded transcript: background work
+  // keeps the session active across foreground turns, and a refetch can carry
+  // both a block's persisted copy and the next turn's user message at once.
+  const hasLiveThinking = thinkingBlocks.length > 0
+  const persistedThinkingIds = useMemo(() => {
+    const ids = new Set<string>()
+    if (!hasLiveThinking) return ids
+    for (const message of messages ?? []) {
+      if (message.type !== 'assistant') continue
+      for (const block of message.thinking ?? []) {
+        if (block.id && block.text.trim()) ids.add(block.id)
+      }
+    }
+    return ids
+  }, [messages, hasLiveThinking])
+
+  // Text-prefix fallback stays within the current turn: the model can reuse
+  // a stock opener in a genuinely new block, which must remain visible.
   const unpersistedThinkingBlocks = useMemo(() => {
     if (!thinkingBlocks.length) return thinkingBlocks
 
@@ -572,7 +558,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     )
     if (!displayableThinkingBlocks.length || !messages?.length) return displayableThinkingBlocks
 
-    const persisted: Array<{ id?: string; text: string }> = []
+    const persisted: Array<{ hasId: boolean; text: string }> = []
     let interrupted = false
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i]
@@ -589,7 +575,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         for (const t of (m as ApiMessage).thinking!) {
           if (typeof t?.text === 'string' && t.text.trim()) {
             persisted.push({
-              ...(typeof t.id === 'string' && t.id && { id: t.id }),
+              hasId: typeof t.id === 'string' && !!t.id,
               text: t.text.trim(),
             })
           }
@@ -605,11 +591,12 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     // discarded whatever the leftover live blocks hold, so they'd strand.
     if (!isActive && (persisted.length || interrupted)) return []
     return displayableThinkingBlocks.filter(b => {
+      if (b.persistedId && persistedThinkingIds.has(b.persistedId)) return false
       const t = b.text.trim()
       const matched = persisted.some(p => {
         // When both sides have an identity, text must not override it: models
         // legitimately reuse stock reasoning across different responses.
-        if (b.persistedId && p.id) return b.persistedId === p.id
+        if (b.persistedId && p.hasId) return false
         // Legacy runtime/transcript fallback. Prefix matching tolerates a live
         // stream that trails the completed transcript.
         return !!t && (p.text.startsWith(t) || t.startsWith(p.text))
@@ -617,7 +604,19 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       if (matched) return false
       return true
     })
-  }, [messages, thinkingBlocks, isActive])
+  }, [messages, thinkingBlocks, isActive, persistedThinkingIds])
+
+  // Handoff is permanent. Filtering alone leaves completed live text in the
+  // shared stream store, where it can reappear when its old turn folds or its
+  // persisted messages leave the loaded page. Cleanup also covers legacy
+  // blocks matched by text and discarded empty/interrupted blocks.
+  useEffect(() => {
+    const visibleIds = new Set(unpersistedThinkingBlocks.map(block => block.id))
+    const consumed = thinkingBlocks
+      .filter(block => block.endedAt !== null && !visibleIds.has(block.id))
+      .map(block => block.id)
+    if (consumed.length) consumeThinkingBlocks(sessionId, consumed)
+  }, [sessionId, thinkingBlocks, unpersistedThinkingBlocks])
 
   // Filter streaming tool uses to only those NOT yet in persisted messages
   const unpersistedStreamingToolUses = useMemo(() => {
@@ -698,11 +697,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // remains fully expanded until it completes; afterward each steering message
   // floats between the summary for the work before it and the summary for the
   // work it initiated.
-  const hasUnpersistedStreamingMessage =
-    !!streamingMessage && !isStreamingMessagePersisted
-  const hasUnpersistedStreamingTools = unpersistedStreamingToolUses.length > 0
-  const hasUnpersistedThinking = unpersistedThinkingBlocks.length > 0
-
   const { completedTurns, completedTurnByItemId, collapsedMessageById } = useMemo(() => {
     const turns: CompletedTurn[] = []
     const byItemId = new Map<string, CompletedTurn>()
@@ -713,7 +707,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       startIndex: number,
       endIndex: number,
       isTerminalPhase: boolean,
-      finalTextIsStillStreaming = false,
     ) => {
       if (endIndex <= startIndex + 1) return
       const items = visibleMessages.slice(startIndex, endIndex)
@@ -795,7 +788,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       const turn: CompletedTurn = {
         id: start.id,
         startMessageId: start.id,
-        finalAssistantMessageId: finalTextIsStillStreaming ? null : finalAssistant.id,
         answerMessageIds,
         revealedToolCallIds,
         elapsedMs:
@@ -810,7 +802,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       for (const item of items) byItemId.set(item.id, turn)
     }
 
-    const finishActualTurn = (endIndex: number, finalTextIsStillStreaming = false) => {
+    const finishActualTurn = (endIndex: number) => {
       if (
         actualTurnStartIndex === null ||
         endIndex <= actualTurnStartIndex + 1
@@ -823,12 +815,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         finishWorkPhase(phaseStartIndex, i, false)
         phaseStartIndex = i
       }
-      finishWorkPhase(
-        phaseStartIndex,
-        endIndex,
-        true,
-        finalTextIsStillStreaming,
-      )
+      finishWorkPhase(phaseStartIndex, endIndex, true)
     }
 
     for (let i = 0; i < visibleMessages.length; i++) {
@@ -837,18 +824,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       actualTurnStartIndex = i
     }
 
-    const hasUnreconciledOutput =
-      hasUnpersistedStreamingMessage ||
-      hasUnpersistedStreamingTools ||
-      hasUnpersistedThinking
     if (actualTurnStartIndex !== null && (!isActive || hasTurnStartingPendingMessage)) {
       // session_idle can precede the final messages refetch. Collapse the
-      // persisted work immediately, but don't mistake its last interim text
-      // for the final answer — the still-streamed final text below owns that.
-      finishActualTurn(
-        visibleMessages.length,
-        hasUnreconciledOutput && !hasTurnStartingPendingMessage,
-      )
+      // persisted work immediately; the still-streamed final text renders below.
+      finishActualTurn(visibleMessages.length)
     }
 
     return {
@@ -856,14 +835,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       completedTurnByItemId: byItemId,
       collapsedMessageById: collapsedById,
     }
-  }, [
-    visibleMessages,
-    hasUnpersistedStreamingMessage,
-    hasUnpersistedStreamingTools,
-    hasUnpersistedThinking,
-    isActive,
-    hasTurnStartingPendingMessage,
-  ])
+  }, [visibleMessages, isActive, hasTurnStartingPendingMessage])
 
   // All scrolling behavior — live-edge following (the owned engine), the
   // new-turn reading-line reserve, windowed rendering of long histories. The
@@ -942,13 +914,13 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     () =>
       peerUserMessages.filter(
         (p) =>
-          p.sender.id !== user?.id &&
+          (!p.sender || p.sender.id !== user?.id) &&
           !messages?.some(
             (m) =>
               m.type === 'user' &&
               (m.id === p.uuid ||
                 (p.queued &&
-                  (m.content as { text?: string }).text?.trim() === p.content.trim() &&
+                  isSentText((m.content as { text?: string }).text, p.content.trim()) &&
                   new Date(m.createdAt).getTime() >= p.receivedAt - 5000))
           )
       ),
@@ -992,30 +964,31 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   // Cancel a queued message before the agent picks it up. cancelled: false
   // means we lost the race — the agent already has the message, so flip the
   // ghost to a picked-up state (no Cancel) until it materializes.
+  // Awaited per call: a second mutate() drops the first call's callbacks, which
+  // would strand its ghost and lose its text when two are cancelled at once.
   const handleCancelQueued = useCallback(
-    (localId: string, uuid: string) => {
+    async (localId: string, uuid: string, text: string) => {
       setCancellingIds((prev) => new Set(prev).add(localId))
-      cancelQueuedMessage.mutate(
-        { sessionId, agentSlug, uuid },
-        {
-          onSuccess: ({ cancelled }) => {
-            if (cancelled) {
-              onPendingMessageAppeared?.(localId)
-            } else {
-              setPickedUpIds((prev) => new Set(prev).add(localId))
-            }
-          },
-          onSettled: () => {
-            setCancellingIds((prev) => {
-              const next = new Set(prev)
-              next.delete(localId)
-              return next
-            })
-          },
+      try {
+        const { cancelled } = await cancelQueuedMessage.mutateAsync({ sessionId, agentSlug, uuid })
+        if (cancelled) {
+          // The host removed it before pickup: it never ran, so its text goes back.
+          appendToSessionDraft(draftsStore, sessionId, asDraft(text), { prepend: true })
+          onPendingMessageAppeared?.(localId)
+        } else {
+          setPickedUpIds((prev) => new Set(prev).add(localId))
         }
-      )
+      } catch {
+        // A failed cancel leaves the ghost as it was; the user can retry.
+      } finally {
+        setCancellingIds((prev) => {
+          const next = new Set(prev)
+          next.delete(localId)
+          return next
+        })
+      }
     },
-    [cancelQueuedMessage, sessionId, agentSlug, onPendingMessageAppeared]
+    [cancelQueuedMessage, sessionId, agentSlug, onPendingMessageAppeared, draftsStore, asDraft]
   )
 
   // Single render path for both local pending ghosts and peer ghosts.
@@ -1025,6 +998,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     sentAt: number
     queued?: boolean
     sender?: { id: string; name: string; email: string; image?: string | null }
+    integration?: ApiMessage['integration']
     testId?: string
     /** Set for own queued ghosts once the server uuid is known — enables Cancel. */
     onCancel?: () => void
@@ -1042,6 +1016,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
             toolCalls: [],
             createdAt: new Date(ghost.sentAt),
             sender: ghost.sender,
+            integration: ghost.integration,
           }}
           agentSlug={agentSlug}
         />
@@ -1080,7 +1055,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       // only once the POST response has landed (a sub-second window).
       ...(pending.queued && pending.uuid
         ? {
-            onCancel: () => handleCancelQueued(pending.localId, pending.uuid!),
+            onCancel: () => void handleCancelQueued(pending.localId, pending.uuid!, pending.text),
             cancelling: cancellingIds.has(pending.localId),
             pickedUp: pickedUpIds.has(pending.localId),
           }
@@ -1093,9 +1068,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
       text: peer.content,
       sentAt: peer.receivedAt,
       queued: peer.queued,
-      sender: peer.sender.name
+      sender: peer.sender?.name
         ? { id: peer.sender.id, name: peer.sender.name, email: peer.sender.email || '', image: peer.sender.image }
         : undefined,
+      integration: peer.integration,
     })
 
   if (isLoading && !hasPendingMessages) {
@@ -1191,9 +1167,12 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
           const isAssistantItem = item.type === 'assistant'
           const isAnswerMessage =
             !!turn && isAssistantItem && turn.answerMessageIds.has(item.id)
+          // A monitor's events are what woke the turn's later work: they fold
+          // away with it.
           const isFoldedWorkItem =
             (isAssistantItem && !isAnswerMessage) ||
-            item.type === 'compact_boundary'
+            item.type === 'compact_boundary' ||
+            item.type === 'monitor_event'
           const hideItem = collapsed && isFoldedWorkItem
           const isRevealedWorkItem = expanded && isFoldedWorkItem
 
@@ -1205,6 +1184,8 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
               renderedItem = <CompactBoundaryItem boundary={item as ApiCompactBoundary} />
             } else if (item.type === 'informational') {
               renderedItem = <InformationalItem item={item as ApiInformational} />
+            } else if (item.type === 'monitor_event') {
+              renderedItem = <MonitorEventItem item={item as ApiMonitorEvent} />
             } else {
               const message = item as ApiMessage
               // Collapsed answer shapes are memoized with the turn grouping so
@@ -1222,11 +1203,12 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                       isLatestAssistant={item.id === latestAssistantId && !(streamingMessage && !isStreamingMessagePersisted)}
                       voiceReading={voiceReading && item.id === latestAssistantId}
                       isSessionActive={canHaveRunningToolCalls.has(item.id)}
-                      activeSubagents={activeSubagents}
-                      completedSubagents={completedSubagents}
+                      // Subagent state changes identity on every subagent event; passing it only
+                      // to rows that read it keeps the other rows' memo.
+                      activeSubagents={readsSubagentState(displayedMessage) ? activeSubagents : undefined}
+                      completedSubagents={readsSubagentState(displayedMessage) ? completedSubagents : undefined}
                       onRemoveMessage={readOnly ? undefined : handleRemoveMessage}
                       onRemoveToolCall={readOnly ? undefined : handleRemoveToolCall}
-                      readOnly={readOnly}
                       workDetailClassName={
                         expanded && isAnswerMessage
                           ? TURN_WORK_REVEAL_CLASS
@@ -1270,11 +1252,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                   turn={turn}
                   expanded={expanded}
                   onToggle={() => toggleTurn(turn.id)}
-                  onProvideFeedback={
-                    hasVoiceConfigured && turn.finalAssistantMessageId === lastAssistantMessageId
-                      ? handleProvideFeedback
-                      : undefined
-                  }
                 />
               )}
               {index === forkBoundaryAt && (
@@ -1345,6 +1322,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                 startedAt={block.startedAt}
                 endedAt={block.endedAt}
                 active={isActive && block.endedAt === null}
+                agentSlug={agentSlug}
               />
             </div>
           </MessageErrorBoundary>
@@ -1364,6 +1342,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
                 ...(errorPresentation && { errorPresentation }),
               }}
               isStreaming={isStreaming}
+              isStreamingRow
               suppressInlineError={currentRoutedError?.live === true}
               agentSlug={agentSlug}
               sessionId={sessionId}
@@ -1489,14 +1468,6 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         </button>
       )}
 
-      {/* Voice Agent feedback dialog */}
-      <VoiceAgentFeedbackDialog
-        open={feedbackDialogOpen}
-        onOpenChange={setFeedbackDialogOpen}
-        agentInstructions={agentData?.instructions ?? ''}
-        messages={plainMessages}
-        onSetDraft={setSessionDraft}
-      />
     </div>
   )
 }

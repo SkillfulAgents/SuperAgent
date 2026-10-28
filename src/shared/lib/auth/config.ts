@@ -1,6 +1,8 @@
 import type { Context } from 'hono'
-import { getSettings } from '@shared/lib/config/settings'
+import { getTrustedOrigins } from './trusted-origins'
 import { isAuthMode } from './mode'
+
+export { getTrustedOrigins } from './trusted-origins'
 
 /**
  * Get the app's external base URL (no trailing slash).
@@ -36,26 +38,6 @@ export function getAppBaseUrlFromRequest(c: Context): string {
   // Fall back to request origin (same as current behavior for unconfigured setups)
   // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
   return c.req.header('origin') || new URL(c.req.url).origin
-}
-
-/**
- * Get trusted origins, env-first.
- *
- * The TRUSTED_ORIGINS env var is the documented deployment interface (README:
- * "the first origin is also used as the app's base URL"), so it must win over
- * settings.json — it feeds Better Auth's baseURL/CSRF config and the audience
- * the RFC 7523 token endpoint verifies grants against.
- */
-export function getTrustedOrigins(): string[] {
-  const fromEnv = (process.env.TRUSTED_ORIGINS ?? '')
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean)
-  if (fromEnv.length > 0) {
-    return fromEnv
-  }
-  const settings = getSettings()
-  return settings.auth?.trustedOrigins ?? []
 }
 
 /**

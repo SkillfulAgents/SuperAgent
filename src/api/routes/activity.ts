@@ -18,11 +18,13 @@ const activityRouter = new Hono()
 activityRouter.use('*', Authenticated())
 
 // Execution liveness, not subscription: subscriptions outlive idle, Stop, and
-// some connection-loss paths, but isSessionActive is true only while a turn is
+// some connection-loss paths, but a session is active only while a turn is
 // actually processing — a persisted 'running' with an inactive session is a
 // dead or stopped run and must downgrade to failed instead of pulsing forever.
-const isSessionLive = (agentSlug: string, sessionId: string) =>
-  agentRegistry.get(agentSlug).sessions.isActive(sessionId)
+async function sessionLiveness(agentSlug: string): Promise<(agentSlug: string, sessionId: string) => boolean> {
+  const active = new Set((await agentRegistry.get(agentSlug).live()).activeSessionIds)
+  return (_agentSlug, sessionId) => active.has(sessionId)
+}
 
 activityRouter.get('/agents/:id', ResolveAgent(), AgentRead(), async (c) => {
   try {
@@ -32,7 +34,7 @@ activityRouter.get('/agents/:id', ResolveAgent(), AgentRead(), async (c) => {
     return c.json(await getAgentActivityStats(getAgentId(c), {
       days,
       tzOffsetMinutes,
-      isSessionLive,
+      isSessionLive: await sessionLiveness(getAgentId(c)),
       ownerId,
     }))
   } catch (error) {

@@ -15,9 +15,9 @@
  * failures log. A new service added there without a start marker fails this
  * test by design: extend EXPECTED_MARKERS.
  *
- * TriggerManager is asserted NOT to start: startup gates it on a platform
- * access token this environment (correctly) lacks. Exercising its real
- * startup end-to-end needs a platform-proxy mock harness.
+ * TriggerManager starts without a platform token (it registers with the
+ * webhook relay, which only claims once the platform connects). Exercising a
+ * real claim end-to-end needs a platform-proxy mock harness.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawn, execFileSync, type ChildProcess } from 'child_process'
@@ -37,6 +37,7 @@ const EXPECTED_MARKERS = [
   '[SessionAutoDeleteMonitor] Monitor started',
   '[AccountSync] Service started',
   '[PlatformService] Started',
+  '[TriggerManager] Started',
 ]
 
 async function findFreePort(): Promise<number> {
@@ -133,8 +134,5 @@ describe('production server boot signals', () => {
 
     // 3. Nothing failed to start.
     expect(output).not.toContain('Failed to start')
-
-    // 4. No platform token here: the TriggerManager gate must hold.
-    expect(output).not.toContain('[TriggerManager] Started')
   }, 90_000)
 })

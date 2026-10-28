@@ -29,7 +29,8 @@ export function useNotifications(limit: number, offset: number = 0) {
  * Fetch unread notification count (for badge)
  */
 export function useUnreadNotificationCount() {
-  return useQuery<{ count: number }>({
+  // `mentions`: the unread ones that tag you, drawn as an @ (auth mode).
+  return useQuery<{ count: number; mentions?: number }>({
     queryKey: ['notifications', 'unread-count'],
     queryFn: async () => {
       const res = await apiFetch('/api/notifications/unread-count')

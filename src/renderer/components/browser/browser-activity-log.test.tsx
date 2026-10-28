@@ -35,7 +35,7 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args as [string]),
 }))
 
-vi.mock('@renderer/components/messages/tool-renderers', () => ({
+vi.mock('@shared/lib/tools/renderers', () => ({
   getToolRenderer: () => undefined,
 }))
 

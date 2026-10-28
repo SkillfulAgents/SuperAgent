@@ -1,6 +1,7 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
+import { auditRuleChange, rulesAboutToBeRemoved } from '@shared/lib/proxy/rules/audit-events'
 import { db } from '@shared/lib/db'
-import { connectedAccounts, agentConnectedAccounts } from '@shared/lib/db/schema'
+import { connectedAccounts, agentConnectedAccounts, type ConnectedAccount } from '@shared/lib/db/schema'
 import { desc, eq } from 'drizzle-orm'
 import {
   getProvider,
@@ -15,14 +16,17 @@ import { isOwnedByCaller } from '@shared/lib/auth/ownership'
 import { getAccountProviderUserId } from '@shared/lib/config/settings'
 import { Authenticated, OwnsAccount, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
+import { background } from '@shared/lib/background'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { countActiveTriggersPerAccount, cancelTriggersForConnectedAccount } from '@shared/lib/services/webhook-trigger-service'
 import {
   findAgentsAssignedConnectedAccount,
+  resumeAccountReauthWaits,
   syncAgentsAssignedConnectedAccount,
   syncConnectedAccountAgents,
 } from '@shared/lib/services/connection-sync-service'
-import { accountReauthManager } from '@shared/lib/proxy/account-reauth-manager'
+import { getServerAdapter } from '@shared/lib/account-providers/server-adapters'
+import type { BaseAccountProvider } from '@shared/lib/account-providers/base-account-provider'
 
 const connectedAccountsRouter = new Hono()
 
@@ -120,11 +124,30 @@ connectedAccountsRouter.post('/sync', async (c) => {
   }
 })
 
+/**
+ * The name a finished grant is saved under, and the account it replaces: the
+ * provider's adapter decides when it has one.
+ */
+async function nameFinishedGrant(
+  c: Context,
+  accountProvider: BaseAccountProvider,
+  connectionId: string,
+  toolkitSlug: string,
+  fallbackName: string,
+  reconnectAccountId: string | undefined,
+): Promise<{ error: string } | { displayName: string; reconnectAccountId?: string }> {
+  const adapter = getServerAdapter(toolkitSlug)
+  if (adapter?.afterConnect) return adapter.afterConnect({ c, connectionId })
+  const displayName = await accountProvider.getAccountDisplayName(connectionId, toolkitSlug, fallbackName)
+  return { displayName, reconnectAccountId }
+}
+
 // POST /api/connected-accounts/initiate - Start OAuth flow
 connectedAccountsRouter.post('/initiate', async (c) => {
   try {
     const body = await c.req.json()
     const { providerSlug, electron, reconnectAccountId } = body
+    let reconnecting: ConnectedAccount | undefined
 
     if (!providerSlug) {
       return c.json({ error: 'Missing required field: providerSlug' }, 400)
@@ -142,6 +165,7 @@ connectedAccountsRouter.post('/initiate', async (c) => {
       if (!existing || !isOwnedByCaller(c, existing)) {
         return c.json({ error: 'Account not found' }, 404)
       }
+      reconnecting = existing
     }
 
     const provider = getDefaultAccountProvider()
@@ -169,11 +193,13 @@ connectedAccountsRouter.post('/initiate', async (c) => {
       ? getCurrentUserId(c)
       : getAccountProviderUserId()
 
-    const { connectionId, redirectUrl } = await provider.initiateConnection(
-      providerSlug,
-      callbackUrl,
-      userId
-    )
+    const startConnect = getServerAdapter(providerSlug)?.startConnect
+    const started = startConnect
+      ? await startConnect({ c, identity: body.identity, reconnecting, callbackUrl, userId })
+      : await provider.initiateConnection(providerSlug, callbackUrl, userId)
+    if ('error' in started) return c.json({ error: started.error }, started.status)
+    if ('accountId' in started) return c.json({ accountId: started.accountId })
+    const { connectionId, redirectUrl } = started
 
     return c.json({
       connectionId,
@@ -214,7 +240,8 @@ connectedAccountsRouter.post('/initiate', async (c) => {
 connectedAccountsRouter.post('/complete', async (c) => {
   try {
     const body = await c.req.json()
-    const { connectionId, toolkit, providerName: reqProviderName, reconnectAccountId } = body
+    const { connectionId, toolkit, providerName: reqProviderName } = body
+    let { reconnectAccountId } = body
 
     if (!connectionId) {
       return c.json({ error: 'Missing connectionId' }, 400)
@@ -239,7 +266,10 @@ connectedAccountsRouter.post('/complete', async (c) => {
     const serviceProvider = getProvider(toolkitSlug)
     const fallbackName = serviceProvider?.displayName || toolkit
 
-    const displayName = await accountProvider.getAccountDisplayName(connectionId, toolkitSlug, fallbackName)
+    const named = await nameFinishedGrant(c, accountProvider, connectionId, toolkitSlug, fallbackName, reconnectAccountId)
+    if ('error' in named) return c.json({ error: named.error }, 502)
+    const { displayName } = named
+    reconnectAccountId = named.reconnectAccountId
 
     const now = new Date()
     let id: string
@@ -277,12 +307,12 @@ connectedAccountsRouter.post('/complete', async (c) => {
       // The account row now points at a provider connection that was verified
       // ACTIVE above. Resume every proxy request parked on this account before
       // the best-effort runtime refresh, which is unrelated to proxy tokens.
-      accountReauthManager.completeAccount(id)
+      await resumeAccountReauthWaits(id)
 
       // Clean up the old remote connection (fire-and-forget)
       if (oldRecord && oldRecord.providerConnectionId !== connectionId) {
-        accountProvider.deleteConnection(oldRecord.providerConnectionId, toolkitSlug)
-          .catch((err) => console.warn('[reconnect] Failed to delete old remote connection:', err))
+        background(accountProvider.deleteConnection(oldRecord.providerConnectionId, toolkitSlug)
+          .catch((err) => console.warn('[reconnect] Failed to delete old remote connection:', err)), { name: 'connected-accounts-route.delete-old-connection' })
       }
 
       trackServerEvent('account_oauth_reconnected', { toolkitSlug })
@@ -340,7 +370,7 @@ connectedAccountsRouter.get('/callback', async (c) => {
     const status = c.req.query('status')
     const toolkit = c.req.query('toolkit')
     const providerName = c.req.query('providerName') ?? 'composio'
-    const reconnectAccountId = c.req.query('reconnectAccountId')
+    let reconnectAccountId = c.req.query('reconnectAccountId')
 
     if (!isValidProviderName(providerName)) {
       return c.html(
@@ -374,7 +404,12 @@ connectedAccountsRouter.get('/callback', async (c) => {
     const serviceProvider = getProvider(toolkitSlug)
     const fallbackName = serviceProvider?.displayName || toolkit
 
-    const displayName = await accountProvider.getAccountDisplayName(connectionId, toolkitSlug, fallbackName)
+    const named = await nameFinishedGrant(c, accountProvider, connectionId, toolkitSlug, fallbackName, reconnectAccountId)
+    if ('error' in named) {
+      return c.html(generateCallbackHtml({ success: false, error: named.error }))
+    }
+    const { displayName } = named
+    reconnectAccountId = named.reconnectAccountId
 
     const now = new Date()
     let id: string
@@ -408,11 +443,11 @@ connectedAccountsRouter.get('/callback', async (c) => {
         .where(eq(connectedAccounts.id, reconnectAccountId))
       id = reconnectAccountId
 
-      accountReauthManager.completeAccount(id)
+      await resumeAccountReauthWaits(id)
 
       if (oldRecord && oldRecord.providerConnectionId !== connectionId) {
-        accountProvider.deleteConnection(oldRecord.providerConnectionId, toolkitSlug)
-          .catch((err) => console.warn('[reconnect] Failed to delete old remote connection:', err))
+        background(accountProvider.deleteConnection(oldRecord.providerConnectionId, toolkitSlug)
+          .catch((err) => console.warn('[reconnect] Failed to delete old remote connection:', err)), { name: 'connected-accounts-route.delete-old-connection' })
       }
 
       trackServerEvent('account_oauth_reconnected', { toolkitSlug })
@@ -529,6 +564,10 @@ connectedAccountsRouter.patch('/:id', Or(OwnsAccount(), IsAdmin()), async (c) =>
     if (!existing) {
       return c.json({ error: 'Connected account not found' }, 404)
     }
+    // The name is what the account is authorized for, so it cannot change.
+    if (getProvider(existing.toolkitSlug)?.fixedName) {
+      return c.json({ error: 'This connection is named after what it is connected to and cannot be renamed' }, 400)
+    }
 
     await db
       .update(connectedAccounts)
@@ -586,7 +625,9 @@ connectedAccountsRouter.delete('/:id', Or(OwnsAccount(), IsAdmin()), async (c) =
     } catch (error) {
       console.warn(`Failed to resolve agents assigned account ${id} before delete:`, error)
     }
+    const removedRules = await rulesAboutToBeRemoved({ kind: 'api', targetId: id })
     await db.delete(connectedAccounts).where(eq(connectedAccounts.id, id))
+    for (const rule of removedRules) await auditRuleChange('deleted', rule, { by: 'system', reason: 'account_deleted' }, getCurrentUserId(c))
     const liveRefresh = assignedAgentSlugs
       ? await syncConnectedAccountAgents(assignedAgentSlugs)
       : false
@@ -629,6 +670,10 @@ function generateCallbackHtml(result: CallbackResult): string {
     toolkitSlug: result.toolkitSlug ? escapeHtml(result.toolkitSlug) : undefined,
     error: result.error ? escapeHtml(result.error) : undefined,
   }
+
+  const returnTo = result.success && result.accountId
+    ? `/settings/connections?detail=account-${encodeURIComponent(result.accountId)}`
+    : null
 
   // JSON.stringify and escape for safe embedding in script tag
   const message = JSON.stringify({
@@ -676,6 +721,10 @@ function generateCallbackHtml(result: CallbackResult): string {
     if (window.opener) {
       window.opener.postMessage(${message}, window.location.origin);
       setTimeout(function() { window.close(); }, ${result.success ? 1000 : 3000});
+    } else if (${JSON.stringify(returnTo)}) {
+      // Reached in this tab (a connect on arrival has no popup): back to the account.
+      document.querySelector('.message').textContent = 'Opening your account…';
+      window.location.replace(${JSON.stringify(returnTo)});
     }
   </script>
 </body>

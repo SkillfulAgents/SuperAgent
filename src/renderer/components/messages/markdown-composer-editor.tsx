@@ -1,6 +1,8 @@
-import { useEffect, useLayoutEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import MarkdownIt from 'markdown-it'
-import { baseKeymap, chainCommands, exitCode, newlineInCode, toggleMark } from 'prosemirror-commands'
+import type Token from 'markdown-it/lib/token.mjs'
+import { baseKeymap, chainCommands, exitCode, joinTextblockBackward, lift, newlineInCode, setBlockType, toggleMark } from 'prosemirror-commands'
 import { history, redo, undo } from 'prosemirror-history'
 import {
   InputRule,
@@ -17,17 +19,31 @@ import {
   defaultMarkdownSerializer,
   schema as commonmarkSchema,
 } from 'prosemirror-markdown'
-import { Fragment, Schema, Slice, type MarkType, type Node as ProseMirrorNode } from 'prosemirror-model'
+import { DOMSerializer, Fragment, Schema, Slice, type MarkType, type Node as ProseMirrorNode, type NodeSpec, type ResolvedPos } from 'prosemirror-model'
 import {
   liftListItem,
   sinkListItem,
   splitListItem,
 } from 'prosemirror-schema-list'
 import { AllSelection, EditorState, Plugin, PluginKey, TextSelection, type Command, type Transaction } from 'prosemirror-state'
-import { Decoration, DecorationSet, EditorView } from 'prosemirror-view'
+import { Decoration, DecorationSet, EditorView, type NodeViewConstructor } from 'prosemirror-view'
 import 'prosemirror-view/style/prosemirror.css'
 import { cn } from '@shared/lib/utils'
-import type { PotentialSecret, SecuredSecret } from '@renderer/lib/secret-detection'
+import { Popover, PopoverAnchor, PopoverContent } from '@renderer/components/ui/popover'
+import { openExternalUrl } from '@renderer/lib/open-external'
+import { findPotentialSecrets, type PotentialSecret } from '@renderer/lib/secret-detection'
+import { CHIP_MARKER, formatChipMarker, type Chip } from '@renderer/lib/chip-marker'
+import {
+  COMPOSER_CHIP_TRIGGERS,
+  chipAt,
+  escapeRegExp,
+  getChipKind,
+  isChipBacked,
+  registeredChip,
+  type ChipContext,
+  type ChipPickerHandle,
+  type ComposerChipTrigger,
+} from './composer-chips'
 
 export interface MarkdownComposerEditorProps {
   value: string
@@ -41,42 +57,157 @@ export interface MarkdownComposerEditorProps {
   enterKeyHint?: 'enter' | 'done' | 'go' | 'next' | 'previous' | 'search' | 'send'
   className?: string
   potentialSecrets?: PotentialSecret[]
-  securedSecrets?: SecuredSecret[]
-  onRemoveSecuredSecrets?: (secrets: SecuredSecret[]) => void
+  chipContext?: ChipContext
+  /** False where a chip picker has no room to open. */
+  pickers?: boolean
   onEditorElement?: (element: HTMLDivElement | null) => void
 }
 
 const CARET_SENTINEL = '\u2063'
+const EMPTY_CHIP_CONTEXT: ChipContext = {}
 
+const chipOf = (node: ProseMirrorNode) => node.attrs as Chip
+
+/** Every chip kind is this one atom. Its kind paints it, and the draft holds its marker. */
+const chipNodeSpec: NodeSpec = {
+  inline: true,
+  group: 'inline',
+  atom: true,
+  selectable: false,
+  attrs: { kind: {}, referent: {}, label: {} },
+  parseDOM: [{
+    tag: 'span[data-chip]',
+    getAttrs: (dom) => {
+      const marker = (dom as HTMLElement).dataset.chip ?? ''
+      const found = chipAt(marker)
+      return found?.length === marker.length ? found.chip : false
+    },
+  }],
+  toDOM: (node) => {
+    const chip = chipOf(node)
+    return ['span', { 'data-chip': formatChipMarker(chip) }, getChipKind(chip)!.render(chip)]
+  },
+  leafText: (node) => formatChipMarker(chipOf(node)),
+}
+
+const commonmarkNodes = commonmarkSchema.spec.nodes
 const markdownSchema = new Schema({
-  nodes: commonmarkSchema.spec.nodes.addBefore('hard_break', 'soft_break', {
-    inline: true,
-    group: 'inline',
-    selectable: false,
-    parseDOM: [{ tag: 'br[data-soft-break]' }],
-    toDOM: () => ['br', { 'data-soft-break': 'true' }] as const,
-  }),
+  nodes: commonmarkNodes
+    .addBefore('hard_break', 'soft_break', {
+      inline: true,
+      group: 'inline',
+      selectable: false,
+      parseDOM: [{ tag: 'br[data-soft-break]' }],
+      toDOM: () => ['br', { 'data-soft-break': 'true' }] as const,
+    })
+    .addBefore('hard_break', 'chip', chipNodeSpec)
+    .update('heading', { ...commonmarkNodes.get('heading'), content: '(text | image | chip)*' })
+    .update('code_block', { ...commonmarkNodes.get('code_block'), content: '(text | chip)*' }),
   marks: commonmarkSchema.spec.marks.addBefore('link', 'strike', {
     parseDOM: [{ tag: 's' }, { tag: 'del' }, { style: 'text-decoration=line-through' }],
     toDOM: () => ['s', 0] as const,
   }),
 })
 
+/**
+ * A setext heading that spans several lines (YAML frontmatter is the common
+ * case) holds line breaks, which the heading schema rejects, so the parser
+ * would drop the whole heading. Keep those lines as a paragraph instead, with
+ * the underline as its last line.
+ */
+export function demoteMultilineSetextHeadings(tokens: Token[], src: string): void {
+  let lines: string[] | undefined
+  for (let i = 0; i < tokens.length - 2; i++) {
+    const open = tokens[i]
+    const inline = tokens[i + 1]
+    if (open.type !== 'heading_open' || (open.markup !== '-' && open.markup !== '=')) continue
+    if (!inline.content.includes('\n') || !open.map) continue
+    lines ??= src.split('\n')
+    // Drop any quote or list indentation prefix from the source line.
+    inline.content += `\n${lines[open.map[1] - 1].replace(/^[\s>]*/, '').trimEnd()}`
+    for (const token of [open, tokens[i + 2]]) {
+      token.type = token.nesting === 1 ? 'paragraph_open' : 'paragraph_close'
+      token.tag = 'p'
+      token.markup = ''
+    }
+  }
+}
+
 const markdownTokenizer = new MarkdownIt('commonmark', {
   html: false,
   linkify: true,
 }).enable('strikethrough')
+markdownTokenizer.core.ruler.after('block', 'demote_multiline_setext', (state) => {
+  demoteMultilineSetextHeadings(state.tokens, state.src)
+})
+// In silent mode markdown-it is scanning a link label; a marker consumed there
+// reads as a nested link and drops the enclosing one, so it stays brackets.
+markdownTokenizer.inline.ruler.before('escape', 'composer_chip', (state, silent) => {
+  if (silent || state.src.charCodeAt(state.pos) !== 0x5b /* [ */) return false
+  const found = chipAt(state.src, state.pos)
+  if (!found || state.pos + found.length > state.posMax) return false
+  state.push('chip', '', 0).meta = found.chip
+  state.pos += found.length
+  return true
+})
+
+/** Alt text is plain, so a chip in it keeps its marker. */
+function altText(tokens: Token[]): string {
+  return tokens.map((token) => token.type === 'chip' ? formatChipMarker(token.meta) : token.content).join('')
+}
 
 const markdownParser = new MarkdownParser(markdownSchema, markdownTokenizer, {
   ...defaultMarkdownParser.tokens,
+  chip: { node: 'chip', getAttrs: (token) => token.meta },
+  image: {
+    node: 'image',
+    // The default keeps only the first child token, and a chip starts a new one.
+    getAttrs: (token) => ({
+      src: token.attrGet('src'),
+      title: token.attrGet('title') || null,
+      alt: altText(token.children ?? []) || null,
+    }),
+  },
   softbreak: { node: 'soft_break' },
   s: { mark: 'strike' },
 })
+
+/**
+ * Escapes the markers that would start a block at the start of a line, so the
+ * line reads back as text. A paragraph's first line can start any list, quote,
+ * heading or divider. A continuation line can only be interrupted by a
+ * non-empty bullet or "1." item, a quote, a heading, or a setext underline.
+ */
+export function escapeLineStart(text: string, paragraphStart = false): string {
+  if (paragraphStart) {
+    return text
+      .replace(/^([ \t]*)([->]|\+(?=[ \t]|$)|#{1,6}(?=[ \t]|$))/, '$1\\$2')
+      .replace(/^([ \t]*\d{1,9})([.)])(?=[ \t]|$)/, '$1\\$2')
+  }
+  return text
+    .replace(/^([ \t]*)([-+](?=[ \t]+\S)|-[- \t]*$|=+[ \t]*$|>|#{1,6}(?=[ \t]|$))/, '$1\\$2')
+    .replace(/^([ \t]*0{0,8}1)([.)])(?=[ \t]+\S)/, '$1\\$2')
+}
 
 const markdownSerializer = new MarkdownSerializer(
   {
     ...defaultMarkdownSerializer.nodes,
     soft_break: (state) => state.write('\n'),
+    chip: (state, node) => state.write(formatChipMarker(chipOf(node))),
+    // Unmarked text that starts a source line, where block syntax would re-read as structure.
+    text: (state, node, parent, index) => {
+      const previous = index > 0 ? parent.child(index - 1).type.name : parent.type.name
+      if (parent.type.name === 'heading' && index === parent.childCount - 1 && node.marks.length === 0) {
+        // A trailing " #" would re-read as the heading's optional closing sequence and disappear.
+        state.text(state.esc(node.text ?? '').replace(/(^|[ \t])(#+[ \t]*)$/, '$1\\$2'), false)
+        return
+      }
+      if (node.marks.length > 0 || !['paragraph', 'soft_break', 'hard_break'].includes(previous)) {
+        defaultMarkdownSerializer.nodes.text(state, node, parent, index)
+        return
+      }
+      state.text(escapeLineStart(state.esc(node.text ?? ''), previous === 'paragraph'), false)
+    },
   },
   {
     ...defaultMarkdownSerializer.marks,
@@ -89,32 +220,37 @@ const markdownSerializer = new MarkdownSerializer(
   }
 )
 
-function serializeLiteralMarkdown(value: string): string {
-  const paragraph = markdownSchema.nodes.paragraph.create(
-    null,
-    value ? markdownSchema.text(value) : undefined
-  )
-  return markdownSerializer.serialize(markdownSchema.nodes.doc.create(null, paragraph))
-}
-
-export function serializeComposerMarkdown(
-  doc: ProseMirrorNode,
-  securedSecrets: SecuredSecret[] = []
-): string {
-  let markdown = markdownSerializer
+export function serializeComposerMarkdown(doc: ProseMirrorNode): string {
+  return markdownSerializer
     .serialize(doc, { tightLists: true })
     .replaceAll(CARET_SENTINEL, '')
-  // Secured displays are editor placeholders, not user-authored Markdown. Keep
-  // them byte-for-byte stable so replaceSecuredSecrets can identify them even
-  // after the user continues editing elsewhere in the document.
-  for (const secret of securedSecrets) {
-    const escapedDisplay = serializeLiteralMarkdown(secret.displayText)
-    markdown = markdown.replace(escapedDisplay, () => secret.displayText)
-  }
-  return markdown
+}
+
+/**
+ * markdown-it runs no inline rules inside code, so a marker there reaches the
+ * document as text. Code has no escapes, so any marker in it is a chip.
+ */
+function liftChipsInCode(doc: ProseMirrorNode): ProseMirrorNode {
+  const chips: Array<{ from: number; to: number; node: ProseMirrorNode }> = []
+  doc.descendants((node, pos, parent) => {
+    if (!node.text || !(parent?.type.spec.code || node.marks.some((mark) => mark.type.spec.code))) return
+    for (const match of node.text.matchAll(CHIP_MARKER)) {
+      const chip = registeredChip(match)
+      const from = pos + match.index
+      if (chip) chips.push({ from, to: from + match[0].length, node: markdownSchema.nodes.chip.create(chip, null, node.marks) })
+    }
+  })
+  if (chips.length === 0) return doc
+  const tr = EditorState.create({ schema: markdownSchema, doc }).tr
+  for (const { from, to, node } of chips.reverse()) tr.replaceWith(from, to, node)
+  return tr.doc
 }
 
 function parseComposerMarkdown(value: string): ProseMirrorNode {
+  return liftChipsInCode(parseKeepingTrailingWhitespace(value))
+}
+
+function parseKeepingTrailingWhitespace(value: string): ProseMirrorNode {
   if (!/[ \t\n]$/.test(value)) return markdownParser.parse(value)
 
   // Markdown parsers intentionally trim end-of-block whitespace. In a
@@ -354,6 +490,96 @@ const removeTrailingSoftBreak: Command = (state, dispatch) => {
   return true
 }
 
+/** Replaces the code block around the cursor with a paragraph, keeping each code line as a line break, and puts the cursor at its start. */
+function codeBlockToText(state: EditorState, $from: ResolvedPos): Transaction {
+  const { nodes } = state.schema
+  // setBlockType would collapse the lines into spaces. Paragraphs drop leading whitespace on re-read.
+  const lines = $from.parent.textContent.replace(/\n+$/, '').split('\n').map((line) => line.replace(/^[ \t]+/, ''))
+  const content = lines.flatMap((line, i) => [...(i > 0 ? [nodes.soft_break.create()] : []), ...(line ? [state.schema.text(line)] : [])])
+  const tr = state.tr.replaceWith($from.before(), $from.after(), nodes.paragraph.create(null, content))
+  return tr.setSelection(TextSelection.create(tr.doc, $from.before() + 1))
+}
+
+/** Enter on an empty last line leaves a code block; in an empty block, it turns it into text. */
+const exitCodeBlockOnEmptyLine: Command = (state, dispatch) => {
+  const { $from, empty } = state.selection
+  const block = $from.parent
+  if (!empty || !block.type.spec.code || $from.parentOffset !== block.content.size) return false
+  const text = block.textContent
+  const blank = /^\n*$/.test(text)
+  if (!blank && !text.endsWith('\n')) return false
+  if (!dispatch) return true
+  if (blank) {
+    dispatch(codeBlockToText(state, $from).scrollIntoView())
+    return true
+  }
+  const { paragraph } = state.schema.nodes
+  const tr = state.tr.delete($from.pos - 1, $from.pos)
+  const after = $from.after() - 1
+  if (tr.doc.resolve(after).nodeAfter?.type !== paragraph) tr.insert(after, paragraph.create())
+  dispatch(tr.setSelection(TextSelection.create(tr.doc, after + 1)).scrollIntoView())
+  return true
+}
+
+/** Backspace at the start of a heading or code block, or of a quote's or list item's first paragraph, turns it into plain text. */
+const removeFormattingAtBlockStart: Command = (state, dispatch) => {
+  const { $from, empty } = state.selection
+  if (!empty || $from.parentOffset !== 0) return false
+  const { nodes } = state.schema
+  if ($from.parent.type === nodes.heading) return setBlockType(nodes.paragraph)(state, dispatch)
+  if ($from.parent.type.spec.code) {
+    if (dispatch) dispatch(codeBlockToText(state, $from).scrollIntoView())
+    return true
+  }
+  if ($from.index(-1) !== 0) return false
+  const container = $from.node(-1).type
+  if (container === nodes.list_item) return liftListItem(nodes.list_item)(state, dispatch)
+  if (container === nodes.blockquote) return lift(state, dispatch)
+  return false
+}
+
+/** Whether `pos` touches a link, checking the text on both sides since a link's mark does not extend past its end. */
+function isInLink(state: EditorState, pos: number): boolean {
+  const $pos = state.doc.resolve(pos)
+  const { link } = state.schema.marks
+  return !!(link.isInSet($pos.nodeAfter?.marks ?? []) ?? link.isInSet($pos.nodeBefore?.marks ?? []))
+}
+
+/** Whether `url` is one web or mail address the card can open and paste can link. */
+function isOpenableUrl(url: string): boolean {
+  if (!/^(https?:\/\/|mailto:)\S+$/i.test(url)) return false
+  try {
+    new URL(url)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Pasting a single URL over selected text links it, unless the result could hide or lose anything. */
+function linkPastedUrl(state: EditorState, text: string): Transaction | null {
+  // Select-all over a draft that is a single text block is still a selection inside one block.
+  const wholeSingleBlock = state.selection instanceof AllSelection && state.doc.childCount === 1 && !!state.doc.firstChild?.isTextblock
+  const selection = wholeSingleBlock ? TextSelection.between(state.selection.$from, state.selection.$to) : state.selection
+  const { link, code } = state.schema.marks
+  if (!(selection instanceof TextSelection) || selection.empty) return null
+  const { from, to, $from, $to } = selection
+  if (!$from.sameParent($to) || $from.parent.type.spec.code || state.doc.rangeHasMark(from, to, code)) return null
+  const url = text.trim()
+  // A link hides its URL, and secret highlighting only marks visible text.
+  if (!isOpenableUrl(url) || findPotentialSecrets(url).length > 0) return null
+  return state.tr.addMark(from, to, link.create({ href: markdownTokenizer.normalizeLink(url) })).scrollIntoView()
+}
+
+/** Backspace on an empty paragraph below a list joins it into the text above instead of adding an item. */
+const returnUpFromEmptyLine: Command = (state, dispatch, view) => {
+  const { $from } = state.selection
+  if ($from.parent.type !== state.schema.nodes.paragraph || $from.parent.content.size > 0) return false
+  const before = $from.node(-1).maybeChild($from.index(-1) - 1)
+  if (!before || before.isTextblock) return false
+  return joinTextblockBackward(state, dispatch, view)
+}
+
 function buildCaretSentinelPlugin(): Plugin {
   return new Plugin({
     appendTransaction: (transactions, _oldState, newState) => {
@@ -435,8 +661,8 @@ function buildInputRules() {
 function buildKeymap() {
   const { nodes, marks } = markdownSchema
   return keymap({
-    Backspace: chainCommands(removeTrailingSoftBreak, undoInputRule),
-    Enter: chainCommands(codeFenceCommand, splitListItem(nodes.list_item)),
+    Backspace: chainCommands(removeTrailingSoftBreak, undoInputRule, removeFormattingAtBlockStart, returnUpFromEmptyLine),
+    Enter: chainCommands(codeFenceCommand, exitCodeBlockOnEmptyLine, newlineInCode, splitListItem(nodes.list_item)),
     'Shift-Enter': chainCommands(newlineInCode, insertSoftBreak),
     Tab: sinkListItem(nodes.list_item),
     'Shift-Tab': liftListItem(nodes.list_item),
@@ -450,84 +676,131 @@ function buildKeymap() {
   })
 }
 
-interface SecretMatch {
-  kind: 'potential' | 'secured'
-  from: number
-  to: number
-  id: string
-  secret?: SecuredSecret
-}
-
-function findSecretMatches(
+function findPotentialSecretRanges(
   doc: ProseMirrorNode,
-  potentialSecrets: PotentialSecret[],
-  securedSecrets: SecuredSecret[]
-): SecretMatch[] {
-  const matches: SecretMatch[] = []
-  const occupied: Array<{ from: number; to: number }> = []
-
-  const findText = (
-    needle: string,
-    create: (from: number, to: number) => SecretMatch
-  ) => {
-    if (!needle) return
+  potentialSecrets: PotentialSecret[]
+): Array<{ from: number; to: number }> {
+  const matches: Array<{ from: number; to: number }> = []
+  for (const candidate of potentialSecrets) {
+    if (!candidate.value) continue
     doc.descendants((node, pos) => {
       if (!node.isText || !node.text) return
-      let fromIndex = 0
-      let index = node.text.indexOf(needle, fromIndex)
+      let index = node.text.indexOf(candidate.value)
       while (index !== -1) {
         const from = pos + index
-        const to = from + needle.length
-        if (!occupied.some((range) => from < range.to && to > range.from)) {
-          matches.push(create(from, to))
-          occupied.push({ from, to })
+        const to = from + candidate.value.length
+        if (!matches.some((range) => from < range.to && to > range.from)) {
+          matches.push({ from, to })
           return
         }
-        fromIndex = index + needle.length
-        index = node.text.indexOf(needle, fromIndex)
+        index = node.text.indexOf(candidate.value, index + candidate.value.length)
       }
     })
   }
-
-  for (const candidate of potentialSecrets) {
-    findText(candidate.value, (from, to) => ({
-      kind: 'potential',
-      from,
-      to,
-      id: candidate.id,
-    }))
-  }
-  for (const secret of securedSecrets) {
-    findText(secret.displayText, (from, to) => ({
-      kind: 'secured',
-      from,
-      to,
-      id: secret.id,
-      secret,
-    }))
-  }
-
   return matches.sort((a, b) => a.from - b.from)
 }
 
-function buildSecretDecorations(
+function buildComposerDecorations(
   doc: ProseMirrorNode,
   potentialSecrets: PotentialSecret[],
-  securedSecrets: SecuredSecret[]
+  chipContext: ChipContext
 ): DecorationSet {
-  const decorations = findSecretMatches(doc, potentialSecrets, securedSecrets).map((match) =>
+  const decorations = findPotentialSecretRanges(doc, potentialSecrets).map((match) =>
     Decoration.inline(match.from, match.to, {
-      'data-testid': match.kind === 'potential' ? 'potential-secret' : 'secured-secret',
-      class: match.kind === 'potential'
-        ? 'rounded-[3px] outline outline-1 outline-dotted outline-amber-500/90'
-        : 'rounded-[3px] bg-amber-500/10 outline outline-1 outline-amber-500/70',
+      'data-testid': 'potential-secret',
+      class: 'rounded-[3px] outline outline-1 outline-dotted outline-amber-500/90',
     })
   )
+  doc.descendants((node, pos) => {
+    if (node.type !== markdownSchema.nodes.chip || isChipBacked(chipOf(node), chipContext)) return
+    const fix = getChipKind(chipOf(node))?.Menu ? '. Right-click to fix it' : ''
+    decorations.push(Decoration.node(pos, pos + node.nodeSize, {
+      'data-unbacked': 'true',
+      class: 'opacity-60 line-through',
+      title: `Not found for this agent, so it sends as plain text${fix}`,
+    }))
+  })
   return DecorationSet.create(doc, decorations)
 }
 
-const secretDecorationsKey = new PluginKey<DecorationSet>('composer-secret-decorations')
-const secretDecorationsMeta = 'composer-secret-decorations:update'
+interface ChipTarget { chip: Chip; pos: number }
+
+const sameChip = (a: Chip, b: Chip) => a.kind === b.kind && a.referent === b.referent && a.label === b.label
+
+/** The chip node painted as `dom`. */
+function chipForDOM(view: EditorView, dom: Element): ChipTarget | null {
+  let target: ChipTarget | null = null
+  view.state.doc.descendants((node, pos) => {
+    if (target) return false
+    if (node.type === markdownSchema.nodes.chip && view.nodeDOM(pos) === dom) target = { chip: chipOf(node), pos }
+  })
+  return target
+}
+
+/** Where a chip is now: its old position if nothing moved it, else the first chip like it. */
+function locateChip(doc: ProseMirrorNode, { chip, pos }: ChipTarget): number | null {
+  const at = pos < doc.content.size ? doc.nodeAt(pos) : null
+  if (at?.type === markdownSchema.nodes.chip && sameChip(chipOf(at), chip)) return pos
+  let found: number | null = null
+  doc.descendants((node, nodePos) => {
+    if (found !== null) return false
+    if (node.type === markdownSchema.nodes.chip && sameChip(chipOf(node), chip)) found = nodePos
+  })
+  return found
+}
+
+/** The trigger the caret sits after, what was typed since, and the range they cover. */
+interface ChipPick { trigger: ComposerChipTrigger; from: number; to: number; query: string }
+
+// A trigger counts at a line start or after a space or `(`. A chip reads as one
+// placeholder character, so a query never runs into one.
+const TRIGGER_PATTERNS = COMPOSER_CHIP_TRIGGERS.map((trigger) => {
+  const char = escapeRegExp(trigger.char)
+  return { trigger, pattern: new RegExp(`(?:^|[\\s(])${char}([^\\s${char}\\ufffc]{0,30})$`) }
+})
+
+function chipPickAt(state: EditorState): ChipPick | null {
+  const { selection } = state
+  if (!selection.empty) return null
+  const { $from } = selection
+  if ($from.parent.type.spec.code || $from.marks().some((mark) => mark.type.spec.code)) return null
+  const before = $from.parent.textBetween(Math.max(0, $from.parentOffset - 40), $from.parentOffset, undefined, '\ufffc')
+  for (const { trigger, pattern } of TRIGGER_PATTERNS) {
+    const match = pattern.exec(before)
+    if (match) return { trigger, from: $from.pos - match[1].length - trigger.char.length, to: $from.pos, query: match[1] }
+  }
+  return null
+}
+
+const samePick = (a: ChipPick | null, b: ChipPick | null) =>
+  a === b || (!!a && !!b && a.trigger === b.trigger && a.from === b.from && a.query === b.query)
+
+/** A zero-width box where the trigger sits, for the picker to hang from. */
+function caretAnchor(view: EditorView, pos: number) {
+  return {
+    getBoundingClientRect: () => {
+      try {
+        const coords = view.coordsAtPos(pos)
+        return new DOMRect(coords.left, coords.top, 0, coords.bottom - coords.top)
+      } catch {
+        // No layout (JSDOM).
+        return new DOMRect()
+      }
+    },
+  }
+}
+
+const iconSlotKeys = new WeakMap<HTMLElement, string>()
+let nextIconSlotKey = 0
+/** A stable React key per icon slot element. */
+function iconSlotKey(slot: HTMLElement): string {
+  let key = iconSlotKeys.get(slot)
+  if (!key) iconSlotKeys.set(slot, (key = `chip-icon-${nextIconSlotKey++}`))
+  return key
+}
+
+const composerDecorationsKey = new PluginKey<DecorationSet>('composer-decorations')
+const composerDecorationsMeta = 'composer-decorations:update'
 const editorViews = new WeakMap<HTMLElement, EditorView>()
 
 /** Programmatic selection for composer integrations that insert text and tests
@@ -559,26 +832,24 @@ export function selectAllMarkdownComposer(element: HTMLElement): boolean {
   return true
 }
 
-function buildSecretDecorationsPlugin(
-  getSecrets: () => { potential: PotentialSecret[]; secured: SecuredSecret[] }
+function buildComposerDecorationsPlugin(
+  getInputs: () => { potentialSecrets: PotentialSecret[]; chipContext: ChipContext }
 ): Plugin<DecorationSet> {
+  const build = (doc: ProseMirrorNode) => {
+    const { potentialSecrets, chipContext } = getInputs()
+    return buildComposerDecorations(doc, potentialSecrets, chipContext)
+  }
   return new Plugin({
-    key: secretDecorationsKey,
+    key: composerDecorationsKey,
     state: {
-      init: (_config, state) => {
-        const { potential, secured } = getSecrets()
-        return buildSecretDecorations(state.doc, potential, secured)
-      },
+      init: (_config, state) => build(state.doc),
       apply: (tr, previous) => {
-        if (tr.docChanged || tr.getMeta(secretDecorationsMeta)) {
-          const { potential, secured } = getSecrets()
-          return buildSecretDecorations(tr.doc, potential, secured)
-        }
+        if (tr.docChanged || tr.getMeta(composerDecorationsMeta)) return build(tr.doc)
         return previous.map(tr.mapping, tr.doc)
       },
     },
     props: {
-      decorations: (state) => secretDecorationsKey.getState(state),
+      decorations: (state) => composerDecorationsKey.getState(state),
     },
   })
 }
@@ -615,12 +886,12 @@ export function MarkdownComposerEditor({
   enterKeyHint,
   className,
   potentialSecrets = [],
-  securedSecrets = [],
-  onRemoveSecuredSecrets,
+  chipContext = EMPTY_CHIP_CONTEXT,
+  pickers = true,
   onEditorElement,
 }: MarkdownComposerEditorProps) {
   const managedClassName = cn(
-    'markdown-composer-editor relative min-h-[var(--composer-min-height)] w-full overflow-y-auto rounded-md bg-transparent pl-1 pr-4 py-0 text-sm leading-5 focus-visible:outline-none',
+    'markdown-composer-editor relative min-h-[var(--composer-min-height)] w-full overflow-y-auto rounded-md bg-transparent pl-1 pr-4 py-0 text-sm leading-5 focus-visible:outline-none [&_a]:text-blue-500 [&_a:hover]:underline',
     className
   )
   const hostRef = useRef<HTMLDivElement | null>(null)
@@ -633,10 +904,18 @@ export function MarkdownComposerEditor({
     placeholder,
     disabled,
     potentialSecrets,
-    securedSecrets,
-    onRemoveSecuredSecrets,
+    chipContext,
   })
   const lastMarkdownRef = useRef(value)
+  const [linkCard, setLinkCard] = useState<{ href: string; anchor: { current: Element } } | null>(null)
+  const [chipMenu, setChipMenu] = useState<(ChipTarget & { anchor: { x: number; y: number } }) | null>(null)
+  const hadChipMenuRef = useRef(false)
+  const [pick, setPick] = useState<ChipPick | null>(null)
+  // Escape closes the picker until the caret leaves this trigger.
+  const dismissedPickRef = useRef<number | null>(null)
+  const pickerRef = useRef<ChipPickerHandle>(null)
+  // Where each chip's kind draws its React icon (an avatar), keyed by the chip's slot element.
+  const [iconSlots, setIconSlots] = useState<ReadonlyMap<HTMLElement, Chip>>(() => new Map())
 
   latestRef.current = {
     onChange,
@@ -645,17 +924,18 @@ export function MarkdownComposerEditor({
     placeholder,
     disabled,
     potentialSecrets,
-    securedSecrets,
-    onRemoveSecuredSecrets,
+    chipContext,
+  }
+
+  const updatePick = (state: EditorState) => {
+    const next = chipPickAt(state)
+    if (next?.from !== dismissedPickRef.current) dismissedPickRef.current = null
+    setPick((current) => (samePick(current, next) ? current : next))
   }
 
   useLayoutEffect(() => {
     if (!hostRef.current) return
 
-    const secretPlugin = buildSecretDecorationsPlugin(() => ({
-      potential: latestRef.current.potentialSecrets,
-      secured: latestRef.current.securedSecrets,
-    }))
     const initialDoc = parseComposerMarkdown(lastMarkdownRef.current)
     const state = EditorState.create({
       schema: markdownSchema,
@@ -667,12 +947,33 @@ export function MarkdownComposerEditor({
         keymap(baseKeymap),
         history(),
         buildCaretSentinelPlugin(),
-        secretPlugin,
+        buildComposerDecorationsPlugin(() => latestRef.current),
       ],
     })
 
+    // A chip whose kind has an Icon gets a slot the component fills through a portal.
+    const chipView: NodeViewConstructor = (node) => {
+      const { dom } = DOMSerializer.renderSpec(document, chipNodeSpec.toDOM!(node))
+      const slot = (dom as HTMLElement).querySelector<HTMLElement>('[data-chip-icon]')
+      if (slot && getChipKind(chipOf(node))?.Icon) setIconSlots((slots) => new Map(slots).set(slot, chipOf(node)))
+      return {
+        dom,
+        // React owns the slot's contents.
+        ignoreMutation: () => true,
+        destroy: () => {
+          if (slot) setIconSlots((slots) => {
+            if (!slots.has(slot)) return slots
+            const next = new Map(slots)
+            next.delete(slot)
+            return next
+          })
+        },
+      }
+    }
+
     const view = new EditorView(hostRef.current, {
       state,
+      nodeViews: { chip: chipView },
       editable: () => !latestRef.current.disabled,
       attributes: {
         role: 'textbox',
@@ -690,46 +991,32 @@ export function MarkdownComposerEditor({
       },
       handleDOMEvents: {
         mousedown: () => typeof document.elementFromPoint !== 'function',
+        blur: () => {
+          setPick(null)
+          return false
+        },
+        contextmenu: (editorView, event) => {
+          const dom = editorView.editable && event.target instanceof Element ? event.target.closest('[data-chip]') : null
+          const target = dom && chipForDOM(editorView, dom)
+          if (!target || !getChipKind(target.chip)?.Menu) return false
+          event.preventDefault()
+          setChipMenu({ ...target, anchor: { x: event.clientX, y: event.clientY } })
+          return true
+        },
         keydown: (editorView, event) => {
           if (event.isComposing) return false
+
+          // An open picker takes its keys (arrows, Enter, Tab, Escape) first.
+          if (pickerRef.current?.onKeyDown(event)) {
+            event.preventDefault()
+            return true
+          }
 
           // Cmd/Ctrl+B belongs to the rich-text editor. Keep it from reaching
           // window-level shortcuts (notably the sidebar toggle) without
           // preventing ProseMirror's strong-mark keymap from handling it.
           if (event.key === 'b' && (event.metaKey || event.ctrlKey)) {
             event.stopPropagation()
-          }
-
-          if ((event.key === 'Backspace' || event.key === 'Delete') && latestRef.current.onRemoveSecuredSecrets) {
-            const { from, to, empty } = editorView.state.selection
-            const matches = findSecretMatches(
-              editorView.state.doc,
-              latestRef.current.potentialSecrets,
-              latestRef.current.securedSecrets
-            ).filter((match) => match.kind === 'secured' && match.secret)
-            const affected = matches.filter((match) => {
-              if (!empty) return match.from < to && match.to > from
-              return event.key === 'Backspace'
-                ? match.from < from && match.to >= from
-                : match.from <= from && match.to > from
-            })
-
-            if (affected.length > 0) {
-              event.preventDefault()
-              const tr = editorView.state.tr
-              if (empty) {
-                for (const match of [...affected].sort((a, b) => b.from - a.from)) {
-                  tr.delete(match.from, match.to)
-                }
-              } else {
-                tr.deleteSelection()
-              }
-              editorView.dispatch(tr.scrollIntoView())
-              latestRef.current.onRemoveSecuredSecrets(
-                affected.flatMap((match) => match.secret ? [match.secret] : [])
-              )
-              return true
-            }
           }
 
           const isUnmodifiedEnter = event.key === 'Enter'
@@ -762,14 +1049,21 @@ export function MarkdownComposerEditor({
       dispatchTransaction: (tr) => {
         const nextState = view.state.apply(tr)
         view.updateState(nextState)
+        // The link card closes on an edit or when the caret leaves every link. A click opens it before the caret moves there.
+        const leavesLink = tr.docChanged || (tr.selectionSet && !isInLink(nextState, nextState.selection.head))
+        if (leavesLink) setLinkCard(null)
         setEditorA11yState(view, latestRef.current.placeholder, latestRef.current.disabled)
+        if (tr.docChanged || tr.selectionSet) updatePick(nextState)
         if (!tr.docChanged) return
-        const markdown = serializeComposerMarkdown(
-          nextState.doc,
-          latestRef.current.securedSecrets
-        )
+        const markdown = serializeComposerMarkdown(nextState.doc)
         lastMarkdownRef.current = markdown
         if (markdown !== latestRef.current.value) latestRef.current.onChange(markdown)
+      },
+      handleClick: (editorView, pos, event) => {
+        const link = editorView.editable && event.button === 0 && event.target instanceof Element ? event.target.closest('a') : null
+        const href = link?.getAttribute('href') ?? ''
+        if (link && isOpenableUrl(href)) setLinkCard({ href, anchor: { current: link } })
+        return false
       },
       handlePaste: (editorView, event) => {
         const hasFiles = Array.from(event.clipboardData?.items ?? [])
@@ -783,6 +1077,11 @@ export function MarkdownComposerEditor({
         const text = event.clipboardData?.getData('text/plain')
         if (!text) return false
         event.preventDefault()
+        const linked = linkPastedUrl(editorView.state, text)
+        if (linked) {
+          editorView.dispatch(linked)
+          return true
+        }
         editorView.dispatch(
           editorView.state.tr
             .replaceSelection(markdownClipboardSlice(text))
@@ -819,6 +1118,8 @@ export function MarkdownComposerEditor({
     tr.setSelection(TextSelection.atEnd(tr.doc))
     view.updateState(view.state.apply(tr))
     lastMarkdownRef.current = value
+    // The redraw detaches the link the card points at.
+    setLinkCard(null)
     setEditorA11yState(view, placeholder, disabled)
   }, [disabled, placeholder, value])
 
@@ -826,6 +1127,7 @@ export function MarkdownComposerEditor({
     const view = viewRef.current
     if (!view) return
     view.setProps({ editable: () => !disabled })
+    if (disabled) setLinkCard(null)
     setEditorA11yState(view, placeholder, disabled)
   }, [disabled, placeholder])
 
@@ -840,8 +1142,88 @@ export function MarkdownComposerEditor({
   useEffect(() => {
     const view = viewRef.current
     if (!view) return
-    view.dispatch(view.state.tr.setMeta(secretDecorationsMeta, true).setMeta('addToHistory', false))
-  }, [potentialSecrets, securedSecrets])
+    view.dispatch(view.state.tr.setMeta(composerDecorationsMeta, true).setMeta('addToHistory', false))
+  }, [potentialSecrets, chipContext])
 
-  return <div ref={hostRef} className="contents" />
+  useEffect(() => {
+    // Once the menu, and any dialog it opened, has unmounted and let go of focus.
+    if (!chipMenu && hadChipMenuRef.current) viewRef.current?.focus()
+    hadChipMenuRef.current = chipMenu !== null
+  }, [chipMenu])
+
+  const replaceChip = (target: ChipTarget, next: Chip) => {
+    const view = viewRef.current
+    if (!view) return
+    const pos = locateChip(view.state.doc, target)
+    if (pos !== null) view.dispatch(view.state.tr.setNodeMarkup(pos, undefined, next))
+  }
+  const ChipMenu = chipMenu && getChipKind(chipMenu.chip)?.Menu
+
+  const insertPicked = (chip: Chip) => {
+    const view = viewRef.current
+    const target = view && chipPickAt(view.state)
+    if (!view || !target) return
+    const tr = view.state.tr.replaceWith(target.from, target.to, [
+      markdownSchema.nodes.chip.create(chip),
+      markdownSchema.text(' '),
+    ])
+    view.dispatch(tr.setSelection(TextSelection.create(tr.doc, target.from + 2)).scrollIntoView())
+  }
+  const dismissPick = () => {
+    dismissedPickRef.current = pick?.from ?? null
+    setPick(null)
+  }
+  const openPick = pickers && pick && viewRef.current && dismissedPickRef.current !== pick.from && pick.trigger.available(chipContext)
+    ? pick
+    : null
+
+  return (
+    <>
+      <div ref={hostRef} className="contents" />
+      {[...iconSlots].map(([slot, chip]) => {
+        const Icon = getChipKind(chip)?.Icon
+        return Icon && createPortal(<Icon chip={chip} context={chipContext} />, slot, iconSlotKey(slot))
+      })}
+      {openPick && (
+        <openPick.trigger.Picker
+          ref={pickerRef}
+          query={openPick.query}
+          context={chipContext}
+          anchor={caretAnchor(viewRef.current!, openPick.from)}
+          onPick={insertPicked}
+          onDismiss={dismissPick}
+        />
+      )}
+      {chipMenu && ChipMenu && (
+        <ChipMenu
+          chip={chipMenu.chip}
+          context={chipContext}
+          backed={isChipBacked(chipMenu.chip, chipContext)}
+          anchor={chipMenu.anchor}
+          replace={(next) => replaceChip(chipMenu, next)}
+          onClose={() => setChipMenu(null)}
+        />
+      )}
+      <Popover open={linkCard !== null} onOpenChange={(open) => { if (!open) setLinkCard(null) }}>
+        {linkCard && <PopoverAnchor virtualRef={linkCard.anchor} />}
+        <PopoverContent
+          align="start"
+          className="w-auto max-w-80 px-2 py-1.5 text-xs"
+          onOpenAutoFocus={(event) => event.preventDefault()}
+        >
+          <button
+            type="button"
+            title={linkCard?.href}
+            className="block max-w-full truncate text-blue-500 hover:underline"
+            onClick={() => {
+              if (linkCard) void openExternalUrl(linkCard.href)
+              setLinkCard(null)
+            }}
+          >
+            {linkCard?.href}
+          </button>
+        </PopoverContent>
+      </Popover>
+    </>
+  )
 }

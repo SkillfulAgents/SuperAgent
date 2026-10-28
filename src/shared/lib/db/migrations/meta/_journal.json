@@ -323,6 +323,111 @@
       "when": 1789574400000,
       "tag": "0045_slack_thread_state",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "6",
+      "when": 1790040447107,
+      "tag": "0046_scheduled_task_overlap_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "6",
+      "when": 1790107007902,
+      "tag": "0047_integration_deliveries",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "6",
+      "when": 1790107007903,
+      "tag": "0048_llm_connections",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "6",
+      "when": 1790125000109,
+      "tag": "0049_message_author_integrations",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "6",
+      "when": 1790976371108,
+      "tag": "0050_todos",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "6",
+      "when": 1791396692104,
+      "tag": "0051_foamy_morph",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "6",
+      "when": 1791587287364,
+      "tag": "0052_friendly_jack_flag",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "6",
+      "when": 1791852666500,
+      "tag": "0053_agent_avatars",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "6",
+      "when": 1791910293234,
+      "tag": "0054_todo_attachments",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "6",
+      "when": 1791924124387,
+      "tag": "0055_read_only_volumes",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "6",
+      "when": 1792093164911,
+      "tag": "0056_agent_integration_meetings",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "6",
+      "when": 1792098812435,
+      "tag": "0057_proxy_rules",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "6",
+      "when": 1792435823425,
+      "tag": "0058_notification_mentions",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "6",
+      "when": 1792530753728,
+      "tag": "0059_volume_global_access",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "6",
+      "when": 1792781899070,
+      "tag": "0060_browser_vault",
+      "breakpoints": true
     }
   ]
 }

@@ -9,11 +9,25 @@ import type {
 import { cn } from '@shared/lib/utils'
 import { AttachmentPreview, type Attachment } from './attachment-preview'
 import { SecretDetectionPrompt } from './secret-detection-prompt'
-import type { PotentialSecret, SecuredSecret } from '@renderer/lib/secret-detection'
+import type { PotentialSecret } from '@renderer/lib/secret-detection'
 import { MarkdownComposerEditor } from './markdown-composer-editor'
+import type { ChipContext } from './composer-chips'
 
 const EMPTY_POTENTIAL_SECRETS: PotentialSecret[] = []
-const EMPTY_SECURED_SECRETS: SecuredSecret[] = []
+
+/** The composer box: the frame the text editor and its action row sit in. Voice mode draws its own contents in the same frame. */
+export const COMPOSER_BOX_CLASS =
+  'group relative mx-auto w-full rounded-2xl border border-border/60 bg-background/95 px-3 py-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/80'
+
+/** The action row under the editor. When even the left group's icons do not fit, the right group wraps to its own line. */
+export const COMPOSER_ACTIONS_ROW_CLASS = 'mt-1 flex min-w-0 flex-wrap items-center gap-2'
+
+/**
+ * The row's left group takes the width the right group leaves, and is the size container the
+ * model picker collapses on. 76px holds the paperclip and the picker's icon, so the row wraps
+ * before they would overlap the right group.
+ */
+export const COMPOSER_LEFT_ACTIONS_CLASS = 'flex min-w-[76px] flex-1 items-center gap-2 [container-type:inline-size]'
 
 /**
  * The floating translucent treatment for a composer that sits over content —
@@ -26,10 +40,8 @@ export const FLOATING_COMPOSER_CLASS =
 interface SecureSecretsProps {
   agentSlug: string
   potentialSecrets?: PotentialSecret[]
-  securedSecrets?: SecuredSecret[]
   onDismiss: (candidate: PotentialSecret) => void
   onSecure: (candidate: PotentialSecret, secret: { key: string; envVar: string }) => void
-  onRemove: (secrets: SecuredSecret[]) => void
 }
 
 interface ChatComposerBoxProps {
@@ -56,6 +68,8 @@ interface ChatComposerBoxProps {
   className?: string
   textareaClassName?: string
   secureSecrets?: SecureSecretsProps
+  /** What the composer knows about its agent, so chips whose referent is gone are flagged. */
+  chipContext?: ChipContext
 }
 
 export function ChatComposerBox({
@@ -82,6 +96,7 @@ export function ChatComposerBox({
   className,
   textareaClassName,
   secureSecrets,
+  chipContext,
 }: ChatComposerBoxProps) {
   const internalEditorRef = useRef<HTMLDivElement | null>(null)
   const setEditorRef = useCallback((node: HTMLDivElement | null) => {
@@ -94,13 +109,9 @@ export function ChatComposerBox({
   }, [textareaRef])
 
   const potentialSecrets = secureSecrets?.potentialSecrets ?? EMPTY_POTENTIAL_SECRETS
-  const securedSecrets = secureSecrets?.securedSecrets ?? EMPTY_SECURED_SECRETS
 
   return (
-    <div className={cn(
-      'group relative mx-auto w-full rounded-2xl border border-border/60 bg-background/95 px-3 py-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/80',
-      className
-    )}>
+    <div className={cn(COMPOSER_BOX_CLASS, className)}>
       {topRightActions && (
         <div className="absolute top-2 right-2 z-10 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 touch:opacity-100">{topRightActions}</div>
       )}
@@ -123,8 +134,7 @@ export function ChatComposerBox({
           enterKeyHint={enterKeyHint}
           className={cn('max-h-[200px]', textareaClassName)}
           potentialSecrets={potentialSecrets}
-          securedSecrets={securedSecrets}
-          onRemoveSecuredSecrets={secureSecrets?.onRemove}
+          chipContext={chipContext}
           onEditorElement={setEditorRef}
         />
       </div>
@@ -136,8 +146,8 @@ export function ChatComposerBox({
           onSecure={secureSecrets.onSecure}
         />
       )}
-      <div className="mt-1 flex min-w-0 items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-1">{leftActions}</div>
+      <div className={COMPOSER_ACTIONS_ROW_CLASS}>
+        <div className={COMPOSER_LEFT_ACTIONS_CLASS}>{leftActions}</div>
         <div className="flex shrink-0 items-center gap-2">{rightActions}</div>
       </div>
       {footer}

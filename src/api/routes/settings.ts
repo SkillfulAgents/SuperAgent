@@ -1,3 +1,10 @@
+import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
+import { resolveGlobalSelection } from '@shared/lib/llm-provider/connections'
+import { resolveSelection } from '@shared/lib/llm-provider/connection-schema'
+import { mergeCatalog } from '@shared/lib/llm-provider/catalog-merge'
+import { listConnections } from '@shared/lib/llm-provider/connections'
+import { syncProviderSettings } from '@shared/lib/llm-provider/connection-settings'
 import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
@@ -10,6 +17,8 @@ import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provid
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
 import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
 import { Authenticated, IsAdmin } from '../middleware/auth'
+import { addAgentUsers } from '@shared/lib/services/agent-members-service'
+import { isPublicVolume } from '@shared/lib/services/volume-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
@@ -29,6 +38,7 @@ import {
   getEffectiveModels,
   getEffectiveAgentLimits,
   getCustomEnvVars,
+  getGlobalInstructions,
   type AppSettings,
   type GlobalSettingsResponse,
   type ModelPickerSettingsResponse,
@@ -49,41 +59,11 @@ import {
 } from '@shared/lib/web-provider'
 import { containerHost } from '@shared/lib/agent-actor'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, getContainerClientClass, getRunnerDisplayName, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
+import { offersRuntime } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { detectAllProviders } from '../../main/host-browser'
 import { revokePlatformToken } from '@shared/lib/services/platform-auth-service'
-import { db } from '@shared/lib/db'
-import type { SQLiteTable } from 'drizzle-orm/sqlite-core'
-import {
-  proxyAuditLog,
-  proxyTokens,
-  agentConnectedAccounts,
-  scheduledTasks,
-  notifications,
-  sessionUnreadMarks,
-  connectedAccounts,
-  userSettings,
-  auditLog,
-  webhookTriggers,
-  chatIntegrations,
-  chatIntegrationSessions,
-  chatIntegrationAccess,
-  slackThreadState,
-  remoteMcpServers,
-  agentRemoteMcps,
-  mcpAuditLog,
-  mcpToolPolicies,
-  agentAcl,
-  agents,
-  messageAuthor,
-  xAgentPolicies,
-  apiScopePolicies,
-  tokenExchangeJti,
-  mobilePairingToken,
-  mobileDevice,
-  apnsDevices,
-  pushSubscriptions,
-  pushVapidKeys,
-} from '@shared/lib/db/schema'
+import { resetApplicationTables } from '@shared/lib/db/reset'
 import fs from 'fs'
 import { credentialBroker } from '../credentials/credential-broker'
 import { CredentialBrokerError } from '../credentials/types'
@@ -163,68 +143,6 @@ async function serveUploadedModelIcon(c: Context) {
   }
 }
 
-/**
- * Canonical set of agent/app-owned relational tables wiped by factory reset.
- *
- * Ordered children-before-parents so deletes succeed regardless of FK-cascade
- * state. Better Auth tables (user, session, account, verification) are
- * intentionally excluded — a factory reset clears app/agent data but does NOT
- * delete user accounts. The data-migration ledger is excluded too, like
- * drizzle's own: it records which one-time moves this database has been
- * through, and a reset database is an empty one, not a legacy one. Re-running
- * those moves after a reset would pull back whatever state the reset did not
- * delete.
- *
- * Keep this reconciled with the per-agent set in agent-cleanup-service.ts. The
- * test in factory-reset.sup206.test.ts enumerates the schema dynamically and
- * fails if a new agent/app-owned table is added without being listed here, so
- * the set cannot silently drift again.
- */
-const FACTORY_RESET_TABLES: SQLiteTable[] = [
-  // Leaf / no-FK-to-reset-table audit + attribution rows
-  proxyAuditLog,
-  proxyTokens,
-  mcpAuditLog,
-  messageAuthor,
-  agentAcl,
-  xAgentPolicies,
-  webhookTriggers,
-  // the agent catalog itself, once the per-agent rows above are gone
-  agents,
-  notifications,
-  sessionUnreadMarks,
-  scheduledTasks,
-  // chat integrations (access + sessions + Slack state cascade from integrations)
-  chatIntegrationAccess,
-  chatIntegrationSessions,
-  slackThreadState,
-  chatIntegrations,
-  // connected accounts + dependents (api scope policies + agent mappings cascade)
-  agentConnectedAccounts,
-  apiScopePolicies,
-  connectedAccounts,
-  // remote MCP servers + dependents (tool policies + agent mappings cascade)
-  agentRemoteMcps,
-  mcpToolPolicies,
-  remoteMcpServers,
-  // per-user settings (user row itself is preserved)
-  userSettings,
-  // global app audit log
-  auditLog,
-  // transient single-use jti replay guard for the token-exchange endpoint
-  tokenExchangeJti,
-  // transient single-use mobile pairing tokens
-  mobilePairingToken,
-  // APNs registrations before mobile devices: the cascade covers paired rows,
-  // but nullable mobile_device_id rows would survive it
-  apnsDevices,
-  // stable mobile devices; deleting them cascades their access sessions
-  mobileDevice,
-  // web push device subscriptions + the VAPID keypair they were minted against
-  pushSubscriptions,
-  pushVapidKeys,
-]
-
 // Custom model icons are used in regular model pickers, so any authenticated
 // user may read them. Writes and the rest of settings stay admin-only.
 settings.get('/model-icons/:fileName', Authenticated(), serveUploadedModelIcon)
@@ -234,13 +152,21 @@ settings.get('/model-icons/:fileName', Authenticated(), serveUploadedModelIcon)
 // editing provider config/catalog is. Serve the picker-safe subset above the
 // admin gate; it carries no secrets (provider ids/names, an isConfigured
 // boolean, catalogs, and default selections).
-settings.get('/models', Authenticated(), (c) => {
+settings.get('/models', Authenticated(), async (c) => {
   try {
     const appSettings = getSettings()
+    const connections = await listConnections({ userId: getCurrentUserId(c), admin: false })
+    const defaultSelection = await resolveGlobalSelection()
+    const root = connections.find(connection => connection.id === defaultSelection?.llmProviderId)
     const response: ModelPickerSettingsResponse = {
-      llmProvider: appSettings.llmProvider ?? 'anthropic',
-      llmProviderStatus: getAllProviderInfo(),
-      models: getEffectiveModels(),
+      enableToolSearch: appSettings.enableToolSearch ?? true,
+      modelPricing: appSettings.modelPricing ?? {},
+      connections,
+      defaultSelection: defaultSelection ? { llmProviderId: defaultSelection.llmProviderId, model: defaultSelection.model } : undefined,
+      legacyLlmProviderId: appSettings.llmLegacyProviderId,
+      llmProvider: root?.provider ?? appSettings.llmProvider ?? 'anthropic',
+      llmProviderStatus: getAllProviderInfo().map(p => root?.provider === p.id ? { ...p, catalog: root.catalog } : p),
+      models: { ...getEffectiveModels(), ...(defaultSelection ? { agentModel: defaultSelection.model } : {}) },
       webProvider: resolveEffectiveWebVendor(),
     }
     return c.json(response)
@@ -248,6 +174,12 @@ settings.get('/models', Authenticated(), (c) => {
     console.error('Failed to fetch model settings:', error)
     return c.json({ error: 'Failed to fetch model settings' }, 500)
   }
+})
+
+// Global guidance shapes every agent's behavior, so everyone may read what
+// their agents are told; only admins edit it (via PUT / below the gate).
+settings.get('/global-instructions', Authenticated(), (c) => {
+  return c.json({ globalInstructions: getGlobalInstructions() })
 })
 
 settings.use('*', Authenticated(), IsAdmin())
@@ -443,6 +375,7 @@ function buildSettingsResponse(
     shareErrorReports: appSettings.shareErrorReports !== false,
     enableToolSearch: appSettings.enableToolSearch !== false,
     agentCapabilities: appSettings.agentCapabilities ?? DEFAULT_AGENT_CAPABILITIES,
+    teamBrain: appSettings.teamBrain,
   }
 }
 
@@ -471,6 +404,10 @@ settings.put(
     try {
       const body = c.req.valid('json')
 
+      if (body.llmProvider && !getLlmProvider(body.llmProvider).supportsDirectApi) {
+        return c.json({ error: 'Select this provider in Settings → Model Providers, where a separate API-capable summarizer can be chosen.' }, 400)
+      }
+
       // A default read-aloud voice must be one the (possibly just-picked)
       // provider offers; the patch schema only knows it is a string.
       const ttsVoice = body.voice?.ttsVoice
@@ -479,6 +416,11 @@ settings.put(
         if (!providerId || !getVoiceProvider(providerId).hasTtsVoice(ttsVoice)) {
           return c.json({ error: 'Unknown text-to-speech voice for the selected voice provider' }, 400)
         }
+      }
+
+      // Every member is given the Team Brain, so every member must be able to read its drive.
+      if (body.teamBrain && !(await isPublicVolume(body.teamBrain.volumeId))) {
+        return c.json({ error: 'Team Brain needs a drive everyone in the workspace can add' }, 400)
       }
 
       // Read FRESH and fail-closed: never merge onto the possibly-
@@ -502,6 +444,7 @@ settings.put(
           hostTotalMemoryBytes: os.totalmem(),
           supportsCustomAgentImage: (runner: ContainerRunner) =>
             getContainerClientClass(runner).supportsCustomAgentImage,
+          offersRuntime: (runner: ContainerRunner) => offersRuntime(getServerFacts(), runner),
         },
       })[0]
 
@@ -517,7 +460,33 @@ settings.put(
         )
       }
 
+      const root = currentSettings.llmDefault
+      if (root && body.modelCatalog && root.llmProviderId.startsWith('legacy-')) {
+        const provider = root.llmProviderId.slice('legacy-'.length) as LlmProviderId
+        if (Object.hasOwn(body.modelCatalog, provider)) {
+          const catalog = mergeCatalog(getLlmProvider(provider).getBuiltinCatalog(), newSettings.modelCatalog?.[provider]?.overrides ?? [])
+          if (!resolveSelection(root, [{ id: root.llmProviderId, catalog }])) {
+            return c.json({ error: 'Change the app default before removing its model' }, 400)
+          }
+        }
+      }
+
       updateSettings(newSettings)
+      if (body.llmProvider !== undefined || body.models !== undefined || body.modelCatalog !== undefined || body.apiKeys !== undefined) {
+        const active = newSettings.llmProvider ?? 'anthropic'
+        const touched = new Set<LlmProviderId>()
+        if (body.apiKeys) {
+          for (const [provider, keys] of Object.entries({ anthropic: ['anthropicApiKey'], openrouter: ['openrouterApiKey'], generic: ['genericApiKey', 'genericBaseUrl'], bedrock: ['bedrockApiKey', 'bedrockAccessKeyId', 'bedrockSecretAccessKey', 'bedrockRegion'] })) {
+            if (keys.some(key => Object.hasOwn(body.apiKeys!, key))) touched.add(provider as LlmProviderId)
+          }
+        }
+        if (body.llmProvider || body.models) touched.add(active)
+        if (body.modelCatalog) for (const provider of Object.keys(body.modelCatalog)) touched.add(provider as LlmProviderId)
+        await syncProviderSettings({ providers: [...touched], apiKeys: body.apiKeys,
+          catalog: !!body.modelCatalog,
+          models: (['agentModel', 'summarizerModel', 'browserModel', 'dashboardBuilderModel'] as const).filter(key => !!body.llmProvider || Object.hasOwn(body.models ?? {}, key)),
+          selectDefault: !!body.llmProvider })
+      }
 
       // A new auto-sleep timeout applies to the containers already up.
       if (body.app?.autoSleepTimeoutMinutes !== undefined) {
@@ -536,7 +505,7 @@ settings.put(
 
       // If auth settings changed, reset the Better Auth singleton so it picks up new config
       if (body.auth !== undefined && isAuthMode()) {
-        import('@shared/lib/auth/index').then(({ resetAuth }) => resetAuth()).catch(() => {})
+        background(import('@shared/lib/auth/index').then(({ resetAuth }) => resetAuth()).catch(() => {}), { name: 'settings-route.reset-auth' })
       }
 
       // If container runner changed, forget the runtimes so the next client is
@@ -551,9 +520,9 @@ settings.put(
         newSettings.container.agentImage !== currentSettings.container.agentImage ||
         newSettings.container.containerRunner !== currentSettings.container.containerRunner
       ) {
-        containerHost.ensureImageReady().catch((error) => {
+        background(containerHost.ensureImageReady().catch((error) => {
           console.error('Failed to re-check image readiness:', error)
-        })
+        }), { name: 'settings-route.ensure-image-ready' })
       }
 
       const runnerAvailability = await checkAllRunnersAvailability()
@@ -564,6 +533,11 @@ settings.put(
         action: 'updated',
         details: buildSettingsAuditDetails(currentSettings, newSettings),
       })
+      // The Team Brain is the workspace's: every member is a user of the agent its record names, and members who join
+      // later get it when their account is made. Every write of the record gives it again, so writing the record again
+      // heals a grant that failed, and giving it twice adds no one twice. Last, so a failed grant still leaves the write
+      // audited and its other effects done.
+      if (body.teamBrain) await addAgentUsers(body.teamBrain.agentSlug)
       return c.json(buildSettingsResponse(newSettings, hasRunningAgents, runnerAvailability))
     } catch (error) {
       console.error('Failed to update settings:', error)
@@ -606,9 +580,9 @@ settings.post('/start-runner', async (c) => {
       const runnerAvailability = await refreshRunnerAvailability()
 
       // Re-check image readiness now that a runner is available
-      containerHost.ensureImageReady().catch((error) => {
+      background(containerHost.ensureImageReady().catch((error) => {
         console.error('Failed to check image after starting runner:', error)
-      })
+      }), { name: 'settings-route.ensure-image-ready' })
 
       return c.json({
         ...result,
@@ -654,9 +628,9 @@ settings.post('/restart-runner', async (c) => {
       await new Promise((resolve) => setTimeout(resolve, 2000))
       const runnerAvailability = await refreshRunnerAvailability()
 
-      containerHost.ensureImageReady().catch((error) => {
+      background(containerHost.ensureImageReady().catch((error) => {
         console.error('Failed to check image after restarting runner:', error)
-      })
+      }), { name: 'settings-route.ensure-image-ready' })
 
       return c.json({ ...result, runnerAvailability })
     }
@@ -673,9 +647,9 @@ settings.post('/refresh-availability', async (c) => {
   try {
     const runnerAvailability = await refreshRunnerAvailability()
     // Also re-check image readiness since runner state may have changed
-    containerHost.ensureImageReady().catch((error) => {
+    background(containerHost.ensureImageReady().catch((error) => {
       console.error('Failed to re-check image readiness:', error)
-    })
+    }), { name: 'settings-route.ensure-image-ready' })
     return c.json({ runnerAvailability })
   } catch (error) {
     console.error('Failed to refresh runner availability:', error)
@@ -909,6 +883,13 @@ settings.post('/validate-web-key', async (c) => {
 // POST /api/settings/factory-reset - Reset all data
 settings.post('/factory-reset', async (c) => {
   try {
+    // Stop integrations and let each provider release its external resources.
+    try {
+      const { cleanupIntegrationResources } = await import('@shared/lib/agent-integrations/cleanup')
+      await cleanupIntegrationResources()
+    } catch (error) {
+      captureException(error, { tags: { component: 'settings', operation: 'factory-reset-integrations' } })
+    }
     // Revoke platform token remotely before clearing local state
     try {
       await revokePlatformToken({ clearLocal: false })
@@ -925,9 +906,7 @@ settings.post('/factory-reset', async (c) => {
 
     // Clear every agent/app-owned relational table (children before parents).
     // Better Auth tables (user/session/account/verification) are preserved.
-    for (const table of FACTORY_RESET_TABLES) {
-      await db.delete(table).run()
-    }
+    await resetApplicationTables()
 
     // Delete settings file (includes platform auth token)
     const settingsPath = path.join(getDataDir(), 'settings.json')

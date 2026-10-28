@@ -1,9 +1,15 @@
 import { parseAttachedFiles, parseMountedFolders } from './attached-files'
+import { parseDictationNote } from './dictation-note'
+import { parseMentions, type Mention } from './mentions'
 import { parseSenderPrefix } from './sender-prefix'
 
 export interface UserMessageParts {
-  /** Sender lifted from a read-only chat mirror's escaped "\[sender]: " prefix. */
+  /** Sender lifted from an escaped "\[sender]: " attribution prefix. */
   sender: string | null
+  /** The people and agents the message @-mentions, drawn as chips where their names stand. */
+  mentions: Mention[]
+  /** The message only notified the teammates it tags; the agent did not run. */
+  silent: boolean
   attachedFiles: string[]
   mountedFolders: { containerPath: string; hostPath: string }[]
   /** The message text with every structured block above removed. */
@@ -12,16 +18,16 @@ export interface UserMessageParts {
 
 /**
  * Peel the structured blocks the app appends to a user message out of its
- * text: the connector sender prefix (read-only mirrors only, so a live user's
- * own "\[x]: " stays literal), then the attached-files block, then the
+ * text: the sender prefix, then the dictation note (which is only for the
+ * agent), then the mentions block, then the attached-files block, then the
  * mounted-folders block. Both the bubble and the notification summary render
  * the leftover text.
  */
-export function parseUserMessageParts(rawText: string, opts: { readOnly: boolean }): UserMessageParts {
-  const { sender, cleanText: afterSender } = opts.readOnly
-    ? parseSenderPrefix(rawText)
-    : { sender: null, cleanText: rawText }
-  const { cleanText: afterFiles, attachedFiles } = parseAttachedFiles(afterSender)
+export function parseUserMessageParts(rawText: string): UserMessageParts {
+  const { sender, cleanText: afterSender } = parseSenderPrefix(rawText)
+  const { cleanText: afterNote } = parseDictationNote(afterSender)
+  const { cleanText: afterMentions, mentions, silent } = parseMentions(afterNote)
+  const { cleanText: afterFiles, attachedFiles } = parseAttachedFiles(afterMentions)
   const { cleanText: text, mountedFolders } = parseMountedFolders(afterFiles)
-  return { sender, attachedFiles, mountedFolders, text }
+  return { sender, mentions, silent, attachedFiles, mountedFolders, text }
 }

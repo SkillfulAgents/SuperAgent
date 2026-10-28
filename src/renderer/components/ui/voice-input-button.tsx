@@ -9,11 +9,12 @@ import { useIsVoiceConfigured } from '@renderer/hooks/use-voice-input'
 import { cn } from '@shared/lib/utils'
 import type { useVoiceInput } from '@renderer/hooks/use-voice-input'
 
-type VoiceInputSize = 'default' | 'sm'
+type VoiceInputSize = 'default' | 'sm' | 'xs'
 
 const SIZE_CONFIG = {
   default: { button: 'h-[34px] w-[34px]', pill: 'h-[34px] w-[102px]', waveform: { width: 56, height: 18 } },
   sm: { button: 'h-8 w-8', pill: 'h-8 w-[92px]', waveform: { width: 48, height: 16 } },
+  xs: { button: 'h-6 w-6', pill: 'h-6 w-[84px]', waveform: { width: 40, height: 12 } },
 } as const
 
 interface VoiceInputButtonProps {
@@ -118,7 +119,8 @@ export function VoiceInputButton({ voiceInput, message, disabled, size = 'defaul
           active ? 'max-w-[64px] opacity-100' : 'max-w-0 opacity-0'
         )}
       >
-        <MiniWaveform analyserRef={voiceInput.analyserRef} color="currentColor" {...config.waveform} />
+        {/* Mounted only while engaged: its draw loop requests a frame every refresh for as long as it exists. */}
+        {active && <MiniWaveform analyserRef={voiceInput.analyserRef} color="currentColor" {...config.waveform} />}
       </span>
       {busy ? (
         <Loader2 className="h-4 w-4 shrink-0 animate-spin" />

@@ -1,3 +1,6 @@
+vi.mock('@shared/lib/account-providers/provider-factory', () => ({
+  getDefaultAccountProvider: () => ({ name: 'composio' }),
+}))
 vi.mock('@shared/lib/agent-integrations/mcp', () => ({ integrationMcpProjection: vi.fn(async () => []) }))
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -23,7 +26,6 @@ const mockStart = vi.fn().mockImplementation(() => {
 const mockStop = vi.fn().mockResolvedValue({ forceStopUsed: false })
 const mockGetInfoFromRuntime = vi.fn()
 const mockGetStats = vi.fn()
-const mockBuildVolumeFlag = vi.fn((hostPath: string, containerPath: string) => `"${hostPath}:${containerPath}"`)
 
 vi.mock('./client-factory', () => ({
   createContainerClient: () => ({
@@ -34,7 +36,6 @@ vi.mock('./client-factory', () => ({
     getStats: mockGetStats,
     fetch: vi.fn(),
     getHostApiBaseUrl: () => 'http://127.0.0.1:3000',
-    buildVolumeFlag: (...args: unknown[]) => mockBuildVolumeFlag(...args as [string, string]),
     createSession: vi.fn(),
     onFatalResult: () => 'settle',
     observeUnexpectedDeath: async () => ({ action: 'settle' as const }),
@@ -97,23 +98,6 @@ vi.mock('@shared/lib/config/data-dir', () => ({
   getAgentWorkspaceDir: (id: string) => `/workspace/${id}`,
 }))
 
-vi.mock('./message-persister', () => ({
-  messagePersister: {
-    broadcastGlobal: vi.fn(),
-    setStopContainerCallback: vi.fn(),
-    setUnexpectedDeathCallback: vi.fn(),
-    markAllSessionsInactiveForAgent: vi.fn(),
-    snapshotMidTurnSessions: vi.fn(() => []),
-    consumeLastFatal: vi.fn(() => null),
-    settleRecoveringSessions: vi.fn(),
-    markRecovered: vi.fn(),
-    takeCoalescedUserMessages: vi.fn(() => []),
-    isSessionRecovering: vi.fn(() => false),
-    isSubscribed: vi.fn(() => false),
-    subscribeToSession: vi.fn(),
-  },
-}))
-
 vi.mock('./health-monitor', () => ({
   healthMonitor: { checkAll: vi.fn().mockReturnValue([]) },
 }))
@@ -133,7 +117,8 @@ vi.mock('@shared/lib/services/timezone-resolver', () => ({
 }))
 
 vi.mock('@shared/lib/services/mount-service', () => ({
-  getMountsWithHealth: () => [],
+  listVolumes: async () => ({ volumes: [], notMounted: [] }),
+  remounted: async () => {},
 }))
 
 import { containerHost } from './container-host'

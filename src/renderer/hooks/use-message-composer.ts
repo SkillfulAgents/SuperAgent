@@ -6,18 +6,20 @@ import { useVoiceInput } from './use-voice-input'
 import { useAddMount } from './use-mounts'
 import { useDraft } from '@renderer/context/drafts-context'
 import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/attached-files'
-import { type FolderGroup } from '@renderer/lib/file-utils'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { appendDictationNote } from '@shared/lib/utils/dictation-note'
+import { mountPathOf } from '@shared/lib/volumes/base-mountable-volume'
+import { filesFromClipboard, folderChoice, type FolderGroup } from '@renderer/lib/file-utils'
+import { usesHostFolderPaths } from '@renderer/lib/capabilities'
 import { attachmentStatus, type Attachment, type MountAttachment } from '@renderer/components/messages/attachment-preview'
 import type { UploadProgress } from '@renderer/lib/upload'
 import { usePendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
+import { chipsToAgentText, silentOpener, type ChipContext } from '@renderer/components/messages/composer-chips'
+import { secretMarker } from '@renderer/components/messages/secret-chip'
 import {
   findPotentialSecrets,
-  replaceSecuredSecrets,
-  secretDisplayText,
   type PotentialSecret,
-  type SecuredSecret,
 } from '@renderer/lib/secret-detection'
+import { useComposerChips } from './use-composer-chips'
 
 interface UseMessageComposerOptions {
   agentSlug: string
@@ -25,8 +27,8 @@ interface UseMessageComposerOptions {
   uploadFile: (args: { file: File; onProgress?: (p: UploadProgress) => void; signal?: AbortSignal; stallMs?: number }) => Promise<{ path: string }>
   /** Upload a folder via Electron fs.cp. Caller provides the right endpoint. */
   uploadFolder: (args: { sourcePath: string }) => Promise<{ path: string }>
-  /** Called after uploads complete and content is fully assembled. */
-  onSubmit: (content: string) => Promise<void>
+  /** Called after uploads complete and content is fully assembled. `silent`: it only notifies, and runs no turn. */
+  onSubmit: (content: string, options: { silent: boolean }) => Promise<void>
   /** Additional guard conditions that prevent submission (e.g. isActive, isOffline). */
   submitDisabled?: boolean
   /** When true, keep the message in the input until onSubmit resolves (useful when there's a navigation delay). Defaults to false. */
@@ -35,23 +37,24 @@ interface UseMessageComposerOptions {
   draftKey?: string
   /** One-shot attachment seed, used when moving a draft into a new session. */
   initialAttachments?: Attachment[]
-  /** One-shot secure-pill seed, used when moving a draft into a new session. */
-  initialSecuredSecrets?: SecuredSecret[]
   /** Fires on composer-mic transcript updates (before message state changes). */
   onVoiceTranscript?: () => void
+  /**
+   * A draft that opens on a chip whose kind `opensSilently` (a teammate) only
+   * notifies, and the agent does not run: for an existing session. A first
+   * message always runs the agent.
+   */
+  silentSends?: boolean
 }
 
 export function useMessageComposer(options: UseMessageComposerOptions) {
-  const { agentSlug, onSubmit, submitDisabled, keepMessageUntilComplete, draftKey } = options
+  const { agentSlug, onSubmit, submitDisabled, keepMessageUntilComplete, draftKey, silentSends } = options
 
   const [draft, setDraft] = useDraft<string>(draftKey)
-  const securedDraftKey = draftKey ? `${draftKey}:secured-secrets` : undefined
-  const [draftSecuredSecrets, setDraftSecuredSecrets] = useDraft<SecuredSecret[]>(securedDraftKey)
   const [message, setMessage] = useState(draft ?? '')
   const [dismissedSecretValues, setDismissedSecretValues] = useState<Set<string>>(() => new Set())
-  const [securedSecrets, setSecuredSecrets] = useState<SecuredSecret[]>(
-    () => options.initialSecuredSecrets ?? draftSecuredSecrets ?? []
-  )
+  const chips = useComposerChips(agentSlug)
+  const chipContext = chips.context
   const [isUploading, setIsUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const addMountMutation = useAddMount()
@@ -69,11 +72,8 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     setDraft(message || undefined)
   }, [message, setDraft])
 
-  useEffect(() => {
-    setDraftSecuredSecrets(securedSecrets.length > 0 ? securedSecrets : undefined)
-  }, [securedSecrets, setDraftSecuredSecrets])
-
-  // Sync externally-injected drafts (e.g. voice feedback) into the local message.
+  // Sync externally-injected drafts (file comments, restored undelivered
+  // messages) into the local message.
   useEffect(() => {
     if (draft !== undefined && draft !== message) {
       setMessage(draft)
@@ -110,21 +110,8 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   ) => {
     setMessage((current) => {
       if (current.slice(candidate.start, candidate.end) !== candidate.value) return current
-      const displayText = secretDisplayText(savedSecret.key)
-      const securedSecret: SecuredSecret = {
-        id: `${candidate.id}:${savedSecret.envVar}`,
-        key: savedSecret.key,
-        envVar: savedSecret.envVar,
-        displayText,
-      }
-      setSecuredSecrets((existing) => [...existing, securedSecret])
-      return `${current.slice(0, candidate.start)}${displayText}${current.slice(candidate.end)}`
+      return `${current.slice(0, candidate.start)}${secretMarker(savedSecret)}${current.slice(candidate.end)}`
     })
-  }, [])
-
-  const removeSecuredSecrets = useCallback((secrets: SecuredSecret[]) => {
-    const secretIds = new Set(secrets.map((secret) => secret.id))
-    setSecuredSecrets((current) => current.filter((secret) => !secretIds.has(secret.id)))
   }, [])
 
   // Mount choice dialog state
@@ -133,7 +120,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   // Whether a dropped folder can be offered as a *mount* rather than an upload.
   // Mounting hands the agent's machine a path on this one, so it needs both the
   // bridge and for the two to be the same machine.
-  const canOfferMount = canUseHostFeatures()
+  const canOfferMount = usesHostFolderPaths()
 
   const handleFoldersReceived = useCallback((folders: FolderGroup[]) => {
     setPendingFolders((current) => [...current, ...folders])
@@ -141,6 +128,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   }, [])
 
   const attachmentsRef = useRef<Attachment[]>([])
+  const checkingRef = useRef(false)
   const queueRef = useRef<ReturnType<typeof useUploadQueue> | null>(null)
 
   const {
@@ -161,7 +149,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     onFoldersReceived: canOfferMount ? handleFoldersReceived : undefined,
     initialAttachments: options.initialAttachments,
     onAttachmentsAdded: (added) => {
-      for (const a of added) if (a.type !== 'mount') queueRef.current?.enqueue(a)
+      for (const a of added) if (a.type === 'file' || a.type === 'folder') queueRef.current?.enqueue(a)
     },
   })
   attachmentsRef.current = attachments
@@ -186,7 +174,8 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     // Unmount aborts the queue generation, so StrictMode's second setup must
     // enqueue again. Skip done/error chips; later adds go through onAttachmentsAdded.
     for (const a of attachmentsRef.current) {
-      if (a.type === 'mount' || a.error || a.upload?.status === 'done') continue
+      if (a.type !== 'file' && a.type !== 'folder') continue
+      if (a.error || a.upload?.status === 'done') continue
       queue.enqueue(a)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount only
@@ -203,45 +192,30 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   // `options` instead would rebuild this every render — callers pass an inline
   // object literal, so its identity is never stable.
   const { onVoiceTranscript } = options
+  // Some of the draft came from the mic, so the agent is told to allow for
+  // transcription slips. Cleared once the draft is sent or emptied.
+  const dictatedRef = useRef(false)
   const voiceInput = useVoiceInput({
     onTranscriptUpdate: useCallback((text: string) => {
       onVoiceTranscript?.()
       setMessage(text)
     }, [onVoiceTranscript]),
+    onDictated: useCallback(() => { dictatedRef.current = true }, []),
   })
+  useEffect(() => {
+    if (!message.trim()) dictatedRef.current = false
+  }, [message])
 
   const handleMountChoice = useCallback((choice: 'upload' | 'mount' | 'cancel') => {
     setShowMountDialog(false)
-    if (choice === 'upload') {
-      addFoldersDirectly(pendingFolders)
-    } else if (choice === 'mount') {
-      // A folder without a resolved absolute path can't be mounted — fall back
-      // to upload for it rather than POSTing a mount with no hostPath.
-      const mountable = pendingFolders.filter((f) => f.folderPath)
-      const pathless = pendingFolders.filter((f) => !f.folderPath)
-      addMounts(mountable.map((f) => ({
-        folderName: f.folderName,
-        hostPath: f.folderPath!,
-      })))
-      if (pathless.length > 0) {
-        addFoldersDirectly(pathless)
-      }
-    }
+    const split = folderChoice(choice, pendingFolders)
+    if (split.mount.length > 0) addMounts(split.mount)
+    if (split.upload.length > 0) addFoldersDirectly(split.upload)
     setPendingFolders([])
   }, [pendingFolders, addFoldersDirectly, addMounts])
 
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLElement>) => {
-    const items = e.clipboardData?.items
-    if (!items) return
-
-    const pastedFiles: File[] = []
-    for (const item of items) {
-      if (item.kind === 'file') {
-        const file = item.getAsFile()
-        if (file) pastedFiles.push(file)
-      }
-    }
-
+    const pastedFiles = filesFromClipboard(e.clipboardData)
     if (pastedFiles.length > 0) {
       e.preventDefault()
       addFiles(pastedFiles.map((file) => ({ file })))
@@ -279,6 +253,19 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
 
     let content = effectiveMessage.trim()
 
+    // The chips' checks may ask first (access for someone it tags). The draft
+    // stays in the composer meanwhile, so a second Enter is not a second send.
+    if (checkingRef.current) return false
+    const silent = !!silentSends && !!silentOpener(content)
+    let sendContext: ChipContext | null
+    checkingRef.current = true
+    try {
+      sendContext = await chips.check(content, { silent })
+    } finally {
+      checkingRef.current = false
+    }
+    if (!sendContext) return false
+
     if (attachmentsRef.current.some((a) => a.type !== 'mount' && a.error)) {
       setIsUploading(true)
       const { ok } = await queue.retryAndWait()
@@ -296,7 +283,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
         for (const a of mounts) {
           try {
             const result = await addMountMutation.mutateAsync({ agentSlug, hostPath: a.hostPath, restart: true })
-            mountResults.push({ containerPath: result.containerPath, hostPath: a.hostPath })
+            mountResults.push({ containerPath: mountPathOf(result.name), hostPath: a.hostPath })
           } catch (error) {
             const message = error instanceof Error ? error.message : 'Mount failed. Please try again.'
             setAttachmentError(a.id, message)
@@ -315,7 +302,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
 
     const paths = attachmentsRef.current.flatMap((a) => {
-      if (a.type === 'mount') return []
+      if (a.type !== 'file' && a.type !== 'folder') return []
       const done = a.upload?.path
         ? { path: a.upload.path, agentSlug: a.upload.agentSlug }
         : queue.pathFor(a.id)
@@ -332,25 +319,28 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
 
     const editableContent = content
-    const submittedContent = replaceSecuredSecrets(content, securedSecrets)
+    const dictated = dictatedRef.current
+    const agentText = chipsToAgentText(content, sendContext, { silent })
+    const submittedContent = dictated ? appendDictationNote(agentText) : agentText
 
     try {
-      await onSubmit(submittedContent)
+      await onSubmit(submittedContent, { silent })
     } catch (error) {
       console.error('Failed to submit:', error)
       if (!keepMessageUntilComplete) {
         // Restore message so the user doesn't lose their text
         setMessage(editableContent)
+        dictatedRef.current = dictated
       }
       return false
     }
 
+    dictatedRef.current = false
     if (keepMessageUntilComplete) {
       setMessage('')
       setDraft(undefined)
       clearAttachments()
     }
-    setSecuredSecrets([])
     return true
   }
 
@@ -361,10 +351,11 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     message,
     setMessage,
     potentialSecrets,
-    securedSecrets,
+    chipContext,
+    /** What a chip's check before a send asks, for the composer to render. */
+    chipDialog: chips.dialog,
     dismissPotentialSecret,
     securePotentialSecret,
-    removeSecuredSecrets,
 
     // Attachments
     attachments,

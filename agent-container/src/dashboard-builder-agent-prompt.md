@@ -68,7 +68,7 @@ Always call `start_dashboard` after making changes. Treat its screenshot as the 
 ### Design Principles
 - **Mobile-first responsive layout.** Use CSS grid or flexbox. Set `max-width` on content containers. Test at narrow widths mentally.
 - **Clear visual hierarchy.** Use size, weight, and spacing to guide the eye. Important metrics should be prominent.
-- **Consistent spacing.** Pick a base unit (e.g., 8px) and use multiples. Use CSS custom properties for theming.
+- **Follow the design system.** Read `/opt/gamut/plugin/skills/dashboards/DESIGN.md` before building UI, so the dashboard matches the app in light and dark mode.
 - **Accessible colors.** Ensure sufficient contrast (WCAG AA). Don't rely on color alone to convey information.
 - **Loading and error states.** Always show a loading indicator while fetching data. Show meaningful error messages, not blank screens.
 
@@ -124,25 +124,10 @@ For React dashboards, install via bun:
 cd /workspace/artifacts/<slug> && bun add chart.js react-chartjs-2
 ```
 
+Pass the design system's chart colors (`--color-chart-1` … `--color-chart-5`) rather than the library's default palette; DESIGN.md covers reading them from canvas libraries.
+
 ### Styling Approach
-Prefer modern CSS with custom properties for theming:
-```css
-:root {
-  --bg: #ffffff;
-  --fg: #1a1a1a;
-  --accent: #3b82f6;
-  --border: #e5e7eb;
-  --radius: 8px;
-  --gap: 16px;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f172a;
-    --fg: #f1f5f9;
-    --border: #334155;
-  }
-}
-```
+Both scaffolds ship the design system as `tokens.css` (`src/tokens.css` in React, beside `index.js` in plain): the app's palette with dark mode, type scale, spacing, radii, and the `.sa-page`, `.sa-card`, `.sa-button`, `.sa-badge` and `.sa-input` classes. Build with those. If a dashboard needs its own look, change the token values there; don't define a parallel set (`--bg`, `--fg`, `--accent`).
 
 ### Common Patterns
 
@@ -150,15 +135,14 @@ Prefer modern CSS with custom properties for theming:
 ```css
 .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: var(--gap);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-4);
 }
-.card {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: var(--gap);
-}
+```
+```html
+<div class="cards">
+  <section class="sa-card">...</section>
+</div>
 ```
 
 **KPI metric display:**
@@ -234,7 +218,6 @@ const client = new Anthropic();
 
 // Non-streaming
 const message = await client.messages.create({
-  model: 'claude-sonnet-4-6',
   max_tokens: 1024,
   messages: [{ role: 'user', content: 'Summarize this data.' }]
 });
@@ -242,7 +225,6 @@ console.log(message.content[0].text);
 
 // Streaming
 const stream = client.messages.stream({
-  model: 'claude-sonnet-4-6',
   max_tokens: 1024,
   messages: [{ role: 'user', content: 'Write a report.' }]
 });
@@ -251,7 +233,7 @@ stream.on('text', (delta, fullText) => {
 });
 ```
 
-Default model: `claude-sonnet-4-6`. Use `claude-haiku-4-5` for fast/cheap tasks, `claude-opus-4-7` for complex reasoning.
+Leave out `model`: the request then uses the user's configured model for their provider. Pass `model` only when the user asks for a specific one.
 Rate limited to 100 req/min. This is the full Anthropic JS SDK (lazy-loaded) — all features including tool use, vision, and extended thinking work. Search for examples online. Full documentation is in `/opt/gamut/plugin/skills/dashboards/LLM_API.md`.
 
 ### Session Dispatch

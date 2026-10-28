@@ -36,6 +36,9 @@ const SLACK_MANIFEST = `{
 
 const PROVIDERS_INFO = `Supported chat integration providers:
 
+**Email (Platform-connected deployments)**
+   An owner creates an inbox from the agent’s Email setup in the app. This is not Gmail/Outlook OAuth and cannot be created by add_chat_integration. For an existing inbox, call list_agent_integrations and follow its sending instructions; new emails need no existing conversation.
+
 1. **Telegram**
    Required: \`botToken\` — create a bot via @BotFather on Telegram and copy the token.
    Optional: \`chatId\` — the Telegram chat ID to send messages to. If omitted, the bot will accept messages from anyone who starts a conversation with it.

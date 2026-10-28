@@ -1,11 +1,15 @@
+import { connectionRuntimeSchema } from './connection-runtime';
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 // Captures SUPERAGENT_HOST_TOKEN and strips it from process.env — import early
 // so no later module can snapshot an environment that still contains it.
 import { HOST_TOKEN_HEADER, hostAuthEnabled, isValidHostToken } from './host-auth';
-import { SessionManager, SessionBusyError, isSdkSessionNotFound } from './session-manager';
+import { SessionManager, SessionBusyError, isSdkSessionNotFound, type UndeliveredTurnReport } from './session-manager';
+import { notifyUndeliveredTurn } from './host-events';
+import { sessionCreationFailure } from './session-creation-error';
 import { CreateSessionRequest, SendMessageRequest } from './types';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
+import { globalInstructionsSchema } from './global-instructions';
 import type { UUID } from 'crypto';
 import * as http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -47,8 +51,17 @@ import { getEditingCommands } from './cdp-editing-commands';
 import { createBrowserNavigation, type BrowserNavigation } from './browser-navigation';
 import type { BrowserTabInfo, BrowserTabListMessage } from './browser-stream-protocol';
 import { CREDENTIAL_AUTOFILL_FUNCTION } from './credential-autofill-script';
+import { CdpConnection } from './login-cdp';
+import type { LoginFillDeps, PageActivity } from './login-fill';
+import type { FieldBox } from './login-form-script';
+import { closePreparedLogins } from './login-requests';
+import type { LoginFillReport } from './login-schema';
+import { clickSubmit, registerLoginRoutes, type SubmitOutcome, type SubmitPlan } from './login-routes';
+import { forgetInjectedSecrets, redactInjectedSecrets, redactInjectedSecretsDeep, rememberInjectedSecret } from './injected-secrets';
 import { selectActivePageTarget } from './active-page-target';
 import { decodeChromeTargetTitle } from './chrome-target-title';
+import { drainVolumeUploads, finishVolumeStop, mountVolumes, mountedVolumeIds, parseVolumes, unmountVolumes } from './volume-mounts';
+import { installVolumeStop } from './volume-stop';
 
 // Global error handlers to prevent crashes from AbortError during interrupts
 // The SDK throws AbortError when queries are aborted, which can propagate uncaught
@@ -76,6 +89,19 @@ process.on('unhandledRejection', (reason: unknown) => {
 
 const app = new Hono();
 const sessionManager = new SessionManager();
+
+sessionManager.on('undelivered-turn', (report: UndeliveredTurnReport) => {
+  console.error(
+    `[Session ${report.sessionId}] Turn ended (${report.resultSubtype ?? 'unknown'}) with no stream subscriber; ` +
+    `the last one closed at ${report.closedAt}, ${report.msSinceClose}ms earlier (code=${report.closeCode}, ` +
+    `reason=${report.closeReason || 'none'}, age=${report.socketAgeMs}ms, idle=${report.idleMsBeforeClose}ms, ` +
+    `error=${report.socketError ?? 'none'})`,
+  );
+  void notifyUndeliveredTurn(report).catch((error) => {
+    console.warn(`[Session ${report.sessionId}] Failed to report undelivered turn:`, error);
+  });
+});
+
 const WORKSPACE_DOWNLOADS_DIR = '/workspace/downloads';
 
 // The agent's own Bash can reach this API (shared network namespace), so every
@@ -89,18 +115,32 @@ app.use('*', async (c, next) => {
   return next();
 });
 
+// Volumes mount at boot. Until they settle, /health holds the host's start check.
+let volumesSettled = false;
+const volumesMounted = mountVolumes(parseVolumes(process.env.SUPERAGENT_VOLUMES)).then(() => {
+  volumesSettled = true;
+});
+
 // Health check endpoint
 app.get('/health', (c) => {
-  return c.json({ status: 'ok', timestamp: new Date().toISOString() });
+  if (!volumesSettled) return c.json({ status: 'starting' }, 503);
+  return c.json({ status: 'ok', timestamp: new Date().toISOString(), volumes: mountedVolumeIds() });
 });
 
 // Session endpoints
+installVolumeStop(app, {
+  hasVolumes: () => mountedVolumeIds().length > 0,
+  stopWriters: async () => { await Promise.all([dashboardManager.stopAll(), sessionManager.stopAll()]); },
+  drain: drainVolumeUploads,
+  finish: finishVolumeStop,
+});
+
 app.post('/sessions', async (c) => {
   try {
     const body = await c.req.json<CreateSessionRequest>();
 
     if (!body.initialMessage) {
-      return c.json({ error: 'initialMessage is required' }, 400);
+      return c.json({ error: 'initialMessage is required', inputAccepted: false }, 400);
     }
 
     if (body.maxBrowserTabs) {
@@ -114,11 +154,7 @@ app.post('/sessions', async (c) => {
     // (`errorClass`, e.g. 'executable_launch_failed') to CLI launch errors.
     // Forward both: the message alone hides the errno behind the SDK's canned
     // libc-mismatch guess, and the host keys auto-recovery off errorClass.
-    return c.json({
-      error: error.message || 'Failed to create session',
-      ...(typeof error.code === 'string' && { code: error.code }),
-      ...(typeof error.errorClass === 'string' && { errorClass: error.errorClass }),
-    }, 500);
+    return c.json(sessionCreationFailure(error), 500);
   }
 });
 
@@ -230,6 +266,25 @@ app.post('/sessions/:id/fork', async (c) => {
   }
 });
 
+// Pre-resume a session's CLI before its next message (the host asks when a
+// person starts typing into the session), so the send skips the CLI spawn and
+// `--resume`. Answers at once — the resume runs in the background, and a send
+// that arrives first waits for it instead of racing a second restart. A JSON
+// 404 is an unknown session; the host reads a plain 404 as an older image.
+app.post('/sessions/:id/warm', (c) => {
+  const sessionId = c.req.param('id');
+  if (!sessionManager.hasSession(sessionId)) {
+    return c.json({ error: 'Session not found' }, 404);
+  }
+  void sessionManager.warmSession(sessionId).then(
+    (outcome) => {
+      if (outcome === 'resumed') console.log(`[Session ${sessionId}] Pre-resumed ahead of the next message`);
+    },
+    (error) => console.error(`[Session ${sessionId}] Pre-resume failed (the next send restarts it):`, error),
+  );
+  return c.json({ accepted: true }, 202);
+});
+
 // Message endpoints
 app.post('/sessions/:id/messages', async (c) => {
   const sessionId = c.req.param('id');
@@ -247,9 +302,11 @@ app.post('/sessions/:id/messages', async (c) => {
       effort: body.effort,
       speed: speedLevelSchema.parse(body.speed),
       model: body.model,
+      llmRuntime: body.llmRuntime ? connectionRuntimeSchema.parse(body.llmRuntime) : undefined,
       shouldQuery: body.shouldQuery,
       isAutomated: body.isAutomated,
       capabilityPolicies: agentCapabilityPoliciesSchema.parse(body.capabilityPolicies),
+      globalInstructions: globalInstructionsSchema.parse(body.globalInstructions),
     });
 
     return c.json({ success: true }, 201);
@@ -738,7 +795,7 @@ function validateBrowserSessionWithRecovery(requestSessionId: string): string | 
 
 const execFileAsync = promisify(execFile);
 
-import { resolveRunCommandArgs } from './browser-command-args';
+import { resolveRunCommandArgs, runCommandRefusal } from './browser-command-args';
 import { validatePressKey } from './press-key';
 import { prepareEvalScript, finalizeEvalOutput, evalErrorHint } from './eval-script';
 import { judgeSelectCommit, parseSelectOptions, targetOptionMatches, SELECT_COMMIT_SETTLE_MS } from './select-verify';
@@ -747,14 +804,20 @@ import { classifyWaitTarget, WAIT_PAGE_PROBE_SCRIPT, parseWaitPageProbe } from '
 /** Budget for the page probe around a wait — independent of the exec ceiling. */
 const WAIT_PAGE_PROBE_TIMEOUT_MS = 3000;
 import { resolveCommittedValue } from './field-value-readback';
-import { capBrowserOutput, redactCdpUrls, describeExecFailure, BROWSER_EXEC_TIMEOUT_MS, MAX_BROWSER_OUTPUT_CHARS, MAX_SNAPSHOT_RAW_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
-import { capSnapshot, compactWithText, countRefs, formatIframePlaceholders, formatTextFooter, THIN_TREE_REFS } from './snapshot-format';
+import { capBrowserOutput, redactCdpUrls, describeExecFailure, stripWebMcpNotices, cliJsonError, extractScreenshotPath, navigationNetError, BROWSER_EXEC_TIMEOUT_MS, MAX_BROWSER_OUTPUT_CHARS, MAX_SNAPSHOT_RAW_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
+import { capSnapshot, capReadText, compactWithText, countRefs, formatIframePlaceholders, formatTextFooter, THIN_TREE_REFS } from './snapshot-format';
 import { observerScript, parseObservation, EMPTY_OBSERVATION, PREVIEW_CHARS, THIN_TREE_PREVIEW_CHARS, type PageObservation } from './page-observer';
 import { formatStatusLine, waitForLoaded } from './page-status';
-import { observeAction, pressPolicy, ACTION_POLICIES, type ActionEffect, type ActionPolicy } from './action-settle';
+import { activeTabAddress, resolveErrorPageUrl } from './error-page-url';
+import { observeAction, pressPolicy, effectWantsTree, sameDocument, newDocument, ACTION_POLICIES, type ActionEffect, type ActionPolicy, type EffectTreeDiff } from './action-settle';
+import { acknowledgeTreeValue, diffTrees, formatUnknownRef, getTreeBaseline, lineFromPreviousDocument, lineWithoutRef, parseTreeRefs, resetTreeBaseline, setTreeBaseline } from './tree-diff';
+import { readerScript, parseReadResult, outlineOf, sectionOf, tidyRead, formatUnreadFrames } from './page-reader';
+import { parseIfChangedOutput, screenshotKey, rememberScreenshot, recallScreenshot, forgetScreenshots } from './screenshot-memory';
+import { noteChallenge, resetChallengedSites, useHumanInput } from './challenge-input';
+import { parseNetworkActivity, type NetworkActivity } from './network-activity';
+import { harSchema, redactHar, summarizeEndpoints, formatCaptureSummary, getCapture, setCapture, captureFileName, bodyFileName, requestFileName, readableBody } from './traffic-capture';
 import {
-  observeUrl, resetUrlTracking,
-  FILL_SETTLE_MS,
+  observeUrl, resetUrlTracking, lastObservedUrl,
   type UrlDigest, type ScrollInfo, parseScrollInfo,
 } from './browser-digest';
 
@@ -829,13 +892,16 @@ async function execBrowser(
         AGENT_BROWSER_ARGS: process.env.AGENT_BROWSER_ARGS || '--no-sandbox,--disable-blink-features=AutomationControlled',
       },
     });
-    return { stdout: capBrowserOutput(stdout.trim(), outputCap), exitCode: 0 };
+    // Raw on purpose: the server parses this output itself. Text bound for the
+    // agent is redacted where it leaves (the browser tools' results).
+    return { stdout: capBrowserOutput(stripWebMcpNotices(stdout.trim()), outputCap), exitCode: 0 };
   } catch (error: any) {
     // Full, unsanitized detail (incl. the command line with the CDP URL) goes
     // to container logs for connectivity debugging — never to the model.
-    console.error('[Browser] agent-browser failed:', error.message);
+    // Container logs reach error reports: no injected value goes along.
+    console.error('[Browser] agent-browser failed:', redactInjectedSecrets(String(error.message)));
     if (error.stderr) {
-      console.error('[Browser] agent-browser stderr:', error.stderr);
+      console.error('[Browser] agent-browser stderr:', redactInjectedSecrets(String(error.stderr)));
     }
     // error.message carries the full argv (the agent's own script or text)
     // and stands in for a cause it does not name — describeExecFailure
@@ -848,11 +914,29 @@ async function execBrowser(
   }
 }
 
+/**
+ * The URL the agent is shown: the page's own, except on Chrome's error page,
+ * where it is the address that failed to load (error-page-url.ts).
+ */
+function addressBarUrl(url: string): Promise<string> {
+  return resolveErrorPageUrl(url, async () => activeTabAddress(
+    await tabManager.queryTabs(),
+    getAllPageTargets,
+    (left, right) => tabManager.urlsMatch(left, right),
+  ));
+}
+
+/** An observation whose URL is the address bar's (see addressBarUrl). */
+async function withAddressBarUrl(obs: PageObservation): Promise<PageObservation> {
+  const url = await addressBarUrl(obs.url);
+  return url === obs.url ? obs : { ...obs, url };
+}
+
 /** Read the current URL after an action and build the navigation digest. */
 async function observeUrlDigest(): Promise<UrlDigest | null> {
   const r = await execBrowser(['get', 'url'], browserState.cdpUrl || undefined);
   if (r.exitCode !== 0 || !r.stdout.trim()) return null;
-  return observeUrl(r.stdout.trim());
+  return observeUrl(await addressBarUrl(r.stdout.trim()));
 }
 
 /** Run a page-observer script in the active page; null when the page cannot be read. */
@@ -864,7 +948,48 @@ async function observePage(script: string): Promise<string | null> {
 /** One observation of the current page. */
 async function observeNow(opts: { previewChars?: number } = {}): Promise<PageObservation> {
   const out = await observePage(observerScript(opts));
-  return (out === null ? null : parseObservation(out)) ?? EMPTY_OBSERVATION;
+  const obs = out === null ? null : parseObservation(out);
+  return obs ? withAddressBarUrl(obs) : EMPTY_OBSERVATION;
+}
+
+/**
+ * The requests an action issued (network-activity.ts), for how long its
+ * settle waits. The log is cleared as each action starts, so an agent's own
+ * `network requests` lists what was issued since its last action.
+ */
+const actionNetwork = {
+  start: async (): Promise<boolean> => (await execBrowser(['network', 'requests', '--clear'], browserState.cdpUrl || undefined)).exitCode === 0,
+  since: async (): Promise<NetworkActivity | null> => {
+    const r = await execBrowser(['network', 'requests', '--json', '--type', 'xhr,fetch'], browserState.cdpUrl || undefined, { outputCap: MAX_SNAPSHOT_RAW_CHARS });
+    return r.exitCode === 0 ? parseNetworkActivity(r.stdout) : null;
+  },
+};
+
+/** Budget for the tree read after an action — a heavy page's tree takes ~1 s. */
+const TREE_READ_TIMEOUT_MS = 10_000;
+
+/**
+ * Read the interactive tree after an action and diff it, by ref, against the
+ * last tree the agent was shown on this page (tree-diff.ts). The read becomes
+ * the new baseline either way. Null when it could not run or there was no
+ * baseline for this page to compare with.
+ */
+async function readTreeDiff(url: string, exclude: { refs?: string[]; subtrees?: string[]; overlayOpened?: boolean }, docStart = 0): Promise<EffectTreeDiff | null> {
+  const prior = getTreeBaseline(url, docStart);
+  const r = await execBrowser(['snapshot', '-i', '-c'], browserState.cdpUrl || undefined, { timeoutMs: TREE_READ_TIMEOUT_MS, outputCap: MAX_SNAPSHOT_RAW_CHARS });
+  if (r.exitCode !== 0) return null;
+  const now = Date.now();
+  // Diff before the read becomes the baseline: the baseline's `seen` lines
+  // carry over to the next one and would already include this read.
+  const result = prior
+    ? {
+      diff: diffTrees(prior.refs, parseTreeRefs(r.stdout), { excludeRefs: exclude.refs, excludeSubtrees: exclude.subtrees, seen: prior.seen, acknowledged: prior.acknowledged, overlayOpened: exclude.overlayOpened }),
+      baselineAgeMs: now - prior.takenAt,
+      baselineSource: prior.source,
+    }
+    : null;
+  setTreeBaseline(url, r.stdout, 'action', now, docStart);
+  return result;
 }
 
 /**
@@ -872,22 +997,132 @@ async function observeNow(opts: { previewChars?: number } = {}): Promise<PageObs
  * the result can say what the action did rather than only whether the URL
  * moved. The "after" observation also supplies the URL, so this replaces the
  * post-action `get url` at no extra round trip; a failed read falls back to
- * it. No effect is reported across a navigation.
+ * it. No effect is reported across a navigation. When the effect is
+ * structural, the changed elements come back as a tree diff with their refs.
  */
 async function runWithEffect(
-  action: () => Promise<{ exitCode: number; stdout: string }>,
+  action: (before: PageObservation | null) => Promise<{ exitCode: number; stdout: string }>,
   policy: ActionPolicy,
-): Promise<{ result: { exitCode: number; stdout: string }; digest: UrlDigest | null; effect: ActionEffect | null; settleMs: number }> {
+  opts: { excludeRefs?: string[]; excludeSubtrees?: string[] } = {},
+): Promise<{ result: { exitCode: number; stdout: string }; digest: UrlDigest | null; effect: ActionEffect | null; settleMs: number; treeDiff: EffectTreeDiff | null; docStart: number }> {
   const settled = await observeAction({
     exec: action,
     isFailure: r => r.exitCode !== 0,
     evalScript: observePage,
     policy,
+    network: actionNetwork,
   });
-  if (settled.result.exitCode !== 0) return { result: settled.result, digest: null, effect: null, settleMs: 0 };
-  const digest = settled.after?.url ? observeUrl(settled.after.url) : await observeUrlDigest();
-  const effect = digest?.navigated ? null : settled.effect;
-  return { result: settled.result, digest, effect, settleMs: settled.waitedMs };
+  noteChallenge(settled.before);
+  noteChallenge(settled.after);
+  if (settled.result.exitCode !== 0) return { result: settled.result, digest: null, effect: null, settleMs: 0, treeDiff: null, docStart: 0 };
+  const lastReported = lastObservedUrl();
+  const recorded = settled.after?.url ? observeUrl(await addressBarUrl(settled.after.url)) : await observeUrlDigest();
+  // With both reads in hand, the action navigated when the URL differs
+  // between them — not when it differs from the last URL some earlier call
+  // recorded (a page that moved on its own before this action did not
+  // "navigate" on it).
+  const reloaded = settled.before?.url === settled.after?.url && newDocument(settled.before, settled.after);
+  const movedBefore = lastReported !== null && settled.before?.url && settled.before.url !== lastReported && (await addressBarUrl(settled.before.url)) !== lastReported;
+  const observed = recorded && settled.before?.url && settled.after?.url
+    ? { ...recorded, navigated: settled.before.url !== settled.after.url || reloaded, ...(reloaded ? { reloaded: true } : {}), ...(movedBefore ? { changedBefore: lastReported } : {}) }
+    : recorded;
+  // A URL change inside one document (an SPA route, a hash) is not a page
+  // load: the effect and the refs carry over, and the result says so.
+  const sameDoc = Boolean(observed?.navigated) && sameDocument(settled.before, settled.after);
+  const digest = observed && sameDoc ? { ...observed, sameDocument: true } : observed;
+  const effect = digest?.navigated && !sameDoc ? null : settled.effect;
+  const docStart = settled.after?.docStart ?? 0;
+  const treeDiff = effect && digest && effectWantsTree(effect, policy.verb)
+    ? await readTreeDiff(digest.url, { refs: opts.excludeRefs, subtrees: opts.excludeSubtrees, overlayOpened: effect.opened.length > 0 }, docStart)
+    : null;
+  return { result: settled.result, digest, effect, settleMs: settled.waitedMs, treeDiff, docStart };
+}
+
+/**
+ * The CLI's `✗ Unknown ref: eN`, plus what eN was when the agent last saw it
+ * and which current refs carry exactly that line (tree-diff.ts
+ * formatUnknownRef). Refs persist since 0.38, so this error now means the
+ * element left the tree — most often a site re-rendering it under a new ref.
+ * Costs one tree read, only on this error; the read becomes the baseline.
+ */
+async function explainUnknownRef(stdout: string, actionRef?: string): Promise<string> {
+  // 0.39.1 falls back to role+name for a ref whose node is gone, and says
+  // "Could not locate element with role=… name=…" when that fails too: the
+  // same situation, named by the ref the action was given.
+  const m = /Unknown ref: @?(e\d+)/.exec(stdout)
+    ?? (/Could not locate element with role=/.test(stdout) && actionRef ? /@?(e\d+)/.exec(actionRef) : null);
+  if (!m) return stdout;
+  const cdp = browserState.cdpUrl || undefined;
+  // By document, not URL: after an in-page URL change (a back within the
+  // page, a hash) the baseline is still this document's.
+  const page = await observeNow();
+  if (!page.url) return stdout;
+  const was = getTreeBaseline(page.url, page.docStart)?.seen.get(m[1]);
+  if (!was) {
+    // A ref from before the page loaded a new document (the observer's load
+    // start moved on): every ref of that document is gone.
+    const old = lineFromPreviousDocument(m[1]);
+    return old
+      ? `${stdout}\n${m[1]} was ${lineWithoutRef(old.text).slice(0, 160)} on the previous page load (${old.url}); the page has loaded a new document since, and refs from before the load do not carry over.`
+      : stdout;
+  }
+  const fresh = await execBrowser(['snapshot', '-i', '-c'], cdp, { timeoutMs: TREE_READ_TIMEOUT_MS, outputCap: MAX_SNAPSHOT_RAW_CHARS });
+  if (fresh.exitCode !== 0) return stdout;
+  setTreeBaseline(page.url, fresh.stdout, 'action', Date.now(), page.docStart);
+  return stdout + formatUnknownRef(m[1], was, parseTreeRefs(fresh.stdout));
+}
+
+/**
+ * Run a ref action; when the CLI answers `Unknown ref` for it, read the tree
+ * once and, if the ref is in it, run the action again. The CLI drops its whole
+ * ref table when a snapshot fails part-way or a tab command runs, and a read
+ * brings every ref back unchanged — so the agent's ref was right all along.
+ * When the ref is not back, the first answer stands (explainUnknownRef).
+ */
+async function withRefRestore(ref: string | undefined, run: () => Promise<{ exitCode: number; stdout: string }>): Promise<{ exitCode: number; stdout: string }> {
+  const r = await run();
+  const id = r.exitCode !== 0 && ref ? /Unknown ref: @?(e\d+)/.exec(r.stdout)?.[1] : undefined;
+  if (!id || id !== ref?.replace(/^@/, '')) return r;
+  const fresh = await execBrowser(['snapshot', '-i', '-c'], browserState.cdpUrl || undefined, { timeoutMs: TREE_READ_TIMEOUT_MS, outputCap: MAX_SNAPSHOT_RAW_CHARS });
+  if (fresh.exitCode !== 0 || !parseTreeRefs(fresh.stdout).lines.has(id)) return r;
+  console.log(`[Browser] ${id} was unknown to the CLI but is in a fresh read — running the action again`);
+  return run();
+}
+
+/** The daemon's active tab, as a key for per-tab state: its CDP target id when the daemon reports one. */
+async function activeTabKey(): Promise<string> {
+  try {
+    const active = (await tabManager.queryTabs()).find(t => t.active);
+    return active?.targetId || active?.tabId || 'active';
+  } catch {
+    return 'active';
+  }
+}
+
+/**
+ * Forget everything kept about the browser that just went away: the tree the
+ * next action would be diffed against, the screenshots an "unchanged" answer
+ * would name, a traffic capture the daemon took with it, and the sites that
+ * served a challenge to it.
+ */
+function resetPerBrowserState(): void {
+  resetTreeBaseline();
+  forgetScreenshots();
+  setCapture(null);
+  resetChallengedSites();
+  closePreparedLogins();
+  forgetInjectedSecrets();
+}
+
+/**
+ * Requests only answerable while the browser exists: a hand-off. They may
+ * belong to a session other than the one that closed it (a background
+ * subagent parked on a hand-off). A sign-in is not one of them: the user may
+ * answer it long after its browser closed, and what they save then signs the
+ * agent in once it opens the page again.
+ */
+function rejectBrowserBoundInputs(reason: string): void {
+  inputManager.rejectByType('browser_input', reason);
 }
 
 /**
@@ -1153,6 +1388,11 @@ app.get('/browser/status', (c) => {
 });
 
 
+/** A URL's #fragment, '' when it has none or does not parse. */
+function urlHash(url: string): string {
+  try { return new URL(url).hash; } catch { return ''; }
+}
+
 // POST /browser/open - Start browser and navigate to URL
 app.post('/browser/open', async (c) => {
   try {
@@ -1197,27 +1437,34 @@ app.post('/browser/open', async (c) => {
       broadcastBrowserEvent(false);
       _setBrowserState({ active: false, sessionId: null, cdpUrl: null, location: null });
       tabManager.resetTabCount();
-      inputManager.rejectByType(
-        'browser_input',
-        'The browser provider changed before the user completed this request'
-      );
+      resetPerBrowserState();
+      rejectBrowserBoundInputs('The browser provider changed before the user completed this request');
     }
 
     // If browser is already active, check for a matching tab before opening a new one
     if (browserState.active) {
       const matchingTab = await tabManager.findMatchingTab(body.url);
       if (matchingTab) {
-        await execBrowser(['tab', matchingTab.tabId], browserState.cdpUrl || undefined);
-        await tabManager.syncTabCount();
+        if (!matchingTab.active) {
+          await execBrowser(['tab', matchingTab.tabId], browserState.cdpUrl || undefined);
+          await tabManager.syncTabCount();
+          // The tree baseline is the active tab's; the same tab keeps its own.
+          resetTreeBaseline();
+        }
         observeUrl(matchingTab.url); // seed URL baseline for post-action digests
-        notifyBrowserAction();
-        return c.json({
-          success: true,
-          switchedToExisting: true,
-          tabId: matchingTab.tabId,
-          url: matchingTab.url,
-          location,
-        });
+        // An anchor the tab is not at (#section-b on a tab at #section-a):
+        // the tab is now active, and the open below takes it there.
+        const wantHash = urlHash(body.url);
+        if (!wantHash || wantHash === urlHash(matchingTab.url)) {
+          notifyBrowserAction();
+          return c.json({
+            success: true,
+            switchedToExisting: true,
+            tabId: matchingTab.tabId,
+            url: matchingTab.url,
+            location,
+          });
+        }
       }
     }
 
@@ -1231,20 +1478,32 @@ app.post('/browser/open', async (c) => {
     // Configure Chrome to save downloads to /workspace/downloads so the agent can access them
     await ensureBrowserDownloadPreferences(profile, WORKSPACE_DOWNLOADS_DIR);
 
-    // Clean up any leftover daemon state before starting
-    cleanupAgentBrowserDaemon();
+    // Clear leftover daemon state only before a net-new launch. While a browser
+    // is active the daemon owns the container's Chrome, so this cleanup (which
+    // pkills agent-browser and headless Chrome) relaunched Chrome on every
+    // navigation and dropped the live-view screencast. Failed opens still clean
+    // up in the retry below.
+    if (launched) cleanupAgentBrowserDaemon();
 
     let result = await execBrowser(['open', body.url, '--profile', profile], cdpUrl);
 
+    // A navigation Chrome answered with its own error page (refused
+    // connection, unknown host, TLS failure) is the browser working: the CLI
+    // exits non-zero, but the tab is on Chrome's error document for that
+    // address, and the landing report below says so. Treating it as a launch
+    // failure killed the daemon and Chrome — every open tab with it — before
+    // retrying a URL that fails the same way.
+    const navNetError = result.exitCode !== 0 ? navigationNetError(result.stdout) : null;
+
     // Retry once on failure — agent-browser daemon startup can be flaky
-    if (result.exitCode !== 0) {
+    if (result.exitCode !== 0 && !navNetError) {
       console.error('[Browser] First open attempt failed, retrying:', result.stdout);
       cleanupAgentBrowserDaemon();
       await new Promise(r => setTimeout(r, 1000));
       result = await execBrowser(['open', body.url, '--profile', profile], cdpUrl);
     }
 
-    if (result.exitCode !== 0) {
+    if (result.exitCode !== 0 && !navNetError) {
       const debugInfo = ` [location=${location}, attempts=2]`;
       return c.json({ error: `${result.stdout}${debugInfo}`, success: false }, 500);
     }
@@ -1265,20 +1524,31 @@ app.post('/browser/open', async (c) => {
 
     browserOpenGeneration++;
     _setBrowserState({ active: true, sessionId: body.sessionId, cdpUrl: cdpUrl || null, location });
+    // The daemon's count, not 1: an open in a live browser keeps its other
+    // tabs, and a stale 1 made the next tab command report a "new tab".
     tabManager.resetTabCount();
+    await tabManager.syncTabCount();
     resetUrlTracking();
+    // A new document: no tree from before it can be diffed against.
+    resetTreeBaseline();
     // Read the landing page once: it seeds the URL baseline so the FIRST
     // post-action digest can distinguish "navigated" from "unchanged", and it
     // tells the tool where the browser actually ended up — final URL, title,
     // HTTP status, challenge wall, net error — instead of echoing the requested
     // URL (transcript-mining theme 2: a 429, a login redirect and about:blank
     // all used to read "Browser opened and navigating to <url>").
-    const page = await observeNow({ previewChars: THIN_TREE_PREVIEW_CHARS });
+    const observed = await observeNow({ previewChars: THIN_TREE_PREVIEW_CHARS });
+    // The headless shell's error page carries no ERR_ code in its text; the
+    // CLI's navigation error does.
+    const page = navNetError && observed.url && (!observed.netError || observed.netError === 'net error')
+      ? { ...observed, netError: navNetError }
+      : observed;
+    noteChallenge(page);
     if (page.url) {
       observeUrl(page.url);
     } else {
       const fallback = await execBrowser(['get', 'url'], cdpUrl);
-      if (fallback.exitCode === 0 && fallback.stdout.trim()) observeUrl(fallback.stdout.trim());
+      if (fallback.exitCode === 0 && fallback.stdout.trim()) observeUrl(await addressBarUrl(fallback.stdout.trim()));
     }
     broadcastBrowserEvent(true);
 
@@ -1314,16 +1584,14 @@ app.post('/browser/close', async (c) => {
     broadcastBrowserEvent(false);
     _setBrowserState({ active: false, sessionId: null, cdpUrl: null, location: null });
     tabManager.resetTabCount();
+    resetPerBrowserState();
 
     // A browser_input request is only answerable while the browser exists —
     // and it may belong to a session OTHER than the closer (e.g. a background
     // subagent parked on a login while the main agent closes the browser).
     // Reject them all so blocked awaiters unblock instead of hanging for the
     // 24h human-input TTL behind a card the user can no longer act on.
-    inputManager.rejectByType(
-      'browser_input',
-      'The browser was closed before the user completed this request'
-    );
+    rejectBrowserBoundInputs('The browser was closed before the user completed this request');
 
     return c.json({ success: true });
   } catch (error: any) {
@@ -1382,14 +1650,12 @@ async function handleExternalBrowserClose(
     broadcastBrowserEvent(false, ownerSessionId);
     _setBrowserState({ active: false, sessionId: null, cdpUrl: null, location: null });
     tabManager.resetTabCount();
+    resetPerBrowserState();
     console.log(`[Browser] Browser closed externally (${reason}), state cleaned up`);
   }
   // Outside the guard: an external close can race the active flag, and a
   // pending browser_input is unanswerable once the browser is gone either way.
-  inputManager.rejectByType(
-    'browser_input',
-    'The browser was closed before the user completed this request'
-  );
+  rejectBrowserBoundInputs('The browser was closed before the user completed this request');
 
   // Only when we detected this ourselves. A host-driven close has already torn
   // the process down — the window is gone but, on macOS, the app it belonged
@@ -1452,13 +1718,26 @@ app.post('/browser/snapshot', async (c) => {
       const out = await observePage(observerScript({ previewChars: THIN_TREE_PREVIEW_CHARS }));
       return out === null ? null : parseObservation(out);
     });
-    const probe = observed ?? EMPTY_OBSERVATION;
+    const probe = observed ? await withAddressBarUrl(observed) : EMPTY_OBSERVATION;
+    noteChallenge(probe);
+    // What the agent now sees is the URL the next action is compared with: a
+    // site that rewrote its URL after load must not make that action read as
+    // a navigation (bench, Meta Ad Library: "Page NAVIGATED" on a dialog click).
+    if (probe.url) observeUrl(probe.url);
 
     // The snapshot has its own cap (capSnapshot) that reports the true size;
     // the exec-level cap must not truncate first.
     const result = await execBrowser(snapshotArgs, browserState.cdpUrl || undefined, { outputCap: MAX_SNAPSHOT_RAW_CHARS });
 
     if (result.exitCode !== 0) {
+      // agent-browser clears its ref table before it resolves the scope, so a
+      // selector that matched nothing left every ref "Unknown" (bench, Toyota:
+      // two clicks on refs still on the page failed). One unscoped read
+      // restores the table — refs persist, so they come back unchanged.
+      if (body.scope) {
+        const restore = await execBrowser(['snapshot', '-i', '-c'], browserState.cdpUrl || undefined, { timeoutMs: TREE_READ_TIMEOUT_MS, outputCap: MAX_SNAPSHOT_RAW_CHARS });
+        if (restore.exitCode === 0 && probe.url) setTreeBaseline(probe.url, restore.stdout, 'snapshot', Date.now(), probe.docStart);
+      }
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
@@ -1484,11 +1763,17 @@ app.post('/browser/snapshot', async (c) => {
     const fullText = Boolean(body.fullText);
     const tree = fullText && body.compact !== false ? compactWithText(result.stdout) : result.stdout;
 
+    // The tree the agent now holds is what the next action is diffed
+    // against. Refs are assigned page-wide in every mode, so the default and
+    // the fullText views both serve; a scoped tree holds only part of the
+    // page and would read as everything else having been removed.
+    if (!body.scope && probe.url) setTreeBaseline(probe.url, result.stdout, 'snapshot', Date.now(), probe.docStart);
+
     const header = formatStatusLine(probe, refCount, { waitedMs });
     return c.json({
       snapshot:
         (header ? `${header}\n\n` : '') +
-        capSnapshot(tree, Boolean(body.scope)) +
+        capSnapshot(tree, Boolean(body.scope), probe.top.find(t => t.kind === 'dialog' || t.kind === 'alertdialog')) +
         formatTextFooter(probe, { fullText, scoped: Boolean(body.scope), previewChars }) +
         formatIframePlaceholders(iframes, tree),
       iframes,
@@ -1519,18 +1804,29 @@ app.post('/browser/click', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const { result, digest, effect, settleMs } = await runWithEffect(
-      () => execBrowser(['click', body.ref], browserState.cdpUrl || undefined),
-      ACTION_POLICIES.click,
+    // On a challenge wall, and on a site that served one, the click moves the
+    // mouse along a human-like path first (challenge-input.ts).
+    let humanInput = false;
+    // Focus landing in a text field ends a click's wait only when the field is
+    // what was clicked: a dialog's "Done" that hands focus back to a date
+    // field is still closing (bench: Google Hotels).
+    const target = getTreeBaseline((await tabManager.queryTabs().catch(() => [])).find(t => t.active)?.url ?? '')?.seen.get(body.ref.replace(/^@/, '')) ?? '';
+    const clickedField = target === '' || /^(textbox|searchbox|combobox|textarea)\b/.test(target);
+    const { result, digest, effect, settleMs, treeDiff } = await runWithEffect(
+      (before) => {
+        humanInput = useHumanInput(before);
+        return withRefRestore(body.ref, () => execBrowser(['click', body.ref, ...(humanInput ? ['--human'] : [])], browserState.cdpUrl || undefined));
+      },
+      clickedField ? ACTION_POLICIES.click : { ...ACTION_POLICIES.click, recheck: () => true },
     );
 
     if (result.exitCode !== 0) {
-      return c.json({ error: result.stdout, success: false }, 500);
+      return c.json({ error: await explainUnknownRef(result.stdout, body.ref), success: false }, 500);
     }
 
     const tabInfo = await tabManager.detectNewTab();
     notifyBrowserAction();
-    return c.json({ success: true, settleMs, ...(digest && { digest }), ...(effect && { effect }), ...(tabInfo && { tabInfo }) });
+    return c.json({ success: true, settleMs, ...(digest && { digest }), ...(effect && { effect }), ...(treeDiff && { treeDiff }), ...(tabInfo && { tabInfo }), ...(humanInput ? { humanInput: true } : {}) });
   } catch (error: any) {
     console.error('[Browser] Error clicking:', error);
     return c.json({ error: error.message || 'Failed to click' }, 500);
@@ -1555,20 +1851,30 @@ app.post('/browser/fill', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const result = await execBrowser(['fill', body.ref, body.value], browserState.cdpUrl || undefined);
+    // Through the settle like a click: a fill can open a suggestion list,
+    // raise a validation message or reveal fields, and the result should say
+    // so. The field's own line is left out of the tree diff — the read-back
+    // below reports it.
+    const { result, digest, effect, settleMs, treeDiff, docStart } = await runWithEffect(
+      () => withRefRestore(body.ref, () => execBrowser(['fill', body.ref, body.value], browserState.cdpUrl || undefined)),
+      ACTION_POLICIES.fill,
+      { excludeRefs: [body.ref] },
+    );
 
     if (result.exitCode !== 0) {
-      return c.json({ error: result.stdout, success: false }, 500);
+      return c.json({ error: await explainUnknownRef(result.stdout, body.ref), success: false }, 500);
     }
 
-    // Read the value back after a settle: the CLI reports success regardless
+    // Read the value back after the settle: the CLI reports success regardless
     // of what the page kept (maxlength truncation, JS reformatting,
     // keystroke-only widgets — audit F6).
-    await sleep(FILL_SETTLE_MS);
     const committedValue = await readCommittedFieldValue(body.ref);
+    // The agent now knows this field's value: the next tree diff must not
+    // report it as a change since the baseline.
+    if (digest) acknowledgeTreeValue(digest.url, body.ref, committedValue, docStart);
 
     notifyBrowserAction();
-    return c.json({ success: true, ...(committedValue !== null && { committedValue }) });
+    return c.json({ success: true, settleMs, ...(committedValue !== null && { committedValue }), ...(effect && { effect }), ...(treeDiff && { treeDiff }) });
   } catch (error: any) {
     console.error('[Browser] Error filling:', error);
     return c.json({ error: error.message || 'Failed to fill' }, 500);
@@ -1576,6 +1882,9 @@ app.post('/browser/fill', async (c) => {
 });
 
 // POST /browser/scroll - Scroll page
+/** How long a scroll that reached the bottom waits for a page that loads more on scroll. */
+const SCROLL_BOTTOM_RECHECK_MS = 1_500;
+
 app.post('/browser/scroll', async (c) => {
   try {
     const body = await c.req.json<{ sessionId: string; direction: string; amount?: number }>();
@@ -1602,11 +1911,21 @@ app.post('/browser/scroll', async (c) => {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    const probe = await execBrowser(
-      ['eval', 'JSON.stringify({y:window.scrollY,vh:window.innerHeight,h:document.documentElement.scrollHeight})'],
-      browserState.cdpUrl || undefined
-    );
-    const scrollInfo: ScrollInfo | null = probe.exitCode === 0 ? parseScrollInfo(probe.stdout) : null;
+    const readScroll = async (): Promise<ScrollInfo | null> => {
+      const probe = await execBrowser(
+        ['eval', 'JSON.stringify({y:window.scrollY,vh:window.innerHeight,h:document.documentElement.scrollHeight})'],
+        browserState.cdpUrl || undefined
+      );
+      return probe.exitCode === 0 ? parseScrollInfo(probe.stdout) : null;
+    };
+    let scrollInfo = await readScroll();
+    // At the bottom after scrolling down: a feed that loads more on scroll
+    // grows a moment later (live: "(bottom of page)" 8 ms after the scroll,
+    // the next batch 1.5 s after). One more look before saying so.
+    if (scrollInfo && body.direction === 'down' && scrollInfo.y + scrollInfo.viewportHeight >= scrollInfo.pageHeight) {
+      await new Promise(r => setTimeout(r, SCROLL_BOTTOM_RECHECK_MS));
+      scrollInfo = (await readScroll()) ?? scrollInfo;
+    }
 
     notifyBrowserAction();
     return c.json({ success: true, ...(scrollInfo && { scrollInfo }) });
@@ -1617,6 +1936,9 @@ app.post('/browser/scroll', async (c) => {
 });
 
 // POST /browser/wait - Wait for condition
+/** The longest sleep browser_wait takes; a longer one sleeps this long and says how long it waited. */
+const WAIT_MS_MAX = 120_000;
+
 app.post('/browser/wait', async (c) => {
   try {
     const body = await c.req.json<{ sessionId: string; for: string }>();
@@ -1640,7 +1962,10 @@ app.post('/browser/wait', async (c) => {
     }
 
     const started = Date.now();
-    const result = await execBrowser(target.args, browserState.cdpUrl || undefined);
+    // A sleep runs as long as it was asked to: the exec ceiling (30 s) cut a
+    // 45 s wait off as an error. Capped so one call cannot hold the browser.
+    const timeoutMs = target.kind === 'ms' ? Math.max(BROWSER_EXEC_TIMEOUT_MS, Math.min(target.ms, WAIT_MS_MAX) + 5_000) : undefined;
+    const result = await execBrowser(target.kind === 'ms' && target.ms > WAIT_MS_MAX ? ['wait', String(WAIT_MS_MAX)] : target.args, browserState.cdpUrl || undefined, timeoutMs ? { timeoutMs } : {});
     const elapsedMs = Date.now() - started;
 
     // Where the page is now, read through a short budget of its own: a wait
@@ -1649,7 +1974,8 @@ app.post('/browser/wait', async (c) => {
     // answer in time simply yields no page line.
     const probePage = async (): Promise<{ url: string; readyState: string } | null> => {
       const probe = await execBrowser(['eval', WAIT_PAGE_PROBE_SCRIPT], browserState.cdpUrl || undefined, { timeoutMs: WAIT_PAGE_PROBE_TIMEOUT_MS });
-      return probe.exitCode === 0 ? parseWaitPageProbe(probe.stdout) : null;
+      const page = probe.exitCode === 0 ? parseWaitPageProbe(probe.stdout) : null;
+      return page ? { ...page, url: await addressBarUrl(page.url) } : null;
     };
 
     if (result.exitCode !== 0) {
@@ -1702,7 +2028,7 @@ app.post('/browser/press', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const { result, digest, effect, settleMs } = await runWithEffect(
+    const { result, digest, effect, settleMs, treeDiff } = await runWithEffect(
       () => execBrowser(['press', body.key], browserState.cdpUrl || undefined),
       pressPolicy(body.key),
     );
@@ -1713,7 +2039,7 @@ app.post('/browser/press', async (c) => {
 
     const tabInfo = await tabManager.detectNewTab();
     notifyBrowserAction();
-    return c.json({ success: true, settleMs, ...(digest && { digest }), ...(effect && { effect }), ...(tabInfo && { tabInfo }) });
+    return c.json({ success: true, settleMs, ...(digest && { digest }), ...(effect && { effect }), ...(treeDiff && { treeDiff }), ...(tabInfo && { tabInfo }) });
   } catch (error: any) {
     console.error('[Browser] Error pressing key:', error);
     return c.json({ error: error.message || 'Failed to press key' }, 500);
@@ -1723,7 +2049,7 @@ app.post('/browser/press', async (c) => {
 // POST /browser/screenshot - Take screenshot
 app.post('/browser/screenshot', async (c) => {
   try {
-    const body = await c.req.json<{ sessionId: string; full?: boolean; annotate?: boolean }>();
+    const body = await c.req.json<{ sessionId: string; full?: boolean; annotate?: boolean; force?: boolean }>();
 
     if (!body.sessionId) {
       return c.json({ error: 'sessionId is required' }, 400);
@@ -1738,20 +2064,241 @@ app.post('/browser/screenshot', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const screenshotArgs = ['screenshot'];
-    if (body.full) screenshotArgs.push('--full');
-    if (body.annotate) screenshotArgs.push('--annotate');
+    const capture = async (extra: string[]) => {
+      const args = ['screenshot', ...extra];
+      if (body.full) args.push('--full');
+      if (body.annotate) args.push('--annotate');
+      return execBrowser(args, browserState.cdpUrl || undefined);
+    };
 
-    const result = await execBrowser(screenshotArgs, browserState.cdpUrl || undefined);
+    // An annotated capture is for its labels, and force asks for an image
+    // regardless: both always capture.
+    if (body.annotate || body.force) {
+      const result = await capture([]);
+      if (result.exitCode !== 0) {
+        return c.json({ error: result.stdout, success: false }, 500);
+      }
+      return c.json({ success: true, output: result.stdout });
+    }
 
+    // Otherwise only when the page looks different from the last image this
+    // tab and mode produced (screenshot-memory.ts).
+    const key = screenshotKey(await activeTabKey(), Boolean(body.full));
+    const conditional = await capture(['--if-changed', '--json']);
+    if (conditional.exitCode !== 0) {
+      return c.json({ error: cliJsonError(conditional.stdout), success: false }, 500);
+    }
+    const shot = parseIfChangedOutput(conditional.stdout);
+    if (shot?.changed && shot.path) {
+      rememberScreenshot(key, shot.path);
+      return c.json({ success: true, path: shot.path });
+    }
+    if (shot && !shot.changed) {
+      const previous = recallScreenshot(key);
+      if (previous && fs.existsSync(previous.path)) {
+        return c.json({
+          success: true,
+          unchanged: true,
+          previousPath: previous.path,
+          previousAgeMs: Date.now() - previous.takenAt,
+          pixelChangeRatio: shot.pixelChangeRatio,
+        });
+      }
+    }
+
+    // Unchanged against an image this server cannot name (taken before a
+    // restart, swept, or too old to offer), or output it could not read: take
+    // a plain capture. When the CLI said "unchanged", the new file shows the
+    // same pixels as its baseline, so it is what the next "unchanged" names.
+    const result = await capture([]);
     if (result.exitCode !== 0) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
-
+    const path = extractScreenshotPath(result.stdout);
+    if (shot && !shot.changed && path.startsWith('/')) rememberScreenshot(key, path);
     return c.json({ success: true, output: result.stdout });
   } catch (error: any) {
     console.error('[Browser] Error taking screenshot:', error);
     return c.json({ error: error.message || 'Failed to take screenshot' }, 500);
+  }
+});
+
+// POST /browser/read - The page's visible text as light markdown (page-reader.ts)
+app.post('/browser/read', async (c) => {
+  try {
+    const body = await c.req.json<{ sessionId: string; outline?: boolean; section?: string }>();
+
+    if (!body.sessionId) {
+      return c.json({ error: 'sessionId is required' }, 400);
+    }
+
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
+    if (validationError) {
+      return c.json({ error: validationError }, 409);
+    }
+
+    if (!browserState.active) {
+      return c.json({ error: 'Browser is not active' }, 400);
+    }
+
+    // Same hold as a snapshot while the document is still loading; the
+    // observation also supplies the status line.
+    const { obs: observed, waitedMs } = await waitForLoaded(async () => {
+      const out = await observePage(observerScript());
+      return out === null ? null : parseObservation(out);
+    });
+    const probe = observed ? await withAddressBarUrl(observed) : EMPTY_OBSERVATION;
+    noteChallenge(probe);
+    if (probe.url) observeUrl(probe.url);
+
+    // The page's whole text comes back as one JSON string: past the default
+    // exec cap it would be cut mid-string and unparseable.
+    const raw = await execBrowser(['eval', readerScript()], browserState.cdpUrl || undefined, { outputCap: MAX_SNAPSHOT_RAW_CHARS });
+    const read = raw.exitCode === 0 ? parseReadResult(raw.stdout) : null;
+    if (!read) {
+      return c.json({ error: 'The page text could not be read (the page did not answer the read script).', success: false }, 500);
+    }
+
+    const text = tidyRead(read.text);
+    let content: string;
+    let note = '';
+    if (body.outline) {
+      content = outlineOf(text);
+      if (!content) note = 'The page has no headings.';
+    } else if (body.section && body.section.trim()) {
+      content = sectionOf(text, body.section);
+      if (!content) {
+        const outline = outlineOf(text);
+        note = `No heading contains ${JSON.stringify(body.section.trim())}.${outline ? ` Headings on this page:\n${outline}` : ' The page has no headings.'}`;
+      }
+    } else {
+      content = text;
+      // Nothing visible is an observation too — not an empty result to read as "no data".
+      if (!content) note = `The reader found no visible text on the page${probe.textChars > 0 ? `; the document's innerText has ${probe.textChars.toLocaleString('en-US')} chars (browser_snapshot with fullText:true shows text beside refs)` : ''}.`;
+    }
+
+    // A dialog or banner on top reads like the page's own text; name it.
+    const onTop = probe.top.length > 0
+      ? `\nOpen on top of the page: ${probe.top.map(t => `${t.kind}${t.name ? ` ${JSON.stringify(t.name)}` : ''}`).join(', ')}`
+      : '';
+    const header = formatStatusLine(probe, null, { waitedMs }) + (formatStatusLine(probe, null) ? onTop : '');
+    return c.json({
+      success: true,
+      text: (header ? `${header}\n\n` : '') + (content ? capReadText(content, { collectTruncated: read.truncated && !body.outline && !body.section }) : '') + (note ? `${content ? '\n\n' : ''}${note}` : '') + formatUnreadFrames(read.frames),
+      chars: content.length,
+    });
+  } catch (error: any) {
+    console.error('[Browser] Error reading page:', error);
+    return c.json({ error: error.message || 'Failed to read page' }, 500);
+  }
+});
+
+const WORKSPACE_CAPTURES_DIR = '/workspace/captures';
+
+// POST /browser/capture-traffic - Record network traffic to a redacted HAR (traffic-capture.ts)
+app.post('/browser/capture-traffic', async (c) => {
+  try {
+    const body = await c.req.json<{ sessionId: string; action?: string; label?: string }>();
+
+    if (!body.sessionId || (body.action !== 'start' && body.action !== 'stop')) {
+      return c.json({ error: 'sessionId and action ("start" or "stop") are required' }, 400);
+    }
+
+    const validationError = validateBrowserSessionWithRecovery(body.sessionId);
+    if (validationError) {
+      return c.json({ error: validationError }, 409);
+    }
+
+    if (!browserState.active) {
+      return c.json({ error: 'Browser is not active' }, 400);
+    }
+
+    const current = getCapture();
+    if (body.action === 'start') {
+      if (current) {
+        return c.json({ error: `A capture is already recording (started ${Math.round((Date.now() - current.startedAt) / 1000)}s ago). Stop it first.`, success: false }, 409);
+      }
+      const r = await execBrowser(['network', 'har', 'start', '--content', 'text'], browserState.cdpUrl || undefined);
+      if (r.exitCode !== 0) {
+        return c.json({ error: r.stdout, success: false }, 500);
+      }
+      const page = await observeNow();
+      setCapture({ startedAt: Date.now(), url: page.url });
+      return c.json({ success: true, started: true, url: page.url });
+    }
+
+    if (!current) {
+      return c.json({ error: 'No traffic capture is recording. Start one with action "start" before the steps you want recorded.', success: false }, 409);
+    }
+    const rawPath = path.join('/tmp', `superagent-har-${process.pid}-${Date.now()}.har`);
+    const stopped = await execBrowser(['network', 'har', 'stop', rawPath], browserState.cdpUrl || undefined);
+    setCapture(null);
+    try {
+      if (stopped.exitCode !== 0) {
+        return c.json({ error: stopped.stdout, success: false }, 500);
+      }
+      const har = harSchema.parse(JSON.parse(await fs.promises.readFile(rawPath, 'utf-8')));
+      // By name (tokens, cookies, auth headers), then by value: a password or
+      // code the host injected, in whatever field the site posted it.
+      const redacted = redactInjectedSecretsDeep(redactHar(har));
+      await fs.promises.mkdir(WORKSPACE_CAPTURES_DIR, { recursive: true });
+      const fileName = captureFileName(body.label);
+      const outPath = path.join(WORKSPACE_CAPTURES_DIR, fileName);
+      await fs.promises.writeFile(outPath, JSON.stringify(redacted, null, 2));
+      const { endpoints, more } = summarizeEndpoints(redacted, current.url);
+
+      // Each data endpoint's first response body as its own readable file:
+      // the web-browser agent has Read but no jq, and one 50 KB JSON line in
+      // the HAR is past what Read returns (bench, SFPL).
+      const bodies = new Map<string, string>();
+      const bodyDir = path.join(WORKSPACE_CAPTURES_DIR, fileName.replace(/\.har$/, ''));
+      let n = 0;
+      for (const e of endpoints) {
+        // The largest response at that URL (the summary's example).
+        const entry = redacted.log.entries
+          .filter(x => x.request.method === e.method && x.request.url === e.url && typeof x.response.content.text === 'string')
+          .sort((a, b) => (b.response.content.text?.length ?? 0) - (a.response.content.text?.length ?? 0))[0];
+        if (!entry?.response.content.text) continue;
+        if (n === 0) await fs.promises.mkdir(bodyDir, { recursive: true });
+        const file = path.join(bodyDir, bodyFileName(++n, e.url, e.mimeType));
+        // Pretty-printing re-serializes JSON, which decodes escapes (`&`)
+        // the HAR's redaction could not see through: redact what is written.
+        await fs.promises.writeFile(file, redactInjectedSecrets(readableBody(entry.response.content.text)));
+        // Its request too, so the headers can be read without opening the
+        // whole HAR (bench, USGS: a 62,000-token file read in pieces).
+        await fs.promises.writeFile(requestFileName(file), JSON.stringify({
+          method: entry.request.method,
+          url: entry.request.url,
+          headers: entry.request.headers,
+          ...(entry.request.postData ? { postData: entry.request.postData } : {}),
+        }, null, 2));
+        bodies.set(`${e.method} ${e.url}`, file);
+      }
+
+      // The cookie names the browser holds for the page's site — never values.
+      let cookieNames: string[] | undefined;
+      try {
+        const site = new URL(current.url).hostname.replace(/^www\./, '').split('.').slice(-2).join('.');
+        const ck = await execBrowser(['cookies', '--json'], browserState.cdpUrl || undefined);
+        const parsed = z.object({ data: z.object({ cookies: z.array(z.object({ name: z.string(), domain: z.string() }).passthrough()) }) }).safeParse(JSON.parse(ck.stdout));
+        if (ck.exitCode === 0 && parsed.success) {
+          cookieNames = [...new Set(parsed.data.data.cookies.filter(k => k.domain.replace(/^\./, '').endsWith(site)).map(k => k.name))];
+        }
+      } catch { /* no page URL or unreadable output: leave the line out */ }
+
+      return c.json({
+        success: true,
+        path: outPath,
+        requestCount: redacted.log.entries.length,
+        summary: formatCaptureSummary({ path: outPath, requestCount: redacted.log.entries.length, endpoints, more, durationMs: Date.now() - current.startedAt, bodies, cookieNames }),
+      });
+    } finally {
+      // The raw file holds live credentials: never leave it behind.
+      await fs.promises.rm(rawPath, { force: true });
+    }
+  } catch (error: any) {
+    console.error('[Browser] Error capturing traffic:', error);
+    return c.json({ error: error.message || 'Failed to capture traffic' }, 500);
   }
 });
 
@@ -1783,13 +2330,14 @@ app.post('/browser/select', async (c) => {
 
     const before = await readValue();
 
-    const { result, effect, settleMs } = await runWithEffect(
-      () => execBrowser(['select', body.ref, body.value], browserState.cdpUrl || undefined),
+    const { result, digest, effect, settleMs, treeDiff, docStart } = await runWithEffect(
+      () => withRefRestore(body.ref, () => execBrowser(['select', body.ref, body.value], browserState.cdpUrl || undefined)),
       { ...ACTION_POLICIES.select, settleMs: SELECT_COMMIT_SETTLE_MS },
+      { excludeSubtrees: [body.ref] },
     );
 
     if (result.exitCode !== 0) {
-      return c.json({ error: result.stdout, success: false }, 500);
+      return c.json({ error: await explainUnknownRef(result.stdout, body.ref), success: false }, 500);
     }
 
     const after = await readValue();
@@ -1812,9 +2360,12 @@ app.post('/browser/select', async (c) => {
     if (!judgement.ok) {
       return c.json({ error: judgement.reason, success: false }, 500);
     }
+    // The tree shows the chosen option's label, the read-back its value:
+    // acknowledge the select (and its options) without comparing.
+    if (digest) acknowledgeTreeValue(digest.url, body.ref, null, docStart);
 
     notifyBrowserAction();
-    return c.json({ success: true, committedValue: judgement.committed, settleMs, ...(effect && { effect }) });
+    return c.json({ success: true, committedValue: judgement.committed, settleMs, ...(effect && { effect }), ...(treeDiff && { treeDiff }) });
   } catch (error: any) {
     console.error('[Browser] Error selecting:', error);
     return c.json({ error: error.message || 'Failed to select' }, 500);
@@ -1839,17 +2390,17 @@ app.post('/browser/hover', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    const { result, effect, settleMs } = await runWithEffect(
-      () => execBrowser(['hover', body.ref], browserState.cdpUrl || undefined),
+    const { result, effect, settleMs, treeDiff } = await runWithEffect(
+      () => withRefRestore(body.ref, () => execBrowser(['hover', body.ref], browserState.cdpUrl || undefined)),
       ACTION_POLICIES.hover,
     );
 
     if (result.exitCode !== 0) {
-      return c.json({ error: result.stdout, success: false }, 500);
+      return c.json({ error: await explainUnknownRef(result.stdout, body.ref), success: false }, 500);
     }
 
     notifyBrowserAction();
-    return c.json({ success: true, settleMs, ...(effect && { effect }) });
+    return c.json({ success: true, settleMs, ...(effect && { effect }), ...(treeDiff && { treeDiff }) });
   } catch (error: any) {
     console.error('[Browser] Error hovering:', error);
     return c.json({ error: error.message || 'Failed to hover' }, 500);
@@ -1932,20 +2483,24 @@ app.post('/browser/type', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    if (body.ref) {
-      const focusResult = await execBrowser(['focus', body.ref], browserState.cdpUrl || undefined);
-      if (focusResult.exitCode !== 0) {
-        return c.json({ error: focusResult.stdout, success: false }, 500);
-      }
-    }
-
     // `keyboard type` dispatches real key events into whatever has focus —
     // this is what drives keystroke-listening widgets (Stripe card fields,
-    // OTP boxes, typeaheads) that programmatic fill cannot.
-    const result = await execBrowser(['keyboard', 'type', body.text], browserState.cdpUrl || undefined);
+    // OTP boxes, typeaheads) that programmatic fill cannot. Through the
+    // settle, so a suggestion list the typing opened is reported.
+    const { result, digest, effect, settleMs, treeDiff, docStart } = await runWithEffect(
+      async () => {
+        if (body.ref) {
+          const focusResult = await withRefRestore(body.ref, () => execBrowser(['focus', body.ref as string], browserState.cdpUrl || undefined));
+          if (focusResult.exitCode !== 0) return focusResult;
+        }
+        return execBrowser(['keyboard', 'type', body.text], browserState.cdpUrl || undefined);
+      },
+      ACTION_POLICIES.type,
+      { excludeRefs: body.ref ? [body.ref] : [] },
+    );
 
     if (result.exitCode !== 0) {
-      return c.json({ error: result.stdout, success: false }, 500);
+      return c.json({ error: await explainUnknownRef(result.stdout, body.ref), success: false }, 500);
     }
 
     // When we know the target, read the value back (keyboard type APPENDS to
@@ -1954,10 +2509,11 @@ app.post('/browser/type', async (c) => {
     let committedValue: string | null = null;
     if (body.ref) {
       committedValue = await readCommittedFieldValue(body.ref);
+      if (digest) acknowledgeTreeValue(digest.url, body.ref, committedValue, docStart);
     }
 
     notifyBrowserAction();
-    return c.json({ success: true, ...(committedValue !== null && { committedValue }) });
+    return c.json({ success: true, settleMs, ...(committedValue !== null && { committedValue }), ...(effect && { effect }), ...(treeDiff && { treeDiff }) });
   } catch (error: any) {
     console.error('[Browser] Error typing:', error);
     return c.json({ error: error.message || 'Failed to type' }, 500);
@@ -2021,40 +2577,62 @@ app.post('/browser/run', async (c) => {
       return c.json({ error: 'Browser is not active' }, 400);
     }
 
-    // The agent-browser CLI `upload` command does not work reliably in this
-    // environment — refuse it and steer the model to `browser_upload`, which
-    // routes through the buffer-based path with size verification.
-    if (commandArgs[0] === 'upload') {
-      return c.json({
-        error: 'Use the `browser_upload(filePath, selector)` MCP tool for file uploads instead of `browser_run("upload …")`.',
-        success: false,
-      }, 400);
-    }
 
-    // Same guard as /browser/press for the raw CLI form: `press` with a
-    // non-key string silently types nothing while reporting success.
-    if (commandArgs[0] === 'press' && commandArgs.length === 2) {
-      const keyError = validatePressKey(commandArgs[1]);
-      if (keyError) {
-        return c.json({ error: keyError, success: false }, 400);
-      }
+    const refusal = runCommandRefusal(commandArgs);
+    if (refusal) {
+      return c.json({ error: refusal, success: false }, 400);
     }
 
     const result = await execBrowser(commandArgs, browserState.cdpUrl || undefined);
+    const verb = commandArgs[0].toLowerCase();
+    const joined = commandArgs.join(' ').toLowerCase();
+    // A bare `tab` / `tab list` only lists: the page in front is the same.
+    const listsTabs = verb.startsWith('tab') && (commandArgs.length === 1 || commandArgs[1]?.toLowerCase() === 'list');
+    const navigates = (verb.startsWith('tab') && !listsTabs) || ['back', 'forward', 'reload', 'open', 'goto', 'navigate'].includes(verb);
+    // A navigation Chrome answered with its own error page still happened:
+    // `tab new <dead url>` leaves a new tab in front. The error stands, and
+    // the bookkeeping below runs as for a success, so the tab is reported now
+    // rather than on some later command.
+    const navFailed = result.exitCode !== 0 && navigates && navigationNetError(result.stdout) !== null;
 
-    if (result.exitCode !== 0) {
+    if (result.exitCode !== 0 && !navFailed) {
       return c.json({ error: result.stdout, success: false }, 500);
     }
 
-    const verb = commandArgs[0].toLowerCase();
-    const joined = commandArgs.join(' ').toLowerCase();
+    // A different tab or document: the tree baseline belongs to the old one,
+    // and the next action is compared with the URL that is now in front (a
+    // tab close used to make the next click read as a navigation).
+    if (navigates) {
+      resetTreeBaseline();
+      const front = await observeNow();
+      if (front.url) observeUrl(front.url);
+      else await observeUrlDigest();
+      // agent-browser clears its ref table on every tab command (new, switch,
+      // close), so the refs the agent holds for the tab now in front all read
+      // "Unknown ref" until a snapshot. Refs persist per document, so one read
+      // brings them back unchanged.
+      if (verb.startsWith('tab') && commandArgs[1]?.toLowerCase() !== 'list' && commandArgs.length > 1) {
+        const restore = await execBrowser(['snapshot', '-i', '-c'], browserState.cdpUrl || undefined, { timeoutMs: TREE_READ_TIMEOUT_MS, outputCap: MAX_SNAPSHOT_RAW_CHARS });
+        if (restore.exitCode === 0 && front.url) setTreeBaseline(front.url, restore.stdout, 'action', Date.now(), front.docStart);
+      }
+    }
     let tabInfo = null;
     if (verb.startsWith('tab') || verb === 'click' || verb === 'dblclick' || joined.includes('.click(')) {
       tabInfo = await tabManager.detectNewTab();
     }
+    if (navFailed) {
+      notifyBrowserAction();
+      return c.json({ error: `${result.stdout}${tabInfo ? tabManager.formatTabNotification(tabInfo) : ''}`, success: false }, 500);
+    }
+
+    // `get url` on Chrome's error page reads chrome-error://; report the
+    // address that failed instead, as every other URL the agent sees does.
+    const output = verb === 'get' && commandArgs[1]?.toLowerCase() === 'url' && commandArgs.length === 2
+      ? await addressBarUrl(result.stdout)
+      : result.stdout;
 
     notifyBrowserAction();
-    return c.json({ success: true, output: result.stdout, ...(tabInfo && { tabInfo }) });
+    return c.json({ success: true, output, ...(tabInfo && { tabInfo }) });
   } catch (error: any) {
     console.error('[Browser] Error running command:', error);
     return c.json({ error: error.message || 'Failed to run browser command' }, 500);
@@ -2291,10 +2869,15 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
     timestamp: new Date(),
   }));
 
+  const connectedAt = Date.now();
+  let lastSentAt = connectedAt;
+  let socketError: string | undefined;
+
   // Subscribe to session events (SDK messages)
   const unsubscribe = sessionManager.subscribe(sessionId, (message) => {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(message));
+      lastSentAt = Date.now();
     }
   });
 
@@ -2322,6 +2905,7 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
         speed: speedLevelSchema.parse(payload.speed),
         model: payload.model,
         capabilityPolicies: agentCapabilityPoliciesSchema.parse(payload.capabilityPolicies),
+        globalInstructions: globalInstructionsSchema.parse(payload.globalInstructions),
       });
     } catch (error: any) {
       console.error('Error handling WebSocket message:', error);
@@ -2333,14 +2917,28 @@ async function handleWebSocketConnection(ws: WebSocket, sessionId: string) {
   });
 
   // Handle connection close
-  ws.on('close', () => {
-    console.log(`WebSocket connection closed for session ${sessionId}`);
+  ws.on('close', (code: number, reason: Buffer) => {
     unsubscribe();
+    const now = Date.now();
+    const close = {
+      code,
+      reason: reason.toString(),
+      socketAgeMs: now - connectedAt,
+      idleMsBeforeClose: now - lastSentAt,
+      socketError,
+    };
+    console.log(
+      `WebSocket connection closed for session ${sessionId} (code=${close.code}, reason=${close.reason || 'none'}, ` +
+      `turnInFlight=${sessionManager.isTurnInFlight(sessionId)}, age=${close.socketAgeMs}ms, ` +
+      `idle=${close.idleMsBeforeClose}ms, error=${socketError ?? 'none'})`,
+    );
+    sessionManager.noteStreamClosed(sessionId, close);
   });
 
   // Handle errors
-  ws.on('error', (error: Error) => {
+  ws.on('error', (error: Error & { code?: string }) => {
     console.error(`WebSocket error for session ${sessionId}:`, error);
+    socketError = error.code ?? error.message;
     unsubscribe();
   });
 
@@ -2683,6 +3281,8 @@ app.post('/browser/fill-credential', async (c) => {
 
     const target = await findActivePageTarget(true);
     if (!target) return c.json({ error: 'No active browser page was found' }, 409);
+    // From here the password may be on the page: what the agent reads redacts it.
+    rememberInjectedSecret(body.password);
     const result = await autofillCredentialViaCdp(
       target,
       body.username,
@@ -2704,6 +3304,115 @@ app.post('/browser/fill-credential', async (c) => {
     console.error('[Browser] Credential autofill failed:', error instanceof Error ? error.message : 'Unknown error');
     return c.json({ error: 'Credential autofill failed' }, 500);
   }
+});
+
+// ── request_login ───────────────────────────────────────────────────────────
+// The endpoints live in login-routes.ts; these are their hands on the live
+// browser: the CLI for refs, our own CDP connection for the page, and the
+// settle-and-observe primitive for the submit.
+
+function loginFillDeps(): LoginFillDeps {
+  const cdpUrl = () => browserState.cdpUrl || undefined;
+  return {
+    focusRef: async (ref) => {
+      const r = await withRefRestore(ref, () => execBrowser(['focus', ref], cdpUrl()));
+      // Redacted before it is cut: a cut can split a value past recognition.
+      return r.exitCode === 0 ? null : redactInjectedSecrets(r.stdout.split('\n')[0] || 'the CLI reported an error').slice(0, 200);
+    },
+    boxOfRef: async (ref) => {
+      const r = await withRefRestore(ref, () => execBrowser(['get', 'box', ref, '--json'], cdpUrl()));
+      if (r.exitCode !== 0) return null;
+      const parsed = z.object({
+        data: z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }),
+      }).safeParse((() => { try { return JSON.parse(r.stdout); } catch { return null; } })());
+      if (!parsed.success) return null;
+      const { x, y, width, height } = parsed.data.data;
+      return { x, y, width, height } satisfies FieldBox;
+    },
+    isEnabled: async (ref) => {
+      const r = await execBrowser(['is', 'enabled', ref], cdpUrl());
+      if (r.exitCode !== 0) return null;
+      const answer = r.stdout.trim().toLowerCase();
+      return answer === 'true' ? true : answer === 'false' ? false : null;
+    },
+    connect: async () => {
+      // agent-browser's active tab: the one its refs belong to.
+      const target = await findActivePageTarget();
+      if (!target) throw new Error('No active browser page was found');
+      return CdpConnection.open(target);
+    },
+  };
+}
+
+/**
+ * Submit a filled sign-in form: click the agent's submit ref through the CLI
+ * (trusted input); when a banner covers it, click it from the page instead;
+ * with no submit ref, press Enter — only while focus is still in the last
+ * field written, so Enter cannot land in another document or field.
+ * Right before each try, the page is checked once more: one that moved on by
+ * itself gets nothing (the CLI resolves a stale ref by role and name, on
+ * whatever page is there by then).
+ */
+async function submitLoginForm(plan: SubmitPlan): Promise<SubmitOutcome> {
+  const cdpUrl = browserState.cdpUrl || undefined;
+  let submitted: NonNullable<LoginFillReport['submitted']> | null = null;
+  let activity: PageActivity | null = null;
+  let error: string | null = null;
+  // Redacted before it is cut: a cut can split a value past recognition.
+  const firstLine = (text: string) => redactInjectedSecrets(text.split('\n')[0] || 'the CLI reported an error').slice(0, 300);
+  const { result, digest, effect, settleMs, treeDiff } = await runWithEffect(
+    async (before) => {
+      const { submitRef } = plan;
+      activity = await plan.stillCurrent();
+      if (activity) return { exitCode: 0, stdout: '' };
+      if (submitRef) {
+        const click = await clickSubmit(plan, submitRef, (ref) => withRefRestore(ref, () => execBrowser(['click', ref, ...(useHumanInput(before) ? ['--human'] : [])], cdpUrl)));
+        if (click.clicked === 'cli') {
+          submitted = { via: 'click', ref: submitRef };
+          return click.result;
+        }
+        if (click.clicked === 'in-page') {
+          submitted = { via: 'click-in-page', ref: submitRef, clickError: firstLine(click.cliError) };
+          return { exitCode: 0, stdout: '' };
+        }
+        if ('activity' in click) {
+          activity = click.activity;
+          return { exitCode: 0, stdout: '' };
+        }
+        error = `clicking ${submitRef} failed: ${firstLine(click.result.stdout)}`;
+        return click.result;
+      }
+      if (!(await plan.enterLandsInField())) {
+        error = 'Enter was not pressed: focus is no longer in the last field filled';
+        return { exitCode: 1, stdout: error };
+      }
+      const pressed = await execBrowser(['press', 'Enter'], cdpUrl);
+      if (pressed.exitCode === 0) submitted = { via: 'enter' };
+      else error = `pressing Enter failed: ${firstLine(pressed.stdout)}`;
+      return pressed;
+    },
+    // A submit that only shows an error message still changed the page:
+    // wait for the settle like a click on a button.
+    plan.submitRef ? { ...ACTION_POLICIES.click, recheck: () => true } : pressPolicy('Enter'),
+  );
+  const observation = { settleMs, ...(digest && { digest }), ...(effect && { effect }), ...(treeDiff && { treeDiff }) };
+  if (activity) return { ok: true, submitted: null, activity, observation };
+  if (result.exitCode !== 0 || !submitted) return { ok: false, error: error ?? firstLine(result.stdout) };
+  const tabInfo = await tabManager.detectNewTab();
+  return { ok: true, submitted, observation: { ...observation, ...(tabInfo && { tabInfo }) } };
+}
+
+registerLoginRoutes(app, {
+  hostAuthEnabled,
+  validateSession: validateBrowserSessionWithRecovery,
+  browserActive: () => browserState.active,
+  fillDeps: loginFillDeps,
+  submit: submitLoginForm,
+  observeUrl: async () => {
+    const digest = await observeUrlDigest();
+    return digest ? { ...digest } : null;
+  },
+  notifyBrowserAction,
 });
 
 /** Helper to build a CDP message, adding sessionId when in session mode */
@@ -2932,7 +3641,10 @@ async function broadcastTabList(prefetched?: { allTargets: PageTarget[]; daemonT
     const claimedTargetIds = new Set<string>();
     let tabs: BrowserTabInfo[] = [];
     for (const dt of daemonTabs) {
-      const target = allTargets.find(t => tabManager.urlsMatch(t.url, dt.url) && !claimedTargetIds.has(t.id));
+      // By target id when the daemon reports it (exact even when two tabs
+      // share a URL); by URL otherwise.
+      const target = (dt.targetId ? allTargets.find(t => t.id === dt.targetId && !claimedTargetIds.has(t.id)) : undefined)
+        ?? allTargets.find(t => tabManager.urlsMatch(t.url, dt.url) && !claimedTargetIds.has(t.id));
       if (!target) continue; // skip tabs with no CDP match (timing edge case, resolves on next poll)
       claimedTargetIds.add(target.id);
       tabs.push({
@@ -2940,7 +3652,8 @@ async function broadcastTabList(prefetched?: { allTargets: PageTarget[]; daemonT
         // Positional index for the renderer's display fallback only — the daemon's
         // stable ids (t1, t2, …) are strings and tab switching uses targetId
         index: tabs.length,
-        url: dt.url,
+        // Chrome's URL is the address bar's; the daemon's can lag a navigation.
+        url: target.url || dt.url,
         // Prefer Chrome's title (actual <title> tag) over daemon's (often just domain)
         title: target.title || dt.title || '',
         faviconUrl: target.faviconUrl,
@@ -3216,11 +3929,15 @@ function handleBrowserStreamConnection(ws: WebSocket) {
 // until a session has been created here at least once. Kicked off before the
 // dashboard scan below: on a cold container the two compete for the same two
 // CPUs, and only this one is in front of a waiting user.
-sessionManager.prewarmFromLastProfile();
+// Both wait for volumes to mount: the warm CLI keeps the prompt it starts with, which lists them.
+volumesMounted.then(() => {
+  if (isShuttingDown) return;
+  sessionManager.prewarmFromLastProfile();
 
-// Start dashboard processes asynchronously (don't block server startup)
-dashboardManager.scanAndStartAll().catch((error) => {
-  console.error('[DashboardManager] Failed to scan and start dashboards:', error);
+  // Start dashboard processes asynchronously (don't block server startup)
+  dashboardManager.scanAndStartAll().catch((error) => {
+    console.error('[DashboardManager] Failed to scan and start dashboards:', error);
+  });
 });
 
 // Sweep abandoned input requests. Entries the host never answers (session
@@ -3276,6 +3993,8 @@ async function gracefulShutdown(signal: string) {
   isShuttingDown = true;
 
   console.log(`\nReceived ${signal}, shutting down gracefully...`);
+  // The host stops containers with a 5s grace, then kills them.
+  const uploadDeadline = Date.now() + 4_000;
 
   // Close the browser even if an automated session released its ownership lock.
   if (browserState.location) {
@@ -3301,6 +4020,9 @@ async function gracefulShutdown(signal: string) {
   } catch (error) {
     console.error('Error stopping sessions:', error);
   }
+
+  // After sessions stop, so nothing is still writing to a volume.
+  await unmountVolumes(uploadDeadline);
 
   // Close WebSocket servers
   browserWss.close(() => {

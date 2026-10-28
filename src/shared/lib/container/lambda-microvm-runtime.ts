@@ -17,7 +17,7 @@ import type {
   GetMicrovmCommandOutput,
   RunMicrovmCommandOutput,
 } from '@aws-sdk/client-lambda-microvms'
-import { BaseContainerClient, CONTAINER_INTERNAL_PORT } from './base-container-client'
+import { BaseContainerClient, CONTAINER_INTERNAL_PORT, withVolumesEnv } from './base-container-client'
 import type {
   ContainerConfig,
   ContainerInfo,
@@ -30,6 +30,7 @@ import type {
 } from './types'
 import { getSettings, isAutoResumeOnUnexpectedDeathEnabled } from '@shared/lib/config/settings'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { setBootstrapEnv, clearBootstrapEnv } from './agent-bootstrap-env-store'
 import {
   classifyMicrovmDeath,
@@ -265,8 +266,10 @@ export class LocalAuthForwardProxy {
 
   async start(): Promise<number> {
     if (this.port !== null) return this.port
-    const server = http.createServer((req, res) => this.handleRequest(req, res))
-    server.on('upgrade', (req, socket, head) => this.handleUpgrade(req, socket as net.Socket, head))
+    const server = http.createServer((req, res) => background(this.handleRequest(req, res), { name: 'microvm-proxy.forward-request' }))
+    server.on('upgrade', (req, socket, head) =>
+      background(this.handleUpgrade(req, socket as net.Socket, head), { name: 'microvm-proxy.forward-upgrade' }),
+    )
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject)
       server.listen(0, '127.0.0.1', () => resolve())
@@ -664,6 +667,56 @@ class MicrovmNotFoundError extends Error {
   readonly name = 'ResourceNotFoundException'
 }
 
+const SAFE_SERVICE_TOKEN = /^[A-Za-z0-9_./-]{1,64}$/
+
+function safeToken(value: unknown): string | null {
+  return typeof value === 'string' && SAFE_SERVICE_TOKEN.test(value) ? value : null
+}
+
+// The controller answers errors with JSON `{ error, code? }`; a non-JSON body means a
+// gateway in front of it (e.g. ALB 502) answered instead.
+export class MicrovmServiceError extends Error {
+  readonly name = 'MicrovmServiceError'
+
+  constructor(
+    method: string,
+    path: string,
+    readonly status: number,
+    readonly serviceCode: string | null,
+    readonly answeredBy: 'controller' | 'gateway',
+    readonly server: string | null,
+  ) {
+    super(`microvm service ${method} ${path} failed: ${status}`)
+  }
+
+  get sentryTags(): Record<string, string> {
+    return {
+      service_status: String(this.status),
+      service_code: this.serviceCode ?? 'none',
+      answered_by: this.answeredBy,
+      service_server: this.server ?? 'unknown',
+    }
+  }
+}
+
+async function toServiceError(res: Response, method: string, path: string): Promise<MicrovmServiceError> {
+  let body: unknown = null
+  try {
+    body = JSON.parse(await res.text())
+  } catch {
+    // Non-JSON body: not the controller.
+  }
+  const fromController = typeof body === 'object' && body !== null && 'error' in body
+  return new MicrovmServiceError(
+    method,
+    path,
+    res.status,
+    fromController ? safeToken((body as { code?: unknown }).code) : null,
+    fromController ? 'controller' : 'gateway',
+    safeToken(res.headers?.get('server') ?? null),
+  )
+}
+
 function isNotFound(error: unknown): boolean {
   return (error as { name?: string })?.name === 'ResourceNotFoundException'
 }
@@ -691,7 +744,7 @@ async function serviceFetch<T>(
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   if (res.status === 404) throw new MicrovmNotFoundError(`microvm not found (${path})`)
-  if (!res.ok) throw new Error(`microvm service ${method} ${path} failed: ${res.status}`)
+  if (!res.ok) throw await toServiceError(res, method, path)
   return (await res.json()) as T
 }
 
@@ -852,7 +905,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
   }
 
   onFatalResult(kind: MicrovmFatalResult): 'settle' | 'defer_for_recovery' {
-    // The persister records the fatal and runtime-recovery hands it back via
+    // The container runtime records the fatal and runtime-recovery hands it back via
     // ObserveUnexpectedDeathInput; keeping a second copy here would go stale.
     return kind === 'oom_sigkill' ? 'defer_for_recovery' : 'settle'
   }
@@ -946,7 +999,7 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     const config = getMicrovmRuntimeConfig()
     // Full env exceeds the 4096-byte payload cap, so stash it host-side and pass the
     // VM only a small bootstrap credential to fetch it at boot via /api/agent-bootstrap.
-    const env = await this.buildAgentEnv(options?.envVars, options?.agentName)
+    const env = await this.buildAgentEnv(withVolumesEnv(options?.envVars, options?.volumes), options?.agentName)
     const hasEnv = Object.keys(env).length > 0
     // Mount the same per-agent workspace path the k8s runtime uses.
     const mount = config.fsId && config.accessPoint && config.mountTargetIp
@@ -1105,7 +1158,17 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
       }
       // Transient (throttling/network): keep last known state so we don't orphan a live
       // VM; container-manager's TTL /health re-probe backstops a genuinely dead one.
-      captureException(error, { tags: { area: 'container', op: 'microvm.getInfo' }, extra: { microvmId: observedId } })
+      captureException(error, {
+        tags: {
+          area: 'container',
+          op: 'microvm.getInfo',
+          ...(error instanceof MicrovmServiceError ? error.sentryTags : {}),
+        },
+        ...(error instanceof MicrovmServiceError
+          ? { fingerprint: ['microvm-service', 'getInfo', String(error.status)] }
+          : {}),
+        extra: { microvmId: observedId },
+      })
       return { status: 'running', port: state.proxyPort }
     }
   }
@@ -1115,8 +1178,8 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     return null
   }
 
-  public buildVolumeFlag(_hostPath: string, _containerPath: string): string {
-    // Workspace is an S3 Files mount performed inside the VM, not a host bind.
+  /** No run flags: under no-new-privs the image's start.sh puts a root mount helper behind fusermount3. */
+  public volumeRunFlags(): string | null {
     return ''
   }
 
@@ -1243,15 +1306,31 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
 
   private async waitForRunning(region: string, microvmId: string, timeoutMs: number): Promise<void> {
     const startedAt = Date.now()
+    let previousState: string | null = null
+    let polls = 0
     while (Date.now() - startedAt < timeoutMs) {
       const mvm = await getMicrovm(region, microvmId)
+      polls++
       if (mvm.state === 'RUNNING') {
         this.markReachedRunning(microvmId)
         return
       }
       if (TERMINAL_MICROVM_STATES.has(mvm.state ?? '')) {
+        addErrorBreadcrumb({
+          category: 'container',
+          message: 'MicroVM terminal before ready',
+          level: 'warning',
+          data: {
+            state: mvm.state,
+            stateReason: mvm.stateReason ?? null,
+            previousState,
+            polls,
+            elapsedMs: Date.now() - startedAt,
+          },
+        })
         throw new Error(`MicroVM ${microvmId} entered ${mvm.state} before becoming ready`)
       }
+      previousState = mvm.state ?? null
       await new Promise((resolve) => setTimeout(resolve, 2_000))
     }
     throw new Error(`Timed out waiting for MicroVM ${microvmId} to become RUNNING`)

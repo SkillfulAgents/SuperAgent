@@ -5,7 +5,7 @@ import { useMessages } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
 import { useQueries } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
-import { getToolRenderer } from '@renderer/components/messages/tool-renderers'
+import { getToolRenderer } from '@shared/lib/tools/renderers'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import { cn } from '@shared/lib/utils/cn'
 import type { ApiMessage, ApiMessageOrBoundary, ApiToolCall } from '@shared/lib/types/api'
@@ -26,7 +26,7 @@ interface BrowserActivityLogProps {
 
 export function BrowserActivityLog({ sessionId, agentSlug }: BrowserActivityLogProps) {
   const { data: messages } = useMessages(sessionId, agentSlug)
-  const { streamingToolUses, activeSubagents } = useMessageStream(sessionId, agentSlug)
+  const { streamingToolUses, activeSubagents } = useMessageStream(sessionId, agentSlug, ['streamingToolUses', 'activeSubagents'])
   const bottomSentinelRef = useRef<HTMLDivElement>(null)
 
   // Collect ALL subagent IDs from the session messages

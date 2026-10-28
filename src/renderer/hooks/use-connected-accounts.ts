@@ -28,11 +28,10 @@ interface ConnectedAccountsResponse {
   accounts: ConnectedAccount[]
 }
 
-interface InitiateConnectionResponse {
-  connectionId: string
-  redirectUrl: string
-  providerSlug: string
-}
+/** The account the user already has, or where to send them to grant a new one. */
+type InitiateConnectionResponse =
+  | { accountId: string }
+  | { connectionId: string; redirectUrl: string; providerSlug: string }
 
 /**
  * Hook to fetch all connected accounts
@@ -83,13 +82,13 @@ export function useConnectedAccountsByToolkit(toolkit: string) {
 export function useInitiateConnection() {
   const { track } = useAnalyticsTracking()
 
-  return useMutation<InitiateConnectionResponse, Error, { providerSlug: string; electron?: boolean; location?: string }>({
+  return useMutation<InitiateConnectionResponse, Error, { providerSlug: string; electron?: boolean; location?: string; identity?: string }>({
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async ({ providerSlug, electron }) => {
+    mutationFn: async ({ providerSlug, electron, identity }) => {
       const res = await apiFetch('/api/connected-accounts/initiate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ providerSlug, electron }),
+        body: JSON.stringify({ providerSlug, electron, identity }),
       })
 
       if (!res.ok) {
@@ -99,7 +98,8 @@ export function useInitiateConnection() {
 
       return res.json()
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (data, variables) => {
+      if ('accountId' in data) return
       track('account_added', { slug: variables.providerSlug, location: variables.location ?? 'settings' })
     },
   })

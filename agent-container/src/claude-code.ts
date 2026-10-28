@@ -1,3 +1,7 @@
+import { startLlmProxy, llmProxyBinding, type LlmProxyHandle } from './llm-proxy';
+import { withoutProviderCredentials, resolveSessionRuntime, type ConnectionRuntime } from './connection-runtime';
+import { webhookRelayAvailable } from './webhook-relay-env';
+import { isAppSandboxHost, isComputerUseHost } from './host-desktop-env';
 import {
   query,
   startup,
@@ -8,21 +12,26 @@ import {
   SDKUserMessage,
   McpServerConfig,
   McpSetServersResult,
+  SlashCommand,
 } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { UUID } from 'crypto';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import type { EffortLevel, SpeedLevel } from './types';
 import { gamutPluginDir } from './gamut-plugin';
-import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createWidgetsMcpServer, createAgentsMcpServer, createChatMcpServer, createWebMcpServer } from './mcp-server';
+import { createUserInputMcpServer, createBrowserMcpServer, createComputerUseMcpServer, createDashboardsMcpServer, createWidgetsMcpServer, createAgentsMcpServer, createChatMcpServer, createMeetingsMcpServer, createRulesMcpServer, createWebMcpServer } from './mcp-server';
 import { createBrowserTools } from './tools/browser';
 import { renameBrowserSession } from './browser-state';
 import { computerUseTools } from './tools/computer-use';
-import { fileHooks, resolveToolFilePath } from './file-hooks';
+import { fileHooks, mountIndexCommandHint, resolveToolFilePath } from './file-hooks';
 import { elapsedTimeNote } from './elapsed-time-note';
+import { builtinHints, createHintHookMatchers } from './hints';
 import { promptDate } from './prompt-date';
+import { mountedDrives, mountedVolumeIndexes, type VolumeIndex } from './volume-mounts';
+import { prepareResumeDiagnostics } from './resume-diagnostics';
 
 /**
  * `Query` plus the `cancel_async_message` control request, which drops a queued
@@ -72,7 +81,12 @@ import {
   type ModelContextWindows,
   type SubagentModelDefinition,
 } from './subagent-model-catalog';
-import { mergeCanonicalSlashCommands } from './slash-commands';
+import {
+  isUnsupportedCommand,
+  mergeCanonicalSlashCommands,
+  unsupportedBuiltinCommands,
+  withPushedCommandNames,
+} from './slash-commands';
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/shared/lib/utils/system-message.ts
@@ -84,14 +98,6 @@ const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] ';
 // already awaits.
 const REMOTE_MCP_READY_TIMEOUT_MS = 8_000;
 const REMOTE_MCP_READY_POLL_MS = 250;
-
-export const AGENT_BROWSER_BASH_WARNING =
-  'STRONG WARNING: This Bash command is probably bypassing Gamut\'s browser integration. For website work, use the dedicated mcp__browser__browser_* tools; if they are deferred, load their exact full names with ToolSearch. The Bash command is still allowed, but continue with agent-browser only when the dedicated browser tools genuinely cannot perform the operation.';
-
-export function startsWithAgentBrowserCommand(command: unknown): boolean {
-  if (typeof command !== 'string') return false;
-  return /^(?:agent-browser|which\s+agent-browser)(?=$|[\s;&|])/.test(command.trimStart());
-}
 
 // Default values for system-prompt template vars when the host env is unset.
 // Mirror values the host (base-container-client.ts) sets, so out-of-host runs
@@ -305,10 +311,6 @@ export function resultNeedsResumeErrorFallback(msg: {
   return !msg.error && !msg.message && !msg.result;
 }
 
-export function isComputerUseHost(): boolean {
-  return ['darwin', 'win32'].includes(process.env.HOST_PLATFORM || '');
-}
-
 /**
  * The template renders every section itself; this bag carries only data. Each
  * list is paired with a `has*` boolean because a Mustache list section repeats
@@ -332,6 +334,10 @@ export interface SystemPromptVars {
   /** Platform token present — built-in service prompt sections (Replicate, Apollo). */
   platformServices: boolean;
   computerUse: boolean;
+  /** The Mac App Store edition: the prompt says what its sandbox leaves out. */
+  appSandbox: boolean;
+  /** The host can run meeting bots — the mcp__meetings__* tools are registered and the Meetings section renders. */
+  meetings: boolean;
   hasModelHints: boolean;
   modelHints: string[];
   hasConnectedAccounts: boolean;
@@ -341,19 +347,10 @@ export interface SystemPromptVars {
   hasEnvVars: boolean;
   envVars: string[];
   hasMounts: boolean;
-  mountPathsJoined: string;
+  drives: { nameJson: string; pathJson: string; readOnly: boolean }[];
+  mountIndexes: (VolumeIndex & { pathJson: string })[];
+  globalInstructions: string;
   userInstructions: string;
-}
-
-const mountsEnvSchema = z.array(z.string().min(1));
-
-function parseMountPaths(raw: string | undefined): string[] {
-  if (!raw) return [];
-  try {
-    return mountsEnvSchema.parse(JSON.parse(raw));
-  } catch {
-    return [];
-  }
 }
 
 /**
@@ -362,6 +359,11 @@ function parseMountPaths(raw: string | undefined): string[] {
  * environment, the labels of whichever native web tools a vendor replaced, the
  * config dir, and the data behind the sections that only render for some agents.
  */
+/** The host said it can run meeting bots: the meeting tools get registered and advertised. */
+function meetingsAvailable(availableIntegrationFamilies?: string[]): boolean {
+  return availableIntegrationFamilies?.includes('meeting') ?? false;
+}
+
 export function buildSystemPromptVars(
   availableEnvVars?: string[],
   userSystemPrompt?: string,
@@ -370,22 +372,25 @@ export function buildSystemPromptVars(
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
   subagentModels?: SubagentModelDefinition[],
+  globalInstructions?: string,
+  availableIntegrationFamilies?: string[],
 ): SystemPromptVars {
   // Connected accounts run through Gamut's Composio (not a personal key). Managed
   // triggers and the platform-only accounts both exist only there.
   const composioPlatform = process.env.COMPOSIO_PLATFORM_MODE === 'true';
-  const composioTriggers = composioPlatform;
+  // Same gates as the webhook tools in mcp-server.ts: every trigger needs the
+  // host's webhook relay, and Composio's also need platform Composio.
+  const webhookEndpoints = webhookRelayAvailable();
+  const composioTriggers = composioPlatform && webhookEndpoints;
   const platformAccounts = composioPlatform;
-  const webhookEndpoints = process.env.PLATFORM_AUTH_ACTIVE === 'true';
-  // Same gate as webhookEndpoints — do not tighten to also require proxy URL
-  // (PLATFORM_AUTH_ACTIVE also gates webhook tools in mcp-server.ts).
-  const platformServices = webhookEndpoints;
+  // Only the platform token: do not tighten to also require proxy URL.
+  const platformServices = process.env.PLATFORM_AUTH_ACTIVE === 'true';
   const modelHints = modelPromptHints || [];
   const connectedAccounts = connectedAccountGroups();
   const remoteMcps = remoteMcpViews();
   const envVars = agentEnvVars(availableEnvVars);
   const userInstructions = userSystemPrompt?.trim() || '';
-  const mountPaths = parseMountPaths(process.env.SUPERAGENT_MOUNTS);
+  const drives = mountedDrives();
   const today = promptDate();
   return {
     CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR || PROMPT_ENV_DEFAULTS.CLAUDE_CONFIG_DIR,
@@ -405,6 +410,8 @@ export function buildSystemPromptVars(
     anyTriggers: composioTriggers || webhookEndpoints,
     platformServices,
     computerUse: isComputerUseHost(),
+    appSandbox: isAppSandboxHost(),
+    meetings: meetingsAvailable(availableIntegrationFamilies),
     hasModelHints: modelHints.length > 0,
     modelHints,
     hasConnectedAccounts: connectedAccounts.length > 0,
@@ -413,10 +420,12 @@ export function buildSystemPromptVars(
     remoteMcps,
     hasEnvVars: envVars.length > 0,
     envVars,
-    hasMounts: mountPaths.length > 0,
-    // Each path is rendered as a JSON string literal. A folder name is user
-    // bytes, and a raw newline or `#` in it would read as prompt structure.
-    mountPathsJoined: mountPaths.map((p) => JSON.stringify(p)).join(', '),
+    hasMounts: drives.length > 0,
+    // Names and paths render as JSON string literals. Both are user bytes, and
+    // a raw newline or `#` in them would read as prompt structure.
+    drives: drives.map((d) => ({ nameJson: JSON.stringify(d.name), pathJson: JSON.stringify(d.path), readOnly: d.readOnly })),
+    mountIndexes: mountedVolumeIndexes().map(({ path: mountPath, index }) => ({ pathJson: JSON.stringify(mountPath), ...index })),
+    globalInstructions: globalInstructions?.trim() || '',
     userInstructions,
   };
 }
@@ -434,6 +443,8 @@ export function generateSystemPrompt(
   webFetchProvider?: string,
   capabilityPolicies?: AgentCapabilityPolicies,
   subagentModels?: SubagentModelDefinition[],
+  globalInstructions?: string,
+  availableIntegrationFamilies?: string[],
 ): string {
   const vars = buildSystemPromptVars(
     availableEnvVars,
@@ -443,6 +454,8 @@ export function generateSystemPrompt(
     webFetchProvider,
     capabilityPolicies,
     subagentModels,
+    globalInstructions,
+    availableIntegrationFamilies,
   );
   return renderPrompt(SYSTEM_PROMPT, vars);
 }
@@ -527,16 +540,30 @@ export interface ClaudeCodeProcessOptions {
   modelContextWindows?: ModelContextWindows;
   webSearchProvider?: string;
   webFetchProvider?: string;
+  availableIntegrationFamilies?: string[];
   maxOutputTokens?: number;
   maxThinkingTokens?: number;
   maxTurns?: number;
   maxBudgetUsd?: number;
+  llmRuntime?: ConnectionRuntime;
+  requiresConnectionRuntime?: boolean;
   customEnvVars?: Record<string, string>;
   effort?: EffortLevel;
   speed?: SpeedLevel;
   capabilityPolicies?: AgentCapabilityPolicies;
   sessionCapabilityGrants?: Capability[];
+  globalInstructions?: string;
 }
+
+type SendOptions = {
+  llmRuntime?: ConnectionRuntime;
+  effort?: EffortLevel;
+  speed?: SpeedLevel;
+  model?: string;
+  shouldQuery?: boolean;
+  capabilityPolicies?: AgentCapabilityPolicies;
+  globalInstructions?: string;
+};
 
 export class ClaudeCodeProcess extends EventEmitter {
   private queryInstance: Query | null = null;
@@ -555,10 +582,15 @@ export class ClaudeCodeProcess extends EventEmitter {
   private modelContextWindows: ModelContextWindows;
   private webSearchProvider: string | undefined;
   private webFetchProvider: string | undefined;
+  private availableIntegrationFamilies: string[] | undefined;
   private maxOutputTokens: number | undefined;
   private maxThinkingTokens: number | undefined;
   private maxTurns: number | undefined;
   private maxBudgetUsd: number | undefined;
+  private llmRuntime: ConnectionRuntime | undefined;
+  private llmProxy: LlmProxyHandle | undefined;
+  private llmProxyBinding: string | undefined;
+  private readonly requiresConnectionRuntime: boolean;
   private customEnvVars: Record<string, string> | undefined;
   private effort: EffortLevel | undefined;
   private speed: SpeedLevel | undefined;
@@ -580,11 +612,16 @@ export class ClaudeCodeProcess extends EventEmitter {
   // session-manager persists them via the 'capability-grant' event), or the
   // host's grant record diverges and a gated launch hangs with no card.
   private sessionCapabilityGrants: Set<Capability>;
+  // Per process, so shown hints are tracked per session, not per container.
+  private readonly hintHooks = createHintHookMatchers(builtinHints, () => this.userMessageCount);
   // Kept so the system prompt can be regenerated when a capability block
   // boundary flips mid-session (the prompt gates delegation sections on it).
   private availableEnvVars: string[] | undefined;
   private userSystemPrompt: string | undefined;
   private modelPromptHints: string[] | undefined;
+  // Org-wide guidance from host Settings. Tracked per message like the
+  // capability policies, so an edit reaches long-lived sessions too.
+  private globalInstructions: string | undefined;
   private isReady: boolean = false;
   private isProcessing: boolean = false;
   // Monotonic id of the current query; bumped by initializeQuery. A previous
@@ -607,6 +644,20 @@ export class ClaudeCodeProcess extends EventEmitter {
   private currentStop: Promise<void> | null = null;
   // Terminal: the session was deleted. No path may revive this process.
   private disposed = false;
+  // The restart a pre-resume (warm()) is running right now. A send waits for
+  // it and then judges its options against the query it built, exactly as on
+  // a live process — joining it blind could deliver the message into a query
+  // built without the send's runtime options.
+  private warmRestart: Promise<void> | null = null;
+  // A pre-resume is under way (any phase); a second one is a no-op.
+  private preResuming = false;
+  // Sends inside sendMessage(). A pre-resume yields to them: a send into a
+  // cold process restarts it itself, with the runtime the host resolved for
+  // that send, so a pre-resume must never start a second restart beside it.
+  private sendsInFlight = 0;
+  // A hooked file's content as each in-flight Write/Edit found it (null when
+  // absent), keyed by tool use, for the file hooks that act on the change.
+  private fileChangeSnapshots = new Map<string, string | null>();
   private userMessageCount: number = 0;
   private isResumedSession: boolean;
   // Late-join replay state. A turn can complete before the host's WebSocket
@@ -647,6 +698,10 @@ export class ClaudeCodeProcess extends EventEmitter {
   // the process rather than in a detached pool.
   private warmHandle: WarmQuery | null = null;
   public slashCommands: { name: string; description: string; argumentHint: string }[] = [];
+  // The CLI's command list and the names system/init last listed, kept so a
+  // send can spot an unsupported built-in without waiting on the CLI.
+  private cliCommands?: readonly SlashCommand[];
+  private runnableCommandNames?: readonly string[];
 
   constructor(options: ClaudeCodeProcessOptions) {
     super();
@@ -657,25 +712,29 @@ export class ClaudeCodeProcess extends EventEmitter {
     // The host resolves selections to a concrete wire id (family aliases →
     // their latest concrete id) before they reach the container, so we pass
     // the model straight through — including '/'-style OpenRouter ids.
-    this.model = options.model;
-    this.browserModel = options.browserModel;
-    this.dashboardBuilderModel = options.dashboardBuilderModel;
-    this.subagentModels = options.subagentModels ?? [];
-    this.modelContextWindows = options.modelContextWindows ?? {};
+    this.model = options.llmRuntime?.model ?? options.model;
+    this.browserModel = options.llmRuntime?.browserModel ?? options.browserModel;
+    this.dashboardBuilderModel = options.llmRuntime?.dashboardBuilderModel ?? options.dashboardBuilderModel;
+    this.subagentModels = options.llmRuntime?.subagentModels ?? options.subagentModels ?? [];
+    this.modelContextWindows = options.llmRuntime?.modelContextWindows ?? options.modelContextWindows ?? {};
     this.webSearchProvider = options.webSearchProvider;
     this.webFetchProvider = options.webFetchProvider;
+    this.availableIntegrationFamilies = options.availableIntegrationFamilies;
     this.maxOutputTokens = options.maxOutputTokens;
     this.maxThinkingTokens = options.maxThinkingTokens;
     this.maxTurns = options.maxTurns;
     this.maxBudgetUsd = options.maxBudgetUsd;
     this.customEnvVars = options.customEnvVars;
+    this.llmRuntime = options.llmRuntime;
+    this.requiresConnectionRuntime = options.requiresConnectionRuntime ?? false;
     this.effort = options.effort;
     this.speed = options.speed;
     this.capabilityPolicies = options.capabilityPolicies;
     this.sessionCapabilityGrants = new Set(options.sessionCapabilityGrants ?? []);
     this.availableEnvVars = options.availableEnvVars;
     this.userSystemPrompt = options.userSystemPrompt;
-    this.modelPromptHints = options.modelPromptHints;
+    this.modelPromptHints = options.llmRuntime?.modelPromptHints ?? options.modelPromptHints;
+    this.globalInstructions = options.globalInstructions;
     this.refreshSystemPrompt();
   }
 
@@ -694,6 +753,8 @@ export class ClaudeCodeProcess extends EventEmitter {
       this.webFetchProvider,
       this.capabilityPolicies,
       this.subagentModels,
+      this.globalInstructions,
+      this.availableIntegrationFamilies,
     );
   }
 
@@ -899,7 +960,9 @@ export class ClaudeCodeProcess extends EventEmitter {
       console.log(`[Session ${this.sessionId}] createQuery: claiming pre-warmed subprocess`);
       return warm.query(this.messageQueue!);
     }
-    return query({ prompt: this.messageQueue!, options: this.buildQueryOptions() });
+    const options = this.buildQueryOptions();
+    if (options.resume) prepareResumeDiagnostics(options.resume, options.env?.CLAUDE_CONFIG_DIR);
+    return query({ prompt: this.messageQueue!, options });
   }
 
   /**
@@ -919,6 +982,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     // Baked into the warm subprocess's options, so initializeQuery must not
     // replace it on claim or the warm process would be unstoppable.
     this.abortController = new AbortController();
+    await this.prepareLlmProxy();
     this.warmHandle = await startup({ options: this.buildQueryOptions() });
   }
 
@@ -939,12 +1003,14 @@ export class ClaudeCodeProcess extends EventEmitter {
    */
   private buildSdkMcpServers(browserMcpTools: ReturnType<typeof createBrowserTools>): Record<string, McpServerConfig> {
     const servers: Record<string, McpServerConfig> = {
-      'user-input': createUserInputMcpServer(() => this),
+      'user-input': createUserInputMcpServer(() => this, () => this.sessionId),
       'browser': createBrowserMcpServer(browserMcpTools),
       'dashboards': createDashboardsMcpServer(),
       'widgets': createWidgetsMcpServer(),
       'agents': createAgentsMcpServer(() => this.sessionId),
       'chat': createChatMcpServer(() => this.sessionId),
+      ...(meetingsAvailable(this.availableIntegrationFamilies) ? { 'meetings': createMeetingsMcpServer() } : {}),
+      'rules': createRulesMcpServer(),
       ...((this.webSearchProvider || this.webFetchProvider)
         ? { 'web': createWebMcpServer({ search: !!this.webSearchProvider, fetch: !!this.webFetchProvider }) }
         : {}),
@@ -954,7 +1020,43 @@ export class ClaudeCodeProcess extends EventEmitter {
     return servers;
   }
 
+  private async prepareLlmProxy(): Promise<void> {
+    const binding = this.llmRuntime && llmProxyBinding(this.llmRuntime.llmProviderId, this.llmRuntime.proxy);
+    if (this.llmProxy && this.llmProxyBinding === binding && this.llmRuntime?.proxy) {
+      this.llmProxy.updateCredential(this.llmRuntime.proxy.credential);
+      return;
+    }
+    await this.llmProxy?.close();
+    this.llmProxy = undefined;
+    this.llmProxyBinding = undefined;
+    if (!this.llmRuntime?.proxy) return;
+    const runtime = this.llmRuntime;
+    const handle = await startLlmProxy({
+      llmProviderId: runtime.llmProviderId,
+      config: runtime.proxy!,
+      ...(runtime.proxy!.credential.expiresAt !== undefined ? {
+        refreshCredential: async (current, rejected) => {
+          const updated = await resolveSessionRuntime(this.sessionId, {
+            llmProviderId: runtime.llmProviderId,
+            ...(rejected ? { rejectedGeneration: current.generation } : {}),
+          });
+          if (updated.llmProviderId !== runtime.llmProviderId || !updated.proxy) {
+            throw new Error('Session provider changed');
+          }
+          return updated.proxy.credential;
+        },
+      } : {}),
+    });
+    if (this.disposed || this.stopping) {
+      await handle.close();
+      throw new Error('Session stopped while preparing its provider');
+    }
+    this.llmProxy = handle;
+    this.llmProxyBinding = binding;
+  }
+
   private buildQueryOptions(): Options {
+    if (this.requiresConnectionRuntime && !this.llmRuntime) throw new Error('LLM provider runtime is required');
     const remoteMcpConfigs = this.buildRemoteMcpServers();
     const remoteMcpToolPatterns = Object.keys(remoteMcpConfigs).map(name => `mcp__${name}__*`);
     this.connectedAccountsSnapshot = connectedAccountsSnapshot();
@@ -985,7 +1087,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         ...remoteMcpToolPatterns,
       ],
       disallowedTools: [
-        'TaskOutput', 'Monitor', 'DesignSync',
+        'DesignSync',
         'CronCreate', 'CronDelete', 'CronList',
         'ScheduleWakeup', 'RemoteTrigger', 'PushNotification',
         'EnterWorktree', 'ExitWorktree',
@@ -994,6 +1096,11 @@ export class ClaudeCodeProcess extends EventEmitter {
         // agent's other sessions — cross-session messaging we neither want nor
         // surface. SendMessage stays: it is how a spawned subagent is continued.
         'ListAgents',
+        // claude.ai Artifacts: publishes pages to claude.ai and runs a
+        // persistent watcher on them. Our agents ship dashboards and files
+        // through their own tools. Also switched off in `settings` and the
+        // env below; this keeps it out of the tool list either way.
+        'Artifact',
         // Only meaningful under the CLI's bundled code-review skill, which
         // `disableBundledSkills` (below) removes — without it the tool is dead
         // weight in every session's tool list.
@@ -1009,6 +1116,8 @@ export class ClaudeCodeProcess extends EventEmitter {
       model: this.model,
       cwd: this.workingDirectory,
       abortController: this.abortController!,
+      // The SDK preserves tool/conversation history and repairs rejected
+      // thinking signatures on the wire when the destination account differs.
       resume: this.claudeSessionId || undefined,
       // A fresh session runs under the id we already hold (tempSessionId /
       // the prewarm uuid) instead of one the CLI mints at init. That is what
@@ -1044,6 +1153,21 @@ export class ClaudeCodeProcess extends EventEmitter {
         // Gamut plugin (`plugins` below); plugin skills and agent-created
         // skills under /workspace/.claude/skills are unaffected by this flag.
         disableBundledSkills: true,
+        // CLI 2.1.296 lists a built-in `plugin-authoring` skill (making
+        // "mods" to Claude Code's own terminal UI and hooks) that
+        // disableBundledSkills does not remove — verified with the
+        // claude-prompt-drift capture. Meaningless inside an agent session.
+        skillOverrides: { 'plugin-authoring': 'off' },
+        // CLI features that default on "once available" and would run work of
+        // their own inside the session. Both start ambient background tasks:
+        // the SDK lists them in background_tasks_changed, so they keep the
+        // session "working" (and the container awake) with nothing in the UI.
+        // - auto-dream: background memory consolidation forks.
+        // - Artifacts: the claude.ai Artifact tool and its live-update watcher.
+        // Off explicitly so a future SDK bump or server-side flag can't turn
+        // them on under us.
+        autoDreamEnabled: false,
+        enableArtifact: false,
       },
       settingSources: ['user', 'project'],
       // The image-baked Gamut plugin: the dashboards + widgets skills and the
@@ -1068,12 +1192,17 @@ export class ClaudeCodeProcess extends EventEmitter {
       // merge, so a user-set ANTHROPIC_CUSTOM_HEADERS is appended to, not lost).
       // withSpeedHeader then appends X-Superagent-Speed for non-normal tiers.
       env: withSpeedHeader(withAgentAttributionHeaders({
+        // The CLI caps concurrent workflow agents at min(16, cores - 2), which
+        // is 1-2 on our 2-core microVMs. Workflow agents mostly wait on the
+        // model API, so floor it at 4. Placed first so a custom env var wins.
+        CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS: String(Math.min(16, Math.max(4, os.availableParallelism() - 2))),
         // Agent SDK 0.2.113+ replaces process.env with options.env instead of
         // overlaying it, so we must spread process.env explicitly or the Claude
         // subprocess loses PATH, HOME, ANTHROPIC_API_KEY, connected-account env
         // vars, and anything else set on the container.
-        ...process.env,
-        ...this.customEnvVars,
+        ...(this.llmRuntime ? withoutProviderCredentials(process.env) : process.env),
+        ...(this.llmRuntime ? withoutProviderCredentials(this.customEnvVars ?? {}) : this.customEnvVars),
+        ...Object.fromEntries(Object.entries({ ...this.llmRuntime?.env, ...this.llmProxy?.env }).map(([key, value]) => [key, value || undefined])),
         // Platform services use the host-injected credentials across every
         // session, regardless of its LLM provider or custom env overrides.
         PLATFORM_BASE_URL: process.env.PLATFORM_BASE_URL,
@@ -1082,7 +1211,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         // The host treats `idle` as the authoritative end-of-session signal (a
         // 'result' alone doesn't end it — queued messages can keep the run going).
         // server.ts announces this capability on WebSocket connect — keep the two
-        // in sync. See message-persister.ts.
+        // in sync. See the host's live-session.ts.
         CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1',
         // The id of the session this process IS, inherited by every Bash
         // child. /opt/gamut/bin/list-sessions.py and read-session.py use it
@@ -1107,6 +1236,15 @@ export class ClaudeCodeProcess extends EventEmitter {
         // self-updated. Pinned like the other vars here: customEnvVars is
         // spread above, so an agent cannot turn this back on.
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+        // The env-layer off switch for claude.ai Artifacts (see `settings`
+        // above). Pinned here for the same reason: an agent's custom env vars
+        // cannot turn it back on.
+        CLAUDE_CODE_DISABLE_ARTIFACT: '1',
+        // CLI 2.1.300 flipped its request-replay record on by default: every
+        // transcript gets ~105 KB api-request-shape lines (system prompt +
+        // tool list) plus api-request-blob lines, about 3x the file size.
+        // Only the CLI's /feedback export reads them; resume does not.
+        CLAUDE_CODE_ELEGANT_MEADOW: '0',
         // Explicit maxOutputTokens setting takes precedence over custom env var
         ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
         // Tell the SDK the real context window for non-Claude models (it
@@ -1115,7 +1253,8 @@ export class ClaudeCodeProcess extends EventEmitter {
         // var for non-claude-* models, so it never affects Claude sessions. A
         // user-set custom env var (spread above) deliberately wins.
         ...(this.contextWindowForModel(this.model) &&
-          !this.customEnvVars?.CLAUDE_CODE_MAX_CONTEXT_TOKENS && {
+          !this.customEnvVars?.CLAUDE_CODE_MAX_CONTEXT_TOKENS &&
+          !this.llmRuntime?.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS && {
             CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(this.contextWindowForModel(this.model)),
           }),
       }), this.speed),
@@ -1142,8 +1281,10 @@ export class ClaudeCodeProcess extends EventEmitter {
             // when one is active (native is Anthropic-server-side, absent on non-Claude models).
             ...(this.webSearchProvider ? ['mcp__web__web_search'] : ['WebSearch']),
             'Read',
+            'Glob',
             'mcp__user-input__request_file',
             'mcp__user-input__request_browser_input',
+            'mcp__user-input__request_login',
           ],
           prompt: WEB_BROWSER_AGENT_PROMPT,
           maxTurns: 500,
@@ -1262,8 +1403,10 @@ export class ClaudeCodeProcess extends EventEmitter {
               },
             ],
           },
+          ...this.hintHooks.UserPromptSubmit,
         ],
         PreToolUse: [
+          ...this.hintHooks.PreToolUse,
           {
             matcher: 'mcp__user-input__.*',
             hooks: [
@@ -1287,21 +1430,6 @@ export class ClaudeCodeProcess extends EventEmitter {
             ],
           },
           {
-            matcher: 'Bash',
-            hooks: [
-              async (input) => {
-                const toolInput = (input as any).tool_input as Record<string, unknown> | undefined;
-                if (!startsWithAgentBrowserCommand(toolInput?.command)) return {};
-                return {
-                  hookSpecificOutput: {
-                    hookEventName: 'PreToolUse' as const,
-                    additionalContext: AGENT_BROWSER_BASH_WARNING,
-                  },
-                };
-              },
-            ],
-          },
-          {
             // Launch-policy gate for subagents/workflows — see
             // createCapabilityGateHook for why this is a hook and not
             // canUseTool.
@@ -1318,7 +1446,7 @@ export class ClaudeCodeProcess extends EventEmitter {
                   this.emit('capability-grant', { capability });
                 },
                 onReviewCancelled: (cancelledToolUseId, capability) => {
-                  // Same relay as SDK frames (persister → SSE → renderer),
+                  // Same relay as SDK frames (live session → SSE → renderer),
                   // so the host closes the orphaned approval card.
                   this.emit('message', {
                     type: 'capability_review_cancelled',
@@ -1369,8 +1497,39 @@ export class ClaudeCodeProcess extends EventEmitter {
               },
             ],
           },
+          {
+            matcher: 'Write|Edit',
+            hooks: [
+              async (input, toolUseId) => {
+                const filePath = resolveToolFilePath((input as any).tool_input as Record<string, unknown>, this.workingDirectory);
+                if (filePath) await this.snapshotForChangeHooks(toolUseId, filePath);
+                return {};
+              },
+            ],
+          },
+        ],
+        PostToolUseFailure: [
+          {
+            matcher: 'Write|Edit',
+            hooks: [
+              async (_input, toolUseId) => {
+                if (toolUseId) this.fileChangeSnapshots.delete(toolUseId);
+                return {};
+              },
+            ],
+          },
         ],
         PostToolUse: [
+          ...this.hintHooks.PostToolUse,
+          {
+            matcher: 'Bash',
+            hooks: [
+              async (input) => {
+                const hint = mountIndexCommandHint(((input as any).tool_input as Record<string, unknown> | undefined)?.command);
+                return hint ? { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: hint } } : {};
+              },
+            ],
+          },
           {
             matcher: 'Read',
             hooks: [
@@ -1380,7 +1539,7 @@ export class ClaudeCodeProcess extends EventEmitter {
                 if (!filePath) return {};
                 for (const hook of fileHooks) {
                   if (!hook.matches(filePath)) continue;
-                  const result = hook.onRead(filePath);
+                  const result = hook.onRead(filePath, (input as any).tool_response);
                   if (result.additionalContext) {
                     return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: result.additionalContext } };
                   }
@@ -1399,8 +1558,8 @@ export class ClaudeCodeProcess extends EventEmitter {
                 for (const hook of fileHooks) {
                   if (!hook.matches(filePath)) continue;
                   try {
-                    const content = await fs.promises.readFile(filePath, 'utf-8');
-                    const result = hook.onEdit(filePath, content);
+                    const result = hook.onEditReply?.(filePath, (input as any).tool_response)
+                      ?? hook.onEdit(filePath, await fs.promises.readFile(filePath, 'utf-8'));
                     if (result.error) {
                       return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: `Warning: ${result.error}` } };
                     }
@@ -1412,6 +1571,18 @@ export class ClaudeCodeProcess extends EventEmitter {
                   }
                 }
                 return {};
+              },
+            ],
+          },
+          {
+            matcher: 'Write|Edit',
+            hooks: [
+              async (input, toolUseId) => {
+                const filePath = resolveToolFilePath((input as any).tool_input as Record<string, unknown>, this.workingDirectory);
+                if (!filePath) return {};
+                const warnings = await this.runChangeHooks(toolUseId, filePath);
+                if (warnings.length === 0) return {};
+                return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: warnings.join('\n\n') } };
               },
             ],
           },
@@ -1428,10 +1599,33 @@ export class ClaudeCodeProcess extends EventEmitter {
     };
   }
 
+  /** Before a Write/Edit: remember the file as it is, if a file hook acts on its changes. */
+  private async snapshotForChangeHooks(toolUseId: string | undefined, filePath: string): Promise<void> {
+    if (!toolUseId || !fileHooks.some((hook) => hook.onChange && hook.matches(filePath))) return;
+    this.fileChangeSnapshots.set(toolUseId, await fs.promises.readFile(filePath, 'utf-8').catch(() => null));
+  }
+
+  /** After a Write/Edit landed: run the change hooks against the snapshot, returning their warnings. */
+  private async runChangeHooks(toolUseId: string | undefined, filePath: string): Promise<string[]> {
+    if (!toolUseId || !this.fileChangeSnapshots.has(toolUseId)) return [];
+    const before = this.fileChangeSnapshots.get(toolUseId) ?? null;
+    this.fileChangeSnapshots.delete(toolUseId);
+    const after = await fs.promises.readFile(filePath, 'utf-8').catch(() => null);
+    if (after === null) return [];
+    const warnings: string[] = [];
+    for (const hook of fileHooks) {
+      if (!hook.onChange || !hook.matches(filePath)) continue;
+      const { warning } = hook.onChange(filePath, before, after);
+      if (warning) warnings.push(warning);
+    }
+    return warnings;
+  }
+
   /**
    * Initializes the abort controller and message queue, then creates a new query.
    */
-  private initializeQuery(): void {
+  private async initializeQuery(): Promise<void> {
+    if (this.llmRuntime?.proxy || this.llmProxy) await this.prepareLlmProxy();
     // New query generation: a stale processMessages loop from a previous
     // query must not clobber this one's state when it finally unwinds.
     this.queryGeneration++;
@@ -1476,7 +1670,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     console.log(`[Session ${this.sessionId}] Working directory:`, this.workingDirectory);
     console.log(`[Session ${this.sessionId}] Resuming:`, isResuming, this.claudeSessionId);
 
-    this.initializeQuery();
+    await this.initializeQuery();
     this.emit('ready');
 
     // Start processing messages in the background
@@ -1522,17 +1716,22 @@ export class ClaudeCodeProcess extends EventEmitter {
           );
           // The init list owns the executable names. supportedCommands adds
           // descriptions/hints, but skill entries may use display titles there.
-          const canonicalCommandNames = Array.isArray(message.slash_commands)
+          this.runnableCommandNames = Array.isArray(message.slash_commands)
             ? message.slash_commands.filter((name): name is string => typeof name === 'string')
             : [];
-          this.slashCommands = mergeCanonicalSlashCommands(canonicalCommandNames, []);
-          try {
-            const cmds = await this.queryInstance!.supportedCommands();
-            this.slashCommands = mergeCanonicalSlashCommands(canonicalCommandNames, cmds);
-          } catch (err) {
-            console.error(`[Session ${this.sessionId}] Failed to fetch slash commands:`, err);
-          }
+          await this.loadCliCommands();
+          // The host rebuilds a live session's menu from this frame's list.
+          message.slash_commands = this.rebuildSlashCommands();
           this.emit('init-complete');
+        }
+
+        // A skill the agent writes mid-turn: the CLI pushes the new list now,
+        // while the next system/init comes only with the next turn.
+        if (message.type === 'system' && message.subtype === 'commands_changed') {
+          this.cliCommands = message.commands;
+          this.runnableCommandNames = withPushedCommandNames(this.runnableCommandNames ?? [], message.commands);
+          this.rebuildSlashCommands();
+          message.commands = this.slashCommands;
         }
 
         // Emit the SDK message
@@ -1587,7 +1786,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           } else {
             userError = errorMsg || 'An unexpected error occurred';
           }
-          // Emit synthetic result so downstream (WebSocket → message-persister → UI)
+          // Emit synthetic result so downstream (WebSocket → host's live session → UI)
           // knows the query failed and can transition to error state
           const isFatal = errorMsg.includes('SIGKILL') || errorMsg.includes('SIGTERM');
           this.emit('message', {
@@ -1615,14 +1814,73 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
   }
 
-  async sendMessage(content: string, uuid?: UUID, options?: { effort?: EffortLevel; speed?: SpeedLevel; model?: string; shouldQuery?: boolean; capabilityPolicies?: AgentCapabilityPolicies }): Promise<void> {
+  /** Rebuilds the menu without the unsupported built-ins; returns its runnable names. */
+  private rebuildSlashCommands(): string[] {
+    const runnable = this.runnableCommandNames ?? [];
+    const unsupported = unsupportedBuiltinCommands(this.cliCommands, runnable);
+    const menuNames = runnable.filter((name) => !unsupported.has(name));
+    this.slashCommands = mergeCanonicalSlashCommands(
+      menuNames,
+      (this.cliCommands ?? []).filter((command) => !unsupported.has(command.name)),
+    );
+    return menuNames;
+  }
+
+  // supportedCommands() answers from the initialize response, which the CLI
+  // sends before its first prompt, and follows later commands_changed pushes.
+  private async loadCliCommands(): Promise<void> {
+    try {
+      this.cliCommands = await this.queryInstance?.supportedCommands() ?? this.cliCommands;
+    } catch (err) {
+      console.error(`[Session ${this.sessionId}] Failed to fetch slash commands:`, err);
+    }
+  }
+
+  async sendMessage(content: string, uuid?: UUID, options?: SendOptions): Promise<void> {
+    // Counted before any await, so a pre-resume that has not started its
+    // restart yet sees this send and stands down (see warm()).
+    this.sendsInFlight++;
+    try {
+      // A pre-resume already restarting the process: let it land, then judge
+      // this send against the query it built, as if the process had been live.
+      if (this.warmRestart) await this.warmRestart.catch(() => undefined);
+      await this.sendMessageNow(content, uuid, options);
+    } finally {
+      this.sendsInFlight--;
+    }
+  }
+
+  private async sendMessageNow(content: string, uuid?: UUID, options?: SendOptions): Promise<void> {
+    const nextRuntime = options?.llmRuntime ?? (this.requiresConnectionRuntime && !this.llmRuntime
+      ? await resolveSessionRuntime(this.sessionId) : undefined);
+    const connectionChanged = nextRuntime !== undefined && (
+      nextRuntime.llmProviderId !== this.llmRuntime?.llmProviderId ||
+      nextRuntime.model !== this.llmRuntime?.model ||
+      (!nextRuntime.proxy && nextRuntime.generation !== this.llmRuntime?.generation) ||
+      JSON.stringify(nextRuntime.env) !== JSON.stringify(this.llmRuntime?.env) ||
+      JSON.stringify([nextRuntime.browserModel, nextRuntime.dashboardBuilderModel, nextRuntime.subagentModels, nextRuntime.modelPromptHints, nextRuntime.modelContextWindows]) !==
+        JSON.stringify([this.llmRuntime?.browserModel, this.llmRuntime?.dashboardBuilderModel, this.llmRuntime?.subagentModels, this.llmRuntime?.modelPromptHints, this.llmRuntime?.modelContextWindows]) ||
+      llmProxyBinding(nextRuntime.llmProviderId, nextRuntime.proxy) !==
+        llmProxyBinding(this.llmRuntime?.llmProviderId ?? '', this.llmRuntime?.proxy)
+    );
+    if (nextRuntime) {
+      if (!connectionChanged && nextRuntime.proxy) this.llmProxy?.updateCredential(nextRuntime.proxy.credential);
+      this.adoptRuntime(nextRuntime);
+    }
     const effort = options?.effort;
     const speed = options?.speed;
-    const model = options?.model;
+    const model = nextRuntime?.model ?? options?.model;
     const connectedAccountsChanged =
       connectedAccountsSnapshot() !== this.connectedAccountsSnapshot;
     const remoteMcpsChanged = remoteMcpsSnapshot() !== this.remoteMcpsSnapshot;
-    if (connectedAccountsChanged || remoteMcpsChanged) {
+    // Absent means an older host that never sends it: keep what we have.
+    // Compared trimmed, the way the prompt renders it, so whitespace-only
+    // edits do not cost a re-query.
+    const nextGlobalInstructions = options?.globalInstructions;
+    const globalInstructionsChanged = nextGlobalInstructions !== undefined &&
+      nextGlobalInstructions.trim() !== (this.globalInstructions ?? '').trim();
+    if (nextGlobalInstructions !== undefined) this.globalInstructions = nextGlobalInstructions;
+    if (connectedAccountsChanged || remoteMcpsChanged || globalInstructionsChanged) {
       // The prompt's connected-account and remote-MCP sections are generated
       // from runtime env metadata, so refresh them alongside the query config.
       this.refreshSystemPrompt();
@@ -1665,6 +1923,8 @@ export class ClaudeCodeProcess extends EventEmitter {
           this.webFetchProvider,
           nextPolicies,
           this.subagentModels,
+          this.globalInstructions,
+          this.availableIntegrationFamilies,
         );
       }
       this.reconcilePendingCapabilityReviews();
@@ -1696,10 +1956,12 @@ export class ClaudeCodeProcess extends EventEmitter {
       await this.restart();
       queryRebuilt = true;
     } else if (
+      connectionChanged ||
       effortChanged ||
       speedChanged ||
       capabilityBlockChanged ||
       connectedAccountsChanged ||
+      globalInstructionsChanged ||
       contextWindowChanged
     ) {
       // Effort can only be set at query creation time — the SDK has no setEffort
@@ -1711,10 +1973,12 @@ export class ClaudeCodeProcess extends EventEmitter {
       // creation — and so does a connected-accounts change, which reaches the
       // model through the prompt alone.
       const reasons: string[] = [];
+      if (connectionChanged) reasons.push('LLM provider configuration changed');
       if (effortChanged) reasons.push(`effort ${currentEffort} -> ${effort}`);
       if (speedChanged) reasons.push(`speed ${currentSpeed} -> ${speed}`);
       if (capabilityBlockChanged) reasons.push('capability block boundary changed');
       if (connectedAccountsChanged) reasons.push('connected accounts changed');
+      if (globalInstructionsChanged) reasons.push('global instructions changed');
       if (remoteMcpsChanged) reasons.push('remote MCP servers changed');
       if (contextWindowChanged) reasons.push('model context window changed');
       if (modelChanged) reasons.push(`model -> ${this.model}`);
@@ -1733,6 +1997,21 @@ export class ClaudeCodeProcess extends EventEmitter {
         // the conservative restart path so the new model still takes effect.
         console.warn(`[Session ${this.sessionId}] setModel failed, falling back to restart:`, err);
         await this.interrupt();
+        queryRebuilt = true;
+      }
+    }
+
+    // The command list comes with system/init, which the CLI sends only after
+    // the first message, so the first slash command of a process waits for it.
+    if (content.startsWith('/') && !this.cliCommands) {
+      await this.loadCliCommands();
+      // A stop that landed while the CLI started: wait it out and restart, as
+      // for a cold session above.
+      if (this.isCold()) {
+        if (this.currentStop) {
+          await this.currentStop.catch(() => undefined);
+        }
+        await this.restart();
         queryRebuilt = true;
       }
     }
@@ -1761,6 +2040,13 @@ export class ClaudeCodeProcess extends EventEmitter {
       await this.waitForRemoteMcpsReady();
     }
 
+    // An unsupported built-in reaches the model as the user typed it: the CLI
+    // runs no slash command in a client-composed turn. Such a turn also skips
+    // the CLI's turn-start context (nested CLAUDE.md, skill listing), which
+    // arrives after the turn's first tool call instead.
+    const clientComposed = content.startsWith('/') &&
+      isUnsupportedCommand(content, unsupportedBuiltinCommands(this.cliCommands, this.runnableCommandNames));
+
     // Create SDK user message format
     const shouldQuery = options?.shouldQuery;
     const message: SDKUserMessage = {
@@ -1778,6 +2064,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       parent_tool_use_id: null,
       ...(uuid ? { uuid } : {}),
       ...(shouldQuery !== undefined ? { shouldQuery } : {}),
+      ...(clientComposed ? { client_composed: true as const } : {}),
     };
 
     if (!content.startsWith(SYSTEM_MESSAGE_PREFIX)) {
@@ -1865,8 +2152,93 @@ export class ClaudeCodeProcess extends EventEmitter {
     }
     console.log(`[Session ${this.sessionId}] Restarting session`);
     this.stopping = false;
-    this.initializeQuery();
+    await this.queryInstance?.return(undefined);
+    await this.initializeQuery();
     this.processingDone = this.processMessages();
+  }
+
+  /** Whether a send would have to restart the query before queueing (see sendMessageNow). */
+  private isCold(): boolean {
+    return this.stopping || !this.messageQueue || !this.isReady;
+  }
+
+  /** A pre-resume may still start its restart: nothing else has taken the process over. */
+  private mayPreResume(): boolean {
+    return !this.disposed && this.sendsInFlight === 0 && this.isCold();
+  }
+
+  /**
+   * Take a connection runtime's execution facts for the next query. The model
+   * is left to the caller: sendMessageNow decides between setModel and a
+   * re-query by comparing the new model with the current one.
+   */
+  private adoptRuntime(runtime: ConnectionRuntime): void {
+    this.llmRuntime = runtime;
+    this.browserModel = runtime.browserModel;
+    this.dashboardBuilderModel = runtime.dashboardBuilderModel;
+    this.subagentModels = runtime.subagentModels;
+    this.modelContextWindows = runtime.modelContextWindows;
+    this.modelPromptHints = runtime.modelPromptHints;
+    this.refreshSystemPrompt();
+  }
+
+  /**
+   * Pre-resume: bring a cold process back up WITHOUT queueing a message, so
+   * the next send finds a live query instead of paying the CLI spawn and
+   * `--resume` on its critical path. Cold means idle-evicted (a stop may still
+   * be closing it) or resumed with its start deferred to the first send. It
+   * runs the restart a cold send runs, with the runtime the session last ran
+   * on — or, for a deferred start, the one the host resolves for the session,
+   * as for an internal send.
+   *
+   * Resolves true when this call restarted the query. False when there was
+   * nothing to do: already live, disposed, another pre-resume under way, or a
+   * send in flight — that send restarts the process itself with the runtime
+   * the host resolved for it, and a send arriving before the restart begins
+   * makes this stand down. Rejects only when the restart fails; the next send
+   * then cold-restarts as it would have without this.
+   *
+   * Turn and settlement state are untouched: the process idles like any live
+   * one, and the session manager's idle eviction reclaims it if no send comes.
+   */
+  async warm(): Promise<boolean> {
+    if (this.preResuming || !this.mayPreResume()) return false;
+    this.preResuming = true;
+    try {
+      if (this.currentStop) await this.currentStop.catch(() => undefined);
+      if (this.requiresConnectionRuntime && !this.llmRuntime && this.mayPreResume()) {
+        const runtime = await resolveSessionRuntime(this.sessionId);
+        if (!this.mayPreResume()) return false;
+        this.adoptRuntime(runtime);
+        this.model = runtime.model;
+      }
+      // Re-checked after every await: a send or a delete that arrived meanwhile owns the process.
+      if (!this.mayPreResume()) return false;
+      console.log(`[Session ${this.sessionId}] Pre-resuming cold session`);
+      // As in sendMessageNow: a rebuilt query whose remote-MCP set changed
+      // waits for the new servers before the first message may land.
+      const remoteMcpsChanged = remoteMcpsSnapshot() !== this.remoteMcpsSnapshot;
+      const restart = (async () => {
+        await this.restart();
+        if (remoteMcpsChanged) await this.waitForRemoteMcpsReady();
+      })();
+      // Published synchronously with the restart's start, so a send can never
+      // slip between the check above and the restart without seeing it.
+      this.warmRestart = restart;
+      try {
+        await restart;
+      } finally {
+        this.warmRestart = null;
+      }
+      // A delete that raced the restart wins: no live query outlives a disposed process.
+      if (this.disposed) {
+        await this.stop();
+        return false;
+      }
+      return true;
+    } finally {
+      this.preResuming = false;
+    }
   }
 
   /**
@@ -1943,10 +2315,14 @@ export class ClaudeCodeProcess extends EventEmitter {
       ]);
     }
 
+    await this.queryInstance?.return(undefined);
     this.isReady = false;
     this.queryInstance = null;
     this.messageQueue = null;
     this.abortController = null;
+    await this.llmProxy?.close();
+    this.llmProxy = undefined;
+    this.llmProxyBinding = undefined;
   }
 
   isRunning(): boolean {
@@ -2137,7 +2513,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     return { promise, cancel: () => cleanup() };
   }
 
-  // Downstream (persister → SSE → renderer) learns each dead uuid through the
+  // Downstream (live session → SSE → renderer) learns each dead uuid through the
   // exact same pipeline as real SDK frames and can rescue the message text
   // deterministically instead of racing a refetch.
   private emitDiscarded(uuid: string): void {
@@ -2209,20 +2585,23 @@ export class ClaudeCodeProcess extends EventEmitter {
     // Abort the current query
     this.abortController!.abort();
 
-    // Wait for the current processing to stop
-    await new Promise<void>((resolve) => {
-      const checkInterval = setInterval(() => {
-        if (!this.isProcessing) {
-          clearInterval(checkInterval);
-          resolve();
-        }
-      }, 50);
-      // Timeout after 5 seconds
-      setTimeout(() => {
-        clearInterval(checkInterval);
-        resolve();
-      }, 5000);
-    });
+    // Let the message loop consume the abort's terminal frames — the
+    // error_during_execution result and the idle that settles the tracker —
+    // before tearing the iterator down. Calling return() first ends the
+    // iteration at once and drops whatever the CLI wrote in response to the
+    // abort, which left every hard-interrupted session busy forever, beyond
+    // the reaper (session-gc-durability.e2e.test.ts guards this). Bounded, as
+    // in stop(); the generation guard covers the timeout path.
+    if (this.processingDone) {
+      await Promise.race([
+        this.processingDone.catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    }
+
+    // Then drain SDK teardown before replacing a transcript or resuming it:
+    // the message iterator can finish before the child has flushed and exited.
+    await this.queryInstance?.return(undefined);
 
     // The SDK's own terminal lifecycle frames died with the query, so emit
     // them ourselves.
@@ -2239,7 +2618,7 @@ export class ClaudeCodeProcess extends EventEmitter {
 
     // Restart the query with resume to continue the session
     console.log(`[Session ${this.sessionId}] Restarting query after interrupt`);
-    this.initializeQuery();
+    await this.initializeQuery();
     this.processingDone = this.processMessages();
 
     return { interrupted: true, discardedUuids, processKept: false };

@@ -1,4 +1,6 @@
 import type { RuntimeOptions } from './runtime-options'
+import type { ContainerVolume } from '@shared/lib/types/mount'
+import type { SessionMetadata } from '@shared/lib/types/agent'
 import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 
 /** The container refused an operation because the session is mid-turn (HTTP 409). */
@@ -19,8 +21,30 @@ export class ContainerNotFoundError extends Error {
 }
 
 export interface SendMessageOptions extends RuntimeOptions {
+  /** Internal: a queued message keeps the active turn configuration. */
+  preserveRuntime?: boolean
   /** Keep an automated session in its automated runtime class for agent-originated follow-ups. */
   isAutomated?: boolean
+  /**
+   * The session's metadata entry as the caller just read it (null: it has
+   * none). The send binds its provider from it instead of reading it again.
+   */
+  sessionMetadata?: SessionMetadata | null
+  /**
+   * Fields the caller is about to store for this send. When the send has to
+   * store a changed provider binding, these go in the same write.
+   */
+  metadataUpdates?: Partial<SessionMetadata>
+}
+
+export interface SendMessageResult {
+  /** The provider binding the send resolved; absent when it kept the running turn's. */
+  selection?: { llmProviderId: string; model: string }
+  /**
+   * The send stored a changed binding before the container had the message,
+   * together with `metadataUpdates`.
+   */
+  metadataWritten?: boolean
 }
 
 export const CONTAINER_RUNNER_IDS = [
@@ -105,6 +129,7 @@ export interface CreateSessionOptions {
   availableEnvVars?: string[]
   initialMessage: string // Required: first message to send (triggers session ID generation)
   initialMessageUuid?: string // Optional UUID for message author attribution
+  llmProviderId?: string | null
   model?: string // Claude model to use for this session
   browserModel?: string // Model for browser subagent
   dashboardBuilderModel?: string // Model for the dashboard-builder subagent
@@ -127,6 +152,7 @@ export interface CreateSessionOptions {
    * default session would discard that process and start cold.
    */
   prewarmDefaults?: {
+    llmProviderId?: string
     model?: string
     effort?: EffortLevel
     speed?: SpeedLevel
@@ -141,14 +167,12 @@ export interface StartOptions {
    * runtime has no view of the workspace and must not read it by host path.
    */
   agentName?: string
-  additionalVolumes?: string[] // Extra -v flag values for bind mounts
-  /**
-   * Called when a bind mount is dropped at run time because the container
-   * runtime can't access it (e.g. a cloud-synced folder the Lima VM helper is
-   * denied). Receives the host path so the caller can warn the user. The
-   * container is still started without that one mount.
-   */
-  onMountDropped?: (hostPath: string) => void
+  /** Sent as SUPERAGENT_VOLUMES with `volumeRunFlags()`, and dropped with them when the runtime refuses the flags. */
+  volumes?: ContainerVolume[]
+  /** The runtime refused the volume flags, so the container started without its volumes. */
+  onVolumesDropped?: () => void
+  /** The container was already running, so this start sent it nothing. */
+  onAlreadyRunning?: () => void
 }
 
 // Container resource usage stats
@@ -210,8 +234,8 @@ export interface ContainerClient {
   stop(options?: StopOptions): Promise<StopResult>
   stopSync(): void // Synchronous stop for exit handlers
 
-  // Build a -v flag value for a volume mount (hostPath:containerPath with runtime-specific suffix)
-  buildVolumeFlag(hostPath: string, containerPath: string): string
+  // Run flags that let the container mount its volumes with FUSE, or null when this runtime can't.
+  volumeRunFlags(): string | null
 
   // Host-internal bridge IP that a host-side service must bind to so THIS runner's
   // containers can reach it via host.docker.internal, or null when containers reach
@@ -249,6 +273,8 @@ export interface ContainerClient {
   // Health checks
   waitForHealthy(timeoutMs?: number, knownPort?: number): Promise<boolean>
   isHealthy(knownPort?: number): Promise<boolean>
+  /** The container's /health body, or null when it does not answer ok within the probe's bound. */
+  health(knownPort?: number): Promise<unknown>
 
   // Resource stats (memory, CPU usage)
   getStats(): Promise<ContainerStats | null>
@@ -262,9 +288,14 @@ export interface ContainerClient {
   // ContainerNotFoundError when the session is gone (JSON 404),
   // ContainerConflictError when the source is mid-turn.
   forkSession(sessionId: string): Promise<{ id: string } | null>
+  // Ask the container to resume this session's CLI ahead of its next message
+  // (it may have been evicted while idle). Best-effort and never throws:
+  // false when the container predates the endpoint (plain 404), does not know
+  // the session, or does not answer within a short timeout.
+  warmSession(sessionId: string): Promise<boolean>
 
   // Message operations
-  sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<void>
+  sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<SendMessageResult>
   // Cancel a queued (not yet picked up) message by the uuid it was sent with.
   // false = too late (already picked up) or session not live — never throws for that.
   cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean>

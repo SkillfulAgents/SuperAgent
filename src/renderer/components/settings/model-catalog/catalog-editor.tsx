@@ -2,7 +2,8 @@ import { findGlobalPrice, withGlobalModelPricing } from '@shared/lib/llm-provide
 import { canonicalPricingId } from '@shared/lib/llm-provider/model-pricing-ids'
 import type { GlobalModelPricing, GlobalModelPricingPatch } from '@shared/lib/llm-provider/global-pricing-schema'
 import { useMemo, useState } from 'react'
-import { ChevronDown, Plus, Settings, Trash2 } from 'lucide-react'
+import { ChevronDown, Info, Plus, Settings, Trash2 } from 'lucide-react'
+import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Button } from '@renderer/components/ui/button'
 import { Checkbox } from '@renderer/components/ui/checkbox'
 import {
@@ -50,7 +51,7 @@ interface CatalogRowProps {
   enabled: boolean
   disabled?: boolean
   onToggle: (enabled: boolean) => void
-  onCustomize: () => void
+  onCustomize?: () => void
   onRemove?: () => void
 }
 
@@ -83,7 +84,7 @@ function CatalogRow({
       <div className="flex items-center justify-end gap-2">
         {/* Fixed-width slot so prices stay aligned whether a row has 1 or 2 actions. */}
         <div className="flex w-16 items-center justify-end gap-0.5">
-          <Button
+          {onCustomize && <Button
             type="button"
             variant="ghost"
             size="icon"
@@ -94,7 +95,7 @@ function CatalogRow({
             className="h-7 w-7 text-muted-foreground hover:text-foreground"
           >
             <Settings className="h-3.5 w-3.5" />
-          </Button>
+          </Button>}
           {onRemove && (
             <Button
               type="button"
@@ -121,9 +122,13 @@ export interface CatalogEditorProps {
   builtinCatalog: ModelDefinition[]
   effectiveCatalog: ModelDefinition[]
   modelCatalog: ModelCatalogSettings | undefined
+  llmProviderId?: string
   modelPricing?: GlobalModelPricing
+  canEditPricing?: boolean
   supportsModelSearch?: boolean
   disabled?: boolean
+  /** Callout at the top of the expanded catalog, e.g. how prices apply to a subscription. */
+  pricingNote?: string
   onChange: (change: CatalogChange) => void
 }
 
@@ -143,9 +148,12 @@ export function CatalogEditor({
   builtinCatalog,
   effectiveCatalog,
   modelCatalog,
+  llmProviderId,
   modelPricing = {},
+  canEditPricing = true,
   supportsModelSearch = false,
   disabled,
+  pricingNote,
   onChange,
 }: CatalogEditorProps) {
   const overrides = useMemo(
@@ -220,14 +228,14 @@ export function CatalogEditor({
     const { pricing, ...model } = entry
     const key = canonicalPricingId(entry.id)
     let modelPricingPatch: GlobalModelPricingPatch | undefined
-    if (pricing) {
+    if (canEditPricing && pricing) {
       // Keep what this dialog does not edit (cache rates, speed tiers, a cliff
       // another provider's entry contributed): the price is shared, and an
       // edit here that never touched them must not change them for everyone.
       const next = { ...modelPricing[key], ...pricing }
       if (entry.longContextPriceCliff) next.longContextPriceCliff = entry.longContextPriceCliff
       modelPricingPatch = { [key]: next }
-    } else if (modelPricing[key]) {
+    } else if (canEditPricing && modelPricing[key]) {
       modelPricingPatch = { [key]: null }
     }
     onChange({
@@ -263,7 +271,7 @@ export function CatalogEditor({
   }
 
   return (
-    <div className="-mx-4 -mb-6 border-t border-border/50" data-testid="model-catalog-editor">
+    <div data-testid="model-catalog-editor">
       <Collapsible>
         <CollapsibleTrigger
           data-testid="catalog-disclosure-trigger"
@@ -279,6 +287,14 @@ export function CatalogEditor({
         </CollapsibleTrigger>
 
         <CollapsibleContent>
+          {pricingNote && (
+            <div className="px-4 pb-3">
+              <Alert role="note" className="py-2 text-xs" data-testid="catalog-pricing-note">
+                <Info className="h-3.5 w-3.5" />
+                <AlertDescription className="text-xs text-muted-foreground">{pricingNote}</AlertDescription>
+              </Alert>
+            </div>
+          )}
           <div className="flex justify-end px-4 pb-2">
             <Button
               type="button"
@@ -310,7 +326,7 @@ export function CatalogEditor({
                         enabled={override?.disabled !== true}
                         disabled={disabled}
                         onToggle={(enabled) => updateBuiltinDisabled(model, enabled)}
-                        onCustomize={() => setEditingBuiltin(model)}
+                        onCustomize={canEditPricing ? () => setEditingBuiltin(model) : undefined}
                       />
                     )
                   })}
@@ -370,8 +386,10 @@ export function CatalogEditor({
       <CustomModelDialog
         open={customDialog !== null}
         mode={customDialog?.mode ?? 'add'}
+        canEditPricing={canEditPricing}
         initialModel={customDialog?.mode === 'edit' ? customDialog.model : null}
         providerId={providerId}
+        llmProviderId={llmProviderId}
         supportsModelSearch={supportsModelSearch}
         disabled={disabled}
         onOpenChange={(open) => !open && setCustomDialog(null)}

@@ -17,10 +17,12 @@ import { ConnectionDetailPage } from '@renderer/components/connections/connectio
 import { ConnectionLogsView } from '@renderer/components/connections/connection-logs-view'
 import { buildUnifiedRows, type UnifiedRow } from '@renderer/components/connections/unified-rows'
 import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
+import { useConnectionArrival } from '@renderer/hooks/use-connection-arrival'
 import { useConnectionActivityStats } from '@renderer/hooks/use-activity-stats'
 import { ActivitySparkChart, ActivitySparkChartSkeleton } from '@renderer/components/activity/activity-spark-chart'
 
 export function ConnectionsTab() {
+  useConnectionArrival()
   const { data: settings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
   const { data: accountsData, isLoading: isLoadingAccounts } = useConnectedAccounts()

@@ -16,6 +16,7 @@ import {
 // --- Mock data ---
 
 const testAgent: ApiAgent = {
+  avatar: { color: 'tonal-blue', shape: 'circle' } as const,
   slug: 'test-agent',
   displaySlug: 'test-agent',
   name: 'Test Agent',
@@ -36,11 +37,17 @@ const mockUpdateAgentMutate = vi.fn()
 const mockUpdateAgentMutateAsync = vi.fn()
 const mockDeleteAgentMutate = vi.fn()
 
+// The cards read the page's search; these tests render Agent Home without a router.
+vi.mock('@tanstack/react-router', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tanstack/react-router')>()),
+  useRouterState: ({ select }: { select: (s: { location: { href: string } }) => unknown }) => select({ location: { href: '/agents/test-agent' } }),
+}))
 vi.mock('@renderer/context/analytics-context', () => ({
   useAnalyticsTracking: () => ({ track: vi.fn() }),
 }))
 
 vi.mock('@renderer/hooks/use-agents', () => ({
+  useUpdateAgentAvatar: () => ({ mutate: vi.fn(), isPending: false }),
   useAgent: () => ({ data: { ...testAgent, mounts: [] } }),
   useAgents: () => ({ data: [testAgent] }),
   useRouteAgentId: () => 'test-agent',
@@ -280,7 +287,6 @@ describe('AgentHome', () => {
         name: 'Newer created session',
         createdAt: new Date('2026-08-25T12:00:00.000Z'),
         lastActivityAt: new Date('2026-08-25T12:00:00.000Z'),
-        messageCount: 1,
       },
       {
         id: 'recently-active',
@@ -288,7 +294,6 @@ describe('AgentHome', () => {
         name: 'Recently active session',
         createdAt: new Date('2026-08-24T12:00:00.000Z'),
         lastActivityAt: new Date('2026-08-26T12:00:00.000Z'),
-        messageCount: 2,
       },
     ]
 
@@ -317,7 +322,6 @@ describe('AgentHome', () => {
           name: 'Old but active session',
           createdAt: new Date('2026-08-17T12:00:00.000Z'),
           lastActivityAt: new Date('2026-08-27T11:00:00.000Z'),
-          messageCount: 2,
         },
       ]
 
@@ -597,6 +601,7 @@ describe('AgentHome', () => {
 
     expect(screen.getByTestId('view-only-banner')).toBeInTheDocument()
     expect(screen.queryByTestId('home-message-input')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('agent-avatar-picker')).not.toBeInTheDocument()
   })
 
   it('shows agent name in view-only mode', () => {

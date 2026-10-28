@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
 import { render } from '@testing-library/react'
-import { DrawerShell } from './drawer-shell'
+import { DrawerShell, slideOverWidth } from './drawer-shell'
 
 describe('DrawerShell', () => {
   it('marks the drawer for a full-width overlay only at the responsive breakpoint', () => {
@@ -72,5 +72,28 @@ describe('DrawerShell', () => {
     expect(shell).not.toHaveClass('file-preview-responsive-overlay')
     expect(shell).not.toHaveClass('file-preview-wide-overlay')
     expect(shell.firstElementChild).not.toHaveClass('file-preview-responsive-resize-handle')
+  })
+})
+
+describe('slideOverWidth', () => {
+  it('leaves the drawer beside the content while the content keeps 240px', () => {
+    expect(slideOverWidth(450, 1200)).toBe(0)
+    expect(slideOverWidth(800, 1040)).toBe(0)
+  })
+
+  it('reaches over the content by exactly what would take it under 240px', () => {
+    expect(slideOverWidth(800, 904)).toBe(136)
+  })
+
+  it('reaches at most 240px when the drawer fills its host', () => {
+    expect(slideOverWidth(800, 700)).toBe(240)
+  })
+
+  it('reaches over the whole host when the host is narrower than 240px', () => {
+    expect(slideOverWidth(450, 200)).toBe(200)
+  })
+
+  it('reaches nothing before the host is measured', () => {
+    expect(slideOverWidth(800, 0)).toBe(0)
   })
 })

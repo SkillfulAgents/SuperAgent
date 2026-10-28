@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { classifyUserMessage, classifyUserText, plainMessage, USER_MESSAGE_KINDS } from './index'
 import { buildConnectionReplacementMessage } from '@shared/lib/utils/connection-replacement-message'
 import { SlashCommandBubble } from './slash-command'
+import type { ApiMessage } from '@shared/lib/types/api'
 
 const kindOf = (text: string) => classifyUserText(text).kind
 
@@ -78,9 +79,10 @@ describe('classifyUserText', () => {
   })
 
   it('lists hidden kinds before the other visible ones so the visibility filter is order-safe', () => {
-    // Dedicated system notices must precede the hidden system prefix.
+    // Dedicated system notices must precede the hidden system prefix. Metadata
+    // kinds are tried in their own pass before any text, so they are exempt.
     const notices = ['voice-mode', 'connection-replacement']
-    const rest = USER_MESSAGE_KINDS.filter((spec) => !notices.includes(spec.kind))
+    const rest = USER_MESSAGE_KINDS.filter((spec) => !notices.includes(spec.kind) && !spec.matchMessage)
     const firstVisible = rest.findIndex((spec) => !spec.hidden)
     expect(rest.slice(firstVisible).every((spec) => !spec.hidden)).toBe(true)
     for (const kind of notices) {
@@ -117,5 +119,34 @@ describe('classifyUserMessage', () => {
     expect(classifyUserMessage({ type: 'user' })).toBe(plainMessage)
     expect(classifyUserMessage({ type: 'user', content: null })).toBe(plainMessage)
     expect(classifyUserMessage({ type: 'user', content: {} })).toBe(plainMessage)
+  })
+})
+
+describe('integration messages', () => {
+  const integration: NonNullable<ApiMessage['integration']> = {
+    version: 1,
+    integration: { id: 'i-1', name: 'Linear', provider: 'linear', family: 'task-manager' },
+    event: { type: 'comment', label: 'New comment' },
+    request: { text: '/deploy please' },
+    source: { kind: 'task', identifier: 'SUP-1' },
+  }
+
+  it('classifies by the host-written card, ahead of any text kind', () => {
+    const spec = classifyUserMessage({ type: 'user', content: { text: '/deploy please' }, integration })
+    expect(spec.kind).toBe('integration')
+    expect(spec.hidden).toBe(false)
+    expect(spec.chrome).toBe('bare')
+    expect(classifyUserMessage({ type: 'user', content: { text: '[SYSTEM] hidden' }, integration }).kind).toBe('integration')
+  })
+
+  it('cannot be selected by text, even text that imitates a card', () => {
+    expect(kindOf(JSON.stringify({ integration }))).toBe('plain')
+    expect(classifyUserMessage({ type: 'user', content: { text: JSON.stringify(integration) } }).kind).toBe('plain')
+    expect(USER_MESSAGE_KINDS.find((spec) => spec.kind === 'integration')?.match(JSON.stringify(integration))).toBe(false)
+  })
+
+  it('classifies peeled text when the caller passes it, and ignores non-user entries', () => {
+    expect(classifyUserMessage({ type: 'user', content: { text: '\\[Ada]: /deploy' } }, '/deploy').kind).toBe('slash')
+    expect(classifyUserMessage({ type: 'assistant', content: { text: 'x' }, integration })).toBe(plainMessage)
   })
 })

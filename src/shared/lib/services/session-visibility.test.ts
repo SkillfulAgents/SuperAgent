@@ -2,6 +2,14 @@ import { describe, it, expect } from 'vitest'
 import { isHiddenAutomatedSession } from './session-visibility'
 
 describe('isHiddenAutomatedSession', () => {
+  it.each([
+    { isAgentIntegrationSession: true }, { agentIntegrationId: 'integration' },
+    { isChatIntegrationSession: true }, { chatIntegrationId: 'legacy' },
+  ])('hides all integration sessions, including legacy metadata, until explicitly promoted (%j)', metadata => {
+    expect(isHiddenAutomatedSession(metadata)).toBe(true)
+    expect(isHiddenAutomatedSession({ ...metadata, promotedToInteractive: true })).toBe(false)
+  })
+
   it('is false for missing metadata (unknown sessions are treated as interactive)', () => {
     expect(isHiddenAutomatedSession(undefined)).toBe(false)
     expect(isHiddenAutomatedSession(null)).toBe(false)

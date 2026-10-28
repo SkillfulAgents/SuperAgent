@@ -117,7 +117,7 @@ interface PendingCommand {
   timer: ReturnType<typeof setTimeout>
 }
 
-/** One observer per cloud browser; independent of the agent and the live viewer. */
+/** One observer per browser; independent of the agent and the live viewer. */
 class RecoveryConnection {
   private socket?: WebSocket
   private stopped = false
@@ -384,7 +384,7 @@ class RecoveryConnection {
 export class GooglePasskeyRecovery {
   private connections = new Map<string, RecoveryConnection>()
 
-  /** Only pass the reusable Browserbase debug URL, never its single-use connectUrl. */
+  /** Pass a reusable browser-level CDP URL, never Browserbase's single-use connectUrl. */
   watch(instanceId: string, debugUrl: string): void {
     const existing = this.connections.get(instanceId)
     if (existing?.url === debugUrl && existing.active) return

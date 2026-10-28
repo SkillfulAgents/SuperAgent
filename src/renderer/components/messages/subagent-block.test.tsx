@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { SubAgentBlock } from './subagent-block'
 import { createToolCall, createAssistantMessage } from '@renderer/test/factories'
 import type { ApiToolCall } from '@shared/lib/types/api'
+import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
 
 // Mock useSubagentMessages
 let mockSubMessages: any[] = []
@@ -169,6 +170,60 @@ describe('SubAgentBlock', () => {
 
     expect(screen.getByText('running')).toBeInTheDocument()
     expect(screen.getByText('Sub-agent is working...')).toBeInTheDocument()
+  })
+
+  it('reopens the original block for a resumed run and shows its live output before the transcript catches up', () => {
+    const tc = createToolCall({
+      id: 'agent-tool',
+      name: 'Agent',
+      input: { subagent_type: 'general-purpose', description: 'Check the changes' },
+      result: 'Initial check finished',
+      subagent: { agentId: 'agent-1', status: 'completed' },
+    })
+    mockSubMessages = [createAssistantMessage({ content: { text: 'Initial check finished' } })]
+    const { rerender } = render(
+      <SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" isSessionActive isCompleted />
+    )
+    expect(screen.queryByText('Initial check finished')).not.toBeInTheDocument()
+
+    // MessageItem selects this later run by agentId. SendMessage has a new
+    // tool id, while the original Agent block and its persisted result stay.
+    const resumed: SubagentInfo = {
+      parentToolId: 'send-tool',
+      agentId: 'agent-1',
+      streamingMessage: 'Checking the follow-up now',
+      streamingToolUse: { id: 'resumed-bash', name: 'Bash', partialInput: '{"command":"sleep 25"}' },
+      progressSummary: null,
+      subagentType: 'general-purpose',
+      description: 'Check the changes',
+      usage: { duration_ms: 5000, total_tokens: 1500, tool_uses: 2 },
+      lastToolName: 'Bash',
+    }
+    const resumedBlock = (
+      <SubAgentBlock
+        toolCall={tc} sessionId="s-1" agentSlug="agent-1"
+        isSessionActive isCompleted={false} activeSubagent={resumed}
+      />
+    )
+    rerender(resumedBlock)
+
+    expect(screen.getByText('running')).toBeInTheDocument()
+    expect(screen.getByText('Checking the follow-up now')).toBeInTheDocument()
+    expect(screen.getByTestId('sub-streaming-tool')).toHaveTextContent('Bash')
+    expect(screen.getByText(/5s · 1.5k tokens · 2 tool calls/)).toBeInTheDocument()
+
+    // A later JSONL refetch must replace, rather than duplicate, the stream.
+    mockSubMessages = [...mockSubMessages, createAssistantMessage({
+      content: { text: 'Checking the follow-up now' },
+      toolCalls: [createToolCall({ id: 'resumed-bash', name: 'Bash', result: undefined })],
+    })]
+    rerender(<SubAgentBlock
+      toolCall={tc} sessionId="s-1" agentSlug="agent-1"
+      isSessionActive isCompleted={false} activeSubagent={{ ...resumed }}
+    />)
+    expect(screen.getAllByText('Checking the follow-up now')).toHaveLength(1)
+    expect(screen.queryByTestId('sub-streaming-tool')).not.toBeInTheDocument()
+    expect(screen.getByTestId('sub-tool-Bash')).toBeInTheDocument()
   })
 
   it('renders subagent messages when expanded', async () => {
@@ -394,5 +449,98 @@ describe('SubAgentBlock', () => {
     await user.click(screen.getByText('Explore'))
 
     expect(screen.getByText('Found 3 config files in the workspace.')).toBeInTheDocument()
+  })
+
+  it("does not show a background launch's acknowledgement as the agent's result", async () => {
+    // Every background subagent (and every fork, which always runs in the
+    // background) gets this tool_result at launch; its report is in the
+    // transcript or the SSE resultText.
+    const user = userEvent.setup()
+    mockSubMessages = [createAssistantMessage({ content: { text: 'date -u output: Mon Oct 19' } })]
+    const tc = createToolCall({
+      name: 'Agent',
+      input: { subagent_type: 'fork', description: 'inspect workspace' },
+      result: 'Async agent launched successfully. (This tool result is internal metadata.)\nagentId: sub-1',
+      subagent: { agentId: 'sub-1', status: 'async_launched' },
+    })
+
+    render(<SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" />)
+    await user.click(screen.getByText('fork'))
+
+    expect(screen.getByText('date -u output: Mon Oct 19')).toBeInTheDocument()
+    expect(screen.queryByText(/Async agent launched/)).not.toBeInTheDocument()
+  })
+
+  it("shows the SSE result of a background launch that finished in this session", async () => {
+    const user = userEvent.setup()
+    const tc = createToolCall({
+      name: 'Agent',
+      input: { subagent_type: 'fork', description: 'inspect workspace' },
+      result: 'Async agent launched successfully.\nagentId: sub-1',
+      subagent: { agentId: 'sub-1', status: 'async_launched' },
+    })
+
+    render(
+      <SubAgentBlock
+        toolCall={tc}
+        sessionId="s-1"
+        agentSlug="agent-1"
+        isSessionActive
+        isCompleted
+        activeSubagent={{
+          parentToolId: tc.id,
+          agentId: 'sub-1',
+          streamingMessage: null,
+          streamingToolUse: null,
+          progressSummary: null,
+          subagentType: 'fork',
+          description: 'inspect workspace',
+          usage: null,
+          lastToolName: null,
+          resultText: 'The listing had 8 entries.',
+        }}
+      />
+    )
+    await user.click(screen.getByText('fork'))
+
+    expect(screen.getByText('The listing had 8 entries.')).toBeInTheDocument()
+    expect(screen.queryByText(/Async agent launched/)).not.toBeInTheDocument()
+  })
+
+  it('keeps a mermaid fence in live sub-agent text as code and draws it in the settled result', async () => {
+    const user = userEvent.setup()
+    const tc = createToolCall({ name: 'Task', input: { subagent_type: 'Explore', description: 'Searching' }, result: undefined })
+    const fence = '```mermaid\ngraph LR\n  Request --> Response\n```'
+    const subagent = {
+      parentToolId: tc.id, agentId: 'sub-1', streamingToolUse: null, progressSummary: null,
+      subagentType: null, description: null, usage: null, lastToolName: null,
+    }
+
+    const live = render(
+      <SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" isSessionActive
+        activeSubagent={{ ...subagent, streamingMessage: fence }} />
+    )
+    // Let the lazy diagram chunk settle, so a settled render would have drawn by now.
+    await act(async () => { await import('./mermaid-diagram') })
+    expect(live.container.querySelector('pre')).toHaveTextContent('Request --> Response')
+    expect(screen.queryByTestId('mermaid-diagram')).toBeNull()
+    live.unmount()
+
+    render(
+      <SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" isSessionActive isCompleted
+        activeSubagent={{ ...subagent, streamingMessage: null, resultText: fence }} />
+    )
+    await user.click(screen.getByText('Explore'))
+    expect(await screen.findByTestId('mermaid-diagram')).toBeInTheDocument()
+  })
+
+  it('draws a mermaid fence in a saved sub-agent transcript item', async () => {
+    const user = userEvent.setup()
+    const tc = createToolCall({ name: 'Task', input: { subagent_type: 'Explore', description: 'Searching' }, result: 'Done', subagent: { agentId: 'sub-1', status: 'completed' } })
+    mockSubMessages = [createAssistantMessage({ content: { text: '```mermaid\ngraph LR\n  Saved --> Item\n```' } })]
+
+    render(<SubAgentBlock toolCall={tc} sessionId="s-1" agentSlug="agent-1" />)
+    await user.click(screen.getByText('Explore'))
+    expect(await screen.findByTestId('mermaid-diagram')).toBeInTheDocument()
   })
 })

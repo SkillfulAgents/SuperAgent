@@ -9,6 +9,7 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { inputManager } from '../input-manager'
+import { isRequestableToolkit } from './search-connected-account-services'
 
 export const requestConnectedAccountTool = tool(
   'request_connected_account',
@@ -21,7 +22,7 @@ Authorization: Bearer $PROXY_TOKEN
 
 The CONNECTED_ACCOUNTS env var contains JSON mapping toolkit names to arrays of {name, id, status} objects. Accounts already listed there are assigned; if one is expired or revoked, make the intended proxy call so the host can ask the user to reconnect instead of requesting the account again.
 
-Common toolkits include gmail, slack, github, notion, linear, salesforce, and many more. Use search_connected_account_services to discover all available services and their toolkit slugs.`,
+Common toolkits include gmail, slack, github, notion, linear, salesforce, and many more. Only use slugs returned by search_connected_account_services; any other slug is rejected.`,
   {
     toolkit: z
       .string()
@@ -53,6 +54,18 @@ Common toolkits include gmail, slack, github, notion, linear, salesforce, and ma
           {
             type: 'text' as const,
             text: 'Unable to process connected account request - no tool use ID available.',
+          },
+        ],
+        isError: true,
+      }
+    }
+
+    if (!isRequestableToolkit(toolkitLower)) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `The toolkit "${toolkitLower}" is not supported by us. Call search_connected_account_services to find a supported slug. If none fits, tell the user there is no built-in connection for this service and suggest another approach, such as a remote MCP server.`,
           },
         ],
         isError: true,

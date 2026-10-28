@@ -21,7 +21,7 @@ import {
   getAgentsDir,
   getAgentDir,
   getAgentWorkspaceDir,
-  getAgentClaudeMdPath,
+  getAgentInstructionsPath,
   writeFile,
   getAgentEnvPath,
   getAgentSessionMetadataPath,
@@ -143,6 +143,11 @@ This is the body.`
     const result = parseMarkdownWithFrontmatter('')
     expect(result.frontmatter).toEqual({})
     expect(result.body).toBe('')
+  })
+
+  it('keeps a quoted blank value a string rather than the number 0', () => {
+    const result = parseMarkdownWithFrontmatter('---\nname: "  "\n---\nBody')
+    expect(result.frontmatter).toEqual({ name: '  ' })
   })
 
   it('parses boolean values', () => {
@@ -736,8 +741,8 @@ describe('path helpers', () => {
     expect(getAgentWorkspaceDir('my-agent')).toMatch(/\/agents\/my-agent\/workspace$/)
   })
 
-  it('getAgentClaudeMdPath returns path ending with CLAUDE.md', () => {
-    expect(getAgentClaudeMdPath('my-agent')).toMatch(/\/agents\/my-agent\/workspace\/CLAUDE\.md$/)
+  it('getAgentInstructionsPath returns path ending with AGENTS.md', () => {
+    expect(getAgentInstructionsPath('my-agent')).toMatch(/\/agents\/my-agent\/workspace\/AGENTS\.md$/)
   })
 
   it('getAgentEnvPath returns path ending with .env', () => {

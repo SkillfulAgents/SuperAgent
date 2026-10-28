@@ -1,19 +1,19 @@
-import type { ChatAgentIntegration as ChatClientConnector, IncomingMessage } from './chat-agent-integration'
-import type { AgentIntegrationRecord as ChatIntegration } from '../agent-integrations/types'
+import type { ChatAgentIntegration, IncomingMessage } from './chat-agent-integration'
+import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import type { SessionActivity } from '../types/agent'
-import type { PendingUserInputRequest } from '../user-input/request-schema'
+import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
 import { agentRegistry, WorkspaceFileError, workspaceBasename } from '../agent-actor'
-import { getToolDefinition } from '../tool-definitions/registry'
-import { formatToolName } from '../tool-definitions/types'
+import { getToolDefinition, getToolPresentation } from '@shared/lib/tools/registry'
+import { formatToolName } from '@shared/lib/tools/types'
 import { requestCardFromRegistry } from './request-card'
 import { captureException } from '../error-reporting'
-export { buildSessionName } from './chat-policy'
+import { background } from '@shared/lib/background'
 const reportError = (err: unknown, operation: string, extra?: Record<string, unknown>, level?: 'error' | 'warning') =>
   captureException(err, { tags: { component: 'chat-integration', operation }, extra, level })
 
 export interface ManagedConnector {
-  connector: ChatClientConnector
-  integration: ChatIntegration
+  connector: ChatAgentIntegration
+  integration: AgentIntegrationRecord
   chatId: string
   streamingState: {
     currentMessageId: string | null
@@ -28,8 +28,13 @@ export interface ManagedConnector {
   // on teardown).
   indicatorShown?: boolean
   indicatorTickTimer?: ReturnType<typeof setInterval> | null
+  // The tick's reads, numbered as they start, and the newest one already
+  // overtaken: by a read that landed after it, or by a clear (the event that
+  // cleared knew more than any read out at the time). An overtaken read is dropped.
+  indicatorReads?: number
+  indicatorReadsOvertaken?: number
   // The session the tick samples; set when the tick is armed (subscribe / wake) so the
-  // sleep guard and the health-check backstop can re-read getSessionActivity(sessionId).
+  // sleep guard and the health-check backstop can re-read its activity.
   sessionId?: string
   // Pending idle-sleep debounce. Scheduled when the session settles non-busy; when it
   // fires it re-reads activity and stops the tick only if STILL non-busy (so a stale or
@@ -59,10 +64,16 @@ async function finalizeTurn(managed: ManagedConnector): Promise<void> {
 
 /**
  * A short, user-facing message for a turn that ended in an error. Curated by the
- * SDK error code; never echoes the raw internal error (which can leak file paths,
- * tokens, or stack text into the chat).
+ * session's provider (`errorPresentation.chatText`) or by the SDK error code;
+ * never echoes the raw internal error (which can leak file paths, tokens, or
+ * stack text into the chat).
  */
-function friendlyErrorMessage(apiErrorCode: string | null | undefined): string {
+export function friendlyErrorMessage(apiErrorCode: string | null | undefined, errorPresentation?: unknown): string {
+  // The session's provider recognized the error and worded it for chat (e.g. a
+  // plan refusing the integration's model). Checked first: the CLI may tag such
+  // a refusal `authentication_failed`, which would otherwise read as a credential problem.
+  const chatText = (errorPresentation as { chatText?: unknown } | null | undefined)?.chatText
+  if (typeof chatText === 'string' && chatText.trim()) return chatText
   const code = (apiErrorCode ?? '').toLowerCase()
   if (code.includes('overload')) return '⚠️ The assistant is overloaded right now. Please try again in a moment.'
   if (code.includes('rate') || code.includes('429')) return '⚠️ Hit a rate limit. Please wait a few seconds and try again.'
@@ -93,7 +104,7 @@ export const BUSY_ACTIVITIES: ReadonlySet<SessionActivity> = new Set([
 export function reconcileIndicator(managed: ManagedConnector, activity: SessionActivity): void {
   if (BUSY_ACTIVITIES.has(activity)) {
     managed.indicatorShown = true
-    managed.connector.startWorking(managed.chatId, activity).catch(() => {})
+    background(managed.connector.startWorking(managed.chatId, activity).catch(() => {}), { name: 'chat-delivery.start-working' })
   } else {
     clearIndicator(managed)
   }
@@ -106,9 +117,10 @@ export function reconcileIndicator(managed: ManagedConnector, activity: SessionA
  * draft, so the four immediate clears and the non-busy tick all route through here.
  */
 export function clearIndicator(managed: ManagedConnector): void {
+  managed.indicatorReadsOvertaken = managed.indicatorReads
   if (!managed.indicatorShown) return
   managed.indicatorShown = false
-  managed.connector.stopWorking(managed.chatId).catch(() => {})
+  background(managed.connector.stopWorking(managed.chatId).catch(() => {}), { name: 'chat-delivery.stop-working' })
 }
 
 /** Pull cadence for the indicator tick. At/under Telegram's draft expiry so drafts stay alive. */
@@ -139,16 +151,30 @@ export function startIndicatorTick(managed: ManagedConnector, sessionId: string)
   managed.sessionId = sessionId
   cancelIndicatorSleep(managed)
   if (managed.indicatorTickTimer) return false
-  managed.indicatorTickTimer = setInterval(() => {
-    const activity = agentRegistry.get(managed.integration.agentSlug).sessions.activity(sessionId)
-    reconcileIndicator(managed, activity)
-    // The tick owns its own sleep: a busy read keeps it awake (cancel any pending stop), the
-    // first of a sustained non-busy run starts the debounce. scheduleIndicatorSleep is arm-once,
-    // so calling it every non-busy tick never pushes the deadline back.
-    if (BUSY_ACTIVITIES.has(activity)) cancelIndicatorSleep(managed)
-    else scheduleIndicatorSleep(managed)
+  const tick = setInterval(() => {
+    const read = (managed.indicatorReads ?? 0) + 1
+    managed.indicatorReads = read
+    background(sessionActivity(managed, sessionId).then((activity) => {
+      // Stopped while it read: the read belongs to no tick.
+      if (managed.indicatorTickTimer !== tick) return
+      // Overtaken while it read: what it read is not the latest.
+      if (read <= (managed.indicatorReadsOvertaken ?? 0)) return
+      managed.indicatorReadsOvertaken = read
+      reconcileIndicator(managed, activity)
+      // The tick owns its own sleep: a busy read keeps it awake (cancel any pending stop), the
+      // first of a sustained non-busy run starts the debounce. scheduleIndicatorSleep is arm-once,
+      // so calling it every non-busy tick never pushes the deadline back.
+      if (BUSY_ACTIVITIES.has(activity)) cancelIndicatorSleep(managed)
+      else scheduleIndicatorSleep(managed)
+    }, () => { /* a failed read changes nothing; the next tick reads again */ }), { name: 'chat-delivery.indicator-tick' })
   }, INDICATOR_TICK_MS)
+  managed.indicatorTickTimer = tick
   return true
+}
+
+/** What the session is doing now, read through its agent's actor. */
+async function sessionActivity(managed: ManagedConnector, sessionId: string): Promise<SessionActivity> {
+  return (await agentRegistry.get(managed.integration.agentSlug).sessions.live(sessionId)).activity
 }
 
 /**
@@ -201,16 +227,23 @@ export function scheduleIndicatorSleep(managed: ManagedConnector): void {
   if (managed.sleepTimer) return
   const sessionId = managed.sessionId
   if (!sessionId) return
-  managed.sleepTimer = setTimeout(() => {
-    managed.sleepTimer = null
-    if (!BUSY_ACTIVITIES.has(agentRegistry.get(managed.integration.agentSlug).sessions.activity(sessionId))) {
+  const sleep = setTimeout(() => {
+    background(sessionActivity(managed, sessionId).then((activity) => {
+      // Cancelled while it read (a busy tick, a stop): the sleep is off.
+      if (managed.sleepTimer !== sleep) return
+      managed.sleepTimer = null
+      if (BUSY_ACTIVITIES.has(activity)) return
       // Clear before stopping: stopIndicatorTick only drops timers, so stopping a tick that
       // is somehow still showing a draft would strand it. Clearing first makes the guard
       // self-defending regardless of how the caller left indicatorShown.
       clearIndicator(managed)
       stopIndicatorTick(managed)
-    }
+    }, () => {
+      // Unread, the sleep is skipped: the tick arms it again on its next non-busy read.
+      if (managed.sleepTimer === sleep) managed.sleepTimer = null
+    }), { name: 'chat-delivery.indicator-sleep' })
   }, INDICATOR_SLEEP_MS)
+  managed.sleepTimer = sleep
 }
 
 // ── SSE event processing (exported for testing) ────────────────────────
@@ -283,9 +316,9 @@ export async function processSSEEvent(
       // Note: deliver_file is handled off its tool_result (see 'tool_result_ready'
       // below), not off the streamed input — so we never read a host-side path
       // before the in-container tool has validated the file exists. It falls
-      // through to isUserRequestTool() here, which just resets the tool input.
+      // through to shouldHideToolStatusInChat() here, which just resets the tool input.
 
-      if (isUserRequestTool(toolName)) {
+      if (shouldHideToolStatusInChat(toolName)) {
         managed.currentToolInput = ''
         break
       }
@@ -333,9 +366,8 @@ export async function processSSEEvent(
     }
 
     case 'user_request_created': {
-      // The one wire chat renders cards from. The legacy per-type events still
-      // fire alongside this one (they die in Phase 8) and are deliberately NOT
-      // handled here — handling both would double-send every card.
+      // The one wire chat renders cards from: every kind of request opens
+      // with this event, so each card is sent exactly once.
       const request = (data as { request?: PendingUserInputRequest }).request
       if (!request) break
       const card = requestCardFromRegistry(request)
@@ -344,7 +376,7 @@ export async function processSSEEvent(
       if (!card) break
 
       // The agent is now waiting on the user → 'awaiting' (non-busy). Settle the
-      // indicator the moment the card is shown (the persister flips isAwaitingInput,
+      // indicator the moment the card is shown (the live session flips isAwaitingInput,
       // so the tick would clear within a tick anyway — this just makes it instant). The
       // tick then sleeps after the lull and re-checks activity at fire time.
       clearIndicator(managed)
@@ -384,7 +416,7 @@ export async function processSSEEvent(
       if (!managed.turnNotified) {
         managed.turnNotified = true
         try {
-          await managed.connector.sendMessage(managed.chatId, { text: friendlyErrorMessage(data.apiErrorCode as string | null) })
+          await managed.connector.sendMessage(managed.chatId, { text: friendlyErrorMessage(data.apiErrorCode as string | null, data.errorPresentation) })
         } catch (err) {
           // Delivery failed — release the latch so a later notice isn't suppressed.
           managed.turnNotified = false
@@ -482,19 +514,8 @@ async function sendDeliveredFile(
 
 // ── Exported pure functions (testable) ────────────────────────────────
 
-const USER_REQUEST_TOOLS = new Set([
-  'AskUserQuestion',
-  'mcp__user-input__request_secret',
-  'mcp__user-input__request_file',
-  'mcp__user-input__deliver_file',
-  'mcp__user-input__request_connected_account',
-  'mcp__user-input__request_remote_mcp',
-  'mcp__user-input__request_browser_input',
-  'mcp__user-input__request_script_run',
-])
-
-export function isUserRequestTool(toolName: string): boolean {
-  return USER_REQUEST_TOOLS.has(toolName)
+export function shouldHideToolStatusInChat(toolName: string): boolean {
+  return getToolPresentation(toolName).hideToolStatusInChat
 }
 
 /**
@@ -508,18 +529,4 @@ export function deriveDisplayName(message: Pick<IncomingMessage, 'chatName' | 'u
 /** Check if a display name looks like the raw-ID fallback (e.g. "User U08G59..."). */
 export function isDisplayNameFallback(name: string | null | undefined): boolean {
   return !name || name.startsWith('User ')
-}
-
-export { formatSessionTimestamp } from '../agent-integrations/presentation'
-
-/** Decide whether a chat session should be rotated based on the configured timeout. */
-export function shouldRotateSession(
-  session: { updatedAt: Date | null; createdAt: Date },
-  timeoutHours: number | null | undefined,
-  now: Date = new Date(),
-): boolean {
-  if (!timeoutHours || timeoutHours <= 0) return false
-  const lastActivity = session.updatedAt?.getTime?.() ?? session.createdAt.getTime()
-  const timeoutMs = timeoutHours * 60 * 60 * 1000
-  return now.getTime() - lastActivity > timeoutMs
 }

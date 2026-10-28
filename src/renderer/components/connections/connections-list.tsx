@@ -324,6 +324,7 @@ function AllConnectionsList({ agentSlug, detailRowKey, detailView, detailBackLab
         backLabel={detailBackLabel}
         onBack={() => onDetailRowKeyChange(null)}
         onViewLogs={() => onDetailViewChange('logs')}
+        agentSlug={agentSlug}
       />
     )
   }

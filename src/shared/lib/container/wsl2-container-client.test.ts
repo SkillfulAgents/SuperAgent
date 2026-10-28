@@ -68,8 +68,15 @@ vi.mock('@shared/lib/config/data-dir', () => ({
   getDataDir: vi.fn(() => 'C:\\Users\\testuser\\.superagent'),
 }))
 
+vi.mock('@shared/lib/error-reporting', () => ({
+  captureException: vi.fn(),
+  captureMessage: vi.fn(),
+  addErrorBreadcrumb: vi.fn(),
+}))
+
 import * as fs from 'fs'
 import { execWithPath, writeEnvFile } from './base-container-client'
+import { captureMessage } from '@shared/lib/error-reporting'
 
 // ============================================================================
 // Import module under test — AFTER mocks
@@ -91,6 +98,12 @@ import {
 const mockedFs = vi.mocked(fs)
 const mockedExecWithPath = vi.mocked(execWithPath)
 const mockedWriteEnvFile = vi.mocked(writeEnvFile)
+const mockedCaptureMessage = vi.mocked(captureMessage)
+
+// Drive owner check (stat -c %u /mnt/c): drives already mount as the agent user.
+function mockDrivesOwnedByAgent() {
+  mockedExecWithPath.mockResolvedValueOnce({ stdout: '1000\n', stderr: '' })
+}
 
 // ============================================================================
 // windowsToWSLPath
@@ -206,6 +219,7 @@ describe('ensureWSL2Ready', () => {
     mockedExecWithPath.mockResolvedValueOnce({ stdout: 'nerdctl version', stderr: '' })
     // Mount health check: test -d /mnt/c/Windows
     mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    mockDrivesOwnedByAgent()
 
     // Mock bundled rootfs
     Object.defineProperty(process, 'resourcesPath', {
@@ -232,6 +246,7 @@ describe('ensureWSL2Ready', () => {
     mockedExecWithPath.mockResolvedValueOnce({ stdout: 'nerdctl version', stderr: '' })
     // Mount health check: test -d /mnt/c/Windows
     mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    mockDrivesOwnedByAgent()
 
     await ensureWSL2Ready()
 
@@ -285,6 +300,7 @@ describe('ensureWSL2Ready', () => {
     mockedExecWithPath.mockResolvedValueOnce({ stdout: 'nerdctl version', stderr: '' })
     // Mount health check: test -d /mnt/c/Windows
     mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    mockDrivesOwnedByAgent()
 
     await ensureWSL2Ready()
 
@@ -367,6 +383,7 @@ describe('ensureWSL2Ready', () => {
     mockedExecWithPath.mockResolvedValueOnce({ stdout: 'nerdctl version', stderr: '' })
     // Mount health check passes on retry
     mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    mockDrivesOwnedByAgent()
 
     // Mock bundled rootfs
     Object.defineProperty(process, 'resourcesPath', {
@@ -413,6 +430,105 @@ describe('ensureWSL2Ready', () => {
     mockedFs.existsSync.mockReturnValue(true)
 
     await expect(ensureWSL2Ready()).rejects.toThrow('cannot mount the Windows filesystem')
+  })
+
+  describe('Windows drive ownership', () => {
+    const rootOwned = { stdout: '0\n', stderr: '' }
+    const ok = { stdout: '', stderr: '' }
+    const execCalls = () => mockedExecWithPath.mock.calls.map((c) => c[0] as string)
+
+    // Everything before the owner check, for a provisioned distro in `state`.
+    function mockReadyUpToOwnerCheck(state: 'Running' | 'Stopped') {
+      mockWSLList([{ name: WSL2_DISTRO_NAME, state }])
+      mockWSLList([{ name: WSL2_DISTRO_NAME, state }])
+      if (state === 'Stopped') mockedExecWithPath.mockResolvedValueOnce({ stdout: 'starting', stderr: '' })
+      // Provisioning check, nerdctl version, mount health check
+      mockedExecWithPath.mockResolvedValueOnce(ok)
+      mockedExecWithPath.mockResolvedValueOnce({ stdout: 'nerdctl version', stderr: '' })
+      mockedExecWithPath.mockResolvedValueOnce(ok)
+    }
+
+    // A `sh -s` child that exits once the script has been piped in.
+    function mockSpawnScript() {
+      const { EventEmitter } = require('events')
+      const proc = new EventEmitter()
+      proc.stdout = new EventEmitter()
+      proc.stderr = new EventEmitter()
+      proc.stdin = { write: vi.fn(), end: vi.fn(() => process.nextTick(() => proc.emit('close', 0))) }
+      mockSpawn.mockReturnValueOnce(proc)
+      return proc
+    }
+
+    it('leaves the distro alone when drives already mount as the agent user', async () => {
+      mockReadyUpToOwnerCheck('Running')
+      mockDrivesOwnedByAgent()
+
+      await ensureWSL2Ready()
+
+      expect(mockSpawn).not.toHaveBeenCalled()
+      expect(execCalls().some((c) => c.includes('--terminate'))).toBe(false)
+    })
+
+    it('rewrites wsl.conf and restarts the distro when drives are root-owned', async () => {
+      mockReadyUpToOwnerCheck('Running')
+      mockedExecWithPath.mockResolvedValueOnce(rootOwned)
+      const confWrite = mockSpawnScript()
+      // nerdctl ps -q: nothing running
+      mockedExecWithPath.mockResolvedValueOnce(ok)
+      // wsl --terminate
+      mockedExecWithPath.mockResolvedValueOnce(ok)
+      // Second pass: the distro boots with the new automount options
+      mockReadyUpToOwnerCheck('Stopped')
+      mockDrivesOwnedByAgent()
+
+      await ensureWSL2Ready()
+
+      const script = confWrite.stdin.write.mock.calls[0][0] as string
+      expect(script).toContain('[boot]')
+      expect(script).toContain('[automount]\noptions = "uid=1000,gid=1000"')
+      expect(execCalls().filter((c) => c.includes('--terminate'))).toEqual([`wsl --terminate ${WSL2_DISTRO_NAME}`])
+      expect(execCalls()).toContain(`wsl -d ${WSL2_DISTRO_NAME} -- echo starting`)
+    })
+
+    it('defers the restart while containers are running', async () => {
+      mockReadyUpToOwnerCheck('Running')
+      mockedExecWithPath.mockResolvedValueOnce(rootOwned)
+      const confWrite = mockSpawnScript()
+      mockedExecWithPath.mockResolvedValueOnce({ stdout: 'abc123\n', stderr: '' })
+
+      await ensureWSL2Ready()
+
+      expect(confWrite.stdin.write).toHaveBeenCalledWith(expect.stringContaining('[automount]'))
+      expect(execCalls().some((c) => c.includes('--terminate'))).toBe(false)
+    })
+
+    it('restarts at most once when WSL ignores the automount options', async () => {
+      mockReadyUpToOwnerCheck('Running')
+      mockedExecWithPath.mockResolvedValueOnce(rootOwned)
+      mockSpawnScript()
+      mockedExecWithPath.mockResolvedValueOnce(ok)
+      mockedExecWithPath.mockResolvedValueOnce(ok)
+      // Second pass: still root-owned
+      mockReadyUpToOwnerCheck('Stopped')
+      mockedExecWithPath.mockResolvedValueOnce(rootOwned)
+
+      await ensureWSL2Ready()
+
+      expect(execCalls().filter((c) => c.includes('--terminate')).length).toBe(1)
+      expect(mockSpawn).toHaveBeenCalledTimes(1)
+      expect(mockedCaptureMessage).toHaveBeenCalledWith(
+        'WSL2 automount uid option did not take effect after restart',
+        expect.objectContaining({ level: 'warning' }),
+      )
+    })
+
+    it('does not fail readiness when the owner check errors', async () => {
+      mockReadyUpToOwnerCheck('Running')
+      mockedExecWithPath.mockRejectedValueOnce(new Error('stat: not found'))
+
+      await expect(ensureWSL2Ready()).resolves.toBeUndefined()
+      expect(execCalls().some((c) => c.includes('--terminate'))).toBe(false)
+    })
   })
 })
 
@@ -716,6 +832,7 @@ describe('WSL2ContainerClient.handleRunError', () => {
     mockedExecWithPath.mockResolvedValueOnce({ stdout: 'ok', stderr: '' })
     // Mount health check: test -d /mnt/c/Windows
     mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    mockDrivesOwnedByAgent()
   }
 
   it('returns true and provisions on ENOENT error', async () => {

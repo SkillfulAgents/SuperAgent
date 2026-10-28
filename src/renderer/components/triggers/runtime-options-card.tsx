@@ -8,16 +8,17 @@ import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
 
 interface RuntimeOptionsCardProps {
   agentSlug: string
+  llmProviderId?: string | null
   model: string | null
   effort: string | null
   speed: string | null
   disabled?: boolean
-  onUpdate: (options: { model?: string | null; effort?: string | null; speed?: string | null }) => void
+  onUpdate: (options: { llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null }) => void
 }
 
-export function RuntimeOptionsCard({ agentSlug, model, effort, speed, disabled, onUpdate }: RuntimeOptionsCardProps) {
+export function RuntimeOptionsCard({ agentSlug, llmProviderId, model, effort, speed, disabled, onUpdate }: RuntimeOptionsCardProps) {
   const picked = useRef(false)
-  const { ready, selection, resolveDisplay } = useInheritedRuntimeSelection(agentSlug, { model, effort, speed })
+  const { ready, selection, resolveDisplay } = useInheritedRuntimeSelection(agentSlug, { llmProviderId, model, effort, speed })
 
   // Local mirror so a pick shows immediately; the parent's save round-trips
   // through props, and the sync effect below re-adopts the inherit once it
@@ -62,7 +63,7 @@ export function RuntimeOptionsCard({ agentSlug, model, effort, speed, disabled, 
     setLocalEffort(cleared.displayEffort)
     setLocalSpeed(cleared.displaySpeed)
     setLocalModel(cleared.model)
-    onUpdate({ model: null, effort: null, speed: null })
+    onUpdate({ llmProviderId: null, model: null, effort: null, speed: null })
   }, [onUpdate, resolveDisplay])
 
   const hasCustom = model !== null || effort !== null || speed !== null
@@ -89,7 +90,10 @@ export function RuntimeOptionsCard({ agentSlug, model, effort, speed, disabled, 
       <div className="flex items-center gap-2">
         {selection?.model && selection.effort && localEffort ? (
           <SettingsModelSelect
+            agentSlug={agentSlug}
             model={localModel}
+            llmProviderId={selection.llmProviderId}
+            onSelectionChange={s => { setLocalModel(s.model); onUpdate(s) }}
             onModelChange={handleSetModel}
             includeEffort
             effort={localEffort}

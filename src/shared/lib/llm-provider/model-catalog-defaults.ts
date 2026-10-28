@@ -12,14 +12,14 @@ export interface CatalogDefaultModels {
 export const ANTHROPIC_CATALOG_DEFAULT_MODELS: CatalogDefaultModels = {
   summarizerModel: 'haiku',
   agentModel: 'opus',
-  browserModel: 'sonnet',
+  browserModel: 'haiku',
   dashboardBuilderModel: 'opus',
 }
 
 export const OPENROUTER_CATALOG_DEFAULT_MODELS: CatalogDefaultModels = {
   summarizerModel: 'haiku',
   agentModel: 'sonnet',
-  browserModel: 'sonnet',
+  browserModel: 'haiku',
   dashboardBuilderModel: 'opus',
 }
 
@@ -32,8 +32,8 @@ export const BEDROCK_CATALOG_DEFAULT_MODELS: CatalogDefaultModels = {
 
 export const PLATFORM_CATALOG_DEFAULT_MODELS: CatalogDefaultModels = {
   summarizerModel: 'haiku',
-  agentModel: 'grok',
-  browserModel: 'sonnet',
+  agentModel: 'sonnet',
+  browserModel: 'haiku',
   dashboardBuilderModel: 'opus',
 }
 
@@ -45,8 +45,21 @@ export const GENERIC_CATALOG_DEFAULT_MODELS: CatalogDefaultModels = {
   dashboardBuilderModel: GENERIC_FALLBACK_MODEL,
 }
 
+export const GROK_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'grok', summarizerModel: 'grok', browserModel: 'grok', dashboardBuilderModel: 'grok' }
+
+export const CODEX_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'gpt-sol', summarizerModel: 'gpt-sol', browserModel: 'gpt-sol', dashboardBuilderModel: 'gpt-sol' }
+
+export const KIMI_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'kimi', summarizerModel: 'kimi', browserModel: 'kimi', dashboardBuilderModel: 'kimi' }
+
+export const MINIMAX_DEFAULT_MODELS: CatalogDefaultModels = { agentModel: 'minimax', summarizerModel: 'minimax', browserModel: 'minimax', dashboardBuilderModel: 'minimax' }
+
 const BUILTIN_DEFAULTS: Record<LlmProviderId, CatalogDefaultModels> = {
   anthropic: ANTHROPIC_CATALOG_DEFAULT_MODELS,
+  'claude-subscription': ANTHROPIC_CATALOG_DEFAULT_MODELS,
+  'grok-subscription': GROK_DEFAULT_MODELS,
+  'codex-subscription': CODEX_DEFAULT_MODELS,
+  'kimi-subscription': KIMI_DEFAULT_MODELS,
+  'minimax-subscription': MINIMAX_DEFAULT_MODELS,
   openrouter: OPENROUTER_CATALOG_DEFAULT_MODELS,
   bedrock: BEDROCK_CATALOG_DEFAULT_MODELS,
   platform: PLATFORM_CATALOG_DEFAULT_MODELS,

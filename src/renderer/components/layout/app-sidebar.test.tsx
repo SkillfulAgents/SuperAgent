@@ -11,7 +11,7 @@ if (typeof localStorage === 'undefined' || !localStorage) {
   }
   Object.defineProperty(globalThis, 'localStorage', { value: stub, configurable: true })
 }
-import { cloneElement, isValidElement, type ReactElement } from 'react'
+import { cloneElement, forwardRef, isValidElement, type ReactElement } from 'react'
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { pointerWithin } from '@dnd-kit/core'
@@ -53,9 +53,13 @@ vi.mock('@renderer/lib/file-utils', async (importOriginal) => ({
   getItemsFromDataTransfer: mockGetItemsFromDataTransfer,
 }))
 
+const mockStartAgent = vi.fn()
+let mockWarmStartEnabled = true
 const mockUseAgents = vi.fn()
 vi.mock('@renderer/hooks/use-agents', () => ({
   useAgents: () => mockUseAgents(),
+  useListedAgents: () => mockUseAgents(),
+  useStartAgent: () => ({ mutate: mockStartAgent }),
   useDeleteAgent: () => ({ mutateAsync: vi.fn(), isPending: false }),
   // Resolve the route param to the canonical id the way the real hook does,
   // using the mocked params + agents so active-state tests behave faithfully.
@@ -90,10 +94,12 @@ vi.mock('@renderer/hooks/use-message-stream', () => ({
   useMessageStream: () => ({ isStreaming: false }),
 }))
 
+const mockUseSettings = vi.fn()
+const mockUseModelSettings = vi.fn()
 vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => ({
-    data: { llmProvider: 'anthropic', apiKeyStatus: { anthropic: { isConfigured: true } } },
-  }),
+  useSettings: () => mockUseSettings(),
+  useWarmStartOnTypeEnabled: () => mockWarmStartEnabled,
+  useModelSettings: () => mockUseModelSettings(),
 }))
 
 const { mockUserSettings, mockUpdateSettings, dndContextProps } = vi.hoisted(() => ({
@@ -123,7 +129,7 @@ vi.mock('@renderer/hooks/use-webhook-triggers', () => ({
   useWebhookTriggers: () => ({ data: [] }),
 }))
 
-const mockUnreadCount = vi.fn(() => ({ data: { count: 0 } }))
+const mockUnreadCount = vi.fn((): { data: { count: number; mentions?: number } } => ({ data: { count: 0 } }))
 vi.mock('@renderer/hooks/use-notifications', () => ({
   useUnreadNotificationCount: () => mockUnreadCount(),
 }))
@@ -175,6 +181,7 @@ const mockUserContext = {
   user: null,
   signOut: vi.fn(),
   agentMemberCount: vi.fn((_slug: string) => 1),
+  canUseAgent: vi.fn((_slug: string) => true),
 }
 vi.mock('@renderer/context/user-context', () => ({
   useUser: () => mockUserContext,
@@ -228,7 +235,8 @@ vi.mock('@renderer/components/agents/agent-status', () => ({
   ),
 }))
 
-vi.mock('@renderer/components/agents/status-indicators', () => ({
+vi.mock('@renderer/components/agents/status-indicators', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/components/agents/status-indicators')>()),
   WorkingDots: () => <span data-testid="working-dots" />,
   AwaitingDot: () => <span data-testid="awaiting-dot" />,
 }))
@@ -289,10 +297,13 @@ vi.mock('@renderer/components/ui/sidebar', () => ({
   SidebarMenu: ({ children }: any) => <ul>{children}</ul>,
   // Honor asChild (Slot): merge data-active + our props onto the child element so
   // the link carries the testid/active state and keeps its own onClick.
-  SidebarMenuButton: ({ children, onClick, isActive, asChild, ...props }: any) =>
-    asChild && isValidElement(children)
+  // Forwards its ref like the real one (a section's ⋯ reaches its header
+  // button through it).
+  SidebarMenuButton: forwardRef(function SidebarMenuButton({ children, onClick, isActive, asChild, ...props }: any, ref: any) {
+    return asChild && isValidElement(children)
       ? cloneElement(children as ReactElement, { 'data-active': isActive ? 'true' : 'false', ...props })
-      : <button onClick={onClick} data-active={isActive ? 'true' : 'false'} {...props}>{children}</button>,
+      : <button ref={ref} onClick={onClick} data-active={isActive ? 'true' : 'false'} {...props}>{children}</button>
+  }),
   SidebarMenuItem: ({ children, ...props }: any) => <li {...props}>{children}</li>,
   SidebarMenuSkeleton: () => <div data-testid="skeleton" />,
   SidebarMenuSub: ({ children }: any) => <ul>{children}</ul>,
@@ -364,6 +375,7 @@ vi.mock('@dnd-kit/modifiers', () => ({
 
 function makeAgent(overrides: Record<string, any> = {}) {
   return {
+    avatar: { color: 'tonal-blue', shape: 'circle' } as const,
     slug: 'test-agent',
     displaySlug: 'test-agent',
     name: 'Test Agent',
@@ -384,7 +396,6 @@ function makeSession(overrides: Record<string, any> = {}) {
     id: 'session-1',
     agentSlug: 'test-agent',
     name: 'Session 1',
-    messageCount: 5,
     lastActivityAt: new Date(),
     createdAt: new Date(),
     isActive: false,
@@ -416,6 +427,10 @@ const localStorageStub = {
 }
 
 beforeEach(() => {
+  mockWarmStartEnabled = true
+  mockRuntimeStatus.runtimeReadiness.status = 'READY'
+  mockUseSettings.mockReturnValue({ data: { llmProvider: 'anthropic', apiKeyStatus: { anthropic: { isConfigured: true } } } })
+  mockUseModelSettings.mockReturnValue({ data: { connections: [], defaultSelection: null } })
   vi.clearAllMocks()
   localStorageStore.clear()
   vi.stubGlobal('localStorage', localStorageStub)
@@ -440,6 +455,7 @@ beforeEach(() => {
   mockUserContext.isAuthMode = false
   mockUserContext.user = null
   mockUserContext.agentMemberCount.mockReturnValue(1)
+  mockUserContext.canUseAgent.mockReturnValue(true)
   mockUseAgentMembers.mockReturnValue({ data: [], isLoading: false, isError: false })
   mockUnreadCount.mockReturnValue({ data: { count: 0 } })
   mockUserSettings.mockReturnValue({ setupCompleted: true, agentOrder: [] })
@@ -457,6 +473,31 @@ beforeEach(() => {
 })
 
 describe('AppSidebar — layout & top nav', () => {
+  it.each(['anthropic', 'claude-subscription'])('uses the selected %s account instead of an empty legacy key', provider => {
+    mockUseSettings.mockReturnValue({ data: { llmProvider: 'anthropic', apiKeyStatus: { anthropic: { isConfigured: false } } } })
+    mockUseModelSettings.mockReturnValue({ data: {
+      connections: [{ id: 'selected', provider, isConfigured: true }],
+      defaultSelection: { llmProviderId: 'selected', model: 'sonnet' },
+    } })
+    renderWithProviders(<AppSidebar />)
+    expect(screen.queryByText('Click to set up')).not.toBeInTheDocument()
+  })
+
+  it('warns for a selected account without credentials even when the legacy key exists', () => {
+    mockUseModelSettings.mockReturnValue({ data: {
+      connections: [{ id: 'selected', provider: 'anthropic', isConfigured: false }],
+      defaultSelection: { llmProviderId: 'selected', model: 'sonnet' },
+    } })
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByText('Click to set up')).toBeInTheDocument()
+  })
+
+  it('keeps the keyless warning before a connection default is configured', () => {
+    mockUseSettings.mockReturnValue({ data: { llmProvider: 'anthropic', apiKeyStatus: { anthropic: { isConfigured: false } } } })
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByText('Click to set up')).toBeInTheDocument()
+  })
+
   it('restores the Gamut wordmark when browser chrome leaves the title bar empty', () => {
     renderWithProviders(<AppSidebar />)
     expect(screen.getByText('Gamut')).toBeInTheDocument()
@@ -532,7 +573,7 @@ describe('AppSidebar — layout & top nav', () => {
     const user = userEvent.setup()
     renderWithProviders(<AppSidebar />)
     await user.click(screen.getByTestId('new-agent-button'))
-    expect(mockCreateUntitledAgent).toHaveBeenCalled()
+    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ surface: 'nav' })
   })
 
   it('keeps the title bar row in non-Electron mode, minus the traffic-light spacer', () => {
@@ -582,6 +623,18 @@ describe('AppSidebar — layout & top nav', () => {
 })
 
 describe('AppSidebar — agent rows', () => {
+  it('renders older agents without avatars and keeps their expand control visible', async () => {
+    const agent = makeAgent({ avatar: undefined })
+    mockUseAgents.mockReturnValue({ data: [agent], isLoading: false, error: null })
+    renderWithProviders(<AppSidebar />)
+    const row = screen.getByTestId('agent-item-test-agent').closest('li')!
+    expect(row.querySelector('[data-avatar-orb]')).toBeNull()
+    const expand = within(row).getByRole('button', { name: 'Expand' })
+    expect(expand.querySelector('svg')).not.toHaveClass('opacity-0')
+    await userEvent.click(expand)
+    expect(screen.getByTestId('session-item-session-1')).toBeInTheDocument()
+  })
+
   it('keeps the member roster control beside the agent navigation link', () => {
     mockUserContext.isAuthMode = true
     mockUserContext.agentMemberCount.mockImplementation(slug => slug === 'test-agent' ? 4 : 1)
@@ -619,6 +672,57 @@ describe('AppSidebar — agent rows', () => {
     expect(screen.getByText('Other Agent')).toBeInTheDocument()
   })
 
+  it('shows the home card\'s last-run meta line under each agent name', () => {
+    vi.useFakeTimers({ now: new Date('2026-10-09T12:00:00Z'), toFake: ['Date'] })
+    try {
+      mockUseAgents.mockReturnValue({
+        data: [
+          makeAgent({ lastActivityAt: new Date('2026-10-09T09:00:00Z') }),
+          makeAgent({ slug: 'idle-agent', displaySlug: 'idle-agent', name: 'Idle Agent', lastActivityAt: null }),
+        ],
+        isLoading: false,
+        error: null,
+      })
+      renderWithProviders(<AppSidebar />)
+      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last run about 3 hours ago')
+      expect(screen.getByTestId('agent-item-idle-agent')).toHaveTextContent('Last run never')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ages last-run labels without rerendering rows and immediately accepts new activity', () => {
+    vi.useFakeTimers({
+      now: new Date('2026-10-09T12:00:00Z'),
+      toFake: ['Date', 'setInterval', 'clearInterval'],
+    })
+    try {
+      mockUseAgents.mockReturnValue({
+        data: [makeAgent({ lastActivityAt: new Date('2026-10-09T09:00:00Z') })],
+        isLoading: false, error: null,
+      })
+      const { rerender, unmount } = renderWithProviders(<AppSidebar />)
+      const renders = mockUseAgents.mock.calls.length
+      act(() => vi.advanceTimersByTime(60 * 60 * 1000))
+      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last run about 4 hours ago')
+      expect(mockUseAgents.mock.calls).toHaveLength(renders)
+
+      // An agent-summary refetch lands between clock ticks after a session event.
+      act(() => vi.advanceTimersByTime(45_000))
+      mockUseAgents.mockReturnValue({
+        data: [makeAgent({ lastActivityAt: new Date('2026-10-09T13:00:45Z') })],
+        isLoading: false, error: null,
+      })
+      rerender(<AppSidebar />)
+      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last run less than a minute ago')
+      act(() => vi.advanceTimersByTime(75_000))
+      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last run 1 minute ago')
+      unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('shows a status indicator for each agent (collapsed)', () => {
     renderWithProviders(<AppSidebar />)
     expect(screen.getByTestId('agent-status-running')).toBeInTheDocument()
@@ -644,6 +748,42 @@ describe('AppSidebar — agent rows', () => {
     await user.click(row)
     // Row click does NOT toggle expansion → no session sub-items rendered.
     expect(screen.queryByTestId('session-item-session-1')).not.toBeInTheDocument()
+  })
+
+  it('offers a new-session link in the status slot that opens a blank session', () => {
+    renderWithProviders(<AppSidebar />)
+    const link = screen.getByTestId('agent-new-session-test-agent')
+    expect(link).toHaveAttribute('data-to', '/agents/$slug/sessions/new')
+    expect(link).toHaveAttribute('data-params', JSON.stringify({ slug: 'test-agent' }))
+    expect(link).toHaveAccessibleName('New session with Test Agent')
+  })
+
+  it('wakes on pen press before navigation and supports keyboard activation', () => {
+    renderWithProviders(<AppSidebar />)
+    const link = screen.getByTestId('agent-new-session-test-agent')
+    expect(mockStartAgent).not.toHaveBeenCalled()
+    fireEvent.pointerDown(link, { button: 0 })
+    expect(mockStartAgent).toHaveBeenCalledWith({ slug: 'test-agent', source: 'warm-start' })
+    fireEvent.click(link, { detail: 1 })
+    expect(mockStartAgent).toHaveBeenCalledTimes(1)
+    fireEvent.click(link, { detail: 0 })
+    expect(mockStartAgent).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['disabled', 'unavailable'])('does not wake from the pen when %s', (state) => {
+    mockWarmStartEnabled = state !== 'disabled'
+    if (state === 'unavailable') mockRuntimeStatus.runtimeReadiness.status = 'RUNTIME_UNAVAILABLE'
+    renderWithProviders(<AppSidebar />)
+    const link = screen.getByTestId('agent-new-session-test-agent')
+    fireEvent.pointerDown(link, { button: 0 })
+    fireEvent.click(link, { detail: 0 })
+    expect(mockStartAgent).not.toHaveBeenCalled()
+  })
+
+  it('offers no new-session link to a view-only member', () => {
+    mockUserContext.canUseAgent.mockReturnValue(false)
+    renderWithProviders(<AppSidebar />)
+    expect(screen.queryByTestId('agent-new-session-test-agent')).not.toBeInTheDocument()
   })
 
   it('chevron click toggles expansion without selecting the agent', async () => {
@@ -685,6 +825,35 @@ describe('AppSidebar — agent rows', () => {
     // session-row dot has its accessible label so screen readers announce it.
     const dots = screen.getAllByLabelText('unread notifications')
     expect(dots.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('draws a purple @ instead of the dot where the viewer was mentioned', () => {
+    mockRouteParams = { slug: 'test-agent' }
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ hasUnreadNotifications: true, hasUnreadMention: true })],
+      isLoading: false,
+      error: null,
+    })
+    mockUseSessions.mockImplementation((slug: string | null) => ({
+      data: slug === 'test-agent' ? [makeSession({ hasUnreadNotifications: true, hasUnreadMention: true })] : [],
+      isLoading: false,
+    }))
+    renderWithProviders(<AppSidebar />)
+
+    // Expanded, so the session row carries it rather than the agent row.
+    const sessionItem = screen.getByTestId('session-item-session-1')
+    expect(within(sessionItem).getByLabelText('mentioned you')).toBeInTheDocument()
+    expect(screen.queryByLabelText('unread notifications')).toBeNull()
+  })
+
+  it('draws the @ on a collapsed agent row too', () => {
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ hasUnreadNotifications: true, hasUnreadMention: true })],
+      isLoading: false,
+      error: null,
+    })
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByLabelText('mentioned you')).toBeInTheDocument()
   })
 
   it('agent with no sessions or dashboards does not render an expand chevron', () => {
@@ -810,6 +979,14 @@ describe('AppSidebar — notifications', () => {
     renderWithProviders(<AppSidebar />)
     const button = screen.getByTestId('notifications-button')
     expect(button.querySelector('[aria-label="3 unread"]')).not.toBeNull()
+  })
+
+  it('renders an @ on the bell while a mention is unread', () => {
+    mockUnreadCount.mockReturnValue({ data: { count: 3, mentions: 1 } })
+    renderWithProviders(<AppSidebar />)
+    const button = screen.getByTestId('notifications-button')
+    expect(button.querySelector('[aria-label="mentioned you"]')).not.toBeNull()
+    expect(button.querySelector('[aria-label="3 unread"]')).toBeNull()
   })
 
   it('Notifications links to the notifications route', () => {
@@ -959,6 +1136,25 @@ describe('UserMenu action for the current target', () => {
 
     expect(screen.getByTestId('switch-to-local-button')).toBeInTheDocument()
     expect(screen.queryByTestId('sign-out-button')).not.toBeInTheDocument()
+  })
+
+  it('replaces the footer Settings button with the user, holding Settings in its menu', async () => {
+    vi.stubGlobal('__AUTH_MODE__', true)
+    setActiveTarget('local', null)
+    renderWithProviders(<AppSidebar />)
+
+    const trigger = screen.getByTestId('user-menu-trigger')
+    expect(trigger).toHaveTextContent('Ada')
+    // One Settings entry, and it lives in the user's popover (rendered open by
+    // this file's Popover mock), not beside it in the footer.
+    const settings = screen.getByTestId('settings-button')
+    const popover = trigger.closest('[data-testid="popover"]')
+    expect(popover).not.toBeNull()
+    expect(settings.closest('[data-testid="popover"]')).toBe(popover)
+
+    await userEvent.click(settings)
+
+    expect(mockDialogContext.openSettings).toHaveBeenCalled()
   })
 
   it('does not revoke the deployment session when that action is used', async () => {
@@ -1181,7 +1377,6 @@ describe('AppSidebar — agent folders', () => {
       .filter(
         (id) =>
           !id.startsWith('agent-folder-empty-') &&
-          !id.startsWith('agent-folder-count-') &&
           !id.startsWith('agent-folder-chevron-')
       )
       .map((id) =>
@@ -1197,17 +1392,14 @@ describe('AppSidebar — agent folders', () => {
     expect(screen.getByTestId('agent-folder-root')).toHaveTextContent('Your Agents')
   })
 
-  it('renders a folder with its name, and how many agents are in it only while collapsed', () => {
+  it('renders a folder with its name and no member count, open or collapsed', () => {
     mockUserSettings.mockReturnValue({
       agentOrder: ['test-agent', 'other-agent'],
       agentFolders: [FOLDERS[0]],
       agentFolderAssignments: { 'test-agent': 'f1', 'other-agent': 'f1' },
     })
     const { unmount } = renderWithProviders(<AppSidebar />)
-
-    // Expanded: the rows underneath say how many there are, so no count.
-    expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent('Work')
-    expect(screen.queryByTestId('agent-folder-count-f1')).not.toBeInTheDocument()
+    expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent(/^Work$/)
     unmount()
 
     mockUserSettings.mockReturnValue({
@@ -1217,8 +1409,50 @@ describe('AppSidebar — agent folders', () => {
       collapsedAgentFolders: ['f1'],
     })
     renderWithProviders(<AppSidebar />)
-    expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent('Work')
-    expect(screen.getByTestId('agent-folder-count-f1')).toHaveTextContent('2')
+    expect(screen.getByTestId('agent-folder-f1')).toHaveTextContent(/^Work$/)
+  })
+
+  it('creates a new agent filed into the folder whose + was pressed', async () => {
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentFolderAssignments: { 'test-agent': 'f1' },
+    })
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('new-agent-in-folder-f1'))
+
+    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ surface: 'section_plus', folderId: 'f1' })
+    // Already open: nothing to expand, so no settings write from the sidebar.
+    expect(mockUpdateSettings).not.toHaveBeenCalled()
+  })
+
+  it('opens a collapsed folder before creating an agent in it', async () => {
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentFolderAssignments: { 'test-agent': 'f1' },
+      collapsedAgentFolders: ['f1'],
+    })
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('new-agent-in-folder-f1'))
+
+    expect(mockUpdateSettings).toHaveBeenCalledWith(
+      { collapsedAgentFolders: [] },
+      expect.anything()
+    )
+    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ surface: 'section_plus', folderId: 'f1' })
+    expect(screen.getByTestId('agent-item-test-agent')).toBeVisible()
+  })
+
+  it('offers + on the default folder as well, creating an unfiled agent', async () => {
+    mockUserSettings.mockReturnValue({ agentOrder: ['test-agent', 'other-agent'] })
+    renderWithProviders(<AppSidebar />)
+
+    await userEvent.click(screen.getByTestId('new-agent-in-folder-root'))
+
+    expect(mockCreateUntitledAgent).toHaveBeenCalledWith({ surface: 'section_plus', folderId: 'root' })
   })
 
   it('defaults the default folder first before anything is arranged', () => {
@@ -1324,44 +1558,49 @@ describe('AppSidebar — agent folders', () => {
     return typeof arg === 'function' ? arg(settings) : arg
   }
 
-  it('adds a uniquely-named folder from the default folder’s header', async () => {
+  /** Make a folder the way users do: "Add section" at the end of the list. */
+  async function addSection() {
+    await userEvent.click(screen.getByTestId('add-section-button'))
+  }
+
+  it('adds a uniquely-named folder from Add section', async () => {
     renderWithProviders(<AppSidebar />)
 
-    await userEvent.click(screen.getByTestId('new-folder-button'))
+    await addSection()
 
     expect(mockUpdateSettings).toHaveBeenCalledTimes(1)
     const patch = patchWith({ agentFolders: [] })
     expect(patch.agentFolders).toHaveLength(1)
-    expect(patch.agentFolders[0].name).toBe('New Folder')
+    expect(patch.agentFolders[0].name).toBe('New Section')
     expect(patch.agentFolders[0].id).toBeTruthy()
   })
 
   it('does not reuse an existing folder name when adding another', async () => {
     const settings = {
       agentOrder: [],
-      agentFolders: [{ id: 'f1', name: 'New Folder' }],
+      agentFolders: [{ id: 'f1', name: 'New Section' }],
     }
     mockUserSettings.mockReturnValue(settings)
     renderWithProviders(<AppSidebar />)
 
-    await userEvent.click(screen.getByTestId('new-folder-button'))
+    await addSection()
 
     const patch = patchWith(settings)
-    expect(patch.agentFolders[1].name).toBe('New Folder 2')
+    expect(patch.agentFolders[1].name).toBe('New Section 2')
   })
 
   it('names a created folder against the folder list at mutation run time', async () => {
     // A create queued behind an in-flight write resolves after it settles: if
-    // that write added "New Folder", this one must come out "New Folder 2" —
+    // that write added "New Section", this one must come out "New Section 2" —
     // and must carry the other write's folder rather than reverting it.
     renderWithProviders(<AppSidebar />)
 
-    await userEvent.click(screen.getByTestId('new-folder-button'))
+    await addSection()
 
-    const patch = patchWith({ agentFolders: [{ id: 'f9', name: 'New Folder' }] })
+    const patch = patchWith({ agentFolders: [{ id: 'f9', name: 'New Section' }] })
     expect(patch.agentFolders).toHaveLength(2)
-    expect(patch.agentFolders[0]).toEqual({ id: 'f9', name: 'New Folder' })
-    expect(patch.agentFolders[1].name).toBe('New Folder 2')
+    expect(patch.agentFolders[0]).toEqual({ id: 'f9', name: 'New Section' })
+    expect(patch.agentFolders[1].name).toBe('New Section 2')
   })
 
   it('renders a folder with no recorded place at the end of the list', () => {
@@ -1377,30 +1616,55 @@ describe('AppSidebar — agent folders', () => {
     expect(listOrder()).toEqual(['folder:root', 'test-agent', 'other-agent', 'folder:f1'])
   })
 
-  it('places a created folder directly above the default folder', async () => {
+  it('places a created folder last, right above Add section', async () => {
     renderWithProviders(<AppSidebar />)
 
-    await userEvent.click(screen.getByTestId('new-folder-button'))
+    await addSection()
 
     // Untouched install: no stored places yet, so root's marker is written
-    // too — without one it would default ahead of the new folder (place -1).
+    // too — without one it would default ahead of everything (place -1).
     const fresh = patchWith({ agentFolders: [] })
-    expect(fresh.agentListOrder).toEqual([
-      `agent-folder::${fresh.agentFolders[0].id}`,
-      ROOT,
-    ])
+    expect(fresh.agentListOrder).toEqual([ROOT, `agent-folder::${fresh.agentFolders[0].id}`])
 
-    // A root the user moved off the top stays put; the new folder splices in
-    // just above it and other folders keep their places.
+    // Arranged sections keep their places; the new one goes after them all.
     const arranged = patchWith({
       agentFolders: [FOLDERS[0]],
-      agentListOrder: ['agent-folder::f1', ROOT],
+      agentListOrder: [ROOT, 'agent-folder::f1'],
     })
     expect(arranged.agentListOrder).toEqual([
+      ROOT,
       'agent-folder::f1',
       `agent-folder::${arranged.agentFolders[1].id}`,
-      ROOT,
     ])
+  })
+
+  it('puts Add section at the end of the agent list, not in the footer', () => {
+    mockUserSettings.mockReturnValue({
+      agentOrder: ['test-agent', 'other-agent'],
+      agentFolders: [FOLDERS[0]],
+      agentFolderAssignments: { 'test-agent': 'f1' },
+    })
+    renderWithProviders(<AppSidebar />)
+
+    const button = screen.getByTestId('add-section-button')
+    expect(button).toHaveTextContent('Add section')
+    // Styled as a section row (the headers' text), but as a plain action it
+    // keeps a hover fill — which the section headers deliberately lack.
+    for (const cls of ['text-xs', 'font-normal', 'text-sidebar-foreground/50', 'hover:bg-sidebar-accent']) {
+      expect(button.className).toContain(cls)
+    }
+    expect(button.className).not.toContain('hover:bg-transparent')
+    const follows = (a: Element, b: Element) =>
+      Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+    // After every section and agent row in the list…
+    const rows = document.querySelectorAll('[data-testid^="agent-item-"], [data-testid^="agent-folder-"]')
+    expect(follows(rows[rows.length - 1], button)).toBe(true)
+    // …and still ahead of the footer's Settings.
+    expect(follows(button, screen.getByTestId('settings-button'))).toBe(true)
+    // The same space above it as above each section header, so the gaps
+    // down the list stay uniform.
+    expect(button.closest('li')?.className).toContain('mt-2')
+    expect(screen.getByTestId('agent-folder-f1').closest('li')?.className).toContain('mt-2')
   })
 
   it('still renders folders when the user has no agents at all', () => {
@@ -1429,7 +1693,8 @@ describe('AppSidebar — agent folders', () => {
     })
     renderWithProviders(<AppSidebar />)
 
-    expect(screen.getByText('Drag agents here')).toBeInTheDocument()
+    expect(screen.getByText('No agents in here yet')).toBeInTheDocument()
+    expect(screen.getByText('Drag in or click + to add')).toBeInTheDocument()
   })
 })
 
@@ -1750,7 +2015,6 @@ describe('AppSidebar — drag orchestration', () => {
       .filter(
         (id) =>
           !id.startsWith('agent-folder-empty-') &&
-          !id.startsWith('agent-folder-count-') &&
           !id.startsWith('agent-folder-chevron-') &&
           !id.startsWith('agent-folder-insert-indicator-')
       )

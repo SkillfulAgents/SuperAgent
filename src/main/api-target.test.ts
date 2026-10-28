@@ -40,7 +40,9 @@ vi.mock('@shared/lib/config/settings', () => ({
 }))
 
 const LOCAL = 'http://localhost:3000'
-const CLOUD = 'http://localhost:3000/cloud/KEY123'
+const CLOUD_BASE = 'http://localhost:3000/cloud/KEY123'
+const DEPLOYMENT = 'https://acme.gamut.example'
+const CLOUD = { baseUrl: CLOUD_BASE, deploymentUrl: DEPLOYMENT }
 
 beforeEach(() => {
   settings.value = {}
@@ -56,6 +58,7 @@ describe('resolveApiTargetForRenderer', () => {
     expect(resolveApiTargetForRenderer(LOCAL, CLOUD)).toEqual({
       target: 'local',
       baseUrl: LOCAL,
+      deploymentUrl: null,
       fallback: null,
     })
   })
@@ -64,7 +67,8 @@ describe('resolveApiTargetForRenderer', () => {
     settings.value.apiTarget = 'cloud'
     expect(resolveApiTargetForRenderer(LOCAL, CLOUD)).toEqual({
       target: 'cloud',
-      baseUrl: CLOUD,
+      baseUrl: CLOUD_BASE,
+      deploymentUrl: DEPLOYMENT,
       fallback: null,
     })
   })
@@ -74,6 +78,7 @@ describe('resolveApiTargetForRenderer', () => {
     expect(resolveApiTargetForRenderer(LOCAL, null)).toEqual({
       target: 'local',
       baseUrl: LOCAL,
+      deploymentUrl: null,
       fallback: 'no-workspace',
     })
   })

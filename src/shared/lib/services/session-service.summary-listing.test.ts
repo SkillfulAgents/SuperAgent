@@ -129,7 +129,7 @@ describe('listSessionsFromSummary', () => {
     await createSession('session-b', '2026-01-02T00:00:00.000Z')
     await getSessionSummary(store)
 
-    // The persister reports a write to the older session; no stat happens.
+    // The live session reports a write to the older session; no stat happens.
     recordSessionActivity(store, 'session-a', new Date('2026-01-03T00:00:00.000Z'))
     statProbe.paths.length = 0
 

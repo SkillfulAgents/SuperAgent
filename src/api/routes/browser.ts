@@ -3,9 +3,10 @@ import type { Context } from 'hono'
 import { getActiveProvider, setOnExternalClose } from '../../main/host-browser'
 import { getSettings } from '@shared/lib/config/settings'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { IsAgent } from '../middleware/auth'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { hostBrowserRequestSchema, browserLaunchErrorReportSchema } from './browser-schema'
 
 const browser = new Hono()
@@ -135,11 +136,11 @@ browser.post('/debug-info', IsAgent(), async (c) => {
 // When a host browser instance closes externally (e.g. user closed Chrome),
 // notify that agent's container so it can clean up its internal state, and
 // broadcast to frontend SSE clients so the preview disappears.
-setOnExternalClose(async (instanceId: string) => {
+setOnExternalClose((instanceId: string) => background(async () => {
   console.log(`[Browser] Host browser for instance ${instanceId} closed externally`)
 
   // Broadcast to all frontend SSE clients with the agentSlug so UI can scope it
-  messagePersister.broadcastGlobal({ type: 'browser_active', active: false, agentSlug: instanceId })
+  globalFeed.publish({ type: 'browser_active', active: false, agentSlug: instanceId })
 
   // Notify the affected container to clean up its internal browser state.
   try {
@@ -147,6 +148,6 @@ setOnExternalClose(async (instanceId: string) => {
   } catch {
     // Non-critical — frontend is already notified
   }
-})
+}, { name: 'browser-route.notify-external-close' }))
 
 export default browser

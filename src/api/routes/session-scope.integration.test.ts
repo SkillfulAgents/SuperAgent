@@ -7,7 +7,7 @@
  * it were replaced with a broken one.
  *
  * This file closes that gap. The session service, the file-storage paths and
- * the message persister are all real, over a real temp data dir. Only the
+ * the agents' live sessions are all real, over a real temp data dir. Only the
  * container, the db and the auth middleware are stubbed.
  *
  * EVERY assertion here is phrased against an OBSERVABLE security property —
@@ -23,8 +23,8 @@ import * as path from 'path'
 import * as os from 'os'
 
 // ---------------------------------------------------------------------------
-// Stubs. Note what is NOT here: session-service, file-storage, fs and
-// message-persister are all REAL.
+// Stubs. Note what is NOT here: session-service, file-storage, fs and the
+// agents' live sessions are all REAL.
 // ---------------------------------------------------------------------------
 
 const mockInterruptSession = vi.fn((..._args: unknown[]) => Promise.resolve({ interrupted: true, processKept: true }))
@@ -159,11 +159,13 @@ vi.mock('@shared/lib/services/artifact-service', () => ({
   listArtifactsFromFilesystem: vi.fn(), deleteArtifactFromFilesystem: vi.fn(),
   renameArtifactOnFilesystem: vi.fn(),
 }))
-vi.mock('@shared/lib/services/chat-integration-service', () => ({
-  listChatIntegrations: vi.fn(() => []), listChatIntegrationsByAgents: vi.fn(() => new Map()),
+vi.mock('@shared/lib/services/agent-integration-service', () => ({
+  listAgentIntegrations: vi.fn(() => []), listAgentIntegrationsByAgents: vi.fn(() => new Map()),
 }))
 vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadNotifications: vi.fn(async () => new Set()),
+  getSessionIdsWithUnreadMentions: vi.fn(async () => new Set()),
+  getUnreadMentionsByAgents: vi.fn(async () => new Map()),
   getUnreadNotificationsByAgents: vi.fn(async () => new Map()),
 }))
 vi.mock('@shared/lib/services/agent-template-service', () => ({
@@ -193,11 +195,10 @@ vi.mock('@anthropic-ai/sdk', () => ({ default: vi.fn() }))
 
 // Import after every mock is registered.
 import agents from './agents'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { agentRegistry } from '@shared/lib/agent-actor'
+import type { LocalAgentActor } from '@shared/lib/agent-actor/local-agent-actor'
+import { drain, drained } from '@shared/lib/agent-actor/testing/drain'
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
-
-// The registry attaches the real stores; these tests drive the persister alone.
-messagePersister.attachSessionStores((slug) => createLocalSessionStore(slug))
 import { registerSession, sessionExists } from '@shared/lib/services/session-service'
 import { getAgentSessionsDir } from '@shared/lib/utils/file-storage'
 
@@ -216,27 +217,6 @@ let victimEvents: unknown[]
 let attackerEvents: unknown[]
 let cleanupVictimSse: () => void
 let cleanupAttackerSse: () => void
-
-function makeMockClient() {
-  let onMessage: ((m: unknown) => void) | null = null
-  return {
-    _emit(content: unknown) {
-      onMessage?.({ type: 'message', content, timestamp: new Date(), sessionId: 'x' })
-    },
-    start: vi.fn(), stop: vi.fn(), stopSync: vi.fn(), getInfoFromRuntime: vi.fn(), getInfo: vi.fn(),
-    fetch: vi.fn(), waitForHealthy: vi.fn(), isHealthy: vi.fn(), getStats: vi.fn(),
-    createSession: vi.fn(), getSession: vi.fn(async () => null), deleteSession: vi.fn(),
-    sendMessage: vi.fn(), interruptSession: vi.fn(),
-    subscribeToStream: vi.fn((_id: string, cb: (m: unknown) => void) => {
-      onMessage = cb
-      return { unsubscribe: vi.fn(), ready: Promise.resolve() }
-    }),
-    on: vi.fn(), off: vi.fn(), onFatalResult: vi.fn(() => 'settle'),
-    observeUnexpectedDeath: vi.fn(async () => ({ action: 'settle' })),
-    getRuntimeGenerationId: vi.fn(() => null),
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any
-}
 
 function app(): Hono {
   const a = new Hono()
@@ -288,21 +268,21 @@ beforeEach(async () => {
   writeTranscript(ATTACKER, attackerSession)
 
   // The victim's session is LIVE: subscribed and streaming.
-  await messagePersister.subscribeToSession(VICTIM, victimSession, makeMockClient(), victimSession)
-  await messagePersister.subscribeToSession(ATTACKER, attackerSession, makeMockClient(), attackerSession)
-  messagePersister.markSessionActive(VICTIM, victimSession)
+  await agentRegistry.get(VICTIM).sessions.attach(victimSession)
+  await agentRegistry.get(ATTACKER).sessions.attach(attackerSession)
+  await agentRegistry.get(VICTIM).sessions.markActive(victimSession)
 
   victimEvents = []
   attackerEvents = []
-  cleanupVictimSse = messagePersister.addSSEClient(VICTIM, victimSession, (d) => { victimEvents.push(d) })
-  cleanupAttackerSse = messagePersister.addSSEClient(ATTACKER, attackerSession, (d) => { attackerEvents.push(d) })
+  cleanupVictimSse = drain(await agentRegistry.get(VICTIM).messages.subscribe(victimSession), (d) => { victimEvents.push(d) })
+  cleanupAttackerSse = drain(await agentRegistry.get(ATTACKER).messages.subscribe(attackerSession), (d) => { attackerEvents.push(d) })
 })
 
 afterEach(() => {
   cleanupVictimSse?.()
   cleanupAttackerSse?.()
-  messagePersister.unsubscribeFromSession(VICTIM, victimSession)
-  messagePersister.unsubscribeFromSession(ATTACKER, attackerSession)
+  ;(agentRegistry.get(VICTIM) as LocalAgentActor).state.sessions.unsubscribe(victimSession)
+  ;(agentRegistry.get(ATTACKER) as LocalAgentActor).state.sessions.unsubscribe(attackerSession)
   realFs.rmSync(tmpDir, { recursive: true, force: true })
   if (previousDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
   else process.env.SUPERAGENT_DATA_DIR = previousDataDir
@@ -312,9 +292,11 @@ afterEach(() => {
  * The property under test, stated once. Every attack asserts exactly this.
  * Note what it does NOT mention: status codes, ownership indexes, map keys.
  */
-function expectVictimUntouched(): void {
-  expect(messagePersister.isSessionActive(VICTIM, victimSession)).toBe(true)
-  expect(messagePersister.isSubscribed(VICTIM, victimSession)).toBe(true)
+async function expectVictimUntouched(): Promise<void> {
+  await drained()
+  const victim = await agentRegistry.get(VICTIM).sessions.live(victimSession)
+  expect(victim.isActive).toBe(true)
+  expect(victim.streamAttached).toBe(true)
   expect(victimEvents).toEqual([])
 }
 
@@ -325,40 +307,40 @@ describe('a session id from another agent cannot drive that agent’s live sessi
     const res = await post(url(ATTACKER, victimSession, '/interrupt'))
     expect(res.status).toBe(404)
     expect(mockInterruptSession).not.toHaveBeenCalled()
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('interrupt, when the container call throws (the handler’s catch path)', async () => {
     mockInterruptSession.mockRejectedValue(new Error('container exploded'))
     const res = await post(url(ATTACKER, victimSession, '/interrupt'))
     expect(res.status).toBe(404)
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('message', async () => {
     const res = await post(url(ATTACKER, victimSession, '/messages'), { content: 'hi' })
     expect(res.status).toBe(404)
     expect(mockSendMessage).not.toHaveBeenCalled()
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('typing', async () => {
     const res = await post(url(ATTACKER, victimSession, '/typing'))
     expect(res.status).toBe(404)
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('delete', async () => {
     const res = await app().request(url(ATTACKER, victimSession), { method: 'DELETE' })
     expect(res.status).toBe(404)
     expect(await sessionExists(createLocalSessionStore(VICTIM), victimSession)).toBe(true)
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('a session id that escapes the agent’s own session directory', async () => {
     const res = await post(url(ATTACKER, '..%2F..%2Fvictim-agent%2Fvictim-session-0000', '/interrupt'))
     expect(res.status).toBe(404)
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 })
 
@@ -378,23 +360,23 @@ describe('a forged transcript does not buy access to another agent’s live sess
 
   it('interrupt', async () => {
     await post(url(ATTACKER, victimSession, '/interrupt'))
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('message', async () => {
     await post(url(ATTACKER, victimSession, '/messages'), { content: 'injected' })
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('typing', async () => {
     await post(url(ATTACKER, victimSession, '/typing'))
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('delete leaves the victim’s real transcript on disk', async () => {
     await app().request(url(ATTACKER, victimSession), { method: 'DELETE' })
     expect(await sessionExists(createLocalSessionStore(VICTIM), victimSession)).toBe(true)
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 })
 
@@ -417,27 +399,27 @@ describe('a symlink forged in the attacker’s workspace resolves to the victim�
   it('the messages listing refuses the id', async () => {
     const res = await app().request(url(ATTACKER, victimSession, '/messages'), { method: 'GET' })
     expect(res.status).toBe(404)
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('the single-session read refuses the id', async () => {
     const res = await app().request(url(ATTACKER, victimSession), { method: 'GET' })
     expect(res.status).toBe(404)
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('interrupt refuses the id', async () => {
     const res = await post(url(ATTACKER, victimSession, '/interrupt'))
     expect(res.status).toBe(404)
     expect(mockInterruptSession).not.toHaveBeenCalled()
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('delete refuses the id and leaves the victim’s real transcript', async () => {
     const res = await app().request(url(ATTACKER, victimSession), { method: 'DELETE' })
     expect(res.status).toBe(404)
     expect(await sessionExists(createLocalSessionStore(VICTIM), victimSession)).toBe(true)
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('media refuses the id even when the attacker also forges its metadata', async () => {
@@ -447,7 +429,7 @@ describe('a symlink forged in the attacker’s workspace resolves to the victim�
     await registerSession(createLocalSessionStore(ATTACKER), victimSession, 'Forged')
     const res = await app().request(url(ATTACKER, victimSession, '/media/anyref'), { method: 'GET' })
     expect(res.status).toBe(404)
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 })
 
@@ -458,7 +440,7 @@ describe('the subagent-messages route stays inside the agent’s own tree', () =
       { method: 'GET' },
     )
     expect(res.status).toBe(404)
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 
   it('refuses a traversal-shaped subagent id that escapes the session tree', async () => {
@@ -471,7 +453,7 @@ describe('the subagent-messages route stays inside the agent’s own tree', () =
       { method: 'GET' },
     )
     expect(res.status).toBe(404)
-    expectVictimUntouched()
+    await expectVictimUntouched()
   })
 })
 
@@ -484,7 +466,87 @@ describe('scoping does not over-block the caller’s own session', () => {
   it('broadcasts typing into its own session only', async () => {
     const res = await post(url(ATTACKER, attackerSession, '/typing'))
     expect(res.status).toBe(200)
+    await drained()
     expect(attackerEvents).toContainEqual(expect.objectContaining({ type: 'user_typing' }))
     expect(victimEvents).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The session stream on the wire: the real route over the real live sessions.
+// ---------------------------------------------------------------------------
+
+/** An SSE response read frame by frame, as a browser's EventSource would. */
+async function openStream(target: string, headers: Record<string, string> = {}) {
+  const controller = new AbortController()
+  const res = await app().request(target, { method: 'GET', headers, signal: controller.signal })
+  expect(res.status).toBe(200)
+  const reader = res.body!.getReader()
+  const decoder = new TextDecoder()
+  let buffered = ''
+  return {
+    /** The next frame that is not a keep-alive ping: its id (if any) and parsed data. */
+    async next(): Promise<{ id: string | undefined; data: Record<string, unknown> }> {
+      for (;;) {
+        const end = buffered.indexOf('\n\n')
+        if (end >= 0) {
+          const block = buffered.slice(0, end)
+          buffered = buffered.slice(end + 2)
+          const lines = block.split('\n')
+          const id = lines.find((line) => line.startsWith('id: '))?.slice(4)
+          const data = JSON.parse(lines.filter((line) => line.startsWith('data: ')).map((line) => line.slice(6)).join('\n'))
+          if (data.type !== 'ping') return { id, data }
+          continue
+        }
+        const { value, done } = await reader.read()
+        if (done) throw new Error('stream ended')
+        buffered += decoder.decode(value, { stream: true })
+      }
+    },
+    close: () => controller.abort(),
+  }
+}
+
+describe('the session stream on the wire', () => {
+  const emit = (event: Record<string, unknown>) =>
+    agentRegistry.get(ATTACKER).messages.broadcastEvent(attackerSession, event)
+
+  it('opens with the connected snapshot and numbers every frame after it', async () => {
+    await agentRegistry.get(ATTACKER).sessions.markActive(attackerSession)
+    const viewer = await openStream(url(ATTACKER, attackerSession, '/stream'))
+
+    const connected = await viewer.next()
+    expect(connected.data).toMatchObject({ type: 'connected', isActive: true, backgroundTasks: [], activeSubagents: [] })
+    expect(connected.id).toMatch(/^[0-9a-f]{8}:\d+$/)
+
+    emit({ type: 'stream_delta', text: 'hi' })
+    const delta = await viewer.next()
+    const [epoch, seq] = connected.id!.split(':')
+    expect(delta).toEqual({ id: `${epoch}:${Number(seq) + 1}`, data: { type: 'stream_delta', text: 'hi' } })
+    viewer.close()
+  })
+
+  it('resumes a viewer that comes back with Last-Event-ID: exactly the frames it missed, no snapshot', async () => {
+    const first = await openStream(url(ATTACKER, attackerSession, '/stream'))
+    await first.next()
+    emit({ type: 'stream_delta', text: 'one' })
+    const lastSeen = await first.next()
+    first.close()
+    emit({ type: 'stream_delta', text: 'two' })
+    emit({ type: 'stream_delta', text: 'three' })
+
+    const again = await openStream(url(ATTACKER, attackerSession, '/stream'), { 'Last-Event-ID': lastSeen.id! })
+
+    expect((await again.next()).data).toEqual({ type: 'stream_delta', text: 'two' })
+    expect((await again.next()).data).toEqual({ type: 'stream_delta', text: 'three' })
+    emit({ type: 'session_idle' })
+    expect((await again.next()).data).toMatchObject({ type: 'session_idle' })
+    again.close()
+  })
+
+  it('starts a viewer over from a snapshot when its id is from somewhere else', async () => {
+    const viewer = await openStream(url(ATTACKER, attackerSession, '/stream'), { 'Last-Event-ID': 'gone:7' })
+    expect((await viewer.next()).data).toMatchObject({ type: 'connected' })
+    viewer.close()
   })
 })

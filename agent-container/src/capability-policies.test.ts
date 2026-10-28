@@ -19,7 +19,7 @@ describe('capabilityForTool', () => {
     expect(capabilityForTool('Agent')).toBe('subagents')
     expect(capabilityForTool('Workflow')).toBe('workflows')
     expect(capabilityForTool('Bash')).toBeNull()
-    expect(capabilityForTool('TaskOutput')).toBeNull()
+    expect(capabilityForTool('Monitor')).toBeNull()
   })
 })
 

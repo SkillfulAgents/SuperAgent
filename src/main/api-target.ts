@@ -17,20 +17,28 @@ import { refreshAppMenu } from './app-menu'
  * renderer. They must never disagree about which machine executes work.
  */
 
+/** How the cloud workspace is reached (the keyed proxy) and where it lives. */
+export interface CloudEndpoint {
+  baseUrl: string
+  deploymentUrl: string
+}
+
 /**
- * The answer handed to a renderer at boot. `cloudBaseUrl` is null when there is
- * no cloud workspace or no live token for one — which is also the validation
- * step for a stored "cloud" preference, so a disconnected account degrades to a
+ * The answer handed to a renderer at boot. `cloud` is null when there is no
+ * cloud workspace or no live token for one — which is also the validation step
+ * for a stored "cloud" preference, so a disconnected account degrades to a
  * working local app rather than a wall of failures.
  */
 export function resolveApiTargetForRenderer(
   localBaseUrl: string,
-  cloudBaseUrl: string | null,
+  cloud: CloudEndpoint | null,
 ): ResolvedApiTarget {
-  const { target, fallback } = resolveApiTarget(readPreferredApiTarget(), cloudBaseUrl)
+  const { target, fallback } = resolveApiTarget(readPreferredApiTarget(), cloud?.baseUrl ?? null)
+  const remote = target === 'cloud' ? cloud : null
   return {
     target,
-    baseUrl: target === 'cloud' && cloudBaseUrl ? cloudBaseUrl : localBaseUrl,
+    baseUrl: remote?.baseUrl ?? localBaseUrl,
+    deploymentUrl: remote?.deploymentUrl ?? null,
     fallback,
   }
 }

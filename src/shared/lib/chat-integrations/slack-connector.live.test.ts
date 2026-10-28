@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { WebClient } from '@slack/web-api'
 import { SlackConnector } from './slack-connector'
-import type { IncomingMessage } from './base-connector'
+import type { IncomingMessage } from './chat-agent-integration'
 
 // ---------------------------------------------------------------------------
 // LIVE Slack connector validation. Gated: runs only with SLACK_LIVE=1 and real

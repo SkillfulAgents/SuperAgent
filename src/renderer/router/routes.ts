@@ -6,7 +6,8 @@ import { HttpError } from '@renderer/lib/api'
 import { agentQuery } from '@renderer/hooks/query-options'
 import { AgentNotFound, AgentLoadError } from './route-fallbacks'
 import { lenient } from './zod-search'
-import { chatSearchSchema, connectionsSearchSchema, homeSearchSchema, rootSearchSchema, settingsSearchSchema, settingsTabSchema } from './search-schemas'
+import { isTeamBrainAgentHome } from '@renderer/lib/team-brain/team-brain-agent-home'
+import { agentHomeSearchSchema, chatSearchSchema, connectionsSearchSchema, homeSearchSchema, rootSearchSchema, settingsSearchSchema, settingsTabSchema } from './search-schemas'
 import { HomePage } from '@renderer/components/home/home-page'
 import { RootLayout, AppShellLayout } from '@renderer/components/layout/route-layouts'
 
@@ -21,6 +22,14 @@ const NotificationsRoute = lazyRouteComponent(
 const NotificationDetailRoute = lazyRouteComponent(
   () => import('@renderer/components/layout/notification-detail-route'),
   'NotificationDetailRoute',
+)
+const TodoRoute = lazyRouteComponent(
+  () => import('@renderer/components/layout/todo-route'),
+  'TodoRoute',
+)
+const TeamBrainRoute = lazyRouteComponent(
+  () => import('@renderer/components/layout/team-brain-route'),
+  'TeamBrainRoute',
 )
 const ExploreRoute = lazyRouteComponent(
   () => import('@renderer/components/layout/explore-route'),
@@ -102,6 +111,23 @@ export const notificationDetailRoute = createRoute({
   component: NotificationDetailRoute,
 })
 
+// The Todo board (the `todo-board` experiment); the route renders a pointer
+// to Settings → Experiments when the experiment is off.
+export const todoRoute = createRoute({
+  getParentRoute: () => appShellRoute,
+  path: 'todo',
+  component: TodoRoute,
+})
+
+// Team Brain (the `team-brain` experiment): the workspace's shared wiki. For
+// now the page before set-up and its set-up modal. Like Todo, the route points
+// at Settings → Experiments when the experiment is off.
+export const teamBrainRoute = createRoute({
+  getParentRoute: () => appShellRoute,
+  path: 'team-brain',
+  component: TeamBrainRoute,
+})
+
 export const exploreRoute = createRoute({
   getParentRoute: () => appShellRoute,
   path: 'explore',
@@ -153,19 +179,43 @@ export const agentLayoutRoute = createRoute({
   errorComponent: AgentLoadError,
 })
 
+// Hoisted: called inline beside loaderDeps, the generic lenient() leaves the route's search typed as the root's.
+const agentHomeSearch = lenient(agentHomeSearchSchema)
+
 export const agentHomeRoute = createRoute({
   // INDEX of /agents/$slug — the agent home. Every other sub-view is its own
   // sibling route, so this leaf is just AgentHome.
   getParentRoute: () => agentLayoutRoute,
   path: '/',
+  validateSearch: agentHomeSearch,
+  loaderDeps: ({ search }) => ({ from: search.from }),
+  // The Team Brain agent's own page stands in for its Agent Home: every way in lands there, except its settings' Agent
+  // settings row. A failed read is left to the layout's loader, which owns turning it into not-found or an error.
+  loader: async ({ context, params, deps }) => {
+    const agent = await context.queryClient.ensureQueryData(agentQuery(params.slug)).catch(() => null)
+    if (agent?.teamBrain && !isTeamBrainAgentHome(deps)) throw redirect({ to: '/team-brain', replace: true })
+  },
   component: AgentHomeRoute,
 })
 
-export const sessionRoute = createRoute({
+// One mounted view owns both an unsent draft and the session it becomes.
+// The children only select the id; changing `new` to an id keeps this parent.
+export const sessionsLayoutRoute = createRoute({
   getParentRoute: () => agentLayoutRoute,
-  path: 'sessions/$sessionId',
-  params: { parse: (raw) => ({ sessionId: z.string().min(1).parse(raw.sessionId) }) },
+  path: 'sessions',
   component: SessionRoute,
+})
+
+// The static segment outranks `$sessionId`, so no APIs see a fake "new" id.
+export const newSessionRoute = createRoute({
+  getParentRoute: () => sessionsLayoutRoute,
+  path: 'new',
+})
+
+export const sessionRoute = createRoute({
+  getParentRoute: () => sessionsLayoutRoute,
+  path: '$sessionId',
+  params: { parse: (raw) => ({ sessionId: z.string().min(1).parse(raw.sessionId) }) },
 })
 
 export const taskRoute = createRoute({
@@ -272,17 +322,32 @@ export const settingsTabRoute = createRoute({
   component: SettingsTabRoute,
 })
 
+// ── MEETING PARTICIPANT: the page a meeting bot presents as its camera ────────
+// Sibling of the app shell: no sidebar, no chrome. The bot's browser has no
+// app session; the page authenticates with the one-time token in its URL.
+const MeetingParticipantRoute = lazyRouteComponent(() => import('./lazy-routes/meeting-participant-route'), 'MeetingParticipantRoute')
+export const meetingParticipantRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: 'meeting/$meetingId',
+  params: { parse: (raw) => ({ meetingId: z.string().min(1).parse(raw.meetingId) }) },
+  validateSearch: lenient(z.object({ token: z.string().optional() })),
+  component: MeetingParticipantRoute,
+})
+
 export const routeTree = rootRoute.addChildren([
+  meetingParticipantRoute,
   appShellRoute.addChildren([
     homeRoute,
     notificationsRoute,
     notificationDetailRoute,
+    todoRoute,
+    teamBrainRoute,
     exploreRoute,
     exploreCategoryRoute,
     exploreTemplateRoute,
     agentLayoutRoute.addChildren([
       agentHomeRoute,
-      sessionRoute,
+      sessionsLayoutRoute.addChildren([newSessionRoute, sessionRoute]),
       taskRoute,
       webhookRoute,
       inboundXAgentRoute,

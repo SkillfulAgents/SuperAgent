@@ -7,66 +7,23 @@
  * inner form is keyed by provider so state resets when the provider changes.
  */
 
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Button } from '@renderer/components/ui/button'
-import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
 import { Switch } from '@renderer/components/ui/switch'
 import { SessionTimeoutSelect } from './integration-settings-controls'
-import { ServiceIcon } from '@renderer/components/ui/service-icon'
-import {
-  DialogHeader,
-  DialogTitle,
-} from '@renderer/components/ui/dialog'
+import { IntegrationSetupLayout, IntegrationSetupField, IntegrationSetupFeedback } from './integration-setup-layout'
 import {
   useCreateAgentIntegration,
-  useTestChatIntegrationCredentials,
+  useTestAgentIntegrationCredentials,
   AgentIntegrationApiError,
 } from '@renderer/hooks/use-agent-integrations'
-import { Loader2, CheckCircle, AlertCircle, Copy, Check, Eye, EyeOff } from 'lucide-react'
+import { Loader2, Copy, Check, Eye, EyeOff } from 'lucide-react'
 import { IMESSAGE_PHONE_E164, type ChatProvider } from '@shared/lib/chat-integrations/config-schema'
+import { slackAppManifest } from '@shared/lib/chat-integrations/slack-manifest'
 
 function generateSlackManifest(botName: string): string {
-  return JSON.stringify({
-    display_information: { name: botName },
-    features: {
-      bot_user: { display_name: botName, always_online: true },
-      app_home: {
-        home_tab_enabled: false,
-        messages_tab_enabled: true,
-        messages_tab_read_only_enabled: false,
-      },
-    },
-    oauth_config: {
-      scopes: {
-        bot: [
-          'users:read',
-          'chat:write',
-          'files:read',
-          'files:write',
-          'im:history',
-          'im:read',
-          'im:write',
-          'channels:history',
-          'channels:read',
-          'groups:history',
-          'groups:read',
-          'mpim:history',
-          'mpim:read',
-          'reactions:write',
-        ],
-      },
-    },
-    settings: {
-      event_subscriptions: {
-        bot_events: ['message.im', 'message.channels', 'message.groups', 'message.mpim'],
-      },
-      interactivity: { is_enabled: true },
-      org_deploy_enabled: false,
-      socket_mode_enabled: true,
-      token_rotation_enabled: false,
-    },
-  }, null, 2)
+  return JSON.stringify(slackAppManifest(botName), null, 2)
 }
 
 const IMESSAGE_SETUP_NUMBER_DISPLAY = '+1 (205) 396-7934'
@@ -149,25 +106,112 @@ const PROVIDER_INFO: Record<ChatProvider, {
   },
 }
 
+/** How a new chat integration behaves, chosen during setup. */
+export interface ChatSetupBehaviorValue {
+  showToolCalls: boolean
+  sessionTimeout: number | null
+  onlyMentioned: boolean
+  answerInThread: boolean
+  newSessionPerThread: boolean
+}
+
+export const DEFAULT_CHAT_SETUP_BEHAVIOR: ChatSetupBehaviorValue = {
+  showToolCalls: false, sessionTimeout: null, onlyMentioned: true, answerInThread: false, newSessionPerThread: false,
+}
+
+/** Slack's channel behavior, as its stored config spells it. */
+export function slackBehaviorConfig(value: ChatSetupBehaviorValue): Record<string, boolean> {
+  return {
+    ...(value.onlyMentioned ? { onlyMentioned: true } : {}),
+    ...(value.answerInThread ? { answerInThread: true } : {}),
+    ...(value.answerInThread && value.newSessionPerThread ? { newSessionPerThread: true } : {}),
+  }
+}
+
+export function ChatSetupBehavior({ provider, value, onChange }: {
+  provider: ChatProvider
+  value: ChatSetupBehaviorValue
+  onChange: (value: ChatSetupBehaviorValue) => void
+}) {
+  const set = (change: Partial<ChatSetupBehaviorValue>) => onChange({ ...value, ...change })
+  return (
+    <div className={`${provider === 'slack' ? 'pt-6' : 'pt-4'} space-y-3`}>
+      <div className="flex items-center justify-between gap-2">
+        <Label htmlFor="setup-show-tool-calls" className="text-xs font-normal cursor-pointer">
+          Show tool calls in chat
+        </Label>
+        <Switch
+          id="setup-show-tool-calls"
+          checked={value.showToolCalls}
+          onCheckedChange={showToolCalls => set({ showToolCalls })}
+        />
+      </div>
+
+      <SessionTimeoutSelect
+        id="setup-session-timeout"
+        value={value.sessionTimeout}
+        onCommit={sessionTimeout => set({ sessionTimeout })}
+        wrapperClassName=""
+      />
+
+      {provider === 'slack' && (
+        <>
+          <div className="flex items-center justify-between gap-2">
+            <Label htmlFor="setup-only-mentioned" className="text-xs font-normal cursor-pointer">
+              Only trigger on @mention
+            </Label>
+            <Switch
+              id="setup-only-mentioned"
+              checked={value.onlyMentioned}
+              onCheckedChange={onlyMentioned => set({ onlyMentioned })}
+            />
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <Label htmlFor="setup-answer-thread" className="text-xs font-normal cursor-pointer">
+              Reply in thread
+            </Label>
+            <Switch
+              id="setup-answer-thread"
+              checked={value.answerInThread}
+              onCheckedChange={(checked) => set({ answerInThread: checked, ...(!checked ? { newSessionPerThread: false } : {}) })}
+            />
+          </div>
+          {value.answerInThread && (
+            <div className="flex items-center justify-between gap-2">
+              <Label htmlFor="setup-session-per-thread" className="text-xs font-normal cursor-pointer">
+                New session per thread
+              </Label>
+              <Switch
+                id="setup-session-per-thread"
+                checked={value.newSessionPerThread}
+                onCheckedChange={newSessionPerThread => set({ newSessionPerThread })}
+              />
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 export function ChatIntegrationSetupForm({
   agentSlug,
   provider,
   onClose,
+  leading,
 }: {
   agentSlug: string
   provider: ChatProvider
   onClose: () => void
+  /** Shown above the fields, e.g. Slack's choice of webhooks. */
+  leading?: ReactNode
 }) {
   const createIntegration = useCreateAgentIntegration()
-  const testCredentials = useTestChatIntegrationCredentials()
+  const testCredentials = useTestAgentIntegrationCredentials()
 
   const [formData, setFormData] = useState<Record<string, string>>({})
   const [integrationName, setIntegrationName] = useState('')
-  const [showToolCalls, setShowToolCalls] = useState(false)
-  const [sessionTimeout, setSessionTimeout] = useState<number | null>(null)
-  const [onlyMentioned, setOnlyMentioned] = useState(true)
-  const [answerInThread, setAnswerInThread] = useState(false)
-  const [newSessionPerThread, setNewSessionPerThread] = useState(false)
+  const [behavior, setBehavior] = useState(DEFAULT_CHAT_SETUP_BEHAVIOR)
   const [testResult, setTestResult] = useState<{ valid: boolean; info?: string } | null>(null)
   const [slackSetupMode, setSlackSetupMode] = useState<'manifest' | 'manual'>('manifest')
   const [manifestCopied, setManifestCopied] = useState(false)
@@ -211,12 +255,7 @@ export function ChatIntegrationSetupForm({
       return
     }
     try {
-      const config: Record<string, unknown> = { ...formData }
-      if (provider === 'slack') {
-        if (onlyMentioned) config.onlyMentioned = true
-        if (answerInThread) config.answerInThread = true
-        if (answerInThread && newSessionPerThread) config.newSessionPerThread = true
-      }
+      const config: Record<string, unknown> = { ...formData, ...(provider === 'slack' ? slackBehaviorConfig(behavior) : {}) }
       if (provider === 'imessage') {
         config.gatewayUrl = 'https://imsgw.com'
       }
@@ -225,8 +264,8 @@ export function ChatIntegrationSetupForm({
         provider,
         name: integrationName.trim() || undefined,
         config,
-        showToolCalls,
-        sessionTimeout,
+        showToolCalls: behavior.showToolCalls,
+        sessionTimeout: behavior.sessionTimeout,
       })
       onClose()
     } catch {
@@ -235,17 +274,10 @@ export function ChatIntegrationSetupForm({
   }
 
   return (
-    <>
-      <DialogHeader>
-        <DialogTitle className="flex items-center gap-2 font-normal">
-          <ServiceIcon slug={info.slug} fallback="mcp" className="h-5 w-5" />
-          Set up remote chat with {info.label}
-        </DialogTitle>
-      </DialogHeader>
-
-      <div className="flex flex-col md:flex-row gap-6 p-1">
-        {/* Left — setup instructions */}
-        <div className="md:w-[55%] flex flex-col justify-center gap-4 max-h-[60vh] overflow-y-auto">
+    <IntegrationSetupLayout
+      provider={info.slug}
+      label={info.label}
+      instructions={<>
         {provider === 'slack' && slackSetupMode === 'manifest' ? (
           <div className="space-y-3">
             <ol className="list-decimal list-outside ml-5 space-y-2.5">
@@ -333,159 +365,65 @@ export function ChatIntegrationSetupForm({
             <p className="text-xs text-amber-900 dark:text-amber-200 leading-relaxed">{info.note}</p>
           </div>
         )}
-        </div>
-
-        {/* Right — credentials + actions */}
-        <div className="md:w-[45%] rounded-lg border bg-muted/40 shadow-md flex flex-col max-h-[60vh]">
-        <div className="flex flex-col gap-4 overflow-y-auto p-4 flex-1 min-h-0">
-        <div className="space-y-3">
-          <div>
-            <Label className="text-xs font-normal">
-              Bot Name
-            </Label>
-            <Input
-              value={integrationName}
-              onChange={(e) => setIntegrationName(e.target.value)}
-              placeholder={`My ${info.label} Bot`}
-              className="mt-1 shadow-none bg-background"
-            />
-          </div>
-
-          {info.fields.map((field) => (
-            <div key={field.key}>
-              <Label className="text-xs font-normal">
-                {field.label}
-                {field.optional && <span className="ml-1 font-normal text-muted-foreground/70">optional</span>}
-              </Label>
-              <Input
-                type={field.type}
-                value={formData[field.key] || ''}
-                onChange={(e) => setFormData({ ...formData, [field.key]: e.target.value })}
-                placeholder={field.placeholder}
-                className="mt-1 shadow-none bg-background"
-              />
-            </div>
-          ))}
-
-          <div className={`${provider === 'slack' ? 'pt-6' : 'pt-4'} space-y-3`}>
-            <div className="flex items-center justify-between gap-2">
-              <Label htmlFor="setup-show-tool-calls" className="text-xs font-normal cursor-pointer">
-                Show tool calls in chat
-              </Label>
-              <Switch
-                id="setup-show-tool-calls"
-                checked={showToolCalls}
-                onCheckedChange={setShowToolCalls}
-              />
-            </div>
-
-            <SessionTimeoutSelect
-              id="setup-session-timeout"
-              value={sessionTimeout}
-              onCommit={setSessionTimeout}
-              wrapperClassName=""
-            />
-
-            {provider === 'slack' && (
-              <>
-                <div className="flex items-center justify-between gap-2">
-                  <Label htmlFor="setup-only-mentioned" className="text-xs font-normal cursor-pointer">
-                    Only trigger on @mention
-                  </Label>
-                  <Switch
-                    id="setup-only-mentioned"
-                    checked={onlyMentioned}
-                    onCheckedChange={setOnlyMentioned}
-                  />
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <Label htmlFor="setup-answer-thread" className="text-xs font-normal cursor-pointer">
-                    Reply in thread
-                  </Label>
-                  <Switch
-                    id="setup-answer-thread"
-                    checked={answerInThread}
-                    onCheckedChange={(checked) => {
-                      setAnswerInThread(checked)
-                      if (!checked) setNewSessionPerThread(false)
-                    }}
-                  />
-                </div>
-                {answerInThread && (
-                  <div className="flex items-center justify-between gap-2">
-                    <Label htmlFor="setup-session-per-thread" className="text-xs font-normal cursor-pointer">
-                      New session per thread
-                    </Label>
-                    <Switch
-                      id="setup-session-per-thread"
-                      checked={newSessionPerThread}
-                      onCheckedChange={setNewSessionPerThread}
-                    />
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        </div>
-
-        {testResult && (
-          <div className={`flex items-center gap-2 p-2 rounded-md border ${
-            testResult.valid
-              ? 'border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-950'
-              : 'border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950'
-          }`}>
-            {testResult.valid ? (
-              <CheckCircle className="h-4 w-4 text-green-500 shrink-0" />
-            ) : (
-              <AlertCircle className="h-4 w-4 text-red-500 shrink-0" />
-            )}
-            <p className={`text-xs ${testResult.valid ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-              {testResult.info}
-            </p>
-          </div>
-        )}
-
+      </>}
+      feedback={<>
+        {testResult && <IntegrationSetupFeedback state={testResult.valid ? 'success' : 'error'}>{testResult.info}</IntegrationSetupFeedback>}
         {createIntegration.error && (
-          <p className="text-xs text-red-500">
+          <IntegrationSetupFeedback state="error">
             {createIntegration.error instanceof AgentIntegrationApiError && createIntegration.error.code === 'duplicate_bot_token'
               ? provider === 'imessage'
                 ? 'This phone number is already connected to another integration. Remove the existing one first.'
                 : 'This bot is already connected to another integration. Remove the existing one first, or use a different bot.'
               : createIntegration.error.message}
-          </p>
+          </IntegrationSetupFeedback>
         )}
-
-        </div>
-        <div className="flex items-center justify-end gap-2 p-4">
-          {provider !== 'imessage' && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="mr-auto"
-              onClick={handleTest}
-              disabled={testCredentials.isPending}
-            >
-              {testCredentials.isPending ? (
-                <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Verifying...</>
-              ) : (
-                'Verify token'
-              )}
-            </Button>
-          )}
+      </>}
+      actions={<>
+        {provider !== 'imessage' && (
           <Button
             size="sm"
-            onClick={handleCreate}
-            disabled={createIntegration.isPending}
+            variant="ghost"
+            className="mr-auto"
+            onClick={handleTest}
+            disabled={testCredentials.isPending}
           >
-            {createIntegration.isPending ? (
-              <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Connecting...</>
+            {testCredentials.isPending ? (
+              <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Verifying...</>
             ) : (
-              'Connect'
+              'Verify token'
             )}
           </Button>
-        </div>
-        </div>
-      </div>
-    </>
+        )}
+        <Button
+          size="sm"
+          onClick={handleCreate}
+          disabled={createIntegration.isPending}
+        >
+          {createIntegration.isPending ? (
+            <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Connecting...</>
+          ) : (
+            'Connect'
+          )}
+        </Button>
+      </>}
+    >
+      {leading}
+      <IntegrationSetupField
+        id="setup-integration-name" label="Integration name"
+        value={integrationName} onChange={e => setIntegrationName(e.target.value)}
+        placeholder={`My ${info.label} integration`}
+      />
+
+      {info.fields.map(field => (
+        <IntegrationSetupField
+          key={field.key} id={`setup-${field.key}`} label={field.label} optional={field.optional}
+          type={field.type} value={formData[field.key] || ''}
+          onChange={e => setFormData({ ...formData, [field.key]: e.target.value })}
+          placeholder={field.placeholder}
+        />
+      ))}
+
+      <ChatSetupBehavior provider={provider} value={behavior} onChange={setBehavior} />
+    </IntegrationSetupLayout>
   )
 }

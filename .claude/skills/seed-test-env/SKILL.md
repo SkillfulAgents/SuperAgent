@@ -39,9 +39,9 @@ Pick the first that exists AND has a populated `apiKeys.anthropicApiKey` (or ano
 
 ### 3. Create structure
 
-For each agent, create `agents/<slug>/workspace/CLAUDE.md`. Write them before the first launch of the data dir: the app imports agent directories into its catalog table once, by a data migration when the database is first opened, and does not scan the directory again. An agent directory added to an already-launched data dir will not show up. **Important:** the CLAUDE.md lives inside `workspace/`, NOT directly under the agent dir. The file-storage layer (`src/shared/lib/utils/file-storage.ts:getAgentClaudeMdPath`) hard-codes that path — putting it elsewhere makes the agent invisible.
+For each agent, create `agents/<slug>/workspace/AGENTS.md`. Write them before the first launch of the data dir: the app imports agent directories into its catalog table once, by a data migration when the database is first opened, and does not scan the directory again. An agent directory added to an already-launched data dir will not show up. **Important:** the AGENTS.md lives inside `workspace/`, NOT directly under the agent dir. The file-storage layer (`src/shared/lib/utils/file-storage.ts:getAgentInstructionsPath`) hard-codes that path — putting it elsewhere makes the agent invisible.
 
-CLAUDE.md uses YAML frontmatter delimited by `---`. Required fields: `name`, `createdAt` (ISO string). Optional: `description`. Body is the agent's instructions. Mirror the format from `src/shared/lib/services/agent-service.ts:createAgent`. Example:
+AGENTS.md uses YAML frontmatter delimited by `---`. Required fields: `name`, `createdAt` (ISO string). Optional: `description`. Body is the agent's instructions. Mirror the format from `src/shared/lib/services/agent-service.ts:createAgent`. Example:
 
 ```markdown
 ---
@@ -91,7 +91,7 @@ Migrations auto-run on first launch via `migrate()` in `src/shared/lib/db/index.
 
 - Use Bash + Write tools directly, don't print the commands and stop. Actually create the files.
 - Never echo full secret values back to the user — show key names only.
-- The `dev:electron` command is `electron-rebuild -f && electron-vite dev`. The `dev` (web) command is `npm rebuild better-sqlite3 && vite`. Both honor `SUPERAGENT_DATA_DIR` via `getDataDir()` in `src/shared/lib/config/data-dir.ts`.
+- The `dev:electron` command is `install-electron && electron-vite dev` (the first part fetches the Electron binary if missing). The `dev` (web) command is `vite`. Both honor `SUPERAGENT_DATA_DIR` via `getDataDir()` in `src/shared/lib/config/data-dir.ts`.
 - Don't modify the real prod data dir under any circumstances. All writes go to `~/Downloads/<dir-name>/` only.
 
 ## When NOT to use

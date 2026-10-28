@@ -29,11 +29,9 @@ vi.mock('@shared/lib/config/settings', () => ({
   mutateSettings: (mutator: (s: Record<string, unknown>) => void) => mockMutateSettings(mutator),
 }))
 
-const mockBroadcastGlobal = vi.fn()
-vi.mock('@shared/lib/container/message-persister', () => ({
-  messagePersister: {
-    broadcastGlobal: (...args: unknown[]) => mockBroadcastGlobal(...args),
-  },
+const mockPublishGlobal = vi.fn()
+vi.mock('@shared/lib/notifications/global-feed', () => ({
+  globalFeed: { publish: (...args: unknown[]) => mockPublishGlobal(...args), subscribe: () => () => {} },
 }))
 
 vi.mock('@shared/lib/error-reporting', () => ({
@@ -90,6 +88,7 @@ vi.mock('@shared/lib/services/supabase-realtime-client', () => ({
 }))
 
 import { platformNotificationsManager } from './platform-notifications-manager'
+import { backgroundSettled } from '@shared/lib/background'
 
 // ============================================================================
 // Fixtures
@@ -114,18 +113,19 @@ function record(id: string, createdAt: string, overrides: Record<string, unknown
 }
 
 function osNotificationBroadcasts() {
-  return mockBroadcastGlobal.mock.calls.filter(
+  return mockPublishGlobal.mock.calls.filter(
     (call) => (call[0] as { type?: string }).type === 'os_notification',
   )
 }
 
 function changedBroadcasts() {
-  return mockBroadcastGlobal.mock.calls.filter(
+  return mockPublishGlobal.mock.calls.filter(
     (call) => (call[0] as { type?: string }).type === 'platform_notifications_changed',
   )
 }
 
-async function startWithDefaults(): Promise<EventCallback> {
+/** Starts the manager; the returned delivery resolves once the insert is handled. */
+async function startWithDefaults(): Promise<(record: unknown) => Promise<void>> {
   mockGetRealtimeConfig.mockResolvedValue(REALTIME_CONFIG)
   // Newest existing row — seeds the watermark on first start.
   mockListNotifications.mockResolvedValue({
@@ -136,7 +136,11 @@ async function startWithDefaults(): Promise<EventCallback> {
   await platformNotificationsManager.start()
   const instance = realtimeInstances[realtimeInstances.length - 1]
   expect(instance).toBeDefined()
-  return instance.onEvent!
+  const onEvent = instance.onEvent!
+  return async (row) => {
+    onEvent(row)
+    await backgroundSettled()
+  }
 }
 
 const JWT_REFRESH_INTERVAL_MS = 50 * 60 * 1000
