@@ -6,6 +6,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
 import { AppLink } from '@renderer/components/ui/app-link'
+import { ContextMenuMoreButton } from '@renderer/components/ui/context-menu'
 import { UnreadDot } from '@renderer/components/agents/status-indicators'
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
@@ -243,49 +244,70 @@ function SessionSubItem({
           isStreaming,
         }}
       >
+        {/* The row (menu target) wraps the link and the 3-dot button, which
+            can't nest inside the <a>; the link fills the rest of the row. */}
         <SidebarMenuSubButton
           asChild
           isActive={isSelected}
+          className="relative gap-0 overflow-visible px-0"
         >
-          <AppLink
-            ref={hintRef}
-            to="/agents/$slug/sessions/$sessionId"
-            params={{ slug: agentSlug, sessionId: session.id }}
-            className="flex items-center gap-2 w-full"
-            data-testid={`session-item-${session.id}`}
-          >
-            <HoverScrollText
-              className="flex-1 text-left"
-              data-testid={`session-name-${session.id}`}
-              hoverTarget="parent"
+          <div>
+            <AppLink
+              ref={hintRef}
+              to="/agents/$slug/sessions/$sessionId"
+              params={{ slug: agentSlug, sessionId: session.id }}
+              // Not draggable, as when the link was the menu trigger itself:
+              // iOS would otherwise lift it on a long-press.
+              draggable={false}
+              className="flex h-full min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-md px-2 outline-none ring-sidebar-ring [-webkit-user-drag:none] focus-visible:ring-2"
+              data-testid={`session-item-${session.id}`}
             >
-              {session.name}
-            </HoverScrollText>
-            {hint !== null ? (
-              <CmdHintBadge hint={hint} />
-            ) : (
-              <span className="flex items-center justify-center gap-1 min-w-4 shrink-0">
-                {showPendingWake && (
-                  <span
-                    className="flex items-center"
-                    role="img"
-                    aria-label="scheduled to resume"
-                    title={`Resumes ${formatDistanceToNow(new Date(session.pendingWakeAt!), { addSuffix: true })}`}
-                    data-testid={`session-pending-wake-${session.id}`}
-                  >
-                    <MoonStar className="h-3 w-3 text-muted-foreground" />
-                  </span>
-                )}
-                {isAwaitingInput ? (
-                  <AwaitingDot />
-                ) : isWorking ? (
-                  <WorkingDots />
-                ) : hasUnread ? (
-                  <UnreadDot mention={session.hasUnreadMention} />
-                ) : null}
-              </span>
+              <HoverScrollText
+                className="flex-1 text-left"
+                data-testid={`session-name-${session.id}`}
+                hoverTarget="parent"
+              >
+                {session.name}
+              </HoverScrollText>
+              {hint !== null ? (
+                <CmdHintBadge hint={hint} />
+              ) : (
+                <span className="flex items-center justify-center gap-1 min-w-4 shrink-0">
+                  {showPendingWake && (
+                    <span
+                      className="flex items-center"
+                      role="img"
+                      aria-label="scheduled to resume"
+                      title={`Resumes ${formatDistanceToNow(new Date(session.pendingWakeAt!), { addSuffix: true })}`}
+                      data-testid={`session-pending-wake-${session.id}`}
+                    >
+                      <MoonStar className="h-3 w-3 text-muted-foreground" />
+                    </span>
+                  )}
+                  {isAwaitingInput ? (
+                    <AwaitingDot />
+                  ) : isWorking ? (
+                    <WorkingDots />
+                  ) : hasUnread ? (
+                    <UnreadDot mention={session.hasUnreadMention} />
+                  ) : null}
+                </span>
+              )}
+            </AppLink>
+            {hint === null && (
+              <ContextMenuMoreButton
+                label={`Options for ${session.name}`}
+                // Spill to the right: a dropdown here would cover the rows below.
+                anchor="beside"
+                data-testid={`session-menu-button-${session.id}`}
+                iconClassName="h-3.5 w-3.5"
+                // After the status slot rather than over it, so the status (and
+                // the resume-time title on its moon) stays readable on hover; no
+                // width until revealed, so the row is unchanged at rest.
+                className="h-5 w-0 overflow-hidden text-muted-foreground hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground focus-visible:ring-sidebar-ring menu-revealed:mr-1 menu-revealed:w-5"
+              />
             )}
-          </AppLink>
+          </div>
         </SidebarMenuSubButton>
       </SessionContextMenu>
     </SidebarMenuSubItem>
@@ -625,48 +647,67 @@ const AgentMenuItemInner = React.forwardRef<
                 <AgentLastRun date={agent.lastActivityAt} />
               </AppLink>
               {isShared && <SidebarMemberIndicator agentSlug={agent.slug} agentName={agent.name} memberCount={memberCount} selected={isSelected} />}
-              {/* The status slot doubles as the new-session control: hovering
-                  the row (or focusing the button) swaps the status for a pen
-                  opening the session view with an empty composer. */}
-              <span className="group/status-slot relative z-10 ml-auto flex shrink-0 items-center">
-                {/* Expose the status title above the stretched link while keeping
-                    clicks (including modifier clicks) native agent navigation. */}
-                <AppLink
-                  to="/agents/$slug"
-                  params={{ slug: agent.displaySlug }}
-                  tabIndex={-1}
-                  aria-label={`Open ${agent.name}`}
-                  className={cn(
-                    'flex items-center transition-opacity',
-                    canStartSession && 'group-hover/agent-row:opacity-0 group-focus-within/status-slot:opacity-0'
-                  )}
-                >
-                  {hint !== null ? (
-                    <CmdHintBadge hint={hint} />
-                  ) : (
-                    <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
-                  )}
-                </AppLink>
-                {canStartSession && (
-                  <TooltipProvider delayDuration={200}>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <AppLink
-                          to="/agents/$slug/sessions/new"
-                          params={{ slug: agent.displaySlug }}
-                          onPointerDown={(event) => { if (event.button === 0) warmStart() }}
-                          onClick={(event) => { if (event.detail === 0) warmStart() }}
-                          aria-label={`New session with ${agent.name}`}
-                          data-testid={`agent-new-session-${agent.slug}`}
-                          className="absolute left-1/2 top-1/2 flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded text-muted-foreground opacity-0 outline-none transition-opacity hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-sidebar-ring group-hover/agent-row:opacity-100"
-                        >
-                          <SquarePen className="h-3.5 w-3.5" />
-                        </AppLink>
-                      </TooltipTrigger>
-                      <TooltipContent side="right">New session</TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
+              {/* The 3-dot button and the status slot travel together, so the
+                  slot holds the right edge whether or not the button shows
+                  (touch never shows it). */}
+              <span className="relative z-10 ml-auto flex shrink-0 items-center">
+                {hint === null && (
+                  <ContextMenuMoreButton
+                    label={`Options for ${agent.name}`}
+                    // Spill to the right: a dropdown here would cover the rows below.
+                    anchor="beside"
+                    data-testid={`agent-menu-button-${agent.slug}`}
+                    iconClassName="h-3.5 w-3.5"
+                    // Left of the status slot, so the pen that takes over the
+                    // slot doesn't move; no width until revealed, so a long name
+                    // keeps its room. mr-1.5 clears the pen, which overhangs the
+                    // w-4 slot by 4px.
+                    className="w-0 overflow-hidden text-muted-foreground hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground focus-visible:ring-sidebar-ring menu-revealed:mr-1.5 menu-revealed:w-6"
+                  />
                 )}
+                {/* The status slot doubles as the new-session control: hovering
+                    the row (or focusing the button) swaps the status for a pen
+                    opening the session view with an empty composer. */}
+                <span className="group/status-slot relative flex shrink-0 items-center">
+                  {/* Expose the status title above the stretched link while keeping
+                      clicks (including modifier clicks) native agent navigation. */}
+                  <AppLink
+                    to="/agents/$slug"
+                    params={{ slug: agent.displaySlug }}
+                    tabIndex={-1}
+                    aria-label={`Open ${agent.name}`}
+                    className={cn(
+                      'flex items-center transition-opacity',
+                      canStartSession && 'group-hover/agent-row:opacity-0 group-focus-within/status-slot:opacity-0'
+                    )}
+                  >
+                    {hint !== null ? (
+                      <CmdHintBadge hint={hint} />
+                    ) : (
+                      <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
+                    )}
+                  </AppLink>
+                  {canStartSession && (
+                    <TooltipProvider delayDuration={200}>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <AppLink
+                            to="/agents/$slug/sessions/new"
+                            params={{ slug: agent.displaySlug }}
+                            onPointerDown={(event) => { if (event.button === 0) warmStart() }}
+                            onClick={(event) => { if (event.detail === 0) warmStart() }}
+                            aria-label={`New session with ${agent.name}`}
+                            data-testid={`agent-new-session-${agent.slug}`}
+                            className="absolute left-1/2 top-1/2 flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded text-muted-foreground opacity-0 outline-none transition-opacity hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-sidebar-ring group-hover/agent-row:opacity-100"
+                          >
+                            <SquarePen className="h-3.5 w-3.5" />
+                          </AppLink>
+                        </TooltipTrigger>
+                        <TooltipContent side="right">New session</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  )}
+                </span>
               </span>
               {/* The avatar holds the expand slot; hovering it (or focusing
                   the toggle) swaps in the chevron, Notion-style. */}

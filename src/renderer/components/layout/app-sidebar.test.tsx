@@ -241,23 +241,39 @@ vi.mock('@renderer/components/agents/status-indicators', async (importOriginal) 
   AwaitingDot: () => <span data-testid="awaiting-dot" />,
 }))
 
-vi.mock('@renderer/components/agents/agent-context-menu', () => ({
-  AgentContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}))
+// The agent and session menus keep the real (empty) ContextMenu around the row,
+// so the row's 3-dot button has a menu to open and the row reports it open.
+vi.mock('@renderer/components/agents/agent-context-menu', async () => {
+  const { ContextMenu, ContextMenuTrigger } = await import('@renderer/components/ui/context-menu')
+  return {
+    AgentContextMenu: ({ children }: { children: React.ReactNode }) => (
+      <ContextMenu>
+        <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+      </ContextMenu>
+    ),
+  }
+})
 
-vi.mock('@renderer/components/sessions/session-context-menu', () => ({
-  SessionContextMenu: ({
-    children,
-    activity,
-  }: {
-    children: React.ReactNode
-    activity: { isActive: boolean; isAwaitingInput: boolean; isStreaming: boolean }
-  }) => (
-    isValidElement(children)
-      ? cloneElement(children as ReactElement, { 'data-is-active': String(activity.isActive || activity.isStreaming) } as any)
-      : <>{children}</>
-  ),
-}))
+vi.mock('@renderer/components/sessions/session-context-menu', async () => {
+  const { ContextMenu, ContextMenuTrigger } = await import('@renderer/components/ui/context-menu')
+  return {
+    SessionContextMenu: ({
+      children,
+      activity,
+    }: {
+      children: React.ReactNode
+      activity: { isActive: boolean; isAwaitingInput: boolean; isStreaming: boolean }
+    }) => (
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          {isValidElement(children)
+            ? cloneElement(children as ReactElement, { 'data-is-active': String(activity.isActive || activity.isStreaming) } as any)
+            : children}
+        </ContextMenuTrigger>
+      </ContextMenu>
+    ),
+  }
+})
 
 vi.mock('@renderer/components/dashboards/dashboard-context-menu', () => ({
   DashboardContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -803,7 +819,7 @@ describe('AppSidebar — agent rows', () => {
     mockRouteParams = { slug: 'test-agent' }
     renderWithProviders(<AppSidebar />)
     expect(screen.getByText('Session 1')).toBeInTheDocument()
-    expect(screen.getByTestId('session-item-session-1')).toHaveAttribute('data-is-active', 'false')
+    expect(screen.getByTestId('session-item-session-1').parentElement).toHaveAttribute('data-is-active', 'false')
   })
 
   it('session sub-item links to the session route', () => {
@@ -1055,7 +1071,7 @@ describe('AppSidebar — agent row indicator', () => {
     renderWithProviders(<AppSidebar />)
     // The agent is expanded — its session sub-row is visible and working…
     expect(screen.getByTestId('session-item-session-1')).toBeInTheDocument()
-    expect(screen.getByTestId('session-item-session-1')).toHaveAttribute('data-is-active', 'true')
+    expect(screen.getByTestId('session-item-session-1').parentElement).toHaveAttribute('data-is-active', 'true')
     // …and the agent row itself still reports working, like the top nav.
     const status = screen.getByTestId('agent-status-running')
     expect(status).toHaveAttribute('data-active', 'true')
@@ -1092,6 +1108,46 @@ describe('AppSidebar — agent row indicator', () => {
     const status = screen.getByTestId('agent-status-running')
     expect(status).toHaveAttribute('data-awaiting', 'true')
     expect(screen.queryByLabelText('unread notifications')).not.toBeInTheDocument()
+  })
+})
+
+// ============================================================================
+// Row 3-dot menu buttons
+// ----------------------------------------------------------------------------
+// Right-click was the only way into the agent and session menus and nobody
+// found it. Each row's 3-dot button opens that same menu (the row is the menu's
+// trigger), so the two ways in can't drift apart.
+// ============================================================================
+describe('AppSidebar — row menu buttons', () => {
+  it.each([
+    ['agent', 'agent-menu-button-test-agent', 'agent-item-test-agent', 'Options for Test Agent'],
+    ['session', 'session-menu-button-session-1', 'session-item-session-1', 'Options for Session 1'],
+  ])('opens the %s row\'s own menu', async (_kind, buttonId, linkId, label) => {
+    mockRouteParams = { slug: 'test-agent' }
+    renderWithProviders(<AppSidebar />)
+    const button = screen.getByTestId(buttonId)
+    const row = screen.getByTestId(linkId).closest('.group\\/context-menu')!
+    expect(button).toHaveAccessibleName(label)
+    expect(button).toHaveAttribute('aria-expanded', 'false')
+
+    await userEvent.click(button)
+
+    expect(button).toHaveAttribute('aria-expanded', 'true')
+    expect(row).toHaveAttribute('data-state', 'open')
+  })
+
+  it.each([
+    ['agent', 'agent-menu-button-test-agent', 'agent-item-test-agent'],
+    ['session', 'session-menu-button-session-1', 'session-item-session-1'],
+  ])('keeps the %s button inside the menu target but outside its link', (_kind, buttonId, linkId) => {
+    mockRouteParams = { slug: 'test-agent' }
+    renderWithProviders(<AppSidebar />)
+    const button = screen.getByTestId(buttonId)
+    const link = screen.getByTestId(linkId)
+    // A <button> inside the <a> would be invalid markup and its click would
+    // navigate; outside the target, hovering it would un-hover the row.
+    expect(link.contains(button)).toBe(false)
+    expect(button.closest('.group\\/context-menu')).toContainElement(link)
   })
 })
 
