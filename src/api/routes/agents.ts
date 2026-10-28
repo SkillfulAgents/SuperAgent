@@ -4350,7 +4350,7 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
       submitted: filled.result.submitted,
       filled: filled.result.filled,
       failed: filled.result.failed,
-      source: account ? 'form_with_vault' : 'form',
+      fill_method: account ? 'form_with_vault' : 'form',
       saved: savedAccount !== null,
       held: heldLabels.length,
     })
@@ -4444,6 +4444,7 @@ agents.post('/:id/sessions/:sessionId/login-via', AgentUser(), zValidator('json'
     trackServerEvent('login_request_via', { provider: providerOf(provider.site)?.id ?? 'other' })
     return c.json({ success: true, account: { username: account.username, site }, provider: { site: provider.site, username: provider.username } })
   } catch (error) {
+    trackServerEvent('login_request_via_failed', { reason: error instanceof VaultConflictError ? 'conflict' : 'error' })
     if (error instanceof VaultConflictError) return c.json({ error: error.message }, 409)
     console.error('[login-via] Failed:', error instanceof Error ? error.message : 'Unknown error')
     return c.json({ error: 'The account could not be saved' }, 500)
@@ -4556,7 +4557,7 @@ agents.post(
       submitted: filled.result.submitted,
       filled: filled.result.filled,
       failed: filled.result.failed,
-      source: 'password_manager',
+      fill_method: 'password_manager',
       saved: savedAccount !== null,
     })
     return c.json({
