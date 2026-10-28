@@ -1116,3 +1116,14 @@ export type NewChatIntegrationAccess = typeof chatIntegrationAccess.$inferInsert
 export type AuditLogEntry = typeof auditLog.$inferSelect
 export type NewAuditLogEntry = typeof auditLog.$inferInsert
 export type TodoRow = typeof todos.$inferSelect
+
+// =============================================================================
+// Agent summaries: what an agent list shows, written from the actors'
+// `agent_summary` events so a listing reads rows and touches no actor.
+// =============================================================================
+export const agentSummaries = sqliteTable('agent_summaries', {
+  agentSlug: text('agent_slug').primaryKey(),
+  /** The `AgentSummary` JSON as the actor last published it. */
+  summary: text('summary').notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+})

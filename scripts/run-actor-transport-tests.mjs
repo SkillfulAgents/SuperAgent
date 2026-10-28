@@ -5,7 +5,8 @@
 // an op's result without awaiting it, or counts on two ops running back to
 // back fails here, as it would against an actor across a wire.
 //
-//   npm run test:actor-transport
+//   npm run test:actor-transport            (the serializing transport)
+//   npm run test:actor-transport -- network (every op as an HTTP request, network-actor.ts)
 //
 // Every test file runs except those in scripts/actor-transport-exceptions.txt,
 // each listed with why it cannot hold across a wire. The list only shrinks: a
@@ -14,6 +15,7 @@ import { readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 
+const transport = process.argv[2] ?? 'serializing'
 const listPath = path.resolve('scripts/actor-transport-exceptions.txt')
 const exceptions = readFileSync(listPath, 'utf8')
   .split('\n')
@@ -22,6 +24,6 @@ const exceptions = readFileSync(listPath, 'utf8')
 
 const result = spawnSync('npx', ['vitest', 'run', ...exceptions.flatMap((file) => ['--exclude', file])], {
   stdio: 'inherit',
-  env: { ...process.env, SUPERAGENT_ACTOR_TRANSPORT: 'serializing' },
+  env: { ...process.env, SUPERAGENT_ACTOR_TRANSPORT: transport },
 })
 process.exit(result.status ?? 1)
