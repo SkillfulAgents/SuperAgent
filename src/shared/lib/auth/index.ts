@@ -141,9 +141,14 @@ function createAuthInstance() {
     databaseHooks: {
       user: {
         delete: {
-          after: async (deletedUser) => {
-            // user_settings has no FK to `user` (the 'local' sentinel has no user row; see schema.ts).
-            await db.delete(schema.userSettings).where(eq(schema.userSettings.userId, deletedUser.id))
+          // What a cascade cannot do: revoke provider connections first, then settings and audit.
+          before: async (deletedUser) => {
+            const { beforeUserRemoved } = await import('@shared/lib/services/user-removal-service')
+            await beforeUserRemoved(deletedUser.id)
+          },
+          after: async (deletedUser, ctx) => {
+            const { afterUserRemoved } = await import('@shared/lib/services/user-removal-service')
+            await afterUserRemoved(deletedUser, ctx?.context.session?.user.id ?? null)
             if (typeof deletedUser.avatarOverride !== 'string') return
             const { removeStoredAvatar } = await import('@shared/lib/services/profile-avatar-service')
             await removeStoredAvatar(deletedUser.avatarOverride)
