@@ -24,6 +24,8 @@ interface AuthConfig {
   passwordRequireComplexity: boolean
   requireAdminApproval: boolean
   hasUsers: boolean
+  /** Absent from servers that predate it; `!hasUsers` is their rule. */
+  firstUserSignupOpen?: boolean
 }
 
 const DEFAULT_AUTH_CONFIG: AuthConfig = {
@@ -35,6 +37,7 @@ const DEFAULT_AUTH_CONFIG: AuthConfig = {
   passwordRequireComplexity: false,
   requireAdminApproval: false,
   hasUsers: false,
+  firstUserSignupOpen: false,
 }
 
 function useAuthConfig() {
@@ -376,7 +379,7 @@ export function AuthPage({ onPendingApproval }: { onPendingApproval?: (pending?:
   const showLocalAuth = config.allowLocalAuth
 
   // Signup is allowed in 'open' or 'domain_restricted' modes, OR for the very first user
-  const signupAllowed = !config.hasUsers || config.signupMode === 'open' || config.signupMode === 'domain_restricted'
+  const signupAllowed = (config.firstUserSignupOpen ?? !config.hasUsers) || config.signupMode === 'open' || config.signupMode === 'domain_restricted'
 
   async function handleProviderSignIn(providerId: string) {
     setProviderError(null)
