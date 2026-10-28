@@ -175,6 +175,7 @@ class NotificationManager {
     const stampedActionContext = actionContext
       ? { ...actionContext, notificationId }
       : undefined
+    const sessionPath = `/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId)}`
 
     const event: NotificationEvent = {
       notificationId,
@@ -183,11 +184,11 @@ class NotificationManager {
       agentSlug,
       title,
       body: resolvedBody,
-      navigatePath: `/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId)}`,
+      navigatePath: recipient ? `${sessionPath}?mention=${encodeURIComponent(recipient.messageUuid)}` : sessionPath,
       ...(actions ? { actions } : {}),
       ...(stampedActionContext ? { actionContext: stampedActionContext } : {}),
       ...(extra ? { extra } : {}),
-      ...(recipient ? { recipientUserId: recipient.userId } : {}),
+      ...(recipient ? { recipientUserId: recipient.userId, messageUuid: recipient.messageUuid } : {}),
     }
 
     // Fire-and-forget per channel: delivery to one backend (a slow push POST,

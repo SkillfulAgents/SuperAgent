@@ -104,7 +104,7 @@ vi.mock('@renderer/context/analytics-context', async () => {
 // this where a test needs different behavior.
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>()
-  return { ...actual, useNavigate: () => () => {} }
+  return { ...actual, useNavigate: () => () => {}, useSearch: vi.fn(() => ({})) }
 })
 
 // `AppLink` (ui/app-link) imports the router singleton — which pulls in

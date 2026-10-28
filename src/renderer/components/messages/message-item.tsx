@@ -367,6 +367,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
           <MessageContextMenu text={text || ''} onRemove={onRemoveMessage ? () => onRemoveMessage(message.id) : undefined} readAloud={readAloudMenu}>
             <div
               dir="auto"
+              data-message-bubble=""
               // Assistant bubbles opt into table breakout and must not clip it.
               data-allow-table-breakout={isAssistant ? '' : undefined}
               className={cn(

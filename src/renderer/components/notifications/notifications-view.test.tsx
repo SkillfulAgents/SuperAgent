@@ -256,6 +256,15 @@ describe('NotificationsView', () => {
     expect(mockMarkReadMutate).toHaveBeenCalledWith('n1')
   })
 
+  it('links a mention to its message', () => {
+    mockNotificationsData = {
+      items: [makeNotification({ id: 'n1', type: 'session_mention', messageUuid: 'msg-1' })],
+      total: 1,
+    }
+    renderWithProviders(<NotificationsView />)
+    expect(screen.getByText('Notification n1').closest('a')).toHaveAttribute('data-search', JSON.stringify({ mention: 'msg-1' }))
+  })
+
   it('does not call markRead for already-read notifications', async () => {
     const user = userEvent.setup()
     mockNotificationsData = {

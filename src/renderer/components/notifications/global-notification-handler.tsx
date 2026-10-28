@@ -157,7 +157,17 @@ export function GlobalNotificationHandler() {
     // the user has clearly seen and acted on. Uses the loose metadata
     // schema so this works regardless of `kind`.
     const metaResult = NotificationMetadataSchema.safeParse(event.context)
-    const notificationId = metaResult.success ? metaResult.data.notificationId : undefined
+    const meta = metaResult.success ? metaResult.data : undefined
+    const notificationId = meta?.notificationId
+    // A mention click lands on its message.
+    if (event.type === 'click' && meta?.messageUuid && meta.agentSlug && meta.sessionId) {
+      void navigate({
+        to: '/agents/$slug/sessions/$sessionId',
+        params: { slug: meta.agentSlug, sessionId: meta.sessionId },
+        search: { mention: meta.messageUuid },
+        replace: true,
+      })
+    }
     if (notificationId) {
       apiFetch(`/api/notifications/${notificationId}/read`, { method: 'POST' })
         .then((res) => {
@@ -424,6 +434,7 @@ export function GlobalNotificationHandler() {
                 agentSlug: agentSlug ?? baseContext.agentSlug,
                 sessionId: notificationSessionId ?? baseContext.sessionId,
                 notificationId: data.notificationId ?? baseContext.notificationId,
+                messageUuid: data.messageUuid,
               }
               // Web Notifications have no context round-trip — wire the click
               // straight to the platform detail route (Electron routes the

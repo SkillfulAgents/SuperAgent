@@ -25,6 +25,8 @@ const mockMessagesData: {
   fetchOlder: typeof mockFetchOlder
   hasOlder: boolean
   isFetchingOlder: boolean
+  dataUpdatedAt: number
+  errorUpdatedAt: number
 } = {
   data: undefined,
   isLoading: false,
@@ -32,7 +34,17 @@ const mockMessagesData: {
   fetchOlder: mockFetchOlder,
   hasOlder: false,
   isFetchingOlder: false,
+  dataUpdatedAt: 0,
+  errorUpdatedAt: 0,
 }
+
+// The session URL's `?mention`, and where the list sends the router.
+const mockRoute = vi.hoisted(() => ({ search: {} as { mention?: string }, navigate: vi.fn() }))
+vi.mock('@tanstack/react-router', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tanstack/react-router')>()),
+  useSearch: () => mockRoute.search,
+  useNavigate: () => mockRoute.navigate,
+}))
 
 const mockDeleteMessage = vi.fn()
 const mockDeleteToolCall = vi.fn()
@@ -188,6 +200,9 @@ describe('MessageList', () => {
     mockMessagesData.error = null
     mockMessagesData.hasOlder = false
     mockMessagesData.isFetchingOlder = false
+    mockMessagesData.dataUpdatedAt = 0
+    mockMessagesData.errorUpdatedAt = 0
+    mockRoute.search = {}
     mockIsOnline = true
     mockCurrentUser = null
     mockCancelResult = { cancelled: true }
@@ -2964,6 +2979,150 @@ describe('MessageList', () => {
       // Pinned to bottom: the slice slides so the DOM stays bounded — m5 drops off.
       expect(screen.queryByText('m5')).not.toBeInTheDocument()
       expect(screen.getByText('m305')).toBeInTheDocument()
+    })
+  })
+
+  describe('mention jump', () => {
+    const thread = (n: number) =>
+      Array.from({ length: n }, (_, i) => createUserMessage({ id: `u${i}`, content: { text: `m${i}` } }))
+    const list = () => <MessageList sessionId="s-1" agentSlug="agent-1" />
+    // The jump settles by dropping `?mention` from the URL.
+    const settled = () => mockRoute.navigate.mock.calls.filter(([to]) => to.replace === true).length
+    let animate: ReturnType<typeof vi.fn>
+    beforeEach(() => {
+      // The page was fetched after the click.
+      mockMessagesData.dataUpdatedAt = Date.now() + 60_000
+      animate = vi.fn()
+      Element.prototype.animate = animate as unknown as Element['animate']
+    })
+
+    it('lands on a loaded message, rings it, and drops the link once', () => {
+      mockMessagesData.data = thread(20)
+      mockRoute.search = { mention: 'u3' }
+      vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+        const top = (this as HTMLElement).dataset?.turnAnchorId === 'u3' ? 1500 : 0
+        return { top, bottom: top, left: 0, right: 0, width: 0, height: 0, x: 0, y: top, toJSON: () => ({}) } as DOMRect
+      })
+      const writes = vi.spyOn(Element.prototype, 'scrollTop', 'set')
+      const { rerender } = renderWithProviders(list())
+      // 100 px under the viewport top, the send reading line's offset.
+      expect(writes).toHaveBeenLastCalledWith(1400)
+      expect((animate.mock.contexts[0] as HTMLElement).closest('[data-turn-anchor-id]')?.getAttribute('data-turn-anchor-id')).toBe('u3')
+      expect(mockRoute.navigate).toHaveBeenCalledWith(expect.objectContaining({ replace: true }))
+      expect(mockRoute.navigate.mock.calls[0][0].search({ mention: 'u3', other: 'x' })).toEqual({ mention: undefined, other: 'x' })
+      // A refetch does not jump again.
+      mockMessagesData.data = [...thread(20)]
+      rerender(list())
+      expect(animate).toHaveBeenCalledOnce()
+      expect(settled()).toBe(1)
+    })
+
+    it('does nothing without a mention link', () => {
+      mockMessagesData.data = thread(20)
+      mockMessagesData.hasOlder = true
+      renderWithProviders(list())
+      expect(animate).not.toHaveBeenCalled()
+      expect(mockFetchOlder).not.toHaveBeenCalled()
+      expect(mockRoute.navigate).not.toHaveBeenCalled()
+    })
+
+    it('grows the window to a loaded message outside it', () => {
+      mockMessagesData.data = thread(305)
+      mockRoute.search = { mention: 'u0' }
+      renderWithProviders(list())
+      expect(screen.getByText('m0')).toBeInTheDocument()
+      expect(animate).toHaveBeenCalledOnce()
+    })
+
+    it('pages until the message loads, two pages back, with no loading row', async () => {
+      const older = createUserMessage({ id: 'old', content: { text: 'the mention' } })
+      const middle = createUserMessage({ id: 'mid', content: { text: 'between' } })
+      mockMessagesData.data = thread(5)
+      mockMessagesData.hasOlder = true
+      mockRoute.search = { mention: 'old' }
+      mockFetchOlder.mockResolvedValueOnce(true).mockResolvedValueOnce(true).mockReturnValue(new Promise(() => {}))
+      const { rerender } = renderWithProviders(list())
+      await waitFor(() => expect(mockFetchOlder).toHaveBeenCalled())
+      mockMessagesData.isFetchingOlder = true
+      mockMessagesData.data = [middle, ...thread(5)]
+      rerender(list())
+      expect(screen.queryByText(/Loading older messages/)).not.toBeInTheDocument()
+      mockMessagesData.isFetchingOlder = false
+      rerender(list())
+      await waitFor(() => expect(mockFetchOlder.mock.calls.length).toBeGreaterThanOrEqual(2))
+      expect(settled()).toBe(0)
+      mockMessagesData.data = [older, middle, ...thread(5)]
+      mockMessagesData.hasOlder = false
+      rerender(list())
+      await waitFor(() => expect(animate).toHaveBeenCalledOnce())
+    })
+
+    it('waits for a page fetched after the click before calling a cached message missing', () => {
+      mockMessagesData.data = thread(5)
+      mockMessagesData.dataUpdatedAt = 1
+      mockRoute.search = { mention: 'new' }
+      const { rerender } = renderWithProviders(list())
+      expect(settled()).toBe(0)
+      mockMessagesData.data = [...thread(5), createUserMessage({ id: 'new', content: { text: 'the mention' } })]
+      mockMessagesData.dataUpdatedAt = Date.now() + 60_000
+      rerender(list())
+      expect(animate).toHaveBeenCalledOnce()
+    })
+
+    it('waits for the first page, and stops when it fails', () => {
+      mockMessagesData.isLoading = true
+      mockRoute.search = { mention: 'u3' }
+      const { rerender } = renderWithProviders(list())
+      expect(settled()).toBe(0)
+      mockMessagesData.isLoading = false
+      mockMessagesData.error = new Error('offline')
+      mockMessagesData.dataUpdatedAt = 0
+      mockMessagesData.errorUpdatedAt = Date.now() + 60_000
+      rerender(list())
+      expect(settled()).toBe(1)
+    })
+
+    it('stops on a page that brings nothing, without ringing', async () => {
+      mockMessagesData.data = thread(5)
+      mockMessagesData.hasOlder = true
+      mockRoute.search = { mention: 'gone' }
+      mockFetchOlder.mockResolvedValue(false)
+      renderWithProviders(list())
+      await waitFor(() => expect(settled()).toBe(1))
+      expect(mockFetchOlder).toHaveBeenCalledOnce()
+      expect(animate).not.toHaveBeenCalled()
+    })
+
+    it('gives the viewport back the moment the reader scrolls, even mid-page', () => {
+      mockMessagesData.data = thread(5)
+      mockMessagesData.hasOlder = true
+      mockRoute.search = { mention: 'old' }
+      mockFetchOlder.mockReturnValue(new Promise(() => {}))
+      renderWithProviders(list())
+      const el = screen.getByTestId('message-list')
+      let top = 900
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => 2000 })
+      Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => 500 })
+      Object.defineProperty(el, 'scrollTop', { configurable: true, get: () => top, set: (v: number) => { top = v } })
+      fireEvent.scroll(el)
+      fireEvent.wheel(el, { deltaY: -100 })
+      top = 700
+      fireEvent.scroll(el)
+      expect(settled()).toBe(1)
+      // The page still in flight keeps the reader's rows in place when it lands.
+      expect(mockFetchOlder).toHaveBeenCalledWith(expect.any(Function))
+    })
+
+    it('settles nothing once the list is gone', async () => {
+      let page!: (added: boolean) => void
+      mockMessagesData.data = thread(5)
+      mockMessagesData.hasOlder = true
+      mockRoute.search = { mention: 'old' }
+      mockFetchOlder.mockReturnValue(new Promise<boolean>((resolve) => { page = resolve }))
+      const { unmount } = renderWithProviders(list())
+      unmount()
+      await act(async () => page(false))
+      expect(settled()).toBe(0)
     })
   })
 

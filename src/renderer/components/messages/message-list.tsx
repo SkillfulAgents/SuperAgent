@@ -1,5 +1,6 @@
 import { UserAvatar } from '@renderer/components/ui/user-avatar'
 
+import { useNavigate, useSearch } from '@tanstack/react-router'
 import { useMessages, useDeleteMessage, useDeleteToolCall, useCancelQueuedMessage, TranscriptNotFoundError } from '@renderer/hooks/use-messages'
 import { useIsVoiceReading } from '@renderer/hooks/use-read-aloud'
 import {
@@ -178,7 +179,16 @@ interface MessageListProps {
 
 export function MessageList({ sessionId, agentSlug, pendingUserMessages, pendingRequestCount = 0, onPendingMessageAppeared, readOnly, suppressScrollToBottom = false, bottomInset = 0 }: MessageListProps) {
   useRenderTracker('MessageList')
-  const { data: messages, isLoading, error, fetchOlder, hasOlder, isFetchingOlder } = useMessages(sessionId, agentSlug)
+  const { data: messages, isLoading, error, fetchOlder, hasOlder, isFetchingOlder, dataUpdatedAt, errorUpdatedAt } = useMessages(sessionId, agentSlug)
+  // A mention link (`?mention=<id>`) lands on its message once, then drops from the URL.
+  const search: { mention?: unknown } = useSearch({ strict: false })
+  const mention = typeof search.mention === 'string' ? search.mention : undefined
+  const navigate = useNavigate()
+  const dropMention = useCallback(() => void navigate({
+    to: '.',
+    search: (prev: Record<string, unknown>) => ({ ...prev, mention: undefined }),
+    replace: true,
+  }), [navigate])
   // useMutation returns a new object every render; only `mutate` is stable, and the
   // row handlers must stay stable for MessageItem's memo.
   const { mutate: deleteMessage } = useDeleteMessage()
@@ -873,6 +883,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
     isCompacting,
     pendingRequestCount,
     activeSubagents,
+    jumpToMessageId: mention,
+    jumpIndex: mention ? visibleMessages.findIndex((message) => message.id === mention) : -1,
+    onJumpSettled: dropMention,
+    latestAnsweredAt: Math.max(dataUpdatedAt, errorUpdatedAt),
   })
 
   // The fork line goes after the last copied message; the length means it
@@ -1140,7 +1154,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
           <div className="flex items-center justify-center py-3 text-xs text-muted-foreground">
             {hiddenCount} earlier {hiddenCount === 1 ? 'message' : 'messages'} hidden — scroll up to load
           </div>
-        ) : isFetchingOlder ? (
+        ) : isFetchingOlder && !mention ? (
           <div
             className="flex items-center justify-center gap-2 py-3 text-xs text-muted-foreground"
             role="status"
