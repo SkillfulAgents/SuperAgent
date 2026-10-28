@@ -12,7 +12,7 @@ import {
 } from '@shared/lib/account-providers'
 import { getAppBaseUrlFromRequest, getCurrentUserId } from '@shared/lib/auth/config'
 import { isAuthMode } from '@shared/lib/auth/mode'
-import { isOwnedByCaller } from '@shared/lib/auth/ownership'
+import { getViewerUserId, isOwnedByCaller } from '@shared/lib/auth/ownership'
 import { getAccountProviderUserId } from '@shared/lib/config/settings'
 import { Authenticated, OwnsAccount, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
@@ -84,7 +84,7 @@ connectedAccountsRouter.post('/', async (c) => {
       providerName: providerName ?? 'composio',
       toolkitSlug,
       displayName,
-      userId: getCurrentUserId(c),
+      userId: getViewerUserId(c),
       status: reqStatus ?? 'active',
       createdAt: now,
       updatedAt: now,
@@ -326,7 +326,7 @@ connectedAccountsRouter.post('/complete', async (c) => {
         providerName,
         toolkitSlug,
         displayName,
-        userId: getCurrentUserId(c),
+        userId: getViewerUserId(c),
         status: 'active',
         createdAt: now,
         updatedAt: now,
@@ -461,7 +461,7 @@ connectedAccountsRouter.get('/callback', async (c) => {
         providerName,
         toolkitSlug,
         displayName,
-        userId: getCurrentUserId(c),
+        userId: getViewerUserId(c),
         status: 'active',
         createdAt: now,
         updatedAt: now,

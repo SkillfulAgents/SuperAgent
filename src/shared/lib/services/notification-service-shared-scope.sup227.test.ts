@@ -50,7 +50,7 @@ import {
   markSessionNotificationsRead,
   markAllAsRead,
 } from './notification-service'
-import { notifications, agentAcl } from '../db/schema'
+import { notifications, agentAcl, user } from '../db/schema'
 
 const USER_A = 'user-a'
 const USER_B = 'user-b'
@@ -60,6 +60,7 @@ const SESSION_SHARED = 'session-shared'
 const SESSION_PRIVATE = 'session-private'
 
 async function seedAcl() {
+  await testDb.insert(user).values([USER_A, USER_B].map(id => ({ id, name: id, email: `${id}@example.com` })))
   await testDb.insert(agentAcl).values([
     { id: 'acl-a-shared', userId: USER_A, agentSlug: AGENT_SHARED, role: 'owner', createdAt: new Date() },
     { id: 'acl-b-shared', userId: USER_B, agentSlug: AGENT_SHARED, role: 'user', createdAt: new Date() },

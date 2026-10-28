@@ -142,6 +142,8 @@ function createAuthInstance() {
       user: {
         delete: {
           after: async (deletedUser) => {
+            // user_settings has no FK to `user` (the 'local' sentinel has no user row; see schema.ts).
+            await db.delete(schema.userSettings).where(eq(schema.userSettings.userId, deletedUser.id))
             if (typeof deletedUser.avatarOverride !== 'string') return
             const { removeStoredAvatar } = await import('@shared/lib/services/profile-avatar-service')
             await removeStoredAvatar(deletedUser.avatarOverride)
