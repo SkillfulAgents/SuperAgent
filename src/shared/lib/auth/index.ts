@@ -9,6 +9,7 @@ import { getOrCreateAuthSecret } from './secret'
 import { getAppBaseUrl, getTrustedOrigins } from './config'
 import { getSettings } from '@shared/lib/config/settings'
 import { resolveAuthSettings } from './auth-settings'
+import { firstUserPromotionApplies, platformJoinRole } from './platform-role'
 import { PENDING_APPROVAL_BAN_REASON } from './clear-pending-approval-bans'
 import { enforceMaxConcurrentSessions } from './session-enforcement'
 import { auditSessionCreated, resolveSessionCreationMethod } from './session-audit'
@@ -148,10 +149,18 @@ function createAuthInstance() {
           },
         },
         create: {
+          before: async (newUser) => {
+            // A member joining a platform-controlled deployment is created with
+            // their Platform role (platform-role.ts).
+            const role = platformJoinRole()
+            return role ? { data: { ...newUser, role } } : undefined
+          },
           after: async (createdUser) => {
             try {
-              // Atomic: only promote if this is the sole user in the table
-              const result = await db
+              // Atomic: only promote if this is the sole user in the table.
+              // Platform-controlled deployments skip it, since members join
+              // with their Platform role, unless the platform sent none.
+              const promoted = firstUserPromotionApplies() && changesOf(await db
                 .update(schema.user)
                 .set({ role: 'admin' })
                 .where(
@@ -160,8 +169,8 @@ function createAuthInstance() {
                     sql`(SELECT count(*) FROM user) = 1`
                   )
                 )
-                .run()
-              if (changesOf(result) > 0) {
+                .run()) > 0
+              if (promoted) {
                 console.log(`First user ${createdUser.email} promoted to admin`)
               }
 
@@ -169,7 +178,7 @@ function createAuthInstance() {
               // auto-ban them pending admin review.
               // Fresh settings each time; platform-controlled forces approval off.
               const currentAuth = resolveAuthSettings(getSettings().auth)
-              if (changesOf(result) === 0 && currentAuth.requireAdminApproval) {
+              if (!promoted && currentAuth.requireAdminApproval) {
                 await db.update(schema.user)
                   .set({ banned: true, banReason: PENDING_APPROVAL_BAN_REASON })
                   .where(eq(schema.user.id, createdUser.id))

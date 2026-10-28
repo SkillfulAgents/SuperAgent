@@ -154,6 +154,23 @@ describe('auth enforcement middleware', () => {
       expect(res.status).toBe(200)
     })
 
+    it('does not let a first user sign up by email on a platform-controlled deployment', async () => {
+      vi.stubEnv('AUTH_MODE', 'true')
+      vi.stubEnv('PLATFORM_TOKEN', `e30.${Buffer.from(JSON.stringify({ orgId: 'org_1' })).toString('base64url')}.sig`)
+      try {
+        mockUserCount = 0
+        const res = await postJson(createApp(), '/api/auth/sign-up/email', {
+          email: 'stranger@example.com',
+          password: 'password123',
+          name: 'Stranger',
+        })
+        expect(res.status).toBe(403)
+        expect(await res.json()).toMatchObject({ code: 'SIGNUPS_DISABLED' })
+      } finally {
+        vi.unstubAllEnvs()
+      }
+    })
+
     it('domain matching is case-insensitive', async () => {
       mockAuthSettings = {
         signupMode: 'domain_restricted',
