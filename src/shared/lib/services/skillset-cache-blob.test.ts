@@ -58,7 +58,7 @@ describe('skillset cache in the blob store', () => {
     expect(await restoreSkillsetCache(dir)).toBe(false)
   })
 
-  it('reads the store once for repeated restores in one process', async () => {
+  it('restores from memory, without reading the store, after a save in the same process', async () => {
     const store = memoryStore()
     const reads = { count: 0 }
     setBlobStore({ ...store, get: async (key) => {
