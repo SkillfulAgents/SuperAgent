@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import type { HookInput } from '@anthropic-ai/claude-agent-sdk'
-import { builtinHints, builtinHintsEnabled } from './builtin-hints'
+import { allBuiltinHints, builtinHintsEnabled, hintAvailable } from './builtin-hints'
 import { createHintHookMatchers, createHintsHook } from './hint-hook'
 import { compileTrigger, type HintEventInput } from './hint-matchers'
 
-const compiled = builtinHints.map((hint) => ({ name: hint.name, triggers: hint.triggers.map(compileTrigger) }))
+const compiled = allBuiltinHints.map((hint) => ({ name: hint.name, triggers: hint.triggers.map(compileTrigger) }))
 const matching = (input: HintEventInput) => compiled.filter(({ triggers }) => triggers.some((m) => m(input))).map(({ name }) => name).sort()
 
 const bash = (command: string): HintEventInput => ({ event: 'PreToolUse', toolName: 'Bash', toolInput: { command } })
@@ -62,20 +62,34 @@ describe('built-in hints: which hints each call triggers', () => {
   })
 
   it('all compile into hook entries', () => {
-    expect(() => createHintHookMatchers(builtinHints, () => 1)).not.toThrow()
+    expect(() => createHintHookMatchers(allBuiltinHints, () => 1)).not.toThrow()
   })
 
   it('every built-in hint has at least one example here', () => {
     const covered = new Set(CASES.flatMap(([, , names]) => names))
-    expect(builtinHints.map((h) => h.name).filter((name) => !covered.has(name))).toEqual([])
+    expect(allBuiltinHints.map((h) => h.name).filter((name) => !covered.has(name))).toEqual([])
   })
 
   it('agent-browser-bash warns on every call, like the hook it replaced', async () => {
-    const hook = createHintsHook(builtinHints, () => 1)
+    const hook = createHintsHook(allBuiltinHints, () => 1)
     const call = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'agent-browser snapshot' } } as HookInput
     for (const id of ['tool-1', 'tool-2']) {
       expect(JSON.stringify(await hook(call, id, { signal: new AbortController().signal }))).toContain('STRONG WARNING')
     }
+  })
+})
+
+describe('requires', () => {
+  const hint = (requires?: 'platform') => ({ ...allBuiltinHints[0], requires })
+
+  it('loads a platform hint only when platform services are on', () => {
+    expect(hintAvailable(hint('platform'), { PLATFORM_AUTH_ACTIVE: 'true' })).toBe(true)
+    expect(hintAvailable(hint('platform'), { PLATFORM_AUTH_ACTIVE: 'false' })).toBe(false)
+    expect(hintAvailable(hint('platform'), {})).toBe(false)
+  })
+
+  it('always loads a hint without requires', () => {
+    expect(hintAvailable(hint(), {})).toBe(true)
   })
 })
 
