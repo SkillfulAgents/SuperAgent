@@ -7,6 +7,7 @@
  */
 
 import { execFile } from 'child_process'
+import { deleteSkillsetCache, restoreSkillsetCache, saveSkillsetCache } from './skillset-cache-blob'
 import { promisify } from 'util'
 import crypto from 'crypto'
 import path from 'path'
@@ -726,7 +727,10 @@ async function isGitRepo(dir: string): Promise<boolean> {
 
 export async function isCacheReady(dir: string, provider?: SkillProvider): Promise<boolean> {
   const p = getSkillsetProvider(provider)
-  return p.usesGitCache ? isGitRepo(dir) : p.isCacheReady(dir)
+  if (p.usesGitCache) return isGitRepo(dir)
+  if (await p.isCacheReady(dir)) return true
+  // A process that started with an empty data dir restores the stored copy (see skillset-cache-blob).
+  return (await restoreSkillsetCache(dir)) && p.isCacheReady(dir)
 }
 
 /**
@@ -809,7 +813,9 @@ export async function ensureSkillsetCached(ref: SkillsetRef): Promise<string> {
 
   const populate = (async () => {
     if (await isCacheReady(repoDir, ref.provider)) return repoDir
-    return populateSkillsetCache(ref, hostingProvider, repoDir)
+    const populated = await populateSkillsetCache(ref, hostingProvider, repoDir)
+    await saveSkillsetCache(populated).catch((error) => console.warn(`[skillsets] Could not store the cache of ${repoDir}:`, error))
+    return populated
   })()
   activeSkillsetPopulates.set(repoDir, populate)
   try {
@@ -854,7 +860,8 @@ async function populateSkillsetCache(
  */
 export async function readIndexJson(repoDir: string): Promise<SkillsetIndex> {
   const indexPath = path.join(repoDir, 'index.json')
-  const content = await readFileOrNull(indexPath)
+  let content = await readFileOrNull(indexPath)
+  if (!content && (await restoreSkillsetCache(repoDir))) content = await readFileOrNull(indexPath)
   if (!content) {
     throw new Error(`index.json not found in skillset repository at ${indexPath}`)
   }
@@ -970,7 +977,8 @@ export async function refreshSkillset(
   const inFlight = activeSkillsetRefreshes.get(repoDir)
   if (inFlight) return inFlight
 
-  const refresh = refreshSkillsetCache(ref, hostingProvider, repoDir).then((index) => {
+  const refresh = refreshSkillsetCache(ref, hostingProvider, repoDir).then(async (index) => {
+    await saveSkillsetCache(repoDir).catch((error) => console.warn(`[skillsets] Could not store the cache of ${repoDir}:`, error))
     lastSkillsetRefreshAt.set(repoDir, Date.now())
     return index
   })
@@ -1082,6 +1090,7 @@ export async function getSkillsetIndex(
 export async function removeSkillsetCache(ref: Pick<SkillsetRef, 'skillsetId' | 'provider' | 'providerData'>): Promise<void> {
   const repoDir = getSkillsetRepoDirForRef(ref)
   lastSkillsetRefreshAt.delete(repoDir)
+  await deleteSkillsetCache(repoDir)
   if (await directoryExists(repoDir)) {
     await fs.promises.rm(repoDir, { recursive: true, force: true })
   }
