@@ -27,13 +27,14 @@ import type { NotificationEvent } from '../notification-event'
  * Typed against the union so a renamed or mistyped member fails typecheck
  * instead of silently never pushing.
  */
-const VISIBLE_TYPES = new Set<NotificationType>(['session_complete', 'session_waiting', 'session_mention'])
+const VISIBLE_TYPES = new Set<NotificationType>(['session_complete', 'session_waiting', 'session_mention', 'session_provider_fallback'])
 const SILENT_TYPES = new Set<NotificationType>([
   'session_complete',
   'session_waiting',
   'session_scheduled',
   'session_webhook',
   'session_mention',
+  'session_provider_fallback',
 ])
 
 /** Relay wire contract: 1..50 pushes per request. */

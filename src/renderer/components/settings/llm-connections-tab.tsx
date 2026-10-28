@@ -34,7 +34,7 @@ import type {
   ConnectionConfig,
   ModelSelection,
 } from '@shared/lib/llm-provider/connection-schema'
-import { isOAuthProvider, type LlmProviderId, type OAuthProvider } from '@shared/lib/llm-provider/provider-types'
+import { isOAuthProvider, isSubscriptionProvider, type LlmProviderId, type OAuthProvider } from '@shared/lib/llm-provider/provider-types'
 import { SIGN_IN, type SubscriptionSignInProvider } from './subscription-sign-in'
 import type { ConnectionSetupObserver } from './connection-setup-events'
 
@@ -407,6 +407,7 @@ export function ConnectionEditor({
   )
   const [envName, setEnvName] = useState('')
   const [envValue, setEnvValue] = useState('')
+  const [fallbackToPlatform, setFallbackToPlatform] = useState(existing?.fallbackToPlatform ?? false)
   // Subscriptions check their token on first use instead; managed connections have nothing to enter.
   const canValidate = !existing?.managed && provider !== 'claude-subscription' && !isOAuthProvider(provider)
   // A new connection has nothing to check until a credential is entered; a saved one validates its stored credential.
@@ -453,7 +454,7 @@ export function ConnectionEditor({
         provider,
         userId: owner,
         oauthLoginId,
-        config: { apiKeys, ...(provider === 'generic' ? { apiFormat, chatTokenLimitField } : {}), runtimeEnv: Object.fromEntries(Object.entries(runtimeEnv).filter(([, value]) => value !== undefined)) },
+        config: { apiKeys, ...(provider === 'generic' ? { apiFormat, chatTokenLimitField } : {}), ...(isSubscriptionProvider(provider) ? { fallbackToPlatform } : {}), runtimeEnv: Object.fromEntries(Object.entries(runtimeEnv).filter(([, value]) => value !== undefined)) },
         modelOverrides: overrides,
         browserModel: browserModel || null,
         dashboardModel: dashboardModel || null,
@@ -546,6 +547,15 @@ export function ConnectionEditor({
       )}
       {provider === 'claude-subscription' && <ClaudeSetupTokenSteps />}
       {isOAuthProvider(provider) && <SubscriptionSignIn provider={SIGN_IN_PROVIDER[provider]} key={`${provider}:${owner ?? 'global'}`} connectionId={existing?.id} userId={owner} accountLabel={accountLabel} region={existing?.region} onConnected={connected} onSetupEvent={onSetupEvent} />}
+      {isSubscriptionProvider(provider) && (
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <label htmlFor={`${formId}-fallbackToPlatform`} className="text-sm">Switch to Gamut Platform at usage limit</label>
+            <p className="text-xs text-muted-foreground mt-0.5">When this plan hits its limit, agents continue on the same model with Gamut credits.</p>
+          </div>
+          <Switch id={`${formId}-fallbackToPlatform`} checked={fallbackToPlatform} onCheckedChange={setFallbackToPlatform} />
+        </div>
+      )}
       {provider === 'generic' && (
         <div className="grid gap-2 text-sm">
           <label htmlFor={`${formId}-apiFormat`}>API format</label>

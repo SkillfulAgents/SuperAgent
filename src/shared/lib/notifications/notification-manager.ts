@@ -340,6 +340,23 @@ class NotificationManager {
     })
   }
 
+  /** A subscription hit its usage limit, so the session continues on Platform credits. */
+  async triggerProviderFallback(
+    sessionId: string,
+    agentSlug: string,
+    connectionName: string,
+    model: string
+  ): Promise<void> {
+    const displayName = await this.getAgentDisplayName(agentSlug)
+    await this.triggerNotification({
+      type: 'session_provider_fallback',
+      sessionId,
+      agentSlug,
+      title: 'Switched to Gamut Platform',
+      body: `${connectionName} hit its usage limit. ${displayName} continues on Gamut Platform (${model}).`,
+    })
+  }
+
   /**
    * Trigger notification when a scheduled task starts a session
    */

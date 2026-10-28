@@ -45,6 +45,8 @@ export const connectionConfigSchema = z.object({
   // Names only: resolve environment-backed values at execution time. Extra
   // connections never inherit the host's ambient provider credentials.
   env: z.record(z.string(), z.string()).default({}),
+  // Subscriptions only: a turn that hits the plan's usage limit continues on Platform.
+  fallbackToPlatform: z.boolean().optional(),
 })
 export type ConnectionConfig = z.infer<typeof connectionConfigSchema>
 
@@ -98,6 +100,7 @@ export function mergeConnectionConfig(
     oauth: previous?.oauth ? { ...previous.oauth, refreshLease: undefined } : undefined,
     apiFormat: input.apiFormat ?? previous?.apiFormat,
     chatTokenLimitField: input.chatTokenLimitField ?? previous?.chatTokenLimitField,
+    fallbackToPlatform: input.fallbackToPlatform ?? previous?.fallbackToPlatform,
     apiKeys: { ...previous?.apiKeys, ...input.apiKeys },
     runtimeEnv: previous?.runtimeEnv ?? {},
     env: previous?.env ?? {}, // Host bindings come only from migration.
@@ -156,6 +159,7 @@ export const connectionInfoSchema = z.object({
   apiFormat: apiFormatSchema.optional(),
   chatTokenLimitField: z.enum(['max_tokens', 'max_completion_tokens']).optional(),
   region: z.string().optional(),
+  fallbackToPlatform: z.boolean().optional(),
   customEnvVarKeys: z.array(z.string()).optional(),
   canManage: z.boolean(),
   canDelete: z.boolean(),

@@ -20,7 +20,7 @@ import { USER_ACTIONABLE_NOTIFICATION_TYPES } from '@shared/lib/notifications/no
 // Re-export types for external use
 export type { Notification, NewNotification }
 
-export type NotificationType = 'session_complete' | 'session_waiting' | 'session_scheduled' | 'session_webhook' | 'session_chat_integration' | 'session_mention'
+export type NotificationType = 'session_complete' | 'session_waiting' | 'session_scheduled' | 'session_webhook' | 'session_chat_integration' | 'session_mention' | 'session_provider_fallback'
 
 // ============================================================================
 // Types

@@ -168,6 +168,10 @@ const SETTLE_AFTER_STOP_GRACE_MS = 1500
 // going without it.
 const TRANSCRIPT_END_WAIT_MS = 1000
 
+// 429 retries in one turn before the host is told the provider hit a usage
+// limit. The runtime keeps its own retry budget either way.
+const USAGE_LIMIT_RETRIES = 3
+
 const CONNECTION_LOST_ERROR =
   'The agent stopped unexpectedly because the connection to its runtime was lost. ' +
   'The container may have crashed or run out of memory.'
@@ -211,6 +215,10 @@ export class LiveSession {
   lastResultCleanSuccess: boolean
   /** The SDK's error code from the latest assistant message (authentication_failed, rate_limit, …). */
   lastApiErrorCode: string | null = null
+  /** This turn's runtime retries after a 429. */
+  private rateLimitedRetries = 0
+  /** This turn already told the host it hit a usage limit. */
+  private usageLimitReported = false
   /** The summary-cache write a send made ahead of the container confirming it; undone if the send fails. */
   provisionalActivity: SessionActivityMark | null
   // Generations a failed send's rollback compares, so it never undoes what a
@@ -426,6 +434,8 @@ export class LiveSession {
     } else {
       // Turn-scoped.
       this.subagents.clear()
+      this.rateLimitedRetries = 0
+      this.usageLimitReported = false
       this.stream.newTurn()
       this.response.newTurn()
     }
@@ -1139,6 +1149,7 @@ export class LiveSession {
         return
       case 'api_retry':
         this.stream.retrying(content)
+        if (content.error_status === 429 && ++this.rateLimitedRetries >= USAGE_LIMIT_RETRIES) this.reportUsageLimit(true)
         return
       case 'task_started':
         this.subagents.taskStarted(content)
@@ -1370,6 +1381,14 @@ export class LiveSession {
     const turnOutcome = this.response.recordOutcome('failed', errorMessage)
     this.ctx.emit({ type: 'session_error', ...error, turnOutcome })
     this.publish({ type: 'session_error', ...error })
+    if (apiErrorStatus === 429) this.reportUsageLimit(false)
+  }
+
+  /** Once per turn: the host decides whether the turn continues on another connection. */
+  private reportUsageLimit(turnRunning: boolean): void {
+    if (this.usageLimitReported) return
+    this.usageLimitReported = true
+    this.ctx.host.send('usageLimit', { agentSlug: this.ctx.agentSlug, sessionId: this.ctx.sessionId, turnRunning })
   }
 
   /**
