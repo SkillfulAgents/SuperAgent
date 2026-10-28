@@ -1,6 +1,7 @@
 import { captureException } from '@shared/lib/error-reporting'
 import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
 import { PLATFORM_CLAIMS } from '@shared/lib/platform-auth/claims'
+import { notePlatformRole } from './platform-role'
 import { z } from 'zod'
 import { getAppBaseUrl } from './config'
 
@@ -150,6 +151,8 @@ class OidcAuthProviderDefinition extends AuthProviderDefinition {
             throw new Error('Account belongs to a different organization')
           }
         }
+        // Held for the user create hook, should this sign-in create the user.
+        if (this.config.id === 'platform') notePlatformRole(profile[PLATFORM_CLAIMS.role])
         // Never override id: account.accountId must stay the OIDC sub.
         return {}
       },

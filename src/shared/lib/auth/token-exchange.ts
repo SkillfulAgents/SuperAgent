@@ -9,7 +9,7 @@ import { getAuth } from './index'
 import { getAppBaseUrl } from './config'
 import { verifyOidcJwt } from './oidc-jwt'
 import { getAuthProviderIssuer, isAuthProviderEnabled } from './provider-config'
-import { applyPlatformJoinRole } from './platform-role'
+import { runPlatformSignIn } from './platform-role'
 import {
   InstalledClientSessionError,
   mintInstalledClientSession,
@@ -202,10 +202,9 @@ type AuthContext = Awaited<ReturnType<typeof getAuth>['$context']>
  *     (linking the platform identity) or provisions a new user.
  *
  * All writes go through Better Auth's internal adapter so database hooks run:
- * pending-approval banning and session limits behave exactly as they do for
- * browser OIDC login. A user this exchange creates gets the grant's platform
- * role in place of the first-user bootstrap; linking an existing user leaves
- * their role alone.
+ * pending-approval banning, session limits and the Platform role a new user
+ * is created with (run under `runPlatformSignIn`) behave exactly as they do for
+ * browser OIDC login. Linking an existing user leaves their role alone.
  */
 async function resolveUser(ctx: AuthContext, claims: DeploymentGrantClaims) {
   const providerId = PLATFORM_AUTH_PROVIDER_ID
@@ -294,7 +293,6 @@ async function resolveUser(ctx: AuthContext, claims: DeploymentGrantClaims) {
     if (!created?.user) {
       throw new TokenExchangeError('invalid_grant')
     }
-    await applyPlatformJoinRole(created.user.id, claims.role)
     return created.user
   }
 
@@ -347,7 +345,7 @@ export async function exchangeDeploymentGrant(
   const auth = getAuth()
   const ctx = await auth.$context
 
-  const user = await resolveUser(ctx, claims)
+  const user = await runPlatformSignIn(claims.role, () => resolveUser(ctx, claims))
 
   let session: Awaited<ReturnType<typeof mintInstalledClientSession>>['session']
   try {

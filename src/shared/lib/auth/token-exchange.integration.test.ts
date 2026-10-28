@@ -636,6 +636,25 @@ describe('platform role on join', () => {
     expect(roleOf()).toBe('admin')
   })
 
+  it('gives the joining owner their role when a concurrent sign-in links their account first', async () => {
+    // Stands in for a second first sign-in by the same member that finds the
+    // user this exchange just inserted and links its platform account before
+    // this exchange's own account insert, which then fails.
+    sqlite.prepare(`CREATE TRIGGER link_concurrently AFTER INSERT ON user BEGIN
+      INSERT INTO account (id, account_id, provider_id, user_id, updated_at)
+      VALUES ('concurrent-link', 'sub_member_1', 'platform', NEW.id, 0);
+    END`).run()
+    try {
+      await exchange({ role: 'owner' })
+    } finally {
+      sqlite.prepare('DROP TRIGGER link_concurrently').run()
+    }
+    expect(countRows('account')).toBe(1)
+    expect(roleOf()).toBe('admin')
+    await exchange({ role: 'owner' })
+    expect(roleOf()).toBe('admin')
+  })
+
   it('keeps the role of a re-invited member whose new membership links to their user', async () => {
     await seedOtherMember()
     await exchange({ role: 'member' })

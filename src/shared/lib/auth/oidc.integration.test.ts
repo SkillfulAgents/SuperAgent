@@ -1,6 +1,6 @@
 /** Real HTTP OIDC discovery, code/PKCE exchange and signed JWKS verification. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
 import type { AppDatabase } from '../db/drivers/types'
 import { auditLog, authAccount, authSession, user } from '../db/schema'
@@ -388,6 +388,26 @@ describe('platform role on join', () => {
     })
     await signIn(undefined)
     expect(captureExceptionMock).not.toHaveBeenCalled()
+  })
+
+  it('gives the joining owner their role when a concurrent sign-in links their account first', async () => {
+    // Stands in for a second first sign-in by the same member that finds the
+    // user this sign-in just inserted and links its platform account before
+    // this sign-in's own account insert, which then fails.
+    await testDb.run(sql.raw(`CREATE TRIGGER link_concurrently AFTER INSERT ON user BEGIN
+      INSERT INTO account (id, account_id, provider_id, user_id, updated_at)
+      VALUES ('concurrent-link', 'sub_member_one', 'platform', NEW.id, 0);
+    END`))
+    try {
+      oidc.state.profile[ROLE_CLAIM] = 'owner'
+      await completeOidcLogin(handleAuthRequest, BASE)
+    } finally {
+      await testDb.run(sql.raw('DROP TRIGGER link_concurrently'))
+    }
+    expect(await testDb.select().from(authAccount)).toHaveLength(1)
+    expect(await roleOf('ada@example.com')).toBe('admin')
+    await signIn('owner')
+    expect(await roleOf('ada@example.com')).toBe('admin')
   })
 
   it('applies the role from a direct ID-token sign-in too', async () => {

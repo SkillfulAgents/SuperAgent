@@ -1,86 +1,61 @@
-import { decodeJwt } from 'jose'
-import { and, eq, sql } from 'drizzle-orm'
-import { db } from '@shared/lib/db'
-import { changesOf } from '@shared/lib/db/batch'
-import { user } from '@shared/lib/db/schema'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { captureException } from '@shared/lib/error-reporting'
-import { PLATFORM_CLAIMS } from '@shared/lib/platform-auth/claims'
-import { PLATFORM_AUTH_PROVIDER_ID } from '@shared/lib/services/platform-auth-service'
 import { isPlatformControlledAuth } from './auth-settings'
 import { PlatformOrgRoleSchema } from './platform-role-schema'
 
 // On a platform-controlled deployment a member joins with their Platform role:
-// owners and admins become admins, members become users. Only the sign-in that
-// creates their user sets it, and nothing here runs again, so a role changed
-// later in Settings > Users stays and someone who links Platform to a user they
-// already had keeps their role. These deployments skip the first-user promotion
-// in the user create hook; it runs here only when the platform sent no role.
+// owners and admins become admins, members become users. It is written in the
+// INSERT that creates their user, so it holds whichever overlapping sign-in
+// creates the user and whichever links their account, and nothing writes it
+// again: a role changed later in Settings > Users stays, and someone who links
+// Platform to a user they already had keeps their role. These deployments skip
+// the first-user promotion unless the platform sent no role it recognizes.
 
-const REPORT_TAGS = { area: 'auth', op: 'platform-role' }
-
-/**
- * Give the user this sign-in just created their Platform role, before the
- * sign-in's session exists. A missing or unknown role is reported, and the
- * self-hosted bootstrap applies instead: admin if they are the only user.
- * Never throws: the user already exists, so failing the sign-in would not
- * apply the role on a retry.
- */
-export async function applyPlatformJoinRole(userId: string, platformRole: unknown): Promise<void> {
-  if (!isPlatformControlledAuth()) return
-  const parsed = PlatformOrgRoleSchema.safeParse(platformRole)
-  try {
-    if (parsed.success) {
-      await db.update(user)
-        .set({ role: parsed.data === 'member' ? 'user' : 'admin' })
-        .where(eq(user.id, userId))
-        .run()
-      return
-    }
-    captureException(new Error('Unrecognized platform role'), {
-      tags: REPORT_TAGS,
-      extra: { platformRole: typeof platformRole === 'string' ? platformRole.slice(0, 64) : typeof platformRole },
-    })
-    const result = await db.update(user)
-      .set({ role: 'admin' })
-      .where(and(eq(user.id, userId), sql`(SELECT count(*) FROM user) = 1`))
-      .run()
-    if (changesOf(result) > 0) console.log(`First user ${userId} promoted to admin: the platform sent no role`)
-  } catch (error) {
-    captureException(error, { tags: REPORT_TAGS })
-  }
+interface SignInState {
+  /** Set once this request is known to be a Platform sign-in. */
+  platform?: { role: unknown }
+  /** Set when this request created a user without a recognized Platform role. */
+  bootstrap?: boolean
 }
 
-// Browser sign-in creates the user and then their platform account in one auth
-// request, and only the account carries the id_token. Each request's endpoint
-// context remembers the user it created, so the account hook can tell a join
-// from a link to an existing user. This leans on Better Auth running the user
-// create hook first and handing both hooks the request's endpoint context;
-// oidc.integration.test.ts pins both. Were either to change, members would
-// join with the default role.
-const createdInRequest = new WeakMap<object, string>()
+const signIn = new AsyncLocalStorage<SignInState>()
 
-/** From the user create hook: this request created `userId`. */
-export function noteUserCreated(context: object | null | undefined, userId: string): void {
-  if (context) createdInRequest.set(context, userId)
+/** Run one auth request with a place for its Platform role, filled in by `notePlatformRole`. */
+export function runAuthRequest<T>(fn: () => T): T {
+  return signIn.run({}, fn)
+}
+
+/** Run a desktop exchange, whose grant already carries the Platform role. */
+export function runPlatformSignIn<T>(platformRole: unknown, fn: () => T): T {
+  return signIn.run({ platform: { role: platformRole } }, fn)
+}
+
+/** Browser sign-in: the verified Platform profile, seen before any user is created. */
+export function notePlatformRole(platformRole: unknown): void {
+  const state = signIn.getStore()
+  if (state) state.platform = { role: platformRole }
 }
 
 /**
- * From the account create hook: when this request created the user and this is
- * their platform account, apply the role on its id_token, which Better Auth
- * verified in this same sign-in. The desktop exchange writes no id_token and
- * applies the grant's role itself.
+ * From the user create hook, before the insert: the role a member joining from
+ * Platform is created with. A missing or unknown role is reported and leaves
+ * the default role, with the first-user promotion allowed to run.
  */
-export async function applyPlatformJoinRoleFromAccount(
-  account: { providerId: string; userId: string; idToken?: string | null },
-  context: object | null | undefined,
-): Promise<void> {
-  if (account.providerId !== PLATFORM_AUTH_PROVIDER_ID || !account.idToken) return
-  if (!context || createdInRequest.get(context) !== account.userId) return
-  let platformRole: unknown
-  try {
-    platformRole = decodeJwt(account.idToken)[PLATFORM_CLAIMS.role]
-  } catch (error) {
-    captureException(error, { tags: REPORT_TAGS })
-  }
-  await applyPlatformJoinRole(account.userId, platformRole)
+export function platformJoinRole(): 'admin' | 'user' | undefined {
+  const state = signIn.getStore()
+  if (!state?.platform || !isPlatformControlledAuth()) return undefined
+  const parsed = PlatformOrgRoleSchema.safeParse(state.platform.role)
+  if (parsed.success) return parsed.data === 'member' ? 'user' : 'admin'
+  const { role } = state.platform
+  captureException(new Error('Unrecognized platform role'), {
+    tags: { area: 'auth', op: 'platform-role' },
+    extra: { platformRole: typeof role === 'string' ? role.slice(0, 64) : typeof role },
+  })
+  state.bootstrap = true
+  return undefined
+}
+
+/** From the user create hook, after the insert: whether the first-user promotion may run. */
+export function firstUserPromotionApplies(): boolean {
+  return !isPlatformControlledAuth() || signIn.getStore()?.bootstrap === true
 }

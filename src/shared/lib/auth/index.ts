@@ -8,7 +8,8 @@ import * as schema from '@shared/lib/db/schema'
 import { getOrCreateAuthSecret } from './secret'
 import { getAppBaseUrl, getTrustedOrigins } from './config'
 import { getSettings } from '@shared/lib/config/settings'
-import { isPlatformControlledAuth, resolveAuthSettings } from './auth-settings'
+import { resolveAuthSettings } from './auth-settings'
+import { firstUserPromotionApplies, platformJoinRole } from './platform-role'
 import { PENDING_APPROVAL_BAN_REASON } from './clear-pending-approval-bans'
 import { enforceMaxConcurrentSessions } from './session-enforcement'
 import { auditSessionCreated, resolveSessionCreationMethod } from './session-audit'
@@ -148,15 +149,18 @@ function createAuthInstance() {
           },
         },
         create: {
-          after: async (createdUser, context) => {
-            const { noteUserCreated } = await import('./platform-role')
-            noteUserCreated(context, createdUser.id)
+          before: async (newUser) => {
+            // A member joining a platform-controlled deployment is created with
+            // their Platform role (platform-role.ts).
+            const role = platformJoinRole()
+            return role ? { data: { ...newUser, role } } : undefined
+          },
+          after: async (createdUser) => {
             try {
               // Atomic: only promote if this is the sole user in the table.
-              // Platform-controlled deployments skip it: members join with
-              // their Platform role instead (platform-role.ts), which falls
-              // back to this when the platform sends none.
-              const promoted = !isPlatformControlledAuth() && changesOf(await db
+              // Platform-controlled deployments skip it, since members join
+              // with their Platform role, unless the platform sent none.
+              const promoted = firstUserPromotionApplies() && changesOf(await db
                 .update(schema.user)
                 .set({ role: 'admin' })
                 .where(
@@ -191,13 +195,6 @@ function createAuthInstance() {
         },
       },
       account: {
-        create: {
-          after: async (account, context) => {
-            // A member's first browser sign-in from Platform takes their Platform role.
-            const { applyPlatformJoinRoleFromAccount } = await import('./platform-role')
-            await applyPlatformJoinRoleFromAccount(account, context)
-          },
-        },
         update: {
           after: async (account) => {
             // Auto-clear mustChangePassword when a user changes their password.
