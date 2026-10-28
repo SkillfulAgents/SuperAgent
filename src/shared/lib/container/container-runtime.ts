@@ -128,6 +128,7 @@ export class ContainerRuntime {
    * or the runtime is dropped; the host re-arms it when the timeout changes.
    */
   readonly idleAlarm = new IdleAlarm({
+    agentSlug: () => this.slug,
     timeoutMs: () => (getSettings().app?.autoSleepTimeoutMinutes ?? 30) * 60_000,
     lastActivityAt: () => this.sleepableSince(),
     isBusy: () => this.isBusy(),
