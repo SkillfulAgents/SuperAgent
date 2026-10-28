@@ -48,6 +48,11 @@ const CASES: Array<[string, HintEventInput, string[]]> = [
   ['after a sign-in step', after('mcp__user-input__request_login', { message: 'Sign in to MockMail.', fields: [] }), ['sign-in-verify-way']],
   ['before a sign-in step', before('mcp__user-input__request_login', { message: 'Sign in to MockMail.' }), []],
   ['browser hand-over', before('mcp__user-input__request_browser_input', { message: 'Solve the CAPTCHA.' }), []],
+  ['background command logs to a file', after('Bash', { command: 'cd /tmp/review && python transcribe.py audio.wav > run.log 2>&1', run_in_background: true }), ['background-redirected-output']],
+  ['background command drops stderr', after('Bash', { command: 'npm run dev 2>/dev/null', run_in_background: true }), ['background-redirected-output']],
+  ['background command without a redirect', after('Bash', { command: 'npm run dev', run_in_background: true }), []],
+  ['foreground command logs to a file', after('Bash', { command: 'python transcribe.py audio.wav > run.log 2>&1' }), []],
+  ['background redirect before it starts', before('Bash', { command: 'python transcribe.py audio.wav > run.log', run_in_background: true }), []],
 ]
 
 describe('built-in hints: which hints each call triggers', () => {
