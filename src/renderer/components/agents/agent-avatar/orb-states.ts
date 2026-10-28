@@ -91,24 +91,15 @@ export function idleFrame(t: number, restPhi: number): OrbFrame {
   return frame
 }
 
+// How much slower a sleeping orb idles.
+export const SLEEP_PACE = 2.5
+
 /**
- * Sleeping: the face fades away — a shut eye, however it was drawn, read as a
- * mouth. The light breathes on a 4s breath. The body stays upright — the
- * design's lean and its face dropped to one side are left out. Loops.
+ * Sleeping: idle at a drowsy pace. The same glances and blinks, 2.5× slower,
+ * so each look and each blink comes round less often and takes longer. Loops.
  */
-export function sleepingFrame(t: number): OrbFrame {
-  const breath = Math.sin((2 * Math.PI * t) / 4)
-  const light = 0.5 + 0.5 * breath
-  return {
-    ...restFrame(90),
-    distance: 0,
-    faceOpacity: 0,
-    scaleY: 1 + 0.035 * breath,
-    scaleX: 1 - 0.02 * breath,
-    glowOpacity: 0.25 + 0.6 * light,
-    glow: 0.82 + 0.18 * light,
-    saturation: 0.85,
-  }
+export function sleepingFrame(t: number, restPhi: number): OrbFrame {
+  return idleFrame(t / SLEEP_PACE, restPhi)
 }
 
 /** Done: one slow nod with a swell of light, then rests facing you, face tipped up and a touch brighter. */

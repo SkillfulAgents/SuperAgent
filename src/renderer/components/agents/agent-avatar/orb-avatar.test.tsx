@@ -10,6 +10,8 @@ const layer = (name: string) => document.querySelector(`[data-orb-layer="${name}
 const body = () => layer('glow').parentElement as HTMLElement
 // The face's translate(x, y): where it sits relative to the centre.
 const faceOffset = () => layer('face').style.transform.match(/translate\((-?[\d.e-]+)px, (-?[\d.e-]+)px\)/)!.slice(1).map(Number)
+// The face's closing scale(): 0.5 at rest, 0.55 needing input (faceScale 1.1).
+const faceScale = () => Number(layer('face').style.transform.match(/scale\((-?[\d.e-]+)\)$/)![1])
 const dotsShown = () => [...document.querySelectorAll<HTMLElement>('[data-orb-layer="dot"]')].filter(dot => dot.style.display !== 'none').length
 
 // Step the shared frame loop in frame-sized slices, letting React render between them.
@@ -76,12 +78,14 @@ describe('OrbAvatar follow within a region', () => {
   it('does not follow while asleep', () => {
     render(orb('sleeping', 'circle', '[data-follow]'))
     place()
+    // 1.8s in, a sleeping orb resting at -90° holds a glance for over 3s.
+    advance(1800)
+    const before = faceOffset()
+    act(() => move(screen.getByTestId('region'), -200, 100)) // far to the left
     advance(500)
-    act(() => move(screen.getByTestId('region'), 400, 100)) // far to the right
-    advance(500)
-    // Still centred, not turned toward the cursor.
-    expect(Math.abs(faceOffset()[0])).toBeLessThan(0.01)
-    expect(Math.abs(faceOffset()[1])).toBeLessThan(0.01)
+    // Still on its own glance, not turned toward the cursor.
+    expect(faceOffset()[0]).toBeCloseTo(before[0], 1)
+    expect(faceOffset()[1]).toBeCloseTo(before[1], 1)
   })
 
   it('measures only after pointer or layout changes', () => {
@@ -124,9 +128,9 @@ describe('OrbAvatar states', () => {
     vi.spyOn(window, 'matchMedia').mockReturnValue({ matches: true } as MediaQueryList)
     const raf = vi.spyOn(window, 'requestAnimationFrame')
     const { rerender } = render(orb('idle', 'circle'))
-    rerender(orb('sleeping', 'circle'))
-    rerender(orb('sleeping', 'triangle'))
-    expect(layer('face').style.opacity).toBe('0')
+    rerender(orb('needs-input', 'circle'))
+    rerender(orb('needs-input', 'triangle'))
+    expect(faceScale()).toBeCloseTo(0.55)
     expect(raf).not.toHaveBeenCalled()
   })
 
@@ -155,16 +159,11 @@ describe('OrbAvatar states', () => {
     expect(dotsShown()).toBe(0)
   })
 
-  it('sleeps upright: hides its face, mutes its colour and breathes', () => {
+  it('sleeps like it idles: face showing, in full colour', () => {
     render(orb('sleeping'))
     advance(1000)
-    // No face: a shut eye read as a mouth.
-    expect(layer('face').style.opacity).toBe('0')
-    // Upright: the body has no rotation at all.
-    expect(body().style.filter).toBe('saturate(0.85)')
-    const glowA = Number(layer('glow').style.opacity)
-    advance(2000)
-    expect(Number(layer('glow').style.opacity)).not.toBeCloseTo(glowA, 2)
+    expect(layer('face').style.opacity).toBe('1')
+    expect(body().style.filter).toBe('')
   })
 
   it('knocks and hops while needing input', () => {
@@ -190,12 +189,11 @@ describe('OrbAvatar states', () => {
   it('blends between states rather than jumping', () => {
     const { rerender } = render(orb('idle'))
     advance(200)
-    rerender(orb('sleeping'))
+    rerender(orb('needs-input'))
     advance(200)
-    // Halfway into sleep: the face is fading, not yet gone.
-    const faceOpacity = Number(layer('face').style.opacity)
-    expect(faceOpacity).toBeGreaterThan(0.05)
-    expect(faceOpacity).toBeLessThan(0.95)
+    // Partway into needing input: the face is growing, not yet full size.
+    expect(faceScale()).toBeGreaterThan(0.501)
+    expect(faceScale()).toBeLessThan(0.549)
   })
 })
 
@@ -248,12 +246,12 @@ describe('OrbAvatar visibility', () => {
     visibility.set(true)
     advance(2000)
     visibility.set(false)
-    rerender(orb('sleeping'))
+    rerender(orb('needs-input'))
     advance(5000)
     visibility.set(true)
     advance(2500)
     expect(dotsShown()).toBe(0)
-    expect(layer('face').style.opacity).toBe('0')
+    expect(faceScale()).toBeCloseTo(0.55)
   })
 
   it('stops all frame work when the document is hidden', () => {
