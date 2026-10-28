@@ -48,6 +48,11 @@ const CASES: Array<[string, HintEventInput, string[]]> = [
   ['after a sign-in step', after('mcp__user-input__request_login', { message: 'Sign in to MockMail.', fields: [] }), ['sign-in-verify-way']],
   ['before a sign-in step', before('mcp__user-input__request_login', { message: 'Sign in to MockMail.' }), []],
   ['browser hand-over', before('mcp__user-input__request_browser_input', { message: 'Solve the CAPTCHA.' }), []],
+  ['python playwright install', bash('cd /tmp && timeout 300 uv run --with playwright python -m playwright install chromium 2>&1 | tail -3'), ['playwright-install']],
+  ['npx playwright install', bash('npx playwright install chromium'), ['playwright-install']],
+  ['pinned npx playwright install', bash('npx --yes playwright@1.64.1 install chromium --only-shell'), ['playwright-install']],
+  ['playwright install-deps', bash('npx playwright install-deps'), []],
+  ['pip install playwright', bash('pip install playwright'), []],
 ]
 
 describe('built-in hints: which hints each call triggers', () => {
@@ -69,6 +74,16 @@ describe('built-in hints: which hints each call triggers', () => {
     const call = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'agent-browser snapshot' } } as HookInput
     for (const id of ['tool-1', 'tool-2']) {
       expect(JSON.stringify(await hook(call, id, { signal: new AbortController().signal }))).toContain('STRONG WARNING')
+    }
+  })
+
+  it('playwright-install refuses every install call', async () => {
+    const hook = createHintsHook(allBuiltinHints, () => 1)
+    const call = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npx playwright install chromium' } } as HookInput
+    for (const id of ['tool-1', 'tool-2']) {
+      const output = await hook(call, id, { signal: new AbortController().signal })
+      expect(output).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } })
+      expect(JSON.stringify(output)).toContain('/opt/playwright-browsers/chromium-current')
     }
   })
 })
