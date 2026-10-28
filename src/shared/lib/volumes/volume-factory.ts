@@ -74,7 +74,7 @@ const volumeTypes: Record<VolumeType, VolumeTypeEntry> = {
   dropbox: volumeType(dropboxVolumeConfigSchema, (row, config, agentSlug) => new DropboxMountableVolume(row.id, row.name, config, agentSlug), prepareDropboxVolume,
     { browseFolders: DropboxMountableVolume.browseFolders }),
   googledrive: volumeType(googleDriveVolumeConfigSchema, (row, config, agentSlug) => new GoogleDriveMountableVolume(row.id, row.name, config, agentSlug), prepareGoogleDriveVolume,
-    { browseFolders: GoogleDriveMountableVolume.browseFolders }),
+    { browseFolders: GoogleDriveMountableVolume.browseFolders, createFolder: GoogleDriveMountableVolume.createFolder }),
   local: volumeType(localVolumeConfigSchema, (row, config) => new LocalMountableVolume(row.id, row.name, config), prepareLocalVolume),
   platform: volumeType(storedPlatformVolumeConfigSchema, (row, config, agentSlug) => new PlatformMountableVolume(row.id, row.name, config, agentSlug), preparePlatformVolume,
     { browseFolders: PlatformMountableVolume.browseFolders, createFolder: PlatformMountableVolume.createFolder }),
