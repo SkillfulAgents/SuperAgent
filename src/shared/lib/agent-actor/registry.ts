@@ -14,6 +14,7 @@ import { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services
 import { localHostPort } from '@shared/lib/host/local-host-port'
 import { LocalAgentActor, type LocalActorDeps } from './local-agent-actor'
 import { serializingActor } from './serializing-actor'
+import { loopbackActor } from './network-actor'
 import type { AgentState } from './agent-state'
 import type { AgentStoreDirectory } from './store-directory'
 import type { AgentActor, AgentRegistry, AgentSlug } from './types'
@@ -200,8 +201,10 @@ export const agentRegistry: AgentRegistry = createAgentRegistry({
   },
 }, {
   states: agentActorStates,
-  // Development and tests only: every actor reached through the serializing test transport.
+  // Development and tests only: every actor reached through a test transport.
   ...(process.env.NODE_ENV !== 'production' && process.env.SUPERAGENT_ACTOR_TRANSPORT === 'serializing'
     ? { transport: serializingActor }
-    : {}),
+    : process.env.NODE_ENV !== 'production' && process.env.SUPERAGENT_ACTOR_TRANSPORT === 'network'
+      ? { transport: loopbackActor }
+      : {}),
 })

@@ -132,6 +132,11 @@ jobs:
   # only shrinks.
   unit-tests-actor-transport:
     runs-on: blacksmith-8vcpu-ubuntu-2404
+    strategy:
+      fail-fast: false
+      matrix:
+        # network: every op as an HTTP request and response (network-actor.ts).
+        transport: [serializing, network]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -151,7 +156,7 @@ jobs:
         run: npm ci
 
       - name: Run the unit tests through the actor transport
-        run: npm run test:actor-transport
+        run: npm run test:actor-transport -- ${{ matrix.transport }}
 
   # Builds both shipped targets and verifies every bare import in the emitted
   # bundles is reachable from the production dependency closure, and that no
