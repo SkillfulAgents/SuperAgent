@@ -40,3 +40,25 @@ export function setActorDurableState(state: ActorDurableState | null): void {
 export function actorDurableState(): ActorDurableState {
   return current
 }
+
+/** A `Map<string, string>` over the durable state, its keys under `prefix`. */
+export function durableStringMap(prefix: string) {
+  const state = () => actorDurableState()
+  return {
+    get: (key: string) => state().get<string>(prefix + key),
+    set(key: string, value: string) {
+      state().put(prefix + key, value)
+      return this
+    },
+    delete: (key: string) => {
+      const had = state().get(prefix + key) !== undefined
+      state().delete(prefix + key)
+      return had
+    },
+    has: (key: string) => state().get(prefix + key) !== undefined,
+    keys: () => state().list<string>(prefix).map(([key]) => key.slice(prefix.length))[Symbol.iterator](),
+    get size() {
+      return state().list(prefix).length
+    },
+  }
+}
