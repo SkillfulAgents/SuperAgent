@@ -677,7 +677,7 @@ const AgentMenuItemInner = React.forwardRef<
                 params={{ slug: agent.displaySlug }}
                 data-testid={`agent-item-${agent.slug}`}
                 data-active={isSelected}
-                className="min-w-0 outline-none after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
+                className="min-w-0 flex-1 outline-none after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
               >
                 <span className="block truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
                 {/* While the avatar carries a badge, the second line says what
@@ -690,7 +690,24 @@ const AgentMenuItemInner = React.forwardRef<
                   <AgentLastRun date={agent.lastActivityAt} />
                 )}
               </AppLink>
-              {isShared && <SidebarMemberIndicator agentSlug={agent.slug} agentName={agent.name} memberCount={memberCount} selected={isSelected} />}
+              {/* The faces sit flush right, over the empty trailing slot (its
+                  16px plus the 6px gap); when the row's pen or ⌘-hint shows,
+                  they slide left to make room for it, and the options button
+                  revealed beside the slot pushes them further. Keyboard focus
+                  only (:focus-visible), like the pen: a click on the avatar's
+                  chevron leaves focus in the row without showing the pen. */}
+              {isShared && (
+                <SidebarMemberIndicator
+                  agentSlug={agent.slug}
+                  agentName={agent.name}
+                  memberCount={memberCount}
+                  className={cn(
+                    'transition-transform duration-200 ease-out',
+                    hint === null && 'translate-x-[22px]',
+                    canStartSession && 'group-hover/agent-row:translate-x-0 group-has-[:focus-visible]/agent-row:translate-x-0',
+                  )}
+                />
+              )}
               {/* The 3-dot button and the status slot travel together, so the
                   slot holds the right edge whether or not the button shows
                   (touch never shows it). */}

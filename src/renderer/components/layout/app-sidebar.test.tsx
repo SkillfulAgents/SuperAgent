@@ -665,7 +665,11 @@ describe('AppSidebar — agent rows', () => {
     expect(link).not.toContainElement(members)
     expect(link.parentElement).toContainElement(members)
     expect(within(members).getAllByRole('img', { hidden: true })).toHaveLength(4)
-    expect(members).not.toHaveTextContent('+')
+    expect(within(members).queryByTestId('sidebar-members-count-test-agent')).toBeNull()
+    // Slides aside for the pen on hover or keyboard focus, not on a click that
+    // leaves focus in the row (the avatar's expand chevron).
+    expect(members.className).toContain('group-has-[:focus-visible]/agent-row:translate-x-0')
+    expect(members.className).not.toContain('focus-within')
     expect(screen.queryByTestId('sidebar-members-other-agent')).toBeNull()
     expect(mockUseAgentMembers).toHaveBeenCalledWith('test-agent', true)
     expect(mockUseAgentMembers).not.toHaveBeenCalledWith('other-agent', expect.anything())
