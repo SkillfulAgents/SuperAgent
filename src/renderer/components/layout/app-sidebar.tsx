@@ -458,7 +458,7 @@ function AgentLastRun({ date }: { date: ApiAgent['lastActivityAt'] }) {
   useMinuteClock()
   return (
     <span className="block truncate text-[11px] leading-tight text-muted-foreground/60">
-      {formatLastRun(date) ?? 'Last run never'}
+      {formatLastRun(date) ?? 'Never active'}
     </span>
   )
 }

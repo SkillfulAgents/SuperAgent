@@ -700,8 +700,8 @@ describe('AppSidebar — agent rows', () => {
         error: null,
       })
       renderWithProviders(<AppSidebar />)
-      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last run about 3 hours ago')
-      expect(screen.getByTestId('agent-item-idle-agent')).toHaveTextContent('Last run never')
+      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last active about 3 hours ago')
+      expect(screen.getByTestId('agent-item-idle-agent')).toHaveTextContent('Never active')
     } finally {
       vi.useRealTimers()
     }
@@ -717,7 +717,7 @@ describe('AppSidebar — agent rows', () => {
       })
       renderWithProviders(<AppSidebar />)
       const row = screen.getByTestId('agent-item-test-agent')
-      expect(row).toHaveTextContent('Last run about 3 hours ago')
+      expect(row).toHaveTextContent('Last active about 3 hours ago')
       expect(row).not.toHaveTextContent('Sleeping')
     } finally {
       vi.useRealTimers()
@@ -737,7 +737,7 @@ describe('AppSidebar — agent rows', () => {
       const { rerender, unmount } = renderWithProviders(<AppSidebar />)
       const renders = mockUseAgents.mock.calls.length
       act(() => vi.advanceTimersByTime(60 * 60 * 1000))
-      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last run about 4 hours ago')
+      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last active about 4 hours ago')
       expect(mockUseAgents.mock.calls).toHaveLength(renders)
 
       // An agent-summary refetch lands between clock ticks after a session event.
@@ -747,9 +747,9 @@ describe('AppSidebar — agent rows', () => {
         isLoading: false, error: null,
       })
       rerender(<AppSidebar />)
-      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last run less than a minute ago')
+      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last active less than a minute ago')
       act(() => vi.advanceTimersByTime(75_000))
-      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last run 1 minute ago')
+      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last active 1 minute ago')
       unmount()
     } finally {
       vi.useRealTimers()
