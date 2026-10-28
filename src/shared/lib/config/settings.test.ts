@@ -1288,7 +1288,7 @@ describe('getEffectiveModels', () => {
 
     expect(getEffectiveModels()).toEqual({
       summarizerModel: 'haiku',
-      agentModel: 'grok',
+      agentModel: 'sonnet',
       browserModel: 'haiku',
       dashboardBuilderModel: 'opus',
       agentEffort: 'medium',

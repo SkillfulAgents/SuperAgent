@@ -32,7 +32,7 @@ export const BEDROCK_CATALOG_DEFAULT_MODELS: CatalogDefaultModels = {
 
 export const PLATFORM_CATALOG_DEFAULT_MODELS: CatalogDefaultModels = {
   summarizerModel: 'haiku',
-  agentModel: 'grok',
+  agentModel: 'sonnet',
   browserModel: 'haiku',
   dashboardBuilderModel: 'opus',
 }
