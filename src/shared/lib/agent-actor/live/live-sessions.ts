@@ -772,7 +772,9 @@ export class LiveSessions {
    * best-effort cancel must never block the message.
    */
   async cancelAwaitingInput(sessionId: string): Promise<void> {
-    if (!this.isAwaitingInput(sessionId)) return
+    // An idle session waits only on a call parked on its own card, held by a
+    // background script: there is no turn to stop, and the message starts one.
+    if (!this.isActive(sessionId) || !this.isAwaitingInput(sessionId)) return
     // Taken before the stop: the stop's idle clears the stream store, and
     // computer-use approvals survive that boundary on purpose. Recovered
     // stubs are included: their container-side pending may well be live.
