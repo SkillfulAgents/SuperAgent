@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { randomIndex } from '@shared/lib/utils/agent-id'
 
 // Persisted IDs are independent of palette order; renames require a data migration.
 export const DEFAULT_AGENT_AVATAR_COLORS = [
@@ -24,5 +25,13 @@ export const agentAvatarSchema = z.object({
 }).strict()
 
 export type AgentAvatar = z.infer<typeof agentAvatarSchema>
+
+/** A random color and shape, assigned once when an agent is created or imported. */
+export function randomAgentAvatar(): AgentAvatar {
+  return {
+    color: DEFAULT_AGENT_AVATAR_COLORS[randomIndex(DEFAULT_AGENT_AVATAR_COLORS.length)],
+    shape: AGENT_AVATAR_SHAPES[randomIndex(AGENT_AVATAR_SHAPES.length)],
+  }
+}
 export type AgentAvatarColor = AgentAvatar['color']
 export type AgentAvatarShape = AgentAvatar['shape']

@@ -1,14 +1,17 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { createElement, type ReactNode } from 'react'
 import { renderHook, act } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
-const { mockMutateAsync, mockUpdateMutateAsync, mockNavigate, mockTrack, mockSetJustCreatedSlug } =
+const { mockMutateAsync, mockUpdateMutateAsync, mockNavigate, mockTrack, mockSetJustCreatedSlug, mockHold } =
   vi.hoisted(() => ({
     mockMutateAsync: vi.fn(),
     mockUpdateMutateAsync: vi.fn(),
     mockNavigate: vi.fn(),
     mockTrack: vi.fn(),
     mockSetJustCreatedSlug: vi.fn(),
+    mockHold: vi.fn(),
   }))
 
 vi.mock('@renderer/hooks/use-agents', () => ({
@@ -17,6 +20,7 @@ vi.mock('@renderer/hooks/use-agents', () => ({
 vi.mock('@renderer/hooks/use-user-settings', () => ({
   useUpdateUserSettings: () => ({ mutateAsync: mockUpdateMutateAsync, isPending: false }),
 }))
+vi.mock('@renderer/lib/api', () => ({ holdAgentRequestsUntilCreated: mockHold }))
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => mockNavigate,
 }))
@@ -26,147 +30,123 @@ vi.mock('@renderer/context/nav-transient-context', () => ({
 vi.mock('@renderer/context/analytics-context', () => ({
   useAnalyticsTracking: () => ({ track: mockTrack }),
 }))
-vi.mock('sonner', () => ({ toast: { error: vi.fn(), loading: vi.fn(() => 'creating-toast'), dismiss: vi.fn() } }))
+vi.mock('@shared/lib/utils/agent-id', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@shared/lib/utils/agent-id')>(),
+  randomAgentId: () => 'k3v9qm2x7a',
+}))
+vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
 
 import { toast } from 'sonner'
-import { CREATE_PROGRESS_DELAY_MS, useCreateUntitledAgent } from './use-create-untitled-agent'
+import type { ApiAgent } from '@shared/lib/types/api'
+import { useCreateUntitledAgent } from './use-create-untitled-agent'
 
-const AGENT = { slug: 'untitled-abc', displaySlug: 'untitled' }
+const ID = 'k3v9qm2x7a'
+const DISPLAY_SLUG = `untitled-${ID}`
+const EXISTING: ApiAgent = { slug: 'sales00agnt', displaySlug: 'sales-sales00agnt', name: 'Sales', createdAt: new Date(0), status: 'stopped', containerPort: null }
+
+let queryClient: QueryClient
+
+function render() {
+  const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client: queryClient }, children)
+  return renderHook(() => useCreateUntitledAgent(), { wrapper })
+}
+
+/** The create, held open until the test answers it. */
+function heldCreate() {
+  let answer!: (agent: ApiAgent) => void
+  let fail!: (error: Error) => void
+  mockMutateAsync.mockReturnValueOnce(new Promise<ApiAgent>((resolve, reject) => { answer = resolve; fail = reject }))
+  return { answer: (agent: ApiAgent) => answer(agent), fail: (error: Error) => fail(error) }
+}
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockMutateAsync.mockResolvedValue(AGENT)
+  queryClient = new QueryClient()
+  queryClient.setQueryData(['agents'], [EXISTING])
+  mockMutateAsync.mockImplementation(async (input: { name: string; id: string; avatar: ApiAgent['avatar'] }) => ({
+    slug: input.id, displaySlug: DISPLAY_SLUG, name: input.name, avatar: input.avatar, createdAt: new Date(), status: 'stopped', containerPort: null,
+  }))
   mockUpdateMutateAsync.mockResolvedValue({})
 })
 
-describe('useCreateUntitledAgent progress', () => {
-  it('says the agent is being created when the create is slow, and clears it once the agent exists', async () => {
-    vi.useFakeTimers()
-    try {
-      let finish!: (agent: typeof AGENT) => void
-      mockMutateAsync.mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
-      const { result } = renderHook(() => useCreateUntitledAgent())
-      let creation!: ReturnType<typeof result.current.createUntitledAgent>
-      await act(async () => {
-        creation = result.current.createUntitledAgent({ surface: 'nav' })
-      })
-
-      await act(async () => {
-        vi.advanceTimersByTime(CREATE_PROGRESS_DELAY_MS)
-      })
-      expect(toast.loading).toHaveBeenCalledWith('Creating agent…')
-      expect(toast.dismiss).not.toHaveBeenCalled()
-
-      await act(async () => {
-        finish(AGENT)
-        await creation
-      })
-      expect(toast.dismiss).toHaveBeenCalledWith('creating-toast')
-      expect(mockNavigate).toHaveBeenCalledOnce()
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('shows no progress for a create that finishes quickly', async () => {
-    vi.useFakeTimers()
-    try {
-      const { result } = renderHook(() => useCreateUntitledAgent())
-      await act(async () => {
-        await result.current.createUntitledAgent({ surface: 'nav' })
-      })
-      await act(async () => {
-        vi.advanceTimersByTime(CREATE_PROGRESS_DELAY_MS * 2)
-      })
-      expect(toast.loading).not.toHaveBeenCalled()
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('clears the progress when the create fails, before saying it failed', async () => {
-    vi.useFakeTimers()
-    try {
-      let fail!: (error: Error) => void
-      mockMutateAsync.mockReturnValueOnce(new Promise((_resolve, reject) => { fail = reject }))
-      const { result } = renderHook(() => useCreateUntitledAgent())
-      let creation!: ReturnType<typeof result.current.createUntitledAgent>
-      await act(async () => {
-        creation = result.current.createUntitledAgent({ surface: 'home' })
-      })
-      await act(async () => {
-        vi.advanceTimersByTime(CREATE_PROGRESS_DELAY_MS)
-      })
-
-      await act(async () => {
-        fail(new Error('Agent limit reached'))
-        await creation
-      })
-      expect(toast.dismiss).toHaveBeenCalledWith('creating-toast')
-      expect(vi.mocked(toast.dismiss).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(toast.error).mock.invocationCallOrder[0])
-      expect(toast.error).toHaveBeenCalledWith('Failed to create agent', { description: 'Agent limit reached' })
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-})
-
 describe('useCreateUntitledAgent', () => {
-  it('creates and navigates without touching folders by default', async () => {
-    const { result } = renderHook(() => useCreateUntitledAgent())
+  it('opens the new agent before its create answers', async () => {
+    const create = heldCreate()
+    const { result } = render()
+    let creation!: Promise<unknown>
+    await act(async () => {
+      creation = result.current.createUntitledAgent({ surface: 'nav' })
+    })
+
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/agents/$slug', params: { slug: DISPLAY_SLUG } })
+    expect(mockSetJustCreatedSlug).toHaveBeenCalledWith(ID)
+    const shown = queryClient.getQueryData<ApiAgent>(['agents', DISPLAY_SLUG])
+    expect(shown).toMatchObject({ slug: ID, name: 'Untitled', status: 'stopped' })
+    expect(queryClient.getQueryData<ApiAgent>(['agents', ID])).toBe(shown)
+    expect(queryClient.getQueryData<ApiAgent[]>(['agents'])?.map((agent) => agent.slug)).toEqual([ID, EXISTING.slug])
+
+    await act(async () => {
+      create.answer({ ...shown!, createdAt: new Date() })
+      await creation
+    })
+    expect(mockTrack).toHaveBeenCalledWith('agent_created', expect.objectContaining({ source: 'new', surface: 'nav' }))
+  })
+
+  it('creates the agent with the id and avatar it showed, and holds requests about it until then', async () => {
+    const { result } = render()
     await act(async () => {
       await result.current.createUntitledAgent({ surface: 'nav' })
     })
-    expect(mockMutateAsync).toHaveBeenCalledWith({ name: 'Untitled' })
-    expect(mockTrack).toHaveBeenCalledWith('agent_created', expect.objectContaining({ source: 'new', surface: 'nav' }))
+
+    const shown = queryClient.getQueryData<ApiAgent>(['agents', ID])
+    expect(mockMutateAsync).toHaveBeenCalledWith({ name: 'Untitled', id: ID, avatar: shown?.avatar })
+    expect(shown?.avatar).toEqual({ color: expect.any(String), shape: expect.any(String) })
+    expect(mockHold).toHaveBeenCalledWith(ID, mockMutateAsync.mock.results[0].value)
+    expect(mockHold.mock.invocationCallOrder[0]).toBeLessThan(mockNavigate.mock.invocationCallOrder[0])
     expect(mockUpdateMutateAsync).not.toHaveBeenCalled()
-    expect(mockNavigate).toHaveBeenCalledWith({
-      to: '/agents/$slug',
-      params: { slug: 'untitled' },
-    })
   })
 
-  it('files the new agent into the requested folder before navigating', async () => {
-    const { result } = renderHook(() => useCreateUntitledAgent())
+  it('takes the agent away and goes home when its create fails', async () => {
+    const create = heldCreate()
+    const { result } = render()
+    let creation!: Promise<unknown>
+    await act(async () => {
+      creation = result.current.createUntitledAgent({ surface: 'section_plus', folderId: 'f1' })
+    })
+
+    await act(async () => {
+      create.fail(new Error('Agent limit reached'))
+      expect(await creation).toBeNull()
+    })
+    expect(queryClient.getQueryData(['agents', ID])).toBeUndefined()
+    expect(queryClient.getQueryData(['agents', DISPLAY_SLUG])).toBeUndefined()
+    expect(toast.error).toHaveBeenCalledWith('Failed to create agent', { description: 'Agent limit reached' })
+    expect(mockNavigate).toHaveBeenLastCalledWith({ to: '/' })
+    expect(mockTrack).not.toHaveBeenCalled()
+    expect(mockUpdateMutateAsync).not.toHaveBeenCalled()
+  })
+
+  it('files the new agent into the requested folder once it exists', async () => {
+    const { result } = render()
     await act(async () => {
       await result.current.createUntitledAgent({ surface: 'section_plus', folderId: 'f1' })
     })
 
-    expect(mockTrack).toHaveBeenCalledWith('agent_created', expect.objectContaining({ surface: 'section_plus' }))
     expect(mockUpdateMutateAsync).toHaveBeenCalledTimes(1)
-    expect(mockUpdateMutateAsync.mock.invocationCallOrder[0]).toBeLessThan(
-      mockNavigate.mock.invocationCallOrder[0]
-    )
+    expect(mockMutateAsync.mock.invocationCallOrder[0]).toBeLessThan(mockUpdateMutateAsync.mock.invocationCallOrder[0])
     // Updater form, resolved against the settings as of when the serialized
     // write runs — it must keep whatever assignments landed in the meantime.
     const patch = mockUpdateMutateAsync.mock.calls[0][0]
     expect(patch({ agentFolderAssignments: { other: 'f2' } })).toEqual({
-      agentFolderAssignments: { other: 'f2', 'untitled-abc': 'f1' },
+      agentFolderAssignments: { other: 'f2', [ID]: 'f1' },
     })
   })
 
-  it('waits for the assignment to finish before navigating', async () => {
-    let finish!: () => void
-    mockUpdateMutateAsync.mockReturnValueOnce(new Promise<void>((resolve) => { finish = resolve }))
-    const { result } = renderHook(() => useCreateUntitledAgent())
-    let creation!: ReturnType<typeof result.current.createUntitledAgent>
-    await act(async () => {
-      creation = result.current.createUntitledAgent({ surface: 'section_plus', folderId: 'f1' })
-    })
-    expect(mockUpdateMutateAsync).toHaveBeenCalledOnce()
-    expect(mockNavigate).not.toHaveBeenCalled()
-    await act(async () => {
-      finish()
-      await creation
-    })
-    expect(mockNavigate).toHaveBeenCalledOnce()
-  })
-
-  it('opens the created agent and explains a failed assignment without creating twice', async () => {
+  it('keeps the created agent open and explains a failed filing without creating twice', async () => {
     mockUpdateMutateAsync.mockRejectedValueOnce(new Error('offline'))
-    const { result } = renderHook(() => useCreateUntitledAgent())
+    const { result } = render()
     await act(async () => {
-      expect(await result.current.createUntitledAgent({ surface: 'section_plus', folderId: 'f1' })).toEqual(AGENT)
+      expect(await result.current.createUntitledAgent({ surface: 'section_plus', folderId: 'f1' })).toMatchObject({ slug: ID })
     })
     expect(mockMutateAsync).toHaveBeenCalledOnce()
     expect(mockNavigate).toHaveBeenCalledOnce()
@@ -177,25 +157,13 @@ describe('useCreateUntitledAgent', () => {
   })
 
   it('treats the default folder as unfiled', async () => {
-    const { result } = renderHook(() => useCreateUntitledAgent())
+    const { result } = render()
     await act(async () => {
       await result.current.createUntitledAgent({ surface: 'section_plus', folderId: 'root' })
     })
     const patch = mockUpdateMutateAsync.mock.calls[0][0]
-    expect(patch({ agentFolderAssignments: { 'untitled-abc': 'f1' } })).toEqual({
+    expect(patch({ agentFolderAssignments: { [ID]: 'f1' } })).toEqual({
       agentFolderAssignments: {},
     })
-  })
-
-  it('does not write a filing when creation fails', async () => {
-    mockMutateAsync.mockRejectedValueOnce(new Error('nope'))
-    const { result } = renderHook(() => useCreateUntitledAgent())
-    let agent: unknown
-    await act(async () => {
-      agent = await result.current.createUntitledAgent({ surface: 'section_plus', folderId: 'f1' })
-    })
-    expect(agent).toBeNull()
-    expect(mockUpdateMutateAsync).not.toHaveBeenCalled()
-    expect(mockNavigate).not.toHaveBeenCalled()
   })
 })

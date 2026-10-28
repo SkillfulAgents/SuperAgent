@@ -430,6 +430,29 @@ Instructions`
       }
     })
 
+    it('creates the agent under the id and avatar the caller chose', async () => {
+      const avatar = { color: 'tonal-teal', shape: 'diamond' } as const
+      const agent = await createAgent({ name: 'Untitled', id: 'k3v9qm2x7a', avatar })
+
+      expect(agent).toMatchObject({ slug: 'k3v9qm2x7a', displaySlug: 'untitled-k3v9qm2x7a', avatar })
+      expect(await getAgentRecord('k3v9qm2x7a')).toMatchObject({ slug: 'k3v9qm2x7a', avatar })
+      expect(await getAgentInstructionsContent('k3v9qm2x7a')).toContain('name: Untitled')
+    })
+
+    it('refuses a caller-chosen id that another agent already uses', async () => {
+      await createAgent({ name: 'Sales', id: 'k3v9qm2x7a' })
+
+      await expect(createAgent({ name: 'Untitled', id: 'k3v9qm2x7a' })).rejects.toMatchObject({ name: 'AgentIdError', code: 'taken' })
+      expect((await getAgentRecord('k3v9qm2x7a'))?.name).toBe('Sales')
+    })
+
+    it('refuses a caller-chosen id that is not a minted id', async () => {
+      for (const id of ['../escape00', 'Sales00Agnt', 'short']) {
+        await expect(createAgent({ name: 'Untitled', id })).rejects.toMatchObject({ name: 'AgentIdError', code: 'invalid' })
+      }
+      expect(await listAgents()).toEqual([])
+    })
+
     it('creates agent with name only', async () => {
       const agent = await createAgent({ name: 'New Agent' })
 
