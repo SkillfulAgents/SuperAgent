@@ -452,13 +452,12 @@ describe('replay prevention', () => {
 })
 
 describe('provisioning and identity mapping', () => {
-  it('promotes the first exchanged user to admin', async () => {
+  it('provisions the first exchanged user with their verified email', async () => {
     const res = await exchangeRequest(await signGrant())
     expect(res.status).toBe(200)
     const user = sqlite
-      .prepare(`SELECT role, email, email_verified FROM user`)
-      .get() as { role: string; email: string; email_verified: number }
-    expect(user.role).toBe('admin')
+      .prepare(`SELECT email, email_verified FROM user`)
+      .get() as { email: string; email_verified: number }
     expect(user.email).toBe('member@example.com')
     expect(user.email_verified).toBe(1)
   })
@@ -547,6 +546,7 @@ describe('provisioning and identity mapping', () => {
       .get() as { n: number }
     expect(mappings.n).toBe(1)
     expect(countRows('session')).toBe(2)
+    expect(sqlite.prepare('SELECT role FROM user').get()).toEqual({ role: 'user' })
   })
 
   it('persists both subject mappings when concurrent first exchanges share a verified email', async () => {
@@ -559,6 +559,117 @@ describe('provisioning and identity mapping', () => {
     expect(sqlite.prepare('SELECT account_id FROM account ORDER BY account_id').all())
       .toEqual([{ account_id: 'sub_first' }, { account_id: 'sub_second' }])
     expect(countRows('session')).toBe(2)
+  })
+})
+
+describe('platform role on join', () => {
+  beforeEach(() => captureExceptionMock.mockClear())
+
+  function roleOf(email = 'member@example.com'): string | undefined {
+    return (sqlite.prepare('SELECT role FROM user WHERE email = ?').get(email) as { role: string } | undefined)?.role
+  }
+  async function exchange(payload: Record<string, unknown>) {
+    const res = await exchangeRequest(await signGrant({ payload }))
+    expect(res.status).toBe(200)
+  }
+  async function seedOtherMember() {
+    await exchange({ sub: 'sub_earlier', email: 'earlier@example.com', role: 'owner' })
+  }
+
+  it.each([
+    ['owner', 'admin'],
+    ['admin', 'admin'],
+    ['member', 'user'],
+  ])('gives the first member to exchange, a Platform %s, the %s role', async (platformRole, role) => {
+    await exchange({ role: platformRole })
+    expect(roleOf()).toBe(role)
+  })
+
+  it.each([
+    ['owner', 'admin'],
+    ['member', 'user'],
+  ])('gives a Platform %s who joins later the %s role', async (platformRole, role) => {
+    await seedOtherMember()
+    await exchange({ role: platformRole })
+    expect(roleOf()).toBe(role)
+  })
+
+  it.each([
+    ['a promotion', 'member', 'admin'],
+    ['a demotion', 'owner', 'user'],
+  ])('keeps %s made in Gamut on later exchanges', async (_label, platformRole, localRole) => {
+    await seedOtherMember()
+    await exchange({ role: platformRole })
+    sqlite.prepare('UPDATE user SET role = ? WHERE email = ?').run(localRole, 'member@example.com')
+    await exchange({ role: platformRole })
+    expect(roleOf()).toBe(localRole)
+  })
+
+  it('keeps the role of an existing password user who links Platform', async () => {
+    await seedOtherMember()
+    const { getAuth } = await import('./index')
+    await getAuth().api.signUpEmail({
+      body: { email: 'member@example.com', password: 'CorrectHorseBattery1!', name: 'Local Member' },
+    })
+    await exchange({ role: 'owner' })
+    expect(sqlite.prepare(`SELECT count(*) AS n FROM account WHERE provider_id = 'platform'`).get()).toEqual({ n: 2 })
+    expect(roleOf()).toBe('user')
+  })
+
+  it('keeps the role of an existing user with no account who links Platform', async () => {
+    const now = Date.now()
+    sqlite.prepare(`INSERT INTO user (id, name, email, email_verified, role, created_at, updated_at) VALUES (?, ?, ?, 1, 'admin', ?, ?)`)
+      .run('user-without-account', 'Member One', 'member@example.com', now, now)
+    await exchange({ role: 'member' })
+    expect(sqlite.prepare('SELECT user_id FROM account').all()).toEqual([{ user_id: 'user-without-account' }])
+    expect(roleOf()).toBe('admin')
+    expect(captureExceptionMock).not.toHaveBeenCalled()
+  })
+
+  it('gives the joining member their role when a concurrent exchange links a second membership', async () => {
+    const [a, b] = await Promise.all([
+      exchangeRequest(await signGrant({ payload: { sub: 'sub_first', role: 'owner' } })),
+      exchangeRequest(await signGrant({ payload: { sub: 'sub_second', role: 'owner' } })),
+    ])
+    expect([a.status, b.status]).toEqual([200, 200])
+    expect(countRows('account')).toBe(2)
+    expect(roleOf()).toBe('admin')
+  })
+
+  it('keeps the role of a re-invited member whose new membership links to their user', async () => {
+    await seedOtherMember()
+    await exchange({ role: 'member' })
+    sqlite.prepare('UPDATE user SET role = ? WHERE email = ?').run('admin', 'member@example.com')
+    await exchange({ sub: 'sub_member_reinvited', role: 'member' })
+    expect(sqlite.prepare(`SELECT count(*) AS n FROM account WHERE provider_id = 'platform'`).get()).toEqual({ n: 3 })
+    expect(roleOf()).toBe('admin')
+  })
+
+  it.each([
+    ['a missing', undefined],
+    ['an unrecognized', 'superuser'],
+  ])('reports %s role and falls back to the first-user bootstrap', async (_label, role) => {
+    await exchange({ role })
+    expect(roleOf()).toBe('admin')
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Unrecognized platform role' }),
+      expect.objectContaining({ tags: { area: 'auth', op: 'platform-role' } }),
+    )
+  })
+
+  it('gives a later member with no role the default role', async () => {
+    await seedOtherMember()
+    await exchange({ role: undefined })
+    expect(roleOf()).toBe('user')
+  })
+
+  it('does not report a missing role when the exchange only links an existing user', async () => {
+    const { getAuth } = await import('./index')
+    await getAuth().api.signUpEmail({
+      body: { email: 'member@example.com', password: 'CorrectHorseBattery1!', name: 'Local Member' },
+    })
+    await exchange({ role: undefined })
+    expect(captureExceptionMock).not.toHaveBeenCalled()
   })
 })
 

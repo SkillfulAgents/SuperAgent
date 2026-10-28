@@ -1,5 +1,6 @@
 import { captureException } from '@shared/lib/error-reporting'
 import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
+import { PLATFORM_CLAIMS } from '@shared/lib/platform-auth/claims'
 import { z } from 'zod'
 import { getAppBaseUrl } from './config'
 
@@ -57,8 +58,6 @@ export interface GenericOAuthProviderConfig {
   accountSubject: (context: { profile: Record<string, unknown> }) => string
   mapProfileToUser?: (profile: Record<string, unknown>) => Record<string, never>
 }
-
-const PLATFORM_ORG_ID_CLAIM = 'https://platform.skillfulagents.dev/claims/org_id'
 
 abstract class AuthProviderDefinition {
   constructor(protected readonly config: AuthProviderSettings) {}
@@ -146,7 +145,7 @@ class OidcAuthProviderDefinition extends AuthProviderDefinition {
         // before Better Auth creates the user/account/session.
         const deploymentOrg = decodeOrgIdFromToken(process.env.PLATFORM_TOKEN ?? '')
         if (deploymentOrg) {
-          const tokenOrg = profile[PLATFORM_ORG_ID_CLAIM]
+          const tokenOrg = profile[PLATFORM_CLAIMS.orgId]
           if (typeof tokenOrg !== 'string' || tokenOrg !== deploymentOrg) {
             throw new Error('Account belongs to a different organization')
           }
