@@ -295,14 +295,16 @@ describe('renaming started work', () => {
     expect(state.names.has('agent-a/session-1')).toBe(false)
   })
 
-  it('renames its own title once the session is gone', async () => {
+  it('renames its own title once the session is gone, even with its name left in metadata', async () => {
     const todo = await startDraft()
     await call(`/${todo.id}/status`, 'POST', { status: 'done' })
+    state.names.set('agent-a/session-1', 'Old session name')
     state.sessions.delete('agent-a/session-1')
-    const res = await call(`/${todo.id}/title`, 'POST', { title: 'Q3 report, archived' })
+    const res = await call(`/${todo.id}/title`, 'POST', { title: 'Archived report' })
     expect(res.status).toBe(200)
-    expect((await res.json()).title).toBe('Q3 report, archived')
-    expect(state.names.has('agent-a/session-1')).toBe(false)
+    expect((await res.json()).title).toBe('Archived report')
+    expect((await (await call('')).json()).todos[0].title).toBe('Archived report')
+    expect(state.names.get('agent-a/session-1')).toBe('Old session name')
   })
 
   it('leaves drafts to their dialog', async () => {

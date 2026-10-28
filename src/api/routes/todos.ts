@@ -96,13 +96,18 @@ async function toView(
     ? agentRegistry.get(row.agentSlug)
     : null
   const live = actor && row.sessionId ? await actor.sessions.live(row.sessionId) : null
+  // A deleted session can leave its name in metadata: use the name only while
+  // the session is known, the same check the rename fallback makes.
+  const sessionName = actor && row.sessionId && (await actor.sessions.isKnown(row.sessionId))
+    ? metadata.get(actor.slug)?.[row.sessionId]?.name
+    : undefined
   const session = live ? { isActive: live.isActive, isAwaitingInput: live.isAwaitingInput } : null
   const column = todoColumn(row.status, session)
   return {
     id: row.id,
     // Started work is named by its session. The stored title is the draft's
     // own, or the name the work had when it joined the board.
-    title: (actor && row.sessionId && metadata.get(actor.slug)?.[row.sessionId]?.name) || row.title,
+    title: sessionName || row.title,
     description: row.description,
     agentSlug: row.agentSlug,
     newAgent: row.newAgent,
