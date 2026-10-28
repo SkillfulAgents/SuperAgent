@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { agentFolderSettingsWriteSchema, userSettingsSchema, userVoiceSettingsWriteSchema } from './user-settings-service'
+import { agentFolderSettingsWriteSchema, teamBrainViewsWriteSchema, userSettingsSchema, userVoiceSettingsWriteSchema } from './user-settings-service'
 
 describe('userSettingsSchema voice', () => {
   it('defaults to undefined and stores a valid voice and speed', () => {
@@ -277,5 +277,15 @@ describe('agentFolderSettingsWriteSchema', () => {
   it('rejects a non-object body', () => {
     expect(agentFolderSettingsWriteSchema.safeParse(null).success).toBe(false)
     expect(agentFolderSettingsWriteSchema.safeParse([1]).success).toBe(false)
+  })
+})
+
+describe('userSettingsSchema teamBrainViews', () => {
+  it('drops a bad stored group alone, and refuses a write the stored schema would only drop', () => {
+    expect(userSettingsSchema.parse({ teamBrainViews: ['about', null] }).teamBrainViews).toEqual(['about'])
+    expect(teamBrainViewsWriteSchema.safeParse({ teamBrainViews: ['about'] }).success).toBe(true)
+    expect(teamBrainViewsWriteSchema.safeParse({}).success).toBe(true)
+    expect(teamBrainViewsWriteSchema.safeParse({ teamBrainViews: null }).success).toBe(false)
+    expect(teamBrainViewsWriteSchema.safeParse({ teamBrainViews: 'about' }).success).toBe(false)
   })
 })

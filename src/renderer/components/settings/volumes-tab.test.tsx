@@ -23,6 +23,7 @@ vi.mock('@renderer/components/volumes/volume-file-browser', () => ({ VolumeFileB
 vi.mock('@renderer/hooks/use-agents', () => ({ useAgents: () => ({ data: [{ slug: 'a1', displaySlug: 'a1', name: 'Ada' }], isLoading: false }) }))
 vi.mock('@renderer/hooks/use-mounts', () => ({ useAddMount: () => ({}), useRemoveMount: () => ({}) }))
 import { agentBackPath, VolumesTab } from './volumes-tab'
+import { TEAM_BRAIN_AGENT_HOME_QUERY } from '@renderer/lib/team-brain/team-brain-agent-home'
 
 beforeEach(() => {
   vi.resetAllMocks()
@@ -89,6 +90,10 @@ describe('volume settings', () => {
     expect(agentBackPath('list', '/agents/a1')).toBeNull()
     expect(agentBackPath('home', '/agents/')).toBeNull()
     expect(agentBackPath('home', '/agents/a1?tab=files')).toBeNull()
+    // The Team Brain agent's Agent Home, which only that search opens.
+    expect(agentBackPath('home', `/agents/a1?${TEAM_BRAIN_AGENT_HOME_QUERY}`)).toBe(`/agents/a1?${TEAM_BRAIN_AGENT_HOME_QUERY}`)
+    expect(agentBackPath('home', `${`/agents/a1?${TEAM_BRAIN_AGENT_HOME_QUERY}`}?x`)).toBeNull()
+    expect(agentBackPath('home', '/agents/a1?from=%2Fsettings')).toBeNull()
   })
   it('shows a read-only title to people who cannot manage the drive', () => {
     state.selectedId = 'v1'

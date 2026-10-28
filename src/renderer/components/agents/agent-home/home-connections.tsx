@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { useNavigate } from '@tanstack/react-router'
+import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { Button } from '@renderer/components/ui/button'
 import { Plus, Settings2 } from 'lucide-react'
 import { IntegrationRow, RowHoverChevron } from '@renderer/components/connections/integration-row'
@@ -49,6 +49,8 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
   const { data: mcpsData } = useAgentRemoteMcps(agentSlug)
   const { data: activityStats, isPending: activityPending } = useAgentActivityStats(agentSlug)
   const navigate = useNavigate()
+  // A detail's Back returns to this page, whatever it carries in its URL.
+  const here = useRouterState({ select: (s) => s.location.href })
   const {
     reconnect: oauthReconnect,
     pendingAccountId,
@@ -162,7 +164,7 @@ export function HomeConnections({ agentSlug, className }: HomeConnectionsProps) 
                 void navigate({
                   to: '/agents/$slug/connections',
                   params: { slug: agentSlug },
-                  search: { detail: conn.id, source: 'home' },
+                  search: { detail: conn.id, source: 'home', from: here },
                 })
               }}
               ariaLabel={conn.foreign ? undefined : `Open ${conn.name} connection details`}
