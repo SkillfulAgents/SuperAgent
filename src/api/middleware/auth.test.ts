@@ -65,6 +65,7 @@ import {
   HasNotificationAccess,
   Or,
   EntityAgentRole,
+  canUseAgent,
   getAuthorizedAgentRole,
   getRequestDeviceId,
 } from './auth'
@@ -389,6 +390,31 @@ describe('Auth Middleware', () => {
 
       const res = await request(app)
       expect(res.status).toBe(403)
+    })
+  })
+
+  describe('canUseAgent()', () => {
+    async function canUse(user: { id: string; role?: string }) {
+      const app = new Hono()
+      setUser(app, user)
+      app.get('/', async (c) => c.json({ ok: await canUseAgent(c, 'test-agent') }))
+      return (await (await request(app, '/')).json()).ok
+    }
+
+    it('follows AgentUser: local mode, admins, and user role up may use the agent', async () => {
+      mockIsAuthMode.mockReturnValue(false)
+      expect(await canUse({ id: 'local' })).toBe(true)
+      mockIsAuthMode.mockReturnValue(true)
+      expect(await canUse({ id: 'admin-1', role: 'admin' })).toBe(true)
+      mockAclQuery('user')
+      expect(await canUse({ id: 'user-1', role: 'user' })).toBe(true)
+    })
+
+    it('refuses a viewer and someone with no role', async () => {
+      mockAclQuery('viewer')
+      expect(await canUse({ id: 'user-1', role: 'user' })).toBe(false)
+      mockAclQuery(null)
+      expect(await canUse({ id: 'user-1', role: 'user' })).toBe(false)
     })
   })
 

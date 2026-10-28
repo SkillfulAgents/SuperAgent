@@ -115,7 +115,14 @@ export function useRenameTodo() {
   return useMutation({
     mutationFn: ({ id, title }: { id: string; title: string }) =>
       send<TodoView>(`/api/todos/${id}/title`, 'POST', { title }, 'Failed to rename the todo'),
-    onSuccess: (todo) => putTodo(queryClient, todo),
+    onSuccess: (todo) => {
+      putTodo(queryClient, todo)
+      // Started work is renamed through its session, which the sidebar shows too.
+      if (todo.agentSlug && todo.sessionId) {
+        queryClient.invalidateQueries({ queryKey: ['sessions', todo.agentSlug] })
+        queryClient.invalidateQueries({ queryKey: ['session', todo.sessionId] })
+      }
+    },
     onError: () => refreshBoard(queryClient),
   })
 }
@@ -253,6 +260,7 @@ export function useStartTodo() {
           sessionId = (await createSession.mutateAsync({
             agentSlug: slug,
             origin: 'todo',
+            name: claimed.title.trim() || undefined,
             message: appendAttachedFiles(appendMountedFolders(todoPrompt(claimed), bound), pointedPaths(list)),
             ...(claimed.model ? { model: claimed.model, llmProviderId: claimed.llmProviderId } : {}),
             ...(claimed.effort ? { effort: claimed.effort } : {}),

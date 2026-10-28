@@ -17,10 +17,13 @@ import {
   DialogTitle,
 } from '@renderer/components/ui/dialog'
 import { Input } from '@renderer/components/ui/input'
+import { useUser } from '@renderer/context/user-context'
 import { useRenameTodo, type TodoView } from '@renderer/hooks/use-todos'
 
 export function TodoCardMenu({ todo, onRename, children }: { todo: TodoView; onRename: (todo: TodoView) => void; children: ReactNode }) {
-  if (todo.status === 'draft') return <>{children}</>
+  const { canUseAgent } = useUser()
+  // Renaming started work renames its session, which the server allows from the user role up.
+  if (todo.status === 'draft' || (todo.agentSlug && todo.sessionId && !canUseAgent(todo.agentSlug))) return <>{children}</>
 
   return (
     <ContextMenu>
