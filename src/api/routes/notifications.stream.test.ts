@@ -57,6 +57,9 @@ vi.mock('hono/streaming', async (importOriginal) => {
 
 vi.mock('@shared/lib/notifications/global-feed', () => ({
   globalFeed: {
+    publish: (event: GlobalFeedEvent) => {
+      for (const listener of globalClients) listener(event)
+    },
     subscribe: (listener: (event: GlobalFeedEvent) => void) => {
       globalClients.add(listener)
       return () => {
@@ -278,13 +281,6 @@ describe('GET /api/notifications/stream teardown', () => {
 describe('collaboration hints over the existing stream', () => {
   it('delivers only to the targeted users and releases subscriptions on socket close', async () => {
     authMode.value = true
-    const originalSubscribe = collaborationEvents.subscribeCollaborationEvents
-    const stops: ReturnType<typeof vi.fn>[] = []
-    const spy = vi.spyOn(collaborationEvents, 'subscribeCollaborationEvents').mockImplementation((...args) => {
-      const stop = vi.fn(originalSubscribe(...args))
-      stops.push(stop)
-      return stop
-    })
     const clients = await Promise.all(['owner', 'removed', 'unrelated'].map((userId) => connectSSE(userId)))
     try {
       for (const client of clients) expect(await client.waitForData('"type":"connected"')).toBe(true)
@@ -298,8 +294,7 @@ describe('collaboration hints over the existing stream', () => {
       expect(clients[0].received()).not.toContain('agent_access_revoked')
     } finally {
       clients.forEach((client) => client.destroy())
-      expect(await waitFor(() => stops.length === 3 && stops.every((stop) => stop.mock.calls.length === 1))).toBe(true)
-      spy.mockRestore()
+      expect(await waitFor(() => globalClients.size === 0)).toBe(true)
     }
   })
 })

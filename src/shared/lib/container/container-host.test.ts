@@ -16,6 +16,7 @@ const mockGetStats = vi.fn()
 const mockIsHealthy = vi.fn()
 
 const mockClearRunnerAvailabilityCache = vi.fn()
+const mockGetContainerClientClass = vi.fn((_runner: string) => ({ requiresLocalImage: true, isEligible: () => true }))
 
 const FUSE_FLAGS = '--device /dev/fuse --cap-add SYS_ADMIN'
 const mockVolumeRunFlags = vi.fn((): string | null => FUSE_FLAGS)
@@ -38,7 +39,7 @@ vi.mock('./client-factory', () => ({
     health: (port?: number) => mockHealth(port),
     volumeRunFlags: () => mockVolumeRunFlags(),
   }),
-  getContainerClientClass: () => ({ requiresLocalImage: true }),
+  getContainerClientClass: (runner: string) => mockGetContainerClientClass(runner),
   checkAllRunnersAvailability: vi.fn().mockResolvedValue([]),
   checkImageExists: vi.fn().mockResolvedValue(true),
   pullImage: vi.fn(),
@@ -66,6 +67,7 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
 const mockGetOrCreateHostToken = vi.fn((..._args: unknown[]) => 'hostc_test-token')
 vi.mock('@shared/lib/container/host-token-store', () => ({
   getOrCreateHostToken: (...args: unknown[]) => mockGetOrCreateHostToken(...args),
+  hostTokenForStart: async (...args: unknown[]) => mockGetOrCreateHostToken(...args),
 }))
 
 const mockGetContainerHostUrl = vi.fn()
@@ -198,7 +200,7 @@ vi.mock('@shared/lib/services/mount-service', () => ({
   remounted: (...args: unknown[]) => mockRemounted(...args),
 }))
 
-import { containerHost } from './container-host'
+import { ContainerHost, containerHost } from './container-host'
 
 describe('ContainerRuntime.ensureRunning — env var construction', () => {
   beforeEach(() => {
@@ -1841,5 +1843,52 @@ describe('ContainerHost stale agents', () => {
     containerHost.runtime('a').updateCachedStatus('stopped', null)
     containerHost.dropRuntime('b')
     expect(stale()).toEqual([false, false, true])
+  })
+})
+
+describe('ContainerHost.getReadiness before this process has checked', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    delete process.env.E2E_MOCK
+    mockGetContainerClientClass.mockImplementation((runner: string) => ({
+      requiresLocalImage: runner !== 'cloudflare-container',
+      isEligible: () => true,
+    }))
+  })
+
+  afterEach(() => {
+    mockGetContainerClientClass.mockImplementation(() => ({ requiresLocalImage: true, isEligible: () => true }))
+    mockSettingsState.containerRunner = 'docker'
+  })
+
+  it('reads as ready for a configured runner that needs no local image, without a check', () => {
+    mockSettingsState.containerRunner = 'cloudflare-container'
+    const freshProcess = new ContainerHost()
+
+    expect(freshProcess.getReadiness()).toEqual({ status: 'READY', message: 'Ready (cloudflare-container)', pullProgress: null })
+    expect(checkAllRunnersAvailability).not.toHaveBeenCalled()
+  })
+
+  it('stays checking for a runner that pulls an image', () => {
+    mockSettingsState.containerRunner = 'docker'
+    expect(new ContainerHost().getReadiness().status).toBe('CHECKING')
+  })
+
+  it('stays checking for a runner that needs no image but is not configured in this process', () => {
+    mockSettingsState.containerRunner = 'cloudflare-container'
+    mockGetContainerClientClass.mockImplementation(() => ({ requiresLocalImage: false, isEligible: () => false }))
+    expect(new ContainerHost().getReadiness().status).toBe('CHECKING')
+  })
+
+  it('reports what a check found once one ran', async () => {
+    mockSettingsState.containerRunner = 'cloudflare-container'
+    vi.mocked(checkAllRunnersAvailability).mockResolvedValue([
+      { runner: 'cloudflare-container', installed: false, running: false, available: false, canStart: false, supportsCustomAgentImage: false },
+    ])
+    const freshProcess = new ContainerHost()
+
+    await freshProcess.ensureImageReady()
+
+    expect(freshProcess.getReadiness().status).toBe('RUNTIME_UNAVAILABLE')
   })
 })

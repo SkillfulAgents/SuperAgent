@@ -490,6 +490,17 @@ export const proxyTokens = sqliteTable('proxy_tokens', {
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
 })
 
+// Host state that must outlive one process when the host runs on many
+// isolates: the settings document, small host files, short-lived flow state.
+// `version` is the compare-and-set token; `expires_at` (ms) is null for state
+// that never expires.
+export const hostState = sqliteTable('host_state', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  version: integer('version').notNull(),
+  expiresAt: integer('expires_at'),
+})
+
 // Proxy audit log - structured log of all proxied requests
 export const proxyAuditLog = sqliteTable('proxy_audit_log', {
   id: text('id').primaryKey(),
@@ -1105,3 +1116,14 @@ export type NewChatIntegrationAccess = typeof chatIntegrationAccess.$inferInsert
 export type AuditLogEntry = typeof auditLog.$inferSelect
 export type NewAuditLogEntry = typeof auditLog.$inferInsert
 export type TodoRow = typeof todos.$inferSelect
+
+// =============================================================================
+// Agent summaries: what an agent list shows, written from the actors'
+// `agent_summary` events so a listing reads rows and touches no actor.
+// =============================================================================
+export const agentSummaries = sqliteTable('agent_summaries', {
+  agentSlug: text('agent_slug').primaryKey(),
+  /** The `AgentSummary` JSON as the actor last published it. */
+  summary: text('summary').notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+})

@@ -12,6 +12,7 @@ import {
   CorruptFileError,
 } from '@shared/lib/utils/file-storage'
 import { captureException } from '@shared/lib/error-reporting'
+import { SETTINGS_KEY, hostStateActive, memoScoped, writeScoped } from '@shared/lib/host-state/scope'
 import { persistedSettingsSchema } from './settings-schema'
 import { globalInstructionsSchema } from './global-instructions-schema'
 import { teamBrainRecordSchema, type TeamBrainRecord } from './team-brain-schema'
@@ -181,6 +182,12 @@ export interface AuthSettings {
   maxConcurrentSessions?: number
   /** Sliding lifetime (days) of the mobile device refresh credential. */
   mobileDeviceLifetimeDays?: number
+  /**
+   * How long (seconds) a browser session is read from its signed cookie instead of the database.
+   * Unset or 0: every request reads it from the database. A signed-out, revoked or banned session
+   * keeps working for up to this long, so only a deployment whose database round trip is costly sets it.
+   */
+  sessionCookieCacheSeconds?: number
 
   // Lockout
   accountLockoutThreshold?: number
@@ -687,6 +694,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
  * Never default-then-save here.
  */
 export function loadSettingsStrict(): AppSettings {
+  if (hostStateActive()) return structuredClone(scopedSettings())
   const settingsPath = getSettingsPath()
   let content: string
   try {
@@ -703,6 +711,18 @@ export function loadSettingsStrict(): AppSettings {
   // Validate the boundary (object shape); torn JSON / non-object → throw.
   const raw = parseJsonStrict(settingsPath, content)
   return mergeLoadedSettings(raw)
+}
+
+const SCOPED_SETTINGS_SOURCE = 'host_state:settings'
+
+function parseScopedSettings(raw: string | null): AppSettings {
+  if (raw === null) return structuredClone(DEFAULT_SETTINGS)
+  return mergeLoadedSettings(parseJsonStrict(SCOPED_SETTINGS_SOURCE, raw))
+}
+
+/** This request's settings, parsed once; throws CorruptFileError on a corrupt stored document. */
+function scopedSettings(): AppSettings {
+  return memoScoped(SETTINGS_KEY, parseScopedSettings)
 }
 
 /** Parse + shape-validate raw settings content; throws CorruptFileError on a
@@ -751,6 +771,12 @@ export function loadSettings(): AppSettings {
  * Save settings to the JSON file.
  */
 export function saveSettings(settings: AppSettings): void {
+  if (hostStateActive()) {
+    // A whole-document replace merged against this request's read: a newer
+    // write from another request fails it rather than being overwritten.
+    writeScoped(SETTINGS_KEY, () => JSON.stringify(settings), { rebase: false })
+    return
+  }
   const settingsPath = getSettingsPath()
   const dataDir = getDataDir()
 
@@ -772,6 +798,7 @@ export function saveSettings(settings: AppSettings): void {
 let cachedSettings: AppSettings | null = null
 
 export function getSettings(): AppSettings {
+  if (hostStateActive()) return scopedSettings()
   if (!cachedSettings) {
     cachedSettings = loadSettings()
   }
@@ -789,6 +816,7 @@ export function getSettings(): AppSettings {
  */
 export function updateSettings(settings: AppSettings): void {
   saveSettings(settings)
+  if (hostStateActive()) return
   cachedSettings = settings
 }
 
@@ -805,6 +833,14 @@ export function updateSettings(settings: AppSettings): void {
  * API keys/auth with defaults. Returns the persisted settings.
  */
 export function mutateSettings(mutator: (settings: AppSettings) => void): AppSettings {
+  if (hostStateActive()) {
+    writeScoped(SETTINGS_KEY, (raw) => {
+      const fresh = parseScopedSettings(raw)
+      mutator(fresh)
+      return JSON.stringify(fresh)
+    })
+    return scopedSettings()
+  }
   const fresh = loadSettingsStrict()
   mutator(fresh)
   saveSettings(fresh)

@@ -21,9 +21,7 @@ import type { CreateSessionOptions } from '../container/types'
 let handle: TestDatabase
 let database: AppDatabase
 vi.mock('../db', () => ({ get db() { return database } }))
-const runtime = vi.hoisted(() => ({ create: vi.fn(), send: vi.fn(), start: vi.fn(), receipt: vi.fn(), register: vi.fn(), attach: vi.fn(), subscribed: vi.fn(), subscribe: vi.fn(), broadcast: vi.fn(),
-  // Sends to the session's last event stream.
-  emit: (_event: unknown) => {} }))
+const runtime = vi.hoisted(() => ({ create: vi.fn(), send: vi.fn(), start: vi.fn(), receipt: vi.fn(), register: vi.fn(), attach: vi.fn(), subscribed: vi.fn(), broadcast: vi.fn() }))
 // Through the serializing transport in the transport suite, as callers reach a real actor.
 vi.mock('../agent-actor', async () => {
   const { viaTestTransport } = await import('../agent-actor/testing/via-test-transport')
@@ -33,7 +31,6 @@ vi.mock('../agent-actor', async () => {
     attach: async (id: string) => { if (!runtime.subscribed(id)) await runtime.attach(id, id) },
     live: async (id: string) => ({ activity: 'working', isActive: true, isAwaitingInput: false, streamAttached: runtime.subscribed(id), openRequests: [], runtime: null }) },
   messages: { findLastEntry: runtime.receipt, broadcastEvent: runtime.broadcast,
-    subscribe: runtime.subscribe,
     // The actor's delivery: the echo with its queued flag, then the message.
     deliver: async (request: { sessionId: string; content: string; uuid?: string; echo?: object }) => {
       if (request.echo) runtime.broadcast(request.sessionId, { type: 'user_message', ...request.echo, uuid: request.uuid, queued: true })
@@ -87,6 +84,12 @@ class RelayTasks extends Tasks {
 const relayBinding = { endpointId: 'whep_tasks', url: 'https://relay.test/v1/hooks/whep_tasks', scope: 'sub_owner' }
 const relayEvent = (id: string) => ({ id, endpointId: 'whep_tasks', type: 'CUSTOM_WEBHOOK', payload: {}, createdAt: '' })
 let manager: AgentIntegrationManager
+/** An event on the last session the manager followed, as the actor's host port delivers it. */
+function emit(event: unknown): void {
+  const followed = [...(manager as unknown as { sessionFollowers: Map<string, unknown> }).sessionFollowers.keys()]
+  const sessionId = followed.at(-1)
+  if (sessionId) manager.handleSessionEvent({ agentSlug: 'agent', sessionId, event: event as never })
+}
 let adapter: Chat | Tasks
 async function start(provider: 'slack' | 'telegram' | 'imessage' | 'linear' = 'slack') {
   if (!(await getAgentIntegration('integration'))) await database.insert(chatIntegrations).values({
@@ -121,9 +124,6 @@ beforeEach(async () => {
     return { id: `session-${runtime.create.mock.calls.length}` }
   })
   runtime.attach.mockResolvedValue(undefined); runtime.subscribed.mockReturnValue(true)
-  runtime.subscribe.mockImplementation(async () => new ReadableStream({ start(controller) {
-    runtime.emit = (event) => controller.enqueue(event)
-  } }))
   runtime.send.mockResolvedValue({}); runtime.start.mockResolvedValue(undefined); runtime.receipt.mockResolvedValue(null)
 })
 afterEach(async () => { vi.restoreAllMocks(); manager?.stop(); await new Promise(resolve => setTimeout(resolve, 20)); await handle.close() })
@@ -315,7 +315,7 @@ describe('shared manager durability with real integration storage', () => {
     finishCreate()
     await vi.waitFor(async () => expect((await rows())[0]).toMatchObject({ state: 'delivered', sessionId: 'session-1' }))
     expect((await getAgentIntegrationSession('integration', 'conversation'))?.sessionId).toBe('session-1')
-    runtime.emit({ type: 'session_idle' })
+    emit({ type: 'session_idle' })
     await vi.waitFor(() => expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1' }), expect.objectContaining({ type: 'turn-completed' })))
     await adapter.input('follow-up')
     await vi.waitFor(() => expect(runtime.send).toHaveBeenCalledWith('session-1', expect.stringContaining('follow-up'), expect.any(String)))
@@ -345,7 +345,7 @@ describe('shared manager durability with real integration storage', () => {
     } finally { finishDisconnect(); await reconnect }
     await vi.waitFor(() => expect(runtime.attach).toHaveBeenCalledWith('session-1', 'session-1'))
     const deliver = vi.spyOn(adapter, 'deliver')
-    runtime.emit({ type: 'session_idle' })
+    emit({ type: 'session_idle' })
     await vi.waitFor(() => expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1' }), expect.objectContaining({ type: 'turn-completed' })))
   })
   it.each(['pause', 'cancel', 'authorization'] as const)('%s while creation is in flight prevents a late mapping', async action => {

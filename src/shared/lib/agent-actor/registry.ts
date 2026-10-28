@@ -14,6 +14,7 @@ import { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services
 import { localHostPort } from '@shared/lib/host/local-host-port'
 import { LocalAgentActor, type LocalActorDeps } from './local-agent-actor'
 import { serializingActor } from './serializing-actor'
+import { loopbackActor } from './network-actor'
 import type { AgentState } from './agent-state'
 import type { AgentStoreDirectory } from './store-directory'
 import type { AgentActor, AgentRegistry, AgentSlug } from './types'
@@ -145,6 +146,34 @@ if (process.env.NODE_ENV !== 'production') {
   globalForRegistry.agentActorStates = agentActorStates
 }
 
+/** What a deployment whose agents live outside this process supplies to `agentRegistry`. */
+export interface AgentRegistryDeployment {
+  /** Where each agent's files are: see `LocalActorDeps.createSessionStore`. */
+  createSessionStore?: LocalActorDeps['createSessionStore']
+  /** How callers reach each agent, e.g. `remoteActor` to an actor in another process. */
+  transport?: (actor: AgentActor) => AgentActor
+}
+
+const deployment: AgentRegistryDeployment = {}
+
+/**
+ * Set once at boot, before the first `agentRegistry.get`: a handle already
+ * handed out keeps the store and transport it was made with. Desktop and the
+ * Node host never call it.
+ */
+export function configureAgentRegistry(options: AgentRegistryDeployment): void {
+  Object.assign(deployment, options)
+}
+
+// Development and tests only: every actor reached through a test transport.
+const testTransport = process.env.NODE_ENV === 'production'
+  ? undefined
+  : process.env.SUPERAGENT_ACTOR_TRANSPORT === 'serializing'
+    ? serializingActor
+    : process.env.SUPERAGENT_ACTOR_TRANSPORT === 'network'
+      ? loopbackActor
+      : undefined
+
 // Getters, not values: each dependency is read when an actor method runs, not
 // when this module loads. A test that mocks one of these modules therefore
 // intercepts exactly the call it always intercepted, and the others are never
@@ -198,10 +227,12 @@ export const agentRegistry: AgentRegistry = createAgentRegistry({
   get host() {
     return localHostPort
   },
+  get createSessionStore() {
+    return deployment.createSessionStore
+  },
 }, {
   states: agentActorStates,
-  // Development and tests only: every actor reached through the serializing test transport.
-  ...(process.env.NODE_ENV !== 'production' && process.env.SUPERAGENT_ACTOR_TRANSPORT === 'serializing'
-    ? { transport: serializingActor }
-    : {}),
+  get transport() {
+    return deployment.transport ?? testTransport
+  },
 })

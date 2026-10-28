@@ -24,7 +24,7 @@ import { db } from '@shared/lib/db'
 import { agentConnectedAccounts, connectedAccounts } from '@shared/lib/db/schema'
 import { eq } from 'drizzle-orm'
 import { getOrCreateProxyToken } from '@shared/lib/proxy/token-store'
-import { getOrCreateHostToken } from '@shared/lib/container/host-token-store'
+import { hostTokenForStart } from '@shared/lib/container/host-token-store'
 import { getSettings } from '@shared/lib/config/settings'
 import { seedBrowserProfileFromChrome } from '@shared/lib/browser/seed-browser-profile'
 import { displayNameFromInstructions } from '@shared/lib/utils/agent-display-name'
@@ -128,6 +128,7 @@ export class ContainerRuntime {
    * or the runtime is dropped; the host re-arms it when the timeout changes.
    */
   readonly idleAlarm = new IdleAlarm({
+    agentSlug: () => this.slug,
     timeoutMs: () => (getSettings().app?.autoSleepTimeoutMinutes ?? 30) * 60_000,
     lastActivityAt: () => this.sleepableSince(),
     isBusy: () => this.isBusy(),
@@ -620,7 +621,7 @@ export class ContainerRuntime {
     // Authenticates the HOST to the container API (the reverse direction of
     // PROXY_TOKEN, which the agent legitimately holds). The container server
     // strips this from its env before spawning the CLI.
-    envVars['SUPERAGENT_HOST_TOKEN'] = getOrCreateHostToken(slug)
+    envVars['SUPERAGENT_HOST_TOKEN'] = await hostTokenForStart(slug)
 
     // Fetch connected accounts for this agent
     const accountMappings = await db

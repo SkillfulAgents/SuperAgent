@@ -1,7 +1,9 @@
 import { Hono, type Context } from 'hono'
 import { ttsSynthesisSchema } from '@shared/lib/voice/tts-types'
 import { VoiceProviderError } from '@shared/lib/voice/provider-error'
-import { LiveSessionRegistry } from '@shared/lib/voice/live-session-registry'
+import { LIVE_SESSION_MAX_MS, LiveSessionRegistry } from '@shared/lib/voice/live-session-registry'
+import { expiringMap } from '@shared/lib/host-state/expiring-map'
+import { sharedLiveSessionSchema } from '@shared/lib/voice/shared-live-session-schema'
 import { z } from 'zod'
 import { limitJsonBody, type LimitedJsonBodyEnv } from '../middleware/limit-json-body'
 import { Authenticated, ResolveAgent, AgentUser, getAgentId } from '../middleware/auth'
@@ -71,6 +73,14 @@ function ttsError(c: Context<LimitedJsonBodyEnv>, error: unknown, fallback: stri
 // retries and expiry after the configured provider changes.
 const liveSessions = new LiveSessionRegistry()
 const pendingLiveStarts = new Map<string, number>()
+// What any process needs to close a session this one opened: the release may
+// reach another process, and an open provider session keeps billing.
+const sharedLiveSessions = expiringMap('voice-live', LIVE_SESSION_MAX_MS, sharedLiveSessionSchema)
+const liveKey = (owner: string, handle: string) => `${owner}:${handle}`
+
+async function openLiveSessionCount(owner: string): Promise<number> {
+  return (await sharedLiveSessions.values(`${owner}:`)).filter((session) => !session.closing).length
+}
 // `sessionId` lets the host look up where the conversation is taking place (a
 // meeting); it never carries instructions of its own.
 const liveSessionSchema = z.object({ sdp: z.string().min(1).max(64000), history: voiceHistorySchema, sessionId: z.string().min(1).max(200).optional() })
@@ -82,11 +92,12 @@ async function createLiveSession(c: Context<LimitedJsonBodyEnv>) {
   if (!parsed.success) return c.json({ error: 'Invalid Live session request.' }, 400)
   const owner = getCurrentUserId(c)
   const pending = pendingLiveStarts.get(owner) ?? 0
-  if (pending + liveSessions.activeCount(owner) >= 4) {
-    return c.json({ error: 'Close an existing voice session before starting another.' }, 429)
-  }
+  // Counted before the await below, so a concurrent start sees this one.
   pendingLiveStarts.set(owner, pending + 1)
   try {
+    if (pending + await openLiveSessionCount(owner) >= 4) {
+      return c.json({ error: 'Close an existing voice session before starting another.' }, 429)
+    }
     let agentContext: LiveAgentContext | undefined
     if (c.req.param('id')) {
       // Only the protected route resolves an agent. Load instructions after ACL
@@ -108,8 +119,9 @@ async function createLiveSession(c: Context<LimitedJsonBodyEnv>) {
       ? await conversation.createLiveSession(parsed.data.sdp, parsed.data.history, agentContext)
       : await conversation.createLiveSession(parsed.data.sdp, parsed.data.history)
     const registered = liveSessions.add(owner, () => conversation.closeLiveSession(answer.session.id, apiKey))
+    await sharedLiveSessions.set(liveKey(owner, registered.handle), { owner, provider: provider.id, providerSessionId: answer.session.id, closing: false })
     if (c.req.raw.signal.aborted) {
-      await liveSessions.release(registered.handle, owner)
+      await releaseLiveSession(registered.handle, owner)
       return c.json({ error: 'Voice connection request was cancelled.' }, 408)
     }
     return c.json({ ...answer, ...registered }, 201)
@@ -124,8 +136,26 @@ async function createLiveSession(c: Context<LimitedJsonBodyEnv>) {
 // Keep generic startup for older renderers; current conversations use the ACL-protected route.
 voice.post('/live/session', createLiveSession)
 voice.post('/live/agents/:id/session', ResolveAgent(), AgentUser(), createLiveSession)
+/**
+ * Close a session this process opened with its own cleanup (retries, expiry),
+ * or one another process opened with the provider it was opened on.
+ */
+async function releaseLiveSession(handle: string, owner: string): Promise<'missing' | 'closed' | 'closing'> {
+  const key = liveKey(owner, handle)
+  let result = await liveSessions.release(handle, owner)
+  if (result === 'missing') {
+    const shared = await sharedLiveSessions.get(key)
+    if (!shared) return 'missing'
+    const conversation = getVoiceProvider(shared.provider).getLiveConversation()
+    result = await (conversation?.closeLiveSession(shared.providerSessionId).then(() => 'closed' as const, () => 'closing' as const) ?? 'closing')
+  }
+  if (result === 'closed') await sharedLiveSessions.delete(key)
+  else await sharedLiveSessions.update(key, (session) => ({ ...session, closing: true }))
+  return result
+}
+
 voice.delete('/live/session/:handle', async (c) => {
-  const result = await liveSessions.release(c.req.param('handle'), getCurrentUserId(c))
+  const result = await releaseLiveSession(c.req.param('handle'), getCurrentUserId(c))
   if (result === 'missing') return c.json({ error: 'Voice session not found.' }, 404)
   return c.json({ closed: result === 'closed', closing: result === 'closing' }, result === 'closed' ? 200 : 202)
 })

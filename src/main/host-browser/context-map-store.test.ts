@@ -155,3 +155,52 @@ describe('getOrCreateMapping — dedups same-key creates (no duplicate context l
     expect(creates).toBe(1) // the paid context was created — confirms the leak surface this guards
   })
 })
+
+describe('getOrCreateMapping — in a shared host state (requests on many isolates)', () => {
+  async function sharedStore() {
+    const { libsql } = await import('@shared/lib/db/drivers/libsql')
+    const { migrateFromBundle } = await import('@shared/lib/db/open-database')
+    const { databaseHostStateStore } = await import('@shared/lib/host-state/store')
+    const handle = await libsql(':memory:').open()
+    await migrateFromBundle(handle.db)
+    return { handle, store: databaseHostStateStore(handle.db) }
+  }
+
+  it('returns in a later request the context an earlier request created, with nothing on disk', async () => {
+    const { runWithHostState } = await import('@shared/lib/host-state/scope')
+    const { handle, store } = await sharedStore()
+    const file = path.join(tmpDir, 'platform-browserbase-contexts.json')
+    let creates = 0
+    const create = async () => `ctx-${++creates}`
+
+    const first = await runWithHostState(store, () => getOrCreateMapping(file, 'sales-assistant', create))
+    const later = await runWithHostState(store, () => getOrCreateMapping(file, 'sales-assistant', create))
+
+    expect([first, later]).toEqual(['ctx-1', 'ctx-1'])
+    expect(creates).toBe(1)
+    expect(fs.existsSync(file)).toBe(false)
+    await handle.close()
+  })
+
+  it('gives two requests that create at once the same context', async () => {
+    const { runWithHostState } = await import('@shared/lib/host-state/scope')
+    const { handle, store } = await sharedStore()
+    const file = path.join(tmpDir, 'platform-browserbase-contexts.json')
+    let creates = 0
+    // Each request runs its own create, as two isolates would.
+    const create = async () => {
+      const id = `ctx-${++creates}`
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      return id
+    }
+
+    const ids = await Promise.all([
+      runWithHostState(store, () => getOrCreateMapping(file, 'inbox-triage', create)),
+      runWithHostState(store, () => getOrCreateMapping(file, 'inbox-triage', create)),
+    ])
+
+    expect(ids[0]).toBe(ids[1])
+    expect(await runWithHostState(store, () => getOrCreateMapping(file, 'inbox-triage', create))).toBe(ids[0])
+    await handle.close()
+  })
+})

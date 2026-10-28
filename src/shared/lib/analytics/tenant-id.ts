@@ -2,16 +2,20 @@ import fs from 'fs'
 import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
 import { getDataDir } from '../config/data-dir'
+import { defineSingletonHostFile, hostFileKey, hostStateActive, readScoped } from '../host-state/scope'
 
 const TENANT_ID_FILE = 'tenant-id'
 
 let cachedTenantId: string | null = null
+
+defineSingletonHostFile(TENANT_ID_FILE, () => uuidv4())
 
 /**
  * Get the persistent tenant ID for this installation.
  * Generated once on first access and stored in the data directory.
  */
 export function getTenantId(): string {
+  if (hostStateActive()) return readScoped(hostFileKey(TENANT_ID_FILE))!.trim()
   if (cachedTenantId) return cachedTenantId
 
   const filePath = path.join(getDataDir(), TENANT_ID_FILE)

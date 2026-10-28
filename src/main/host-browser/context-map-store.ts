@@ -19,6 +19,7 @@ import {
   withFileLock,
 } from '@shared/lib/utils/file-storage'
 import { captureException } from '@shared/lib/error-reporting'
+import { currentStore, hostStateActive } from '@shared/lib/host-state/scope'
 
 const contextMapSchema = z.record(z.string(), z.string())
 
@@ -72,6 +73,7 @@ export async function getOrCreateMapping(
   key: string,
   create: () => Promise<string>,
 ): Promise<string> {
+  if (hostStateActive()) return getOrCreateSharedMapping(path.basename(filePath), key, create)
   const existing = loadContextMap(filePath)[key]
   if (existing) return existing
 
@@ -100,6 +102,42 @@ export async function getOrCreateMapping(
       throw err
     }
     return contextId
+  })()
+  inflightContextCreations.set(inflightKey, p)
+  try {
+    return await p
+  } finally {
+    inflightContextCreations.delete(inflightKey)
+  }
+}
+
+/**
+ * The same mapping in the shared host state, for a host that serves requests
+ * on many isolates: the file would be empty on the next request, so every
+ * launch would create (and bill) a new context and lose the agent's sign-ins.
+ * Two isolates may still both create one; the first stored wins and the other
+ * is reported as orphaned, as a failed persist is.
+ */
+async function getOrCreateSharedMapping(file: string, key: string, create: () => Promise<string>): Promise<string> {
+  const store = currentStore()
+  const storeKey = `browser-context:${file}:${key}`
+  const existing = await store.get(storeKey)
+  if (existing) return existing.value
+
+  const inflightKey = `${storeKey}::shared`
+  const pending = inflightContextCreations.get(inflightKey)
+  if (pending) return pending
+
+  const p = (async () => {
+    const contextId = await create()
+    const stored = await store.insertIfAbsent(storeKey, contextId)
+    if (stored.value !== contextId) {
+      captureException(new Error('Another process stored a context for this key first'), {
+        tags: { area: 'host-browser-context-map', op: 'persist' },
+        extra: { key, orphanedContextId: contextId },
+      })
+    }
+    return stored.value
   })()
   inflightContextCreations.set(inflightKey, p)
   try {

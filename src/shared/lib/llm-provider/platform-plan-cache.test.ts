@@ -64,10 +64,11 @@ describe('platformPlanCache (SUP-1124)', () => {
   })
 
   it('does not let a load that began before clear() restore what it cleared', async () => {
-    let finish: (policy: PlatformPlanPolicy) => void = () => {}
+    let finish: ((policy: PlatformPlanPolicy) => void) | undefined
     const pending = platformPlanCache.get(KEY, () => new Promise((resolve) => { finish = resolve }))
+    await vi.waitFor(() => expect(finish).toBeDefined())
     platformPlanCache.clear()
-    finish(PRO_30)
+    finish!(PRO_30)
     await pending
     const load = vi.fn(async () => PRO_200)
     expect(await platformPlanCache.get(KEY, load)).toEqual(PRO_200)

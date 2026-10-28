@@ -6,6 +6,27 @@ import { reportCloudSessionRejected } from './cloud-session'
 import { addRendererBreadcrumb } from './error-reporting'
 import { HttpError } from './http-error'
 import { WORKSPACE_UNAVAILABLE_HEADER, WorkspaceUnavailableError } from './workspace-unavailable'
+import { AGENT_ID_LENGTH } from '@shared/lib/utils/agent-id'
+
+// Agents the renderer opened before their create answered, by id: a request about one of them
+// waits for its create, so it never reaches the host before the agent exists.
+const pendingAgentCreates = new Map<string, Promise<unknown>>()
+const AGENT_IN_PATH_RE = /\/agents\/([a-z0-9-]+)/
+
+/** Holds every request about agent `id` until `creation` settles. */
+export function holdAgentRequestsUntilCreated(id: string, creation: Promise<unknown>): void {
+  pendingAgentCreates.set(id, creation)
+  void creation.catch(() => {}).finally(() => {
+    if (pendingAgentCreates.get(id) === creation) pendingAgentCreates.delete(id)
+  })
+}
+
+function pendingCreateFor(path: string): Promise<unknown> | undefined {
+  if (pendingAgentCreates.size === 0) return undefined
+  const segment = AGENT_IN_PATH_RE.exec(path)?.[1]
+  // A display slug ends with the id: `untitled-{id}`.
+  return segment ? pendingAgentCreates.get(segment.slice(-AGENT_ID_LENGTH)) : undefined
+}
 
 /**
  * Fetch wrapper that prepends the API base URL.
@@ -20,6 +41,8 @@ export async function apiFetch(
   path: string,
   init?: RequestInit
 ): Promise<Response> {
+  const pending = pendingCreateFor(path)
+  if (pending) await pending.catch(() => {})
   const baseUrl = getApiBaseUrl()
   const response = await fetch(`${baseUrl}${path}`, init)
   handleWorkspaceUnavailableResponse(path, (name) => response.headers.get(name))

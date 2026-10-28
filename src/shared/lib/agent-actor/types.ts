@@ -252,8 +252,10 @@ export interface AgentCatalog {
   exists(slug: AgentSlug): Promise<boolean>
   /** A fresh, unused agent slug. Nothing exists until `insert` records it. */
   mint(): Promise<AgentSlug>
-  /** Record a new local agent. The caller has written its workspace already. */
-  insert(record: { slug: AgentSlug; name: string; description?: string; createdAt: Date }): Promise<AgentRecord>
+  /** Whether a slug is unused, so a caller-chosen one may be recorded. */
+  available(slug: AgentSlug): Promise<boolean>
+  /** Record a new local agent; the avatar is random unless given. The caller has written its workspace already. */
+  insert(record: { slug: AgentSlug; name: string; description?: string; createdAt: Date; avatar?: AgentAvatar }): Promise<AgentRecord>
   /** Change an agent's identity or appearance; null when there is no such agent. */
   update(slug: AgentSlug, changes: AgentIdentityChanges): Promise<AgentRecord | null>
   /** The agent slug for a display slug or a slug, or null when there is no such agent. */
@@ -470,6 +472,15 @@ export interface SessionOps {
    * Attached and busy, the live stream already carries what it needs.
    */
   attach(sessionId: string, options?: { metadata?: SessionMetadata | null; replayTerminal?: boolean }): Promise<void>
+
+  /**
+   * Rebuild what this actor held in memory from its running container, after
+   * the actor itself restarted: sessions with a turn in flight or a parked ask
+   * are attached, the asks registered again (recovered), and user messages
+   * held for an interrupted recovery are sent. Nothing when the container is
+   * not running.
+   */
+  recover(): Promise<{ attached: string[]; requests: string[]; resent: string[] }>
 
   /**
    * The session was opened by a notice, not by a person (voice mode started

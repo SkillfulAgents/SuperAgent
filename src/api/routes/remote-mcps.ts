@@ -422,7 +422,7 @@ remoteMcps.get('/oauth-callback', async (c) => {
   const iss = c.req.query('iss')
 
   if (error) {
-    const issuerValidation = validateAndConsumeOAuthErrorResponse(state, iss)
+    const issuerValidation = await validateAndConsumeOAuthErrorResponse(state, iss)
     if (!issuerValidation.valid) {
       return c.html(mcpOAuthCallbackBody(
         { type: 'mcp-oauth-callback', state, success: false, error: 'OAuth callback validation failed' },

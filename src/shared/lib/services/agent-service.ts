@@ -11,10 +11,12 @@
  * edit and the host reads them back.
  */
 
+import { NO_AGENT_SUMMARY, readAgentSummaries, storedAgentSummariesInUse } from './agent-summaries'
 import {
   parseMarkdownWithFrontmatter,
   serializeMarkdownWithFrontmatter,
   displaySlug,
+  isMintedAgentId,
 } from '@shared/lib/utils/file-storage'
 import {
   AgentFrontmatter,
@@ -238,6 +240,11 @@ export async function listAgents(): Promise<AgentRecord[]> {
 export async function listAgentsWithStatus(options: { slugs?: string[] } = {}): Promise<ApiAgent[]> {
   const records = options.slugs ? await agentCatalog.getMany(options.slugs) : await agentCatalog.records()
 
+  if (storedAgentSummariesInUse()) {
+    const summaries = await readAgentSummaries(records.map((record) => record.slug))
+    return records.map((record) => toApiAgent(record, (summaries.get(record.slug) ?? NO_AGENT_SUMMARY).container))
+  }
+
   // The cached container statuses: no docker process is spawned.
   return Promise.all(records.map(async (record) => toApiAgent(record, (await agentRegistry.get(record.slug).live()).container)))
 }
@@ -250,10 +257,10 @@ export async function listAgentsWithStatus(options: { slugs?: string[] } = {}): 
  * Create a new agent (returns API format with stopped status)
  */
 export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
-  const { name: rawName, description, instructions } = input
+  const { name: rawName, description, instructions, id, avatar } = input
   const name = String(rawName)
   const body = instructions || DEFAULT_AGENT_INSTRUCTIONS
-  const record = await writeNewAgent({ name, description: description || undefined }, body)
+  const record = await writeNewAgent({ name, description: description || undefined, id, avatar }, body)
   return newAgentResponse(record, body)
 }
 
@@ -264,14 +271,18 @@ export async function createAgent(input: CreateAgentInput): Promise<ApiAgent> {
  * nothing lists. A workspace write that fails takes the row with it.
  */
 async function writeNewAgent(
-  identity: { name: string; description?: string },
+  identity: { name: string; description?: string; id?: string; avatar?: AgentAvatar },
   body: string,
 ): Promise<AgentRecord> {
-  // Mint an opaque id — the name no longer feeds the folder, so the "Untitled"
+  // An opaque id — the name no longer feeds the folder, so the "Untitled"
   // promptless-create flow can't poison it.
-  const slug = await agentCatalog.mint()
+  const slug = identity.id ?? await agentCatalog.mint()
+  if (identity.id !== undefined) {
+    if (!isMintedAgentId(identity.id)) throw new AgentIdError('invalid', 'An agent id must be 10 lowercase letters or digits')
+    if (!(await agentCatalog.available(identity.id))) throw new AgentIdError('taken', 'That agent id is already in use')
+  }
   const createdAt = new Date()
-  const record = await agentCatalog.insert({ slug, name: identity.name, description: identity.description, createdAt })
+  const record = await agentCatalog.insert({ slug, name: identity.name, description: identity.description, createdAt, avatar: identity.avatar })
 
   const frontmatter: AgentFrontmatter = { name: identity.name, createdAt: createdAt.toISOString() }
   if (identity.description) {
@@ -414,6 +425,14 @@ export async function syncAgentIdentityFromWorkspace(slug: string): Promise<Arra
  * agent is preserved and the operation is retryable. The DELETE route catches
  * this to surface an actionable message instead of a generic 500.
  */
+/** A caller-chosen agent id that cannot be used: malformed, or already in use. */
+export class AgentIdError extends Error {
+  constructor(readonly code: 'invalid' | 'taken', message: string) {
+    super(message)
+    this.name = 'AgentIdError'
+  }
+}
+
 export class AgentContainerStopError extends Error {
   readonly slug: string
   constructor(slug: string, cause: unknown) {

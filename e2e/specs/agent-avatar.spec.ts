@@ -80,7 +80,7 @@ test('avatar changes persist across reloads and reach another browser', async ({
 
     // A fresh browser has no local storage or shared query cache.
     const otherPage = await otherBrowser.newPage()
-    const streamReady = otherPage.waitForResponse(response => response.url().endsWith('/api/notifications/stream'))
+    const streamReady = otherPage.waitForEvent('websocket', socket => socket.url().endsWith('/api/notifications/socket'))
     await otherPage.goto(`/agents/${agent.slug}`)
     await streamReady
     const otherPicker = otherPage.getByTestId('agent-avatar-picker')

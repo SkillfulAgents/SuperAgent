@@ -1,5 +1,5 @@
 
-import { Bell, Brain, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, ListTodo, SquareMousePointer, LogOut, Compass, MoonStar, SquarePen } from 'lucide-react'
+import { Bell, Brain, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Loader2, Plus, Search, Settings, AlertTriangle, LayoutGrid, ListTodo, SquareMousePointer, LogOut, Compass, MoonStar, SquarePen } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
@@ -1783,7 +1783,7 @@ export function AppSidebar() {
                     disabled={isCreatingAgent}
                     data-testid="new-agent-button"
                   >
-                    <Plus className="h-4 w-4" />
+                    {isCreatingAgent ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
                     <span>New Agent</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>

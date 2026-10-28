@@ -104,6 +104,8 @@ const PINNED_CALL_SITES: Record<string, string> = {
     'derives the origin even though the host does. The `window.location.host` ' +
     'fallback is correct — getApiBaseUrl() is empty in web mode, where ' +
     'same-origin is the right answer. Re-read this if the API origin ever moves.',
+  'components/notifications/global-notification-handler.tsx::GlobalNotificationHandler::WebSocket(wsUrl)':
+    'the same ws/wss scheme surgery as use-browser-stream.ts above, for the global notifications socket',
   'lib/voice/providers/deepgram/transcription.ts::DeepgramSttAdapter.createSocket::WebSocket(url)':
     'third-party Deepgram STT endpoint, not this API — must NOT follow the API origin',
   'lib/voice/providers/openai/transcription.ts::OpenAISttAdapter.createSocket::WebSocket(url)':
@@ -152,7 +154,7 @@ const DIRECT_BASE_URL_CONSUMERS: Record<string, string> = {
     'getAgentFileUrl() — the one place a workspace-file URL is composed. Every file surface reaches it through describeWorkspaceFile() in lib/workspace-file.ts rather than directly: the preview tray\'s previewers, the unsupported renderer\'s and delivered-file row\'s download links, a sent message\'s image chip, and file:///workspace Markdown images resolved to the authenticated route. None of those can carry a request header, and building the URL once here is what keeps their encoding and cache-busting from drifting apart',
   'components/messages/message-input.tsx': 'fire-and-forget typing ping (deliberately not awaited)',
   'components/notifications/global-notification-handler.tsx':
-    'EventSource — global notification stream',
+    'WebSocket — global notification stream',
   'hooks/use-message-stream.ts': 'EventSource — per-session message stream',
   'hooks/use-browser-stream.ts': 'WebSocket — browser view frames',
   'components/meeting/meeting-participant-page.tsx':
