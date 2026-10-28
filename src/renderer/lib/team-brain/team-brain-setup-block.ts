@@ -21,14 +21,14 @@ const SCHEDULE_TEXT: Record<TeamBrainSchedule, string> = {
 export function fillTeamBrainSetupBlock(
   instructions: string,
   { agentSlug, brainPath, schedule, setUpBy, accounts }: {
-    agentSlug: string; brainPath: string; schedule: TeamBrainSchedule; setUpBy: { name: string; email: string } | null
+    agentSlug: string; brainPath: string; schedule: TeamBrainSchedule | null; setUpBy: { name: string; email: string } | null
     accounts: { toolkitSlug: string; status: string }[] | undefined
   },
 ): string {
   let filled = instructions
     .replace('`{{brain_path}}`', () => `\`${brainPath}\``)
     .replace('`{{agent_slug}}`', () => `\`${agentSlug}\``)
-    .replace('`{{schedule}}`', SCHEDULE_TEXT[schedule])
+    .replace('`{{schedule}}`', schedule ? SCHEDULE_TEXT[schedule] : 'none')
   if (setUpBy) filled = filled.replace('`{{set_up_by}}`', () => `\`${setUpByText(setUpBy)}\``)
   if (accounts) filled = filled.replace('`{{connected_accounts}}`', () => `\`${connectedText(accounts)}\``)
   return filled

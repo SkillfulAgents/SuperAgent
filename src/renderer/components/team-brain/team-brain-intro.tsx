@@ -63,7 +63,7 @@ export function TeamBrainIntro({ onStart }: { onStart?: () => void }) {
           <span className="block">One source of truth for every agent.</span>
           <span className="block text-muted-foreground">Organized and maintained autonomously.</span>
         </h1>
-        <p className="mt-5 max-w-xl text-sm text-muted-foreground md:text-base">
+        <p className="mt-5 max-w-xl text-sm font-normal text-muted-foreground/80 md:text-base">
           Team Brain syncs essential context from your tools and agents into a shared file system. Your agents do better
           work, faster, with less input from you.
         </p>

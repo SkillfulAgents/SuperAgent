@@ -21,7 +21,7 @@ import type { ApiAgent } from '@renderer/hooks/use-agents'
  * dictation as Agent Home, in the session composer's glass (it floats over
  * the tree); Agent Home's voice-mode and expand buttons are left out.
  */
-export function TeamBrainHomeComposer({ agent }: { agent: ApiAgent }) {
+export function TeamBrainHomeComposer({ agent, readOnly = false }: { agent: ApiAgent; readOnly?: boolean }) {
   const navigate = useNavigate()
   const { data: runtimeStatus, isPending: isRuntimePending } = useRuntimeStatus()
   const isRuntimeReady = isRuntimePending || runtimeStatus?.runtimeReadiness?.status === 'READY'
@@ -65,7 +65,7 @@ export function TeamBrainHomeComposer({ agent }: { agent: ApiAgent }) {
           onChange={composer.setMessage}
           onKeyDown={handleKeyDown}
           onPaste={composer.handlePaste}
-          placeholder="Ask Team Brain anything, or tell it something to keep…"
+          placeholder={readOnly ? 'Ask Team Brain anything…' : 'Ask Team Brain anything, or tell it something to keep…'}
           disabled={isDisabled}
           rows={2}
           dataTestId="team-brain-message-input"

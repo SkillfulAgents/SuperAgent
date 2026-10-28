@@ -168,10 +168,17 @@ function OverviewBody({
   const finishLoading = useCallback(() => setLoadingDone(true), [])
   const location = useTeamBrainLocation(agent)
   const noDrive = !!mounts && !mounts.some((mount) => mount.volumeId === volumeId)
+  // Another workspace keeps the brain and this one only reads it, as its own drive says. Until the drive is read
+  // neither the writer's status and syncs nor the read-only ones show.
+  const readOnly = !!useBrainMount(agent)?.readOnly
   const { front, index, rest } = useMemo(() => splitFrontPages(drive), [drive])
   const tasks = useBrainTasks(agentSlug)
   const active = tasks.some((task) => task.status === 'pending')
-  const { data: syncs = [], isError: syncsUnreadable } = useTeamBrainSyncs(agentSlug, readable)
+  // Read-only, the syncs are the other workspace's, so none are read here.
+  // A drive list that can't be read shows the page as it was before read-only existed, rather than nothing.
+  const known = !!mounts || mountsUnreadable
+  const showSyncs = known && !readOnly
+  const { data: syncs = [], isError: syncsUnreadable } = useTeamBrainSyncs(agentSlug, showSyncs ? readable : undefined)
   // Recent sessions: what a person started here, and any scheduled run waiting on someone.
   const { data: sessions } = useSessions(agentSlug)
   const [allSessions, setAllSessions] = useState(false)
@@ -239,7 +246,9 @@ function OverviewBody({
             // What went wrong is in the banner at the top.
             <TreeNote height={treeHeight}>The tree shows once the drive can be read.</TreeNote>
           ) : ready && loadingDone && drive.length === 0 ? (
-            <TreeNote height={treeHeight}>Nothing in the drive yet. Team Brain fills it as it builds the brain.</TreeNote>
+            <TreeNote height={treeHeight}>
+              {readOnly ? 'Nothing in this folder yet. Pages appear as they’re added where it’s managed.' : 'Nothing in the drive yet. Team Brain fills it as it builds the brain.'}
+            </TreeNote>
           ) : ready && loadingDone ? (
             <TeamBrainRadial
               drive={rest}
@@ -285,8 +294,8 @@ function OverviewBody({
               <div aria-hidden="true" className="team-brain-dock-cover pointer-events-none absolute -inset-x-6 -bottom-7 -z-10 bg-background" style={{ top: -treeTop }} />
               {/* On the page's glass, with the composer's buttons' corners, so it reads over the tree as it passes behind. */}
               <p className={cn('flex items-center gap-1.5 rounded-md px-3 py-1 text-sm text-muted-foreground', GLASS_SURFACE)} data-testid="team-brain-status">
-                <span className={cn('inline-block h-1.5 w-1.5 rounded-full', active ? 'bg-green-500' : 'bg-muted-foreground')} aria-hidden="true" />
-                {syncLine(active, tasks)}
+                <span className={cn('inline-block h-1.5 w-1.5 rounded-full', active && !readOnly ? 'bg-green-500' : 'bg-muted-foreground')} aria-hidden="true" />
+                {known && (readOnly ? 'Read-only' : syncLine(active, tasks))}
               </p>
               {/* Opens the settings panel: where it lives, the schedule, sources, agents, turning it off. */}
               <Button
@@ -305,7 +314,7 @@ function OverviewBody({
             </header>
             {/* Talk to it, as on Agent Home: a message starts a session with the Team Brain agent. Glass, as the session's
                 composer is, so the tree shows through it as it passes over. */}
-            <TeamBrainHomeComposer agent={agent} />
+            <TeamBrainHomeComposer agent={agent} readOnly={readOnly || !known} />
           </div>
 
           {/* The latest few sessions, on the composer's glass and at its width, as Agent Home has them; See all sessions
@@ -350,14 +359,16 @@ function OverviewBody({
 
           {/* What each sync filed, read like a changelog, on a glass sheet like the composer's and as wide as it: the tree
               shows through it, blurred, as it passes over. */}
-          <div className={cn('relative z-10 mx-auto w-full max-w-[720px] rounded-3xl px-6 pb-8 pt-8', GLASS_SURFACE)}>
-            <TeamBrainSyncSummaries
-              syncs={syncs}
-              unreadable={syncsUnreadable}
-              onOpenFile={openPage}
-              onOpenSession={(sessionId) => void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId } })}
-            />
-          </div>
+          {showSyncs && (
+            <div className={cn('relative z-10 mx-auto w-full max-w-[720px] rounded-3xl px-6 pb-8 pt-8', GLASS_SURFACE)}>
+              <TeamBrainSyncSummaries
+                syncs={syncs}
+                unreadable={syncsUnreadable}
+                onOpenFile={openPage}
+                onOpenSession={(sessionId) => void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId } })}
+              />
+            </div>
+          )}
 
           {showSettings && wide && (
             // Beside the page, in the room the column makes: level with the status row, it scrolls with the column and
@@ -365,6 +376,7 @@ function OverviewBody({
             <div className="pointer-events-none absolute inset-y-0 right-0 z-0 !mt-0 w-[360px]">
               <SettingsPanel
                 agent={agent}
+                readOnly={readOnly}
                 placement="beside"
                 open={settingsOpen}
                 onClose={() => onSettingsOpenChange(false)}
@@ -388,6 +400,7 @@ function OverviewBody({
           <div className={cn('mx-auto flex h-full w-full justify-end px-6 pb-6 pt-10', PAGE_WIDTH)}>
             <SettingsPanel
               agent={agent}
+              readOnly={readOnly}
               placement="over"
               open={settingsOpen}
               onClose={() => onSettingsOpenChange(false)}
@@ -557,8 +570,10 @@ const PANEL_FADE_MS = 300
  * the status line toggles it, Escape closes it, and where it floats over the
  * page (narrower than xl) so does a click off it.
  */
-function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recordParts, onViewChange, onHeightChange, style }: {
+function SettingsPanel({ agent, readOnly, placement, open, onClose, onClosed, views, recordParts, onViewChange, onHeightChange, style }: {
   agent: ApiAgent
+  /** Another workspace keeps the brain; this one reads it, and turning it off disconnects. */
+  readOnly: boolean
   /** Beside the page, in its column (sticky; `style` gives where it sticks and its tallest), or floating over it. */
   placement: 'beside' | 'over'
   open: boolean
@@ -645,22 +660,23 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
           disabled={deleteAgent.isPending}
           data-testid="team-brain-turn-off"
         >
-          Turn off Team Brain
+          {readOnly ? 'Disconnect Team Brain' : 'Turn off Team Brain'}
         </Button>}
       </div>
       <AlertDialog open={confirmOff} onOpenChange={setConfirmOff}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Turn off Team Brain?</AlertDialogTitle>
+            <AlertDialogTitle>{readOnly ? 'Disconnect Team Brain?' : 'Turn off Team Brain?'}</AlertDialogTitle>
             <AlertDialogDescription>
-              This deletes the Team Brain agent, so nothing syncs and agents can no longer message it. Its drive and files stay where they
-              are, but other agents lose it from their next start. You can set Team Brain up again any time.
+              {readOnly
+                ? 'Agents on this computer stop reading it from their next start. The folder and its files are not affected, and you can connect again any time.'
+                : 'This deletes the Team Brain agent, so nothing syncs and agents can no longer message it. Its drive and files stay where they are, but other agents lose it from their next start. You can set Team Brain up again any time.'}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Keep it on</AlertDialogCancel>
             <AlertDialogAction onClick={turnOff} className="bg-destructive text-destructive-foreground hover:bg-destructive/90" data-testid="team-brain-turn-off-confirm">
-              Turn off
+              {readOnly ? 'Disconnect' : 'Turn off'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

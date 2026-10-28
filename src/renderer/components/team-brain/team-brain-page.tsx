@@ -1,4 +1,5 @@
 import { useAgents } from '@renderer/hooks/use-agents'
+import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { useTeamBrainSetup } from '@renderer/hooks/use-team-brain-setup'
 import { useUser } from '@renderer/context/user-context'
 import { useTeamBrain } from '@renderer/lib/team-brain/team-brain-store'
@@ -8,11 +9,14 @@ import { TeamBrainOverview } from './team-brain-overview'
 
 /**
  * The Team Brain page: the pitch and the set-up modal over it, or once set up,
- * its home page. Admins set it up, as they make drives global.
+ * its home page. Admins set it up, as they make drives global. On the desktop
+ * set-up can instead connect a folder managed elsewhere, read-only.
  */
 export function TeamBrainPage() {
   const tb = useTeamBrain()
   const setup = useTeamBrainSetup()
+  // The desktop app on its own computer can read a Team Brain kept elsewhere; a cloud workspace and the web only set one up.
+  const desktop = canUseHostFeatures()
   const { isAuthMode, isAdmin } = useUser()
   const { data: agents, isPending } = useAgents()
   const brainAgent = setup.agentSlug && agents?.find((agent) => agent.slug === setup.agentSlug)
@@ -27,7 +31,14 @@ export function TeamBrainPage() {
   return (
     <>
       <TeamBrainIntro onStart={isAuthMode && !isAdmin ? undefined : tb.start} />
-      <TeamBrainOnboarding open={tb.isOnboarding} onPrepare={setup.prepare} onStartChat={setup.startChat} onCancel={setup.cancel} />
+      <TeamBrainOnboarding
+        open={tb.isOnboarding}
+        desktop={desktop}
+        onPrepare={setup.prepare}
+        onDiscard={setup.discardPrepared}
+        onStartChat={setup.startChat}
+        onCancel={setup.cancel}
+      />
     </>
   )
 }

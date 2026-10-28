@@ -32,6 +32,7 @@ const { app, user } = vi.hoisted(() => {
         calls.push(`mount ${agentSlug}${readOnly ? ' read-only' : ''}`)
         return { id: `m-${agentSlug}`, volumeId: 'vol1', name: 'Team Brain' }
       }),
+      setMountReadOnly: vi.fn(async ({ mountId }: { mountId: string }) => { calls.push(`read-only ${mountId}`) }),
       startAgent: vi.fn(() => { calls.push('warm-start') }),
       deleteAgent: vi.fn(async (slug: string) => { calls.push(`delete agent ${slug}`) }),
       deleteVolume: vi.fn(async (id: string) => { calls.push(`delete drive ${id}`) }),
@@ -64,6 +65,7 @@ vi.mock('@renderer/hooks/use-mounts', () => ({
     refetch: app.recheck,
   }),
   useAddMount: () => ({ mutateAsync: app.addMount }),
+  useSetMountReadOnly: () => ({ mutateAsync: app.setMountReadOnly }),
 }))
 vi.mock('@renderer/hooks/use-volume-definitions', () => ({
   useDeleteVolumeDefinition: () => ({ mutateAsync: app.deleteVolume }),
@@ -94,8 +96,16 @@ vi.mock('@renderer/context/user-context', () => ({ useUser: () => user }))
 vi.mock('@renderer/context/onboarding-context', () => ({ useOnboarding: () => ({ setOnboarding: vi.fn() }) }))
 vi.mock('@renderer/components/ui/app-link', () => ({ AppLink: ({ children }: { children: unknown }) => <span>{children as string}</span> }))
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), info: vi.fn() }) }))
+vi.mock('@renderer/hooks/use-target-switch', () => ({ useTargetSwitch: () => ({ switching: false, switchTo: vi.fn(async () => false) }) }))
+// On the desktop set-up first asks how. Its steps have their own tests.
+const { desktop } = vi.hoisted(() => ({ desktop: { on: false } }))
+vi.mock('@renderer/lib/capabilities', () => ({
+  canUseHostFeatures: () => desktop.on,
+}))
 // The home page has its own tests; here it only needs to show up, for the right agent.
-vi.mock('./team-brain-overview', () => ({ TeamBrainOverview: ({ agent }: { agent: { slug: string } }) => <div data-testid="team-brain-home">{agent.slug}</div> }))
+vi.mock('./team-brain-overview', () => ({
+  TeamBrainOverview: ({ agent }: { agent: { slug: string } }) => <div data-testid="team-brain-home">{agent.slug}</div>,
+}))
 // The drive's own set-up, reduced to its save.
 vi.mock('@renderer/components/volumes/volume-setup-registry', async (importOriginal) => {
   const { volumeSetupRegistry } = await importOriginal<typeof import('@renderer/components/volumes/volume-setup-registry')>()
@@ -118,6 +128,7 @@ const agent = (slug: string) => ({ slug, displaySlug: slug, name: slug[0].toUppe
 
 beforeEach(() => {
   resetTeamBrainState()
+  desktop.on = false
   app.calls.length = 0
   app.agents = [agent('writer'), agent('planner')]
   app.record = undefined
@@ -162,6 +173,11 @@ describe('TeamBrainPage', () => {
     expect(homes.map((home) => home.dataset.testid)).toEqual(['googledrive', 'dropbox', ...rest].map((id) => `team-brain-location-${id}`))
     for (const home of homes) expect(home).toHaveAttribute('aria-checked', 'false')
     expect(screen.getByTestId('team-brain-next')).toBeDisabled()
+    // Off the desktop the rail is today's: all four steps, none greyed or folded away.
+    const rail = within(screen.getByRole('list', { name: 'Set-up steps' })).getAllByRole('listitem')
+    expect(rail.map((item) => [item.textContent, item.hasAttribute('data-pending'), item.getAttribute('aria-hidden')])).toEqual([
+      ['01Choose where it lives', false, null], ['02Choose its agents', false, null], ['03Set a schedule', false, null], ['04Context ingestion', false, null],
+    ])
   })
 
   it('prepares on the saved drive, and launches in order: instructions, record, upkeep, agent list, the chosen agents, then the session', async () => {
@@ -175,6 +191,7 @@ describe('TeamBrainPage', () => {
     await saveDrive(clicker)
     await waitFor(() => expect(screen.getByTestId('team-brain-onboarding-step')).toHaveAttribute('data-step', 'agents'))
     expect(app.calls).toEqual(['install', 'mount team-brain', 'warm-start'])
+    expect(app.setMountReadOnly).not.toHaveBeenCalled()
 
     // Every agent off, then planner off, weekly.
     await clicker.click(screen.getByTestId('team-brain-every-agent-switch'))
@@ -402,5 +419,95 @@ describe('TeamBrainPage', () => {
     render(<TeamBrainPage />)
     expect(screen.queryByTestId('team-brain-start')).toBeNull()
     expect(screen.getByTestId('team-brain-ask-admin')).toHaveTextContent('Ask an admin to set up Team Brain.')
+  })
+
+  it('on the desktop, one Set up opens set-up at how', async () => {
+    desktop.on = true
+    render(<TeamBrainPage />)
+    expect(screen.getByTestId('team-brain-start')).toHaveTextContent('Set up Team Brain')
+    await userEvent.click(screen.getByTestId('team-brain-start'))
+    expect(screen.getByTestId('team-brain-onboarding-step')).toHaveAttribute('data-step', 'how')
+    // Picking a path stays on how until Next.
+    await userEvent.click(screen.getByTestId('team-brain-how-here'))
+    expect(screen.getByTestId('team-brain-onboarding-step')).toHaveAttribute('data-step', 'how')
+  })
+
+  it('on the desktop, connects a folder managed elsewhere read-only: no schedule, no upkeep, no chat, straight to its home', async () => {
+    desktop.on = true
+    const clicker = userEvent.setup()
+    app.invalidate.mockImplementationOnce(async () => {
+      app.calls.push('refresh agents')
+      app.agents = [...app.agents, { ...agent('team-brain'), teamBrain: { volumeId: 'vol-1' } }]
+    })
+    render(<TeamBrainPage />)
+    await clicker.click(screen.getByTestId('team-brain-start'))
+    await clicker.click(screen.getByTestId('team-brain-how-team'))
+    await clicker.click(screen.getByTestId('team-brain-next'))
+    await clicker.click(screen.getByTestId('team-brain-location-googledrive'))
+    await clicker.click(screen.getByTestId('team-brain-next'))
+    await clicker.click(screen.getByTestId('drive-save'))
+    await waitFor(() => expect(screen.getByTestId('team-brain-onboarding-step')).toHaveAttribute('data-step', 'agents'))
+    // Its own drive refuses writes before it first starts.
+    expect(app.calls).toEqual(['install', 'mount team-brain', 'read-only m-team-brain', 'warm-start'])
+    expect(app.setMountReadOnly).toHaveBeenCalledWith({ agentSlug: 'team-brain', mountId: 'm-team-brain', readOnly: true })
+
+    await clicker.click(screen.getByTestId('team-brain-finish'))
+    await waitFor(() => expect(screen.getByTestId('team-brain-home')).toHaveTextContent('team-brain'))
+    expect(app.calls.some((call) => call.startsWith('upkeep'))).toBe(false)
+    expect(app.session).not.toHaveBeenCalled()
+    expect(app.instructions).toBe('Brain: `/mounts/Team Brain`. Schedule: none.')
+  })
+
+  it('on the desktop, removes the agent and its new drive when the drive cannot be made read-only', async () => {
+    desktop.on = true
+    app.setMountReadOnly.mockRejectedValueOnce(new Error('Could not update drive'))
+    const clicker = userEvent.setup()
+    render(<TeamBrainPage />)
+    await clicker.click(screen.getByTestId('team-brain-start'))
+    await clicker.click(screen.getByTestId('team-brain-how-team'))
+    await clicker.click(screen.getByTestId('team-brain-next'))
+    await clicker.click(screen.getByTestId('team-brain-location-googledrive'))
+    await clicker.click(screen.getByTestId('team-brain-next'))
+    await clicker.click(screen.getByTestId('drive-save'))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not update drive')
+    await waitFor(() => expect(app.calls).toEqual(['install', 'mount team-brain', 'delete agent team-brain', 'delete drive vol1']))
+    expect(getTeamBrainState()).toMatchObject({ prepared: null, installing: null, step: 'location' })
+  })
+
+  it('on the desktop, turning back to the other path removes the saved draft first, and stays put when that fails', async () => {
+    desktop.on = true
+    const clicker = userEvent.setup()
+    render(<TeamBrainPage />)
+    await clicker.click(screen.getByTestId('team-brain-start'))
+    await clicker.click(screen.getByTestId('team-brain-how-team'))
+    await clicker.click(screen.getByTestId('team-brain-next'))
+    await clicker.click(screen.getByTestId('team-brain-location-googledrive'))
+    await clicker.click(screen.getByTestId('team-brain-next'))
+    await clicker.click(screen.getByTestId('drive-save'))
+    await waitFor(() => expect(screen.getByTestId('team-brain-onboarding-step')).toHaveAttribute('data-step', 'agents'))
+    await clicker.click(screen.getByTestId('team-brain-back'))
+    await clicker.click(screen.getByTestId('team-brain-back'))
+
+    // The removal fails: set-up stays on how with the draft, so Close can still remove it.
+    app.deleteAgent.mockRejectedValueOnce(new Error('Container still stopping'))
+    await clicker.click(screen.getByTestId('team-brain-how-here'))
+    await clicker.click(screen.getByTestId('team-brain-next'))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Could not remove the Team Brain agent', expect.anything()))
+    expect(screen.getByTestId('team-brain-onboarding-step')).toHaveAttribute('data-step', 'how')
+    expect(getTeamBrainState().prepared).toMatchObject({ agentSlug: 'team-brain', readOnly: true })
+
+    // Tried again, it goes, and set-up moves on to where the new Team Brain lives.
+    await clicker.click(screen.getByTestId('team-brain-next'))
+    await waitFor(() => expect(screen.getByTestId('team-brain-onboarding-step')).toHaveAttribute('data-step', 'location'))
+    expect(app.calls.slice(-2)).toEqual(['delete agent team-brain', 'delete drive vol1'])
+    expect(getTeamBrainState().prepared).toBeNull()
+  })
+
+  it('on the desktop, keeps the home page of a Team Brain set up here before', () => {
+    desktop.on = true
+    app.agents = [agent('writer'), { ...agent('team-brain'), teamBrain: { volumeId: 'vol-1' } }]
+    render(<TeamBrainPage />)
+    expect(screen.getByTestId('team-brain-home')).toHaveTextContent('team-brain')
   })
 })

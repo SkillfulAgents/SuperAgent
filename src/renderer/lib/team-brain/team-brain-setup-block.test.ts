@@ -43,4 +43,9 @@ describe('fillTeamBrainSetupBlock', () => {
     ])).toContain('- **Already connected:** `github, slack`.')
     expect(fill([])).toContain('- **Already connected:** `none`.')
   })
+
+  it('says there is no schedule for a Team Brain another workspace keeps', () => {
+    expect(fillTeamBrainSetupBlock(BLOCK, { agentSlug: 'tb', brainPath: '/mounts/Team Brain', schedule: null, setUpBy: null, accounts: undefined }))
+      .toContain('- **Maintenance schedule:** none')
+  })
 })

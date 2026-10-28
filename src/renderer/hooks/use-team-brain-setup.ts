@@ -17,7 +17,7 @@ import type { VolumeSource } from '@shared/lib/volumes/volume-config-schema'
 import { useDiscoverableAgents, useInstallAgentFromSkillset } from './use-agent-templates'
 import { useAgents, useDeleteAgent, useStartAgent, useUpdateAgent } from './use-agents'
 import { useConnectedAccounts } from './use-connected-accounts'
-import { useAddMount, useAgentMounts } from './use-mounts'
+import { useAddMount, useAgentMounts, useSetMountReadOnly } from './use-mounts'
 import { setTeamBrainReach, useGiveTeamBrain } from './use-team-brain-access'
 import { useStartOnboardingSession } from './use-start-onboarding-session'
 import { useSettings, useUpdateSettings } from './use-settings'
@@ -42,6 +42,7 @@ export function useTeamBrainSetup() {
   const { data: agents } = useAgents()
   const install = useInstallAgentFromSkillset()
   const addMount = useAddMount()
+  const setMountReadOnly = useSetMountReadOnly()
   const giveTeamBrain = useGiveTeamBrain()
   const startAgent = useStartAgent()
   const deleteAgent = useDeleteAgent()
@@ -70,7 +71,7 @@ export function useTeamBrainSetup() {
     })
   }, [draft, driveHealth, warm])
 
-  const discard = async ({ agentSlug, volumeId }: TeamBrainPrepared) => {
+  const discard = async ({ agentSlug, volumeId }: Pick<TeamBrainPrepared, 'agentSlug' | 'volumeId'>) => {
     // The drive delete refuses while the agent still has it attached.
     await deleteAgent.mutateAsync(agentSlug)
     await deleteVolume.mutateAsync(volumeId)
@@ -97,11 +98,18 @@ export function useTeamBrainSetup() {
     // Before the install's agent-list refresh lands, so the list never shows it.
     tb.setInstalling(agent.slug)
     let prepared: TeamBrainPrepared
+    let volumeId: string | undefined
     try {
       const mount = await addMount.mutateAsync({ agentSlug: agent.slug, ...source, name: details.name, visibility: details.visibility })
-      prepared = { agentSlug: agent.slug, volumeId: mount.volumeId, brainPath: mountPathOf(mount.name), firstPrompt: agent.onboardingFirstPrompt }
+      volumeId = mount.volumeId
+      // A folder managed elsewhere: the drive refuses this workspace's writes before it first starts.
+      const readOnly = getTeamBrainState().path === 'team'
+      if (readOnly) await setMountReadOnly.mutateAsync({ agentSlug: agent.slug, mountId: mount.id, readOnly: true })
+      prepared = { agentSlug: agent.slug, volumeId: mount.volumeId, brainPath: mountPathOf(mount.name), firstPrompt: agent.onboardingFirstPrompt, readOnly }
     } catch (error) {
-      void deleteAgent.mutateAsync(agent.slug).catch(() => {})
+      // A drive made before the failure goes with the agent, as `discard` does it.
+      const made = volumeId
+      void (made ? discard({ agentSlug: agent.slug, volumeId: made }) : deleteAgent.mutateAsync(agent.slug)).catch(() => {})
       if (run !== attempt.current) return false
       tb.setInstalling(null)
       throw error
@@ -112,6 +120,26 @@ export function useTeamBrainSetup() {
       return false
     }
     tb.setPrepared(prepared)
+    return true
+  }
+
+  /**
+   * Drop what was prepared and stay in set-up: on the desktop, someone turned back and chose the other path. The draft
+   * stays until it is gone, so a failed removal can be tried again, or Close removes it; true once nothing is left.
+   */
+  const discardPrepared = async () => {
+    const { prepared } = getTeamBrainState()
+    if (!prepared) return true
+    const run = attempt.current
+    try {
+      await discard(prepared)
+    } catch (error) {
+      toast.error('Could not remove the Team Brain agent', { description: error instanceof Error ? error.message : undefined })
+      return false
+    }
+    // Closed or started over meanwhile: that set-up's state is not this one's to change.
+    if (run !== attempt.current || !mounted.current) return false
+    tb.setPrepared(null)
     return true
   }
 
@@ -138,7 +166,7 @@ export function useTeamBrainSetup() {
     const { instructions = '' }: ApiAgent = await res.json()
     await updateAgent.mutateAsync({
       slug: prepared.agentSlug,
-      instructions: fillTeamBrainSetupBlock(instructions, { agentSlug: prepared.agentSlug, brainPath: prepared.brainPath, schedule, setUpBy: user, accounts: connected?.accounts }),
+      instructions: fillTeamBrainSetupBlock(instructions, { agentSlug: prepared.agentSlug, brainPath: prepared.brainPath, schedule: prepared.readOnly ? null : schedule, setUpBy: user, accounts: connected?.accounts }),
     })
     // Only a refusal says the record is not this set-up's: after any other failure it may have been saved.
     onRecordWrite()
@@ -154,11 +182,14 @@ export function useTeamBrainSetup() {
     }
     // Published once the record is this set-up's. Team Brain's own read-write attachment wins over the global read-only one.
     if (everyAgent) await saveVolume.mutateAsync({ id: prepared.volumeId, global: 'read' })
-    const upkeep = await apiFetch(`/api/agents/${prepared.agentSlug}/team-brain/upkeep`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scheduleExpression: TEAM_BRAIN_CRON[schedule] }),
-    }).catch(() => null)
-    // Past the record Team Brain exists, so a failure here is reported, never thrown back into a set-up that would delete it.
-    if (!upkeep?.ok) toast.error('Could not schedule Brain upkeep', { description: 'Team Brain is set up but will not sync on its own yet.' })
+    // Read-only, another workspace keeps the brain and its upkeep.
+    if (!prepared.readOnly) {
+      const upkeep = await apiFetch(`/api/agents/${prepared.agentSlug}/team-brain/upkeep`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scheduleExpression: TEAM_BRAIN_CRON[schedule] }),
+      }).catch(() => null)
+      // Past the record Team Brain exists, so a failure here is reported, never thrown back into a set-up that would delete it.
+      if (!upkeep?.ok) toast.error('Could not schedule Brain upkeep', { description: 'Team Brain is set up but will not sync on its own yet.' })
+    }
     // The record marks the agent; the list must carry the mark before set-up stops hiding it.
     await queryClient.invalidateQueries({ queryKey: ['agents'] })
 
@@ -170,7 +201,8 @@ export function useTeamBrainSetup() {
         everyAgent && setTeamBrainReach(queryClient, prepared.agentSlug, 'read', true),
       ]).then((results) => results.every((result) => result.status === 'fulfilled')),
     ])
-    await startOnboardingSession(prepared.agentSlug, prepared.firstPrompt)
+    // Read-only, there is no brain to build: no chat, set-up ends on the home page.
+    if (!prepared.readOnly) await startOnboardingSession(prepared.agentSlug, prepared.firstPrompt)
     const failed = attached.filter((result) => result.status === 'rejected').length
     if (failed > 0) {
       toast.error(`Team Brain could not be added to ${failed} ${failed === 1 ? 'agent' : 'agents'}`, {
@@ -197,6 +229,7 @@ export function useTeamBrainSetup() {
         toast.info('Another admin already set up Team Brain', { description: 'This set-up was removed. The page shows theirs.' })
       }
       // Set-up is over whether or not the session opened; without it the page shows Team Brain.
+      if (prepared.readOnly) setOnboarding(false)
       tb.cancelSetup()
     } catch (error) {
       setOnboarding(false)
@@ -222,7 +255,7 @@ export function useTeamBrainSetup() {
     }
   }, [])
 
-  return { agentSlug: setUpSlug, prepare, cancel, startChat }
+  return { agentSlug: setUpSlug, prepare, discardPrepared, cancel, startChat }
 }
 
 /**
