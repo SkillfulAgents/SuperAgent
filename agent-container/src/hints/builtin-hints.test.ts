@@ -55,6 +55,7 @@ const CASES: Array<[string, HintEventInput, string[]]> = [
   ['list a whisper folder', bash('ls whisper-models'), []],
   ['grep for whisper', bash('grep -r whisper notes/'), []],
   ['python playwright install', bash('cd /tmp && timeout 300 uv run --with playwright python -m playwright install chromium 2>&1 | tail -3'), ['playwright-install']],
+  ['python playwright install headless shell', bash('cd /tmp && uv run --with playwright python -m playwright install chromium-headless-shell > /tmp/pw.log 2>&1; echo done >> /tmp/pw.log'), ['playwright-install', 'uv-run-env-file']],
   ['npx playwright install', bash('npx playwright install chromium'), ['playwright-install']],
   ['pinned npx playwright install', bash('npx --yes playwright@1.64.1 install chromium --only-shell'), ['playwright-install']],
   ['playwright install-deps', bash('npx playwright install-deps'), []],
@@ -83,14 +84,19 @@ describe('built-in hints: which hints each call triggers', () => {
     }
   })
 
-  it('playwright-install refuses every install call', async () => {
-    const hook = createHintsHook(allBuiltinHints, () => 1)
+  it('playwright-install refuses the first install call of each turn', async () => {
+    let turn = 1
+    const hook = createHintsHook(allBuiltinHints, () => turn)
     const call = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npx playwright install chromium' } } as HookInput
-    for (const id of ['tool-1', 'tool-2']) {
-      const output = await hook(call, id, { signal: new AbortController().signal })
-      expect(output).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } })
-      expect(JSON.stringify(output)).toContain('/opt/playwright-browsers/chromium-current')
-    }
+    const run = (id: string) => hook(call, id, { signal: new AbortController().signal })
+
+    const first = await run('tool-1')
+    expect(first).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } })
+    expect(JSON.stringify(first)).toContain('/opt/playwright-browsers/chromium-current')
+    expect(JSON.stringify(await run('tool-2'))).not.toContain('deny')
+
+    turn = 2
+    expect(await run('tool-3')).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } })
   })
 })
 

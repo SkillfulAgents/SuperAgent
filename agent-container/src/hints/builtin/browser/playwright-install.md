@@ -10,7 +10,7 @@ triggers:
     tool: Bash
     input:
       command: "*playwright@* install *"
-repeat: always
+repeat: turn
 deny: true
 ---
-Chromium is preinstalled. Launch it with `executable_path` (Python) or `executablePath` (Node) set to `/opt/playwright-browsers/chromium-current` instead of installing a browser.
+Chromium is preinstalled. Don't run `playwright install` for any browser, `chromium-headless-shell` included. Launch it with `executable_path` (Python) or `executablePath` (Node) set to `/opt/playwright-browsers/chromium-current`.
