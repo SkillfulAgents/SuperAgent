@@ -33,7 +33,15 @@ export function runPlatformSignIn<T>(platformRole: unknown, fn: () => T): T {
 /** Browser sign-in: the verified Platform profile, seen before any user is created. */
 export function notePlatformRole(platformRole: unknown): void {
   const state = signIn.getStore()
-  if (state) state.platform = { role: platformRole }
+  if (state) {
+    state.platform = { role: platformRole }
+  } else if (isPlatformControlledAuth()) {
+    // A sign-in that bypassed handleAuthRequest: a member it creates would
+    // join with the default role.
+    captureException(new Error('Platform sign-in outside an auth request'), {
+      tags: { area: 'auth', op: 'platform-role' },
+    })
+  }
 }
 
 /**
