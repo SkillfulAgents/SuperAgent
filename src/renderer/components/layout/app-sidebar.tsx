@@ -1986,14 +1986,14 @@ export function AppSidebar() {
                 {/*
                   Always the last thing in the list, under the sections it
                   adds to, and styled as one of them: a section header's text
-                  and chevron-sized icon, spaced like one (mt-2, as on each
+                  and chevron-sized icon, spaced like one (mt-4, as on each
                   section's block) so the gaps down the list stay uniform.
                   Unlike a header it is a plain action, so it keeps the menu
                   button's hover fill (the Electron vibrancy rules supply the
                   translucent one there) and its text and + darken on hover.
                 */}
                 {(agents?.length ?? 0) > 0 && (
-                  <SidebarMenuItem className="mt-2">
+                  <SidebarMenuItem className="mt-4">
                     <SidebarMenuButton
                       onClick={handleCreateFolder}
                       className={cn(

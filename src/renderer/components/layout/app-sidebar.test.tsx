@@ -1761,8 +1761,8 @@ describe('AppSidebar — agent folders', () => {
     expect(follows(button, screen.getByTestId('settings-button'))).toBe(true)
     // The same space above it as above each section header, so the gaps
     // down the list stay uniform.
-    expect(button.closest('li')?.className).toContain('mt-2')
-    expect(screen.getByTestId('agent-folder-f1').closest('li')?.className).toContain('mt-2')
+    expect(button.closest('li')?.className).toContain('mt-4')
+    expect(screen.getByTestId('agent-folder-f1').closest('li')?.className).toContain('mt-4')
   })
 
   it('still renders folders when the user has no agents at all', () => {

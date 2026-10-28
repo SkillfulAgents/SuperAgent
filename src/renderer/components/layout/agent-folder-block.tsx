@@ -374,10 +374,10 @@ export function AgentFolderBlock({
   const isAgentTarget = (isOver || isBodyOver) && activeDragType === 'agent'
 
   return (
-    // mt-2: air above each section header. A margin, not padding, so the
+    // mt-4: air above each section header. A margin, not padding, so the
     // header's absolutely placed buttons (top-4 = the header's centre) and the
     // insert line keep their offsets from the block's top edge.
-    <li ref={setNodeRef} style={style} className="group/folder-block relative mt-2 list-none">
+    <li ref={setNodeRef} style={style} className="group/folder-block relative mt-4 list-none">
       {insertEdge && !isDragging && (
         // A folder over a folder is a reorder, not a nest — folders do not
         // nest — so it gets an insert line rather than the fill an agent drop
