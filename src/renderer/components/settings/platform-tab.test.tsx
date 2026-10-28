@@ -258,3 +258,62 @@ describe('PlatformTab plan (SUP-1143)', () => {
     expect(screen.getByText('Subscription')).toBeInTheDocument()
   })
 })
+
+// The platform's billing tab is owner/admin only: a member sent to ?tab=billing lands on General.
+describe('PlatformTab billing links', () => {
+  const connected = (role: string | null) => ({
+    ...disconnected(),
+    isConnected: true,
+    platformAuth: { connected: true, platformControlled: false, orgName: 'Example workspace', orgId: 'org_1', role, platformBaseUrl: 'https://platform.example.com' },
+  })
+  const billing = (b: Record<string, unknown>) => ({ data: { connected: true, billing: b }, isLoading: false, isFetching: false, error: null, refetch: vi.fn() })
+  const configured = billing({
+    configured: true,
+    subscription: { status: 'active', paymentStatus: 'current', currentPeriodEnd: null, creditScope: 'seat' },
+    seat: null,
+    orgPool: { poolBalanceCents: 0 },
+  })
+  const unconfigured = billing({ configured: false })
+
+  beforeEach(() => {
+    useUserMock.mockReturnValue(localUser)
+  })
+
+  afterEach(() => {
+    billingInfoMock.mockReset()
+    billingInfoMock.mockReturnValue({ data: undefined, isLoading: false, isFetching: false, error: null, refetch: vi.fn() })
+  })
+
+  it.each(['owner', 'admin', null])('offers Manage billing to role %s', (role) => {
+    platformConnectMock.mockReturnValue(connected(role))
+    billingInfoMock.mockReturnValue(configured)
+    render(<PlatformTab />)
+    expect(screen.getByText('Manage billing on the web')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Manage' })).toBeEnabled()
+  })
+
+  it('hides Manage billing from members', () => {
+    platformConnectMock.mockReturnValue(connected('member'))
+    billingInfoMock.mockReturnValue(configured)
+    render(<PlatformTab />)
+    expect(screen.getByText('Subscription')).toBeInTheDocument()
+    expect(screen.queryByText('Manage billing on the web')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Manage' })).not.toBeInTheDocument()
+  })
+
+  it('offers Set up to an owner of an org without billing', () => {
+    platformConnectMock.mockReturnValue(connected('owner'))
+    billingInfoMock.mockReturnValue(unconfigured)
+    render(<PlatformTab />)
+    expect(screen.getByRole('button', { name: 'Set up' })).toBeEnabled()
+    expect(screen.queryByTestId('billing-ask-admin')).not.toBeInTheDocument()
+  })
+
+  it('points a member of an org without billing to an owner or admin instead of Set up', () => {
+    platformConnectMock.mockReturnValue(connected('member'))
+    billingInfoMock.mockReturnValue(unconfigured)
+    render(<PlatformTab />)
+    expect(screen.queryByRole('button', { name: 'Set up' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('billing-ask-admin')).toHaveTextContent('Ask a workspace owner or admin')
+  })
+})
