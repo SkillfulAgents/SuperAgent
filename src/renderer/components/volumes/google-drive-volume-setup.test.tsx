@@ -2,22 +2,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, onlineManager } from '@tanstack/react-query'
 
 Element.prototype.scrollIntoView = vi.fn()
 Element.prototype.hasPointerCapture = vi.fn(() => false)
 Element.prototype.releasePointerCapture = vi.fn()
 
-const state = vi.hoisted(() => ({ failTop: false, connects: [] as string[], accounts: [{ id: 'first', displayName: 'Work Drive', status: 'active' }] }))
+const state = vi.hoisted(() => ({ failTop: false, connects: [] as string[], accounts: [{ id: 'first', displayName: 'Work Drive', status: 'active' }], fetches: 0, teamName: 'Team' }))
 vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: () => false, usesHostFolderPaths: () => false, agentsRunInAppSandbox: () => false }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: false }) }))
 vi.mock('@renderer/hooks/use-connected-accounts', () => ({ useConnectedAccountsByToolkit: () => ({ data: { accounts: state.accounts }, isLoading: false }) }))
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: async (url: string) => {
+    state.fetches++
     const folderId = new URL(url, 'http://app').searchParams.get('folderId')
     if (!folderId && state.failTop) return Response.json({ error: 'Google Drive is unavailable' }, { status: 503 })
     if (!folderId) return Response.json({ folders: [{ id: 'mydrive', name: 'My Drive' }, { id: 'shared1', name: 'Shared drive' }] })
-    return Response.json({ folders: folderId === 'mydrive' ? [{ id: 'team', name: 'Team' }] : [] })
+    return Response.json({ folders: folderId === 'mydrive' ? [{ id: 'team', name: state.teamName }] : [] })
   },
 }))
 // Connect goes straight into the provider's sign-in; here it hands back a new account at once.
@@ -33,7 +34,7 @@ vi.mock('@renderer/hooks/use-connect-account', () => ({
 }))
 import { VolumeSettingsDialog } from './volume-settings-dialog'
 
-beforeEach(() => { state.failTop = false; state.connects = []; state.accounts = [{ id: 'first', displayName: 'Work Drive', status: 'active' }, { id: 'second', displayName: 'Personal Drive', status: 'active' }] })
+beforeEach(() => { state.failTop = false; state.connects = []; state.fetches = 0; state.teamName = 'Team'; state.accounts = [{ id: 'first', displayName: 'Work Drive', status: 'active' }, { id: 'second', displayName: 'Personal Drive', status: 'active' }] })
 afterEach(cleanup)
 async function setup(save = vi.fn()) {
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -120,8 +121,56 @@ describe('Google Drive volume creation', () => {
     await chooseAccount()
     await userEvent.click(screen.getByRole('button', { name: /^Select folder location/ }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Google Drive is unavailable')
+    // A filter typed before the picker steps into My Drive does not carry into it.
+    await userEvent.type(screen.getByRole('textbox', { name: 'Filter folders' }), 'zzz')
     state.failTop = false
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(await screen.findByRole('button', { name: 'Open Team' })).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Filter folders' })).toHaveValue('')
   })
+})
+
+describe('Google Drive picker filter', () => {
+  it('narrows the listed folders without a request and clears on opening another', async () => {
+    await setup()
+    await chooseAccount()
+    await userEvent.click(screen.getByRole('button', { name: /^Select folder location/ }))
+    await screen.findByRole('button', { name: 'Open Team' })
+    const filter = () => screen.getByRole('textbox', { name: 'Filter folders' })
+    const fetches = state.fetches
+    await userEvent.type(filter(), 'zzz ')
+    expect(screen.getByText('No folders match “zzz”')).toBeInTheDocument()
+    await userEvent.clear(filter())
+    await userEvent.type(filter(), 'TE ')
+    expect(screen.getByRole('button', { name: 'Team' })).toBeInTheDocument()
+    expect(state.fetches).toBe(fetches)
+    await userEvent.click(screen.getByRole('button', { name: 'Open Team' }))
+    await screen.findByText('No folders in Team')
+    expect(filter()).toHaveValue('')
+  })
+
+  it('never uses a highlighted folder the filter hides', async () => {
+    await setup()
+    await chooseAccount()
+    await userEvent.click(screen.getByRole('button', { name: /^Select folder location/ }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Team' }))
+    await userEvent.type(screen.getByRole('textbox', { name: 'Filter folders' }), 'zzz')
+    await userEvent.click(screen.getByRole('button', { name: 'Use “My Drive”' }))
+    expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent(/^My Drive$/)
+  })
+
+  it('follows a highlighted folder through a refreshed listing: hidden when renamed out of the filter, its new name when shown', async () => {
+    await setup()
+    await chooseAccount()
+    await userEvent.click(screen.getByRole('button', { name: /^Select folder location/ }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Team' }))
+    await userEvent.type(screen.getByRole('textbox', { name: 'Filter folders' }), 'te')
+    state.teamName = 'Projects'
+    onlineManager.setOnline(false)
+    onlineManager.setOnline(true)
+    expect(await screen.findByRole('button', { name: 'Use “My Drive”' })).toBeEnabled()
+    await userEvent.clear(screen.getByRole('textbox', { name: 'Filter folders' }))
+    expect(screen.getByRole('button', { name: 'Use “Projects”' })).toBeEnabled()
+  })
+
 })
