@@ -44,7 +44,7 @@ describe('awaitReview', () => {
 
     manager.resolveMatchingPending('agent', 'gmail.send', 'allow')
 
-    await expect(decision).resolves.toBe('allow')
+    await expect(decision).resolves.toEqual({ decision: 'allow' })
     expect(reevaluate).toHaveBeenCalledOnce()
     expect(pending()).toEqual([])
   })
@@ -58,7 +58,7 @@ describe('awaitReview', () => {
     expect(pending().map((review) => review.id)).toEqual([card.id])
 
     expect(manager.submitDecision('agent', card.id, 'deny')).toBe(true)
-    await expect(decision).resolves.toBe('deny')
+    await expect(decision).resolves.toEqual({ decision: 'deny' })
   })
 
   it('lets the person\'s decision win when it lands while the host rechecks', async () => {
@@ -70,11 +70,29 @@ describe('awaitReview', () => {
 
     manager.resolveMatchingPending('agent', 'gmail.send', 'allow')
     await flush()
-    expect(manager.submitDecision('agent', card.id, 'deny')).toBe(true)
+    expect(manager.submitDecision('agent', card.id, 'deny', 'Not that inbox')).toBe(true)
     finishRecheck('allow')
 
-    await expect(decision).resolves.toBe('deny')
+    await expect(decision).resolves.toEqual({ decision: 'deny', reason: 'Not that inbox' })
     expect(pending()).toEqual([])
+  })
+
+  it('drops the reason of a deny whose caller aborts while rechecking', async () => {
+    const controller = new AbortController()
+    let finishRecheck!: (outcome: 'allow') => void
+    const decision = manager.requestReview(details, controller.signal, {
+      reevaluate: () => new Promise((resolve) => { finishRecheck = resolve }),
+    })
+    const [card] = pending()
+
+    manager.resolveMatchingPending('agent', 'gmail.send', 'allow')
+    await flush()
+    manager.submitDecision('agent', card.id, 'deny', 'Not that inbox')
+    controller.abort()
+    finishRecheck('allow')
+
+    await expect(decision).rejects.toThrow('Request aborted')
+    await expect(manager.takeDenyReason('agent', card.id)).resolves.toBeUndefined()
   })
 
   it('withdraws the card of an aborted request', async () => {
@@ -107,6 +125,6 @@ describe('awaitReview', () => {
   it('releases a swept review whose caller does not recheck', async () => {
     const decision = manager.requestReview(details)
     manager.resolveMatchingPending('agent', 'gmail.send', 'allow')
-    await expect(decision).resolves.toBe('allow')
+    await expect(decision).resolves.toEqual({ decision: 'allow' })
   })
 })

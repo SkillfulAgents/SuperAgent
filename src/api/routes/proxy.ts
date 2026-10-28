@@ -8,7 +8,7 @@ import { isPreviewableContentType } from '@shared/lib/proxy/body-translation'
 import { canonicalizeTargetPath, rawRouteTail } from '@shared/lib/proxy/target-path'
 import { resolveApiPolicy } from '@shared/lib/proxy/policy-resolver'
 import { agentRegistry } from '@shared/lib/agent-actor'
-import { withDismissalReason } from '@shared/lib/proxy/reauth-dismissal'
+import { withUserReason } from '@shared/lib/proxy/user-reason'
 import { awaitReauth } from '@shared/lib/proxy/reauth-request'
 import { getAccountProviderByName } from '@shared/lib/account-providers'
 import { getProviderDisplayName } from '@shared/lib/account-providers/service-catalog'
@@ -199,7 +199,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     }
 
     if (result.reason === 'dismissed') {
-      const message = withDismissalReason(
+      const message = withUserReason(
         'A user dismissed the reconnection request, so this call was not made. '
         + 'Do not retry it until the connection is reconnected.',
         result.dismissReason,
@@ -345,7 +345,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
     const rules = reportedRules(ruleGate)
     try {
       const reviews = agentRegistry.get(agentSlug).inputs.reviews
-      const decision = await awaitReview(reviews, (raise) => reviews.request({
+      const review = await awaitReview(reviews, (raise) => reviews.request({
         accountId,
         reviewType: 'api',
         toolkit: account.toolkitSlug,
@@ -368,7 +368,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
           return gate.unavailable ? 'review' : gate.decision
         },
       })
-      if (decision === 'deny') {
+      if (review.decision === 'deny') {
         await logAuditEntry({
           agentSlug,
           accountId,
@@ -380,7 +380,7 @@ proxy.all('/:agentSlug/:accountId/:rest{.+}', async (c) => {
           matchedScopes: JSON.stringify(policyResult.matchedScopes),
           ...ruleAudit,
         })
-        return c.json({ error: 'denied_by_user', message: 'Request denied by user.', rules }, 403)
+        return c.json({ error: 'denied_by_user', message: withUserReason('Request denied by user.', review.reason), rules }, 403)
       }
       resolvedPolicyDecision = 'approved_by_user'
     } catch {

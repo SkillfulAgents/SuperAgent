@@ -232,6 +232,7 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
       callerSlug, request.targetAgentSlug, request.targetAgentName, request.operation, request.preview, request.fileTransfer,
     ),
     withdraw: vi.fn(),
+    takeDenyReason: vi.fn(),
     getPendingReviewsForAgent: () => [],
   },
 }))

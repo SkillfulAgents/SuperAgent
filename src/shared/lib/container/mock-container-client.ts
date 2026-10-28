@@ -25,6 +25,7 @@ import { resolveContainerModel } from './resolve-model'
 import { getAgentWorkspaceDir, getSessionJsonlPath, readJsonlFile } from '../utils/file-storage'
 import { reviewManager } from '../proxy/review-manager'
 import { matchScopes } from '../proxy/scope-matcher'
+import { withUserReason } from '../proxy/user-reason'
 import { db } from '../db'
 import { connectedAccounts } from '../db/schema'
 import { background } from '../background'
@@ -1566,7 +1567,7 @@ export class ProxyReviewScenario implements MockScenario {
         matchedScopes: this.matchedScopes,
         scopeDescriptions: this.scopeDescriptions,
         endpointDescription: matchScopes(this.toolkit, this.method, '/' + this.targetPath).endpointDescription,
-      }).then((decision) => {
+      }).then((review) => {
         // Write JSONL and complete the session after the user decides
         client.writeJsonlEntry(sessionId, {
           type: 'user',
@@ -1575,7 +1576,7 @@ export class ProxyReviewScenario implements MockScenario {
         })
         client.writeJsonlEntry(sessionId, {
           type: 'assistant',
-          message: { content: [{ type: 'text', text: `API request ${decision === 'allow' ? 'approved' : 'denied'} by user.` }] },
+          message: { content: [{ type: 'text', text: review.decision === 'allow' ? 'API request approved by user.' : withUserReason('API request denied by user.', review.reason) }] },
           timestamp: new Date().toISOString(),
         })
         client.emitStreamMessage(sessionId, {
@@ -1711,7 +1712,7 @@ export class XAgentReviewScenario implements MockScenario {
         this.targetAgentSlug,
         this.targetAgentName,
         this.operation,
-      ).then((decision) => {
+      ).then(({ decision }) => {
         client.writeJsonlEntry(sessionId, {
           type: 'user',
           message: { content: userMessage },
