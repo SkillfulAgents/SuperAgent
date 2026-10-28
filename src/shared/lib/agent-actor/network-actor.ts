@@ -195,7 +195,8 @@ const noStreams: StreamSink = {
  * or been cancelled, the body is let go.
  */
 async function readBody(body: ReadableStream<Uint8Array>): Promise<{ head: Frame; source: StreamSource }> {
-  const reader = body.pipeThrough(new TextDecoderStream()).getReader()
+  // The DOM types give TextDecoderStream a BufferSource input, which a Uint8Array stream's pair type does not accept.
+  const reader = body.pipeThrough(new TextDecoderStream() as unknown as ReadableWritablePair<string, Uint8Array>).getReader()
   let buffered = ''
   const lines: string[] = []
   let ended = false

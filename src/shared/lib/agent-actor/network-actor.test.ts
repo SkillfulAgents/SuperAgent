@@ -35,7 +35,7 @@ function fakeActor() {
         return { size: got.length }
       }),
       stat: vi.fn(async () => {
-        throw new WorkspaceFileError('not_found', 'notes.md does not exist')
+        throw new WorkspaceFileError('not-found', 'notes.md does not exist')
       }),
       list: vi.fn(() => {
         throw new Error('sync throw')
@@ -91,7 +91,7 @@ describe('network actor', () => {
 
     const error = await remote.files.stat('notes.md').catch((e: unknown) => e)
     expect(error).toBeInstanceOf(WorkspaceFileError)
-    expect(error).toMatchObject({ code: 'not_found', message: 'notes.md does not exist' })
+    expect(error).toMatchObject({ code: 'not-found', message: 'notes.md does not exist' })
 
     await expect(remote.files.list('')).rejects.toThrow('files.list threw instead of rejecting')
   })

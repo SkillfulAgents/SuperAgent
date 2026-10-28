@@ -8,7 +8,7 @@ function fakeHost() {
   const events: Array<{ name: string; event: unknown }> = []
   const port: HostPort = {
     call: vi.fn(async (name: string, request: unknown) => {
-      if (name === 'hostScript') throw new WorkspaceFileError('not_found', 'script.sh does not exist')
+      if (name === 'hostScript') throw new WorkspaceFileError('not-found', 'script.sh does not exist')
       return { status: 'resolved', value: `ran ${(request as { toolName: string }).toolName}` }
     }) as unknown as HostPort['call'],
     send: (name, event) => {
