@@ -3,13 +3,15 @@ import { sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { user } from '@shared/lib/db/schema'
 import { getAuthSettings } from '@shared/lib/auth/auth-settings'
+import { lockoutCounter } from '@shared/lib/host-state/counters'
+import { resetProcessHostState } from '@shared/lib/host-state/scope'
 
-// Per-email failed login attempt tracking
-const accountLockouts = new Map<string, { count: number; lockedUntil: number }>()
+// Per-email failed login attempts
+const accountLockouts = lockoutCounter('account-lockout')
 
 /** Exported for testing: clear all lockout state */
 export function clearLockouts() {
-  accountLockouts.clear()
+  resetProcessHostState()
 }
 
 export function validatePasswordComplexity(password: string): string | null {
@@ -99,19 +101,13 @@ export async function authEnforcementMiddleware(c: Context, next: Next) {
     // Account lockout check
     if (body?.email) {
       const email = String(body.email).toLowerCase()
-      const lockout = accountLockouts.get(email)
-      const now = Date.now()
-
-      if (lockout && lockout.count >= (authSettings.accountLockoutThreshold ?? 10)) {
-        if (now < lockout.lockedUntil) {
-          const remainingMin = Math.ceil((lockout.lockedUntil - now) / 60000)
-          return c.json({
-            code: 'ACCOUNT_LOCKED',
-            message: `Account is locked. Try again in ${remainingMin} minute${remainingMin !== 1 ? 's' : ''}.`,
-          }, 429)
-        }
-        // Lockout expired — reset
-        accountLockouts.delete(email)
+      const lockedUntil = await accountLockouts.lockedUntil(email, authSettings.accountLockoutThreshold ?? 10)
+      if (lockedUntil !== null) {
+        const remainingMin = Math.ceil((lockedUntil - Date.now()) / 60000)
+        return c.json({
+          code: 'ACCOUNT_LOCKED',
+          message: `Account is locked. Try again in ${remainingMin} minute${remainingMin !== 1 ? 's' : ''}.`,
+        }, 429)
       }
 
       // Pre-check ban status so we return a meaningful message
@@ -166,18 +162,11 @@ export async function authEnforcementMiddleware(c: Context, next: Next) {
     const status = c.res.status
 
     if (status >= 400) {
-      // Failed login — increment counter
-      const lockout = accountLockouts.get(email) ?? { count: 0, lockedUntil: 0 }
-      lockout.count++
       const threshold = authSettings.accountLockoutThreshold ?? 10
-      if (lockout.count >= threshold) {
-        const durationMs = (authSettings.accountLockoutDurationMin ?? 30) * 60 * 1000
-        lockout.lockedUntil = Date.now() + durationMs
-      }
-      accountLockouts.set(email, lockout)
+      const durationMs = (authSettings.accountLockoutDurationMin ?? 30) * 60 * 1000
+      await accountLockouts.fail(email, threshold, durationMs)
     } else {
-      // Successful login — clear lockout
-      accountLockouts.delete(email)
+      await accountLockouts.clear(email)
     }
   }
 }

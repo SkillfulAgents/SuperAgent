@@ -175,7 +175,7 @@ export async function prepareConnection(raw: unknown, viewer: ConnectionViewer, 
   const config = mergeConnectionConfig(oldConfig, input.config)
   if (input.oauthLoginId) {
     if (!isOAuthProvider(input.provider)) throw new Error('Invalid subscription sign-in')
-    config.oauth = credentialsFromLogin(input.oauthLoginId, viewer, input.userId, id, input.provider)
+    config.oauth = await credentialsFromLogin(input.oauthLoginId, viewer, input.userId, id, input.provider)
   }
   if (isOAuthProvider(input.provider)) {
     if (!config.oauth) throw new Error('Sign in before saving this subscription connection')
@@ -250,7 +250,7 @@ export async function saveConnection(
         .values({ ...values, id: llmProviderId, createdAt: new Date() })
         .run()
     }
-    if (input.oauthLoginId) consumeOAuthLogin(input.oauthLoginId)
+    if (input.oauthLoginId) await consumeOAuthLogin(input.oauthLoginId)
     return llmProviderId
   })
 }

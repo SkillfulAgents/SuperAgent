@@ -403,7 +403,8 @@ type OAuthIssuerValidationResult =
 
 // Pending OAuth flows, keyed by the `state` parameter. They expire: a user
 // who never finishes sign-in leaves nothing behind.
-const pendingOAuthFlows = expiringMap('mcp-oauth', 15 * 60 * 1000, pendingOAuthFlowSchema)
+// Sealed in a shared store: a flow holds its PKCE verifier and client secret.
+const pendingOAuthFlows = expiringMap('mcp-oauth', 15 * 60 * 1000, pendingOAuthFlowSchema, { sealed: true })
 
 /**
  * How the callback route should deliver the result to the client, derived from

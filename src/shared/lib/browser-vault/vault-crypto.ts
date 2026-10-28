@@ -24,7 +24,7 @@ const KEY_FILE = '.vault-key'
 
 /** What a sealed value belongs to: bound in as additional authenticated data. */
 export interface SealBinding {
-  purpose: 'account-secrets' | 'account-session'
+  purpose: 'account-secrets' | 'account-session' | 'host-state'
   /** The row's id. */
   id: string
   site: string
