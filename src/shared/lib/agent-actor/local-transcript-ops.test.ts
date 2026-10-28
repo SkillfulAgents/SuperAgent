@@ -2,7 +2,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { copyDerivedSessionFiles, listSubagents, readSubagentTranscript } from './local-transcript-ops'
+import { copyDerivedSessionFiles, listSubagents, readConversationCarryOver, readSubagentTranscript } from './local-transcript-ops'
 import { WorkspaceFileError } from './workspace-path'
 import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
 
@@ -179,5 +179,80 @@ describe('copyDerivedSessionFiles — fork subagents', () => {
 
     expect((await lines(COPY, forkFile))[0]).toBe(unmapped)
     expect(await fs.promises.readFile(path.join(sessionsDir, COPY, 'subagents', 'agent-plain.jsonl'), 'utf8')).toBe(plain)
+  })
+})
+
+describe('readConversationCarryOver — rotated chat sessions', () => {
+  let dataDir: string
+  let previousDataDir: string | undefined
+  let sessionsDir: string
+
+  const user = (text: string, extra: object = {}) => JSON.stringify({ type: 'user', message: { role: 'user', content: text }, ...extra })
+  const assistant = (text: string) => JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } })
+  const toolResult = (output: string) => JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu-1', content: output }] } })
+  const boundary = JSON.stringify({ type: 'system', subtype: 'compact_boundary', compactMetadata: { trigger: 'auto' } })
+  const summary = (text: string) => user(text, { isCompactSummary: true, isVisibleInTranscriptOnly: true })
+
+  async function write(sessionId: string, lines: string[]) {
+    await fs.promises.writeFile(path.join(sessionsDir, `${sessionId}.jsonl`), lines.join('\n') + '\n')
+  }
+
+  beforeEach(async () => {
+    dataDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'transcript-ops-carry-'))
+    previousDataDir = process.env.SUPERAGENT_DATA_DIR
+    process.env.SUPERAGENT_DATA_DIR = dataDir
+    sessionsDir = sessionsDirOf(dataDir, AGENT)
+    await fs.promises.mkdir(sessionsDir, { recursive: true })
+  })
+
+  afterEach(async () => {
+    if (previousDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
+    else process.env.SUPERAGENT_DATA_DIR = previousDataDir
+    await fs.promises.rm(dataDir, { recursive: true, force: true })
+  })
+
+  it('returns the newest compact summary and the text turns after it, oldest first', async () => {
+    await write('old', [
+      user('Book the dentist for Tuesday.'),
+      boundary,
+      summary('Old summary: the user asked for a dentist booking.'),
+      user('Draft the weekly report.'),
+      boundary,
+      summary('Newest summary: the dentist is booked for Tuesday at 9 AM.'),
+      user('Who is the advocate on the Ellis file?'),
+      toolResult('a very long CRM export'),
+      user('Base directory for this skill: /workspace/.claude/skills/crm', { isMeta: true }),
+      assistant('Olga Garnica is the advocate.'),
+    ])
+
+    const carry = await readConversationCarryOver(createLocalSessionStore(AGENT), ['old'])
+
+    expect(carry.summary).toBe('Newest summary: the dentist is booked for Tuesday at 9 AM.')
+    expect(carry.recent).toEqual([
+      { role: 'user', text: 'Who is the advocate on the Ellis file?' },
+      { role: 'assistant', text: 'Olga Garnica is the advocate.' },
+    ])
+  })
+
+  it('continues into the earlier session when the newer one has no summary', async () => {
+    await write('old', [
+      summary('Summary: the weekly report goes out every Friday.'),
+      user('Thanks, that works.'),
+    ])
+    await write('outbound-only', [
+      assistant('[SYSTEM] A message was sent to the user on your behalf via chat integration:\nThe 8 AM report is ready.'),
+    ])
+
+    const carry = await readConversationCarryOver(createLocalSessionStore(AGENT), ['outbound-only', 'old'])
+
+    expect(carry.summary).toBe('Summary: the weekly report goes out every Friday.')
+    expect(carry.recent.map((turn) => turn.text)).toEqual([
+      'Thanks, that works.',
+      '[SYSTEM] A message was sent to the user on your behalf via chat integration:\nThe 8 AM report is ready.',
+    ])
+  })
+
+  it('returns nothing for a session with no transcript', async () => {
+    expect(await readConversationCarryOver(createLocalSessionStore(AGENT), ['missing'])).toEqual({ summary: null, recent: [] })
   })
 })

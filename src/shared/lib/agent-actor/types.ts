@@ -51,6 +51,7 @@ import type {
   SessionMetadataMap,
 } from '@shared/lib/types/agent'
 import type { MediaRef } from '@shared/lib/services/session-media'
+import type { ConversationCarryOver } from './local-transcript-ops'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
 import type { ConfigDoc, ConfigDocId } from './config-schema'
 import type { AgentMemoryDocument, AgentMemoryEntry } from '@shared/lib/types/memory'
@@ -579,6 +580,8 @@ export interface MessageOps {
   appendAssistant(sessionId: string, text: string): Promise<void>
   /** Each user message of a forked transcript: its uuid in the fork and the one it had in the source. */
   forkedUserUuids(sessionId: string): Promise<Array<{ newUuid: string; oldUuid: string }>>
+  /** `readConversationCarryOver` — the newest compact summary and later text turns across these transcripts, newest session first. */
+  carryOver(sessionIds: string[]): Promise<ConversationCarryOver>
   /** The transcript file's bytes for the debug view, or null when there is no transcript. */
   rawLog(sessionId: string): Promise<{ size: number; stream: ReadableStream<Uint8Array> } | null>
   /** `openMediaBlob` (session-media) — one media item referenced from the transcript, or undefined when it is gone. */
