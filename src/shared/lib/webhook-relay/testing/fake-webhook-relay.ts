@@ -39,6 +39,7 @@ export function createFakeWebhookRelay(): FakeWebhookRelay {
 
   return {
     kind: 'platform',
+    passIntervalMs: 30_000,
     consumers,
     log,
     snapshot: () => snapshot,
@@ -100,6 +101,7 @@ export function createFakeWebhookRelay(): FakeWebhookRelay {
     testEndpointFilter: () => Promise.reject(new Error('testEndpointFilter is not faked')),
     wake: () => {},
     start: () => {},
+    runPass: async () => {},
     stop: () => {},
     onAuthChanged: () => {},
   }
