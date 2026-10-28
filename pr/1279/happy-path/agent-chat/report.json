@@ -1,26 +1,17 @@
 {
   "storyId": "agent-chat",
-  "passed": true,
-  "reason": "Successfully sent a message to the QA-20261010-002907-ymno agent and verified it correctly answered a basic arithmetic question with a response mentioning \"4\"",
-  "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully with title \"Gamut\"",
-    "Found the \"QA-20261010-002907-ymno\" agent in the sidebar (located with data-testid=\"agent-item-5xmrmnxma6\") — Agent found among 2 available agents",
-    "Clicked the agent to open it — Successfully navigated to the agent's page at URL http://localhost:47891/agents/qa-20261010-002907-ymno-5xmrmnxma6",
-    "Verified agent status by checking data-testid=\"agent-status\" in main content area — Status is \"idle\" (valid state, as required)",
-    "Typed message \"Hello! What is 2+2?\" in the message input field — Message successfully entered in input field",
-    "Clicked the send button to submit the message — Message sent and page navigated to chat session URL http://localhost:47891/agents/qa-20261010-002907-ymno-5xmrmnxma6/sessions/011d2b1c-8525-4175-b3c3-d6f5b8eca690",
-    "Waited for agent response with timeout up to 3 minutes — Response received immediately with content: \"Today at 12:32 AMHello! What is 2+2?2 + 2 = 4.\"",
-    "Verified response mentions \"4\" and took final screenshot — Response verified to contain \"4\" in the text \"2 + 2 = 4.\""
-  ],
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: ied response mentions \"4\" and took screenshot — Agent responded with \"2 + 2 = 4.\" The response clearly contains the number \"4\" as required. Screenshot captured showing the complete conversation with both the user message and agent response.\n\n**All test steps completed successfully. No bugs found.**\n",
+  "steps": [],
   "bugs": [],
-  "durationMs": 205145,
-  "sessionId": "c36a8e85-71e6-4c41-b45d-1a81e6c6a2a6",
+  "durationMs": 106349,
+  "sessionId": "073d69f8-8685-4817-96fd-a6d70b602c70",
   "cost": {
-    "inputTokens": 482,
-    "outputTokens": 13772,
-    "cacheCreationTokens": 89105,
-    "cacheReadTokens": 1169051,
+    "inputTokens": 508,
+    "outputTokens": 13934,
+    "cacheCreationTokens": 138593,
+    "cacheReadTokens": 1662505,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.297628
+    "totalCostUsd": 0.40967
   }
 }
