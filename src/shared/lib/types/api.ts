@@ -46,6 +46,13 @@ export interface ApiAgent {
   hasUnreadNotifications?: boolean
   /** One of its sessions has an unread notification that tags the viewer. */
   hasUnreadMention?: boolean
+  /**
+   * The start of the newest unread notification behind the flag that wins
+   * above (waiting, then mention, then any unread), on one line. Absent when
+   * none of those flags has a notification to show, e.g. a session marked
+   * unread by hand or a pending proxy review.
+   */
+  notificationPreview?: string
   sessionCount?: number
   lastActivityAt?: Date | null
   dashboards?: ApiAgentDashboard[]

@@ -680,7 +680,15 @@ const AgentMenuItemInner = React.forwardRef<
                 className="min-w-0 outline-none after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
               >
                 <span className="block truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
-                <AgentLastRun date={agent.lastActivityAt} />
+                {/* While the avatar carries a badge, the second line says what
+                    that notification says instead of when the agent last ran. */}
+                {badgeKind && agent.notificationPreview ? (
+                  <span className="block truncate text-[11px] leading-tight text-muted-foreground/60" data-testid={`agent-notification-preview-${agent.slug}`}>
+                    {agent.notificationPreview}
+                  </span>
+                ) : (
+                  <AgentLastRun date={agent.lastActivityAt} />
+                )}
               </AppLink>
               {isShared && <SidebarMemberIndicator agentSlug={agent.slug} agentName={agent.name} memberCount={memberCount} selected={isSelected} />}
               {/* The 3-dot button and the status slot travel together, so the

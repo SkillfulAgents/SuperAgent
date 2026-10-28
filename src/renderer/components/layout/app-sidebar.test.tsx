@@ -1126,6 +1126,27 @@ describe('AppSidebar — agent row indicator', () => {
     expect(badge).toHaveAccessibleName('unread notifications')
     expect(badge).toHaveClass('bg-blue-500')
   })
+
+  it('shows the notification preview in place of the last run while badged', () => {
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ hasUnreadNotifications: true, notificationPreview: 'Drafted the weekly update.' })],
+      isLoading: false,
+      error: null,
+    })
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByTestId('agent-notification-preview-test-agent')).toHaveTextContent('Drafted the weekly update.')
+  })
+
+  it('keeps the last run when the badge is suppressed on an expanded row', () => {
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ hasUnreadNotifications: true, notificationPreview: 'Drafted the weekly update.' })],
+      isLoading: false,
+      error: null,
+    })
+    mockRouteParams = { slug: 'test-agent' }
+    renderWithProviders(<AppSidebar />)
+    expect(screen.queryByTestId('agent-notification-preview-test-agent')).not.toBeInTheDocument()
+  })
 })
 
 // ============================================================================

@@ -250,6 +250,7 @@ vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadMentions: vi.fn(),
   getUnreadMentionsByAgents: vi.fn(),
   getUnreadNotificationsByAgents: vi.fn(),
+  getUnreadNotificationPreviewsByAgents: vi.fn(),
   deleteNotificationsBySessionIds: vi.fn(),
 }))
 

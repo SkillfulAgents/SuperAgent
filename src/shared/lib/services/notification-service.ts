@@ -13,7 +13,7 @@
 import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
 import { notifications, agentAcl, type Notification, type NewNotification } from '@shared/lib/db/schema'
-import { eq, desc, and, lt, inArray, isNull, or } from 'drizzle-orm'
+import { eq, desc, and, lt, inArray, isNull, or, sql } from 'drizzle-orm'
 import { count } from 'drizzle-orm'
 import { USER_ACTIONABLE_NOTIFICATION_TYPES } from '@shared/lib/notifications/notification-preferences'
 
@@ -201,6 +201,45 @@ export async function getUnreadNotificationsByAgents(agentSlugs: string[], viewe
     let set = result.get(row.agentSlug)
     if (!set) { set = new Set(); result.set(row.agentSlug, set) }
     set.add(row.sessionId)
+  }
+  return result
+}
+
+export interface UnreadNotificationPreview {
+  sessionId: string
+  type: NotificationType
+  /** The start of the body, enough for one truncated line. */
+  text: string
+}
+
+/**
+ * The unread rows behind getUnreadNotificationsByAgents with the start of each
+ * body, newest first per agent, so a list can show what the latest one says.
+ */
+export async function getUnreadNotificationPreviewsByAgents(agentSlugs: string[], viewerId?: string): Promise<Map<string, UnreadNotificationPreview[]>> {
+  if (agentSlugs.length === 0) return new Map()
+
+  const rows = await db
+    .select({
+      agentSlug: notifications.agentSlug,
+      sessionId: notifications.sessionId,
+      type: notifications.type,
+      text: sql<string>`substr(${notifications.body}, 1, 200)`,
+    })
+    .from(notifications)
+    .where(and(
+      inArray(notifications.agentSlug, agentSlugs),
+      eq(notifications.isRead, false),
+      inArray(notifications.type, [...USER_ACTIONABLE_NOTIFICATION_TYPES]),
+      visibleTo(viewerId),
+    ))
+    .orderBy(desc(notifications.createdAt))
+
+  const result = new Map<string, UnreadNotificationPreview[]>()
+  for (const { agentSlug, ...preview } of rows) {
+    let list = result.get(agentSlug)
+    if (!list) { list = []; result.set(agentSlug, list) }
+    list.push(preview)
   }
   return result
 }
