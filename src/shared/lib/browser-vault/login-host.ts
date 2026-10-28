@@ -11,7 +11,8 @@ import {
   type LoginVaultPayload,
 } from '@shared/lib/tools/request-login/login-request'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
-import { heldLoginFor, releaseHeldValues, rememberSignInIdentity, type HeldLogin } from './held-values'
+import { heldLoginFor, releaseHeldValues, rememberSignInIdentity } from './held-values'
+import type { HeldLogin } from './held-values-schema'
 import { providerName } from './providers'
 import { siteOfOrigin, usernameKey, vaultFillsInto } from './site'
 import {
@@ -203,7 +204,7 @@ export async function settleHeldParts(input: {
 }): Promise<void> {
   const { agentSlug, sessionId, site, held, used, username } = input
   if (used.length === 0) return
-  releaseHeldValues(agentSlug, sessionId, site, used)
+  await releaseHeldValues(agentSlug, sessionId, site, used)
   if (!held.save || !username) return
   const owner = held.save.owner
   try {
@@ -332,7 +333,7 @@ export async function decideLoginRequest(call: LoginRequestCall): Promise<LoginD
     return ask({ mode: 'ask', ...(username ? { username: turnedDown?.username ?? username } : {}), ...(reason ? { reason } : {}) }, context)
   }
 
-  const held = usableHeld(heldLoginFor(agentSlug, sessionId, site, username), context.origin)
+  const held = usableHeld(await heldLoginFor(agentSlug, sessionId, site, username), context.origin)
   if (!username && !held) {
     const granted = await listGrantedAccounts(agentSlug, site)
     if (granted.length === 0) return ask({ mode: 'new' }, context)
@@ -404,7 +405,7 @@ export async function decideLoginRequest(call: LoginRequestCall): Promise<LoginD
   // The page or the browser refused: the user can still answer the form.
   if (!filled.ok) return ask({ mode: 'complete', ...(identity ? { username: identity } : {}), ...(account ? { accountId: account.id } : {}), covered }, context)
 
-  if (identity) rememberSignInIdentity(agentSlug, sessionId, site, identity)
+  if (identity) await rememberSignInIdentity(agentSlug, sessionId, site, identity)
   // Only what went into the page counts: the browser may have written none of it.
   const wentIn = fieldsWentIn(filled.result, context.fields.length)
   // Saved once filled: the step it was for did come.

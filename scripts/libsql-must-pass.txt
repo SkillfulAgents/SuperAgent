@@ -82,3 +82,5 @@ src/shared/lib/auth/oidc-discovery-timeout.integration.test.ts
 src/shared/lib/browser-vault/vault-service.test.ts
 src/api/routes/browser-accounts.test.ts
 src/shared/lib/browser-vault/login-host.test.ts
+src/shared/lib/host-state/scope.test.ts
+src/shared/lib/host-state/shared-flows.test.ts
