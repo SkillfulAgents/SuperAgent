@@ -35,6 +35,8 @@ export const hintFrontmatterSchema = z
     repeat: z.enum(['turn', 'once', 'always']).default('turn'),
     /** When the hint fires (per `repeat`), refuse the call with the body as the reason instead of adding it as context. */
     deny: z.boolean().optional(),
+    /** Load the hint only where this is available. `platform`: platform services are on (PLATFORM_AUTH_ACTIVE). */
+    requires: z.enum(['platform']).optional(),
   })
   .refine((hint) => !hint.deny || hint.triggers.every((t) => t.event === 'PreToolUse'), {
     message: 'A deny hint can only have PreToolUse triggers',

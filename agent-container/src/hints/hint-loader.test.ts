@@ -29,6 +29,11 @@ describe('parseHint', () => {
     expect(() => parseHint('no-sleep.md', file(valid, '   '))).toThrow('empty body')
   })
 
+  it('reads requires and rejects an unknown value', () => {
+    expect(parseHint('no-sleep.md', file(`${valid}\nrequires: platform`)).requires).toBe('platform')
+    expect(() => parseHint('no-sleep.md', file(`${valid}\nrequires: desktop`))).toThrow()
+  })
+
   it('reads deny and allows it only on PreToolUse triggers', () => {
     expect(parseHint('no-sleep.md', file(`${valid}\ndeny: true`)).deny).toBe(true)
     expect(() => parseHint('no-sleep.md', file(`${valid}\ndeny: once`))).toThrow()
