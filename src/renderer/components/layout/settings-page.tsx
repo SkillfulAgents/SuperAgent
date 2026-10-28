@@ -1,13 +1,18 @@
-import type { ReactNode } from 'react'
+import type { ReactNode, Ref } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { cn } from '@shared/lib/utils/cn'
+import { ScrollAwarePageTitle } from './scroll-aware-title'
 
 interface SettingsPageContainerProps {
   children: ReactNode
   className?: string
+  scrollContainerRef?: Ref<HTMLDivElement>
+  scrollRestorationId?: string
   /** Use a wider, less padded frame for content like tables. */
   fullScreen?: boolean
+  /** Drop the 720px cap and fill the full inset width (sub-views lay out their own width). */
+  fullWidth?: boolean
 }
 
 /**
@@ -15,12 +20,24 @@ interface SettingsPageContainerProps {
  * sibling pages). Centers content at 720px, adds vertical rhythm, and scrolls
  * independently of the app shell.
  */
-export function SettingsPageContainer({ children, className, fullScreen }: SettingsPageContainerProps) {
+export function SettingsPageContainer({
+  children,
+  className,
+  scrollContainerRef,
+  scrollRestorationId,
+  fullScreen,
+  fullWidth,
+}: SettingsPageContainerProps) {
   return (
-    <div className="flex-1 overflow-auto">
+    <div
+      ref={scrollContainerRef}
+      data-scroll-restoration-id={scrollRestorationId}
+      className="flex-1 overflow-auto"
+    >
       <div
         className={cn(
-          'mx-auto w-full max-w-[720px] px-6 pt-10 pb-6 space-y-10',
+          'mx-auto w-full px-6 pt-10 pb-6 space-y-10',
+          fullWidth ? 'max-w-none' : 'max-w-[720px]',
           fullScreen && 'max-w-5xl pt-4 space-y-6',
           className,
         )}
@@ -32,17 +49,19 @@ export function SettingsPageContainer({ children, className, fullScreen }: Setti
 }
 
 interface PageTitleProps {
-  title: string
+  title: ReactNode
   back?: { onClick: () => void; label?: string; testId?: string }
   actions?: ReactNode
+  /** Hide the matching nav title until this in-page heading scrolls away. */
+  scrollAware?: boolean
 }
 
 /**
  * Page heading with optional back button and right-aligned actions.
  */
-export function PageTitle({ title, back, actions }: PageTitleProps) {
-  return (
-    <div>
+export function PageTitle({ title, back, actions, scrollAware = false }: PageTitleProps) {
+  const content = (
+    <>
       {back && (
         <Button
           type="button"
@@ -57,9 +76,15 @@ export function PageTitle({ title, back, actions }: PageTitleProps) {
         </Button>
       )}
       <div className="flex items-end justify-between gap-4">
-        <h2 className="text-xl font-medium">{title}</h2>
+        {typeof title === 'string' ? (
+          <h2 className="text-xl font-medium">{title}</h2>
+        ) : (
+          <div className="min-w-0 flex-1">{title}</div>
+        )}
         {actions && <div className="shrink-0">{actions}</div>}
       </div>
-    </div>
+    </>
   )
+
+  return scrollAware ? <ScrollAwarePageTitle>{content}</ScrollAwarePageTitle> : <div>{content}</div>
 }

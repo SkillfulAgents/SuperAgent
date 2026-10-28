@@ -1,0 +1,105 @@
+import type { ApiMessageOrBoundary, ApiToolCall } from '@shared/lib/types/api'
+
+/**
+ * What a background task IS, for the places that list them by name: the
+ * per-task rows in the activity card and the Stop dialog's "these are still
+ * running" list. The stream only carries task ids; the launching tool call in
+ * the transcript carries the command, the subagent's type and description.
+ */
+
+export interface BackgroundTaskRef {
+  taskId: string
+  startedAt: number
+  isWorkflow?: boolean
+  isSubagent?: boolean
+  /** The runtime's task type (local_bash, local_agent, local_workflow, …). */
+  taskType?: string
+  /** The runtime's own description — the label when the transcript has no launching call. */
+  description?: string
+  /** A subagent task's type, from the runtime's task list (SDK >= 0.3.293). */
+  subagentType?: string
+}
+
+export interface BackgroundTaskLabel {
+  /** What kind of work: the subagent type, "Background command", "Background workflow", "Monitor". */
+  title: string
+  /** The command or description, when the transcript has it. */
+  detail: string | null
+  /** A Monitor watch: its output wakes the agent until it ends. */
+  isMonitor?: boolean
+}
+
+export interface LabeledBackgroundTask extends BackgroundTaskRef, BackgroundTaskLabel {}
+
+// The CLI's tool_result text for a backgrounded Bash call names the task:
+// "Command running in background with ID: bg_abc123. Output is being…"
+const BACKGROUND_ID_PATTERN = /background with ID:\s*([A-Za-z0-9_-]+)/i
+
+function resultText(result: unknown): string {
+  if (typeof result === 'string') return result
+  if (Array.isArray(result)) {
+    return result
+      .map((part) => (part && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string'
+        ? (part as { text: string }).text
+        : ''))
+      .join('')
+  }
+  if (result && typeof result === 'object' && typeof (result as { text?: unknown }).text === 'string') {
+    return (result as { text: string }).text
+  }
+  return ''
+}
+
+// A task with no launching call in this transcript — a subagent launched it,
+// the call predates what is loaded, or its result has not arrived yet — still
+// has the runtime's description, and a subagent its type.
+function genericLabel(task: BackgroundTaskRef): BackgroundTaskLabel {
+  const detail = task.description || null
+  if (task.isWorkflow) return { title: 'Background workflow', detail }
+  if (task.isSubagent) return { title: task.subagentType || 'Background agent', detail }
+  // A WebSocket watch has a type of its own; a command watch is a shell task,
+  // known only from its launching call.
+  if (task.taskType?.startsWith('monitor_')) return { title: 'Monitor', detail, isMonitor: true }
+  return { title: 'Background command', detail }
+}
+
+/** Join every background task to the tool call that launched it. */
+export function labelBackgroundTasks(
+  tasks: readonly BackgroundTaskRef[],
+  messages: readonly ApiMessageOrBoundary[] | undefined,
+): LabeledBackgroundTask[] {
+  if (tasks.length === 0) return []
+  const byTaskId = new Map<string, BackgroundTaskLabel>()
+
+  for (const message of messages ?? []) {
+    if (message.type !== 'user' && message.type !== 'assistant') continue
+    for (const call of (message.toolCalls ?? []) as ApiToolCall[]) {
+      if (call.name === 'Bash') {
+        // The API carries the id the runtime assigned; the result text is the
+        // fallback for transcripts shaped before it did.
+        const taskId = call.backgroundTaskId ?? BACKGROUND_ID_PATTERN.exec(resultText(call.result))?.[1]
+        if (!taskId) continue
+        const command = typeof call.input.command === 'string' ? call.input.command : null
+        byTaskId.set(taskId, { title: 'Background command', detail: command })
+      } else if (call.name === 'Monitor' && call.backgroundTaskId) {
+        const input = call.input as { description?: unknown; command?: unknown; ws?: { url?: unknown } }
+        const detail = typeof input.description === 'string' && input.description
+          ? input.description
+          : typeof input.ws?.url === 'string' ? input.ws.url : typeof input.command === 'string' ? input.command : null
+        byTaskId.set(call.backgroundTaskId, { title: 'Monitor', detail, isMonitor: true })
+      } else if ((call.name === 'Agent' || call.name === 'Task') && call.subagent?.agentId) {
+        const input = call.input as { subagent_type?: unknown; description?: unknown }
+        byTaskId.set(call.subagent.agentId, {
+          title: typeof input.subagent_type === 'string' && input.subagent_type ? input.subagent_type : 'Agent',
+          detail: typeof input.description === 'string' && input.description ? input.description : null,
+        })
+      }
+    }
+  }
+
+  return tasks.map((task) => {
+    const fromTranscript = byTaskId.get(task.taskId)
+    if (!fromTranscript) return { ...task, ...genericLabel(task) }
+    return { ...task, ...fromTranscript, detail: fromTranscript.detail ?? (task.description || null) }
+  })
+}

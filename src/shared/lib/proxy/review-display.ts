@@ -1,0 +1,156 @@
+/**
+ * What a proxy or x-agent review is about, and how it reads on a card. Pure
+ * helpers: the review stores and their router both build on them.
+ */
+import type { XAgentReview } from './x-agent-review'
+import type { ReviewRuleOutcome } from './rules/gate'
+import type { RuleProposalReview } from './rules/proposal-schema'
+import type { ScopeDescriptor } from './scope-catalog'
+
+/**
+ * Which policy table an "always allow/deny" on this review writes to.
+ * `api` reviews carry a connected-account id; `mcp` reviews carry a remote
+ * MCP server id. Stamped at creation so no reader has to infer it from the
+ * request path (an MCP call that is not `tools/call` looks like an API path).
+ */
+export type ProxyReviewType = 'api' | 'mcp'
+
+export interface ReviewDetails {
+  agentSlug: string
+  accountId: string
+  /** Absent only on envelopes written before the field existed. */
+  reviewType?: ProxyReviewType
+  toolkit: string
+  method: string
+  targetPath: string
+  matchedScopes: string[]
+  scopeDescriptions: Record<string, string>
+  /** Deployment metadata for matched scopes; absent on older envelopes and MCP reviews. */
+  scopeMetadata?: ScopeDescriptor[]
+  /**
+   * Description of the matched API endpoint (what the current call does).
+   * Preferred over scopeDescriptions when generating the prompt headline.
+   */
+  endpointDescription?: string
+  /** Several endpoints match equally and disagree, so the scope wording would misdescribe the call. */
+  endpointAmbiguous?: boolean
+  /** What the request sends, as text, for the card's request details. Absent for no body or a binary one. */
+  requestBody?: string
+  /** Proxy rules that ran on this request and did not allow it. */
+  ruleOutcomes?: ReviewRuleOutcome[]
+  /** Set when the review asks a person to confirm an agent's proxy rule. */
+  ruleProposal?: RuleProposalReview
+  // Optional: x-agent review fields.
+  // When present, the UI renders a dedicated "Agent X wants to use Agent Y" prompt
+  // with a read/invoke level selector. targetAgentSlug is the other agent being acted on.
+  xAgent?: XAgentReview
+}
+
+/**
+ * Convert a snake_case or kebab-case tool/action name into a gerund phrase.
+ * e.g. "list_meetings" → "listing meetings", "get_user_profile" → "getting user profile",
+ *      "send_message" → "sending message", "search_contacts" → "searching contacts"
+ */
+export function humanizeActionName(name: string): string {
+  const words = name.replace(/[_-]/g, ' ').trim().split(/\s+/)
+  if (words.length === 0 || words[0] === '') return name || 'action'
+
+  // Convert first word (the verb) to gerund form
+  const verb = words[0]
+  let gerund: string
+  if (verb.endsWith('e') && !verb.endsWith('ee')) {
+    gerund = verb.slice(0, -1) + 'ing' // e.g. "create" → "creating"
+  } else if (/^[a-z]*[bcdfghjklmnpqrstvwxyz][aeiou][bcdfghlmnprstvwz]$/.test(verb) && verb.length <= 4) {
+    // Double final consonant for short CVC verbs: "get" → "getting", "run" → "running"
+    gerund = verb + verb[verb.length - 1] + 'ing'
+  } else {
+    gerund = verb + 'ing' // e.g. "list" → "listing", "search" → "searching"
+  }
+
+  return [gerund, ...words.slice(1)].join(' ')
+}
+
+/**
+ * Generate a human-readable display text for a proxy review request.
+ *
+ * Priority:
+ *  1. The matched endpoint description (describes the specific call)
+ *  2. The first scope description (fallback when endpoint is uncurated, skipped when
+ *     several endpoints match and disagree)
+ *  3. A generic "Allow <method> request to <Toolkit>?" string
+ *
+ * Note: do NOT default to scope descriptions for the headline. Scope-level
+ * text describes the broad permission (e.g. "Read, compose, send, and
+ * permanently delete all your email") and is alarming when the user is
+ * actually approving a narrow call (e.g. read profile).
+ */
+export function generateReviewDisplayText(
+  toolkit: string,
+  method: string,
+  targetPath: string,
+  scopeDescriptions: Record<string, string>,
+  endpointDescription?: string,
+  endpointAmbiguous?: boolean,
+): string {
+  const candidate = endpointDescription || (endpointAmbiguous ? undefined : Object.values(scopeDescriptions)[0])
+  if (candidate) {
+    if (candidate.endsWith('?')) return candidate
+    // Strip leading "allow" (case-insensitive) to avoid "Allow allow...", and the
+    // GraphQL root-field key the matcher reads (`Mutation: issueDelete - `).
+    const stripped = candidate.replace(/^allow\s+/i, '').replace(/^(Query|Mutation|Subscription): \S+ - /, '')
+    return `Allow ${stripped.charAt(0).toLowerCase()}${stripped.slice(1)}?`
+  }
+
+  const toolkitDisplay = toolkit.charAt(0).toUpperCase() + toolkit.slice(1)
+
+  // MCP tool call pattern: "tools/call: <tool_name>" or "tools/call:<tool_name>"
+  const mcpMatch = targetPath.match(/tools\/call:\s*(.+)/)
+  if (mcpMatch) {
+    const action = humanizeActionName(mcpMatch[1])
+    return `Allow ${action} via ${toolkitDisplay}?`
+  }
+
+  // Fallback: generic description using toolkit name
+  return `Allow ${method} request to ${toolkitDisplay}?`
+}
+
+// Room for an email the card decodes from its body: headers, text, and HTML, before any attachment. Matches PARSE_MAX_BYTES.
+const PREVIEW_MAX_CHARS = 64_000
+// Bodies past this size are shown from their start, unparsed.
+export const PARSE_MAX_BYTES = 64_000
+const GRAPHQL_KEYS = new Set(['query', 'variables', 'operationName'])
+
+/** A GraphQL request: a `query` string and nothing beyond the standard GraphQL fields. */
+export function isGraphqlRequest(json: unknown): json is { query: string; variables?: unknown; operationName?: unknown } {
+  return !!json && typeof json === 'object' && !Array.isArray(json) &&
+    'query' in json && typeof json.query === 'string' &&
+    Object.keys(json).every((key) => GRAPHQL_KEYS.has(key))
+}
+
+/**
+ * The request body as the approval card shows it: a GraphQL query as written with its operation and variables,
+ * other JSON pretty-printed, other text as sent. The caller passes only bodies of a previewable content type.
+ */
+export function requestBodyPreview(body: ArrayBuffer | null): string | undefined {
+  if (!body) return undefined
+  const parsable = body.byteLength <= PARSE_MAX_BYTES
+  // A UTF-8 character is at most 4 bytes, so this prefix covers every character the preview keeps.
+  let text = new TextDecoder().decode(parsable ? body : body.slice(0, PREVIEW_MAX_CHARS * 4))
+  if (!text.trim()) return undefined
+  if (parsable) {
+    try {
+      const json: unknown = JSON.parse(text)
+      text = isGraphqlRequest(json)
+        ? [
+            typeof json.operationName === 'string' ? `operation: ${json.operationName}` : '',
+            json.query.trim(),
+            json.variables ? JSON.stringify(json.variables, null, 2) : '',
+          ].filter(Boolean).join('\n\n')
+        : JSON.stringify(json, null, 2)
+    } catch {
+      // Not JSON: show it as sent.
+    }
+  }
+  if (!text.trim()) return undefined
+  return text.length > PREVIEW_MAX_CHARS ? `${text.slice(0, PREVIEW_MAX_CHARS)}…` : text
+}

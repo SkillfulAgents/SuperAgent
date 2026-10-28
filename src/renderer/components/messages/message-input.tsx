@@ -1,68 +1,285 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { getApiBaseUrl } from '@renderer/lib/env'
-import { useSendMessage, useUploadFile, useUploadFolder, useInterruptSession } from '@renderer/hooks/use-messages'
+import { useMessages, useSendMessage, useUploadFile, useUploadFolder, useInterruptSession } from '@renderer/hooks/use-messages'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
-import { WifiOff } from 'lucide-react'
+import { labelBackgroundTasks } from '@renderer/lib/background-task-label'
+import { StopSessionDialog } from './stop-session-dialog'
+import { AtSign, WifiOff } from 'lucide-react'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
+import { VoiceModeButton } from '@renderer/components/ui/voice-mode-button'
+import { VoiceModeComposer } from './voice-mode-composer'
+import { AnimatedHeight } from './animated-height'
+import { useCreateSession, useSessions } from '@renderer/hooks/use-sessions'
+import { useRenameUntitledAgent } from '@renderer/hooks/use-rename-untitled-agent'
+import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
+import { useIsMobile } from '@renderer/hooks/use-mobile'
+import type { PendingMessagesContextValue } from '@renderer/context/pending-messages-context'
+import { useAgent } from '@renderer/hooks/use-agents'
+import { VoiceModeControls, useHoldSoundPreference } from './voice-mode-controls'
+import { useVoiceMode } from '@renderer/hooks/use-voice-mode'
+import { useHoldSound } from '@renderer/hooks/use-hold-sound'
+import { useUserMusicPreference, useUserMusicSession, userMusicSupported } from '@renderer/hooks/use-user-music'
+import { holdSound } from '@renderer/lib/voice/shared/speech/hold-sound'
+import { userMusic } from '@renderer/lib/voice/shared/speech/user-music'
+import { readAloud } from '@renderer/lib/voice/services/read-aloud'
+import { clearVoiceModeRequest, isVoiceModeRequested, registerVoiceModeExit, setVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
+import { VOICE_MODE_ENTERED_MESSAGE, VOICE_MODE_EXITED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
+import { boundVoiceHistoryTransport } from '@shared/lib/voice/voice-history-transport'
+import { UploadError } from '@renderer/components/ui/upload-error'
+import { AgentRuntimeErrorView } from '@shared/lib/agent-runtime-errors/agent-runtime-error-view'
 import { ComposerActionButton } from './composer-action-button'
 import { SlashCommandMenu } from './slash-command-menu'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { useMessageComposer } from '@renderer/hooks/use-message-composer'
-import { ChatComposerBox } from './chat-composer-box'
+import { silentOpener } from './composer-chips'
+import { registerSessionComposerFocus } from './composer-focus'
+import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
+import { ChatComposerBox, FLOATING_COMPOSER_CLASS } from './chat-composer-box'
 import { ComposerOptions, useComposerOptions } from './composer-options'
+import { AgentDefaultFooter } from './agent-default-footer'
+import { useAgentPreferences } from '@renderer/hooks/use-agent-preferences'
+import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
+import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
 import { useRenderTracker } from '@renderer/lib/perf'
-import type { EffortLevel } from '@shared/lib/container/types'
+import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
+import type { ComposerSnapshot } from '@renderer/lib/new-session-carryover'
+import type { VoiceInputRequest } from '@renderer/lib/voice/contracts/conversation'
 
 interface MessageInputProps {
-  sessionId: string
+  /** Null until the first message creates a session. */
+  sessionId: string | null
+  /** Hands a new session to the shell for navigation and its optimistic message. */
+  onSessionCreated?: PendingMessagesContextValue['onSessionCreated']
   agentSlug: string
-  onMessageSent?: (content: string) => void
+  /** Called right before the POST so the caller can show the optimistic copy. `queued` is true when the agent is mid-turn. */
+  onMessageSent?: (content: string, localId: string, queued: boolean) => void
+  /** Called when the POST response arrives with the server-assigned message uuid. */
+  onMessageUuidAssigned?: (localId: string, uuid: string, queued: boolean) => void
+  /** Called when the POST fails, so the caller can drop the optimistic copy. */
+  onMessageFailed?: (localId: string) => void
   /** Effort level last used on this session; seeds the composer selector. Defaults to 'high' when absent. */
   initialEffort?: EffortLevel
+  /** Speed last used on this session; seeds the composer selector. Defaults to 'normal' when absent. */
+  initialSpeed?: SpeedLevel
   /** Model last used on this session; seeds the composer selector. Defaults to provider's agent default. */
+  initialLlmProviderId?: string | null
   initialModel?: string
+  /** Registers a getter so the stale-session prompt can move the live draft. */
+  registerSnapshot?: (getSnapshot: (() => ComposerSnapshot) | null) => void
+  /**
+   * Hidden behind a request card the agent is waiting on. Voice mode pauses
+   * (mic closed, the reply being read finishes, no hold sound) and resumes
+   * when the card is gone, rather than ending, so the agent is not told the
+   * person left.
+   */
+  suspended?: boolean
+  inputRequests?: readonly VoiceInputRequest[]
 }
 
-export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffort, initialModel }: MessageInputProps) {
+/**
+ * Whether Space is voice mode's to take: nothing else has handled it, and
+ * focus is on the page itself or on the voice composer outside its controls.
+ * Anywhere else (the message list, a drawer row, the live browser) Space
+ * keeps its own meaning rather than interrupting the agent.
+ */
+function spaceInterruptsVoice(event: KeyboardEvent, frame: HTMLElement | null): boolean {
+  if (event.defaultPrevented) return false
+  const target = event.target
+  if (target === document.body) return true
+  if (!(target instanceof Element) || !frame?.contains(target)) return false
+  return target.closest('button, input, textarea, select, a[href], [role="button"]') === null
+}
+
+export function MessageInput({ sessionId, agentSlug, onSessionCreated, onMessageSent, onMessageUuidAssigned, onMessageFailed, initialEffort, initialSpeed, initialModel, initialLlmProviderId, registerSnapshot, suspended = false, inputRequests }: MessageInputProps) {
   useRenderTracker('MessageInput')
+  const isMobile = useIsMobile()
+  const { data: voiceAgent } = useAgent(agentSlug)
+  const { data: sessions } = useSessions(sessionId ? null : agentSlug)
+  const createSession = useCreateSession({ agentRuntimeErrorsShownInline: true })
+  const renameUntitledAgent = useRenameUntitledAgent()
   const { canUseAgent, isAuthMode } = useUser()
   const isViewOnly = !canUseAgent(agentSlug)
   const lastTypingNotification = useRef(0)
   const [slashMenuOpen, setSlashMenuOpen] = useState(false)
   const [slashMenuIndex, setSlashMenuIndex] = useState(0)
-  const composerOptions = useComposerOptions({ initialEffort, initialModel })
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const sendMessage = useSendMessage()
+  const { data: agentPrefs, isFetched: agentPrefsFetched } = useAgentPreferences(agentSlug)
+  const composerOptions = useComposerOptions({
+    initialEffort,
+    initialSpeed,
+    initialModel,
+    initialLlmProviderId,
+    sessionId: sessionId ?? undefined,
+    followDefaults: !sessionId,
+    agentDefaultLlmProviderId: agentPrefs?.defaultLlmProviderId,
+    agentDefaultModel: agentPrefs?.defaultModel,
+    agentDefaultEffort: agentPrefs?.defaultEffort,
+    agentDefaultSpeed: agentPrefs?.defaultSpeed,
+    agentKey: agentSlug,
+    agentDefaultsReady: agentPrefsFetched,
+  })
+  const textareaRef = useRef<HTMLDivElement>(null)
+  // Set by the voice-mode send path so message_sent can tell a spoken turn from a typed one.
+  const voiceSendRef = useRef(false)
+  // Let out-of-tree components (file-preview comment bar) focus this composer.
+  useEffect(() => {
+    if (sessionId) return registerSessionComposerFocus(sessionId, () => textareaRef.current?.focus())
+  }, [sessionId])
+  const previousSessionId = useRef(sessionId)
+  useEffect(() => {
+    const adopted = previousSessionId.current === null && sessionId !== null
+    previousSessionId.current = sessionId
+    if (!adopted || isMobile || isViewOnly) return
+    // Disabling a contenteditable during creation drops browser focus. Restore
+    // it after navigation and editor updates, unless the person focused elsewhere.
+    const frame = requestAnimationFrame(() => {
+      const editor = textareaRef.current
+      if (!editor || editor.getAttribute('aria-disabled') === 'true') return
+      if (document.activeElement === document.body || editor.closest('form')?.contains(document.activeElement)) {
+        editor.focus({ preventScroll: true })
+      }
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [sessionId, isMobile, isViewOnly])
+  const sendMessage = useSendMessage({ agentRuntimeErrorsShownInline: true })
   const uploadFile = useUploadFile()
   const uploadFolder = useUploadFolder()
   const interruptSession = useInterruptSession()
-  const { isActive, slashCommands } = useMessageStream(sessionId, agentSlug)
+  const { isActive, slashCommands, isWaitingBackground, backgroundTasks } = useMessageStream(sessionId, agentSlug, ['isActive', 'slashCommands', 'isWaitingBackground', 'backgroundTasks'])
+  // The Stop dialog names what is running; the launching tool calls in the
+  // transcript carry the names.
+  const { data: messages } = useMessages(sessionId, agentSlug)
+  const [stopDialogOpen, setStopDialogOpen] = useState(false)
+  const stopDialogTasks = useMemo(
+    () => (stopDialogOpen ? labelBackgroundTasks(backgroundTasks, messages) : []),
+    [stopDialogOpen, backgroundTasks, messages]
+  )
+  // The tasks can finish while the question is open; with none left there is
+  // nothing to decide, and the next Stop goes straight through.
+  useEffect(() => {
+    if (stopDialogOpen && backgroundTasks.length === 0) setStopDialogOpen(false)
+  }, [stopDialogOpen, backgroundTasks.length])
   const isOnline = useIsOnline()
   const isOffline = !isOnline
   const { track } = useAnalyticsTracking()
+  // Block sends while the container runtime is still coming up (checking,
+  // pulling image, unavailable). A message sent then has nothing to run it,
+  // so the agent would silently drop it. `isPending` is the initial query
+  // load — treat it as ready to avoid a disabled-input flash on mount.
+  const { data: runtimeStatus, isPending: isRuntimePending } = useRuntimeStatus()
+  const isRuntimeReady = isRuntimePending || runtimeStatus?.runtimeReadiness?.status === 'READY'
+
+  const createFirstTurn = useCallback(async (content: string, voiceMode = false) => {
+    if (!onSessionCreated) throw new Error('Missing session creation handler')
+    const shouldRename = !voiceMode && voiceAgent?.name === UNTITLED_AGENT_NAME && (sessions?.length ?? 0) === 0
+    const session = await createSession.mutateAsync({
+      agentSlug,
+      message: content,
+      ...composerOptions.toRuntimeOptions(),
+      ...(voiceMode ? { inputMode: 'voice' as const } : {}),
+    })
+    if (voiceMode) onSessionCreated(session.id, content, session.initialMessageUuid, { voiceMode: true })
+    else onSessionCreated(session.id, content, session.initialMessageUuid)
+    if (shouldRename) renameUntitledAgent.mutate({ slug: agentSlug, prompt: content })
+  }, [onSessionCreated, voiceAgent?.name, sessions, createSession, agentSlug, composerOptions, renameUntitledAgent])
+  const isSending = sessionId ? sendMessage.isPending : createSession.isPending
+  const sendError = sessionId ? sendMessage.error : createSession.error
 
   const composer = useMessageComposer({
     agentSlug,
     uploadFile: useCallback(
-      ({ file }) => uploadFile.mutateAsync({ sessionId, agentSlug, file }),
+      ({ file, onProgress, signal, stallMs }) => uploadFile.mutateAsync({ sessionId: sessionId ?? undefined, agentSlug, file, onProgress, signal, stallMs }),
       [uploadFile, sessionId, agentSlug]
     ),
     uploadFolder: useCallback(
-      ({ sourcePath }) => uploadFolder.mutateAsync({ sessionId, agentSlug, sourcePath }),
+      ({ sourcePath }) => uploadFolder.mutateAsync({ sessionId: sessionId ?? undefined, agentSlug, sourcePath }),
       [uploadFolder, sessionId, agentSlug]
     ),
-    onSubmit: useCallback(async (content: string) => {
-      onMessageSent?.(content)
-      await sendMessage.mutateAsync({ sessionId, agentSlug, content, ...composerOptions.toRuntimeOptions() })
-      track('message_sent')
-    }, [onMessageSent, sendMessage, sessionId, agentSlug, track, composerOptions]),
-    submitDisabled: sendMessage.isPending || isActive || isOffline,
-    draftKey: `session:${sessionId}`,
+    onSubmit: useCallback(async (content: string, { silent }: { silent: boolean }) => {
+      if (!sessionId) return createFirstTurn(content)
+      // Local correlation id for the optimistic copy; the server-assigned
+      // message uuid arrives with the POST response (the server always
+      // generates it — a client-chosen id could forge attribution).
+      const localId = crypto.randomUUID()
+      const inputMode = voiceSendRef.current ? 'voice' : 'text'
+      voiceSendRef.current = false
+      // A message that only notifies joins the transcript and runs no turn,
+      // so it is never queued behind one.
+      // Mid-turn sends are queued by the agent loop (SDK streaming input) and
+      // picked up after the current step. They must not carry model/effort —
+      // a parameter change would interrupt/restart the in-flight query.
+      // (The server also strips them when it sees the session is active.)
+      const queued = !silent && isActive && !isWaitingBackground
+      const runtimeOptions = queued || silent ? {} : composerOptions.toRuntimeOptions()
+      onMessageSent?.(content, localId, queued)
+      let credentialSource: string | undefined
+      try {
+        const result = await sendMessage.mutateAsync({
+          sessionId,
+          agentSlug,
+          content,
+          ...runtimeOptions,
+          ...(silent ? { shouldQuery: false } : {}),
+        })
+        // Only a fresh turn accepts runtime-option changes. The server's
+        // queued decision is authoritative and may differ from our SSE-based
+        // guess, so keep a user pick dirty when the server stripped it.
+        if (!result.queued && !silent) composerOptions.markSubmitted(runtimeOptions)
+        // Reconcile against the server's authoritative decision: our local
+        // `queued` guess is derived from SSE state that can be stale (reconnect,
+        // a peer's turn, background-task flag), and a mismatch otherwise strands
+        // the ghost — a server-queued message is re-id'd by the CLI, so it never
+        // matches our uuid and never materializes.
+        onMessageUuidAssigned?.(localId, result.uuid, result.queued)
+        credentialSource = result.credentialSource
+      } catch (error) {
+        onMessageFailed?.(localId)
+        throw error
+      }
+      track('message_sent', {
+        origin: 'user', input_mode: inputMode,
+        session_id: sessionId, credential_source: credentialSource ?? 'unknown',
+        notify_only: silent,
+      })
+    }, [createFirstTurn, onMessageSent, onMessageUuidAssigned, onMessageFailed, sendMessage, sessionId, agentSlug, track, composerOptions, isActive, isWaitingBackground]),
+    submitDisabled: isSending || isOffline || !isRuntimeReady || isViewOnly,
+    keepMessageUntilComplete: !sessionId,
+    draftKey: sessionId ? `session:${sessionId}` : `new-session:${agentSlug}`,
+    silentSends: !!sessionId,
   })
+  const notifiesOnly = sessionId ? silentOpener(composer.message) : null
+
+  const warmStartEnabled = useWarmStartOnTypeEnabled()
+  const { warmStart } = useWarmStartOnType({
+    agentSlug,
+    // Also resumes this session's agent process if it went idle.
+    sessionId,
+    message: composer.message,
+    enabled: warmStartEnabled && !isViewOnly && !isOffline,
+  })
+
+  const snapshotRef = useRef<ComposerSnapshot>({
+    text: '',
+    attachments: [],
+    model: undefined,
+    effort: composerOptions.effort,
+    speed: composerOptions.speed,
+  })
+  snapshotRef.current = {
+    text: composer.message,
+    attachments: composer.attachments,
+    model: composerOptions.model,
+    effort: composerOptions.effort,
+    speed: composerOptions.speed,
+  }
+  useEffect(() => {
+    if (!registerSnapshot) return
+    registerSnapshot(() => snapshotRef.current)
+    return () => registerSnapshot(null)
+  }, [registerSnapshot])
 
   // Extract the slash command prefix being typed (e.g. "co" from "/co")
   const slashFilter = useMemo(() => {
@@ -90,8 +307,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffor
     textareaRef.current?.focus()
   }, [composer])
 
-  const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const value = e.target.value
+  const handleChange = useCallback((value: string) => {
     composer.setMessage(value)
 
     // Open slash menu when input is "/" followed by optional non-space chars (still typing command)
@@ -103,7 +319,7 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffor
     }
 
     // Debounced typing notification for shared agents (auth mode)
-    if (isAuthMode && value.length > 0) {
+    if (sessionId && isAuthMode && value.length > 0) {
       const now = Date.now()
       if (now - lastTypingNotification.current > 3000) {
         lastTypingNotification.current = now
@@ -117,16 +333,27 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffor
     }
   }, [composer, slashCommands.length, isAuthMode, agentSlug, sessionId])
 
-  const handleInterrupt = async () => {
-    if (interruptSession.isPending) return
+  const runInterrupt = async (scope: 'turn' | 'all') => {
+    if (!sessionId || interruptSession.isPending) return
     try {
-      await interruptSession.mutateAsync({ sessionId, agentSlug })
+      await interruptSession.mutateAsync({ sessionId, agentSlug, scope })
     } catch (error) {
       console.error('Failed to interrupt session:', error)
     }
   }
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  // Stop ends the response. Background tasks are the user's call: with any
+  // running, ask whether they go too, instead of killing them silently.
+  const handleInterrupt = () => {
+    if (!sessionId || interruptSession.isPending) return
+    if (backgroundTasks.length > 0) {
+      setStopDialogOpen(true)
+      return
+    }
+    void runInterrupt('turn')
+  }
+
+  const handleKeyDown = (e: KeyboardEvent) => {
     // Slash command menu keyboard navigation
     if (slashMenuOpen && filteredCommands.length > 0) {
       if (e.key === 'ArrowDown') {
@@ -152,22 +379,165 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffor
     }
 
     if (e.key === 'Enter' && !e.shiftKey) {
+      // On touch (coarse pointer, no physical Shift key) Enter must insert a
+      // newline — the user taps the Send button instead. Otherwise every Return,
+      // including the keyboard's autocorrect-accept, would fire the message
+      // mid-thought. Desktop (fine pointer) keeps Enter-to-send unchanged.
+      if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches) return
       e.preventDefault()
-      composer.handleSubmit(e)
+      if (!composer.canSubmit) return
+      void composer.handleSubmit(e)
     }
   }
 
-  const isDisabled = sendMessage.isPending || composer.isUploading || isOffline
+  const isDisabled = isSending || composer.isUploading || isOffline || !isRuntimeReady
+
+  // Voice mode. A session opened from the home page's voice button arrives
+  // with the request already made (and the entry notice already sent as its
+  // first message); otherwise it starts here, with the notice appended for
+  // the agent to read with the next utterance.
+  const [openedByVoice] = useState(() => !!sessionId && isVoiceModeRequested(sessionId))
+  const [voiceModeOn, setVoiceModeOn] = useState(openedByVoice)
+  useEffect(() => {
+    if (!sessionId) return
+    if (isVoiceModeRequested(sessionId)) setVoiceModeOn(true)
+    clearVoiceModeRequest(sessionId)
+  }, [sessionId])
+  // The rest of the session view draws around the mic (activity card, hints).
+  useEffect(() => {
+    if (!sessionId) return
+    setVoiceModeActive(sessionId, voiceModeOn)
+    return () => setVoiceModeActive(sessionId, false)
+  }, [sessionId, voiceModeOn])
+  // Its own mutation: the composer treats a pending send as "busy", and an
+  // utterance spoken while the entry notice is still in flight must not be
+  // dropped for it.
+  // A notice that fails (the session was deleted, the app is offline as
+  // the person leaves) is not worth a toast: the agent misses a hint.
+  const sendNotice = useSendMessage({ quiet: true })
+  const sendNoticeRef = useRef<(content: string) => void>(() => {})
+  sendNoticeRef.current = (content: string) => {
+    if (!sessionId) return
+    sendNotice.mutate(
+      { sessionId, agentSlug, content, shouldQuery: false },
+      { onError: (err) => console.warn('Voice-mode notice not delivered:', err) },
+    )
+  }
+  const enterVoiceMode = useCallback(() => {
+    // Audio output is unlocked inside the click, for the first reply to use.
+    if (isDisabled) return
+    readAloud.unlockAudio()
+    if (!sessionId) {
+      void createFirstTurn(VOICE_MODE_ENTERED_MESSAGE, true).then(() => {
+        track('voice_mode_entered', { origin: 'session' })
+      }).catch((error: unknown) => {
+        console.error('Failed to start a voice session:', error)
+        readAloud.releaseUnlockedAudio()
+        track('voice_mode_start_failed', { origin: 'session' })
+      })
+      return
+    }
+    setVoiceModeOn(true)
+    sendNoticeRef.current(VOICE_MODE_ENTERED_MESSAGE)
+    track('voice_mode_entered', { origin: 'session' })
+  }, [track, isDisabled, sessionId, createFirstTurn])
+  const exitVoiceMode = useCallback(() => setVoiceModeOn(false), [])
+  useEffect(() => {
+    if (sessionId) return registerVoiceModeExit(sessionId, exitVoiceMode)
+  }, [sessionId, exitVoiceMode])
+  const exitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const trackRef = useRef(track)
+  trackRef.current = track
+  // Leaving voice mode — by the exit button or by navigating away from the
+  // session — tells the agent. Deferred a tick so a development-mode
+  // remount does not send it for a mode that is still on.
+  useEffect(() => {
+    if (!voiceModeOn) return
+    return () => {
+      const timer = setTimeout(() => {
+        sendNoticeRef.current(VOICE_MODE_EXITED_MESSAGE)
+        trackRef.current('voice_mode_exited', { origin: openedByVoice ? 'home' : 'session' })
+      }, 0)
+      exitTimerRef.current = timer
+    }
+  }, [voiceModeOn, openedByVoice])
+  useEffect(() => {
+    if (!voiceModeOn || exitTimerRef.current === null) return
+    clearTimeout(exitTimerRef.current)
+    exitTimerRef.current = null
+  }, [voiceModeOn])
+  const { submitMessage } = composer
+  // Transport bound only; the host trims to the voice model's token budget.
+  const voiceHistory = useMemo(() => boundVoiceHistoryTransport((messages ?? []).flatMap((message) =>
+      (message.type === 'user' || message.type === 'assistant') && message.content.text.trim()
+        ? [{ role: message.type, content: message.content.text }]
+        : [],
+    )), [messages])
+  const voice = useVoiceMode({
+    sessionId,
+    agentSlug,
+    active: voiceModeOn && !isViewOnly,
+    paused: suspended,
+    inputRequests,
+    send: (text) => {
+      voiceSendRef.current = true
+      return submitMessage(text).finally(() => { voiceSendRef.current = false })
+    },
+    startWithAgentTurn: openedByVoice,
+    history: voiceHistory,
+  })
+  // Keys while voice mode is on: Space interrupts the agent (the orb's own
+  // action while it has the floor), ⌘⇧M (Ctrl⇧M) mutes the microphone and
+  // ⌘⇧A (Ctrl⇧A) the agent's voice. Read from the latest render so the
+  // listener is bound once per voice session.
+  const voiceRef = useRef(voice)
+  voiceRef.current = voice
+  const voiceFrameRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!voiceModeOn || isViewOnly) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === ' ' && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+        if (!spaceInterruptsVoice(event, voiceFrameRef.current)) return
+        if (voiceRef.current.phase === 'listening') return
+        voiceRef.current.pressMic()
+        event.preventDefault()
+        return
+      }
+      if (event.defaultPrevented || !(event.metaKey || event.ctrlKey) || !event.shiftKey || event.altKey) return
+      const key = event.key.toLowerCase()
+      if (key === 'm') voiceRef.current.setMicMuted(!voiceRef.current.micMuted)
+      else if (key === 'a') voiceRef.current.setOutputMuted(!voiceRef.current.outputMuted)
+      else return
+      event.preventDefault()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [voiceModeOn, isViewOnly])
+  // Something to hear while the agent works, unless the person muted it:
+  // their own music if it was playing when voice mode came on, else the loop.
+  // The takeover lasts the whole voice session: a muted hold sound or a
+  // request card keeps the music paused, and leaving voice mode gives it back.
+  const holdSoundWanted = useHoldSoundPreference()
+  const userMusicWanted = useUserMusicPreference()
+  const music = useUserMusicSession(voiceModeOn && !isViewOnly && userMusicWanted && userMusicSupported())
+  useHoldSound({
+    enabled: voiceModeOn && !isViewOnly && !suspended && holdSoundWanted,
+    agentTurn: voice.hold.allowed,
+    delayMs: voice.hold.delayMs,
+    speaking: voice.speechActive ?? voice.phase === 'speaking',
+    working: voice.working,
+    source: music.active ? userMusic : holdSound,
+  })
 
 
   if (isViewOnly) {
     return null
   }
 
-  return (
-    <form
-      onSubmit={composer.handleSubmit}
-      className={`relative px-4 pt-3 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
+  const form = voiceModeOn ? (
+    <div
+      ref={voiceFrameRef}
+      className={`relative z-10 isolate px-4 pt-0 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
       {...composer.dragHandlers}
     >
       <MountChoiceDialog
@@ -175,6 +545,79 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffor
         onChoice={composer.mountDialog.onChoice}
         folderName={composer.mountDialog.folderName}
       />
+      <VoiceModeComposer
+        phase={voice.phase}
+        ready={voice.ready}
+        agentName={voiceAgent?.name}
+        userSpeaking={voice.userSpeaking}
+        utterance={voice.utterance}
+        transcript={voice.transcript}
+        error={voice.error}
+        onClearError={voice.clearError}
+        onPressMic={voice.pressMic}
+        micMuted={voice.micMuted}
+        onToggleMicMuted={() => voice.setMicMuted(!voice.micMuted)}
+        outputMuted={voice.outputMuted}
+        onToggleOutputMuted={() => voice.setOutputMuted(!voice.outputMuted)}
+        getAnalyser={voice.getAnalyser}
+        getOutputAnalyser={voice.getOutputAnalyser}
+        onExit={exitVoiceMode}
+        attachments={composer.attachments}
+        onRemoveAttachment={composer.removeAttachment}
+        onRetryAttachment={composer.retryAttachment}
+        attachmentPicker={(
+          <AttachmentPicker
+            onFileSelect={composer.handleFileSelect}
+            onFolderSelect={composer.handleFolderSelect}
+            onRecentFileAttach={(file) => composer.addFiles([{ file }])}
+            disabled={isDisabled}
+          />
+        )}
+        composerOptions={(
+          <ComposerOptions
+            state={composerOptions}
+            disabled={isDisabled || isActive}
+            footer={<AgentDefaultFooter agentSlug={agentSlug} state={composerOptions} />}
+          />
+        )}
+        voiceControls={<VoiceModeControls showSpeed={voice.capabilities.speechSpeed} />}
+        footer={(
+          <>
+            {isOffline && (
+              <div className="mt-2 flex items-center gap-1.5 text-xs text-destructive">
+                <WifiOff className="h-3 w-3 shrink-0" />
+                <span>No internet connection. Messages cannot be sent.</span>
+              </div>
+            )}
+            <UploadError error={composer.uploadError} onDismiss={composer.clearUploadError} className="mt-2" />
+            <AgentRuntimeErrorView error={sendError} className="mt-2" />
+          </>
+        )}
+      />
+    </div>
+  ) : (
+    <form
+      onSubmit={composer.handleSubmit}
+      onPointerDown={warmStart}
+      className={`relative z-10 isolate px-4 pt-0 ${composer.isDragOver ? 'ring-2 ring-primary ring-inset' : ''}`}
+      {...composer.dragHandlers}
+    >
+      <StopSessionDialog
+        open={stopDialogOpen}
+        onOpenChange={setStopDialogOpen}
+        tasks={stopDialogTasks}
+        // Waiting on background work means the response already ended; the
+        // only thing left to stop is the tasks themselves.
+        turnInProgress={!isWaitingBackground}
+        onStopTurn={() => { setStopDialogOpen(false); void runInterrupt('turn') }}
+        onStopAll={() => { setStopDialogOpen(false); void runInterrupt('all') }}
+      />
+      <MountChoiceDialog
+        open={composer.mountDialog.open}
+        onChoice={composer.mountDialog.onChoice}
+        folderName={composer.mountDialog.folderName}
+      />
+      {composer.chipDialog}
       <SlashCommandMenu
         commands={filteredCommands}
         selectedIndex={slashMenuIndex}
@@ -183,14 +626,16 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffor
         filter={slashFilter ?? ''}
       />
       <ChatComposerBox
+        className={`${FLOATING_COMPOSER_CLASS} composer-enter-contents`}
         attachments={composer.attachments}
         onRemoveAttachment={composer.removeAttachment}
+        onRetryAttachment={composer.retryAttachment}
         textareaRef={textareaRef}
         value={composer.message}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
         onPaste={composer.handlePaste}
-        onFocus={() => { if (slashFilter !== null && slashCommands.length > 0) setSlashMenuOpen(true) }}
+        onFocus={() => { warmStart(); if (slashFilter !== null && slashCommands.length > 0) setSlashMenuOpen(true) }}
         onBlur={() => setSlashMenuOpen(false)}
         placeholder={
           isOffline
@@ -201,7 +646,16 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffor
         }
         disabled={isDisabled}
         rows={2}
+        autoFocus={!sessionId && !isMobile}
+        enterKeyHint="enter"
         dataTestId="message-input"
+        secureSecrets={{
+          agentSlug,
+          potentialSecrets: composer.potentialSecrets,
+          onDismiss: composer.dismissPotentialSecret,
+          onSecure: composer.securePotentialSecret,
+        }}
+        chipContext={composer.chipContext}
         leftActions={(
           <>
             <AttachmentPicker
@@ -210,7 +664,13 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffor
               onRecentFileAttach={(file) => composer.addFiles([{ file }])}
               disabled={isDisabled}
             />
-            <ComposerOptions state={composerOptions} disabled={isDisabled} />
+            {/* Model/effort are locked while the agent works — changing them
+                mid-turn would interrupt the running query. */}
+            <ComposerOptions
+              state={composerOptions}
+              disabled={isDisabled || isActive}
+              footer={<AgentDefaultFooter agentSlug={agentSlug} state={composerOptions} />}
+            />
           </>
         )}
         rightActions={(
@@ -220,10 +680,13 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffor
               message={composer.message}
               disabled={isDisabled}
             />
+            {/* Not mid-dictation: that mic and socket would stay open under voice mode's own. */}
+            <VoiceModeButton onClick={enterVoiceMode} disabled={isDisabled || composer.voiceInput.isRecording || composer.voiceInput.isConnecting} />
             <ComposerActionButton
               isActive={isActive}
+              isWaitingBackground={isWaitingBackground}
               canSubmit={composer.canSubmit}
-              isSending={sendMessage.isPending || composer.isUploading}
+              isSending={isSending || composer.isUploading}
               isInterrupting={interruptSession.isPending}
               onInterrupt={handleInterrupt}
             />
@@ -237,10 +700,22 @@ export function MessageInput({ sessionId, agentSlug, onMessageSent, initialEffor
                 <span>No internet connection. Messages cannot be sent.</span>
               </div>
             )}
+            {notifiesOnly && (
+              <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground" data-testid="mention-notify-only-hint">
+                <AtSign className="h-3 w-3 shrink-0 text-violet-500" />
+                <span>{`Only notifies ${notifiesOnly.label}. The agent won't reply.`}</span>
+              </div>
+            )}
             <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2" />
+            <UploadError error={composer.uploadError} onDismiss={composer.clearUploadError} className="mt-2" />
+            <AgentRuntimeErrorView error={sendError} className="mt-2" />
           </>
         )}
       />
     </form>
   )
+
+  // One frame around either form: it stays mounted across the swap so the
+  // height glides, and the incoming form gets the enter animation.
+  return <AnimatedHeight>{form}</AnimatedHeight>
 }

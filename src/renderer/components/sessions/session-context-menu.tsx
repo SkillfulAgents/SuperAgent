@@ -1,9 +1,13 @@
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@renderer/components/ui/context-menu'
 import {
@@ -26,16 +30,84 @@ import {
 } from '@renderer/components/ui/dialog'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { useDeleteSession, useUpdateSessionName } from '@renderer/hooks/use-sessions'
-import { useSelection } from '@renderer/context/selection-context'
+import { useDeleteSession, useUpdateSessionName, useSetSessionMarkedUnread, useForkSession, useForkAndCompact } from '@renderer/hooks/use-sessions'
+import { useNavigate } from '@tanstack/react-router'
+import { useRouteLocation } from '@renderer/router/use-route-location'
 import { useUser } from '@renderer/context/user-context'
-import { Trash2, ClipboardCopy, Pencil } from 'lucide-react'
+import { Trash2, ClipboardCopy, Download, Pencil, Eye, Split, Minimize2, Loader2, Check, type LucideIcon } from 'lucide-react'
+import { toast } from 'sonner'
 import { apiFetch } from '@renderer/lib/api'
+import { downloadBlob } from '@renderer/lib/download'
+import { AddSessionToTodoItem } from '@renderer/components/todo/todo-add-session-item'
+import type { SessionUsageTotals } from '@shared/lib/types/usage'
 
+type UsageState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'success'; totals: SessionUsageTotals }
+  | { status: 'error' }
+
+function formatCost(cost: number): string {
+  if (cost > 0 && cost < 0.0001) return '<$0.0001'
+  const digits = cost > 0 && cost < 0.01 ? 4 : 2
+  return `$${cost.toFixed(digits)}`
+}
+
+type MenuActionStatus = 'idle' | 'running' | 'done'
+
+const DONE_MS = 2000
+
+/**
+ * Runs a menu item's action in place: the menu stays open and the item's icon
+ * spins until the action settles. With `showDone`, a check then shows for
+ * DONE_MS, for actions with nothing else on screen to confirm them. A failed
+ * action goes back to idle and reports its own error.
+ */
+function useMenuAction(action: () => Promise<unknown>, { showDone = false } = {}) {
+  const [status, setStatus] = useState<MenuActionStatus>('idle')
+
+  useEffect(() => {
+    if (status !== 'done') return
+    const timer = setTimeout(() => setStatus('idle'), DONE_MS)
+    return () => clearTimeout(timer)
+  }, [status])
+
+  const onSelect = (event: Event) => {
+    event.preventDefault()
+    if (status === 'running') return
+    setStatus('running')
+    action().then(
+      () => setStatus(showDone ? 'done' : 'idle'),
+      () => setStatus('idle'),
+    )
+  }
+
+  return { status, onSelect }
+}
+
+function MenuActionIcon({ icon: Icon, status }: { icon: LucideIcon; status: MenuActionStatus }) {
+  if (status === 'running') return <Loader2 className="h-4 w-4 mr-2 animate-spin" role="img" aria-label="in progress" />
+  if (status === 'done') return <Check className="h-4 w-4 mr-2 text-green-600 dark:text-green-400" role="img" aria-label="done" />
+  return <Icon className="h-4 w-4 mr-2" />
+}
+
+export interface SessionMenuActivity {
+  isActive: boolean
+  isAwaitingInput: boolean
+  isStreaming: boolean
+}
+
+/**
+ * The one session menu. Every entry point — sidebar row right-click, the
+ * breadcrumb, and the agent home's session list (its three-dot replays a
+ * contextmenu on the row) — opens this same list, so an action is never only
+ * reachable from one of them. Styled to match AgentContextMenu.
+ */
 interface SessionContextMenuProps {
   sessionId: string
   sessionName: string
   agentSlug: string
+  activity: SessionMenuActivity
   children: React.ReactNode
 }
 
@@ -43,31 +115,59 @@ export function SessionContextMenu({
   sessionId,
   sessionName,
   agentSlug,
+  activity,
   children,
 }: SessionContextMenuProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [showRenameDialog, setShowRenameDialog] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [newName, setNewName] = useState(sessionName)
+  const [usage, setUsage] = useState<UsageState>({ status: 'idle' })
   const renameInputRef = useRef<HTMLInputElement>(null)
+  const usageRequestRef = useRef(0)
   const deleteSession = useDeleteSession()
   const updateSessionName = useUpdateSessionName()
-  const { handleSessionDeleted } = useSelection()
-  const { canAdminAgent } = useUser()
+  const setSessionMarkedUnread = useSetSessionMarkedUnread()
+  const navigate = useNavigate()
+  // null when the menu is opened off the session route (e.g. from the sidebar
+  // or the agent home's list), so the up-nav only fires when we're actually
+  // viewing the session being deleted.
+  const { view } = useRouteLocation()
+  const routeSessionId = view.kind === 'session' ? view.id : null
+  const { canAdminAgent, canUseAgent } = useUser()
   const isOwner = canAdminAgent(agentSlug)
+  const canUse = canUseAgent(agentSlug)
+  const forkSession = useForkSession()
+  const forkAndCompact = useForkAndCompact()
+  // Unread dots are suppressed while working or awaiting. Fork is refused
+  // while the transcript is open (active or still streaming).
+  const hideUnread = activity.isActive || activity.isAwaitingInput
+  const forkDisabled = activity.isActive || activity.isStreaming
 
   const handleDelete = async () => {
     setIsDeleting(true)
     try {
       await deleteSession.mutateAsync({ id: sessionId, agentSlug })
       setShowDeleteDialog(false)
-      handleSessionDeleted(sessionId)
+      if (routeSessionId === sessionId) {
+        void navigate({ to: '/agents/$slug', params: { slug: agentSlug } })
+      }
     } catch (error) {
       console.error('Failed to delete session:', error)
     } finally {
       setIsDeleting(false)
     }
   }
+
+  // Radix's context menu has no `open` prop, so a new key is how it closes
+  // once a fork settles. The key remounts the trigger too, which drops its
+  // focus and hover state.
+  const [menuKey, setMenuKey] = useState(0)
+  const closeMenu = () => setMenuKey((key) => key + 1)
+  // Both hooks log and toast their own failures. Fork & Summarize settles
+  // after the copy has opened, so its menu closes even if /compact fails.
+  const fork = useMenuAction(() => forkSession.mutateAsync({ sessionId, agentSlug }).finally(closeMenu))
+  const forkAndSummarize = useMenuAction(() => forkAndCompact.mutateAsync({ sessionId, agentSlug }).finally(closeMenu))
 
   const handleRename = async () => {
     const trimmed = newName.trim()
@@ -83,49 +183,176 @@ export function SessionContextMenu({
     }
   }
 
-  const handleCopyRawLog = async () => {
+  const handleMarkUnread = async () => {
     try {
-      const response = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/raw-log`)
-      if (!response.ok) {
-        throw new Error('Failed to fetch raw log')
-      }
-      const text = await response.text()
+      await setSessionMarkedUnread.mutateAsync({ sessionId, agentSlug, markedUnread: true })
+    } catch (error) {
+      console.error('Failed to mark session as unread:', error)
+    }
+  }
+
+  const fetchRawLog = async (): Promise<Response> => {
+    const response = await apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/raw-log`)
+    if (!response.ok) {
+      throw new Error('Failed to fetch raw log')
+    }
+    return response
+  }
+
+  const copyRawLog = useMenuAction(async () => {
+    try {
+      const text = await (await fetchRawLog()).text()
       await navigator.clipboard.writeText(text)
     } catch (error) {
       console.error('Failed to copy raw log:', error)
+      toast.error('Could not copy raw log', {
+        description: error instanceof Error ? error.message : undefined,
+      })
+      throw error
     }
+  }, { showDone: true })
+
+  const downloadRawLog = useMenuAction(async () => {
+    try {
+      const response = await fetchRawLog()
+      const base = sessionName.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
+      await downloadBlob(response, `${base || sessionId}.jsonl`)
+    } catch (error) {
+      console.error('Failed to download raw log:', error)
+      toast.error('Could not download raw log', {
+        description: error instanceof Error ? error.message : undefined,
+      })
+      throw error
+    }
+  }, { showDone: true })
+
+  const handleMenuOpenChange = (open: boolean) => {
+    if (!open) return
+
+    const requestId = ++usageRequestRef.current
+    setUsage({ status: 'loading' })
+
+    void apiFetch(`/api/agents/${agentSlug}/sessions/${sessionId}/usage`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Failed to fetch session usage')
+        const totals = (await response.json()) as SessionUsageTotals
+        if (usageRequestRef.current === requestId) {
+          setUsage({ status: 'success', totals })
+        }
+      })
+      .catch((error) => {
+        if (usageRequestRef.current === requestId) {
+          console.error('Failed to fetch session usage:', error)
+          setUsage({ status: 'error' })
+        }
+      })
   }
 
   return (
     <>
-      <ContextMenu>
+      <ContextMenu key={menuKey} onOpenChange={handleMenuOpenChange}>
         <ContextMenuTrigger asChild>
           {children}
         </ContextMenuTrigger>
-        <ContextMenuContent>
+        <ContextMenuContent className="w-56 rounded-xl p-2" data-testid="session-context-menu">
           {isOwner && (
-            <ContextMenuItem onClick={() => {
-              setNewName(sessionName)
-              setShowRenameDialog(true)
-            }}>
+            <ContextMenuItem
+              data-testid="rename-session-item"
+              onClick={() => {
+                setNewName(sessionName)
+                setShowRenameDialog(true)
+              }}
+            >
               <Pencil className="h-4 w-4 mr-2" />
               Rename Session
             </ContextMenuItem>
           )}
-          <ContextMenuItem onClick={handleCopyRawLog}>
-            <ClipboardCopy className="h-4 w-4 mr-2" />
-            Copy Raw Log
-          </ContextMenuItem>
-          {isOwner && (
-            <ContextMenuItem
-              className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-              onClick={() => setShowDeleteDialog(true)}
-              data-testid="delete-session-item"
-            >
-              <Trash2 className="h-4 w-4 mr-2" />
-              Delete Session
+          {canUse && (
+            <ContextMenuSub>
+              {/* The item wrapper dims a disabled row; the sub-trigger wrapper does not. */}
+              <ContextMenuSubTrigger
+                disabled={forkDisabled}
+                className="data-[disabled]:opacity-50"
+                data-testid="fork-session-trigger"
+              >
+                <Split className="h-4 w-4 mr-2" />
+                Fork Session
+              </ContextMenuSubTrigger>
+              <ContextMenuSubContent className="rounded-xl p-2" data-testid="fork-session-menu">
+                {/* Also on the rows: the source can go active while the submenu is open. */}
+                <ContextMenuItem data-testid="fork-session-item" disabled={forkDisabled} onSelect={fork.onSelect}>
+                  <MenuActionIcon icon={Split} status={fork.status} />
+                  Fork
+                </ContextMenuItem>
+                <ContextMenuItem
+                  data-testid="fork-summarize-session-item"
+                  disabled={forkDisabled}
+                  onSelect={forkAndSummarize.onSelect}
+                >
+                  <MenuActionIcon icon={Minimize2} status={forkAndSummarize.status} />
+                  Fork &amp; Summarize
+                </ContextMenuItem>
+              </ContextMenuSubContent>
+            </ContextMenuSub>
+          )}
+          <AddSessionToTodoItem agentSlug={agentSlug} sessionId={sessionId} sessionName={sessionName} />
+          {/* Not permission-gated, unlike rename/delete: a mark is scoped to
+              the acting user, so it is only ever a note to yourself. */}
+          {!hideUnread && (
+            <ContextMenuItem data-testid="mark-unread-session-item" onClick={handleMarkUnread}>
+              <Eye className="h-4 w-4 mr-2" />
+              Mark as Unread
             </ContextMenuItem>
           )}
+          <ContextMenuItem onSelect={copyRawLog.onSelect} data-testid="copy-session-raw-log-item">
+            <MenuActionIcon icon={ClipboardCopy} status={copyRawLog.status} />
+            Copy Raw Log
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={downloadRawLog.onSelect} data-testid="download-session-raw-log-item">
+            <MenuActionIcon icon={Download} status={downloadRawLog.status} />
+            Download Raw Log
+          </ContextMenuItem>
+          {isOwner && (
+            <>
+              <ContextMenuSeparator className="mx-1" />
+              <ContextMenuItem
+                className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                onClick={() => setShowDeleteDialog(true)}
+                data-testid="delete-session-item"
+              >
+                <Trash2 className="h-4 w-4 mr-2" />
+                Delete
+              </ContextMenuItem>
+            </>
+          )}
+          <div
+            className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 rounded-md bg-muted px-2 py-1.5 text-xs"
+            data-testid="session-usage-totals"
+          >
+            {usage.status === 'loading' || usage.status === 'idle' ? (
+              <span className="col-span-2 text-muted-foreground">Calculating usage...</span>
+            ) : usage.status === 'error' ? (
+              <span className="col-span-2 text-muted-foreground">Usage unavailable</span>
+            ) : (
+              <>
+                <span className="text-muted-foreground">Cost</span>
+                <span className="text-right tabular-nums text-muted-foreground">
+                  {usage.totals.priceMissing
+                    ? 'Model price missing'
+                    : formatCost(usage.totals.totalCost)}
+                </span>
+                <span className="text-muted-foreground">Tokens</span>
+                <span className="text-right tabular-nums text-muted-foreground">
+                  {usage.totals.totalTokens.toLocaleString('en-US')}
+                </span>
+                {usage.totals.usageIncomplete && (
+                  <span className="col-span-2 text-amber-600 dark:text-amber-400">
+                    Warning: usage may be incomplete
+                  </span>
+                )}
+              </>
+            )}
+          </div>
         </ContextMenuContent>
       </ContextMenu>
 

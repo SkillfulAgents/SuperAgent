@@ -1,4 +1,5 @@
 import Analytics, { type AnalyticsInstance } from 'analytics'
+import { clientFacts, serverFacts } from '@renderer/lib/facts'
 import amplitudePlugin from '@analytics/amplitude'
 import googleAnalyticsPlugin from '@analytics/google-analytics'
 import mixpanelPlugin from '@analytics/mixpanel'
@@ -6,6 +7,8 @@ import type { AnalyticsTarget } from '@shared/lib/config/settings'
 import { isElectron } from './env'
 
 function buildPlugins(shareAnalytics: boolean, targets?: AnalyticsTarget[]) {
+  if (__E2E_MOCK__) return []
+
   const plugins: ReturnType<typeof amplitudePlugin>[] = []
 
   // Datawizz sharing via hardcoded Amplitude key
@@ -20,11 +23,7 @@ function buildPlugins(shareAnalytics: boolean, targets?: AnalyticsTarget[]) {
       switch (target.type) {
         case 'amplitude':
           if (target.config.apiKey) {
-            plugins.push(amplitudePlugin({
-              apiKey: target.config.apiKey,
-              // Namespace to avoid collision with the Datawizz instance
-              ...(shareAnalytics && __AMPLITUDE_API_KEY__ ? { pluginName: 'amplitude-custom' } : {}),
-            }))
+            plugins.push(amplitudePlugin({ apiKey: target.config.apiKey }))
           }
           break
         case 'google-analytics':
@@ -41,7 +40,30 @@ function buildPlugins(shareAnalytics: boolean, targets?: AnalyticsTarget[]) {
     }
   }
 
-  return plugins
+  return dedupeByName(plugins)
+}
+
+// Analytics() throws `<name>AlreadyLoaded` on a repeated plugin name, and these
+// plugins drive one page-global SDK each, so a second copy could never load anyway.
+function dedupeByName<T extends { name: string }>(plugins: T[]): T[] {
+  const seen = new Set<string>()
+  return plugins.filter((plugin) => {
+    if (seen.has(plugin.name)) {
+      console.warn(`[Analytics] Ignoring duplicate "${plugin.name}" target; only the first one is used.`)
+      return false
+    }
+    seen.add(plugin.name)
+    return true
+  })
+}
+
+/** This window's distribution (direct | mac-app-store | windows-store), or null for a browser or before facts settle. */
+function clientDistribution(): string | null {
+  try {
+    return clientFacts().distribution ?? serverFacts()?.distribution ?? null
+  } catch {
+    return null
+  }
 }
 
 export function getAnalyticsMetadata() {
@@ -50,6 +72,9 @@ export function getAnalyticsMetadata() {
     versionId: __APP_VERSION__,
     platform,
   }
+  // The Store build shares versionId with the direct build; the stamp tells them apart.
+  const distribution = clientDistribution()
+  if (distribution) metadata.distribution = distribution
 
   if (platform === 'electron') {
     metadata.os = navigator.platform
@@ -74,6 +99,7 @@ export function createAnalyticsInstance(
 }
 
 export function hasActivePlugins(shareAnalytics: boolean, targets?: AnalyticsTarget[]): boolean {
+  if (__E2E_MOCK__) return false
   if (shareAnalytics && __AMPLITUDE_API_KEY__) return true
   if (targets?.some(t => t.enabled)) return true
   return false

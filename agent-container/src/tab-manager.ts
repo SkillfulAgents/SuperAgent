@@ -10,7 +10,16 @@ import * as path from 'path';
 const DEFAULT_MAX_TABS = 10;
 
 export interface TabInfo {
-  index: number;
+  /** Stable tab id assigned by the agent-browser daemon (e.g. "t1") — does not shift when other tabs close */
+  tabId: string;
+  /**
+   * The tab's CDP target id (agent-browser 0.34+). Matches Chrome's own
+   * target list exactly — the URL does not when two tabs share one, or when
+   * the daemon's copy of it is stale (host mode, Chrome's error page).
+   */
+  targetId?: string;
+  /** Optional user-assigned label (tab new --label <name>) */
+  label: string | null;
   url: string;
   title: string;
   active: boolean;
@@ -18,7 +27,7 @@ export interface TabInfo {
 
 export interface NewTabResult {
   newTab: true;
-  activeIndex: number;
+  activeId: string;
   activeUrl: string;
   tabCount: number;
 }
@@ -97,7 +106,7 @@ class TabManager {
         if (active) {
           return {
             newTab: true,
-            activeIndex: active.index,
+            activeId: active.tabId,
             activeUrl: active.url,
             tabCount: tabs.length,
           };
@@ -123,25 +132,25 @@ class TabManager {
     } catch { return false; }
   }
 
-  /** Find a tab whose URL matches the given URL */
+  /** Find a tab whose URL matches the given URL — one at exactly that URL (fragment included) first. */
   async findMatchingTab(url: string): Promise<TabInfo | null> {
     try {
       const tabs = await this.queryTabs();
-      return tabs.find(t => this.urlsMatch(t.url, url)) ?? null;
+      return tabs.find(t => t.url === url) ?? tabs.find(t => this.urlsMatch(t.url, url)) ?? null;
     } catch { return null; }
   }
 
   // --- Message Formatting ---
 
   /** Format a notification about a newly opened tab (appended to click/press responses) */
-  formatTabNotification(tabInfo: { activeIndex: number; activeUrl: string; tabCount: number }): string {
-    const { activeIndex, activeUrl, tabCount } = tabInfo;
-    let msg = `\nNew tab opened — you are now on tab ${activeIndex} (${activeUrl}). ${tabCount} tab(s) open.`;
+  formatTabNotification(tabInfo: { activeId: string; activeUrl: string; tabCount: number }): string {
+    const { activeId, activeUrl, tabCount } = tabInfo;
+    let msg = `\nNew tab opened — you are now on tab ${activeId} (${activeUrl}). ${tabCount} tab(s) open.`;
 
     if (tabCount >= this.maxTabs) {
-      msg += `\n⚠️ WARNING: ${tabCount} tabs open (max ${this.maxTabs}). You MUST close tabs you no longer need IMMEDIATELY. Switch with browser_run("tab <n>") then browser_run("tab close").`;
+      msg += `\n⚠️ WARNING: ${tabCount} tabs open (max ${this.maxTabs}). You MUST close tabs you no longer need IMMEDIATELY: browser_run("tab") to list ids, then browser_run("tab close <id>") for each unneeded tab.`;
     } else {
-      msg += `\nIf you no longer need the tab you came from, close it now: browser_run("tab <prev>") then browser_run("tab close").`;
+      msg += `\nIf you no longer need the tab you came from, close it by id without switching: browser_run("tab close <id>") — browser_run("tab") lists ids like t1, t2.`;
     }
 
     return msg;
@@ -149,7 +158,7 @@ class TabManager {
 
   /** Escalating warning appended to tool responses when tabs are high */
   formatTabWarning(tabCount: number): string {
-    if (tabCount >= this.maxTabs) return `\n\n🚨 CRITICAL: ${tabCount} TABS OPEN (limit: ${this.maxTabs}). STOP and close unneeded tabs NOW. Run browser_run("tab") to list, then close extras.`;
+    if (tabCount >= this.maxTabs) return `\n\n🚨 CRITICAL: ${tabCount} TABS OPEN (limit: ${this.maxTabs}). STOP and close unneeded tabs NOW. Run browser_run("tab") to list ids, then browser_run("tab close <id>") for each extra.`;
     if (tabCount >= this.maxTabs - 1) return `\n\n[${tabCount} tabs open — close any you no longer need]`;
     return '';
   }

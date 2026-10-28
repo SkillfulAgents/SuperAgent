@@ -25,7 +25,7 @@ export function getPlatformDeviceName(): string {
       // fall through
     }
   }
-  return os.hostname().trim() || 'SuperAgent Device'
+  return os.hostname().trim() || 'Gamut Device'
 }
 
 export function getOrCreatePlatformClientInstanceId() {

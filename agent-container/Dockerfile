@@ -1,13 +1,23 @@
 # Base image is glibc-based. If this ever changes to a musl distro (e.g. Alpine),
 # the Agent SDK native-binary cleanup step below must flip: delete the `-glibc`
 # variant instead of the `-musl` one, or the Claude subprocess will fail to spawn.
-FROM ubuntu:22.04
+#
+# Stage layout: `base` holds the agent's tool environment (apt packages,
+# runtimes, browser) and is shared by `builder` (dev deps + tsc, discarded)
+# and `runtime` (prod deps + dist, published).
+#
+# Pinned by digest: when Docker Hub moves the tag, every layer's cache key
+# changes, so the image rebuilds from scratch and every user re-pulls all of
+# it. Dependabot (.github/dependabot.yml) proposes the new digest as a PR.
+FROM ubuntu:22.04@sha256:e0f80c829509ef4df9e76bd8944eb7b8ec25cbb379b112a7f9448b2c77a77c9b AS base
 
 # Prevent interactive prompts during installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
+# Install system dependencies. --no-install-recommends everywhere: Ubuntu
+# otherwise drags in recommended packages nobody uses; the tools named here
+# arrive via hard Depends.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     curl \
     wget \
     git \
@@ -16,6 +26,9 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     # Timezone data (required for TZ env var to resolve IANA names)
     tzdata \
+    # Colour emoji for headless Chromium: widget snapshots rasterized in the
+    # container ship to native surfaces (iOS) and would show tofu without it.
+    fonts-noto-color-emoji \
     # Network/DNS utilities
     dnsutils \
     iputils-ping \
@@ -32,38 +45,92 @@ RUN apt-get update && apt-get install -y \
     unzip \
     file \
     tree \
+    # Document/media reading (formats the product renders)
+    poppler-utils \
+    ffmpeg \
+    # FUSE for volumes at /mounts/<name> (fusermount3 lets the non-root user mount)
+    fuse3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Node.js 20.x
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
+# Keep the agent on the same Node 22 patch as the app image.
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs=22.23.4-1nodesource1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python 3.11 and pip
-RUN apt-get update && apt-get install -y \
-    python3.11 \
-    python3-pip \
-    python3.11-venv \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
-    && ln -sf /usr/bin/python3 /usr/bin/python
+# Jammy's python3.11 package is still a prerelease. Install the distro's
+# Python package, then provide stable 3.11 through uv below.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install UV (Universal Virtualenv)
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# Pin uv and the agent's Python. These install paths are build-only: agents
+# can still use uv to install another interpreter in their writable home.
+# This image owns the interpreter. Remove uv's external-management marker
+# so existing non-root pip --user workflows still work; the installation
+# itself stays root-owned. Workspace projects should continue using venvs.
+# Keep the conventional stdlib path for `python3 -m venv --copies` too.
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /bin/
+RUN UV_PYTHON_INSTALL_DIR=/opt/python UV_PYTHON_BIN_DIR=/usr/local/bin \
+    uv python install --default 3.11.17 && \
+    rm /opt/python/cpython-3.11.17-linux-*/lib/python3.11/EXTERNALLY-MANAGED && \
+    python3 -m ensurepip --upgrade --default-pip && \
+    bin="$(dirname "$(readlink -f /usr/local/bin/python3)")" && \
+    ln -s "$(dirname "$bin")/lib/python3.11" /usr/local/lib/python3.11 && \
+    ln -s "$bin/pip" /usr/local/bin/pip && \
+    ln -s "$bin/pip3" /usr/local/bin/pip3 && \
+    ln -s /usr/local/bin/python3.11 /usr/bin/python3.11 && \
+    ln -sf /usr/local/bin/python3.11 /usr/bin/python3 && \
+    ln -sf /usr/local/bin/python3.11 /usr/bin/python && \
+    python3 --version && python3 -m pip --version && pip3 --version && \
+    rm -rf /root/.cache
 
-# Install TypeScript and ts-node globally
-RUN npm install -g typescript ts-node
+# Preserve the historical /usr/bin/python{,3,3.11} paths above: persisted venvs
+# point to them and would silently switch to 3.10 if python3 were restored to
+# Ubuntu's default. The managed 3.11 tree is root-owned, including for the
+# isolated FUSE helper; the distro binary remains at /usr/bin/python3.10.
+
+# Lock the agent's TypeScript tools separately from the app/build dependencies.
+# ts-node 10.9.2's old Node16 default pairs module=Node16 with moduleResolution=node;
+# the scoped @tsconfig/node16 override fixes scripts without a tsconfig on TS 5.9.
+# Project configs and project-local compilers still take precedence normally.
+# Keep global CLI and npm-root module paths without changing NODE_PATH. Clear
+# npm's cache in this layer so downloaded tarballs do not ship in the image.
+COPY runtime-tools/package.json runtime-tools/package-lock.json /opt/gamut/runtime-tools/
+RUN npm ci --prefix /opt/gamut/runtime-tools --omit=dev --ignore-scripts && \
+    global_root="$(npm root -g)" && prefix="$(npm prefix -g)" && \
+    mkdir -p "$global_root" && \
+    ln -s /opt/gamut/runtime-tools/node_modules/typescript "$global_root/typescript" && \
+    ln -s /opt/gamut/runtime-tools/node_modules/ts-node "$global_root/ts-node" && \
+    for tool in tsc tsserver ts-node ts-node-cwd ts-node-esm ts-node-script ts-node-transpile-only ts-script; do \
+      ln -s "/opt/gamut/runtime-tools/node_modules/.bin/$tool" "$prefix/bin/$tool" || exit 1; \
+    done && \
+    rm -rf /root/.npm
 
 # Install Bun (for running dashboard servers)
 # Install as root then copy binary to /usr/local/bin so the claude user can access it
-# (symlinks to /root/.bun/bin/ won't work because /root/ is not readable by other users)
-RUN curl -fsSL https://bun.sh/install | bash && \
+# (symlinks to /root/.bun/bin/ won't work because /root/ is not readable by other users).
+# Remove the installer's /root/.bun copy in the same layer or the ~90MB binary ships twice.
+RUN curl -fsSL https://bun.sh/install | bash -s "bun-v1.4.3" && \
     cp /root/.bun/bin/bun /usr/local/bin/bun && \
     ln -s /usr/local/bin/bun /usr/local/bin/bunx && \
-    chmod 755 /usr/local/bin/bun
+    chmod 755 /usr/local/bin/bun && \
+    rm -rf /root/.bun
+
+# Install rclone, the FUSE driver that mounts each volume from the app over WebDAV.
+# Checksums come from the release's SHA256SUMS for the two supported arches.
+RUN arch="$(dpkg --print-architecture)" && \
+    case "$arch" in \
+      amd64) sha256=efbfe852181f7191eb3c9043ed1ab49c9b2d0ba045c61c926a5da111c939ec5c ;; \
+      arm64) sha256=b8ba161d5c837206fad79ff1aabf0a81aa02a5fb164cdbc0ff5db4160aecd278 ;; \
+      *) echo "Unsupported rclone architecture: $arch" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL -o /tmp/rclone.deb "https://downloads.rclone.org/v1.75.2/rclone-v1.75.2-linux-${arch}.deb" && \
+    echo "$sha256  /tmp/rclone.deb" | sha256sum --check && \
+    dpkg -i /tmp/rclone.deb && \
+    rm /tmp/rclone.deb
 
 # Install Chromium dependencies (needed by agent-browser)
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
     libcups2 libdrm2 libdbus-1-3 libxkbcommon0 \
     libatspi2.0-0 libxcomposite1 libxdamage1 libxfixes3 \
@@ -72,21 +139,37 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install agent-browser (native Rust binary since v0.20.0) and Playwright's
-# Chromium. Both the agent-browser runtime (via find_playwright_chromium) and
-# our dashboard screenshot code (via playwright-core) share a single Chromium
-# install under PLAYWRIGHT_BROWSERS_PATH.
+# Chromium headless shell. Both the agent-browser runtime (via
+# AGENT_BROWSER_EXECUTABLE_PATH) and our dashboard screenshot code (via
+# playwright-core) launch the chromium-current symlink, which resolves to
+# headless_shell — so only the shell is installed (--only-shell). The full
+# chromium build was ~640MB of never-launched weight.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
-RUN npm install -g agent-browser@0.25.3 && \
-    npx playwright install chromium && \
-    chmod -R o+rx /opt/playwright-browsers
+# Playwright 1.64.1 preserves the existing Chromium 156.0.8078.4 (revision
+# 1248). Pin the installer so refreshing unrelated runtimes cannot move it.
+# The npm package ships the CLI for every platform (~100MB); its postinstall
+# links agent-browser straight to this machine's binary, so the others are
+# dead weight. Pruned only when the link is that direct one.
+RUN npm install -g agent-browser@0.39.1 && \
+    keep="$(readlink -f "$(command -v agent-browser)")" && \
+    case "$keep" in \
+      */agent-browser-linux-*) \
+        for f in "$(npm root -g)"/agent-browser/bin/agent-browser-*; do \
+          [ "$(readlink -f "$f")" = "$keep" ] || rm -f "$f"; \
+        done ;; \
+    esac && \
+    agent-browser --version && \
+    npx --yes playwright@1.64.1 install chromium --only-shell && \
+    chmod -R o+rx /opt/playwright-browsers && \
+    rm -rf /root/.npm
 
 # Create a stable symlink to whatever chromium binary got installed, so our
 # runtime code can point at a fixed path rather than globbing. Playwright's
-# layout (chrome-linux vs chrome-linux64 vs chrome-headless-shell-linux64) has
-# shifted between versions, so we use find to locate the binary regardless.
-# Prefer headless_shell (smaller); fall back to full chrome. Build fails loudly
-# if neither is present.
-RUN bin=$(find /opt/playwright-browsers -type f -name headless_shell -perm -u+x 2>/dev/null | head -n 1); \
+# layout AND binary name shift across versions and arches: arm64 unpacks to
+# chrome-linux/headless_shell while amd64 unpacks to
+# chrome-headless-shell-linux64/chrome-headless-shell. Find either headless
+# binary name; fall back to full chrome. Build fails loudly if none is present.
+RUN bin=$(find /opt/playwright-browsers -type f \( -name headless_shell -o -name chrome-headless-shell \) -perm -u+x 2>/dev/null | head -n 1); \
     if [ -z "$bin" ]; then \
       bin=$(find /opt/playwright-browsers -type f -name chrome -perm -u+x 2>/dev/null | head -n 1); \
     fi; \
@@ -98,26 +181,46 @@ RUN bin=$(find /opt/playwright-browsers -type f -name headless_shell -perm -u+x 
     ln -sf "$bin" /opt/playwright-browsers/chromium-current; \
     echo "Linked /opt/playwright-browsers/chromium-current -> $bin"
 
-# Create workspace directory
-RUN mkdir -p /workspace
+# Create the non-root user and its directories up front so every layer below
+# can create files with the right owner. Ownership fixes must happen in the
+# SAME layer that creates the files: a later `chown -R` (or `rm`) of a lower
+# layer copies up (or merely whiteouts) every file, shipping ~400MB twice.
+RUN useradd -m -s /bin/bash claude && \
+    install -d -o claude -g claude /app /workspace /mounts /home/claude/.claude
 WORKDIR /app
 
-# Copy package files
+# ---- builder: dev install + TypeScript build ----
+# Nothing from this stage ships except /app/dist, so devDeps (typescript,
+# ts-node, vitest, @types/*) never reach the runtime image.
+FROM base AS builder
+
 COPY package*.json ./
+RUN npm ci
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build
 
-# Install dependencies. The Agent SDK ships per-platform native Claude Code
-# binaries as optional dependencies; npm picks the matching one for this arch
-# (e.g. @anthropic-ai/claude-agent-sdk-linux-arm64/claude).
-RUN npm install
+# ---- runtime ----
+FROM base AS runtime
 
-# Drop the musl variant if npm installed it alongside the glibc one. Our base
-# image is glibc-based Ubuntu (see note at top of file), but npm sometimes
-# ignores the package's `libc` field and installs both. The SDK's resolver
-# prefers the musl binary when present, which then fails at runtime with
-# "binary not found" (the kernel can't load it because ld-musl-<arch>.so isn't
-# on the image). If the base image ever switches to musl (Alpine), invert this:
-# delete the non-musl variants instead.
-RUN rm -rf /app/node_modules/@anthropic-ai/claude-agent-sdk-linux-*-musl
+# Copy package files
+COPY --chown=claude:claude package*.json ./
+
+# Install production dependencies only. The Agent SDK ships per-platform
+# native Claude Code binaries as optional dependencies; npm picks the matching
+# one for this arch (e.g. @anthropic-ai/claude-agent-sdk-linux-arm64/claude).
+#
+# In the same layer (see note above), drop the musl SDK variant if npm
+# installed it alongside the glibc one. Our base image is glibc-based Ubuntu
+# (see note at top of file), but npm sometimes ignores the package's `libc`
+# field and installs both. The SDK's resolver prefers the musl binary when
+# present, which then fails at runtime with "binary not found" (the kernel
+# can't load it because ld-musl-<arch>.so isn't on the image). If the base
+# image ever switches to musl (Alpine), invert this: delete the non-musl
+# variants instead.
+RUN npm ci --omit=dev && \
+    rm -rf /app/node_modules/@anthropic-ai/claude-agent-sdk-linux-*-musl /root/.npm && \
+    chown -R claude:claude /app
 
 # Expose the SDK-bundled claude binary on PATH so shell invocations
 # (`claude -p ...`) inside the container still work. Find-based resolution
@@ -133,12 +236,8 @@ RUN bin=$(find /app/node_modules/@anthropic-ai -maxdepth 2 -type d -name 'claude
       exit 1; \
     fi
 
-# Copy source code
-COPY tsconfig.json ./
-COPY src ./src
-
-# Build TypeScript
-RUN npm run build
+# Compiled output from the builder stage
+COPY --from=builder --chown=claude:claude /app/dist ./dist
 
 # Functional smoke test: the bash step above confirms a binary exists under
 # /opt/playwright-browsers and is marked executable. This step additionally
@@ -147,19 +246,52 @@ RUN npm run build
 # catch a non-functional install (corrupt file, missing shared libs, etc.).
 RUN node dist/scripts/assert-chromium-available.js
 
-# Create non-root user for running Claude Code
-RUN useradd -m -s /bin/bash claude && \
-    chown -R claude:claude /app /workspace && \
-    if [ -d /root/.agent-browser/browsers ]; then \
+# Legacy agent-browser (<0.20) downloaded browsers into /root; move them where
+# the claude user can reach them. No-op with the native-binary versions.
+RUN if [ -d /root/.agent-browser/browsers ]; then \
       mkdir -p /home/claude/.agent-browser && \
       mv /root/.agent-browser/browsers /home/claude/.agent-browser/browsers && \
       chown -R claude:claude /home/claude/.agent-browser; \
     fi
 
-# Copy skills and settings into the user's Claude config directory (after user creation)
-COPY skills/ /home/claude/.claude/skills/
-COPY settings.json /home/claude/.claude/settings.json
-RUN chown -R claude:claude /home/claude/.claude
+# The Gamut plugin: our skills (dashboards, widgets) and vendored workflows
+# (deep-research), loaded into every session via the SDK `plugins` option
+# (claude-code.ts / gamut-plugin.ts). Image-owned and read-only like the docs:
+# the CLI ignores ~/.claude entirely (it reads CLAUDE_CONFIG_DIR =
+# /workspace/.claude, which is the agent-writable bind mount), so a plugin
+# outside both is the only way to ship skills the agent can neither miss nor
+# edit. See plugin/README.md.
+# NOTE: session-transcript retention (cleanupPeriodDays) is NOT set here for
+# the same reason — SessionManager provisions /workspace/.claude/settings.json
+# at runtime instead (see session-manager.ts:ensureClaudeSettings).
+COPY --chown=root:root plugin/ /opt/gamut/plugin/
+RUN chmod -R a-w /opt/gamut/plugin
+
+# Platform capability guides are image-owned rather than stored in /workspace,
+# which is replaced by a writable per-agent bind mount at runtime. The agent can
+# read these guides on demand but cannot edit them.
+COPY --chown=root:root docs/ /opt/gamut/docs/
+RUN chmod -R a-w /opt/gamut/docs
+
+# Helper scripts the guides tell the agent to run (session-history readers).
+# Image-owned and read-only for the same reason as the guides above; the agent
+# runs them with `python3 <path>`, so only the read bit is load-bearing.
+COPY --chown=root:root bin/ /opt/gamut/bin/
+RUN chmod -R a-w /opt/gamut/bin && chmod a+rx /opt/gamut/bin/*.py
+
+# Volumes. Ubuntu 25.04+ hosts confine the program at /usr/bin/fusermount3 by
+# path, which reaches into containers too; a setuid copy earlier on PATH lets
+# claude mount FUSE there. start.sh drops to claude when a runtime starts the
+# image as root (Apple Container, whose /dev/fuse is root-only).
+RUN install -m 4755 /usr/bin/fusermount3 /usr/local/bin/fusermount3
+# Under no-new-privs that setuid copy cannot mount; start.sh binds this helper over it.
+COPY --chown=root:root --chmod=0755 fusermount-helper.py /usr/local/lib/gamut/fusermount-helper
+# fusermount3 unmounts for a non-root user only with /etc/mtab, which Docker
+# creates at run time and Apple Container does not.
+RUN ln -sf /proc/self/mounts /etc/mtab
+# Volumes show every file as executable, so git in a repo under /mounts ignores the executable bit.
+COPY --chown=root:root git.sh /usr/local/bin/git
+COPY --chown=root:root start.sh /usr/local/bin/gamut-start
 
 # Switch to non-root user
 USER claude
@@ -171,6 +303,7 @@ EXPOSE 3000
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOME=/home/claude
+ENV CLAUDE_CODE_ATTRIBUTION_HEADER=0
 ENV AGENT_BROWSER_STREAM_PORT=9223
 # Point agent-browser at the chromium binary installed under PLAYWRIGHT_BROWSERS_PATH.
 # agent-browser's built-in discovery only finds Playwright's chromium at the old
@@ -182,13 +315,29 @@ ENV AGENT_BROWSER_EXECUTABLE_PATH=/opt/playwright-browsers/chromium-current
 ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage,--disable-blink-features=AutomationControlled,--disable-features=AutomationControlled,--disable-infobars,--disable-background-timer-throttling,--disable-popup-blocking,--disable-backgrounding-occluded-windows,--disable-renderer-backgrounding,--disable-component-update"
 ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 ENV AGENT_BROWSER_PROFILE=/workspace/.browser-profile
+# agent-browser 0.33.1+ shuts its daemon (and Chrome) down after an hour
+# without a command. The browser's lifecycle is ours (browser_open/close, the
+# session lock, the live view), so never time out.
+ENV AGENT_BROWSER_IDLE_TIMEOUT_MS=0
+# agent-browser 0.36+ enables WebMCP (site-registered tools) and announces
+# page tools in the output of whatever command runs next — an observer eval
+# included. Off until the harness supports it (SUP-1265 §9); execBrowser also
+# strips any announcement that gets through.
+ENV AGENT_BROWSER_NO_WEBMCP=1
 ENV DISABLE_AUTOUPDATER=1
-# Disable automatic MCP tool deferral until tested — re-enable with 'auto:10' or 'true'
-ENV ENABLE_TOOL_SEARCH=false
+# Keep bun's package cache on the persistent workspace mount. The default
+# ($HOME/.bun/install/cache) lives in the container's writable layer, which is
+# discarded on every restart (each start is `rm -f` + a fresh `run`), so any
+# dashboard dependency install after a wake re-downloaded every package.
+ENV BUN_INSTALL_CACHE_DIR=/workspace/.bun-cache
+# ENABLE_TOOL_SEARCH is deliberately NOT set here. The host passes 'true' or
+# 'false' for every session, depending on whether the provider's endpoint
+# expands deferred tools (BaseLlmProvider.toolSearchEnv); unset would read as
+# on behind any custom base URL (CLI 2.1.304+).
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:3000/health || exit 1
 
 # Start the server
-CMD ["node", "dist/server.js"]
+CMD ["gamut-start"]

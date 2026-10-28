@@ -5,14 +5,16 @@ import * as os from 'os'
 import {
   parseEnvFile,
   serializeEnvFile,
-  keyToEnvVar,
   listSecrets,
+  listUserSecrets,
   getSecret,
   setSecret,
+  updateSecret,
   deleteSecret,
   hasSecrets,
   getSecretEnvVars,
 } from './secrets-service'
+import { keyToEnvVar } from '@shared/lib/utils/secrets'
 import {
   SAMPLE_ENV_FILE,
   SAMPLE_ENV_FILE_WITH_SPECIAL_CHARS,
@@ -117,6 +119,62 @@ BAZ=qux`
     const result = parseEnvFile(content)
 
     expect(result.size).toBe(2)
+  })
+
+  it('unescapes quotes, backslashes and newlines in double-quoted values', () => {
+    const content = 'JSON="{\\"a\\": \\"b c\\"}"\nMULTI="line1\\nline2"\nSLASH="a\\\\b"'
+    const result = parseEnvFile(content)
+
+    expect(result.get('JSON')?.value).toBe('{"a": "b c"}')
+    expect(result.get('MULTI')?.value).toBe('line1\nline2')
+    expect(result.get('SLASH')?.value).toBe('a\\b')
+  })
+
+  it('leaves single-quoted values literal (no unescaping)', () => {
+    const result = parseEnvFile("RAW='a\\nb'")
+    expect(result.get('RAW')?.value).toBe('a\\nb')
+  })
+})
+
+describe('serialize → parse round trip', () => {
+  it.each(['QA_COMPLEX', 'QA Complex'])('preserves hashes after escaped quotes and the display name %s', (key) => {
+    const values = [
+      'qa "quote" #hash \\slash\nline2',
+      '"quoted"#literal',
+      'ends with \\',
+      'backslashes \\\\" and #literal',
+      "single 'quote' #literal",
+      '#entire value',
+    ]
+    for (const value of values) {
+      let secret = { key, envVar: 'QA_COMPLEX', value }
+      for (let cycle = 0; cycle < 3; cycle++) {
+        const parsed = parseEnvFile(serializeEnvFile([secret])).get(secret.envVar)
+        expect(parsed).toEqual({ value, comment: key === secret.envVar ? undefined : key })
+        secret = { ...secret, value: parsed!.value }
+      }
+    }
+  })
+
+  it('values with quotes/JSON/backslashes/newlines survive repeated cycles unchanged', () => {
+    // Regression: parseEnvFile used to strip quotes WITHOUT unescaping, so a
+    // value containing `"` gained an escape level on every read-modify-write —
+    // progressive corruption of e.g. JSON-valued secrets.
+    const values = [
+      '{"github": [{"name": "x y"}]}',
+      'has "quotes" and \\backslash\\',
+      'line1\nline2',
+      'plain',
+      'tricky \\" pre-escaped-looking',
+    ]
+    let secrets = values.map((value, i) => ({ key: `K_${i}`, envVar: `K_${i}`, value }))
+
+    for (let cycle = 0; cycle < 3; cycle++) {
+      const parsed = parseEnvFile(serializeEnvFile(secrets))
+      secrets = secrets.map((s) => ({ ...s, value: parsed.get(s.envVar)!.value }))
+    }
+
+    expect(secrets.map((s) => s.value)).toEqual(values)
   })
 })
 
@@ -277,6 +335,50 @@ describe('secrets service integration', () => {
     })
   })
 
+  describe('listUserSecrets (SUP-239 bug 3)', () => {
+    const envPathFor = () =>
+      path.join(testDir, 'agents', 'test-agent', 'workspace', '.env')
+
+    it('omits reserved runtime env vars but keeps user secrets', async () => {
+      // CONNECTED_ACCOUNTS / PROXY_TOKEN are written into the same .env by the
+      // container runtime; they are reserved (SUP-210) and must not show as
+      // user-editable secrets.
+      await fs.promises.writeFile(
+        envPathFor(),
+        [
+          'GITHUB_TOKEN=ghp_x  # GitHub Token',
+          'CONNECTED_ACCOUNTS=systemvalue',
+          'PROXY_TOKEN=systemtoken',
+          'MY_API_KEY=k',
+        ].join('\n')
+      )
+
+      // listSecrets stays unfiltered — runtime consumers (getSecretEnvVars) need
+      // every var passed to the session.
+      const all = await listSecrets('test-agent')
+      expect(all.map((s) => s.envVar).sort()).toEqual(
+        ['CONNECTED_ACCOUNTS', 'GITHUB_TOKEN', 'MY_API_KEY', 'PROXY_TOKEN'].sort()
+      )
+
+      // listUserSecrets drops the reserved runtime vars.
+      const userSecrets = await listUserSecrets('test-agent')
+      expect(userSecrets.map((s) => s.envVar).sort()).toEqual(['GITHUB_TOKEN', 'MY_API_KEY'].sort())
+      expect(userSecrets.some((s) => s.envVar === 'CONNECTED_ACCOUNTS')).toBe(false)
+      expect(userSecrets.some((s) => s.envVar === 'PROXY_TOKEN')).toBe(false)
+    })
+
+    it('returns all secrets when none are reserved', async () => {
+      await fs.promises.writeFile(envPathFor(), 'FOO=1\nBAR=2')
+      const userSecrets = await listUserSecrets('test-agent')
+      expect(userSecrets.map((s) => s.envVar).sort()).toEqual(['BAR', 'FOO'])
+    })
+
+    it('returns empty array when no .env file exists', async () => {
+      const userSecrets = await listUserSecrets('test-agent')
+      expect(userSecrets).toEqual([])
+    })
+  })
+
   describe('getSecret', () => {
     it('returns null when secret does not exist', async () => {
       const secret = await getSecret('test-agent', 'NONEXISTENT')
@@ -304,6 +406,19 @@ describe('secrets service integration', () => {
   })
 
   describe('setSecret', () => {
+    it('preserves a complex secret through unrelated creates, edits and deletes', async () => {
+      const secret = { key: 'QA Complex', envVar: 'QA_COMPLEX', value: 'qa "quote" #hash \\slash\nline2' }
+      await setSecret('test-agent', secret)
+      await setSecret('test-agent', { key: 'Unrelated', envVar: 'UNRELATED', value: 'other' })
+      expect(await getSecret('test-agent', secret.envVar)).toEqual(secret)
+
+      expect(await updateSecret('test-agent', 'UNRELATED', { value: 'edited' })).toMatchObject({ status: 'updated' })
+      expect(await getSecret('test-agent', secret.envVar)).toEqual(secret)
+
+      expect(await deleteSecret('test-agent', 'UNRELATED')).toBe(true)
+      expect(await listSecrets('test-agent')).toEqual([secret])
+    })
+
     it('creates .env file and adds secret', async () => {
       await setSecret('test-agent', {
         key: 'New Key',
@@ -371,10 +486,65 @@ describe('secrets service integration', () => {
       )
       const stats = await fs.promises.stat(envPath)
 
-      // Mode 0o666 is requested so non-root agent containers can read secrets.
-      // Effective permissions depend on process umask.
-      const umask = process.umask()
-      expect(stats.mode & 0o777).toBe(0o666 & ~umask)
+      // Exact 0o666 is FORCED (not umask-reduced, not preserved-from-existing):
+      // the atomic rename transfers ownership to this process, and the
+      // container — a different uid — must still be able to read AND write the
+      // file. A carried-over restrictive mode locks it out (EACCES on POST /env).
+      expect(stats.mode & 0o777).toBe(0o666)
+    })
+  })
+
+  describe('updateSecret', () => {
+    it('returns not found without creating a workspace for a missing secret file', async () => {
+      const result = await updateSecret('missing-agent', 'MISSING', { value: 'new' })
+
+      expect(result).toEqual({ status: 'not_found' })
+      expect(
+        fs.existsSync(path.join(testDir, 'agents', 'missing-agent', 'workspace')),
+      ).toBe(false)
+    })
+
+    it('renames and updates a secret without a delete-then-set gap', async () => {
+      await setSecret('test-agent', { key: 'Old Key', envVar: 'OLD_KEY', value: 'old' })
+
+      const result = await updateSecret('test-agent', 'OLD_KEY', {
+        key: 'New Key',
+        value: 'new',
+      })
+
+      expect(result).toEqual({
+        status: 'updated',
+        secret: { key: 'New Key', envVar: 'NEW_KEY', value: 'new' },
+      })
+      expect(await getSecret('test-agent', 'OLD_KEY')).toBeNull()
+      expect(await getSecret('test-agent', 'NEW_KEY')).toEqual({
+        key: 'New Key',
+        envVar: 'NEW_KEY',
+        value: 'new',
+      })
+    })
+
+    it('rejects a destination collision and preserves both secrets', async () => {
+      await setSecret('test-agent', { key: 'Source', envVar: 'SOURCE', value: 'source-value' })
+      await setSecret('test-agent', { key: 'Target', envVar: 'TARGET', value: 'target-value' })
+
+      const result = await updateSecret('test-agent', 'SOURCE', { key: 'Target' })
+
+      expect(result).toEqual({ status: 'conflict', envVar: 'TARGET' })
+      expect((await getSecret('test-agent', 'SOURCE'))?.value).toBe('source-value')
+      expect((await getSecret('test-agent', 'TARGET'))?.value).toBe('target-value')
+    })
+
+    it('hides reserved source variables from the update operation', async () => {
+      const envPath = path.join(testDir, 'agents', 'test-agent', 'workspace', '.env')
+      await fs.promises.writeFile(envPath, 'CONNECTED_ACCOUNTS=runtime-value\n')
+
+      const result = await updateSecret('test-agent', 'CONNECTED_ACCOUNTS', {
+        key: 'Stolen Runtime Value',
+      })
+
+      expect(result).toEqual({ status: 'not_found' })
+      expect((await getSecret('test-agent', 'CONNECTED_ACCOUNTS'))?.value).toBe('runtime-value')
     })
   })
 

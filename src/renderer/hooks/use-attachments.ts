@@ -1,17 +1,39 @@
-import { useState, useCallback, useEffect } from 'react'
-import { type Attachment } from '@renderer/components/messages/attachment-preview'
-import { getItemsFromDataTransfer, getFolderFromDirectoryInput, type FileWithPath, type FolderGroup } from '@renderer/lib/file-utils'
+import { useState, useCallback, useEffect, useRef } from 'react'
+import { type Attachment, type UploadState } from '@renderer/components/messages/attachment-preview'
+import { getItemsFromDataTransfer, getFolderFromDirectoryInput, type DataTransferResult, type FileWithPath, type FolderGroup } from '@renderer/lib/file-utils'
+import { requiresImagePreviewConversion } from '@renderer/lib/file-types'
 
 // 500 MB max folder size for in-browser zip upload (no Electron fs.cp available)
 const MAX_WEB_FOLDER_SIZE = 500 * 1024 * 1024
 
-interface UseAttachmentsOptions {
-  onFoldersReceived?: (folders: FolderGroup[]) => void
+function revokePreview(preview: string | undefined) {
+  if (preview?.startsWith('blob:')) URL.revokeObjectURL(preview)
 }
 
+interface UseAttachmentsOptions {
+  onFoldersReceived?: (folders: FolderGroup[]) => void
+  initialAttachments?: Attachment[]
+  onAttachmentsAdded?: (added: Attachment[]) => void
+}
+
+export type UploadPatch = { upload?: UploadState; error?: string; errorRetryable?: boolean; preview?: string }
+
 export function useAttachments(options?: UseAttachmentsOptions) {
-  const [attachments, setAttachments] = useState<Attachment[]>([])
+  // Carried-over chips (stale-session → agent home) always re-upload: their
+  // paths belong to the composer that uploaded them.
+  const [attachments, setAttachments] = useState<Attachment[]>(() =>
+    (options?.initialAttachments ?? []).map((attachment) => {
+      const stripped = attachment.type === 'mount' ? attachment : { ...attachment, upload: undefined, error: undefined, errorRetryable: undefined }
+      return stripped.type === 'file' && stripped.file.type.startsWith('image/') && !requiresImagePreviewConversion(stripped.file.name) && !stripped.preview
+        ? { ...stripped, preview: URL.createObjectURL(stripped.file) }
+        : stripped
+    }),
+  )
   const [isDragOver, setIsDragOver] = useState(false)
+  const onAddedRef = useRef(options?.onAttachmentsAdded)
+  onAddedRef.current = options?.onAttachmentsAdded
+  const onFoldersReceivedRef = useRef(options?.onFoldersReceived)
+  onFoldersReceivedRef.current = options?.onFoldersReceived
 
   const addFiles = useCallback((files: FileWithPath[]) => {
     const newAttachments: Attachment[] = files.map(({ file }) => {
@@ -20,12 +42,13 @@ export function useAttachments(options?: UseAttachmentsOptions) {
         file,
         id: crypto.randomUUID(),
       }
-      if (file.type.startsWith('image/')) {
+      if (file.type.startsWith('image/') && !requiresImagePreviewConversion(file.name)) {
         attachment.preview = URL.createObjectURL(file)
       }
       return attachment
     })
     setAttachments((prev) => [...prev, ...newAttachments])
+    onAddedRef.current?.(newAttachments)
   }, [])
 
   const addFolders = useCallback((folders: FolderGroup[]) => {
@@ -48,10 +71,15 @@ export function useAttachments(options?: UseAttachmentsOptions) {
     }
     if (newAttachments.length > 0) {
       setAttachments((prev) => [...prev, ...newAttachments])
+      onAddedRef.current?.(newAttachments)
     }
   }, [])
 
   const addMounts = useCallback((mounts: { folderName: string; hostPath: string }[]) => {
+    // Attach mounts as-is. Whether a folder actually mounts can't be told from
+    // the path here — the container start leaves out a folder it can't mount
+    // and surfaces a mount-health warning, which is the authoritative guard.
+    if (mounts.length === 0) return
     const newAttachments: Attachment[] = mounts.map((m) => ({
       type: 'mount' as const,
       id: crypto.randomUUID(),
@@ -61,12 +89,22 @@ export function useAttachments(options?: UseAttachmentsOptions) {
     setAttachments((prev) => [...prev, ...newAttachments])
   }, [])
 
+  const updateAttachment = useCallback((id: string, patch: UploadPatch) => {
+    setAttachments((prev) => prev.map((a) => (a.id === id && a.type !== 'mount' ? { ...a, ...patch } : a)))
+  }, [])
+
+  const setAttachmentError = useCallback((id: string, error: string | undefined) => {
+    setAttachments((prev) => prev.map((a) => (a.id === id ? { ...a, error } : a)))
+  }, [])
+
+  const clearAttachmentErrors = useCallback(() => {
+    setAttachments((prev) => (prev.some((a) => a.error) ? prev.map((a) => (a.error ? { ...a, error: undefined } : a)) : prev))
+  }, [])
+
   const removeAttachment = useCallback((id: string) => {
     setAttachments((prev) => {
       const removed = prev.find((a) => a.id === id)
-      if (removed?.type === 'file' && removed.preview) {
-        URL.revokeObjectURL(removed.preview)
-      }
+      if (removed?.type === 'file') revokePreview(removed.preview)
       return prev.filter((a) => a.id !== id)
     })
   }, [])
@@ -74,7 +112,7 @@ export function useAttachments(options?: UseAttachmentsOptions) {
   const clearAttachments = useCallback(() => {
     setAttachments((prev) => {
       prev.forEach((a) => {
-        if (a.type === 'file' && a.preview) URL.revokeObjectURL(a.preview)
+        if (a.type === 'file') revokePreview(a.preview)
       })
       return []
     })
@@ -84,11 +122,21 @@ export function useAttachments(options?: UseAttachmentsOptions) {
   useEffect(() => {
     return () => {
       attachments.forEach((a) => {
-        if (a.type === 'file' && a.preview) URL.revokeObjectURL(a.preview)
+        if (a.type === 'file') revokePreview(a.preview)
       })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  const addItems = useCallback(({ files, folders }: DataTransferResult) => {
+    if (files.length > 0) addFiles(files)
+    if (folders.length === 0) return
+    if (onFoldersReceivedRef.current) {
+      onFoldersReceivedRef.current(folders)
+    } else {
+      addFolders(folders)
+    }
+  }, [addFiles, addFolders])
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -107,17 +155,9 @@ export function useAttachments(options?: UseAttachmentsOptions) {
     e.stopPropagation()
     setIsDragOver(false)
     if (e.dataTransfer.items.length > 0) {
-      const { files, folders } = await getItemsFromDataTransfer(e.dataTransfer)
-      if (files.length > 0) addFiles(files)
-      if (folders.length > 0) {
-        if (options?.onFoldersReceived) {
-          options.onFoldersReceived(folders)
-        } else {
-          addFolders(folders)
-        }
-      }
+      addItems(await getItemsFromDataTransfer(e.dataTransfer))
     }
-  }, [addFiles, addFolders, options])
+  }, [addItems])
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -145,7 +185,11 @@ export function useAttachments(options?: UseAttachmentsOptions) {
     isDragOver,
     addFiles,
     addFolders,
+    addItems,
     addMounts,
+    updateAttachment,
+    setAttachmentError,
+    clearAttachmentErrors,
     removeAttachment,
     clearAttachments,
     handleFileSelect,

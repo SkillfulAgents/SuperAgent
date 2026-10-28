@@ -1,0 +1,99 @@
+import type { VoiceHistory, VoiceTranscriptEntry } from '@shared/lib/voice/conversation-types'
+import type { SessionTurnOutcome } from '@shared/lib/container/session-turn-outcome-schema'
+
+export type VoiceModePhase = 'listening' | 'thinking' | 'speaking'
+export type { VoiceConversationEngine } from '@shared/lib/voice/conversation-types'
+
+export type VoiceAgentCommand = { type: 'submit'; text: string } | { type: 'cancel' }
+export type VoiceCommandResult = { accepted: true } | { accepted: false; error?: string }
+
+/** Snapshot of the existing agent stream; protocol heuristics are confined to the coordinator. */
+export interface VoiceAgentSnapshot {
+  active: boolean
+  text: string
+  startedAt: number | null
+  toolsRunning: boolean
+  error: string | null
+  /** Foreground activity alone controls interruption and chained playback. */
+  background?: boolean
+  turnOutcome?: SessionTurnOutcome | null
+}
+export interface VoiceAgentState {
+  active: boolean
+  awaiting: boolean
+  toolsUsed: boolean
+  background?: boolean
+}
+/** Display context only; never includes a submitted answer or credential. */
+export interface VoiceInputRequest {
+  id: string
+  message: string
+}
+export type VoiceAgentEvent =
+  | { type: 'state'; state: VoiceAgentState }
+  | { type: 'reset' }
+  | { type: 'reply'; segment: number; text: string; complete: boolean }
+  | { type: 'turn-ended'; turnId: string; outcome: 'completed' | 'cancelled' }
+  | { type: 'error'; message: string }
+  | { type: 'input-requests'; requests: readonly VoiceInputRequest[] }
+
+export interface VoiceConversationSnapshot {
+  phase: VoiceModePhase
+  ready: boolean
+  userSpeaking: boolean
+  assistantSpeaking: boolean
+  utterance: string
+  transcript?: VoiceTranscriptEntry[]
+  /** Provider turn-taking policy; execution activity itself comes from the coordinator. */
+  hold: { allowed: boolean; delayMs: number }
+}
+export interface VoiceConversationEvents {
+  onCommand(command: VoiceAgentCommand): Promise<VoiceCommandResult>
+  onSnapshot(snapshot: VoiceConversationSnapshot): void
+  onError(message: string | null): void
+}
+export interface VoiceConversationContext {
+  agentSlug: string
+  sessionId: string
+  history: VoiceHistory
+}
+
+/** Turn-taking bounds and leniency an engine asks of the coordinator. */
+export interface VoiceTurnPolicy {
+  /** How long to wait for the agent to confirm an interrupt. */
+  interruptTimeoutMs: number
+  /** How long a request may go without agent activity before the floor returns. */
+  turnStartTimeoutMs: number
+  /**
+   * Chained speech keeps the original contract: an interrupt that cannot be
+   * confirmed in time is not a reason to drop the words the person just said,
+   * and a failed cancel is not reported. Live keeps strict ordering instead.
+   */
+  sendAfterFailedInterrupt: boolean
+  /** Live needs results produced during a request-card pause on resume. */
+  retainPausedReplies?: boolean
+}
+
+/** No agent API calls or stream subscriptions belong in implementations. */
+export interface VoiceConversationAdapter {
+  readonly capabilities: { speechSpeed: boolean; spokenTranscript: boolean }
+  /** Omitted: the coordinator's strict defaults apply. */
+  readonly turnPolicy?: Partial<VoiceTurnPolicy>
+  readonly analyser: AnalyserNode | null
+  /** The reply's audio, where it plays in this window (Live); the reader-backed engine has none. */
+  readonly outputAnalyser?: AnalyserNode | null
+  start(): Promise<void>
+  acceptAgentEvent(event: VoiceAgentEvent): void
+  setPaused(paused: boolean): void
+  /** Mute the person's microphone: the engine keeps running and hears silence. Independent of pausing. */
+  setMicrophoneMuted(muted: boolean): void
+  /** Silence the agent's voice: the reply still plays out, so turn-taking is unchanged. */
+  setOutputMuted(muted: boolean): void
+  pressMic(): void
+  /**
+   * Add a standing instruction while the conversation runs, such as who is in
+   * the room. Engines without a live instruction channel may omit it.
+   */
+  appendInstructions?(text: string): void
+  close(): void
+}

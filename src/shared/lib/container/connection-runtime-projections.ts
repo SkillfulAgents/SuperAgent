@@ -1,0 +1,98 @@
+import { eq } from 'drizzle-orm'
+import { db } from '../db'
+import { agentRemoteMcps, remoteMcpServers } from '../db/schema'
+import { integrationMcpProjection } from '../agent-integrations/mcp'
+import { parseCachedMcpTools } from '../mcp/connection-schema'
+
+export interface ConnectedAccountProjectionSource {
+  id: string
+  toolkitSlug: string
+  displayName: string
+  status: string
+}
+
+export type ConnectedAccountRuntimeStatus = 'active' | 'expired' | 'revoked'
+
+export interface ConnectedAccountRuntimeEntry {
+  name: string
+  id: string
+  status: ConnectedAccountRuntimeStatus
+}
+
+export interface RemoteMcpProjectionSource {
+  id: string
+  name: string
+  status: string
+  toolsJson: string | null
+}
+
+export interface RemoteMcpRuntimeConfig {
+  id: string
+  name: string
+  status: 'active' | 'auth_required'
+  proxyUrl: string
+  integration?: { id: string; provider: string; name: string; workspace: string }
+  tools: Array<{ name: string }>
+}
+
+export function buildConnectedAccountsProjection(
+  accounts: ConnectedAccountProjectionSource[],
+): Record<string, ConnectedAccountRuntimeEntry[]> {
+  const metadata: Record<string, ConnectedAccountRuntimeEntry[]> = {}
+  const assignedAccounts = accounts
+    // Keep reconnectable accounts in the runtime. The first proxy request made
+    // with one of these IDs parks while the host surfaces the reconnect card.
+    // Dropping them here makes an assigned account look entirely unavailable.
+    .filter((account) =>
+      account.status === 'active' ||
+      account.status === 'expired' ||
+      account.status === 'revoked'
+    )
+    .sort((a, b) =>
+      a.toolkitSlug.localeCompare(b.toolkitSlug) ||
+      a.id.localeCompare(b.id),
+    )
+
+  for (const account of assignedAccounts) {
+    metadata[account.toolkitSlug] ??= []
+    metadata[account.toolkitSlug].push({
+      name: account.displayName,
+      id: account.id,
+      status: account.status as ConnectedAccountRuntimeStatus,
+    })
+  }
+
+  return metadata
+}
+
+export function buildRemoteMcpProjection(
+  mcps: RemoteMcpProjectionSource[],
+  agentSlug: string,
+  hostApiBaseUrl: string,
+): RemoteMcpRuntimeConfig[] {
+  return mcps
+    // Keep auth-required servers in the runtime. Their MCP handshake reaches
+    // the host proxy, which serves cached discovery locally; the first actual
+    // tool call parks and surfaces the reconnect card. Dropping them here makes
+    // the agent believe an assigned MCP does not exist.
+    .filter((mcp) => mcp.status === 'active' || mcp.status === 'auth_required')
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map((mcp) => ({
+      id: mcp.id,
+      name: mcp.name,
+      status: mcp.status as 'active' | 'auth_required',
+      proxyUrl: `${hostApiBaseUrl}/api/mcp-proxy/${agentSlug}/${mcp.id}`,
+      tools: parseCachedMcpTools(mcp.toolsJson).map(({ name }) => ({ name })),
+    }))
+}
+
+/** Shared by container boot and hot updates. Credentials never enter this projection. */
+export async function listAgentMcpConnections(agentSlug: string, hostApiBaseUrl: string): Promise<RemoteMcpRuntimeConfig[]> {
+  const mappings = await db.select({ mcp: remoteMcpServers }).from(agentRemoteMcps)
+    .innerJoin(remoteMcpServers, eq(agentRemoteMcps.remoteMcpId, remoteMcpServers.id))
+    .where(eq(agentRemoteMcps.agentSlug, agentSlug))
+  return [
+    ...buildRemoteMcpProjection(mappings.map(({ mcp }) => mcp), agentSlug, hostApiBaseUrl),
+    ...await integrationMcpProjection(agentSlug, hostApiBaseUrl),
+  ]
+}

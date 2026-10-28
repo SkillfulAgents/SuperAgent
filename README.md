@@ -7,7 +7,7 @@ SuperAgent is a super app for building and running personal agents. You can crea
 
 | Windows | Mac |
 |:-------:|:---:|
-| [Download for Windows](https://github.com/SkillfulAgents/SuperAgent/releases/latest/download/Superagent-Setup.exe) | [Download for Mac](https://github.com/SkillfulAgents/SuperAgent/releases/latest/download/Superagent-arm64.dmg) |
+| [Download for Windows](https://updates.gamutagents.com/download/win) | [Download for Mac](https://updates.gamutagents.com/download/mac) |
 
 **Features:**
 
@@ -171,6 +171,8 @@ Both regular and auth-enabled images are published on every push to `main` and o
 | `HOST` | Server hostname, used to construct the auth base URL when `TRUSTED_ORIGINS` is not set. | `localhost` |
 | `PORT` | Server port, used to construct the auth base URL when `TRUSTED_ORIGINS` is not set. | `47891` |
 | `USE_HTTPS` | Use `https` protocol in the auth base URL when `TRUSTED_ORIGINS` is not set. | `false` |
+| `HOST_PUBLIC_URL` | The public https address of the app, for links and pages handed to outside services (OAuth callbacks, the meeting bot's camera page). Features that need the internet to reach the app, such as [meetings](docs/meeting-integrations.md), are offered only when this is set to a non-private https URL. | First `TRUSTED_ORIGINS` entry (links only) |
+| `RECALL_API_KEY` / `RECALL_REGION` | Self-hosted alternative to the platform proxy for meeting bots: a Recall.ai key and its region (`us-west-2` default). Not needed when the platform is connected. | None |
 
 ### Example: production deployment
 
@@ -231,7 +233,7 @@ ANTHROPIC_API_KEY=your-api-key-here
 ### Distribution
 | Script | Description |
 |--------|-------------|
-| `npm run dist:mac` | Package Electron app for macOS |
+| `npm run dist:mac` | Package Electron app for macOS. Building the built-in runtime's VM image needs Docker running (`scripts/build-lima-image.sh`); without it the app ships Alpine's stock image, whose first boot downloads sudo and reboots once |
 | `npm run dist:win` | Package Electron app for Windows |
 | `npm run preview` | Build and run production server locally |
 
@@ -252,6 +254,38 @@ ANTHROPIC_API_KEY=your-api-key-here
 | `npm run db:studio` | Open Drizzle Studio |
 | `npm run db:reset` | Reset database |
 
+## On-demand PR desktop builds
+
+To build signed macOS and Windows installers for a PR, open **Actions → PR Build →
+Run workflow**, leave the workflow branch as `main`, and enter the PR number.
+You can also trigger it from this checkout with GitHub CLI:
+
+```sh
+gh workflow run pr-build.yml --ref main -f pr_number=1477
+```
+
+Replace `1477` with the PR to build. The workflow resolves its current head commit
+once and uses it for both platforms. It posts the commit and artifact download
+links in a PR comment; artifacts are retained for 14 days. Signed builds require
+a PR branch in this repository, because they use repository signing secrets.
+
+For the Mac App Store package as well, tick **Also build the Mac App Store
+package** (or add `-f mas=true`). App Store Connect validates it, and it is
+never uploaded. It needs the Store's signing secrets (see
+`.github/workflows/build-mas.yml`); without them the comment says it was skipped.
+
+The manual trigger becomes available once this workflow change is merged into
+`main`. PR pushes run tests without automatically packaging desktop apps; builds
+on `main` pushes and version-tag releases still run automatically. The Mac App
+Store package is built only by releases, and on demand for a PR. A release
+uploads it to App Store Connect and adds it to the TestFlight groups: Team at
+once, and Beta after Beta App Review. Every release of a version shares one
+TestFlight version (0.6.0-rc.1, rc.2 and 0.6.0 are all 0.6.0), so only its
+first build needs a full review. A full release also leaves the macOS App Store
+version ready to submit: the version being prepared takes its number and build,
+or a new version is made, with the last one's listing, once the last is out.
+Submitting it for review is a click in App Store Connect.
+
 ## Architecture
 
 The application uses a dual-target architecture supporting both web and Electron desktop deployment:
@@ -265,9 +299,27 @@ The application uses a dual-target architecture supporting both web and Electron
 - **Renderer Process**: Same React app as web, communicates with API via localhost
 - **Preload Script**: Exposes safe IPC methods to renderer
 
+The desktop app can also drive a *remote* auth-mode deployment ("cloud
+workspace") instead of its own embedded API. Because the same React app runs in
+three configurations — Electron on the local API, Electron on a cloud workspace,
+and a plain browser — a feature is gated by **what it touches, not by what the
+window is**:
+
+| The feature acts on… | Predicate |
+| --- | --- |
+| this computer, on the agents' behalf | `canUseHostFeatures()` |
+| the machine running the API | `!targetIsRemote()` |
+| the window itself (traffic lights, tray, updates) | `isElectron()` |
+
+`!targetIsRemote()` is true in browsers and `isElectron()` is not, so these are
+not one scale of strictness — choosing the wrong one silently withdraws a
+feature from every web deployment. See
+[docs/cloud-workspace.md § Capability gating](docs/cloud-workspace.md#capability-gating-three-questions-not-one-axis)
+for the truth table and the full inventory of gated sites.
+
 ### Agent Containers
 Each agent runs in its own Docker/Podman container with Claude Code in headless mode:
 - Containers communicate via HTTP/WebSocket APIs
 - SSE streaming for real-time message updates
 - File-based persistence for agents, sessions, and messages
-- SQLite database for OAuth connected accounts
+- SQLite database for OAuth connected accounts 

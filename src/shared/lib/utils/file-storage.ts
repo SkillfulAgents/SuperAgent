@@ -11,7 +11,13 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
+import { Transform } from 'stream'
+import type { ZodType } from 'zod'
+import pLimit from 'p-limit'
 import { getDataDir } from '@shared/lib/config/data-dir'
+import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
+import { CLI_TRANSCRIPTS_DIR } from '@shared/lib/agent-actor/session-store'
+import { background } from '@shared/lib/background'
 
 // ============================================================================
 // Slug Generation
@@ -33,7 +39,7 @@ function generateRandomSuffix(length: number = 6): string {
  * Convert a name to a URL-safe slug
  * "My Cool Agent" -> "my-cool-agent"
  */
-function nameToSlugBase(name: string): string {
+export function nameToSlugBase(name: string): string {
   return name
     .toLowerCase()
     .trim()
@@ -43,35 +49,33 @@ function nameToSlugBase(name: string): string {
 }
 
 /**
- * Generate a URL-safe slug with unique suffix
- * "My Cool Agent" -> "my-cool-agent-k7x9m2"
- *
- * Note: Display name always comes from CLAUDE.md frontmatter, not the slug.
- * The slug is only used for directory names and URLs.
+ * Length of a minted agent id. Deliberately distinct from the legacy 6-char
+ * name-suffix: that length gap is what lets the agent catalog tell a minted
+ * id apart from a legacy compound folder name when it resolves a display slug.
  */
-export function generateAgentSlug(name: string): string {
-  const base = nameToSlugBase(name)
-  const suffix = generateRandomSuffix()
-  return base ? `${base}-${suffix}` : suffix
+export const AGENT_ID_LENGTH = 10
+
+const MINTED_ID_RE = new RegExp(`^[a-z0-9]{${AGENT_ID_LENGTH}}$`)
+
+/**
+ * Whether an id is a freshly-minted opaque id (vs a legacy name-derived folder).
+ */
+export function isMintedAgentId(id: string): boolean {
+  return MINTED_ID_RE.test(id)
 }
 
 /**
- * Generate a unique agent slug, checking for collisions
- * Regenerates random suffix if directory already exists
+ * Project the decorative display slug shown to models and placed in URLs:
+ *   {nameToSlugBase(name)}-{id}   (or bare {id} when the name slugifies to empty)
+ *
+ * Legacy folders (non-minted ids, e.g. "untitled-h45k3n") are returned VERBATIM:
+ * prettifying them would break resolution, since the folder still embeds the old
+ * name and there is no reverse lookup from a name-prefix back to the folder.
  */
-export async function generateUniqueAgentSlug(name: string): Promise<string> {
-  const maxAttempts = 10
-  for (let i = 0; i < maxAttempts; i++) {
-    const slug = generateAgentSlug(name)
-    const agentDir = getAgentDir(slug)
-    if (!await directoryExists(agentDir)) {
-      return slug
-    }
-  }
-  // Fallback: use timestamp for uniqueness
+export function displaySlug(name: string, id: string): string {
+  if (!isMintedAgentId(id)) return id
   const base = nameToSlugBase(name)
-  const timestamp = Date.now().toString(36)
-  return base ? `${base}-${timestamp}` : timestamp
+  return base ? `${base}-${id}` : id
 }
 
 // ============================================================================
@@ -131,7 +135,7 @@ export function parseMarkdownWithFrontmatter<T = Record<string, unknown>>(
     // Parse booleans and numbers
     if (value === 'true') value = true
     else if (value === 'false') value = false
-    else if (!isNaN(Number(value)) && value !== '') value = Number(value)
+    else if (!isNaN(Number(value)) && value.trim() !== '') value = Number(value)
 
     frontmatter[key] = value
   }
@@ -290,58 +294,151 @@ export function parseJsonl<T = unknown>(content: string): T[] {
 }
 
 /**
- * Read and parse a JSONL file
- * Returns empty array if file doesn't exist
+ * Read and parse a JSONL file. Streams line-by-line so a large transcript is
+ * never one `readFile` string. Returns [] if the file does not exist.
  */
 export async function readJsonlFile<T = unknown>(filePath: string): Promise<T[]> {
-  const content = await readFileOrNull(filePath)
-  if (content === null) {
-    return []
+  const results: T[] = []
+  try {
+    for await (const item of streamJsonlFile<T>(filePath)) {
+      results.push(item)
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return []
+    }
+    throw error
   }
-  return parseJsonl<T>(content)
+  return results
 }
 
+const NEWLINE_BYTE = 0x0a
 /**
  * Stream-read JSONL file line by line (for large files)
  * Yields parsed objects one at a time
+ *
+ * Lines are split in the raw bytes rather than through a string decoder: agent
+ * transcripts are dominated by very large tool-result rows, and materializing a
+ * whole file (or even a whole chunk-spanning row twice) costs several times the
+ * file size in peak memory. Only ASCII whitespace is trimmed at the byte level,
+ * and every such byte is < 0x80, so a multi-byte UTF-8 sequence is never split.
  */
 export async function* streamJsonlFile<T = unknown>(
   filePath: string
 ): AsyncIterable<T> {
+  for await (const line of streamFileLines(filePath)) {
+    const parsed = parseJsonlLine<T>(line)
+    if (parsed !== undefined) yield parsed
+  }
+}
+
+/**
+ * Stream a file's RAW lines as byte buffers, split on `\n` (the newline byte is
+ * excluded; a `\r` from a CRLF line is kept). Lines are never decoded or
+ * re-encoded, so a consumer that copies them back out preserves the original
+ * bytes exactly — the property the transcript rewriters rely on.
+ *
+ * `range` restricts the read to `[start, end)` byte offsets. `start` must be a
+ * line boundary; a range ending mid-line yields the truncated head of that
+ * line, which JSONL consumers drop as malformed.
+ *
+ * `signal` aborts between chunk reads (throws the abort reason) — a per-line
+ * check in the consumer is not enough, because a multi-MB row spans many
+ * chunks before it ever yields.
+ */
+export async function* streamFileLines(
+  filePath: string,
+  range?: { start?: number; end?: number },
+  signal?: AbortSignal
+): AsyncIterable<Buffer> {
+  signal?.throwIfAborted()
+  if (range?.end !== undefined && range.end <= (range.start ?? 0)) return
   const fileHandle = await fs.promises.open(filePath, 'r')
-  const stream = fileHandle.createReadStream({ encoding: 'utf-8' })
+  try {
+    const stream = fileHandle.createReadStream({
+      ...(range?.start !== undefined ? { start: range.start } : {}),
+      // createReadStream's `end` is inclusive; the range contract is exclusive.
+      ...(range?.end !== undefined ? { end: range.end - 1 } : {}),
+    })
+    // Chunks holding the trailing, not-yet-terminated line. Concatenated only
+    // once its newline arrives, so a row spanning many chunks is joined once.
+    let pending: Buffer[] = []
 
-  let buffer = ''
-
-  for await (const chunk of stream) {
-    buffer += chunk
-    const lines = buffer.split(/\r?\n/)
-
-    // Keep the last potentially incomplete line in buffer
-    buffer = lines.pop() || ''
-
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed) continue
-
-      try {
-        yield JSON.parse(trimmed) as T
-      } catch {
-        // Skip malformed lines
+    for await (const chunk of stream) {
+      signal?.throwIfAborted()
+      let start = 0
+      let idx = chunk.indexOf(NEWLINE_BYTE)
+      while (idx !== -1) {
+        if (pending.length > 0) {
+          pending.push(chunk.subarray(start, idx))
+          // Concat and release the source chunks BEFORE yielding: yield
+          // suspends the generator, so anything still referenced here stays
+          // reachable while the consumer holds the line — clearing `pending`
+          // after the yield would retain a chunk-spanning row twice.
+          const line = Buffer.concat(pending)
+          pending = []
+          yield line
+        } else {
+          yield chunk.subarray(start, idx)
+        }
+        start = idx + 1
+        idx = chunk.indexOf(NEWLINE_BYTE, start)
       }
+      if (start < chunk.length) pending.push(chunk.subarray(start))
     }
-  }
 
-  // Process any remaining content in buffer
-  if (buffer.trim()) {
-    try {
-      yield JSON.parse(buffer.trim()) as T
-    } catch {
-      // Skip malformed line
+    // An abort can arrive together with the stream's end event, after the
+    // last per-chunk check — observe it before paying for the concatenation
+    // of an unterminated trailing row.
+    signal?.throwIfAborted()
+    // Process any remaining content (file not terminated by a newline)
+    if (pending.length > 0) {
+      // Same as above: drop the source chunks before suspending on yield
+      const line = Buffer.concat(pending)
+      pending = []
+      yield line
     }
+  } finally {
+    // Runs on early `break` from the consumer's for-await too, which the
+    // previous trailing close() silently skipped — leaking the descriptor.
+    await fileHandle.close()
   }
+}
 
-  await fileHandle.close()
+/**
+ * Decode and parse one JSONL line. Returns undefined for blank and malformed
+ * lines (common while the SDK is mid-write), which callers skip.
+ */
+export function parseJsonlLine<T>(line: Buffer): T | undefined {
+  const trimmed = line.toString('utf-8').trim()
+  if (!trimmed) return undefined
+  try {
+    return JSON.parse(trimmed) as T
+  } catch {
+    return undefined
+  }
+}
+
+/** Object-mode items in → JSON array bytes out. Pair with `pipeline(Readable.from(items), this)`. */
+export function createJsonArrayStringifyTransform(): Transform {
+  let first = true
+  return new Transform({
+    writableObjectMode: true,
+    transform(obj, _enc, cb) {
+      try {
+        const json = JSON.stringify(obj) ?? 'null'
+        this.push(first ? `[${json}` : `,${json}`)
+        first = false
+        cb()
+      } catch (err) {
+        cb(err as Error)
+      }
+    },
+    flush(cb) {
+      this.push(first ? '[]' : ']')
+      cb()
+    },
+  })
 }
 
 // ============================================================================
@@ -384,11 +481,13 @@ export function getAgentWorkspaceDir(slug: string): string {
   return path.join(getAgentDir(slug), 'workspace')
 }
 
-/**
- * Get CLAUDE.md path for agent (inside workspace)
- * ~/.superagent/agents/{slug}/workspace/CLAUDE.md
- */
-export function getAgentClaudeMdPath(slug: string): string {
+/** Canonical instructions path for an agent's workspace. */
+export function getAgentInstructionsPath(slug: string): string {
+  return path.join(getAgentWorkspaceDir(slug), 'AGENTS.md')
+}
+
+/** Legacy instructions path, used only for compatibility and migration. */
+export function getLegacyAgentInstructionsPath(slug: string): string {
   return path.join(getAgentWorkspaceDir(slug), 'CLAUDE.md')
 }
 
@@ -409,6 +508,14 @@ export function getAgentSessionMetadataPath(slug: string): string {
 }
 
 /**
+ * Get agent preferences path
+ * ~/.superagent/agents/{slug}/workspace/agent-preferences.json
+ */
+export function getAgentPreferencesPath(slug: string): string {
+  return path.join(getAgentWorkspaceDir(slug), 'agent-preferences.json')
+}
+
+/**
  * Get Claude config directory (for CLAUDE_CONFIG_DIR env var)
  * ~/.superagent/agents/{slug}/workspace/.claude/
  */
@@ -417,19 +524,28 @@ export function getAgentClaudeConfigDir(slug: string): string {
 }
 
 /**
- * Get sessions directory where JSONL files are stored
+ * Host path of the directory the CLI writes a local agent's transcripts to.
+ * The application reads transcripts through the agent's session store; this
+ * is for the code that stands in for the CLI (the mock container client) and
+ * for test fixtures.
  * ~/.superagent/agents/{slug}/workspace/.claude/projects/-workspace/
  */
 export function getAgentSessionsDir(slug: string): string {
-  return path.join(getAgentClaudeConfigDir(slug), 'projects', '-workspace')
+  return path.join(getAgentWorkspaceDir(slug), ...CLI_TRANSCRIPTS_DIR.split('/'))
 }
 
 /**
- * Get path to a specific session's JSONL file
+ * Host path of a local session's transcript, for the same callers as
+ * {@link getAgentSessionsDir}.
  * ~/.superagent/agents/{slug}/workspace/.claude/projects/-workspace/{sessionId}.jsonl
  */
 export function getSessionJsonlPath(slug: string, sessionId: string): string {
-  return path.join(getAgentSessionsDir(slug), `${sessionId}.jsonl`)
+  const sessionsDir = getAgentSessionsDir(slug)
+  return assertPathWithinDir(
+    sessionsDir,
+    path.resolve(sessionsDir, `${sessionId}.jsonl`),
+    'Invalid session ID',
+  )
 }
 
 // ============================================================================
@@ -442,6 +558,27 @@ export async function copyDirectoryFiltered(
   src: string,
   dest: string,
   extraExclusions?: string[],
+  options: { followSymlinks?: boolean } = {},
+): Promise<void> {
+  const srcStat = await fs.promises.lstat(src)
+  // Default skips a source-root symlink. Template/skillset callers pass
+  // followSymlinks for symlink-to-dir roots that directoryExists (stat)
+  // already accepted.
+  if (!options.followSymlinks && !srcStat.isDirectory()) {
+    console.warn(`copyDirectoryFiltered: skipped non-directory source ${src}`)
+    return
+  }
+
+  const limit = pLimit(8)
+  await copyDirectoryFilteredLimited(src, dest, extraExclusions, limit, options)
+}
+
+async function copyDirectoryFilteredLimited(
+  src: string,
+  dest: string,
+  extraExclusions: string[] | undefined,
+  limit: ReturnType<typeof pLimit>,
+  options: { followSymlinks?: boolean } = {},
 ): Promise<void> {
   await ensureDirectory(dest)
   const entries = await fs.promises.readdir(src, { withFileTypes: true })
@@ -450,6 +587,7 @@ export async function copyDirectoryFiltered(
     ? new Set([...DEFAULT_COPY_EXCLUDED, ...extraExclusions])
     : DEFAULT_COPY_EXCLUDED
 
+  const tasks: Promise<void>[] = []
   for (const entry of entries) {
     if (excluded.has(entry.name)) continue
 
@@ -457,13 +595,613 @@ export async function copyDirectoryFiltered(
     const destPath = path.join(dest, entry.name)
 
     if (entry.isDirectory()) {
-      await copyDirectoryFiltered(srcPath, destPath, extraExclusions)
+      tasks.push(copyDirectoryFilteredLimited(srcPath, destPath, extraExclusions, limit, options))
+    } else if (options.followSymlinks || entry.isFile()) {
+      tasks.push(limit(() => fs.promises.copyFile(srcPath, destPath)))
     } else {
-      await fs.promises.copyFile(srcPath, destPath)
+      console.warn(`copyDirectoryFiltered: skipped ${srcPath}`)
+    }
+  }
+  await Promise.all(tasks)
+}
+
+/**
+ * Write a value as pretty-printed JSON.
+ *
+ * Delegates to {@link writeJsonFileAtomic} so every existing caller gets crash-safe
+ * temp-file + rename semantics for free — a torn/half-written JSON file can never
+ * replace a good one (the data-loss bug-class). The parent directory must
+ * already exist (same precondition as before).
+ */
+export async function writeJsonFile(filePath: string, data: unknown): Promise<void> {
+  await writeJsonFileAtomic(filePath, data)
+}
+
+// ============================================================================
+// Atomic Writes, Serialized Read-Modify-Write & Strict JSON Reads
+// ============================================================================
+//
+// The file-based stores in this app (session metadata, settings, secrets,
+// mounts, host-browser context maps, agent prefs, …) historically used plain
+// `fs.writeFile` overwrites with read-modify-write of a whole map/array and no
+// serialization, plus reads that swallowed parse errors into an empty default.
+// Under concurrent or interrupted writes that combination silently and
+// permanently destroys data (34 session names wiped in an earlier incident). The primitives
+// below close that bug-class:
+//
+//  * writeFileAtomic / writeJsonFileAtomic — temp-file → fsync → rename → fsync
+//    dir. A reader sees the whole old file or the whole new file, never a mix,
+//    and a crash mid-write leaves the previous good file intact.
+//  * withFileLock — in-process promise-chain mutex keyed by resolved path, so
+//    read-modify-write cycles for the same file never interleave.
+//  * readJsonFileStrict — returns the fallback ONLY when the file is absent
+//    (ENOENT); a present-but-unreadable file (torn/corrupt/IO error) THROWS a
+//    CorruptFileError so the surrounding write is aborted instead of clobbering
+//    the file with a default.
+//  * withCrossProcessFileLock — O_EXCL lockfile for the cross-process cases
+//    (the agent `.env` written by both the app and the container).
+//
+// Each has a sync twin for the synchronous call sites (settings, mounts,
+// host-browser providers) that can't easily become async.
+
+/**
+ * Thrown by the strict JSON readers when a file EXISTS but cannot be read as
+ * valid JSON matching the expected schema (truncated/torn write, corrupt bytes,
+ * or wrong shape) — as distinct from the file simply being absent.
+ *
+ * Callers MUST let this propagate and abort the surrounding read-modify-write
+ * rather than treating it as an empty default and overwriting (the original
+ * failure mode). The on-disk file is left untouched so it can be recovered.
+ */
+export class CorruptFileError extends Error {
+  readonly filePath: string
+  readonly reason: string
+  constructor(filePath: string, reason: string, options?: { cause?: unknown }) {
+    super(`Refusing to use corrupt file ${filePath}: ${reason}`, options)
+    this.name = 'CorruptFileError'
+    this.filePath = filePath
+    this.reason = reason
+  }
+}
+
+let tmpWriteCounter = 0
+
+/** The longest file name every filesystem here accepts, in bytes. */
+const FILE_NAME_MAX_BYTES = 255
+
+/** Sibling temp path in the same directory as `filePath` (so rename is atomic —
+ *  same filesystem). Leading dot + pid + counter + random keeps it unique and
+ *  out of the way of glob/dir listings. The target's name is kept for
+ *  forensics but cut so the temp name fits the filesystem's limit: a name
+ *  the filesystem accepts must never fail to write because its temp name is
+ *  longer. */
+function tempPathFor(filePath: string): string {
+  const dir = path.dirname(filePath)
+  const suffix = `.${process.pid}.${++tmpWriteCounter}.${generateRandomSuffix(8)}.tmp`
+  const budget = FILE_NAME_MAX_BYTES - 1 - Buffer.byteLength(suffix)
+  const base = Array.from(path.basename(filePath))
+  while (base.length > 0 && Buffer.byteLength(base.join('')) > budget) base.pop()
+  return path.join(dir, `.${base.join('')}${suffix}`)
+}
+
+/**
+ * fsync a directory so a rename inside it is durable across a power loss.
+ * Best-effort: some platforms (notably Windows) can't fsync a directory handle.
+ */
+async function fsyncDir(dir: string): Promise<void> {
+  let handle: fs.promises.FileHandle | undefined
+  try {
+    handle = await fs.promises.open(dir, 'r')
+    await handle.sync()
+  } catch {
+    // best-effort durability — ignore platforms that disallow dir fsync
+  } finally {
+    await handle?.close().catch(() => {})
+  }
+}
+
+function fsyncDirSync(dir: string): void {
+  let fd: number | undefined
+  try {
+    fd = fs.openSync(dir, 'r')
+    fs.fsyncSync(fd)
+  } catch {
+    // best-effort durability
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd)
+      } catch {
+        // ignore
+      }
     }
   }
 }
 
-export async function writeJsonFile(filePath: string, data: unknown): Promise<void> {
-  await fs.promises.writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8')
+// Windows can transiently fail a rename-replace with EPERM/EACCES/EBUSY when an
+// external process (antivirus, Search indexer, backup) briefly holds the target
+// open WITHOUT FILE_SHARE_DELETE — POSIX renames don't hit this. Retry a few
+// times with a short backoff (mirrors npm `write-file-atomic`); a no-op on
+// platforms/filesystems where rename doesn't raise these codes.
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY', 'ENOTEMPTY'])
+
+async function renameWithRetry(from: string, to: string, attempts = 10): Promise<void> {
+  for (let i = 0; ; i++) {
+    try {
+      await fs.promises.rename(from, to)
+      return
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code
+      if (i >= attempts || !code || !RENAME_RETRY_CODES.has(code)) throw err
+      await new Promise((r) => setTimeout(r, 10 * (i + 1)))
+    }
+  }
+}
+
+/** Sync rename with bounded immediate retries (a sync sleep would block the
+ *  event loop). Best-effort Windows resilience for the synchronous writers. */
+function renameWithRetrySync(from: string, to: string, attempts = 10): void {
+  for (let i = 0; ; i++) {
+    try {
+      fs.renameSync(from, to)
+      return
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code
+      if (i >= attempts || !code || !RENAME_RETRY_CODES.has(code)) throw err
+    }
+  }
+}
+
+/**
+ * Atomically write `content` to `filePath`:
+ *   1. write to a sibling temp file in the same directory
+ *   2. fsync the temp file (contents durable on disk)
+ *   3. rename temp → target (atomic on the same filesystem)
+ *   4. fsync the parent directory (the rename itself is durable)
+ *
+ * On ANY error the temp file is removed and the existing target is left exactly
+ * as it was — a failed/interrupted write never replaces a good file.
+ *
+ * The parent directory must already exist (callers ensure this), matching the
+ * precondition of the plain `writeFile` it replaces.
+ */
+export async function writeFileAtomic(
+  filePath: string,
+  content: string,
+  options?: { mode?: number; forceMode?: boolean }
+): Promise<void> {
+  await writeFileAtomicWith(filePath, (handle) => handle.writeFile(content, 'utf-8'), options)
+}
+
+export interface AtomicWriteOptions {
+  overwrite?: boolean
+  /** Validate an opened staging file before writing and again before publishing. */
+  validate?: (handle: fs.promises.FileHandle, temporaryPath: string) => Promise<void>
+  mode?: number
+  forceMode?: boolean
+  /**
+   * Flush the file and its directory to disk before returning (the default).
+   * `false` keeps the write atomic — a reader sees the old file or the whole
+   * new one — but not durable across a crash, for bulk content (uploads,
+   * imports) that was never flushed before and where a flush per file is the
+   * dominant cost.
+   */
+  fsync?: boolean
+  /**
+   * A caller's lock, held around the final publish (`beforePublish`, the check that the
+   * temp file is still this write's, the claim, then the rename) and around a failed
+   * write's cleanup, which then removes the temp file only while it is still this
+   * write's. Not held while the content is written. Passing it turns those checks on.
+   */
+  lock?: (fn: () => Promise<void>) => Promise<void>
+  /** Called under `lock` just before `filePath` is published; throwing refuses the publish. */
+  beforePublish?: (filePath: string) => Promise<void>
+}
+
+/**
+ * Streaming variant of {@link writeFileAtomic}: the content is produced by an
+ * iterable of chunks (written verbatim, in order) instead of one string, so a
+ * large file can be rewritten without ever materializing it in memory. Same
+ * temp-file + fsync + rename guarantees; if the producer throws, the temp file
+ * is removed and the target is untouched.
+ */
+export async function writeFileAtomicStream(
+  filePath: string,
+  chunks: AsyncIterable<Buffer | string> | Iterable<Buffer | string>,
+  options?: AtomicWriteOptions
+): Promise<void> {
+  // Batch small chunks (transcript lines) into ~1MB writes so a many-line file
+  // doesn't pay one syscall per line.
+  const FLUSH_BYTES = 1 << 20
+  await writeFileAtomicWith(
+    filePath,
+    async (handle) => {
+      let batch: Buffer[] = []
+      let batchSize = 0
+      const flush = async () => {
+        if (batchSize === 0) return
+        const buf = batch.length === 1 ? batch[0] : Buffer.concat(batch)
+        batch = []
+        batchSize = 0
+        let offset = 0
+        while (offset < buf.length) {
+          const { bytesWritten } = await handle.write(buf, offset, buf.length - offset)
+          offset += bytesWritten
+        }
+      }
+      for await (const chunk of chunks) {
+        const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf-8') : chunk
+        if (buf.length === 0) continue
+        batch.push(buf)
+        batchSize += buf.length
+        if (batchSize >= FLUSH_BYTES) await flush()
+      }
+      await flush()
+    },
+    options
+  )
+}
+
+/** Shared temp-write/fsync/rename core of {@link writeFileAtomic} and
+ *  {@link writeFileAtomicStream}; `writeContent` fills the open temp file. */
+async function writeFileAtomicWith(
+  filePath: string,
+  writeContent: (handle: fs.promises.FileHandle) => Promise<void>,
+  options?: AtomicWriteOptions
+): Promise<void> {
+  const dir = path.dirname(filePath)
+  const tmpPath = tempPathFor(filePath)
+  // Match fs.writeFile(mode) semantics: `mode` applies only when CREATING the
+  // target. If it already exists, preserve its current owner, group, and
+  // permissions — the rename below replaces the inode, which would otherwise
+  // hand the file to this process's uid with the temp file's perms. Ownership
+  // preservation is best-effort (only root can give a file away; EPERM is
+  // ignored), matching npm write-file-atomic.
+  //
+  // `forceMode` inverts the mode handling for files that MUST hold a specific
+  // mode no matter what (the agent .env is written by two different uids, and
+  // the non-root writer can never chown it back — so a preserved stray 0o600
+  // would permanently lock the other writer out; only a forced world-RW mode
+  // makes ownership irrelevant).
+  let existing: { mode: number; uid: number; gid: number } | undefined
+  if (!options?.forceMode) {
+    try {
+      // The rename replaces a link rather than writing through it, so a link is a create:
+      // its target lends no mode or owner, and a target that cannot be reached fails nothing.
+      const st = await fs.promises.lstat(filePath)
+      if (!st.isSymbolicLink()) existing = { mode: st.mode & 0o777, uid: st.uid, gid: st.gid }
+    } catch (err) {
+      // Only a confirmed-absent target is a create. Anything else (ESTALE from a
+      // cross-client NFS rename, EIO) must fail the write — treating it as a
+      // create would silently reset the file's permissions to options.mode.
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+    }
+  }
+  let claimed = false
+  // A caller that publishes under its own lock may share the folder with writers that can take the
+  // temp file's name, so its publish and cleanup act only on the temp file this write opened.
+  let staged: fs.Stats | undefined
+  const lock = options?.lock
+  try {
+    // 'wx' = O_EXCL: never reuse a stray temp file. Unique name makes this safe.
+    const handle = await fs.promises.open(tmpPath, 'wx', options?.mode ?? 0o666)
+    try {
+      if (lock) staged = await handle.stat()
+      await options?.validate?.(handle, tmpPath)
+      await writeContent(handle)
+      // Best-effort: object-storage / perms-less mounts (e.g. an S3 FUSE driver)
+      // may reject chown/chmod — a metadata tweak must never fail the data write.
+      // chown before chmod: chown can clear mode bits on some platforms.
+      if (options?.forceMode) {
+        await handle.chmod(options.mode ?? 0o666).catch(() => {})
+      } else if (existing) {
+        await handle.chown(existing.uid, existing.gid).catch(() => {})
+        await handle.chmod(existing.mode).catch(() => {})
+      }
+      if (options?.fsync !== false) await handle.sync()
+      await options?.validate?.(handle, tmpPath)
+    } finally {
+      await handle.close()
+    }
+    const publish = async () => {
+      await options?.beforePublish?.(filePath)
+      if (staged) {
+        // Publish only the file this write made, never what took its name, a link included.
+        const current = await fs.promises.lstat(tmpPath)
+        if (!current.isFile() || current.ino !== staged.ino || current.dev !== staged.dev) {
+          throw Object.assign(new Error(`The staged file for ${filePath} was replaced before it was published`), { code: 'ENOENT' })
+        }
+      }
+      if (options?.overwrite === false) {
+        // Claim the name with an exclusive create (EEXIST when taken), then the
+        // rename replaces that empty claim. This needs no hard link, which S3
+        // Files refuses. A writer that writes the name between claim and rename
+        // is replaced.
+        await fs.promises.writeFile(filePath, '', { flag: 'wx' })
+        claimed = true
+      }
+      await renameWithRetry(tmpPath, filePath)
+    }
+    await (lock ? lock(publish) : publish())
+  } catch (err) {
+    if (lock) {
+      // Under the lock, so nothing takes the name between the check and the removal: whatever
+      // was moved onto it stays.
+      await lock(async () => {
+        const left = await fs.promises.lstat(tmpPath).catch(() => null)
+        if (left && staged && left.ino === staged.ino && left.dev === staged.dev) await fs.promises.rm(tmpPath, { force: true })
+      }).catch(() => {})
+    } else {
+      await fs.promises.rm(tmpPath, { force: true }).catch(() => {})
+    }
+    // Remove the claim only while it is still empty.
+    const claim = claimed ? await fs.promises.lstat(filePath).catch(() => null) : null
+    if (claim?.size === 0) await fs.promises.rm(filePath, { force: true }).catch(() => {})
+    throw err
+  }
+  if (options?.fsync !== false) await fsyncDir(dir)
+}
+
+/** Synchronous twin of {@link writeFileAtomic}. */
+export function writeFileAtomicSync(
+  filePath: string,
+  content: string,
+  options?: { mode?: number; forceMode?: boolean }
+): void {
+  const dir = path.dirname(filePath)
+  const tmpPath = tempPathFor(filePath)
+  let existing: { mode: number; uid: number; gid: number } | undefined
+  if (!options?.forceMode) {
+    try {
+      const st = fs.lstatSync(filePath)
+      if (!st.isSymbolicLink()) existing = { mode: st.mode & 0o777, uid: st.uid, gid: st.gid }
+    } catch (err) {
+      // See writeFileAtomic: ENOENT-only, everything else fails the write.
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+    }
+  }
+  try {
+    const fd = fs.openSync(tmpPath, 'wx', options?.mode ?? 0o666)
+    try {
+      fs.writeFileSync(fd, content, 'utf-8')
+      // Best-effort (see writeFileAtomic): never let a perms-less mount's
+      // chown/chmod rejection fail the data write. chown before chmod.
+      try {
+        if (options?.forceMode) {
+          fs.fchmodSync(fd, options.mode ?? 0o666)
+        } else if (existing) {
+          try {
+            fs.fchownSync(fd, existing.uid, existing.gid)
+          } catch {
+            // ignore — only root can give a file away
+          }
+          fs.fchmodSync(fd, existing.mode)
+        }
+      } catch {
+        // ignore — perms are advisory on object-storage mounts
+      }
+      fs.fsyncSync(fd)
+    } finally {
+      fs.closeSync(fd)
+    }
+    renameWithRetrySync(tmpPath, filePath)
+  } catch (err) {
+    try {
+      fs.rmSync(tmpPath, { force: true })
+    } catch {
+      // ignore cleanup failure
+    }
+    throw err
+  }
+  fsyncDirSync(dir)
+}
+
+/** Atomically write `data` as pretty-printed JSON. See {@link writeFileAtomic}. */
+export async function writeJsonFileAtomic(filePath: string, data: unknown): Promise<void> {
+  await writeFileAtomic(filePath, JSON.stringify(data, null, 2))
+}
+
+/** Synchronous twin of {@link writeJsonFileAtomic}. */
+export function writeJsonFileAtomicSync(filePath: string, data: unknown): void {
+  writeFileAtomicSync(filePath, JSON.stringify(data, null, 2))
+}
+
+// ---------------------------------------------------------------------------
+// In-process serialization (per-path async mutex)
+// ---------------------------------------------------------------------------
+
+const fileWriteQueues = new Map<string, Promise<unknown>>()
+
+/**
+ * Serialize `fn` against other `withFileLock` callers for the SAME file, so a
+ * read-modify-write cycle can't interleave with another in this process.
+ *
+ * Keyed by the resolved absolute path. The lock is NON-reentrant: never call
+ * `withFileLock(p, …)` for the same `p` from inside another `withFileLock(p)` —
+ * it would deadlock. Keep the read AND the write inside one `withFileLock` body;
+ * the read/write primitives above deliberately do NOT take the lock themselves.
+ *
+ * This covers only THIS process. Cross-process races (the `.env` app-vs-container
+ * case) need {@link withCrossProcessFileLock}.
+ */
+export function withFileLock<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
+  const key = path.resolve(filePath)
+  const prev = fileWriteQueues.get(key) ?? Promise.resolve()
+  // Run fn after prev settles, whether it resolved or rejected. `prev` is always
+  // a never-rejecting tail, so the onRejected branch is just belt-and-suspenders.
+  const result = prev.then(fn, fn)
+  const tail = result.then(
+    () => undefined,
+    () => undefined
+  )
+  fileWriteQueues.set(key, tail)
+  // Drop the map entry once this is the last queued op, so the map can't grow
+  // unbounded across many distinct paths.
+  background(tail.then(() => {
+    if (fileWriteQueues.get(key) === tail) fileWriteQueues.delete(key)
+  }), { name: 'file-storage.drop-write-queue' })
+  return result
+}
+
+// ---------------------------------------------------------------------------
+// Strict JSON reads (fail-closed on corruption)
+// ---------------------------------------------------------------------------
+
+function parseJsonStrict<T>(filePath: string, content: string, schema: ZodType<T>): T {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(content)
+  } catch (err) {
+    throw new CorruptFileError(filePath, 'file is not valid JSON', { cause: err })
+  }
+  const result = schema.safeParse(parsed)
+  if (!result.success) {
+    throw new CorruptFileError(filePath, `does not match expected schema: ${result.error.message}`, {
+      cause: result.error,
+    })
+  }
+  return result.data
+}
+
+/**
+ * Read + Zod-validate a JSON file, distinguishing "absent" from "unreadable":
+ *   - file missing (ENOENT)            → return `fallbackIfAbsent`
+ *   - present but invalid JSON / wrong shape / IO error → THROW
+ *
+ * Use this everywhere a read-modify-write previously swallowed errors into an
+ * empty default, so a transiently-unreadable file aborts the write instead of
+ * being overwritten with the default (the instructions-document fail-closed rule).
+ */
+export async function readJsonFileStrict<T>(
+  filePath: string,
+  schema: ZodType<T>,
+  fallbackIfAbsent: T
+): Promise<T> {
+  let content: string
+  try {
+    content = await fs.promises.readFile(filePath, 'utf-8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return fallbackIfAbsent
+    throw err // EIO / EACCES / EBUSY / … — never swallow
+  }
+  return parseJsonStrict(filePath, content, schema)
+}
+
+/** Synchronous twin of {@link readJsonFileStrict}. */
+export function readJsonFileStrictSync<T>(
+  filePath: string,
+  schema: ZodType<T>,
+  fallbackIfAbsent: T
+): T {
+  let content: string
+  try {
+    content = fs.readFileSync(filePath, 'utf-8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return fallbackIfAbsent
+    throw err
+  }
+  return parseJsonStrict(filePath, content, schema)
+}
+
+// ---------------------------------------------------------------------------
+// Cross-process advisory lock (O_EXCL lockfile)
+// ---------------------------------------------------------------------------
+
+export interface CrossProcessLockOptions {
+  /** Max time to wait to acquire the lock before throwing (ms). Default 5000. */
+  timeoutMs?: number
+  /** Poll interval while the lock is held by someone else (ms). Default 50. */
+  retryIntervalMs?: number
+  /** A lock whose file is older than this is considered stale and stolen (ms). Default 30000. */
+  staleMs?: number
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+/**
+ * Run `fn` while holding an on-disk `<targetPath>.lock` (O_EXCL), serializing
+ * across processes that honor the same lockfile convention. Also wraps the body
+ * in {@link withFileLock} so concurrent callers within THIS process queue rather
+ * than fight over the lockfile.
+ *
+ * A stale lock (file older than `staleMs`, e.g. left by a crashed process) is
+ * stolen so a dead writer can't wedge the file forever. The lock is always
+ * released in a `finally`.
+ *
+ * ACCEPTED LIMITATION (not a bug — do not "fix" by tightening the steal): there
+ * is no heartbeat, so a holder that is *alive but frozen* for longer than
+ * `staleMs` (laptop sleep, a hung network fs / S3 File Gateway NFS stall, a
+ * multi-second GC pause) is indistinguishable from a dead one and can be falsely
+ * stolen, letting two writers briefly proceed. This is deliberately tolerated:
+ * the trigger is pathological (frozen >30s mid-millisecond write WHILE another
+ * writer contends), and because every write is atomic temp-file→rename the worst
+ * case is a single lost env-var update — never a torn/corrupt file. Fully closing
+ * it needs a heartbeat lock (e.g. `proper-lockfile`); revisit only if real
+ * cross-process `.env` contention shows up.
+ */
+export async function withCrossProcessFileLock<T>(
+  targetPath: string,
+  fn: () => Promise<T>,
+  options?: CrossProcessLockOptions
+): Promise<T> {
+  const timeoutMs = options?.timeoutMs ?? 5000
+  const retryIntervalMs = options?.retryIntervalMs ?? 50
+  const staleMs = options?.staleMs ?? 30_000
+  const lockPath = `${targetPath}.lock`
+  // Unique per-acquisition owner token written INTO the lockfile, so release can
+  // verify we still own it (see the finally below).
+  const ownerToken = `${process.pid}.${generateRandomSuffix(12)}`
+
+  return withFileLock(targetPath, async () => {
+    const deadline = Date.now() + timeoutMs
+    let acquiredAt = 0
+    // Acquire
+    for (;;) {
+      try {
+        const handle = await fs.promises.open(lockPath, 'wx')
+        try {
+          await handle.writeFile(ownerToken)
+        } finally {
+          await handle.close()
+        }
+        acquiredAt = Date.now()
+        break // acquired
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err
+        // Held by someone else — steal it if it's stale.
+        try {
+          const stat = await fs.promises.stat(lockPath)
+          if (Date.now() - stat.mtimeMs > staleMs) {
+            await fs.promises.rm(lockPath, { force: true }).catch(() => {})
+            continue // retry immediately
+          }
+        } catch {
+          // lock vanished between open and stat — retry immediately
+          continue
+        }
+        if (Date.now() >= deadline) {
+          throw new Error(`Timed out after ${timeoutMs}ms acquiring cross-process lock ${lockPath}`)
+        }
+        await sleep(retryIntervalMs)
+      }
+    }
+    // Critical section
+    try {
+      return await fn()
+    } finally {
+      // Release ONLY if we still own the lock. If a later writer stole it as
+      // stale (we stalled past staleMs — plausible on a hung network fs), the
+      // file now holds THEIR token; deleting it would let a third writer in
+      // while they're mid-critical-section, reopening the lost-update race.
+      // If the readback itself fails transiently (EIO/EACCES → null) we can't see
+      // the token — but a steal can only happen after staleMs, so while we've held
+      // it for less than that it's provably still ours; remove it rather than
+      // leak our own lock (which would make other writers time out until it ages
+      // into stale).
+      const current = await fs.promises.readFile(lockPath, 'utf-8').catch(() => null)
+      if (current === ownerToken || (current === null && Date.now() - acquiredAt < staleMs)) {
+        await fs.promises.rm(lockPath, { force: true }).catch(() => {})
+      }
+    }
+  })
 }

@@ -196,11 +196,11 @@ export function classifyWSL2Stderr(stderrRaw: string): RunnerSetupRemediation | 
       kind: 'access-denied',
       title: 'Access denied while creating WSL2 distro',
       remediation:
-        'Windows blocked writing to the Superagent data directory. This is usually caused by antivirus software or Windows Controlled Folder Access.',
+        'Windows blocked writing to the Gamut data directory. This is usually caused by antivirus software or Windows Controlled Folder Access.',
       steps: [
         { label: 'Open Windows Security → Virus & threat protection → Ransomware protection → Manage Controlled folder access.' },
-        { label: 'Allow Superagent through Controlled Folder Access, or temporarily disable it to confirm it is the cause.' },
-        { label: 'Whitelist the Superagent data folder in your antivirus: %APPDATA%\\superagent' },
+        { label: 'Allow Gamut through Controlled Folder Access, or temporarily disable it to confirm it is the cause.' },
+        { label: 'Whitelist the Gamut data folder in your antivirus: %APPDATA%\\superagent' },
         { label: 'Retry starting the runtime.' },
       ],
       docsUrl: null,
@@ -219,11 +219,11 @@ export function classifyWSL2Stderr(stderrRaw: string): RunnerSetupRemediation | 
       kind: 'rootfs-missing',
       title: 'WSL2 could not read the Alpine rootfs',
       remediation:
-        'Windows reported that the path to the bundled Alpine rootfs could not be found. Your Superagent install may be corrupt, or %APPDATA% may be redirected to OneDrive.',
+        'Windows reported that the path to the bundled Alpine rootfs could not be found. Your Gamut install may be corrupt, or %APPDATA% may be redirected to OneDrive.',
       steps: [
         { label: 'Check whether your AppData is redirected to OneDrive:', command: '[Environment]::GetFolderPath("ApplicationData")' },
         { label: 'If the path is inside OneDrive, pause OneDrive sync and retry.' },
-        { label: 'Otherwise, reinstall Superagent to restore the bundled Alpine rootfs.' },
+        { label: 'Otherwise, reinstall Gamut to restore the bundled Alpine rootfs.' },
       ],
       docsUrl: null,
       originalStderr: stderr,
@@ -261,7 +261,7 @@ export function unknownRunnerSetupError(stderr: string): RunnerSetupRemediation 
     kind: 'unknown',
     title: 'Failed to set up WSL2 runtime',
     remediation:
-      'An unexpected error occurred while setting up the WSL2 runtime. The error details have been reported to Superagent.',
+      'An unexpected error occurred while setting up the WSL2 runtime. The error details have been reported to Gamut.',
     steps: [
       { label: 'Try shutting down WSL and retrying:', command: 'wsl --shutdown' },
       { label: 'If the error persists, reboot your computer.' },

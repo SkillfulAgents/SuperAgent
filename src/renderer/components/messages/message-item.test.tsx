@@ -1,13 +1,29 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
+import { render, screen, act, fireEvent } from '@testing-library/react'
 import { MessageItem } from './message-item'
+import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-error-presentation'
 import { createUserMessage, createAssistantMessage, createToolCall } from '@renderer/test/factories'
+import { appendMentions } from '@shared/lib/utils/mentions'
 
 // Mock SubAgentBlock and ToolCallItem to isolate MessageItem
 vi.mock('./subagent-block', () => ({
-  SubAgentBlock: ({ toolCall }: { toolCall: { name: string } }) => (
-    <div data-testid="subagent-block">{toolCall.name}</div>
+  SubAgentBlock: ({
+    toolCall,
+    activeSubagent,
+    isCompleted,
+  }: {
+    toolCall: { name: string }
+    activeSubagent?: { parentToolId: string } | null
+    isCompleted?: boolean
+  }) => (
+    <div
+      data-testid="subagent-block"
+      data-active-parent={activeSubagent?.parentToolId ?? ''}
+      data-completed={String(!!isCompleted)}
+    >
+      {toolCall.name}
+    </div>
   ),
 }))
 
@@ -20,9 +36,27 @@ vi.mock('./tool-call-item', () => ({
   ),
 }))
 
-// Mock MessageContextMenu to just render children
+// Stub the chip: these cover how the message lays attachments out, not how a
+// single chip draws itself (sent-attachment-chip.test.tsx does that).
+vi.mock('./sent-attachment-chip', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./sent-attachment-chip')>()),
+  SentAttachmentChip: ({ filePath }: { filePath: string }) => (
+    <div data-testid="file-pill" data-file-path={filePath} />
+  ),
+}))
+
+// Mock MessageContextMenu to render children, plus its read-aloud item as a plain button
 vi.mock('./message-context-menu', () => ({
-  MessageContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  MessageContextMenu: ({ children, readAloud }: { children: React.ReactNode; readAloud?: { active: boolean; onToggle: () => void } }) => (
+    <>
+      {children}
+      {readAloud && (
+        <button type="button" data-testid="context-read-aloud" data-active={String(readAloud.active)} onClick={readAloud.onToggle}>
+          {readAloud.active ? 'Stop reading' : 'Read aloud'}
+        </button>
+      )}
+    </>
+  ),
 }))
 
 // Mock tooltip to render inline (avoids Radix portal issues in tests)
@@ -33,7 +67,119 @@ vi.mock('@renderer/components/ui/tooltip', () => ({
   TooltipContent: ({ children }: { children: React.ReactNode }) => <span data-testid="tooltip-content">{children}</span>,
 }))
 
+const platformAuth = { connected: false as boolean }
+const BILLING_URL = 'https://platform.example.com/dashboard/organizations/org_123?tab=billing'
+
+vi.mock('@renderer/hooks/use-platform-auth', () => ({
+  usePlatformAuthStatus: () => ({ data: platformAuth }),
+}))
+
+// Read-aloud: the availability query and the playback store are replaced with
+// switches so these tests need neither a QueryClient nor an audio stack.
+const readAloudState = {
+  configured: false,
+  available: true,
+  activeId: null as string | null,
+  status: 'speaking' as 'speaking' | 'paused' | 'connecting',
+  error: null as string | null,
+  toggle: vi.fn(),
+  pause: vi.fn(),
+  resume: vi.fn(),
+  speak: vi.fn(),
+  stop: vi.fn(),
+}
+
+vi.mock('@renderer/hooks/use-voice-input', () => ({
+  useIsTtsConfigured: () => readAloudState.configured,
+}))
+
+vi.mock('@renderer/hooks/use-read-aloud', () => ({
+  useIsReadAloudAvailable: () => readAloudState.available,
+  useIsBeingRead: (id: string) => readAloudState.activeId === id,
+  useReadAloud: (id: string) => ({
+    status: readAloudState.activeId === id ? readAloudState.status : 'idle',
+    isActive: readAloudState.activeId === id,
+    toggle: readAloudState.toggle,
+    pause: readAloudState.pause,
+    resume: readAloudState.resume,
+    error: readAloudState.error,
+  }),
+  useSpokenWordHighlight: () => {},
+  useIsVoiceReading: () => false,
+}))
+vi.mock('@renderer/lib/voice/services/read-aloud', () => ({
+  readAloud: {
+    restart: vi.fn(),
+    getPlayer: () => null,
+    getStreamWordCursor: () => -1,
+    speak: (...args: unknown[]) => readAloudState.speak(...args),
+    stop: () => readAloudState.stop(),
+  },
+}))
+
+// The speed picker inside the controls reads user settings (react-query).
+vi.mock('@renderer/hooks/use-user-settings', () => ({
+  useUserSettings: () => ({ data: { voice: { ttsSpeed: 1.2 } } }),
+  useUpdateUserSettings: () => ({ mutate: vi.fn() }),
+}))
+
+// Mention chips look their people and agents up for avatars.
+vi.mock('@renderer/hooks/use-agent-members', () => ({
+  useAgentMembers: () => ({ data: [{ id: 'mike-id', name: 'Mike Smith', email: 'mike@acme.com', image: null, role: 'user' }] }),
+}))
+vi.mock('@renderer/hooks/use-agents', () => ({
+  useAgents: (options?: { select?: (agents: unknown[]) => unknown }) => {
+    const agents = [{ slug: 'k3j4h5g6f7', displaySlug: 'billing-agent-k3j4h5g6f7', name: 'Billing Agent', avatar: null }]
+    return { data: options?.select ? options.select(agents) : agents }
+  },
+}))
+
 describe('MessageItem', () => {
+  beforeEach(() => {
+    platformAuth.connected = false
+    readAloudState.configured = false
+    readAloudState.activeId = null
+    readAloudState.status = 'speaking'
+    readAloudState.error = null
+    readAloudState.toggle.mockReset()
+    readAloudState.pause.mockReset()
+    readAloudState.resume.mockReset()
+  })
+
+  describe('mentions', () => {
+    const mike = { kind: 'user' as const, id: 'mike-id', name: 'Mike Smith', email: 'mike@acme.com' }
+    const billing = { kind: 'agent' as const, slug: 'billing-agent-k3j4h5g6f7', name: 'Billing Agent' }
+
+    it('draws each mention as a chip where its name stands, without the list the agent reads', () => {
+      const text = appendMentions('Ask @Billing Agent, then ping @Mike Smith', [billing, mike])
+      render(<MessageItem message={createUserMessage({ content: { text } })} agentSlug="support01x" />)
+
+      const bubble = screen.getByTestId('message-user')
+      expect(bubble).not.toHaveTextContent('Mentioned')
+      expect(screen.getByTestId('agent-mention')).toHaveTextContent('@Billing Agent')
+      // The avatar's initials and then the name.
+      expect(screen.getByTestId('user-mention')).toHaveTextContent('MS@Mike Smith')
+      expect(screen.getByTestId('user-mention').previousSibling?.textContent).toBe(', then ping ')
+      expect(screen.queryByTestId('mention-notified')).toBeNull()
+    })
+
+    it('leaves a name inside code as typed', () => {
+      const text = appendMentions('run `@Mike Smith` as is', [mike])
+      render(<MessageItem message={createUserMessage({ content: { text } })} />)
+
+      expect(screen.queryByTestId('user-mention')).toBeNull()
+      expect(screen.getByText('@Mike Smith').tagName).toBe('CODE')
+    })
+
+    it('marks a message that only notified the teammates it tags', () => {
+      const text = appendMentions('@Mike Smith look at this', [mike], { silent: true })
+      render(<MessageItem message={createUserMessage({ content: { text: `\\[Dana Lee]: ${text}` } })} />)
+
+      expect(screen.getByTestId('mention-notified')).toHaveTextContent('Notified Mike Smith')
+      expect(screen.getByTestId('user-mention').closest('.border-dashed')).not.toBeNull()
+    })
+  })
+
   describe('user messages', () => {
     it('renders with user data-testid', () => {
       const msg = createUserMessage({ content: { text: 'Hello world' } })
@@ -45,6 +191,47 @@ describe('MessageItem', () => {
       const msg = createUserMessage({ content: { text: 'Hello world' } })
       render(<MessageItem message={msg} />)
       expect(screen.getByText('Hello world')).toBeInTheDocument()
+    })
+  })
+
+  describe('attachments on a sent message', () => {
+    const withFiles = (...paths: string[]) =>
+      createUserMessage({ content: { text: `look\n\n[Attached files:]\n${paths.map((p) => `- ${p}`).join('\n')}` } })
+
+    it('splits pictures from files so a tall image never stretches the chips', () => {
+      render(<MessageItem message={withFiles('/workspace/uploads/1-a.png', '/workspace/uploads/1-b.pdf')} agentSlug="a1" />)
+      const files = screen.getByTestId('sent-files').querySelectorAll('[data-file-pill], [data-testid="file-pill"]')
+      const images = screen.getByTestId('sent-images').querySelectorAll('[data-testid="file-pill"]')
+      expect([...files].map((el) => el.getAttribute('data-file-path'))).toEqual(['/workspace/uploads/1-b.pdf'])
+      expect([...images].map((el) => el.getAttribute('data-file-path'))).toEqual(['/workspace/uploads/1-a.png'])
+    })
+
+    it('lays four or more images out as a grid', () => {
+      const paths = ['a', 'b', 'c', 'd'].map((n) => `/workspace/uploads/1-${n}.png`)
+      render(<MessageItem message={withFiles(...paths)} agentSlug="a1" />)
+      expect(screen.getByTestId('sent-images')).toHaveAttribute('data-image-layout', 'grid')
+      expect(screen.getAllByTestId('file-pill')).toHaveLength(4)
+    })
+
+    // Attaching the same file twice is legal, and a key of the path alone
+    // collides. React still paints both on a first render, so the defect shows
+    // as its duplicate-key warning — and as reconciliation reusing the wrong
+    // chip once the list changes.
+    it.each([
+      ['files', '/workspace/uploads/1-a.pdf'],
+      ['pictures', '/workspace/uploads/1-a.png'],
+    ])('keys repeated %s apart', (_kind, filePath) => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        render(<MessageItem message={withFiles(filePath, filePath)} agentSlug="a1" />)
+        expect(screen.getAllByTestId('file-pill')).toHaveLength(2)
+        const warnings = consoleError.mock.calls
+          .map((args) => args.join(' '))
+          .filter((message) => message.includes('same key'))
+        expect(warnings).toEqual([])
+      } finally {
+        consoleError.mockRestore()
+      }
     })
   })
 
@@ -68,6 +255,24 @@ describe('MessageItem', () => {
       const link = screen.getByText('Click here')
       expect(link).toHaveAttribute('target', '_blank')
       expect(link).toHaveAttribute('href', 'https://example.com')
+    })
+
+    it('renders a container screenshot through its verified tool-result alias', () => {
+      const fileUrl = 'file:///home/claude/.agent-browser/tmp/screenshots/shot.png'
+      const mediaUrl = '/api/agents/a/sessions/s/media/ref_123'
+      const msg = createAssistantMessage({
+        content: { text: `![Captured page](${fileUrl})` },
+      })
+
+      const { container } = render(
+        <MessageItem
+          message={msg}
+          embeddedImageAliases={new Map([[fileUrl, mediaUrl]])}
+        />
+      )
+
+      expect(container.querySelector('img')).toHaveAttribute('src', mediaUrl)
+      expect(container.querySelector('img')).toHaveAttribute('alt', 'Captured page')
     })
 
     it('renders code blocks', () => {
@@ -122,6 +327,288 @@ describe('MessageItem', () => {
     })
   })
 
+  describe('read aloud', () => {
+    it('offers "Read aloud" in the message menu when speech is configured, and nothing under the reply', () => {
+      readAloudState.configured = true
+      readAloudState.speak.mockClear()
+      const msg = createAssistantMessage({ content: { text: 'Hello **there**.' } })
+      render(<MessageItem message={msg} />)
+      expect(screen.queryByTestId('read-aloud-controls')).toBeNull()
+      expect(screen.queryByTestId('read-aloud-button')).toBeNull()
+      const item = screen.getByTestId('context-read-aloud')
+      expect(item).toHaveTextContent('Read aloud')
+      expect(item).toHaveAttribute('data-active', 'false')
+      item.click()
+      expect(readAloudState.speak).toHaveBeenCalledWith(msg.id, 'Hello **there**.')
+    })
+
+    it('hides "Read aloud" while a Live conversation owns the speaker', () => {
+      readAloudState.configured = true
+      readAloudState.available = false
+      try {
+        render(<MessageItem message={createAssistantMessage({ content: { text: 'Hello.' } })} />)
+        expect(screen.queryByTestId('context-read-aloud')).toBeNull()
+      } finally {
+        readAloudState.available = true
+      }
+    })
+
+    it('offers "Stop reading" in the menu while this reply is being read', () => {
+      readAloudState.configured = true
+      readAloudState.stop.mockClear()
+      const msg = createAssistantMessage({ content: { text: 'Hello there world' } })
+      readAloudState.activeId = msg.id
+      render(<MessageItem message={msg} />)
+      const item = screen.getByTestId('context-read-aloud')
+      expect(item).toHaveTextContent('Stop reading')
+      item.click()
+      expect(readAloudState.stop).toHaveBeenCalledTimes(1)
+    })
+
+    it('shows nothing when the voice provider cannot speak', () => {
+      const msg = createAssistantMessage({ content: { text: 'Hello there.' } })
+      render(<MessageItem message={msg} />)
+      expect(screen.queryByTestId('context-read-aloud')).toBeNull()
+      expect(screen.queryByTestId('read-aloud-controls')).toBeNull()
+    })
+
+    it('never offers it on user messages, streaming text, or provider errors', () => {
+      readAloudState.configured = true
+      const { unmount } = render(<MessageItem message={createUserMessage({ content: { text: 'hi' } })} />)
+      expect(screen.queryByTestId('context-read-aloud')).toBeNull()
+      unmount()
+
+      const streaming = render(<MessageItem message={createAssistantMessage({ content: { text: 'partial' } })} isStreaming />)
+      expect(screen.queryByTestId('context-read-aloud')).toBeNull()
+      streaming.unmount()
+
+      render(<MessageItem message={createAssistantMessage({ content: { text: 'boom' }, apiError: 'rate_limit' })} />)
+      expect(screen.queryByTestId('context-read-aloud')).toBeNull()
+    })
+
+    it('renders the word spans and dims the prose only for the reply being read', () => {
+      readAloudState.configured = true
+      const msg = createAssistantMessage({ content: { text: 'Hello **bright** world' } })
+      // Idle: plain prose, nothing addressable, no dimming.
+      const idle = render(<MessageItem message={msg} />)
+      expect(idle.container.querySelector('[data-spoken-word]')).toBeNull()
+      expect(idle.container.querySelector('.read-aloud-prose')).toBeNull()
+      idle.unmount()
+
+      readAloudState.activeId = msg.id
+      const { container } = render(<MessageItem message={msg} />)
+      expect(container.querySelector('.read-aloud-prose')).not.toBeNull()
+      const words = Array.from(container.querySelectorAll<HTMLElement>('[data-spoken-word]'))
+      expect(words.map((w) => w.textContent)).toEqual(['Hello', 'bright', 'world'])
+      expect(words.map((w) => w.dataset.spokenWord)).toEqual(['0', '1', '2'])
+      expect(screen.queryByTestId('read-aloud-button')).toBeNull()
+      expect(screen.getByTestId('read-aloud-stop')).toBeInTheDocument()
+    })
+
+    it('while reading, offers pause, stop, and the speed picker; paused offers resume', () => {
+      readAloudState.configured = true
+      const msg = createAssistantMessage({ content: { text: 'Hello there world' } })
+      readAloudState.activeId = msg.id
+      const speaking = render(<MessageItem message={msg} />)
+      expect(screen.queryByTestId('read-aloud-resume')).toBeNull()
+      screen.getByTestId('read-aloud-pause').click()
+      expect(readAloudState.pause).toHaveBeenCalledTimes(1)
+      expect(screen.getByTestId('read-aloud-speed')).toHaveTextContent('1.2×')
+      screen.getByTestId('read-aloud-stop').click()
+      expect(readAloudState.toggle).toHaveBeenCalledTimes(1)
+      speaking.unmount()
+
+      readAloudState.status = 'paused'
+      render(<MessageItem message={msg} />)
+      expect(screen.queryByTestId('read-aloud-pause')).toBeNull()
+      screen.getByTestId('read-aloud-resume').click()
+      expect(readAloudState.resume).toHaveBeenCalledTimes(1)
+    })
+
+    it('shows what went wrong next to the speaker button', () => {
+      readAloudState.configured = true
+      const msg = createAssistantMessage({ content: { text: 'Hello there world' } })
+      const quiet = render(<MessageItem message={msg} />)
+      expect(screen.queryByTestId('read-aloud-error')).toBeNull()
+      quiet.unmount()
+
+      readAloudState.error = 'Deepgram key revoked'
+      render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('read-aloud-error')).toHaveTextContent('Deepgram key revoked')
+      expect(screen.getByTestId('read-aloud-button')).toBeInTheDocument()
+    })
+
+    it('mounts nothing under the reply while idle', () => {
+      readAloudState.configured = true
+      render(<MessageItem message={createAssistantMessage({ content: { text: 'Hello there world' } })} />)
+      for (const id of ['read-aloud-controls', 'read-aloud-button', 'read-aloud-pause', 'read-aloud-resume', 'read-aloud-stop', 'read-aloud-speed']) {
+        expect(screen.queryByTestId(id)).toBeNull()
+      }
+    })
+
+    it('leaves other messages plain while one is being read', () => {
+      readAloudState.configured = true
+      readAloudState.activeId = 'some-other-message'
+      const msg = createAssistantMessage({ content: { text: 'Hello world' } })
+      const { container } = render(<MessageItem message={msg} />)
+      expect(container.querySelector('.read-aloud-prose')).toBeNull()
+      expect(container.querySelector('[data-spoken-word]')).toBeNull()
+    })
+
+    it('adds no spans when speech is not configured', () => {
+      const msg = createAssistantMessage({ content: { text: 'Hello world' } })
+      const { container } = render(<MessageItem message={msg} />)
+      expect(container.querySelector('[data-spoken-word]')).toBeNull()
+    })
+  })
+
+  describe('streaming word reveal', () => {
+    it('adds a reveal hook to prose words in the active Markdown tail', () => {
+      const msg = createAssistantMessage({ content: { text: 'Hello **bright** world' } })
+      const { container } = render(<MessageItem message={msg} isStreaming />)
+      const words = Array.from(container.querySelectorAll<HTMLElement>('.streaming-word-reveal'))
+
+      expect(words.map((word) => word.textContent)).toEqual(['Hello', 'bright', 'world'])
+      expect(words.map((word) => word.style.animationDelay)).toEqual(['0ms', '36ms', '72ms'])
+    })
+
+    it('keeps settled paragraphs and inline code crisp', () => {
+      const msg = createAssistantMessage({
+        content: { text: 'Already settled.\n\nRun `npm test` next' },
+      })
+      const { container } = render(<MessageItem message={msg} isStreaming />)
+      const paragraphs = container.querySelectorAll('p')
+
+      expect(paragraphs[0].querySelector('.streaming-word-reveal')).toBeNull()
+      expect(paragraphs[1].querySelectorAll('.streaming-word-reveal')).toHaveLength(2)
+      expect(paragraphs[1].querySelector('code .streaming-word-reveal')).toBeNull()
+    })
+
+    it('does not replay the reveal on words that were already mounted', () => {
+      const first = createAssistantMessage({ content: { text: 'Hello' } })
+      const { container, rerender } = render(<MessageItem message={first} isStreaming />)
+      const hello = container.querySelector('.streaming-word-reveal')
+
+      const next = createAssistantMessage({ ...first, content: { text: 'Hello world' } })
+      rerender(<MessageItem message={next} isStreaming />)
+
+      const words = container.querySelectorAll('.streaming-word-reveal')
+      expect(words).toHaveLength(2)
+      expect(words[0]).toBe(hello)
+      expect(words[1]).toHaveTextContent('world')
+    })
+
+    it('starts each appended paragraph chunk as a fresh compact word wave', () => {
+      const first = createAssistantMessage({ content: { text: 'Already visible' } })
+      const { container, rerender } = render(<MessageItem message={first} isStreaming />)
+      const existing = Array.from(
+        container.querySelectorAll<HTMLElement>('.streaming-word-reveal')
+      ).map((word) => word.style.animationDelay)
+
+      const next = createAssistantMessage({
+        ...first,
+        content: { text: 'Already visible and now four more words' },
+      })
+      rerender(<MessageItem message={next} isStreaming />)
+
+      const delays = Array.from(
+        container.querySelectorAll<HTMLElement>('.streaming-word-reveal')
+      ).map((word) => word.style.animationDelay)
+      expect(delays.slice(0, 2)).toEqual(existing)
+      expect(delays.slice(2)).toEqual(['0ms', '36ms', '72ms', '108ms', '144ms'])
+    })
+
+    it('renders persisted responses without reveal wrappers', () => {
+      const msg = createAssistantMessage({ content: { text: 'All done' } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      expect(container.querySelector('.streaming-word-reveal')).toBeNull()
+    })
+  })
+
+  describe('streaming markdown splitting', () => {
+    it('renders every block of a multi-block streaming message', () => {
+      const text = '# Heading\n\nSome text\n\n```js\nconsole.log("hi")\n```\n\nMore text'
+      const msg = createAssistantMessage({ content: { text } })
+      render(<MessageItem message={msg} isStreaming />)
+      expect(screen.getByText('Heading')).toBeInTheDocument()
+      expect(screen.getByText('Some text')).toBeInTheDocument()
+      expect(screen.getByText('console.log("hi")')).toBeInTheDocument()
+      expect(screen.getByTestId('message-assistant')).toHaveTextContent('More text')
+    })
+
+    it('keeps an in-progress code fence (with an internal blank line) intact while streaming', () => {
+      // Unterminated fence whose body contains a blank line. A naive \n\n split
+      // would freeze a broken open fence, leaving `const y = 2` outside the code
+      // block. The fence-aware split keeps the whole fence in the tail.
+      const text = 'Intro paragraph\n\n```js\nconst x = 1\n\nconst y = 2'
+      const msg = createAssistantMessage({ content: { text } })
+      const { container } = render(<MessageItem message={msg} isStreaming />)
+      expect(screen.getByText('Intro paragraph')).toBeInTheDocument()
+      const pres = container.querySelectorAll('pre')
+      expect(pres.length).toBe(1)
+      // Both lines live inside the SAME code block — the discriminating check.
+      expect(pres[0].textContent).toContain('const x = 1')
+      expect(pres[0].textContent).toContain('const y = 2')
+    })
+
+    it('renders the same text (whitespace-insensitive) while streaming as a single-document parse', () => {
+      const text =
+        '# Title\n\nFirst paragraph with **bold**.\n\n- a\n- b\n\n```ts\nconst n = 1\n```\n\nClosing line.'
+      const msg = createAssistantMessage({ content: { text } })
+      // Per-block rendering adds invisible whitespace text nodes between block
+      // elements (block-level CSS margins handle real spacing), so we compare
+      // visible characters ignoring whitespace: nothing dropped, added, or reordered.
+      const norm = (s: string | null) => (s ?? '').replace(/\s+/g, '')
+
+      const streamed = render(<MessageItem message={msg} isStreaming />)
+      const streamedText = norm(streamed.container.textContent)
+      streamed.unmount()
+
+      const whole = render(<MessageItem message={msg} />)
+      expect(norm(whole.container.textContent)).toBe(streamedText)
+    })
+
+    // The split's accepted trade-off: cross-block markdown constructs (reference-
+    // style links, loose lists) render differently MID-STREAM, then self-heal the
+    // instant the message persists and re-renders as one document. These tests pin
+    // BOTH the transient artifact AND the self-heal, since the self-heal is what
+    // makes the artifact acceptable.
+    it('reference-style link is literal while streaming, resolves once persisted', () => {
+      const text = 'See [the docs][1] for details.\n\n[1]: https://example.com'
+      const msg = createAssistantMessage({ content: { text } })
+
+      // Streaming: usage and its later definition land in separate blocks, so the
+      // link cannot resolve — it shows as literal bracket text, no anchor.
+      const streamed = render(<MessageItem message={msg} isStreaming />)
+      expect(streamed.container.querySelectorAll('a')).toHaveLength(0)
+      expect(streamed.container.textContent).toContain('[the docs][1]')
+      streamed.unmount()
+
+      // Persisted (whole-document parse): the reference resolves to a real link.
+      const whole = render(<MessageItem message={msg} />)
+      const link = whole.container.querySelector('a')
+      expect(link).not.toBeNull()
+      expect(link).toHaveAttribute('href', 'https://example.com')
+      expect(whole.container.textContent).not.toContain('[the docs][1]')
+    })
+
+    it('loose list splits into separate lists while streaming, collapses to one when persisted', () => {
+      const text = '1. a\n\n2. b\n\n3. c'
+      const msg = createAssistantMessage({ content: { text } })
+
+      // Streaming: blank-separated items settle into separate blocks -> separate <ol>.
+      const streamed = render(<MessageItem message={msg} isStreaming />)
+      expect(streamed.container.querySelectorAll('ol').length).toBeGreaterThan(1)
+      streamed.unmount()
+
+      // Persisted: one continuous list.
+      const whole = render(<MessageItem message={msg} />)
+      expect(whole.container.querySelectorAll('ol')).toHaveLength(1)
+      expect(whole.container.querySelectorAll('li')).toHaveLength(3)
+    })
+  })
+
   describe('tool calls', () => {
     it('renders tool calls below assistant message', () => {
       const msg = createAssistantMessage({
@@ -143,6 +630,45 @@ describe('MessageItem', () => {
       })
       render(<MessageItem message={msg} sessionId="s1" agentSlug="agent1" />)
       expect(screen.getByTestId('subagent-block')).toBeInTheDocument()
+    })
+
+    it('passes the running resumed lifecycle to the original subagent block', () => {
+      const msg = createAssistantMessage({
+        content: { text: '' },
+        toolCalls: [createToolCall({
+          id: 'agent-tool',
+          name: 'Agent',
+          result: 'FIRST_DONE',
+          subagent: { agentId: 'agent-1', status: 'completed' },
+        })],
+      })
+      const baseSubagent = {
+        agentId: 'agent-1',
+        streamingMessage: null,
+        streamingToolUse: null,
+        progressSummary: null,
+        subagentType: 'general-purpose',
+        description: 'Resume UI probe',
+        usage: null,
+        lastToolName: null,
+      }
+
+      render(
+        <MessageItem
+          message={msg}
+          sessionId="s1"
+          agentSlug="agent1"
+          isSessionActive
+          activeSubagents={[
+            { ...baseSubagent, parentToolId: 'agent-tool' },
+            { ...baseSubagent, parentToolId: 'send-tool', progressSummary: 'Running resumed task' },
+          ]}
+          completedSubagents={new Set(['agent-tool'])}
+        />
+      )
+
+      expect(screen.getByTestId('subagent-block')).toHaveAttribute('data-active-parent', 'send-tool')
+      expect(screen.getByTestId('subagent-block')).toHaveAttribute('data-completed', 'false')
     })
   })
 
@@ -172,10 +698,33 @@ describe('MessageItem', () => {
       expect(screen.getByText('Alice Baker')).toBeInTheDocument()
     })
 
+    it('draws the sender avatar beside the name, from their profile image', () => {
+      const msg = createUserMessage({
+        content: { text: 'Hello' },
+        sender: { id: 'user-1', name: 'Alice Baker', email: 'alice@example.com', image: 'https://example.com/alice.png' },
+      })
+      render(<MessageItem message={msg} />)
+      const avatar = screen.getByRole('img', { name: 'Alice Baker' })
+      expect(avatar.querySelector('img')).toHaveAttribute('src', 'https://example.com/alice.png')
+    })
+
+    it('falls back to initials for a sender lifted from a mirror prefix', () => {
+      const msg = createUserMessage({ content: { text: '\\[Dana Scully]: hello' } })
+      render(<MessageItem message={msg} />)
+      expect(screen.getByRole('img', { name: 'Dana Scully' })).toHaveTextContent('DS')
+    })
+
     it('does not render sender name when sender is absent', () => {
       const msg = createUserMessage({ content: { text: 'Hello' } })
       render(<MessageItem message={msg} />)
       expect(screen.queryByText('Alice Baker')).not.toBeInTheDocument()
+    })
+
+    it('lifts a leading escaped sender prefix out of the bubble', () => {
+      const msg = createUserMessage({ content: { text: '\\[Dana]: hello' } })
+      render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('message-user')).not.toHaveTextContent('[Dana]:')
+      expect(screen.getByText('hello')).toBeInTheDocument()
     })
 
     it('does not render sender on assistant messages', () => {
@@ -187,6 +736,38 @@ describe('MessageItem', () => {
     })
   })
 
+  describe('integration messages', () => {
+    const integration = {
+      version: 1 as const,
+      integration: { id: 'i-1', name: 'Support bot', provider: 'slack', family: 'chat' },
+      event: { type: 'message', label: 'Channel message' },
+      request: { text: 'Please check the deploy', author: { name: 'Ada Lovelace' } },
+      source: { kind: 'channel' as const, title: '#ops' },
+    }
+
+    it('draws the card instead of the model-facing text, without a second sender label', () => {
+      const msg = createUserMessage({ content: { text: '\\[Ada Lovelace]: Please check the deploy\n\nEarlier thread context' }, integration })
+      render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('integration-message')).toBeInTheDocument()
+      expect(screen.queryByText(/Earlier thread context/)).not.toBeInTheDocument()
+      expect(screen.getAllByText('Ada Lovelace')).toHaveLength(1)
+    })
+
+    it('still draws the card, and the file chips, when the message carried only files', () => {
+      const msg = createUserMessage({ content: { text: '[Attached files:]\n- /workspace/uploads/report.pdf' }, integration: { ...integration, request: { text: '', author: integration.request.author } } })
+      render(<MessageItem message={msg} agentSlug="agent-1" />)
+      expect(screen.getByTestId('integration-message')).toBeInTheDocument()
+      expect(screen.getByTestId('file-pill')).toHaveAttribute('data-file-path', '/workspace/uploads/report.pdf')
+    })
+
+    it('leaves a message without card data as its own text, whatever it says', () => {
+      const msg = createUserMessage({ content: { text: JSON.stringify({ integration }) } })
+      render(<MessageItem message={msg} />)
+      expect(screen.queryByTestId('integration-message')).not.toBeInTheDocument()
+      expect(screen.getByTestId('message-user')).toHaveTextContent('Support bot')
+    })
+  })
+
   describe('LLM provider error messages', () => {
     it('renders provider error card when apiError is a provider error code', () => {
       const msg = createAssistantMessage({
@@ -194,8 +775,8 @@ describe('MessageItem', () => {
         apiError: 'authentication_failed',
       })
       render(<MessageItem message={msg} />)
-      expect(screen.getByText('LLM Provider Error')).toBeInTheDocument()
-      expect(screen.getByText('Invalid API key')).toBeInTheDocument()
+      expect(screen.getByTestId('provider-error-card')).toHaveTextContent('LLM Provider Error: Invalid API key')
+      act(() => { screen.getByTestId('provider-error-card').click() })
       expect(screen.getByText(/external LLM provider API/)).toBeInTheDocument()
     })
 
@@ -216,6 +797,316 @@ describe('MessageItem', () => {
       render(<MessageItem message={msg} />)
       expect(screen.queryByText('LLM Provider Error')).not.toBeInTheDocument()
       expect(screen.getByText('Output too long')).toBeInTheDocument()
+    })
+
+    it('renders an orange spend-limit card from a server-attached presentation', () => {
+      const spendCap =
+        'API Error: Request rejected (429) · A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.'
+      const msg = createAssistantMessage({
+        content: { text: spendCap },
+        apiError: 'rate_limit',
+        errorPresentation: parsePlatformErrorResponse(429, spendCap, BILLING_URL)!,
+      })
+      render(<MessageItem message={msg} />)
+      const card = screen.getByTestId('provider-error-card')
+      expect(card).toHaveTextContent('Spend Limit Reached')
+      expect(card).toHaveTextContent('A spend cap for this workspace was reached. It resets within 30 days.')
+      expect(card).not.toHaveTextContent('LLM Provider Error')
+      expect(card).toHaveAttribute('data-severity', 'warning')
+      expect(card).toHaveClass('bg-orange-50', 'dark:bg-orange-950')
+      expect(screen.getByRole('link', { name: /raise spend limit/i })).toBeInTheDocument()
+    })
+
+    it('renders the provider card for a generic SDK code when a presentation is attached', () => {
+      const msg = createAssistantMessage({
+        content: { text: 'API Error: 402' },
+        apiError: 'unknown',
+        errorPresentation: { severity: 'error', message: '**Attached**', icon: 'info' },
+      })
+      render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Attached')
+    })
+
+    it('renders nothing in the stream while its composer-routed error is shown by the placement', () => {
+      const msg = createAssistantMessage({
+        content: { text: 'API Error: 402 insufficient balance' },
+        apiError: 'billing_error',
+        errorPresentation: { severity: 'error', message: '**Routed**', icon: 'info', placement: 'composer' },
+      })
+      const { container } = render(<MessageItem message={msg} suppressInlineError />)
+      expect(container.innerHTML).toBe('')
+    })
+
+    it('keeps a composer-routed error in the transcript as the default card once it is no longer current', () => {
+      const msg = createAssistantMessage({
+        content: { text: 'API Error: 402 insufficient balance' },
+        apiError: 'billing_error',
+        errorPresentation: { severity: 'error', message: '**Routed**', icon: 'info', placement: 'composer' },
+      })
+      render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Routed')
+    })
+
+    it('still renders the inline card when placement is explicitly inline', () => {
+      const msg = createAssistantMessage({
+        content: { text: 'API Error: 429' },
+        apiError: 'rate_limit',
+        errorPresentation: { severity: 'error', message: '**Explicit inline**', icon: 'info', placement: 'inline' },
+      })
+      render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Explicit inline')
+    })
+
+    it('falls back to the generic provider banner when no presentation is attached', () => {
+      const msg = createAssistantMessage({
+        content: {
+          text: 'API Error: Request rejected (429) · A spend cap for this workspace was reached. It resets within 30 days.',
+        },
+        apiError: 'rate_limit',
+      })
+      render(<MessageItem message={msg} />)
+      expect(screen.getByTestId('provider-error-card')).toHaveTextContent('LLM Provider Error')
+      expect(screen.queryByRole('link', { name: /raise spend limit/i })).not.toBeInTheDocument()
+    })
+  })
+
+  describe('mermaid code fences', () => {
+    const fence = (source: string) => '```mermaid\n' + source + '\n```'
+    const FLOW = fence('graph LR\n  Request --> Response')
+
+    // The diagram is a lazy chunk. Load it up front so the first test's
+    // findBy (1s) isn't racing a cold import on a busy CI worker.
+    beforeAll(async () => {
+      await import('./mermaid-diagram')
+    })
+
+    it('renders a settled mermaid fence as a themed diagram', async () => {
+      const msg = createAssistantMessage({ content: { text: `Here is the flow:\n\n${FLOW}` } })
+      render(<MessageItem message={msg} />)
+
+      const diagram = await screen.findByTestId('mermaid-diagram')
+      const shadow = diagram.querySelector('.w-max')!.shadowRoot!
+      const svg = shadow.querySelector('svg')
+      expect(svg).not.toBeNull()
+      expect(shadow.textContent).toContain('Request')
+      // The app's own --accent is a bare HSL triplet; inheriting it made arrowheads black.
+      expect(svg!.getAttribute('style')).toContain('--accent:hsl(var(--brand))')
+      // --border:hsl(var(--border)) would reference itself and be dropped by CSS.
+      expect(svg!.getAttribute('style')).not.toContain('--border:')
+      expect(diagram.closest('pre')).toBeNull()
+    })
+
+    it('keeps the diagram stylesheet inside its shadow root', async () => {
+      const msg = createAssistantMessage({ content: { text: FLOW } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      const diagram = await screen.findByTestId('mermaid-diagram')
+      const style = diagram.querySelector('.w-max')!.shadowRoot!.querySelector('style')
+      expect(style).not.toBeNull()
+      expect(style!.textContent).not.toContain('@import')
+      expect(container.querySelector('style')).toBeNull()
+    })
+
+    it('keeps an unsupported diagram type as a code block', async () => {
+      const pie = fence('pie title Pets\n  "Dogs" : 3\n  "Cats" : 2')
+      const msg = createAssistantMessage({ content: { text: `${FLOW}\n\n${pie}` } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      await screen.findByTestId('mermaid-diagram')
+      expect(screen.getAllByTestId('mermaid-diagram')).toHaveLength(1)
+      expect(container.querySelector('pre')).toHaveTextContent('pie title Pets')
+    })
+
+    it('keeps the fence still streaming in as a code block', async () => {
+      const text = FLOW + '\n\n```mermaid\ngraph LR\n  Draft --> Final'
+      const msg = createAssistantMessage({ content: { text } })
+      const { container } = render(<MessageItem message={msg} isStreaming />)
+
+      await screen.findByTestId('mermaid-diagram')
+      expect(screen.getAllByTestId('mermaid-diagram')).toHaveLength(1)
+      expect(container.querySelector('pre')).toHaveTextContent('Draft --> Final')
+    })
+  })
+
+  describe('html code fences', () => {
+    const CHART = '```html\n<svg width="120" height="120"><circle cx="60" cy="60" r="50"/></svg>\n<script>document.title = "Spend"</script>\n```'
+
+    it('renders a settled html fence in a script-only sandbox with the policy first', () => {
+      const msg = createAssistantMessage({ content: { text: `Here is your spend:\n\n${CHART}` } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      const frame = screen.getByTitle('HTML preview')
+      expect(frame.getAttribute('sandbox')).toBe('allow-scripts')
+      const doc = frame.getAttribute('srcdoc')!
+      expect(doc.indexOf('Content-Security-Policy')).toBeLessThan(doc.indexOf('<svg'))
+      expect(doc).toContain("default-src 'none'")
+      expect(doc).not.toContain('https:')
+      expect(container.querySelector('pre')).toBeNull()
+    })
+
+    it('previews fences tagged HTML or htm', () => {
+      const msg = createAssistantMessage({ content: { text: '```HTML\n<p>Upper</p>\n```\n\n```htm\n<p>Short</p>\n```' } })
+      render(<MessageItem message={msg} />)
+
+      expect(screen.getAllByTitle('HTML preview')).toHaveLength(2)
+    })
+
+    it('sizes html and body to their content, not the frame', () => {
+      const msg = createAssistantMessage({ content: { text: '```html\n<style>body{min-height:100vh;padding:24px}</style><p>Total</p>\n```' } })
+      render(<MessageItem message={msg} />)
+
+      const doc = screen.getByTitle('HTML preview').getAttribute('srcdoc')!
+      const reset = doc.indexOf('html,body{height:auto!important;min-height:0!important}')
+      expect(reset).toBeGreaterThan(-1)
+      expect(reset).toBeLessThan(doc.indexOf('min-height:100vh'))
+    })
+
+    it('keeps html as code in the streaming row, which its persisted message replaces', () => {
+      const msg = createAssistantMessage({ content: { text: `${CHART}\n\nStill writing` } })
+      const { container, rerender } = render(<MessageItem message={msg} isStreaming isStreamingRow />)
+
+      expect(screen.queryByTitle('HTML preview')).toBeNull()
+      rerender(<MessageItem message={msg} isStreaming={false} isStreamingRow />)
+      expect(screen.queryByTitle('HTML preview')).toBeNull()
+      expect(container.querySelector('pre')).toHaveTextContent('<svg')
+    })
+
+    it('keeps the fence still streaming in as a code block', () => {
+      const msg = createAssistantMessage({ content: { text: '```html\n<div>Draft' } })
+      const { container } = render(<MessageItem message={msg} isStreaming />)
+
+      expect(screen.queryByTitle('HTML preview')).toBeNull()
+      expect(container.querySelector('pre')).toHaveTextContent('<div>Draft')
+    })
+
+    it('leaves other fences as code', () => {
+      const msg = createAssistantMessage({ content: { text: '```text\n<div>Source only</div>\n```' } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      expect(screen.queryByTitle('HTML preview')).toBeNull()
+      expect(container.querySelector('pre')).toHaveTextContent('<div>Source only</div>')
+    })
+
+    it('keeps html fences from users and integrations as code', () => {
+      const msg = createUserMessage({ content: { text: CHART } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      expect(screen.queryByTitle('HTML preview')).toBeNull()
+      expect(container.querySelector('pre')).toHaveTextContent('<svg')
+    })
+
+    it('shows the source once the frame loads a page other than its own', () => {
+      const msg = createAssistantMessage({ content: { text: CHART } })
+      const { container } = render(<MessageItem message={msg} />)
+      const frame = screen.getByTitle('HTML preview')
+
+      fireEvent.load(frame)
+      expect(screen.getByTitle('HTML preview')).toBe(frame)
+      fireEvent.load(frame)
+      expect(screen.queryByTitle('HTML preview')).toBeNull()
+      expect(container.querySelector('pre')).toHaveTextContent('<svg')
+    })
+
+    it('sizes the frame from its own height reports only', () => {
+      const msg = createAssistantMessage({ content: { text: CHART } })
+      render(<MessageItem message={msg} />)
+      const frame = screen.getByTitle('HTML preview') as HTMLIFrameElement
+      const report = (source: MessageEventSource | null, height: number) =>
+        act(() => {
+          window.dispatchEvent(new MessageEvent('message', { source, data: { type: 'superagent:html-block-height', height } }))
+        })
+
+      report(window, 900)
+      expect(frame.style.height).toBe('160px')
+      report(frame.contentWindow, 240)
+      expect(frame.style.height).toBe('240px')
+      report(frame.contentWindow, 50_000)
+      expect(frame.style.height).toBe('1200px')
+    })
+
+    it('does not grow for content that follows the frame height, but still shrinks', () => {
+      const msg = createAssistantMessage({ content: { text: '```html\n<h3>Spend</h3><div style="height:100vh"></div>\n```' } })
+      render(<MessageItem message={msg} />)
+      const frame = screen.getByTitle('HTML preview') as HTMLIFrameElement
+      const report = (height: number, followsFrame: boolean) =>
+        act(() => {
+          window.dispatchEvent(new MessageEvent('message', { source: frame.contentWindow, data: { type: 'superagent:html-block-height', height, followsFrame } }))
+        })
+
+      report(218, false)
+      expect(frame.style.height).toBe('218px')
+      report(276, true)
+      expect(frame.style.height).toBe('218px')
+      report(120, true)
+      expect(frame.style.height).toBe('120px')
+    })
+
+    it('forwards wheel input the frame reports to the chat only while the pointer is on it', () => {
+      const msg = createAssistantMessage({ content: { text: '```html\n<p>Weekly spend</p>\n```' } })
+      const { container } = render(<MessageItem message={msg} />)
+      const frame = screen.getByTitle('HTML preview') as HTMLIFrameElement
+      const wheels: number[] = []
+      container.addEventListener('wheel', (event) => wheels.push((event as WheelEvent).deltaY))
+      const report = (source: MessageEventSource | null, deltaY: number) =>
+        act(() => {
+          window.dispatchEvent(new MessageEvent('message', { source, data: { type: 'superagent:html-block-wheel', deltaY } }))
+        })
+
+      report(window, 40)
+      report(frame.contentWindow, 60)
+      vi.spyOn(frame, 'matches').mockImplementation((selector) => selector === ':hover')
+      report(frame.contentWindow, -120)
+      expect(wheels).toEqual([-120])
+    })
+  })
+
+  describe('math code fences', () => {
+    const fence = (source: string) => '```math\n' + source + '\n```'
+    const EULER = fence('e^{i\\pi} + 1 = 0')
+
+    // Same as the mermaid fences: preload the lazy chunk.
+    beforeAll(async () => {
+      await import('./math-block')
+    })
+
+    it('renders a settled math fence as a display equation', async () => {
+      const msg = createAssistantMessage({ content: { text: `Euler's identity:\n\n${EULER}` } })
+      render(<MessageItem message={msg} />)
+
+      const block = await screen.findByTestId('math-block')
+      expect(block.querySelector('.katex-display')).not.toBeNull()
+      expect(block.querySelector('annotation')).toHaveTextContent('e^{i\\pi} + 1 = 0')
+      expect(block.closest('pre')).toBeNull()
+      expect(screen.getByText("Euler's identity:")).toBeInTheDocument()
+    })
+
+    it('keeps invalid LaTeX as a code block', async () => {
+      const broken = fence('\\frac{1}{')
+      const msg = createAssistantMessage({ content: { text: `${EULER}\n\n${broken}` } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      await screen.findByTestId('math-block')
+      expect(screen.getAllByTestId('math-block')).toHaveLength(1)
+      expect(container.querySelector('pre')).toHaveTextContent('\\frac{1}{')
+    })
+
+    it('does not turn links into anchors', async () => {
+      const msg = createAssistantMessage({ content: { text: fence('\\href{https://example.com}{x}') } })
+      const { container } = render(<MessageItem message={msg} />)
+
+      const block = await screen.findByTestId('math-block')
+      expect(block.querySelector('a')).toBeNull()
+      expect(container.querySelector('a[href="https://example.com"]')).toBeNull()
+    })
+
+    it('keeps the fence still streaming in as a code block', async () => {
+      const text = EULER + '\n\n```math\na^2 + b^2'
+      const msg = createAssistantMessage({ content: { text } })
+      const { container } = render(<MessageItem message={msg} isStreaming />)
+
+      await screen.findByTestId('math-block')
+      expect(screen.getAllByTestId('math-block')).toHaveLength(1)
+      expect(container.querySelector('pre')).toHaveTextContent('a^2 + b^2')
     })
   })
 })

@@ -1,22 +1,16 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { callHost, textResult, XAgentError } from './host-client'
-
-interface InvokeResult {
-  sessionId: string
-  status: 'running' | 'completed'
-  lastMessage?: string
-  error?: string
-}
+import { invokeResultSchema } from './host-response-schemas'
 
 export function makeInvokeAgentTool(getCallerSessionId: () => string) {
   return tool(
     'invoke_agent',
     `Send a message to another agent in this workspace.
 
-If session_id is omitted, a new session is started on the target agent. If session_id is provided, the message is appended to that existing session â€” the session must exist and not currently be running (use get_session_transcript with sync to wait).
+If session_id is omitted, a new session is started on the target agent. If session_id is provided, the message is appended to that existing session. If that session is in the middle of a turn, the message joins the turn, the way a user's follow-up does.
 
-If sync=true, the tool waits for the target agent's turn to finish and returns its last message. If sync=false (default), the tool returns immediately with status 'running' and you can later read the transcript with get_session_transcript.
+If sync=true, the tool waits up to ~2 minutes for the target agent's turn to finish and returns its last message. If the target is still working after that, the call returns status 'running' with the session_id â€” the invocation was delivered and is in progress; do NOT re-invoke (that would start a duplicate run), poll get_agent_session_transcript instead. If sync=false (default), the tool returns immediately with status 'running' and you can later read the transcript with get_agent_session_transcript.
 
 Use list_agents first to discover available slugs.
 
@@ -26,6 +20,7 @@ Note: sessions started by another agent cannot themselves invoke other agents â€
       prompt: z.string().min(1).describe('Message to send to the target agent'),
       session_id: z.string().optional().describe('Optional existing session ID to continue. Omit to start a new session.'),
       sync: z.boolean().optional().describe('If true, wait for the target agent to finish its turn and return its final message. Default false.'),
+      attachments: z.array(z.string()).max(10).optional().describe('Up to 10 regular files under the caller\'s /workspace to send with the prompt. Paths may be absolute /workspace/... paths or workspace-relative paths.'),
     },
     async (args) => {
       try {
@@ -35,8 +30,9 @@ Note: sessions started by another agent cannot themselves invoke other agents â€
         }
         if (args.session_id) body.sessionId = args.session_id
         if (args.sync) body.sync = true
+        if (args.attachments !== undefined) body.attachments = args.attachments
 
-        const data = await callHost<InvokeResult>('invoke', body, { callerSessionId: getCallerSessionId() })
+        const data = await callHost('invoke', body, invokeResultSchema, { callerSessionId: getCallerSessionId() })
         const lines = [`session_id: ${data.sessionId}`, `status: ${data.status}`]
         // Use !== undefined so an empty-string lastMessage is still surfaced
         // (compactMessage now returns "[no text response]" rather than "" for

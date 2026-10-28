@@ -1,0 +1,143 @@
+import { db } from '@shared/lib/db'
+import { auditLog, user, type AuditLogEntry } from '@shared/lib/db/schema'
+import { desc, and, eq, count, isNotNull, inArray, type SQL } from 'drizzle-orm'
+
+export type { AuditLogEntry }
+
+export const AUDIT_EVENT_MAP = {
+  agent:            ['created', 'updated', 'deleted', 'imported', 'exported'],
+  agent_access:     ['granted', 'revoked', 'changed'],
+  account:          ['connected', 'disconnected', 'assigned', 'unassigned'],
+  mcp:              ['created', 'updated', 'deleted', 'assigned', 'unassigned'],
+  // Browser Vault accounts: `used` is an agent signing in with one (never the
+  // values); `rejected`, an agent saying the site turned it down.
+  browser_account:  ['created', 'updated', 'deleted', 'assigned', 'unassigned', 'used', 'rejected'],
+  trigger:          ['created', 'updated', 'deleted', 'paused', 'resumed'],
+  task:             ['created', 'updated', 'deleted', 'paused', 'resumed'],
+  chat_integration: ['created', 'updated', 'deleted'],
+  skill:            ['created', 'updated', 'deleted', 'exported'],
+  secret:           ['created', 'updated', 'deleted', 'revealed'],
+  file:             ['uploaded'],
+  mount:            ['created', 'updated', 'deleted'],
+  volume:           ['created', 'updated', 'deleted'],
+  settings:         ['updated', 'factory_reset'],
+  policy:           ['updated'],
+  proxy_rule:       ['created', 'updated', 'deleted', 'approved', 'rejected'],
+  user:             ['invited', 'reset_password'],
+  // Authentication events. Every path that mints a session records `created`
+  // with a `method` detail — see auth/session-audit.ts. `revoked` currently
+  // covers only explicit mobile-device revocation (auth/mobile-pairing.ts);
+  // sign-out, admin revoke, and the concurrent-session reaper are still
+  // unaudited, so absence of a `revoked` row is not proof a session lived out
+  // its lifetime.
+  session:          ['created', 'revoked'],
+} as const satisfies Record<string, readonly string[]>
+
+export type AuditObject = keyof typeof AUDIT_EVENT_MAP
+export type AuditAction = typeof AUDIT_EVENT_MAP[AuditObject][number]
+
+export const AUDIT_OBJECTS = Object.keys(AUDIT_EVENT_MAP) as AuditObject[]
+export const AUDIT_ACTIONS = [...new Set(Object.values(AUDIT_EVENT_MAP).flat())] as AuditAction[]
+
+type AuditEventFor<O extends AuditObject> = typeof AUDIT_EVENT_MAP[O][number]
+
+export type LogAuditEventParams = {
+  [O in AuditObject]: {
+    userId?: string | null
+    object: O
+    objectId: string
+    action: AuditEventFor<O>
+    details?: Record<string, unknown>
+  }
+}[AuditObject]
+
+/**
+ * Write an audit event and surface storage failures to the caller.
+ *
+ * Use this for security-sensitive operations that must not succeed without a
+ * durable audit row. Most product events should continue to use
+ * logAuditEvent(), whose best-effort behavior keeps audit storage outages from
+ * breaking unrelated user actions.
+ */
+export async function logAuditEventOrThrow(params: LogAuditEventParams): Promise<void> {
+  await db.insert(auditLog).values({
+    id: crypto.randomUUID(),
+    userId: params.userId ?? null,
+    object: params.object,
+    objectId: params.objectId,
+    action: params.action,
+    details: params.details ? JSON.stringify(params.details) : null,
+    createdAt: new Date(),
+  })
+}
+
+export async function logAuditEvent(params: LogAuditEventParams): Promise<void> {
+  try {
+    await logAuditEventOrThrow(params)
+  } catch (error) {
+    console.error('[audit] Failed to write audit log:', error)
+  }
+}
+
+export interface AuditLogQuery {
+  object?: string
+  action?: string
+  userId?: string
+  limit?: number
+  offset?: number
+}
+
+export interface AuditLogPage {
+  entries: AuditLogEntry[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export async function queryAuditLog(query: AuditLogQuery): Promise<AuditLogPage> {
+  const limit = Math.min(query.limit ?? 50, 100)
+  const offset = query.offset ?? 0
+
+  const conditions: SQL[] = []
+  if (query.object) conditions.push(eq(auditLog.object, query.object))
+  if (query.action) conditions.push(eq(auditLog.action, query.action))
+  if (query.userId) conditions.push(eq(auditLog.userId, query.userId))
+
+  const where = conditions.length > 0 ? and(...conditions) : undefined
+
+  const [entries, totalResult] = await Promise.all([
+    db
+      .select()
+      .from(auditLog)
+      .where(where)
+      .orderBy(desc(auditLog.createdAt))
+      .limit(limit)
+      .offset(offset),
+    db
+      .select({ count: count() })
+      .from(auditLog)
+      .where(where),
+  ])
+
+  return {
+    entries,
+    total: totalResult[0]?.count ?? 0,
+    limit,
+    offset,
+  }
+}
+
+export async function getDistinctAuditUsers(): Promise<Array<{ id: string; name: string; email: string }>> {
+  const rows = await db
+    .selectDistinct({ userId: auditLog.userId })
+    .from(auditLog)
+    .where(isNotNull(auditLog.userId))
+
+  const userIds = rows.map(r => r.userId).filter((id): id is string => id !== null && id !== 'local')
+  if (userIds.length === 0) return []
+
+  return db
+    .select({ id: user.id, name: user.name, email: user.email })
+    .from(user)
+    .where(inArray(user.id, userIds))
+}

@@ -7,7 +7,7 @@ export class SessionPage {
   constructor(private page: Page) {}
 
   /**
-   * Get the message input textarea (handles both home page and chat page)
+   * Get the rich message editor (handles both home page and chat page)
    */
   getMessageInput() {
     // Try regular message input first, then home page input
@@ -24,6 +24,69 @@ export class SessionPage {
     const regular = this.page.locator('[data-testid="send-button"]')
     const home = this.page.locator('[data-testid="home-send-button"]')
     return regular.or(home)
+  }
+
+  private async findMatchingLocator(locators: Locator[], options: { enabled?: boolean } = {}) {
+    for (const locator of locators) {
+      const count = await locator.count().catch(() => 0)
+      for (let index = 0; index < count; index++) {
+        const candidate = locator.nth(index)
+        const isVisible = await candidate.isVisible().catch(() => false)
+        if (!isVisible) continue
+        // isEnabled (unlike isVisible) waits for the element, with no timeout by
+        // default: a candidate unmounted since the count (the home composer as a
+        // send navigates to the session) would hang the caller's whole poll.
+        const isEnabled = await candidate.isEnabled({ timeout: 1000 }).catch(() => false)
+        if (options.enabled && !isEnabled) continue
+        return candidate
+      }
+    }
+    return undefined
+  }
+
+  private getMessageInputLocators() {
+    const regular = this.page.locator('[data-testid="message-input"]')
+    const home = this.page.locator('[data-testid="home-message-input"]')
+    return [regular, home]
+  }
+
+  private getSendButtonLocators() {
+    const regular = this.page.locator('[data-testid="send-button"]')
+    const home = this.page.locator('[data-testid="home-send-button"]')
+    return [regular, home]
+  }
+
+  private async getVisibleMessageInput(timeout = 10000) {
+    let visibleInput: Locator | undefined
+    await expect.poll(async () => {
+      visibleInput = await this.findMatchingLocator(this.getMessageInputLocators())
+      return visibleInput ? 'found' : 'none'
+    }, { timeout }).not.toBe('none')
+
+    return visibleInput ?? this.page.locator('[data-testid="message-input"]').first()
+  }
+
+  private async getEnabledMessageInput(timeout = 10000) {
+    let enabledInput: Locator | undefined
+    await expect.poll(async () => {
+      enabledInput = await this.findMatchingLocator(this.getMessageInputLocators(), { enabled: true })
+      return enabledInput ? 'found' : 'none'
+    }, { timeout }).not.toBe('none')
+
+    return enabledInput ?? this.page.locator('[data-testid="message-input"]').first()
+  }
+
+  private async clickEnabledSendButton(timeout = 10000) {
+    let button: Locator | undefined
+    await expect.poll(async () => {
+      button = await this.findMatchingLocator(this.getSendButtonLocators(), { enabled: true })
+      return !!button
+    }, { timeout }).toBe(true)
+
+    // A click can submit successfully before its navigation wait times out.
+    // Poll only for readiness; retrying the click after submission either
+    // waits forever on the cleared composer or sends a duplicate message.
+    await button!.click({ timeout })
   }
 
   /**
@@ -62,10 +125,27 @@ export class SessionPage {
   }
 
   /**
+   * Expand the newest completed turn so assertions can inspect work that is
+   * intentionally hidden behind the turn summary once the agent is idle.
+   */
+  async expandLatestCompletedTurn(timeout = 10000) {
+    const summary = this.page.getByTestId('turn-summary').last()
+    await expect(summary).toBeVisible({ timeout })
+
+    if (await summary.getAttribute('aria-expanded') !== 'true') {
+      await summary.click()
+    }
+
+    await expect(summary).toHaveAttribute('aria-expanded', 'true', { timeout })
+  }
+
+  /**
    * Type a message into the input
    */
   async typeMessage(content: string) {
-    await this.getMessageInput().fill(content)
+    const input = await this.getEnabledMessageInput()
+    await input.fill(content)
+    await expect(input).toHaveText(content)
   }
 
   /**
@@ -73,7 +153,7 @@ export class SessionPage {
    */
   async sendMessage(content: string) {
     await this.typeMessage(content)
-    await this.getSendButton().click()
+    await this.clickEnabledSendButton()
   }
 
   /**
@@ -112,22 +192,25 @@ export class SessionPage {
   }
 
   /**
-   * Delete a session via context menu
+   * Delete a session via the sidebar right-click context menu, confirming the
+   * dialog. Targets the row by session id (names appear in the breadcrumb and
+   * agent-home list too, so a text match would be ambiguous). Pass expectedName
+   * to also assert the confirm dialog names the right session.
    */
-  async deleteSessionViaContextMenu(sessionName: string) {
-    // Right-click on the session in the sidebar
-    const sessionItem = this.page.getByText(sessionName)
+  async deleteSessionViaContextMenu(sessionId: string, expectedName?: string) {
+    const sessionItem = this.page.locator(`[data-testid="session-item-${sessionId}"]`)
+    await expect(sessionItem).toBeVisible({ timeout: 15000 })
     await sessionItem.click({ button: 'right' })
 
-    // Click delete
     await this.page.locator('[data-testid="delete-session-item"]').click()
 
-    // Confirm deletion
-    await expect(this.page.locator('[data-testid="confirm-dialog"]')).toBeVisible()
+    const dialog = this.page.locator('[data-testid="confirm-dialog"]')
+    await expect(dialog).toBeVisible()
+    if (expectedName) {
+      await expect(dialog).toContainText(expectedName)
+    }
     await this.page.locator('[data-testid="confirm-button"]').click()
-
-    // Wait for dialog to close
-    await expect(this.page.locator('[data-testid="confirm-dialog"]')).not.toBeVisible()
+    await expect(dialog).not.toBeVisible()
   }
 
   /**
@@ -136,6 +219,19 @@ export class SessionPage {
   async expectUserMessage(text: string, index = 0) {
     const messages = this.getUserMessages()
     await expect(messages.nth(index)).toContainText(text)
+  }
+
+  /**
+   * The "[Request interrupted by user]" marker the CLI appends on abort. It
+   * occupies a user-message slot but renders as a bare "Stopped" chip, so it
+   * is located by test id rather than by the raw marker text.
+   */
+  getInterruptMarkers() {
+    return this.getUserMessages().filter({ has: this.page.locator('[data-testid="interrupt-marker"]') })
+  }
+
+  async expectInterruptMarker(index = 0) {
+    await expect(this.getUserMessages().nth(index).getByTestId('interrupt-marker')).toBeVisible()
   }
 
   /**
@@ -158,16 +254,16 @@ export class SessionPage {
   /**
    * Assert that the assistant message contains expected text
    */
-  async expectAssistantMessage(text: string, index = 0) {
+  async expectAssistantMessage(text: string, index = 0, timeout = 10000) {
     const messages = this.getAssistantMessages()
-    await expect(messages.nth(index)).toContainText(text)
+    await expect(messages.nth(index)).toContainText(text, { timeout })
   }
 
   /**
    * Wait for the input to be enabled (agent finished responding)
    */
   async waitForInputEnabled(timeout = 10000) {
-    await expect(this.getMessageInput()).toBeEnabled({ timeout })
+    await this.getEnabledMessageInput(timeout)
   }
 
   /**
@@ -210,6 +306,18 @@ export class SessionPage {
     if (!(await target.isVisible())) {
       throw new Error('paginateToCard: target never became visible in the stack')
     }
+  }
+
+  private async waitForVisibleRequestCard(testId: string, timeout = 15000, card?: Locator) {
+    card ??= this.page.locator(`[data-testid="${testId}"]`).first()
+    await expect(card).toBeAttached({ timeout })
+
+    await expect.poll(async () => {
+      if (await card.isVisible().catch(() => false)) return 'visible'
+
+      await this.paginateToCard(card, 1000).catch(() => undefined)
+      return await card.isVisible().catch(() => false) ? 'visible' : 'hidden'
+    }, { timeout }).toBe('visible')
   }
 
   /**
@@ -310,6 +418,12 @@ export class SessionPage {
     return { index: idx, total }
   }
 
+  async expectStackPagination(expected: { index: number; total: number }) {
+    const el = this.page.locator('[data-testid="request-stack-pagination"]:visible').first()
+    await expect(el).toHaveAttribute('data-current-index', String(expected.index))
+    await expect(el).toHaveAttribute('data-count', String(expected.total))
+  }
+
   /** Click the visible header "next" chevron in the pending-request stack. */
   async clickStackNext() {
     await this.page.locator('[data-testid="request-stack-next"]:visible').first().click()
@@ -360,7 +474,7 @@ export class SessionPage {
   // --- Script Run Request Helpers ---
 
   async waitForScriptRunRequest(timeout = 15000) {
-    await expect(this.page.locator('[data-testid="script-run-request"]').first()).toBeVisible({ timeout })
+    await this.waitForVisibleRequestCard('script-run-request', timeout)
   }
 
   getScriptRunRequests() {
@@ -380,22 +494,28 @@ export class SessionPage {
   // --- Proxy Review Request Helpers ---
 
   async waitForProxyReviewRequest(timeout = 15000) {
-    await expect(this.page.locator('[data-testid="proxy-review-request"]').first()).toBeVisible({ timeout })
+    await this.waitForVisibleRequestCard('proxy-review-request', timeout)
   }
 
-  getProxyReviewRequests() {
-    return this.page.locator('[data-testid="proxy-review-request"]')
+  async waitForProxyReviewRequestById(reviewId: string, timeout = 15000) {
+    await this.waitForVisibleRequestCard('proxy-review-request', timeout, this.getProxyReviewRequests(reviewId))
   }
 
-  async allowProxyReview() {
-    const container = this.page.locator('[data-testid="proxy-review-request"]').first()
-    // The Allow button is now a popover — click it to open, then click "Allow Once"
-    await container.locator('[data-testid="proxy-review-always-allow-btn"]').click()
-    await this.page.locator('[data-testid="proxy-review-allow-once-menu-btn"]').click()
+  getProxyReviewRequests(reviewId?: string) {
+    return reviewId
+      ? this.page.locator(`[data-testid="proxy-review-request"][data-review-id="${reviewId}"]`)
+      : this.page.locator('[data-testid="proxy-review-request"]')
   }
 
-  async denyProxyReview() {
-    const container = this.page.locator('[data-testid="proxy-review-request"]').first()
+  async allowProxyReview(reviewId?: string) {
+    const container = this.getProxyReviewRequests(reviewId).first()
+    await this.paginateToCard(container)
+    await container.locator('[data-testid="proxy-review-allow-once-btn"]').click()
+  }
+
+  async denyProxyReview(reviewId?: string) {
+    const container = this.getProxyReviewRequests(reviewId).first()
+    await this.paginateToCard(container)
     await container.locator('[data-testid="proxy-review-deny-btn"]').click()
   }
 
@@ -405,27 +525,74 @@ export class SessionPage {
     ).toBeVisible({ timeout })
   }
 
-  async alwaysAllowScope(scope: string) {
-    const container = this.page.locator('[data-testid="proxy-review-request"]').first()
-    // Open the Allow popover, then click the "Always allow <scope>" button
+  async alwaysAllowLabelGroup(label: 'read' | 'write' | 'destructive', reviewId?: string) {
+    const container = this.getProxyReviewRequests(reviewId).first()
+    await this.paginateToCard(container)
+    // Open the Allow popover, then click the minimal risk-group "Allow all <label>" option
     await container.locator('[data-testid="proxy-review-always-allow-btn"]').click()
-    await this.page.locator(`[data-testid="proxy-review-always-allow-${scope}"]`).click()
+    await this.page.locator(`[data-testid="proxy-review-allow-label-${label}"]`).click()
   }
 
-  async alwaysDenyScope(scope: string) {
-    const container = this.page.locator('[data-testid="proxy-review-request"]').first()
-    await container.locator(`[data-testid="proxy-review-always-deny-${scope}"]`).click()
+  async denyWithReason(reason: string, reviewId?: string) {
+    const container = this.getProxyReviewRequests(reviewId).first()
+    await this.paginateToCard(container)
+    // The reason textarea + submit arrow live inside the Deny chevron popover.
+    await container.locator('[data-testid="proxy-review-deny-btn-chevron"]').click()
+    await this.page.locator('[data-testid="proxy-review-deny-reason-input"]').fill(reason)
+    await this.page.locator('[data-testid="proxy-review-deny-reason-submit"]').click()
   }
 
-  async alwaysAllowAll() {
-    const container = this.page.locator('[data-testid="proxy-review-request"]').first()
-    await container.locator('[data-testid="proxy-review-always-allow-all"]').click()
+  async alwaysAllowAll(reviewId?: string) {
+    const container = this.getProxyReviewRequests(reviewId).first()
+    await this.paginateToCard(container)
+    // "Always allow all <toolkit> requests" lives inside the Allow popover — open it first.
+    await container.locator('[data-testid="proxy-review-always-allow-btn"]').click()
+    await this.page.locator('[data-testid="proxy-review-always-allow-all"]').click()
+  }
+
+  // --- X-Agent Review Request Helpers ---
+
+  async waitForXAgentReviewRequest(timeout = 15000) {
+    await this.waitForVisibleRequestCard('xagent-review-request', timeout)
+  }
+
+  async waitForXAgentReviewRequestById(reviewId: string, timeout = 15000) {
+    await this.waitForVisibleRequestCard('xagent-review-request', timeout, this.getXAgentReviewRequests(reviewId))
+  }
+
+  getXAgentReviewRequests(reviewId?: string) {
+    return reviewId
+      ? this.page.locator(`[data-testid="xagent-review-request"][data-review-id="${reviewId}"]`)
+      : this.page.locator('[data-testid="xagent-review-request"]')
+  }
+
+  async allowXAgentReview(reviewId?: string) {
+    const container = this.getXAgentReviewRequests(reviewId).first()
+    await this.paginateToCard(container)
+    await container.locator('[data-testid="xagent-review-allow-once-btn"]').click()
+  }
+
+  async denyXAgentReview(reviewId?: string) {
+    const container = this.getXAgentReviewRequests(reviewId).first()
+    await this.paginateToCard(container)
+    await container.locator('[data-testid="xagent-review-deny-btn"]').click()
+  }
+
+  async stopSessionFromRequest(container?: Locator) {
+    if (container) {
+      const target = container.first()
+      await this.paginateToCard(target)
+      await target.locator('[data-testid="request-stop-session"]').click()
+      return
+    }
+
+    await this.page.locator('[data-testid="request-stop-session"]').first().click()
   }
 
   // --- Computer Use Request Helpers ---
 
   async waitForComputerUseRequest(timeout = 15000) {
-    await expect(this.page.locator('[data-testid="computer-use-request"]').first()).toBeVisible({ timeout })
+    await this.waitForVisibleRequestCard('computer-use-request', timeout)
   }
 
   getComputerUseRequests() {

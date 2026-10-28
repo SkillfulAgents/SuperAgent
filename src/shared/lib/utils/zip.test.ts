@@ -1,0 +1,487 @@
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import * as fs from 'fs'
+import * as path from 'path'
+import * as os from 'os'
+import yauzl from 'yauzl'
+import yazl from 'yazl'
+import {
+  openZipFromBuffer,
+  openZipFromFile,
+  createZipBuffer,
+  writeZipFile,
+  detectZipPrefix,
+  ZipExtractionSizeError,
+} from './zip'
+import type { ZipEntryMeta } from './zip'
+
+let tempDir: string
+
+function makeTempDir(): string {
+  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zip-test-'))
+  return tempDir
+}
+
+afterEach(() => {
+  if (tempDir) {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+    tempDir = undefined!
+  }
+})
+
+// ============================================================================
+// createZipBuffer + openZipFromBuffer (round-trip)
+// ============================================================================
+
+describe('createZipBuffer + openZipFromBuffer', () => {
+  it('round-trips files through write and read', async () => {
+    const buf = await createZipBuffer({
+      'hello.txt': 'hello world',
+      'nested/deep/file.md': '# Title',
+    })
+
+    const reader = await openZipFromBuffer(buf)
+    try {
+      const fileEntries = reader.entries.filter((e) => !e.isDirectory)
+      const fileNames = fileEntries.map((e) => e.fileName).sort()
+      expect(fileNames).toEqual(['hello.txt', 'nested/deep/file.md'])
+
+      const content = await reader.readEntry('hello.txt')
+      expect(content.toString('utf-8')).toBe('hello world')
+
+      const mdContent = await reader.readEntry('nested/deep/file.md')
+      expect(mdContent.toString('utf-8')).toBe('# Title')
+    } finally {
+      reader.close()
+    }
+  })
+
+  it('handles Buffer values', async () => {
+    const data = Buffer.from([0x00, 0x01, 0x02, 0xff])
+    const buf = await createZipBuffer({ 'binary.bin': data })
+
+    const reader = await openZipFromBuffer(buf)
+    try {
+      const content = await reader.readEntry('binary.bin')
+      expect(content).toEqual(data)
+    } finally {
+      reader.close()
+    }
+  })
+
+  it('reports correct uncompressed sizes', async () => {
+    const content = 'x'.repeat(1000)
+    const buf = await createZipBuffer({ 'file.txt': content })
+
+    const reader = await openZipFromBuffer(buf)
+    try {
+      const entry = reader.entries.find((e) => e.fileName === 'file.txt')!
+      expect(entry.uncompressedSize).toBe(1000)
+      expect(entry.compressedSize).toBeLessThanOrEqual(1000)
+    } finally {
+      reader.close()
+    }
+  })
+
+  it('marks directory entries correctly', async () => {
+    const buf = await createZipBuffer({
+      'dir/file.txt': 'content',
+    })
+
+    const reader = await openZipFromBuffer(buf)
+    try {
+      const dirs = reader.entries.filter((e) => e.isDirectory)
+      const files = reader.entries.filter((e) => !e.isDirectory)
+      expect(files.length).toBeGreaterThanOrEqual(1)
+      for (const d of dirs) {
+        expect(d.fileName.endsWith('/')).toBe(true)
+      }
+    } finally {
+      reader.close()
+    }
+  })
+})
+
+// ============================================================================
+// openZipFromBuffer — errors
+// ============================================================================
+
+describe('openZipFromBuffer — errors', () => {
+  it('rejects with invalid buffer', async () => {
+    await expect(openZipFromBuffer(Buffer.from('not a zip'))).rejects.toThrow()
+  })
+
+  it('rejects with empty buffer', async () => {
+    await expect(openZipFromBuffer(Buffer.alloc(0))).rejects.toThrow()
+  })
+})
+
+// ============================================================================
+// openZipFromFile
+// ============================================================================
+
+describe('openZipFromFile', () => {
+  it('reads entries and contents identically to openZipFromBuffer', async () => {
+    const dir = makeTempDir()
+    const zipPath = path.join(dir, 'archive.zip')
+    await writeZipFile(zipPath, {
+      'hello.txt': 'hello world',
+      'nested/deep/file.md': '# Title',
+    })
+
+    const fileReader = await openZipFromFile(zipPath)
+    const bufferReader = await openZipFromBuffer(fs.readFileSync(zipPath))
+    try {
+      expect(fileReader.entries).toEqual(bufferReader.entries)
+      const fromFile = await fileReader.readEntry('hello.txt')
+      const fromBuffer = await bufferReader.readEntry('hello.txt')
+      expect(fromFile.equals(fromBuffer)).toBe(true)
+    } finally {
+      fileReader.close()
+      bufferReader.close()
+    }
+  })
+
+  it('extracts entries to disk', async () => {
+    const dir = makeTempDir()
+    const zipPath = path.join(dir, 'archive.zip')
+    await writeZipFile(zipPath, { 'data.bin': Buffer.from([1, 2, 3]) })
+
+    const reader = await openZipFromFile(zipPath)
+    try {
+      const dest = path.join(dir, 'out.bin')
+      const bytes = await reader.extractEntry('data.bin', dest)
+      expect(bytes).toBe(3)
+      expect(fs.readFileSync(dest).equals(Buffer.from([1, 2, 3]))).toBe(true)
+    } finally {
+      reader.close()
+    }
+  })
+
+  it('rejects for a missing file', async () => {
+    const dir = makeTempDir()
+    await expect(openZipFromFile(path.join(dir, 'missing.zip'))).rejects.toThrow()
+  })
+
+  it('rejects for a non-zip file', async () => {
+    const dir = makeTempDir()
+    const p = path.join(dir, 'not-a-zip.txt')
+    fs.writeFileSync(p, 'not a zip')
+    await expect(openZipFromFile(p)).rejects.toThrow()
+  })
+
+  it('closes the file when the entry walk fails after a successful open', async () => {
+    const dir = makeTempDir()
+    const zipPath = path.join(dir, 'corrupt-walk.zip')
+    await writeZipFile(zipPath, { 'first.txt': 'one', 'second.txt': 'two' })
+
+    // Corrupt the SECOND central-directory record signature (PK\x01\x02) so
+    // the zip opens fine (EOCD and first record intact) but the entry walk
+    // errors partway through — the shape of a truncated/damaged upload.
+    const bytes = fs.readFileSync(zipPath)
+    const signature = Buffer.from([0x50, 0x4b, 0x01, 0x02])
+    const firstRecord = bytes.indexOf(signature)
+    const secondRecord = bytes.indexOf(signature, firstRecord + 1)
+    expect(secondRecord).toBeGreaterThan(-1)
+    bytes[secondRecord] = 0xff
+    fs.writeFileSync(zipPath, bytes)
+
+    // No ZipReader is constructed on this path, so the shared open path must
+    // close the underlying file itself; the spy proves close() ran, and the
+    // fd check proves the descriptor was actually released.
+    const closeSpy = vi.spyOn(yauzl.ZipFile.prototype, 'close')
+    // Count only descriptors that point at THIS zip, not every fd in the
+    // process. The suite shares one worker, so an unrelated async fs op running
+    // during the await below can open a descriptor and inflate a whole-process
+    // count — a spurious "+1 leak". Matching the file makes the check immune to
+    // that. (SUP-flaky: `expected N to be <= N-1` under load.)
+    const realZipPath = fs.realpathSync(zipPath)
+    const openFdsForZip = () => {
+      if (process.platform === 'win32') return 0
+      let count = 0
+      for (const fd of fs.readdirSync('/dev/fd')) {
+        try {
+          if (fs.readlinkSync(path.join('/dev/fd', fd)) === realZipPath) count++
+        } catch {
+          // fd was closed between readdir and readlink, or isn't a symlink.
+        }
+      }
+      return count
+    }
+    // close() hands the descriptor to the OS asynchronously, so the release
+    // trails the rejection by an unpredictable amount under load — a busy CI
+    // worker loses that race where a quiet laptop wins it. Wait for the
+    // descriptor to go rather than sampling once: a real leak never goes and
+    // still fails, just a second later.
+    const waitForReleasedFd = async (timeoutMs = 2000): Promise<number> => {
+      const deadline = Date.now() + timeoutMs
+      let open = openFdsForZip()
+      while (open > 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        open = openFdsForZip()
+      }
+      return open
+    }
+    try {
+      await expect(openZipFromFile(zipPath)).rejects.toThrow(/central directory/i)
+      expect(closeSpy).toHaveBeenCalled()
+      // The descriptor opened for the zip must be released on the error path.
+      expect(await waitForReleasedFd()).toBe(0)
+    } finally {
+      closeSpy.mockRestore()
+    }
+  })
+
+  it('supports readEntry after entry enumeration completes (fd stays open until close)', async () => {
+    const dir = makeTempDir()
+    const zipPath = path.join(dir, 'archive.zip')
+    await writeZipFile(zipPath, { 'late.txt': 'still readable' })
+
+    const reader = await openZipFromFile(zipPath)
+    try {
+      // Yield a few ticks so any autoClose behavior would have fired.
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      const content = await reader.readEntry('late.txt')
+      expect(content.toString('utf-8')).toBe('still readable')
+    } finally {
+      reader.close()
+    }
+  })
+})
+
+// ============================================================================
+// readEntry
+// ============================================================================
+
+describe('readEntry', () => {
+  it('throws for nonexistent entry', async () => {
+    const buf = await createZipBuffer({ 'a.txt': 'content' })
+    const reader = await openZipFromBuffer(buf)
+    try {
+      await expect(reader.readEntry('nonexistent.txt')).rejects.toThrow('Entry not found')
+    } finally {
+      reader.close()
+    }
+  })
+
+  it('throws ZipExtractionSizeError when maxBytes exceeded', async () => {
+    const content = 'x'.repeat(1000)
+    const buf = await createZipBuffer({ 'big.txt': content })
+    const reader = await openZipFromBuffer(buf)
+    try {
+      await expect(reader.readEntry('big.txt', 500)).rejects.toThrow(ZipExtractionSizeError)
+    } finally {
+      reader.close()
+    }
+  })
+
+  it('succeeds when content fits within maxBytes', async () => {
+    const content = 'hello'
+    const buf = await createZipBuffer({ 'small.txt': content })
+    const reader = await openZipFromBuffer(buf)
+    try {
+      const data = await reader.readEntry('small.txt', 1000)
+      expect(data.toString('utf-8')).toBe('hello')
+    } finally {
+      reader.close()
+    }
+  })
+})
+
+// ============================================================================
+// extractEntry
+// ============================================================================
+
+describe('openEntryStream', () => {
+  async function collect(stream: NodeJS.ReadableStream): Promise<Buffer> {
+    const chunks: Buffer[] = []
+    for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    return Buffer.concat(chunks)
+  }
+
+  it('streams an entry', async () => {
+    const content = 'y'.repeat(70_000)
+    const buf = await createZipBuffer({ 'big.txt': content })
+    const reader = await openZipFromBuffer(buf)
+    try {
+      expect((await collect(await reader.openEntryStream('big.txt'))).toString('utf-8')).toBe(content)
+      expect((await collect(await reader.openEntryStream('big.txt', 70_000))).toString('utf-8')).toBe(content)
+    } finally {
+      reader.close()
+    }
+  })
+
+  it('fails the stream with ZipExtractionSizeError past maxBytes', async () => {
+    const buf = await createZipBuffer({ 'big.txt': 'x'.repeat(1000) })
+    const reader = await openZipFromBuffer(buf)
+    try {
+      await expect(collect(await reader.openEntryStream('big.txt', 500))).rejects.toThrow(ZipExtractionSizeError)
+    } finally {
+      reader.close()
+    }
+  })
+
+  it('throws for nonexistent entry', async () => {
+    const buf = await createZipBuffer({ 'a.txt': 'content' })
+    const reader = await openZipFromBuffer(buf)
+    try {
+      await expect(reader.openEntryStream('nonexistent.txt')).rejects.toThrow('Entry not found')
+    } finally {
+      reader.close()
+    }
+  })
+})
+
+describe('entry modes', () => {
+  it('reports the mode of an entry written with one, and none otherwise', async () => {
+    const zipFile = new yazl.ZipFile()
+    zipFile.addBuffer(Buffer.from('#!/bin/sh\n'), 'run.sh', { mode: 0o100755 })
+    zipFile.addBuffer(Buffer.from('n'), 'notes.txt', { mode: 0o100644 })
+    zipFile.end()
+    const chunks: Buffer[] = []
+    for await (const chunk of zipFile.outputStream) chunks.push(chunk as Buffer)
+    const reader = await openZipFromBuffer(Buffer.concat(chunks))
+    try {
+      expect(reader.entries.find((e) => e.fileName === 'run.sh')?.mode).toBe(0o755)
+      expect(reader.entries.find((e) => e.fileName === 'notes.txt')?.mode).toBe(0o644)
+    } finally {
+      reader.close()
+    }
+  })
+})
+
+describe('extractEntry', () => {
+  it('extracts file to disk', async () => {
+    const dir = makeTempDir()
+    const buf = await createZipBuffer({ 'test.txt': 'file content here' })
+    const reader = await openZipFromBuffer(buf)
+    try {
+      const destPath = path.join(dir, 'test.txt')
+      const bytes = await reader.extractEntry('test.txt', destPath)
+      expect(bytes).toBe(17)
+      expect(fs.readFileSync(destPath, 'utf-8')).toBe('file content here')
+    } finally {
+      reader.close()
+    }
+  })
+
+  it('returns actual byte count', async () => {
+    const dir = makeTempDir()
+    const content = 'a'.repeat(5000)
+    const buf = await createZipBuffer({ 'data.bin': content })
+    const reader = await openZipFromBuffer(buf)
+    try {
+      const bytes = await reader.extractEntry('data.bin', path.join(dir, 'data.bin'))
+      expect(bytes).toBe(5000)
+    } finally {
+      reader.close()
+    }
+  })
+
+  it('throws ZipExtractionSizeError and cleans up partial file when maxBytes exceeded', async () => {
+    const dir = makeTempDir()
+    const content = 'x'.repeat(10000)
+    const buf = await createZipBuffer({ 'large.bin': content })
+    const reader = await openZipFromBuffer(buf)
+    try {
+      const destPath = path.join(dir, 'large.bin')
+      await expect(reader.extractEntry('large.bin', destPath, 500)).rejects.toThrow(ZipExtractionSizeError)
+      // Partial file cleanup is deferred to writeStream close; allow time for it
+      await new Promise((r) => setTimeout(r, 100))
+      expect(fs.existsSync(destPath)).toBe(false)
+    } finally {
+      reader.close()
+    }
+  })
+
+  it('throws for nonexistent entry', async () => {
+    const buf = await createZipBuffer({ 'a.txt': 'content' })
+    const reader = await openZipFromBuffer(buf)
+    try {
+      await expect(reader.extractEntry('nope.txt', '/tmp/nope')).rejects.toThrow('Entry not found')
+    } finally {
+      reader.close()
+    }
+  })
+})
+
+// ============================================================================
+// writeZipFile
+// ============================================================================
+
+describe('writeZipFile', () => {
+  it('writes a valid ZIP to disk', async () => {
+    const dir = makeTempDir()
+    const zipPath = path.join(dir, 'output.zip')
+    await writeZipFile(zipPath, {
+      'README.md': '# Hello',
+      'src/index.ts': 'export {}',
+    })
+
+    expect(fs.existsSync(zipPath)).toBe(true)
+
+    const reader = await openZipFromBuffer(fs.readFileSync(zipPath))
+    try {
+      const names = reader.entries.filter((e) => !e.isDirectory).map((e) => e.fileName).sort()
+      expect(names).toEqual(['README.md', 'src/index.ts'])
+    } finally {
+      reader.close()
+    }
+  })
+})
+
+// ============================================================================
+// detectZipPrefix
+// ============================================================================
+
+describe('detectZipPrefix', () => {
+  it('detects common prefix when all files share one', () => {
+    const entries: ZipEntryMeta[] = [
+      { fileName: 'wrapper/', isDirectory: true, uncompressedSize: 0, compressedSize: 0 },
+      { fileName: 'wrapper/file1.txt', isDirectory: false, uncompressedSize: 10, compressedSize: 5 },
+      { fileName: 'wrapper/sub/file2.txt', isDirectory: false, uncompressedSize: 10, compressedSize: 5 },
+    ]
+    expect(detectZipPrefix(entries)).toBe('wrapper/')
+  })
+
+  it('returns empty string when files are at root level', () => {
+    const entries: ZipEntryMeta[] = [
+      { fileName: 'file1.txt', isDirectory: false, uncompressedSize: 10, compressedSize: 5 },
+      { fileName: 'file2.txt', isDirectory: false, uncompressedSize: 10, compressedSize: 5 },
+    ]
+    expect(detectZipPrefix(entries)).toBe('')
+  })
+
+  it('returns empty string when files have different top-level dirs', () => {
+    const entries: ZipEntryMeta[] = [
+      { fileName: 'dir1/file.txt', isDirectory: false, uncompressedSize: 10, compressedSize: 5 },
+      { fileName: 'dir2/file.txt', isDirectory: false, uncompressedSize: 10, compressedSize: 5 },
+    ]
+    expect(detectZipPrefix(entries)).toBe('')
+  })
+
+  it('ignores __MACOSX entries', () => {
+    const entries: ZipEntryMeta[] = [
+      { fileName: '__MACOSX/._file', isDirectory: false, uncompressedSize: 10, compressedSize: 5 },
+      { fileName: 'wrapper/file.txt', isDirectory: false, uncompressedSize: 10, compressedSize: 5 },
+    ]
+    expect(detectZipPrefix(entries)).toBe('wrapper/')
+  })
+
+  it('returns empty string for empty entries', () => {
+    expect(detectZipPrefix([])).toBe('')
+  })
+
+  it('returns empty string when only directory entries exist', () => {
+    const entries: ZipEntryMeta[] = [
+      { fileName: 'dir/', isDirectory: true, uncompressedSize: 0, compressedSize: 0 },
+    ]
+    expect(detectZipPrefix(entries)).toBe('')
+  })
+
+  it('handles single file in a directory as common prefix', () => {
+    const entries: ZipEntryMeta[] = [
+      { fileName: 'only-dir/only-file.txt', isDirectory: false, uncompressedSize: 10, compressedSize: 5 },
+    ]
+    expect(detectZipPrefix(entries)).toBe('only-dir/')
+  })
+})

@@ -7,7 +7,10 @@
  * the result inline.
  */
 
-interface XAgentCallOptions {
+import { z } from 'zod'
+import { xAgentErrorResponseSchema } from './host-response-schemas'
+
+export interface XAgentCallOptions {
   // Calling Claude session ID. The host uses this to enforce policies that depend
   // on per-session state (e.g. blocking already-invoked sessions from re-invoking).
   // Passed under reserved key `_callerSessionId` in the request body.
@@ -23,11 +26,11 @@ export class XAgentError extends Error {
   }
 }
 
-export async function callHost<T>(
+export async function authenticatedHostResponse(
   op: string,
   body: Record<string, unknown>,
   opts: XAgentCallOptions = {},
-): Promise<T> {
+): Promise<Response> {
   const baseUrl = process.env.SUPERAGENT_HOST_API_URL
   const token = process.env.PROXY_TOKEN
   if (!baseUrl) {
@@ -54,15 +57,26 @@ export async function callHost<T>(
     throw new XAgentError(0, `Network error calling x-agent ${op}: ${error instanceof Error ? error.message : String(error)}`)
   }
   if (!response.ok) {
-    let errorBody: { error?: string } = {}
+    let errorMessage: string | undefined
     try {
-      errorBody = (await response.json()) as { error?: string }
+      const parsed = xAgentErrorResponseSchema.safeParse(await response.json())
+      if (parsed.success) errorMessage = parsed.data.error
     } catch {
-      // ignore
+      // Non-JSON error responses use the status fallback below.
     }
-    throw new XAgentError(response.status, errorBody.error ?? `x-agent ${op} failed (HTTP ${response.status})`)
+    throw new XAgentError(response.status, errorMessage ?? `x-agent ${op} failed (HTTP ${response.status})`)
   }
-  return (await response.json()) as T
+  return response
+}
+
+export async function callHost<T extends z.ZodType>(
+  op: string,
+  body: Record<string, unknown>,
+  responseSchema: T,
+  opts: XAgentCallOptions = {},
+): Promise<z.infer<T>> {
+  const response = await authenticatedHostResponse(op, body, opts)
+  return responseSchema.parse(await response.json())
 }
 
 export function textResult(text: string, isError = false) {

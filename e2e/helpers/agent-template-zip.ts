@@ -1,9 +1,9 @@
-import AdmZip from 'adm-zip'
 import fs from 'fs'
 import path from 'path'
+import { writeZipFile } from '@shared/lib/utils/zip'
 
 export interface BuildAgentTemplateZipOptions {
-  /** Agent display name written into CLAUDE.md frontmatter. */
+  /** Agent display name written into AGENTS.md frontmatter. */
   name: string
   /** When true, include `.claude/skills/agent-onboarding/SKILL.md` so the import is detected as an onboarding template. */
   withOnboardingSkill?: boolean
@@ -14,28 +14,20 @@ export interface BuildAgentTemplateZipOptions {
  * Caller is responsible for cleanup (write to a tmp dir).
  *
  * Layout when `withOnboardingSkill` is true:
- *   CLAUDE.md
+ *   AGENTS.md
  *   .claude/skills/agent-onboarding/SKILL.md
  */
-export function buildAgentTemplateZip(filePath: string, opts: BuildAgentTemplateZipOptions): string {
-  const zip = new AdmZip()
-
-  zip.addFile(
-    'CLAUDE.md',
-    Buffer.from(`---\nname: ${opts.name}\n---\n\nTest agent template for E2E.\n`, 'utf-8'),
-  )
+export async function buildAgentTemplateZip(filePath: string, opts: BuildAgentTemplateZipOptions): Promise<string> {
+  const files: Record<string, string> = {
+    'AGENTS.md': `---\nname: ${opts.name}\n---\n\nTest agent template for E2E.\n`,
+  }
 
   if (opts.withOnboardingSkill) {
-    zip.addFile(
-      '.claude/skills/agent-onboarding/SKILL.md',
-      Buffer.from(
-        `---\nname: agent-onboarding\ndescription: Helps the user configure a freshly-imported agent.\n---\n\nOnboard the agent.\n`,
-        'utf-8',
-      ),
-    )
+    files['.claude/skills/agent-onboarding/SKILL.md'] =
+      `---\nname: agent-onboarding\ndescription: Helps the user configure a freshly-imported agent.\n---\n\nOnboard the agent.\n`
   }
 
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
-  zip.writeZip(filePath)
+  await writeZipFile(filePath, files)
   return filePath
 }

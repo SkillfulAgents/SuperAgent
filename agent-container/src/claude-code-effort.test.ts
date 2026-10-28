@@ -9,7 +9,7 @@
  *     as the current level (so the first post-upgrade message with effort='high'
  *     does not trigger a spurious restart).
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 type MockQueryCall = { options: Record<string, unknown> }
 const calls: MockQueryCall[] = []
@@ -17,9 +17,20 @@ const setModelCalls: (string | undefined)[] = []
 
 // Stub the SDK before importing ClaudeCodeProcess.
 vi.mock('@anthropic-ai/claude-agent-sdk', () => {
-  // Returns an async iterator that never yields until aborted — good enough to
-  // model a running session for the purposes of this test.
-  function makeQuery(_args: { prompt: unknown; options: Record<string, unknown> }) {
+  // Model a running SDK iterator that actually honors the AbortController.
+  // This lets interrupt() observe processMessages() unwind immediately instead
+  // of paying its 5-second hung-SDK fallback in every restart test.
+  function makeQuery(args: { prompt: unknown; options: Record<string, unknown> }) {
+    const abortController = args.options.abortController as AbortController
+    let resolvePending:
+      | ((result: IteratorResult<never>) => void)
+      | undefined
+    const finish = () => {
+      resolvePending?.({ value: undefined, done: true })
+      resolvePending = undefined
+    }
+    abortController.signal.addEventListener('abort', finish, { once: true })
+
     const iter: AsyncIterableIterator<never> & {
       interrupt: () => Promise<void>
       setModel: (model?: string) => Promise<void>
@@ -28,11 +39,15 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         return this
       },
       next() {
-        return new Promise<IteratorResult<never>>(() => {
-          /* pending forever — real abort handled via AbortController in process */
+        if (abortController.signal.aborted) {
+          return Promise.resolve({ value: undefined, done: true })
+        }
+        return new Promise<IteratorResult<never>>((resolve) => {
+          resolvePending = resolve
         })
       },
       return() {
+        finish()
         return Promise.resolve({ value: undefined, done: true } as IteratorResult<never>)
       },
       throw(err?: unknown) {
@@ -63,12 +78,21 @@ vi.mock('./mcp-server', () => ({
   createBrowserMcpServer: () => ({}),
   createComputerUseMcpServer: () => ({}),
   createDashboardsMcpServer: () => ({}),
+  createWidgetsMcpServer: () => ({}),
   createAgentsMcpServer: (_getCallerSessionId: () => string) => ({}),
+  createChatMcpServer: () => ({}),
+  createMeetingsMcpServer: () => ({}),
+  createRulesMcpServer: () => ({}),
 }))
 
 vi.mock('./tools/browser', () => ({
-  browserTools: [],
-  setCurrentBrowserSessionId: () => {},
+  createBrowserTools: () => [
+    { name: 'browser_open' },
+    { name: 'browser_get_state' },
+    { name: 'browser_snapshot' },
+    { name: 'browser_click' },
+    { name: 'browser_close' },
+  ],
 }))
 
 vi.mock('./tools/computer-use', () => ({
@@ -78,10 +102,12 @@ vi.mock('./tools/computer-use', () => ({
 vi.mock('./file-hooks', () => ({
   fileHooks: {},
   resolveToolFilePath: () => '',
+  mountIndexCommandHint: (command: string) => (command === 'rm /mounts/notes/a.md' ? 'index hint' : undefined),
 }))
 
 vi.mock('./input-manager', () => ({
   inputManager: {},
+  HUMAN_INPUT_TTL_MS: 24 * 60 * 60 * 1000,
 }))
 
 import { ClaudeCodeProcess } from './claude-code'
@@ -91,14 +117,7 @@ describe('ClaudeCodeProcess effort handling', () => {
     calls.length = 0
   })
 
-  afterEach(async () => {
-    // Nothing to tear down — process.stop() triggers abort which our stub ignores.
-  })
-
-  // Interrupt's wait-for-stop polls up to 5 s before falling through; our mock
-  // doesn't honor the abort signal, so each effort-change test waits that full
-  // window. Raise the per-test timeout accordingly.
-  it('rebuilds the query with the new effort when effort changes', { timeout: 15000 }, async () => {
+  it('rebuilds the query with the new effort when effort changes', async () => {
     const process = new ClaudeCodeProcess({
       sessionId: 'test-session-1',
       workingDirectory: '/tmp',
@@ -134,7 +153,7 @@ describe('ClaudeCodeProcess effort handling', () => {
     expect(calls).toHaveLength(1)
   })
 
-  it('treats undefined stored effort as high so first high message does not restart', { timeout: 15000 }, async () => {
+  it('treats undefined stored effort as high so first high message does not restart', async () => {
     // Simulates a session created before this feature (no persisted effort).
     const process = new ClaudeCodeProcess({
       sessionId: 'test-session-3',
@@ -159,6 +178,88 @@ describe('ClaudeCodeProcess effort handling', () => {
   })
 })
 
+describe('ClaudeCodeProcess speed handling', () => {
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  const speedHeaderOf = (call: MockQueryCall): string | undefined => {
+    const env = call.options.env as Record<string, string | undefined>
+    return env.ANTHROPIC_CUSTOM_HEADERS?.split('\n').find((l) => l.startsWith('X-Superagent-Speed:'))
+  }
+
+  it('bakes the speed header into the query env at creation', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-speed-1',
+      workingDirectory: '/tmp',
+      speed: 'fast',
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+    expect(speedHeaderOf(calls[0])).toBe('X-Superagent-Speed: fast')
+  })
+
+  it("emits no speed header for 'normal' or unset speed", async () => {
+    const p1 = new ClaudeCodeProcess({ sessionId: 'test-speed-2a', workingDirectory: '/tmp', speed: 'normal' })
+    await p1.start()
+    const p2 = new ClaudeCodeProcess({ sessionId: 'test-speed-2b', workingDirectory: '/tmp' })
+    await p2.start()
+    expect(calls).toHaveLength(2)
+    expect(speedHeaderOf(calls[0])).toBeUndefined()
+    expect(speedHeaderOf(calls[1])).toBeUndefined()
+  })
+
+  it('rebuilds the query with the new header when speed changes', { timeout: 15000 }, async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-speed-3',
+      workingDirectory: '/tmp',
+      speed: 'normal',
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+
+    await process.sendMessage('hello', undefined, { speed: 'fast' })
+
+    expect(calls).toHaveLength(2)
+    expect(speedHeaderOf(calls[1])).toBe('X-Superagent-Speed: fast')
+  })
+
+  it('does not rebuild the query when the same speed is passed', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-speed-4',
+      workingDirectory: '/tmp',
+      speed: 'fast',
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+
+    await process.sendMessage('hello', undefined, { speed: 'fast' })
+    expect(calls).toHaveLength(1)
+  })
+
+  it("treats undefined stored speed as 'normal' so a first normal message does not restart", { timeout: 15000 }, async () => {
+    // Simulates a session created before this feature (no persisted speed).
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-speed-5',
+      workingDirectory: '/tmp',
+      // speed intentionally omitted
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+
+    await process.sendMessage('hello', undefined, { speed: 'normal' })
+    expect(calls).toHaveLength(1)
+
+    await process.sendMessage('hello again', undefined, { speed: 'slow' })
+    expect(calls).toHaveLength(2)
+    expect(speedHeaderOf(calls[1])).toBe('X-Superagent-Speed: slow')
+  })
+})
+
 describe('ClaudeCodeProcess model handling', () => {
   beforeEach(() => {
     calls.length = 0
@@ -174,18 +275,18 @@ describe('ClaudeCodeProcess model handling', () => {
 
     await process.start()
     expect(calls).toHaveLength(1)
-    // Constructor maps full IDs to SDK aliases.
-    expect(calls[0].options.model).toBe('sonnet')
+    // The host resolves to a concrete id; the container forwards it unchanged.
+    expect(calls[0].options.model).toBe('claude-sonnet-4-6')
 
     // Switching to Opus mid-session should call setModel on the running query —
     // no interrupt, no second query() call.
     await process.sendMessage('hello', undefined, { model: 'claude-opus-4-7' })
 
     expect(calls).toHaveLength(1)
-    expect(setModelCalls).toEqual(['opus'])
+    expect(setModelCalls).toEqual(['claude-opus-4-7'])
   })
 
-  it('does not call setModel when the same model family is passed', async () => {
+  it('does not call setModel for the same concrete id, but treats a different version as a real switch', async () => {
     const process = new ClaudeCodeProcess({
       sessionId: 'test-model-2',
       workingDirectory: '/tmp',
@@ -195,15 +296,16 @@ describe('ClaudeCodeProcess model handling', () => {
     await process.start()
     expect(calls).toHaveLength(1)
 
-    // Same family alias — no restart, no setModel.
+    // Identical concrete id — no restart, no setModel.
     await process.sendMessage('hello', undefined, { model: 'claude-opus-4-7' })
     expect(calls).toHaveLength(1)
     expect(setModelCalls).toHaveLength(0)
 
-    // Same alias but different pinned version maps to same alias 'opus'.
+    // A different pinned version of the same family is now a real switch
+    // (concrete-id compare, post-SUP-275) — setModel on the running query.
     await process.sendMessage('hello again', undefined, { model: 'claude-opus-4-6' })
     expect(calls).toHaveLength(1)
-    expect(setModelCalls).toHaveLength(0)
+    expect(setModelCalls).toEqual(['claude-opus-4-6'])
   })
 
   it('combined effort + model change restarts the query exactly once with both new values', { timeout: 15000 }, async () => {
@@ -217,7 +319,7 @@ describe('ClaudeCodeProcess model handling', () => {
     await process.start()
     expect(calls).toHaveLength(1)
     expect(calls[0].options.effort).toBe('high')
-    expect(calls[0].options.model).toBe('sonnet')
+    expect(calls[0].options.model).toBe('claude-sonnet-4-6')
 
     // Effort can only change via re-query, so the model rides along on that
     // restart rather than calling setModel separately.
@@ -225,7 +327,7 @@ describe('ClaudeCodeProcess model handling', () => {
 
     expect(calls).toHaveLength(2)
     expect(calls[1].options.effort).toBe('low')
-    expect(calls[1].options.model).toBe('haiku')
+    expect(calls[1].options.model).toBe('claude-haiku-4-5')
     expect(setModelCalls).toHaveLength(0)
   })
 
@@ -246,9 +348,260 @@ describe('ClaudeCodeProcess model handling', () => {
 
     await process.sendMessage('hello', undefined, { model: 'claude-opus-4-7' })
 
-    expect(failOnce).toHaveBeenCalledWith('opus')
+    expect(failOnce).toHaveBeenCalledWith('claude-opus-4-7')
     // Restart happened after the failure.
     expect(calls).toHaveLength(2)
-    expect(calls[1].options.model).toBe('opus')
+    expect(calls[1].options.model).toBe('claude-opus-4-7')
+  })
+})
+
+describe('ClaudeCodeProcess model context windows', () => {
+  beforeEach(() => {
+    calls.length = 0
+    setModelCalls.length = 0
+  })
+
+  const windows = { 'grok-4.6': 500_000, 'gpt-5.5': 1_050_000 }
+  const maxContextOf = (call: MockQueryCall): string | undefined =>
+    (call.options.env as Record<string, string | undefined>).CLAUDE_CODE_MAX_CONTEXT_TOKENS
+
+  it('sets CLAUDE_CODE_MAX_CONTEXT_TOKENS from the catalog map for the session model', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-ctx-1',
+      workingDirectory: '/tmp',
+      model: 'grok-4.6',
+      modelContextWindows: windows,
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+    expect(maxContextOf(calls[0])).toBe('500000')
+  })
+
+  it('leaves the env var unset for a model without a catalog window', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-ctx-2',
+      workingDirectory: '/tmp',
+      model: 'claude-sonnet-4-6',
+      modelContextWindows: windows,
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+    expect(maxContextOf(calls[0])).toBeUndefined()
+  })
+
+  it('lets a user-set custom env var win over the catalog value', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-ctx-3',
+      workingDirectory: '/tmp',
+      model: 'grok-4.6',
+      modelContextWindows: windows,
+      customEnvVars: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: '123456' },
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+    expect(maxContextOf(calls[0])).toBe('123456')
+  })
+
+  it('restarts the query (not setModel) when a model switch changes the window', { timeout: 15000 }, async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-ctx-4',
+      workingDirectory: '/tmp',
+      model: 'claude-sonnet-4-6',
+      modelContextWindows: windows,
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+    expect(maxContextOf(calls[0])).toBeUndefined()
+
+    // claude → grok changes the window (unset → 500k); dynamic setModel would
+    // leave the new model running against the old env, so it must re-query.
+    await process.sendMessage('hello', undefined, { model: 'grok-4.6' })
+
+    expect(setModelCalls).toHaveLength(0)
+    expect(calls).toHaveLength(2)
+    expect(calls[1].options.model).toBe('grok-4.6')
+    expect(maxContextOf(calls[1])).toBe('500000')
+  })
+
+  it('still switches dynamically when both models share a window', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-ctx-5',
+      workingDirectory: '/tmp',
+      model: 'claude-sonnet-4-6',
+      modelContextWindows: windows,
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+
+    // Neither claude id has a catalog window — no env change, setModel is fine.
+    await process.sendMessage('hello', undefined, { model: 'claude-opus-4-7' })
+
+    expect(calls).toHaveLength(1)
+    expect(setModelCalls).toEqual(['claude-opus-4-7'])
+  })
+})
+
+describe('ClaudeCodeProcess model prompt hints', () => {
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  it('injects model-specific prompt hints into the system prompt', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-prompt-hints',
+      workingDirectory: '/tmp',
+      modelPromptHints: ['Use exact ToolSearch names.', 'Do not send pages as an empty string.'],
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+    expect(calls[0].options.systemPrompt.prompt).toContain('## Model-Specific Instructions')
+    expect(calls[0].options.systemPrompt.prompt).toContain('- Use exact ToolSearch names.')
+    expect(calls[0].options.systemPrompt.prompt).toContain('- Do not send pages as an empty string.')
+  })
+})
+
+describe('ClaudeCodeProcess agent-browser Bash hook', () => {
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  it('adds a warning without denying direct agent-browser commands', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-agent-browser-hook',
+      workingDirectory: '/tmp',
+    })
+
+    await process.start()
+    const hooks = calls[0].options.hooks as {
+      PreToolUse: Array<{
+        matcher?: string
+        hooks: Array<(input: unknown) => Promise<Record<string, unknown>>>
+      }>
+    }
+    const bashHook = hooks.PreToolUse.find((hook) => hook.matcher?.startsWith('^(') && new RegExp(hook.matcher).test('Bash'))
+    expect(bashHook).toBeDefined()
+
+    const directResult = await bashHook!.hooks[0]({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'agent-browser open https://example.com' },
+    })
+    const discoveryResult = await bashHook!.hooks[0]({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'which agent-browser; agent-browser --help' },
+    })
+    for (const result of [directResult, discoveryResult]) {
+      expect(result).toMatchObject({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          additionalContext: expect.stringContaining('STRONG WARNING'),
+        },
+      })
+      expect(result).not.toHaveProperty('hookSpecificOutput.permissionDecision')
+    }
+  })
+
+  it('does not add context to ordinary Bash commands', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-ordinary-bash-hook',
+      workingDirectory: '/tmp',
+    })
+
+    await process.start()
+    const hooks = calls[0].options.hooks as {
+      PreToolUse: Array<{
+        matcher?: string
+        hooks: Array<(input: unknown) => Promise<Record<string, unknown>>>
+      }>
+    }
+    const bashHook = hooks.PreToolUse.find((hook) => hook.matcher?.startsWith('^(') && new RegExp(hook.matcher).test('Bash'))!
+    await expect(bashHook.hooks[0]({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'rg browser src' },
+    })).resolves.toEqual({})
+  })
+})
+
+describe('ClaudeCodeProcess static tool bans', () => {
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  it('blocks DesignSync globally', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-designsync-disabled',
+      workingDirectory: '/tmp',
+    })
+
+    await process.start()
+    expect(calls).toHaveLength(1)
+    const disallowed = calls[0].options.disallowedTools as string[]
+    expect(disallowed).toContain('DesignSync')
+  })
+})
+
+describe('ClaudeCodeProcess dashboard browser tools', () => {
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  it('lets the dashboard builder open and validate container-local dashboards', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-dashboard-browser-tools',
+      workingDirectory: '/tmp',
+    })
+
+    await process.start()
+    const agents = calls[0].options.agents as Record<string, { tools: string[] }>
+    const tools = agents['dashboard-builder'].tools
+    expect(tools).toContain('mcp__browser__browser_open')
+    expect(tools).toContain('mcp__browser__browser_get_state')
+    expect(tools).toContain('mcp__browser__browser_click')
+    expect(tools).toContain('mcp__browser__browser_close')
+  })
+})
+
+describe('ClaudeCodeProcess web browser tools', () => {
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  it('lets the web browser list workspace files before uploading them', async () => {
+    const process = new ClaudeCodeProcess({
+      sessionId: 'test-web-browser-glob',
+      workingDirectory: '/tmp',
+    })
+
+    await process.start()
+    const agents = calls[0].options.agents as Record<string, { tools: string[] }>
+    const tools = agents['web-browser'].tools
+    expect(tools).toContain('Glob')
+  })
+})
+
+describe('ClaudeCodeProcess mount index Bash hook', () => {
+  beforeEach(() => {
+    calls.length = 0
+  })
+
+  it('returns the mount index hint after a matching command', async () => {
+    const process = new ClaudeCodeProcess({ sessionId: 'test-mount-index-hook', workingDirectory: '/tmp' })
+    await process.start()
+    const hooks = calls[0].options.hooks as {
+      PostToolUse: Array<{ matcher: string; hooks: Array<(input: unknown) => Promise<Record<string, unknown>>> }>
+    }
+    const bashHook = hooks.PostToolUse.find((hook) => hook.matcher === 'Bash')!
+    await expect(bashHook.hooks[0]({ tool_name: 'Bash', tool_input: { command: 'rm /mounts/notes/a.md' } })).resolves.toEqual({
+      hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'index hint' },
+    })
+    await expect(bashHook.hooks[0]({ tool_name: 'Bash', tool_input: { command: 'ls' } })).resolves.toEqual({})
   })
 })

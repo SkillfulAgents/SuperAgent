@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { RuntimeOptionsSchema, parseRuntimeOptions } from './runtime-options'
+import { RuntimeOptionsSchema, clampEffortForDisplay, clampSpeedForDisplay, parseRuntimeOptions, resolveRuntimeInherit } from './runtime-options'
 
 describe('RuntimeOptionsSchema', () => {
   it('accepts an empty object', () => {
@@ -60,5 +60,81 @@ describe('parseRuntimeOptions', () => {
     expect(parseRuntimeOptions(null)).toEqual({})
     expect(parseRuntimeOptions(undefined)).toEqual({})
     expect(parseRuntimeOptions('foo')).toEqual({})
+  })
+})
+
+describe('resolveRuntimeInherit', () => {
+  const models = { agentModel: 'claude-opus-4-8', agentEffort: 'medium' as const }
+
+  it('uses the app default when neither surface nor agent set one, and omits speed', () => {
+    const resolved = resolveRuntimeInherit({ model: null, effort: null, speed: null }, {}, models)
+    expect(resolved).toEqual({ model: 'claude-opus-4-8', effort: 'medium' })
+    expect('speed' in resolved).toBe(false)
+  })
+
+  it('prefers the agent default over the app default', () => {
+    expect(resolveRuntimeInherit({}, {
+      defaultModel: 'opus',
+      defaultEffort: 'high',
+      defaultSpeed: 'slow',
+    }, models)).toEqual({
+      model: 'opus',
+      effort: 'high',
+      speed: 'slow',
+    })
+  })
+
+  it('prefers the surface override over the agent default', () => {
+    expect(resolveRuntimeInherit(
+      { model: 'claude-haiku-4-5', effort: 'low', speed: 'fast' },
+      { defaultModel: 'opus', defaultEffort: 'high', defaultSpeed: 'slow' },
+      models,
+    )).toEqual({
+      model: 'claude-haiku-4-5',
+      effort: 'low',
+      speed: 'fast',
+    })
+  })
+
+  it('treats an empty surface model as unset', () => {
+    expect(resolveRuntimeInherit({ model: '' }, { defaultModel: 'sonnet' }, models).model).toBe('sonnet')
+  })
+
+  it('treats junk surface effort as unset and falls through to the app default', () => {
+    expect(resolveRuntimeInherit({ effort: 'turbo' }, {}, models)).toEqual({
+      model: 'claude-opus-4-8',
+      effort: 'medium',
+    })
+  })
+
+  it('omits effort when no rung has one, including junk app effort', () => {
+    expect(resolveRuntimeInherit({}, {}, { agentModel: 'claude-opus-4-8' })).toEqual({
+      model: 'claude-opus-4-8',
+    })
+    expect(resolveRuntimeInherit({}, {}, { agentModel: 'claude-opus-4-8', agentEffort: 'turbo' })).toEqual({
+      model: 'claude-opus-4-8',
+    })
+  })
+})
+
+describe('clampEffortForDisplay', () => {
+  it('keeps an allowed effort and snaps an illegal one to medium', () => {
+    expect(clampEffortForDisplay('high', ['low', 'medium', 'high'])).toBe('high')
+    expect(clampEffortForDisplay('max', ['low', 'medium', 'high'])).toBe('medium')
+  })
+})
+
+describe('clampSpeedForDisplay', () => {
+  it('leaves the speed alone when the model is not in the catalog', () => {
+    expect(clampSpeedForDisplay('fast', undefined)).toBe('fast')
+  })
+
+  it('snaps to normal when the model is found and has no speed choice', () => {
+    expect(clampSpeedForDisplay('fast', {})).toBe('normal')
+  })
+
+  it('keeps an allowed speed and snaps an illegal listed one to normal', () => {
+    expect(clampSpeedForDisplay('fast', { supportedSpeeds: ['slow', 'normal', 'fast'] })).toBe('fast')
+    expect(clampSpeedForDisplay('fast', { supportedSpeeds: ['slow', 'normal'] })).toBe('normal')
   })
 })

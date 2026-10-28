@@ -1,0 +1,12 @@
+{
+  "sessionId": "013f8bd1-1743-4dab-8568-3520abfa9ced",
+  "agentSlug": "background-bash-premature-idle",
+  "description": "Real SUPERAGENT_CAPTURE_DIR capture of the premature-idle regression (ac23bdd8). Two back-to-back Bash run_in_background tasks (task_type=local_bash). For EACH, the SDK emits session_state_changed:'idle' at TURN-END while the bash is still running, then later re-emits 'running' + task_notification{status:completed} when it actually finishes. by2nbnmbo finishes ~0.2s after its premature idle; bp2edegys is a 30s sleep and finishes ~28.3s after its premature idle. The idle handler's phantom-clear wrongly cleared the still-running task at the premature idle and finalized the session (broadcasting background_task_completed + session_idle), so the container would auto-sleep mid-job — the exact failure run_in_background was meant to prevent. activeBackgroundTasks only ever holds local_bash tasks, so the phantom-clear's 'a per-task terminal signal was missed' premise never holds: the real terminal signal (task_notification/task_updated) always arrives later. Correct behavior: idle-with-bg-pending must emit session_waiting_background and NOT phantom-clear or finalize; the task clears only on its own task_notification, and the subsequent (truly settled) idle finalizes.",
+  "subagents": [],
+  "startActive": true,
+  "backgroundTasks": [
+    { "taskId": "by2nbnmbo", "label": "short (~0.2s gap)", "prematureIdleT": 71704, "realCompletionT": 71910 },
+    { "taskId": "bp2edegys", "label": "30s sleep (~28.3s gap)", "prematureIdleT": 207883, "realCompletionT": 236138 }
+  ],
+  "totalEntries": 94
+}

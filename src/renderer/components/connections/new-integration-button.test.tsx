@@ -1,0 +1,425 @@
+// @vitest-environment jsdom
+import { fakeLoginWindow } from '@renderer/test/fake-login-window'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { screen, waitFor, act, fireEvent } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { renderWithProviders } from '@renderer/test/test-utils'
+import { NewIntegrationButton } from './connections-list'
+import { LOGIN_WINDOW_CANCEL_DELAY_MS } from '@renderer/hooks/use-login-window'
+import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
+
+const MOCK_ACCOUNT_ID = 'new-account-123'
+const MOCK_MCP_ID = 'new-mcp-123'
+
+const mockApiFetch = vi.fn()
+vi.mock('@renderer/lib/api', () => ({
+  apiFetch: (...args: unknown[]) => mockApiFetch(...args),
+}))
+
+vi.mock('@renderer/lib/oauth-popup', () => import('@renderer/test/fake-login-window'))
+
+vi.mock('@shared/lib/account-providers', () => ({
+  getProvider: (slug: string) => ({
+    slug,
+    displayName: slug.charAt(0).toUpperCase() + slug.slice(1),
+  }),
+}))
+
+const mockOpenExternal = vi.hoisted(() => vi.fn())
+vi.mock('@renderer/lib/open-external', () => ({
+  openExternalUrl: (...args: unknown[]) => mockOpenExternal(...args),
+}))
+
+vi.mock('@renderer/hooks/use-mcp-oauth-listener', () => ({
+  useMcpOAuthListener: vi.fn(),
+}))
+
+let capturedOAuthCallback: ((params: any) => void) | null = null
+let capturedMcpOAuthCallback: ((result: { success: boolean; error?: string }) => void) | null = null
+let originalElectronAPI: typeof window.electronAPI
+let lastToolPoliciesPutBody: { policies: Array<{ toolName: string; decision: string }> } | null = null
+
+function mockFetchResponses() {
+  mockApiFetch.mockImplementation(async (url: string, opts?: { method?: string; body?: string }) => {
+    if (url === '/api/providers') {
+      return {
+        ok: true,
+        json: async () => ({
+          providers: [
+            { slug: 'slack', displayName: 'Slack', description: 'Team communication' },
+          ],
+        }),
+      }
+    }
+    if (url === '/api/connected-accounts/initiate') {
+      return {
+        ok: true,
+        json: async () => ({
+          connectionId: 'pending-conn-123',
+          redirectUrl: 'https://oauth.example.test/authorize',
+          providerSlug: 'slack',
+        }),
+      }
+    }
+    if (url === '/api/connected-accounts/complete') {
+      return {
+        ok: true,
+        json: async () => ({
+          success: true,
+          account: { id: MOCK_ACCOUNT_ID, toolkitSlug: 'slack', displayName: 'Slack Account' },
+        }),
+      }
+    }
+    if (url === '/api/remote-mcps/initiate-oauth') {
+      return {
+        ok: true,
+        json: async () => ({ redirectUrl: 'https://oauth.example/authorize', state: 'oauth-state' }),
+      }
+    }
+    if (url === '/api/remote-mcps') {
+      return {
+        ok: true,
+        json: async () => ({
+          servers: [
+            {
+              id: MOCK_MCP_ID,
+              name: 'Linear',
+              url: 'https://mcp.linear.app/mcp',
+              authType: 'oauth',
+              status: 'active',
+              errorMessage: null,
+              tools: [
+                { name: 'list_issues', description: 'List issues' },
+                { name: 'create_issue', description: 'Create issue' },
+              ],
+              toolsDiscoveredAt: '2026-06-16T00:00:00.000Z',
+              createdAt: '2026-06-16T00:00:00.000Z',
+              updatedAt: '2026-06-16T00:00:00.000Z',
+            },
+          ],
+        }),
+      }
+    }
+    if (url.startsWith('/api/policies/scope/')) {
+      return { ok: true, json: async () => ({ policies: [] }) }
+    }
+    if (url.startsWith('/api/policies/tool/')) {
+      if (opts?.method === 'PUT') {
+        lastToolPoliciesPutBody = JSON.parse(opts.body as string)
+        return { ok: true, json: async () => ({ ok: true }) }
+      }
+      return { ok: true, json: async () => ({ policies: [] }) }
+    }
+    return { ok: true, json: async () => ({}) }
+  })
+}
+
+beforeEach(() => {
+  originalElectronAPI = window.electronAPI
+  vi.clearAllMocks()
+  fakeLoginWindow.navigate.mockReset()
+  fakeLoginWindow.close.mockReset()
+  capturedMcpOAuthCallback = null
+  lastToolPoliciesPutBody = null
+  mockFetchResponses()
+  vi.mocked(useMcpOAuthListener).mockImplementation((active, onComplete) => {
+    if (active) capturedMcpOAuthCallback = onComplete
+  })
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+  window.electronAPI = originalElectronAPI
+  capturedOAuthCallback = null
+  capturedMcpOAuthCallback = null
+})
+
+describe('NewIntegrationButton — All tab', () => {
+  it('opens on the All tab showing both APIs and MCP servers', async () => {
+    window.electronAPI = undefined
+
+    renderWithProviders(<NewIntegrationButton />)
+    await userEvent.click(screen.getByTestId('connections-add-button'))
+
+    expect(screen.getByTestId('directory-tab-all')).toHaveAttribute('data-state', 'active')
+    await waitFor(() => expect(screen.getByTestId('directory-connect-api-slack')).toBeInTheDocument())
+    expect(screen.getByTestId('directory-connect-mcp-linear')).toBeInTheDocument()
+    expect(screen.getByTestId('directory-connect-mcp-custom')).toBeInTheDocument()
+  })
+
+  it('keeps both sections when the search only matches one of them', async () => {
+    window.electronAPI = undefined
+
+    renderWithProviders(<NewIntegrationButton />)
+    await userEvent.click(screen.getByTestId('connections-add-button'))
+    await waitFor(() => expect(screen.getByTestId('directory-connect-api-slack')).toBeInTheDocument())
+
+    await userEvent.type(screen.getByPlaceholderText('Search all connections...'), 'linear')
+
+    // The APIs section stays put and says so itself rather than disappearing.
+    await waitFor(() => expect(screen.getByText('No API matches')).toBeInTheDocument())
+    expect(screen.getByRole('heading', { name: 'APIs' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'MCPs' })).toBeInTheDocument()
+    expect(screen.queryByTestId('directory-connect-api-slack')).not.toBeInTheDocument()
+
+    // While searching, Custom MCP trails the real hits instead of leading.
+    const cards = screen.getAllByTestId(/^directory-connect-mcp-/)
+    expect(cards[0]).toHaveAttribute('data-testid', 'directory-connect-mcp-linear')
+    expect(cards.at(-1)).toHaveAttribute('data-testid', 'directory-connect-mcp-custom')
+  })
+
+  it('shows both empty states when nothing matches', async () => {
+    window.electronAPI = undefined
+
+    renderWithProviders(<NewIntegrationButton />)
+    await userEvent.click(screen.getByTestId('connections-add-button'))
+    await waitFor(() => expect(screen.getByTestId('directory-connect-api-slack')).toBeInTheDocument())
+
+    await userEvent.type(screen.getByPlaceholderText('Search all connections...'), 'zzzznope')
+
+    await waitFor(() => expect(screen.getByText('No API matches')).toBeInTheDocument())
+    expect(screen.getByText('No MCP matches')).toBeInTheDocument()
+    // The browse-time footer note steps aside once a search is running.
+    expect(screen.queryByText(/Don't see what you're looking for/)).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'APIs' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'MCPs' })).toBeInTheDocument()
+  })
+})
+
+describe('NewIntegrationButton — cross-directory search hint', () => {
+  it('offers a jump to All when the scoped tab finds nothing but the other one does', async () => {
+    window.electronAPI = undefined
+
+    renderWithProviders(<NewIntegrationButton />)
+    await userEvent.click(screen.getByTestId('connections-add-button'))
+    await userEvent.click(screen.getByTestId('directory-tab-apis'))
+    await waitFor(() => expect(screen.getByTestId('directory-connect-api-slack')).toBeInTheDocument())
+
+    await userEvent.type(screen.getByPlaceholderText('Search APIs...'), 'linear')
+
+    await waitFor(() => expect(screen.getByText('No API matches')).toBeInTheDocument())
+    expect(screen.getByText(/1 MCP server matches/)).toBeInTheDocument()
+
+    await userEvent.click(screen.getByTestId('directory-see-all'))
+
+    // Lands on All with the query carried over, not discarded.
+    expect(screen.getByTestId('directory-tab-all')).toHaveAttribute('data-state', 'active')
+    expect(screen.getByPlaceholderText('Search all connections...')).toHaveValue('linear')
+    await waitFor(() => expect(screen.getByTestId('directory-connect-mcp-linear')).toBeInTheDocument())
+  })
+
+  it('omits the hint when neither directory matches', async () => {
+    window.electronAPI = undefined
+
+    renderWithProviders(<NewIntegrationButton />)
+    await userEvent.click(screen.getByTestId('connections-add-button'))
+    await userEvent.click(screen.getByTestId('directory-tab-mcps'))
+
+    await userEvent.type(screen.getByPlaceholderText('Search MCP servers...'), 'zzzznope')
+
+    await waitFor(() => expect(screen.getByText('No MCP matches')).toBeInTheDocument())
+    expect(screen.queryByTestId('directory-see-all')).not.toBeInTheDocument()
+  })
+})
+
+describe('NewIntegrationButton — post-OAuth policy editor', () => {
+  it('opens ScopePolicyEditor after Electron IPC OAuth callback', async () => {
+    const unsubscribe = vi.fn()
+    window.electronAPI = {
+      // onOAuthCallback now returns a per-listener unsubscribe (SUP-215).
+      onOAuthCallback: vi.fn((cb: any) => { capturedOAuthCallback = cb; return unsubscribe }),
+      openExternal: vi.fn(),
+    } as any
+
+    renderWithProviders(<NewIntegrationButton />)
+
+    await userEvent.click(screen.getByTestId('connections-add-button'))
+
+    await waitFor(() => {
+      expect(screen.getByText('Slack')).toBeInTheDocument()
+    })
+
+    await userEvent.click(screen.getByTestId('directory-connect-api-slack'))
+
+    expect(capturedOAuthCallback).not.toBeNull()
+
+    // A callback for another sign-in settles nothing; only this click's connection completes it.
+    await act(async () => {
+      await capturedOAuthCallback!({ connectionId: 'other-conn', toolkit: 'slack', status: 'success' })
+    })
+    expect(mockApiFetch).not.toHaveBeenCalledWith('/api/connected-accounts/complete', expect.anything())
+
+    await act(async () => {
+      await capturedOAuthCallback!({
+        connectionId: 'pending-conn-123',
+        toolkit: 'slack',
+        status: 'success',
+      })
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText(/Successfully Connected/i)).toBeInTheDocument()
+    }, { timeout: 3000 })
+  })
+
+  it('opens ScopePolicyEditor after web postMessage OAuth callback', async () => {
+    window.electronAPI = undefined
+
+    renderWithProviders(<NewIntegrationButton />)
+
+    await userEvent.click(screen.getByTestId('connections-add-button'))
+
+    await waitFor(() => {
+      expect(screen.getByText('Slack')).toBeInTheDocument()
+    })
+
+    await userEvent.click(screen.getByTestId('directory-connect-api-slack'))
+
+    const callback = { type: 'oauth-callback', success: true, accountId: MOCK_ACCOUNT_ID, toolkitSlug: 'slack' }
+    // Another site's message settles nothing.
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent('message', { data: callback, origin: 'https://evil.example' }))
+      await new Promise((r) => setTimeout(r, 50))
+    })
+    expect(screen.getByText('Add New Connection')).toBeInTheDocument()
+
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent('message', { data: callback, origin: window.location.origin }))
+      // Let the async message handler settle
+      await new Promise((r) => setTimeout(r, 50))
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText(/Successfully Connected/i)).toBeInTheDocument()
+    }, { timeout: 3000 })
+  })
+
+  it('falls back to closing dialog when accountId is missing', async () => {
+    window.electronAPI = undefined
+
+    renderWithProviders(<NewIntegrationButton />)
+
+    await userEvent.click(screen.getByTestId('connections-add-button'))
+
+    await waitFor(() => {
+      expect(screen.getByText('Slack')).toBeInTheDocument()
+    })
+
+    await userEvent.click(screen.getByTestId('directory-connect-api-slack'))
+
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'oauth-callback', success: true }, origin: window.location.origin }))
+      await new Promise((r) => setTimeout(r, 50))
+    })
+
+    // Dialog closes but no policy editor
+    await waitFor(() => {
+      expect(screen.queryByText('Add New Connection')).not.toBeInTheDocument()
+    })
+    expect(screen.queryByText(/Successfully Connected/i)).not.toBeInTheDocument()
+  })
+
+  it('shows delayed cancel during Electron OAuth and removes the pending listener', async () => {
+    const user = userEvent.setup()
+    const unsubscribe = vi.fn()
+    window.electronAPI = {
+      onOAuthCallback: vi.fn((cb: any) => { capturedOAuthCallback = cb; return unsubscribe }),
+      openExternal: vi.fn(),
+    } as any
+
+    renderWithProviders(<NewIntegrationButton />)
+
+    await user.click(screen.getByTestId('connections-add-button'))
+
+    await waitFor(() => {
+      expect(screen.getByText('Slack')).toBeInTheDocument()
+    })
+
+    vi.useFakeTimers()
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('directory-connect-api-slack'))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(capturedOAuthCallback).not.toBeNull()
+    expect(screen.queryByTestId('directory-cancel-api-slack')).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent(/^Connecting Slack…$/)
+
+    act(() => {
+      vi.advanceTimersByTime(LOGIN_WINDOW_CANCEL_DELAY_MS)
+    })
+
+    expect(screen.getByTestId('directory-cancel-api-slack')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Connecting Slack…, Cancel available')
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('directory-cancel-api-slack'))
+      await Promise.resolve()
+    })
+    expect(unsubscribe).toHaveBeenCalledTimes(1)
+    expect(fakeLoginWindow.close).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('directory-connect-api-slack')).not.toBeDisabled()
+  })
+
+  it('lets a newly connected MCP save default tool policies', async () => {
+    window.electronAPI = undefined
+
+    renderWithProviders(<NewIntegrationButton />)
+
+    await userEvent.click(screen.getByTestId('connections-add-button'))
+    await userEvent.click(screen.getByTestId('directory-tab-mcps'))
+    await userEvent.click(screen.getByTestId('directory-connect-mcp-linear'))
+    await userEvent.click(screen.getByTestId('mcp-form-submit'))
+
+    await waitFor(() => expect(capturedMcpOAuthCallback).not.toBeNull())
+
+    await act(async () => {
+      capturedMcpOAuthCallback!({ success: true })
+    })
+
+    await waitFor(() => expect(screen.getByTestId('tool-policy-save')).toBeEnabled())
+
+    await userEvent.click(screen.getByTestId('tool-policy-save'))
+    await waitFor(() => expect(lastToolPoliciesPutBody).toEqual({ policies: [] }))
+  })
+})
+
+describe('NewIntegrationButton — Shopify', () => {
+  function mockDirectory() {
+    window.electronAPI = undefined
+    const base = mockApiFetch.getMockImplementation()!
+    mockApiFetch.mockImplementation(async (url: string, opts?: { method?: string; body?: string }) => {
+      if (url === '/api/providers') {
+        return {
+          ok: true,
+          json: async () => ({
+            providers: [
+              { slug: 'slack', displayName: 'Slack', description: 'Team communication' },
+              { slug: 'shopify', displayName: 'Shopify', description: 'Online store' },
+            ],
+          }),
+        }
+      }
+      return base(url, opts)
+    })
+  }
+
+  // A provider with an install page (Shopify's App Store listing) has no grant to
+  // wait for, so the directory must not enter its connecting state.
+  it('opens the App Store listing instead of calling initiate', async () => {
+    mockDirectory()
+
+    renderWithProviders(<NewIntegrationButton />)
+    await userEvent.click(screen.getByTestId('connections-add-button'))
+    await waitFor(() => expect(screen.getByTestId('directory-connect-api-shopify')).toBeInTheDocument())
+    await userEvent.click(screen.getByTestId('directory-connect-api-shopify'))
+
+    expect(mockOpenExternal).toHaveBeenCalledWith('https://apps.shopify.com/gamut')
+    // The regression was a stuck connecting state that disabled every tile.
+    expect(screen.getByTestId('directory-connect-api-shopify')).toBeEnabled()
+    expect(mockApiFetch).not.toHaveBeenCalledWith(
+      '/api/connected-accounts/initiate',
+      expect.anything(),
+    )
+  })
+})

@@ -1,22 +1,7 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { callHost, textResult, XAgentError } from './host-client'
-
-interface SessionEntry {
-  id: string
-  name: string
-  createdAt: string
-  lastActivityAt: string
-  messageCount: number
-  isRunning: boolean
-}
-
-interface GetSessionsResult {
-  sessions: SessionEntry[]
-  total: number
-  offset: number
-  limit: number
-}
+import { getSessionsResultSchema } from './host-response-schemas'
 
 export const getSessionsTool = tool(
   'get_agent_sessions',
@@ -32,17 +17,17 @@ Use the returned session ID with get_session_transcript to read the conversation
   },
   async (args) => {
     try {
-      const data = await callHost<GetSessionsResult>('get-sessions', {
+      const data = await callHost('get-sessions', {
         slug: args.slug,
         limit: args.limit,
         offset: args.offset,
-      })
+      }, getSessionsResultSchema)
       if (data.total === 0) {
         return textResult(`Agent "${args.slug}" has no sessions.`)
       }
       const lines = data.sessions.map((s) => {
         const running = s.isRunning ? ' [running]' : ''
-        return `- ${s.id}${running} · ${s.name} · ${s.messageCount} msgs · last ${s.lastActivityAt}`
+        return `- ${s.id}${running} · ${s.name} · last ${s.lastActivityAt}`
       })
       const shown = data.offset + data.sessions.length
       const header = `Sessions for "${args.slug}" (${data.sessions.length} of ${data.total}):`

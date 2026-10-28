@@ -1,113 +1,240 @@
-import { MessageList } from '@renderer/components/messages/message-list'
+import { useMemo } from 'react'
 import { MessageInput } from '@renderer/components/messages/message-input'
-import { AgentActivityIndicator } from '@renderer/components/messages/agent-activity-indicator'
-import { PendingRequestStack } from '@renderer/components/messages/pending-request-stack'
-import { renderPendingRequest, type RenderContext } from '@renderer/components/messages/pending-request-renderer'
-import { usePendingRequests } from '@renderer/components/messages/use-pending-requests'
+import { describeVoiceInputRequest } from '@shared/lib/tools/registry'
+import { useIsVoiceModeActive } from '@renderer/lib/voice-mode-handoff'
+import { SessionThread } from '@renderer/components/messages/session-thread'
+import { PendingRequestStack } from '@shared/lib/tools/requests/pending-request-stack'
+import { renderPendingRequest, type RenderContext } from '@shared/lib/tools/requests/pending-request-renderer'
+import { PendingRequestErrorBoundary } from '@shared/lib/tools/requests/pending-request-error-boundary'
+import { usePendingRequests } from '@shared/lib/tools/requests/use-pending-requests'
+import { StaleSessionNotice } from '@renderer/components/messages/stale-session-notice'
+import { PendingWakeBanner } from '@renderer/components/messages/pending-wake-banner'
+import { ProviderErrorPlacement } from '@renderer/components/provider-error/provider-error-placement'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
+import { useScreenWakeLock } from '@renderer/hooks/use-screen-wake-lock'
+import { useStaleSession } from '@renderer/hooks/use-stale-session'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { DonutChart } from '@renderer/components/ui/donut-chart'
-import type { EffortLevel } from '@shared/lib/container/types'
-
-interface PendingMessage {
-  text: string
-  sentAt: number
-  sender?: { id: string; name: string; email: string }
-}
+import type { EffortLevel, SpeedLevel } from '@shared/lib/container/types'
+import type { PendingMessage } from '@renderer/components/messages/pending-message'
+import type { PendingMessagesContextValue } from '@renderer/context/pending-messages-context'
+import type { SessionUsage } from '@shared/lib/types/agent'
 
 interface SessionChatColumnProps {
-  sessionId: string
+  sessionId: string | null
+  onSessionCreated?: PendingMessagesContextValue['onSessionCreated']
+  /** Route slug used by session APIs and navigation. */
   agentSlug: string
-  pendingUserMessage: PendingMessage | null
+  /** Stable agent ID used by agent-scoped draft storage. */
+  agentId?: string
+  pendingUserMessages: PendingMessage[]
   isViewOnly: boolean
   contextPercent: number | null
   effort?: EffortLevel
+  speed?: SpeedLevel
+  llmProviderId?: string | null
   model?: string
-  onPendingMessageAppeared: () => void
-  onMessageSent: (content: string) => void
+  onPendingMessageAppeared: (localId: string) => void
+  onMessageSent: (content: string, localId: string, queued: boolean) => void
+  onMessageUuidAssigned: (localId: string, uuid: string, queued: boolean) => void
+  onMessageFailed: (localId: string) => void
+  lastActivityAt?: Date | null
+  contextUsage?: SessionUsage | null
+  // Pending scheduled wake (long sleep) — renders the auto-resume banner
+  pendingWakeAt?: string
+  pendingWakeTaskId?: string
+  pendingWakeNote?: string
 }
 
 export function SessionChatColumn({
   sessionId,
+  onSessionCreated,
   agentSlug,
-  pendingUserMessage,
+  agentId,
+  pendingUserMessages,
   isViewOnly,
   contextPercent,
   effort,
+  speed,
   model,
+  llmProviderId,
   onPendingMessageAppeared,
   onMessageSent,
+  onMessageUuidAssigned,
+  onMessageFailed,
+  lastActivityAt,
+  contextUsage,
+  pendingWakeAt,
+  pendingWakeTaskId,
+  pendingWakeNote,
 }: SessionChatColumnProps) {
-  const { isActive } = useMessageStream(sessionId, agentSlug)
+  const { isActive, browserActive, isWaitingBackground } = useMessageStream(sessionId, agentSlug, ['isActive', 'browserActive', 'isWaitingBackground'])
+  const voiceModeActive = useIsVoiceModeActive(sessionId)
+  // Keep the phone awake (PWA only) while this session is actively working.
+  useScreenWakeLock(isActive || isWaitingBackground)
   const { items: pendingRequestItems, count: pendingRequestCount } = usePendingRequests({
     sessionId,
     agentSlug,
-    pendingUserMessage,
+    pendingUserMessages,
+  })
+  const voiceInputRequests = useMemo(() => pendingRequestItems.map(describeVoiceInputRequest), [pendingRequestItems])
+
+  const renderCtx: RenderContext | null = sessionId ? { sessionId, agentSlug, readOnly: isViewOnly } : null
+
+  const staleSession = useStaleSession({
+    sessionId,
+    agentSlug: agentId ?? agentSlug,
+    routeAgentSlug: agentSlug,
+    isActive,
+    isWaitingBackground,
+    isAwaitingInput: pendingRequestCount > 0,
+    isViewOnly,
+    lastActivityAt,
+    contextUsage,
   })
 
-  const renderCtx: RenderContext = { sessionId, agentSlug, readOnly: isViewOnly }
-
   return (
-    <div className="flex-1 min-w-0 grid grid-rows-[1fr_auto] min-h-0">
-      <MessageList
-        sessionId={sessionId}
-        agentSlug={agentSlug}
-        pendingUserMessage={pendingUserMessage}
-        pendingRequestCount={pendingRequestCount}
-        onPendingMessageAppeared={onPendingMessageAppeared}
-      />
-      <div className="bg-background max-w-[740px] mx-auto w-full">
-        <AgentActivityIndicator sessionId={sessionId} agentSlug={agentSlug} />
-        {pendingRequestCount > 0 ? (
-          <div className="px-4 pb-4" data-testid="pending-request-slot">
-            <PendingRequestStack>
-              {pendingRequestItems.map((d) => renderPendingRequest(d, renderCtx))}
-            </PendingRequestStack>
-          </div>
-        ) : (
-          <>
-            <MessageInput
-              key={sessionId}
-              sessionId={sessionId}
-              agentSlug={agentSlug}
-              onMessageSent={onMessageSent}
-              initialEffort={effort}
-              initialModel={model}
-            />
-            <div className="flex justify-between items-center gap-1.5 px-6 py-3">
-              {contextPercent != null ? (
-                <TooltipProvider delayDuration={0}>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <div className="flex items-center gap-1.5 cursor-default">
-                        <span className="text-xs text-muted-foreground">Context Usage</span>
-                        <DonutChart
-                          percent={contextPercent}
-                          animated={isActive}
-                          size="sm"
-                          showLabel={false}
-                        />
-                      </div>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <p>{contextPercent}%</p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              ) : (
-                <span />
-              )}
-              <span className="text-xs text-muted-foreground flex items-center gap-1">
-                <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">↵</kbd>
-                <span>Send</span>
-                <span className="mx-1">·</span>
-                <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">⇧↵</kbd>
-                <span>New line</span>
-              </span>
+    <SessionThread
+      sessionId={sessionId}
+      agentSlug={agentSlug}
+      browserActive={browserActive}
+      pendingUserMessages={pendingUserMessages}
+      pendingRequestCount={pendingRequestCount}
+      onPendingMessageAppeared={onPendingMessageAppeared}
+      suppressScrollToBottom={staleSession.popoverOpen}
+      overlayFooter
+      footerClassName="max-w-[740px] mx-auto w-full"
+      footer={
+        <>
+          {sessionId && renderCtx && pendingRequestCount > 0 && (
+            <div className="px-4 pb-4" data-testid="pending-request-slot">
+              <PendingRequestStack>
+                {pendingRequestItems.map((d) => (
+                  <PendingRequestErrorBoundary
+                    key={d.key}
+                    sessionId={sessionId}
+                    agentSlug={agentSlug}
+                    onDismiss={d.onComplete}
+                    itemId={d.key}
+                    kind={d.kind}
+                  >
+                    {renderPendingRequest(d, renderCtx)}
+                  </PendingRequestErrorBoundary>
+                ))}
+              </PendingRequestStack>
             </div>
-          </>
-        )}
-      </div>
+          )}
+          {/* Kept mounted behind a request card or a blocking provider error, just
+              hidden: what it holds (a draft, voice mode) survives. Voice mode pauses
+              for either and picks the agent's turn back up once it is gone. */}
+          <div hidden={pendingRequestCount > 0}>
+            <ProviderErrorPlacement placement="composer" sessionId={sessionId} agentSlug={agentSlug}>
+              {({ displaced }) => (
+                <>
+                  {sessionId && pendingWakeAt && pendingWakeTaskId && !isActive && (
+                    <PendingWakeBanner
+                      sessionId={sessionId}
+                      agentSlug={agentSlug}
+                      wakeAt={pendingWakeAt}
+                      taskId={pendingWakeTaskId}
+                      note={pendingWakeNote}
+                      readOnly={isViewOnly}
+                    />
+                  )}
+                  {staleSession.showNotice && (
+                    <StaleSessionNotice
+                      onIgnore={staleSession.ignore}
+                      onContinueCompacted={staleSession.continueCompacted}
+                      onStartFresh={staleSession.startFresh}
+                      isPending={staleSession.isPending}
+                      onPopoverOpenChange={staleSession.setPopoverOpen}
+                    />
+                  )}
+                  {!isViewOnly && <MessageInput
+                    onSessionCreated={onSessionCreated}
+                    sessionId={sessionId}
+                    agentSlug={agentSlug}
+                    onMessageSent={onMessageSent}
+                    onMessageUuidAssigned={onMessageUuidAssigned}
+                    onMessageFailed={onMessageFailed}
+                    initialEffort={effort}
+                    initialSpeed={speed}
+                    initialModel={model} initialLlmProviderId={llmProviderId}
+                    registerSnapshot={staleSession.registerSnapshot}
+                    suspended={pendingRequestCount > 0 || displaced}
+                    inputRequests={voiceInputRequests}
+                  />}
+                  <SessionComposerHints contextPercent={contextPercent} isActive={isActive} voiceModeActive={voiceModeActive} />
+                </>
+              )}
+            </ProviderErrorPlacement>
+          </div>
+        </>
+      }
+    />
+  )
+}
+
+function SessionComposerHints({ contextPercent, isActive = false, voiceModeActive = false }: {
+  contextPercent: number | null
+  isActive?: boolean
+  voiceModeActive?: boolean
+}) {
+  return (
+    <div className="relative isolate flex flex-wrap items-center justify-between gap-x-1.5 gap-y-0.5 overflow-hidden px-6 py-3">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-y-0 left-0 z-0 w-[52%] bg-gradient-to-r from-background via-background/75 to-transparent backdrop-blur-[2px]"
+        style={{
+          maskImage: 'linear-gradient(to right, black 0%, black 55%, transparent 100%)',
+          WebkitMaskImage: 'linear-gradient(to right, black 0%, black 55%, transparent 100%)',
+        }}
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-y-0 right-0 z-0 w-[52%] bg-gradient-to-l from-background via-background/75 to-transparent backdrop-blur-[2px]"
+        style={{
+          maskImage: 'linear-gradient(to left, black 0%, black 55%, transparent 100%)',
+          WebkitMaskImage: 'linear-gradient(to left, black 0%, black 55%, transparent 100%)',
+        }}
+      />
+      {contextPercent != null ? (
+        <TooltipProvider delayDuration={0}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="relative z-10 flex cursor-default items-center gap-1.5 whitespace-nowrap">
+                <span className="text-xs text-muted-foreground">Context Usage</span>
+                <DonutChart
+                  percent={contextPercent}
+                  animated={isActive}
+                  size="sm"
+                  showLabel={false}
+                />
+              </div>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>{contextPercent}%</p>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      ) : (
+        <span className="relative z-10" />
+      )}
+      {voiceModeActive ? (
+        <span className="relative z-10 flex items-center gap-1 whitespace-nowrap text-xs text-muted-foreground" data-testid="voice-mode-hint">
+          <span>Speak or</span>
+          <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">Space</kbd>
+          <span>to Interrupt</span>
+        </span>
+      ) : (
+        <span className="relative z-10 flex items-center gap-1 whitespace-nowrap text-xs text-muted-foreground">
+          <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">↵</kbd>
+          <span>Send</span>
+          <span className="mx-1">·</span>
+          <kbd className="inline-flex items-center justify-center rounded-sm bg-muted border border-border/50 px-1 h-4 text-xs font-sans leading-none">⇧↵</kbd>
+          <span>New line</span>
+        </span>
+      )}
     </div>
   )
 }

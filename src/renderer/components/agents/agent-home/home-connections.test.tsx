@@ -1,32 +1,45 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HomeConnections } from './home-connections'
+import { TEAM_BRAIN_AGENT_HOME_QUERY } from '@renderer/lib/team-brain/team-brain-agent-home'
 import { renderWithProviders } from '@renderer/test/test-utils'
 
-// Mock apiFetch so the real `useAgentConnectedAccounts` hook and
-// `useDeleteConnectedAccount` mutation run end-to-end against a fake network.
-// This is the level of integration that exercises the cache-key wiring —
-// mocking the hooks would skip exactly the code we want to test.
+// Mock apiFetch so the real `useAgentConnectedAccounts` hook runs end-to-end
+// against a fake network.
 const mockApiFetch = vi.fn()
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
 
-// HomeConnections calls setView({ kind: 'connections' }) for the
-// "Manage Connections" button — not part of the delete flow we care about.
-vi.mock('@renderer/context/selection-context', () => ({
-  useSelection: () => ({
-    setView: vi.fn(),
-    setAgent: vi.fn(),
-    consumePendingDraft: vi.fn(() => null),
+const oauthReconnectMocks = vi.hoisted(() => ({
+  reconnect: vi.fn(),
+  cancelReconnect: vi.fn(),
+}))
+vi.mock('@renderer/hooks/use-oauth-reconnect', () => ({
+  useOAuthReconnect: () => ({
+    reconnect: oauthReconnectMocks.reconnect,
+    pendingAccountId: null,
+    canCancelPendingReconnect: false,
+    cancelReconnect: oauthReconnectMocks.cancelReconnect,
   }),
+}))
+
+// Capture navigate so we can assert the deep link into the connections page
+// (the rows navigate directly).
+const mockNavigate = vi.fn()
+const mockHere = vi.hoisted(() => ({ current: '/agents/test-agent' }))
+vi.mock('@tanstack/react-router', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tanstack/react-router')>()),
+  useNavigate: () => mockNavigate,
+  useRouterState: ({ select }: { select: (s: { location: { href: string } }) => unknown }) => select({ location: { href: mockHere.current } }),
 }))
 
 const ACCOUNT = {
   id: 'acc-1',
-  composioConnectionId: 'conn-1',
+  providerConnectionId: 'conn-1',
+  providerName: 'composio',
   toolkitSlug: 'github',
   displayName: 'My GitHub Account',
   status: 'active' as const,
@@ -37,6 +50,11 @@ const ACCOUNT = {
   provider: { slug: 'github', displayName: 'GitHub' },
 }
 
+type AccountFixture = Omit<typeof ACCOUNT, 'status'> & {
+  status: 'active' | 'expired' | 'revoked'
+}
+let accountResponse: AccountFixture[] = [ACCOUNT]
+
 function jsonResponse(body: unknown, ok = true): Response {
   return {
     ok,
@@ -45,60 +63,138 @@ function jsonResponse(body: unknown, ok = true): Response {
   } as Response
 }
 
-describe('HomeConnections — delete account flow', () => {
+describe('HomeConnections — row navigation', () => {
   beforeEach(() => {
     mockApiFetch.mockReset()
-  })
-
-  it('removes the deleted account from the agent-home list after global delete', async () => {
-    // Backend state: starts with one account, becomes empty after DELETE.
-    let accounts = [ACCOUNT]
+    mockNavigate.mockReset()
+    mockHere.current = '/agents/test-agent'
+    oauthReconnectMocks.reconnect.mockReset()
+    oauthReconnectMocks.cancelReconnect.mockReset()
+    accountResponse = [ACCOUNT]
 
     mockApiFetch.mockImplementation((path: string, init?: { method?: string }) => {
       const method = init?.method ?? 'GET'
-
       if (path === '/api/agents/test-agent/connected-accounts' && method === 'GET') {
-        return Promise.resolve(jsonResponse({ accounts }))
+        return Promise.resolve(jsonResponse({ accounts: accountResponse }))
       }
       if (path === '/api/agents/test-agent/remote-mcps' && method === 'GET') {
         return Promise.resolve(jsonResponse({ mcps: [] }))
       }
-      if (path === '/api/connected-accounts/acc-1' && method === 'DELETE') {
-        accounts = []
-        return Promise.resolve(jsonResponse({}, true))
+      if (path.startsWith('/api/activity/agents/test-agent?days=14&tz=') && method === 'GET') {
+        return Promise.resolve(jsonResponse({
+          days: 2,
+          generatedAt: '2026-07-09T12:00:00.000Z',
+          cronByTaskId: {},
+          webhookByTriggerId: {},
+          inboundXAgent: { total: 0, lastInvokedAt: null, activity: [] },
+          connectionById: {
+            'account-acc-1': [
+              { date: '2026-07-08', succeeded: 2, failed: 1 },
+              { date: '2026-07-09', succeeded: 1, failed: 0 },
+            ],
+          },
+        }))
+      }
+      throw new Error(`Unexpected request: ${method} ${path}`)
+    })
+  })
+
+  it('deep-links to the connection detail view when a row is activated', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<HomeConnections agentSlug="test-agent" />)
+
+    // Wait for initial load — the account row appears (name = provider display name).
+    expect(await screen.findByText('GitHub')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Open GitHub connection details' }))
+
+    // The row key matches the UnifiedRow key format used by the connections
+    // page; source 'home' makes Back (and the header breadcrumb) skip the list.
+    expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/agents/$slug/connections',
+      params: { slug: 'test-agent' },
+      search: { detail: 'account-acc-1', source: 'home', from: '/agents/test-agent' },
+    })
+  })
+
+  it('Back returns to the page it was opened from, with what that page carries in its URL', async () => {
+    mockHere.current = `/agents/test-agent?${TEAM_BRAIN_AGENT_HOME_QUERY}`
+    const user = userEvent.setup()
+    renderWithProviders(<HomeConnections agentSlug="test-agent" />)
+    expect(await screen.findByText('GitHub')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Open GitHub connection details' }))
+    expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/agents/$slug/connections',
+      params: { slug: 'test-agent' },
+      search: { detail: 'account-acc-1', source: 'home', from: `/agents/test-agent?${TEAM_BRAIN_AGENT_HOME_QUERY}` },
+    })
+  })
+
+  it('opens the connections page (no deep link) from the Manage Connections button', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<HomeConnections agentSlug="test-agent" />)
+
+    expect(await screen.findByText('GitHub')).toBeInTheDocument()
+
+    await user.click(screen.getByTestId('home-connections-open-page'))
+
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/agents/$slug/connections', params: { slug: 'test-agent' } })
+  })
+
+  it('shows only this agent\'s activity for the matching connection', async () => {
+    renderWithProviders(<HomeConnections agentSlug="test-agent" />)
+
+    expect(await screen.findByRole('img', {
+      name: 'GitHub activity: 4 calls over 2 days, 3 succeeded and 1 failed.',
+    })).toBeInTheDocument()
+    expect(mockApiFetch).toHaveBeenCalledWith(
+      `/api/activity/agents/test-agent?days=14&tz=${new Date().getTimezoneOffset()}`,
+    )
+  })
+
+  it('shows an expired API account and reconnects it from the status badge', async () => {
+    accountResponse = [{ ...ACCOUNT, status: 'expired' }]
+    const user = userEvent.setup()
+    renderWithProviders(<HomeConnections agentSlug="test-agent" />)
+
+    expect(await screen.findByText('GitHub')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /Expired/i }))
+
+    expect(oauthReconnectMocks.reconnect).toHaveBeenCalledWith('acc-1', 'github')
+    expect(mockNavigate).not.toHaveBeenCalled()
+  })
+
+  it('shows foreign links as non-navigable shared capabilities', async () => {
+    mockApiFetch.mockImplementation((path: string, init?: { method?: string }) => {
+      const method = init?.method ?? 'GET'
+      if (path === '/api/agents/test-agent/connected-accounts' && method === 'GET') {
+        return Promise.resolve(jsonResponse({
+          accounts: [{ kind: 'connected-account', toolkitSlug: 'slack', mappingId: 'map-a1' }],
+        }))
+      }
+      if (path === '/api/agents/test-agent/remote-mcps' && method === 'GET') {
+        return Promise.resolve(jsonResponse({ mcps: [{ kind: 'remote-mcp', mappingId: 'map-m1' }] }))
+      }
+      if (path.startsWith('/api/activity/agents/test-agent?days=14&tz=') && method === 'GET') {
+        return Promise.resolve(jsonResponse({
+          days: 0,
+          generatedAt: '2026-07-19T12:00:00.000Z',
+          cronByTaskId: {},
+          webhookByTriggerId: {},
+          inboundXAgent: { total: 0, lastInvokedAt: null, activity: [] },
+          connectionById: {},
+        }))
       }
       throw new Error(`Unexpected request: ${method} ${path}`)
     })
 
-    const user = userEvent.setup()
     renderWithProviders(<HomeConnections agentSlug="test-agent" />)
 
-    // Wait for initial load — the account row appears.
-    expect(await screen.findByText('My GitHub Account')).toBeInTheDocument()
-
-    // Open the row's actions menu, then trigger the global delete.
-    await user.click(screen.getByTestId('integration-row-actions-oauth-acc-1'))
-    await user.click(await screen.findByRole('button', { name: /delete/i }))
-
-    // Confirm in the AlertDialog (button labeled "Delete for all agents").
-    // Use `getAllByRole` because the menu item still exists in the DOM behind the dialog.
-    const confirmButtons = await screen.findAllByRole('button', { name: /delete for all agents/i })
-    // The last one is the AlertDialogAction (rendered in a portal on top).
-    await user.click(confirmButtons[confirmButtons.length - 1])
-
-    // The account row should disappear once the agent-scoped query is
-    // invalidated and refetches the now-empty list. Without invalidation
-    // of `['agent-connected-accounts']`, the cache stays stale and this fails.
-    await waitFor(() => {
-      expect(screen.queryByText('My GitHub Account')).not.toBeInTheDocument()
-    })
-    expect(screen.getByText('No connections yet')).toBeInTheDocument()
-
-    // Sanity-check the network: the agent-scoped endpoint was hit at least
-    // twice (initial load + post-delete refetch).
-    const agentAccountCalls = mockApiFetch.mock.calls.filter(
-      ([path, init]) => path === '/api/agents/test-agent/connected-accounts' && (init?.method ?? 'GET') === 'GET'
-    )
-    expect(agentAccountCalls.length).toBeGreaterThanOrEqual(2)
+    expect(await screen.findByText('Slack')).toBeInTheDocument()
+    expect(screen.getByText('Shared MCP connection')).toBeInTheDocument()
+    expect(screen.getAllByText('Connected by another member')).toHaveLength(2)
+    expect(screen.getAllByText('Shared')).toHaveLength(2)
+    expect(screen.queryByRole('button', { name: /connection details/i })).not.toBeInTheDocument()
+    expect(mockNavigate).not.toHaveBeenCalled()
   })
 })

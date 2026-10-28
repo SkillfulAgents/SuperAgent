@@ -2,30 +2,67 @@
  * Notification Manager
  *
  * Coordinates notification triggering:
- * 1. Checks if session is currently being viewed (skip if so)
- * 2. Checks notification settings (skip if disabled)
- * 3. Creates DB notification
- * 4. Broadcasts OS notification event via SSE
+ * 1. Checks notification settings (skip if disabled; auth mode defers to the
+ *    per-user gates in each delivery path)
+ * 2. Creates DB notification
+ * 3. Builds the canonical NotificationEvent and hands it to every registered
+ *    delivery channel (SSE client broadcast, Web Push, …). Viewed-session
+ *    suppression is a per-channel concern: the renderer applies it for the
+ *    client broadcast; Web Push currently has no presence signal and always
+ *    delivers (deliberate v1 scope).
  */
 
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { getRequestDefinition } from '@shared/lib/tools/registry'
+import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
+import { agentRegistry } from '@shared/lib/agent-actor'
 import {
   createNotification,
+  deleteMessageNotifications,
+  getAgentAccessUserIds,
   type NotificationType,
 } from '@shared/lib/services/notification-service'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
-import { getAgent } from '@shared/lib/services/agent-service'
-import { getSessionMetadata } from '@shared/lib/services/session-service'
+import { getAgentRecord } from '@shared/lib/services/agent-service'
+import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
+import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
+import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
+import { runWithOptionalUser } from '@shared/lib/platform-attribution/request-context'
+import { getNotificationChannels } from './channels'
+import { broadcastMentionWithdrawn } from './channels/client-broadcast-channel'
+import { isNotificationTypeEnabled } from './notification-preferences'
+import type { NotificationEvent } from './notification-event'
+import { buildSessionCompleteBody } from './session-complete-summary'
+
+interface SessionCompleteNotificationOptions {
+  /** Final top-level assistant text, already selected by the agent's session. */
+  responseText?: string | null
+  /** Where the transcript ended when this turn did: the byte bound for the body's context lookup. */
+  responseTranscriptEndOffset?: number | null
+}
+
+/** A mention's inbox body is its message, cut to a preview. */
+const MENTION_BODY_MAX = 280
+
+type NotificationBody = string | {
+  fallback: string
+  resolve: () => Promise<string>
+}
 
 class NotificationManager {
+  // Long responses may require a model call. Keep completion notifications for
+  // one session in lifecycle order even when a later short response is ready
+  // first; unrelated sessions remain fully parallel.
+  private readonly sessionCompleteChains = new Map<string, Promise<void>>()
+
   /**
    * Get the display name for an agent (name if available, otherwise slug)
    */
   private async getAgentDisplayName(agentSlug: string): Promise<string> {
     try {
-      const agent = await getAgent(agentSlug)
-      return agent?.frontmatter?.name || agentSlug
+      const agent = await getAgentRecord(agentSlug)
+      return agent?.name || agentSlug
     } catch {
       return agentSlug
     }
@@ -37,29 +74,40 @@ class NotificationManager {
    * In auth mode, always returns true — each client checks its own user's
    * settings before showing the OS notification (see GlobalNotificationHandler).
    */
-  private isNotificationTypeEnabled(type: NotificationType): boolean {
+  private async isNotificationTypeEnabled(type: NotificationType): Promise<boolean> {
     if (isAuthMode()) {
       return true
     }
 
-    const settings = getUserSettings('local')
-    const notificationSettings = settings.notifications
+    return isNotificationTypeEnabled((await getUserSettings('local')).notifications, type)
+  }
 
-    // Check global toggle first
-    if (!notificationSettings.enabled) {
+  /**
+   * Auth mode creates one shared inbox row, but enrichment is only useful when
+   * at least one ACL recipient has this notification type enabled. Delivery
+   * channels still enforce each user's preference independently.
+   */
+  private async shouldResolveDeferredBody(
+    type: NotificationType,
+    agentSlug: string,
+  ): Promise<boolean> {
+    if (!isAuthMode()) return true
+
+    try {
+      const userIds = await getAgentAccessUserIds(agentSlug)
+      for (const userId of userIds) {
+        if (isNotificationTypeEnabled((await getUserSettings(userId)).notifications, type)) return true
+      }
       return false
-    }
-
-    // Check per-type toggle
-    switch (type) {
-      case 'session_complete':
-        return notificationSettings.sessionComplete !== false
-      case 'session_waiting':
-        return notificationSettings.sessionWaiting !== false
-      case 'session_scheduled':
-        return notificationSettings.sessionScheduled !== false
-      default:
-        return true
+    } catch (error) {
+      // Preference lookup failure must not suppress a potentially wanted
+      // summary. Fail open, but make the unexpected token-spend path visible.
+      captureException(error, {
+        level: 'warning',
+        tags: { area: 'notifications', op: 'deferred-body-preferences' },
+        extra: { agentSlug, type },
+      })
+      return true
     }
   }
 
@@ -74,16 +122,41 @@ class NotificationManager {
     sessionId: string
     agentSlug: string
     title: string
-    body: string
+    body: NotificationBody
     actions?: Array<{ text: string }>
     actionContext?: Record<string, unknown>
+    extra?: Omit<Record<string, unknown>, 'type' | 'notificationType' | 'notificationId' | 'sessionId' | 'agentSlug' | 'title' | 'body' | 'actions' | 'actionContext'>
+    /** A targeted notification: only this user gets it. */
+    recipient?: { userId: string; messageUuid: string }
   }): Promise<void> {
-    const { type, sessionId, agentSlug, title, body, actions, actionContext } = params
+    const { type, sessionId, agentSlug, title, body, actions, actionContext, extra, recipient } = params
+
+    // A blocked automated session must become visible: session lists exclude
+    // non-promoted automated sessions, so a session_waiting notification on one
+    // would raise unread indicators pointing at nothing — and could never be
+    // cleared. Promote first (idempotent, no-op for non-automated sessions),
+    // and before the settings check: visibility isn't a notification pref.
+    if (type === 'session_waiting') {
+      try {
+        await agentRegistry.get(agentSlug).sessions.promoteAutomated(sessionId)
+      } catch (error) {
+        console.error('[NotificationManager] Failed to promote automated session:', error)
+      }
+    }
 
     // Skip if notification type is disabled in settings
-    if (!this.isNotificationTypeEnabled(type)) {
+    if (!(await this.isNotificationTypeEnabled(type))) {
       return
     }
+
+    // Completion bodies can require one summarizer call. Resolve them only
+    // after preferences pass so a disabled notification never spends model
+    // tokens. Other notification types keep their immediate string bodies.
+    const resolvedBody = typeof body === 'string'
+      ? body
+      : (await this.shouldResolveDeferredBody(type, agentSlug))
+          ? await body.resolve()
+          : body.fallback
 
     // Always create DB notification (for badge/dropdown history)
     const notificationId = await createNotification({
@@ -91,7 +164,8 @@ class NotificationManager {
       sessionId,
       agentSlug,
       title,
-      body,
+      body: resolvedBody,
+      ...(recipient ? { recipientUserId: recipient.userId, messageUuid: recipient.messageUuid } : {}),
     })
 
     // Stamp the actionContext with notificationId so the renderer dispatcher
@@ -102,19 +176,27 @@ class NotificationManager {
       ? { ...actionContext, notificationId }
       : undefined
 
-    // Broadcast OS notification event to all connected clients
-    // Frontend will decide whether to show based on tab visibility and selected session
-    messagePersister.broadcastGlobal({
-      type: 'os_notification',
+    const event: NotificationEvent = {
       notificationId,
-      notificationType: type,
+      type,
       sessionId,
       agentSlug,
       title,
-      body,
+      body: resolvedBody,
+      navigatePath: `/agents/${encodeURIComponent(agentSlug)}/sessions/${encodeURIComponent(sessionId)}`,
       ...(actions ? { actions } : {}),
       ...(stampedActionContext ? { actionContext: stampedActionContext } : {}),
-    })
+      ...(extra ? { extra } : {}),
+      ...(recipient ? { recipientUserId: recipient.userId } : {}),
+    }
+
+    // Fire-and-forget per channel: delivery to one backend (a slow push POST,
+    // a dead endpoint) must never block the trigger path or another channel.
+    for (const channel of getNotificationChannels()) {
+      background(channel.deliver(event).catch((error) => {
+        console.error(`[NotificationManager] ${channel.id} delivery failed:`, error)
+      }), { name: 'notification-manager.deliver-to-channel' })
+    }
   }
 
   /**
@@ -127,19 +209,70 @@ class NotificationManager {
   async triggerSessionComplete(
     sessionId: string,
     agentSlug: string,
-    agentName?: string
+    options: SessionCompleteNotificationOptions = {},
   ): Promise<void> {
-    const meta = await getSessionMetadata(agentSlug, sessionId)
-    if (meta?.isScheduledExecution || meta?.isWebhookExecution || meta?.isChatIntegrationSession) {
+    const key = `${agentSlug}\0${sessionId}`
+    const previous = this.sessionCompleteChains.get(key) ?? Promise.resolve()
+    const current = previous
+      .catch(() => undefined)
+      .then(() => this.triggerSessionCompleteNow(sessionId, agentSlug, options))
+    this.sessionCompleteChains.set(key, current)
+
+    try {
+      await current
+    } finally {
+      if (this.sessionCompleteChains.get(key) === current) {
+        this.sessionCompleteChains.delete(key)
+      }
+    }
+  }
+
+  private async triggerSessionCompleteNow(
+    sessionId: string,
+    agentSlug: string,
+    options: SessionCompleteNotificationOptions,
+  ): Promise<void> {
+    const meta = await agentRegistry.get(agentSlug).sessions.metadata(sessionId)
+    if (isHiddenAutomatedSession(meta)) {
       return
     }
-    const displayName = agentName || await this.getAgentDisplayName(agentSlug)
+    const displayName = await this.getAgentDisplayName(agentSlug)
+    const fallbackBody = `${displayName} has finished running`
     await this.triggerNotification({
       type: 'session_complete',
       sessionId,
       agentSlug,
-      title: 'Session Complete',
-      body: `${displayName} has finished running`,
+      // The old body carried the only agent identity. Keep that context after
+      // replacing it with the response preview, especially on APNs / desktop.
+      title: `${displayName} finished`,
+      body: {
+        fallback: fallbackBody,
+        // The summarizer is a host-direct proxy call fired from the container
+        // event stream, outside any request scope. Attribute it to the agent
+        // owner. The owner lookup is a DB read, so it stays inside the guard.
+        resolve: async () => {
+          try {
+            return await runWithOptionalUser(await getAgentOwnerUserId(agentSlug), async () =>
+              buildSessionCompleteBody({
+                sessionId,
+                agentSlug,
+                responseText: options.responseText,
+                responseTranscriptEndOffset: options.responseTranscriptEndOffset,
+                fallbackBody,
+              }),
+            )
+          } catch (error) {
+            // Body enrichment must never turn a successful session into a lost
+            // notification. The helper is defensive too; this is the last guard.
+            console.error('[NotificationManager] Failed to build completion body:', error)
+            captureException(error, {
+              tags: { area: 'notifications', op: 'session-complete-body' },
+              extra: { agentSlug, sessionId },
+            })
+            return fallbackBody
+          }
+        },
+      },
     })
   }
 
@@ -149,44 +282,18 @@ class NotificationManager {
   async triggerSessionWaitingInput(
     sessionId: string,
     agentSlug: string,
-    waitingFor: 'secret' | 'connected_account' | 'question' | 'file' | 'remote_mcp' | 'browser_input' | 'script_run' | 'computer_use',
+    request: Pick<PendingUserInputRequest, 'kind' | 'payload'>,
     agentName?: string
   ): Promise<void> {
     const displayName = agentName || await this.getAgentDisplayName(agentSlug)
-    let waitingMessage: string
-    switch (waitingFor) {
-      case 'secret':
-        waitingMessage = 'needs a secret value'
-        break
-      case 'connected_account':
-        waitingMessage = 'needs account access'
-        break
-      case 'question':
-        waitingMessage = 'has a question for you'
-        break
-      case 'file':
-        waitingMessage = 'needs a file from you'
-        break
-      case 'remote_mcp':
-        waitingMessage = 'needs access to an MCP server'
-        break
-      case 'browser_input':
-        waitingMessage = 'needs your browser input'
-        break
-      case 'script_run':
-        waitingMessage = 'wants to run a script on your machine'
-        break
-      case 'computer_use':
-        waitingMessage = 'wants to control your computer'
-        break
-    }
+    const notification = getRequestDefinition(request.kind).getNotification(displayName, request.payload)
+    if (!notification) return
 
     await this.triggerNotification({
       type: 'session_waiting',
       sessionId,
       agentSlug,
-      title: 'Action Required',
-      body: `${displayName} ${waitingMessage}`,
+      ...notification,
     })
   }
 
@@ -208,7 +315,10 @@ class NotificationManager {
     kind: 'api_request' | 'agent_action' = 'api_request',
   ): Promise<void> {
     const displayName = agentName || await this.getAgentDisplayName(agentSlug)
-    const titleSuffix = kind === 'agent_action' ? 'Agent Action Review' : 'API Request Review'
+    const notification = getRequestDefinition(
+      kind === 'agent_action' ? 'x_agent_review' : 'proxy_review',
+    ).getNotification(displayName, { displayText })
+    if (!notification) return
     // Decisions are index-aligned with `actions`. Carrying them in the
     // context decouples the renderer's dispatch from button order — see
     // notification-action-schema for the contract. (Review S6.)
@@ -218,8 +328,7 @@ class NotificationManager {
       type: 'session_waiting',
       sessionId,
       agentSlug,
-      title: `${displayName} — ${titleSuffix}`,
-      body: displayText,
+      ...notification,
       actions,
       actionContext: {
         kind: 'proxy_review',
@@ -237,6 +346,7 @@ class NotificationManager {
   async triggerScheduledSessionStarted(
     sessionId: string,
     agentSlug: string,
+    taskId: string,
     taskName?: string,
     agentName?: string
   ): Promise<void> {
@@ -249,6 +359,32 @@ class NotificationManager {
       agentSlug,
       title: 'Scheduled Task Started',
       body: `${taskDisplay} started for ${displayName}`,
+      extra: { taskId },
+    })
+  }
+
+  /**
+   * Trigger notification when a scheduled wake resumes an existing session.
+   * Reuses the session_scheduled type — a wake is a scheduled execution whose
+   * target happens to be an existing session.
+   */
+  async triggerScheduledSessionResumed(
+    sessionId: string,
+    agentSlug: string,
+    taskId: string,
+    sessionName?: string,
+    agentName?: string
+  ): Promise<void> {
+    const displayName = agentName || await this.getAgentDisplayName(agentSlug)
+    const sessionDisplay = sessionName || 'Session'
+
+    await this.triggerNotification({
+      type: 'session_scheduled',
+      sessionId,
+      agentSlug,
+      title: 'Session Resumed',
+      body: `${sessionDisplay} resumed as scheduled for ${displayName}`,
+      extra: { taskId },
     })
   }
 
@@ -293,11 +429,48 @@ class NotificationManager {
   }
 
   /**
+   * Trigger the notification for one person tagged in a session message.
+   * Only they get it, it always notifies (there is no setting for it), and it
+   * points at the message.
+   */
+  async triggerSessionMention(params: {
+    sessionId: string
+    agentSlug: string
+    messageUuid: string
+    recipientUserId: string
+    senderName: string
+    /** The message as the bubble shows it. */
+    text: string
+  }): Promise<void> {
+    const body = params.text.length > MENTION_BODY_MAX
+      ? `${params.text.slice(0, MENTION_BODY_MAX - 1).trimEnd()}…`
+      : params.text
+    await this.triggerNotification({
+      type: 'session_mention',
+      sessionId: params.sessionId,
+      agentSlug: params.agentSlug,
+      title: `${params.senderName} mentioned you`,
+      body,
+      recipient: { userId: params.recipientUserId, messageUuid: params.messageUuid },
+    })
+  }
+
+  /**
+   * Take back the mentions of a message that never reached the transcript
+   * (cancelled while queued, or discarded by a Stop): the inbox row and the @
+   * go. A push already shown stays shown.
+   */
+  async withdrawSessionMentions(messageUuid: string): Promise<void> {
+    for (const row of await deleteMessageNotifications(messageUuid)) broadcastMentionWithdrawn(row)
+  }
+
+  /**
    * Trigger notification when a webhook event starts a session
    */
   async triggerWebhookSessionStarted(
     sessionId: string,
     agentSlug: string,
+    triggerId: string,
     triggerName?: string,
     agentName?: string
   ): Promise<void> {
@@ -310,6 +483,7 @@ class NotificationManager {
       agentSlug,
       title: 'Webhook Trigger Fired',
       body: `${triggerDisplay} fired for ${displayName}`,
+      extra: { triggerId },
     })
   }
 }

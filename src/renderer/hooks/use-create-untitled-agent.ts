@@ -1,26 +1,78 @@
 import { useCallback } from 'react'
+import { flushSync } from 'react-dom'
 import { toast } from 'sonner'
 import { useCreateAgent } from '@renderer/hooks/use-agents'
-import { useSelection } from '@renderer/context/selection-context'
+import { useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
+import { assignAgentToFolder } from '@renderer/lib/agent-folders'
+import { useNavigate } from '@tanstack/react-router'
+import { useNavTransient } from '@renderer/context/nav-transient-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 
 export const UNTITLED_AGENT_NAME = 'Untitled'
 
-/**
- * Immediately creates an Untitled agent and selects it. Replaces the old
- * "open the create-agent modal" flow — the user lands on the agent's home
- * page where the composer + creation aids handle the rest.
- */
+/** Where the create was started, for `agent_created`'s `surface`. */
+export type CreateUntitledAgentSurface = 'nav' | 'section_plus' | 'home' | 'app_menu'
+
+export interface CreateUntitledAgentOptions {
+  surface: CreateUntitledAgentSurface
+  /**
+   * The left-nav folder to file the new agent into. Omitted (or the default
+   * folder) leaves it unfiled, the way the nav's own "New Agent" does.
+   */
+  folderId?: string
+}
+
 export function useCreateUntitledAgent() {
   const createAgent = useCreateAgent()
-  const { setAgent } = useSelection()
+  const updateSettings = useUpdateUserSettings()
+  // Morph tag lives in NavTransientContext; set it BEFORE navigate so
+  // AgentHome's first-mount initializer reads it and plays the intro once.
+  const { setJustCreatedSlug } = useNavTransient()
+  const navigate = useNavigate()
   const { track } = useAnalyticsTracking()
 
-  const createUntitledAgent = useCallback(async () => {
+  const createUntitledAgent = useCallback(async (options: CreateUntitledAgentOptions) => {
     try {
       const agent = await createAgent.mutateAsync({ name: UNTITLED_AGENT_NAME })
-      track('agent_created', { source: 'new', num_skills_added_at_creation: 0 })
-      setAgent(agent.slug)
+      track('agent_created', {
+        source: 'new',
+        surface: options.surface,
+        num_skills_added_at_creation: 0,
+      })
+
+      // Wait for the filing before navigating. Resolve the assignment against
+      // the latest settings when the serialized write runs.
+      if (options.folderId) {
+        const folderId = options.folderId
+        try {
+          await updateSettings.mutateAsync((current) => ({
+            agentFolderAssignments: assignAgentToFolder(
+              current.agentFolderAssignments,
+              agent.slug,
+              folderId
+            ),
+          }))
+        } catch {
+          // Creation succeeded. Open the agent even if its per-user filing
+          // failed, and explain where to find it instead of inviting a retry
+          // that would create a duplicate.
+          toast.error('Agent created, but could not add it to the section', {
+            description: 'You can find it in Your Agents and move it from there.',
+          })
+        }
+      }
+
+      // Morph tag keys on the canonical id (AgentHome compares against agent.slug);
+      // navigate with the pretty display slug so the URL reflects the name.
+      //
+      // Commit the tag SYNCHRONOUSLY before navigating: `navigate` renders the
+      // destination route (mounting AgentHome) within the same tick, and AgentHome
+      // reads `justCreatedSlug` once in a mount-time initializer. Without flushSync
+      // the router's synchronous render runs before React commits this context
+      // update, so AgentHome captures the pre-set `null` and the intro never plays.
+      flushSync(() => setJustCreatedSlug(agent.slug))
+      void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug } })
+
       return agent
     } catch (error) {
       console.error('Failed to create untitled agent:', error)
@@ -29,10 +81,10 @@ export function useCreateUntitledAgent() {
       })
       return null
     }
-  }, [createAgent, setAgent, track])
+  }, [createAgent, updateSettings, setJustCreatedSlug, navigate, track])
 
   return {
     createUntitledAgent,
-    isPending: createAgent.isPending,
+    isPending: createAgent.isPending || updateSettings.isPending,
   }
 }

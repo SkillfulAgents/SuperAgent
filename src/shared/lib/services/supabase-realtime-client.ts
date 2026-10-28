@@ -9,20 +9,63 @@
  */
 
 import WebSocket from 'ws'
-import type { RealtimeConfig } from './webhook-events-client'
+import { background } from '../background'
+
+export interface RealtimeConfig {
+  url: string
+  apikey: string
+  jwt: string
+  channel: string
+  /**
+   * Postgres table to subscribe to. Optional for backwards compatibility with
+   * the webhook-events poll response, which predates the field — the realtime
+   * client defaults to `webhook_events`. Row scoping is enforced by RLS via
+   * the JWT's claims (whole-channel subscribe), so no filter param is needed.
+   */
+  table?: string
+}
 
 type RealtimeCallback = (payload: unknown) => void
+type RealtimeRecord = {
+  member_id?: unknown
+  org_id?: unknown
+  composio_trigger_id?: unknown
+  status?: unknown
+}
+
+// Default preserved from before RealtimeConfig grew a `table` field, so the
+// webhook-events flow (whose poll response omits it) is untouched.
+const DEFAULT_TABLE = 'webhook_events'
+
+// Join error codes Supabase documents as not worth retrying with the same JWT
+// and config; every other code (restarts, rate limits, DB connection trouble)
+// is retried with backoff. https://supabase.com/docs/guides/realtime/protocol#join-errors
+const FATAL_JOIN_ERRORS = new Set([
+  'InvalidJWTExpiration',
+  'MalformedJWT',
+  'JwtSignatureError',
+  'Unauthorized',
+  'TopicNameRequired',
+  'TenantNotFound',
+  'RealtimeDisabledForTenant',
+  'RealtimeDisabledForConfiguration',
+])
 
 export class SupabaseRealtimeClient {
   private ws: WebSocket | null = null
   private heartbeatInterval: NodeJS.Timeout | null = null
   private reconnectTimeout: NodeJS.Timeout | null = null
   private reconnectAttempts = 0
-  private maxReconnectAttempts = 10
   private onEvent: RealtimeCallback | null = null
   private onDisconnect: (() => void) | null = null
+  private onConnect: (() => void) | null = null
   private config: RealtimeConfig | null = null
   private isConnected = false
+  private isJoined = false
+  // postgres_changes errors leave the channel open and Supabase retries the
+  // subscription itself, announcing recovery with a system `ok`.
+  private isSubscribed = false
+  private joinRef: string | null = null
   private isStopped = false
   private ref = 0
 
@@ -30,14 +73,25 @@ export class SupabaseRealtimeClient {
     return String(++this.ref)
   }
 
+  /**
+   * Resolves once Supabase accepts the channel join and rejects if it refuses
+   * it. Auth and config refusals stop the client, since retrying with the same
+   * JWT would be refused again; other refusals keep retrying with backoff.
+   *
+   * `onConnect` runs on every accepted join, including the client's own reconnects:
+   * INSERTs made while the socket was down were never announced, so a caller
+   * that treats notifications as wake-ups should catch up there.
+   */
   async connect(
     config: RealtimeConfig,
     onEvent: RealtimeCallback,
     onDisconnect?: () => void,
+    onConnect?: () => void,
   ): Promise<void> {
     this.config = config
     this.onEvent = onEvent
     this.onDisconnect = onDisconnect ?? null
+    this.onConnect = onConnect ?? null
     this.isStopped = false
     this.reconnectAttempts = 0
 
@@ -48,6 +102,7 @@ export class SupabaseRealtimeClient {
     if (this.isStopped || !this.config) return
 
     const { url, apikey, jwt } = this.config
+    const table = this.config.table ?? DEFAULT_TABLE
 
     // apikey param = Supabase project anon key (for gateway auth)
     // jwt is sent later in the phx_join payload as access_token (for RLS)
@@ -67,15 +122,22 @@ export class SupabaseRealtimeClient {
         this.ws?.close()
       }, 10000)
 
+      // A socket that errors out fires close without ever joining; the
+      // promise must settle then (not wait out the 10s timeout, which close
+      // cancels) or callers awaiting connect() hang forever.
+      let settled = false
+
       this.ws.onopen = () => {
-        clearTimeout(timeout)
         this.isConnected = true
-        this.reconnectAttempts = 0
         console.log('[SupabaseRealtime] Connected')
 
-        // Join the realtime channel for webhook_events with RLS
+        // Join the realtime channel for the configured table with RLS
+        console.log(
+          `[SupabaseRealtime] Joining channel realtime:public:${table} jwt=${describeRealtimeJwt(jwt)}`,
+        )
+        this.joinRef = this.nextRef()
         this.sendMessage({
-          topic: `realtime:public:webhook_events`,
+          topic: `realtime:public:${table}`,
           event: 'phx_join',
           payload: {
             config: {
@@ -84,13 +146,13 @@ export class SupabaseRealtimeClient {
                 {
                   event: 'INSERT',
                   schema: 'public',
-                  table: 'webhook_events',
+                  table,
                 },
               ],
             },
             access_token: jwt,
           },
-          ref: this.nextRef(),
+          ref: this.joinRef,
         })
 
         // Start heartbeat
@@ -102,8 +164,6 @@ export class SupabaseRealtimeClient {
             ref: this.nextRef(),
           })
         }, 30000)
-
-        resolve()
       }
 
       this.ws.onmessage = (event) => {
@@ -112,17 +172,66 @@ export class SupabaseRealtimeClient {
             topic?: string
             event?: string
             payload?: unknown
+            ref?: string
+          }
+
+          if (msg.event === 'phx_reply' && msg.ref !== undefined && msg.ref === this.joinRef) {
+            const reply = msg.payload as { status?: string; response?: unknown } | undefined
+            clearTimeout(timeout)
+            settled = true
+            if (reply?.status === 'ok') {
+              this.isJoined = true
+              this.isSubscribed = true
+              this.reconnectAttempts = 0
+              console.log(`[SupabaseRealtime] Joined channel realtime:public:${table}`)
+              this.onConnect?.()
+              resolve()
+            } else {
+              const reason = describeReplyError(reply?.response)
+              console.error(`[SupabaseRealtime] Channel join rejected: ${reason}`)
+              if (FATAL_JOIN_ERRORS.has(reason.split(':')[0].trim())) {
+                this.disconnect()
+              } else {
+                this.ws?.close()
+              }
+              reject(new Error(`Realtime channel join rejected: ${reason}`))
+            }
+            return
+          }
+
+          if (msg.topic === `realtime:public:${table}` && (msg.event === 'phx_error' || msg.event === 'phx_close')) {
+            this.isJoined = false
+            console.warn(`[SupabaseRealtime] Channel ${msg.event}`)
+            return
+          }
+
+          if (msg.event === 'system') {
+            const system = msg.payload as { status?: string; message?: string; extension?: string } | undefined
+            if (system?.extension === 'postgres_changes') {
+              this.isSubscribed = system.status === 'ok'
+              if (!this.isSubscribed) {
+                console.error(`[SupabaseRealtime] Subscription error: ${system.message ?? 'unknown'}`)
+              }
+            } else if (system?.status === 'error') {
+              this.isJoined = false
+              console.error(`[SupabaseRealtime] System error: ${system.message ?? 'unknown'}`)
+            }
+            return
           }
 
           // Handle postgres_changes INSERT events
           if (msg.event === 'postgres_changes' && msg.payload) {
             const payload = msg.payload as { data?: { type?: string; record?: unknown } }
             if (payload.data?.type === 'INSERT' && payload.data.record) {
+              const record = payload.data.record as RealtimeRecord
+              console.log(
+                `[SupabaseRealtime] INSERT member=${stringValue(record.member_id)} org=${stringValue(record.org_id)} trigger=${stringValue(record.composio_trigger_id)} status=${stringValue(record.status)}`,
+              )
               this.onEvent?.(payload.data.record)
             }
           }
-        } catch {
-          // Ignore non-JSON messages
+        } catch (error) {
+          console.warn('[SupabaseRealtime] Failed to parse realtime message:', error)
         }
       }
 
@@ -134,6 +243,7 @@ export class SupabaseRealtimeClient {
       this.ws.onclose = () => {
         clearTimeout(timeout)
         this.isConnected = false
+        this.isJoined = false
         this.stopHeartbeat()
         console.log('[SupabaseRealtime] Disconnected')
 
@@ -142,6 +252,11 @@ export class SupabaseRealtimeClient {
         }
 
         this.onDisconnect?.()
+
+        if (!settled) {
+          settled = true
+          reject(new Error('WebSocket closed before the channel was joined'))
+        }
       }
     })
   }
@@ -160,10 +275,7 @@ export class SupabaseRealtimeClient {
   }
 
   private scheduleReconnect(): void {
-    if (this.isStopped || this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.log('[SupabaseRealtime] Max reconnect attempts reached')
-      return
-    }
+    if (this.isStopped) return
 
     const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000)
     this.reconnectAttempts++
@@ -171,9 +283,9 @@ export class SupabaseRealtimeClient {
     console.log(`[SupabaseRealtime] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`)
 
     this.reconnectTimeout = setTimeout(() => {
-      this.doConnect().catch((err) => {
+      background(this.doConnect().catch((err) => {
         console.error('[SupabaseRealtime] Reconnect failed:', err)
-      })
+      }), { name: 'supabase-realtime-client.reconnect' })
     }, delay)
   }
 
@@ -193,11 +305,13 @@ export class SupabaseRealtimeClient {
     }
 
     this.isConnected = false
+    this.isJoined = false
     console.log('[SupabaseRealtime] Stopped')
   }
 
+  /** True only while the channel is joined and subscribed, not merely while the socket is open. */
   isActive(): boolean {
-    return this.isConnected && !this.isStopped
+    return this.isJoined && this.isSubscribed && !this.isStopped
   }
 
   /**
@@ -207,15 +321,44 @@ export class SupabaseRealtimeClient {
   async updateToken(jwt: string): Promise<void> {
     if (!this.config) return
     this.config = { ...this.config, jwt }
+    console.log(`[SupabaseRealtime] Updating access_token jwt=${describeRealtimeJwt(jwt)}`)
 
     // Send access_token update if connected
     if (this.isConnected) {
       this.sendMessage({
-        topic: `realtime:public:webhook_events`,
+        topic: `realtime:public:${this.config.table ?? DEFAULT_TABLE}`,
         event: 'access_token',
         payload: { access_token: jwt },
         ref: this.nextRef(),
       })
     }
   }
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' && value.length > 0 ? value : 'none'
+}
+
+function describeReplyError(response: unknown): string {
+  if (response && typeof response === 'object' && 'reason' in response) {
+    return String((response as { reason: unknown }).reason)
+  }
+  return response === undefined ? 'unknown' : JSON.stringify(response)
+}
+
+function describeRealtimeJwt(jwt: string): string {
+  const segments = jwt.split('.')
+  if (segments.length !== 3) return 'opaque'
+  try {
+    const payload = JSON.parse(decodeBase64Url(segments[1])) as Record<string, unknown>
+    return `sub=${stringValue(payload.sub)} member=${stringValue(payload.member_id)} org=${stringValue(payload.org_id)} exp=${typeof payload.exp === 'number' ? payload.exp : 'none'}`
+  } catch {
+    return 'unparseable'
+  }
+}
+
+function decodeBase64Url(value: string): string {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+  const padded = normalized + '='.repeat((4 - (normalized.length % 4 || 4)) % 4)
+  return Buffer.from(padded, 'base64').toString('utf8')
 }

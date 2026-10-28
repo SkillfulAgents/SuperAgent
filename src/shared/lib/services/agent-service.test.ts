@@ -2,13 +2,18 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import Database from 'better-sqlite3'
+import { drizzle } from 'drizzle-orm/better-sqlite3'
+import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
+import * as schema from '@shared/lib/db/schema'
+import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import {
-  SAMPLE_CLAUDE_MD,
-  SAMPLE_CLAUDE_MD_MINIMAL,
-  SAMPLE_CLAUDE_MD_NO_FRONTMATTER,
+  SAMPLE_INSTRUCTIONS,
+  SAMPLE_INSTRUCTIONS_MINIMAL,
+  SAMPLE_INSTRUCTIONS_NO_FRONTMATTER,
 } from './__fixtures__/test-data'
 
-// Mock containerManager before importing the service
+// Mock the container host before importing the service
 // Use vi.hoisted to ensure mock variables are available when vi.mock is hoisted
 const { mockGetCachedInfo, mockStopContainer, mockGetClient, mockGetPendingReviewsForAgent } = vi.hoisted(() => {
   const mockGetCachedInfo = vi.fn((): { status: string; port: number | null } => ({ status: 'stopped', port: null }))
@@ -21,14 +26,19 @@ const { mockGetCachedInfo, mockStopContainer, mockGetClient, mockGetPendingRevie
   return { mockGetCachedInfo, mockStopContainer, mockGetClient, mockGetPendingReviewsForAgent }
 })
 
-vi.mock('@shared/lib/container/container-manager', () => ({
-  containerManager: {
-    getClient: mockGetClient,
-    getCachedInfo: mockGetCachedInfo,
-    stopContainer: mockStopContainer,
-    getHealthWarnings: vi.fn(() => []),
-  },
-}))
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      getClient: mockGetClient,
+      getCachedInfo: mockGetCachedInfo,
+      stopContainer: mockStopContainer,
+      getHealthWarnings: vi.fn(() => []),
+      // deleteAgent evicts the handle once the agent is gone (dropRuntime).
+      removeClient: vi.fn(),
+    }),
+  }
+})
 
 vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: {
@@ -36,19 +46,33 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
   },
 }))
 
+// The catalog is the `agents` table: one in-memory database per test, so a
+// test's agents never leak into the next.
+let testDb: ReturnType<typeof drizzle>
+let sqlite: InstanceType<typeof Database>
+vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
+
 // Import after mocking
 import {
   getAgent,
+  getAgentRecord,
   getAgentWithStatus,
   listAgents,
   listAgentsWithStatus,
   createAgent,
+  createAgentFromExistingWorkspace,
+  updateAgentAvatar,
   updateAgent,
   deleteAgent,
   agentExists,
-  getAgentClaudeMdContent,
-  setAgentClaudeMdContent,
+  getAgentInstructionsContent,
+  setAgentInstructionsContent,
+  adoptAgentIdentityFromWorkspace,
+  syncAgentIdentityFromWorkspace,
+  writeAgentIdentityProjection,
 } from './agent-service'
+import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
+import { importAgentDirectories } from '@shared/lib/db/data-migrations/0001-import-agents-from-directories'
 
 describe('agent-service', () => {
   let testDir: string
@@ -64,6 +88,10 @@ describe('agent-service', () => {
     originalEnv = process.env.SUPERAGENT_DATA_DIR
     process.env.SUPERAGENT_DATA_DIR = testDir
 
+    sqlite = new Database(':memory:')
+    testDb = drizzle(sqlite, { schema })
+    migrate(testDb, { migrationsFolder: 'src/shared/lib/db/migrations' })
+
     // Reset mocks
     vi.clearAllMocks()
   })
@@ -78,19 +106,23 @@ describe('agent-service', () => {
 
     // Clean up temp directory
     await fs.promises.rm(testDir, { recursive: true, force: true })
+    sqlite.close()
 
     // Reset module cache
     vi.resetModules()
   })
 
-  // Helper to create an agent directory with CLAUDE.md
-  async function createTestAgent(slug: string, claudeMdContent: string) {
+  // Helper to create an agent the way an install found on disk is: a
+  // directory with a AGENTS.md, imported into the catalog by the data
+  // migration that runs when the database is opened.
+  async function createTestAgent(slug: string, instructionsContent: string) {
     const workspaceDir = path.join(testDir, 'agents', slug, 'workspace')
     await fs.promises.mkdir(workspaceDir, { recursive: true })
     await fs.promises.writeFile(
-      path.join(workspaceDir, 'CLAUDE.md'),
-      claudeMdContent
+      path.join(workspaceDir, 'AGENTS.md'),
+      instructionsContent
     )
+    await importAgentDirectories(testDb)
   }
 
   // ============================================================================
@@ -103,8 +135,65 @@ describe('agent-service', () => {
       expect(agent).toBeNull()
     })
 
+    it('returns null when a directory exists but AGENTS.md is missing, so it was never imported', async () => {
+      await fs.promises.mkdir(path.join(testDir, 'agents', 'hollow', 'workspace'), { recursive: true })
+      await importAgentDirectories(testDb)
+
+      const agent = await getAgent('hollow')
+
+      expect(agent).toBeNull()
+    })
+
+    // Slugs reach getAgent from request bodies and stored policy rows, not
+    // only from ResolveAgent, so anything that is not a catalog row must be
+    // null — not a thrown read.
+    it('returns null when the slug names a regular file in the agents dir', async () => {
+      await fs.promises.mkdir(path.join(testDir, 'agents'), { recursive: true })
+      await fs.promises.writeFile(path.join(testDir, 'agents', 'stray-file'), 'not an agent')
+      await importAgentDirectories(testDb)
+
+      await expect(getAgent('stray-file')).resolves.toBeNull()
+    })
+
+    it('returns null for a slug that is not a valid path component', async () => {
+      await expect(getAgent('bad\0slug')).resolves.toBeNull()
+      await expect(getAgent('x'.repeat(300))).resolves.toBeNull()
+    })
+
+    it('still surfaces a real read error on an existing agent', async () => {
+      // AGENTS.md is a directory: the agent exists, its config is unreadable.
+      // The workspace layer reports EISDIR as its own `not-a-file` error; what
+      // matters here is that it propagates instead of reading as "no agent".
+      const created = await createAgent({ name: 'Broken' })
+      const agentsMd = path.join(testDir, 'agents', created.slug, 'workspace', 'AGENTS.md')
+      await fs.promises.rm(agentsMd)
+      await fs.promises.mkdir(agentsMd)
+
+      await expect(getAgent(created.slug)).rejects.toMatchObject({ name: 'WorkspaceFileError', code: 'not-a-file' })
+    })
+
+    it('reads an agent whose AGENTS.md has gone missing as one with no instructions', async () => {
+      const created = await createAgent({ name: 'Bare' })
+      await fs.promises.rm(path.join(testDir, 'agents', created.slug, 'workspace', 'AGENTS.md'))
+
+      const agent = await getAgent(created.slug)
+
+      expect(agent?.frontmatter.name).toBe('Bare')
+      expect(agent?.instructions).toBe('')
+    })
+
+    it('answers with the catalog name, not the frontmatter, once they differ', async () => {
+      // The agent editing its own frontmatter no longer renames it: the row
+      // is the authority and the host rewrites the projection on its next write.
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
+      await setAgentInstructionsContent('test-agent', SAMPLE_INSTRUCTIONS.replace('name: Github Agent', 'name: Self Renamed'))
+
+      expect((await getAgent('test-agent'))?.frontmatter.name).toBe('Github Agent')
+      expect((await getAgentRecord('test-agent'))?.name).toBe('Github Agent')
+    })
+
     it('returns agent config for existing agent', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
       const agent = await getAgent('test-agent')
 
@@ -118,8 +207,8 @@ describe('agent-service', () => {
       expect(agent?.instructions).toContain('You are a helpful AI assistant')
     })
 
-    it('handles CLAUDE.md without description', async () => {
-      await createTestAgent('minimal-agent', SAMPLE_CLAUDE_MD_MINIMAL)
+    it('handles AGENTS.md without description', async () => {
+      await createTestAgent('minimal-agent', SAMPLE_INSTRUCTIONS_MINIMAL)
 
       const agent = await getAgent('minimal-agent')
 
@@ -141,13 +230,13 @@ Instructions
       expect(agent?.frontmatter.name).toBe('no-name-agent')
     })
 
-    it('handles CLAUDE.md without frontmatter', async () => {
-      await createTestAgent('no-frontmatter', SAMPLE_CLAUDE_MD_NO_FRONTMATTER)
+    it('handles AGENTS.md without frontmatter', async () => {
+      await createTestAgent('no-frontmatter', SAMPLE_INSTRUCTIONS_NO_FRONTMATTER)
 
       const agent = await getAgent('no-frontmatter')
 
       expect(agent?.frontmatter.name).toBe('no-frontmatter') // Falls back to slug
-      expect(agent?.instructions).toBe(SAMPLE_CLAUDE_MD_NO_FRONTMATTER)
+      expect(agent?.instructions).toBe(SAMPLE_INSTRUCTIONS_NO_FRONTMATTER)
     })
   })
 
@@ -158,17 +247,21 @@ Instructions
     })
 
     it('returns agent with stopped status', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
       const agent = await getAgentWithStatus('test-agent')
 
       expect(agent).not.toBeNull()
       expect(agent?.status).toBe('stopped')
       expect(agent?.containerPort).toBeNull()
+      expect(agent?.sessionCount).toBe(0)
+      expect(agent?.lastActivityAt).toBeNull()
+      expect(agent?.hasActiveSessions).toBe(false)
+      expect(agent?.hasSessionsAwaitingInput).toBe(false)
     })
 
     it('returns agent with running status when container is running', async () => {
-      await createTestAgent('running-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('running-agent', SAMPLE_INSTRUCTIONS)
 
       // Mock container as running
       mockGetCachedInfo.mockReturnValueOnce({ status: 'running', port: 3456 })
@@ -179,8 +272,20 @@ Instructions
       expect(agent?.containerPort).toBe(3456)
     })
 
+    it('can omit filesystem session summaries for command responses', async () => {
+      await createTestAgent('command-agent', SAMPLE_INSTRUCTIONS)
+
+      const agent = await getAgentWithStatus('command-agent', { includeSummary: false })
+
+      expect(agent).not.toBeNull()
+      expect(agent).not.toHaveProperty('sessionCount')
+      expect(agent).not.toHaveProperty('lastActivityAt')
+      expect(agent).not.toHaveProperty('hasActiveSessions')
+      expect(agent).not.toHaveProperty('hasSessionsAwaitingInput')
+    })
+
     it('surfaces awaiting input when agent has pending proxy reviews and no active sessions', async () => {
-      await createTestAgent('review-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('review-agent', SAMPLE_INSTRUCTIONS)
       mockGetPendingReviewsForAgent.mockReturnValueOnce([
         { id: 'review-1', agentSlug: 'review-agent', accountId: 'acc-1', toolkit: 'gmail', method: 'GET', targetPath: '/messages', matchedScopes: [], scopeDescriptions: {} },
       ])
@@ -198,8 +303,8 @@ Instructions
     })
 
     it('lists all agents', async () => {
-      await createTestAgent('agent-1', SAMPLE_CLAUDE_MD)
-      await createTestAgent('agent-2', SAMPLE_CLAUDE_MD_MINIMAL)
+      await createTestAgent('agent-1', SAMPLE_INSTRUCTIONS)
+      await createTestAgent('agent-2', SAMPLE_INSTRUCTIONS_MINIMAL)
 
       const agents = await listAgents()
 
@@ -225,12 +330,12 @@ Instructions`
 
       const agents = await listAgents()
 
-      expect(agents[0].frontmatter.name).toBe('New Agent')
-      expect(agents[1].frontmatter.name).toBe('Old Agent')
+      expect(agents[0].name).toBe('New Agent')
+      expect(agents[1].name).toBe('Old Agent')
     })
 
-    it('skips directories without CLAUDE.md', async () => {
-      await createTestAgent('valid-agent', SAMPLE_CLAUDE_MD)
+    it('skips directories without AGENTS.md', async () => {
+      await createTestAgent('valid-agent', SAMPLE_INSTRUCTIONS)
 
       // Create empty agent directory
       await fs.promises.mkdir(
@@ -243,12 +348,44 @@ Instructions`
       expect(agents.length).toBe(1)
       expect(agents[0].slug).toBe('valid-agent')
     })
+
+    it('orders many agents newest-first regardless of directory or creation order', async () => {
+      // Slug order, directory-creation order and createdAt order all disagree,
+      // so the listing must sort purely by createdAt.
+      const agents = [
+        ['agent-c', '2026-03-01T00:00:00.000Z'],
+        ['agent-a', '2026-05-01T00:00:00.000Z'],
+        ['agent-e', '2026-01-01T00:00:00.000Z'],
+        ['agent-b', '2026-04-01T00:00:00.000Z'],
+        ['agent-d', '2026-02-01T00:00:00.000Z'],
+        ['agent-f', '2026-06-01T00:00:00.000Z'],
+      ] as const
+      for (const [slug, createdAt] of agents) {
+        await createTestAgent(slug, `---\nname: ${slug}\ncreatedAt: "${createdAt}"\n---\nInstructions`)
+      }
+
+      const listed = await listAgents()
+
+      expect(listed.map((a) => a.slug)).toEqual([
+        'agent-f', 'agent-a', 'agent-b', 'agent-c', 'agent-d', 'agent-e',
+      ])
+    })
+
+    it('skips an agent whose AGENTS.md is missing while keeping its siblings', async () => {
+      await createTestAgent('first', SAMPLE_INSTRUCTIONS)
+      await fs.promises.mkdir(path.join(testDir, 'agents', 'hollow', 'workspace'), { recursive: true })
+      await createTestAgent('last', SAMPLE_INSTRUCTIONS)
+
+      const listed = await listAgents()
+
+      expect(listed.map((a) => a.slug).sort()).toEqual(['first', 'last'])
+    })
   })
 
   describe('listAgentsWithStatus', () => {
-    it('returns agents with their container status', async () => {
-      await createTestAgent('agent-1', SAMPLE_CLAUDE_MD)
-      await createTestAgent('agent-2', SAMPLE_CLAUDE_MD_MINIMAL)
+    it('returns agents with their container status and without instructions', async () => {
+      await createTestAgent('agent-1', SAMPLE_INSTRUCTIONS)
+      await createTestAgent('agent-2', SAMPLE_INSTRUCTIONS_MINIMAL)
 
       // Default mock returns stopped status
       const agents = await listAgentsWithStatus()
@@ -257,7 +394,19 @@ Instructions`
       agents.forEach((agent) => {
         expect(agent.status).toBe('stopped')
         expect(agent.containerPort).toBeNull()
+        expect(agent).not.toHaveProperty('instructions')
       })
+      expect(agents.map((agent) => agent.name).sort()).toEqual(['Github Agent', 'Minimal Agent'])
+    })
+
+    it('restricts the listing to the given slugs, newest first', async () => {
+      await createTestAgent('agent-1', SAMPLE_INSTRUCTIONS)
+      await createTestAgent('agent-2', SAMPLE_INSTRUCTIONS_MINIMAL)
+      await createTestAgent('agent-3', SAMPLE_INSTRUCTIONS)
+
+      const agents = await listAgentsWithStatus({ slugs: ['agent-2', 'agent-3', 'not-an-agent'] })
+
+      expect(agents.map((agent) => agent.slug)).toEqual(['agent-3', 'agent-2'])
     })
   })
 
@@ -266,11 +415,28 @@ Instructions`
   // ============================================================================
 
   describe('createAgent', () => {
+    it('assigns stored avatars through both direct creation and the import/install entry point', async () => {
+      for (const create of [() => createAgent({ name: 'Direct' }), () => createAgentFromExistingWorkspace('Imported')]) {
+        const agent = await create()
+        expect(agent.avatar).toEqual((await getAgentRecord(agent.slug))?.avatar)
+        expect(agentAvatarSchema.safeParse(agent.avatar).success).toBe(true)
+        const before = await getAgentInstructionsContent(agent.slug)
+        const chosen = { color: 'duo-red-amber', shape: 'bloom' } as const
+        expect(await updateAgentAvatar(agent.slug, chosen)).toEqual(chosen)
+        expect((await getAgentWithStatus(agent.slug))?.avatar).toEqual(chosen)
+        expect(await getAgentInstructionsContent(agent.slug)).toBe(before)
+        await updateAgent(agent.slug, { name: 'Renamed' })
+        expect((await getAgentRecord(agent.slug))?.avatar).toEqual(chosen)
+      }
+    })
+
     it('creates agent with name only', async () => {
       const agent = await createAgent({ name: 'New Agent' })
 
       expect(agent.name).toBe('New Agent')
-      expect(agent.slug).toMatch(/^new-agent-[a-z0-9]{6}$/)
+      // Identity is now an opaque minted id; the name lives in the projected displaySlug.
+      expect(agent.slug).toMatch(/^[a-z0-9]{10}$/)
+      expect(agent.displaySlug).toMatch(/^new-agent-[a-z0-9]{10}$/)
       expect(agent.status).toBe('stopped')
       expect(agent.containerPort).toBeNull()
       expect(agent.instructions).toContain('You are a helpful AI assistant')
@@ -288,9 +454,11 @@ Instructions`
 
       expect(agent.description).toBe('This is a description')
 
-      // Verify description is in the file
-      const content = await getAgentClaudeMdContent(agent.slug)
+      // The catalog holds it, and the file carries the projection
+      expect((await getAgentRecord(agent.slug))?.description).toBe('This is a description')
+      const content = await getAgentInstructionsContent(agent.slug)
       expect(content).toContain('description: This is a description')
+      expect(content).toContain('name: Described Agent')
     })
 
     it('creates agent with custom instructions', async () => {
@@ -301,6 +469,26 @@ Instructions`
       })
 
       expect(agent.instructions).toBe(customInstructions)
+    })
+
+    it('records the agent before writing its workspace, and takes the row back if the write fails', async () => {
+      // Pin the minted slug and put a file where its directory must go, so
+      // the workspace write fails after the row exists.
+      const slug = 'a'.repeat(10)
+      await fs.promises.mkdir(path.join(testDir, 'agents'), { recursive: true })
+      const random = vi.spyOn(Math, 'random').mockReturnValue(0)
+      try {
+        await fs.promises.writeFile(path.join(testDir, 'agents', slug), 'in the way')
+        // mint() also refuses a slug whose directory exists, so it falls back
+        // to the timestamp form; block that too by making every candidate
+        // collide with a file.
+        await expect(createAgent({ name: 'Doomed' })).rejects.toThrow()
+      } finally {
+        random.mockRestore()
+      }
+
+      expect(await agentExists(slug)).toBe(false)
+      expect(await listAgents()).toEqual([])
     })
 
     it('creates unique slugs for same name', async () => {
@@ -317,20 +505,23 @@ Instructions`
       expect(result).toBeNull()
     })
 
-    it('updates agent name', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+    it('updates agent name in the catalog and projects it into AGENTS.md', async () => {
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
       const updated = await updateAgent('test-agent', { name: 'Updated Name' })
 
       expect(updated?.name).toBe('Updated Name')
+      expect(updated?.displaySlug).toBe('test-agent') // legacy slugs are never re-prettified
 
       // Verify persisted
       const agent = await getAgent('test-agent')
       expect(agent?.frontmatter.name).toBe('Updated Name')
+      expect((await getAgentRecord('test-agent'))?.name).toBe('Updated Name')
+      expect(await getAgentInstructionsContent('test-agent')).toContain('name: Updated Name')
     })
 
     it('updates agent description', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
       const updated = await updateAgent('test-agent', {
         description: 'New description',
@@ -340,15 +531,17 @@ Instructions`
     })
 
     it('removes description when set to empty string', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
       const updated = await updateAgent('test-agent', { description: '' })
 
       expect(updated?.description).toBeUndefined()
+      expect(await getAgentRecord('test-agent')).not.toHaveProperty('description')
+      expect(await getAgentInstructionsContent('test-agent')).not.toContain('description:')
     })
 
     it('updates agent instructions', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
       const updated = await updateAgent('test-agent', {
         instructions: 'New instructions',
@@ -358,7 +551,7 @@ Instructions`
     })
 
     it('preserves unchanged fields', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
       await updateAgent('test-agent', { name: 'New Name' })
 
@@ -371,6 +564,169 @@ Instructions`
     })
   })
 
+  describe('rename atomicity', () => {
+    const frontmatterName = async (slug: string) =>
+      (await getAgentInstructionsContent(slug))?.match(/^name: (.*)$/m)?.[1]
+
+    it('leaves the old identity in the row and the document when the projection write fails', async () => {
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
+      const before = await getAgentInstructionsContent('test-agent')
+      vi.spyOn(agentRegistry.get('test-agent').config, 'put').mockRejectedValueOnce(new Error('disk full'))
+
+      await expect(updateAgent('test-agent', { name: 'Half Renamed', description: 'Half described' })).rejects.toThrow('disk full')
+
+      expect(await getAgentRecord('test-agent')).toMatchObject({
+        name: 'Github Agent',
+        description: 'An agent that helps with GitHub tasks',
+      })
+      expect(await getAgentInstructionsContent('test-agent')).toBe(before)
+    })
+
+    it('puts the old document back when the row update fails after the projection was written', async () => {
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
+      const before = await getAgentInstructionsContent('test-agent')
+      vi.spyOn(agentCatalog, 'update').mockRejectedValueOnce(new Error('row update failed'))
+
+      await expect(updateAgent('test-agent', { name: 'Half Renamed' })).rejects.toThrow('row update failed')
+
+      expect((await getAgentRecord('test-agent'))?.name).toBe('Github Agent')
+      expect(await getAgentInstructionsContent('test-agent')).toBe(before)
+    })
+
+    it('leaves no document behind when the row update fails for an agent that had none', async () => {
+      const created = await createAgent({ name: 'Bare' })
+      await fs.promises.rm(path.join(testDir, 'agents', created.slug, 'workspace', 'AGENTS.md'))
+      vi.spyOn(agentCatalog, 'update').mockRejectedValueOnce(new Error('database is locked'))
+
+      await expect(updateAgent(created.slug, { name: 'Half Renamed' })).rejects.toThrow('database is locked')
+
+      expect((await getAgentRecord(created.slug))?.name).toBe('Bare')
+      expect(await getAgentInstructionsContent(created.slug)).toBeNull()
+    })
+
+    it('serializes overlapping renames so the last one completed wins in the row and the document', async () => {
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
+      const config = agentRegistry.get('test-agent').config
+      const realPut = config.put.bind(config)
+      let release!: () => void
+      const held = new Promise<void>((resolve) => { release = resolve })
+      vi.spyOn(config, 'put').mockImplementationOnce(async (id, doc) => {
+        await held
+        return realPut(id, doc)
+      })
+
+      const first = updateAgent('test-agent', { name: 'First' })
+      const second = updateAgent('test-agent', { name: 'Second' })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      // Nothing has landed while the first projection write is held.
+      expect((await getAgentRecord('test-agent'))?.name).toBe('Github Agent')
+      expect(await frontmatterName('test-agent')).toBe('Github Agent')
+
+      release()
+      const results = await Promise.all([first, second])
+
+      expect(results.map((agent) => agent?.name)).toEqual(['First', 'Second'])
+      expect((await getAgentRecord('test-agent'))?.name).toBe('Second')
+      expect(await frontmatterName('test-agent')).toBe('Second')
+    })
+
+    it('leaves the created identity alone when the projection write fails during adoption', async () => {
+      const created = await createAgent({ name: 'Placeholder', description: 'Placeholder description' })
+      await setAgentInstructionsContent(created.slug, '---\nname: Template Name\ndescription: From the template\n---\nBody\n')
+      const before = await getAgentInstructionsContent(created.slug)
+      vi.spyOn(agentRegistry.get(created.slug).config, 'put').mockRejectedValueOnce(new Error('disk full'))
+
+      await expect(adoptAgentIdentityFromWorkspace(created.slug)).rejects.toThrow('disk full')
+
+      expect(await getAgentRecord(created.slug)).toMatchObject({ name: 'Placeholder', description: 'Placeholder description' })
+      expect(await getAgentInstructionsContent(created.slug)).toBe(before)
+    })
+  })
+
+  describe('identity projection', () => {
+    it('rewrites the frontmatter from the catalog and keeps other keys and the body', async () => {
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
+      await setAgentInstructionsContent('test-agent', '---\nname: Template Name\nversion: 2.0.0\n---\nTemplate body\n')
+
+      await writeAgentIdentityProjection('test-agent')
+
+      const content = await getAgentInstructionsContent('test-agent')
+      expect(content).toContain('name: Github Agent')
+      expect(content).toContain('description: An agent that helps with GitHub tasks')
+      expect(content).toContain('createdAt: "2026-01-24T01:30:50.090Z"')
+      expect(content).toContain('version: 2.0.0')
+      expect(content).toContain('Template body')
+    })
+
+    it('does nothing for an unknown agent or one without instructions', async () => {
+      await writeAgentIdentityProjection('nonexistent')
+      const created = await createAgent({ name: 'Bare' })
+      await fs.promises.rm(path.join(testDir, 'agents', created.slug, 'workspace', 'AGENTS.md'))
+      await writeAgentIdentityProjection(created.slug)
+      expect(await getAgentInstructionsContent(created.slug)).toBeNull()
+    })
+
+    it('adopts the name and description a template brought, keeping the creation date', async () => {
+      const created = await createAgent({ name: 'Placeholder' })
+      await setAgentInstructionsContent(created.slug, '---\nname: Template Name\ndescription: From the template\ncreatedAt: "2020-01-01T00:00:00.000Z"\n---\nBody\n')
+
+      const adopted = await adoptAgentIdentityFromWorkspace(created.slug)
+
+      expect(adopted).toMatchObject({ name: 'Template Name', description: 'From the template', createdAt: created.createdAt })
+      const content = await getAgentInstructionsContent(created.slug)
+      expect(content).toContain('name: Template Name')
+      expect(content).toContain(`createdAt: "${created.createdAt.toISOString()}"`)
+      expect(content).not.toContain('2020-01-01')
+    })
+
+    it('lets an override win over the template name, and keeps the row name when the template has none', async () => {
+      const created = await createAgent({ name: 'Chosen' })
+      await setAgentInstructionsContent(created.slug, '---\nname: Template Name\n---\nBody\n')
+      expect((await adoptAgentIdentityFromWorkspace(created.slug, { name: '  Override  ' }))?.name).toBe('Override')
+
+      await setAgentInstructionsContent(created.slug, 'No frontmatter\n')
+      expect((await adoptAgentIdentityFromWorkspace(created.slug, { name: '' }))?.name).toBe('Override')
+      expect(await adoptAgentIdentityFromWorkspace('nonexistent')).toBeNull()
+    })
+  })
+
+  describe('syncAgentIdentityFromWorkspace', () => {
+    it('takes the name and description the agent wrote, and a later user rename wins', async () => {
+      const created = await createAgent({ name: 'Untitled' })
+      await setAgentInstructionsContent(created.slug, '---\nname: Inbox Bot\ndescription: Triages Gmail and drafts replies.\n---\nBody\n')
+
+      expect(await syncAgentIdentityFromWorkspace(created.slug)).toEqual(['name', 'description'])
+
+      expect(await getAgentRecord(created.slug)).toMatchObject({ name: 'Inbox Bot', description: 'Triages Gmail and drafts replies.' })
+      await updateAgent(created.slug, { name: 'Mail Helper' })
+      const content = await getAgentInstructionsContent(created.slug)
+      expect(content).toContain('name: Mail Helper')
+      expect(content).toContain('description: Triages Gmail and drafts replies.')
+      expect(await syncAgentIdentityFromWorkspace(created.slug)).toEqual([])
+    })
+
+    it('leaves blank or missing fields alone', async () => {
+      const created = await createAgent({ name: 'Inbox Helper', description: 'Triages Gmail.' })
+      await setAgentInstructionsContent(created.slug, '---\nname: "  "\n---\nBody\n')
+
+      expect(await syncAgentIdentityFromWorkspace(created.slug)).toEqual([])
+      expect(await syncAgentIdentityFromWorkspace('nonexistent')).toEqual([])
+
+      expect(await getAgentRecord(created.slug)).toMatchObject({ name: 'Inbox Helper' })
+      expect((await getAgentRecord(created.slug))?.description).toBe('Triages Gmail.')
+    })
+
+    it('leaves a field alone when the value is too long or a YAML block indicator', async () => {
+      const created = await createAgent({ name: 'Inbox Helper', description: 'Triages Gmail.' })
+      await setAgentInstructionsContent(created.slug, `---\nname: ${'n'.repeat(81)}\ndescription: >-\n  Triages Gmail.\n---\nBody\n`)
+      expect(await syncAgentIdentityFromWorkspace(created.slug)).toEqual([])
+
+      await setAgentInstructionsContent(created.slug, `---\nname: Mail Helper\ndescription: ${'d'.repeat(201)}\n---\nBody\n`)
+      expect(await syncAgentIdentityFromWorkspace(created.slug)).toEqual(['name'])
+      expect(await getAgentRecord(created.slug)).toMatchObject({ name: 'Mail Helper', description: 'Triages Gmail.' })
+    })
+  })
+
   describe('deleteAgent', () => {
     it('returns false for non-existent agent', async () => {
       const result = await deleteAgent('nonexistent')
@@ -378,7 +734,7 @@ Instructions`
     })
 
     it('deletes agent and returns true', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
       const result = await deleteAgent('test-agent')
 
@@ -387,12 +743,37 @@ Instructions`
     })
 
     it('stops container before deleting', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
       mockStopContainer.mockClear()
 
       await deleteAgent('test-agent')
 
       expect(mockStopContainer).toHaveBeenCalledWith('test-agent')
+    })
+
+    it('drops what the host kept for the agent: locks, widget refreshes, proxy sessions, uploads, deferred namings', async () => {
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
+      const actor = agentRegistry.get('test-agent')
+      expect(await actor.locks.tryAcquire('wake:task-1')).not.toBeNull()
+      const waiting = actor.locks.acquire('wake:task-1')
+      expect(await actor.widgets.beginRefresh('macros')).not.toBeNull()
+      const joined = actor.widgets.beginOrJoinRefresh('macros')
+      const proxySession = await actor.mcpSessions.open('mcp-1', '2025-06-18')
+      await actor.volumeUploads.end('notes.txt', await actor.volumeUploads.begin('notes.txt'), 'failed')
+      await actor.sessions.deferNaming('session-1')
+
+      await deleteAgent('test-agent')
+
+      // Whoever waited on it hears the end of it…
+      await expect(waiting).rejects.toThrow(/no longer held/)
+      await expect(joined).resolves.toMatchObject({ outcome: { ok: false } })
+      // …and none of it reaches the next handle for the slug.
+      const fresh = agentRegistry.get('test-agent')
+      expect(await fresh.locks.tryAcquire('wake:task-1')).not.toBeNull()
+      expect(await fresh.widgets.refreshing()).toEqual([])
+      expect(await fresh.mcpSessions.get('mcp-1', proxySession)).toBeNull()
+      expect(await fresh.volumeUploads.allowDelete('notes.txt')).toBe(true)
+      expect(await fresh.sessions.takeDeferredNaming('session-1')).toBe(false)
     })
   })
 
@@ -407,35 +788,35 @@ Instructions`
     })
 
     it('returns true for existing agent', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
       const exists = await agentExists('test-agent')
       expect(exists).toBe(true)
     })
   })
 
-  describe('getAgentClaudeMdContent', () => {
+  describe('getAgentInstructionsContent', () => {
     it('returns null for non-existent agent', async () => {
-      const content = await getAgentClaudeMdContent('nonexistent')
+      const content = await getAgentInstructionsContent('nonexistent')
       expect(content).toBeNull()
     })
 
-    it('returns raw CLAUDE.md content', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+    it('returns raw AGENTS.md content', async () => {
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
-      const content = await getAgentClaudeMdContent('test-agent')
-      expect(content).toBe(SAMPLE_CLAUDE_MD)
+      const content = await getAgentInstructionsContent('test-agent')
+      expect(content).toBe(SAMPLE_INSTRUCTIONS)
     })
   })
 
-  describe('setAgentClaudeMdContent', () => {
-    it('writes raw CLAUDE.md content', async () => {
-      await createTestAgent('test-agent', SAMPLE_CLAUDE_MD)
+  describe('setAgentInstructionsContent', () => {
+    it('writes raw AGENTS.md content', async () => {
+      await createTestAgent('test-agent', SAMPLE_INSTRUCTIONS)
 
       const newContent = '# New Content\n\nNew instructions.'
-      await setAgentClaudeMdContent('test-agent', newContent)
+      await setAgentInstructionsContent('test-agent', newContent)
 
-      const content = await getAgentClaudeMdContent('test-agent')
+      const content = await getAgentInstructionsContent('test-agent')
       expect(content).toBe(newContent)
     })
   })

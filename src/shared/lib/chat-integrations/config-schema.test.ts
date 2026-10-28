@@ -2,8 +2,10 @@ import { describe, it, expect } from 'vitest'
 import {
   telegramConfigSchema,
   slackConfigSchema,
+  imessageConfigSchema,
   validateChatIntegrationConfig,
   parseChatIntegrationConfig,
+  mergeChatIntegrationConfig,
 } from './config-schema'
 
 // ── Telegram config schema ──────────────────────────────────────────────
@@ -62,6 +64,103 @@ describe('slackConfigSchema', () => {
   it('rejects empty appToken', () => {
     expect(() => slackConfigSchema.parse({ botToken: 'xoxb-123', appToken: '' })).toThrow()
   })
+
+  const relay = { endpointId: 'whep_1', url: 'https://relay.test/v1/hooks/whep_1', scope: 'sub_1' }
+
+  it('accepts webhooks without an app-level token, and an installation waiting for its Slack app', () => {
+    expect(slackConfigSchema.parse({ botToken: 'xoxb-123', signingSecret: 'secret', relay, webhookStatus: 'verified' })).toMatchObject({ relay, webhookStatus: 'verified' })
+    expect(slackConfigSchema.parse({ onlyMentioned: true, relay })).toEqual({ onlyMentioned: true, relay })
+  })
+
+  it('keeps webhook state out of caller-supplied config', () => {
+    const stored = JSON.stringify({ botToken: 'xoxb-123', appToken: 'xapp-456' })
+    const merged = mergeChatIntegrationConfig('slack', stored, { relay, webhookStatus: 'verified', signingSecret: 'secret' })
+    expect(merged).toEqual({ botToken: 'xoxb-123', appToken: 'xapp-456', signingSecret: 'secret' })
+  })
+
+  it('forgets what posts showed whenever a signing secret is saved, even the same one', () => {
+    const stored = JSON.stringify({ botToken: 'xoxb-123', signingSecret: 'secret', relay, webhookStatus: 'rejected' })
+    expect(mergeChatIntegrationConfig('slack', stored, { onlyMentioned: true })).toMatchObject({ webhookStatus: 'rejected' })
+    expect(mergeChatIntegrationConfig('slack', stored, { signingSecret: '••••••••' })).toMatchObject({ webhookStatus: 'rejected' })
+    expect(mergeChatIntegrationConfig('slack', stored, { signingSecret: ' secret ' })).not.toHaveProperty('webhookStatus')
+    expect(mergeChatIntegrationConfig('slack', stored, { signingSecret: 'rotated' })).not.toHaveProperty('webhookStatus')
+  })
+})
+
+// ── iMessage config schema ──────────────────────────────────────────────
+
+describe('imessageConfigSchema', () => {
+  const validConfig = {
+    gatewayUrl: 'https://gateway.example.com',
+    phoneNumber: '+15551234567',
+    token: 'my-secret-token',
+  }
+
+  it('accepts valid config with all fields', () => {
+    const result = imessageConfigSchema.parse(validConfig)
+    expect(result.gatewayUrl).toBe('https://gateway.example.com')
+    expect(result.phoneNumber).toBe('+15551234567')
+    expect(result.token).toBe('my-secret-token')
+  })
+
+  it('accepts valid E.164 US phone number', () => {
+    const result = imessageConfigSchema.parse({ ...validConfig, phoneNumber: '+15551234567' })
+    expect(result.phoneNumber).toBe('+15551234567')
+  })
+
+  it('accepts valid E.164 UK phone number', () => {
+    const result = imessageConfigSchema.parse({ ...validConfig, phoneNumber: '+442071234567' })
+    expect(result.phoneNumber).toBe('+442071234567')
+  })
+
+  it('accepts valid E.164 China phone number', () => {
+    const result = imessageConfigSchema.parse({ ...validConfig, phoneNumber: '+8613800138000' })
+    expect(result.phoneNumber).toBe('+8613800138000')
+  })
+
+  it('rejects missing phoneNumber', () => {
+    const { phoneNumber: _, ...rest } = validConfig
+    expect(() => imessageConfigSchema.parse(rest)).toThrow()
+  })
+
+  it('rejects empty phoneNumber', () => {
+    expect(() => imessageConfigSchema.parse({ ...validConfig, phoneNumber: '' })).toThrow()
+  })
+
+  it('rejects phone without + prefix', () => {
+    expect(() => imessageConfigSchema.parse({ ...validConfig, phoneNumber: '15551234567' })).toThrow()
+  })
+
+  it('rejects phone with letters', () => {
+    expect(() => imessageConfigSchema.parse({ ...validConfig, phoneNumber: '+1555abc4567' })).toThrow()
+  })
+
+  it('rejects phone too short', () => {
+    expect(() => imessageConfigSchema.parse({ ...validConfig, phoneNumber: '+1234' })).toThrow()
+  })
+
+  it('rejects missing gatewayUrl', () => {
+    const { gatewayUrl: _, ...rest } = validConfig
+    expect(() => imessageConfigSchema.parse(rest)).toThrow()
+  })
+
+  it('rejects invalid URL for gatewayUrl', () => {
+    expect(() => imessageConfigSchema.parse({ ...validConfig, gatewayUrl: 'not-a-url' })).toThrow()
+  })
+
+  it('rejects missing token', () => {
+    const { token: _, ...rest } = validConfig
+    expect(() => imessageConfigSchema.parse(rest)).toThrow()
+  })
+
+  it('rejects empty token', () => {
+    expect(() => imessageConfigSchema.parse({ ...validConfig, token: '' })).toThrow()
+  })
+
+  it('strips unknown fields', () => {
+    const result = imessageConfigSchema.parse({ ...validConfig, extraField: 'should-be-stripped' })
+    expect(result).not.toHaveProperty('extraField')
+  })
 })
 
 // ── validateChatIntegrationConfig ───────────────────────────────────────
@@ -78,12 +177,30 @@ describe('validateChatIntegrationConfig', () => {
     expect(result).toHaveProperty('appToken', 'xapp')
   })
 
+  it('validates imessage config', () => {
+    const result = validateChatIntegrationConfig('imessage', {
+      gatewayUrl: 'https://gw.example.com',
+      phoneNumber: '+15551234567',
+      token: 'tok',
+    })
+    expect(result).toHaveProperty('gatewayUrl', 'https://gw.example.com')
+    expect(result).toHaveProperty('phoneNumber', '+15551234567')
+    expect(result).toHaveProperty('token', 'tok')
+  })
+
   it('throws on invalid telegram config', () => {
     expect(() => validateChatIntegrationConfig('telegram', {})).toThrow()
   })
 
   it('throws on invalid slack config (missing appToken)', () => {
     expect(() => validateChatIntegrationConfig('slack', { botToken: 'xoxb' })).toThrow()
+  })
+
+  it('throws on invalid imessage config (missing token)', () => {
+    expect(() => validateChatIntegrationConfig('imessage', {
+      gatewayUrl: 'https://gw.example.com',
+      phoneNumber: '+15551234567',
+    })).toThrow()
   })
 
   it('throws on non-object input', () => {
@@ -108,6 +225,18 @@ describe('parseChatIntegrationConfig', () => {
     expect(result).toEqual({ botToken: 'xoxb', appToken: 'xapp' })
   })
 
+  it('parses valid imessage JSON', () => {
+    const result = parseChatIntegrationConfig(
+      'imessage',
+      '{"gatewayUrl":"https://gw.example.com","phoneNumber":"+15551234567","token":"tok"}',
+    )
+    expect(result).toEqual({
+      gatewayUrl: 'https://gw.example.com',
+      phoneNumber: '+15551234567',
+      token: 'tok',
+    })
+  })
+
   it('returns null for corrupt JSON', () => {
     const result = parseChatIntegrationConfig('telegram', '{not-valid-json}')
     expect(result).toBeNull()
@@ -125,6 +254,14 @@ describe('parseChatIntegrationConfig', () => {
 
   it('returns null for JSON with wrong types', () => {
     const result = parseChatIntegrationConfig('telegram', '{"botToken":12345}')
+    expect(result).toBeNull()
+  })
+
+  it('returns null for imessage JSON with invalid phone number', () => {
+    const result = parseChatIntegrationConfig(
+      'imessage',
+      '{"gatewayUrl":"https://gw.example.com","phoneNumber":"not-e164","token":"tok"}',
+    )
     expect(result).toBeNull()
   })
 })

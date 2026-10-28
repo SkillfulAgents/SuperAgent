@@ -13,6 +13,7 @@ vi.mock('./version', () => ({
 }))
 
 import fs from 'fs'
+import { CorruptFileError } from '@shared/lib/utils/file-storage'
 import {
   loadSettings,
   saveSettings,
@@ -26,9 +27,11 @@ import {
   getComposioUserId,
   getEffectiveModels,
   getEffectiveAgentLimits,
+  getModelCatalogSettings,
   getCustomEnvVars,
   DEFAULT_SETTINGS,
   DEFAULT_AUTH_SETTINGS,
+  isAutoResumeOnUnexpectedDeathEnabled,
 } from './settings'
 import type { AppSettings } from './settings'
 
@@ -47,10 +50,16 @@ function mockSettingsFile(content: string) {
 }
 
 /**
- * Configure the fs mock to simulate no settings file.
+ * Configure the fs mock to simulate no settings file. loadSettings reads via
+ * fs.readFileSync (fail-closed), so an absent file is simulated by throwing
+ * ENOENT — NOT just existsSync=false (which would leave readFileSync returning
+ * stale content from a previous test, since clearAllMocks keeps return values).
  */
 function mockNoSettingsFile() {
   mockedFs.existsSync.mockReturnValue(false)
+  mockedFs.readFileSync.mockImplementation(() => {
+    throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' })
+  })
 }
 
 /**
@@ -76,6 +85,12 @@ const originalEnv = { ...process.env }
 beforeEach(() => {
   vi.clearAllMocks()
   clearSettingsCache()
+  // The auto-mocked fs.lstatSync returns undefined, which writeFileAtomicSync's
+  // ENOENT-scoped existingMode probe would rethrow as a TypeError. Simulate the
+  // "target absent → create with mode" path the save tests assume.
+  mockedFs.lstatSync.mockImplementation(() => {
+    throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' })
+  })
   // Reset env vars that could interfere
   delete process.env.ANTHROPIC_API_KEY
   delete process.env.COMPOSIO_API_KEY
@@ -140,9 +155,11 @@ describe('loadSettings', () => {
 
       loadSettings()
 
+      // Fail-closed read: a corrupt file surfaces a CorruptFileError
+      // and loadSettings degrades to in-memory defaults WITHOUT overwriting.
       expect(consoleSpy).toHaveBeenCalledWith(
-        'Failed to load settings, using defaults:',
-        expect.any(SyntaxError)
+        'Failed to load settings; using in-memory defaults (NOT overwriting the file):',
+        expect.any(CorruptFileError)
       )
       consoleSpy.mockRestore()
     })
@@ -221,15 +238,65 @@ describe('loadSettings', () => {
     it('merges partial model settings with defaults', () => {
       mockSettingsFile(
         JSON.stringify({
-          models: { agentModel: 'claude-sonnet-4-6' },
+          // A genuine pin (older non-default version) — must survive untouched.
+          models: { agentModel: 'claude-opus-4-7' },
         })
       )
 
       const result = loadSettings()
 
-      expect(result.models?.agentModel).toBe('claude-sonnet-4-6')
-      expect(result.models?.summarizerModel).toBe('claude-haiku-4-5') // default
-      expect(result.models?.browserModel).toBe('claude-sonnet-4-6') // default
+      expect(result.models?.agentModel).toBe('claude-opus-4-7')
+      expect(result.models?.summarizerModel).toBe('haiku') // default
+      expect(result.models?.browserModel).toBe('haiku') // default
+    })
+
+    it('migrates legacy concrete model defaults to bare family aliases', () => {
+      // Pre-SUP-275 persisted the three defaults as concrete ids. These have no
+      // Bedrock catalog entry and would pass straight through (and fail) there,
+      // so loadSettings rewrites them to bare aliases that resolve per provider.
+      mockSettingsFile(
+        JSON.stringify({
+          models: {
+            summarizerModel: 'claude-haiku-4-5',
+            agentModel: 'claude-opus-4-8',
+            browserModel: 'claude-sonnet-4-6',
+            agentEffort: 'high',
+          },
+        })
+      )
+
+      const result = loadSettings()
+
+      expect(result.models?.summarizerModel).toBe('haiku')
+      expect(result.models?.agentModel).toBe('opus')
+      expect(result.models?.browserModel).toBe('sonnet')
+      // Non-model fields are untouched by the migration.
+      expect(result.models?.agentEffort).toBe('high')
+    })
+
+    it('preserves the web provider selection', () => {
+      mockSettingsFile(JSON.stringify({ webProvider: 'exa' }))
+
+      const result = loadSettings()
+
+      expect(result.webProvider).toBe('exa')
+    })
+
+    it('recovers a legacy webSearchProvider selection on upgrade (pre-collapse installs)', () => {
+      mockSettingsFile(JSON.stringify({ webSearchProvider: 'exa' }))
+
+      const result = loadSettings()
+
+      expect(result.webProvider).toBe('exa')
+    })
+
+    it('preserves the web allow/deny site lists', () => {
+      mockSettingsFile(JSON.stringify({ webAllowedSites: ['nytimes.com'], webBlockedSites: ['evil.com'] }))
+
+      const result = loadSettings()
+
+      expect(result.webAllowedSites).toEqual(['nytimes.com'])
+      expect(result.webBlockedSites).toEqual(['evil.com'])
     })
 
     it('merges auth settings with defaults', () => {
@@ -289,6 +356,54 @@ describe('loadSettings', () => {
       expect(result.agentLimits).toEqual(limits)
     })
 
+    it('preserves app.autoDeleteInactiveDays', () => {
+      mockSettingsFile(JSON.stringify({ app: { autoDeleteInactiveDays: 30 } }))
+
+      const result = loadSettings()
+
+      expect(result.app?.autoDeleteInactiveDays).toBe(30)
+    })
+
+    it('preserves app.autoDeleteInactiveDays = 0 (disabled)', () => {
+      mockSettingsFile(JSON.stringify({ app: { autoDeleteInactiveDays: 0 } }))
+
+      const result = loadSettings()
+
+      expect(result.app?.autoDeleteInactiveDays).toBe(0)
+    })
+
+    it('leaves autoDeleteInactiveDays undefined when not set', () => {
+      mockSettingsFile(JSON.stringify({}))
+
+      const result = loadSettings()
+
+      expect(result.app?.autoDeleteInactiveDays).toBeUndefined()
+    })
+
+    it('defaults app.apiLogAutoDeleteDays to 30 when not set', () => {
+      mockSettingsFile(JSON.stringify({}))
+
+      const result = loadSettings()
+
+      expect(result.app?.apiLogAutoDeleteDays).toBe(30)
+    })
+
+    it('preserves app.apiLogAutoDeleteDays = 0 (Never)', () => {
+      mockSettingsFile(JSON.stringify({ app: { apiLogAutoDeleteDays: 0 } }))
+
+      const result = loadSettings()
+
+      expect(result.app?.apiLogAutoDeleteDays).toBe(0)
+    })
+
+    it('preserves app.apiLogAutoDeleteDays = 90', () => {
+      mockSettingsFile(JSON.stringify({ app: { apiLogAutoDeleteDays: 90 } }))
+
+      const result = loadSettings()
+
+      expect(result.app?.apiLogAutoDeleteDays).toBe(90)
+    })
+
     it('preserves customEnvVars as-is', () => {
       const envVars = { MY_VAR: 'hello', ANOTHER: 'world' }
       mockSettingsFile(JSON.stringify({ customEnvVars: envVars }))
@@ -296,6 +411,57 @@ describe('loadSettings', () => {
       const result = loadSettings()
 
       expect(result.customEnvVars).toEqual(envVars)
+    })
+
+    it('preserves a valid modelCatalog override map', () => {
+      const modelCatalog = {
+        anthropic: {
+          overrides: [{ id: 'claude-opus-4-8', disabled: true }],
+        },
+      }
+      mockSettingsFile(JSON.stringify({ modelCatalog }))
+
+      const result = loadSettings()
+
+      expect(result.modelCatalog).toEqual(modelCatalog)
+    })
+
+    it('drops one unreadable global price without failing the load or losing the others', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      const good = { inputPerMtok: 1, outputPerMtok: 2 }
+      mockSettingsFile(
+        JSON.stringify({
+          apiKeys: { anthropicApiKey: 'sk-kept' },
+          modelPricing: { good, bad: { inputPerMtok: -1, outputPerMtok: 2 }, worse: 'free' },
+        }),
+      )
+
+      const result = loadSettings()
+
+      expect(result.modelPricing).toEqual({ good })
+      expect(result.apiKeys?.anthropicApiKey).toBe('sk-kept')
+      expect(warn).toHaveBeenCalledTimes(2)
+      warn.mockRestore()
+    })
+
+    it('ignores a modelPricing value that is not a map', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      mockSettingsFile(JSON.stringify({ modelPricing: [1, 2] }))
+
+      expect(loadSettings().modelPricing).toEqual({})
+      expect(warn).toHaveBeenCalledOnce()
+      warn.mockRestore()
+    })
+
+    it('ignores a malformed modelCatalog instead of failing settings load', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      mockSettingsFile(JSON.stringify({ modelCatalog: { anthropic: { overrides: [{ id: '' }] } } }))
+
+      const result = loadSettings()
+
+      expect(result.modelCatalog).toBeUndefined()
+      expect(warn).toHaveBeenCalledOnce()
+      warn.mockRestore()
     })
 
     it('preserves skillsets as-is', () => {
@@ -315,6 +481,25 @@ describe('loadSettings', () => {
       expect(result.skillsets).toEqual(skillsets)
     })
 
+    it('preserves skillset credentials without copying them into skillset metadata', () => {
+      const skillsetCredentials = {
+        skillcred_test: {
+          id: 'skillcred_test',
+          type: 'token',
+          token: 'github_pat_secret',
+          tokenPreview: '••••cret',
+          createdAt: '2026-08-06T00:00:00.000Z',
+          updatedAt: '2026-08-06T00:00:00.000Z',
+        },
+      }
+      mockSettingsFile(JSON.stringify({ skillsetCredentials }))
+
+      const result = loadSettings()
+
+      expect(result.skillsetCredentials).toEqual(skillsetCredentials)
+      expect(JSON.stringify(result.skillsets)).not.toContain('github_pat_secret')
+    })
+
     it('handles completely empty JSON object', () => {
       mockSettingsFile('{}')
 
@@ -332,7 +517,8 @@ describe('loadSettings', () => {
       expect(result.apiKeys).toBeUndefined()
       expect(result.agentLimits).toBeUndefined()
       expect(result.customEnvVars).toBeUndefined()
-      expect(result.skillsets).toBeUndefined()
+      expect(result.modelCatalog).toBeUndefined()
+      expect(result.skillsets).toEqual(DEFAULT_SETTINGS.skillsets)
     })
   })
 
@@ -456,72 +642,6 @@ describe('loadSettings', () => {
   })
 
   // --------------------------------------------------------------------------
-  // useHostBrowser -> hostBrowserProvider migration
-  // --------------------------------------------------------------------------
-
-  describe('useHostBrowser to hostBrowserProvider migration', () => {
-    it('migrates useHostBrowser=true to hostBrowserProvider=chrome', () => {
-      mockSettingsFile(
-        JSON.stringify({
-          app: { useHostBrowser: true },
-        })
-      )
-
-      const result = loadSettings()
-
-      expect(result.app?.hostBrowserProvider).toBe('chrome')
-    })
-
-    it('does NOT migrate when useHostBrowser is false', () => {
-      mockSettingsFile(
-        JSON.stringify({
-          app: { useHostBrowser: false },
-        })
-      )
-
-      const result = loadSettings()
-
-      expect(result.app?.hostBrowserProvider).toBeUndefined()
-    })
-
-    it('does NOT overwrite existing hostBrowserProvider', () => {
-      mockSettingsFile(
-        JSON.stringify({
-          app: { useHostBrowser: true, hostBrowserProvider: 'browserbase' },
-        })
-      )
-
-      const result = loadSettings()
-
-      expect(result.app?.hostBrowserProvider).toBe('browserbase')
-    })
-
-    it('does NOT set hostBrowserProvider when useHostBrowser is absent', () => {
-      mockSettingsFile(
-        JSON.stringify({
-          app: { showMenuBarIcon: false },
-        })
-      )
-
-      const result = loadSettings()
-
-      expect(result.app?.hostBrowserProvider).toBeUndefined()
-    })
-
-    it('strips useHostBrowser after migrating so it cannot re-fire', () => {
-      mockSettingsFile(
-        JSON.stringify({
-          app: { useHostBrowser: true },
-        })
-      )
-
-      const result = loadSettings()
-
-      expect(result.app).not.toHaveProperty('useHostBrowser')
-    })
-  })
-
-  // --------------------------------------------------------------------------
   // Edge cases
   // --------------------------------------------------------------------------
 
@@ -601,7 +721,7 @@ describe('loadSettings', () => {
             autoSleepTimeoutMinutes: 60,
             notifications: { enabled: false },
           },
-          models: { agentModel: 'claude-sonnet-4-6' },
+          models: { agentModel: 'claude-opus-4-7' },
           auth: { signupMode: 'open' },
         })
       )
@@ -620,8 +740,8 @@ describe('loadSettings', () => {
       expect(result.app?.notifications?.sessionComplete).toBe(true) // default
 
       // Models
-      expect(result.models?.agentModel).toBe('claude-sonnet-4-6')
-      expect(result.models?.summarizerModel).toBe('claude-haiku-4-5') // default
+      expect(result.models?.agentModel).toBe('claude-opus-4-7')
+      expect(result.models?.summarizerModel).toBe('haiku') // default
 
       // Auth
       expect(result.auth?.signupMode).toBe('open')
@@ -694,10 +814,12 @@ describe('saveSettings', () => {
     const settings = makeFullSettings()
     saveSettings(settings)
 
-    expect(mockedFs.writeFileSync).toHaveBeenCalledWith(
-      '/mock/data/dir/settings.json',
-      JSON.stringify(settings, null, 2),
-      { encoding: 'utf-8', mode: 0o600 }
+    // Atomic write: the serialized content is written to a temp file
+    // (by fd) which is then renamed onto the real settings path.
+    expect(mockedFs.writeFileSync.mock.calls[0][1]).toBe(JSON.stringify(settings, null, 2))
+    expect(mockedFs.renameSync).toHaveBeenCalledWith(
+      expect.any(String),
+      '/mock/data/dir/settings.json'
     )
   })
 
@@ -726,8 +848,9 @@ describe('saveSettings', () => {
 
     saveSettings(makeFullSettings())
 
-    const writeCall = mockedFs.writeFileSync.mock.calls[0]
-    expect(writeCall[2]).toEqual({ encoding: 'utf-8', mode: 0o600 })
+    // 0o600 is applied when the atomic writer CREATES the temp file via openSync.
+    const openCall = mockedFs.openSync.mock.calls[0]
+    expect(openCall[2]).toBe(0o600)
   })
 
   it('serializes with pretty-printed JSON (2-space indent)', () => {
@@ -758,8 +881,8 @@ describe('settings cache', () => {
 
       // Same reference means it was cached
       expect(first).toBe(second)
-      // existsSync should only be called once (on first load)
-      expect(mockedFs.existsSync).toHaveBeenCalledTimes(1)
+      // The file is read at most once (on first load); the cache serves the rest.
+      expect(mockedFs.readFileSync).toHaveBeenCalledTimes(1)
     })
 
     it('loads from file on first call', () => {
@@ -1083,9 +1206,11 @@ describe('getEffectiveModels', () => {
     const models = getEffectiveModels()
 
     expect(models).toEqual({
-      summarizerModel: 'claude-haiku-4-5',
-      agentModel: 'claude-opus-4-7',
-      browserModel: 'claude-sonnet-4-6',
+      summarizerModel: 'haiku',
+      agentModel: 'opus',
+      browserModel: 'haiku',
+      dashboardBuilderModel: 'opus',
+      agentEffort: 'medium',
     })
   })
 
@@ -1106,6 +1231,8 @@ describe('getEffectiveModels', () => {
       summarizerModel: 'custom-summarizer',
       agentModel: 'custom-agent',
       browserModel: 'custom-browser',
+      dashboardBuilderModel: 'opus',
+      agentEffort: 'medium',
     })
   })
 
@@ -1119,8 +1246,8 @@ describe('getEffectiveModels', () => {
     const models = getEffectiveModels()
 
     expect(models.agentModel).toBe('custom-agent')
-    expect(models.summarizerModel).toBe('claude-haiku-4-5')
-    expect(models.browserModel).toBe('claude-sonnet-4-6')
+    expect(models.summarizerModel).toBe('haiku')
+    expect(models.browserModel).toBe('haiku')
   })
 
   it('falls back to defaults when model values are empty strings', () => {
@@ -1137,9 +1264,9 @@ describe('getEffectiveModels', () => {
     const models = getEffectiveModels()
 
     // Empty strings are falsy, so || fallback triggers
-    expect(models.summarizerModel).toBe('claude-haiku-4-5')
-    expect(models.agentModel).toBe('claude-opus-4-7')
-    expect(models.browserModel).toBe('claude-sonnet-4-6')
+    expect(models.summarizerModel).toBe('haiku')
+    expect(models.agentModel).toBe('opus')
+    expect(models.browserModel).toBe('haiku')
   })
 
   it('handles models being undefined in settings', () => {
@@ -1148,9 +1275,37 @@ describe('getEffectiveModels', () => {
     const models = getEffectiveModels()
 
     expect(models).toEqual({
-      summarizerModel: 'claude-haiku-4-5',
-      agentModel: 'claude-opus-4-7',
-      browserModel: 'claude-sonnet-4-6',
+      summarizerModel: 'haiku',
+      agentModel: 'opus',
+      browserModel: 'haiku',
+      dashboardBuilderModel: 'opus',
+      agentEffort: 'medium',
+    })
+  })
+
+  it('uses the selected provider catalog defaults when model fields are missing', () => {
+    mockSettingsFile(JSON.stringify({ llmProvider: 'platform' }))
+
+    expect(getEffectiveModels()).toEqual({
+      summarizerModel: 'haiku',
+      agentModel: 'sonnet',
+      browserModel: 'haiku',
+      dashboardBuilderModel: 'opus',
+      agentEffort: 'medium',
+    })
+  })
+
+  it('falls back to Anthropic defaults for an unknown persisted provider', () => {
+    // A downgrade can load a provider id written by a newer app version. The
+    // settings file is not schema-validated, so this must remain a soft fallback.
+    mockSettingsFile(JSON.stringify({ llmProvider: 'some-future-provider' }))
+
+    expect(getEffectiveModels()).toEqual({
+      summarizerModel: 'haiku',
+      agentModel: 'opus',
+      browserModel: 'haiku',
+      dashboardBuilderModel: 'opus',
+      agentEffort: 'medium',
     })
   })
 })
@@ -1215,6 +1370,38 @@ describe('getCustomEnvVars', () => {
 })
 
 // ============================================================================
+// getModelCatalogSettings()
+// ============================================================================
+
+describe('getModelCatalogSettings', () => {
+  it('returns empty overrides when no model catalog is configured', () => {
+    mockNoSettingsFile()
+
+    expect(getModelCatalogSettings()).toEqual({})
+  })
+
+  it('returns configured model catalog overrides', () => {
+    const modelCatalog = {
+      platform: {
+        overrides: [{ id: 'gpt-5.5', pricing: { inputPerMtok: 6, outputPerMtok: 36 } }],
+      },
+    }
+    mockSettingsFile(JSON.stringify({ modelCatalog }))
+
+    expect(getModelCatalogSettings()).toEqual(modelCatalog)
+  })
+
+  it('returns empty overrides when modelCatalog is null', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    mockSettingsFile(JSON.stringify({ modelCatalog: null }))
+
+    expect(getModelCatalogSettings()).toEqual({})
+    expect(warn).toHaveBeenCalledOnce()
+    warn.mockRestore()
+  })
+})
+
+// ============================================================================
 // DEFAULT_SETTINGS export
 // ============================================================================
 
@@ -1230,6 +1417,12 @@ describe('DEFAULT_SETTINGS', () => {
   it('has expected app defaults', () => {
     expect(DEFAULT_SETTINGS.app?.showMenuBarIcon).toBe(true)
     expect(DEFAULT_SETTINGS.app?.autoSleepTimeoutMinutes).toBe(30)
+    expect(DEFAULT_SETTINGS.app?.warmStartOnType).toBe(true)
+    expect(DEFAULT_SETTINGS.app?.autoResumeOnUnexpectedDeath).toBe(true)
+    expect(DEFAULT_SETTINGS.app?.apiLogAutoDeleteDays).toBe(30)
+    expect(isAutoResumeOnUnexpectedDeathEnabled(undefined)).toBe(true)
+    expect(isAutoResumeOnUnexpectedDeathEnabled({ app: {} })).toBe(true)
+    expect(isAutoResumeOnUnexpectedDeathEnabled({ app: { autoResumeOnUnexpectedDeath: false } })).toBe(false)
   })
 
   it('has expected notification defaults', () => {
@@ -1241,11 +1434,13 @@ describe('DEFAULT_SETTINGS', () => {
     })
   })
 
-  it('has expected model defaults', () => {
+  it('has expected model defaults (bare aliases so fresh installs track latest)', () => {
     expect(DEFAULT_SETTINGS.models).toEqual({
-      summarizerModel: 'claude-haiku-4-5',
-      agentModel: 'claude-opus-4-7',
-      browserModel: 'claude-sonnet-4-6',
+      summarizerModel: 'haiku',
+      agentModel: 'opus',
+      browserModel: 'haiku',
+      dashboardBuilderModel: 'opus',
+      agentEffort: 'medium',
     })
   })
 })
@@ -1269,6 +1464,7 @@ describe('DEFAULT_AUTH_SETTINGS', () => {
       sessionMaxLifetimeHrs: 24,
       sessionIdleTimeoutMin: 60,
       maxConcurrentSessions: 5,
+      mobileDeviceLifetimeDays: 90,
       accountLockoutThreshold: 10,
       accountLockoutDurationMin: 30,
     })
@@ -1359,10 +1555,12 @@ describe('integration scenarios', () => {
     })
     updateSettings(updated)
 
-    // Now getSettings should return the updated value without reading file
+    // Now getSettings should return the updated value without reading file.
+    // Reset call counters first so we assert specifically that the post-update
+    // read is served from cache (the initial load did read the file once).
+    vi.clearAllMocks()
     const afterUpdate = getSettings()
     expect(afterUpdate.container.containerRunner).toBe('podman')
-    // readFileSync should only have been called once (the initial load)
     expect(mockedFs.readFileSync).not.toHaveBeenCalled()
   })
 })
@@ -1441,5 +1639,59 @@ describe('runtimeSettings migration', () => {
 
     const reloaded = loadSettings()
     expect(reloaded.container.runtimeSettings?.lima?.vmMemory).toBe('16GiB')
+  })
+})
+
+// ============================================================================
+// agentCapabilities (subagent/workflow launch policies)
+// ============================================================================
+
+describe('agentCapabilities', () => {
+  it('defaults to allow subagents / review workflows when the file is absent', () => {
+    mockNoSettingsFile()
+    expect(loadSettings().agentCapabilities).toEqual({ subagents: 'allow', workflows: 'review' })
+  })
+
+  it('fills a partial stored section from the defaults', () => {
+    mockSettingsFile(JSON.stringify({ agentCapabilities: { subagents: 'block' } }))
+    expect(loadSettings().agentCapabilities).toEqual({ subagents: 'block', workflows: 'review' })
+  })
+
+  it('preserves a fully customized section', () => {
+    mockSettingsFile(JSON.stringify({ agentCapabilities: { subagents: 'review', workflows: 'allow' } }))
+    expect(loadSettings().agentCapabilities).toEqual({ subagents: 'review', workflows: 'allow' })
+  })
+
+  it('defaults only the invalid field, keeping valid siblings', () => {
+    mockSettingsFile(JSON.stringify({ agentCapabilities: { subagents: 'maybe', workflows: 'allow' } }))
+    expect(loadSettings().agentCapabilities).toEqual({ subagents: 'allow', workflows: 'allow' })
+  })
+
+  it('an invalid field never lifts a valid block on the other capability', () => {
+    mockSettingsFile(JSON.stringify({ agentCapabilities: { subagents: 'block', workflows: 'future-tier' } }))
+    expect(loadSettings().agentCapabilities).toEqual({ subagents: 'block', workflows: 'review' })
+  })
+
+  it('DEFAULT_SETTINGS carries the section so new files persist it', () => {
+    expect(DEFAULT_SETTINGS.agentCapabilities).toEqual({ subagents: 'allow', workflows: 'review' })
+  })
+})
+
+describe('globalInstructions', () => {
+  it('is absent when never set', () => {
+    mockNoSettingsFile()
+    expect(loadSettings().globalInstructions).toBeUndefined()
+  })
+
+  it('loads a stored string as-is', () => {
+    mockSettingsFile(JSON.stringify({ globalInstructions: 'Be concise.\n' }))
+    expect(loadSettings().globalInstructions).toBe('Be concise.\n')
+  })
+
+  it.each([42, { text: 'x' }, 'x'.repeat(20_001)])('drops an invalid stored value (%#) instead of prompting every agent with it', (value) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mockSettingsFile(JSON.stringify({ globalInstructions: value }))
+    expect(loadSettings().globalInstructions).toBeUndefined()
+    warn.mockRestore()
   })
 })

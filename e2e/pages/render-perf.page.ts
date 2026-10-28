@@ -55,6 +55,15 @@ export class RenderPerfPage {
     return await this.page.evaluate(() => window.__RENDER_DATA__?.snapshot() ?? {})
   }
 
+  /** Sample render counters for a bounded window. */
+  async sampleFor(ms: number) {
+    await this.page.waitForFunction(
+      (duration) => new Promise((resolve) => setTimeout(resolve, duration)),
+      ms,
+      { timeout: ms + 5000 }
+    )
+  }
+
   /** Get captured why-did-you-render logs */
   getWdyrLogs(): string[] {
     return [...this.wdyrLogs]

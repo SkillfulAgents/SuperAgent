@@ -2,23 +2,10 @@ export interface MockStreamState {
   isActive: boolean
   isStreaming: boolean
   streamingMessage: string | null
-  streamingToolUse: { id: string; name: string; partialInput: string } | null
-  pendingSecretRequests: Array<{ toolUseId: string; secretName: string; reason?: string }>
-  pendingConnectedAccountRequests: Array<{ toolUseId: string; toolkit: string; reason?: string }>
-  pendingQuestionRequests: Array<{
-    toolUseId: string
-    questions: Array<{
-      question: string
-      header: string
-      options: Array<{ label: string; description: string }>
-      multiSelect: boolean
-    }>
-  }>
-  pendingFileRequests: Array<{ toolUseId: string; description: string; fileTypes?: string }>
-  pendingRemoteMcpRequests: Array<{ toolUseId: string; url: string; name?: string; reason?: string }>
+  streamingToolUses: Array<{ id: string; name: string; partialInput: string; ready?: boolean }>
   pendingBrowserInputRequests: Array<{ toolUseId: string; message: string; requirements: string[] }>
-  pendingScriptRunRequests: Array<{ toolUseId: string; script: string; explanation: string; scriptType: 'applescript' | 'shell' | 'powershell' }>
-  pendingComputerUseRequests: Array<{ toolUseId: string; method: string; params: Record<string, unknown>; permissionLevel: string; appName?: string }>
+  autoApprovedScriptRunIds: ReadonlySet<string>
+  autoApprovedComputerUseIds: ReadonlySet<string>
   error: string | null
   browserActive: boolean
   activeStartTime: number | null
@@ -32,15 +19,10 @@ export const DEFAULT_STREAM_STATE: MockStreamState = {
   isActive: false,
   isStreaming: false,
   streamingMessage: null,
-  streamingToolUse: null,
-  pendingSecretRequests: [],
-  pendingConnectedAccountRequests: [],
-  pendingQuestionRequests: [],
-  pendingFileRequests: [],
-  pendingRemoteMcpRequests: [],
+  streamingToolUses: [],
   pendingBrowserInputRequests: [],
-  pendingScriptRunRequests: [],
-  pendingComputerUseRequests: [],
+  autoApprovedScriptRunIds: new Set(),
+  autoApprovedComputerUseIds: new Set(),
   error: null,
   browserActive: false,
   activeStartTime: null,

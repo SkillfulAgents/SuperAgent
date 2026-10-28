@@ -6,11 +6,16 @@ import { Hono } from 'hono'
 // ---------------------------------------------------------------------------
 
 const mockListAgents = vi.fn()
-const mockGetAgent = vi.fn()
+const mockGetManyAgents = vi.fn()
 
 vi.mock('@shared/lib/services/agent-service', () => ({
   listAgents: (...args: unknown[]) => mockListAgents(...args),
-  getAgent: (...args: unknown[]) => mockGetAgent(...args),
+}))
+
+// The ACL-scoped branch reads the admitted agents from the catalog in one query.
+vi.mock('@shared/lib/agent-actor/agent-catalog', () => ({
+  agentCatalog: { getMany: (...args: unknown[]) => mockGetManyAgents(...args) },
+  identityFromInstructions: () => ({}),
 }))
 
 const mockGetAgentClaudeConfigDir = vi.fn()
@@ -74,7 +79,7 @@ function createApp() {
 
 interface MockAgent {
   slug: string
-  frontmatter: { name: string }
+  name: string
 }
 
 interface MockModelBreakdown {
@@ -97,7 +102,7 @@ interface MockDayUsage {
 }
 
 function makeAgent(slug: string, name: string): MockAgent {
-  return { slug, frontmatter: { name } }
+  return { slug, name }
 }
 
 function makeDay(date: string, totalCost: number, models: MockModelBreakdown[] = []): MockDayUsage {
@@ -177,7 +182,7 @@ describe('usage route', () => {
         { agentSlug: 'agent-1', agentName: 'Agent One', cost: 1.50, totalTokens: 0 },
       ])
       expect(dayEntry.byModel).toEqual([
-        { model: 'claude-sonnet', cost: 1.50 },
+        { model: 'claude-sonnet', cost: 1.50, totalTokens: 0 },
       ])
     })
 
@@ -415,7 +420,7 @@ describe('usage route', () => {
       mockGetCurrentUserId.mockReturnValue('user-123')
       mockDbFrom.mockReturnValue({ where: mockDbWhere })
       mockDbWhere.mockResolvedValue([{ agentSlug: 'my-agent' }])
-      mockGetAgent.mockResolvedValue(makeAgent('my-agent', 'My Agent'))
+      mockGetManyAgents.mockResolvedValue([makeAgent('my-agent', 'My Agent')])
       mockLoadDailyUsageData.mockResolvedValue([])
 
       // We need to mock the middleware to set the user on context
@@ -431,6 +436,7 @@ describe('usage route', () => {
       await customApp.request('http://localhost/api/usage')
 
       expect(mockListAgents).not.toHaveBeenCalled()
+      expect(mockGetManyAgents).toHaveBeenCalledWith(['my-agent'])
       expect(mockGetCurrentUserId).toHaveBeenCalled()
     })
 
@@ -526,7 +532,7 @@ describe('usage route', () => {
       }
     })
 
-    it('converts byModel map entries to array of {model, cost}', async () => {
+    it('converts byModel map entries to array of model usage totals', async () => {
       const agent = makeAgent('agent-1', 'Agent One')
       mockListAgents.mockResolvedValue([agent])
       mockGetAgentClaudeConfigDir.mockReturnValue('/data/agents/agent-1/.claude')
@@ -547,9 +553,38 @@ describe('usage route', () => {
       for (const modelUsage of dayEntry.byModel) {
         expect(modelUsage).toHaveProperty('model')
         expect(modelUsage).toHaveProperty('cost')
+        expect(modelUsage).toHaveProperty('totalTokens')
         expect(typeof modelUsage.model).toBe('string')
         expect(typeof modelUsage.cost).toBe('number')
+        expect(typeof modelUsage.totalTokens).toBe('number')
       }
+    })
+
+    it('aggregates token totals by model', async () => {
+      const agent = makeAgent('agent-1', 'Agent One')
+      mockListAgents.mockResolvedValue([agent])
+      mockGetAgentClaudeConfigDir.mockReturnValue('/data/agents/agent-1/.claude')
+
+      mockLoadDailyUsageData.mockResolvedValue([
+        makeDay('2025-01-15', 1.25, [
+          {
+            modelName: 'claude-sonnet',
+            cost: 1.25,
+            inputTokens: 1_000,
+            outputTokens: 250,
+            cacheCreationTokens: 100,
+            cacheReadTokens: 2_000,
+          },
+        ]),
+      ])
+
+      const res = await getUsage('days=7')
+      const body = await res.json()
+      const dayEntry = body.daily.find((d: { date: string }) => d.date === '2025-01-15')
+
+      expect(dayEntry.byModel).toEqual([
+        { model: 'claude-sonnet', cost: 1.25, totalTokens: 3_350 },
+      ])
     })
 
     it('handles rejected agent promises gracefully (skips them)', async () => {

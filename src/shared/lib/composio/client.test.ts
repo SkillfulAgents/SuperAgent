@@ -13,9 +13,9 @@ vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAccessToken: () => null,
 }))
 
-const mockCaptureMessage = vi.fn()
+const mockAddErrorBreadcrumb = vi.fn()
 vi.mock('@shared/lib/error-reporting', () => ({
-  captureMessage: (...args: unknown[]) => mockCaptureMessage(...args),
+  addErrorBreadcrumb: (...args: unknown[]) => mockAddErrorBreadcrumb(...args),
 }))
 
 // Mock global fetch
@@ -27,9 +27,12 @@ import {
   proxyExecute,
   getAccountDisplayName,
   initiateConnection,
+  getOrCreateAuthConfig,
+  listAuthConfigs,
   ComposioApiError,
   ComposioRedactedTokenError,
 } from './client'
+import { envelopeToResponse } from '../proxy/composio-envelope'
 
 function makeComposioResponse(
   state: { authScheme: string; val: Record<string, unknown> },
@@ -192,7 +195,7 @@ describe('getConnectionToken', () => {
     }
   })
 
-  it('emits a Sentry warning with toolkit and pattern tags when a redacted token is detected', async () => {
+  it('emits a breadcrumb with toolkit and pattern when a redacted token is detected', async () => {
     mockFetchOk(makeComposioResponse(
       { authScheme: 'OAUTH2', val: { status: 'ACTIVE', access_token: 'REDACTED' } },
       { toolkit: { slug: 'slack' }, auth_config: { id: 'ac_rNLPL7-eRjv2', auth_scheme: 'OAUTH2', is_composio_managed: true } },
@@ -200,31 +203,27 @@ describe('getConnectionToken', () => {
 
     await expect(getConnectionToken('ca_enPiGqqyyQJl')).rejects.toThrow('redacted')
 
-    expect(mockCaptureMessage).toHaveBeenCalledTimes(1)
-    const [message, context] = mockCaptureMessage.mock.calls[0]
-    expect(message).toMatch(/redacted/i)
-    expect(context.level).toBe('warning')
-    expect(context.tags).toMatchObject({
-      component: 'composio-client',
+    expect(mockAddErrorBreadcrumb).toHaveBeenCalledTimes(1)
+    const breadcrumb = mockAddErrorBreadcrumb.mock.calls[0][0]
+    expect(breadcrumb.category).toBe('composio')
+    expect(breadcrumb.message).toMatch(/redacted/i)
+    expect(breadcrumb.level).toBe('warning')
+    expect(breadcrumb.data).toMatchObject({
       toolkit: 'slack',
       auth_scheme: 'OAUTH2',
       is_composio_managed: 'true',
       redaction_pattern: 'literal-redacted',
-    })
-    expect(context.extra).toMatchObject({
       connectionId: 'ca_enPiGqqyyQJl',
-      authConfigId: 'ac_rNLPL7-eRjv2',
     })
-    expect(context.fingerprint).toEqual(['composio-redacted-token', 'literal-redacted'])
   })
 
-  it('does not emit a Sentry warning for valid tokens', async () => {
+  it('does not emit a breadcrumb for valid tokens', async () => {
     mockFetchOk(makeComposioResponse({
       authScheme: 'OAUTH2',
       val: { status: 'ACTIVE', access_token: 'fake-valid-token-1234567890abcdef' },
     }))
     await getConnectionToken('conn-1')
-    expect(mockCaptureMessage).not.toHaveBeenCalled()
+    expect(mockAddErrorBreadcrumb).not.toHaveBeenCalled()
   })
 
   it.each([
@@ -397,12 +396,12 @@ describe('proxyExecute', () => {
     expect(sent2.body).toBeUndefined()
   })
 
-  it('returns parsed binaryData when envelope includes binary_data', async () => {
+  it.each([null, undefined])('streams binary_data when JSON data is %s', async (data) => {
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({
         status: 200,
-        data: null,
+        ...(data === undefined ? {} : { data }),
         headers: {},
         binary_data: {
           url: 'https://cdn.example/x',
@@ -425,6 +424,20 @@ describe('proxyExecute', () => {
       size: 100,
       expires_at: '2099-01-01T00:00:00Z',
     })
+    const bytes = new Uint8Array([0, 255, 128, 1])
+    const download = vi.fn<typeof fetch>().mockResolvedValue(new Response(bytes))
+    const response = await envelopeToResponse(result, download)
+    expect(download).toHaveBeenCalledWith('https://cdn.example/x')
+    expect(response.headers.get('content-type')).toBe('application/pdf')
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes)
+  })
+
+  it.each([200, 204])('accepts an empty upstream %s envelope without JSON data', async (status) => {
+    mockFetch.mockResolvedValue({
+      ok: true, json: async () => ({ status, headers: { 'x-request-id': 'empty-response' } }),
+    })
+    const result = await proxyExecute({ endpoint: '/resource', method: 'DELETE', connectedAccountId: 'ca_abc' })
+    expect(result).toEqual({ status, data: undefined, headers: { 'x-request-id': 'empty-response' }, binaryData: undefined })
   })
 
   it('throws ComposioApiError on non-ok response from Composio', async () => {
@@ -825,5 +838,173 @@ describe('initiateConnection', () => {
     await expect(
       initiateConnection('ac_x', 'cb://done', 'user-1')
     ).rejects.toThrow()
+  })
+})
+
+describe('listAuthConfigs', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetEffectiveComposioApiKey.mockReturnValue('test-api-key')
+  })
+
+  it('omits query params when no toolkitSlug is given (backwards compatible)', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [] }),
+    })
+
+    await listAuthConfigs()
+
+    const url = mockFetch.mock.calls[0][0] as string
+    expect(url).toMatch(/\/auth_configs$/)
+    expect(url).not.toContain('toolkit_slug')
+  })
+
+  it('passes toolkit_slug + limit when slug is given', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [] }),
+    })
+
+    await listAuthConfigs('gmail')
+
+    const url = mockFetch.mock.calls[0][0] as string
+    expect(url).toContain('toolkit_slug=gmail')
+    expect(url).toContain('limit=100')
+  })
+
+  it('url-encodes the slug', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [] }),
+    })
+
+    await listAuthConfigs('weird/slug with space')
+
+    const url = mockFetch.mock.calls[0][0] as string
+    expect(url).toContain('toolkit_slug=weird%2Fslug%20with%20space')
+  })
+})
+
+describe('getOrCreateAuthConfig', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetEffectiveComposioApiKey.mockReturnValue('test-api-key')
+  })
+
+  function mockListResponse(items: Array<{
+    id: string
+    auth_scheme?: string
+    is_composio_managed?: boolean
+    status?: 'ENABLED' | 'DISABLED'
+    created_at?: string
+    toolkit?: { slug: string }
+  }>) {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        items: items.map((i) => ({
+          id: i.id,
+          auth_scheme: i.auth_scheme ?? 'OAUTH2',
+          is_composio_managed: i.is_composio_managed ?? true,
+          status: i.status ?? 'ENABLED',
+          created_at: i.created_at ?? '2026-05-01T00:00:00Z',
+          toolkit: i.toolkit ?? { slug: 'gmail' },
+        })),
+      }),
+    })
+  }
+
+  function mockCreateResponse(authConfigId: string, slug = 'gmail') {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        toolkit: { slug },
+        auth_config: {
+          id: authConfigId,
+          auth_scheme: 'OAUTH2',
+          is_composio_managed: true,
+        },
+      }),
+    })
+  }
+
+  it('queries Composio with the toolkit_slug filter, not a bare list', async () => {
+    mockListResponse([{ id: 'ac_existing' }])
+
+    await getOrCreateAuthConfig('gmail')
+
+    const url = mockFetch.mock.calls[0][0] as string
+    expect(url).toContain('toolkit_slug=gmail')
+    expect(url).toContain('limit=100')
+  })
+
+  it('reuses an existing ENABLED auth config without POSTing', async () => {
+    mockListResponse([
+      {
+        id: 'ac_existing',
+        status: 'ENABLED',
+        created_at: '2026-05-01T00:00:00Z',
+      },
+    ])
+
+    const result = await getOrCreateAuthConfig('gmail')
+
+    expect(result.id).toBe('ac_existing')
+    expect(mockFetch).toHaveBeenCalledTimes(1) // GET only, no POST
+  })
+
+  it('picks the most recent ENABLED config when multiple exist (the dedup case)', async () => {
+    mockListResponse([
+      { id: 'ac_older', created_at: '2026-03-31T00:00:00Z' },
+      { id: 'ac_newest', created_at: '2026-05-18T00:00:00Z' },
+      { id: 'ac_middle', created_at: '2026-04-23T00:00:00Z' },
+    ])
+
+    const result = await getOrCreateAuthConfig('gmail')
+
+    expect(result.id).toBe('ac_newest')
+    expect(mockFetch).toHaveBeenCalledTimes(1) // GET only
+  })
+
+  it('skips DISABLED configs and reuses the newest ENABLED one', async () => {
+    mockListResponse([
+      { id: 'ac_disabled_newest', status: 'DISABLED', created_at: '2026-05-18T00:00:00Z' },
+      { id: 'ac_enabled_older', status: 'ENABLED', created_at: '2026-05-09T00:00:00Z' },
+    ])
+
+    const result = await getOrCreateAuthConfig('gmail')
+
+    expect(result.id).toBe('ac_enabled_older')
+    expect(mockFetch).toHaveBeenCalledTimes(1) // GET only
+  })
+
+  it('POSTs a new auth config when no ENABLED config exists for the toolkit', async () => {
+    mockListResponse([
+      { id: 'ac_disabled', status: 'DISABLED' },
+    ])
+    mockCreateResponse('ac_new', 'gmail')
+
+    const result = await getOrCreateAuthConfig('gmail')
+
+    expect(result.id).toBe('ac_new')
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+    const postCall = mockFetch.mock.calls[1]
+    expect((postCall[1] as { method: string }).method).toBe('POST')
+    const body = JSON.parse((postCall[1] as { body: string }).body)
+    expect(body).toEqual({
+      toolkit: { slug: 'gmail' },
+      auth_config: { type: 'use_composio_managed_auth' },
+    })
+  })
+
+  it('POSTs a new auth config when the list is empty', async () => {
+    mockListResponse([])
+    mockCreateResponse('ac_first', 'gmail')
+
+    const result = await getOrCreateAuthConfig('gmail')
+
+    expect(result.id).toBe('ac_first')
+    expect(mockFetch).toHaveBeenCalledTimes(2)
   })
 })

@@ -14,12 +14,14 @@
 
 import { randomUUID } from 'crypto'
 import { z } from 'zod'
-import { and, eq, isNull, or } from 'drizzle-orm'
+import { and, desc, eq, isNull, ne, or } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
+import { batch, changesOf } from '@shared/lib/db/batch'
 import { xAgentPolicies, type XAgentPolicy } from '@shared/lib/db/schema'
+import { serializeByKey } from '@shared/lib/utils/keyed-queue'
 
 // ============================================================================
-// Zod schemas (boundary validation per CLAUDE.md)
+// Zod schemas (boundary validation per AGENTS.md)
 // ============================================================================
 
 export const xAgentOperationSchema = z.enum(['list', 'read', 'invoke'])
@@ -57,12 +59,12 @@ function targetMatch(target: string | null) {
  * Look up an exact policy row.
  * For 'list', pass target=null. For 'read'/'invoke', pass target=<otherSlug>.
  */
-export function getPolicy(
+export async function getPolicy(
   callerSlug: string,
   operation: XAgentOperation,
   targetSlug: string | null,
-): XAgentPolicy | null {
-  const rows = db
+): Promise<XAgentPolicy | null> {
+  const rows = await db
     .select()
     .from(xAgentPolicies)
     .where(
@@ -72,50 +74,71 @@ export function getPolicy(
         targetMatch(targetSlug),
       ),
     )
+    // Defense-in-depth: SQLite treats NULL targets as distinct in the unique
+    // index, so a pre-existing duplicate global row could otherwise be resolved
+    // non-deterministically. Order by updatedAt so the latest write always wins.
+    .orderBy(desc(xAgentPolicies.updatedAt))
     .limit(1)
     .all()
   return rows[0] ?? null
 }
 
+const MAX_SET_POLICY_ATTEMPTS = 5
+
 /**
- * Upsert a policy row atomically.
+ * Set a policy row and report exactly what it displaced: whether a row was
+ * created and the decision it replaced. The graph's drawn edges rely on that
+ * to decide whether to refresh, so it cannot be a guess from a read next to
+ * the write.
  *
- * SQLite's unique-index semantics treat NULL != NULL, so a (caller, NULL, op)
- * row is not deduped by the unique index — two concurrent inserts could both
- * succeed and create duplicates. We wrap the read + insert/update in a
- * transaction so concurrent setPolicy calls serialize correctly.
- *
- * Returns Promise to keep the call-site signature stable; the actual work is
- * sync (better-sqlite3 transactions are synchronous).
+ * Calls for the same key are serialized within this process, so a burst of
+ * edits to one edge lands in arrival order with every call succeeding, as
+ * the old transaction gave. Against another process the write is still a
+ * compare-and-set: update only while the row holds the decision that was
+ * read, or insert only while no row holds the key (the NULL-safe unique
+ * index from migration 0044 makes a global, null-target key conflict too);
+ * zero changes means read again and swap against what the other writer left.
  */
-export async function setPolicy(
+export function setPolicy(
   callerSlug: string,
   operation: XAgentOperation,
   targetSlug: string | null,
   decision: XAgentDecision,
-): Promise<void> {
+): Promise<{ created: boolean; previousDecision: XAgentDecision | null }> {
+  return serializeByKey(`x-agent-policy:${callerSlug}\u0000${operation}\u0000${targetSlug ?? ''}`, () =>
+    compareAndSetPolicy(callerSlug, operation, targetSlug, decision),
+  )
+}
+
+async function compareAndSetPolicy(
+  callerSlug: string,
+  operation: XAgentOperation,
+  targetSlug: string | null,
+  decision: XAgentDecision,
+): Promise<{ created: boolean; previousDecision: XAgentDecision | null }> {
   const now = new Date()
-  db.transaction(() => {
-    const existing = db
-      .select()
+  const key = and(
+    eq(xAgentPolicies.callerAgentSlug, callerSlug),
+    eq(xAgentPolicies.operation, operation),
+    targetMatch(targetSlug),
+  )
+  for (let attempt = 0; attempt < MAX_SET_POLICY_ATTEMPTS; attempt++) {
+    const existing = await db
+      .select({ id: xAgentPolicies.id, decision: xAgentPolicies.decision })
       .from(xAgentPolicies)
-      .where(
-        and(
-          eq(xAgentPolicies.callerAgentSlug, callerSlug),
-          eq(xAgentPolicies.operation, operation),
-          targetMatch(targetSlug),
-        ),
-      )
-      .limit(1)
-      .all()
-    if (existing.length > 0) {
-      db.update(xAgentPolicies)
+      .where(key)
+      .get()
+    if (existing) {
+      const updated = await db
+        .update(xAgentPolicies)
         .set({ decision, updatedAt: now })
-        .where(eq(xAgentPolicies.id, existing[0].id))
+        .where(and(eq(xAgentPolicies.id, existing.id), eq(xAgentPolicies.decision, existing.decision)))
         .run()
-      return
+      if (changesOf(updated) > 0) return { created: false, previousDecision: existing.decision as XAgentDecision }
+      continue
     }
-    db.insert(xAgentPolicies)
+    const inserted = await db
+      .insert(xAgentPolicies)
       .values({
         id: randomUUID(),
         callerAgentSlug: callerSlug,
@@ -125,8 +148,61 @@ export async function setPolicy(
         createdAt: now,
         updatedAt: now,
       })
+      .onConflictDoNothing()
       .run()
-  })
+    if (changesOf(inserted) > 0) return { created: true, previousDecision: null }
+  }
+  throw new Error('Policy changed concurrently; try again')
+}
+
+/** Delete the exact policy row(s) for (caller, operation, target). */
+export async function deletePolicy(
+  callerSlug: string,
+  operation: XAgentOperation,
+  targetSlug: string | null,
+): Promise<number> {
+  const result = await db
+    .delete(xAgentPolicies)
+    .where(
+      and(
+        eq(xAgentPolicies.callerAgentSlug, callerSlug),
+        eq(xAgentPolicies.operation, operation),
+        targetMatch(targetSlug),
+      ),
+    )
+    .run()
+  return changesOf(result)
+}
+
+/**
+ * Delete the specific-target policy rows for (caller, operation, target).
+ * With `preserveBlock`, 'block' rows survive: revoking a granted edge must
+ * not silently lift an explicit block (that would ESCALATE access — the
+ * effective decision would fall back to a global allow, if one exists).
+ * Returns the number of rows removed.
+ */
+export async function deleteTargetPolicy(
+  callerSlug: string,
+  operation: XAgentOperation,
+  targetSlug: string,
+  options?: { preserveBlock?: boolean },
+): Promise<number> {
+  if (!options?.preserveBlock) {
+    return deletePolicy(callerSlug, operation, targetSlug)
+  }
+  const conditions = [
+    eq(xAgentPolicies.callerAgentSlug, callerSlug),
+    eq(xAgentPolicies.operation, operation),
+    eq(xAgentPolicies.targetAgentSlug, targetSlug),
+  ]
+  if (options?.preserveBlock) {
+    conditions.push(ne(xAgentPolicies.decision, 'block'))
+  }
+  const result = await db
+    .delete(xAgentPolicies)
+    .where(and(...conditions))
+    .run()
+  return changesOf(result)
 }
 
 /**
@@ -148,16 +224,16 @@ export async function setPolicy(
  * part of the invoke contract and does not require 'read' — 'read' only gates
  * browsing existing sessions via get_agent_sessions / get_agent_session_transcript.
  */
-export function evaluate(
+export async function evaluate(
   callerSlug: string,
   operation: XAgentOperation,
   targetSlug: string | null,
-): XAgentDecision {
+): Promise<XAgentDecision> {
   if (targetSlug !== null) {
-    const exact = getPolicy(callerSlug, operation, targetSlug)
+    const exact = await getPolicy(callerSlug, operation, targetSlug)
     if (exact) return exact.decision
   }
-  const global = getPolicy(callerSlug, operation, null)
+  const global = await getPolicy(callerSlug, operation, null)
   if (global) return global.decision
   return 'review'
 }
@@ -165,7 +241,7 @@ export function evaluate(
 /**
  * List all policy rows for a caller (used by UI to show current settings).
  */
-export function listPoliciesForCaller(callerSlug: string): XAgentPolicy[] {
+export async function listPoliciesForCaller(callerSlug: string): Promise<XAgentPolicy[]> {
   return db
     .select()
     .from(xAgentPolicies)
@@ -193,12 +269,14 @@ export async function deletePoliciesForAgent(agentSlug: string): Promise<void> {
  * Used by the per-agent policy editor UI.
  *
  * Decision semantics:
- *  - 'allow' / 'block' → persisted as a row.
- *  - 'review' → NOT persisted (treated as the implicit default for absent rows).
- *    This is intentional: storing a 'review' row adds no behavior and just bloats
- *    the table. Round-tripping {operation, target, decision: 'review'} through
- *    PUT then GET will see the row disappear — clients should treat the absence
- *    of a row as 'review' and render it that way.
+ *  - 'allow' / 'block' / 'review' → all persisted as a row.
+ *    'review' is the implicit default for an absent row, but it is still stored
+ *    when set explicitly: a per-target 'review' is a meaningful OVERRIDE of a
+ *    global 'allow'/'block' (evaluate() resolves most-specific-first), and the
+ *    editor relies on the row's presence to render the toggle as active.
+ *  - To clear a setting back to the inherited default, omit the row entirely.
+ *    The editor sends 'default' for that, which the API layer drops before
+ *    calling here, so an absent row still resolves to 'review' in evaluate().
  */
 export const replacePoliciesForCallerInputSchema = z.object({
   policies: z
@@ -206,7 +284,6 @@ export const replacePoliciesForCallerInputSchema = z.object({
       z.object({
         operation: xAgentOperationSchema,
         targetSlug: z.string().nullable(),
-        // 'review' is accepted but not persisted (see docstring above).
         decision: xAgentDecisionSchema,
       }),
     )
@@ -214,30 +291,42 @@ export const replacePoliciesForCallerInputSchema = z.object({
 })
 export type ReplacePoliciesForCallerInput = z.infer<typeof replacePoliciesForCallerInputSchema>
 
-export function replacePoliciesForCaller(
+export async function replacePoliciesForCaller(
   callerSlug: string,
   policies: ReplacePoliciesForCallerInput['policies'],
-): void {
+): Promise<void> {
   const now = new Date()
-  db.transaction(() => {
-    db.delete(xAgentPolicies)
-      .where(eq(xAgentPolicies.callerAgentSlug, callerSlug))
-      .run()
-    for (const p of policies) {
-      // Skip the implicit-default 'review' state — it's the default if no row exists,
-      // so storing it adds no value and just bloats the table.
-      if (p.decision === 'review') continue
-      db.insert(xAgentPolicies)
-        .values({
-          id: randomUUID(),
-          callerAgentSlug: callerSlug,
-          targetAgentSlug: p.targetSlug,
-          operation: p.operation,
-          decision: p.decision,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .run()
+
+  // Dedupe the payload before inserting. Two global entries like
+  // (alice, NULL, 'list') in one payload are the editor re-stating a toggle,
+  // so collapse them per operation with last-write-wins (later entries win),
+  // mirroring setPolicy's upsert. Both unique indexes then hold: the plain one
+  // rejects duplicate specific-target rows and the null-safe one duplicate
+  // globals, and a client sending two conflicting specific-target rows is an
+  // error that aborts the whole batch.
+  const globalByOp = new Map<XAgentOperation, ReplacePoliciesForCallerInput['policies'][number]>()
+  const specific: ReplacePoliciesForCallerInput['policies'] = []
+  for (const p of policies) {
+    if (p.targetSlug === null) {
+      globalByOp.set(p.operation, p)
+    } else {
+      specific.push(p)
     }
-  })
+  }
+  const toInsert = [...specific, ...globalByOp.values()]
+
+  await batch([
+    db.delete(xAgentPolicies).where(eq(xAgentPolicies.callerAgentSlug, callerSlug)),
+    ...toInsert.map((p) =>
+      db.insert(xAgentPolicies).values({
+        id: randomUUID(),
+        callerAgentSlug: callerSlug,
+        targetAgentSlug: p.targetSlug,
+        operation: p.operation,
+        decision: p.decision,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    ),
+  ])
 }

@@ -1,8 +1,53 @@
 import { defineConfig, devices, chromium } from '@playwright/test'
 import path from 'path'
 
-// Use a separate data directory for E2E tests to avoid polluting production data
-const e2eDataDir = path.join(__dirname, '.e2e-data')
+// Use a separate data directory for E2E tests to avoid polluting production data.
+// CI can override these so suites can keep isolated state and artifacts.
+const defaultE2eDataDir = path.join(__dirname, '.e2e-data', 'web')
+if (!process.env.SUPERAGENT_DATA_DIR) {
+  process.env.SUPERAGENT_DATA_DIR = defaultE2eDataDir
+}
+const e2eDataDir = path.resolve(process.env.SUPERAGENT_DATA_DIR)
+const e2ePort = process.env.E2E_PORT ?? process.env.PORT ?? '3000'
+const e2eBaseUrl = process.env.E2E_BASE_URL ?? `http://localhost:${e2ePort}`
+const playwrightOutputDir = process.env.PLAYWRIGHT_OUTPUT_DIR ?? 'test-results'
+const playwrightHtmlReportDir = process.env.PLAYWRIGHT_HTML_REPORT ?? 'playwright-report'
+const configuredWorkers = process.env.PLAYWRIGHT_WORKERS
+  ? Number(process.env.PLAYWRIGHT_WORKERS)
+  : undefined
+
+const webTestIgnore = [
+  '**/auth/**',
+  // Desktop runtime tests have their own app launcher and config.
+  '**/electron/**',
+  // Real-container probes with their own config (playwright.live-mcp.config.ts).
+  '**/live/**',
+  // Recorded walkthroughs, not regression tests — they throttle the network and
+  // sit still on purpose. Run them with playwright.demo.config.ts (see the
+  // pr-demo-video skill).
+  '**/*.demo.spec.ts',
+  '**/getting-started-wizard.spec.ts',
+  // Mutates the global provider API key — quarantined to the wizard config.
+  '**/provider-api-key.spec.ts',
+  // Writes app-wide model defaults — also belongs to the isolated wizard suite.
+  '**/paywall-subscriptions.spec.ts',
+  // Needs a production build (service worker) — runs under playwright.pwa.config.ts.
+  '**/pwa-precache.spec.ts',
+  // WebKit-engine regression (async-scroll follow) — runs under the web-webkit project.
+  '**/safari-follow.spec.ts',
+  // Canvas mouse gestures need a still layout: sibling specs' agent churn on
+  // the shared server re-solves the graph under the cursor, which made this
+  // the suite's top flake. Runs under the web-graph project on its own server
+  // and data dir (see test:e2e:graph).
+  '**/home-graph.spec.ts',
+  // Section drags also need a stable list; sibling specs create/delete agents
+  // mid-gesture. Run on a fresh server through test:e2e:sidebar.
+  '**/agent-folders.spec.ts',
+]
+
+if (process.env.E2E_INCLUDE_A11Y !== 'true') {
+  webTestIgnore.push('**/a11y-audit.spec.ts')
+}
 
 // Resolve Playwright's bundled Chromium path for the browser streaming E2E test.
 // This allows the mock container to launch a real headless browser without requiring
@@ -21,7 +66,8 @@ function buildWebServerCommand() {
   const env: Record<string, string> = {
     SUPERAGENT_DATA_DIR: e2eDataDir,
     E2E_MOCK: 'true',
-    PORT: '3000',
+    PORT: e2ePort,
+    VITE_CACHE_DIR: path.join(e2eDataDir, '.vite'),
   }
   if (chromiumPath) env.E2E_CHROMIUM_PATH = chromiumPath
 
@@ -35,56 +81,62 @@ function buildWebServerCommand() {
 
 export default defineConfig({
   testDir: './e2e',
-  testIgnore: ['**/auth/**'],  // Auth tests use separate config (playwright.auth.config.ts)
+  // Auth tests use a separate config (playwright.auth.config.ts); e2e/live
+  // holds probes against the REAL container (playwright.live-mcp.config.ts
+  // and the .mjs harnesses), which the mock host cannot satisfy.
+  testIgnore: ['**/auth/**', '**/live/**', '**/electron/**'],
+  outputDir: playwrightOutputDir,
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 2 : 2,
-  reporter: process.env.CI ? [['list']] : [['html', { open: 'never' }], ['list']],
+  workers: configuredWorkers && Number.isFinite(configuredWorkers) ? configuredWorkers : 4,
+  reporter: [['list'], ['html', { open: 'never', outputFolder: playwrightHtmlReportDir }]],
 
   use: {
-    baseURL: 'http://localhost:3000',
+    baseURL: e2eBaseUrl,
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
 
   projects: [
     {
-      // Wizard tests toggle setupCompleted (global shared state).
-      // Must run alone before anything else to avoid poisoning other tests.
-      name: 'wizard',
-      testMatch: '**/getting-started-wizard.spec.ts',
-      use: { ...devices['Desktop Chrome'] },
-      fullyParallel: false,
-    },
-    {
-      // Settings/policy tests modify global settings but don't toggle setupCompleted.
-      // Safe to run after wizard tests complete.
-      name: 'global-state',
-      testMatch: [
-        '**/settings.spec.ts',
-        '**/policy-settings.spec.ts',
-      ],
-      use: { ...devices['Desktop Chrome'] },
-      fullyParallel: false,
-      dependencies: ['wizard'],
-    },
-    {
       name: 'web-chromium',
-      testIgnore: [
-        '**/auth/**',
-        '**/getting-started-wizard.spec.ts',
-        '**/settings.spec.ts',
-        '**/policy-settings.spec.ts',
-      ],
+      testIgnore: webTestIgnore,
       use: { ...devices['Desktop Chrome'] },
-      dependencies: ['global-state'],
+    },
+    // WebKit's async compositor can roll programmatic scrollTop writes back —
+    // the follow regression this covers never reproduces in Chromium. Run
+    // explicitly with --project=web-webkit (needs `npx playwright install webkit`).
+    {
+      name: 'web-webkit',
+      testMatch: ['**/safari-follow.spec.ts', '**/thinking-collapse-reading-line.spec.ts', '**/read-aloud-follow.spec.ts', '**/openai-read-aloud.spec.ts', '**/sidebar-sections-mobile.spec.ts', '**/pdf-preview.spec.ts'],
+      use: { ...devices['Desktop Safari'] },
+    },
+    // Section drag-and-drop and persistence, on their own server/data dir.
+    {
+      name: 'web-sidebar',
+      testMatch: ['**/agent-folders.spec.ts'],
+      fullyParallel: false,
+      use: { ...devices['Desktop Chrome'] },
+    },
+    // Home connections graph — canvas mouse gestures (hover-fade, edge draw,
+    // node drag) against react-flow. Run with `npm run test:e2e:graph` and a
+    // dedicated SUPERAGENT_DATA_DIR: the only agents on the board are the
+    // spec's own, so the layout stays still and fitView never bottoms out at
+    // minZoom. Not fullyParallel — the file's own tests would otherwise churn
+    // each other's layout from parallel workers, recreating the flake this
+    // project exists to remove.
+    {
+      name: 'web-graph',
+      testMatch: ['**/home-graph.spec.ts'],
+      fullyParallel: false,
+      use: { ...devices['Desktop Chrome'] },
     },
   ],
 
   webServer: {
     command: buildWebServerCommand(),
-    url: 'http://localhost:3000/api/settings',  // Wait for API to be ready, not just Vite
+    url: `${e2eBaseUrl}/api/settings`,  // Wait for API to be ready, not just Vite
     reuseExistingServer: false,  // Always start fresh for E2E tests
     timeout: 120000,
     stdout: 'pipe',

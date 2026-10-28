@@ -1,0 +1,409 @@
+// @vitest-environment jsdom
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { renderHook, act, render as renderUi, screen } from '@testing-library/react'
+import { useComposerOptions, type ComposerOptionsState, type UseComposerOptionsArgs } from './composer-options'
+import { ComposerOptionsPopover } from './composer-options-popover'
+
+// No provider locks a model here (model locks have their own tests).
+vi.mock('@renderer/hooks/use-model-lock', () => ({ useModelLock: () => undefined }))
+vi.mock('@renderer/hooks/use-provider-model-availability', () => ({
+  useModelAvailabilities: () => ({ reasonFor: () => undefined, availabilityOf: () => null }),
+}))
+
+// Mutable settings the mocked useModelSettings reads at call time, so tests can
+// simulate the query resolving (undefined → loaded) and later refetches.
+const state = vi.hoisted(() => ({ settings: undefined as unknown, connections: undefined as unknown }))
+
+vi.mock('@renderer/hooks/use-llm-connections', () => ({ useLlmConnections: () => ({ data: state.connections }) }))
+
+vi.mock('@renderer/hooks/use-settings', () => ({
+  useModelSettings: () => ({ data: state.settings }),
+}))
+
+const LOADED_SETTINGS = {
+  llmProvider: 'anthropic',
+  models: { agentModel: 'opus' },
+  llmProviderStatus: [
+    { id: 'anthropic', catalog: [], defaultModels: { agent: 'sonnet' } },
+  ],
+}
+
+function render(initialProps: UseComposerOptionsArgs) {
+  return renderHook((props: UseComposerOptionsArgs) => useComposerOptions(props), {
+    initialProps,
+  })
+}
+
+beforeEach(() => { state.connections = undefined })
+
+describe('useComposerOptions default adoption', () => {
+  beforeEach(() => {
+    state.settings = LOADED_SETTINGS
+  })
+
+  it('keeps model picks before a connection has been configured', () => {
+    state.connections = { connections: [], defaultSelection: null }
+    const { result } = render({})
+    act(() => result.current.setModel('claude-haiku-4-5'))
+    expect(result.current.model).toBe('claude-haiku-4-5')
+    expect(result.current.toRuntimeOptions()).toEqual({ model: 'claude-haiku-4-5' })
+  })
+
+  it('adopts the agent default over the global default as sources stream in', () => {
+    state.settings = undefined
+    const { result, rerender } = render({ agentKey: 'a', agentDefaultsReady: false })
+    expect(result.current.model).toBeUndefined()
+
+    // Settings resolve first: adopt the global default.
+    state.settings = LOADED_SETTINGS
+    rerender({ agentKey: 'a', agentDefaultsReady: false })
+    expect(result.current.model).toBe('opus')
+    expect(result.current.effort).toBe('medium')
+
+    // Agent preferences resolve later: the agent default wins.
+    rerender({
+      agentKey: 'a',
+      agentDefaultModel: 'haiku',
+      agentDefaultEffort: 'high',
+      agentDefaultsReady: true,
+    })
+    expect(result.current.model).toBe('haiku')
+    expect(result.current.effort).toBe('high')
+  })
+
+  it('locks once both sources answered: a background default change cannot swap an untouched selection', () => {
+    const { result, rerender } = render({
+      agentKey: 'a',
+      agentDefaultModel: 'haiku',
+      agentDefaultEffort: 'high',
+      agentDefaultsReady: true,
+    })
+    expect(result.current.model).toBe('haiku')
+
+    // Another window edits the default and the query refetches mid-compose.
+    rerender({
+      agentKey: 'a',
+      agentDefaultModel: 'sonnet',
+      agentDefaultEffort: 'low',
+      agentDefaultsReady: true,
+    })
+    expect(result.current.model).toBe('haiku')
+    expect(result.current.effort).toBe('high')
+  })
+
+  it('followDefaults keeps tracking after load, including a reset back to the global default', () => {
+    const { result, rerender } = render({
+      agentKey: 'a',
+      followDefaults: true,
+      agentDefaultModel: 'haiku',
+      agentDefaultsReady: true,
+    })
+    expect(result.current.model).toBe('haiku')
+
+    rerender({ agentKey: 'a', followDefaults: true, agentDefaultModel: 'sonnet', agentDefaultsReady: true })
+    expect(result.current.model).toBe('sonnet')
+
+    // Reset-to-global on the agent-home card: defaults cleared → global default.
+    rerender({ agentKey: 'a', followDefaults: true, agentDefaultsReady: true })
+    expect(result.current.model).toBe('opus')
+  })
+
+  it('an agentKey change unlocks and re-adopts, dropping to medium effort when the new agent has no defaults', () => {
+    const { result, rerender } = render({
+      agentKey: 'a',
+      agentDefaultModel: 'haiku',
+      agentDefaultEffort: 'max',
+      agentDefaultsReady: true,
+    })
+    expect(result.current.model).toBe('haiku')
+    expect(result.current.effort).toBe('max')
+
+    // Quick-dispatch switches to an agent with no defaults (and no global
+    // agentEffort configured): both knobs must follow.
+    rerender({ agentKey: 'b', agentDefaultsReady: true })
+    expect(result.current.model).toBe('opus')
+    expect(result.current.effort).toBe('medium')
+  })
+
+  it('an explicit user pick survives default changes and agent switches', () => {
+    const { result, rerender } = render({ agentKey: 'a', agentDefaultsReady: true })
+    act(() => {
+      result.current.setModel('claude-opus-4-7')
+      result.current.setEffort('low')
+    })
+
+    rerender({
+      agentKey: 'b',
+      agentDefaultModel: 'haiku',
+      agentDefaultEffort: 'max',
+      agentDefaultsReady: true,
+    })
+    expect(result.current.model).toBe('claude-opus-4-7')
+    expect(result.current.effort).toBe('low')
+  })
+
+  it('omits untouched knobs from runtime options so the server resolves the defaults', () => {
+    const { result } = render({
+      agentKey: 'a',
+      agentDefaultModel: 'haiku',
+      agentDefaultEffort: 'high',
+      agentDefaultsReady: true,
+    })
+    // Adopted for display, but nothing was explicitly chosen — the wire bag
+    // stays empty so a still-loading or later-edited default can't be beaten
+    // by its own stale echo.
+    expect(result.current.model).toBe('haiku')
+    expect(result.current.toRuntimeOptions()).toEqual({})
+  })
+
+  it('serializes explicitly picked and session-seeded values', () => {
+    const { result } = render({ agentKey: 'a', agentDefaultsReady: true })
+    act(() => {
+      result.current.setModel('claude-opus-4-7')
+    })
+    // Model picked, effort untouched: only the pick goes on the wire.
+    expect(result.current.toRuntimeOptions()).toEqual({ model: 'claude-opus-4-7' })
+
+    const seeded = render({
+      initialModel: 'claude-opus-4-6',
+      initialEffort: 'xhigh',
+      agentKey: 'a',
+      agentDefaultsReady: true,
+    })
+    expect(seeded.result.current.toRuntimeOptions()).toEqual({
+      model: 'claude-opus-4-6',
+      effort: 'xhigh',
+    })
+  })
+
+  it('serializes an explicitly picked speed so the dispatch payload carries it', () => {
+    const { result } = render({ agentKey: 'a', agentDefaultsReady: true })
+    expect(result.current.toRuntimeOptions()).toEqual({})
+    act(() => {
+      result.current.setSpeed('fast')
+    })
+    expect(result.current.toRuntimeOptions()).toEqual({ speed: 'fast' })
+  })
+
+  it('session-seeded initial values win over defaults', () => {
+    const { result } = render({
+      initialModel: 'claude-opus-4-6',
+      initialEffort: 'xhigh',
+      agentKey: 'a',
+      agentDefaultModel: 'haiku',
+      agentDefaultEffort: 'low',
+      agentDefaultsReady: true,
+    })
+    expect(result.current.model).toBe('claude-opus-4-6')
+    expect(result.current.effort).toBe('xhigh')
+  })
+
+  it('adopts a newer authoritative session model after mounting from stale cached detail', () => {
+    const { result, rerender } = render({
+      initialModel: 'claude-opus-4-6',
+      agentKey: 'a',
+      agentDefaultModel: 'haiku',
+      agentDefaultsReady: true,
+    })
+    expect(result.current.model).toBe('claude-opus-4-6')
+
+    // React Query can render cached session detail first, then deliver the
+    // refetched last-used model. The refreshed session value must replace the
+    // stale seed and be the value sent on the next turn.
+    rerender({
+      initialModel: 'claude-sonnet-4-6',
+      agentKey: 'a',
+      agentDefaultModel: 'haiku',
+      agentDefaultsReady: true,
+    })
+    expect(result.current.model).toBe('claude-sonnet-4-6')
+    expect(result.current.toRuntimeOptions()).toEqual({ model: 'claude-sonnet-4-6' })
+  })
+
+  it('protects an unsent model pick, then follows session updates after submit succeeds', () => {
+    const { result, rerender } = render({
+      initialModel: 'claude-opus-4-6',
+      agentKey: 'a',
+      agentDefaultsReady: true,
+    })
+    act(() => result.current.setModel('claude-sonnet-4-6'))
+
+    // A peer update/refetch must not erase a local choice that has not reached
+    // the server yet.
+    rerender({
+      initialModel: 'claude-haiku-4-5',
+      agentKey: 'a',
+      agentDefaultsReady: true,
+    })
+    expect(result.current.model).toBe('claude-sonnet-4-6')
+
+    act(() => result.current.markSubmitted({ model: 'claude-sonnet-4-6' }))
+    rerender({
+      initialModel: 'claude-sonnet-4-6',
+      agentKey: 'a',
+      agentDefaultsReady: true,
+    })
+
+    // Once acknowledged, a later peer's accepted model is authoritative.
+    rerender({
+      initialModel: 'claude-opus-4-8',
+      agentKey: 'a',
+      agentDefaultsReady: true,
+    })
+    expect(result.current.model).toBe('claude-opus-4-8')
+    expect(result.current.toRuntimeOptions()).toEqual({ model: 'claude-opus-4-8' })
+  })
+
+  it('applies the same authoritative refresh and unsent-edit protection to effort and speed', () => {
+    const { result, rerender } = render({
+      initialEffort: 'medium',
+      initialSpeed: 'normal',
+      agentKey: 'a',
+      agentDefaultsReady: true,
+    })
+
+    rerender({
+      initialEffort: 'high',
+      initialSpeed: 'fast',
+      agentKey: 'a',
+      agentDefaultsReady: true,
+    })
+    expect(result.current.effort).toBe('high')
+    expect(result.current.speed).toBe('fast')
+
+    act(() => {
+      result.current.setEffort('low')
+      result.current.setSpeed('slow')
+    })
+    rerender({
+      initialEffort: 'xhigh',
+      initialSpeed: 'normal',
+      agentKey: 'a',
+      agentDefaultsReady: true,
+    })
+    expect(result.current.effort).toBe('low')
+    expect(result.current.speed).toBe('slow')
+
+    act(() => result.current.markSubmitted({ effort: 'low', speed: 'slow' }))
+    rerender({
+      initialEffort: 'low',
+      initialSpeed: 'slow',
+      agentKey: 'a',
+      agentDefaultsReady: true,
+    })
+    rerender({
+      initialEffort: 'high',
+      initialSpeed: 'fast',
+      agentKey: 'a',
+      agentDefaultsReady: true,
+    })
+    expect(result.current.effort).toBe('high')
+    expect(result.current.speed).toBe('fast')
+  })
+})
+
+describe('useComposerOptions web provider', () => {
+  it('exposes the active webProvider from settings', () => {
+    state.settings = { ...LOADED_SETTINGS, webProvider: 'platform', webProviderIsDefault: true }
+    const { result } = render({ agentKey: 'a', agentDefaultsReady: true })
+    expect(result.current.webProvider).toBe('platform')
+  })
+})
+
+
+describe('connection/model selection', () => {
+  const model = (id: string) => ({ id, label: id, supportedEfforts: ['low', 'medium', 'high'] })
+  const first = { id: 'global', defaultModel: 'same', catalog: [model('same'), model('global-default')] }
+  const second = { id: 'personal', defaultModel: 'same', catalog: [model('same'), model('personal-other')] }
+  beforeEach(() => {
+    state.settings = LOADED_SETTINGS
+    state.connections = { connections: [first, second], defaultSelection: { llmProviderId: 'global', model: 'global-default' } }
+  })
+  it('retains a model picked while the connection query is still pending', () => {
+    state.connections = undefined
+    const { result, rerender } = render({})
+    act(() => result.current.setModel('same'))
+    state.connections = { connections: [first, second], defaultSelection: { llmProviderId: 'global', model: 'global-default' } }
+    rerender({})
+    expect(result.current.model).toBe('same')
+    expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'global', model: 'same' })
+  })
+
+  it('binds a model pick to the inherited connection before the initial query has settled', () => {
+    state.connections = undefined
+    const { result, rerender } = render({ initialModel: 'same' })
+    state.connections = { connections: [first, second], defaultSelection: { llmProviderId: 'global', model: 'global-default' } }
+    rerender({ initialModel: 'same' })
+    act(() => result.current.setModel('same'))
+    expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'global', model: 'same' })
+  })
+
+  it('uses the server-resolved provider default instead of the first family default', () => {
+    const platform = { id: 'platform', defaultModel: 'grok', catalog: [
+      { ...model('opus-id'), family: 'opus', isDefault: true, isLatest: true },
+      { ...model('grok-id'), family: 'grok', isDefault: true, isLatest: true },
+    ] }
+    state.connections = { connections: [first, platform], defaultSelection: { llmProviderId: 'global', model: 'same' } }
+    const { result } = render({ initialLlmProviderId: 'global', initialModel: 'same' })
+    act(() => result.current.setConnection?.('platform'))
+    expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'platform', model: 'grok' })
+  })
+
+  it('changes accounts even when both expose the same model ID', () => {
+    const { result } = render({ initialLlmProviderId: 'global', initialModel: 'same' })
+    act(() => result.current.setConnection?.('personal'))
+    expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'personal', model: 'same' })
+    expect(result.current.catalog).toEqual(second.catalog)
+  })
+  it('drops the whole deleted pair instead of charging another account for the orphaned model', () => {
+    const { result, rerender } = render({ initialLlmProviderId: 'personal', initialModel: 'same' })
+    state.connections = { connections: [first], defaultSelection: { llmProviderId: 'global', model: 'global-default' } }
+    rerender({ initialLlmProviderId: 'personal', initialModel: 'same' })
+    expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'global', model: 'global-default' })
+  })
+  it('drops a removed model before considering an agent default', () => {
+    const { result } = render({ initialLlmProviderId: 'personal', initialModel: 'removed', agentDefaultLlmProviderId: 'personal', agentDefaultModel: 'personal-other' })
+    expect(result.current.llmProviderId).toBe('personal')
+    expect(result.current.model).toBe('personal-other')
+  })
+  it('protects an unsent account change from an authoritative refetch', () => {
+    const { result, rerender } = render({ initialLlmProviderId: 'global', initialModel: 'same' })
+    act(() => result.current.setConnection?.('personal'))
+    rerender({ initialLlmProviderId: 'global', initialModel: 'global-default' })
+    expect(result.current.toRuntimeOptions()).toMatchObject({ llmProviderId: 'personal', model: 'same' })
+  })
+})
+
+describe('effort the selected model cannot run', () => {
+  // No Medium: the popover's clamp would snap the built-in medium start to Low.
+  const flash = { id: 'deepseek-flash', label: 'DeepSeek Flash', family: 'deepseek', isLatest: true, icon: 'deepseek', supportedEfforts: ['low', 'high', 'max'] }
+  const settingsWith = (agentEffort?: string) => ({
+    llmProvider: 'anthropic',
+    models: { agentModel: 'deepseek-flash', ...(agentEffort ? { agentEffort } : {}) },
+    llmProviderStatus: [{ id: 'anthropic', catalog: [flash], defaultModels: { agent: 'deepseek-flash' } }],
+  })
+
+  // The real popover as a child, so its clamp effect runs before the hook's
+  // adoption effect, as in the app.
+  function Composer({ onState }: { onState: (s: ComposerOptionsState) => void }) {
+    const composer = useComposerOptions({ agentKey: 'a', followDefaults: true, agentDefaultsReady: true })
+    onState(composer)
+    return <ComposerOptionsPopover state={composer} />
+  }
+
+  it('adopts the default effort instead of locking in the clamped Low', () => {
+    state.settings = settingsWith('max')
+    let composer: ComposerOptionsState | undefined
+    renderUi(<Composer onState={(s) => { composer = s }} />)
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('DeepSeek Flash · Max')
+    expect(composer?.toRuntimeOptions()).not.toHaveProperty('effort')
+  })
+
+  it('shows an unsupported default clamped but leaves it off the wire', () => {
+    state.settings = settingsWith()
+    let composer: ComposerOptionsState | undefined
+    renderUi(<Composer onState={(s) => { composer = s }} />)
+    expect(screen.getByTestId('composer-options-trigger')).toHaveTextContent('DeepSeek Flash · Low')
+    expect(composer?.toRuntimeOptions()).not.toHaveProperty('effort')
+  })
+})

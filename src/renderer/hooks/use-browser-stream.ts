@@ -1,11 +1,20 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
-import type { BrowserTabInfo } from '@renderer/components/browser/browser-tab-bar'
+import { useState, useEffect, useRef, useCallback, useReducer } from 'react'
+import type { BrowserTabInfo, BrowserNavigateAction } from '@shared/lib/browser-stream-protocol'
+import { browserViewReducer, initialBrowserView } from '@renderer/lib/browser-stream-state'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { apiFetch } from '@renderer/lib/api'
-import { clearBrowserActive, useMessageStream } from '@renderer/hooks/use-message-stream'
+import { clearBrowserActive } from '@renderer/hooks/use-message-stream'
+import { usePendingBrowserInputRequests } from '@shared/lib/tools/requests/use-pending-requests'
 import { useUser } from '@renderer/context/user-context'
 
 const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta'])
+
+export type NavigateAction = BrowserNavigateAction
+
+// Reconnect backoff for a socket that keeps dying before it opens.
+const RECONNECT_BASE_MS = 1000
+const MAX_RECONNECT_DELAY_MS = 8000
+const MAX_FAILED_RECONNECTS = 5
 
 interface UseBrowserStreamOptions {
   agentSlug: string
@@ -38,16 +47,21 @@ export function useBrowserStream({
   // Multi-tab state
   const [tabs, setTabs] = useState<BrowserTabInfo[]>([])
   const [agentActiveTargetId, setAgentActiveTargetId] = useState<string | null>(null)
-  const [viewingTargetId, setViewingTargetId] = useState<string | null>(null)
+  const [{ targetId: viewingTargetId, history }, dispatchView] = useReducer(browserViewReducer, initialBrowserView)
+  const setViewingTargetId = useCallback((targetId: string | null) => dispatchView({ type: 'view', targetId }), [])
   const [autoFollow, setAutoFollow] = useState(true)
   const autoFollowRef = useRef(autoFollow)
   autoFollowRef.current = autoFollow
 
   // Lifecycle refs for cleanup
-  const isMountedRef = useRef(true)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Sockets that died before ever opening, back to back. The stream endpoint
+  // answering "still active" is not proof it can serve us — give up rather than
+  // reconnect at 1Hz forever behind a preview that will never paint.
+  const failedReconnectsRef = useRef(0)
 
-  const { pendingBrowserInputRequests } = useMessageStream(sessionId, agentSlug)
+  const { requests: pendingBrowserInputRequests, dismiss: dismissBrowserInputRequest } =
+    usePendingBrowserInputRequests(sessionId, agentSlug)
   const needsAttention = browserActive && pendingBrowserInputRequests.length > 0 && !isViewOnly
   const latestRequestId = pendingBrowserInputRequests.length > 0
     ? pendingBrowserInputRequests[pendingBrowserInputRequests.length - 1].toolUseId
@@ -132,7 +146,6 @@ export function useBrowserStream({
       return
     }
 
-    isMountedRef.current = true
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current)
       reconnectTimerRef.current = null
@@ -145,12 +158,18 @@ export function useBrowserStream({
 
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
+    // Set by a browser_closed frame: the server has already dropped its browser
+    // state, so the close that follows needs no status check and no retry.
+    let browserGone = false
 
     ws.onopen = () => {
+      failedReconnectsRef.current = 0
+      dispatchView({ type: 'reset' })
       setConnected(true)
     }
 
     ws.onmessage = (event) => {
+      if (wsRef.current !== ws) return
       try {
         // During window resize, skip frame rendering entirely to keep resize smooth
         const resizing = isResizingWindowRef.current
@@ -174,6 +193,16 @@ export function useBrowserStream({
 
         if (data.type === 'page_loading') {
           setPageLoading(prev => prev === data.loading ? prev : data.loading)
+        } else if (data.type === 'history_state') {
+          dispatchView({
+            type: 'history',
+            targetId: typeof data.targetId === 'string' ? data.targetId : undefined,
+            history: {
+              canGoBack: data.canGoBack === true,
+              canGoForward: data.canGoForward === true,
+              url: typeof data.url === 'string' ? data.url : '',
+            },
+          })
         } else if (data.type === 'frame' && data.data) {
           if (!resizing) {
             const blob = base64ToBlob(data.data, 'image/jpeg')
@@ -190,19 +219,25 @@ export function useBrowserStream({
           setTabs(prev => {
             if (prev.length === data.tabs.length && prev.every((t: BrowserTabInfo, i: number) =>
               t.targetId === data.tabs[i].targetId && t.title === data.tabs[i].title &&
-              t.url === data.tabs[i].url && t.active === data.tabs[i].active
+              t.url === data.tabs[i].url && t.active === data.tabs[i].active &&
+              t.faviconUrl === data.tabs[i].faviconUrl
             )) return prev
             return data.tabs
           })
           setAgentActiveTargetId(prev => prev === data.activeTargetId ? prev : data.activeTargetId)
           if (autoFollowRef.current) {
-            setViewingTargetId(prev => prev === data.activeTargetId ? prev : data.activeTargetId)
+            setViewingTargetId(data.activeTargetId)
           }
         } else if (data.type === 'tab_switched') {
           setAgentActiveTargetId(prev => prev === data.targetId ? prev : data.targetId)
-          setViewingTargetId(prev => prev === data.targetId ? prev : data.targetId)
+          setViewingTargetId(data.targetId)
         } else if (data.type === 'selection_result' && data.text) {
           navigator.clipboard.writeText(data.text).catch(() => {})
+        } else if (data.type === 'browser_closed') {
+          // The user closed the browser window. Drop the tray now rather than
+          // waiting on the status round-trip the socket close would trigger.
+          browserGone = true
+          clearBrowserActive(sessionId)
         }
       } catch {
         // Ignore parse errors for binary frames
@@ -210,30 +245,40 @@ export function useBrowserStream({
     }
 
     ws.onclose = () => {
-      if (!isMountedRef.current) return
+      if (wsRef.current !== ws) return
       setConnected(false)
       setPageLoading(false)
+      dispatchView({ type: 'reset' })
+      if (browserGone) {
+        clearBrowserActive(sessionId)
+        return
+      }
       apiFetch(`/api/agents/${agentSlug}/browser/status`)
         .then((res) => res.json())
         .then((status: { active?: boolean; sessionId?: string }) => {
-          if (!isMountedRef.current) return
+          if (wsRef.current !== ws) return
           if (!status.active || status.sessionId !== sessionId) {
             clearBrowserActive(sessionId)
+          } else if (failedReconnectsRef.current >= MAX_FAILED_RECONNECTS) {
+            clearBrowserActive(sessionId)
           } else {
-            reconnectTimerRef.current = setTimeout(() => setReconnectKey(k => k + 1), 1000)
+            const attempt = failedReconnectsRef.current++
+            reconnectTimerRef.current = setTimeout(
+              () => setReconnectKey(k => k + 1),
+              Math.min(RECONNECT_BASE_MS * 2 ** attempt, MAX_RECONNECT_DELAY_MS),
+            )
           }
         })
         .catch(() => {
-          if (isMountedRef.current) clearBrowserActive(sessionId)
+          if (wsRef.current === ws) clearBrowserActive(sessionId)
         })
     }
 
     ws.onerror = () => {
-      if (isMountedRef.current) setConnected(false)
+      if (wsRef.current === ws) setConnected(false)
     }
 
     return () => {
-      isMountedRef.current = false
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current)
         reconnectTimerRef.current = null
@@ -248,7 +293,7 @@ export function useBrowserStream({
       wsRef.current = null
       setConnected(false)
     }
-  }, [browserActive, isConnected, agentSlug, sessionId, renderFrame, reconnectKey])
+  }, [browserActive, isConnected, agentSlug, sessionId, renderFrame, reconnectKey, setViewingTargetId])
 
   // Reset overlay dismiss state when attention state ends
   useEffect(() => {
@@ -263,15 +308,15 @@ export function useBrowserStream({
       setViewingTargetId(agentActiveTargetId)
       setAutoFollow(true)
     }
-  }, [tabs, viewingTargetId, agentActiveTargetId])
+  }, [tabs, viewingTargetId, agentActiveTargetId, setViewingTargetId])
 
-  // Prevent wheel events from bubbling (must use native listener with passive: false)
+  // Prevent default scroll behavior (must use native listener with passive: false
+  // so preventDefault() works; React's onWheel is passive and can't prevent scrolling)
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas || isViewOnly) return
     const handler = (e: WheelEvent) => {
       e.preventDefault()
-      e.stopPropagation()
     }
     canvas.addEventListener('wheel', handler, { passive: false })
     return () => canvas.removeEventListener('wheel', handler)
@@ -453,7 +498,12 @@ export function useBrowserStream({
     setAutoFollow(false)
     setViewingTargetId(targetId)
     sendMessage({ type: 'switch_tab', targetId })
-  }, [viewingTargetId, sendMessage])
+  }, [viewingTargetId, sendMessage, setViewingTargetId])
+
+  /** Back / forward / reload on the tab being viewed. */
+  const navigate = useCallback((action: NavigateAction) => {
+    if (!isViewOnly) sendMessage({ type: 'navigate', action })
+  }, [sendMessage, isViewOnly])
 
   const handleCloseTab = useCallback((targetId: string) => {
     sendMessage({ type: 'close_tab', targetId })
@@ -466,7 +516,7 @@ export function useBrowserStream({
     if (next && agentActiveTargetId) {
       setViewingTargetId(agentActiveTargetId)
     }
-  }, [autoFollow, agentActiveTargetId, sendMessage])
+  }, [autoFollow, agentActiveTargetId, sendMessage, setViewingTargetId])
 
   const closeBrowser = useCallback(async () => {
     setIsClosing(true)
@@ -513,6 +563,7 @@ export function useBrowserStream({
     needsAttention,
     showOverlay,
     pendingBrowserInputRequests,
+    dismissBrowserInputRequest,
     latestRequestId,
     // Canvas event handlers
     handleMouseDown,
@@ -526,6 +577,11 @@ export function useBrowserStream({
     handleTabClick,
     handleCloseTab,
     toggleAutoFollow,
+    // History
+    canGoBack: history.canGoBack,
+    canGoForward: history.canGoForward,
+    pageUrl: history.url,
+    navigate,
     // Close handlers
     closeBrowser,
     handleCloseClick,

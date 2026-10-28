@@ -1,3 +1,4 @@
+import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * X-Agent Work routes
  *
@@ -9,39 +10,62 @@
  * Bearer <token>. The route resolves the caller's agent slug from that token and
  * applies xAgentPolicies + ACLs accordingly.
  */
+import { requiresOneTimeXAgentReview, type XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
 
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { randomUUID } from 'crypto'
-import { and, eq } from 'drizzle-orm'
+import { and, desc, eq, isNotNull } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
-import { agentAcl } from '@shared/lib/db/schema'
+import { agentAcl, messageAuthor } from '@shared/lib/db/schema'
+import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
+import { userExists } from '@shared/lib/services/user-profile-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { hasMinRole, type AgentRole } from '@shared/lib/types/agent'
+import { runWithOptionalUser } from '@shared/lib/platform-attribution'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
 import {
   createAgent,
   listAgents,
-  getAgent,
+  getAgentRecord,
 } from '@shared/lib/services/agent-service'
-import {
-  listSessions,
-  getSessionMessagesWithCompact,
-  getSessionMetadata,
-  registerSession,
-  updateSessionMetadata,
-} from '@shared/lib/services/session-service'
-import { containerManager } from '@shared/lib/container/container-manager'
-import { messagePersister } from '@shared/lib/container/message-persister'
-import { reviewManager } from '@shared/lib/proxy/review-manager'
+import { displaySlug } from '@shared/lib/utils/file-storage'
+import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
+import { deliveryFailure, startFailure } from '@shared/lib/agent-actor/delivery-errors'
+import type { FileOps } from '@shared/lib/agent-actor/types'
+import type { ContainerSession } from '@shared/lib/container/types'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
 import {
   evaluate as evaluatePolicy,
   type XAgentOperation,
 } from '@shared/lib/services/x-agent-policy-service'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings } from '@shared/lib/config/settings'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
-import type { JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
+import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
+import { captureException } from '@shared/lib/error-reporting'
+import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
+import {
+  removeTransferredAttachments,
+  transferXAgentAttachments,
+  normalizeXAgentAttachmentPaths,
+  openXAgentFile,
+  transferError,
+  XAgentAttachmentError,
+} from '@shared/lib/services/x-agent-attachment-service'
+import {
+  xAgentAttachmentsSchema,
+  xAgentDownloadFileBodySchema,
+} from '@shared/lib/services/x-agent-attachment-schema'
+import {
+  collectDeliveredFiles,
+  compactMessage,
+  findDeliveredFile,
+  pageTranscript,
+} from './x-agent-transcript-view'
+import { awaitReview } from '@shared/lib/proxy/review-request'
+
+const X_AGENT_SENTRY = { area: 'x-agent', op: 'invoke' } as const
 
 // Typed context variables for the x-agent router. Using Hono's generic instead
 // of `as never` casts gives us type safety on c.get/c.set.
@@ -85,6 +109,53 @@ async function getOwnersOfAgent(agentSlug: string): Promise<string[]> {
     .from(agentAcl)
     .where(and(eq(agentAcl.agentSlug, agentSlug), eq(agentAcl.role, 'owner')))
   return rows.map((r) => r.userId)
+}
+
+/**
+ * Resolve the user who sent the message currently driving an agent session.
+ * In shared sessions this can differ from the session creator, so invocation
+ * attribution must prefer the latest per-message author record.
+ */
+async function getLatestMessageAuthorUserId(
+  agentSlug: string,
+  sessionId: string,
+): Promise<string | undefined> {
+  try {
+    const rows = await db
+      .select({ userId: messageAuthor.userId })
+      .from(messageAuthor)
+      .where(and(
+        eq(messageAuthor.agentSlug, agentSlug),
+        eq(messageAuthor.sessionId, sessionId),
+        // An integration-delivered message has no user author.
+        isNotNull(messageAuthor.userId),
+      ))
+      .orderBy(desc(messageAuthor.createdAt), desc(messageAuthor.id))
+      .limit(1)
+    return rows[0]?.userId ?? undefined
+  } catch (error) {
+    // Attribution is optional. A DB/read failure must never block the invoke.
+    console.warn('[x-agent] failed to resolve triggering message author; continuing unattributed', {
+      agentSlug,
+      sessionId,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return undefined
+  }
+}
+
+async function getAgentDisplayNameBestEffort(agentSlug: string): Promise<string> {
+  try {
+    const agent = await getAgentRecord(agentSlug)
+    return agent?.name || agentSlug
+  } catch (error) {
+    // Human-readable naming is cosmetic and must not gate agent invocation.
+    console.warn('[x-agent] failed to resolve caller display name; using slug', {
+      agentSlug,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return agentSlug
+  }
 }
 
 /**
@@ -150,22 +221,21 @@ async function checkAgentPolicy(
   targetSlug: string | null,
   targetName: string,
   preview?: string,
+  fileTransfer?: XAgentFileTransfer,
 ): Promise<{ allowed: boolean; reason?: string }> {
   if (operation !== 'create') {
-    const decision = evaluatePolicy(callerSlug, operation, targetSlug)
-    if (decision === 'allow') return { allowed: true }
+    const decision = await evaluatePolicy(callerSlug, operation, targetSlug)
+    if (decision === 'allow' && !requiresOneTimeXAgentReview({ operation, fileTransfer })) return { allowed: true }
     if (decision === 'block') return { allowed: false, reason: 'Blocked by policy' }
     // 'review' → fall through to interactive prompt
   }
 
   try {
-    const userDecision = await reviewManager.requestXAgentReview(
-      callerSlug,
-      targetSlug ?? '',
-      targetName,
-      operation,
-      preview,
-    )
+    const reviews = agentRegistry.get(callerSlug).inputs.reviews
+    const { decision: userDecision } = await awaitReview(reviews, (raise) => reviews.requestXAgent(
+      { targetAgentSlug: targetSlug ?? '', targetAgentName: targetName, operation, preview, fileTransfer },
+      raise,
+    ))
     if (userDecision === 'deny') {
       return { allowed: false, reason: 'Denied by user' }
     }
@@ -195,9 +265,11 @@ xAgent.post('/list', async (c) => {
     .filter((a) => a.slug !== callerSlug)
     .filter((a) => (visible ? visible.has(a.slug) : true))
     .map((a) => ({
-      slug: a.slug,
-      name: a.frontmatter.name,
-      description: a.frontmatter.description,
+      // Project the decorative display slug for the model; the catalog tolerates
+      // it (and the bare id / legacy form) on the way back in via invoke/get-*.
+      slug: displaySlug(a.name, a.slug),
+      name: a.name,
+      description: a.description,
     }))
   return c.json({ agents: filtered })
 })
@@ -239,7 +311,14 @@ xAgent.post('/create', zValidator('json', createBodySchema), async (c) => {
       })
     }
   }
-  return c.json({ slug: agent.slug, name: agent.name })
+
+  // Announce only after ACL inheritance so live stream filters admit owners.
+  globalFeed.publish({
+    type: 'agent_created',
+    agentSlug: agent.slug,
+  })
+
+  return c.json({ slug: agent.displaySlug, name: agent.name })
 })
 
 // ----------------------------------------------------------------------------
@@ -254,30 +333,36 @@ const getSessionsBodySchema = z.object({
 
 xAgent.post('/get-sessions', zValidator('json', getSessionsBodySchema), async (c) => {
   const callerSlug = getCallerSlug(c)
-  const { slug: targetSlug, limit = 50, offset = 0 } = c.req.valid('json')
+  const { slug: rawTargetSlug, limit = 50, offset = 0 } = c.req.valid('json')
 
-  const target = await getAgent(targetSlug)
+  // Resolve the model-supplied display slug to the canonical id and rebind, so
+  // every downstream ACL / policy / fs use below keys on the id, not the prefix.
+  const targetSlug = await agentCatalog.resolve(rawTargetSlug)
+  if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
+
+  const target = await getAgentRecord(targetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
 
   if (!(await callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'viewer'))) {
     return c.json({ error: 'Forbidden: caller has no access to target agent' }, 403)
   }
 
-  const policy = await checkAgentPolicy(callerSlug, 'read', targetSlug, target.frontmatter.name)
+  const policy = await checkAgentPolicy(callerSlug, 'read', targetSlug, target.name)
   if (!policy.allowed) {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
 
-  const allSessions = await listSessions(targetSlug)
+  const actor = agentRegistry.get(targetSlug)
+  const allSessions = await actor.sessions.list()
   const page = allSessions.slice(offset, offset + limit)
+  const active = new Set((await actor.live()).activeSessionIds)
   return c.json({
     sessions: page.map((s) => ({
       id: s.id,
       name: s.name,
       createdAt: s.createdAt,
       lastActivityAt: s.lastActivityAt,
-      messageCount: s.messageCount,
-      isRunning: messagePersister.isSessionActive(s.id),
+      isRunning: active.has(s.id),
     })),
     total: allSessions.length,
     offset,
@@ -293,68 +378,11 @@ const getTranscriptBodySchema = z.object({
   slug: z.string(),
   sessionId: z.string(),
   sync: z.boolean().optional(),
+  // Most recent N view-rows. Omitted = the whole view.
+  limit: z.number().int().min(1).max(500).optional(),
+  // Default quiet: spoken turns, internals collapsed. true = today's compact view.
+  fullTranscript: z.boolean().optional(),
 })
-
-/**
- * Convert a JSONL message entry into a compact { role, content, toolName? } shape.
- * Strips internal SDK fields, keeps text and tool name only.
- */
-function compactMessage(entry: JsonlMessageEntry | JsonlSystemEntry): {
-  role: string
-  content: string
-  toolName?: string
-} | null {
-  if (entry.type === 'system') {
-    if (entry.subtype === 'compact_boundary') {
-      return { role: 'system', content: '[context compacted]' }
-    }
-    // Surface unknown system subtypes rather than silently dropping them — keeps
-    // future SDK additions visible to invoking agents (and to debugging).
-    return { role: 'system', content: `[system: ${entry.subtype ?? 'unknown'}]` }
-  }
-  const msg = entry.message
-  if (typeof msg.content === 'string') {
-    return { role: entry.type, content: msg.content }
-  }
-  // Array of content blocks: collapse text + summarize tool calls.
-  // Thinking blocks are stripped (internal), but we track whether the turn
-  // *only* had thinking so we can surface a placeholder rather than returning
-  // empty content (which would otherwise look like "the agent didn't respond").
-  const parts: string[] = []
-  let firstToolName: string | undefined
-  let hadThinking = false
-  for (const block of msg.content) {
-    if (block.type === 'text') {
-      parts.push(block.text)
-    } else if (block.type === 'tool_use') {
-      firstToolName = firstToolName ?? block.name
-      parts.push(`[tool_use: ${block.name}]`)
-    } else if (block.type === 'tool_result') {
-      const text = Array.isArray(block.content)
-        ? block.content
-            .filter((p) => p && typeof p === 'object' && 'text' in p)
-            .map((p) => (p as { text: string }).text)
-            .join('\n')
-        : typeof block.content === 'string'
-          ? block.content
-          : ''
-      parts.push(text ? `[tool_result] ${text}` : '[tool_result]')
-    } else if (block.type === 'thinking') {
-      hadThinking = true
-    }
-  }
-  let content = parts.join('\n').trim()
-  if (!content) {
-    // Distinguish thinking-only turns from genuinely-empty turns so callers
-    // (especially sync invoke's lastMessage) don't silently look "blank".
-    content = hadThinking ? '[thinking only — no text response]' : '[no text response]'
-  }
-  return {
-    role: entry.type,
-    content,
-    ...(firstToolName ? { toolName: firstToolName } : {}),
-  }
-}
 
 /**
  * After a sync invoke, the SDK may emit 'result' (which clears isActive) before
@@ -374,47 +402,219 @@ function compactMessage(entry: JsonlMessageEntry | JsonlSystemEntry): {
 const READ_RETRY_ATTEMPTS = Number(process.env.X_AGENT_READ_RETRY_ATTEMPTS) || 10
 const READ_RETRY_INTERVAL_MS = Number(process.env.X_AGENT_READ_RETRY_INTERVAL_MS) || 500
 
+// Sync x-agent calls hold the HTTP response open with zero bytes written until
+// the target turn completes, and the container's fetch (undici) aborts any
+// request whose response headers don't arrive within 300s ("fetch failed").
+// Cap the sync wait well under that cliff: sync is meant for fast turns, so a
+// slow turn promotes to the async contract (status 'running' + session id)
+// instead of dying as a network error that invites the caller to retry.
+//
+// The budget is end-to-end from handler entry, not from when waitForIdle
+// starts: policy review and container startup happen first and can be slow,
+// and a wait that ignored them could still push the total response time past
+// the transport cliff.
+const SYNC_WAIT_TIMEOUT_DEFAULT_MS = 120_000
+
+// Exported for unit tests. The env override can only SHORTEN the wait (its
+// purpose is keeping tests snappy): the container tool docs promise "up to
+// ~2 minutes", and a longer wait would both break that promise and erode the
+// margin to the 300s transport cliff.
+export function resolveSyncWaitTimeoutMs(raw: string | undefined): number {
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed) || parsed <= 0) return SYNC_WAIT_TIMEOUT_DEFAULT_MS
+  return Math.min(parsed, SYNC_WAIT_TIMEOUT_DEFAULT_MS)
+}
+
+const SYNC_WAIT_TIMEOUT_MS = resolveSyncWaitTimeoutMs(process.env.X_AGENT_SYNC_WAIT_TIMEOUT_MS)
+
+// Hard stop for delivering the prompt at all. Past this point the caller's
+// fetch has been dead-or-dying for a while (undici gives up at 300s), so
+// delivering anyway creates exactly the ghost run the caller's inevitable
+// retry then duplicates. Applies to async invokes too — they also respond
+// only after delivery, so a slow container start can strand them the same way.
+// The 60s margin leaves room for the delivery call itself plus the response.
+const DELIVERY_CUTOFF_MS = 240_000
+
+function deliveryCutoffError(): string {
+  return (
+    `Target agent took too long to become ready (over ${Math.round(DELIVERY_CUTOFF_MS / 1000)}s), ` +
+    'so the prompt was NOT delivered. It is safe to retry; prefer sync=false.'
+  )
+}
+
+function lateDeliveryRevokedError(): string {
+  return (
+    `Target agent took too long to start the session (over ${Math.round(DELIVERY_CUTOFF_MS / 1000)}s total). ` +
+    'The invocation was cancelled and any late-created session is revoked, so nothing is running — ' +
+    'it is safe to retry; prefer sync=false.'
+  )
+}
+
+const DEADLINE = Symbol('deadline')
+
+// Race a promise against an absolute deadline. The losing promise keeps
+// running — callers that receive DEADLINE must decide what to do when (or if)
+// it eventually settles, and must attach their own rejection handler to it.
+async function raceDeadline<T>(promise: Promise<T>, deadline: number): Promise<T | typeof DEADLINE> {
+  const remainingMs = deadline - Date.now()
+  if (remainingMs <= 0) return DEADLINE
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<typeof DEADLINE>((resolve) => {
+        timer = setTimeout(() => resolve(DEADLINE), remainingMs)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+// Bounds the live sessions' stream attach — its WebSocket `ready` promise has no
+// timeout of its own, so a wedged container would otherwise hold the caller's
+// fetch open past its 300s header timeout.
+const SUBSCRIBE_TIMEOUT_MS = Number(process.env.X_AGENT_SUBSCRIBE_TIMEOUT_MS) || 30_000
+
+async function subscribeWithTimeout(subscribe: Promise<void>): Promise<void> {
+  const result = await raceDeadline(subscribe, Date.now() + SUBSCRIBE_TIMEOUT_MS)
+  if (result === DEADLINE) {
+    // The stalled attach may still settle later; swallow its rejection so a
+    // late failure doesn't become an unhandled rejection.
+    subscribe.catch(() => {})
+    throw new Error(`Timed out attaching to session stream after ${SUBSCRIBE_TIMEOUT_MS}ms`)
+  }
+}
+
+/**
+ * Wait for the target turn to finish within what's left of the caller's sync
+ * budget (deadline is stamped at handler entry). Returns 'timeout' when the
+ * budget is exhausted, before or during the wait.
+ *
+ * Every sync caller marks the session active before the prompt is delivered
+ * (invoke) or checks isSessionActive just before waiting (get-transcript), so
+ * an inactive session here means the turn already finished: the wait
+ * resolving at once is correct, not a startup race.
+ */
+async function waitForTurnWithinBudget(
+  targetSlug: string,
+  sessionId: string,
+  deadline: number,
+): Promise<'completed' | 'timeout'> {
+  const remainingMs = deadline - Date.now()
+  if (remainingMs <= 0) {
+    // Pre-wait work can eat the whole budget; if the turn already finished
+    // during it, that's a completion — reporting 'timeout' here would label a
+    // finished turn 'running' and make the caller poll for a result it has.
+    return (await agentRegistry.get(targetSlug).sessions.live(sessionId)).isActive ? 'timeout' : 'completed'
+  }
+  const outcome = await agentRegistry.get(targetSlug).sessions.waitForIdle(sessionId, { timeoutMs: remainingMs })
+  return outcome === 'idle' ? 'completed' : 'timeout'
+}
+
+function syncWaitPromotedNote(timeoutMs: number): string {
+  return (
+    `Sync wait timed out after ${Math.round(timeoutMs / 1000)}s, but the target agent is still ` +
+    'working on this prompt. Do NOT re-invoke — that would start a duplicate run. ' +
+    'Poll get_agent_session_transcript with this session_id to retrieve the result.'
+  )
+}
+
+/**
+ * `boundaryUuid` is the uuid of the last assistant entry persisted BEFORE the
+ * current turn's prompt was delivered (undefined when the session is new or
+ * had none). Seeing that entry still last means this turn's reply hasn't
+ * flushed yet — keep polling rather than returning the previous turn's answer
+ * as if it were this one's.
+ */
 async function readLastAssistantMessage(
   targetSlug: string,
   sessionId: string,
-  attempts = READ_RETRY_ATTEMPTS,
-  intervalMs = READ_RETRY_INTERVAL_MS,
+  boundaryUuid?: string,
 ): Promise<{ role: string; content: string; toolName?: string } | null> {
-  for (let i = 0; i < attempts; i++) {
-    const entries = await getSessionMessagesWithCompact(targetSlug, sessionId)
-    // Walk backwards to find the most recent assistant entry.
-    for (let j = entries.length - 1; j >= 0; j--) {
-      const e = entries[j]
-      if (e.type !== 'assistant') continue
-      const compact = compactMessage(e)
-      if (compact) return compact
+  const actor = agentRegistry.get(targetSlug)
+  for (let i = 0; i < READ_RETRY_ATTEMPTS; i++) {
+    // Only the most recent assistant entry matters, so read the transcript
+    // from the tail instead of full-parsing it (transcripts reach 100MB+, and
+    // this runs up to READ_RETRY_ATTEMPTS times per invoke).
+    const entry = await actor.messages.findLastEntry(sessionId, { kind: 'assistant' })
+    const isStaleBoundary = boundaryUuid !== undefined && entry?.uuid === boundaryUuid
+    if (entry && !isStaleBoundary) {
+      const compact = compactMessage(entry)
+      if (compact) {
+        return {
+          role: compact.role,
+          content: compact.content,
+          ...(compact.toolName ? { toolName: compact.toolName } : {}),
+        }
+      }
     }
-    if (i < attempts - 1) {
-      await new Promise((r) => setTimeout(r, intervalMs))
+    if (i < READ_RETRY_ATTEMPTS - 1) {
+      await new Promise((r) => setTimeout(r, READ_RETRY_INTERVAL_MS))
     }
   }
   return null
 }
 
 xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), async (c) => {
+  // Stamp the sync budget before any slow pre-work (policy review can block on
+  // a human decision) so the total response time stays under the transport cap.
+  const syncDeadline = Date.now() + SYNC_WAIT_TIMEOUT_MS
   const callerSlug = getCallerSlug(c)
-  const { slug: targetSlug, sessionId, sync } = c.req.valid('json')
+  const { slug: rawTargetSlug, sessionId, sync, limit, fullTranscript } = c.req.valid('json')
 
-  const target = await getAgent(targetSlug)
+  // Resolve the model-supplied display slug to the canonical id and rebind.
+  const targetSlug = await agentCatalog.resolve(rawTargetSlug)
+  if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
+
+  const target = await getAgentRecord(targetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
 
   if (!(await callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'viewer'))) {
     return c.json({ error: 'Forbidden: caller has no access to target agent' }, 403)
   }
 
-  const policy = await checkAgentPolicy(callerSlug, 'read', targetSlug, target.frontmatter.name)
+  const policy = await checkAgentPolicy(callerSlug, 'read', targetSlug, target.name)
   if (!policy.allowed) {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
 
-  if (sync && messagePersister.isSessionActive(sessionId)) {
+  const actor = agentRegistry.get(targetSlug)
+
+  // Status and wait state live in the target's live sessions. Validate the
+  // target/session pair before consulting them, not only before reading the
+  // target-scoped transcript below.
+  if (!(await actor.sessions.isKnown(sessionId))) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+
+  if (sync && (await actor.sessions.live(sessionId)).isActive) {
+    // Last reply flushed before we started waiting — used below to detect that
+    // the turn we waited out has actually reached the transcript file.
+    const boundaryEntry = await actor.messages.findLastEntry(sessionId, { kind: 'assistant' })
     try {
-      await messagePersister.waitForIdle(sessionId)
+      // 'timeout' falls through: return the transcript so far with status
+      // 'running'. Sync get-transcript is a bounded long-poll the caller can
+      // repeat, not an unbounded wait — an unbounded wait would outlive the
+      // container's 300s fetch header timeout and surface as a retry-inducing
+      // network error. Other failures stay hard errors.
+      const outcome = await waitForTurnWithinBudget(targetSlug, sessionId, syncDeadline)
+      // The turn's 'result' event clears isActive before its final assistant
+      // entry hits the JSONL file. When the turn we observed running has ended
+      // — the wait said so, or it timed out and the turn ended in the gap
+      // before the status read below — reconcile (bounded, ~5s) until an entry
+      // newer than the pre-wait boundary appears, so an "idle" response
+      // doesn't ship a transcript missing the reply it waited for.
+      //
+      // Deliberately gated on activity observed IN THIS REQUEST: the JSONL is
+      // written by the container process, so the host has no write queue to
+      // barrier on, and reconciling on every idle response would burn the full
+      // poll budget on sessions that are simply idle. A session that went idle
+      // just before the isSessionActive check above keeps plain read-what's-
+      // flushed semantics.
+      if (outcome === 'completed' || !(await actor.sessions.live(sessionId)).isActive) {
+        await readLastAssistantMessage(targetSlug, sessionId, boundaryEntry?.uuid)
+      }
     } catch (error) {
       return c.json({
         error: `Session did not idle: ${error instanceof Error ? error.message : String(error)}`,
@@ -422,20 +622,87 @@ xAgent.post('/get-transcript', zValidator('json', getTranscriptBodySchema), asyn
     }
   }
 
-  const isAwaiting = messagePersister.isSessionAwaitingInput(sessionId)
-  const isActive = messagePersister.isSessionActive(sessionId)
-  const status: 'running' | 'idle' | 'awaiting_input' = isAwaiting
+  const live = await actor.sessions.live(sessionId)
+  const status: 'running' | 'idle' | 'awaiting_input' = live.isAwaitingInput
     ? 'awaiting_input'
-    : isActive
+    : live.isActive
       ? 'running'
       : 'idle'
 
-  const entries = await getSessionMessagesWithCompact(targetSlug, sessionId)
-  const messages = entries
-    .map(compactMessage)
-    .filter((m): m is NonNullable<ReturnType<typeof compactMessage>> => m !== null)
+  const entries = await actor.messages.withCompact(sessionId)
+  const { messages, total } = pageTranscript(entries, { fullTranscript, limit })
+  const deliveredFiles = collectDeliveredFiles(entries)
 
-  return c.json({ status, messages })
+  return c.json({ status, messages, total, deliveredFiles })
+})
+
+// ----------------------------------------------------------------------------
+// POST /api/x-agent/download-file - stream a successful deliver_file output
+// ----------------------------------------------------------------------------
+
+function attachmentDisposition(filename: string): string {
+  const ascii = filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_')
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`
+}
+
+xAgent.post('/download-file', zValidator('json', xAgentDownloadFileBodySchema), async (c) => {
+  const callerSlug = getCallerSlug(c)
+  const { slug: rawTargetSlug, sessionId, deliveryId } = c.req.valid('json')
+  const targetSlug = await agentCatalog.resolve(rawTargetSlug)
+  if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
+
+  const target = await getAgentRecord(targetSlug)
+  if (!target) return c.json({ error: 'Target agent not found' }, 404)
+  if (!(await callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'viewer'))) {
+    return c.json({ error: 'Forbidden: caller has no access to target agent' }, 403)
+  }
+  const actor = agentRegistry.get(targetSlug)
+  if (!(await actor.sessions.isKnown(sessionId))) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+
+  const entries = await actor.messages.withCompact(sessionId)
+  const delivery = findDeliveredFile(entries, deliveryId)
+  if (!delivery) return c.json({ error: 'Delivered file not found' }, 404)
+  const policy = await checkAgentPolicy(
+    callerSlug,
+    'read',
+    targetSlug,
+    target.name,
+    undefined,
+    { kind: 'download', filename: delivery.filename },
+  )
+  if (!policy.allowed) return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
+
+  let sourcePath: string
+  try {
+    [sourcePath] = normalizeXAgentAttachmentPaths([delivery.filePath])
+  } catch {
+    return c.json({ error: 'Delivered file path is invalid' }, 400)
+  }
+  try {
+    const upstream = await openXAgentFile(actor.files, sourcePath)
+    const currentSize = upstream.sizeBytes
+    if (currentSize !== delivery.sizeBytes) {
+      await upstream.body.cancel().catch(() => {})
+      return c.json({ error: 'Delivered file changed after it was published' }, 409)
+    }
+    return new Response(upstream.body, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': String(currentSize),
+        'Content-Disposition': attachmentDisposition(delivery.filename),
+        'Cache-Control': 'private, no-store, max-age=0',
+      },
+    })
+  } catch (caught) {
+    const error = transferError(caught)
+    if (error instanceof XAgentAttachmentError) {
+      return c.json({ error: error.status === 404 ? 'Delivered file is no longer available' : error.message }, error.status)
+    }
+    return c.json({ error: 'Failed to read delivered file' }, 502)
+  }
 })
 
 // ----------------------------------------------------------------------------
@@ -447,6 +714,7 @@ const invokeBodySchema = z.object({
   prompt: z.string().min(1),
   sessionId: z.string().optional(),
   sync: z.boolean().optional(),
+  attachments: xAgentAttachmentsSchema.optional(),
   // Cycle protection: container sends the calling Claude session ID so the host
   // can reject calls from sessions that were themselves invoked by another agent
   // (one-hop rule — also blocks A→B→A and any deeper chain transitively).
@@ -454,31 +722,55 @@ const invokeBodySchema = z.object({
 })
 
 xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
+  // Stamp both clocks before any slow pre-work (policy review, container
+  // startup, session creation): the sync budget governs how long we wait for
+  // the turn, the delivery cutoff governs whether we deliver the prompt at all
+  // — so the total response time stays under the container fetch's 300s header
+  // timeout, and no prompt is delivered to a caller that already gave up.
+  const syncDeadline = Date.now() + SYNC_WAIT_TIMEOUT_MS
+  const deliveryCutoff = Date.now() + DELIVERY_CUTOFF_MS
   const callerSlug = getCallerSlug(c)
-  const { slug: targetSlug, prompt, sessionId: existingSessionId, sync, _callerSessionId } = c.req.valid('json')
+  const {
+    slug: rawTargetSlug,
+    prompt,
+    sessionId: existingSessionId,
+    sync,
+    attachments = [],
+    _callerSessionId,
+  } = c.req.valid('json')
+
+  // Resolve display slug → canonical id so ACL / policy / runtime all use ids.
+  const targetSlug = await agentCatalog.resolve(rawTargetSlug)
+  if (!targetSlug) return c.json({ error: 'Target agent not found' }, 404)
 
   if (targetSlug === callerSlug) {
     return c.json({ error: 'Agent cannot invoke itself' }, 400)
   }
 
-  // One-hop rule: a session that was started by another agent cannot itself
-  // start invocations into other agents. Prevents A→B→C chains and A→B→A
-  // cycles transitively.
-  if (_callerSessionId) {
-    const callerMeta = await getSessionMetadata(callerSlug, _callerSessionId)
-    if (callerMeta?.invokedByAgentSlug) {
-      return c.json(
-        {
-          error:
-            `This session was invoked by agent "${callerMeta.invokedByAgentSlug}" and cannot invoke other agents. ` +
-            'Cross-agent invocation is one hop deep.',
-        },
-        403,
-      )
-    }
+  // One-hop rule: sessions started by another agent cannot invoke further.
+  const callerMeta = _callerSessionId
+    ? await agentRegistry.get(callerSlug).sessions.metadata(_callerSessionId)
+    : null
+  if (callerMeta?.invokedByAgentSlug) {
+    return c.json(
+      {
+        error:
+          `This session was invoked by agent "${callerMeta.invokedByAgentSlug}" and cannot invoke other agents. ` +
+          'Cross-agent invocation is one hop deep.',
+      },
+      403,
+    )
   }
 
-  const target = await getAgent(targetSlug)
+  // Capture the triggering message's author before a review prompt can pause
+  // this request and newer messages can arrive in a shared caller session.
+  // This remains a best-effort "latest author" heuristic until the container
+  // can pass the exact driving message UUID.
+  const triggeringUserId = isAuthMode() && _callerSessionId
+    ? await getLatestMessageAuthorUserId(callerSlug, _callerSessionId)
+    : undefined
+
+  const target = await getAgentRecord(targetSlug)
   if (!target) return c.json({ error: 'Target agent not found' }, 404)
 
   if (!(await callerOwnerHasRoleOnTarget(callerSlug, targetSlug, 'user'))) {
@@ -489,117 +781,326 @@ xAgent.post('/invoke', zValidator('json', invokeBodySchema), async (c) => {
     callerSlug,
     'invoke',
     targetSlug,
-    target.frontmatter.name,
+    target.name,
     prompt.slice(0, 200),
+    attachments.length ? { kind: 'send', paths: attachments } : undefined,
   )
   if (!policy.allowed) {
     return c.json({ error: policy.reason ?? 'Forbidden' }, 403)
   }
 
-  // Existing session: must exist, must not be running
-  if (existingSessionId) {
-    if (messagePersister.isSessionActive(existingSessionId)) {
-      return c.json({ error: 'Target session is currently running' }, 409)
-    }
-    const client = await containerManager.ensureRunning(targetSlug)
-    if (!messagePersister.isSubscribed(existingSessionId)) {
-      await messagePersister.subscribeToSession(existingSessionId, client, existingSessionId, targetSlug)
-    }
-    messagePersister.markSessionActive(existingSessionId, targetSlug)
-    await client.sendMessage(existingSessionId, prompt)
-
-    if (sync) {
-      try {
-        await messagePersister.waitForIdle(existingSessionId)
-      } catch (error) {
-        return c.json({
-          sessionId: existingSessionId,
-          status: 'running',
-          error: error instanceof Error ? error.message : String(error),
-        })
-      }
-      const lastMessage = await readLastAssistantMessage(targetSlug, existingSessionId)
-      return c.json({
-        sessionId: existingSessionId,
-        status: 'completed',
-        lastMessage: lastMessage?.content,
-      })
-    }
-    return c.json({ sessionId: existingSessionId, status: 'running' })
-  }
-
-  // New session
-  const client = await containerManager.ensureRunning(targetSlug)
-  const availableEnvVars = await getSecretEnvVars(targetSlug)
-  const agentLimits = getEffectiveAgentLimits()
-  const customEnvVars = getCustomEnvVars()
-
-  const containerSession = await client.createSession({
-    availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
-    initialMessage: prompt,
-    model: getEffectiveModels().agentModel,
-    browserModel: getEffectiveModels().browserModel,
-    maxOutputTokens: agentLimits.maxOutputTokens,
-    maxThinkingTokens: agentLimits.maxThinkingTokens,
-    maxTurns: agentLimits.maxTurns,
-    maxBudgetUsd: agentLimits.maxBudgetUsd,
-    customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
-    maxBrowserTabs: getSettings().app?.maxBrowserTabs,
-  })
-  const newSessionId = containerSession.id
-  // Mark active synchronously before any await so waitForIdle has state to observe
-  // even if the SDK's 'result' event lands before subscribeToSession completes.
-  messagePersister.markSessionActive(newSessionId, targetSlug)
-
-  // Register on the host. If this fails, the container is already holding a
-  // running session — clean it up so we don't leave orphans burning model budget.
-  try {
-    await registerSession(targetSlug, newSessionId, `Invoked by ${callerSlug}`)
-  } catch (registerErr) {
-    console.error('[x-agent] registerSession failed; cleaning up container session', registerErr)
-    await client.deleteSession(newSessionId).catch((cleanupErr) => {
-      // Container was unreachable or session already gone — nothing more we can do
-      console.error('[x-agent] failed to clean up orphaned container session', newSessionId, cleanupErr)
-    })
-    messagePersister.unsubscribeFromSession(newSessionId)
-    return c.json(
-      { error: `Failed to register invoked session: ${registerErr instanceof Error ? registerErr.message : String(registerErr)}` },
-      500,
-    )
-  }
-
-  // Metadata write failure shouldn't fail the invoke (the session is still
-  // usable), but don't silently swallow — log so we can debug missing
-  // cross-agent provenance later.
-  try {
-    await updateSessionMetadata(targetSlug, newSessionId, { invokedByAgentSlug: callerSlug })
-  } catch (metaErr) {
-    console.warn('[x-agent] updateSessionMetadata failed (session usable, provenance not recorded)', metaErr)
-  }
-
-  await messagePersister.subscribeToSession(newSessionId, client, newSessionId, targetSlug)
-  if (containerSession.slashCommands && containerSession.slashCommands.length > 0) {
-    messagePersister.setSlashCommands(newSessionId, containerSession.slashCommands)
-  }
-
-  if (sync) {
+  // Attribute to the triggering message author. Session creator and caller
+  // owner remain compatibility fallbacks for old sessions without author rows.
+  let attributedUserId: string | undefined = triggeringUserId ?? callerMeta?.createdByUserId
+  if (!attributedUserId && isAuthMode()) {
     try {
-      await messagePersister.waitForIdle(newSessionId)
+      attributedUserId = (await getOwnersOfAgent(callerSlug))[0]
     } catch (error) {
-      return c.json({
-        sessionId: newSessionId,
-        status: 'running',
+      // ACL checks already ran above; this second lookup is attribution-only.
+      console.warn('[x-agent] failed to resolve caller owner for attribution; continuing unattributed', {
+        callerSlug,
         error: error instanceof Error ? error.message : String(error),
       })
     }
-    const lastMessage = await readLastAssistantMessage(targetSlug, newSessionId)
-    return c.json({
-      sessionId: newSessionId,
-      status: 'completed',
-      lastMessage: lastMessage?.content,
-    })
   }
-  return c.json({ sessionId: newSessionId, status: 'running' })
+
+  return runWithOptionalUser(attributedUserId, async () => {
+    // Stages for runtime 500s: ensure_running → create_session / send_message.
+    let stage = 'ensure_running'
+    let stagedTargetDirectory: string | undefined
+    let stagedTargetFiles: FileOps | undefined
+    let promptDeliveryStarted = false
+    try {
+      const targetActor = agentRegistry.get(targetSlug)
+      if (existingSessionId) {
+        // Invoke rights on the target say nothing about the session id sent
+        // with them. The target's live sessions take any id they are handed, so
+        // a third agent's id would get attached to the target's container here —
+        // and the target's transcript written under it.
+        if (!(await targetActor.sessions.isKnown(existingSessionId))) {
+          return c.json({ error: 'Session not found' }, 404)
+        }
+        stage = 'ensure_running'
+        await targetActor.container.start()
+        const files = targetActor.files
+        stagedTargetFiles = files
+        let deliveredPrompt = prompt
+        if (attachments.length > 0) {
+          stage = 'transfer_attachments'
+          const transferred = await transferXAgentAttachments({
+            sourceFiles: agentRegistry.get(callerSlug).files,
+            targetFiles: files,
+            sourcePaths: attachments,
+            signal: c.req.raw.signal,
+          })
+          stagedTargetDirectory = transferred.targetDirectory
+          deliveredPrompt = appendAttachedFiles(prompt, transferred.attachments.map((item) => item.targetPath))
+        }
+        // Last reply flushed before THIS prompt goes out — used to make sure a
+        // fast turn's answer isn't confused with the previous turn's while the
+        // new entry is still being written to the JSONL file.
+        const replyBoundary = sync
+          ? await targetActor.messages.findLastEntry(existingSessionId, { kind: 'assistant' })
+          : null
+        stage = 'subscribe'
+        // Attached here rather than by the delivery, so the attach is bounded
+        // and the cutoff below is checked after it.
+        await subscribeWithTimeout(targetActor.sessions.attach(existingSessionId))
+        // Checked AFTER every unbounded pre-send await (container startup and
+        // the stream attach above) so only fast local writes remain between
+        // here and sendMessage — a check followed by a slow await could still
+        // deliver to a caller whose fetch died at the 300s header timeout.
+        if (Date.now() > deliveryCutoff) {
+          console.warn('[x-agent] delivery cutoff exceeded before send; prompt not delivered', {
+            callerSlug,
+            targetSlug,
+            sessionId: existingSessionId,
+          })
+          if (stagedTargetDirectory) {
+            await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
+          }
+          return c.json({ error: deliveryCutoffError() }, 504)
+        }
+        stage = 'send_message'
+        let messageUuid: string | undefined
+        if (isAuthMode() && attributedUserId) {
+          const candidateUuid = randomUUID()
+          const recorded = await insertMessageAuthorBestEffort({
+            id: candidateUuid,
+            sessionId: existingSessionId,
+            agentSlug: targetSlug,
+            userId: attributedUserId,
+          })
+          if (recorded) messageUuid = candidateUuid
+        }
+        // What a message that never went leaves behind is removed; a failed
+        // send that may have gone keeps both, so an accepted message never
+        // references deleted bytes or loses its author.
+        const discardUndelivered = async () => {
+          promptDeliveryStarted = false
+          if (messageUuid) await deleteMessageAuthorBestEffort(messageUuid)
+          if (stagedTargetDirectory) {
+            await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
+            stagedTargetDirectory = undefined
+          }
+        }
+        promptDeliveryStarted = true
+        try {
+          // A session in the middle of a turn takes the prompt into that turn,
+          // as a user's message does.
+          await targetActor.messages.deliver({
+            sessionId: existingSessionId,
+            content: deliveredPrompt,
+            uuid: messageUuid,
+            options: { isAutomated: true },
+          })
+        } catch (sendError) {
+          if (deliveryFailure(sendError)?.accepted === false) await discardUndelivered()
+          throw sendError
+        }
+
+        if (sync) {
+          stage = 'wait_for_idle'
+          let outcome: 'completed' | 'timeout'
+          try {
+            outcome = await waitForTurnWithinBudget(targetSlug, existingSessionId, syncDeadline)
+          } catch (error) {
+            return c.json({
+              sessionId: existingSessionId,
+              status: 'running',
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
+          if (outcome === 'timeout') {
+            // Budget exhausted (whether before or during the wait) means the
+            // target is simply still working — promote to the async contract
+            // with explicit guidance so the caller polls instead of re-invoking
+            // (a re-invoke duplicates the whole run).
+            return c.json({
+              sessionId: existingSessionId,
+              status: 'running',
+              error: syncWaitPromotedNote(SYNC_WAIT_TIMEOUT_MS),
+            })
+          }
+          const lastMessage = await readLastAssistantMessage(
+            targetSlug,
+            existingSessionId,
+            replyBoundary?.uuid,
+          )
+          return c.json({
+            sessionId: existingSessionId,
+            status: 'completed',
+            lastMessage: lastMessage?.content,
+          })
+        }
+        return c.json({ sessionId: existingSessionId, status: 'running' })
+      }
+
+      stage = 'ensure_running'
+      await targetActor.container.start()
+      const files = targetActor.files
+      stagedTargetFiles = files
+      let deliveredPrompt = prompt
+      if (attachments.length > 0) {
+        stage = 'transfer_attachments'
+        const transferred = await transferXAgentAttachments({
+          sourceFiles: agentRegistry.get(callerSlug).files,
+          targetFiles: files,
+          sourcePaths: attachments,
+          signal: c.req.raw.signal,
+        })
+        stagedTargetDirectory = transferred.targetDirectory
+        deliveredPrompt = appendAttachedFiles(prompt, transferred.attachments.map((item) => item.targetPath))
+      }
+      const availableEnvVars = await getSecretEnvVars(targetSlug)
+      const agentLimits = getEffectiveAgentLimits()
+      const customEnvVars = getCustomEnvVars()
+      const targetPrefs = await readAgentPreferences(targetSlug)
+      const models = getEffectiveModels()
+      const resolved = await resolveConnectionRuntimeInherit({}, targetPrefs, models)
+      const callerName = await getAgentDisplayNameBestEffort(callerSlug)
+      const initialMessageUuid = isAuthMode() && attributedUserId
+        ? randomUUID()
+        : undefined
+
+      // createSession delivers the prompt (initialMessage) — same cutoff rule
+      // as sendMessage above.
+      if (Date.now() > deliveryCutoff) {
+        console.warn('[x-agent] delivery cutoff exceeded before create; prompt not delivered', {
+          callerSlug,
+          targetSlug,
+        })
+        if (stagedTargetDirectory) {
+          await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
+        }
+        return c.json({ error: deliveryCutoffError() }, 504)
+      }
+      stage = 'create_session'
+      // Creating the session IS the delivery (initialMessage carries the
+      // prompt) and cannot be cancelled mid-flight. One that lands after the
+      // cutoff, when the caller's fetch may already be dead, is revoked by the
+      // start itself the moment it materializes, instead of leaving a ghost
+      // run for the caller's retry to duplicate. A failed registration or
+      // stream attach is revoked the same way: without the attach nothing
+      // would persist the session's transcript.
+      // Recorded as the session's creator only while that person exists (a
+      // legacy id can outlive its user); the attribution row follows the start.
+      const createdByUserId = initialMessageUuid && attributedUserId && (await userExists(attributedUserId))
+        ? attributedUserId
+        : undefined
+      promptDeliveryStarted = true
+      let containerSession: ContainerSession
+      try {
+        containerSession = await targetActor.sessions.start({
+          create: {
+          availableEnvVars: availableEnvVars.length > 0 ? availableEnvVars : undefined,
+          initialMessage: deliveredPrompt,
+          ...(initialMessageUuid ? { initialMessageUuid } : {}),
+          model: resolved.model,
+        llmProviderId: resolved.llmProviderId,
+          browserModel: models.browserModel,
+          dashboardBuilderModel: models.dashboardBuilderModel,
+          effort: resolved.effort,
+          speed: resolved.speed,
+          maxOutputTokens: agentLimits.maxOutputTokens,
+          maxThinkingTokens: agentLimits.maxThinkingTokens,
+          maxTurns: agentLimits.maxTurns,
+          maxBudgetUsd: agentLimits.maxBudgetUsd,
+          customEnvVars: Object.keys(customEnvVars).length > 0 ? customEnvVars : undefined,
+          maxBrowserTabs: getSettings().app?.maxBrowserTabs,
+          metadata: { isAutomated: true },
+        },
+          name: `Invoked by ${callerName}`,
+          metadata: { invokedByAgentSlug: callerSlug, ...(createdByUserId ? { createdByUserId } : {}) },
+          notAfter: deliveryCutoff,
+          attachTimeoutMs: SUBSCRIBE_TIMEOUT_MS,
+        })
+      } catch (startErr) {
+        if (stagedTargetDirectory) {
+          await removeTransferredAttachments(files, stagedTargetDirectory).catch(() => {})
+        }
+        const failure = startFailure(startErr)
+        if (failure?.code === 'created-late') {
+          console.warn('[x-agent] delivery cutoff exceeded during create; the late session was revoked', { callerSlug, targetSlug })
+          return c.json({ error: lateDeliveryRevokedError() }, 504)
+        }
+        if (failure?.code !== 'register-failed' && failure?.code !== 'attach-failed') throw startErr
+        stage = failure.code === 'register-failed' ? 'register_session' : 'subscribe'
+        const message = startErr instanceof Error ? startErr.message : String(startErr)
+        console.error('[x-agent] invoke failed', { callerSlug, targetSlug, stage, error: message })
+        captureException(startErr, { tags: { ...X_AGENT_SENTRY, stage }, extra: { callerSlug, targetSlug } })
+        return c.json({
+          error: failure.code === 'register-failed'
+            ? `Failed to register invoked session: ${message}`
+            : `Failed to attach to invoked session: ${message}`,
+        }, 500)
+      }
+      const newSessionId = containerSession.id
+      if (initialMessageUuid && createdByUserId) {
+        await insertMessageAuthorBestEffort({
+          id: initialMessageUuid,
+          sessionId: newSessionId,
+          agentSlug: targetSlug,
+          userId: createdByUserId,
+        })
+      }
+      // The x-agent provenance exists now: the target's trigger and history
+      // UI can show the session at once instead of at its next poll.
+      globalFeed.publish({ type: 'session_updated', sessionId: newSessionId, agentSlug: targetSlug })
+
+      if (sync) {
+        stage = 'wait_for_idle'
+        let outcome: 'completed' | 'timeout'
+        try {
+          outcome = await waitForTurnWithinBudget(targetSlug, newSessionId, syncDeadline)
+        } catch (error) {
+          return c.json({
+            sessionId: newSessionId,
+            status: 'running',
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+        if (outcome === 'timeout') {
+          // Budget exhausted (whether before or during the wait) means the
+          // target is simply still working — promote to the async contract
+          // with explicit guidance so the caller polls instead of re-invoking
+          // (a re-invoke duplicates the whole run).
+          return c.json({
+            sessionId: newSessionId,
+            status: 'running',
+            error: syncWaitPromotedNote(SYNC_WAIT_TIMEOUT_MS),
+          })
+        }
+        const lastMessage = await readLastAssistantMessage(targetSlug, newSessionId)
+        return c.json({
+          sessionId: newSessionId,
+          status: 'completed',
+          lastMessage: lastMessage?.content,
+        })
+      }
+      return c.json({ sessionId: newSessionId, status: 'running' })
+    } catch (err) {
+      if (!promptDeliveryStarted && stagedTargetFiles && stagedTargetDirectory) {
+        await removeTransferredAttachments(stagedTargetFiles, stagedTargetDirectory).catch(() => {})
+      }
+      if (err instanceof XAgentAttachmentError) {
+        return c.json({ error: err.message }, err.status)
+      }
+      const message = err instanceof Error ? err.message : String(err)
+      console.error('[x-agent] invoke failed', {
+        callerSlug,
+        targetSlug,
+        existingSessionId: existingSessionId ?? null,
+        stage,
+        error: message,
+      })
+      captureException(err, {
+        tags: { ...X_AGENT_SENTRY, stage },
+        extra: { callerSlug, targetSlug, existingSessionId: existingSessionId ?? null },
+      })
+      return c.json({ error: `Failed to invoke agent (${stage}): ${message}` }, 500)
+    }
+  })
 })
 
 export default xAgent

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen } from '@testing-library/react'
+import { fireEvent, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { RuntimeTab } from './runtime-tab'
 import { renderWithProviders } from '@renderer/test/test-utils'
@@ -20,8 +20,9 @@ const mockSettings = {
         cpu: 1,
         memory: '1g',
       },
-      runtimeSettings: {},
+      runtimeSettings: {} as Record<string, Record<string, string>>,
     },
+    hostTotalMemoryBytes: 64 * 1024 ** 3,
     runnerAvailability: [
       {
         runner: 'docker',
@@ -29,13 +30,17 @@ const mockSettings = {
         running: true,
         available: true,
         canStart: false,
+        supportsCustomAgentImage: true,
       },
     ],
     runtimeReadiness: { status: 'READY', message: 'Ready' },
     hasRunningAgents: false,
     customEnvVars: {},
     dataDir: '/tmp/superagent',
-    app: { autoSleepTimeoutMinutes: 30 },
+    app: {
+      autoSleepTimeoutMinutes: 30,
+      autoResumeOnUnexpectedDeath: undefined as boolean | undefined,
+    },
     agentLimits: {},
   },
   isLoading: false,
@@ -69,7 +74,8 @@ const mockRefreshAvailability = {
   isPending: false,
 }
 
-vi.mock('@renderer/hooks/use-settings', () => ({
+vi.mock('@renderer/hooks/use-settings', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/hooks/use-settings')>()),
   useSettings: () => mockSettings,
   useUpdateSettings: () => mockUpdateSettings,
   useStartRunner: () => mockStartRunner,
@@ -80,18 +86,31 @@ vi.mock('@renderer/hooks/use-settings', () => ({
 describe('RuntimeTab', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockSettings.data.container.containerRunner = 'docker'
     mockSettings.data.container.agentImage = 'ghcr.io/skillfulagents/superagent-agent-container-base:latest'
+    mockSettings.data.container.runtimeSettings = {}
+    mockSettings.data.hostTotalMemoryBytes = 64 * 1024 ** 3
+    mockSettings.data.app = { autoSleepTimeoutMinutes: 30, autoResumeOnUnexpectedDeath: undefined }
+    mockSettings.data.customEnvVars = {}
+    mockSettings.data.runnerAvailability = [
+      {
+        runner: 'docker',
+        installed: true,
+        running: true,
+        available: true,
+        canStart: false,
+        supportsCustomAgentImage: true,
+      },
+    ]
     mockUpdateSettings.isPending = false
     mockUpdateSettings.error = null
   })
 
   it('disables save when agent image is blank', async () => {
-    const user = userEvent.setup()
     renderWithProviders(<RuntimeTab />)
 
     const agentImageInput = screen.getByLabelText('Agent Image')
-    await user.clear(agentImageInput)
-    await user.type(agentImageInput, '   ')
+    fireEvent.change(agentImageInput, { target: { value: '   ' } })
 
     expect(screen.getByText('Agent image is required.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
@@ -127,6 +146,204 @@ describe('RuntimeTab', () => {
     await user.click(screen.getByRole('button', { name: 'Use default' }))
 
     expect(screen.getByLabelText('Agent Image')).toHaveValue(getDefaultAgentImage())
+  })
+
+  describe('runner without custom agent image support (e.g. lambda-microvm)', () => {
+    beforeEach(() => {
+      mockSettings.data.container.containerRunner = 'lambda-microvm'
+      mockSettings.data.runnerAvailability = [
+        {
+          runner: 'lambda-microvm',
+          installed: true,
+          running: true,
+          available: true,
+          canStart: false,
+          supportsCustomAgentImage: false,
+        },
+      ]
+    })
+
+    it('disables the Agent Image input and hides Use default', () => {
+      renderWithProviders(<RuntimeTab />)
+
+      expect(screen.getByLabelText('Agent Image')).toBeDisabled()
+      expect(screen.queryByRole('button', { name: 'Use default' })).not.toBeInTheDocument()
+      expect(
+        screen.getByText('Agent image is managed by the deployment for this runner and cannot be changed here.')
+      ).toBeInTheDocument()
+    })
+
+    it('does not treat a blank persisted agent image as a validation error', () => {
+      mockSettings.data.container.agentImage = ''
+
+      renderWithProviders(<RuntimeTab />)
+
+      expect(screen.queryByText('Agent image is required.')).not.toBeInTheDocument()
+    })
+  })
+
+  it('hides the MicroVM auto-resume toggle on other runtimes', () => {
+    renderWithProviders(<RuntimeTab />)
+
+    expect(screen.queryByRole('switch', { name: 'Auto-resume mid-turn sessions' })).not.toBeInTheDocument()
+  })
+
+  it('defaults auto-resume on for MicroVM and persists the toggle immediately', async () => {
+    const user = userEvent.setup()
+    mockSettings.data.container.containerRunner = 'lambda-microvm'
+    mockSettings.data.runnerAvailability = [
+      {
+        runner: 'lambda-microvm',
+        installed: true,
+        running: true,
+        available: true,
+        canStart: false,
+        supportsCustomAgentImage: false,
+      },
+    ]
+    renderWithProviders(<RuntimeTab />)
+
+    const toggle = screen.getByRole('switch', { name: 'Auto-resume mid-turn sessions' })
+    expect(toggle).toBeChecked()
+
+    await user.click(toggle)
+
+    expect(mockUpdateSettings.mutate).toHaveBeenCalledWith({
+      app: { autoResumeOnUnexpectedDeath: false },
+    })
+  })
+
+  it('renders auto-resume off when the MicroVM preference is disabled', () => {
+    mockSettings.data.container.containerRunner = 'lambda-microvm'
+    mockSettings.data.runnerAvailability = [
+      {
+        runner: 'lambda-microvm',
+        installed: true,
+        running: true,
+        available: true,
+        canStart: false,
+        supportsCustomAgentImage: false,
+      },
+    ]
+    mockSettings.data.app = { autoSleepTimeoutMinutes: 30, autoResumeOnUnexpectedDeath: false }
+
+    renderWithProviders(<RuntimeTab />)
+
+    expect(screen.getByRole('switch', { name: 'Auto-resume mid-turn sessions' })).not.toBeChecked()
+  })
+
+  it('adds a custom environment variable through the dialog', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<RuntimeTab />)
+
+    await user.click(screen.getByRole('button', { name: 'Add Variable' }))
+    await user.type(screen.getByLabelText('Variable Name'), 'claude code max output tokens')
+    await user.type(screen.getByLabelText('Value'), '32000')
+    const dialog = screen.getByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Add Variable' }))
+
+    expect(mockUpdateSettings.mutateAsync).toHaveBeenCalledWith({
+      customEnvVars: {
+        CLAUDE_CODE_MAX_OUTPUT_TOKENS: '32000',
+      },
+    })
+  })
+
+  it('rejects a reserved env var: shows the error, does not save, and does not keep the row (SUP-239 bug 1)', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<RuntimeTab />)
+
+    await user.click(screen.getByRole('button', { name: 'Add Variable' }))
+    await user.type(screen.getByLabelText('Variable Name'), 'PROXY_BASE_URL')
+    await user.type(screen.getByLabelText('Value'), 'evil')
+    const dialog = screen.getByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Add Variable' }))
+
+    // The reserved-runtime-var error is surfaced…
+    expect(await screen.findByText(/reserved runtime variable/i)).toBeInTheDocument()
+    // …the value is never sent to the server (client-side guard)…
+    expect(mockUpdateSettings.mutateAsync).not.toHaveBeenCalled()
+    // …and the rejected row does not linger as if it had been saved.
+    expect(screen.queryByDisplayValue('PROXY_BASE_URL')).not.toBeInTheDocument()
+  })
+
+  it('saves edited custom env vars with the full current draft', async () => {
+    const user = userEvent.setup()
+    mockSettings.data.customEnvVars = {
+      FOO: 'one',
+      BAR: 'two',
+    }
+
+    renderWithProviders(<RuntimeTab />)
+
+    const fooInput = screen.getByDisplayValue('one')
+    await user.clear(fooInput)
+    await user.type(fooInput, 'updated')
+    await user.tab()
+
+    expect(mockUpdateSettings.mutateAsync).toHaveBeenCalledWith({
+      customEnvVars: {
+        FOO: 'updated',
+        BAR: 'two',
+      },
+    })
+  })
+
+  describe('Lima VM memory guardrails', () => {
+    beforeEach(() => {
+      mockSettings.data.container.containerRunner = 'lima'
+      mockSettings.data.runnerAvailability = [
+        {
+          runner: 'lima',
+          installed: true,
+          running: true,
+          available: true,
+          canStart: false,
+          supportsCustomAgentImage: true,
+        },
+      ]
+      // A 16 GB machine — the Jessica configuration.
+      mockSettings.data.hostTotalMemoryBytes = 16 * 1024 ** 3
+    })
+
+    it('disables VM memory options at or above the machine total', async () => {
+      const user = userEvent.setup()
+      renderWithProviders(<RuntimeTab />)
+
+      const trigger = screen.getByRole('combobox', { name: 'VM Memory' })
+      trigger.focus()
+      await user.keyboard('[Enter]')
+
+      const oversized = await screen.findByRole('option', { name: /16 GB \(exceeds system memory\)/ })
+      expect(oversized).toHaveAttribute('aria-disabled', 'true')
+      // Options that fit stay selectable.
+      const fits = screen.getByRole('option', { name: '8 GB' })
+      expect(fits).not.toHaveAttribute('aria-disabled', 'true')
+    })
+
+    it('warns when the saved VM memory is more than half of the machine total', () => {
+      mockSettings.data.container.runtimeSettings = { lima: { vmMemory: '12GiB' } }
+
+      renderWithProviders(<RuntimeTab />)
+
+      expect(screen.getByText(/more than half of this machine's 16 GB/)).toBeInTheDocument()
+    })
+
+    it('shows no warning at or below half of the machine total', () => {
+      mockSettings.data.container.runtimeSettings = { lima: { vmMemory: '8GiB' } }
+
+      renderWithProviders(<RuntimeTab />)
+
+      expect(screen.queryByText(/more than half/)).not.toBeInTheDocument()
+    })
+
+    it('flags a legacy persisted oversized value (saved before the guardrail existed)', () => {
+      mockSettings.data.container.runtimeSettings = { lima: { vmMemory: '16GiB' } }
+
+      renderWithProviders(<RuntimeTab />)
+
+      expect(screen.getByText(/must be smaller than this machine's total memory/)).toBeInTheDocument()
+    })
   })
 
   describe('non-standard resource limits', () => {
@@ -174,4 +391,17 @@ describe('RuntimeTab', () => {
       )
     })
   })
+})
+
+
+it('directs LLM-specific variables to the provider editor instead of saving globally', async () => {
+  mockUpdateSettings.mutateAsync.mockClear()
+  mockSettings.data.customEnvVars = {}
+  renderWithProviders(<RuntimeTab />)
+  await userEvent.click(screen.getByRole('button', { name: 'Add Variable' }))
+  await userEvent.type(screen.getByLabelText('Variable Name'), 'ANTHROPIC_AUTH_TOKEN')
+  await userEvent.type(screen.getByLabelText('Value', { exact: true }), 'unused-secret')
+  await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Add Variable' }))
+  expect(mockUpdateSettings.mutateAsync).not.toHaveBeenCalled()
+  expect(screen.getByText(/Set LLM provider variables in Settings/)).toBeInTheDocument()
 })

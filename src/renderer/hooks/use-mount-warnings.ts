@@ -1,9 +1,11 @@
 import { useCallback } from 'react'
 import { useQueryClient, useQuery } from '@tanstack/react-query'
+import { useAgents, resolveRouteAgentId } from '@renderer/hooks/use-agents'
+import type { NotMountedVolume } from '@shared/lib/types/mount'
 
 interface MountWarning {
   agentSlug: string
-  missingMounts: { folderName: string; hostPath: string }[]
+  notMounted: NotMountedVolume[]
 }
 
 const QUERY_KEY_PREFIX = 'mount-warnings'
@@ -11,18 +13,25 @@ const QUERY_KEY_PREFIX = 'mount-warnings'
 export function useMountWarnings(agentSlug: string | null) {
   const queryClient = useQueryClient()
 
+  // The caller passes the route param (a display slug), but the SSE handler writes
+  // warnings under the canonical id (setMountWarning ← data.agentSlug). Resolve so
+  // the subscription keys on the same id — otherwise the missing-mount banner
+  // silently never shows on a pretty display-slug route.
+  const { data: agents } = useAgents()
+  const resolvedSlug = agentSlug ? resolveRouteAgentId(agentSlug, agents) ?? agentSlug : null
+
   const { data: warning } = useQuery<MountWarning | null>({
-    queryKey: [QUERY_KEY_PREFIX, agentSlug],
+    queryKey: [QUERY_KEY_PREFIX, resolvedSlug],
     queryFn: () => null,
     enabled: false, // Never fetches — data is set manually from SSE
     staleTime: Infinity,
   })
 
   const dismiss = useCallback(() => {
-    if (agentSlug) {
-      queryClient.setQueryData([QUERY_KEY_PREFIX, agentSlug], null)
+    if (resolvedSlug) {
+      queryClient.setQueryData([QUERY_KEY_PREFIX, resolvedSlug], null)
     }
-  }, [queryClient, agentSlug])
+  }, [queryClient, resolvedSlug])
 
   return { warning: warning ?? null, dismiss }
 }

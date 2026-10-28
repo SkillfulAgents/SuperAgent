@@ -1,0 +1,75 @@
+import type { UndeliveredTurnReport } from './session-manager'
+
+/** Best-effort container → host events that keep renderer caches precise. */
+async function postHostEvent(event: string, body: Record<string, unknown>): Promise<boolean> {
+  const baseUrl = process.env.SUPERAGENT_HOST_API_URL
+  const token = process.env.PROXY_TOKEN
+  const agentSlug = process.env.SUPERAGENT_AGENT_SLUG
+  if (!baseUrl || !token || !agentSlug) return false
+
+  const response = await fetch(
+    `${baseUrl.replace(/\/$/, '')}/agent-bootstrap/${encodeURIComponent(agentSlug)}/events/${event}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+    },
+  )
+  if (!response.ok) {
+    throw new Error(`Host rejected ${event} event (HTTP ${response.status})`)
+  }
+  return true
+}
+
+export async function notifyDashboardScreenshotReady(dashboardSlug: string): Promise<boolean> {
+  return postHostEvent('dashboard-screenshot-ready', { dashboardSlug })
+}
+
+/**
+ * Terminal dashboard startup transitions ('running' | 'crashed'), pushed so
+ * the renderer flips the moment a dashboard is serveable instead of waiting
+ * out its artifacts-poll interval. Intermediate states stay poll-only.
+ */
+export async function notifyDashboardStatusChanged(
+  dashboardSlug: string,
+  status: 'running' | 'crashed',
+): Promise<boolean> {
+  return postHostEvent('dashboard-status-changed', { dashboardSlug, status })
+}
+
+/**
+ * A widget refresh finished (successfully or not) and snapshot.json was
+ * rewritten. Sent for every refresh, including agent-initiated ones the host
+ * never asked for, so open Home surfaces reload the snapshot.
+ */
+export async function notifyWidgetSnapshotReady(
+  widgetSlug: string,
+  snapshot: { generatedAt: string; validUntil: string | null; htmlHash: string; lastError: string | null },
+): Promise<boolean> {
+  return postHostEvent('widget-snapshot-ready', {
+    widgetSlug,
+    generatedAt: snapshot.generatedAt,
+    validUntil: snapshot.validUntil,
+    htmlHash: snapshot.htmlHash,
+    error: snapshot.lastError,
+  })
+}
+
+/**
+ * The agent changed the name or description in its instructions file's
+ * frontmatter. A signal only: the host reads the file itself.
+ */
+export async function notifyAgentIdentityChanged(): Promise<boolean> {
+  return postHostEvent('agent-identity-changed', {})
+}
+
+/**
+ * A turn ended after its stream subscriber dropped mid-turn, so the host never
+ * saw it end. The host's socket may still read as open; only we can tell it.
+ */
+export async function notifyUndeliveredTurn(report: UndeliveredTurnReport): Promise<boolean> {
+  return postHostEvent('undelivered-turn', { ...report })
+}

@@ -1,342 +1,123 @@
-import crypto from 'crypto'
-import { broadcastReview } from './review-broadcast'
-import { messagePersister } from '@shared/lib/container/message-persister'
-import { notificationManager } from '@shared/lib/notifications/notification-manager'
+import type { XAgentFileTransfer } from '@shared/lib/proxy/x-agent-review'
+import { AttachedStores, type AgentStoreDirectory } from '@shared/lib/agent-actor/store-directory'
+import type { AgentReviews, ReviewDecision, ReviewOutcome, ReviewRequest, ReviewRequestOptions, XAgentOperation } from './agent-reviews'
+import type { ReviewDetails } from './review-display'
+import { awaitReview, type ReviewReevaluator, type ReviewResult } from './review-request'
+import type { ScopeLabel } from './scope-metadata'
 
-const REVIEW_TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes
-
-export interface ReviewDetails {
-  agentSlug: string
-  accountId: string
-  toolkit: string
-  method: string
-  targetPath: string
-  matchedScopes: string[]
-  scopeDescriptions: Record<string, string>
-  /**
-   * Description of the matched API endpoint (what the current call does).
-   * Preferred over scopeDescriptions when generating the prompt headline.
-   */
-  endpointDescription?: string
-  // Optional: x-agent review fields.
-  // When present, the UI renders a dedicated "Agent X wants to use Agent Y" prompt
-  // with a read/invoke level selector. targetAgentSlug is the other agent being acted on.
-  xAgent?: {
-    targetAgentSlug: string
-    targetAgentName: string
-    operation: 'list' | 'read' | 'invoke' | 'create'
-    // For 'invoke': the prompt being sent. For 'create': the proposed name.
-    preview?: string
-  }
-}
+export { generateReviewDisplayText, humanizeActionName, type ReviewDetails } from './review-display'
+export { AgentReviews, type ReviewDecision, type ReviewOutcome, type ReviewRequest, type XAgentOperation } from './agent-reviews'
 
 /**
- * Convert a snake_case or kebab-case tool/action name into a gerund phrase.
- * e.g. "list_meetings" → "listing meetings", "get_user_profile" → "getting user profile",
- *      "send_message" → "sending message", "search_contacts" → "searching contacts"
+ * The router in front of every agent's reviews. The reviews live in each
+ * agent's actor (`AgentReviews`); this singleton dispatches the calls that
+ * arrive with a slug (the proxy's `requestReview` for the agent a call came
+ * from) and runs the shutdown sweep.
  */
-export function humanizeActionName(name: string): string {
-  const words = name.replace(/[_-]/g, ' ').trim().split(/\s+/)
-  if (words.length === 0 || words[0] === '') return name || 'action'
-
-  // Convert first word (the verb) to gerund form
-  const verb = words[0]
-  let gerund: string
-  if (verb.endsWith('e') && !verb.endsWith('ee')) {
-    gerund = verb.slice(0, -1) + 'ing' // e.g. "create" → "creating"
-  } else if (/^[a-z]*[bcdfghjklmnpqrstvwxyz][aeiou][bcdfghlmnprstvwz]$/.test(verb) && verb.length <= 4) {
-    // Double final consonant for short CVC verbs: "get" → "getting", "run" → "running"
-    gerund = verb + verb[verb.length - 1] + 'ing'
-  } else {
-    gerund = verb + 'ing' // e.g. "list" → "listing", "search" → "searching"
-  }
-
-  return [gerund, ...words.slice(1)].join(' ')
-}
-
-/**
- * Generate a human-readable display text for a proxy review request.
- *
- * Priority:
- *  1. The matched endpoint description (describes the specific call)
- *  2. The first scope description (fallback when endpoint is uncurated)
- *  3. A generic "Allow <method> request to <Toolkit>?" string
- *
- * Note: do NOT default to scope descriptions for the headline. Scope-level
- * text describes the broad permission (e.g. "Read, compose, send, and
- * permanently delete all your email") and is alarming when the user is
- * actually approving a narrow call (e.g. read profile).
- */
-export function generateReviewDisplayText(
-  toolkit: string,
-  method: string,
-  targetPath: string,
-  scopeDescriptions: Record<string, string>,
-  endpointDescription?: string,
-): string {
-  const candidate = endpointDescription || Object.values(scopeDescriptions)[0]
-  if (candidate) {
-    if (candidate.endsWith('?')) return candidate
-    // Strip leading "allow" (case-insensitive) to avoid "Allow allow..."
-    const stripped = candidate.replace(/^allow\s+/i, '')
-    return `Allow ${stripped.charAt(0).toLowerCase()}${stripped.slice(1)}?`
-  }
-
-  const toolkitDisplay = toolkit.charAt(0).toUpperCase() + toolkit.slice(1)
-
-  // MCP tool call pattern: "tools/call: <tool_name>" or "tools/call:<tool_name>"
-  const mcpMatch = targetPath.match(/tools\/call:\s*(.+)/)
-  if (mcpMatch) {
-    const action = humanizeActionName(mcpMatch[1])
-    return `Allow ${action} via ${toolkitDisplay}?`
-  }
-
-  // Fallback: generic description using toolkit name
-  return `Allow ${method} request to ${toolkitDisplay}?`
-}
-
-interface PendingReview {
-  id: string
-  details: ReviewDetails
-  resolve: (decision: 'allow' | 'deny') => void
-  reject: (error: Error) => void
-  timer: ReturnType<typeof setTimeout>
-}
-
 export class ReviewManager {
-  private pending: Map<string, PendingReview> = new Map()
+  private readonly agents = new AttachedStores<AgentReviews>('reviews')
 
-  requestReview(details: ReviewDetails, signal?: AbortSignal): Promise<'allow' | 'deny'> {
-    const id = crypto.randomUUID()
+  /** Called once by the agent registry with the way to each agent's reviews. */
+  attachAgents(directory: AgentStoreDirectory<AgentReviews> | null): void {
+    this.agents.attach(directory)
+  }
 
-    return new Promise<'allow' | 'deny'>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id)
-        reject(new Error('Review timeout'))
-      }, REVIEW_TIMEOUT_MS)
+  /** Raise a review for the agent a call came from and wait for its decision (see `awaitReview`). */
+  requestReview(details: ReviewDetails, signal?: AbortSignal, options?: { reevaluate?: ReviewReevaluator }): Promise<ReviewResult> {
+    const reviews = this.agents.get(details.agentSlug)
+    return awaitReview(reviews, (raise) => reviews.request(details, raise), { signal, ...options })
+  }
 
-      const cleanup = () => {
-        clearTimeout(timer)
-        this.pending.delete(id)
-        broadcastReview(details.agentSlug, {
-          type: 'proxy_review_resolved',
-          reviewId: id,
-          decision: 'deny',
-        })
-      }
+  /** `AgentReviews.request` on the agent's reviews: the outcome as data. */
+  request(agentSlug: string, details: ReviewRequest, options: ReviewRequestOptions): Promise<ReviewOutcome> {
+    return this.agents.get(agentSlug).request(details, options)
+  }
 
-      // If the request is aborted (e.g. task stopped), clean up the orphaned review
-      if (signal) {
-        signal.addEventListener('abort', () => {
-          if (!this.pending.has(id)) return // already resolved/timed out
-          cleanup()
-          reject(new Error('Request aborted'))
-        }, { once: true })
-      }
+  withdraw(agentSlug: string, id: string): void {
+    this.agents.peek(agentSlug)?.withdraw(id)
+  }
 
-      this.pending.set(id, { id, details, resolve, reject, timer })
+  resume(agentSlug: string, id: string): Promise<ReviewOutcome> {
+    return this.agents.peek(agentSlug)?.resume(id) ?? Promise.resolve('withdrawn')
+  }
 
-      const displayText = generateReviewDisplayText(
-        details.toolkit,
-        details.method,
-        details.targetPath,
-        details.scopeDescriptions,
-        details.endpointDescription,
-      )
-
-      // Broadcast review request to agent's active sessions
-      broadcastReview(details.agentSlug, {
-        type: 'proxy_review_request',
-        reviewId: id,
-        accountId: details.accountId,
-        toolkit: details.toolkit,
-        method: details.method,
-        targetPath: details.targetPath,
-        matchedScopes: details.matchedScopes,
-        scopeDescriptions: details.scopeDescriptions,
-        displayText,
-        ...(details.xAgent ? { xAgent: details.xAgent } : {}),
-      })
-
-      // Fire ONE OS notification per review, attributed to the first active
-      // session of this agent. The proxy call is agent-scoped (no sessionId
-      // in the request), so we pick an active session — same attribution
-      // heuristic the sidebar uses for its orange dot (agents.ts:
-      // isActive && hasAgentLevelReviews). Do NOT gate on hasActiveViewers
-      // here: an open SSE connection ≠ actively looking at the screen
-      // (the user can have the session open and be alt-tabbed away). The
-      // renderer-side gate (isAppActive && isViewingNotificationSession)
-      // is the only one that knows about real OS focus.
-      const targetSessionId = messagePersister.getActiveSessionIdsForAgent(details.agentSlug)[0]
-      if (targetSessionId) {
-        const kind = details.xAgent ? 'agent_action' : 'api_request'
-        notificationManager
-          .triggerSessionApiReviewWaiting(targetSessionId, details.agentSlug, id, displayText, undefined, kind)
-          .catch((err) => {
-            console.error('[ReviewManager] Failed to trigger API review notification:', err)
-          })
-      }
-    })
+  settle(agentSlug: string, id: string, decision: ReviewDecision): Promise<ReviewOutcome> {
+    return this.agents.peek(agentSlug)?.settle(id, decision) ?? Promise.resolve('withdrawn')
   }
 
   /**
-   * Resolve a pending review.
-   *
-   * `expectedAgentSlug` MUST be passed when the call originates from an
-   * HTTP route — it guards against a user with role on agent A submitting
-   * a decision for agent B's review by sending B's reviewId to A's URL.
-   * Internal callers (e.g. `resolveMatchingPending`, which already filters
-   * by agentSlug itself) may omit it.
+   * Resolve one of the agent's pending reviews by id. Only the agent's store
+   * is consulted: a user with a role on agent A who sends agent B's review id
+   * to A's URL finds nothing — the same `false` as "review not found", so
+   * nothing leaks to an unauthorized caller.
    */
-  submitDecision(id: string, decision: 'allow' | 'deny', expectedAgentSlug?: string): boolean {
-    const review = this.pending.get(id)
-    if (!review) return false
-    if (expectedAgentSlug !== undefined && review.details.agentSlug !== expectedAgentSlug) {
-      // Don't leak existence of the review to an unauthorized caller —
-      // return the same `false` shape as "review not found".
-      return false
-    }
-
-    clearTimeout(review.timer)
-    this.pending.delete(id)
-    review.resolve(decision)
-
-    // Broadcast resolution so UIs can dismiss the prompt
-    broadcastReview(review.details.agentSlug, {
-      type: 'proxy_review_resolved',
-      reviewId: id,
-      decision,
-    })
-
-    return true
+  submitDecision(agentSlug: string, id: string, decision: ReviewDecision, reason?: string): boolean {
+    return this.agents.peek(agentSlug)?.submit(id, decision, reason) ?? false
   }
 
-  resolveMatchingPending(
-    agentSlug: string,
-    scope: string,
-    decision: 'allow' | 'deny'
-  ): void {
-    for (const [id, review] of this.pending) {
-      if (
-        review.details.agentSlug === agentSlug &&
-        review.details.matchedScopes.includes(scope)
-      ) {
-        clearTimeout(review.timer)
-        this.pending.delete(id)
-        review.resolve(decision)
-
-        broadcastReview(agentSlug, {
-          type: 'proxy_review_resolved',
-          reviewId: id,
-          decision,
-        })
-      }
-    }
+  takeDenyReason(agentSlug: string, id: string): Promise<string | undefined> {
+    return this.agents.peek(agentSlug)?.takeDenyReason(id) ?? Promise.resolve(undefined)
   }
 
-  /**
-   * Resolve every pending x-agent review for `agentSlug` whose operation matches.
-   * Used when the user picks "always allow for all agents" — the saved policy has
-   * targetSlug=null, so the per-target scope match in resolveMatchingPending
-   * wouldn't catch sibling pending prompts (e.g. read:bob while saving global read).
-   */
-  resolveMatchingXAgentByOperation(
-    agentSlug: string,
-    operation: 'list' | 'read' | 'invoke' | 'create',
-    decision: 'allow' | 'deny',
-  ): void {
-    for (const [id, review] of this.pending) {
-      if (
-        review.details.agentSlug === agentSlug &&
-        review.details.xAgent?.operation === operation
-      ) {
-        clearTimeout(review.timer)
-        this.pending.delete(id)
-        review.resolve(decision)
-
-        broadcastReview(agentSlug, {
-          type: 'proxy_review_resolved',
-          reviewId: id,
-          decision,
-        })
-      }
-    }
+  resolveMatchingPending(agentSlug: string, scope: string, decision: ReviewDecision): void {
+    this.agents.peek(agentSlug)?.resolveMatching(scope, decision)
   }
 
-  getPendingReviewsForAgent(
-    agentSlug: string
-  ): Array<{ id: string; displayText: string } & ReviewDetails> {
-    const results: Array<{ id: string; displayText: string } & ReviewDetails> = []
-    for (const review of this.pending.values()) {
-      if (review.details.agentSlug === agentSlug) {
-        const displayText = generateReviewDisplayText(
-          review.details.toolkit,
-          review.details.method,
-          review.details.targetPath,
-          review.details.scopeDescriptions,
-          review.details.endpointDescription,
-        )
-        results.push({ id: review.id, displayText, ...review.details })
-      }
-    }
-    return results
+  resolveMatchingPendingByLabel(agentSlug: string, label: ScopeLabel, decision: ReviewDecision): void {
+    this.agents.peek(agentSlug)?.resolveMatchingByLabel(label, decision)
   }
 
-  /**
-   * Convenience helper for x-agent reviews. Wraps requestReview with a stable
-   * scopeDescriptions/displayText that the dedicated UI renderer keys off.
-   */
+  resolveMatchingXAgentByOperation(agentSlug: string, operation: XAgentOperation, decision: ReviewDecision): void {
+    this.agents.peek(agentSlug)?.resolveMatchingXAgent(operation, decision)
+  }
+
+  getPendingReviewsForAgent(agentSlug: string): Array<{ id: string; displayText: string } & ReviewDetails> {
+    return this.agents.peek(agentSlug)?.pending() ?? []
+  }
+
+  /** Raise an x-agent review for the calling agent and wait for its decision (see `awaitReview`). */
   requestXAgentReview(
     callerAgentSlug: string,
     targetAgentSlug: string,
     targetAgentName: string,
-    operation: 'list' | 'read' | 'invoke' | 'create',
+    operation: XAgentOperation,
     preview?: string,
+    fileTransfer?: XAgentFileTransfer,
     signal?: AbortSignal,
-  ): Promise<'allow' | 'deny'> {
-    const scope =
-      operation === 'list'
-        ? 'list'
-        : operation === 'create'
-          ? 'create'
-          : `${operation}:${targetAgentSlug}`
-    const description =
-      operation === 'create'
-        ? `Allow agent to create a new agent named "${targetAgentName}"?`
-        : operation === 'list'
-          ? `Allow agent to list other agents in this workspace?`
-          : operation === 'invoke'
-            ? `Allow agent to send a message to "${targetAgentName}"?`
-            : `Allow agent to read sessions of "${targetAgentName}"?`
+  ): Promise<ReviewResult> {
+    const reviews = this.agents.get(callerAgentSlug)
+    return awaitReview(reviews, (raise) => reviews.requestXAgent({ targetAgentSlug, targetAgentName, operation, preview, fileTransfer }, raise), { signal })
+  }
 
-    return this.requestReview(
-      {
-        agentSlug: callerAgentSlug,
-        // Reuse fields semantically — accountId carries target slug for "always allow X" routing
-        accountId: targetAgentSlug,
-        toolkit: 'agents',
-        method: operation,
-        targetPath: `agents:${operation}:${targetAgentSlug}`,
-        matchedScopes: [scope],
-        scopeDescriptions: { [scope]: description },
-        xAgent: {
-          targetAgentSlug,
-          targetAgentName,
-          operation,
-          preview,
-        },
-      },
-      signal,
-    )
+  /** `AgentReviews.requestXAgent` on the calling agent's reviews: the outcome as data. */
+  requestXAgent(
+    callerAgentSlug: string,
+    request: { targetAgentSlug: string; targetAgentName: string; operation: XAgentOperation; preview?: string; fileTransfer?: XAgentFileTransfer },
+    options: ReviewRequestOptions,
+  ): Promise<ReviewOutcome> {
+    return this.agents.get(callerAgentSlug).requestXAgent(request, options)
+  }
+
+  denyAllForAgent(agentSlug: string): void {
+    this.agents.peek(agentSlug)?.denyAll()
   }
 
   rejectAll(): void {
-    for (const [id, review] of this.pending) {
-      clearTimeout(review.timer)
-      this.pending.delete(id)
-      review.reject(new Error('Review timeout'))
-    }
+    for (const reviews of this.agents.all()) reviews.rejectAll()
   }
 }
 
-export const reviewManager = new ReviewManager()
+// Use globalThis to persist across dev-server hot reloads, matching the
+// agents' state (see `createAgentRegistry`). The two are coupled: pending
+// reviews live in the agents' actors and write through to their user-input
+// stores (which drive the live sessions' awaiting projection), and that state
+// survives reloads — so the router in front of it must too.
+const globalForReviewManager = globalThis as unknown as {
+  reviewManager: ReviewManager | undefined
+}
+
+export const reviewManager = globalForReviewManager.reviewManager ?? new ReviewManager()
+
+if (process.env.NODE_ENV !== 'production') {
+  globalForReviewManager.reviewManager = reviewManager
+}

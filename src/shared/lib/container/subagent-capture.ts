@@ -1,8 +1,9 @@
 import * as path from 'path'
 import { promises as fsPromises } from 'fs'
+import type { FileOps } from '@shared/lib/agent-actor/types'
 import type { StreamMessage } from './types'
 
-// Dev-only capture of MessagePersister inputs, outputs, and FS snapshots.
+// Dev-only capture of the live sessions' inputs, outputs, and FS snapshots.
 // Enabled when SUPERAGENT_CAPTURE_DIR is set. Used to produce realistic
 // fixtures for the subagent-routing replay harness.
 
@@ -10,6 +11,11 @@ export class SubagentCapture {
   private readonly baseDir: string
   private readonly startedAt = Date.now()
   private snapshotCounter = 0
+  // Serializes appends per file. Callers fire-and-forget recordInput/recordOutput,
+  // so without this two near-simultaneous messages can land in the file in the
+  // wrong order (the fixture line order then disagrees with processing order,
+  // which the `t` field — stamped synchronously at call time — preserves).
+  private writeChains = new Map<string, Promise<void>>()
 
   constructor(baseDir: string) {
     this.baseDir = baseDir
@@ -47,35 +53,45 @@ export class SubagentCapture {
     })
   }
 
-  // Snapshot the subagents directory (with mtimes preserved) at a labelled checkpoint.
-  async snapshotSubagentsDir(sessionId: string, sourceDir: string, label: string): Promise<void> {
+  // Snapshot the subagents directory of the agent's workspace (with mtimes
+  // preserved) at a labelled checkpoint. `sourceDir` is a workspace path.
+  async snapshotSubagentsDir(sessionId: string, files: FileOps, sourceDir: string, label: string): Promise<void> {
     const idx = String(this.snapshotCounter++).padStart(3, '0')
     const dest = path.join(this.sessionDir(sessionId), `snapshot-${idx}-${label}`)
 
     try {
-      const files = await fsPromises.readdir(sourceDir)
+      const entries = await files.list(sourceDir)
       await fsPromises.mkdir(dest, { recursive: true })
-      for (const file of files) {
-        const srcPath = path.join(sourceDir, file)
-        const destPath = path.join(dest, file)
-        const stat = await fsPromises.stat(srcPath)
-        if (!stat.isFile()) continue
-        await fsPromises.copyFile(srcPath, destPath)
-        await fsPromises.utimes(destPath, stat.atime, stat.mtime)
+      for (const entry of entries) {
+        if (entry.kind !== 'file') continue
+        const stat = await files.stat(entry.path)
+        if (!stat) continue
+        const destPath = path.join(dest, entry.name)
+        const bytes = await files.getDoc(entry.path)
+        if (bytes === null) continue
+        await fsPromises.writeFile(destPath, bytes)
+        const mtime = new Date(stat.mtimeMs)
+        await fsPromises.utimes(destPath, mtime, mtime)
       }
-      await this.recordNote(sessionId, 'fs_snapshot', { label, dir: `snapshot-${idx}-${label}`, fileCount: files.length })
+      await this.recordNote(sessionId, 'fs_snapshot', { label, dir: `snapshot-${idx}-${label}`, fileCount: entries.length })
     } catch (err) {
       await this.recordNote(sessionId, 'fs_snapshot_error', { label, error: String(err) })
     }
   }
 
-  private async append(sessionId: string, fileName: string, data: unknown): Promise<void> {
-    try {
-      const dir = this.sessionDir(sessionId)
-      await fsPromises.mkdir(dir, { recursive: true })
-      await fsPromises.appendFile(path.join(dir, fileName), JSON.stringify(data) + '\n')
-    } catch {
-      // Capture is best-effort — never disrupt real flow.
-    }
+  private append(sessionId: string, fileName: string, data: unknown): Promise<void> {
+    const key = `${sessionId}/${fileName}`
+    const line = JSON.stringify(data) + '\n'
+    const chained = (this.writeChains.get(key) ?? Promise.resolve()).then(async () => {
+      try {
+        const dir = this.sessionDir(sessionId)
+        await fsPromises.mkdir(dir, { recursive: true })
+        await fsPromises.appendFile(path.join(dir, fileName), line)
+      } catch {
+        // Capture is best-effort — never disrupt real flow.
+      }
+    })
+    this.writeChains.set(key, chained)
+    return chained
   }
 }

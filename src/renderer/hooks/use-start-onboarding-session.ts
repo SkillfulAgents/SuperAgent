@@ -1,6 +1,6 @@
 import { useCallback } from 'react'
+import { useNavigate } from '@tanstack/react-router'
 import { useCreateSession } from '@renderer/hooks/use-sessions'
-import { useSelection } from '@renderer/context/selection-context'
 import { useOnboarding } from '@renderer/context/onboarding-context'
 
 const ONBOARDING_MESSAGE =
@@ -15,24 +15,25 @@ const ONBOARDING_MESSAGE =
  */
 export function useStartOnboardingSession() {
   const createSession = useCreateSession()
-  const { setView } = useSelection()
   const { setOnboarding } = useOnboarding()
+  const navigate = useNavigate()
 
   return useCallback(
-    async (agentSlug: string) => {
+    async (agentSlug: string, firstPrompt?: string) => {
       setOnboarding(true)
       try {
         const session = await createSession.mutateAsync({
           agentSlug,
-          message: ONBOARDING_MESSAGE,
+          message: firstPrompt?.trim() || ONBOARDING_MESSAGE,
+          origin: 'onboarding',
         })
-        setView({ kind: 'session', id: session.id })
+        void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId: session.id } })
       } catch {
         // Onboarding session creation failed — user can still use agent normally
       } finally {
         setOnboarding(false)
       }
     },
-    [createSession, setView, setOnboarding],
+    [createSession, setOnboarding, navigate],
   )
 }

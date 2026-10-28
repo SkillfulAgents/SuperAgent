@@ -1,0 +1,200 @@
+import { describe, it, expect } from 'vitest'
+import { overlayLiveStatus, phaseModels, progressSummary, workflowProgressSegments } from './workflow-tray-content'
+import type { WorkflowAgentNode } from '@shared/lib/workflows/workflow-schemas'
+
+function node(over: Partial<WorkflowAgentNode>): WorkflowAgentNode {
+  return {
+    agentId: 'a',
+    label: 'agent',
+    phase: 'P',
+    status: 'running',
+    result: null,
+    resolved: 'prompt-regex',
+    prompt: '',
+    toolCount: 0,
+    tokens: 0,
+    durationMs: null,
+    model: null,
+    ...over,
+  }
+}
+
+describe('overlayLiveStatus', () => {
+  it('renders live agents before any disk tree is available', () => {
+    const out = overlayLiveStatus([], {
+      a: { status: 'running', result: null, label: 'search:reddit', phase: 'Research', tokens: 500, toolCount: 3, lastTool: 'WebSearch', model: 'claude-sonnet-5', prompt: 'Find B2B results' },
+      b: { status: 'done', result: 'Evidence found' },
+    })
+    expect(out).toMatchObject([
+      { agentId: 'a', label: 'search:reddit', phase: 'Research', status: 'running', tokens: 500, toolCount: 3, lastTool: 'WebSearch', model: 'claude-sonnet-5', prompt: 'Find B2B results' },
+      { agentId: 'b', label: 'agent 2', status: 'done', result: 'Evidence found' },
+    ])
+  })
+
+  it('keeps newly started live agents when the disk snapshot is behind', () => {
+    const base = [node({ agentId: 'a', prompt: 'Full prompt from disk', phase: null })]
+    const live = {
+      a: { status: 'done' as const, result: 'Done', phase: 'Research', prompt: 'Full prompt…' },
+      b: { status: 'running' as const, result: null, label: 'synthesis' },
+    }
+    expect(overlayLiveStatus(base, live)).toMatchObject([
+      { agentId: 'a', phase: 'Research', prompt: 'Full prompt from disk', status: 'done' },
+      { agentId: 'b', label: 'synthesis', status: 'running' },
+    ])
+    // Once disk catches up the same agent is enriched, never duplicated.
+    expect(overlayLiveStatus([...base, node({ agentId: 'b', model: 'claude-sonnet-5' })], live))
+      .toHaveLength(2)
+  })
+
+  it('returns the base tree unchanged when there is no live data', () => {
+    const base = [node({ agentId: 'a', status: 'done', result: 'x' })]
+    expect(overlayLiveStatus(base, undefined)).toBe(base)
+  })
+
+  it('upgrades a tree running → done from a live done event', () => {
+    const base = [node({ agentId: 'a', status: 'running', result: null })]
+    const out = overlayLiveStatus(base, { a: { status: 'done', result: 'A done' } })
+    expect(out[0]).toMatchObject({ status: 'done', result: 'A done' })
+  })
+
+  it('does NOT let a stale live running override a tree done (the missed-final-line bug)', () => {
+    const base = [node({ agentId: 'aa18', status: 'done', result: 'all done' })]
+    const out = overlayLiveStatus(base, { aa18: { status: 'running', result: null } })
+    expect(out[0]).toMatchObject({ status: 'done', result: 'all done' })
+  })
+
+  it('keeps an agent running when both sources say running', () => {
+    const base = [node({ agentId: 'a', status: 'running' })]
+    const out = overlayLiveStatus(base, { a: { status: 'running', result: null } })
+    expect(out[0].status).toBe('running')
+  })
+
+  it('prefers the disk result but falls back to the live result', () => {
+    const base = [node({ agentId: 'a', status: 'running', result: null })]
+    const out = overlayLiveStatus(base, { a: { status: 'done', result: 'live result' } })
+    expect(out[0].result).toBe('live result')
+  })
+
+  it('surfaces a live failed state', () => {
+    const base = [node({ agentId: 'a', status: 'running', result: null })]
+    const out = overlayLiveStatus(base, { a: { status: 'failed', result: null } })
+    expect(out[0].status).toBe('failed')
+  })
+
+  it('does NOT let a stale live running override a tree failed (trailing-error detection)', () => {
+    const base = [node({ agentId: 'a', status: 'failed', result: 'request_too_large: 413' })]
+    const out = overlayLiveStatus(base, { a: { status: 'running', result: null } })
+    expect(out[0]).toMatchObject({ status: 'failed', result: 'request_too_large: 413' })
+  })
+
+  it('lets done win over failed when the sources disagree (a result is definitive)', () => {
+    const base = [node({ agentId: 'a', status: 'failed', result: 'err' })]
+    const out = overlayLiveStatus(base, { a: { status: 'done', result: 'late result' } })
+    expect(out[0].status).toBe('done')
+  })
+
+  it('overlays live tokens/toolCount/lastTool onto the node', () => {
+    const base = [node({ agentId: 'a', status: 'running', tokens: 1, toolCount: 0 })]
+    const out = overlayLiveStatus(base, {
+      a: { status: 'running', result: null, tokens: 500, toolCount: 3, lastTool: 'Bash sleep 40' },
+    })
+    expect(out[0]).toMatchObject({ tokens: 500, toolCount: 3, lastTool: 'Bash sleep 40' })
+  })
+})
+
+describe('overlayLiveStatus — labels', () => {
+  it('prefers the runtime phase when disk inference puts the agent in a different phase', () => {
+    const out = overlayLiveStatus([
+      node({ agentId: 'scope', label: 'search:', phase: 'Search' }),
+      node({ agentId: 'search1', label: 'fetch:', phase: 'Fetch' }),
+      node({ agentId: 'search2', label: 'v', phase: 'Verify' }),
+    ], {
+      scope: { status: 'done', result: null, label: 'scope', phase: 'Scope' },
+      search1: { status: 'done', result: null, label: 'search:one', phase: 'Search' },
+      search2: { status: 'running', result: null, label: 'search:two', phase: 'Search' },
+    })
+    expect(out.map(({ label, phase }) => ({ label, phase }))).toEqual([
+      { label: 'scope', phase: 'Scope' },
+      { label: 'search:one', phase: 'Search' },
+      { label: 'search:two', phase: 'Search' },
+    ])
+  })
+
+  it('prefers the wire label over the disk re-join (which can degrade to "agent N")', () => {
+    const out = overlayLiveStatus([node({ label: 'agent 1' })], {
+      a: { status: 'running', result: null, label: 'qualify:closera' },
+    })
+    expect(out[0].label).toBe('qualify:closera')
+  })
+
+  it('keeps the disk label when the wire carries none (reload of a finished run)', () => {
+    const out = overlayLiveStatus([node({ label: 'qualify:moda' })], { a: { status: 'done', result: null } })
+    expect(out[0].label).toBe('qualify:moda')
+  })
+})
+
+describe('phaseModels', () => {
+  it('lists distinct model labels in first-seen order, skipping unknowns', () => {
+    const agents = [
+      node({ model: 'claude-haiku-4-5-20251001' }),
+      node({ model: null }),
+      node({ model: 'haiku-4-5' }), // meta.json slug form of the same model
+      node({ model: 'claude-sonnet-5' }),
+    ]
+    expect(phaseModels(agents)).toEqual(['Haiku 4.5', 'Sonnet 5'])
+  })
+
+  it('is empty when no agent has a known model', () => {
+    expect(phaseModels([node({}), node({})])).toEqual([])
+  })
+})
+
+describe('workflowProgressSegments', () => {
+  it('colors known agents by status', () => {
+    const agents = [node({ agentId: 'a', status: 'done' }), node({ agentId: 'b', status: 'running' })]
+    expect(workflowProgressSegments(agents, 0)).toEqual(['done', 'running'])
+  })
+
+  it('adds gray pending cells for declared-but-not-started agents', () => {
+    const agents = [node({ agentId: 'a', status: 'done' }), node({ agentId: 'b', status: 'running' })]
+    // 3 call sites, 2 started → 1 pending
+    expect(workflowProgressSegments(agents, 3)).toEqual(['done', 'running', 'pending'])
+  })
+
+  it('never shows phantom pending when the fan-out exceeds the call-site count', () => {
+    const agents = [
+      node({ agentId: 'a', status: 'done' }),
+      node({ agentId: 'b', status: 'done' }),
+      node({ agentId: 'c', status: 'running' }),
+    ]
+    // 1 map call site spawned 3 agents → no pending, bar just grew
+    expect(workflowProgressSegments(agents, 1)).toEqual(['done', 'done', 'running'])
+  })
+
+  it('returns no segments before anything is known', () => {
+    expect(workflowProgressSegments([], 0)).toEqual([])
+  })
+
+  it('maps a failed agent to a red (failed) segment', () => {
+    const agents = [node({ agentId: 'a', status: 'done' }), node({ agentId: 'b', status: 'failed' })]
+    expect(workflowProgressSegments(agents, 0)).toEqual(['done', 'failed'])
+  })
+
+  it('drops pending cells once the run is no longer active', () => {
+    const agents = [node({ agentId: 'a', status: 'done' })]
+    // The estimate said 3 but the run finished with 1 — whatever didn't start never will.
+    expect(workflowProgressSegments(agents, 3, false)).toEqual(['done'])
+  })
+})
+
+describe('progressSummary', () => {
+  it('reads "N/M agents done" when nothing failed', () => {
+    expect(progressSummary(['done', 'done', 'running', 'pending'])).toBe('2/4 agents done')
+  })
+
+  it('counts failed agents as finished and calls them out', () => {
+    // 22 done + 1 failed + 1 running must not read "22/24 done" — 23 have finished.
+    const segs = Array<'done' | 'failed' | 'running'>(22).fill('done').concat('failed', 'running')
+    expect(progressSummary(segs)).toBe('23/24 agents finished · 1 failed')
+  })
+})

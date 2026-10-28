@@ -1,0 +1,15 @@
+{
+  "sessionId": "61f6780c-7d72-48e5-bd34-895cdde916e9",
+  "agentSlug": "he-9simt4",
+  "description": "Real, verbatim SUPERAGENT_CAPTURE_DIR capture (2026-06-11) of a run_in_background SUBAGENT completing mid-turn. The agent launches a background Agent (task_type 'local_agent', run_in_background:true in the streamed tool input), gets an immediate 'async_launched' tool_result, then the subagent's real completion arrives ~18s later as task_updated{patch.status:completed} + task_notification{tool_use_id,status:completed} — NOT a second tool_result and NOT a sidechain 'result'. Regression guard: the persister must broadcast subagent_completed at that point (mid-turn, ~20s before the final result/idle) so the UI flips the subagent to done instead of spinning until the turn ends.",
+  "subagents": [
+    {
+      "parentToolId": "toolu_011ySGsZcQGaHjviTbumqF3N",
+      "taskId": "a7cf1c08d7c9161dd",
+      "agentId": "a7cf1c08d7c9161dd",
+      "subagentType": "general-purpose",
+      "description": "Sleep 15 seconds"
+    }
+  ],
+  "totalEntries": 102
+}

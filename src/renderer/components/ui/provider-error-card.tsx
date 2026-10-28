@@ -1,43 +1,128 @@
-import { CloudOff } from 'lucide-react'
+import { useContext, useMemo, useState } from 'react'
+import type { Components } from 'react-markdown'
+import { CircleDollarSign, Info, Lock, TriangleAlert, type LucideIcon } from 'lucide-react'
 
-function extractReadableError(raw: string): string {
-  const jsonMatch = raw.match(/\{"type":\s*"error".*?"message":\s*"([^"]+)"\s*\}/)
-  if (jsonMatch) {
-    const prefix = raw.slice(0, raw.indexOf('{')).trim()
-    const msg = jsonMatch[1]
-    return prefix ? `${prefix} ${msg}` : msg
+import { defaultParseErrorResponse, type ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
+
+import { RequestError } from '@shared/lib/tools/requests/request-error'
+import { Button } from '@renderer/components/ui/button'
+import type { ProviderErrorComponentProps } from '@renderer/components/provider-error/provider-error-registry'
+import { Markdown } from '@renderer/components/ui/markdown'
+import { DialogContext } from '@renderer/context/dialog-context'
+import { openExternalUrl } from '@renderer/lib/open-external'
+import { settingsTabFromHref } from '@renderer/lib/in-app-link'
+
+const ICONS: Record<string, LucideIcon> = {
+  info: Info,
+  'triangle-alert': TriangleAlert,
+  'circle-dollar-sign': CircleDollarSign,
+  lock: Lock,
+}
+
+const OPAQUE_DARK: Record<ProviderErrorPresentation['severity'], string> = {
+  error: 'mt-0 dark:bg-red-950',
+  warning: 'mt-0 dark:bg-orange-950',
+}
+
+// In-app settings links (e.g. `/settings/llm`) navigate here; anything else opens in the browser.
+function markdownComponents(openSettings: ((tab: string) => void) | undefined): Components {
+  return {
+    p: ({ children }) => <span>{children}</span>,
+    strong: ({ children }) => <strong className="font-medium">{children}</strong>,
+    a: ({ href, children }) => {
+      const settingsTab = settingsTabFromHref(href)
+      return (
+        <a
+          href={href}
+          {...(settingsTab ? {} : { target: '_blank', rel: 'noopener noreferrer' })}
+          className="font-medium underline-offset-2 hover:underline"
+          onClick={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            if (settingsTab) openSettings?.(settingsTab)
+            else if (href) void openExternalUrl(href)
+          }}
+        >
+          {children}
+        </a>
+      )
+    },
   }
-  return raw
 }
 
-interface ProviderErrorCardProps {
-  message: string
-  'data-testid'?: string
-}
-
-function getHint(message: string): string {
-  const lower = message.toLowerCase()
-  if (lower.includes('invalid or revoked') || lower.includes('authentication') || lower.includes('401'))
+function defaultHint(raw: string): string {
+  const lower = raw.toLowerCase()
+  if (lower.includes('invalid or revoked') || lower.includes('authentication') || lower.includes('401')) {
     return 'Your access token may have expired or been revoked. Please reconnect your platform account in Settings.'
+  }
   return 'This error came from the external LLM provider API, not from this application. Check your provider configuration in Settings.'
 }
 
-export function ProviderErrorCard({ message, 'data-testid': testId }: ProviderErrorCardProps) {
-  const displayMessage = extractReadableError(message)
+function hasMarkdownLink(markdown: string): boolean {
+  return /\[[^\]]+\]\([^)]+\)/.test(markdown)
+}
+
+export function ProviderErrorView({
+  presentation,
+  rawMessage,
+  showDefaultHint = true,
+  'data-testid': testId,
+}: {
+  presentation: ProviderErrorPresentation
+  rawMessage?: string
+  /** Off when the message already says what to do, e.g. retry a temporary outage. */
+  showDefaultHint?: boolean
+  'data-testid'?: string
+}) {
+  const Icon = ICONS[presentation.icon] ?? Info
+  // The main app and quick dispatch both provide this; only bare test renders lack it.
+  const openSettings = useContext(DialogContext)?.openSettings
+  const components = useMemo(() => markdownComponents(openSettings), [openSettings])
 
   return (
-    <div
-      className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-3"
+    <RequestError
+      label={null}
+      message={
+        <Markdown components={components}>{presentation.message}</Markdown>
+      }
+      hint={!showDefaultHint || hasMarkdownLink(presentation.message) ? undefined : defaultHint(rawMessage ?? presentation.message)}
+      severity={presentation.severity}
+      icon={Icon}
+      className={OPAQUE_DARK[presentation.severity]}
       data-testid={testId ?? 'provider-error-card'}
-    >
-      <div className="flex items-center gap-2">
-        <CloudOff className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-        <span className="text-sm font-medium text-amber-600 dark:text-amber-400">LLM Provider Error</span>
-      </div>
-      <p className="mt-1 text-sm text-amber-600/90 dark:text-amber-400/90">{displayMessage}</p>
-      <p className="mt-1.5 text-xs text-muted-foreground">
-        {getHint(message)}
-      </p>
-    </div>
+    />
+  )
+}
+
+// `presentation` is authored server-side by the active LLM provider's
+// presentationForTurnError. Without one (older server, missed event) the card falls
+// back to the provider-agnostic default banner built from the raw message.
+export function ProviderErrorCard({
+  message,
+  presentation,
+  dismissible = false,
+  showDefaultHint,
+  'data-testid': testId,
+}: ProviderErrorComponentProps & { showDefaultHint?: boolean; 'data-testid'?: string }) {
+  const [dismissed, setDismissed] = useState(false)
+  const resolved = useMemo(
+    () => presentation ?? defaultParseErrorResponse(undefined, message),
+    [presentation, message],
+  )
+  if (dismissed) return null
+  return (
+    <>
+      <ProviderErrorView
+        presentation={resolved}
+        rawMessage={message}
+        showDefaultHint={showDefaultHint}
+        data-testid={testId}
+      />
+      {dismissible && (
+        <div className="mt-1 flex justify-end">
+          <Button size="sm" variant="ghost" onClick={() => setDismissed(true)}>Dismiss</Button>
+        </div>
+      )}
+    </>
   )
 }

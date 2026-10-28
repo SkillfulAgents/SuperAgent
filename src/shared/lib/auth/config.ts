@@ -1,6 +1,8 @@
 import type { Context } from 'hono'
-import { getSettings } from '@shared/lib/config/settings'
+import { getTrustedOrigins } from './trusted-origins'
 import { isAuthMode } from './mode'
+
+export { getTrustedOrigins } from './trusted-origins'
 
 /**
  * Get the app's external base URL (no trailing slash).
@@ -36,15 +38,6 @@ export function getAppBaseUrlFromRequest(c: Context): string {
   // Fall back to request origin (same as current behavior for unconfigured setups)
   // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
   return c.req.header('origin') || new URL(c.req.url).origin
-}
-
-/**
- * Get trusted origins from app settings.
- * Used for both CORS and Better Auth CSRF protection.
- */
-export function getTrustedOrigins(): string[] {
-  const settings = getSettings()
-  return settings.auth?.trustedOrigins ?? []
 }
 
 /**

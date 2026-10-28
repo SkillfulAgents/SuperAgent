@@ -35,13 +35,13 @@ test.describe('Render Performance', () => {
     await agentPage.createAgent(`Perf Idle ${Date.now()}`)
 
     // Wait for initial renders to settle
-    await page.waitForTimeout(3000)
+    await perf.sampleFor(3000)
 
     // Start measuring
     await perf.resetCounters()
 
     // Wait 10 seconds with no interaction
-    await page.waitForTimeout(10000)
+    await perf.sampleFor(10000)
 
     const data = await perf.getAllRenderData()
     console.log('=== Idle Render Report (10s) ===')
@@ -71,16 +71,16 @@ test.describe('Render Performance', () => {
     await agentPage.createAgent(agent2)
 
     // Let things settle
-    await page.waitForTimeout(2000)
+    await perf.sampleFor(2000)
     await perf.resetCounters()
 
     // Navigate between agents
     await agentPage.selectAgent(agent1)
-    await page.waitForTimeout(1000)
+    await perf.sampleFor(1000)
     await agentPage.selectAgent(agent2)
-    await page.waitForTimeout(1000)
+    await perf.sampleFor(1000)
     await agentPage.selectAgent(agent1)
-    await page.waitForTimeout(1000)
+    await perf.sampleFor(1000)
 
     const data = await perf.snapshot()
     console.log('=== Navigation Render Report (3 agent switches) ===')
@@ -97,7 +97,7 @@ test.describe('Render Performance', () => {
     await agentPage.createAgent(`Perf Chat ${Date.now()}`)
 
     // Let initial renders settle
-    await page.waitForTimeout(2000)
+    await perf.sampleFor(2000)
     await perf.resetCounters()
 
     // Send a message and wait for response
@@ -105,7 +105,7 @@ test.describe('Render Performance', () => {
     await sessionPage.waitForResponse(15000)
 
     // Wait a bit for streaming to finish
-    await page.waitForTimeout(2000)
+    await perf.sampleFor(2000)
 
     const data = await perf.snapshot()
     console.log('=== Chat Flow Render Report (1 message + response) ===')

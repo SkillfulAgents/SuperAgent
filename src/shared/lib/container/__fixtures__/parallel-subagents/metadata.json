@@ -1,0 +1,22 @@
+{
+  "sessionId": "fc845c0b-f276-4f45-ba15-6b6145a8435c",
+  "agentSlug": "untitled-axa382",
+  "description": "Two parallel web-browser subagents launched in the same assistant turn. Agent A fetches HN #1 story, Agent B fetches GitHub #1 trending repo. Both task_started events fire within ~1.5s.",
+  "subagents": [
+    {
+      "parentToolId": "toolu_01WCLQRXvaGU6LSdhtr7SmLR",
+      "taskId": "a833e9fc775852a47",
+      "agentId": "a833e9fc775852a47",
+      "subagentType": "web-browser",
+      "description": "Get HN #1 story title"
+    },
+    {
+      "parentToolId": "toolu_01N6wZRaFBiDy1ccFhDmTYYj",
+      "taskId": "aca96e85788fec42e",
+      "agentId": "aca96e85788fec42e",
+      "subagentType": "web-browser",
+      "description": "Get GitHub #1 trending repo"
+    }
+  ],
+  "totalEntries": 75
+}

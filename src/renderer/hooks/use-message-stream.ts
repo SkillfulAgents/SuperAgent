@@ -1,73 +1,34 @@
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useQueryClient, QueryClient } from '@tanstack/react-query'
 import { getApiBaseUrl } from '@renderer/lib/env'
+import { sessionTurnOutcomeSchema, type SessionTurnOutcome } from '@shared/lib/container/session-turn-outcome-schema'
 import type { SessionUsage } from '@shared/lib/types/agent'
 import type { SlashCommandInfo } from '@shared/lib/container/types'
-
-interface SecretRequest {
-  toolUseId: string
-  secretName: string
-  reason?: string
-}
-
-interface ConnectedAccountRequest {
-  toolUseId: string
-  toolkit: string
-  reason?: string
-}
-
-interface QuestionRequest {
-  toolUseId: string
-  questions: Array<{
-    question: string
-    header: string
-    options: Array<{ label: string; description: string }>
-    multiSelect: boolean
-  }>
-}
-
-interface FileRequest {
-  toolUseId: string
-  description: string
-  fileTypes?: string
-}
-
-interface RemoteMcpRequest {
-  toolUseId: string
-  url: string
-  name?: string
-  reason?: string
-  authHint?: 'oauth' | 'bearer'
-}
-
-interface BrowserInputRequest {
-  toolUseId: string
-  message: string
-  requirements: string[]
-}
-
-interface ScriptRunRequest {
-  toolUseId: string
-  script: string
-  explanation: string
-  scriptType: 'applescript' | 'shell' | 'powershell'
-}
-
-export interface ComputerUseRequest {
-  toolUseId: string
-  method: string
-  params: Record<string, unknown>
-  permissionLevel: string
-  appName?: string
-}
+import type { ApiMessage, ApiMessageOrBoundary } from '@shared/lib/types/api'
+import type { WorkflowAgentNode } from '@shared/lib/workflows/workflow-schemas'
+import type { BackgroundTaskRef } from '@renderer/lib/background-task-label'
+import { isBlockingUserInputToolName } from '@shared/lib/tools/user-input-tools'
+import { applySessionActivityStatus } from '@renderer/lib/agent-cache'
+import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
+import { integrationMessageDisplaySchema, type IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
+import {
+  providerErrorPresentationSchema,
+  type ProviderErrorPresentation,
+} from '@shared/lib/llm-provider/error-presentation'
 
 export interface SubagentInfo {
   parentToolId: string | null
   agentId: string | null
   streamingMessage: string | null
   streamingToolUse: { id: string; name: string; partialInput: string } | null
-  progressSummary: string | null // AI-generated progress summary from agentProgressSummaries
+  progressSummary: string | null
+  subagentType: string | null
+  description: string | null
+  usage: { total_tokens: number; tool_uses: number; duration_ms: number } | null
+  lastToolName: string | null
+  resultText?: string | null
+  status?: 'running' | 'completed'
 }
 
 interface ApiRetryInfo {
@@ -77,22 +38,34 @@ interface ApiRetryInfo {
   errorStatus?: number
 }
 
+/**
+ * Optimistic copy of a message another user sent in this shared session,
+ * shown until the persisted message (matched by uuid) arrives via refetch.
+ */
+export interface PeerUserMessage {
+  uuid: string
+  content: string
+  /** Absent when an integration, not a person in the app, sent it. */
+  sender?: { id: string; name?: string; email?: string; image?: string | null }
+  /** Card data for a message an integration delivered. */
+  integration?: IntegrationMessageDisplay
+  /** Sent while the agent was mid-turn — rendered as a queued ghost. */
+  queued?: boolean
+  /** Local arrival time — bounds the text-fallback match so an old identical-text message can't claim this ghost. */
+  receivedAt: number
+}
+
 interface StreamState {
   isActive: boolean // True from user message until query result
+  turnOutcome: SessionTurnOutcome | null // Last backend outcome; delivery metadata only
   isStreaming: boolean // True while actively receiving tokens
   streamingMessage: string | null
-  streamingToolUse: { id: string; name: string; partialInput: string } | null
-  pendingSecretRequests: SecretRequest[]
-  pendingConnectedAccountRequests: ConnectedAccountRequest[]
-  pendingQuestionRequests: QuestionRequest[]
-  pendingFileRequests: FileRequest[]
-  pendingRemoteMcpRequests: RemoteMcpRequest[]
-  pendingBrowserInputRequests: BrowserInputRequest[]
-  pendingScriptRunRequests: ScriptRunRequest[]
-  pendingComputerUseRequests: ComputerUseRequest[]
+  streamingToolUses: Array<{ id: string; name: string; partialInput: string; ready?: boolean }>
   error: string | null // Error message if session encountered an error
   /** SDK error code from the LLM provider (e.g., 'authentication_failed', 'rate_limit', 'server_error') */
   apiErrorCode: string | null
+  /** Provider-authored copy for the error, computed server-side by the active provider. */
+  errorPresentation: ProviderErrorPresentation | null
   browserActive: boolean // Whether browser is running for this session
   computerUseApp: string | null // Name of the app currently grabbed for computer use
   computerUseAppIcon: string | null // Base64 PNG icon of the grabbed app
@@ -101,12 +74,28 @@ interface StreamState {
   contextUsage: SessionUsage | null // Latest context window usage data
   activeSubagents: SubagentInfo[] // Currently running subagent(s) info
   completedSubagents: Set<string> | null // parentToolIds of completed subagents (for status logic)
-  typingUser: { id: string; name?: string } | null // User currently typing (auth mode shared agents)
-  peerUserMessage: { content: string; sender: { id: string; name?: string; email?: string } } | null // User message from another user
+  typingUser: { id: string; name?: string; image?: string | null } | null // User currently typing (auth mode shared agents)
+  peerUserMessages: PeerUserMessage[] // Messages from other users not yet seen in fetched messages
   apiRetry: ApiRetryInfo | null // Non-null while API is retrying a transient error
+  backgroundTasks: BackgroundTaskRef[] // Every live background task the runtime lists: Bash commands, dynamic workflows, background subagents
+  isWaitingBackground: boolean // True when agent turn ended but background tasks are still running
+  // Uuids of queued user messages the runtime reported dead (command_lifecycle
+  // state discarded, e.g. killed by an interrupt). MessageList returns matching
+  // ghosts' text to the composer, then consumes each uuid.
+  discardedCommandUuids: string[]
 }
 
 // Upsert a subagent entry in the array by parentToolId (immutable)
+/**
+ * The server's whole live task list, which it sends with every frame that
+ * changes it. Replacing ours with it — rather than applying the one change —
+ * means a frame this client missed cannot leave a task behind. Null when the
+ * frame carries none.
+ */
+function serverTaskList(data: { backgroundTasks?: unknown }): BackgroundTaskRef[] | null {
+  return Array.isArray(data.backgroundTasks) ? (data.backgroundTasks as BackgroundTaskRef[]) : null
+}
+
 function upsertSubagent(list: SubagentInfo[], entry: SubagentInfo): SubagentInfo[] {
   const idx = list.findIndex(s => s.parentToolId === entry.parentToolId)
   if (idx >= 0) {
@@ -120,19 +109,13 @@ function upsertSubagent(list: SubagentInfo[], entry: SubagentInfo): SubagentInfo
 // Global state to track streaming per session
 const EMPTY_STREAM_STATE: StreamState = {
   isActive: false,
+  turnOutcome: null,
   isStreaming: false,
   streamingMessage: null,
-  streamingToolUse: null,
-  pendingSecretRequests: [],
-  pendingConnectedAccountRequests: [],
-  pendingQuestionRequests: [],
-  pendingFileRequests: [],
-  pendingRemoteMcpRequests: [],
-  pendingBrowserInputRequests: [],
-  pendingScriptRunRequests: [],
-  pendingComputerUseRequests: [],
+  streamingToolUses: [],
   error: null,
   apiErrorCode: null,
+  errorPresentation: null,
   browserActive: false,
   computerUseApp: null,
   computerUseAppIcon: null,
@@ -142,8 +125,11 @@ const EMPTY_STREAM_STATE: StreamState = {
   activeSubagents: [],
   completedSubagents: null,
   typingUser: null,
-  peerUserMessage: null,
+  peerUserMessages: [],
   apiRetry: null,
+  backgroundTasks: [],
+  isWaitingBackground: false,
+  discardedCommandUuids: [],
 }
 
 const streamStates = new Map<string, StreamState>()
@@ -151,6 +137,84 @@ const streamListeners = new Map<string, Set<() => void>>()
 
 // Slash commands per session (separate from streamStates to avoid touching 25+ set() calls)
 const sessionSlashCommands = new Map<string, SlashCommandInfo[]>()
+
+// Extended-thinking stream per session. Kept outside StreamState (like slash commands)
+// so the ~15 full state-rebuild sites don't have to thread it through. `isThinking`
+// drives the "Thinking" status; `blocks` accumulates one entry per thinking episode
+// (a turn can think several times, between tool calls) so each renders as its own
+// card in the transcript. Text only arrives when the agent requests
+// `display: 'summarized'` (see agent-container/src/claude-code.ts).
+// Blocks are ephemeral — never persisted — and reset when the next turn starts.
+// State is updated immutably (fresh state object + blocks array per event) so the
+// hook mirror can bail out of re-renders with a reference check.
+export interface ThinkingBlock {
+  id: number
+  /** Stable identity shared with the persisted transcript block, when available. */
+  persistedId?: string
+  text: string
+  startedAt: number
+  /** null while this block is still streaming */
+  endedAt: number | null
+}
+interface ThinkingState { blocks: ThinkingBlock[]; isThinking: boolean }
+const EMPTY_THINKING: ThinkingState = { blocks: [], isThinking: false }
+const sessionThinking = new Map<string, ThinkingState>()
+let nextThinkingBlockId = 1
+
+// Stamp endedAt on any still-open block. Used when a new block starts (at most
+// one may be live), when a block stops, and at turn end — a turn that ends
+// without thinking_stop (interrupt, error) must freeze its timer at the actual
+// elapsed time, not tick forever or read "0s".
+function closeOpenThinkingBlocks(blocks: ThinkingBlock[]): ThinkingBlock[] {
+  return blocks.map(b => b.endedAt === null ? { ...b, endedAt: Date.now() } : b)
+}
+
+// Live state for dynamic-workflow (`Workflow` tool) runs in this session. Kept
+// outside StreamState (like thinking/slash commands) so the ~15 full state-rebuild
+// sites don't thread it through. Live agents render without waiting for the disk
+// tree (which enriches them and survives reload). This holds the wire signals: the
+// runId↔Workflow-tool link (for click-through), per-agent status patches (from the
+// journal tailer), and completion. Stored as immutable arrays so the hook's
+// reference-equality check skips re-render on non-workflow events.
+// The live status vocabulary is the same enum the disk tree uses (single source of
+// truth in workflow-schemas), so the overlay can't drift from the tree's statuses.
+export type WorkflowAgentLiveStatus = WorkflowAgentNode['status']
+export interface WorkflowAgentLive {
+  status: WorkflowAgentLiveStatus
+  result: string | null
+  tokens?: number
+  toolCount?: number
+  lastTool?: string | null
+  label?: string
+  phase?: string | null
+  model?: string | null
+  prompt?: string
+}
+export interface WorkflowRunLive {
+  toolUseId: string
+  runId: string
+  name?: string
+  startedAt: number
+  completedAt?: number
+  agents: Record<string, WorkflowAgentLive>
+  /** Cumulative workflow usage from the live wire snapshot (task_progress.usage). */
+  usage?: { totalTokens: number; toolUses: number; durationMs: number }
+}
+const EMPTY_WORKFLOWS: WorkflowRunLive[] = []
+const sessionWorkflows = new Map<string, WorkflowRunLive[]>()
+
+// `done`/`failed` are terminal and sticky: a later `running`/`progress` snapshot must
+// never downgrade them (snapshots can momentarily lag or reorder).
+function mergeAgentStatus(prev: WorkflowAgentLiveStatus | undefined, next: WorkflowAgentLiveStatus): WorkflowAgentLiveStatus {
+  if (prev === 'done' || prev === 'failed') return next === 'done' || next === 'failed' ? next : prev
+  return next
+}
+
+function mapWorkflowAgentState(s: string): WorkflowAgentLiveStatus {
+  if (s === 'done') return 'done'
+  if (s === 'failed' || s === 'error' || s === 'killed' || s === 'cancelled') return 'failed'
+  return 'running' // 'start' | 'progress' | queued | anything else
+}
 
 // Stable empty Set so the hook return is referentially stable when nothing is auto-approved.
 const EMPTY_AUTO_APPROVED_SET: ReadonlySet<string> = new Set()
@@ -161,17 +225,256 @@ const EMPTY_AUTO_APPROVED_SET: ReadonlySet<string> = new Set()
 // StreamState to avoid threading a new field through ~15 state-rebuild sites.
 const sessionAutoApprovedScriptRunIds = new Map<string, Set<string>>()
 
+// Same suppression set for computer-use requests. Unlike most user-input tools,
+// computer-use can be auto-executed when the agent already has a matching grant.
+// The server still broadcasts autoApproved:true so streaming/history recovery
+// can tell "in flight but granted" apart from "actually waiting for approval".
+const sessionAutoApprovedComputerUseIds = new Map<string, Set<string>>()
+
 
 // Singleton EventSource connections per session (prevents duplicates from StrictMode/re-renders)
 const eventSources = new Map<string, EventSource>()
+const typingTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const refCounts = new Map<string, number>()
+
+// Owner token of the in-flight post-idle reconcile loop per session. A newer
+// session_idle SUPERSEDES a sleeping loop by overwriting the token: only the
+// current owner invalidates, and a superseded loop exits at its next wake. A
+// plain "one loop at a time" guard would DROP the newer turn's reconciliation
+// instead — a second short turn (or a rapid remount) idling while the previous
+// loop sleeps would then wait on the 15s poll for its final text.
+const idleReconcileOwners = new Map<string, symbol>()
+
+// Every SSE-driven ['messages', sessionId] invalidation funnels through one
+// per-session leading-edge throttle: the first event refetches immediately,
+// further events within the window collapse into at most one trailing refetch.
+// A busy turn emits many refetch triggers in quick succession (tool_call,
+// tool_result, messages_updated, turn_output_complete, session_idle …); each
+// refetch of a long session is a multi-MB response the server assembles from a
+// full transcript read, so an unthrottled burst multiplies into concurrent
+// requests that can OOM a memory-limited deployment. Live deltas render from
+// stream state, not from these refetches, so collapsing them does not affect
+// streaming UX. User-initiated invalidations (delete message/tool call,
+// interrupt in use-messages.ts) intentionally do NOT go through this throttle.
+export const MESSAGES_REFETCH_THROTTLE_MS = 750
+
+interface MessagesInvalidateThrottle {
+  lastInvalidatedAt: number
+  /** Pending trailing refetch; further calls in the window join its promise. */
+  trailing: {
+    timer: ReturnType<typeof setTimeout>
+    promise: Promise<void>
+    /** Resolves the joined promise — called by the timer, by a fold-in
+     * refetch that supersedes the timer, or by unmount cleanup. */
+    settle: () => void
+  } | null
+}
+const messagesInvalidateThrottles = new Map<string, MessagesInvalidateThrottle>()
+
+// Resolves once the (possibly deferred) invalidate's refetch has settled, so
+// callers that need the refreshed cache (the idle reconcile loop) can await it.
+function invalidateMessagesThrottled(
+  queryClient: QueryClient,
+  sessionId: string
+): Promise<void> {
+  let entry = messagesInvalidateThrottles.get(sessionId)
+  if (!entry) {
+    entry = { lastInvalidatedAt: 0, trailing: null }
+    messagesInvalidateThrottles.set(sessionId, entry)
+  }
+  if (entry.trailing) return entry.trailing.promise
+  const wait = MESSAGES_REFETCH_THROTTLE_MS - (Date.now() - entry.lastInvalidatedAt)
+  if (wait <= 0) {
+    entry.lastInvalidatedAt = Date.now()
+    return queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+  }
+  const throttle = entry
+  let settle!: () => void
+  const promise = new Promise<void>((resolve) => { settle = resolve })
+  const timer = setTimeout(() => {
+    throttle.trailing = null
+    throttle.lastInvalidatedAt = Date.now()
+    queryClient.invalidateQueries({ queryKey: ['messages', sessionId] }).then(settle, settle)
+  }, wait)
+  throttle.trailing = { timer, promise, settle }
+  return promise
+}
+
+// Immediate variant for the post-idle reconcile loop. Its whole job is beating
+// the transcript write/read race, so deferring its retries to the trailing edge
+// would push finalization a window later exactly when persistence lags. The
+// loop is already rate-limited — single-flight per session with its own bounded
+// backoff — so exempting it cannot reopen the refetch storm. The refetch FOLDS
+// into the throttle rather than stacking on top of it: a pending trailing timer
+// is cancelled (its waiters settle with this refetch) and the window restarts
+// from now, so surrounding events coalesce onto this fetch instead of adding
+// another.
+function invalidateMessagesNow(
+  queryClient: QueryClient,
+  sessionId: string
+): Promise<void> {
+  let entry = messagesInvalidateThrottles.get(sessionId)
+  if (!entry) {
+    entry = { lastInvalidatedAt: 0, trailing: null }
+    messagesInvalidateThrottles.set(sessionId, entry)
+  }
+  const pending = entry.trailing
+  entry.trailing = null
+  if (pending) clearTimeout(pending.timer)
+  entry.lastInvalidatedAt = Date.now()
+  const refetch = queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+  if (pending) refetch.then(pending.settle, pending.settle)
+  return refetch
+}
+
+// Only the subagent that changed: a session-wide refresh re-downloads every subagent transcript on each event.
+function invalidateSubagentMessages(queryClient: QueryClient, sessionId: string, agentId: string | null): void {
+  queryClient.invalidateQueries({
+    queryKey: ['subagent-messages', sessionId],
+    predicate: agentId ? (query) => query.queryKey[3] === agentId : undefined,
+  })
+}
+
+// subagent_updated fires when the container relays a subagent's frame; the CLI
+// writes that frame to the subagent transcript a few hundred ms later, so the
+// refetch it triggers can read the file just before the write. Measured live
+// (SDK 0.3.296): a resumed run's first tool call landed ~0.6s after its
+// update, and a foreground command then sends no frame for its whole run, so
+// the block showed the previous run's content until the run ended. One more
+// refetch after the updates go quiet picks the write up.
+export const SUBAGENT_TRAILING_REFETCH_MS = 1500
+const trailingSubagentRefetch = new Map<string, ReturnType<typeof setTimeout>>()
+
+function refreshSubagentMessages(queryClient: QueryClient, sessionId: string, agentId: string | null): void {
+  invalidateSubagentMessages(queryClient, sessionId, agentId)
+  const key = `${sessionId}\u0000${agentId ?? ''}`
+  clearTimeout(trailingSubagentRefetch.get(key))
+  trailingSubagentRefetch.set(key, setTimeout(() => {
+    trailingSubagentRefetch.delete(key)
+    invalidateSubagentMessages(queryClient, sessionId, agentId)
+  }, SUBAGENT_TRAILING_REFETCH_MS))
+}
+
+// Does the last persisted assistant message in the messages cache match the
+// just-streamed text? Mirrors MessageList's `isStreamingMessagePersisted` so we
+// stop reconciling at exactly the point the UI considers the turn finalized.
+function messagesFromQueryCache(data: unknown): ApiMessageOrBoundary[] | null {
+  if (Array.isArray(data)) return data as ApiMessageOrBoundary[]
+  if (data && typeof data === 'object' && Array.isArray((data as { messages?: unknown }).messages)) {
+    return (data as { messages: ApiMessageOrBoundary[] }).messages
+  }
+  return null
+}
+
+function lastPersistedAssistantMatches(
+  queryClient: QueryClient,
+  sessionId: string,
+  expectedText: string
+): boolean {
+  const entries = queryClient.getQueriesData({
+    queryKey: ['messages', sessionId],
+  })
+  for (const [, data] of entries) {
+    const messages = messagesFromQueryCache(data)
+    if (!messages) continue
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type === 'assistant') {
+        const content = (messages[i] as ApiMessage).content as { text?: string } | undefined
+        const persisted = content?.text?.trim() || ''
+        if (!persisted) return false
+        return persisted.startsWith(expectedText) || expectedText.startsWith(persisted)
+      }
+    }
+  }
+  return false
+}
+
+// Does the persisted transcript end on the assistant's side? For a turn whose
+// output has ended this holds once the transcript has caught up, whatever the
+// turn said — including a turn that said nothing.
+function lastPersistedMessageIsAssistant(queryClient: QueryClient, sessionId: string): boolean {
+  const entries = queryClient.getQueriesData({
+    queryKey: ['messages', sessionId],
+  })
+  for (const [, data] of entries) {
+    const messages = messagesFromQueryCache(data)
+    if (!messages) continue
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type === 'assistant') return true
+      if (messages[i].type === 'user') return false
+    }
+  }
+  return false
+}
+
+// The session_idle SSE event can arrive before the final assistant line is
+// durably readable in the JSONL transcript (it's written across the container
+// boundary), so the immediate invalidate's refetch may come back without it.
+// No further SSE event follows, so without this the UI would only reconcile on
+// the slow safety-net poll (useMessages, 15s) — the regression where a turn's
+// "Worked for Xs" line takes seconds to appear. Refetch a few times with short
+// backoff until the persisted tail matches the streamed text, then stop.
+// Bounded and self-terminating; the background poll remains the ultimate backstop.
+async function reconcileMessagesAfterIdle(
+  sessionId: string,
+  queryClient: QueryClient,
+  streamingText: string | null
+): Promise<void> {
+  const expected = streamingText?.trim()
+  // Nothing streamed (e.g. a tool-only or interrupted turn) — no text to match
+  // against, so the handler's immediate invalidate is all we can do.
+  if (!expected) return
+  await reconcileMessagesUntil(sessionId, queryClient, () =>
+    lastPersistedAssistantMatches(queryClient, sessionId, expected))
+}
+
+// The bounded refetch loop behind every reconcile: refetch with short backoff
+// until `caughtUp` says the persisted transcript has the turn, then stop.
+async function reconcileMessagesUntil(
+  sessionId: string,
+  queryClient: QueryClient,
+  caughtUp: () => boolean
+): Promise<void> {
+  const token = Symbol(sessionId)
+  idleReconcileOwners.set(sessionId, token)
+  // The stream generation this loop belongs to. The sleeps below can straddle
+  // the last subscriber's unmount (which closes the EventSource and clears the
+  // throttle state) or a rapid remount (which creates a NEW EventSource);
+  // invalidating from a stale loop would recreate the throttle entry the
+  // unmount cleanup just removed and push the remount's fresh leading-edge
+  // refetch onto the trailing edge.
+  const generation = eventSources.get(sessionId)
+  try {
+    // ~1.5s total across 3 tries — long enough to beat the write/read race,
+    // short enough that a genuine mismatch falls through to the poll quickly.
+    for (const delay of [250, 500, 750]) {
+      if (caughtUp()) return
+      await new Promise((resolve) => setTimeout(resolve, delay))
+      if (idleReconcileOwners.get(sessionId) !== token) return
+      if (eventSources.get(sessionId) !== generation) return
+      // refetchType defaults to 'active': refetches the mounted messages query
+      // (the session being viewed) and resolves once the cache is updated.
+      await invalidateMessagesNow(queryClient, sessionId)
+    }
+  } finally {
+    if (idleReconcileOwners.get(sessionId) === token) {
+      idleReconcileOwners.delete(sessionId)
+    }
+  }
+}
 
 function getOrCreateEventSource(
   sessionId: string,
   agentSlug: string,
   queryClient: QueryClient
 ): EventSource {
-  const key = `${agentSlug}:${sessionId}`
+  // Key the singleton by sessionId alone: a session id is globally unique and
+  // belongs to exactly one agent, so subscribers that pass different slug forms
+  // for the same session (the sidebar uses the canonical id; the session view
+  // uses the URL display slug) must still share ONE EventSource — otherwise both
+  // streams write the same session state and the response renders doubled.
+  // agentSlug is only used to build the URL below (the host resolves any form).
+  const key = sessionId
   let es = eventSources.get(key)
   if (es && es.readyState !== EventSource.CLOSED) {
     // Increment ref count
@@ -185,90 +488,171 @@ function getOrCreateEventSource(
   eventSources.set(key, es)
   refCounts.set(key, 1)
 
+  // A command_lifecycle:started frame is the authoritative queued-message
+  // pickup signal. The CLI writes the queued_command transcript attachment
+  // around the same time, so the pickup invalidate below can beat that write.
+  // Keep the command marked until the next model response starts; by then the
+  // command has necessarily been incorporated into the request and a second,
+  // conditional refetch can materialize its optimistic ghost reliably.
+  const startedCommandsAwaitingTranscript = new Set<string>()
+
+  // What a viewer coming back must check again: state its stream does not
+  // carry (the browser preview the browser stream cleared when it dropped)
+  // and one-shot events it may have missed. The 'connected' snapshot does it
+  // for a viewer starting over; a viewer the server resumed is replayed the
+  // missed frames and gets no snapshot, so its reopened connection does it.
+  // Once per connection, and it never touches the streamed content.
+  let reconnecting = false
+  let reconciled = false
+  const reconcileConnection = () => {
+    if (reconciled) return
+    reconciled = true
+    // Resync the unified pending-request store too: its create/resolve
+    // events are one-shot, so anything settled or opened while this
+    // stream was down must be recovered from the snapshot endpoint.
+    queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
+    // Fetch current browser status to sync state (handles missed events)
+    fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status`)
+      .then((res) => res.json())
+      .then((status: { active?: boolean; sessionId?: string }) => {
+        const latest = streamStates.get(sessionId)
+        // Only mark browser active if it belongs to THIS session
+        const activeForThisSession = (status.active ?? false) && status.sessionId === sessionId
+        if (latest && latest.browserActive !== activeForThisSession) {
+          streamStates.set(sessionId, { ...latest, browserActive: activeForThisSession })
+          streamListeners.get(sessionId)?.forEach((listener) => listener())
+        }
+      })
+      .catch(() => { /* ignore - agent may not be running */ })
+  }
+  es.onopen = () => {
+    reconciled = false
+    if (!reconnecting) return
+    reconnecting = false
+    reconcileConnection()
+  }
+
   es.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data)
       const current = streamStates.get(sessionId)
-
-      // Only session_active and session_idle events change isActive
-      // All other events preserve the current isActive value
 
       if (data.type === 'connected') {
         // Capture slash commands from server
         if (Array.isArray(data.slashCommands)) {
           sessionSlashCommands.set(sessionId, data.slashCommands)
         }
+        const connectedSubagents = Array.isArray(data.activeSubagents)
+          ? data.activeSubagents as SubagentInfo[]
+          : null
+        const connectedCompletedSubagents = connectedSubagents
+          ? new Set(
+              connectedSubagents
+                .filter((subagent) => subagent.status === 'completed' && subagent.parentToolId)
+                .map((subagent) => subagent.parentToolId!),
+            )
+          : (current?.completedSubagents ?? null)
         // Initial connection - get isActive from server
         streamStates.set(sessionId, {
           isActive: data.isActive ?? false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: false,
           streamingMessage: null,
-          streamingToolUse: null,
-          pendingSecretRequests: current?.pendingSecretRequests ?? [],
-          pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
-          pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
-          pendingFileRequests: current?.pendingFileRequests ?? [],
-          pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
-          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
-          pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
-          pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
+          streamingToolUses: [],
           error: null,
           apiErrorCode: null,
+          errorPresentation: null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
           activeStartTime: current?.activeStartTime ?? null,
           isCompacting: current?.isCompacting ?? false,
           contextUsage: current?.contextUsage ?? null,
-          activeSubagents: current?.activeSubagents ?? [],
-          completedSubagents: current?.completedSubagents ?? null,
+          activeSubagents: connectedSubagents ?? (current?.activeSubagents ?? []),
+          completedSubagents: connectedCompletedSubagents,
           typingUser: current?.typingUser ?? null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: current?.apiRetry ?? null,
+          backgroundTasks: Array.isArray(data.backgroundTasks) ? data.backgroundTasks : (current?.backgroundTasks ?? []),
+          // The snapshot says whether the turn's output has ended; a task in
+          // the list can still belong to a turn that is streaming.
+          isWaitingBackground:
+            data.isWaitingBackground === true && Array.isArray(data.backgroundTasks) && data.backgroundTasks.length > 0,
+          discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
-        // Fetch current browser status to sync state (handles missed events)
-        fetch(`${baseUrl}/api/agents/${agentSlug}/browser/status`)
-          .then((res) => res.json())
-          .then((status: { active?: boolean; sessionId?: string }) => {
-            const latest = streamStates.get(sessionId)
-            // Only mark browser active if it belongs to THIS session
-            const activeForThisSession = (status.active ?? false) && status.sessionId === sessionId
-            if (latest && latest.browserActive !== activeForThisSession) {
-              streamStates.set(sessionId, { ...latest, browserActive: activeForThisSession })
-              streamListeners.get(sessionId)?.forEach((listener) => listener())
-            }
-          })
-          .catch(() => { /* ignore - agent may not be running */ })
+        // Reconcile against the persisted transcript on every (re)connect. A client
+        // that opens the stream AFTER the agent already broadcast events (common for a
+        // freshly-created session, or any reconnect) misses those one-shot broadcasts —
+        // they are not buffered server-side. The persisted messages are the source of
+        // truth (MessageList renders streamed text, tool calls, and derives pending
+        // input requests from them), so force a refetch now instead of waiting for the
+        // safety-net poll. Without this, a late join only recovers on the next poll
+        // tick, which races the assertion timeout in tests and shows a stale UI in prod.
+        invalidateMessagesThrottled(queryClient, sessionId)
+        // A turn that ended while its background tasks run on — a quick turn
+        // that launched one, say — leaves the session active with no
+        // session_idle to come, and that single refetch can beat the
+        // transcript write. Retry it the way a late join to a completed turn
+        // does (below), until the transcript ends on the assistant's side.
+        // There is no reply text to match: a turn that ends into waiting on
+        // background records no outcome (only idle, an error or a stop does),
+        // so any outcome this frame carries can be an earlier turn's. The
+        // server sets isWaitingBackground only once the turn's output has
+        // ended and clears it on the next accepted message or wake turn, so
+        // it is never true while a turn streams beside a running task.
+        if (data.isWaitingBackground === true) {
+          void reconcileMessagesUntil(sessionId, queryClient, () =>
+            lastPersistedMessageIsAssistant(queryClient, sessionId))
+        }
+        reconcileConnection()
       }
       else if (data.type === 'session_active') {
         // Session became active - user sent a message
         if (data.sessionId && data.sessionId !== sessionId) return
+        // Echo the flip into the session/agent caches from THIS stream too.
+        // The global notifications stream normally carries it, but that
+        // stream can be silently stale while this one (opened with the view)
+        // is live — and then the sidebar/header would show a sleeping agent
+        // streaming tokens until the next refetch. Idempotent with the global
+        // handler's echo: identical patches leave the caches untouched.
+        applySessionActivityStatus(queryClient, agentSlug, sessionId, { isActive: true })
+        // This frame carries TWO meanings: a genuinely new turn, and a
+        // queued/steering message accepted into a turn that is already running
+        // (`queuedMidTurn`). Deciding reset-vs-preserve field by field produced a
+        // long tail of bugs — queueing a follow-up blanked the running turn's
+        // whole status surface (SUP-736) — so the rule is encoded once, as two
+        // named groups, instead:
+        //
+        //   message-scoped — invalidated by ANY accepted message.
+        //   turn-scoped    — only a real turn boundary ends these. Mid-turn the
+        //                    compaction, thinking blocks, subagents, retry and
+        //                    elapsed clock all belong to the turn still running.
+        //
+        // Everything else carries over from the state we already hold, so state
+        // added to StreamState later survives a mid-turn pickup by default —
+        // opting it out is an explicit line in the turn-scoped group.
+        const queuedMidTurn = data.queuedMidTurn === true
+        // The thinking stream lives outside StreamState but is turn-scoped too.
+        if (!queuedMidTurn) sessionThinking.delete(sessionId)
         streamStates.set(sessionId, {
+          ...(current ?? EMPTY_STREAM_STATE),
           isActive: true,
-          isStreaming: current?.isStreaming ?? false,
-          streamingMessage: current?.streamingMessage ?? null,
-          streamingToolUse: current?.streamingToolUse ?? null,
-          pendingSecretRequests: current?.pendingSecretRequests ?? [],
-          pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
-          pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
-          pendingFileRequests: current?.pendingFileRequests ?? [],
-          pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
-          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
-          pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
-          pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
-          error: null, // Clear any previous error when starting new request
+          // Message-scoped: a new message clears the last error, ends whatever
+          // typing indicator it belongs to, and resumes work that was parked on
+          // background tasks.
+          error: null,
           apiErrorCode: null,
-          browserActive: current?.browserActive ?? false,
-          computerUseApp: current?.computerUseApp ?? null,
-          computerUseAppIcon: current?.computerUseAppIcon ?? null,
-          activeStartTime: Date.now(),
-          isCompacting: false,
-          contextUsage: current?.contextUsage ?? null,
-          activeSubagents: [],
-          completedSubagents: null,
+          errorPresentation: null,
           typingUser: null,
-          peerUserMessage: current?.peerUserMessage ?? null,
-          apiRetry: null,
+          isWaitingBackground: false,
+          // Turn-scoped: a new turn only.
+          ...(queuedMidTurn ? {} : {
+            activeStartTime: Date.now(),
+            isCompacting: false,
+            activeSubagents: [],
+            completedSubagents: null,
+            apiRetry: null,
+          }),
         })
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
       }
@@ -276,26 +660,27 @@ function getOrCreateEventSource(
         // Session became idle - query completed or interrupted
         // Keep streamingMessage so it stays visible until persisted data arrives
         // (isStreamingMessagePersisted in MessageList handles deduplication)
-        // Clear streamingToolUse - if the tool was persisted, ToolCallItem renders it;
-        // if it wasn't (interrupted mid-stream), it should disappear.
+        // Clear streamingToolUses - if tools were persisted, ToolCallItem renders them;
+        // if they weren't (interrupted mid-stream), they should disappear.
         if (data.sessionId && data.sessionId !== sessionId) return
+        // A turn interrupted mid-thinking never gets thinking_stop: close open
+        // blocks so their cards freeze at the real elapsed time instead of "0s",
+        // and drop the "Thinking" status.
+        const thinkingAtIdle = sessionThinking.get(sessionId)
+        if (thinkingAtIdle && (thinkingAtIdle.isThinking || thinkingAtIdle.blocks.some(b => b.endedAt === null))) {
+          sessionThinking.set(sessionId, { blocks: closeOpenThinkingBlocks(thinkingAtIdle.blocks), isThinking: false })
+        }
         streamStates.set(sessionId, {
           isActive: false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
-          streamingToolUse: null,
-          pendingSecretRequests: [],
-          pendingConnectedAccountRequests: [],
-          pendingQuestionRequests: [],
-          pendingFileRequests: [],
-          pendingRemoteMcpRequests: [],
-          pendingBrowserInputRequests: [],
-          pendingScriptRunRequests: [],
-          pendingComputerUseRequests: [],
+          streamingToolUses: [],
           error: null,
           // Preserve apiErrorCode — it was set from the assistant message's error field
           // and is still valid context for the last turn. Cleared on next session_active.
           apiErrorCode: current?.apiErrorCode ?? null,
+          errorPresentation: current?.errorPresentation ?? null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
@@ -308,11 +693,56 @@ function getOrCreateEventSource(
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: current?.apiRetry ?? null,
+          backgroundTasks: [],
+          isWaitingBackground: false,
+          discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
-        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        invalidateMessagesThrottled(queryClient, sessionId)
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
+        // The immediate invalidate above can refetch before the final assistant
+        // line is durably readable in the JSONL transcript. Beat that race with a
+        // short bounded reconcile so the turn's "Worked for Xs" line appears
+        // promptly instead of waiting for the next safety-net poll.
+        void reconcileMessagesAfterIdle(sessionId, queryClient, current?.streamingMessage ?? null)
+      }
+      // Agent turn ended but background tasks are still running — allow sending messages
+      else if (data.type === 'session_waiting_background') {
+        if (current) {
+          if (data.interrupted === true) {
+            // The user stopped the turn and the runtime spared its background
+            // tasks. Settle the streaming state as session_idle does (the
+            // partial text stays until persisted data replaces it) but keep
+            // the session active on its task list — the server's copy is
+            // authoritative, a task may have settled while the stop landed.
+            // Foreground subagents died with the turn and will never report
+            // completion; only the ones that are background tasks remain.
+            const backgroundTasks: StreamState['backgroundTasks'] = Array.isArray(data.backgroundTasks)
+              ? data.backgroundTasks
+              : current.backgroundTasks
+            const backgroundAgentIds = new Set(backgroundTasks.filter(t => t.isSubagent).map(t => t.taskId))
+            streamStates.set(sessionId, {
+              ...current,
+              isStreaming: false,
+              streamingToolUses: [],
+              activeStartTime: null,
+              isCompacting: false,
+              typingUser: null,
+              apiRetry: null,
+              activeSubagents: current.activeSubagents.filter(s => !!s.agentId && backgroundAgentIds.has(s.agentId)),
+              backgroundTasks,
+              isWaitingBackground: true,
+            })
+            invalidateMessagesThrottled(queryClient, sessionId)
+          } else {
+            streamStates.set(sessionId, {
+              ...current,
+              backgroundTasks: serverTaskList(data) ?? current.backgroundTasks,
+              isWaitingBackground: true,
+            })
+          }
+        }
       }
       else if (data.type === 'session_error') {
         // Session encountered an error
@@ -320,19 +750,13 @@ function getOrCreateEventSource(
         // until the persisted JSONL data arrives (isStreamingMessagePersisted handles dedup).
         streamStates.set(sessionId, {
           isActive: false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
-          streamingToolUse: null,
-          pendingSecretRequests: [],
-          pendingConnectedAccountRequests: [],
-          pendingQuestionRequests: [],
-          pendingFileRequests: [],
-          pendingRemoteMcpRequests: [],
-          pendingBrowserInputRequests: [],
-          pendingScriptRunRequests: [],
-          pendingComputerUseRequests: [],
+          streamingToolUses: [],
           error: data.error || 'An unknown error occurred',
           apiErrorCode: data.apiErrorCode || null,
+          errorPresentation: providerErrorPresentationSchema.nullish().catch(null).parse(data.errorPresentation) ?? null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
@@ -342,38 +766,182 @@ function getOrCreateEventSource(
           activeSubagents: [],
           completedSubagents: null,
           typingUser: null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: current?.apiRetry ?? null,
+          backgroundTasks: [],
+          isWaitingBackground: false,
+          discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
-        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        invalidateMessagesThrottled(queryClient, sessionId)
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      }
+      // Per-command lifecycle (runtime >= CLI 2.1.206). A started command
+      // drives queued-ghost reconciliation; 'discarded' names a message that
+      // will never run, the deterministic rescue signal.
+      else if (data.type === 'command_lifecycle') {
+        const commandUuid = typeof data.commandUuid === 'string' ? data.commandUuid : null
+        if (commandUuid && data.state === 'started') {
+          startedCommandsAwaitingTranscript.add(commandUuid)
+          // Fast path: in the common case the transcript attachment is already
+          // readable. stream_start below provides the bounded read-after-write
+          // retry when this invalidate lands a moment too early.
+          invalidateMessagesThrottled(queryClient, sessionId)
+        } else if (
+          commandUuid &&
+          (data.state === 'completed' || data.state === 'discarded' || data.state === 'cancelled')
+        ) {
+          startedCommandsAwaitingTranscript.delete(commandUuid)
+        }
+        // Stop also cancels the command that is running, so 'cancelled' is no answer.
+        if (
+          current &&
+          data.state === 'discarded' &&
+          commandUuid &&
+          !current.discardedCommandUuids.includes(commandUuid)
+        ) {
+          streamStates.set(sessionId, {
+            ...current,
+            discardedCommandUuids: [...current.discardedCommandUuids, commandUuid],
+          })
+        }
+      }
+      // Background Bash task events
+      else if (data.type === 'background_task_started' || data.type === 'background_task_updated') {
+        // Updated carries the same full entry once a later signal (the
+        // runtime's task list, a launch result) knows more about the task.
+        if (current) {
+          const task: BackgroundTaskRef = {
+            taskId: data.taskId,
+            startedAt: data.startedAt,
+            isWorkflow: data.isWorkflow,
+            isSubagent: data.isSubagent,
+            taskType: data.taskType,
+            description: data.description,
+            subagentType: data.subagentType,
+          }
+          const index = current.backgroundTasks.findIndex(t => t.taskId === data.taskId)
+          streamStates.set(sessionId, {
+            ...current,
+            backgroundTasks: serverTaskList(data) ?? (index === -1
+              ? [...current.backgroundTasks, task]
+              : current.backgroundTasks.map((t, i) => (i === index ? task : t))),
+          })
+        }
+      }
+      else if (data.type === 'background_task_completed') {
+        if (current) {
+          const backgroundTasks = serverTaskList(data) ?? current.backgroundTasks.filter(t => t.taskId !== data.taskId)
+          streamStates.set(sessionId, {
+            ...current,
+            backgroundTasks,
+            // Clear the "waiting on background" flag once the last task is gone. This
+            // flag drives the composer's stop button + submit-enabled logic and is
+            // otherwise only reset by session_idle/session_active — so if the final
+            // task clears without a follow-up idle, the composer would stay pinned.
+            isWaitingBackground: current.isWaitingBackground && backgroundTasks.length > 0,
+          })
+        }
+      }
+      // Dynamic-workflow live events (the per-agent tree itself is read from disk via
+      // the tree route; these drive click-through + live status without client polling).
+      else if (data.type === 'workflow_started') {
+        const runs = sessionWorkflows.get(sessionId) ?? EMPTY_WORKFLOWS
+        const exists = runs.some(r => r.runId === data.runId)
+        const next = exists
+          ? runs.map(r => r.runId === data.runId
+              ? { ...r, toolUseId: data.toolUseId, name: data.name, startedAt: data.startedAt }
+              : r)
+          : [...runs, { toolUseId: data.toolUseId, runId: data.runId, name: data.name, startedAt: data.startedAt, agents: {} }]
+        sessionWorkflows.set(sessionId, next)
+        streamListeners.get(sessionId)?.forEach((l) => l())
+      }
+      else if (data.type === 'workflow_agent_updated') {
+        // Journal-tailer signal: authoritative for status transitions + the result string.
+        const runs = sessionWorkflows.get(sessionId) ?? EMPTY_WORKFLOWS
+        const incoming = data.status as WorkflowAgentLiveStatus
+        const patchAgents = (agents: Record<string, WorkflowAgentLive>) => {
+          const prev = agents[data.agentId]
+          return {
+            ...agents,
+            [data.agentId]: {
+              ...prev,
+              status: mergeAgentStatus(prev?.status, incoming),
+              result: data.result ?? prev?.result ?? null,
+            },
+          }
+        }
+        const exists = runs.some(r => r.runId === data.runId)
+        const next = exists
+          ? runs.map(r => r.runId === data.runId ? { ...r, agents: patchAgents(r.agents) } : r)
+          // An agent update can arrive before workflow_started (e.g. a late-joining
+          // client that missed the start); stub the run so the signal isn't lost.
+          : [...runs, { toolUseId: '', runId: data.runId, startedAt: Date.now(), agents: patchAgents({}) }]
+        sessionWorkflows.set(sessionId, next)
+        streamListeners.get(sessionId)?.forEach((l) => l())
+      }
+      else if (data.type === 'workflow_progress') {
+        // Rich live snapshot from the wire: per-agent state (incl. failed), tokens,
+        // toolCalls, current tool, + workflow usage. Merge onto the run (status never
+        // downgrades; result is owned by workflow_agent_updated).
+        const runs = sessionWorkflows.get(sessionId) ?? EMPTY_WORKFLOWS
+        const run = runs.find(r => r.runId === data.runId)
+        if (run) {
+          const agents = { ...run.agents }
+          for (const a of (data.agents ?? []) as Array<{ agentId: string; label?: string; phase?: string | null; model?: string | null; prompt?: string; state: string; tokens?: number; toolCalls?: number; lastTool?: string | null }>) {
+            const prev = agents[a.agentId]
+            agents[a.agentId] = {
+              status: mergeAgentStatus(prev?.status, mapWorkflowAgentState(a.state)),
+              result: prev?.result ?? null,
+              tokens: a.tokens ?? prev?.tokens,
+              toolCount: a.toolCalls ?? prev?.toolCount,
+              lastTool: a.lastTool ?? prev?.lastTool ?? null,
+              label: a.label ?? prev?.label,
+              phase: a.phase ?? prev?.phase ?? null,
+              model: a.model ?? prev?.model,
+              prompt: a.prompt ?? prev?.prompt,
+            }
+          }
+          sessionWorkflows.set(sessionId, runs.map(r => r.runId === data.runId ? { ...r, agents, usage: data.usage ?? r.usage } : r))
+          streamListeners.get(sessionId)?.forEach((l) => l())
+        }
+      }
+      else if (data.type === 'workflow_completed') {
+        const runs = sessionWorkflows.get(sessionId) ?? EMPTY_WORKFLOWS
+        if (runs.some(r => r.runId === data.runId && r.completedAt === undefined)) {
+          sessionWorkflows.set(sessionId, runs.map(r => r.runId === data.runId ? { ...r, completedAt: Date.now() } : r))
+          streamListeners.get(sessionId)?.forEach((l) => l())
+        }
+      }
+      else if (data.type === 'slash_commands_changed') {
+        if (Array.isArray(data.slashCommands)) {
+          sessionSlashCommands.set(sessionId, data.slashCommands)
+          streamListeners.get(sessionId)?.forEach((l) => l())
+        }
       }
       // Streaming events - update streaming state, preserve isActive
       else if (data.type === 'stream_start') {
+        if (startedCommandsAwaitingTranscript.size > 0) {
+          startedCommandsAwaitingTranscript.clear()
+          invalidateMessagesThrottled(queryClient, sessionId)
+        }
         // Capture slash commands from init event (piggybacked on stream_start)
         if (Array.isArray(data.slashCommands)) {
           sessionSlashCommands.set(sessionId, data.slashCommands)
         }
-        // If there was a streaming tool use, trigger a refetch so the persisted
-        // version is available before we clear the streaming state.
-        if (current?.streamingToolUse) {
-          queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        // If there were streaming tool uses, trigger a refetch so the persisted
+        // versions are available before we clear the streaming state.
+        if (current?.streamingToolUses?.length) {
+          invalidateMessagesThrottled(queryClient, sessionId)
         }
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: true,
           streamingMessage: '',
-          streamingToolUse: null,
-          pendingSecretRequests: current?.pendingSecretRequests ?? [],
-          pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
-          pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
-          pendingFileRequests: current?.pendingFileRequests ?? [],
-          pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
-          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
-          pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
-          pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
+          streamingToolUses: [],
           error: null,
           apiErrorCode: null,
+          errorPresentation: null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
@@ -383,26 +951,23 @@ function getOrCreateEventSource(
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: current?.typingUser ?? null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: null, // Clear retry state — API call succeeded
+          backgroundTasks: current?.backgroundTasks ?? [],
+          isWaitingBackground: false,
+          discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
       }
       else if (data.type === 'stream_delta') {
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: true,
           streamingMessage: (current?.streamingMessage || '') + data.text,
-          streamingToolUse: null,
-          pendingSecretRequests: current?.pendingSecretRequests ?? [],
-          pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
-          pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
-          pendingFileRequests: current?.pendingFileRequests ?? [],
-          pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
-          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
-          pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
-          pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
+          streamingToolUses: current?.streamingToolUses ?? [],
           error: current?.error ?? null,
           apiErrorCode: data.apiErrorCode || current?.apiErrorCode || null,
+          errorPresentation: current?.errorPresentation ?? null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
@@ -412,8 +977,11 @@ function getOrCreateEventSource(
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: current?.typingUser ?? null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: current?.apiRetry ?? null,
+          backgroundTasks: current?.backgroundTasks ?? [],
+          isWaitingBackground: current?.isWaitingBackground ?? false,
+          discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
       }
       else if (data.type === 'stream_api_error') {
@@ -427,25 +995,21 @@ function getOrCreateEventSource(
         }
       }
       else if (data.type === 'tool_use_start' || data.type === 'tool_use_streaming') {
+        const newTool = { id: data.toolId, name: data.toolName, partialInput: data.partialInput ?? '' }
+        const existing = current?.streamingToolUses ?? []
+        const idx = existing.findIndex(t => t.id === newTool.id)
+        const updatedTools = idx >= 0
+          ? existing.map((t, i) => i === idx ? newTool : t)
+          : [...existing, newTool]
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: true,
           streamingMessage: current?.streamingMessage ?? null,
-          streamingToolUse: {
-            id: data.toolId,
-            name: data.toolName,
-            partialInput: data.partialInput ?? '',
-          },
-          pendingSecretRequests: current?.pendingSecretRequests ?? [],
-          pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
-          pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
-          pendingFileRequests: current?.pendingFileRequests ?? [],
-          pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
-          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
-          pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
-          pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
+          streamingToolUses: updatedTools,
           error: current?.error ?? null,
           apiErrorCode: current?.apiErrorCode ?? null,
+          errorPresentation: current?.errorPresentation ?? null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
@@ -455,56 +1019,39 @@ function getOrCreateEventSource(
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: current?.typingUser ?? null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: current?.apiRetry ?? null,
+          backgroundTasks: current?.backgroundTasks ?? [],
+          isWaitingBackground: current?.isWaitingBackground ?? false,
+          discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
       }
       else if (data.type === 'tool_use_ready') {
-        // Tool is ready to execute - keep streamingToolUse visible until persisted
-        streamStates.set(sessionId, {
-          isActive: current?.isActive ?? false,
-          isStreaming: true,
-          streamingMessage: current?.streamingMessage ?? null,
-          streamingToolUse: current?.streamingToolUse ?? null,
-          pendingSecretRequests: current?.pendingSecretRequests ?? [],
-          pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
-          pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
-          pendingFileRequests: current?.pendingFileRequests ?? [],
-          pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
-          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
-          pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
-          pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
-          error: current?.error ?? null,
-          apiErrorCode: current?.apiErrorCode ?? null,
-          browserActive: current?.browserActive ?? false,
-          computerUseApp: current?.computerUseApp ?? null,
-          computerUseAppIcon: current?.computerUseAppIcon ?? null,
-          activeStartTime: current?.activeStartTime ?? null,
-          isCompacting: current?.isCompacting ?? false,
-          contextUsage: current?.contextUsage ?? null,
-          activeSubagents: current?.activeSubagents ?? [],
-          completedSubagents: current?.completedSubagents ?? null,
-          typingUser: current?.typingUser ?? null,
-          peerUserMessage: current?.peerUserMessage ?? null,
-          apiRetry: current?.apiRetry ?? null,
-        })
+        if (current) {
+          const tools = current.streamingToolUses
+          const idx = tools.findIndex(t => t.id === data.toolId)
+          if (idx >= 0) {
+            const updated = tools.map((t, i) => i === idx ? { ...t, ready: true } : t)
+            streamStates.set(sessionId, { ...current, streamingToolUses: updated })
+          }
+        }
+        if (isBlockingUserInputToolName(data.toolName)) {
+          // The request-specific SSE event can be missed under load while the
+          // streaming fallback still renders the card. Keep status sidebars in sync.
+          queryClient.invalidateQueries({ queryKey: ['sessions'] })
+          queryClient.invalidateQueries({ queryKey: ['agents'] })
+        }
       }
       else if (data.type === 'stream_end') {
         streamStates.set(sessionId, {
           isActive: current?.isActive ?? false,
+          turnOutcome: current?.turnOutcome ?? null,
           isStreaming: false,
           streamingMessage: current?.streamingMessage ?? null,
-          streamingToolUse: null,
-          pendingSecretRequests: current?.pendingSecretRequests ?? [],
-          pendingConnectedAccountRequests: current?.pendingConnectedAccountRequests ?? [],
-          pendingQuestionRequests: current?.pendingQuestionRequests ?? [],
-          pendingFileRequests: current?.pendingFileRequests ?? [],
-          pendingRemoteMcpRequests: current?.pendingRemoteMcpRequests ?? [],
-          pendingBrowserInputRequests: current?.pendingBrowserInputRequests ?? [],
-          pendingScriptRunRequests: current?.pendingScriptRunRequests ?? [],
-          pendingComputerUseRequests: current?.pendingComputerUseRequests ?? [],
+          streamingToolUses: current?.streamingToolUses ?? [],
           error: current?.error ?? null,
           apiErrorCode: current?.apiErrorCode ?? null,
+          errorPresentation: current?.errorPresentation ?? null,
           browserActive: current?.browserActive ?? false,
           computerUseApp: current?.computerUseApp ?? null,
           computerUseAppIcon: current?.computerUseAppIcon ?? null,
@@ -514,41 +1061,63 @@ function getOrCreateEventSource(
           activeSubagents: current?.activeSubagents ?? [],
           completedSubagents: current?.completedSubagents ?? null,
           typingUser: current?.typingUser ?? null,
-          peerUserMessage: current?.peerUserMessage ?? null,
+          peerUserMessages: current?.peerUserMessages ?? [],
           apiRetry: current?.apiRetry ?? null,
+          backgroundTasks: current?.backgroundTasks ?? [],
+          isWaitingBackground: current?.isWaitingBackground ?? false,
+          discardedCommandUuids: current?.discardedCommandUuids ?? [],
         })
       }
       else if (data.type === 'user_message') {
-        // Another user sent a message in this shared session
-        streamStates.set(sessionId, {
-          ...current!,
-          peerUserMessage: { content: data.content, sender: data.sender },
-          typingUser: null, // Clear typing since they sent
-        })
+        // Another user sent a message in this shared session. Track it until
+        // the persisted copy (same uuid) shows up in fetched messages — there
+        // may be several at once when users queue messages mid-turn.
+        if (current && data.uuid) {
+          const existing = current.peerUserMessages
+          streamStates.set(sessionId, {
+            ...current,
+            peerUserMessages: existing.some((p) => p.uuid === data.uuid)
+              ? existing
+              : [...existing, {
+                  uuid: data.uuid, content: data.content, sender: data.sender, queued: data.queued, receivedAt: Date.now(),
+                  // Host-written, but a malformed card must fall back to text, not break the list.
+                  integration: integrationMessageDisplaySchema.safeParse(data.integration).data,
+                }],
+            typingUser: null, // Clear typing since they sent
+          })
+        }
         // Refetch to pick up the persisted message shortly
-        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        invalidateMessagesThrottled(queryClient, sessionId)
       }
       else if (data.type === 'user_typing') {
         // Another user is typing in this shared session
         if (current) {
           streamStates.set(sessionId, { ...current, typingUser: data.sender })
           // Auto-clear after 5s if no follow-up
-          setTimeout(() => {
+          clearTimeout(typingTimers.get(sessionId))
+          typingTimers.set(sessionId, setTimeout(() => {
+            typingTimers.delete(sessionId)
             const latest = streamStates.get(sessionId)
             if (latest && latest.typingUser?.id === data.sender.id) {
               streamStates.set(sessionId, { ...latest, typingUser: null })
               streamListeners.get(sessionId)?.forEach((l) => l())
             }
-          }, 5000)
+          }, 5000))
         }
       }
       else if (data.type === 'messages_updated') {
-        // Don't clear peerUserMessage here — the render dedup in MessageList
-        // hides it once the fetched messages include the matching text.
-        // Server signals that a message has been persisted to JSONL.
-        // Refetch so that persisted data is available before stream_start
-        // clears the streaming tool use state (prevents tool call flicker).
-        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        invalidateMessagesThrottled(queryClient, sessionId)
+      }
+      else if (data.type === 'turn_output_complete') {
+        // A turn's output finished (the session may or may not settle — e.g.
+        // queued messages or background work can keep it active). Reconcile
+        // the streamed text against the transcript exactly like at idle —
+        // otherwise a follow-up turn's stream_start clears the streaming
+        // bubble before the persisted copy is fetched and the final message
+        // disappears briefly. The reconcile helper is idempotent, so the
+        // session_idle handler's own reconcile coexists harmlessly.
+        invalidateMessagesThrottled(queryClient, sessionId)
+        void reconcileMessagesAfterIdle(sessionId, queryClient, current?.streamingMessage ?? null)
       }
       else if (data.type === 'tool_call' || data.type === 'tool_result') {
         // Message has been persisted - keep streamingMessage visible until refetch completes
@@ -558,7 +1127,11 @@ function getOrCreateEventSource(
             isStreaming: false,
           })
         }
-        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        // A tool_result that settles a pending request no longer needs its own
+        // card cleanup here: the registry resolution that accompanies it emits
+        // user_request_resolved, and the branch above invalidates the store
+        // every tab renders from.
+        invalidateMessagesThrottled(queryClient, sessionId)
       }
       else if (data.type === 'context_usage') {
         // Context window usage update from backend
@@ -575,144 +1148,92 @@ function getOrCreateEventSource(
           })
         }
       }
-      else if (data.type === 'secret_request') {
-        // Agent is requesting a secret from the user
-        const newRequest: SecretRequest = {
-          toolUseId: data.toolUseId,
-          secretName: data.secretName,
-          reason: data.reason,
-        }
-        if (current) {
-          streamStates.set(sessionId, {
-            ...current,
-            pendingSecretRequests: [...current.pendingSecretRequests, newRequest],
-          })
-          // Invalidate sessions so sidebar picks up awaiting-input state
-          // (redundant safety net for global SSE race condition)
-          queryClient.invalidateQueries({ queryKey: ['sessions'] })
-        }
+      else if (data.type === 'thinking_start') {
+        // New thinking episode — open a fresh block. If a previous block never got
+        // its stop (dropped event), close it now so at most one block is live.
+        const t = sessionThinking.get(sessionId) ?? EMPTY_THINKING
+        const blocks = closeOpenThinkingBlocks(t.blocks)
+        const persistedId = typeof data.thinkingId === 'string' && data.thinkingId
+          ? data.thinkingId
+          : undefined
+        blocks.push({ id: nextThinkingBlockId++, persistedId, text: '', startedAt: Date.now(), endedAt: null })
+        sessionThinking.set(sessionId, { blocks, isThinking: true })
       }
-      else if (data.type === 'connected_account_request') {
-        // Agent is requesting access to a connected account
-        const newRequest: ConnectedAccountRequest = {
-          toolUseId: data.toolUseId,
-          toolkit: data.toolkit,
-          reason: data.reason,
-        }
-        if (current) {
-          streamStates.set(sessionId, {
-            ...current,
-            pendingConnectedAccountRequests: [...current.pendingConnectedAccountRequests, newRequest],
-          })
-          queryClient.invalidateQueries({ queryKey: ['sessions'] })
-        }
-      }
-      else if (data.type === 'user_question_request') {
-        // Agent is asking the user questions
-        const newRequest: QuestionRequest = {
-          toolUseId: data.toolUseId,
-          questions: data.questions,
-        }
-        if (current) {
-          streamStates.set(sessionId, {
-            ...current,
-            pendingQuestionRequests: [...current.pendingQuestionRequests, newRequest],
-          })
-          queryClient.invalidateQueries({ queryKey: ['sessions'] })
-        }
-      }
-      else if (data.type === 'file_request') {
-        // Agent is requesting a file from the user
-        const newRequest: FileRequest = {
-          toolUseId: data.toolUseId,
-          description: data.description,
-          fileTypes: data.fileTypes,
-        }
-        if (current) {
-          streamStates.set(sessionId, {
-            ...current,
-            pendingFileRequests: [...current.pendingFileRequests, newRequest],
-          })
-          queryClient.invalidateQueries({ queryKey: ['sessions'] })
-        }
-      }
-      else if (data.type === 'remote_mcp_request') {
-        // Agent is requesting access to a remote MCP server
-        const newRequest: RemoteMcpRequest = {
-          toolUseId: data.toolUseId,
-          url: data.url,
-          name: data.name,
-          reason: data.reason,
-          authHint: data.authHint,
-        }
-        if (current) {
-          streamStates.set(sessionId, {
-            ...current,
-            pendingRemoteMcpRequests: [...current.pendingRemoteMcpRequests, newRequest],
-          })
-          queryClient.invalidateQueries({ queryKey: ['sessions'] })
-        }
-      }
-      else if (data.type === 'browser_input_request') {
-        // Dedupe: the server may broadcast the same toolUseId from multiple detection points
-        if (current && !current.pendingBrowserInputRequests.some(r => r.toolUseId === data.toolUseId)) {
-          const newRequest: BrowserInputRequest = {
-            toolUseId: data.toolUseId,
-            message: data.message,
-            requirements: data.requirements || [],
+      else if (data.type === 'thinking_delta') {
+        // Accumulate streamed (summarized) reasoning text on the live block.
+        // A delta with no open block (missed start after reconnect) opens one.
+        const t = sessionThinking.get(sessionId) ?? EMPTY_THINKING
+        const persistedId = typeof data.thinkingId === 'string' && data.thinkingId
+          ? data.thinkingId
+          : undefined
+        let blocks = [...t.blocks]
+        const last = blocks[blocks.length - 1]
+        // If a reconnect dropped thinking_start, an indexed delta can identify
+        // a new block even while an unrelated stale block is still open.
+        const belongsToOpenBlock =
+          last &&
+          last.endedAt === null &&
+          (!persistedId || !last.persistedId || last.persistedId === persistedId)
+        if (belongsToOpenBlock) {
+          blocks[blocks.length - 1] = {
+            ...last,
+            ...(persistedId && !last.persistedId && { persistedId }),
+            text: last.text + (data.text ?? ''),
           }
-          streamStates.set(sessionId, {
-            ...current,
-            pendingBrowserInputRequests: [...current.pendingBrowserInputRequests, newRequest],
-          })
-          queryClient.invalidateQueries({ queryKey: ['sessions'] })
+        } else {
+          blocks = closeOpenThinkingBlocks(blocks)
+          blocks.push({ id: nextThinkingBlockId++, persistedId, text: data.text ?? '', startedAt: Date.now(), endedAt: null })
+        }
+        sessionThinking.set(sessionId, { blocks, isThinking: true })
+      }
+      else if (data.type === 'thinking_stop') {
+        // Thinking block ended — flip back to "Working", keep the block (its card
+        // collapses but stays readable for the rest of the turn)
+        const t = sessionThinking.get(sessionId)
+        if (t) {
+          sessionThinking.set(sessionId, { blocks: closeOpenThinkingBlocks(t.blocks), isThinking: false })
         }
       }
-      else if (data.type === 'script_run_request') {
-        // Agent is requesting script execution on the host. When `autoApproved` is
-        // true the server is already executing it; we just record the toolUseId so
-        // the messages-based fallback in MessageList knows to suppress its prompt.
-        if (data.autoApproved) {
-          let approved = sessionAutoApprovedScriptRunIds.get(sessionId)
-          if (!approved) {
-            approved = new Set()
-            sessionAutoApprovedScriptRunIds.set(sessionId, approved)
+      else if (data.type === 'user_request_created' || data.type === 'user_request_resolved') {
+        // Unified wire: the event is an invalidation trigger, not a data
+        // carrier — the refetch reads the server registry snapshot, so a
+        // burst of events collapses into one consistent read and a stale
+        // in-flight response can never overwrite a newer one.
+        queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
+        // The one thing the snapshot can't do in time: an auto-approved
+        // script_run / computer_use is ALREADY executing server-side, and
+        // between its tool_use streaming in and its result persisting, the
+        // streaming and message-history fallbacks would draw an approval
+        // card for it. These sets suppress that card, and they have to be
+        // written synchronously with the event to beat the flash.
+        if (data.type === 'user_request_created') {
+          const request = data.request as PendingUserInputRequest | undefined
+          const target =
+            request?.autoApproved && request.kind === 'script_run'
+              ? sessionAutoApprovedScriptRunIds
+              : request?.autoApproved && request.kind === 'computer_use'
+                ? sessionAutoApprovedComputerUseIds
+                : null
+          if (target && request) {
+            let approved = target.get(sessionId)
+            if (!approved) {
+              approved = new Set()
+              target.set(sessionId, approved)
+            }
+            approved.add(request.id)
+            streamListeners.get(sessionId)?.forEach((l) => l())
           }
-          approved.add(data.toolUseId)
-          streamListeners.get(sessionId)?.forEach((l) => l())
-        } else if (current && !current.pendingScriptRunRequests.some(r => r.toolUseId === data.toolUseId)) {
-          const newRequest: ScriptRunRequest = {
-            toolUseId: data.toolUseId,
-            script: data.script,
-            explanation: data.explanation,
-            scriptType: data.scriptType,
-          }
-          streamStates.set(sessionId, {
-            ...current,
-            pendingScriptRunRequests: [...current.pendingScriptRunRequests, newRequest],
-          })
-          queryClient.invalidateQueries({ queryKey: ['sessions'] })
-        }
-      }
-      else if (data.type === 'computer_use_request') {
-        // Agent is requesting computer use on the host
-        if (current && !current.pendingComputerUseRequests.some(r => r.toolUseId === data.toolUseId)) {
-          const newRequest: ComputerUseRequest = {
-            toolUseId: data.toolUseId,
-            method: data.method,
-            params: data.params || {},
-            permissionLevel: data.permissionLevel,
-            appName: data.appName,
-          }
-          streamStates.set(sessionId, {
-            ...current,
-            pendingComputerUseRequests: [...current.pendingComputerUseRequests, newRequest],
-          })
-          queryClient.invalidateQueries({ queryKey: ['sessions'] })
         }
       }
       else if (data.type === 'compact_start') {
         // Context compaction started
+        const thinkingAtCompact = sessionThinking.get(sessionId)
+        if (thinkingAtCompact) {
+          sessionThinking.set(sessionId, {
+            blocks: closeOpenThinkingBlocks(thinkingAtCompact.blocks),
+            isThinking: false,
+          })
+        }
         if (current) {
           streamStates.set(sessionId, {
             ...current,
@@ -722,17 +1243,21 @@ function getOrCreateEventSource(
       }
       else if (data.type === 'compact_complete') {
         // Context compaction finished — messages_updated will trigger refetch
+        // Compactor reasoning is not a user-visible assistant message and may
+        // never persist. Retire all pre-boundary live blocks; historical cards
+        // now belong to the transcript read path.
+        sessionThinking.delete(sessionId)
         if (current) {
           streamStates.set(sessionId, {
             ...current,
             isCompacting: false,
           })
         }
-        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        invalidateMessagesThrottled(queryClient, sessionId)
       }
       else if (data.type === 'memory_recall') {
         // Agent recalled memory files — refetch messages so the persisted entry appears
-        queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+        invalidateMessagesThrottled(queryClient, sessionId)
       }
       else if (data.type === 'api_retry') {
         // API is retrying a transient error — show retry state in activity indicator
@@ -772,17 +1297,47 @@ function getOrCreateEventSource(
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
         queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
       }
-      else if (data.type === 'scheduled_task_created') {
-        // A scheduled task was created - invalidate scheduled tasks cache
+      else if (data.type === 'scheduled_task_created' || data.type === 'scheduled_task_cancelled' || data.type === 'scheduled_task_updated') {
+        // A scheduled task was created, cancelled, or updated - invalidate scheduled tasks cache
         const taskAgentSlug = (data as { agentSlug?: string }).agentSlug
         if (taskAgentSlug) {
           queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', taskAgentSlug] })
         }
       }
-      else if (data.type === 'webhook_trigger_created' || data.type === 'webhook_trigger_cancelled') {
+      else if (data.type === 'webhook_trigger_created' || data.type === 'webhook_trigger_updated' || data.type === 'webhook_trigger_cancelled') {
         const triggerAgentSlug = (data as { agentSlug?: string }).agentSlug
         if (triggerAgentSlug) {
           queryClient.invalidateQueries({ queryKey: ['webhook-triggers', triggerAgentSlug] })
+        }
+      }
+      else if (data.type === 'subagent_started') {
+        // task_started fired — immediately register agentId, type, and description
+        if (current) {
+          const existing = current.activeSubagents.find(s => s.parentToolId === data.parentToolId)
+          const updated: SubagentInfo = {
+            parentToolId: data.parentToolId,
+            agentId: data.agentId ?? existing?.agentId ?? null,
+            streamingMessage: existing?.streamingMessage ?? null,
+            streamingToolUse: existing?.streamingToolUse ?? null,
+            progressSummary: existing?.progressSummary ?? null,
+            subagentType: data.subagentType ?? existing?.subagentType ?? null,
+            description: data.description ?? existing?.description ?? null,
+            usage: existing?.usage ?? null,
+            lastToolName: existing?.lastToolName ?? null,
+          }
+          // A new run under a call that already finished (CLI 2.1.296+ re-runs
+          // a subagent under its launching call to hand it the result of its
+          // own background work) is running again until its next completion.
+          let completedSubagents = current.completedSubagents
+          if (data.parentToolId && completedSubagents?.has(data.parentToolId)) {
+            completedSubagents = new Set(completedSubagents)
+            completedSubagents.delete(data.parentToolId)
+          }
+          streamStates.set(sessionId, {
+            ...current,
+            activeSubagents: upsertSubagent(current.activeSubagents, updated),
+            completedSubagents,
+          })
         }
       }
       else if (data.type === 'subagent_updated') {
@@ -797,33 +1352,49 @@ function getOrCreateEventSource(
             streamingMessage: existing?.streamingMessage ?? null,
             streamingToolUse: existing?.streamingToolUse ?? null,
             progressSummary: existing?.progressSummary ?? null,
+            subagentType: existing?.subagentType ?? null,
+            description: existing?.description ?? null,
+            usage: existing?.usage ?? null,
+            lastToolName: existing?.lastToolName ?? null,
           }
           streamStates.set(sessionId, {
             ...current,
             activeSubagents: upsertSubagent(current.activeSubagents, updated),
           })
-          queryClient.invalidateQueries({ queryKey: ['subagent-messages', sessionId] })
+          refreshSubagentMessages(queryClient, sessionId, updated.agentId)
         }
       }
       else if (data.type === 'subagent_completed') {
-        // Subagent finished — keep streaming data visible (for summary text) until persisted data arrives.
-        // Update agentId if provided, and mark as completed so status logic shows "completed".
+        // Subagent finished — update streaming message with resultText if provided
+        // (shows the exit summary immediately without waiting for refetch).
         if (current) {
           const existing = current.activeSubagents.find(s => s.parentToolId === data.parentToolId)
           const newCompleted = new Set(current.completedSubagents)
           if (data.parentToolId) {
             newCompleted.add(data.parentToolId)
           }
-          const updatedSubagents = existing
-            ? upsertSubagent(current.activeSubagents, { ...existing, agentId: data.agentId ?? existing.agentId })
-            : current.activeSubagents
+          const updatedEntry: SubagentInfo = {
+            ...(existing ?? {
+              parentToolId: data.parentToolId,
+              streamingMessage: null,
+              streamingToolUse: null,
+              progressSummary: null,
+              subagentType: null,
+              description: null,
+              usage: null,
+              lastToolName: null,
+            }),
+            agentId: data.agentId ?? existing?.agentId ?? null,
+            resultText: data.resultText ?? null,
+          }
+          const updatedSubagents = upsertSubagent(current.activeSubagents, updatedEntry)
           streamStates.set(sessionId, {
             ...current,
             activeSubagents: updatedSubagents,
             completedSubagents: newCompleted,
           })
-          queryClient.invalidateQueries({ queryKey: ['subagent-messages', sessionId] })
-          queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+          refreshSubagentMessages(queryClient, sessionId, updatedEntry.agentId)
+          invalidateMessagesThrottled(queryClient, sessionId)
         }
       }
       // Subagent streaming events
@@ -836,6 +1407,10 @@ function getOrCreateEventSource(
             streamingMessage: '',
             streamingToolUse: null,
             progressSummary: existing?.progressSummary ?? null,
+            subagentType: existing?.subagentType ?? null,
+            description: existing?.description ?? null,
+            usage: existing?.usage ?? null,
+            lastToolName: existing?.lastToolName ?? null,
           }
           streamStates.set(sessionId, {
             ...current,
@@ -852,6 +1427,10 @@ function getOrCreateEventSource(
             streamingMessage: (existing?.streamingMessage || '') + data.text,
             streamingToolUse: existing?.streamingToolUse ?? null,
             progressSummary: existing?.progressSummary ?? null,
+            subagentType: existing?.subagentType ?? null,
+            description: existing?.description ?? null,
+            usage: existing?.usage ?? null,
+            lastToolName: existing?.lastToolName ?? null,
           }
           streamStates.set(sessionId, {
             ...current,
@@ -872,6 +1451,10 @@ function getOrCreateEventSource(
               partialInput: data.partialInput ?? '',
             },
             progressSummary: existing?.progressSummary ?? null,
+            subagentType: existing?.subagentType ?? null,
+            description: existing?.description ?? null,
+            usage: existing?.usage ?? null,
+            lastToolName: existing?.lastToolName ?? null,
           }
           streamStates.set(sessionId, {
             ...current,
@@ -880,15 +1463,18 @@ function getOrCreateEventSource(
         }
       }
       else if (data.type === 'subagent_progress') {
-        // AI-generated progress summary for a running subagent
         if (current) {
           const existing = current.activeSubagents.find(s => s.parentToolId === data.parentToolId)
           const updated: SubagentInfo = {
             parentToolId: data.parentToolId,
-            agentId: existing?.agentId ?? null,
+            agentId: data.agentId ?? existing?.agentId ?? null,
             streamingMessage: existing?.streamingMessage ?? null,
             streamingToolUse: existing?.streamingToolUse ?? null,
-            progressSummary: data.summary ?? null,
+            progressSummary: data.summary ?? existing?.progressSummary ?? null,
+            subagentType: data.subagentType ?? existing?.subagentType ?? null,
+            description: existing?.description ?? null, // keep original from task_started
+            usage: data.usage ?? existing?.usage ?? null,
+            lastToolName: data.lastToolName ?? existing?.lastToolName ?? null,
           }
           streamStates.set(sessionId, {
             ...current,
@@ -907,17 +1493,45 @@ function getOrCreateEventSource(
             ...current,
             isActive: false,
             isStreaming: false,
-            streamingMessage: null,
-            streamingToolUse: null,
+            streamingMessage: current.streamingMessage,
+            streamingToolUses: [],
+            backgroundTasks: [],
+            isWaitingBackground: false,
             error: null,
             apiErrorCode: null,
+            errorPresentation: null,
             activeStartTime: null,
           })
-          queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+          invalidateMessagesThrottled(queryClient, sessionId)
           queryClient.invalidateQueries({ queryKey: ['sessions'] })
         }
       }
       // Note: os_notification events are handled by GlobalNotificationHandler, not here
+
+      // Replay only the outcome and its text. Working indicators continue to
+      // use the existing session_active/session_idle/background-task handlers.
+      const next = streamStates.get(sessionId)
+      const parsedOutcome = sessionTurnOutcomeSchema.safeParse(data.turnOutcome)
+      if (next && parsedOutcome.success) {
+        const outcome = parsedOutcome.data
+        const recovery = data.type === 'connected' || data.type === 'ping'
+        streamStates.set(sessionId, {
+          ...next, turnOutcome: outcome,
+          ...((!recovery || !next.isActive) && { streamingMessage: outcome.responseText, error: outcome.error }),
+        })
+        // A stream that opens after the turn already ended — common for a new
+        // session whose first turn is quick — gets no session_idle, only the
+        // connected handler's single refetch. That refetch can beat the
+        // transcript write exactly as the idle one can, and nothing retries it:
+        // the turn's tool calls stay missing and the user's own message reads
+        // as undelivered until the safety-net poll. Reconcile against the
+        // outcome's text the same bounded way the idle handler does.
+        if (data.type === 'connected' && data.isActive !== true && outcome.status === 'completed') {
+          void reconcileMessagesAfterIdle(sessionId, queryClient, outcome.responseText)
+        }
+      } else if (next && data.turnOutcome === null) {
+        streamStates.set(sessionId, { ...next, turnOutcome: null })
+      }
 
       // Notify all listeners
       streamListeners.get(sessionId)?.forEach((listener) => listener())
@@ -927,8 +1541,11 @@ function getOrCreateEventSource(
   }
 
   es.onerror = () => {
-    // Don't reset isActive on error - EventSource will auto-reconnect
-    // and we'll get the correct state from the 'connected' event.
+    reconnecting = true
+    // Don't reset isActive on error - EventSource will auto-reconnect with
+    // the last frame id it got, and the server either replays what was missed
+    // (the streamed text continues where it stopped) or, when it cannot,
+    // sends a fresh 'connected' snapshot.
     // Only reset streaming state since that's definitely interrupted.
     // Preserve pending secret requests and error as they may still be valid.
     const current = streamStates.get(sessionId)
@@ -936,20 +1553,20 @@ function getOrCreateEventSource(
       streamStates.set(sessionId, {
         ...current,
         isStreaming: false,
-        streamingMessage: null,
-        streamingToolUse: null,
+        streamingMessage: current.streamingMessage,
+        streamingToolUses: [],
       })
     }
     streamListeners.get(sessionId)?.forEach((listener) => listener())
     // Refetch messages to ensure we have latest data
-    queryClient.invalidateQueries({ queryKey: ['messages', sessionId] })
+    invalidateMessagesThrottled(queryClient, sessionId)
   }
 
   return es
 }
 
-function releaseEventSource(sessionId: string, agentSlug: string): void {
-  const key = `${agentSlug}:${sessionId}`
+function releaseEventSource(sessionId: string): void {
+  const key = sessionId
   const count = (refCounts.get(key) || 1) - 1
   refCounts.set(key, count)
 
@@ -960,122 +1577,73 @@ function releaseEventSource(sessionId: string, agentSlug: string): void {
       eventSources.delete(key)
     }
     refCounts.delete(key)
+    clearTimeout(typingTimers.get(key))
+    typingTimers.delete(key)
+    const state = streamStates.get(key)
+    if (state) streamStates.set(key, { ...state, typingUser: null })
+    // Symmetric cleanup for the refetch throttle: cancel a pending trailing
+    // timer (nothing is mounted to refetch), settle its waiters so nothing can
+    // ever hang on the joined promise, and drop the entry so the map stays
+    // bounded by open sessions and a remount starts on a fresh leading edge.
+    const throttle = messagesInvalidateThrottles.get(key)
+    if (throttle) {
+      if (throttle.trailing) {
+        clearTimeout(throttle.trailing.timer)
+        throttle.trailing.settle()
+        throttle.trailing = null
+      }
+      messagesInvalidateThrottles.delete(key)
+    }
   }
 }
 
-// Helper function to remove a secret request from a session
-export function removeSecretRequest(sessionId: string, toolUseId: string): void {
+// Remove a peer user message once its persisted copy is visible in fetched messages
+// Consume a discarded-command uuid once MessageList has acted on it (rescued
+// the ghost's text or dropped a peer ghost). Leftover uuids are harmless —
+// rescue only fires while a matching ghost exists — but consuming keeps the
+// list from growing across a long session.
+export function consumeDiscardedCommand(sessionId: string, uuid: string): void {
   const current = streamStates.get(sessionId)
-  if (current) {
+  if (current && current.discardedCommandUuids.includes(uuid)) {
     streamStates.set(sessionId, {
       ...current,
-      pendingSecretRequests: current.pendingSecretRequests.filter(
-        (r) => r.toolUseId !== toolUseId
-      ),
-    })
-    // Notify listeners
-    streamListeners.get(sessionId)?.forEach((listener) => listener())
-  }
-}
-
-// Helper function to remove a connected account request from a session
-export function removeConnectedAccountRequest(sessionId: string, toolUseId: string): void {
-  const current = streamStates.get(sessionId)
-  if (current) {
-    streamStates.set(sessionId, {
-      ...current,
-      pendingConnectedAccountRequests: current.pendingConnectedAccountRequests.filter(
-        (r) => r.toolUseId !== toolUseId
-      ),
-    })
-    // Notify listeners
-    streamListeners.get(sessionId)?.forEach((listener) => listener())
-  }
-}
-
-// Helper function to remove a file request from a session
-export function removeFileRequest(sessionId: string, toolUseId: string): void {
-  const current = streamStates.get(sessionId)
-  if (current) {
-    streamStates.set(sessionId, {
-      ...current,
-      pendingFileRequests: current.pendingFileRequests.filter(
-        (r) => r.toolUseId !== toolUseId
-      ),
-    })
-    // Notify listeners
-    streamListeners.get(sessionId)?.forEach((listener) => listener())
-  }
-}
-
-// Helper function to remove a question request from a session
-export function removeQuestionRequest(sessionId: string, toolUseId: string): void {
-  const current = streamStates.get(sessionId)
-  if (current) {
-    streamStates.set(sessionId, {
-      ...current,
-      pendingQuestionRequests: current.pendingQuestionRequests.filter(
-        (r) => r.toolUseId !== toolUseId
-      ),
-    })
-    // Notify listeners
-    streamListeners.get(sessionId)?.forEach((listener) => listener())
-  }
-}
-
-// Helper function to remove a remote MCP request from a session
-export function removeRemoteMcpRequest(sessionId: string, toolUseId: string): void {
-  const current = streamStates.get(sessionId)
-  if (current) {
-    streamStates.set(sessionId, {
-      ...current,
-      pendingRemoteMcpRequests: current.pendingRemoteMcpRequests.filter(
-        (r) => r.toolUseId !== toolUseId
-      ),
-    })
-    // Notify listeners
-    streamListeners.get(sessionId)?.forEach((listener) => listener())
-  }
-}
-
-// Helper function to remove a browser input request from a session
-export function removeBrowserInputRequest(sessionId: string, toolUseId: string): void {
-  const current = streamStates.get(sessionId)
-  if (current) {
-    streamStates.set(sessionId, {
-      ...current,
-      pendingBrowserInputRequests: current.pendingBrowserInputRequests.filter(
-        (r) => r.toolUseId !== toolUseId
-      ),
+      discardedCommandUuids: current.discardedCommandUuids.filter((u) => u !== uuid),
     })
     streamListeners.get(sessionId)?.forEach((listener) => listener())
   }
 }
 
-// Helper function to remove a script run request from a session
-export function removeScriptRunRequest(sessionId: string, toolUseId: string): void {
+// Once the transcript owns a completed thinking card, retire its live copy.
+// Otherwise a later turn boundary or page eviction can make it look unmatched
+// again. Keep open blocks until thinking_stop so later deltas still append to
+// the same episode; MessageList already hides live cards with persisted copies.
+export function consumeThinkingBlocks(sessionId: string, ids: readonly number[]): void {
+  const current = sessionThinking.get(sessionId)
+  if (!current || ids.length === 0) return
+  const consumed = new Set(ids)
+  const blocks = current.blocks.filter(block => block.endedAt === null || !consumed.has(block.id))
+  if (blocks.length === current.blocks.length) return
+  sessionThinking.set(sessionId, { ...current, blocks })
+  streamListeners.get(sessionId)?.forEach(listener => listener())
+}
+
+export function removePeerUserMessage(sessionId: string, uuid: string): void {
   const current = streamStates.get(sessionId)
-  if (current) {
+  if (current && current.peerUserMessages.some((p) => p.uuid === uuid)) {
     streamStates.set(sessionId, {
       ...current,
-      pendingScriptRunRequests: current.pendingScriptRunRequests.filter(
-        (r) => r.toolUseId !== toolUseId
-      ),
+      peerUserMessages: current.peerUserMessages.filter((p) => p.uuid !== uuid),
     })
     streamListeners.get(sessionId)?.forEach((listener) => listener())
   }
 }
 
-// Helper function to remove a computer use request from a session
-export function removeComputerUseRequest(sessionId: string, toolUseId: string): void {
+// Drop all peer user messages (safety net for messages that never persisted,
+// e.g. the agent was interrupted before picking up a queued message)
+export function clearPeerUserMessages(sessionId: string): void {
   const current = streamStates.get(sessionId)
-  if (current) {
-    streamStates.set(sessionId, {
-      ...current,
-      pendingComputerUseRequests: current.pendingComputerUseRequests.filter(
-        (r) => r.toolUseId !== toolUseId
-      ),
-    })
+  if (current && current.peerUserMessages.length > 0) {
+    streamStates.set(sessionId, { ...current, peerUserMessages: [] })
     streamListeners.get(sessionId)?.forEach((listener) => listener())
   }
 }
@@ -1098,45 +1666,93 @@ export function clearBrowserActive(sessionId: string): void {
   }
 }
 
-export function useMessageStream(sessionId: string | null, agentSlug: string | null) {
-  const [state, setState] = useState<StreamState>(EMPTY_STREAM_STATE)
-  const [slashCommands, setSlashCommands] = useState<SlashCommandInfo[]>([])
-  const [autoApprovedScriptRunIds, setAutoApprovedScriptRunIds] = useState<ReadonlySet<string>>(EMPTY_AUTO_APPROVED_SET)
+const EMPTY_SLASH_COMMANDS: SlashCommandInfo[] = []
+
+export interface MessageStreamValue extends StreamState {
+  slashCommands: SlashCommandInfo[]
+  autoApprovedScriptRunIds: ReadonlySet<string>
+  autoApprovedComputerUseIds: ReadonlySet<string>
+  workflows: WorkflowRunLive[]
+  isThinking: boolean
+  thinkingBlocks: ThinkingBlock[]
+}
+
+export type MessageStreamField = keyof MessageStreamValue
+
+const EMPTY_MESSAGE_STREAM_VALUE: MessageStreamValue = {
+  ...EMPTY_STREAM_STATE,
+  slashCommands: EMPTY_SLASH_COMMANDS,
+  autoApprovedScriptRunIds: EMPTY_AUTO_APPROVED_SET,
+  autoApprovedComputerUseIds: EMPTY_AUTO_APPROVED_SET,
+  workflows: EMPTY_WORKFLOWS,
+  isThinking: EMPTY_THINKING.isThinking,
+  thinkingBlocks: EMPTY_THINKING.blocks,
+}
+
+// The global sets are mutated in place, so reuse the previous snapshot when the contents match.
+function snapshotIdSet(prev: ReadonlySet<string>, current: Set<string> | undefined): ReadonlySet<string> {
+  if (!current || current.size === 0) return prev.size === 0 ? prev : EMPTY_AUTO_APPROVED_SET
+  if (prev.size === current.size) {
+    let identical = true
+    for (const id of current) {
+      if (!prev.has(id)) { identical = false; break }
+    }
+    if (identical) return prev
+  }
+  return new Set(current)
+}
+
+function readMessageStream(sessionId: string, prev: MessageStreamValue): MessageStreamValue {
+  const thinking = sessionThinking.get(sessionId) ?? EMPTY_THINKING
+  return {
+    ...(streamStates.get(sessionId) ?? prev),
+    slashCommands: sessionSlashCommands.get(sessionId) ?? EMPTY_SLASH_COMMANDS,
+    autoApprovedScriptRunIds: snapshotIdSet(prev.autoApprovedScriptRunIds, sessionAutoApprovedScriptRunIds.get(sessionId)),
+    autoApprovedComputerUseIds: snapshotIdSet(prev.autoApprovedComputerUseIds, sessionAutoApprovedComputerUseIds.get(sessionId)),
+    workflows: sessionWorkflows.get(sessionId) ?? EMPTY_WORKFLOWS,
+    isThinking: thinking.isThinking,
+    thinkingBlocks: thinking.blocks,
+  }
+}
+
+function sameFields(prev: MessageStreamValue, next: MessageStreamValue, fields: readonly MessageStreamField[]): boolean {
+  return fields.every((field) => Object.is(prev[field], next[field]))
+}
+
+const ALL_MESSAGE_STREAM_FIELDS = Object.keys(EMPTY_MESSAGE_STREAM_VALUE) as MessageStreamField[]
+
+/**
+ * Pass `fields` to re-render only when one of them changes. Without it the
+ * caller re-renders on every stream event, including each streamed token.
+ */
+export function useMessageStream<K extends MessageStreamField = MessageStreamField>(
+  sessionId: string | null,
+  agentSlug: string | null,
+  fields?: readonly K[],
+): Pick<MessageStreamValue, K> {
+  const [value, setValue] = useState<MessageStreamValue>(EMPTY_MESSAGE_STREAM_VALUE)
+  const valueRef = useRef(value)
+  const fieldsRef = useRef<readonly MessageStreamField[]>(fields ?? ALL_MESSAGE_STREAM_FIELDS)
+  fieldsRef.current = fields ?? ALL_MESSAGE_STREAM_FIELDS
   const queryClient = useQueryClient()
+
+  const commit = useCallback((next: MessageStreamValue) => {
+    if (sameFields(valueRef.current, next, fieldsRef.current)) return
+    valueRef.current = next
+    setValue(next)
+  }, [])
 
   // Update local state when global state changes
   const updateState = useCallback(() => {
-    if (sessionId) {
-      const globalState = streamStates.get(sessionId)
-      if (globalState) {
-        setState(globalState)
-      }
-      setSlashCommands(sessionSlashCommands.get(sessionId) ?? [])
-      const approved = sessionAutoApprovedScriptRunIds.get(sessionId)
-      // Hand back a fresh snapshot when the contents changed so React re-renders consumers.
-      setAutoApprovedScriptRunIds((prev) => {
-        if (!approved || approved.size === 0) {
-          return prev.size === 0 ? prev : EMPTY_AUTO_APPROVED_SET
-        }
-        if (prev.size === approved.size) {
-          let identical = true
-          for (const id of approved) {
-            if (!prev.has(id)) { identical = false; break }
-          }
-          if (identical) return prev
-        }
-        return new Set(approved)
-      })
-    }
-  }, [sessionId])
+    if (sessionId) commit(readMessageStream(sessionId, valueRef.current))
+  }, [sessionId, commit])
 
   useEffect(() => {
     if (!sessionId || !agentSlug) {
       // Reset local state so a previous subscription's values (e.g. isStreaming=true)
       // don't leak after the caller stops passing a sessionId — otherwise an unselected
       // session row can get stuck in a "working" state after the stream finishes.
-      setState(EMPTY_STREAM_STATE)
-      setSlashCommands([])
+      commit(EMPTY_MESSAGE_STREAM_VALUE)
       return
     }
 
@@ -1162,9 +1778,9 @@ export function useMessageStream(sessionId: string | null, agentSlug: string | n
       if (listeners?.size === 0) {
         streamListeners.delete(sessionId)
       }
-      releaseEventSource(sessionId, agentSlug)
+      releaseEventSource(sessionId)
     }
-  }, [sessionId, agentSlug, updateState, queryClient])
+  }, [sessionId, agentSlug, updateState, commit, queryClient])
 
-  return { ...state, slashCommands, autoApprovedScriptRunIds }
+  return value
 }

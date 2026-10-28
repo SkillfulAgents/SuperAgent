@@ -1,12 +1,15 @@
+import path from 'path'
+import { directoryExists } from '@shared/lib/utils/file-storage'
 import type {
   InstalledAgentMetadata,
   InstalledSkillMetadata,
   SkillProvider,
   SkillsetConfig,
+  SkillsetCredentialInput,
   SkillsetProviderData,
 } from '@shared/lib/types/skillset'
 
-export type SkillsetPublishMode = 'pull_request' | 'hosted_submit'
+export type SkillsetPublishMode = 'pull_request' | 'hosted_submit' | 'none'
 
 export type SkillsetHostedUpdateType = 'skill' | 'agent'
 
@@ -20,6 +23,8 @@ export type SkillsetHostedUpdateInput = {
   skillsetUrl: string
   skillsetName?: string
   providerData?: SkillsetProviderData
+  /** Request-scoped secret for validation/add flows. Never serialize this ref. */
+  credential?: SkillsetCredentialInput
   targetName: string
   targetType: SkillsetHostedUpdateType
   files: SkillsetHostedUpdateFile[]
@@ -34,6 +39,8 @@ export type SkillsetPublishInput = {
   title: string
   body: string
   gitAddPaths?: string[]
+  /** Obsolete repository files to remove as part of a GitHub update. */
+  deletePaths?: string[]
 } & SkillsetHostedUpdateInput
 
 export type SkillsetPublishResult = {
@@ -56,6 +63,8 @@ export type SkillsetProviderRef = {
   skillsetUrl?: string
   skillsetName?: string
   providerData?: SkillsetProviderData
+  /** Request-scoped secret for validation/add flows. Never serialize this ref. */
+  credential?: SkillsetCredentialInput
 }
 
 export type SkillsetSourceInfo = {
@@ -75,6 +84,7 @@ export abstract class BaseSkillsetProvider {
 
   readonly supportsSuggestions: boolean = true
   readonly supportsRemoteSync: boolean = false
+  readonly usesGitCache: boolean = true
 
   normalizeProviderData(source?: { providerData?: SkillsetProviderData } | null): SkillsetProviderData | undefined {
     return source?.providerData
@@ -100,11 +110,39 @@ export abstract class BaseSkillsetProvider {
     return { showUrl: true }
   }
 
+  async isCacheReady(cacheDir: string): Promise<boolean> {
+    return directoryExists(path.join(cacheDir, '.git'))
+  }
+
+  async populateCache(_cacheDir: string, _ref: SkillsetProviderRef): Promise<void> {
+    throw new Error(`${this.name} provider does not implement populateCache`)
+  }
+
+  async refreshCache(_cacheDir: string, _ref: SkillsetProviderRef): Promise<void> {
+    throw new Error(`${this.name} provider does not implement refreshCache`)
+  }
+
   async resolveCloneUrl(url: string, _options?: SkillsetProviderRef): Promise<string> {
     return url
   }
 
-  async ensurePublishPreconditions(): Promise<void> {}
+  /** Add provider-specific authentication to a Git child process environment. */
+  getGitEnvironment(
+    _ref: SkillsetProviderRef,
+    baseEnvironment: NodeJS.ProcessEnv,
+  ): NodeJS.ProcessEnv {
+    return baseEnvironment
+  }
+
+  /** Add provider-specific authentication to a provider CLI child process. */
+  getCliEnvironment(
+    _ref: SkillsetProviderRef,
+    baseEnvironment: NodeJS.ProcessEnv,
+  ): NodeJS.ProcessEnv {
+    return baseEnvironment
+  }
+
+  async ensurePublishPreconditions(_ref?: SkillsetProviderRef): Promise<void> {}
 
   getRegistrationUrl(url: string): string {
     return url

@@ -4,10 +4,10 @@ import { Page, expect } from '@playwright/test'
  * Page object for the Getting Started Wizard
  *
  * Manual flow steps (0-indexed):
- *   0: LLM  |  1: Browser  |  2: Composio  |  3: Runtime  |  4: Privacy  |  5: Agent
+ *   0: LLM  |  1: Model  |  2: Browser  |  3: Composio  |  4: Runtime  |  5: Privacy  |  6: Agent
  *
- * Skippable steps: Composio (2), Agent (5)
- * Non-skippable steps with gating: LLM (needs key), Browser (default ok), Runtime (needs available runner)
+ * Skippable steps: Composio (3), Agent (6)
+ * Non-skippable steps with gating: LLM (needs key), Model (default ok), Browser (default ok), Runtime (needs available runner)
  */
 export class WizardPage {
   constructor(private page: Page) {}
@@ -77,21 +77,23 @@ export class WizardPage {
    * Requires a mock API key to be configured (LLM step gating)
    * and a runtime to be available (Runtime step gating).
    *
-   * Steps: LLM(Next) -> Browser(Next) -> Composio(Skip) -> Runtime(Next) -> Privacy(Next) -> Agent(Skip=Finish)
+   * Steps: LLM(Next) -> Model(Next) -> Browser(Next) -> Composio(Skip) -> Runtime(Next) -> Privacy(Next) -> Agent(Skip=Finish)
    */
   async dismissManualFlow() {
     await this.chooseManualSetup()
     await this.expectStep(0)
-    await this.clickNext()    // LLM -> Browser
+    await this.clickNext()    // LLM -> Model
     await this.expectStep(1)
-    await this.clickNext()    // Browser -> Composio
+    await this.clickNext()    // Model -> Browser
     await this.expectStep(2)
-    await this.clickSkip()    // Composio -> Runtime
+    await this.clickNext()    // Browser -> Composio
     await this.expectStep(3)
-    await this.clickNext()    // Runtime -> Privacy
+    await this.clickSkip()    // Composio -> Runtime
     await this.expectStep(4)
-    await this.clickNext()    // Privacy -> Agent
+    await this.clickNext()    // Runtime -> Privacy
     await this.expectStep(5)
+    await this.clickNext()    // Privacy -> Agent
+    await this.expectStep(6)
     await this.clickSkip()    // Agent (skip = finish)
   }
 

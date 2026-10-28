@@ -1,21 +1,65 @@
-import type { ChangeEventHandler, ClipboardEventHandler, FocusEventHandler, KeyboardEventHandler, ReactNode, Ref } from 'react'
+import { useCallback, useRef } from 'react'
+import type {
+  ClipboardEventHandler,
+  FocusEventHandler,
+  MutableRefObject,
+  ReactNode,
+  Ref,
+} from 'react'
 import { cn } from '@shared/lib/utils'
 import { AttachmentPreview, type Attachment } from './attachment-preview'
+import { SecretDetectionPrompt } from './secret-detection-prompt'
+import type { PotentialSecret } from '@renderer/lib/secret-detection'
+import { MarkdownComposerEditor } from './markdown-composer-editor'
+import type { ChipContext } from './composer-chips'
+
+const EMPTY_POTENTIAL_SECRETS: PotentialSecret[] = []
+
+/** The composer box: the frame the text editor and its action row sit in. Voice mode draws its own contents in the same frame. */
+export const COMPOSER_BOX_CLASS =
+  'group relative mx-auto w-full rounded-2xl border border-border/60 bg-background/95 px-3 py-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/80'
+
+/** The action row under the editor. When even the left group's icons do not fit, the right group wraps to its own line. */
+export const COMPOSER_ACTIONS_ROW_CLASS = 'mt-1 flex min-w-0 flex-wrap items-center gap-2'
+
+/**
+ * The row's left group takes the width the right group leaves, and is the size container the
+ * model picker collapses on. 76px holds the paperclip and the picker's icon, so the row wraps
+ * before they would overlap the right group.
+ */
+export const COMPOSER_LEFT_ACTIONS_CLASS = 'flex min-w-[76px] flex-1 items-center gap-2 [container-type:inline-size]'
+
+/**
+ * The floating translucent treatment for a composer that sits over content —
+ * the session composer's look, shared so the wizard's create-agent composer
+ * matches it instead of drifting on its own copy of the recipe.
+ */
+export const FLOATING_COMPOSER_CLASS =
+  'relative z-10 border-border/70 bg-background/85 shadow-[0_0_24px_rgba(15,23,42,0.07),0_2px_10px_-4px_rgba(15,23,42,0.08)] backdrop-blur-md supports-[backdrop-filter]:bg-background/65 dark:shadow-[0_0_26px_rgba(0,0,0,0.22),0_2px_12px_-4px_rgba(0,0,0,0.16)]'
+
+interface SecureSecretsProps {
+  agentSlug: string
+  potentialSecrets?: PotentialSecret[]
+  onDismiss: (candidate: PotentialSecret) => void
+  onSecure: (candidate: PotentialSecret, secret: { key: string; envVar: string }) => void
+}
 
 interface ChatComposerBoxProps {
   attachments: Attachment[]
   onRemoveAttachment: (id: string) => void
-  textareaRef?: Ref<HTMLTextAreaElement>
+  onRetryAttachment?: (id: string) => void
+  textareaRef?: Ref<HTMLDivElement>
   value: string
-  onChange: ChangeEventHandler<HTMLTextAreaElement>
-  onKeyDown?: KeyboardEventHandler<HTMLTextAreaElement>
-  onPaste?: ClipboardEventHandler<HTMLTextAreaElement>
-  onFocus?: FocusEventHandler<HTMLTextAreaElement>
-  onBlur?: FocusEventHandler<HTMLTextAreaElement>
+  onChange: (value: string) => void
+  onKeyDown?: (event: KeyboardEvent) => void
+  onPaste?: ClipboardEventHandler<HTMLDivElement>
+  onFocus?: FocusEventHandler<HTMLDivElement>
+  onBlur?: FocusEventHandler<HTMLDivElement>
   placeholder: string
   disabled?: boolean
   rows?: number
   autoFocus?: boolean
+  enterKeyHint?: 'enter' | 'done' | 'go' | 'next' | 'previous' | 'search' | 'send'
   dataTestId?: string
   leftActions?: ReactNode
   rightActions?: ReactNode
@@ -23,11 +67,15 @@ interface ChatComposerBoxProps {
   footer?: ReactNode
   className?: string
   textareaClassName?: string
+  secureSecrets?: SecureSecretsProps
+  /** What the composer knows about its agent, so chips whose referent is gone are flagged. */
+  chipContext?: ChipContext
 }
 
 export function ChatComposerBox({
   attachments,
   onRemoveAttachment,
+  onRetryAttachment,
   textareaRef,
   value,
   onChange,
@@ -39,6 +87,7 @@ export function ChatComposerBox({
   disabled,
   rows = 2,
   autoFocus,
+  enterKeyHint,
   dataTestId,
   leftActions,
   rightActions,
@@ -46,40 +95,60 @@ export function ChatComposerBox({
   footer,
   className,
   textareaClassName,
+  secureSecrets,
+  chipContext,
 }: ChatComposerBoxProps) {
+  const internalEditorRef = useRef<HTMLDivElement | null>(null)
+  const setEditorRef = useCallback((node: HTMLDivElement | null) => {
+    internalEditorRef.current = node
+    if (typeof textareaRef === 'function') {
+      textareaRef(node)
+    } else if (textareaRef) {
+      (textareaRef as MutableRefObject<HTMLDivElement | null>).current = node
+    }
+  }, [textareaRef])
+
+  const potentialSecrets = secureSecrets?.potentialSecrets ?? EMPTY_POTENTIAL_SECRETS
+
   return (
-    <div className={cn(
-      'group relative mx-auto w-full rounded-2xl border border-border/60 bg-background/95 px-3 py-3 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-background/80',
-      className
-    )}>
+    <div className={cn(COMPOSER_BOX_CLASS, className)}>
       {topRightActions && (
-        <div className="absolute top-2 right-2 z-10 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">{topRightActions}</div>
+        <div className="absolute top-2 right-2 z-10 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 touch:opacity-100">{topRightActions}</div>
       )}
-      <AttachmentPreview attachments={attachments} onRemove={onRemoveAttachment} />
-      <div className={attachments.length > 0 ? 'mt-2' : ''}>
-        <textarea
-          ref={textareaRef}
-          dir="auto"
+      <AttachmentPreview attachments={attachments} onRemove={onRemoveAttachment} onRetry={onRetryAttachment} />
+      <div
+        className={cn('relative', attachments.length > 0 && 'mt-2')}
+        onPaste={onPaste}
+        onFocus={onFocus}
+        onBlur={onBlur}
+      >
+        <MarkdownComposerEditor
           value={value}
           onChange={onChange}
           onKeyDown={onKeyDown}
-          onPaste={onPaste}
-          onFocus={onFocus}
-          onBlur={onBlur}
           placeholder={placeholder}
           disabled={disabled}
-          rows={rows}
           autoFocus={autoFocus}
-          data-testid={dataTestId}
-          className={cn(
-            'w-full resize-none rounded-md bg-background pl-1 pr-4 py-0 text-sm placeholder:text-muted-foreground focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 max-h-[200px] overflow-y-auto [field-sizing:content]',
-            textareaClassName
-          )}
+          dataTestId={dataTestId}
+          minRows={rows}
+          enterKeyHint={enterKeyHint}
+          className={cn('max-h-[200px]', textareaClassName)}
+          potentialSecrets={potentialSecrets}
+          chipContext={chipContext}
+          onEditorElement={setEditorRef}
         />
       </div>
-      <div className="mt-1 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1">{leftActions}</div>
-        <div className="flex items-center gap-2">{rightActions}</div>
+      {secureSecrets && potentialSecrets[0] && (
+        <SecretDetectionPrompt
+          agentSlug={secureSecrets.agentSlug}
+          candidate={potentialSecrets[0]}
+          onDismiss={secureSecrets.onDismiss}
+          onSecure={secureSecrets.onSecure}
+        />
+      )}
+      <div className={COMPOSER_ACTIONS_ROW_CLASS}>
+        <div className={COMPOSER_LEFT_ACTIONS_CLASS}>{leftActions}</div>
+        <div className="flex shrink-0 items-center gap-2">{rightActions}</div>
       </div>
       {footer}
     </div>

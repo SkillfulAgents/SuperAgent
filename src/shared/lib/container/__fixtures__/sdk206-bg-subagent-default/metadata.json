@@ -1,0 +1,25 @@
+{
+  "sessionId": "8025db40-d9e4-427f-b3be-288a023428ad",
+  "agentSlug": "capture",
+  "description": "Real capture (2026-07-09, SDK 0.3.206). Agent tool WITHOUT run_in_background — exercising the new CLI 2.1.198 background-BY-DEFAULT subagent behavior. The lead turn ends while the subagent runs; completion arrives via task_* signals. This is the shape every plain Task fan-out now produces.",
+  "sdkVersion": "0.3.206",
+  "cliVersion": "2.1.206",
+  "capturedAt": "2026-07-09",
+  "startActive": true,
+  "subagents": [],
+  "backgroundTasks": [
+    {
+      "taskId": "ac91a7e5e3992e123",
+      "taskType": "local_agent",
+      "startedT": 246375,
+      "prematureIdleT": 247905,
+      "realCompletionT": 250154
+    }
+  ],
+  "newFrameCounts": {
+    "background_tasks_changed": 2,
+    "result.terminal_reason:completed": 2,
+    "command_lifecycle:completed": 1
+  },
+  "totalEntries": 50
+}

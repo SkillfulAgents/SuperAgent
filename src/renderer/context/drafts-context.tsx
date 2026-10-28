@@ -2,10 +2,58 @@ import { createContext, useCallback, useContext, useMemo, useRef, useSyncExterna
 
 type Listener = () => void
 
-interface DraftsStore {
+export interface DraftsStore {
   get<T>(key: string): T | undefined
   set<T>(key: string, value: T | undefined): void
   subscribe(key: string, listener: Listener): () => void
+}
+
+export function appendToSessionDraft(
+  store: Pick<DraftsStore, 'get' | 'set'>,
+  sessionId: string,
+  content: string,
+  { prepend }: { prepend: boolean },
+): void {
+  const draftKey = `session:${sessionId}`
+  const existing = store.get<string>(draftKey)?.trim() ?? ''
+  const addition = content.trim()
+  const parts = prepend ? [addition, existing] : [existing, addition]
+  store.set(draftKey, parts.filter(Boolean).join('\n\n') || undefined)
+}
+
+export interface SessionDraftSnapshot {
+  text: string | undefined
+}
+
+/**
+ * Fork Session: capture the source's unsent text at click time (the fork's id
+ * does not exist yet), then seed the fork's slot once it does. A copy, not a
+ * move — the source keeps its own draft. Attachments live in component state,
+ * not here, so they do not carry.
+ */
+export function snapshotSessionDraft(store: Pick<DraftsStore, 'get'>, sessionId: string): SessionDraftSnapshot {
+  return {
+    text: store.get<string>(`session:${sessionId}`),
+  }
+}
+
+export function seedSessionDraft(
+  store: Pick<DraftsStore, 'set'>,
+  sessionId: string,
+  snapshot: SessionDraftSnapshot,
+): void {
+  if (snapshot.text !== undefined) store.set(`session:${sessionId}`, snapshot.text)
+}
+
+/** Seed a newly installed agent's home composer from its template prompt. */
+export function seedAgentTemplatePrompt(
+  store: Pick<DraftsStore, 'set'>,
+  agentSlug: string,
+  content: string | undefined,
+): boolean {
+  if (!content) return false
+  store.set(`agent:${agentSlug}`, content)
+  return true
 }
 
 const DraftsContext = createContext<DraftsStore | null>(null)
@@ -46,6 +94,17 @@ export function DraftsProvider({ children }: { children: ReactNode }) {
 }
 
 const NOOP_UNSUB = () => {}
+
+/**
+ * Imperative access to the drafts store without subscribing. Use when you need
+ * to read/write a draft in an event handler or effect but must NOT re-render on
+ * every keystroke (which `useDraft` would cause). The returned store is stable.
+ */
+export function useDraftsStore(): DraftsStore {
+  const store = useContext(DraftsContext)
+  if (!store) throw new Error('useDraftsStore must be used within DraftsProvider')
+  return store
+}
 
 export function useDraft<T>(key: string | null | undefined): [T | undefined, (value: T | undefined) => void] {
   const store = useContext(DraftsContext)

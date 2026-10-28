@@ -3,7 +3,7 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { signIn, signUp, signOut } from '@renderer/lib/auth-client'
-import { apiFetch } from '@renderer/lib/api'
+import { apiFetch, consumeRedirectStash, peekRedirectStash } from '@renderer/lib/api'
 import { Card, CardContent, CardHeader } from '@renderer/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@renderer/components/ui/tabs'
 import { Input } from '@renderer/components/ui/input'
@@ -11,6 +11,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Label } from '@renderer/components/ui/label'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Loader2 } from 'lucide-react'
+import type { PublicAuthProviderConfig } from '@shared/lib/auth/provider-config'
 
 // --- Public auth config (fetched from server) ---
 
@@ -18,6 +19,7 @@ interface AuthConfig {
   signupMode: string
   allowLocalAuth: boolean
   allowSocialAuth: boolean
+  providers: PublicAuthProviderConfig[]
   passwordMinLength: number
   passwordRequireComplexity: boolean
   requireAdminApproval: boolean
@@ -28,6 +30,7 @@ const DEFAULT_AUTH_CONFIG: AuthConfig = {
   signupMode: 'open',
   allowLocalAuth: true,
   allowSocialAuth: false,
+  providers: [],
   passwordMinLength: 8,
   passwordRequireComplexity: false,
   requireAdminApproval: false,
@@ -36,15 +39,37 @@ const DEFAULT_AUTH_CONFIG: AuthConfig = {
 
 function useAuthConfig() {
   const [config, setConfig] = useState<AuthConfig>(DEFAULT_AUTH_CONFIG)
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    let cancelled = false
     apiFetch('/api/auth-config')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => { if (data) setConfig(data) })
-      .catch(() => {})
+      .then(async (res) => {
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}))
+          throw new Error(data.error || 'Failed to load authentication configuration')
+        }
+        return res.json() as Promise<AuthConfig>
+      })
+      .then((data) => {
+        if (cancelled) return
+        setConfig(data)
+        setError(null)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setError(err instanceof Error ? err.message : 'Failed to load authentication configuration')
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
 
-  return config
+  return { config, isLoading, error }
 }
 
 // --- Schemas ---
@@ -99,6 +124,16 @@ function SignInForm({ onSwitchToSignUp, showSignupLink }: { onSwitchToSignUp: ()
       const res = await signIn.email({ email: data.email, password: data.password })
       if (res.error) {
         setServerError(res.error.message || 'Sign in failed')
+        return
+      }
+      // Restore the URL stashed when a 401 expired the session. Email login
+      // otherwise keeps the address bar in place, so this is a no-op unless a 401
+      // had bounced us to the sign-in screen. Lazy-import the router singleton so
+      // AuthPage's module graph (and its unit tests) don't pull in the whole route tree.
+      const back = consumeRedirectStash()
+      if (back) {
+        const { router } = await import('@renderer/router')
+        router.history.push(back)
       }
     } catch {
       setServerError('Sign in failed. Please try again.')
@@ -333,20 +368,92 @@ function SignUpForm({ onSwitchToSignIn, config, onPendingApproval }: { onSwitchT
 }
 
 export function AuthPage({ onPendingApproval }: { onPendingApproval?: (pending?: boolean) => void } = {}) {
-  const config = useAuthConfig()
+  const { config, isLoading, error } = useAuthConfig()
   const [tab, setTab] = useState<string>('signin')
+  const [providerError, setProviderError] = useState<string | null>(null)
+  const [providerLoadingId, setProviderLoadingId] = useState<string | null>(null)
+  const hasProviders = config.providers.length > 0
+  const showLocalAuth = config.allowLocalAuth
 
   // Signup is allowed in 'open' or 'domain_restricted' modes, OR for the very first user
   const signupAllowed = !config.hasUsers || config.signupMode === 'open' || config.signupMode === 'domain_restricted'
+
+  async function handleProviderSignIn(providerId: string) {
+    setProviderError(null)
+    setProviderLoadingId(providerId)
+
+    try {
+      const res = await signIn.social({
+        provider: providerId,
+        // Carry the post-401 destination through the OAuth round-trip.
+        callbackURL: peekRedirectStash(),
+        errorCallbackURL: '/',
+      })
+      if (res?.error) {
+        setProviderError(res.error.message || 'Failed to start single sign-on')
+        setProviderLoadingId(null)
+      }
+    } catch (error) {
+      setProviderError(error instanceof Error ? error.message : 'Failed to start single sign-on')
+      setProviderLoadingId(null)
+    }
+  }
 
   return (
     <div className="flex items-center justify-center h-screen bg-background" data-testid="auth-page">
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
-          <h1 className="text-2xl font-bold">SuperAgent</h1>
+          <h1 className="text-2xl font-medium">Gamut</h1>
         </CardHeader>
-        <CardContent>
-          {signupAllowed ? (
+        <CardContent className="space-y-4">
+          {isLoading ? (
+            <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground" data-testid="auth-config-loading">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading authentication options...
+            </div>
+          ) : error ? (
+            <Alert variant="destructive" data-testid="auth-config-error">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          ) : (
+            <>
+          {hasProviders && (
+            <div className="space-y-2" data-testid="auth-providers">
+              {config.providers.map((provider) => (
+                <Button
+                  key={provider.id}
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  disabled={!provider.available || providerLoadingId === provider.id}
+                  loading={providerLoadingId === provider.id}
+                  title={provider.available ? undefined : provider.readiness.reasons.join(', ')}
+                  data-testid={`auth-provider-${provider.id}`}
+                  onClick={() => handleProviderSignIn(provider.id)}
+                >
+                  Continue with {provider.displayName}
+                </Button>
+              ))}
+              {providerError && (
+                <Alert variant="destructive" data-testid="provider-signin-error">
+                  <AlertDescription>{providerError}</AlertDescription>
+                </Alert>
+              )}
+            </div>
+          )}
+
+          {hasProviders && showLocalAuth && (
+            <div className="relative" aria-hidden="true">
+              <div className="absolute inset-0 flex items-center">
+                <span className="w-full border-t" />
+              </div>
+              <div className="relative flex justify-center text-xs">
+                <span className="bg-background px-2 text-muted-foreground">or</span>
+              </div>
+            </div>
+          )}
+
+          {showLocalAuth && signupAllowed ? (
             <Tabs value={tab} onValueChange={setTab}>
               <TabsList className="w-full mb-4">
                 <TabsTrigger value="signin" className="flex-1" data-testid="auth-tab-signin">Sign In</TabsTrigger>
@@ -359,8 +466,14 @@ export function AuthPage({ onPendingApproval }: { onPendingApproval?: (pending?:
                 <SignUpForm onSwitchToSignIn={() => setTab('signin')} config={config} onPendingApproval={onPendingApproval} />
               </TabsContent>
             </Tabs>
-          ) : (
+          ) : showLocalAuth ? (
             <SignInForm onSwitchToSignUp={() => {}} showSignupLink={false} />
+          ) : !hasProviders ? (
+            <Alert data-testid="auth-config-empty">
+              <AlertDescription>No authentication providers are configured for this deployment.</AlertDescription>
+            </Alert>
+          ) : null}
+            </>
           )}
         </CardContent>
       </Card>

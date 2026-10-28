@@ -4,7 +4,8 @@
  * Type definitions for file-based agent storage
  */
 
-import type { EffortLevel, SlashCommandInfo } from '../container/types'
+import type { EffortLevel, SlashCommandInfo, SpeedLevel } from '../container/types'
+import type { LlmProviderId } from '../llm-provider/provider-types'
 
 // ============================================================================
 // Agent Roles
@@ -24,7 +25,7 @@ export function hasMinRole(actual: AgentRole | null, required: AgentRole): boole
 // ============================================================================
 
 /**
- * Frontmatter stored in CLAUDE.md
+ * Frontmatter stored in AGENTS.md
  */
 export interface AgentFrontmatter {
   name: string
@@ -34,12 +35,12 @@ export interface AgentFrontmatter {
 }
 
 /**
- * Full agent configuration from CLAUDE.md (internal use)
+ * Full agent configuration from AGENTS.md (internal use)
  */
 export interface AgentConfig {
   slug: string
   frontmatter: AgentFrontmatter
-  instructions: string // CLAUDE.md body (system prompt)
+  instructions: string // AGENTS.md body (system prompt)
 }
 
 /**
@@ -79,28 +80,73 @@ export interface SessionMetadata {
   name?: string
   starred?: boolean
   createdAt?: string // ISO date string - set when session is first created
+  createdByUserId?: string
+  // Mobile device family that started the session (session deviceId
+  // additionalField). Absent for browser/desktop/web/cron/webhook starts.
+  // Origin-device routing: the alert target falls back to this when no
+  // alertDeviceId claim exists.
+  createdByDeviceId?: string
+  // "Last speaker claims the alert": re-stamped on every device-authenticated
+  // message send; null when a deviceless surface (web) spoke last; absent =
+  // never re-claimed (fall back to createdByDeviceId).
+  alertDeviceId?: string | null
   // Scheduled task fields - present when session was created from a scheduled task
   isScheduledExecution?: boolean
   scheduledTaskId?: string
   scheduledTaskName?: string
+  scheduledExecutionAt?: string
   // Webhook trigger fields - present when session was created from a webhook trigger
   isWebhookExecution?: boolean
   webhookTriggerId?: string
   webhookTriggerName?: string
+  // Lifecycle outcome for cron/webhook sessions. Set to running at session
+  // creation and finalized from the runtime's terminal result event.
+  automationStatus?: 'running' | 'succeeded' | 'failed'
+  // One webhook session can represent a batch of several claimed deliveries.
+  webhookInvocationCount?: number
+  // Common provenance for every external integration; set by the integration manager.
+  isAgentIntegrationSession?: boolean
+  agentIntegrationId?: string
   // Chat integration fields - present when session was created from an external chat
   isChatIntegrationSession?: boolean
   chatIntegrationId?: string
+  // Set when an automated session is promoted to interactive (e.g. agent asked a user question).
+  // The original automation flags above are preserved for provenance.
+  promotedToInteractive?: boolean
+  // Last scheduled wake delivered to this session. Duplicate-fire guard: the
+  // scheduler skips re-sending a wake whose task id + execution slot match.
+  lastWake?: { taskId: string; executionAt: string }
   // Context window usage from the last completed turn
   lastUsage?: SessionUsage
   // Available slash commands from the agent SDK
   slashCommands?: SlashCommandInfo[]
   // Last effort level used by the user on this session (seeds the composer on reload)
   effort?: EffortLevel
+  // Last processing speed used by the user on this session (seeds the composer on reload)
+  speed?: SpeedLevel
   // Last model used by the user on this session (seeds the composer on reload).
   // Stored as the provider's pinned ID, not the family.
   model?: string
-  // X-Agent: present when this session was created by another agent invoking this one
+  llmProviderId?: string | null
+  // Provider that produced each API-error message, keyed by transcript uuid,
+  // so the error keeps its own provider's copy after the session switches.
+  errorProviders?: Record<string, LlmProviderId>
+  // X-Agent: present when this session was created by another agent invoking this one.
+  // Such sessions are hidden as automated until promoted for human input.
   invokedByAgentSlug?: string
+  // Widget repair: the platform opened this session because the artifact's
+  // widget refresh script failed. Automated (hidden) like a cron run, and the
+  // slug doubles as the per-widget dedupe key.
+  isWidgetRepair?: boolean
+  widgetRepairSlug?: string
+  // Dashboard dispatch: present when the session was started from a dashboard's
+  // dispatch confirmation dialog. Provenance only — a human clicked Dispatch,
+  // so these sessions stay interactive (never hidden as automated).
+  dispatchedByDashboardSlug?: string
+  dispatchedByDashboardAgentSlug?: string
+  // Fork lineage: the session this one was copied from (Fork Session). Provenance
+  // only — a fork stays interactive; do not add it to the automated-hide list.
+  forkedFromSessionId?: string
 }
 
 /**
@@ -109,6 +155,8 @@ export interface SessionMetadata {
 export interface SessionMetadataMap {
   [sessionId: string]: SessionMetadata
 }
+
+export type SessionOrigin = 'user' | 'scheduled' | 'webhook' | 'integration' | 'agent' | 'widget-repair'
 
 /**
  * Session info derived from JSONL file + metadata
@@ -119,8 +167,9 @@ export interface SessionInfo {
   name: string
   createdAt: Date
   lastActivityAt: Date
-  messageCount: number
   isActive?: boolean
+  /** Original source, preserved when an automated session becomes interactive. */
+  origin?: SessionOrigin
 }
 
 /**
@@ -136,18 +185,27 @@ export interface JsonlMessageEntry {
     role: string
     content: string | ContentBlock[]
     model?: string
+  llmProviderId?: string | null
     id?: string
     usage?: {
       input_tokens: number
       output_tokens: number
+      cache_creation_input_tokens?: number
+      cache_read_input_tokens?: number
     }
   }
+  // Set by the CLI on synthetic assistant entries that carry an API error
+  // text ("API Error: 529 Overloaded ..."). See utils/synthetic-message.ts.
+  isApiErrorMessage?: boolean
   // Tool result specific fields (present when type is 'user' with tool_result content)
   toolUseResult?: {
     stdout: string
     stderr: string
     interrupted: boolean
     isImage: boolean
+    backgroundTaskId?: string
+    // Monitor's result: the id of the watch it started
+    taskId?: string
     // Subagent-specific (present only on Task tool results)
     agentId?: string
     status?: string
@@ -162,6 +220,22 @@ export interface JsonlMessageEntry {
   // Compact summary fields (present on user messages that contain a compaction summary)
   isCompactSummary?: boolean
   isVisibleInTranscriptOnly?: boolean
+  // SDK message origin metadata (available since claude-agent-sdk 0.3.144)
+  origin?: { kind: string; [key: string]: unknown }
+  // Set on synthetic user entries derived from queued_command attachments
+  // (messages delivered mid-turn) — see normalizeQueuedCommandEntry.
+  isQueuedCommand?: boolean
+  forkedFrom?: JsonlForkStamp
+}
+
+/**
+ * Stamped by the SDK on every line copied into a forked session (messages,
+ * system entries, attachments alike): the source session and the line's uuid
+ * there. Absent on lines written after the fork.
+ */
+export interface JsonlForkStamp {
+  sessionId: string
+  messageUuid: string
 }
 
 /**
@@ -179,6 +253,33 @@ export interface JsonlSystemEntry {
     preTokens: number
   }
   memory_paths?: string[]
+  // Severity for `informational` entries (host-persisted loop banners, e.g. a
+  // hook blocking a prompt). Mirrors the SDK's informational message `level`.
+  level?: string
+  forkedFrom?: JsonlForkStamp
+}
+
+/**
+ * Attachment entry from Claude's JSONL format. The CLI records user messages
+ * that arrive mid-turn (queued/steering input) as `queued_command` attachments
+ * instead of regular user entries; `source_uuid` is the queue entry's id, which
+ * for SDK input is the uuid the message was sent with (verified live on SDK
+ * 0.3.280; a fork leaves it unchanged). The line's own `uuid` is unrelated.
+ */
+export interface JsonlAttachmentEntry {
+  uuid: string
+  parentUuid?: string | null
+  type: 'attachment'
+  sessionId?: string
+  timestamp: string
+  attachment: {
+    type: string
+    prompt?: string | ContentBlock[]
+    source_uuid?: string
+    commandMode?: string
+    isMeta?: boolean
+  }
+  forkedFrom?: JsonlForkStamp
 }
 
 /**
@@ -197,7 +298,29 @@ export interface JsonlFileHistoryEntry {
 /**
  * Union type for all JSONL entry types
  */
-export type JsonlEntry = JsonlMessageEntry | JsonlFileHistoryEntry | JsonlSystemEntry
+export type JsonlEntry = JsonlMessageEntry | JsonlFileHistoryEntry | JsonlSystemEntry | JsonlAttachmentEntry
+
+// ============================================================================
+// Session activity (working-indicator projection)
+// ============================================================================
+
+/**
+ * What the agent is doing right now, projected from a session's streaming state.
+ * Mirrors the app activity-indicator precedence so chat connectors can surface
+ * the same honest label instead of a single hardcoded "Thinking…".
+ *
+ * 'idle' | 'awaiting' | 'streaming' show NO placeholder — the surface is owned
+ * by the reply (streaming) or a request card (awaiting), or there is nothing to
+ * show (idle). The rest are "busy" states that drive a labeled placeholder.
+ */
+export type SessionActivity =
+  | 'idle'        // not active
+  | 'awaiting'    // waiting on the user (question / secret / file / etc.)
+  | 'streaming'   // assistant TEXT is streaming into the reply — it owns the surface
+  | 'compacting'  // context compaction in progress
+  | 'retrying'    // API retry in progress
+  | 'thinking'    // an extended-thinking block is streaming
+  | 'working'     // active with nothing more specific to show
 
 // ============================================================================
 // Content Block Types (from Anthropic API)
@@ -264,9 +387,9 @@ You are a helpful AI assistant.
 `
 
 /**
- * Generate default CLAUDE.md content for a new agent
+ * Generate default AGENTS.md content for a new agent
  */
-export function generateDefaultClaudeMd(name: string, description?: string): string {
+export function generateDefaultAgentInstructions(name: string, description?: string): string {
   const frontmatter: AgentFrontmatter = {
     name,
     createdAt: new Date().toISOString(),

@@ -1,0 +1,16 @@
+# Runs on every push to main and immediately succeeds. The "commit-is-on-main"
+# check it produces is required by the "Release tags only from main" tag ruleset,
+# so v* tags can only be created on commits that were pushed to main.
+name: Tag Eligibility
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  commit-is-on-main:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Commit is on main - eligible for release tagging."

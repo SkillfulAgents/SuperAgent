@@ -5,13 +5,15 @@
  */
 
 import { apiFetch } from '@renderer/lib/api'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ApiScheduledTask } from '@shared/lib/types/api'
 import {
   useAutomationList,
   useAutomationDetail,
   useCancelAutomation,
   useAutomationSessions,
+  automationSessionsQuery,
+  type AutomationSessionInfo,
 } from './use-agent-automations'
 
 // Re-export for convenience
@@ -45,6 +47,33 @@ export function useCancelScheduledTask() {
  */
 export function useScheduledTaskSessions(taskId: string | null) {
   return useAutomationSessions(TYPE, taskId)
+}
+
+/**
+ * Fetch the sessions created by each of these scheduled tasks, together
+ */
+export function useScheduledTasksSessions(taskIds: string[]) {
+  return useQueries({
+    queries: taskIds.map((id) => automationSessionsQuery(TYPE, id)),
+    combine: (results) => results.flatMap((result) => result.data ?? []),
+  })
+}
+
+/**
+ * Fetch settled sessions created by completed one-time scheduled tasks.
+ * Keep this under the agent's sessions query prefix so session lifecycle,
+ * rename, and delete invalidations refresh the footer count and history page.
+ */
+export function useCompletedOneTimeSessions(agentSlug: string | null) {
+  return useQuery<AutomationSessionInfo[]>({
+    queryKey: ['sessions', agentSlug, 'completed-one-time'],
+    queryFn: async () => {
+      const res = await apiFetch(`/api/agents/${agentSlug}/scheduled-tasks/completed-sessions`)
+      if (!res.ok) throw new Error('Failed to fetch completed one-time sessions')
+      return res.json()
+    },
+    enabled: !!agentSlug,
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +179,7 @@ export function useRunScheduledTaskNow() {
  */
 export function useDescribeSchedule() {
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ taskId }: { taskId: string }) => {
       const res = await apiFetch(`/api/scheduled-tasks/${taskId}/describe-schedule`, {
         method: 'POST',
@@ -165,6 +195,7 @@ export function useDescribeSchedule() {
  */
 export function useParseSchedule() {
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ taskId, description }: { taskId: string; description: string }) => {
       const res = await apiFetch(`/api/scheduled-tasks/${taskId}/parse-schedule`, {
         method: 'POST',
@@ -187,6 +218,7 @@ export function useUpdateScheduledTaskPrompt() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ taskId, prompt }: { taskId: string; agentSlug: string; prompt: string }) => {
       const res = await apiFetch(`/api/scheduled-tasks/${taskId}/prompt`, {
         method: 'PATCH',
@@ -207,16 +239,45 @@ export function useUpdateScheduledTaskPrompt() {
 }
 
 /**
- * Update a scheduled task's runtime options (model and/or effort)
+ * Update a scheduled task's display name
+ */
+export function useUpdateScheduledTaskName() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async ({ taskId, name }: { taskId: string; agentSlug: string; name: string }) => {
+      const res = await apiFetch(`/api/scheduled-tasks/${taskId}/name`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || 'Failed to update name')
+      }
+      return res.json() as Promise<ApiScheduledTask>
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['scheduled-task', data.id] })
+      queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', data.agentSlug] })
+    },
+  })
+}
+
+/**
+ * Update a scheduled task's runtime options (model, effort, and/or speed)
  */
 export function useUpdateScheduledTaskRuntimeOptions() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ taskId, model, effort }: { taskId: string; agentSlug: string; model?: string | null; effort?: string | null }) => {
+    mutationFn: async ({ taskId, llmProviderId, model, effort, speed }: { taskId: string; agentSlug: string; llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null }) => {
       const body: Record<string, string | null> = {}
+      if (llmProviderId !== undefined) body.llmProviderId = llmProviderId
       if (model !== undefined) body.model = model
       if (effort !== undefined) body.effort = effort
+      if (speed !== undefined) body.speed = speed
       const res = await apiFetch(`/api/scheduled-tasks/${taskId}/runtime-options`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -228,10 +289,10 @@ export function useUpdateScheduledTaskRuntimeOptions() {
       }
       return res.json() as Promise<ApiScheduledTask>
     },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['scheduled-task', data.id] })
-      queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', data.agentSlug] })
-    },
+    onSuccess: (data) => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['scheduled-task', data.id] }),
+      queryClient.invalidateQueries({ queryKey: ['scheduled-tasks', data.agentSlug] }),
+    ]),
   })
 }
 
@@ -249,7 +310,9 @@ export function useUpdateSchedule() {
         body: JSON.stringify({ scheduleExpression }),
       })
       if (!res.ok) throw new Error('Failed to update schedule')
-      return res.json() as Promise<ApiScheduledTask>
+      // The route appends a top-level `warning` when the new cadence is below the
+      // recommended minimum interval; surface it to the caller.
+      return res.json() as Promise<ApiScheduledTask & { warning?: string }>
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['scheduled-task', data.id] })

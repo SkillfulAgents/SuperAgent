@@ -1,0 +1,269 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import type { ScheduledTask } from '@shared/lib/services/scheduled-task-service'
+
+const mockGetDueTasks = vi.fn()
+const mockMarkTaskExecuted = vi.fn()
+const mockMarkTaskFailed = vi.fn()
+const mockUpdateNextExecution = vi.fn()
+const mockRescheduleAfterFailure = vi.fn()
+
+vi.mock('@shared/lib/services/scheduled-task-service', () => ({
+  getDueTasks: (...args: unknown[]) => mockGetDueTasks(...args),
+  getScheduledTask: vi.fn(() => Promise.resolve(null)),
+  markTaskExecuted: (...args: unknown[]) => mockMarkTaskExecuted(...args),
+  markTaskFailed: (...args: unknown[]) => mockMarkTaskFailed(...args),
+  updateNextExecution: (...args: unknown[]) => mockUpdateNextExecution(...args),
+  rescheduleAfterFailure: (...args: unknown[]) => mockRescheduleAfterFailure(...args),
+  recordTaskSkip: vi.fn(() => Promise.resolve()),
+}))
+
+const mockCreateSession = vi.fn()
+const mockEnsureRunning = vi.fn()
+
+// The actor reaches the container client through getClient after start();
+// hand back whatever ensureRunning last resolved to.
+let mockClient: unknown
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return {
+    containerHost: hostFromManagerMock({
+      ensureRunning: async (...args: unknown[]) => {
+        mockClient = await mockEnsureRunning(...args)
+        return mockClient
+      },
+      getClient: () => mockClient,
+    }),
+  }
+})
+
+vi.mock('@shared/lib/config/settings', () => ({
+  getSettings: () => ({}),
+  getEffectiveModels: () => ({
+    agentModel: 'claude-sonnet-4-20250514',
+    browserModel: 'claude-sonnet-4-20250514',
+    dashboardBuilderModel: 'claude-sonnet-4-20250514',
+  }),
+}))
+
+const mockSubscribeToSession = vi.fn()
+const mockMarkSessionActive = vi.fn()
+
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    subscribe: (...args) => mockSubscribeToSession(...args),
+    markActive: (...args) => mockMarkSessionActive(...args),
+  }),
+}))
+
+const mockTriggerScheduledSessionStarted = vi.fn()
+
+vi.mock('@shared/lib/notifications/notification-manager', () => ({
+  notificationManager: {
+    triggerScheduledSessionStarted: (...args: unknown[]) =>
+      mockTriggerScheduledSessionStarted(...args),
+  },
+}))
+
+const mockGetSessionForScheduledExecution = vi.fn()
+const mockRegisterSession = vi.fn()
+const mockUpdateSessionMetadata = vi.fn()
+
+vi.mock('@shared/lib/services/session-service', () => ({
+  getSessionMetadata: vi.fn(() => Promise.resolve(null)),
+  getSessionForScheduledExecution: (...args: unknown[]) =>
+    mockGetSessionForScheduledExecution(...args),
+  registerSession: (...args: unknown[]) => mockRegisterSession(...args),
+  updateSessionMetadata: (...args: unknown[]) => mockUpdateSessionMetadata(...args),
+}))
+
+const mockGetSecretEnvVars = vi.fn()
+
+vi.mock('@shared/lib/services/secrets-service', () => ({
+  getSecretEnvVars: (...args: unknown[]) => mockGetSecretEnvVars(...args),
+}))
+
+const mockAgentExists = vi.fn()
+
+vi.mock('@shared/lib/services/agent-service', () => ({
+  agentExists: (...args: unknown[]) => mockAgentExists(...args),
+}))
+
+const mockGetNextCronTime = vi.fn()
+
+vi.mock('@shared/lib/services/schedule-parser', () => ({
+  getNextCronTime: (...args: unknown[]) => mockGetNextCronTime(...args),
+}))
+
+const mockRunWithOptionalUser = vi.fn(
+  (_userId: string | null | undefined, fn: () => unknown) => fn(),
+)
+
+vi.mock('@shared/lib/platform-attribution', () => ({
+  runWithOptionalUser: (userId: string | null | undefined, fn: () => unknown) =>
+    mockRunWithOptionalUser(userId, fn),
+}))
+
+const mockCaptureException = vi.fn()
+
+vi.mock('@shared/lib/error-reporting', () => ({
+  captureException: (...args: unknown[]) => mockCaptureException(...args),
+}))
+
+import { taskScheduler } from './task-scheduler'
+
+const scheduledExecutionAt = new Date('2026-06-26T17:00:00.000Z')
+const nextExecutionAt = new Date('2026-06-26T17:05:00.000Z')
+
+function createTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
+  return {
+    id: 'task-1',
+    agentSlug: 'agent-one',
+    scheduleType: 'at',
+    scheduleExpression: 'at 2026-06-26 10:00',
+    prompt: 'Run the scheduled report',
+    name: 'Daily report',
+    status: 'pending',
+    nextExecutionAt: scheduledExecutionAt,
+    lastExecutedAt: null,
+    isRecurring: false,
+    executionCount: 0,
+    consecutiveSkips: 0,
+    lastSkippedAt: null,
+    lastSessionId: null,
+    createdBySessionId: null,
+    createdByUserId: 'user-1',
+    timezone: 'America/Los_Angeles',
+    model: null,
+  llmProviderId: null,
+    effort: null,
+    speed: null,
+    resumeSessionId: null,
+    createdAt: new Date('2026-06-26T16:00:00.000Z'),
+    cancelledAt: null,
+    pausedAt: null,
+    ...overrides,
+  }
+}
+
+function existingScheduledSession(sessionId = 'container-session-1') {
+  return {
+    id: sessionId,
+    agentSlug: 'agent-one',
+    name: 'Daily report',
+    createdAt: scheduledExecutionAt,
+    lastActivityAt: scheduledExecutionAt,
+  }
+}
+
+describe('TaskScheduler duplicate execution guard', () => {
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    taskScheduler.stop()
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    vi.clearAllMocks()
+    mockGetDueTasks.mockResolvedValue([])
+    mockEnsureRunning.mockResolvedValue({ createSession: mockCreateSession })
+    mockCreateSession.mockResolvedValue({ id: 'container-session-1' })
+    mockSubscribeToSession.mockResolvedValue(undefined)
+    mockTriggerScheduledSessionStarted.mockResolvedValue(undefined)
+    mockRegisterSession.mockResolvedValue(undefined)
+    mockUpdateSessionMetadata.mockResolvedValue(undefined)
+    mockGetSecretEnvVars.mockResolvedValue([])
+    mockAgentExists.mockResolvedValue(true)
+    mockGetSessionForScheduledExecution.mockResolvedValue(null)
+    mockMarkTaskExecuted.mockResolvedValue(undefined)
+    mockMarkTaskFailed.mockResolvedValue(undefined)
+    mockUpdateNextExecution.mockResolvedValue(undefined)
+    mockRescheduleAfterFailure.mockResolvedValue(undefined)
+    mockGetNextCronTime.mockReturnValue(nextExecutionAt)
+  })
+
+  afterEach(() => {
+    taskScheduler.stop()
+    consoleErrorSpy.mockRestore()
+  })
+
+  it('reconciles a retried one-time task with the existing scheduled session instead of creating a duplicate', async () => {
+    const task = createTask()
+    mockGetDueTasks.mockResolvedValue([task])
+    mockGetSessionForScheduledExecution
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(existingScheduledSession())
+    mockMarkTaskExecuted
+      .mockRejectedValueOnce(new Error('lost durable mark'))
+      .mockResolvedValueOnce(undefined)
+    mockMarkTaskFailed.mockRejectedValue(new Error('same SQLite outage'))
+
+    await taskScheduler.triggerExecution()
+    await taskScheduler.triggerExecution()
+
+    expect(mockGetSessionForScheduledExecution).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ slug: 'agent-one' }),
+      'task-1',
+      scheduledExecutionAt,
+    )
+    expect(mockGetSessionForScheduledExecution).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ slug: 'agent-one' }),
+      'task-1',
+      scheduledExecutionAt,
+    )
+    expect(mockCreateSession).toHaveBeenCalledTimes(1)
+    expect(mockEnsureRunning).toHaveBeenCalledTimes(1)
+    expect(mockRegisterSession).toHaveBeenCalledWith(
+      expect.objectContaining({ slug: 'agent-one' }),
+      'container-session-1',
+      'Daily report',
+      expect.objectContaining({
+        isScheduledExecution: true,
+        scheduledTaskId: 'task-1',
+        scheduledTaskName: 'Daily report',
+        scheduledExecutionAt: scheduledExecutionAt.toISOString(),
+        automationStatus: 'running',
+      }),
+    )
+    expect(mockUpdateSessionMetadata).not.toHaveBeenCalled()
+    expect(mockMarkTaskExecuted).toHaveBeenNthCalledWith(1, 'task-1', 'container-session-1')
+    expect(mockMarkTaskExecuted).toHaveBeenNthCalledWith(2, 'task-1', 'container-session-1')
+  })
+
+  it('reconciles a retried recurring task with the existing scheduled session and advances the schedule', async () => {
+    const task = createTask({
+      scheduleType: 'cron',
+      scheduleExpression: '*/5 * * * *',
+      isRecurring: true,
+    })
+    mockGetDueTasks.mockResolvedValue([task])
+    mockGetSessionForScheduledExecution
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(existingScheduledSession())
+    mockUpdateNextExecution
+      .mockRejectedValueOnce(new Error('lost durable advance'))
+      .mockResolvedValueOnce(undefined)
+    mockRescheduleAfterFailure.mockRejectedValue(new Error('same SQLite outage'))
+    mockMarkTaskFailed.mockRejectedValue(new Error('same SQLite outage'))
+
+    await taskScheduler.triggerExecution()
+    await taskScheduler.triggerExecution()
+
+    expect(mockCreateSession).toHaveBeenCalledTimes(1)
+    expect(mockUpdateNextExecution).toHaveBeenNthCalledWith(
+      1,
+      'task-1',
+      nextExecutionAt,
+      'container-session-1',
+    )
+    // The failure path only advances the schedule; it never records a fire
+    // with a blank session id.
+    expect(mockRescheduleAfterFailure).toHaveBeenCalledWith('task-1', nextExecutionAt)
+    expect(mockUpdateNextExecution).toHaveBeenNthCalledWith(
+      2,
+      'task-1',
+      nextExecutionAt,
+      'container-session-1',
+    )
+  })
+})

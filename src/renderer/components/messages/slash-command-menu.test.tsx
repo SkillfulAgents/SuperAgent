@@ -128,8 +128,8 @@ describe('SlashCommandMenu', () => {
         filter="de"
       />
     )
-    // "de" should be bold in "deploy" and "debug"
-    const boldElements = document.querySelectorAll('.font-bold')
+    // "de" should be highlighted in "deploy" and "debug"
+    const boldElements = document.querySelectorAll('.font-medium')
     expect(boldElements.length).toBeGreaterThanOrEqual(2)
     expect(boldElements[0].textContent).toBe('de')
   })

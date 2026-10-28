@@ -1,128 +1,137 @@
-import { test, expect } from '@playwright/test'
-import { AppPage } from '../pages/app.page'
-import { AgentPage } from '../pages/agent.page'
+import { test, expect, type Page } from '@playwright/test'
 import { SessionPage } from '../pages/session.page'
+import {
+  createAgent as createAgentViaApi,
+  getAgentItem,
+  gotoAgentHome,
+  gotoAgentSession,
+  uniqueName,
+  uniqueSuffix,
+  waitForSessionIdle,
+  type TestAgent,
+  type TestSession,
+} from '../helpers/agents'
 
-// Run serially to avoid conflicts
-test.describe.configure({ mode: 'serial' })
+function userMessage(sessionPage: SessionPage, text: string) {
+  // `.first()` is deliberate: during reconciliation the optimistic
+  // pending-user-message ghost and the persisted message-user briefly coexist
+  // (both carry data-testid="message-user"), so a bare toBeVisible() on the
+  // unscoped match trips Playwright strict mode under CI load. These checks only
+  // assert the message is PRESENT; the isolation guarantee is asserted by the
+  // getMessageList().not.toContainText(...) lines below.
+  return sessionPage.getUserMessages().filter({ hasText: text }).first()
+}
 
+async function currentSession(page: Page, agent: Pick<TestAgent, 'slug'>): Promise<TestSession> {
+  let sessionId = ''
+
+  await expect.poll(async () => {
+    const match = page.url().match(/\/agents\/([^/?#]+)\/sessions\/([^/?#]+)(?:[?#].*)?$/)
+    if (!match || !match[1].endsWith(agent.slug)) return ''
+
+    sessionId = match[2]
+    return sessionId
+  }, { timeout: 15000 }).not.toBe('')
+
+  return { id: sessionId, name: '' }
+}
+
+async function waitForSessionsToSettle(
+  request: Parameters<typeof waitForSessionIdle>[0],
+  sessions: Array<{ agent: TestAgent; session: TestSession | undefined }>,
+) {
+  for (const { agent, session } of sessions) {
+    if (session) await waitForSessionIdle(request, agent, session).catch(() => {})
+  }
+}
+
+async function switchAgentViaSidebar(page: Page, agent: TestAgent) {
+  const agentItem = getAgentItem(page, agent)
+
+  await expect(agentItem).toBeVisible({ timeout: 15000 })
+  await agentItem.scrollIntoViewIfNeeded({ timeout: 10000 })
+  await agentItem.click()
+  await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agent.name, { timeout: 15000 })
+  await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible({ timeout: 15000 })
+}
+
+// These tests leave their uniquely named agents in the per-run data dir and let
+// setup-e2e-data reset them before the next run. Deleting agents while sibling
+// workers list /api/agents can race session-summary file reads under load.
 test.describe('Cross-Session Message Isolation', () => {
-  let appPage: AppPage
-  let agentPage: AgentPage
-  let sessionPage: SessionPage
+  test('messages from one agent do not leak into another agent', async ({ page, request }, testInfo) => {
+    const sessionPage = new SessionPage(page)
+    const agentA = await createAgentViaApi(request, uniqueName(testInfo, 'Isolation A'))
+    const agentB = await createAgentViaApi(request, uniqueName(testInfo, 'Isolation B'))
+    const messageA = `slow response for agent A ${uniqueSuffix(testInfo)}`
+    const messageB = `Hello from agent B ${uniqueSuffix(testInfo)}`
+    let sessionA: TestSession | undefined
+    let sessionB: TestSession | undefined
 
-  test.beforeEach(async ({ page }) => {
-    appPage = new AppPage(page)
-    agentPage = new AgentPage(page)
-    sessionPage = new SessionPage(page)
+    try {
+      await gotoAgentHome(page, agentA)
+      await sessionPage.sendMessage(messageA)
+      sessionA = await currentSession(page, agentA)
+
+      await expect(userMessage(sessionPage, messageA)).toBeVisible({ timeout: 10000 })
+      await expect(sessionPage.getStopButton()).toBeVisible({ timeout: 5000 })
+
+      await switchAgentViaSidebar(page, agentB)
+      await expect(page.locator('[data-testid="main-content"]')).not.toContainText(messageA)
+
+      await sessionPage.sendMessage(messageB)
+      sessionB = await currentSession(page, agentB)
+
+      await expect(userMessage(sessionPage, messageB)).toBeVisible({ timeout: 10000 })
+      await expect(sessionPage.getMessageList()).not.toContainText(messageA)
+
+      await gotoAgentSession(page, agentA, sessionA)
+
+      const messageAList = sessionPage.getMessageList()
+      await expect(messageAList).toBeVisible({ timeout: 5000 })
+      await expect(userMessage(sessionPage, messageA)).toBeVisible({ timeout: 10000 })
+      await expect(messageAList).not.toContainText(messageB)
+    } finally {
+      await waitForSessionsToSettle(request, [
+        { agent: agentA, session: sessionA },
+        { agent: agentB, session: sessionB },
+      ])
+    }
   })
 
-  test('messages from one agent do not leak into another agent', async ({ page }) => {
-    const ts = Date.now()
-    const agentAName = `Agent A ${ts}`
-    const agentBName = `Agent B ${ts}`
-    const messageA = 'slow response for agent A'
-    const messageB = 'Hello from agent B'
+  test('pending optimistic message is scoped to session', async ({ page, request }, testInfo) => {
+    const sessionPage = new SessionPage(page)
+    const agentA = await createAgentViaApi(request, uniqueName(testInfo, 'Pending A'))
+    const agentB = await createAgentViaApi(request, uniqueName(testInfo, 'Pending B'))
+    const messageA = `slow response test ${uniqueSuffix(testInfo)}`
+    const messageB = `Quick message B ${uniqueSuffix(testInfo)}`
+    let sessionA: TestSession | undefined
+    let sessionB: TestSession | undefined
 
-    await appPage.goto()
-    await appPage.waitForAgentsLoaded()
+    try {
+      await gotoAgentHome(page, agentA)
+      await sessionPage.sendMessage(messageA)
+      sessionA = await currentSession(page, agentA)
 
-    // Create two agents
-    await agentPage.createAgent(agentAName)
-    await agentPage.createAgent(agentBName)
+      await expect(userMessage(sessionPage, messageA)).toBeVisible({ timeout: 10000 })
+      await expect(sessionPage.getStopButton()).toBeVisible({ timeout: 5000 })
 
-    // 1. Go to Agent A and send a slow message (triggers 3s delay)
-    await agentPage.selectAgent(agentAName)
-    await sessionPage.sendMessage(messageA)
+      await gotoAgentHome(page, agentB)
+      await sessionPage.sendMessage(messageB)
+      sessionB = await currentSession(page, agentB)
 
-    // Wait for user message to appear
-    await sessionPage.waitForUserMessageCount(1)
+      await expect(userMessage(sessionPage, messageB)).toBeVisible({ timeout: 10000 })
+      await expect(sessionPage.getMessageList()).not.toContainText(messageA)
 
-    // Verify Agent A is working (slow response takes 3s)
-    await expect(sessionPage.getStopButton()).toBeVisible({ timeout: 5000 })
+      await gotoAgentSession(page, agentA, sessionA)
 
-    // 2. While Agent A is working, switch to Agent B
-    await agentPage.selectAgent(agentBName)
-
-    // 3. Send a message to Agent B
-    await sessionPage.sendMessage(messageB)
-    await sessionPage.waitForUserMessageCount(1)
-    await sessionPage.expectUserMessage(messageB, 0)
-
-    // Verify Agent B's message list does NOT contain Agent A's message
-    const messageBList = sessionPage.getMessageList()
-    await expect(messageBList).not.toContainText(messageA)
-
-    // 4. Switch back to Agent A and select its session
-    await agentPage.selectAgent(agentAName)
-    // Need to click on the session in the sidebar since switching agent deselects it
-    await sessionPage.selectFirstSessionInSidebar(agentPage.getAgentLi(agentAName))
-
-    // Wait for message list to appear
-    const messageAList = sessionPage.getMessageList()
-    await expect(messageAList).toBeVisible({ timeout: 5000 })
-
-    // 5. Verify Agent A's messages do NOT contain Agent B's message
-    await sessionPage.expectUserMessage(messageA, 0)
-    await expect(messageAList).not.toContainText(messageB)
-
-    // Cleanup: delete both agents
-    await agentPage.selectAgent(agentAName)
-    try { await agentPage.deleteAgent() } catch { /* ignore */ }
-    await page.waitForTimeout(500)
-    await agentPage.selectAgent(agentBName)
-    try { await agentPage.deleteAgent() } catch { /* ignore */ }
-  })
-
-  test('pending optimistic message is scoped to session', async ({ page }) => {
-    const ts = Date.now()
-    const agentAName = `Pending A ${ts}`
-    const agentBName = `Pending B ${ts}`
-    const messageA = 'slow response test'
-    const messageB = 'Quick message B'
-
-    await appPage.goto()
-    await appPage.waitForAgentsLoaded()
-
-    // Create two agents
-    await agentPage.createAgent(agentAName)
-    await agentPage.createAgent(agentBName)
-
-    // Send slow message to Agent A
-    await agentPage.selectAgent(agentAName)
-    await sessionPage.sendMessage(messageA)
-    await sessionPage.waitForUserMessageCount(1)
-
-    // Agent A should be working
-    await expect(sessionPage.getStopButton()).toBeVisible({ timeout: 5000 })
-
-    // Switch to Agent B and send a message
-    await agentPage.selectAgent(agentBName)
-    await sessionPage.sendMessage(messageB)
-    await sessionPage.waitForUserMessageCount(1)
-
-    // Agent B should show its own message, not Agent A's
-    await sessionPage.expectUserMessage(messageB, 0)
-    const userMessagesB = sessionPage.getUserMessages()
-    await expect(userMessagesB).toHaveCount(1)
-
-    // Switch back to Agent A and select session
-    await agentPage.selectAgent(agentAName)
-    await sessionPage.selectFirstSessionInSidebar(agentPage.getAgentLi(agentAName))
-
-    // Agent A should show its message
-    await sessionPage.waitForUserMessageCount(1)
-    await sessionPage.expectUserMessage(messageA, 0)
-
-    // And should NOT have messageB anywhere
-    const messageListA = sessionPage.getMessageList()
-    await expect(messageListA).not.toContainText(messageB)
-
-    // Cleanup
-    await agentPage.selectAgent(agentAName)
-    try { await agentPage.deleteAgent() } catch { /* ignore */ }
-    await page.waitForTimeout(500)
-    await agentPage.selectAgent(agentBName)
-    try { await agentPage.deleteAgent() } catch { /* ignore */ }
+      await expect(userMessage(sessionPage, messageA)).toBeVisible({ timeout: 10000 })
+      await expect(sessionPage.getMessageList()).not.toContainText(messageB)
+    } finally {
+      await waitForSessionsToSettle(request, [
+        { agent: agentA, session: sessionA },
+        { agent: agentB, session: sessionB },
+      ])
+    }
   })
 })

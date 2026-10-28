@@ -22,9 +22,27 @@ export function getDataDir(): string {
 
 /**
  * Get the path to the SQLite database file.
+ * SUPERAGENT_DB_PATH overrides the default ($SUPERAGENT_DATA_DIR/superagent.db).
  */
 export function getDatabasePath(): string {
+  const envDbPath = process.env.SUPERAGENT_DB_PATH
+  if (envDbPath) {
+    return path.resolve(envDbPath)
+  }
   return path.join(getDataDir(), 'superagent.db')
+}
+
+/**
+ * Regenerable cache directory (skillset zip unpack, etc.).
+ * SUPERAGENT_CACHE_DIR overrides the default ($SUPERAGENT_DATA_DIR/skillset-cache).
+ * Desktop is unchanged when the env is unset.
+ */
+export function getCacheDir(): string {
+  const envCacheDir = process.env.SUPERAGENT_CACHE_DIR
+  if (envCacheDir) {
+    return path.resolve(envCacheDir)
+  }
+  return path.join(getDataDir(), 'skillset-cache')
 }
 
 /**

@@ -8,7 +8,7 @@ import {
 } from '@shared/lib/config/settings'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
-import { captureMessage } from '@shared/lib/error-reporting'
+import { addErrorBreadcrumb } from '@shared/lib/error-reporting'
 import { ProxyExecuteResponseSchema } from './proxy-execute-schema'
 import { LinkResponseSchema } from './link-response-schema'
 
@@ -58,7 +58,7 @@ function shouldUseLocalComposioKey(): boolean {
   return Boolean(getEffectiveComposioApiKey())
 }
 
-async function composioFetch<T>(
+export async function composioFetch<T>(
   endpoint: string,
   options: RequestInit = {},
   apiVersion: ComposioApiVersion = 'v3'
@@ -70,7 +70,7 @@ async function composioFetch<T>(
 
   let url: string
   if (platformToken) {
-    if (apiVersion !== 'v3') {
+    if (apiVersion !== 'v3' && apiVersion !== 'v3.1') {
       throw new ComposioApiError(
         `Platform Composio mode does not yet support API version ${apiVersion}. Configure a local Composio API key.`,
         501
@@ -180,10 +180,19 @@ function mapAuthConfigListItem(item: AuthConfigListItem): AuthConfig {
 }
 
 /**
- * List all auth configs for the current user.
+ * List auth configs for the current user. When `toolkitSlug` is provided,
+ * Composio filters server-side — necessary to avoid pagination cutoff
+ * hiding existing configs for the toolkit (Composio defaults to 20/page).
  */
-export async function listAuthConfigs(): Promise<AuthConfig[]> {
-  const response = await composioFetch<ListAuthConfigsResponse>('/auth_configs')
+export async function listAuthConfigs(
+  toolkitSlug?: string,
+): Promise<AuthConfig[]> {
+  const query = toolkitSlug
+    ? `?toolkit_slug=${encodeURIComponent(toolkitSlug)}&limit=100`
+    : ''
+  const response = await composioFetch<ListAuthConfigsResponse>(
+    `/auth_configs${query}`,
+  )
   return (response.items || []).map(mapAuthConfigListItem)
 }
 
@@ -195,13 +204,9 @@ export async function getOrCreateAuthConfig(
   providerSlug: string
 ): Promise<AuthConfig> {
   // First, check if an enabled auth config already exists for this provider
-  const existing = await listAuthConfigs()
+  const existing = await listAuthConfigs(providerSlug)
   const matchingConfigs = existing
-    .filter(
-      (config) =>
-        config.toolkitSlug.toLowerCase() === providerSlug.toLowerCase() &&
-        config.status !== 'DISABLED'
-    )
+    .filter((config) => config.status !== 'DISABLED')
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
 
   if (matchingConfigs.length > 0) {
@@ -231,12 +236,15 @@ export async function getOrCreateAuthConfig(
 export interface ComposioConnection {
   id: string
   status: 'ACTIVE' | 'INITIATED' | 'INITIALIZING' | 'FAILED' | 'EXPIRED' | 'INACTIVE'
+  toolkitSlug?: string
+  createdAt?: string
 }
 
 // API response type for GET /connected_accounts/:id
 interface ConnectedAccountGetResponse {
   id: string
   status: string
+  created_at?: string
   toolkit: {
     slug: string
   }
@@ -253,35 +261,53 @@ interface ConnectedAccountGetResponse {
 
 interface ListConnectedAccountsResponse {
   items: ConnectedAccountGetResponse[]
+  next_cursor?: string
+  total_pages?: number
 }
 
 /**
  * List all connected accounts for the current user.
+ * Handles cursor-based pagination (Composio caps at 50/page).
  */
 export async function listConnections(
   toolkit?: string,
   userIdOverride?: string
 ): Promise<ComposioConnection[]> {
   const useLocal = shouldUseLocalComposioKey()
-  let endpoint = '/connected_accounts'
+  let baseEndpoint = '/connected_accounts?'
   if (useLocal || !getPlatformComposioToken()) {
     const userId = userIdOverride || getComposioUserId()
     if (!userId) {
       throw new ComposioApiError('Composio User ID is not configured', 401)
     }
-    endpoint += `?user_id=${encodeURIComponent(userId)}`
+    baseEndpoint += `user_ids=${encodeURIComponent(userId)}&`
   }
 
   if (toolkit) {
-    endpoint += endpoint.includes('?') ? '&' : '?'
-    endpoint += `toolkit_slug=${encodeURIComponent(toolkit)}`
+    baseEndpoint += `toolkit_slugs=${encodeURIComponent(toolkit)}&`
   }
 
-  const response = await composioFetch<ListConnectedAccountsResponse>(endpoint)
-  return (response.items || []).map((item) => ({
-    id: item.id,
-    status: item.status as ComposioConnection['status'],
-  }))
+  const all: ComposioConnection[] = []
+  let cursor: string | undefined
+
+  for (let page = 0; page < 20; page++) {
+    const endpoint = baseEndpoint + (cursor ? `cursor=${encodeURIComponent(cursor)}` : '')
+    const response = await composioFetch<ListConnectedAccountsResponse>(endpoint)
+
+    for (const item of response.items || []) {
+      all.push({
+        id: item.id,
+        status: item.status as ComposioConnection['status'],
+        toolkitSlug: item.toolkit?.slug,
+        createdAt: item.created_at,
+      })
+    }
+
+    if (!response.next_cursor) break
+    cursor = response.next_cursor
+  }
+
+  return all
 }
 
 interface InitiateConnectionResponse {
@@ -433,21 +459,17 @@ export async function getConnectionToken(
 
   const redactionPattern = detectRedaction(accessToken)
   if (redactionPattern) {
-    captureMessage('Composio returned a redacted access token', {
+    addErrorBreadcrumb({
+      category: 'composio',
+      message: `Redacted token detected (${redactionPattern}) for connection ${connectionId}`,
       level: 'warning',
-      tags: {
-        component: 'composio-client',
-        operation: 'get-connection-token',
+      data: {
         toolkit: response.toolkit?.slug ?? 'unknown',
         auth_scheme: String(authScheme ?? 'unknown'),
         is_composio_managed: String(response.auth_config?.is_composio_managed ?? 'unknown'),
         redaction_pattern: redactionPattern,
-      },
-      extra: {
         connectionId,
-        authConfigId: response.auth_config?.id,
       },
-      fingerprint: ['composio-redacted-token', redactionPattern],
     })
     throw new ComposioRedactedTokenError(
       'Access token is redacted by Composio. Disable "Mask Connected Account Secrets" in the Composio project settings. If the connection uses a Composio-managed auth config, credentials are redacted regardless of that setting — migrate to a custom auth config (your own OAuth app) to retrieve actual credentials.'

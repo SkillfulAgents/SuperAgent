@@ -1,4 +1,9 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+// Type-only (erased at build — the preload bundle has no @shared alias).
+import type { ClassifiedImportPackage } from '../shared/lib/utils/package-extensions'
+import type { ApiTarget, ResolvedApiTarget } from '../shared/lib/api-target'
+import type { Facts } from '../shared/lib/facts/facts-schema'
+import type { NowPlayingPauseResult, NowPlayingProbe, NowPlayingResumeResult } from '../shared/lib/voice/now-playing-types'
 
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
@@ -7,34 +12,63 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getApiUrl: (): Promise<string> => {
     return ipcRenderer.invoke('get-api-url')
   },
+  // Which Superagent this renderer drives, plus the finished base URL for it.
+  // Resolved in main so every window agrees, and because the cloud URL carries
+  // the per-boot proxy key — a secret that is fetched, never assembled here.
+  getApiTarget: (): Promise<ResolvedApiTarget> => {
+    return ipcRenderer.invoke('get-api-target')
+  },
+  // Records the choice for subsequent boots; the caller reloads.
+  setPreferredApiTarget: (target: ApiTarget): Promise<void> => {
+    return ipcRenderer.invoke('set-preferred-api-target', target)
+  },
+  // The facts this renderer gates on, for the target it settled (main/facts.ts).
+  getFacts: (target: ApiTarget): Promise<Facts> => {
+    return ipcRenderer.invoke('get-facts', target)
+  },
   platform: process.platform,
   osVersion: process.getSystemVersion(),
+  // The app's deep-link scheme (superagent / superagent-dev). Main assigns the
+  // env var before any window spawns, so the renderer's copy always has it.
+  desktopProtocol: process.env.SUPERAGENT_PROTOCOL || 'superagent',
 
-  // OAuth callback handling - receives parsed callback params from main process
+  // OAuth callback handling - receives parsed callback params from main process.
+  // Returns a per-listener unsubscribe so concurrent subscribers (multiple
+  // toolkits / overlapping reconnect flows) can be torn down independently.
   onOAuthCallback: (callback: (params: {
     connectionId?: string | null
     status?: string | null
     toolkit?: string | null
     error?: string | null
-  }) => void) => {
-    ipcRenderer.on('oauth-callback', (_event, params) => callback(params))
+  }) => void): (() => void) => {
+    const handler = (_event: unknown, params: unknown) => callback(params as never)
+    ipcRenderer.on('oauth-callback', handler)
+    return () => {
+      ipcRenderer.removeListener('oauth-callback', handler)
+    }
   },
 
-  // Remove OAuth callback listener
+  // Channel-wide reset — removes EVERY oauth-callback listener. Prefer the
+  // unsubscribe returned by onOAuthCallback for per-component cleanup.
   removeOAuthCallback: () => {
     ipcRenderer.removeAllListeners('oauth-callback')
   },
 
   // MCP OAuth callback handling - receives result from main process after token exchange
   onMcpOAuthCallback: (callback: (params: {
+    state?: string
     success: boolean
     mcpId?: string | null
     error?: string | null
-  }) => void) => {
-    ipcRenderer.on('mcp-oauth-callback', (_event, params) => callback(params))
+  }) => void): (() => void) => {
+    const handler = (_event: unknown, params: unknown) => callback(params as never)
+    ipcRenderer.on('mcp-oauth-callback', handler)
+    return () => {
+      ipcRenderer.removeListener('mcp-oauth-callback', handler)
+    }
   },
 
-  // Remove MCP OAuth callback listener
+  // Channel-wide reset — prefer the unsubscribe returned by onMcpOAuthCallback.
   removeMcpOAuthCallback: () => {
     ipcRenderer.removeAllListeners('mcp-oauth-callback')
   },
@@ -43,19 +77,29 @@ contextBridge.exposeInMainWorld('electronAPI', {
     success: boolean
     email?: string | null
     error?: string | null
-  }) => void) => {
-    ipcRenderer.on('platform-auth-callback', (_event, params) => callback(params))
+  }) => void): (() => void) => {
+    const handler = (_event: unknown, params: unknown) => callback(params as never)
+    ipcRenderer.on('platform-auth-callback', handler)
+    return () => {
+      ipcRenderer.removeListener('platform-auth-callback', handler)
+    }
   },
 
+  // Channel-wide reset — prefer the unsubscribe returned by onPlatformAuthCallback.
   removePlatformAuthCallback: () => {
     ipcRenderer.removeAllListeners('platform-auth-callback')
   },
 
   // Full screen state handling
-  onFullScreenChange: (callback: (isFullScreen: boolean) => void) => {
-    ipcRenderer.on('fullscreen-change', (_event, isFullScreen) => callback(isFullScreen))
+  onFullScreenChange: (callback: (isFullScreen: boolean) => void): (() => void) => {
+    const handler = (_event: unknown, isFullScreen: unknown) => callback(isFullScreen as boolean)
+    ipcRenderer.on('fullscreen-change', handler)
+    return () => {
+      ipcRenderer.removeListener('fullscreen-change', handler)
+    }
   },
 
+  // Channel-wide reset — prefer the unsubscribe returned by onFullScreenChange.
   removeFullScreenChange: () => {
     ipcRenderer.removeAllListeners('fullscreen-change')
   },
@@ -78,9 +122,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getWindowMaximizedState: (): Promise<boolean> => {
     return ipcRenderer.invoke('get-window-maximized-state')
   },
-  onWindowMaximizedChange: (callback: (isMaximized: boolean) => void) => {
-    ipcRenderer.on('window-maximized-change', (_event, isMaximized) => callback(isMaximized))
+  onWindowMaximizedChange: (callback: (isMaximized: boolean) => void): (() => void) => {
+    const handler = (_event: unknown, isMaximized: unknown) => callback(isMaximized as boolean)
+    ipcRenderer.on('window-maximized-change', handler)
+    return () => {
+      ipcRenderer.removeListener('window-maximized-change', handler)
+    }
   },
+  // Channel-wide reset — prefer the unsubscribe returned by onWindowMaximizedChange.
   removeWindowMaximizedChange: () => {
     ipcRenderer.removeAllListeners('window-maximized-change')
   },
@@ -90,36 +139,85 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('open-external', url)
   },
 
+  openApplePasswordsExtension: (): Promise<void> => {
+    return ipcRenderer.invoke('open-apple-passwords-extension')
+  },
+
   // Launch an elevated PowerShell window with a whitelisted command (Windows only)
   launchPowershellAdmin: (command: string): Promise<void> => {
     return ipcRenderer.invoke('launch-powershell-admin', command)
   },
 
   // Navigation from tray menu or deep links.
-  onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => {
-    ipcRenderer.on('navigate-to-agent', (_event, agentSlug, sessionId) => callback(agentSlug, sessionId))
+  onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void): (() => void) => {
+    const handler = (_event: unknown, agentSlug: unknown, sessionId: unknown) =>
+      callback(agentSlug as string, sessionId as string | null | undefined)
+    ipcRenderer.on('navigate-to-agent', handler)
+    return () => {
+      ipcRenderer.removeListener('navigate-to-agent', handler)
+    }
   },
 
+  // Channel-wide reset — prefer the unsubscribe returned by onNavigateToAgent.
   removeNavigateToAgent: () => {
     ipcRenderer.removeAllListeners('navigate-to-agent')
   },
 
   // Menu commands - open settings
-  onOpenSettings: (callback: () => void) => {
-    ipcRenderer.on('open-settings', () => callback())
+  onOpenSettings: (callback: () => void): (() => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('open-settings', handler)
+    return () => {
+      ipcRenderer.removeListener('open-settings', handler)
+    }
   },
 
+  // Channel-wide reset — prefer the unsubscribe returned by onOpenSettings.
   removeOpenSettings: () => {
     ipcRenderer.removeAllListeners('open-settings')
   },
 
   // Menu commands - open create agent dialog
-  onOpenCreateAgent: (callback: () => void) => {
-    ipcRenderer.on('open-create-agent', () => callback())
+  onOpenCreateAgent: (callback: () => void): (() => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('open-create-agent', handler)
+    return () => {
+      ipcRenderer.removeListener('open-create-agent', handler)
+    }
   },
 
+  // Channel-wide reset — prefer the unsubscribe returned by onOpenCreateAgent.
   removeOpenCreateAgent: () => {
     ipcRenderer.removeAllListeners('open-create-agent')
+  },
+
+  // Main asking this window to switch Superagents (a Spotlight result from the
+  // other side). The renderer runs its own Local/Cloud checks before switching.
+  onSwitchTarget: (callback: (target: ApiTarget) => void): (() => void) => {
+    const handler = (_event: unknown, target: unknown) => callback(target === 'cloud' ? 'cloud' : 'local')
+    ipcRenderer.on('switch-target', handler)
+    return () => {
+      ipcRenderer.removeListener('switch-target', handler)
+    }
+  },
+  // The switch main asked for did not happen (refused, or one already under way).
+  declineTargetSwitch: () => {
+    ipcRenderer.send('target-switch-declined')
+  },
+
+  onHistoryNavigationCommand: (callback: (command: 'back' | 'forward') => void): (() => void) => {
+    const handler = (_event: unknown, command: unknown) => {
+      if (command === 'back' || command === 'forward') callback(command)
+    }
+    ipcRenderer.on('history-navigation-command', handler)
+    return () => {
+      ipcRenderer.removeListener('history-navigation-command', handler)
+    }
+  },
+
+  // Channel-wide reset — prefer the unsubscribe returned by onHistoryNavigationCommand.
+  removeHistoryNavigationCommand: () => {
+    ipcRenderer.removeAllListeners('history-navigation-command')
   },
 
   // Reclaim window focus (e.g. after Chrome steals it by opening a new tab)
@@ -127,9 +225,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.send('focus-window')
   },
 
-  // Notify main of sidebar collapsed state so it can reposition macOS traffic lights
-  setSidebarCollapsed: (collapsed: boolean) => {
-    ipcRenderer.send('set-sidebar-collapsed', collapsed)
+  // Cover the window before a target switch reloads it, and uncover it once the
+  // reloaded renderer has something on screen. The animation lives outside the
+  // document because the document is what the switch destroys — see
+  // main/target-switch-overlay.ts. Awaited: the band has to be up first.
+  beginTargetSwitch: (): Promise<void> => {
+    return ipcRenderer.invoke('begin-target-switch')
+  },
+  signalRendererPainted: () => {
+    ipcRenderer.send('renderer-painted')
   },
 
   // Tray visibility control
@@ -161,6 +265,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  // True when the user turned off notifications for the app in macOS System Settings.
+  getOsNotificationsBlocked: (): Promise<boolean> => {
+    return ipcRenderer.invoke('get-os-notifications-blocked')
+  },
+
   // Pull events queued while the window was closed (main-process fallback
   // notifications). Renderer calls this once on mount so click/action
   // events captured before any IPC listener existed still get dispatched.
@@ -169,6 +278,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
     navigations: Array<{ agentSlug: string; sessionId: string | null }>
   }> => {
     return ipcRenderer.invoke('flush-pending-notification-events')
+  },
+
+  // Pull menu commands (Settings / New Agent / navigate-to-agent / switch-target)
+  // queued while the window was closed. The renderer calls this once on mount so
+  // commands captured before its IPC listeners existed still get dispatched (SUP-264).
+  flushPendingMenuCommands: (): Promise<
+    Array<
+      | { channel: 'navigate-to-agent'; agentSlug: string; sessionId?: string | null }
+      | { channel: 'open-settings' }
+      | { channel: 'open-create-agent' }
+      | { channel: 'switch-target'; target: ApiTarget }
+    >
+  > => {
+    return ipcRenderer.invoke('flush-pending-menu-commands')
   },
 
   // Set dock badge count (macOS)
@@ -211,14 +334,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return webUtils.getPathForFile(file)
   },
 
-  // Open a native directory picker dialog
-  openDirectory: (): Promise<string | null> => {
-    return ipcRenderer.invoke('open-directory')
+  // Open a native directory picker dialog. In the Mac App Store build the pick
+  // also carries the security-scoped bookmark that reopens it after a relaunch.
+  // `startIn` opens the dialog in that folder.
+  openDirectory: (startIn?: string): Promise<{ path: string; bookmark?: string } | null> => {
+    return ipcRenderer.invoke('open-directory', startIn)
   },
 
   // Reveal a path in the OS file manager (Finder / Explorer / Files)
   showInFolder: (hostPath: string): Promise<string | null> => {
     return ipcRenderer.invoke('show-in-folder', hostPath)
+  },
+
+  // Select a file or directory in Finder / Explorer / Files
+  revealInFolder: (hostPath: string): Promise<string | null> => {
+    return ipcRenderer.invoke('reveal-in-folder', hostPath)
   },
 
   // Get recently opened files from the OS
@@ -230,6 +360,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   readLocalFile: (filePath: string): Promise<{ buffer: ArrayBuffer; name: string; type: string } | null> => {
     return ipcRenderer.invoke('read-local-file', filePath)
   },
+
+  // Keep awake (macOS lid-close sleep prevention)
+  setKeepAwake: (enabled: boolean): Promise<void> => {
+    return ipcRenderer.invoke('set-keep-awake', enabled)
+  },
+
+  // --- The person's own music player, for voice mode ---
+
+  // Which player is audibly playing right now, if any.
+  musicProbe: (): Promise<NowPlayingProbe> => ipcRenderer.invoke('music:probe'),
+  // Pause whatever is playing; says which player that was, or null when nothing was.
+  musicPause: (): Promise<NowPlayingPauseResult> => ipcRenderer.invoke('music:pause'),
+  // Play again the player musicPause reported, if it still owns now playing.
+  musicResume: (playerId: string): Promise<NowPlayingResumeResult> => ipcRenderer.invoke('music:resume', playerId),
 
   // Auto-update
   checkForUpdates: (): Promise<void> => {
@@ -259,6 +403,96 @@ contextBridge.exposeInMainWorld('electronAPI', {
   removeUpdateStatus: () => {
     ipcRenderer.removeAllListeners('update-status')
   },
+
+  // --- Quick-dispatch launcher ---
+
+  // Fired by the launcher renderer after an agent is dispatched: hide the panel
+  // and raise the main window on the new session.
+  quickDispatchDispatched: (payload: { agentSlug: string; sessionId: string }) => {
+    ipcRenderer.send('quick-dispatch:dispatched', payload)
+  },
+  // Dismiss the launcher (Esc / blur from the renderer).
+  quickDispatchClose: () => {
+    ipcRenderer.send('quick-dispatch:close')
+  },
+  // Report measured content height so the frameless panel hugs its contents.
+  quickDispatchResize: (height: number) => {
+    ipcRenderer.send('quick-dispatch:resize', height)
+  },
+  // Suppress blur-to-hide while a native picker is open (true), then restore (false).
+  quickDispatchSetModal: (open: boolean) => {
+    ipcRenderer.send('quick-dispatch:set-modal', open)
+  },
+  // "Set up voice input" → open the main window's settings.
+  quickDispatchOpenSettings: () => {
+    ipcRenderer.send('quick-dispatch:open-settings')
+  },
+  // JS window-drag: the panel can't use a CSS drag region (inert to file drops),
+  // so the renderer drives the move — start, then stream cursor deltas, then end.
+  quickDispatchDragStart: () => {
+    ipcRenderer.send('quick-dispatch:drag-start')
+  },
+  quickDispatchDragMove: (delta: { dx: number; dy: number }) => {
+    ipcRenderer.send('quick-dispatch:drag-move', delta)
+  },
+  quickDispatchDragEnd: () => {
+    ipcRenderer.send('quick-dispatch:drag-end')
+  },
+  // Main → launcher: the panel was just shown (focus input, re-measure).
+  onQuickDispatchShown: (callback: () => void): (() => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('quick-dispatch:shown', handler)
+    return () => {
+      ipcRenderer.removeListener('quick-dispatch:shown', handler)
+    }
+  },
+  // Main → launcher: a second shortcut press while open → toggle dictation.
+  onQuickDispatchToggleDictation: (callback: () => void): (() => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('quick-dispatch:toggle-dictation', handler)
+    return () => {
+      ipcRenderer.removeListener('quick-dispatch:toggle-dictation', handler)
+    }
+  },
+  // Pull the queued dock-drop / "Open With" file paths (race-free: the renderer
+  // drains on mount and on the `attach-pending` ping below).
+  quickDispatchDrainAttach: (): Promise<string[]> => ipcRenderer.invoke('quick-dispatch:drain-attach'),
+  // Main → launcher: files are queued for attach — drain them now.
+  onQuickDispatchAttachPending: (callback: () => void): (() => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('quick-dispatch:attach-pending', handler)
+    return () => {
+      ipcRenderer.removeListener('quick-dispatch:attach-pending', handler)
+    }
+  },
+  // Main → launcher: the panel was hidden — reset transient state (attachments).
+  onQuickDispatchReset: (callback: () => void): (() => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('quick-dispatch:reset', handler)
+    return () => {
+      ipcRenderer.removeListener('quick-dispatch:reset', handler)
+    }
+  },
+  // Re-bind the global launcher shortcut (from Settings). Resolves to the
+  // registration result so the UI can surface conflicts.
+  setGlobalDispatchShortcut: (accelerator: string): Promise<{ success: boolean; error?: string }> => {
+    return ipcRenderer.invoke('set-global-dispatch-shortcut', accelerator)
+  },
+
+  // --- Opened .agent/.skill packages (double-click / "Open With") ---
+
+  // Pull the queued packages, already classified by content in the main
+  // process (race-free: the renderer drains on mount and on the `pending`
+  // ping below). Read the bytes with readLocalFile only when importing.
+  importPackagesDrain: (): Promise<ClassifiedImportPackage[]> => ipcRenderer.invoke('import-package:drain'),
+  // Main → renderer: package paths are queued — drain them now.
+  onImportPackagePending: (callback: () => void): (() => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('import-package-pending', handler)
+    return () => {
+      ipcRenderer.removeListener('import-package-pending', handler)
+    }
+  },
 })
 
 // OAuth callback params from main process
@@ -274,32 +508,44 @@ declare global {
   interface Window {
     electronAPI?: {
       getApiUrl: () => Promise<string>
+      // Optional: an older main process has no such handler (see env.ts).
+      getApiTarget?: () => Promise<ResolvedApiTarget>
+      setPreferredApiTarget?: (target: ApiTarget) => Promise<void>
+      // Optional for the same reason as getApiTarget.
+      getFacts?: (target: ApiTarget) => Promise<Facts>
       platform: string
       osVersion: string
-      onOAuthCallback: (callback: (params: OAuthCallbackParams) => void) => void
+      desktopProtocol?: string
+      onOAuthCallback: (callback: (params: OAuthCallbackParams) => void) => () => void
       removeOAuthCallback: () => void
-      onMcpOAuthCallback: (callback: (params: { success: boolean; mcpId?: string | null; error?: string | null }) => void) => void
+      onMcpOAuthCallback: (callback: (params: { state?: string; success: boolean; mcpId?: string | null; error?: string | null }) => void) => () => void
       removeMcpOAuthCallback: () => void
-      onPlatformAuthCallback: (callback: (params: { success: boolean; email?: string | null; error?: string | null }) => void) => void
+      onPlatformAuthCallback: (callback: (params: { success: boolean; email?: string | null; error?: string | null }) => void) => () => void
       removePlatformAuthCallback: () => void
-      onFullScreenChange: (callback: (isFullScreen: boolean) => void) => void
+      onFullScreenChange: (callback: (isFullScreen: boolean) => void) => () => void
       removeFullScreenChange: () => void
       getFullScreenState: () => Promise<boolean>
       minimizeWindow: () => void
       toggleMaximizeWindow: () => void
       closeWindow: () => void
       getWindowMaximizedState: () => Promise<boolean>
-      onWindowMaximizedChange: (callback: (isMaximized: boolean) => void) => void
+      onWindowMaximizedChange: (callback: (isMaximized: boolean) => void) => () => void
       removeWindowMaximizedChange: () => void
       openExternal: (url: string) => Promise<void>
+      openApplePasswordsExtension: () => Promise<void>
       launchPowershellAdmin: (command: string) => Promise<void>
-      onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => void
+      onNavigateToAgent: (callback: (agentSlug: string, sessionId?: string | null) => void) => () => void
       removeNavigateToAgent: () => void
-      onOpenSettings: (callback: () => void) => void
+      onOpenSettings: (callback: () => void) => () => void
       removeOpenSettings: () => void
-      onOpenCreateAgent: (callback: () => void) => void
+      onOpenCreateAgent: (callback: () => void) => () => void
       removeOpenCreateAgent: () => void
-      setSidebarCollapsed: (collapsed: boolean) => void
+      onSwitchTarget?: (callback: (target: ApiTarget) => void) => () => void
+      declineTargetSwitch?: () => void
+      onHistoryNavigationCommand: (callback: (command: 'back' | 'forward') => void) => () => void
+      removeHistoryNavigationCommand: () => void
+      beginTargetSwitch: () => Promise<void>
+      signalRendererPainted: () => void
       setTrayVisible: (visible: boolean) => Promise<void>
       showNotification: (
         title: string,
@@ -310,10 +556,19 @@ declare global {
       onNotificationEvent: (
         callback: (event: { type: 'click' | 'action'; actionIndex?: number; context?: unknown }) => void,
       ) => () => void
+      getOsNotificationsBlocked: () => Promise<boolean>
       flushPendingNotificationEvents: () => Promise<{
         events: Array<{ type: 'click' | 'action'; actionIndex?: number; context?: unknown }>
         navigations: Array<{ agentSlug: string; sessionId: string | null }>
       }>
+      flushPendingMenuCommands: () => Promise<
+        Array<
+          | { channel: 'navigate-to-agent'; agentSlug: string; sessionId?: string | null }
+          | { channel: 'open-settings' }
+          | { channel: 'open-create-agent' }
+          | { channel: 'switch-target'; target: ApiTarget }
+        >
+      >
       setBadgeCount: (count: number) => Promise<void>
       detectHostBrowser: () => Promise<{ available: boolean; browser: string | null; path: string | null }>
       setNativeTheme: (theme: string) => Promise<void>
@@ -322,16 +577,37 @@ declare global {
       showEmojiPanel: () => Promise<void>
       createDockShortcut: (agentSlug: string, dashboardSlug: string, dashboardName: string, iconPng: Uint8Array) => Promise<void>
       getPathForFile: (file: File) => string
-      openDirectory: () => Promise<string | null>
+      openDirectory: (startIn?: string) => Promise<{ path: string; bookmark?: string } | null>
       showInFolder: (hostPath: string) => Promise<string | null>
+      revealInFolder: (hostPath: string) => Promise<string | null>
       getRecentFiles: (limit?: number) => Promise<{ name: string; path: string; thumbnail?: string }[]>
       readLocalFile: (filePath: string) => Promise<{ buffer: ArrayBuffer; name: string; type: string } | null>
+      setKeepAwake: (enabled: boolean) => Promise<void>
+      musicProbe: () => Promise<NowPlayingProbe>
+      musicPause: () => Promise<NowPlayingPauseResult>
+      musicResume: (playerId: string) => Promise<NowPlayingResumeResult>
       checkForUpdates: () => Promise<void>
       downloadUpdate: () => Promise<void>
       installUpdate: () => Promise<void>
       getUpdateStatus: () => Promise<any>
       onUpdateStatus: (callback: (status: any) => void) => () => void
       removeUpdateStatus: () => void
+      quickDispatchDispatched: (payload: { agentSlug: string; sessionId: string }) => void
+      quickDispatchClose: () => void
+      quickDispatchResize: (height: number) => void
+      quickDispatchSetModal: (open: boolean) => void
+      quickDispatchOpenSettings: () => void
+      quickDispatchDragStart: () => void
+      quickDispatchDragMove: (delta: { dx: number; dy: number }) => void
+      quickDispatchDragEnd: () => void
+      onQuickDispatchShown: (callback: () => void) => () => void
+      onQuickDispatchToggleDictation: (callback: () => void) => () => void
+      quickDispatchDrainAttach: () => Promise<string[]>
+      onQuickDispatchAttachPending: (callback: () => void) => () => void
+      onQuickDispatchReset: (callback: () => void) => () => void
+      setGlobalDispatchShortcut: (accelerator: string) => Promise<{ success: boolean; error?: string }>
+      importPackagesDrain: () => Promise<ClassifiedImportPackage[]>
+      onImportPackagePending: (callback: () => void) => () => void
     }
   }
 }

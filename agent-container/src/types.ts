@@ -1,5 +1,14 @@
+import type { ConnectionRuntime } from './connection-runtime';
 import type { UUID } from 'crypto';
 import type { EffortLevel } from '@anthropic-ai/claude-agent-sdk';
+import type { SubagentModelDefinition } from './subagent-model-catalog';
+
+// Normalized processing-speed tiers (slow/normal/fast). Not an SDK concept:
+// the speed is signaled upstream via the X-Superagent-Speed custom header,
+// which the platform proxy maps to the provider's tier (OpenAI/xAI
+// service_tier, Anthropic fast mode). Keep in sync with
+// src/shared/lib/container/types.ts SPEED_LEVELS.
+export type SpeedLevel = 'slow' | 'normal' | 'fast';
 
 // Re-export types from Claude Agent SDK
 export type {
@@ -31,6 +40,7 @@ export interface Session {
   workingDirectory: string;
   envVars?: Record<string, string>;
   systemPrompt?: string;
+  modelPromptHints?: string[];
   availableEnvVars?: string[];
   slashCommands?: SlashCommandInfo[];
 }
@@ -50,16 +60,35 @@ export interface FileTree {
   children?: FileTree[];
 }
 
+// Three-tier launch policy for a delegation capability. 'review' holds each
+// launch until the user approves it; 'block' removes the capability from the
+// session entirely (tools + prompt), with a call-time deny as backstop.
+export type CapabilityPolicy = 'allow' | 'review' | 'block';
+
+export interface AgentCapabilityPolicies {
+  subagents?: CapabilityPolicy;
+  workflows?: CapabilityPolicy;
+}
+
 export interface CreateSessionRequest {
+  llmProviderId?: string;
+  llmRuntime?: ConnectionRuntime;
   metadata?: Record<string, any>;
   workingDirectory?: string;
   envVars?: Record<string, string>;
   systemPrompt?: string; // Custom system prompt to append to default
+  modelPromptHints?: string[];
   availableEnvVars?: string[]; // List of env var names available to the agent
   initialMessage: string; // Required: first message to send (triggers session ID generation)
   initialMessageUuid?: UUID; // Optional UUID for message author attribution
   model?: string; // Claude model to use for this session
   browserModel?: string; // Model for browser subagent
+  dashboardBuilderModel?: string; // Model for the dashboard-builder subagent
+  subagentModels?: SubagentModelDefinition[]; // Provider catalog exposed as model-backed subagent types
+  modelContextWindows?: Record<string, number>; // Model id → catalog context window (feeds CLAUDE_CODE_MAX_CONTEXT_TOKENS)
+  webSearchProvider?: string; // Active host-side web search vendor id (non-secret); activates mcp__web__search + disables native WebSearch
+  webFetchProvider?: string; // Active host-side web fetch vendor id (non-secret); activates mcp__web__web_fetch + disables native WebFetch
+  availableIntegrationFamilies?: string[]; // Integration families the host can run ('meeting' registers mcp__meetings__*); absent → none
   maxOutputTokens?: number; // Max tokens per response (CLAUDE_CODE_MAX_OUTPUT_TOKENS)
   maxThinkingTokens?: number; // Max tokens for extended thinking
   maxTurns?: number; // Max conversation turns
@@ -67,12 +96,34 @@ export interface CreateSessionRequest {
   customEnvVars?: Record<string, string>; // User-defined env vars for the agent process
   maxBrowserTabs?: number; // Max browser tabs allowed (default 10)
   effort?: EffortLevel; // Initial thinking effort level
+  speed?: SpeedLevel; // Initial processing-speed tier (emitted as X-Superagent-Speed)
+  capabilityPolicies?: AgentCapabilityPolicies; // Launch policies for subagents/workflows (absent = allow)
+  globalInstructions?: string; // Org-wide guidance set in host Settings, rendered into every agent's prompt
+  // What the host expects the NEXT session to ask for (agent default model/
+  // effort/speed with the global fallback applied), as opposed to this
+  // session's own possibly one-off pick. Used to pre-warm a CLI subprocess for
+  // the right configuration; absent on non-interactive callers.
+  prewarmDefaults?: {
+    llmRuntime?: ConnectionRuntime;
+    llmProviderId?: string
+    model?: string;
+    modelPromptHints?: string[];
+    effort?: EffortLevel;
+    speed?: SpeedLevel;
+  };
 }
 
 export interface SendMessageRequest {
+  llmProviderId?: string;
+  llmRuntime?: ConnectionRuntime;
   content: any;
   type?: 'user' | 'system';
   uuid?: UUID;
   effort?: EffortLevel; // If set and different from current session effort, triggers interrupt+restart with new effort
+  speed?: SpeedLevel; // If set and different from current session speed, triggers interrupt+restart with new speed
   model?: string; // If set and different from current session model, triggers interrupt+restart with new model
+  shouldQuery?: boolean; // When false, appends to transcript without triggering an assistant turn
+  isAutomated?: boolean; // Agent-originated follow-up: preserve the session's automated runtime class
+  capabilityPolicies?: AgentCapabilityPolicies; // Current launch policies; a block-boundary change triggers interrupt+restart
+  globalInstructions?: string; // Current org-wide guidance; a change triggers interrupt+restart (it lives in the prompt)
 }

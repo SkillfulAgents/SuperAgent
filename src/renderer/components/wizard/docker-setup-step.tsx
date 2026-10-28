@@ -2,13 +2,15 @@ import { useState, useMemo, useEffect } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { useSettings, useStartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
-import { getPlatform } from '@renderer/lib/env'
+import { serverFacts } from '@renderer/lib/facts'
 import { Wsl2InstallGuide } from './wsl2-install-guide'
-import { RequestError } from '@renderer/components/messages/request-error'
+import { RequestError } from '@shared/lib/tools/requests/request-error'
 import { RunnerSetupErrorPanel, getRunnerSetupPayload } from '@renderer/components/settings/runner-setup-error-panel'
+import { RuntimeProvisionProgress } from '@renderer/components/runtime/runtime-provision-progress'
 import {
   Loader2,
-  Power,
+  Play,
+  Download,
   ArrowUpRight,
   RefreshCw,
 } from 'lucide-react'
@@ -16,8 +18,8 @@ import {
 const RUNTIME_INFO: Record<string, { name: string; description: string; installUrl: string }> = {
   'apple-container': {
     name: 'macOS Container',
-    description: 'Native container runtime built into macOS. Fast and lightweight with no extra software needed.',
-    installUrl: 'https://github.com/apple/container',
+    description: 'Apple\'s container runtime for macOS. Gamut can install it for you (administrator password required).',
+    installUrl: '',
   },
   docker: {
     name: 'Docker Desktop',
@@ -83,17 +85,25 @@ export function DockerSetupStep({ onCanProceedChange }: DockerSetupStepProps) {
 
   const effectiveSelected = selectedRunner ?? defaultRunner
 
-  const isWindows = getPlatform() === 'win32'
+  // Without a built-in runtime there is nothing to show collapsed, so list every option.
+  const hasBuiltin = runtimeStatuses.some((r) => r.runner === 'lima' || r.runner === 'wsl2')
+  const showAllOptions = showMoreOptions || !hasBuiltin
+
+  // The runtime is installed on the machine running the API, not necessarily this one.
+  const isWindows = serverFacts()?.os === 'win32'
   const wsl2Runtime = runtimeStatuses.find((r) => r.runner === 'wsl2')
   const showWsl2Guide = isWindows && wsl2Runtime && !wsl2Runtime.installed
 
-  // Report to parent whether the selected runtime is available and running
+  // Report to parent whether the selected runtime is available and not mid-provision
   const selectedRuntime = runtimeStatuses.find((r) => r.runner === effectiveSelected)
+  const provisioningSelected =
+    !!selectedRuntime && startRunner.isProvisioning(selectedRuntime.runner)
   useEffect(() => {
-    onCanProceedChange?.(selectedRuntime?.available ?? false)
-  }, [selectedRuntime?.available, onCanProceedChange])
+    onCanProceedChange?.(Boolean(selectedRuntime?.available) && !provisioningSelected)
+  }, [selectedRuntime?.available, provisioningSelected, onCanProceedChange])
 
   const handleStartRunner = async (runner: string) => {
+    startRunner.reset()
     try {
       await startRunner.mutateAsync(runner)
     } catch (error) {
@@ -122,7 +132,7 @@ export function DockerSetupStep({ onCanProceedChange }: DockerSetupStepProps) {
       <div className="space-y-3">
         {runtimeStatuses.map((runtime) => {
           const isBuiltin = runtime.runner === 'lima' || runtime.runner === 'wsl2'
-          if (!isBuiltin && !showMoreOptions) return null
+          if (!isBuiltin && !showAllOptions) return null
 
           const isSelected = effectiveSelected === runtime.runner
           const isStarting = isBuiltin && isBuiltinStarting && !runtime.available
@@ -188,6 +198,12 @@ export function DockerSetupStep({ onCanProceedChange }: DockerSetupStepProps) {
                         onRefresh={() => refreshAvailability.mutate()}
                         isRefreshing={refreshAvailability.isPending}
                       />
+                    ) : runtime.available &&
+                      startRunner.variables === runtime.runner &&
+                      runtimeStatus?.runtimeReadiness?.status === 'PULLING_IMAGE' ? (
+                      <RuntimeProvisionProgress
+                        progress={runtimeStatus.runtimeReadiness.pullProgress}
+                      />
                     ) : runtime.available ? (
                       null
                     ) : isStarting ? (
@@ -198,21 +214,30 @@ export function DockerSetupStep({ onCanProceedChange }: DockerSetupStepProps) {
                         </span>
                         Starting up...
                       </p>
-                    ) : runtime.installed && runtime.canStart ? (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 text-xs pl-[8px]"
-                        onClick={() => handleStartRunner(runtime.runner)}
-                        disabled={startRunner.isPending}
-                      >
-                        {startRunner.isPending ? (
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                        ) : (
-                          <Power className="!h-3 !w-3" />
+                    ) : runtime.canStart ? (
+                      <div className="space-y-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs pl-[8px]"
+                          onClick={() => handleStartRunner(runtime.runner)}
+                          disabled={startRunner.isPending}
+                        >
+                          {startRunner.isPending && startRunner.variables === runtime.runner ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : runtime.installed ? (
+                            <Play className="!h-3 !w-3" />
+                          ) : (
+                            <Download className="!h-3 !w-3" />
+                          )}
+                          {runtime.installed ? `Start ${runtime.info.name}` : `Install ${runtime.info.name}`}
+                        </Button>
+                        {startRunner.isProvisioning(runtime.runner) && (
+                          <RuntimeProvisionProgress
+                            progress={runtimeStatus?.runtimeReadiness?.pullProgress}
+                          />
                         )}
-                        Start {runtime.info.name}
-                      </Button>
+                      </div>
                     ) : runtime.info.installUrl ? (
                       <Button
                         size="sm"
@@ -232,7 +257,7 @@ export function DockerSetupStep({ onCanProceedChange }: DockerSetupStepProps) {
         })}
       </div>
 
-      {!showMoreOptions ? (
+      {!showAllOptions ? (
         <div className="flex justify-start">
           <button
             className="text-xs text-muted-foreground hover:text-foreground transition-colors"
@@ -243,14 +268,16 @@ export function DockerSetupStep({ onCanProceedChange }: DockerSetupStepProps) {
         </div>
       ) : (
         <div className="flex justify-between">
+          {hasBuiltin && (
+            <button
+              className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+              onClick={() => setShowMoreOptions(false)}
+            >
+              Show less
+            </button>
+          )}
           <button
-            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-            onClick={() => setShowMoreOptions(false)}
-          >
-            Show less
-          </button>
-          <button
-            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+            className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
             onClick={() => refreshAvailability.mutate()}
             disabled={refreshAvailability.isPending}
           >
@@ -260,13 +287,13 @@ export function DockerSetupStep({ onCanProceedChange }: DockerSetupStepProps) {
         </div>
       )}
 
-      {startRunner.error && getRunnerSetupPayload(startRunner.error) ? (
-        <RunnerSetupErrorPanel error={startRunner.error} />
+      {startRunner.displayError && getRunnerSetupPayload(startRunner.displayError) ? (
+        <RunnerSetupErrorPanel error={startRunner.displayError} />
       ) : (
-        <RequestError message={startRunner.error?.message ?? null} />
+        <RequestError message={startRunner.displayError?.message ?? null} />
       )}
 
-      {startRunner.isSuccess && startRunner.data?.message && (
+      {startRunner.isSuccess && startRunner.data?.message && !startRunner.displayError && (
         <p className="text-sm text-green-600 dark:text-green-400">
           {startRunner.data.message}
         </p>

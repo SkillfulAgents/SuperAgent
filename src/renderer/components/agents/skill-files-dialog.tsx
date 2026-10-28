@@ -83,6 +83,15 @@ export function SkillFilesDialog({
     }
   }, [fileContent])
 
+  // Open the skill's own SKILL.md by default, when it has one
+  useEffect(() => {
+    if (!open || selectedPath || !files) return
+    const skillMd = files.find(
+      (entry) => entry.type === 'file' && entry.path.toLowerCase() === 'skill.md',
+    )
+    if (skillMd) setSelectedPath(skillMd.path)
+  }, [open, selectedPath, files])
+
   // Reset state when dialog closes
   useEffect(() => {
     if (!open) {

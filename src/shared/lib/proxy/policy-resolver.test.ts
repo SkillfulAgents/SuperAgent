@@ -27,6 +27,12 @@ vi.mock('@shared/lib/services/user-settings-service', () => ({
   getUserSettings: (...args: unknown[]) => mockGetUserSettings(...args),
 }))
 
+// Mock scope→label lookup (real policy-sentinels labelDefaultKey is used as-is)
+const mockGetScopeLabel = vi.fn()
+vi.mock('./scope-metadata', () => ({
+  getScopeLabel: (...args: unknown[]) => mockGetScopeLabel(...args),
+}))
+
 import { resolveApiPolicy, resolveMcpPolicy } from './policy-resolver'
 
 describe('resolveApiPolicy', () => {
@@ -59,6 +65,27 @@ describe('resolveApiPolicy', () => {
     )
     expect(result.decision).toBe('allow')
     expect(result.resolvedFrom).toBe('scope_policy')
+  })
+
+  it('carries the matcher\'s endpoint ambiguity to the review', async () => {
+    setupPolicies([])
+    const result = await resolveApiPolicy(
+      'acc-1',
+      { ...makeMatchResult(true, ['read']), endpointAmbiguous: true },
+      'user-1'
+    )
+    expect(result.endpointAmbiguous).toBe(true)
+  })
+
+  it('lets a decision stand on disagreeing endpoints only when every scope shares it', async () => {
+    const tie = { ...makeMatchResult(true, ['read', 'write']), endpointAmbiguous: true }
+    setupPolicies([{ scope: 'read', decision: 'allow' }])
+    expect((await resolveApiPolicy('acc-1', makeMatchResult(true, ['read', 'write']), 'user-1')).decision).toBe('allow')
+    expect((await resolveApiPolicy('acc-1', tie, 'user-1')).decision).toBe('review')
+    setupPolicies([{ scope: 'read', decision: 'allow' }, { scope: 'write', decision: 'block' }])
+    expect((await resolveApiPolicy('acc-1', tie, 'user-1')).decision).toBe('review')
+    setupPolicies([{ scope: 'read', decision: 'allow' }, { scope: 'write', decision: 'allow' }])
+    expect((await resolveApiPolicy('acc-1', tie, 'user-1')).decision).toBe('allow')
   })
 
   it('explicit scope policy "block" returns "block"', async () => {
@@ -167,6 +194,16 @@ describe('resolveApiPolicy', () => {
     // gmail.full → block, gmail.readonly → allow (wildcard), most permissive = allow
     expect(result.decision).toBe('allow')
   })
+  it("a policy on a toolkit's own scope does not cover the same name borrowed from a fallback", async () => {
+    setupPolicies([{ scope: 'drive.readonly', decision: 'allow' }])
+    const result = await resolveApiPolicy(
+      'acc-1',
+      makeMatchResult(true, ['googledrive:drive.readonly']),
+      'user-1'
+    )
+    expect(result.decision).toBe('review')
+    expect(result.resolvedFrom).toBe('global_default')
+  })
 })
 
 describe('resolveMcpPolicy', () => {
@@ -207,5 +244,134 @@ describe('resolveMcpPolicy', () => {
     ])
     const result = await resolveMcpPolicy('mcp-1', null, 'user-1')
     expect(result.decision).toBe('allow')
+  })
+})
+
+describe('resolveApiPolicy — label-default tier', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetUserSettings.mockReturnValue({ defaultApiPolicy: 'review' })
+    // Default: scopes have no label unless a test sets one
+    mockGetScopeLabel.mockReturnValue(undefined)
+  })
+
+  function setupPolicies(policies: Array<{ scope: string; decision: string }>) {
+    mockDbFrom.mockReturnValue({ where: mockWhere })
+    mockWhere.mockReturnValue({ all: mockAll })
+    mockAll.mockReturnValue(policies.map((p) => ({ policy: p })))
+  }
+  function labelMap(map: Record<string, string>) {
+    mockGetScopeLabel.mockImplementation((_toolkit: string, scope: string) => map[scope])
+  }
+  const match = (scopes: string[]): ScopeMatchResult => ({
+    matched: true,
+    scopes,
+    descriptions: {},
+  })
+
+  it('applies the account label default (e.g. "*read" → allow)', async () => {
+    labelMap({ 'gmail.readonly': 'read' })
+    setupPolicies([{ scope: '*read', decision: 'allow' }])
+    const r = await resolveApiPolicy('acc-1', match(['gmail.readonly']), 'user-1', 'gmail')
+    expect(r.decision).toBe('allow')
+    expect(r.resolvedFrom).toBe('account_label_default')
+  })
+
+  it('a "*destructive" → block label default blocks (sole resolution)', async () => {
+    labelMap({ 'gmail.full': 'destructive' })
+    setupPolicies([{ scope: '*destructive', decision: 'block' }])
+    const r = await resolveApiPolicy('acc-1', match(['gmail.full']), 'user-1', 'gmail')
+    expect(r.decision).toBe('block')
+    expect(r.resolvedFrom).toBe('account_label_default')
+  })
+
+  it('explicit scope policy beats the label default', async () => {
+    labelMap({ 'gmail.readonly': 'read' })
+    setupPolicies([
+      { scope: 'gmail.readonly', decision: 'block' },
+      { scope: '*read', decision: 'allow' },
+    ])
+    const r = await resolveApiPolicy('acc-1', match(['gmail.readonly']), 'user-1', 'gmail')
+    expect(r.decision).toBe('block')
+    expect(r.resolvedFrom).toBe('scope_policy')
+  })
+
+  it('label default beats the account-wide "*" default', async () => {
+    labelMap({ 'gmail.readonly': 'read' })
+    setupPolicies([
+      { scope: '*read', decision: 'allow' },
+      { scope: '*', decision: 'block' },
+    ])
+    const r = await resolveApiPolicy('acc-1', match(['gmail.readonly']), 'user-1', 'gmail')
+    expect(r.decision).toBe('allow')
+    expect(r.resolvedFrom).toBe('account_label_default')
+  })
+
+  it('REGRESSION: a labeled scope with NO label rows behaves exactly like legacy (account "*")', async () => {
+    // The scope HAS a risk label, but the account was never seeded with '*read' etc.
+    // It must fall straight through to the account '*' default — i.e. existing
+    // accounts are never silently migrated by the label tier.
+    labelMap({ 'gmail.readonly': 'read' })
+    setupPolicies([{ scope: '*', decision: 'block' }])
+    const r = await resolveApiPolicy('acc-1', match(['gmail.readonly']), 'user-1', 'gmail')
+    expect(r.decision).toBe('block')
+    expect(r.resolvedFrom).toBe('account_default')
+  })
+
+  it('an unlabeled scope skips the label tier even if label rows exist', async () => {
+    labelMap({}) // getScopeLabel → undefined for this scope
+    setupPolicies([
+      { scope: '*read', decision: 'allow' },
+      { scope: '*', decision: 'review' },
+    ])
+    const r = await resolveApiPolicy('acc-1', match(['weird.uncurated.scope']), 'user-1', 'gmail')
+    expect(r.decision).toBe('review')
+    expect(r.resolvedFrom).toBe('account_default')
+  })
+
+  it('most permissive across mixed-label sufficient scopes', async () => {
+    // gmail.send (write→block) OR gmail.readonly (read→allow) suffice for the call;
+    // the most permissive wins, matching the "sufficient scopes" semantics.
+    labelMap({ 'gmail.send': 'write', 'gmail.readonly': 'read' })
+    setupPolicies([
+      { scope: '*write', decision: 'block' },
+      { scope: '*read', decision: 'allow' },
+    ])
+    const r = await resolveApiPolicy(
+      'acc-1',
+      match(['gmail.send', 'gmail.readonly']),
+      'user-1',
+      'gmail',
+    )
+    expect(r.decision).toBe('allow')
+  })
+
+  it("a borrowed scope resolves through the account's label default for its inherited label", async () => {
+    setupPolicies([{ scope: '*write', decision: 'allow' }])
+    mockGetScopeLabel.mockImplementation((_t: string, s: string) =>
+      s === 'googledrive:drive.file' ? 'write' : undefined,
+    )
+    const result = await resolveApiPolicy(
+      'acc-1',
+      { matched: true, scopes: ['googledrive:drive.file'], descriptions: {} },
+      'user-1',
+      'gmail',
+    )
+    expect(mockGetScopeLabel).toHaveBeenCalledWith('gmail', 'googledrive:drive.file')
+    expect(result.decision).toBe('allow')
+    expect(result.resolvedFrom).toBe('account_label_default')
+  })
+
+  it('without a toolkit the label tier is skipped (legacy callers)', async () => {
+    labelMap({ 'gmail.readonly': 'read' })
+    setupPolicies([
+      { scope: '*read', decision: 'allow' },
+      { scope: '*', decision: 'block' },
+    ])
+    // no toolkit arg → getScopeLabel never consulted → falls to account '*'
+    const r = await resolveApiPolicy('acc-1', match(['gmail.readonly']), 'user-1')
+    expect(r.decision).toBe('block')
+    expect(r.resolvedFrom).toBe('account_default')
+    expect(mockGetScopeLabel).not.toHaveBeenCalled()
   })
 })

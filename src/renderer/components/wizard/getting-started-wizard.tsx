@@ -1,13 +1,16 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
+import { useUpdateSettings } from '@renderer/hooks/use-settings'
 import {
   ChevronRight,
   ChevronLeft,
 } from 'lucide-react'
 import { isElectron, getPlatform } from '@renderer/lib/env'
+import { targetIsRemote } from '@renderer/lib/api-target'
 import { WelcomeStep } from './welcome-step'
 import { ConfigureLLMStep } from './configure-llm-step'
+import { ConfigureModelStep } from './configure-model-step'
 import { DockerSetupStep } from './docker-setup-step'
 import { BrowserSetupStep } from './browser-setup-step'
 import { ComposioStep } from './composio-step'
@@ -15,10 +18,11 @@ import { CreateAgentStep } from './create-agent-step'
 import { PrivacyStep } from './privacy-step'
 import { RibbonWave } from './ribbon-wave'
 
-type WizardStepId = 'llm' | 'browser' | 'composio' | 'runtime' | 'privacy' | 'agent'
+type WizardStepId = 'llm' | 'model' | 'browser' | 'composio' | 'runtime' | 'privacy' | 'agent'
 
 const MANUAL_STEPS: { id: WizardStepId; label: string; skippable: boolean }[] = [
   { id: 'llm', label: 'LLM', skippable: false },
+  { id: 'model', label: 'Model', skippable: false },
   { id: 'browser', label: 'Browser', skippable: false },
   { id: 'composio', label: 'Composio', skippable: true },
   { id: 'runtime', label: 'Runtime', skippable: false },
@@ -27,17 +31,60 @@ const MANUAL_STEPS: { id: WizardStepId; label: string; skippable: boolean }[] = 
 ]
 
 const PLATFORM_STEPS: { id: WizardStepId; label: string; skippable: boolean }[] = [
+  { id: 'model', label: 'Model', skippable: false },
   { id: 'browser', label: 'Browser', skippable: false },
   { id: 'runtime', label: 'Runtime', skippable: false },
   { id: 'privacy', label: 'Privacy', skippable: false },
   { id: 'agent', label: 'Agent', skippable: true },
 ]
 
+/**
+ * The steps of a path, as this window can actually run them.
+ *
+ * The runtime step sets up the container runtime of the Superagent being
+ * configured — starting a runner, and on the desktop opening the Docker Desktop
+ * download or telling you to run `wsl --install` as Administrator. That is
+ * exactly what onboarding is for, on the desktop app and on a self-hosted web
+ * deployment alike. A cloud workspace is the one case where it is not: the
+ * runtime is already provisioned and the machine is out of reach.
+ *
+ * So the test is `targetIsRemote()`, NOT `canUseHostFeatures()` — the latter is
+ * false in every browser and would drop this step from ordinary web onboarding
+ * as well.
+ *
+ * Everything that turns a step id into a position must go through here. Two
+ * places do — rendering and restoring saved progress — and indexing one into
+ * the filtered list and the other into the constant lands the user on a
+ * different step than the one they left.
+ */
+export function stepsForPath(path: 'platform' | 'manual' | null) {
+  const all = path === 'platform' ? PLATFORM_STEPS : path === 'manual' ? MANUAL_STEPS : []
+  return targetIsRemote() ? all.filter((step) => step.id !== 'runtime') : all
+}
+
+/**
+ * The create-agent step is the one step wider than a form: it inlines the
+ * template roster under the composer, which wants three card columns. It also
+ * carries the only horizontal padding in the wizard — 480px of form has
+ * gutters to spare in any window big enough to run the app, but the roster at
+ * this width does not. `max-w` is border-box, so the cap is 760px of content
+ * plus that padding.
+ *
+ * Unlike the other steps this one is a HEIGHT-FILLING column, not a centered
+ * block, and the step container must not scroll: the composer stays pinned
+ * while CreateAgentForm scrolls the template roster in the room below it, so
+ * every layer between here and the form passes height down (h-full/flex-1
+ * with min-h-0 at each level — any level missing min-h-0 lets flex content
+ * push the column taller than the window and the pin silently breaks).
+ */
+const AGENT_STEP_MAX_WIDTH = 'max-w-[808px] px-6'
+
 interface GettingStartedWizardProps {
+  agentOnly?: boolean
   onClose: () => void
 }
 
-export function GettingStartedWizard({ onClose }: GettingStartedWizardProps) {
+export function GettingStartedWizard({ agentOnly, onClose }: GettingStartedWizardProps) {
   const [currentStep, setCurrentStep] = useState(0)
   const [welcomePath, setWelcomePath] = useState<'platform' | 'manual' | null>(null)
   const [composioCanProceed, setComposioCanProceed] = useState(false)
@@ -49,12 +96,9 @@ export function GettingStartedWizard({ onClose }: GettingStartedWizardProps) {
   const isRestoringRef = useRef(false)
   const { data: userSettings } = useUserSettings()
   const updateUserSettings = useUpdateUserSettings()
+  const updateGlobalSettings = useUpdateSettings()
 
-  const steps = useMemo(() => {
-    if (welcomePath === 'platform') return PLATFORM_STEPS
-    if (welcomePath === 'manual') return MANUAL_STEPS
-    return []
-  }, [welcomePath])
+  const steps = useMemo(() => stepsForPath(welcomePath), [welcomePath])
 
   const activeStep = welcomePath ? steps[currentStep] : null
 
@@ -69,7 +113,7 @@ export function GettingStartedWizard({ onClose }: GettingStartedWizardProps) {
 
     const progress = userSettings.onboardingProgress
     if (progress) {
-      const targetSteps = progress.path === 'platform' ? PLATFORM_STEPS : MANUAL_STEPS
+      const targetSteps = stepsForPath(progress.path)
       const idx = targetSteps.findIndex(s => s.id === progress.stepId)
       if (idx >= 0) {
         isRestoringRef.current = true
@@ -100,8 +144,10 @@ export function GettingStartedWizard({ onClose }: GettingStartedWizardProps) {
   }, [currentStep, welcomePath]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleFinish = async () => {
-    // Use null (not undefined) so it survives JSON serialization and actually clears the field
     await updateUserSettings.mutateAsync({ setupCompleted: true, onboardingProgress: null })
+    if (!agentOnly) {
+      await updateGlobalSettings.mutateAsync({ app: { setupCompleted: true } }).catch(() => {})
+    }
     onClose()
   }
 
@@ -136,7 +182,34 @@ export function GettingStartedWizard({ onClose }: GettingStartedWizardProps) {
     setCurrentStep(0)
   }
 
-  const isAgentStep = activeStep?.id === 'agent'
+  const isAgentStep = agentOnly || activeStep?.id === 'agent'
+
+  if (agentOnly) {
+    return (
+      <div className="flex h-svh bg-background overflow-hidden" data-testid="wizard-container">
+        {isElectron() && <div className="absolute top-0 left-0 right-0 h-12 app-drag-region z-10" />}
+        <div className="relative flex flex-col h-svh w-full">
+          <div className="flex flex-1 min-h-0 flex-col overflow-hidden">
+            <div className={`flex h-full min-h-0 w-full mx-auto flex-col pt-10 ${AGENT_STEP_MAX_WIDTH}`}>
+              <div className="min-h-0 flex-1" data-testid="wizard-step-content">
+                <CreateAgentStep onAgentCreated={handleFinish} />
+              </div>
+            </div>
+          </div>
+          <div className={`flex justify-end pb-10 w-full mx-auto ${AGENT_STEP_MAX_WIDTH}`}>
+            <Button
+              variant="outline"
+              onClick={() => void handleFinish()}
+              data-testid="wizard-skip"
+            >
+              Skip
+              <ChevronRight className="h-4 w-4 ml-1" />
+            </Button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="flex h-svh bg-background overflow-hidden" data-testid="wizard-container">
@@ -147,11 +220,12 @@ export function GettingStartedWizard({ onClose }: GettingStartedWizardProps) {
       <div className={`relative flex flex-col h-svh transition-[width] duration-500 ease-in-out ${isAgentStep ? 'w-full' : 'w-full lg:w-1/2'}`}>
         <h1 className="sr-only">Getting Started</h1>
 
-        <div className={`flex flex-1 flex-col justify-center py-10 w-full mx-auto transition-[max-width] duration-500 ${isAgentStep ? 'max-w-[640px]' : 'max-w-[480px]'}`}>
-          <div className="w-full">
+        <div className={`flex flex-1 min-h-0 flex-col ${isAgentStep ? 'overflow-hidden' : 'justify-center'}`}>
+          <div className={`w-full mx-auto transition-[max-width] duration-500 ${isAgentStep ? `${AGENT_STEP_MAX_WIDTH} flex h-full min-h-0 flex-col pt-10` : 'max-w-[480px] py-10'}`}>
 
-          {/* Step content */}
-          <div className="min-h-[320px]" data-testid="wizard-step-content" data-step={currentStep}>
+          {/* Step content. The agent step fills the column height (its roster
+              scrolls internally); the rest keep the centered min-height block. */}
+          <div className={isAgentStep ? 'min-h-0 flex-1' : 'min-h-[320px]'} data-testid="wizard-step-content" data-step={currentStep}>
             {!welcomePath && (
               <WelcomeStep
                 onChoosePlatform={handleWelcomePlatformPath}
@@ -163,6 +237,7 @@ export function GettingStartedWizard({ onClose }: GettingStartedWizardProps) {
                 onCanProceedChange={setLlmCanProceed}
               />
             )}
+            {activeStep?.id === 'model' && <ConfigureModelStep />}
             {activeStep?.id === 'browser' && <BrowserSetupStep onCanProceedChange={setBrowserCanProceed} />}
             {activeStep?.id === 'composio' && <ComposioStep onCanProceedChange={setComposioCanProceed} saveRef={composioSaveRef} />}
             {activeStep?.id === 'runtime' && <DockerSetupStep onCanProceedChange={setRuntimeCanProceed} />}
@@ -173,7 +248,7 @@ export function GettingStartedWizard({ onClose }: GettingStartedWizardProps) {
         </div>
 
         {/* Navigation buttons — hidden on welcome page */}
-        <div className={`flex items-center justify-between pb-10 w-full mx-auto transition-[max-width] duration-500 ${isAgentStep ? 'max-w-[640px]' : 'max-w-[480px]'} ${!welcomePath ? 'hidden' : ''}`}>
+        <div className={`flex items-center justify-between pb-10 w-full mx-auto transition-[max-width] duration-500 ${isAgentStep ? AGENT_STEP_MAX_WIDTH : 'max-w-[480px]'} ${!welcomePath ? 'hidden' : ''}`}>
           {!welcomePath ? (
             <div />
           ) : (

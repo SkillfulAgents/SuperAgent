@@ -7,7 +7,8 @@ import type { RemoteMcpServer } from '@renderer/hooks/use-remote-mcps'
 function account(overrides: Partial<ConnectedAccount> = {}): ConnectedAccount {
   return {
     id: 'a1',
-    composioConnectionId: 'comp-1',
+    providerConnectionId: 'comp-1',
+    providerName: 'composio',
     toolkitSlug: 'slack',
     displayName: 'Slack',
     status: 'active',
@@ -104,6 +105,31 @@ describe('buildUnifiedRows', () => {
     expect(rows[0].iconSlug).toBeUndefined()
   })
 
+  it('propagates accountStatus from connected account to unified row', () => {
+    const rows = buildUnifiedRows({
+      allAccounts: [
+        account({ id: 'a-active', status: 'active' }),
+        account({ id: 'a-expired', status: 'expired' }),
+        account({ id: 'a-revoked', status: 'revoked' }),
+      ],
+      allMcps: [],
+    })
+    const byId = Object.fromEntries(rows.map((r) => [r.id, r.accountStatus]))
+    expect(byId).toEqual({
+      'a-active': 'active',
+      'a-expired': 'expired',
+      'a-revoked': 'revoked',
+    })
+  })
+
+  it('does not set accountStatus on MCP rows', () => {
+    const rows = buildUnifiedRows({
+      allAccounts: [],
+      allMcps: [mcp({ id: 'm1' })],
+    })
+    expect(rows[0].accountStatus).toBeUndefined()
+  })
+
   it('uses the toolkit slug as the OAuth row icon and exposes toolkit on the row', () => {
     const rows = buildUnifiedRows({
       allAccounts: [account({ id: 'a-slack', toolkitSlug: 'slack' })],
@@ -113,5 +139,58 @@ describe('buildUnifiedRows', () => {
     expect(rows[0].iconFallback).toBe('oauth')
     expect(rows[0].toolkit).toBe('slack')
     expect(rows[0].type).toBe('oauth')
+  })
+
+  it('renders foreign links as generic, granted rows without resource metadata', () => {
+    const rows = buildUnifiedRows({
+      allAccounts: [],
+      allMcps: [],
+      foreignAccounts: [{ kind: 'connected-account', toolkitSlug: 'github', mappingId: 'map-a1' }],
+      foreignMcps: [{ kind: 'remote-mcp', mappingId: 'map-m1' }],
+    })
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        key: 'foreign-account-map-a1',
+        name: 'GitHub',
+        subtitle: 'Connected by another member',
+        type: 'oauth',
+        granted: true,
+        foreign: true,
+        mappingId: 'map-a1',
+      }),
+      expect.objectContaining({
+        key: 'foreign-mcp-map-m1',
+        name: 'Shared MCP connection',
+        subtitle: 'Connected by another member',
+        type: 'mcp',
+        granted: true,
+        foreign: true,
+        mappingId: 'map-m1',
+      }),
+    ])
+    expect(rows.every((row) => row.date === undefined)).toBe(true)
+    expect(rows.every((row) => row.mcpTools === undefined)).toBe(true)
+    expect(rows.every((row) => row.mcpErrorMessage === undefined)).toBe(true)
+  })
+
+  it('keys foreign rows on the link id so removing a sibling cannot shift them', () => {
+    const build = (accounts: Array<{ toolkitSlug: string; mappingId: string }>) =>
+      buildUnifiedRows({
+        allAccounts: [],
+        allMcps: [],
+        foreignAccounts: accounts.map((a) => ({ kind: 'connected-account' as const, ...a })),
+      })
+
+    const before = build([
+      { toolkitSlug: 'slack', mappingId: 'map-1' },
+      { toolkitSlug: 'slack', mappingId: 'map-2' },
+    ])
+    const after = build([{ toolkitSlug: 'slack', mappingId: 'map-2' }])
+
+    // Two links to the same toolkit are indistinguishable by name; only the
+    // link id keeps the surviving row pointing at itself after the refetch.
+    expect(before.map((r) => r.key)).toEqual(['foreign-account-map-1', 'foreign-account-map-2'])
+    expect(after.map((r) => r.key)).toEqual(['foreign-account-map-2'])
   })
 })

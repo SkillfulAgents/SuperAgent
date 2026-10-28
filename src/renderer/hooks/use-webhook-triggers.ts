@@ -6,7 +6,7 @@
 
 import { apiFetch } from '@renderer/lib/api'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import type { WebhookTrigger } from '@shared/lib/db/schema'
+import type { PublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
 import {
   useAutomationList,
   useAutomationDetail,
@@ -14,7 +14,7 @@ import {
   useAutomationSessions,
 } from './use-agent-automations'
 
-export type { WebhookTrigger }
+export type WebhookTrigger = PublicWebhookTrigger
 
 const TYPE = 'webhook-triggers' as const
 
@@ -59,6 +59,7 @@ export function useUpdateWebhookTriggerPrompt() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ triggerId, prompt }: { triggerId: string; agentSlug: string; prompt: string }) => {
       const res = await apiFetch(`/api/webhook-triggers/${triggerId}/prompt`, {
         method: 'PATCH',
@@ -82,10 +83,12 @@ export function useUpdateWebhookTriggerRuntimeOptions() {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async ({ triggerId, model, effort }: { triggerId: string; agentSlug: string; model?: string | null; effort?: string | null }) => {
+    mutationFn: async ({ triggerId, llmProviderId, model, effort, speed }: { triggerId: string; agentSlug: string; llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null }) => {
       const body: Record<string, string | null> = {}
+      if (llmProviderId !== undefined) body.llmProviderId = llmProviderId
       if (model !== undefined) body.model = model
       if (effort !== undefined) body.effort = effort
+      if (speed !== undefined) body.speed = speed
       const res = await apiFetch(`/api/webhook-triggers/${triggerId}/runtime-options`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -97,10 +100,10 @@ export function useUpdateWebhookTriggerRuntimeOptions() {
       }
       return res.json() as Promise<WebhookTrigger>
     },
-    onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['webhook-trigger', variables.triggerId] })
-      queryClient.invalidateQueries({ queryKey: ['webhook-triggers', variables.agentSlug] })
-    },
+    onSuccess: (_data, variables) => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['webhook-trigger', variables.triggerId] }),
+      queryClient.invalidateQueries({ queryKey: ['webhook-triggers', variables.agentSlug] }),
+    ]),
   })
 }
 

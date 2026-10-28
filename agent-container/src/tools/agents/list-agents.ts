@@ -1,9 +1,6 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { callHost, textResult, XAgentError } from './host-client'
-
-interface ListAgentsResult {
-  agents: Array<{ slug: string; name: string; description?: string }>
-}
+import { listAgentsResultSchema } from './host-response-schemas'
 
 export const listAgentsTool = tool(
   'list_agents',
@@ -15,7 +12,7 @@ In auth mode, the list is filtered to agents the workspace owner has access to.`
   {},
   async () => {
     try {
-      const data = await callHost<ListAgentsResult>('list', {})
+      const data = await callHost('list', {}, listAgentsResultSchema)
       if (data.agents.length === 0) {
         return textResult('No other agents available in this workspace.')
       }

@@ -2,6 +2,8 @@ import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import { Shield, ChevronDown } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
+import { isLabelDefaultKey, LABEL_DEFAULT_BASELINE } from '@shared/lib/proxy/policy-sentinels'
+import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 
 interface PolicySummaryPillProps {
   accountId: string
@@ -22,7 +24,17 @@ export function PolicySummaryPill({ accountId, onClick }: PolicySummaryPillProps
     },
   })
 
-  const hasAnyPolicy = (data?.policies?.length || 0) > 0
+  // The scope editor pre-fills the recommended per-label baseline ('*read'=allow,
+  // '*write'=review, '*destructive'=block) and persists it on Save. Saving the
+  // baseline as-is is not a meaningful customization, so only count policies that
+  // DEVIATE from that baseline when deciding whether to show "Custom".
+  const customPolicies = (data?.policies ?? []).filter((p) => {
+    if (isLabelDefaultKey(p.scope)) {
+      return LABEL_DEFAULT_BASELINE[p.scope.slice(1) as ScopeLabel] !== p.decision
+    }
+    return true
+  })
+  const hasAnyPolicy = customPolicies.length > 0
 
   return (
     <button

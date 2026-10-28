@@ -1,4 +1,62 @@
 import type { RuntimeOptions } from './runtime-options'
+import type { ContainerVolume } from '@shared/lib/types/mount'
+import type { SessionMetadata } from '@shared/lib/types/agent'
+import type { ObserveUnexpectedDeathInput, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
+
+/** The container refused an operation because the session is mid-turn (HTTP 409). */
+export class ContainerConflictError extends Error {
+  readonly code = 'session_busy'
+  constructor(message: string) {
+    super(message)
+    this.name = 'ContainerConflictError'
+  }
+}
+
+/** The container has the route but the session is gone (HTTP 404 + JSON). */
+export class ContainerNotFoundError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ContainerNotFoundError'
+  }
+}
+
+export interface SendMessageOptions extends RuntimeOptions {
+  /** Internal: a queued message keeps the active turn configuration. */
+  preserveRuntime?: boolean
+  /** Keep an automated session in its automated runtime class for agent-originated follow-ups. */
+  isAutomated?: boolean
+  /**
+   * The session's metadata entry as the caller just read it (null: it has
+   * none). The send binds its provider from it instead of reading it again.
+   */
+  sessionMetadata?: SessionMetadata | null
+  /**
+   * Fields the caller is about to store for this send. When the send has to
+   * store a changed provider binding, these go in the same write.
+   */
+  metadataUpdates?: Partial<SessionMetadata>
+}
+
+export interface SendMessageResult {
+  /** The provider binding the send resolved; absent when it kept the running turn's. */
+  selection?: { llmProviderId: string; model: string }
+  /**
+   * The send stored a changed binding before the container had the message,
+   * together with `metadataUpdates`.
+   */
+  metadataWritten?: boolean
+}
+
+export const CONTAINER_RUNNER_IDS = [
+  'docker',
+  'podman',
+  'apple-container',
+  'lima',
+  'wsl2',
+  'kubernetes',
+  'lambda-microvm',
+] as const
+export type ContainerRunner = (typeof CONTAINER_RUNNER_IDS)[number]
 
 export type ContainerStatus = 'stopped' | 'running'
 
@@ -6,6 +64,12 @@ export type ContainerStatus = 'stopped' | 'running'
 // 'xhigh' is Opus 4.7 only; 'max' is Opus 4.6/4.7 only.
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 export type EffortLevel = typeof EFFORT_LEVELS[number]
+
+// Normalized processing-speed tiers across providers. 'fast' maps to
+// Anthropic fast mode / OpenAI priority; 'slow' maps to OpenAI flex.
+// 'normal' is the universal default and the only tier every model supports.
+export const SPEED_LEVELS = ['slow', 'normal', 'fast'] as const
+export type SpeedLevel = typeof SPEED_LEVELS[number]
 
 // Info returned from Docker
 export interface ContainerInfo {
@@ -18,6 +82,8 @@ export interface ContainerConfig {
   envVars?: Record<string, string>
   /** Called when a connection error is detected (ECONNREFUSED, etc.) */
   onConnectionError?: () => void
+  /** Manager-owned restart: single-flight doStartContainer (fresh env + status cache). */
+  restartAgent?: () => Promise<void>
 }
 
 export interface SlashCommandInfo {
@@ -26,12 +92,28 @@ export interface SlashCommandInfo {
   argumentHint: string
 }
 
+export type InterruptScope = 'turn' | 'all'
+
+export interface InterruptSessionOptions {
+  scope?: InterruptScope
+}
+
+export interface InterruptSessionResult {
+  // The container acknowledged the interrupt (false: session not live there).
+  interrupted: boolean
+  // The CLI process survived, so its background tasks are still running and
+  // their state must be kept. False when the process was replaced (a full
+  // stop, or a soft stop that had to fall back) — every background task died.
+  processKept: boolean
+}
+
 export interface ContainerSession {
   id: string
   createdAt: string
   lastActivity: string
   workingDirectory: string
   slashCommands?: SlashCommandInfo[]
+  isRunning?: boolean
 }
 
 export interface StreamMessage {
@@ -47,8 +129,10 @@ export interface CreateSessionOptions {
   availableEnvVars?: string[]
   initialMessage: string // Required: first message to send (triggers session ID generation)
   initialMessageUuid?: string // Optional UUID for message author attribution
+  llmProviderId?: string | null
   model?: string // Claude model to use for this session
   browserModel?: string // Model for browser subagent
+  dashboardBuilderModel?: string // Model for the dashboard-builder subagent
   maxOutputTokens?: number // Max tokens per response (CLAUDE_CODE_MAX_OUTPUT_TOKENS)
   maxThinkingTokens?: number // Max tokens for extended thinking
   maxTurns?: number // Max conversation turns
@@ -56,11 +140,39 @@ export interface CreateSessionOptions {
   customEnvVars?: Record<string, string> // User-defined env vars for the agent process
   maxBrowserTabs?: number // Max browser tabs allowed (default 10)
   effort?: EffortLevel // Initial thinking effort level
+  speed?: SpeedLevel // Initial processing speed tier
+  /**
+   * What the NEXT session on this agent will most likely ask for: the agent's
+   * default model/effort/speed with the global fallback applied, ignoring any
+   * per-session pick in `model`/`effort`/`speed` above.
+   *
+   * The container pre-warms a CLI subprocess for this shape. Without it the
+   * container can only guess from the session it just ran, so a single one-off
+   * model pick would leave it warmed for the wrong configuration — the next
+   * default session would discard that process and start cold.
+   */
+  prewarmDefaults?: {
+    llmProviderId?: string
+    model?: string
+    effort?: EffortLevel
+    speed?: SpeedLevel
+  }
 }
 
 export interface StartOptions {
   envVars?: Record<string, string>
-  additionalVolumes?: string[] // Extra -v flag values for bind mounts
+  /**
+   * The agent's display name, for the LLM provider's per-agent attribution.
+   * Supplied by the caller, which reads it through the agent's actor; the
+   * runtime has no view of the workspace and must not read it by host path.
+   */
+  agentName?: string
+  /** Sent as SUPERAGENT_VOLUMES with `volumeRunFlags()`, and dropped with them when the runtime refuses the flags. */
+  volumes?: ContainerVolume[]
+  /** The runtime refused the volume flags, so the container started without its volumes. */
+  onVolumesDropped?: () => void
+  /** The container was already running, so this start sent it nothing. */
+  onAlreadyRunning?: () => void
 }
 
 // Container resource usage stats
@@ -79,14 +191,65 @@ export interface HealthCheckResult {
   details?: Record<string, unknown>
 }
 
+export interface StopOptions {
+  stopTimeoutMs?: number
+  killTimeoutMs?: number
+  /**
+   * Whether to escalate to a runtime-level force-stop (e.g. killing the entire
+   * Lima VM) when both `stop` and `kill` time out. Defaults to true.
+   *
+   * Force-stop kills the shared VM, taking down ALL running agents. That is an
+   * acceptable last resort for user-initiated stops (a debug escape hatch — if
+   * a container won't die, you want the bigger hammer) and for app shutdown.
+   * It is NOT acceptable for the background auto-sleep sweep: reclaiming one
+   * idle container should never nuke everyone's active work. Auto-sleep passes
+   * `false`, in which case a stuck container is left running and retried on the
+   * next cycle.
+   */
+  escalateToForceStop?: boolean
+}
+
+export interface StopResult {
+  /** True if we had to force-stop the runtime (e.g. kill the Lima VM). */
+  forceStopUsed: boolean
+  /**
+   * True if the container was actually stopped (gracefully, killed, or via
+   * force-stop). False only when stop+kill timed out and force-stop was
+   * disabled — the container is still running and should be retried.
+   */
+  stopped: boolean
+}
+
+// Verdict from probing a host-side TCP endpoint from the runner's network side.
+// Only 'unreachable' is a proven block; 'unknown' must never fail a launch.
+export type HostPortProbeResult = 'reachable' | 'unreachable' | 'unknown'
+
 export interface ContainerClient {
   // Lifecycle management
-  start(options?: StartOptions): Promise<void>
-  stop(): Promise<{ forceStopUsed: boolean }>
+  // Returns the state already proven by the runtime's health gate. All
+  // in-tree clients return it; `void` stays in the contract so an
+  // implementation that can't cheaply report state may omit it, in which
+  // case ContainerManager falls back to getInfoFromRuntime().
+  start(options?: StartOptions): Promise<ContainerInfo | void>
+  stop(options?: StopOptions): Promise<StopResult>
   stopSync(): void // Synchronous stop for exit handlers
 
-  // Build a -v flag value for a volume mount (hostPath:containerPath with runtime-specific suffix)
-  buildVolumeFlag(hostPath: string, containerPath: string): string
+  // Run flags that let the container mount its volumes with FUSE, or null when this runtime can't.
+  volumeRunFlags(): string | null
+
+  // Host-internal bridge IP that a host-side service must bind to so THIS runner's
+  // containers can reach it via host.docker.internal, or null when containers reach
+  // the host's loopback directly (e.g. Docker Desktop forwards loopback). Used to
+  // forward an unauthenticated host CDP port to the container without ever binding
+  // it on 0.0.0.0 (SUP-217).
+  getHostBridgeIp(): string | null
+
+  // Probe whether a host-side TCP endpoint (e.g. the CDP proxy bound to
+  // getHostBridgeIp()) is actually reachable from the runner's network side,
+  // where container-originated traffic comes from. 'unknown' means the runner
+  // has no vantage point to test from — callers must treat it as "proceed",
+  // never as a failure.
+  probeHostPortFromRunner(host: string, port: number): Promise<HostPortProbeResult>
 
   // Query the container runtime for current state (spawns CLI process)
   // Use containerManager.getCachedInfo() for cached status instead
@@ -99,9 +262,19 @@ export interface ContainerClient {
   // Throws if container is not running
   fetch(path: string, init?: RequestInit): Promise<Response>
 
+  // Headers proving the caller is the host — required by the container API,
+  // which is also reachable from the agent's own Bash. Callers that dial the
+  // container directly (e.g. WebSocket upgrades) must attach these.
+  getHostAuthHeaders(): Record<string, string>
+
+  getWebSocketBaseUrl(port: number): string
+  getHostApiBaseUrl(): string | Promise<string>
+
   // Health checks
-  waitForHealthy(timeoutMs?: number): Promise<boolean>
-  isHealthy(): Promise<boolean>
+  waitForHealthy(timeoutMs?: number, knownPort?: number): Promise<boolean>
+  isHealthy(knownPort?: number): Promise<boolean>
+  /** The container's /health body, or null when it does not answer ok within the probe's bound. */
+  health(knownPort?: number): Promise<unknown>
 
   // Resource stats (memory, CPU usage)
   getStats(): Promise<ContainerStats | null>
@@ -110,13 +283,36 @@ export interface ContainerClient {
   createSession(options: CreateSessionOptions): Promise<ContainerSession>
   getSession(sessionId: string): Promise<ContainerSession | null>
   deleteSession(sessionId: string): Promise<boolean>
+  // Copy a session's transcript into a new session (Fork Session).
+  // null = the container predates the fork endpoint (plain 404). Throws
+  // ContainerNotFoundError when the session is gone (JSON 404),
+  // ContainerConflictError when the source is mid-turn.
+  forkSession(sessionId: string): Promise<{ id: string } | null>
+  // Ask the container to resume this session's CLI ahead of its next message
+  // (it may have been evicted while idle). Best-effort and never throws:
+  // false when the container predates the endpoint (plain 404), does not know
+  // the session, or does not answer within a short timeout.
+  warmSession(sessionId: string): Promise<boolean>
 
   // Message operations
-  sendMessage(sessionId: string, content: string, uuid?: string, options?: RuntimeOptions): Promise<void>
-  getMessages(sessionId: string): Promise<any[]>
-  interruptSession(sessionId: string): Promise<boolean>
+  sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<SendMessageResult>
+  // Cancel a queued (not yet picked up) message by the uuid it was sent with.
+  // false = too late (already picked up) or session not live — never throws for that.
+  cancelQueuedMessage(sessionId: string, uuid: string): Promise<boolean>
+  // scope 'turn' (default) ends the foreground turn and spares background
+  // tasks; 'all' replaces the CLI process, which kills them too.
+  interruptSession(sessionId: string, options?: InterruptSessionOptions): Promise<InterruptSessionResult>
+  // Stop one background task by its SDK task id. false = the container could
+  // not (session not live, or a build that predates the endpoint).
+  stopTask(sessionId: string, taskId: string): Promise<boolean>
 
-  // Streaming - returns unsubscribe function and a ready promise
+  // Default settles (today's session_error). Overrides must be safe on a live runtime (queued re-run).
+  onFatalResult(kind: RuntimeFatalKind): 'settle' | 'defer_for_recovery'
+  observeUnexpectedDeath(input?: ObserveUnexpectedDeathInput): Promise<UnexpectedDeathPlan>
+  getRuntimeGenerationId(): string | null
+
+  // Streaming - ready resolves after listener attachment and terminal replay,
+  // before a new send may safely mark the session active.
   subscribeToStream(
     sessionId: string,
     callback: (message: StreamMessage) => void

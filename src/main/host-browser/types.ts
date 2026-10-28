@@ -1,6 +1,6 @@
 import type { ChromeProfile } from '@shared/lib/browser/chrome-profile'
 
-export type HostBrowserProviderId = 'chrome' | 'browserbase'
+export type HostBrowserProviderId = 'chrome' | 'browserbase' | 'platform'
 
 export interface BrowserConnectionInfo {
   /** Full CDP WebSocket URL (for remote providers like Browserbase) */

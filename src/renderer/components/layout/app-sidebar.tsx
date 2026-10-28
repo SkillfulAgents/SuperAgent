@@ -1,16 +1,25 @@
 
-import { Bell, ChevronDown, ChevronRight, Plus, Search, Settings, AlertTriangle, LayoutGrid, Loader2, SquareMousePointer, WifiOff, LogOut, User, Users } from 'lucide-react'
+import { Bell, Brain, ChevronDown, ChevronLeft, ChevronRight, Cloud, Laptop, Plus, Search, Settings, AlertTriangle, LayoutGrid, ListTodo, SquareMousePointer, LogOut, Compass, MoonStar, SquarePen } from 'lucide-react'
+import { formatDistanceToNow } from 'date-fns'
+import { toast } from 'sonner'
 import { cn } from '@shared/lib/utils/cn'
 import { Skeleton } from '@renderer/components/ui/skeleton'
 import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
+import { AppLink } from '@renderer/components/ui/app-link'
+import { UnreadDot } from '@renderer/components/agents/status-indicators'
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { isElectron, getPlatform, openDashboardExternal } from '@renderer/lib/env'
+import { openExternalUrl } from '@renderer/lib/open-external'
+import { targetIsRemote } from '@renderer/lib/api-target'
+import { resolveSidebarVersionState } from '@renderer/components/layout/sidebar-version-state'
+import { TargetSwitcher } from '@renderer/components/layout/target-switcher'
+import { useTargetSwitch } from '@renderer/hooks/use-target-switch'
+import { hasInteractiveLogin } from '@renderer/lib/auth-mode'
 import { useDialogs } from '@renderer/context/dialog-context'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
 import {
   Collapsible,
   CollapsibleContent,
-  CollapsibleTrigger,
 } from '@renderer/components/ui/collapsible'
 import {
   Sidebar,
@@ -18,7 +27,6 @@ import {
   SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
@@ -28,52 +36,137 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
   SidebarRail,
+  useSidebar,
 } from '@renderer/components/ui/sidebar'
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
-import { useAgents, type ApiAgent } from '@renderer/hooks/use-agents'
+import {
+  FirewallBlockedSidebarBanner,
+  OfflineSidebarBanner,
+  RuntimeUnavailableSidebarBanner,
+  RuntimeCheckingSidebarBanner,
+  RuntimePullingSidebarBanner,
+  ServicesDegradedSidebarBanner,
+  SidebarBannerStack,
+  type FirewallFixUiState,
+} from '@renderer/components/runtime/runtime-status-banners'
+import { useFirewallStatus, useFixFirewall } from '@renderer/hooks/use-firewall-status'
+import { useAgents, useListedAgents, useRouteAgentId, useStartAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { useSessions, type ApiSession } from '@renderer/hooks/use-sessions'
 import { useMessageStream } from '@renderer/hooks/use-message-stream'
-import { useSettings } from '@renderer/hooks/use-settings'
+import { useSettings, useModelSettings, useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
+import { useExperiment } from '@renderer/hooks/use-experiment'
+import { useTodos } from '@renderer/hooks/use-todos'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
+import { usePlatformAuthStatus } from '@renderer/hooks/use-platform-auth'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { AgentStatus } from '@renderer/components/agents/agent-status'
+import { SidebarMemberIndicator } from '@renderer/components/agents/sidebar-member-indicator'
 import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
+import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
+import { agentActivity, agentAvatarState } from '@shared/lib/types/agent-activity-status'
+import { useMinuteClock } from '@renderer/hooks/use-minute-clock'
+import { formatLastRun } from '@renderer/lib/last-run'
+import { SIDEBAR_TREE_CONNECTORS } from '@renderer/components/ui/tree-connectors'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
 import { SessionContextMenu } from '@renderer/components/sessions/session-context-menu'
 import { DashboardContextMenu } from '@renderer/components/dashboards/dashboard-context-menu'
 import { useQueryClient } from '@tanstack/react-query'
+import { useParams, useRouterState } from '@tanstack/react-router'
 import { apiFetch } from '@renderer/lib/api'
-import { useSelection } from '@renderer/context/selection-context'
+import { useRouteLocation } from '@renderer/router/use-route-location'
+import { useHistoryNavigation } from '@renderer/router/use-history-navigation'
 import { useSearch } from '@renderer/context/search-context'
+import { useCmdHintTarget, CmdHintBadge } from '@renderer/context/cmd-hint-context'
 import { useArtifacts, type ArtifactInfo } from '@renderer/hooks/use-artifacts'
-import { useChatIntegrations, useChatIntegrationSessions, type ChatIntegration } from '@renderer/hooks/use-chat-integrations'
-import { formatProviderName } from '@shared/lib/chat-integrations/utils'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
+import { useIsMobile } from '@renderer/hooks/use-mobile'
 import { useUser } from '@renderer/context/user-context'
+import { UserAvatar } from '@renderer/components/ui/user-avatar'
 import { useUpdateStatus } from '@renderer/context/update-status-context'
-import { NotificationsPopoverContent } from '@renderer/components/notifications/notifications-popover'
 import { useUnreadNotificationCount } from '@renderer/hooks/use-notifications'
+import { usePlatformUnreadCount } from '@renderer/hooks/use-platform-notifications'
 import { useIsOnline } from '@renderer/context/connectivity-context'
+import { HoverScrollText } from '@renderer/components/ui/hover-scroll-text'
 import {
   DndContext,
-  closestCenter,
+  DragOverlay,
   PointerSensor,
   KeyboardSensor,
+  closestCenter,
+  pointerWithin,
+  rectIntersection,
   useSensor,
   useSensors,
+  type UniqueIdentifier,
+  type CollisionDetection,
   type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
 } from '@dnd-kit/core'
 import {
   SortableContext,
   verticalListSortingStrategy,
-  arrayMove,
   sortableKeyboardCoordinates,
+  type SortingStrategy,
 } from '@dnd-kit/sortable'
 import { restrictToVerticalAxis } from '@dnd-kit/modifiers'
 import { SortableAgentMenuItem } from './sortable-agent-item'
+import { AGENT_AVATAR_LEFT, AGENT_AVATAR_SIZE, SIDEBAR_FOLLOW_REGION } from './sidebar-avatar'
+import { SidebarDragProvider, useSidebarDragActive } from './sidebar-drag-context'
+import {
+  AgentDragOverlayRow,
+  AgentFolderBlock,
+  SECTION_ICON_CLASS,
+  SECTION_ROW_CLASS,
+  agentDropAnimation,
+} from './agent-folder-block'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
+import {
+  containerIdForFolder,
+  buildFolderSections,
+  dissolveFolder,
+  ROOT_FOLDER_ID,
+  locateAgent,
+  moveAgent,
+  moveFolder,
+  newFolderId,
+  resolveAgentDrop,
+  resolveFolderDrop,
+  sanitizeFolders,
+  sectionsToSettings,
+  sortableIdForFolder,
+  uniqueFolderName,
+  applyTreeOperation,
+  type TreeOperation,
+} from '@renderer/lib/agent-folders'
 import { useRenderTracker } from '@renderer/lib/perf'
+import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
+import { useSkillsets } from '@renderer/hooks/use-skillsets'
+import { useRememberedFlag } from '@renderer/hooks/use-remembered-flag'
+import { useSidebarFileDrop } from './use-sidebar-file-drop'
+
+/** Set once Team Brain has been opened, which retires its "New" badge: the badge invites a first look, then goes away. */
+const TEAM_BRAIN_SEEN_KEY = 'team-brain.seen'
+
+function VersionBehindDot({
+  wayBehind,
+  label,
+}: {
+  wayBehind: boolean
+  label: string
+}) {
+  return (
+    <span
+      className={cn(
+        'ml-0.5 h-1.5 w-1.5 rounded-full',
+        wayBehind ? 'bg-orange-500' : 'bg-blue-500',
+      )}
+      aria-label={label}
+    />
+  )
+}
 
 // 4px-wide thin scrollbar with a muted-foreground/20 thumb. Reused on the
 // agents-list group; pull out as a constant so the call site stays readable.
@@ -81,6 +174,26 @@ const THIN_SCROLLBAR =
   '[scrollbar-width:thin] [scrollbar-color:hsl(var(--muted-foreground)/0.2)_transparent] ' +
   '[&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:bg-transparent ' +
   '[&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/20'
+
+// Sensor options MUST be referentially stable. `useSensor` memoizes on the
+// options object, so an inline literal here mints new sensor descriptors on
+// every AppSidebar render — which makes DndContext rebuild its activators,
+// which hands every `useSortable` row a brand-new `listeners` object, which
+// breaks AgentMenuItem's memo for the entire list on every unrelated sidebar
+// render. Measured: 80 filed agents cost 2 full row re-renders per row per
+// toggle with inline options, ~0 with these hoisted.
+const POINTER_SENSOR_OPTIONS = { activationConstraint: { distance: 5 } }
+const KEYBOARD_SENSOR_OPTIONS = { coordinateGetter: sortableKeyboardCoordinates }
+const SIDEBAR_FILE_DROP_CUE =
+  'data-[file-drop-active]:bg-sidebar-accent data-[file-drop-active]:ring-1 data-[file-drop-active]:ring-sidebar-ring'
+
+/** The user-settings fields that together describe the left-nav tree. */
+type AgentTreeSettings = ReturnType<typeof sectionsToSettings>
+
+type ActiveDrag = { type: 'agent' | 'folder'; label: string; folderId?: string }
+
+/** Where a dragged folder is currently set to land. */
+type FolderDropCue = { folderId: string; edge: 'above' | 'below' }
 
 // Session sub-item that tracks its streaming state
 function SessionSubItem({
@@ -91,193 +204,90 @@ function SessionSubItem({
   agentSlug: string
 }) {
   useRenderTracker('SessionSubItem')
-  const { view, setAgent } = useSelection()
-  const isSelected = view.kind === 'session' && view.id === session.id
-  const { isStreaming } = useMessageStream(isSelected ? session.id : null, isSelected ? agentSlug : null)
+  // Active state is route-derived (URL is authoritative, read from useParams) so
+  // the highlight + the stream subscription are correct on a cold reload, with no
+  // in-memory selection state to wait on.
+  const { sessionId: routeSessionId } = useParams({ strict: false }) as { sessionId?: string }
+  const routeAgentId = useRouteAgentId()
+  const isSelected = routeAgentId === agentSlug && routeSessionId === session.id
+  const { isStreaming } = useMessageStream(isSelected ? session.id : null, isSelected ? agentSlug : null, ['isStreaming'])
   const isWorking = (session.isActive || isStreaming) && !session.isAwaitingInput
   const isAwaitingInput = session.isAwaitingInput
   const hasUnread = !session.isActive && !session.isAwaitingInput && session.hasUnreadNotifications
-
-  const handleClick = () => {
-    setAgent(agentSlug, { kind: 'session', id: session.id })
-  }
+  // Pending-wake (long sleep) indicator: shown alongside the unread dot, but
+  // suppressed while the session is actively working/awaiting (momentarily
+  // redundant — the session clearly isn't asleep).
+  const showPendingWake = !!session.pendingWakeAt && !isWorking && !isAwaitingInput
+  const { ref: hintRef, hint } = useCmdHintTarget()
+  const dragHandlers = useSidebarFileDrop({
+    kind: 'session',
+    agentSlug,
+    sessionId: session.id,
+    // No composer is mounted behind a pending request, so a drop would be
+    // swallowed and then resurface once the request is answered.
+    disabled: isAwaitingInput,
+  })
 
   return (
-    <SidebarMenuSubItem>
+    <SidebarMenuSubItem
+      {...dragHandlers}
+      className={cn('rounded-md', SIDEBAR_FILE_DROP_CUE)}
+    >
       <SessionContextMenu
         sessionId={session.id}
         sessionName={session.name}
         agentSlug={agentSlug}
+        activity={{
+          isActive: !!session.isActive,
+          isAwaitingInput: !!session.isAwaitingInput,
+          isStreaming,
+        }}
       >
         <SidebarMenuSubButton
           asChild
           isActive={isSelected}
         >
-          <button
-            onClick={handleClick}
+          <AppLink
+            ref={hintRef}
+            to="/agents/$slug/sessions/$sessionId"
+            params={{ slug: agentSlug, sessionId: session.id }}
             className="flex items-center gap-2 w-full"
             data-testid={`session-item-${session.id}`}
           >
-            <span className="flex-1 min-w-0 truncate text-left">{session.name}</span>
-            <span className="flex items-center justify-center w-4 shrink-0">
-              {isAwaitingInput ? (
-                <AwaitingDot />
-              ) : isWorking ? (
-                <WorkingDots />
-              ) : hasUnread ? (
-                <span className="h-1.5 w-1.5 rounded-full bg-blue-500" role="img" aria-label="unread notifications" />
-              ) : null}
-            </span>
-          </button>
+            <HoverScrollText
+              className="flex-1 text-left"
+              data-testid={`session-name-${session.id}`}
+              hoverTarget="parent"
+            >
+              {session.name}
+            </HoverScrollText>
+            {hint !== null ? (
+              <CmdHintBadge hint={hint} />
+            ) : (
+              <span className="flex items-center justify-center gap-1 min-w-4 shrink-0">
+                {showPendingWake && (
+                  <span
+                    className="flex items-center"
+                    role="img"
+                    aria-label="scheduled to resume"
+                    title={`Resumes ${formatDistanceToNow(new Date(session.pendingWakeAt!), { addSuffix: true })}`}
+                    data-testid={`session-pending-wake-${session.id}`}
+                  >
+                    <MoonStar className="h-3 w-3 text-muted-foreground" />
+                  </span>
+                )}
+                {isAwaitingInput ? (
+                  <AwaitingDot />
+                ) : isWorking ? (
+                  <WorkingDots />
+                ) : hasUnread ? (
+                  <UnreadDot mention={session.hasUnreadMention} />
+                ) : null}
+              </span>
+            )}
+          </AppLink>
         </SidebarMenuSubButton>
       </SessionContextMenu>
-    </SidebarMenuSubItem>
-  )
-}
-
-// Chat integration sub-item (with expandable chat sessions)
-function ChatIntegrationSubItem({
-  integration,
-  agentSlug,
-}: {
-  integration: ChatIntegration
-  agentSlug: string
-}) {
-  const { view, setAgent } = useSelection()
-  const { data: sessions } = useChatIntegrationSessions(integration.id)
-  const viewingThisIntegration = view.kind === 'chat' && view.integrationId === integration.id
-  const selectedChatSessionId = view.kind === 'chat' ? view.sessionId ?? null : null
-  const isSelected = viewingThisIntegration && !selectedChatSessionId
-  const hasSelectedSession = viewingThisIntegration && selectedChatSessionId != null
-  const [isOpen, setIsOpen] = useState(viewingThisIntegration || hasSelectedSession)
-
-  const handleClick = () => {
-    setAgent(agentSlug, { kind: 'chat', integrationId: integration.id })
-  }
-
-  const handleSessionClick = (sessionId: string) => {
-    setAgent(agentSlug, { kind: 'chat', integrationId: integration.id, sessionId })
-  }
-
-  const statusDot = integration.status === 'active' ? 'bg-green-500' :
-    integration.status === 'paused' ? 'bg-yellow-500' :
-    integration.status === 'error' ? 'bg-red-500' : 'bg-gray-400'
-
-  const tooltip = `${integration.provider}: ${integration.status}`
-  const hasSessions = sessions && sessions.length > 0
-
-  return (
-    <SidebarMenuSubItem>
-      {hasSessions ? (
-        <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-          <div className="flex items-center">
-            <SidebarMenuSubButton
-              asChild
-              isActive={isSelected}
-              title={tooltip}
-              className="flex-1"
-            >
-              <button
-                onClick={handleClick}
-                className={`flex items-center gap-2 w-full text-muted-foreground ${integration.status === 'paused' ? 'opacity-50' : 'opacity-70'}`}
-              >
-                <span className="truncate">
-                  {integration.name || formatProviderName(integration.provider)}
-                </span>
-                <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${statusDot}`} />
-                <CollapsibleTrigger asChild>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setIsOpen(!isOpen) }}
-                    className="ml-auto p-0.5"
-                  >
-                    <ChevronRight className="h-3 w-3 shrink-0 transition-transform duration-200" style={{ transform: isOpen ? 'rotate(90deg)' : 'none' }} />
-                  </button>
-                </CollapsibleTrigger>
-              </button>
-            </SidebarMenuSubButton>
-          </div>
-          <CollapsibleContent>
-            <SidebarMenuSub>
-              {sessions.map((session) => {
-                const isArchived = session.archivedAt != null
-                return (
-                  <SidebarMenuSubItem key={session.id}>
-                    <SidebarMenuSubButton
-                      asChild
-                      isActive={selectedChatSessionId === session.sessionId}
-                    >
-                      <button
-                        onClick={() => handleSessionClick(session.sessionId)}
-                        className={`flex items-center gap-2 w-full text-muted-foreground ${isArchived ? 'opacity-40' : 'opacity-70'}`}
-                      >
-                        <span className="truncate text-xs">
-                          {session.displayName || `Chat ${session.externalChatId.slice(-6)}`}
-                        </span>
-                        {isArchived && (
-                          <span className="ml-auto text-2xs text-muted-foreground/50 shrink-0">archived</span>
-                        )}
-                      </button>
-                    </SidebarMenuSubButton>
-                  </SidebarMenuSubItem>
-                )
-              })}
-            </SidebarMenuSub>
-          </CollapsibleContent>
-        </Collapsible>
-      ) : (
-        <SidebarMenuSubButton
-          asChild
-          isActive={isSelected}
-          title={tooltip}
-        >
-          <button
-            onClick={handleClick}
-            className={`flex items-center gap-2 w-full text-muted-foreground ${integration.status === 'paused' ? 'opacity-50' : 'opacity-70'}`}
-          >
-            <span className="truncate">
-              {integration.name || formatProviderName(integration.provider)}
-            </span>
-            <span className={`ml-auto h-1.5 w-1.5 rounded-full shrink-0 ${statusDot}`} />
-          </button>
-        </SidebarMenuSubButton>
-      )}
-    </SidebarMenuSubItem>
-  )
-}
-
-// Collapsible group for multiple chat integrations
-function ChatIntegrationsGroup({
-  integrations,
-  agentSlug,
-}: {
-  integrations: ChatIntegration[]
-  agentSlug: string
-}) {
-  const [isOpen, setIsOpen] = useState(false)
-
-  return (
-    <SidebarMenuSubItem>
-      <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-        <CollapsibleTrigger asChild>
-          <SidebarMenuSubButton asChild>
-            <button className="flex items-center gap-2 w-full text-muted-foreground opacity-70">
-              <span className="truncate">Chat Integrations ({integrations.length})</span>
-              <ChevronRight className="ml-auto h-3 w-3 shrink-0 transition-transform duration-200 data-[state=open]:rotate-90" data-state={isOpen ? 'open' : 'closed'} />
-            </button>
-          </SidebarMenuSubButton>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <SidebarMenuSub>
-            {integrations.map((integration) => (
-              <ChatIntegrationSubItem
-                key={integration.id}
-                integration={integration}
-                agentSlug={agentSlug}
-              />
-            ))}
-          </SidebarMenuSub>
-        </CollapsibleContent>
-      </Collapsible>
     </SidebarMenuSubItem>
   )
 }
@@ -290,13 +300,11 @@ function DashboardSubItem({
   artifact: ArtifactInfo
   agentSlug: string
 }) {
-  const { view, setAgent } = useSelection()
-  const isSelected = view.kind === 'dashboard' && view.slug === artifact.slug
+  const { dashSlug: routeDashSlug } = useParams({ strict: false }) as { dashSlug?: string }
+  const routeAgentId = useRouteAgentId()
+  const isSelected = routeAgentId === agentSlug && routeDashSlug === artifact.slug
   const [isRenaming, setIsRenaming] = useState(false)
-
-  const handleClick = () => {
-    setAgent(agentSlug, { kind: 'dashboard', slug: artifact.slug })
-  }
+  const { ref: hintRef, hint } = useCmdHintTarget()
 
   const handleDoubleClick = () => {
     openDashboardExternal(agentSlug, artifact.slug, artifact.name)
@@ -315,8 +323,10 @@ function DashboardSubItem({
           isActive={isSelected}
           title={`${artifact.description || artifact.name} (double-click to open in new window)`}
         >
-          <button
-            onClick={handleClick}
+          <AppLink
+            ref={hintRef}
+            to="/agents/$slug/dashboards/$dashSlug"
+            params={{ slug: agentSlug, dashSlug: artifact.slug }}
             onDoubleClick={handleDoubleClick}
             className="flex items-center gap-2 w-full"
           >
@@ -331,7 +341,8 @@ function DashboardSubItem({
             ) : (
               <span className="truncate">{artifact.name}</span>
             )}
-          </button>
+            {hint !== null && <CmdHintBadge hint={hint} className="ml-auto" />}
+          </AppLink>
         </SidebarMenuSubButton>
       </DashboardContextMenu>
     </SidebarMenuSubItem>
@@ -419,11 +430,25 @@ function SessionsSkeleton() {
   )
 }
 
+// Only this label subscribes to the clock; the expensive agent row stays memoized.
+function AgentLastRun({ date }: { date: ApiAgent['lastActivityAt'] }) {
+  useMinuteClock()
+  return (
+    <span className="block truncate text-[11px] leading-tight text-muted-foreground/60">
+      {formatLastRun(date) ?? 'Last run never'}
+    </span>
+  )
+}
+
 // Right-side indicator on the agent row.
-// When expanded, suppress session-derived states (awaiting / working / unread)
-// since the individual session rows already surface those. Keep agent-level
-// sleeping / idle states which describe the container itself.
-// Priority when collapsed: awaiting > working > unread > sleeping/idle.
+// Awaiting / working aggregate across sessions regardless of expansion, with
+// the same formula as the agent header's AgentStatus (fresh sessions data
+// when loaded, agent-level flags as fallback) — the sidebar and the top nav
+// render on the same screen and must never disagree about whether an agent
+// is working. The unread dot IS still suppressed when expanded: it's a
+// sidebar-only navigation aid with no header counterpart, and the session
+// rows already point at the unread session.
+// Priority: awaiting > working > unread > sleeping/idle.
 function AgentRowIndicator({
   agent,
   sessions,
@@ -433,13 +458,12 @@ function AgentRowIndicator({
   sessions: ApiSession[] | undefined
   isOpen: boolean
 }) {
-  const isAwaiting = !isOpen && (sessions?.some((s) => s.isAwaitingInput) || (agent.hasSessionsAwaitingInput ?? false))
-  const isWorking = !isOpen && !isAwaiting && (sessions?.some((s) => s.isActive) || (agent.hasActiveSessions ?? false))
+  const { isAwaiting, isWorking } = agentActivity(agent, sessions)
   const isUnread = !isOpen && !isAwaiting && !isWorking && (agent.hasUnreadNotifications ?? false)
   if (isUnread) {
     return (
-      <span className="flex items-center w-4 justify-center" role="img" aria-label="unread notifications">
-        <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+      <span className="flex items-center w-4 justify-center">
+        <UnreadDot mention={agent.hasUnreadMention} />
       </span>
     )
   }
@@ -454,23 +478,30 @@ function AgentRowIndicator({
 }
 
 // Agent menu item with expandable sessions
-export const AgentMenuItem = React.forwardRef<
+const AgentMenuItemInner = React.forwardRef<
   HTMLLIElement,
   { agent: ApiAgent } & React.HTMLAttributes<HTMLLIElement>
 >(({ agent, style, ...rest }, ref) => {
   useRenderTracker('AgentMenuItem')
-  const { selectedAgentSlug, setAgent, view } = useSelection()
-  const { agentMemberCount } = useUser()
+  const { view } = useRouteLocation()
+  const { isAuthMode, agentMemberCount, canUseAgent } = useUser()
   const queryClient = useQueryClient()
-  const isSelected = agent.slug === selectedAgentSlug
+  // Route-derived selection (URL is authoritative — correct on a cold reload,
+  // and inherently false on the global notifications/home views since they carry
+  // no slug). Drives the highlight AND the submenu auto-expand below.
+  const routeAgentId = useRouteAgentId()
+  const isSelected = agent.slug === routeAgentId
   // Auto-expand on selection only if the agent has content to show. Brand-new
-  // agents (no sessions / dashboards / chat integrations yet) start collapsed
-  // — the empty submenu would just be visual noise.
+  // agents (no sessions / dashboards yet) start collapsed - the empty submenu
+  // would just be visual noise.
   const hasInitialContent =
     (agent.sessionCount ?? 0) > 0 ||
-    (agent.chatIntegrationCount ?? 0) > 0 ||
-    (agent.dashboardCount ?? 0) > 0
+    (agent.dashboards?.length ?? 0) > 0
   const [isOpen, setIsOpen] = useState(isSelected && hasInitialContent)
+  // Collapse visually for the duration of a drag so drop targets stay still.
+  // `isOpen` itself is untouched, so nothing refetches and the row reopens on
+  // drop; only the rendered height changes.
+  const isDragActive = useSidebarDragActive()
 
   // Once the user navigates into a sub-item (session / task / webhook / chat /
   // dashboard) we want the agent's submenu open so the active row is visible.
@@ -483,23 +514,24 @@ export const AgentMenuItem = React.forwardRef<
       view.kind === 'task' ||
       view.kind === 'webhook' ||
       view.kind === 'chat' ||
-      view.kind === 'dashboard')
+      view.kind === 'dashboard' ||
+      view.kind === 'completedTasks')
   useEffect(() => {
     if (isViewingSubItem) setIsOpen(true)
   }, [isViewingSubItem])
   const [showAll, setShowAll] = useState(false)
   const [showSkeleton, setShowSkeleton] = useState(false)
-  const isShared = agentMemberCount(agent.slug) > 1
+  const memberCount = agentMemberCount(agent.slug)
+  const isShared = isAuthMode && memberCount > 1
 
   // Lazy-load detail data only when expanded
   const { data: sessions, isLoading: sessionsLoading } = useSessions(isOpen ? agent.slug : null)
   const { data: artifacts } = useArtifacts(isOpen ? agent.slug : null)
-  const { data: chatIntegrationsData } = useChatIntegrations(isOpen ? agent.slug : null, 'active')
 
   const visibleSessions = showAll ? sessions : sessions?.slice(0, 5)
   const hasMore = (sessions?.length ?? 0) > 5
   const dashboards = Array.isArray(artifacts) ? artifacts : []
-  const chatIntegrations = chatIntegrationsData || []
+  const avatarState = agentAvatarState(agent, sessions)
 
   // Use pre-aggregated counts to determine if the chevron should show.
   // Also show when isOpen (agent selected) since sessions may have been
@@ -507,8 +539,7 @@ export const AgentMenuItem = React.forwardRef<
   const hasExpandableContent =
     isOpen ||
     (agent.sessionCount ?? 0) > 0 ||
-    (agent.chatIntegrationCount ?? 0) > 0 ||
-    (agent.dashboardCount ?? 0) > 0
+    (agent.dashboards?.length ?? 0) > 0
 
   // Show skeleton after 100ms if sessions haven't loaded yet
   useEffect(() => {
@@ -535,61 +566,145 @@ export const AgentMenuItem = React.forwardRef<
     }
   }, [isOpen, agent.slug, queryClient])
 
-  const handleClick = () => {
-    setAgent(agent.slug)
-  }
-
   const handleChevronClick = (e: React.MouseEvent) => {
     e.stopPropagation()
     setIsOpen((prev) => !prev)
   }
 
+  const { ref: hintRef, hint } = useCmdHintTarget()
+  // View-only members can't send, so they get no new-session control; nor
+  // does the slot while it shows the ⌘-number hint.
+  const canStartSession = hint === null && canUseAgent(agent.slug)
+  const warmStartEnabled = useWarmStartOnTypeEnabled()
+  const startAgent = useStartAgent()
+  const { data: runtimeStatus } = useRuntimeStatus()
+  const warmStart = () => {
+    if (warmStartEnabled && canStartSession && runtimeStatus?.runtimeReadiness.status === 'READY') {
+      startAgent.mutate({ slug: agent.slug, source: 'warm-start' })
+    }
+  }
+  const dragHandlers = useSidebarFileDrop({
+    kind: 'agent',
+    agentSlug: agent.slug,
+    displaySlug: agent.displaySlug,
+  })
+
   return (
-    <Collapsible asChild open={isOpen} onOpenChange={setIsOpen}>
-      <SidebarMenuItem ref={ref} style={style} {...rest} onMouseEnter={handleMouseEnter}>
-        {/*
-          Wrap the row + chevron in a relative box so the absolutely-positioned
-          chevron tracks the row height, not the (potentially expanded) menu
-          item that also contains CollapsibleContent below.
-        */}
-        <div className="relative">
-          <AgentContextMenu agent={agent}>
-            <SidebarMenuButton
-              onClick={handleClick}
-              isActive={isSelected}
-              className="justify-between pl-7"
-              data-testid={`agent-item-${agent.slug}`}
-            >
-              <span className="flex items-center gap-1.5 min-w-0">
-                <span className="truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
-                {isShared && <Users className="h-3 w-3 shrink-0 text-muted-foreground" />}
-              </span>
-              <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
-            </SidebarMenuButton>
-          </AgentContextMenu>
-          {/*
-            Sibling chevron button overlays its slot in the row so the row stays a
-            single <button> (no nested interactive controls).
-          */}
-          <button
-            type="button"
-            onClick={handleChevronClick}
-            aria-label={isOpen ? 'Collapse' : 'Expand'}
-            aria-expanded={isOpen}
-            className="absolute left-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded focus-visible:ring-2 focus-visible:ring-sidebar-ring outline-none"
+    <Collapsible asChild open={isOpen && !isDragActive} onOpenChange={setIsOpen}>
+      <SidebarMenuItem
+        ref={ref}
+        style={style}
+        {...rest}
+        onMouseEnter={handleMouseEnter}
+        // Portaled menus bubble through React, but are outside the draggable row.
+        onPointerDown={event => {
+          if (event.currentTarget.contains(event.target as Node)) rest.onPointerDown?.(event)
+        }}
+        onKeyDown={event => {
+          if (event.currentTarget.contains(event.target as Node)) rest.onKeyDown?.(event)
+        }}
+      >
+        <AgentContextMenu agent={agent}>
+          <SidebarMenuButton
+            asChild
+            isActive={isSelected}
+            className={cn('group/agent-row relative h-10 gap-1.5 overflow-visible pl-[42px]', SIDEBAR_FILE_DROP_CUE)}
           >
-            <ChevronRight
-              className={cn(
-                'h-3.5 w-3.5 text-muted-foreground/60 transition-[color,transform] group-hover/menu-item:text-sidebar-foreground',
-                isOpen && 'rotate-90'
+            <div {...dragHandlers}>
+              {/* Stretch the native link across the row; the roster and
+                  chevron sit above it as separate interactive controls. */}
+              <AppLink
+                ref={hintRef}
+                to="/agents/$slug"
+                params={{ slug: agent.displaySlug }}
+                data-testid={`agent-item-${agent.slug}`}
+                data-active={isSelected}
+                className="min-w-0 outline-none after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
+              >
+                <span className="block truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
+                <AgentLastRun date={agent.lastActivityAt} />
+              </AppLink>
+              {isShared && <SidebarMemberIndicator agentSlug={agent.slug} agentName={agent.name} memberCount={memberCount} selected={isSelected} />}
+              {/* The status slot doubles as the new-session control: hovering
+                  the row (or focusing the button) swaps the status for a pen
+                  opening the session view with an empty composer. */}
+              <span className="group/status-slot relative z-10 ml-auto flex shrink-0 items-center">
+                {/* Expose the status title above the stretched link while keeping
+                    clicks (including modifier clicks) native agent navigation. */}
+                <AppLink
+                  to="/agents/$slug"
+                  params={{ slug: agent.displaySlug }}
+                  tabIndex={-1}
+                  aria-label={`Open ${agent.name}`}
+                  className={cn(
+                    'flex items-center transition-opacity',
+                    canStartSession && 'group-hover/agent-row:opacity-0 group-focus-within/status-slot:opacity-0'
+                  )}
+                >
+                  {hint !== null ? (
+                    <CmdHintBadge hint={hint} />
+                  ) : (
+                    <AgentRowIndicator agent={agent} sessions={sessions} isOpen={isOpen} />
+                  )}
+                </AppLink>
+                {canStartSession && (
+                  <TooltipProvider delayDuration={200}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <AppLink
+                          to="/agents/$slug/sessions/new"
+                          params={{ slug: agent.displaySlug }}
+                          onPointerDown={(event) => { if (event.button === 0) warmStart() }}
+                          onClick={(event) => { if (event.detail === 0) warmStart() }}
+                          aria-label={`New session with ${agent.name}`}
+                          data-testid={`agent-new-session-${agent.slug}`}
+                          className="absolute left-1/2 top-1/2 flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded text-muted-foreground opacity-0 outline-none transition-opacity hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-sidebar-ring group-hover/agent-row:opacity-100"
+                        >
+                          <SquarePen className="h-3.5 w-3.5" />
+                        </AppLink>
+                      </TooltipTrigger>
+                      <TooltipContent side="right">New session</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                )}
+              </span>
+              {/* The avatar holds the expand slot; hovering it (or focusing
+                  the toggle) swaps in the chevron, Notion-style. */}
+              {hasExpandableContent ? (
+                <button
+                  type="button"
+                  onClick={handleChevronClick}
+                  aria-label={isOpen ? 'Collapse' : 'Expand'}
+                  aria-expanded={isOpen}
+                  className="group/avatar absolute left-1 top-1/2 z-10 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+                >
+                  <AgentAvatar
+                    agent={agent}
+                    state={avatarState}
+                    size={AGENT_AVATAR_SIZE}
+                    followPointer={SIDEBAR_FOLLOW_REGION}
+                    className="transition-opacity group-hover/avatar:opacity-0 group-focus-visible/avatar:opacity-0"
+                  />
+                  <ChevronRight
+                    className={cn(
+                      'absolute h-3.5 w-3.5 text-sidebar-foreground transition-[opacity,transform]',
+                      agent.avatar && 'opacity-0 group-hover/avatar:opacity-100 group-focus-visible/avatar:opacity-100',
+                      isOpen && !isDragActive && 'rotate-90'
+                    )}
+                  />
+                </button>
+              ) : (
+                <span className="pointer-events-none absolute left-1 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center">
+                  <AgentAvatar agent={agent} state={avatarState} size={AGENT_AVATAR_SIZE} followPointer={SIDEBAR_FOLLOW_REGION} />
+                </span>
               )}
-            />
-          </button>
-        </div>
+            </div>
+          </SidebarMenuButton>
+        </AgentContextMenu>
         {hasExpandableContent ? (
           <>
             <CollapsibleContent>
-              <SidebarMenuSub className="pb-2">
+              <SidebarMenuSub className={cn('pb-2 pl-[25px]', SIDEBAR_TREE_CONNECTORS)}>
                 {isOpen && sessionsLoading && showSkeleton ? (
                   <SessionsSkeleton />
                 ) : (
@@ -602,18 +717,6 @@ export const AgentMenuItem = React.forwardRef<
                         agentSlug={agent.slug}
                       />
                     ))}
-                    {/* Chat integrations */}
-                    {chatIntegrations.length > 1 ? (
-                      <ChatIntegrationsGroup
-                        integrations={chatIntegrations}
-                        agentSlug={agent.slug}
-                      />
-                    ) : chatIntegrations.length === 1 ? (
-                      <ChatIntegrationSubItem
-                        integration={chatIntegrations[0]}
-                        agentSlug={agent.slug}
-                      />
-                    ) : null}
                     {/* Regular sessions */}
                     {visibleSessions?.map((session) => (
                       <SessionSubItem
@@ -649,65 +752,222 @@ export const AgentMenuItem = React.forwardRef<
     </Collapsible>
   )
 })
-AgentMenuItem.displayName = 'AgentMenuItem'
+AgentMenuItemInner.displayName = 'AgentMenuItem'
+
+/**
+ * Memoized so that dnd-kit's per-tick context churn stops at the sortable
+ * wrapper. During a drag, dnd-kit publishes a new internal context value on
+ * essentially every pointer tick, which re-renders every `useSortable`
+ * consumer — that is every row wrapper in the list. This row's subtree is the
+ * expensive part (a Radix context menu, a mounted-but-closed settings dialog,
+ * three alert dialogs, session queries), so the wrapper must be able to bail
+ * before reaching it. All of the wrapper's props are referentially stable
+ * across those ticks — dnd-kit memoizes `attributes` and `listeners`, and the
+ * wrapper memoizes `style` — so a plain identity memo holds. Profiled: without
+ * this, a 40-agent list spends whole frames (60–90ms) re-rendering rows whose
+ * output cannot change.
+ */
+export const AgentMenuItem = React.memo(AgentMenuItemInner)
 
 if (__RENDER_TRACKING__) {
   (SessionSubItem as any).whyDidYouRender = true;
   (AgentMenuItem as any).whyDidYouRender = true
 }
 
-function NotificationsMenuButton() {
-  const { data: countData } = useUnreadNotificationCount()
-  const unreadCount = countData?.count ?? 0
-  const [open, setOpen] = useState(false)
+/**
+ * `ids`, keeping the previous array's identity while the ids and their order
+ * are unchanged. dnd-kit's SortableContext keys its context value on the
+ * identity of `items`, and a new value re-renders every `useSortable` row
+ * beneath it — on each agents refetch, every row in the section, since the
+ * list is rebuilt whenever any agent changes.
+ */
+function useSortableIds(ids: string[]): string[] {
+  const key = ids.join('\n')
+  return useMemo(() => (key ? key.split('\n') : []), [key])
+}
 
+/** One section's sortable member list. */
+function SectionAgentList({ agents }: { agents: ApiAgent[] }) {
+  const items = useSortableIds(agents.map((a) => a.slug))
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <SidebarMenuButton data-testid="notifications-button">
-          <Bell className="h-4 w-4" />
-          <span>Notifications</span>
-          {unreadCount > 0 && (
-            <span className="ml-auto h-1.5 w-1.5 rounded-full bg-blue-500" aria-label={`${unreadCount} unread`} />
-          )}
-        </SidebarMenuButton>
-      </PopoverTrigger>
-      <PopoverContent
-        className="w-80 p-0"
-        align="start"
-        side="right"
-        sideOffset={8}
-      >
-        <NotificationsPopoverContent onNavigate={() => setOpen(false)} />
-      </PopoverContent>
-    </Popover>
+    <SortableContext items={items} strategy={verticalListSortingStrategy}>
+      {agents.map((agent) => (
+        <SortableAgentMenuItem key={agent.slug} agent={agent} />
+      ))}
+    </SortableContext>
   )
 }
 
-function UserMenu() {
-  const { isAuthMode, user, signOut } = useUser()
-  if (!isAuthMode || !user) return null
+function NotificationsMenuButton() {
+  const { data: countData } = useUnreadNotificationCount()
+  const { data: platformCountData } = usePlatformUnreadCount()
+  const unreadCount = (countData?.count ?? 0) + (platformCountData?.count ?? 0)
+  const unreadMentions = countData?.mentions ?? 0
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const isActive = pathname === '/notifications'
+
   return (
-    <div className="px-2">
-      <Popover>
-        <PopoverTrigger asChild>
-          <button className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors" data-testid="user-menu-trigger">
-            <User className="h-3 w-3" />
-            <span className="truncate max-w-[140px]">{user.name}</span>
-          </button>
-        </PopoverTrigger>
-        <PopoverContent align="start" className="w-48 p-1">
+    <SidebarMenuButton asChild data-testid="notifications-button" isActive={isActive}>
+      <AppLink to="/notifications">
+        <Bell className="h-4 w-4" />
+        <span>Notifications</span>
+        {unreadMentions > 0 ? (
+          <UnreadDot mention className="ml-auto" />
+        ) : unreadCount > 0 && (
+          <span
+            className="ml-auto h-1.5 w-1.5 rounded-full bg-blue-500"
+            aria-label={`${unreadCount} unread`}
+          />
+        )}
+      </AppLink>
+    </SidebarMenuButton>
+  )
+}
+
+/**
+ * The Todo board (the `todo-board` experiment). Like Notifications, it
+ * carries a dot when something wants you — here, an agent waiting on your
+ * input — so it is visible from anywhere.
+ */
+function TodoMenuButton() {
+  const { data: todos } = useTodos()
+  const needsInput = todos?.filter((t) => t.column === 'needs_input').length ?? 0
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+
+  return (
+    <SidebarMenuButton asChild data-testid="todo-button" isActive={pathname === '/todo'}>
+      <AppLink to="/todo">
+        <ListTodo className="h-4 w-4" />
+        <span>Todo</span>
+        {needsInput > 0 && (
+          <span
+            className="ml-auto h-1.5 w-1.5 rounded-full bg-orange-500"
+            aria-label={`${needsInput} waiting on your input`}
+          />
+        )}
+      </AppLink>
+    </SidebarMenuButton>
+  )
+}
+
+function findTeamBrainAgent(agents: ApiAgent[]): ApiAgent | undefined {
+  return agents.find((agent) => agent.teamBrain)
+}
+
+/**
+ * Team Brain (the `team-brain` experiment): its page, the pitch and set-up or,
+ * once set up, its home page; lit there and in its agent's sessions. The row
+ * carries Explore's "New" badge until opened or set up.
+ */
+function TeamBrainMenuButton() {
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const { data: brainAgent } = useAgents({ select: findTeamBrainAgent, poll: false })
+  const visited = pathname === '/team-brain' || (!!brainAgent && pathname.startsWith(`/agents/${brainAgent.displaySlug}`))
+  const [seen] = useState(() => localStorage.getItem(TEAM_BRAIN_SEEN_KEY) === '1')
+  useEffect(() => {
+    if (visited) localStorage.setItem(TEAM_BRAIN_SEEN_KEY, '1')
+  }, [visited])
+
+  const label = (
+    <>
+      <Brain className="h-4 w-4" />
+      <span>Team Brain</span>
+      {!seen && !visited && !brainAgent && (
+        <span className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium leading-tight text-white">
+          New
+        </span>
+      )}
+    </>
+  )
+  return (
+    <SidebarMenuButton asChild data-testid="team-brain-button" isActive={visited}>
+      <AppLink to="/team-brain">{label}</AppLink>
+    </SidebarMenuButton>
+  )
+}
+
+const userMenuItemClassName =
+  'flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors disabled:opacity-60'
+
+/**
+ * The footer's primary button. With a signed-in user it is their avatar and
+ * name, opening a popover that holds Settings and sign out; without one (local
+ * mode) it is the plain Settings button.
+ */
+function UserMenu({ onOpenSettings }: { onOpenSettings: () => void }) {
+  const { isAuthMode, user, signOut } = useUser()
+  // Go through the same switch path as the sidebar's control rather than
+  // calling switchTarget directly: it owns the failure handling, so a switch
+  // that cannot be recorded reports itself instead of rejecting into nothing.
+  const { switching, switchTo } = useTargetSwitch()
+  const [open, setOpen] = useState(false)
+  if (!isAuthMode || !user) {
+    return (
+      <SidebarMenuButton
+        onClick={onOpenSettings}
+        className="w-auto"
+        style={{ paddingLeft: AGENT_AVATAR_LEFT }}
+        data-testid="settings-button"
+      >
+        <Settings className="h-4 w-4" />
+        <span>Settings</span>
+      </SidebarMenuButton>
+    )
+  }
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <SidebarMenuButton
+          className="w-auto min-w-0"
+          style={{ paddingLeft: AGENT_AVATAR_LEFT }}
+          data-testid="user-menu-trigger"
+        >
+          <UserAvatar user={user} size={20} />
+          <span className="truncate">{user.name || user.email}</span>
+        </SidebarMenuButton>
+      </PopoverTrigger>
+      <PopoverContent side="top" align="start" className="w-48 p-1">
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(false)
+            onOpenSettings()
+          }}
+          className={userMenuItemClassName}
+          data-testid="settings-button"
+        >
+          <Settings className="h-4 w-4" />
+          Settings
+        </button>
+        <div className="-mx-1 my-1 h-px bg-border" role="separator" />
+        {hasInteractiveLogin() ? (
           <button
+            type="button"
             onClick={signOut}
-            className="flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent transition-colors"
+            className={userMenuItemClassName}
             data-testid="sign-out-button"
           >
             <LogOut className="h-4 w-4" />
             Sign out
           </button>
-        </PopoverContent>
-      </Popover>
-    </div>
+        ) : (
+          // Cloud workspace: signing out would revoke the deployment session
+          // the desktop's grant is bound to — disruptive, and pointless since
+          // main still holds the platform connection and would just mint
+          // another. Offer the action that actually means something here.
+          <button
+            type="button"
+            onClick={() => void switchTo('local')}
+            disabled={switching}
+            className={userMenuItemClassName}
+            data-testid="switch-to-local-button"
+          >
+            <LogOut className="h-4 w-4" />
+            Use this computer
+          </button>
+        )}
+      </PopoverContent>
+    </Popover>
   )
 }
 
@@ -719,10 +979,14 @@ function ApiKeyWarning({ onOpenSettings }: { onOpenSettings: () => void }) {
   const { isAuthMode, isAdmin } = useUser()
   const showAdminInfo = !isAuthMode || isAdmin
   const { data: settings } = useSettings({ enabled: showAdminInfo })
+  const { data: modelSettings } = useModelSettings()
+  const selectedConnection = modelSettings?.connections?.find(
+    connection => connection.id === modelSettings.defaultSelection?.llmProviderId
+  )
 
   const activeProviderId = settings?.llmProvider ?? 'anthropic'
-  const activeKeyStatus = settings?.apiKeyStatus?.[activeProviderId as keyof typeof settings.apiKeyStatus]
-  if (!activeKeyStatus || activeKeyStatus.isConfigured) return null
+  const activeKeyStatus = selectedConnection ?? settings?.apiKeyStatus?.[activeProviderId as keyof typeof settings.apiKeyStatus]
+  if (!showAdminInfo || !activeKeyStatus || activeKeyStatus.isConfigured) return null
 
   return (
     <div className="px-2 pb-2">
@@ -741,27 +1005,100 @@ function ApiKeyWarning({ onOpenSettings }: { onOpenSettings: () => void }) {
   )
 }
 
+function HistoryNavigationButtons() {
+  const { canGoBack, canGoForward, back, forward } = useHistoryNavigation()
+  const buttonClassName =
+    'h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground transition-colors ' +
+    'hover:bg-foreground/10 hover:text-foreground disabled:cursor-default disabled:text-muted-foreground/30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground/30'
+
+  return (
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={back}
+            disabled={!canGoBack}
+            aria-label="Back"
+            className={buttonClassName}
+            data-testid="history-back-button"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">Back</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={forward}
+            disabled={!canGoForward}
+            aria-label="Forward"
+            className={buttonClassName}
+            data-testid="history-forward-button"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">Forward</TooltipContent>
+      </Tooltip>
+    </>
+  )
+}
+
 export function AppSidebar() {
   useRenderTracker('AppSidebar')
-  const { setSettingsOpen, openSettings } = useDialogs()
+  const { openSettings } = useDialogs()
   const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()
   const updateStatus = useUpdateStatus()
   const updateAvailable = updateStatus.state === 'available' || updateStatus.state === 'downloaded'
 
-  // Electron menu → New Agent
-  useEffect(() => {
-    if (!window.electronAPI?.onOpenCreateAgent) return
-    window.electronAPI.onOpenCreateAgent(() => { void createUntitledAgent() })
-    return () => {
-      window.electronAPI?.removeOpenCreateAgent?.()
-    }
-  }, [createUntitledAgent])
-  const { clearSelection, selectedAgentSlug } = useSelection()
+  // The "New Agent" menu command is handled centrally by MenuCommandHandler
+  // (which calls createUntitledAgent); the sidebar keeps the hook for its own
+  // "+" button below.
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
   const { openSearch } = useSearch()
-  const { data: agents, isLoading, error } = useAgents()
+  const isMobile = useIsMobile()
+  const { setOpenMobile } = useSidebar()
+  // On mobile the sidebar is an off-canvas Sheet that doesn't auto-close on
+  // navigation. Collapse it whenever the location changes (pathname OR search,
+  // so selecting a session also closes it) — desktop is unaffected.
+  const locationHref = useRouterState({ select: (s) => s.location.href })
+  useEffect(() => {
+    if (isMobile) setOpenMobile(false)
+  }, [locationHref, isMobile, setOpenMobile])
+  const { data: agents, isLoading, error } = useListedAgents()
+  // Whether to offer Explore is two round trips deep — skillsets, and only then
+  // the discoverable agents they contain — so the item arrives after the rest of
+  // the nav and pushes it down on the way in. Remember the last answer for this
+  // Superagent and show that until the real one lands; `null` means "still
+  // asking", which is not the same as "no" and must not render as one.
+  const { data: skillsets } = useSkillsets()
+  const { data: discoverableAgents } = useDiscoverableAgents()
+  const marketplaceAnswer =
+    skillsets === undefined
+      ? null
+      : skillsets.length === 0
+        ? false // no skillsets, so the discoverable query never runs at all
+        : discoverableAgents === undefined
+          ? null
+          : discoverableAgents.length > 0
+  const hasMarketplace = useRememberedFlag('marketplace', marketplaceAnswer)
+  const todoBoardEnabled = useExperiment('todo-board')
+  const teamBrainEnabled = useExperiment('team-brain')
+  const exploreVisited = pathname === '/explore' || pathname.startsWith('/explore/')
   const { data: userSettings } = useUserSettings()
   const updateSettings = useUpdateUserSettings()
   const { data: runtimeStatus } = useRuntimeStatus()
+  const { data: platformAuth } = usePlatformAuthStatus()
+  const isCloud = targetIsRemote()
+  const desktopVersion = __APP_VERSION__
+  const versionState = resolveSidebarVersionState({
+    desktopVersion,
+    cloudVersion: isCloud ? runtimeStatus?.appVersion : undefined,
+    feedVersion: updateAvailable ? updateStatus.version : undefined,
+  })
   const isFullScreen = useFullScreen()
 
   // macOS fires `enter-full-screen` only after its ~700ms zoom animation completes;
@@ -776,173 +1113,673 @@ export function AppSidebar() {
 
   // Drag-and-drop sensors: distance threshold prevents click conflicts
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+    useSensor(PointerSensor, POINTER_SENSOR_OPTIONS),
+    useSensor(KeyboardSensor, KEYBOARD_SENSOR_OPTIONS)
   )
 
-  // Optimistic local order during mutation
-  const [localOrder, setLocalOrder] = useState<string[] | null>(null)
-  const effectiveOrder = localOrder ?? userSettings?.agentOrder
+  // ─── Agent list tree (order + folders) ────────────────────────────────────
+  //
+  // The left nav is one ordered list in which unfiled agents and folders sit
+  // side by side, so a folder can be placed anywhere among them. That order
+  // cannot be derived from agentOrder — an empty folder has no member to sit
+  // behind — so it has a field of its own. agentOrder is still written on every
+  // change as the flat reading order, which is what the home grid, the graph
+  // and the tray read without knowing folders exist.
+
+  // Optimistic copy of the fields the tree is built from. Held from the first
+  // drag movement until the settings write settles, so the list never flashes
+  // back to its pre-drag shape.
+  const [localTree, setLocalTree] = useState<AgentTreeSettings | null>(null)
+  const [localCollapsed, setLocalCollapsed] = useState<string[] | null>(null)
+  // Last-write token for localCollapsed, same job as pendingTreeRef below.
+  const pendingCollapsedRef = React.useRef<string[] | null>(null)
+  // The folder a just-created row should open in rename mode.
+  const [pendingRenameFolderId, setPendingRenameFolderId] = useState<string | null>(null)
+  const [activeDrag, setActiveDrag] = useState<ActiveDrag | null>(null)
+  // The insertion point for a live folder drag. Computed by collision
+  // detection (which alone knows the pointer's half of the target block) and
+  // read both by the blocks (to place the insert line) and by the drop handler
+  // — one source of truth is what keeps the line honest about the landing
+  // spot. Collision detection runs in DndContext's RENDER (it may only write
+  // the ref — a setState there is a render-phase update of this component),
+  // so the state the insert line renders from is committed one step later by
+  // onDragMove, which fires from an effect after every render whose drag
+  // translate changed — i.e. after every render that recomputed the cue.
+  const [folderDropCue, setFolderDropCue] = useState<FolderDropCue | null>(null)
+  const folderDropCueRef = React.useRef<FolderDropCue | null>(null)
+  const commitFolderDropCue = useCallback(() => {
+    setFolderDropCue((prev) => {
+      const next = folderDropCueRef.current
+      if (prev?.folderId === next?.folderId && prev?.edge === next?.edge) return prev
+      return next
+    })
+  }, [])
+  const clearFolderDropCue = useCallback(() => {
+    folderDropCueRef.current = null
+    setFolderDropCue(null)
+  }, [])
+
+  const effectiveOrder = localTree?.agentOrder ?? userSettings?.agentOrder
+  const effectiveFolders = localTree?.agentFolders ?? userSettings?.agentFolders
+  const effectiveAssignments =
+    localTree?.agentFolderAssignments ?? userSettings?.agentFolderAssignments
+  const effectiveListOrder = localTree?.agentListOrder ?? userSettings?.agentListOrder
+  const collapsedFolders = localCollapsed ?? userSettings?.collapsedAgentFolders
+
   const orderedAgents = useMemo(
     () => applyAgentOrder(agents ?? [], effectiveOrder),
     [agents, effectiveOrder]
   )
+  const sections = useMemo(
+    () => buildFolderSections(orderedAgents, effectiveFolders, effectiveAssignments, effectiveListOrder),
+    [orderedAgents, effectiveFolders, effectiveAssignments, effectiveListOrder]
+  )
+  const sectionSortableIds = useSortableIds(sections.map((s) => sortableIdForFolder(s.folder.id)))
+  const hasFolders = (effectiveFolders?.length ?? 0) > 0
+
+  // Drag handlers fire between renders, so they read the sections through a
+  // ref rather than a closed-over render value — two pointer moves can land
+  // before React has re-derived `sections` from the state the first one set.
+  const sectionsRef = React.useRef(sections)
+  sectionsRef.current = sections
+  // The raw agent list for the write-time rebase in writeTree below, which
+  // rebuilds sections from the settings as of when the mutation runs.
+  const agentsRef = React.useRef<ApiAgent[]>([])
+  agentsRef.current = agents ?? []
+  // Whether this drag has actually changed anything, so a drag that ends where
+  // it started does not write settings.
+  const dragDirtyRef = React.useRef(false)
+  // Whether a drag is in progress right now. Mirrors `activeDrag` for the
+  // settle callbacks below, which fire between renders.
+  const activeDragRef = React.useRef(false)
+  // Guards against an earlier write settling while a later one is still in
+  // flight and clearing its optimistic view.
+  const pendingTreeRef = React.useRef<AgentTreeSettings | null>(null)
+
+  const writeTree = useCallback((
+    optimistic: AgentTreeSettings & { collapsedAgentFolders?: string[] },
+    operation: TreeOperation
+  ) => {
+    pendingTreeRef.current = optimistic
+    setLocalTree(optimistic)
+    updateSettings.mutate(
+      (current) => {
+        // Re-derive the change against the settings as of when this
+        // (scope-serialized) mutation actually runs. The drop's sections
+        // snapshot goes stale the moment a concurrent write — a folder
+        // create, a rename, a context-menu filing — lands first, and writing
+        // the snapshot back would replace agentFolders, assignments and
+        // order wholesale, silently undoing that work. The snapshot stays
+        // exactly right for the optimistic paint above, and with nothing in
+        // flight the rebase reproduces it byte for byte (the operation
+        // records the moved thing's FINAL position).
+        const sections = buildFolderSections(
+          applyAgentOrder(agentsRef.current, current?.agentOrder),
+          current?.agentFolders,
+          current?.agentFolderAssignments,
+          current?.agentListOrder
+        )
+        const rebased = sectionsToSettings(applyTreeOperation(sections, operation))
+        if (operation.kind !== 'dissolveFolder') return rebased
+        return {
+          ...rebased,
+          collapsedAgentFolders: (current?.collapsedAgentFolders ?? []).filter(
+            (id) => id !== operation.folderId
+          ),
+        }
+      },
+      {
+        onError: () => {
+          // Settings writes deliberately skip the global error toast, but a
+          // drag is a big gesture to lose without a word — the tree is about
+          // to snap back to its server shape.
+          toast.error("Couldn't save the new layout")
+        },
+        onSettled: () => {
+          if (pendingTreeRef.current !== optimistic) return
+          pendingTreeRef.current = null
+          // A newer drag may be holding its own mid-drag re-parent in
+          // localTree; clearing it now would snap the dragged row back to its
+          // source folder for the rest of that drag (over-change events only
+          // fire when `over` CHANGES, so nothing would restore it). The
+          // drag's own end/cancel paths reset localTree instead.
+          if (!activeDragRef.current) setLocalTree(null)
+        },
+      }
+    )
+  }, [updateSettings])
+
+
+  // Prefer whatever the pointer is directly inside, falling back to rect
+  // overlap when a fast drag has outrun every droppable. Then bias toward the
+  // kind of thing being dragged: an agent aims at rows (which carry a real
+  // insertion index), a folder aims at other folders' slots.
+  //
+  // Two rules on top of that:
+  //
+  // The dragged agent's CURRENT folder is sticky. Live re-parenting reshapes
+  // the list — pulling the row out shrinks the folder, which moves the very
+  // boundary the pointer just crossed, which re-parents it straight back — so
+  // a within-folder sort near the folder's edge used to flicker in and out of
+  // it. While the pointer remains inside the folder block's rect, only targets
+  // inside that folder are eligible; leaving the rect really does mean leaving
+  // the folder, and by then the shrink moves the boundary AWAY from the
+  // pointer, so it cannot oscillate. In sticky mode the gap between two member
+  // rows (where nothing row-like is under the pointer) snaps to the nearest
+  // member row, so the sort preview never resets mid-gap and the folder never
+  // lights up as a drop target for a row it already holds.
+  //
+  // A dragged FOLDER over an agent row is promoted to that row's section
+  // header: the drop takes the whole section's slot, so the header — where the
+  // insert line renders — is what `over` should report, not the row.
+  const collisionDetection = useCallback<CollisionDetection>((args) => {
+    const activeType = args.active.data.current?.type
+    const pointerHits = pointerWithin(args)
+    let collisions = pointerHits.length > 0 ? pointerHits : rectIntersection(args)
+    const wantedType = activeType === 'folder' ? 'folder' : 'agent'
+    const typeOf = (id: UniqueIdentifier) =>
+      args.droppableContainers.find((d) => d.id === id)?.data.current?.type
+
+    if (activeType === 'agent' && args.pointerCoordinates) {
+      const location = locateAgent(sectionsRef.current, String(args.active.id))
+      const section = location ? sectionsRef.current[location.sectionIndex] : null
+      if (section) {
+        const blockRect = args.droppableContainers.find(
+          (d) => d.id === sortableIdForFolder(section.folder.id)
+        )?.rect.current
+        const { x, y } = args.pointerCoordinates
+        // The vertical grace band absorbs boundary jitter that is not the
+        // user's doing: while dnd-kit auto-scrolls, the block slides under a
+        // stationary pointer a few px per tick, and without the band each
+        // tick at the edge re-parents the row out and back in.
+        const grace = 8
+        if (
+          blockRect &&
+          x >= blockRect.left && x <= blockRect.right &&
+          y >= blockRect.top - grace && y <= blockRect.bottom + grace
+        ) {
+          const inside = new Set<string>([
+            sortableIdForFolder(section.folder.id),
+            containerIdForFolder(section.folder.id),
+            ...section.agents.map((a) => a.slug),
+          ])
+          const filtered = collisions.filter((c) => inside.has(String(c.id)))
+          if (filtered.length > 0) collisions = filtered
+          if (!collisions.some((c) => typeOf(c.id) === 'agent')) {
+            const memberRows = args.droppableContainers.filter((d) => {
+              if (!section.agents.some((a) => a.slug === String(d.id))) return false
+              // A collapsed folder's member rows stay mounted but hidden, and
+              // a hidden row measures 0×0 — inert for the containment and
+              // overlap detectors above, but a perfectly good candidate for a
+              // DISTANCE snap, which would steal `over` from the header and
+              // land the drop at the hidden row's index instead of appending.
+              const rect = d.rect.current
+              return !!rect && rect.width > 0 && rect.height > 0
+            })
+            const closest = closestCenter({ ...args, droppableContainers: memberRows })
+            if (closest.length > 0) return [closest[0]]
+          }
+        }
+      }
+    }
+
+    if (wantedType === 'folder') {
+      // Resolve the drag to a target BLOCK: a direct hit, an agent row
+      // promoted to its section, or — in the empty sidebar area above the
+      // first block or below the last — the nearest outermost block. Then the
+      // pointer's half of that block decides which edge the folder lands on;
+      // the cue drives both the insert line and the drop itself.
+      const blockOf = (id: UniqueIdentifier) =>
+        args.droppableContainers.find((d) => d.id === id)
+
+      let target = collisions.find((c) => typeOf(c.id) === 'folder')
+      if (!target) {
+        const rowHit = collisions.find((c) => typeOf(c.id) === 'agent')
+        const location = rowHit ? locateAgent(sectionsRef.current, String(rowHit.id)) : null
+        if (location) {
+          target = {
+            id: sortableIdForFolder(sectionsRef.current[location.sectionIndex].folder.id),
+          }
+        }
+      }
+      if (!target && args.pointerCoordinates) {
+        const blocks = args.droppableContainers
+          .filter((d) => d.data.current?.type === 'folder' && d.rect.current)
+          .sort((a, b) => a.rect.current!.top - b.rect.current!.top)
+        if (blocks.length > 0) {
+          const y = args.pointerCoordinates.y
+          const first = blocks[0]
+          const last = blocks[blocks.length - 1]
+          if (y <= first.rect.current!.top) target = { id: first.id }
+          else if (y >= last.rect.current!.bottom) target = { id: last.id }
+        }
+      }
+
+      if (target) {
+        const rect = blockOf(target.id)?.rect.current
+        const y = args.pointerCoordinates?.y
+        const folderId = String(target.id).replace('agent-folder::', '')
+        if (rect && y !== undefined) {
+          // Ref only — this runs during render; onDragMove commits it.
+          folderDropCueRef.current = {
+            folderId,
+            edge: y < rect.top + rect.height / 2 ? 'above' : 'below',
+          }
+        }
+        return [target]
+      }
+      folderDropCueRef.current = null
+      return collisions
+    }
+
+    if (collisions.length === 0) return collisions
+    const preferred = collisions.find((c) => typeOf(c.id) === wantedType)
+    return preferred ? [preferred] : collisions
+  }, [])
+
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    dragDirtyRef.current = false
+    activeDragRef.current = true
+    const data = event.active.data.current
+    clearFolderDropCue()
+    if (data?.type === 'folder') {
+      const section = sectionsRef.current.find((s) => s.folder.id === data.folderId)
+      setActiveDrag({
+        type: 'folder',
+        label: section?.folder.name ?? 'Section',
+        folderId: String(data.folderId),
+      })
+      return
+    }
+    const slug = String(event.active.id)
+    const agent = sectionsRef.current
+      .flatMap((s) => s.agents)
+      .find((a) => a.slug === slug)
+    setActiveDrag({ type: 'agent', label: agent?.name ?? slug })
+  }, [clearFolderDropCue])
+
+  // Move an agent between containers live, so the row is already sitting in its
+  // new folder before the pointer is released. Reordering inside one container
+  // is left to the sortable preview and settled on drop.
+  const handleDragOver = useCallback((event: DragOverEvent) => {
+    const { active, over } = event
+    if (!over || active.data.current?.type !== 'agent') return
+
+    const current = sectionsRef.current
+    const slug = String(active.id)
+    const target = resolveAgentDrop(current, String(over.id))
+    const from = locateAgent(current, slug)
+    if (!target || !from) return
+
+    if (current[from.sectionIndex].folder.id === target.folderId) return
+
+    const next = moveAgent(current, slug, target)
+    if (next === current) return
+
+    sectionsRef.current = next
+    dragDirtyRef.current = true
+    setLocalTree(sectionsToSettings(next))
+  }, [])
 
   const handleDragEnd = useCallback((event: DragEndEvent) => {
     const { active, over } = event
-    if (!over || active.id === over.id) return
-    if (typeof active.id !== 'string' || typeof over.id !== 'string') return
+    setActiveDrag(null)
+    activeDragRef.current = false
+    // Read BEFORE clearing — the cue is what decides where a folder drop
+    // lands. Clearing first would silently fall every pointer drop through to
+    // the keyboard branch's "take the target's slot" semantics, which only
+    // coincides with the cue's promise in two of the four direction/edge
+    // quadrants — the insert line would lie in the other two.
+    const cue = folderDropCueRef.current
+    clearFolderDropCue()
 
-    const currentSlugs = orderedAgents.map(a => a.slug)
-    const oldIndex = currentSlugs.indexOf(active.id)
-    const newIndex = currentSlugs.indexOf(over.id)
-    if (oldIndex === -1 || newIndex === -1) return
+    // Released outside every droppable — treat it as an escape hatch and put
+    // the list back the way it was, including any mid-drag move.
+    if (!over) {
+      setLocalTree(pendingTreeRef.current)
+      return
+    }
 
-    const newOrder = arrayMove(currentSlugs, oldIndex, newIndex)
-    setLocalOrder(newOrder)
-    updateSettings.mutate(
-      { agentOrder: newOrder },
-      { onSettled: () => setLocalOrder(null) }
+    const current = sectionsRef.current
+    const overId = String(over.id)
+    let next = current
+
+    if (active.data.current?.type === 'folder') {
+      const folderId = String(active.data.current.folderId)
+      if (cue) {
+        // Insertion-point semantics: land on the cued edge of the cued block.
+        // "Take the target's slot" (below) is kept only for keyboard drags,
+        // which never produce a pointer-derived cue.
+        const from = current.findIndex((s) => s.folder.id === folderId)
+        const targetIndex = current.findIndex((s) => s.folder.id === cue.folderId)
+        if (from !== -1 && targetIndex !== -1) {
+          let insertAt = targetIndex + (cue.edge === 'below' ? 1 : 0)
+          if (from < insertAt) insertAt -= 1
+          next = moveFolder(current, folderId, insertAt)
+        }
+      } else {
+        const index = resolveFolderDrop(current, overId)
+        if (index !== null) next = moveFolder(current, folderId, index)
+      }
+    } else {
+      const target = resolveAgentDrop(current, overId)
+      if (target) next = moveAgent(current, String(active.id), target)
+    }
+
+    if (next === current && !dragDirtyRef.current) {
+      // A drag that ended where it started writes nothing.
+      setLocalTree(pendingTreeRef.current)
+      return
+    }
+
+    // Record the drop as the moved thing's FINAL position in `next`, so the
+    // write can re-apply it to whatever the settings say by the time it runs
+    // (see writeTree). Deriving from `next` makes the serial case exact.
+    let operation: TreeOperation | null = null
+    if (active.data.current?.type === 'folder') {
+      const folderId = String(active.data.current.folderId)
+      const index = next.findIndex((s) => s.folder.id === folderId)
+      if (index !== -1) operation = { kind: 'placeFolder', folderId, index }
+    } else {
+      const slug = String(active.id)
+      const location = locateAgent(next, slug)
+      if (location) {
+        operation = {
+          kind: 'placeAgent',
+          slug,
+          folderId: next[location.sectionIndex].folder.id,
+          index: location.memberIndex,
+        }
+      }
+    }
+    if (!operation) {
+      setLocalTree(pendingTreeRef.current)
+      return
+    }
+    writeTree(sectionsToSettings(next), operation)
+  }, [writeTree, clearFolderDropCue])
+
+  /**
+   * The shift preview opens a gap by displacing the rows between the dragged
+   * item and the one under the pointer, by the dragged item's own height. For
+   * an agent row that is a few dozen pixels and reads well. For a folder it is
+   * the height of the whole block, which throws the hovered row clear of the
+   * pointer, flips the drop target, and lands the folder a slot away from where
+   * it was aimed. Folders therefore move without displacing anything, and say
+   * where they will land with an insert line instead.
+   */
+  const topLevelStrategy = useCallback<SortingStrategy>(
+    (args) => (activeDrag?.type === 'folder' ? null : verticalListSortingStrategy(args)),
+    [activeDrag?.type]
+  )
+
+  const handleDragCancel = useCallback(() => {
+    setActiveDrag(null)
+    activeDragRef.current = false
+    clearFolderDropCue()
+    setLocalTree(pendingTreeRef.current)
+  }, [clearFolderDropCue])
+
+  // ─── Folder CRUD ──────────────────────────────────────────────────────────
+
+  // Create and rename replace `agentFolders` wholesale, so they use the
+  // updater form: the folder list is read when the (scope-serialized)
+  // mutation runs, not when the click happened — a payload snapshotted at
+  // click time would revert whatever folder write was still in flight.
+  const handleCreateFolder = useCallback(() => {
+    const id = newFolderId()
+    // Created from "Add section" at the end of the list, so the new one goes
+    // last — right above the button, where its rename input opens.
+    setPendingRenameFolderId(id)
+    updateSettings.mutate((current) => {
+      const folders = sanitizeFolders(current?.agentFolders)
+      const marker = sortableIdForFolder(id)
+      const order = (current?.agentListOrder ?? []).filter((key) => key !== marker)
+      // An untouched install has no stored places yet; write the default
+      // folder's too, or it would keep defaulting ahead of everything (-1)
+      // regardless of where it was shown.
+      const rootMarker = sortableIdForFolder(ROOT_FOLDER_ID)
+      const withRoot = order.includes(rootMarker) ? order : [rootMarker, ...order]
+      return {
+        agentFolders: [...folders, { id, name: uniqueFolderName(folders) }],
+        agentListOrder: [...withRoot, marker],
+      }
+    })
+  }, [updateSettings])
+
+  const handleRenameFolder = useCallback((folderId: string, name: string) => {
+    updateSettings.mutate((current) => ({
+      agentFolders: sanitizeFolders(current?.agentFolders).map((f) =>
+        f.id === folderId ? { ...f, name } : f
+      ),
+    }))
+  }, [updateSettings])
+
+  const handleDeleteFolder = useCallback((folderId: string) => {
+    const current = sectionsRef.current
+    const next = dissolveFolder(current, folderId)
+    if (next === current) return
+    writeTree(
+      {
+        ...sectionsToSettings(next),
+        collapsedAgentFolders: (collapsedFolders ?? []).filter((id) => id !== folderId),
+      },
+      { kind: 'dissolveFolder', folderId }
     )
-  }, [orderedAgents, updateSettings])
+  }, [collapsedFolders, writeTree])
+
+  const handleToggleFolder = useCallback((folderId: string) => {
+    const current = collapsedFolders ?? []
+    const next = current.includes(folderId)
+      ? current.filter((id) => id !== folderId)
+      : [...current, folderId]
+    // Collapsing has to feel instant even against a cloud workspace, so paint
+    // it locally and let the write catch up. Only the LATEST toggle may clear
+    // the optimistic view — with two toggles in flight, the first settling
+    // would otherwise drop the second's fold back to the cached state until
+    // its own write lands (a visible flap on a slow connection).
+    pendingCollapsedRef.current = next
+    setLocalCollapsed(next)
+    updateSettings.mutate(
+      { collapsedAgentFolders: next },
+      {
+        onSettled: () => {
+          if (pendingCollapsedRef.current !== next) return
+          pendingCollapsedRef.current = null
+          setLocalCollapsed(null)
+        },
+      }
+    )
+  }, [collapsedFolders, updateSettings])
+
+  // A folder's own +: the new agent is filed into it, and a collapsed folder
+  // opens so the new row is in view when the list refetches. Two settings
+  // writes (expand, then the filing inside the hook), serialized by scope.
+  const handleCreateAgentInFolder = useCallback((folderId: string) => {
+    if (isCreatingAgent) return
+    if ((collapsedFolders ?? []).includes(folderId)) handleToggleFolder(folderId)
+    void createUntitledAgent({ surface: 'section_plus', folderId })
+  }, [isCreatingAgent, collapsedFolders, handleToggleFolder, createUntitledAgent])
 
   const isOnline = useIsOnline()
 
+  // Windows-only: firewall Block rules against our exe silently kill every
+  // container→host connection (browser launch, tool proxies) while the rest
+  // of the app works, so surface it here rather than waiting for a failure.
+  const { data: firewallStatus } = useFirewallStatus()
+  const fixFirewall = useFixFirewall()
+  const isFirewallBlocked = !!firewallStatus?.blocked
+  const firewallFixState: FirewallFixUiState = fixFirewall.isPending
+    ? 'fixing'
+    : fixFirewall.data && !fixFirewall.data.ok
+      ? fixFirewall.data.reason === 'uac-declined' ? 'declined' : 'failed'
+      : 'idle'
+
   const readiness = runtimeStatus?.runtimeReadiness
+  const servicesInitError = runtimeStatus?.servicesInitError ?? null
   const isRuntimeUnavailable = readiness?.status === 'RUNTIME_UNAVAILABLE' || readiness?.status === 'ERROR'
   const isPullingOrBuilding = readiness?.status === 'PULLING_IMAGE'
   const isChecking = readiness?.status === 'CHECKING'
 
-  // The header bar exists only to leave room for macOS traffic lights when
-  // windowed. In every other case (mac fullscreen, windows, web) it collapses
-  // to 0 height so the wordmark sits flush with the top of the sidebar.
+  // macOS windowed is the only case that needs room reserved at the left of the
+  // header row; everywhere else (mac fullscreen, Windows, web) the row starts at
+  // the sidebar's own padding.
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && !animatedFullScreen
   const isWindowsElectron = isElectron() && getPlatform() === 'win32'
-  const showHeaderBar = needsTrafficLightPadding
+  const showHistoryNavigation = !__WEB__ && isElectron()
 
   return (
-    <Sidebar variant="inset" data-testid="app-sidebar">
+    <>
+      <Sidebar variant="inset" data-testid="app-sidebar">
       {/*
-        Always rendered so height/border can transition smoothly when entering
-        or leaving fullscreen on macOS. Collapses to 0 height (with no border)
-        when there's no traffic-light spacer to make room for and no Windows
-        menu chevron to host.
+        The sidebar's title bar: one 48px row holding everything that acts on the
+        window rather than on an agent — where agents run, history, search — and,
+        on macOS, the traffic lights it leaves room for. The browser restores the
+        app name in the space left by the Electron-only target and history
+        controls.
+
+        The left padding (not the height) is what changes on a fullscreen
+        toggle, so the row itself never moves and only the traffic-light gap
+        animates shut.
       */}
       <SidebarHeader
-        className={cn(
-          'app-drag-region p-0 overflow-hidden transition-[height,border-bottom-width] duration-200 ease-out',
-          showHeaderBar ? 'h-12 border-b' : 'h-0 border-b-0'
-        )}
-        style={{
-          paddingLeft: needsTrafficLightPadding ? '80px' : undefined,
-        }}
+        className="app-drag-region h-12 shrink-0 p-0 transition-[padding-left] duration-200 ease-out"
+        style={{ paddingLeft: needsTrafficLightPadding ? '80px' : undefined }}
       >
-        <div className="flex items-center h-12 px-2 gap-1" />
+        <div className="flex items-center h-12 px-2 gap-1">
+          {__WEB__ && (
+            <span className="shrink-0 select-none text-base font-medium">Gamut</span>
+          )}
+
+          {isWindowsElectron && (
+            <button
+              className="app-no-drag shrink-0 p-0.5 rounded hover:bg-foreground/10 transition-colors cursor-default"
+              aria-label="Application menu"
+              onClick={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect()
+                window.electronAPI?.popupAppMenu(Math.round(rect.left), Math.round(rect.bottom))
+              }}
+            >
+              <ChevronDown className="h-4 w-4 text-foreground/60" />
+            </button>
+          )}
+
+          {/* Which Superagent this window drives. First in the row, ahead of the
+              controls that act within it: it scopes them, and everything below.
+              Renders nothing when there is no cloud workspace to switch to. */}
+          <TargetSwitcher />
+
+          <div className="app-no-drag ml-auto -mr-2 flex shrink-0 items-center gap-0.5">
+            <TooltipProvider delayDuration={200}>
+              {showHistoryNavigation && <HistoryNavigationButtons />}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={openSearch}
+                    aria-label="Search"
+                    className="h-7 w-7 inline-flex items-center justify-center rounded-md text-muted-foreground hover:bg-foreground/10 transition-colors"
+                    data-testid="search-button"
+                  >
+                    <Search className="h-4 w-4 -translate-y-[1px]" />
+                  </button>
+                </TooltipTrigger>
+                {/* No keyboard on touch, and the Sheet's focus-trap would auto-open
+                    this tooltip with no way to dismiss it — so suppress it on mobile. */}
+                {!isMobile && (
+                  <TooltipContent side="bottom" className="flex items-center gap-2">
+                    <span>Search</span>
+                    <span className="opacity-70">{getPlatform() === 'darwin' ? '⌘K' : 'Ctrl+K'}</span>
+                  </TooltipContent>
+                )}
+              </Tooltip>
+            </TooltipProvider>
+          </div>
+        </div>
       </SidebarHeader>
 
       <ErrorBoundary compact>
-        <SidebarContent className="overflow-visible">
+        <SidebarContent className="gap-0 overflow-visible">
           <SidebarGroup className="shrink-0 p-0">
-            {/*
-              When the header bar is present its 48px sit above the wordmark
-              (small `-4px` pull-up tightens the gap). When it's collapsed the
-              wordmark needs its own breathing room. Animated via marginTop so
-              the transition matches the header collapse on fullscreen toggle.
-            */}
-            <div
-              className={cn(
-                'px-2 pb-4 text-base font-semibold select-none transition-[margin-top] duration-200 ease-out flex items-center gap-1',
-                isWindowsElectron && 'app-drag-region'
-              )}
-              style={{ marginTop: showHeaderBar ? '-4px' : '12px' }}
-            >
-              SuperAgent
-              {isWindowsElectron && (
-                <button
-                  className="app-no-drag p-0.5 rounded hover:bg-foreground/10 transition-colors cursor-default"
-                  onClick={(e) => {
-                    const rect = e.currentTarget.getBoundingClientRect()
-                    window.electronAPI?.popupAppMenu(Math.round(rect.left), Math.round(rect.bottom))
-                  }}
-                >
-                  <ChevronDown className="h-4 w-4 text-foreground/60" />
-                </button>
-              )}
-            </div>
-
-            {/* Status banners — render under the wordmark so they sit inside the
-                sidebar's content area rather than pushing the wordmark down. */}
-            {!isOnline && (
-              <div className="px-2 pb-2">
-                <Alert variant="destructive" className="py-2 [&>svg]:top-2.5">
-                  <WifiOff className="h-4 w-4" />
-                  <AlertDescription className="text-xs">
-                    No internet connection. Some features may be unavailable.
-                  </AlertDescription>
-                </Alert>
-              </div>
-            )}
-
-            {isRuntimeUnavailable && (
-              <div className="px-2 pb-2">
-                <Alert
-                  variant="destructive"
-                  className="py-2 [&>svg]:top-2.5 cursor-pointer hover:bg-destructive/20 transition-colors"
-                  onClick={() => openSettings('runtime')}
-                >
-                  <AlertTriangle className="h-4 w-4" />
-                  <AlertDescription className="text-xs">
-                    {readiness?.message || 'Container runtime not available.'}{' '}
-                    <span className="underline">Open settings</span>
-                  </AlertDescription>
-                </Alert>
-              </div>
-            )}
-
-            {isChecking && (
-              <div className="px-2 pb-2">
-                <Alert className="py-2 [&>svg]:top-2.5">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  <AlertDescription className="text-xs">
-                    {readiness?.message || 'Starting runtime...'}
-                  </AlertDescription>
-                </Alert>
-              </div>
-            )}
-
-            {isPullingOrBuilding && (
-              <div className="px-2 pb-2">
-                <Alert className="py-2 [&>svg]:top-2.5">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  <AlertDescription className="text-xs">
-                    {readiness?.message || 'Preparing agent image...'}
-                    {readiness?.pullProgress?.percent != null && (
-                      <span className="ml-1">({readiness.pullProgress.percent}%)</span>
-                    )}
-                  </AlertDescription>
-                </Alert>
-              </div>
+            {/* Status banners — render under the title bar so they sit inside the
+                sidebar's content area rather than pushing the header down. The
+                SidebarBannerStack wrapper owns horizontal padding, inter-banner
+                gap, and trailing space; render it only when at least one banner
+                is visible to avoid a stray padded div. */}
+            {(!isOnline || isRuntimeUnavailable || isChecking || isPullingOrBuilding || isFirewallBlocked || servicesInitError) && (
+              <SidebarBannerStack>
+                {!isOnline && <OfflineSidebarBanner />}
+                {servicesInitError && <ServicesDegradedSidebarBanner message={servicesInitError} />}
+                {isRuntimeUnavailable && (
+                  <RuntimeUnavailableSidebarBanner
+                    message={readiness?.message}
+                    onOpenSettings={() => openSettings('runtime')}
+                  />
+                )}
+                {isChecking && <RuntimeCheckingSidebarBanner message={readiness?.message} />}
+                {isPullingOrBuilding && (
+                  <RuntimePullingSidebarBanner
+                    message={readiness?.message}
+                    percent={readiness?.pullProgress?.percent}
+                  />
+                )}
+                {isFirewallBlocked && (
+                  <FirewallBlockedSidebarBanner
+                    fixState={firewallFixState}
+                    onFix={() => fixFirewall.mutate()}
+                  />
+                )}
+              </SidebarBannerStack>
             )}
 
             <ApiKeyWarning onOpenSettings={() => openSettings('llm')} />
             <SidebarGroupContent>
-              <SidebarMenu>
+              <SidebarMenu className="gap-0.5 pt-2 pb-0">
                 <SidebarMenuItem>
                   <SidebarMenuButton
-                    onClick={clearSelection}
-                    isActive={!selectedAgentSlug}
+                    asChild
+                    // Route-derived: active only on the exact home route, so it
+                    // never lights up on /notifications or an agent route.
+                    isActive={pathname === '/'}
                     data-testid="home-button"
                   >
-                    <LayoutGrid className="h-4 w-4" />
-                    <span>Home</span>
+                    <AppLink to="/">
+                      <LayoutGrid className="h-4 w-4" />
+                      <span>Home</span>
+                    </AppLink>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
                 <SidebarMenuItem>
                   <NotificationsMenuButton />
                 </SidebarMenuItem>
+                {todoBoardEnabled && (
+                  <SidebarMenuItem>
+                    <TodoMenuButton />
+                  </SidebarMenuItem>
+                )}
+                {teamBrainEnabled && (
+                  <SidebarMenuItem>
+                    <TeamBrainMenuButton />
+                  </SidebarMenuItem>
+                )}
+                {hasMarketplace && (
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      asChild
+                      // Prefix match: the details page (/explore/...) is still Explore.
+                      isActive={exploreVisited}
+                      data-testid="marketplace-button"
+                    >
+                      <AppLink to="/explore">
+                        <Compass className="h-4 w-4" />
+                        <span>Discover New Agents</span>
+                      </AppLink>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                )}
                 <SidebarMenuItem>
                   <SidebarMenuButton
-                    onClick={() => { void createUntitledAgent() }}
+                    onClick={() => { void createUntitledAgent({ surface: 'nav' }) }}
                     disabled={isCreatingAgent}
                     data-testid="new-agent-button"
                   >
@@ -950,20 +1787,13 @@ export function AppSidebar() {
                     <span>New Agent</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    onClick={openSearch}
-                    data-testid="search-button"
-                  >
-                    <Search className="h-4 w-4" />
-                    <span>Search</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
-          <SidebarGroup className={cn('flex-1 min-h-0 overflow-y-auto p-0', THIN_SCROLLBAR)}>
-            <SidebarGroupLabel className="mt-2 font-normal text-sidebar-foreground/50">Your Agents</SidebarGroupLabel>
+          <SidebarGroup
+            className={cn('group/agents-group flex-1 min-h-0 overflow-y-auto p-0', THIN_SCROLLBAR)}
+            data-testid="agent-list-scroll"
+          >
             <SidebarGroupContent>
               <SidebarMenu className="gap-1">
                 {isLoading ? (
@@ -978,26 +1808,94 @@ export function AppSidebar() {
                   <div className="px-2 py-4 text-sm text-destructive select-text">
                     Failed to load agents
                   </div>
-                ) : !agents?.length ? (
+                ) : !agents?.length && !hasFolders ? (
                   <div className="px-2 py-4 text-sm text-muted-foreground">
                     No agents yet. Create one to get started.
                   </div>
                 ) : (
-                  <DndContext
-                    sensors={sensors}
-                    collisionDetection={closestCenter}
-                    onDragEnd={handleDragEnd}
-                    modifiers={[restrictToVerticalAxis]}
-                  >
-                    <SortableContext
-                      items={orderedAgents.map(a => a.slug)}
-                      strategy={verticalListSortingStrategy}
+                  <SidebarDragProvider value={activeDrag?.type ?? null}>
+                    <DndContext
+                      sensors={sensors}
+                      collisionDetection={collisionDetection}
+                      onDragStart={handleDragStart}
+                      onDragMove={commitFolderDropCue}
+                      onDragOver={handleDragOver}
+                      onDragEnd={handleDragEnd}
+                      onDragCancel={handleDragCancel}
+                      modifiers={[restrictToVerticalAxis]}
                     >
-                      {orderedAgents.map((agent) => (
-                        <SortableAgentMenuItem key={agent.slug} agent={agent} />
-                      ))}
-                    </SortableContext>
-                  </DndContext>
+                      {/*
+                        The top level is folders and nothing else — "Your
+                        Agents" is the always-present default one, so every
+                        agent sits under some header and the headers read as
+                        peers. Each folder's members are a nested sortable
+                        list of their own.
+                      */}
+                      <SortableContext
+                        items={sectionSortableIds}
+                        strategy={topLevelStrategy}
+                      >
+                        {sections.map((section) => (
+                          <AgentFolderBlock
+                            key={section.folder.id}
+                            folder={section.folder}
+                            isRoot={section.isRoot}
+                            agentCount={section.agents.length}
+                            isCollapsed={(collapsedFolders ?? []).includes(section.folder.id)}
+                            activeDragType={activeDrag?.type ?? null}
+                            insertEdge={
+                              folderDropCue?.folderId === section.folder.id &&
+                              activeDrag?.folderId !== section.folder.id
+                                ? folderDropCue.edge
+                                : null
+                            }
+                            initialRenaming={section.folder.id === pendingRenameFolderId}
+                            onToggle={() => handleToggleFolder(section.folder.id)}
+                            onRename={(name) => handleRenameFolder(section.folder.id, name)}
+                            onRenameEnd={() => setPendingRenameFolderId(null)}
+                            onDelete={() => handleDeleteFolder(section.folder.id)}
+                            onCreateAgent={() => handleCreateAgentInFolder(section.folder.id)}
+                          >
+                            <SectionAgentList agents={section.agents} />
+                          </AgentFolderBlock>
+                        ))}
+                      </SortableContext>
+                      <DragOverlay dropAnimation={agentDropAnimation}>
+                        {activeDrag ? (
+                          <AgentDragOverlayRow
+                            label={activeDrag.label}
+                            isFolder={activeDrag.type === 'folder'}
+                          />
+                        ) : null}
+                      </DragOverlay>
+                    </DndContext>
+                  </SidebarDragProvider>
+                )}
+                {/*
+                  Always the last thing in the list, under the sections it
+                  adds to, and styled as one of them: a section header's text
+                  and chevron-sized icon, spaced like one (mt-2, as on each
+                  section's block) so the gaps down the list stay uniform.
+                  Unlike a header it is a plain action, so it keeps the menu
+                  button's hover fill (the Electron vibrancy rules supply the
+                  translucent one there) and its text and + darken on hover.
+                */}
+                {(agents?.length ?? 0) > 0 && (
+                  <SidebarMenuItem className="mt-2">
+                    <SidebarMenuButton
+                      onClick={handleCreateFolder}
+                      className={cn(
+                        SECTION_ROW_CLASS,
+                        'group/add-section hover:bg-sidebar-accent hover:text-sidebar-foreground active:bg-sidebar-accent active:text-sidebar-foreground'
+                      )}
+                      data-testid="add-section-button"
+                    >
+                      <span className="flex shrink-0 items-center">
+                        <Plus className={cn(SECTION_ICON_CLASS, 'group-hover/add-section:text-sidebar-foreground')} />
+                      </span>
+                      <span>Add section</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
                 )}
               </SidebarMenu>
             </SidebarGroupContent>
@@ -1005,34 +1903,82 @@ export function AppSidebar() {
         </SidebarContent>
       </ErrorBoundary>
 
-      <SidebarFooter className="border-t p-0 px-2 pt-4">
-        <UserMenu />
+      {/* Full width like the agent rows, so its ends can line up with
+          theirs: the user's avatar starts where the agent avatars do (in
+          UserMenu), and the version ends 12px in, where the rows' status
+          icons end (a 10px icon centred in a 16px slot 8px in). */}
+      <SidebarFooter className="border-t p-0 pt-1 pb-[env(safe-area-inset-bottom)]">
         <div className="flex items-center justify-between gap-2">
-          <SidebarMenuButton
-            onClick={() => setSettingsOpen(true)}
-            className="w-auto"
-            data-testid="settings-button"
-          >
-            <Settings className="h-4 w-4" />
-            <span>Settings</span>
-          </SidebarMenuButton>
-          <button
-            type="button"
-            onClick={() => openSettings('general')}
-            className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground shrink-0 hover:text-foreground"
-            title={updateAvailable ? `Update available: v${updateStatus.version}` : undefined}
-            data-testid="sidebar-version"
-          >
-            {updateAvailable && (
-              <span className="h-2 w-2 rounded-full bg-blue-500" aria-label="Update available" />
-            )}
-            <span>v{__APP_VERSION__}</span>
-          </button>
+          <UserMenu onOpenSettings={() => openSettings()} />
+          {isCloud && versionState.showPair && versionState.cloudVersion ? (
+            <div
+              className="flex items-center gap-1.5 pl-2 pr-3 text-xs text-muted-foreground shrink-0"
+              data-testid="sidebar-version"
+            >
+              <button
+                type="button"
+                onClick={() => openSettings('general')}
+                className="inline-flex items-center gap-0.5 hover:text-foreground"
+                title={`Desktop v${versionState.desktopVersion}`}
+                data-testid="sidebar-version-desktop"
+              >
+                <Laptop className="mr-0.5 size-3" aria-hidden="true" />
+                {versionState.desktopVersion}
+                {versionState.desktopBehind && (
+                  <VersionBehindDot
+                    wayBehind={versionState.desktopWayBehind}
+                    label="Desktop update available"
+                  />
+                )}
+              </button>
+              <span className="h-2.5 w-px bg-current opacity-60" aria-hidden="true" />
+              <button
+                type="button"
+                onClick={() => {
+                  const base = platformAuth?.platformBaseUrl
+                  const orgId = platformAuth?.orgId
+                  if (!base || !orgId) return
+                  void openExternalUrl(
+                    `${base}/dashboard/organizations/${orgId}?tab=cloud`,
+                  )
+                }}
+                className="inline-flex items-center gap-0.5 hover:text-foreground"
+                title={`Cloud v${versionState.cloudVersion}`}
+                data-testid="sidebar-version-cloud"
+              >
+                <Cloud className="mr-0.5 size-3" aria-hidden="true" />
+                {versionState.cloudVersion}
+                {versionState.cloudBehind && (
+                  <VersionBehindDot
+                    wayBehind={versionState.cloudWayBehind}
+                    label="Cloud update available"
+                  />
+                )}
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => openSettings('general')}
+              className="inline-flex items-center gap-1.5 pl-2 pr-3 text-xs text-muted-foreground shrink-0 hover:text-foreground"
+              title={updateAvailable ? `${isCloud ? 'Desktop update available' : 'Update available'}: v${updateStatus.version}` : undefined}
+              data-testid="sidebar-version"
+            >
+              <span>{versionState.cloudVersion ?? desktopVersion}</span>
+              {updateAvailable && (
+                <span
+                  className="h-1.5 w-1.5 rounded-full bg-blue-500"
+                  aria-label={isCloud ? 'Desktop update available' : 'Update available'}
+                />
+              )}
+            </button>
+          )}
         </div>
       </SidebarFooter>
 
       <SidebarRail />
-    </Sidebar>
+      </Sidebar>
+    </>
   )
 }
 

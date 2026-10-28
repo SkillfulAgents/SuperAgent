@@ -1,0 +1,48 @@
+import type { ComponentType } from 'react'
+
+import {
+  errorPlacement,
+  type ProviderErrorPlacement,
+  type ProviderErrorPresentation,
+} from '@shared/lib/llm-provider/error-presentation'
+import { PLATFORM_MODEL_NOT_IN_PLAN_COMPONENT, PLATFORM_PAYWALL_COMPONENT } from '@shared/lib/llm-provider/platform-error-presentation'
+import { ProviderErrorCard } from '@renderer/components/ui/provider-error-card'
+
+import { PlatformModelNotInPlanCard } from './platform-model-not-in-plan-card'
+import { PlatformPaywallCard } from './platform-paywall-card'
+
+export interface ProviderErrorComponentProps {
+  message: string
+  presentation?: ProviderErrorPresentation
+  /** Report whether the content this error sits above (the composer) must be withheld. */
+  onDisplaceChildren?: (displaced: boolean) => void
+  /** True when this is the in-flight turn error, not a persisted history row. */
+  live?: boolean
+  /** When true, the card shows Dismiss. Default false. */
+  dismissible?: boolean
+  /** Present only on a current session's error, where recovery can continue that chat. */
+  session?: { sessionId: string; agentSlug: string }
+}
+
+export const DEFAULT_ERROR_COMPONENT = 'default'
+
+// `errorPresentation.component` → component. Adding an error component = one row here.
+const REGISTRY: Record<string, ComponentType<ProviderErrorComponentProps>> = {
+  [DEFAULT_ERROR_COMPONENT]: ProviderErrorCard,
+  [PLATFORM_PAYWALL_COMPONENT]: PlatformPaywallCard,
+  [PLATFORM_MODEL_NOT_IN_PLAN_COMPONENT]: PlatformModelNotInPlanCard,
+}
+
+export interface ResolvedProviderError {
+  Component: ComponentType<ProviderErrorComponentProps>
+  placement: ProviderErrorPlacement
+}
+
+// Unknown keys fall back to the default so an older client never drops a server-authored error.
+export function resolveProviderError(presentation: ProviderErrorPresentation | null | undefined): ResolvedProviderError {
+  const key = presentation?.component ?? DEFAULT_ERROR_COMPONENT
+  return {
+    Component: REGISTRY[key] ?? REGISTRY[DEFAULT_ERROR_COMPONENT],
+    placement: errorPlacement(presentation),
+  }
+}

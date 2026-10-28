@@ -1,0 +1,16 @@
+{
+  "sessionId": "0e100682-dd28-475a-b353-ab04da1f8cdb",
+  "agentSlug": "untitled-axa382",
+  "description": "Single web-browser subagent with multiple task_progress events. Navigates HN, clicks first story, screenshots. Tests usage/last_tool_name propagation.",
+  "subagents": [
+    {
+      "parentToolId": "toolu_01UVkGK84WK3oqYZQuLwnwuJ",
+      "taskId": "a753473a0a1b248e7",
+      "agentId": "a753473a0a1b248e7",
+      "subagentType": "web-browser",
+      "description": "Hacker News first story"
+    }
+  ],
+  "taskProgressCount": 4,
+  "totalEntries": 115
+}

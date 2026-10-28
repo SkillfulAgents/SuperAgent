@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
 
 const mockGetSettings = vi.fn()
@@ -9,6 +9,7 @@ const mockRefreshSkillset = vi.fn()
 const mockGetSkillsetIndex = vi.fn()
 const mockRemoveSkillsetCache = vi.fn()
 const mockEnsureSkillsetCached = vi.fn()
+const mockIsGitAvailable = vi.fn()
 const mockGetPlatformProxyBaseUrl = vi.fn()
 const mockGetPlatformAccessToken = vi.fn()
 const mockGetPlatformAuthStatus = vi.fn()
@@ -16,6 +17,15 @@ const mockGetPlatformAuthStatus = vi.fn()
 vi.mock('@shared/lib/config/settings', () => ({
   getSettings: (...args: unknown[]) => mockGetSettings(...args),
   updateSettings: (...args: unknown[]) => mockUpdateSettings(...args),
+  // routes now persist via the serialized fresh-read mutateSettings.
+  // Faithfully reproduce its observable effect against the seeded mock settings
+  // so existing assertions on mockUpdateSettings keep working.
+  mutateSettings: (mutator: (s: Record<string, unknown>) => void) => {
+    const s = structuredClone(mockGetSettings() ?? {})
+    mutator(s)
+    mockUpdateSettings(s)
+    return s
+  },
 }))
 
 vi.mock('@shared/lib/services/skillset-service', () => ({
@@ -25,6 +35,8 @@ vi.mock('@shared/lib/services/skillset-service', () => ({
   getSkillsetIndex: (...args: unknown[]) => mockGetSkillsetIndex(...args),
   removeSkillsetCache: (...args: unknown[]) => mockRemoveSkillsetCache(...args),
   ensureSkillsetCached: (...args: unknown[]) => mockEnsureSkillsetCached(...args),
+  isGitAvailable: (...args: unknown[]) => mockIsGitAvailable(...args),
+  HOST_GIT_UNAVAILABLE: 'This needs git, which the Mac App Store edition can’t run.',
 }))
 
 vi.mock('@shared/lib/platform-auth/config', () => ({
@@ -48,6 +60,7 @@ describe('skillsets routes', () => {
     vi.clearAllMocks()
     mockGetPlatformAuthStatus.mockReturnValue({
       connected: true,
+      source: 'settings',
       tokenPreview: 'plat_s...1234',
       email: 'user@example.com',
       label: 'SuperAgent',
@@ -159,5 +172,322 @@ describe('skillsets routes', () => {
     })
 
     vi.unstubAllGlobals()
+  })
+
+  it('GET / surfaces error when ensureSkillsetCached fails for uncached skillset', async () => {
+    mockGetSettings.mockReturnValue({
+      skillsets: [{
+        id: 'bad-skillset',
+        url: 'https://github.com/Org/missing',
+        name: 'Missing',
+        description: '',
+        addedAt: '2026-01-01T00:00:00.000Z',
+        provider: 'public',
+      }],
+    })
+    mockGetSkillsetIndex.mockResolvedValue(null)
+    mockEnsureSkillsetCached.mockRejectedValue(new Error('Repository not found'))
+
+    const app = new Hono()
+    app.route('/api/skillsets', skillsets)
+    const res = await app.request('/api/skillsets')
+
+    expect(res.status).toBe(200)
+    const body = await res.json() as Array<{ id: string; error?: string; skillCount: number }>
+    expect(body).toHaveLength(1)
+    expect(body[0].error).toBe('Repository not found')
+    expect(body[0].skillCount).toBe(0)
+  })
+
+  it('GET / returns no error for healthy cached skillset', async () => {
+    mockGetSettings.mockReturnValue({
+      skillsets: [{
+        id: 'ok-skillset',
+        url: 'https://github.com/Org/repo',
+        name: 'OK',
+        description: '',
+        addedAt: '2026-01-01T00:00:00.000Z',
+        provider: 'github',
+      }],
+    })
+    mockGetSkillsetIndex.mockResolvedValue({ skills: [{ name: 'a' }], agents: [] })
+
+    const app = new Hono()
+    app.route('/api/skillsets', skillsets)
+    const res = await app.request('/api/skillsets')
+
+    const body = await res.json() as Array<{ error?: string; skillCount: number; publishMode: string }>
+    expect(body[0].error).toBeUndefined()
+    expect(body[0].skillCount).toBe(1)
+    expect(body[0].publishMode).toBe('pull_request')
+  })
+
+  describe('in the Mac App Store edition, which can’t run git', () => {
+    beforeEach(() => {
+      vi.stubEnv('E2E_MOCK', 'true')
+      vi.stubEnv('SUPERAGENT_FAKE_DISTRIBUTION', 'mac-app-store')
+    })
+    afterEach(() => {
+      vi.unstubAllEnvs()
+    })
+
+    it('GET / offers no pull requests to a GitHub skillset', async () => {
+      mockGetSettings.mockReturnValue({
+        skillsets: [{ id: 'gh', url: 'https://github.com/Org/repo', name: 'GH', description: '', addedAt: '2026-01-01T00:00:00.000Z', provider: 'github' }],
+      })
+      mockGetSkillsetIndex.mockResolvedValue({ skills: [], agents: [] })
+
+      const app = new Hono()
+      app.route('/api/skillsets', skillsets)
+      const body = await (await app.request('/api/skillsets')).json() as Array<{ publishMode: string }>
+
+      expect(body[0].publishMode).toBe('none')
+    })
+
+    it('POST / refuses a private repository token before validating anything', async () => {
+      mockGetSettings.mockReturnValue({ skillsets: [] })
+      const app = new Hono()
+      app.route('/api/skillsets', skillsets)
+      const res = await app.request('/api/skillsets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: 'https://github.com/Org/private-repo', token: 'github_pat_x_1234' }),
+      })
+
+      expect(await res.json()).toEqual({ error: 'This needs git, which the Mac App Store edition can’t run.' })
+      expect(mockValidateSkillsetUrl).not.toHaveBeenCalled()
+      expect(mockUpdateSettings).not.toHaveBeenCalled()
+    })
+  })
+
+  it('POST /validate auto-detects public provider when git is unavailable', async () => {
+    mockIsGitAvailable.mockResolvedValue(false)
+    mockValidateSkillsetUrl.mockResolvedValue({
+      skillset_name: 'Test', skills: [], description: '', version: '1.0.0',
+    })
+
+    const app = new Hono()
+    app.route('/api/skillsets', skillsets)
+    const res = await app.request('/api/skillsets/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'https://github.com/Org/repo' }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(mockValidateSkillsetUrl).toHaveBeenCalledWith('https://github.com/Org/repo', 'public', undefined)
+  })
+
+  it('POST /validate does not override explicit provider', async () => {
+    mockIsGitAvailable.mockResolvedValue(false)
+    mockValidateSkillsetUrl.mockResolvedValue({
+      skillset_name: 'Test', skills: [], description: '', version: '1.0.0',
+    })
+
+    const app = new Hono()
+    app.route('/api/skillsets', skillsets)
+    await app.request('/api/skillsets/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'https://github.com/Org/repo', provider: 'github' }),
+    })
+
+    expect(mockValidateSkillsetUrl).toHaveBeenCalledWith('https://github.com/Org/repo', 'github', undefined)
+  })
+
+  it('POST /validate falls through to default when git is available', async () => {
+    mockIsGitAvailable.mockResolvedValue(true)
+    mockValidateSkillsetUrl.mockResolvedValue({
+      skillset_name: 'Test', skills: [], description: '', version: '1.0.0',
+    })
+
+    const app = new Hono()
+    app.route('/api/skillsets', skillsets)
+    await app.request('/api/skillsets/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'https://github.com/Org/repo' }),
+    })
+
+    expect(mockValidateSkillsetUrl).toHaveBeenCalledWith('https://github.com/Org/repo', undefined, undefined)
+  })
+
+  it('POST / saves resolved provider in config', async () => {
+    mockIsGitAvailable.mockResolvedValue(false)
+    mockUrlToSkillsetId.mockReturnValue('github-com-org-repo')
+    mockGetSettings.mockReturnValue({ skillsets: [] })
+    mockValidateSkillsetUrl.mockResolvedValue({
+      skillset_name: 'Test', skills: [{ name: 'a' }], description: 'desc', version: '1.0.0',
+    })
+
+    const app = new Hono()
+    app.route('/api/skillsets', skillsets)
+    const res = await app.request('/api/skillsets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'https://github.com/Org/repo' }),
+    })
+
+    expect(res.status).toBe(201)
+    expect(mockUpdateSettings).toHaveBeenCalledTimes(1)
+    const saved = mockUpdateSettings.mock.calls[0][0]
+    expect(saved.skillsets[0].provider).toBe('public')
+  })
+
+  it('POST / stores a private repository token separately and never returns it', async () => {
+    const token = 'github_pat_private_test_1234'
+    let settingsState: Record<string, unknown> = { skillsets: [], skillsetCredentials: {} }
+    mockUrlToSkillsetId.mockReturnValue('github-com-org-private-repo')
+    mockGetSettings.mockImplementation(() => settingsState)
+    mockUpdateSettings.mockImplementation((next) => { settingsState = next })
+    mockValidateSkillsetUrl.mockResolvedValue({
+      skillset_name: 'Private', skills: [{ name: 'a' }], description: 'desc', version: '1.0.0',
+    })
+
+    const app = new Hono()
+    app.route('/api/skillsets', skillsets)
+    const res = await app.request('/api/skillsets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'https://github.com/Org/private-repo', token }),
+    })
+
+    expect(res.status).toBe(201)
+    expect(mockValidateSkillsetUrl).toHaveBeenCalledWith(
+      'https://github.com/Org/private-repo',
+      'github',
+      { type: 'token', token },
+    )
+
+    const saved = mockUpdateSettings.mock.calls[0][0]
+    const credentialId = saved.skillsets[0].providerData.credentialId
+    expect(credentialId).toMatch(/^skillcred_/)
+    expect(saved.skillsetCredentials[credentialId]).toMatchObject({
+      type: 'token',
+      token,
+      tokenPreview: '••••1234',
+    })
+    expect(saved.skillsets[0].url).toBe('https://github.com/Org/private-repo')
+    const responseBody = JSON.stringify(await res.json())
+    expect(responseBody).not.toContain(token)
+    expect(responseBody).toContain('••••1234')
+  })
+
+  it('PATCH /:id/credential validates and rotates a token without changing its opaque id', async () => {
+    const oldToken = 'github_pat_old_1111'
+    const newToken = 'github_pat_new_2222'
+    let settingsState: any = {
+      skillsets: [{
+        id: 'private-repo',
+        url: 'https://github.com/Org/private-repo',
+        name: 'Private',
+        description: '',
+        addedAt: '2026-01-01T00:00:00.000Z',
+        provider: 'github',
+        providerData: { credentialId: 'skillcred_test' },
+      }],
+      skillsetCredentials: {
+        skillcred_test: {
+          id: 'skillcred_test', type: 'token', token: oldToken, tokenPreview: '••••1111',
+          createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+    }
+    mockGetSettings.mockImplementation(() => settingsState)
+    mockUpdateSettings.mockImplementation((next) => { settingsState = next })
+    mockValidateSkillsetUrl.mockResolvedValue({
+      skillset_name: 'Private', skills: [{ name: 'a' }], description: '', version: '1.0.0',
+    })
+    mockGetSkillsetIndex.mockResolvedValue({ skills: [{ name: 'a' }], agents: [] })
+
+    const app = new Hono()
+    app.route('/api/skillsets', skillsets)
+    const res = await app.request('/api/skillsets/private-repo/credential', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: newToken }),
+    })
+
+    expect(res.status).toBe(200)
+    expect(mockValidateSkillsetUrl).toHaveBeenCalledWith(
+      'https://github.com/Org/private-repo',
+      'github',
+      { type: 'token', token: newToken },
+    )
+    expect(settingsState.skillsets[0].providerData.credentialId).toBe('skillcred_test')
+    expect(settingsState.skillsetCredentials.skillcred_test).toMatchObject({
+      token: newToken,
+      tokenPreview: '••••2222',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    })
+    const responseBody = JSON.stringify(await res.json())
+    expect(responseBody).not.toContain(oldToken)
+    expect(responseBody).not.toContain(newToken)
+    expect(responseBody).toContain('••••2222')
+  })
+
+  it('PATCH /:id/credential returns 404 when the skillset is deleted concurrently', async () => {
+    let settingsState: Record<string, unknown> = {
+      skillsets: [{
+        id: 'private-repo',
+        url: 'https://github.com/Org/private-repo',
+        name: 'Private',
+        description: '',
+        addedAt: '2026-01-01T00:00:00.000Z',
+        provider: 'github',
+        providerData: { credentialId: 'skillcred_test' },
+      }],
+      skillsetCredentials: {
+        skillcred_test: {
+          id: 'skillcred_test', type: 'token', token: 'secret', tokenPreview: '••••cret',
+          createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+    }
+    mockGetSettings.mockImplementation(() => settingsState)
+    mockUpdateSettings.mockImplementation(() => {
+      settingsState = { skillsets: [], skillsetCredentials: {} }
+    })
+
+    const app = new Hono()
+    app.route('/api/skillsets', skillsets)
+    const res = await app.request('/api/skillsets/private-repo/credential', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: null }),
+    })
+
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Skillset not found' })
+  })
+
+  it('DELETE / removes the credential owned by the skillset', async () => {
+    const config = {
+      id: 'private-repo',
+      url: 'https://github.com/Org/private-repo',
+      name: 'Private',
+      description: '',
+      addedAt: '2026-01-01T00:00:00.000Z',
+      provider: 'github' as const,
+      providerData: { credentialId: 'skillcred_test' },
+    }
+    mockGetSettings.mockReturnValue({
+      skillsets: [config],
+      skillsetCredentials: {
+        skillcred_test: {
+          id: 'skillcred_test', type: 'token', token: 'secret', tokenPreview: '••••cret',
+          createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+    })
+
+    const app = new Hono()
+    app.route('/api/skillsets', skillsets)
+    const res = await app.request('/api/skillsets/private-repo', { method: 'DELETE' })
+
+    expect(res.status).toBe(204)
+    const saved = mockUpdateSettings.mock.calls[0][0]
+    expect(saved.skillsets).toEqual([])
+    expect(saved.skillsetCredentials).toEqual({})
   })
 })

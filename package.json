@@ -1,60 +1,134 @@
 {
   "name": "superagent",
-  "version": "0.3.23",
+  "version": "0.6.1",
+  "description": "AI agent management platform",
+  "author": "Datawizz Inc.",
+  "license": "MIT",
   "private": true,
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "main": "dist/main/index.js",
   "scripts": {
-    "dev": "npm rebuild better-sqlite3 && vite",
+    "dev": "vite",
     "dev:web": "vite",
     "dev:api": "tsx watch src/web/server.ts",
-    "dev:electron": "electron-rebuild -f && electron-vite dev",
+    "dev:electron": "install-electron && cross-env SUPERAGENT_BASE_PORT=5000 electron-vite dev",
     "build": "npm run build:web && npm run build:api",
-    "build:web": "vite build",
-    "build:api": "tsup",
-    "build:electron": "electron-vite build",
+    "build:web": "node --max-old-space-size=4096 node_modules/vite/bin/vite.js build",
+    "build:api": "tsup && node scripts/check-runtime-dependencies.mjs web",
+    "build:electron": "node --max-old-space-size=4096 node_modules/electron-vite/bin/electron-vite.js build && node scripts/check-runtime-dependencies.mjs electron",
+    "check:runtime-deps": "node scripts/check-runtime-dependencies.mjs all",
     "preview": "npm run build && node dist/web/server.mjs",
     "download:lima": "bash scripts/download-lima.sh",
     "download:wsl-rootfs": "bash scripts/download-wsl-rootfs.sh",
-    "dist:mac": "PLATFORM_PROXY_URL=${PLATFORM_PROXY_URL:-https://platformproxy.gamutagents.com} npm run download:lima && electron-vite build && electron-builder --mac --publish never",
-    "dist:win": "npm run download:wsl-rootfs && electron-vite build && electron-builder --win --publish never",
+    "download:agent-image": "tsx scripts/fetch-agent-image.ts build/agent-image",
+    "build:mediaremote-adapter": "bash scripts/build-mediaremote-adapter.sh",
+    "build:spotlight-bridge": "bash scripts/build-spotlight-bridge.sh",
+    "dist:mac": "PLATFORM_PROXY_URL=${PLATFORM_PROXY_URL:-https://platformproxy.gamutagents.com} concurrently --kill-others-on-fail --timings npm:download:lima npm:download:agent-image npm:build:mediaremote-adapter npm:build:spotlight-bridge npm:build:electron && electron-builder --mac --publish never",
+    "dist:mas": "PLATFORM_PROXY_URL=${PLATFORM_PROXY_URL:-https://platformproxy.gamutagents.com} AGENT_IMAGE_REQUIRED=${AGENT_IMAGE_REQUIRED:-true} concurrently --kill-others-on-fail --timings npm:download:lima npm:download:agent-image npm:build:spotlight-bridge npm:build:electron && electron-builder --config electron-builder.mas.cjs --mac mas --publish never",
+    "dist:mas-dev": "PLATFORM_PROXY_URL=${PLATFORM_PROXY_URL:-https://platformproxy.gamutagents.com} concurrently --kill-others-on-fail --timings npm:download:lima npm:download:agent-image npm:build:spotlight-bridge npm:build:electron && electron-builder --config electron-builder.mas.cjs --mac mas-dev --publish never",
+    "dist:win": "npm run download:wsl-rootfs && npm run build:electron && electron-builder --win --publish never",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src --ext .ts,.tsx",
+    "lint": "eslint src e2e perf --ext .ts,.tsx",
+    "lint:e2e": "eslint e2e --ext .ts",
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:container": "npm --prefix agent-container test",
     "test:e2e": "E2E_MOCK=true playwright test --project=web-chromium",
+    "test:e2e:web": "E2E_MOCK=true playwright test --project=web-chromium",
+    "test:e2e:wizard": "E2E_MOCK=true playwright test --config=playwright.wizard.config.ts",
+    "test:e2e:sidebar": "E2E_MOCK=true playwright test --project=web-sidebar",
+    "test:e2e:graph": "E2E_MOCK=true playwright test --project=web-graph",
+    "test:e2e:pwa": "E2E_MOCK=true playwright test --config=playwright.pwa.config.ts",
+    "test:e2e:a11y": "E2E_MOCK=true E2E_INCLUDE_A11Y=true playwright test e2e/specs/a11y-audit.spec.ts --project=web-chromium",
     "test:e2e:headed": "E2E_MOCK=true playwright test --project=web-chromium --headed",
     "test:e2e:ui": "E2E_MOCK=true playwright test --ui",
     "test:e2e:auth": "npx playwright test --config=playwright.auth.config.ts",
-    "test:e2e:electron": "npm run build:electron && E2E_MOCK=true playwright test --project=electron",
+    "test:live:mcp-hot-add": "node e2e/live/mcp-hot-add/run.mjs",
+    "test:live:x-agent-attachments": "tsx e2e/live/x-agent-attachments/run.ts",
+    "test:e2e:electron": "E2E_MOCK=true playwright test --config=playwright.electron.config.ts",
     "test:e2e:perf": "RENDER_TRACKING=true E2E_MOCK=true playwright test --project=web-chromium e2e/specs/render-perf.spec.ts",
+    "test:halftone:visual": "E2E_MOCK=true playwright test e2e/specs/halftone-visual.spec.ts --project=web-chromium --workers=1",
+    "benchmark:halftone": "tsx scripts/benchmark-halftone.ts",
+    "benchmark:halftone:runtime": "tsx scripts/benchmark-halftone-runtime.ts",
     "db:reset": "rm superagent.db* && drizzle-kit migrate",
-    "db:generate": "drizzle-kit generate",
+    "db:generate": "drizzle-kit generate && npm run db:bundle",
+    "db:bundle": "tsx scripts/bundle-migrations.ts",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "build:container": "docker build -t superagent-container ./agent-container",
-    "icons:download": "tsx scripts/download-service-icons.ts"
+    "icons:download": "tsx scripts/download-service-icons.ts",
+    "icons:optimize": "tsx scripts/optimize-service-icons.ts",
+    "test:perf": "vitest run --config vitest.perf.config.ts",
+    "test:libsql": "node scripts/run-libsql-tests.mjs",
+    "test:actor-transport": "node scripts/run-actor-transport-tests.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/bedrock-sdk": "^1.1.0",
+    "@anthropic-ai/sdk": "^1.3.0",
+    "@aws-sdk/client-lambda-microvms": "^3.1075.0",
+    "@aws-sdk/client-s3": "^3.1149.0",
+    "@hono/node-server": "^2.1.5",
+    "@hono/zod-validator": "^0.9.1",
+    "@sentry/node": "^10.48.0",
+    "@skillful-agents/agent-computer": "^0.0.15",
+    "@slack/bolt": "^4.7.0",
+    "@smithy/node-http-handler": "^4.12.1",
+    "archiver": "^7.0.1",
+    "better-sqlite3": "^13.0.3",
+    "chrono-node": "^2.10.3",
+    "cron-parser": "^5.10.2",
+    "date-fns": "^4.1.0",
+    "drizzle-orm": "^0.45.1",
+    "electron-updater": "^6.8.11",
+    "eventsource": "^4.1.0",
+    "grammy": "^1.44.0",
+    "graphql": "^17.0.2",
+    "heic-decode": "^2.1.0",
+    "hono": "^4.13.13",
+    "ignore": "^5.3.2",
+    "jose": "^6.1.3",
+    "jpeg-js": "^0.4.4",
+    "js-yaml": "^4.3.2",
+    "koffi": "^3.3.3",
+    "llm-endpoint-translation": "https://github.com/SkillfulAgents/llm-endpoint-translation/releases/download/v0.1.7/llm-endpoint-translation-0.1.7.tgz",
+    "marked": "^18.1.1",
+    "node-diff3": "^3.2.1",
+    "pngjs": "^7.0.0",
+    "semver": "~7.7.3",
+    "tar": "^7.5.22",
+    "tldts": "^7.0.23",
+    "tokenx": "^2.1.0",
+    "undici": "^7.30.1",
+    "uuid": "^14.0.1",
+    "web-push": "^3.6.7",
+    "ws": "^8.22.0",
+    "yauzl": "^3.3.0",
+    "yazl": "^3.3.1",
+    "zod": "~4.3.6"
+  },
+  "devDependencies": {
     "@analytics/amplitude": "^0.1.3",
     "@analytics/google-analytics": "^1.1.0",
     "@analytics/mixpanel": "^0.4.0",
-    "@anthropic-ai/bedrock-sdk": "^0.26.4",
-    "@anthropic-ai/sdk": "^0.91.0",
+    "@axe-core/playwright": "^4.11.1",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/modifiers": "^9.0.0",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
-    "@hono/node-server": "^1.13.7",
-    "@hono/zod-validator": "^0.7.6",
+    "@hono/vite-dev-server": "^0.24.1",
     "@hookform/resolvers": "^5.2.2",
+    "@libsql/client": "^0.18.0",
     "@monaco-editor/react": "^4.7.0",
+    "@playwright/test": "^1.58.0",
     "@radix-ui/react-alert-dialog": "^1.1.15",
     "@radix-ui/react-checkbox": "^1.3.3",
     "@radix-ui/react-collapsible": "^1.1.12",
     "@radix-ui/react-context-menu": "^2.2.16",
     "@radix-ui/react-dialog": "^1.1.15",
+    "@radix-ui/react-dropdown-menu": "^2.1.16",
     "@radix-ui/react-label": "^2.1.8",
     "@radix-ui/react-popover": "^1.1.15",
     "@radix-ui/react-scroll-area": "^1.1.0",
@@ -65,109 +139,136 @@
     "@radix-ui/react-tabs": "^1.1.0",
     "@radix-ui/react-tooltip": "^1.2.8",
     "@sentry/browser": "^10.48.0",
-    "@sentry/electron": "^7.11.0",
-    "@sentry/node": "^10.48.0",
-    "@skillful-agents/agent-computer": "^0.0.11",
-    "@slack/bolt": "^4.7.0",
-    "@tanstack/react-query": "^5.56.0",
-    "@types/react-file-icon": "^1.0.4",
-    "adm-zip": "^0.5.16",
-    "analytics": "^0.8.19",
-    "archiver": "^7.0.1",
-    "better-auth": "^1.4.19",
-    "better-sqlite3": "^12.8.0",
-    "ccusage": "^15.2.0",
-    "chrono-node": "^2.9.0",
-    "class-variance-authority": "^0.7.1",
-    "clsx": "^2.1.1",
-    "cron-parser": "^5.5.0",
-    "cronstrue": "^3.14.0",
-    "date-fns": "^4.1.0",
-    "drizzle-orm": "^0.45.1",
-    "electron-updater": "^6.7.3",
-    "eventsource": "^4.1.0",
-    "fflate": "^0.8.2",
-    "grammy": "^1.42.0",
-    "hono": "^4.6.14",
-    "js-yaml": "^4.1.1",
-    "lucide-react": "^0.446.0",
-    "marked": "^18.0.0",
-    "node-vibrant": "^4.0.4",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-file-icon": "^1.6.0",
-    "react-hook-form": "^7.71.2",
-    "react-markdown": "^10.1.0",
-    "recharts": "^2.15.4",
-    "remark-gfm": "^4.0.1",
-    "sonner": "^2.0.7",
-    "tailwind-merge": "^2.6.0",
-    "tailwindcss-animate": "^1.0.7",
-    "uuid": "^10.0.0",
-    "ws": "^8.18.0",
-    "zod": "^4.3.6"
-  },
-  "devDependencies": {
-    "@axe-core/playwright": "^4.11.1",
-    "@electron/rebuild": "^3.7.2",
-    "@hono/vite-dev-server": "^0.24.1",
-    "@playwright/test": "^1.58.0",
+    "@smithy/types": "^4.19.0",
     "@tailwindcss/typography": "^0.5.19",
+    "@tanstack/react-query": "^5.104.5",
+    "@tanstack/react-router": "1.170.15",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
-    "@types/adm-zip": "^0.5.7",
     "@types/archiver": "^7.0.0",
     "@types/better-sqlite3": "^7.6.11",
+    "@types/d3-force": "^3.0.10",
     "@types/eventsource": "^1.1.15",
+    "@types/hast": "^3.0.4",
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^24.0.0",
+    "@types/node": "^22.20.0",
+    "@types/pngjs": "^6.0.5",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
-    "@types/uuid": "^10.0.0",
-    "@types/ws": "^8.5.12",
+    "@types/semver": "^7.8.0",
+    "@types/web-push": "^3.6.4",
+    "@types/ws": "^8.18.2",
+    "@types/yauzl": "^2.10.3",
+    "@types/yazl": "^3.3.1",
     "@typescript-eslint/eslint-plugin": "^7.18.0",
     "@typescript-eslint/parser": "^7.18.0",
     "@vitejs/plugin-react": "^4.3.4",
     "@vitest/coverage-v8": "^4.0.18",
     "@welldone-software/why-did-you-render": "^8.0.3",
+    "@xyflow/react": "^12.11.1",
+    "analytics": "^0.8.19",
     "autoprefixer": "^10.4.0",
-    "concurrently": "^9.1.2",
+    "beautiful-mermaid": "^1.1.3",
+    "better-auth": "1.7.12",
+    "ccusage": "^15.2.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "concurrently": "^9.2.5",
+    "cronstrue": "^3.32.0",
+    "cross-env": "^7.0.3",
+    "d3-force": "^3.0.0",
+    "dompurify": "3.4.17",
     "drizzle-kit": "^0.31.9",
-    "electron": "^41.1.0",
-    "electron-builder": "^26.4.0",
-    "electron-vite": "^5.0.0",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^6.0.0",
+    "esbuild": "^0.25.12",
     "eslint": "^8.0.0",
     "eslint-plugin-jsx-a11y": "^6.10.2",
     "eslint-plugin-local-rules": "^3.0.2",
     "eslint-plugin-react": "^7.37.3",
     "eslint-plugin-react-hooks": "^5.1.0",
+    "fflate": "^0.8.2",
     "jsdom": "^28.1.0",
-    "postcss": "^8.4.0",
+    "katex": "^0.18.9",
+    "lucide-react": "^1.40.0",
+    "markdown-it": "^14.3.3",
+    "monaco-editor": "0.55.1",
+    "p-limit": "^3.1.0",
+    "postal-mime": "^4.0.6",
+    "postcss": "^8.5.23",
+    "prosemirror-commands": "^1.7.2",
+    "prosemirror-history": "^1.5.1",
+    "prosemirror-inputrules": "^1.5.1",
+    "prosemirror-keymap": "^1.2.3",
+    "prosemirror-markdown": "^1.13.8",
+    "prosemirror-model": "^1.25.12",
+    "prosemirror-schema-list": "^1.5.1",
+    "prosemirror-state": "^1.4.4",
+    "prosemirror-view": "^1.42.6",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-hook-form": "^7.71.2",
+    "react-markdown": "^10.1.0",
+    "react-pdf": "^10.5.0",
+    "react-qr-code": "^2.2.0",
+    "recharts": "^2.15.4",
+    "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
+    "remark-rehype": "^11.1.2",
+    "sonner": "^2.0.7",
+    "svgo": "4.1.0",
+    "tailwind-merge": "^2.6.0",
     "tailwindcss": "^3.4.0",
+    "tailwindcss-animate": "^1.0.7",
+    "thinking-orbs": "^0.1.1",
     "tsup": "^8.3.5",
     "tsx": "^4.19.2",
     "typescript": "^5.3.0",
-    "vite": "^7.0.0",
+    "unified": "^11.0.5",
+    "vite": "^7.3.7",
+    "vite-plugin-pwa": "^1.3.0",
     "vitest": "^4.0.18"
+  },
+  "overrides": {
+    "monaco-editor": {
+      "dompurify": "$dompurify"
+    }
   },
   "build": {
     "appId": "com.superagent.app",
-    "productName": "Superagent",
+    "productName": "Gamut",
     "directories": {
       "output": "release"
     },
-    "files": [
-      "dist/**/*"
+    "fileAssociations": [
+      {
+        "ext": "agent",
+        "name": "Gamut Agent",
+        "description": "Gamut Agent Template",
+        "role": "Editor",
+        "rank": "Owner",
+        "icon": "file-icons/agent"
+      },
+      {
+        "ext": "skill",
+        "name": "Gamut Skill",
+        "description": "Gamut Skill",
+        "role": "Editor",
+        "rank": "Owner",
+        "icon": "file-icons/skill"
+      }
     ],
+    "files": [
+      "dist/**/*",
+      "!node_modules/better-sqlite3/{build,deps,src,binding.gyp}"
+    ],
+    "npmRebuild": false,
     "asarUnpack": [
       "node_modules/@skillful-agents/agent-computer/bin/**"
     ],
     "extraResources": [
-      {
-        "from": "src/shared/lib/db/migrations",
-        "to": "migrations"
-      },
       {
         "from": "build",
         "to": "tray-icons",
@@ -182,8 +283,10 @@
         "to": "lima",
         "filter": [
           "bin/limactl",
+          "bin/lima-nerdctl",
           "share/lima/lima-guestagent*",
-          "alpine.qcow2"
+          "alpine.qcow2",
+          "packages/**"
         ]
       },
       {
@@ -200,12 +303,63 @@
         "dmg",
         "zip"
       ],
-      "artifactName": "Superagent-${arch}.${ext}",
+      "extraResources": [
+        {
+          "from": "build/mediaremote-adapter",
+          "to": "mediaremote-adapter"
+        },
+        {
+          "from": "build/spotlight-bridge",
+          "to": "spotlight-bridge"
+        },
+        {
+          "from": "build/notification-bridge",
+          "to": "notification-bridge"
+        },
+        {
+          "from": "build/agent-image",
+          "to": "agent-image",
+          "filter": [
+            "agent-image.tar",
+            "agent-image.json"
+          ]
+        }
+      ],
+      "artifactName": "Gamut-${version}-${arch}.${ext}",
       "category": "public.app-category.developer-tools",
+      "minimumSystemVersion": "13.0",
       "icon": "build/icon.icon",
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
-      "notarize": true
+      "notarize": true,
+      "extendInfo": {
+        "NSUserActivityTypes": [
+          "com.apple.corespotlightitem"
+        ],
+        "CFBundleAlternateNames": [
+          "Gamut",
+          "Superagent",
+          "SuperAgent",
+          "Claude",
+          "Codex",
+          "ChatGPT"
+        ],
+        "CFBundleDocumentTypes": [
+          {
+            "CFBundleTypeName": "Any File",
+            "CFBundleTypeRole": "Viewer",
+            "LSHandlerRank": "Alternate",
+            "LSItemContentTypes": [
+              "public.item",
+              "public.content"
+            ]
+          }
+        ]
+      },
+      "files": [
+        "!node_modules/@skillful-agents/agent-computer/bin/ac-core-win32-*",
+        "!node_modules/better-sqlite3/prebuilds/{linux,linuxmusl,win32}-*"
+      ]
     },
     "win": {
       "target": [
@@ -224,7 +378,74 @@
           ]
         }
       ],
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "fileAssociations": [
+        {
+          "ext": "png",
+          "name": "PNG Image"
+        },
+        {
+          "ext": "jpg",
+          "name": "JPEG Image"
+        },
+        {
+          "ext": "jpeg",
+          "name": "JPEG Image"
+        },
+        {
+          "ext": "gif",
+          "name": "GIF Image"
+        },
+        {
+          "ext": "webp",
+          "name": "WebP Image"
+        },
+        {
+          "ext": "pdf",
+          "name": "PDF Document"
+        },
+        {
+          "ext": "txt",
+          "name": "Text Document"
+        },
+        {
+          "ext": "md",
+          "name": "Markdown Document"
+        },
+        {
+          "ext": "csv",
+          "name": "CSV File"
+        },
+        {
+          "ext": "json",
+          "name": "JSON File"
+        },
+        {
+          "ext": "docx",
+          "name": "Word Document"
+        },
+        {
+          "ext": "xlsx",
+          "name": "Excel Spreadsheet"
+        }
+      ],
+      "signExts": [
+        ".exe",
+        ".dll",
+        ".node"
+      ],
+      "azureSignOptions": {
+        "endpoint": "https://eus.codesigning.azure.net",
+        "certificateProfileName": "gamut-windows",
+        "codeSigningAccountName": "Gamut",
+        "publisherName": "Datawizz Inc."
+      },
+      "files": [
+        "!node_modules/@skillful-agents/agent-computer/bin/ac-core-darwin-*",
+        "!node_modules/@skillful-agents/agent-computer/bin/ac-core-win32-!(${arch}).exe",
+        "!node_modules/better-sqlite3/prebuilds/{darwin,linux,linuxmusl}-*",
+        "!node_modules/better-sqlite3/prebuilds/win32-!(${arch}).node"
+      ]
     },
     "nsis": {
       "oneClick": false,
@@ -232,14 +453,15 @@
       "perMachine": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Superagent",
-      "uninstallDisplayName": "Superagent",
-      "artifactName": "Superagent-Setup.${ext}"
+      "shortcutName": "Gamut",
+      "uninstallDisplayName": "Gamut",
+      "artifactName": "Gamut-${version}-Setup.${ext}",
+      "include": "build/installer.nsh"
     },
     "publish": {
-      "provider": "github",
-      "owner": "SkillfulAgents",
-      "repo": "SuperAgent"
+      "provider": "generic",
+      "url": "https://updates.gamutagents.com/",
+      "channel": "latest"
     }
   }
 }

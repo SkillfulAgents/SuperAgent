@@ -6,17 +6,21 @@
  *
  * In auth mode, list/count/mark-read queries are scoped to the user's
  * accessible agents (via agentAcl). Pass userId to scope; omit for all.
+ * A targeted row (a mention) is seen only by its recipient: every read for a
+ * user applies visibleTo().
  */
 
 import { db } from '@shared/lib/db'
+import { changesOf } from '@shared/lib/db/batch'
 import { notifications, agentAcl, type Notification, type NewNotification } from '@shared/lib/db/schema'
-import { eq, desc, and, lt, inArray } from 'drizzle-orm'
+import { eq, desc, and, lt, inArray, isNull, or } from 'drizzle-orm'
 import { count } from 'drizzle-orm'
+import { USER_ACTIONABLE_NOTIFICATION_TYPES } from '@shared/lib/notifications/notification-preferences'
 
 // Re-export types for external use
 export type { Notification, NewNotification }
 
-export type NotificationType = 'session_complete' | 'session_waiting' | 'session_scheduled' | 'session_webhook' | 'session_chat_integration'
+export type NotificationType = 'session_complete' | 'session_waiting' | 'session_scheduled' | 'session_webhook' | 'session_chat_integration' | 'session_mention'
 
 // ============================================================================
 // Types
@@ -28,6 +32,10 @@ export interface CreateNotificationParams {
   agentSlug: string
   title: string
   body: string
+  /** A targeted row: only this user sees it, and its read state is theirs. */
+  recipientUserId?: string
+  /** The transcript message a targeted row points at. */
+  messageUuid?: string
 }
 
 // ============================================================================
@@ -43,6 +51,24 @@ export async function getAccessibleAgentSlugs(userId: string): Promise<string[]>
     .from(agentAcl)
     .where(eq(agentAcl.userId, userId))
   return rows.map((r) => r.agentSlug)
+}
+
+/**
+ * The rows a user may see: every shared row, and the targeted rows addressed
+ * to them. Without a viewer (local mode) nothing is hidden.
+ */
+function visibleTo(viewerId: string | undefined) {
+  if (viewerId === undefined) return undefined
+  return or(isNull(notifications.recipientUserId), eq(notifications.recipientUserId, viewerId))
+}
+
+/** Get the users who can receive notifications for an agent in auth mode. */
+export async function getAgentAccessUserIds(agentSlug: string): Promise<string[]> {
+  const rows = await db
+    .select({ userId: agentAcl.userId })
+    .from(agentAcl)
+    .where(eq(agentAcl.agentSlug, agentSlug))
+  return rows.map((row) => row.userId)
 }
 
 // ============================================================================
@@ -65,6 +91,8 @@ export async function createNotification(
     title: params.title,
     body: params.body,
     isRead: false,
+    recipientUserId: params.recipientUserId ?? null,
+    messageUuid: params.messageUuid ?? null,
     createdAt: new Date(),
   }
 
@@ -81,41 +109,61 @@ export async function createNotification(
  * List notifications, ordered by creation time (newest first).
  * When userId is provided, only returns notifications for agents the user has access to.
  */
-export async function listNotifications(limit: number = 50, userId?: string): Promise<Notification[]> {
+export async function listNotifications(limit: number = 50, userId?: string, offset: number = 0): Promise<Notification[]> {
   if (userId) {
     const slugs = await getAccessibleAgentSlugs(userId)
     if (slugs.length === 0) return []
     return db
       .select()
       .from(notifications)
-      .where(inArray(notifications.agentSlug, slugs))
+      .where(and(inArray(notifications.agentSlug, slugs), visibleTo(userId)))
       .orderBy(desc(notifications.createdAt))
       .limit(limit)
+      .offset(offset)
   }
   return db
     .select()
     .from(notifications)
     .orderBy(desc(notifications.createdAt))
     .limit(limit)
+    .offset(offset)
+}
+
+export async function countNotifications(userId?: string): Promise<number> {
+  if (userId) {
+    const slugs = await getAccessibleAgentSlugs(userId)
+    if (slugs.length === 0) return 0
+    const result = await db
+      .select({ count: count() })
+      .from(notifications)
+      .where(and(inArray(notifications.agentSlug, slugs), visibleTo(userId)))
+    return result[0]?.count ?? 0
+  }
+  const result = await db
+    .select({ count: count() })
+    .from(notifications)
+  return result[0]?.count ?? 0
 }
 
 /**
  * Notification types that drive any unread dot or count in the UI.
- * Lifecycle events (`session_scheduled`, `session_chat_integration`,
- * `session_webhook`) live in the popover history but do not contribute
- * to badges — the user didn't take an action that requires their attention.
+ * Definition lives in the renderer-safe notification-preferences leaf (this
+ * module imports the DB and cannot be pulled into the renderer); re-exported
+ * here for the existing server-side consumers.
  */
-export const USER_ACTIONABLE_NOTIFICATION_TYPES = ['session_complete', 'session_waiting'] as const
+export { USER_ACTIONABLE_NOTIFICATION_TYPES }
 
 /**
  * Get session IDs that have unread notifications for a given agent.
- * Useful for showing "unseen" indicators in the sidebar.
+ * Useful for showing "unseen" indicators in the sidebar. `viewerId` hides
+ * other people's mentions without the ACL check `userId` adds.
  */
-export async function getSessionIdsWithUnreadNotifications(agentSlug: string, userId?: string): Promise<Set<string>> {
+export async function getSessionIdsWithUnreadNotifications(agentSlug: string, userId?: string, viewerId = userId): Promise<Set<string>> {
   const conditions = [
     eq(notifications.agentSlug, agentSlug),
     eq(notifications.isRead, false),
     inArray(notifications.type, [...USER_ACTIONABLE_NOTIFICATION_TYPES]),
+    visibleTo(viewerId),
   ]
 
   if (userId) {
@@ -135,7 +183,7 @@ export async function getSessionIdsWithUnreadNotifications(agentSlug: string, us
  * Batch version: get unread notification session IDs for multiple agents in a single query.
  * Returns a Map from agentSlug to Set of sessionIds with unread notifications.
  */
-export async function getUnreadNotificationsByAgents(agentSlugs: string[]): Promise<Map<string, Set<string>>> {
+export async function getUnreadNotificationsByAgents(agentSlugs: string[], viewerId?: string): Promise<Map<string, Set<string>>> {
   if (agentSlugs.length === 0) return new Map()
 
   const rows = await db
@@ -145,6 +193,7 @@ export async function getUnreadNotificationsByAgents(agentSlugs: string[]): Prom
       inArray(notifications.agentSlug, agentSlugs),
       eq(notifications.isRead, false),
       inArray(notifications.type, [...USER_ACTIONABLE_NOTIFICATION_TYPES]),
+      visibleTo(viewerId),
     ))
 
   const result = new Map<string, Set<string>>()
@@ -154,6 +203,54 @@ export async function getUnreadNotificationsByAgents(agentSlugs: string[]): Prom
     set.add(row.sessionId)
   }
   return result
+}
+
+/** A viewer's own unread mentions: the rows that draw an @ instead of a dot. */
+function unreadMentionsOf(viewerId: string) {
+  return and(
+    eq(notifications.recipientUserId, viewerId),
+    eq(notifications.type, 'session_mention'),
+    eq(notifications.isRead, false),
+  )
+}
+
+/** Sessions of an agent where the viewer was mentioned and has not looked yet. */
+export async function getSessionIdsWithUnreadMentions(agentSlug: string, viewerId: string): Promise<Set<string>> {
+  const rows = await db
+    .select({ sessionId: notifications.sessionId })
+    .from(notifications)
+    .where(and(eq(notifications.agentSlug, agentSlug), unreadMentionsOf(viewerId)))
+  return new Set(rows.map((row) => row.sessionId))
+}
+
+/** Batch version of getSessionIdsWithUnreadMentions, one query for many agents. */
+export async function getUnreadMentionsByAgents(agentSlugs: string[], viewerId: string): Promise<Map<string, Set<string>>> {
+  if (agentSlugs.length === 0) return new Map()
+  const rows = await db
+    .select({ agentSlug: notifications.agentSlug, sessionId: notifications.sessionId })
+    .from(notifications)
+    .where(and(inArray(notifications.agentSlug, agentSlugs), unreadMentionsOf(viewerId)))
+  const result = new Map<string, Set<string>>()
+  for (const row of rows) {
+    let set = result.get(row.agentSlug)
+    if (!set) { set = new Set(); result.set(row.agentSlug, set) }
+    set.add(row.sessionId)
+  }
+  return result
+}
+
+/**
+ * The viewer's unread mentions, on agents they can still open (a lost share
+ * hides them like any other row).
+ */
+export async function getUnreadMentionCount(userId: string): Promise<number> {
+  const slugs = await getAccessibleAgentSlugs(userId)
+  if (slugs.length === 0) return 0
+  const result = await db
+    .select({ count: count() })
+    .from(notifications)
+    .where(and(inArray(notifications.agentSlug, slugs), unreadMentionsOf(userId)))
+  return result[0]?.count ?? 0
 }
 
 /**
@@ -167,7 +264,7 @@ export async function listUnreadNotifications(limit: number = 50, userId?: strin
     return db
       .select()
       .from(notifications)
-      .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, slugs)))
+      .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, slugs), visibleTo(userId)))
       .orderBy(desc(notifications.createdAt))
       .limit(limit)
   }
@@ -191,7 +288,7 @@ export async function getUnreadCount(userId?: string): Promise<number> {
     const result = await db
       .select({ count: count() })
       .from(notifications)
-      .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, slugs), actionable))
+      .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, slugs), actionable, visibleTo(userId)))
     return result[0]?.count ?? 0
   }
   const result = await db
@@ -230,7 +327,7 @@ export async function markAsRead(notificationId: string): Promise<boolean> {
     })
     .where(eq(notifications.id, notificationId))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
 }
 
 /**
@@ -246,7 +343,7 @@ export async function markSessionNotificationsRead(sessionId: string, userId?: s
   if (userId) {
     const slugs = await getAccessibleAgentSlugs(userId)
     if (slugs.length === 0) return 0
-    conditions.push(inArray(notifications.agentSlug, slugs))
+    conditions.push(inArray(notifications.agentSlug, slugs), visibleTo(userId)!)
   }
 
   const result = await db
@@ -257,7 +354,7 @@ export async function markSessionNotificationsRead(sessionId: string, userId?: s
     })
     .where(and(...conditions))
 
-  return result.changes ?? 0
+  return changesOf(result)
 }
 
 /**
@@ -274,8 +371,8 @@ export async function markAllAsRead(userId?: string): Promise<number> {
         isRead: true,
         readAt: new Date(),
       })
-      .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, slugs)))
-    return result.changes ?? 0
+      .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, slugs), visibleTo(userId)))
+    return changesOf(result)
   }
 
   const result = await db
@@ -286,7 +383,7 @@ export async function markAllAsRead(userId?: string): Promise<number> {
     })
     .where(eq(notifications.isRead, false))
 
-  return result.changes ?? 0
+  return changesOf(result)
 }
 
 // ============================================================================
@@ -301,7 +398,42 @@ export async function deleteNotification(notificationId: string): Promise<boolea
     .delete(notifications)
     .where(eq(notifications.id, notificationId))
 
-  return (result.changes ?? 0) > 0
+  return changesOf(result) > 0
+}
+
+/**
+ * Delete all notifications for the given session IDs.
+ *
+ * Used by session retention cleanup (SessionAutoDeleteMonitor) and manual
+ * session deletion so that notification history does not retain rows pointing
+ * at sessions that no longer exist. Notifications are stored in BOTH auth and
+ * non-auth modes (userId is nullable), so callers should invoke this
+ * unconditionally — not gated on auth mode.
+ *
+ * No-op (returns 0) when the input list is empty.
+ */
+export async function deleteNotificationsBySessionIds(sessionIds: string[]): Promise<number> {
+  if (sessionIds.length === 0) return 0
+
+  const result = await db
+    .delete(notifications)
+    .where(inArray(notifications.sessionId, sessionIds))
+
+  return changesOf(result)
+}
+
+/**
+ * Delete the targeted rows a message made (its mentions), for a message that
+ * never reached the transcript. Returns who each row was for.
+ */
+export async function deleteMessageNotifications(messageUuid: string): Promise<Array<{ recipientUserId: string; agentSlug: string; sessionId: string }>> {
+  const rows = await db
+    .select({ recipientUserId: notifications.recipientUserId, agentSlug: notifications.agentSlug, sessionId: notifications.sessionId })
+    .from(notifications)
+    .where(eq(notifications.messageUuid, messageUuid))
+  if (rows.length === 0) return []
+  await db.delete(notifications).where(eq(notifications.messageUuid, messageUuid))
+  return rows.flatMap((row) => row.recipientUserId ? [{ ...row, recipientUserId: row.recipientUserId }] : [])
 }
 
 /**
@@ -315,5 +447,5 @@ export async function deleteOldNotifications(olderThanDays: number = 30): Promis
     .delete(notifications)
     .where(lt(notifications.createdAt, cutoffDate))
 
-  return result.changes ?? 0
+  return changesOf(result)
 }

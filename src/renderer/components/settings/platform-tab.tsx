@@ -1,11 +1,567 @@
-import { useMemo } from 'react'
-import { ExternalLink, Loader2, LogIn, RefreshCw } from 'lucide-react'
+import { formatCents } from '@renderer/lib/currency'
+import { useState, type ReactNode } from 'react'
+import { ArrowUpRight, BadgeX, Check, ChevronsUpDown, Loader2, RefreshCw } from 'lucide-react'
 
 import { Alert, AlertDescription } from '@renderer/components/ui/alert'
 import { Button } from '@renderer/components/ui/button'
-import { Label } from '@renderer/components/ui/label'
-import { usePlatformConnect } from '@renderer/hooks/use-platform-auth'
-import { ManualAccessKeyInput } from '@renderer/components/settings/manual-access-key-input'
+import { Input } from '@renderer/components/ui/input'
+import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { Progress } from '@renderer/components/ui/progress'
+import { ErrorBoundary } from '@renderer/components/ui/error-boundary'
+import { RequestError } from '@shared/lib/tools/requests/request-error'
+import { LoginButton } from '@renderer/components/connections/login-button'
+import { ProfileSection } from './profile-section'
+import { StaleAgentsNotice } from './stale-agents-notice'
+import { useUser } from '@renderer/context/user-context'
+import { usePlatformConnect, useSavePlatformAccessKey } from '@renderer/hooks/use-platform-auth'
+import { useBillingInfo } from '@renderer/hooks/use-billing-info'
+import { pendingPlanChangeText, usePlatformPlanUpgrade } from '@renderer/hooks/use-platform-plan'
+import { isPlatformOrgAdmin } from '@renderer/components/provider-error/platform-paywall-cta'
+import { useCloudWorkspace } from '@renderer/hooks/use-cloud-workspace'
+import { isElectron } from '@renderer/lib/env'
+import { openExternalUrl } from '@renderer/lib/open-external'
+import { cn } from '@shared/lib/utils'
+import { SUBSCRIPTION_CREDIT_COPY, subscriptionCreditScope } from '@shared/lib/services/platform-billing-copy'
+import type { ParsedPlatformBillingInfo, SubscriptionCreditScope } from '@shared/lib/types/skillset-schema'
+
+interface PlatformTabProps {
+  readOnly?: boolean
+}
+
+interface SettingRowProps {
+  name: string
+  subtitle?: ReactNode
+  right: ReactNode
+}
+
+function SettingRow({ name, subtitle, right }: SettingRowProps) {
+  return (
+    <div className="py-3 px-4">
+      <div className="flex items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-medium truncate">{name}</div>
+          {subtitle && (
+            <div className="text-[11px] text-muted-foreground mt-0.5">{subtitle}</div>
+          )}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">{right}</div>
+      </div>
+    </div>
+  )
+}
+
+const CARD_CLASS = 'rounded-xl border bg-background divide-y divide-border/50 overflow-hidden'
+const SECTION_HEADING = 'text-xs font-medium text-muted-foreground px-1'
+
+function seatPercentRemaining(seat: NonNullable<ParsedPlatformBillingInfo['seat']>): number {
+  if (seat.startingBalanceCents <= 0) return 0
+  return Math.max(0, Math.min(100, (seat.balanceCents / seat.startingBalanceCents) * 100))
+}
+
+// Called only with a configured snapshot — the unconfigured case is handled by
+// a separate row before this runs.
+function subscriptionLabel(b: ParsedPlatformBillingInfo): string {
+  if (b.subscription.paymentStatus === 'past_due' || b.subscription.paymentStatus === 'payment_failed') {
+    return 'Past due'
+  }
+  switch (b.subscription.status) {
+    case 'active':
+      return b.seat ? 'Subscribed' : 'Active'
+    case 'cancellation_scheduled':
+      return 'Cancelling'
+    case 'cancelled':
+      return 'Cancelled'
+    default:
+      return 'Free'
+  }
+}
+
+const VALUE_CLASS = 'text-xs text-muted-foreground truncate max-w-[260px]'
+
+// The plan row's value: the plan's name, with the subscription's state when it
+// isn't plainly active ("Pro 30 · Cancelling").
+function planLabel(b: ParsedPlatformBillingInfo, plan: NonNullable<ParsedPlatformBillingInfo['plan']>): string {
+  const status = subscriptionLabel(b)
+  return status === 'Subscribed' || status === 'Active' ? plan.name : `${plan.name} · ${status}`
+}
+
+// What the plan leaves out and what is about to change, under the plan's name.
+// `excluded` is worded by the server, which owns reading the plan's denylist.
+function PlanDetails({ billing, excluded }: { billing: ParsedPlatformBillingInfo; excluded: string | null }) {
+  const pending = billing.pendingPlanChange ? pendingPlanChangeText(billing.pendingPlanChange) : null
+  if (!excluded && !pending) return null
+  return (
+    <>
+      {excluded && <span className="block" data-testid="billing-plan-excludes">Excludes {excluded}</span>}
+      {pending && <span className="block" data-testid="billing-plan-pending">{pending}</span>}
+    </>
+  )
+}
+
+function PlatformBillingCard({
+  platformBaseUrl,
+  orgId,
+  role,
+}: {
+  platformBaseUrl?: string | null
+  orgId?: string | null
+  /** The member's org role; only owners and admins can change the plan. Unknown = offer it. */
+  role?: string | null
+}) {
+  const { data, isLoading, isFetching, error, refetch } = useBillingInfo(true)
+  const billing = data?.billing
+  const openPlanUpgrade = usePlatformPlanUpgrade()
+  const canChangePlan = role == null || isPlatformOrgAdmin(role)
+
+  async function handleManageBilling() {
+    if (!platformBaseUrl || !orgId) return
+    await openExternalUrl(`${platformBaseUrl}/dashboard/organizations/${orgId}?tab=billing`)
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between px-1">
+        <h3 className="text-xs font-medium text-muted-foreground">Billing</h3>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 gap-1.5 text-xs"
+          onClick={() => void refetch()}
+          disabled={isFetching}
+        >
+          <RefreshCw className={cn('h-3.5 w-3.5', isFetching && 'animate-spin')} />
+          Refresh
+        </Button>
+      </div>
+
+      <div className={CARD_CLASS}>
+        {isLoading ? (
+          <div className="flex items-center gap-2 py-6 px-4 text-xs text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading billing…
+          </div>
+        ) : billing && !billing.configured ? (
+          // Legacy / pre-billing org with no billing workspace yet.
+          <SettingRow
+            name="Subscription"
+            subtitle="No billing set up for this organization"
+            right={
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void handleManageBilling()}
+                disabled={!platformBaseUrl || !orgId}
+              >
+                Set up
+              </Button>
+            }
+          />
+        ) : billing ? (
+          <>
+            {billing.plan ? (
+              <SettingRow
+                name="Plan"
+                subtitle={<PlanDetails billing={billing} excluded={data?.excludedModels ?? null} />}
+                right={
+                  <>
+                    <span className={VALUE_CLASS} data-testid="billing-plan-name">{planLabel(billing, billing.plan)}</span>
+                    {canChangePlan && (
+                      <Button size="sm" variant="outline" onClick={() => openPlanUpgrade()} data-testid="billing-change-plan">
+                        Change plan
+                      </Button>
+                    )}
+                  </>
+                }
+              />
+            ) : (
+              <SettingRow
+                name="Subscription"
+                right={<span className={VALUE_CLASS}>{subscriptionLabel(billing)}</span>}
+              />
+            )}
+            {billing.seat ? (
+              <SubscriptionCreditsRow
+                seat={billing.seat}
+                scope={subscriptionCreditScope(billing)}
+                periodEnd={billing.subscription.currentPeriodEnd}
+              />
+            ) : (
+              <SettingRow
+                name={SUBSCRIPTION_CREDIT_COPY[subscriptionCreditScope(billing)].credits}
+                right={<span className={VALUE_CLASS}>Not subscribed</span>}
+              />
+            )}
+            <SettingRow
+              name="Organization credits"
+              subtitle={
+                subscriptionCreditScope(billing) === 'org'
+                  ? 'Shared pool used after your team plan credits'
+                  : 'Shared pool used after your seat quota'
+              }
+              right={<span className={VALUE_CLASS}>{formatCents(billing.orgPool.poolBalanceCents)}</span>}
+            />
+            <SettingRow
+              name="Manage billing on the web"
+              right={
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="group gap-0"
+                  onClick={() => void handleManageBilling()}
+                  disabled={!platformBaseUrl || !orgId}
+                >
+                  Manage
+                  <HoverArrow />
+                </Button>
+              }
+            />
+          </>
+        ) : (
+          <div className="py-6 px-4 text-xs text-muted-foreground">Billing information is unavailable.</div>
+        )}
+      </div>
+
+      {data?.stale && (
+        <p className="text-[11px] text-muted-foreground px-1">
+          Showing last known data
+          {data.lastRefreshedAt ? ` · updated ${formatTimestamp(data.lastRefreshedAt)}` : ''}
+        </p>
+      )}
+
+      {error && !billing && (
+        <RequestError message={error instanceof Error ? error.message : String(error)} />
+      )}
+    </div>
+  )
+}
+
+function CloudWorkspaceCard({
+  platformBaseUrl,
+  orgId,
+}: {
+  platformBaseUrl?: string | null
+  orgId?: string | null
+}) {
+  const { data, isLoading, isFetching, error, refetch } = useCloudWorkspace(true, orgId)
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between px-1">
+        <h3 className="text-xs font-medium text-muted-foreground">Cloud Agents</h3>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 gap-1.5 text-xs"
+          onClick={() => void refetch()}
+          disabled={isFetching}
+        >
+          <RefreshCw className={cn('h-3.5 w-3.5', isFetching && 'animate-spin')} />
+          Refresh
+        </Button>
+      </div>
+
+      <div className={CARD_CLASS}>
+        {isLoading ? (
+          <div className="flex items-center gap-2 py-6 px-4 text-xs text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading cloud agents…
+          </div>
+        ) : data?.found && data.deploymentUrl ? (
+          <SettingRow
+            name="Cloud agents"
+            subtitle={data.deploymentUrl}
+            right={
+              <Button
+                size="sm"
+                className="group gap-0"
+                onClick={() => void openExternalUrl(data.deploymentUrl!)}
+              >
+                Open
+                <HoverArrow />
+              </Button>
+            }
+          />
+        ) : !data || data.discoveryFailed ? (
+          // Discovery didn't complete, so we don't know whether a workspace
+          // exists. Offer a retry — claiming "none yet" here would push the user
+          // to create a second one.
+          <SettingRow
+            name="Cloud agents"
+            subtitle="Couldn't check for cloud agents right now"
+            right={
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void refetch()}
+                disabled={isFetching}
+              >
+                Retry
+              </Button>
+            }
+          />
+        ) : (
+          // Discovery succeeded and listed none — CTA to create one on the web
+          // dashboard.
+          <SettingRow
+            name="Cloud agents"
+            subtitle="No cloud agents yet for this organization"
+            right={
+              <Button
+                size="sm"
+                variant="outline"
+                className="group gap-0"
+                onClick={() => {
+                  if (!platformBaseUrl || !orgId) return
+                  void openExternalUrl(
+                    `${platformBaseUrl}/dashboard/organizations/${orgId}?tab=cloud`,
+                  )
+                }}
+                disabled={!platformBaseUrl || !orgId}
+              >
+                Set up cloud agents
+                <HoverArrow />
+              </Button>
+            }
+          />
+        )}
+      </div>
+
+      {error && !data && (
+        <RequestError message={error instanceof Error ? error.message : String(error)} />
+      )}
+    </div>
+  )
+}
+
+// The monthly subscription credit. A pooled org (`scope: 'org'`) gets the same
+// bar with the same numbers — the proxy already sends the org's shared pool
+// under `seat` — so only the wording says whose credit it is.
+function SubscriptionCreditsRow({
+  seat,
+  scope,
+  periodEnd,
+}: {
+  seat: NonNullable<ParsedPlatformBillingInfo['seat']>
+  scope: SubscriptionCreditScope
+  periodEnd: string | null
+}) {
+  const pct = seatPercentRemaining(seat)
+  return (
+    <div className="py-3 px-4 space-y-1.5" data-testid="subscription-credits-row" data-scope={scope}>
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium">{SUBSCRIPTION_CREDIT_COPY[scope].credits}</span>
+        <span className="text-xs text-muted-foreground">{Math.round(pct)}% remaining</span>
+      </div>
+      <Progress percent={pct} thresholds={{ warning: 20, critical: 5 }} />
+      <div className="text-[11px] text-muted-foreground">
+        {formatCents(seat.balanceCents)} of {formatCents(seat.startingBalanceCents)}
+        {scope === 'org' && ` · shared by your whole organization${renewalNote(periodEnd)}`}
+      </div>
+    </div>
+  )
+}
+
+function renewalNote(periodEnd: string | null): string {
+  if (!periodEnd || !Number.isFinite(Date.parse(periodEnd))) return ''
+  return `, resets ${new Date(periodEnd).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
+}
+
+function HoverArrow() {
+  return (
+    <span className="inline-flex overflow-hidden w-0 ml-0 opacity-0 transition-all duration-150 group-hover:w-4 group-hover:ml-2 group-hover:opacity-100 group-focus-visible:w-4 group-focus-visible:ml-2 group-focus-visible:opacity-100">
+      <ArrowUpRight className="h-4 w-4 shrink-0" />
+    </span>
+  )
+}
+
+interface WorkspaceSwitcherProps {
+  orgName: string
+  /** The workspace's plan, shown beside its name. */
+  planName?: string | null
+  /** Re-auth is rejected in auth mode and pointless mid-launch — see ReconnectRow. */
+  switchDisabled: boolean
+  onSwitch: () => void
+}
+
+function WorkspaceSwitcher({ orgName, planName, switchDisabled, onSwitch }: WorkspaceSwitcherProps) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-expanded={open}
+          className="flex items-center gap-1 max-w-[260px] rounded-sm text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <span className="truncate">{orgName}</span>
+          {planName && (
+            <span className="shrink-0 rounded-sm border border-border px-1 text-[10px] leading-4" data-testid="workspace-plan-badge">
+              {planName}
+            </span>
+          )}
+          <ChevronsUpDown className="h-3 w-3 shrink-0 text-foreground" aria-hidden />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-auto p-1">
+        <Button
+          size="sm"
+          variant="ghost"
+          className="w-full justify-between gap-6 text-xs font-normal"
+          disabled={switchDisabled}
+          onClick={() => {
+            setOpen(false)
+            onSwitch()
+          }}
+        >
+          Switch workspace
+          <ArrowUpRight className="h-3.5 w-3.5 shrink-0" />
+        </Button>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function AccessKeyInput({ onClose }: { onClose: () => void }) {
+  const [key, setKey] = useState('')
+  const saveKey = useSavePlatformAccessKey()
+
+  return (
+    <>
+      <div className="flex items-center gap-2">
+        <Input
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+          placeholder="Paste account key"
+          className="font-mono text-xs h-8 flex-1"
+          autoFocus
+        />
+        <Button
+          size="sm"
+          className="h-8"
+          disabled={!key.trim() || saveKey.isPending}
+          onClick={() => {
+            saveKey.mutate(key.trim(), { onSuccess: onClose })
+          }}
+        >
+          {saveKey.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Submit'}
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-8"
+          onClick={onClose}
+        >
+          Cancel
+        </Button>
+      </div>
+      <RequestError message={saveKey.isError ? saveKey.error.message : null} />
+    </>
+  )
+}
+
+interface NotConnectedEmptyStateProps {
+  readOnly: boolean
+  isLaunching: boolean
+  canCancel: boolean
+  onConnect: () => void
+  onCancel: () => void
+}
+
+function NotConnectedEmptyState({ readOnly, isLaunching, canCancel, onConnect, onCancel }: NotConnectedEmptyStateProps) {
+  const [showKeyInput, setShowKeyInput] = useState(false)
+
+  return (
+    <div className="rounded-xl border border-dashed bg-background px-6 py-10">
+      <div className="flex flex-col items-center text-center gap-3">
+        <div className="rounded-full bg-muted p-3">
+          <BadgeX className="h-5 w-5 text-muted-foreground" />
+        </div>
+        <h3 className="text-sm font-normal">No Gamut account connected to this workspace</h3>
+        {!readOnly && (
+          <div className="w-full max-w-sm mt-3 space-y-2">
+            {showKeyInput ? (
+              <AccessKeyInput onClose={() => setShowKeyInput(false)} />
+            ) : (
+              <div className="flex items-center justify-center gap-2">
+                <LoginButton
+                  size="sm"
+                  onClick={onConnect}
+                  className="group"
+                  label={<span className="inline-flex items-center">Connect Account<HoverArrow /></span>}
+                  pendingLabel="Opening browser…"
+                  pending={isLaunching}
+                  canCancel={canCancel}
+                  onCancel={onCancel}
+                  cancelSide="right"
+                  cancelTestId="platform-cancel-connect"
+                />
+                <Button size="sm" variant="outline" onClick={() => setShowKeyInput(true)}>
+                  Add access key
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+interface ReconnectRowProps {
+  readOnly: boolean
+  isLaunching: boolean
+  canCancel: boolean
+  connectLabel: string
+  onReconnect: () => void
+  onCancel: () => void
+}
+
+function ReconnectRow({ readOnly, isLaunching, canCancel, connectLabel, onReconnect, onCancel }: ReconnectRowProps) {
+  const [showInput, setShowInput] = useState(false)
+
+  if (showInput) {
+    return (
+      <div className="py-3 px-4 space-y-2">
+        <AccessKeyInput onClose={() => setShowInput(false)} />
+      </div>
+    )
+  }
+
+  return (
+    <div className="py-3 px-4">
+      <div className="flex items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-medium truncate">Issues? Try reconnecting</div>
+          <div className="text-[11px] text-muted-foreground mt-0.5">
+            Sign in to your account on the web or add an access key.
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <LoginButton
+            size="sm"
+            variant="outline"
+            onClick={onReconnect}
+            disabled={readOnly}
+            className="group"
+            label={<span className="inline-flex items-center">{connectLabel}<HoverArrow /></span>}
+            pendingLabel="Opening browser…"
+            pending={isLaunching}
+            canCancel={canCancel}
+            onCancel={onCancel}
+            cancelSide="left"
+            cancelTestId="platform-cancel-reconnect"
+          />
+          {!readOnly && (
+            <Button size="sm" variant="outline" onClick={() => setShowInput(true)}>
+              Add key
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
 
 function formatTimestamp(value: string | null): string {
   if (!value) return '—'
@@ -16,9 +572,11 @@ function formatTimestamp(value: string | null): string {
   }
 }
 
-export function PlatformTab() {
+export function PlatformTab({ readOnly = false }: PlatformTabProps) {
   const {
     handleConnect,
+    cancelConnect,
+    canCancel,
     isLaunching,
     error,
     message,
@@ -26,101 +584,161 @@ export function PlatformTab() {
     platformAuth: data,
     isLoadingPlatformAuth: isLoading,
   } = usePlatformConnect({
-    successMessage: 'Connected. Please restart your running agents for the new token to take effect.',
+    // Agents still on the old token announce themselves below (StaleAgentsNotice).
+    successMessage: 'Connected.',
   })
+  // The signed-in user's own profile leads this tab instead of having a tab of
+  // its own. Only auth mode has a user to edit, so local installs skip it.
+  const { isAuthMode } = useUser()
+  // Same snapshot the billing card reads; the plan's name also labels the workspace.
+  const plan = useBillingInfo(isConnected).data?.billing?.plan
 
-  const connectLabel = useMemo(() => {
-    if (isLaunching) return 'Opening browser…'
-    return isConnected ? 'Reconnect' : 'Connect'
-  }, [isConnected, isLaunching])
+  const connectLabel = isConnected ? 'Reconnect' : 'Connect'
 
   async function handleOpenPlatform() {
     if (!data?.platformBaseUrl) return
-    if (window.electronAPI?.openExternal) {
-      await window.electronAPI.openExternal(data.platformBaseUrl)
-      return
-    }
-    window.open(data.platformBaseUrl, '_blank', 'noopener,noreferrer')
+    await openExternalUrl(data.platformBaseUrl)
   }
 
   if (isLoading) {
     return (
-      <div className="flex items-center gap-2 py-10 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" />
-        <span>Loading platform status…</span>
+      <div className="space-y-6">
+        {isAuthMode && <ProfileSection />}
+        <div className="flex items-center gap-2 py-10 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <span>Loading platform status…</span>
+        </div>
       </div>
     )
   }
 
+  // Auth-mode users manage their own profile here; an unconfigured platform
+  // connection is deployment-wide and has no action they can take in this tab.
+  if (isAuthMode && !isConnected) {
+    return (
+      <div className="space-y-6">
+        <ProfileSection />
+      </div>
+    )
+  }
+
+  const valueClass = 'text-xs text-muted-foreground truncate max-w-[260px]'
+
   return (
     <div className="space-y-6">
-      {/* Status */}
+      {isAuthMode && <ProfileSection />}
+
+      {/* Headed so it reads as its own section under the profile, not as
+          more of it — this card is the Gamut platform account, not the login. */}
       <div className="space-y-2">
-        <Label>Status</Label>
-        <p className={`text-sm ${isConnected ? 'text-foreground font-medium' : 'text-muted-foreground'}`}>
-          {isConnected ? 'Connected' : 'Not connected'}
-        </p>
+        <h3 className={SECTION_HEADING}>Gamut Account</h3>
+        {isConnected ? (
+          <div className={CARD_CLASS}>
+            <SettingRow
+              name="Workspace"
+              right={
+                // Switching workspaces means re-authenticating, so the popover's
+                // action opens the same platform login Reconnect below launches.
+                <WorkspaceSwitcher
+                  orgName={data?.orgName ?? '—'}
+                  planName={plan?.name}
+                  switchDisabled={readOnly || isLaunching}
+                  onSwitch={handleConnect}
+                />
+              }
+            />
+            <SettingRow
+              name="Email"
+              right={<span className={valueClass}>{data?.email ?? '—'}</span>}
+            />
+            <SettingRow
+              name="Role"
+              right={<span className={`${valueClass} capitalize`}>{data?.role ?? '—'}</span>}
+            />
+            <SettingRow
+              name="Last updated"
+              right={<span className={valueClass}>{formatTimestamp(data?.updatedAt ?? null)}</span>}
+            />
+            <SettingRow
+              name="Manage your account and organization on the web"
+              right={
+                <Button
+                  size="sm"
+                  className="group gap-0"
+                  onClick={() => {
+                    void handleOpenPlatform()
+                  }}
+                  disabled={!data?.platformBaseUrl}
+                >
+                  Go to Account
+                  <HoverArrow />
+                </Button>
+              }
+            />
+          </div>
+        ) : (
+          <NotConnectedEmptyState
+            readOnly={readOnly}
+            isLaunching={isLaunching}
+            canCancel={canCancel}
+            onConnect={handleConnect}
+            onCancel={cancelConnect}
+          />
+        )}
       </div>
 
-      {/* Account */}
-      <div className="space-y-2">
-        <Label>Account</Label>
-        <p className="text-sm">{data?.email ?? '—'}</p>
-      </div>
+      {isConnected && (
+        // Billing is non-critical display data — never let a glitch here take
+        // down the Account screen. Errors render a compact, retryable fallback.
+        <ErrorBoundary compact>
+          <PlatformBillingCard platformBaseUrl={data?.platformBaseUrl} orgId={data?.orgId} role={data?.role} />
+        </ErrorBoundary>
+      )}
 
-      {/* Organization */}
-      <div className="space-y-2">
-        <Label>Organization</Label>
-        <p className="text-sm">{data?.orgName ?? '—'}</p>
-      </div>
+      {isConnected && isElectron() && (
+        // Desktop-only: discovers the org's cloud workspace and maintains the
+        // deployment token behind the scenes. Deployment→deployment discovery is
+        // meaningless (and can loop), so it never renders in the web app.
+        <ErrorBoundary compact>
+          <CloudWorkspaceCard platformBaseUrl={data?.platformBaseUrl} orgId={data?.orgId} />
+        </ErrorBoundary>
+      )}
 
-      {/* Role */}
-      <div className="space-y-2">
-        <Label>Role</Label>
-        <p className="text-sm capitalize">{data?.role ?? '—'}</p>
-      </div>
+      {isConnected && (
+        <div className={CARD_CLASS}>
+          <ReconnectRow
+            readOnly={readOnly}
+            isLaunching={isLaunching}
+            canCancel={canCancel}
+            connectLabel={connectLabel}
+            onReconnect={handleConnect}
+            onCancel={cancelConnect}
+          />
+        </div>
+      )}
 
-      {/* Last updated */}
-      <div className="space-y-2">
-        <Label>Last updated</Label>
-        <p className="text-sm">{formatTimestamp(data?.updatedAt ?? null)}</p>
-      </div>
-
-      {/* Feedback */}
-      {message && (
+      {readOnly && (
         <Alert>
-          <AlertDescription>{message}</AlertDescription>
+          <AlertDescription>
+            Platform access is managed by this deployment. Connection changes must be made by updating the deployment environment bundle.
+          </AlertDescription>
         </Alert>
       )}
+      {message && (
+        <p className="text-xs text-green-600 dark:text-green-400 flex items-center gap-1">
+          <Check className="h-3 w-3" />
+          {message}
+        </p>
+      )}
+      {!readOnly && <StaleAgentsNotice />}
       {error && (
-        <Alert variant="destructive">
-          <AlertDescription>
+        <Alert variant="destructive" className="py-2 text-xs">
+          <AlertDescription className="text-xs">
             {error}
             {error.includes('membership') ? ' Create or join an organization in Platform, then try again.' : ''}
           </AlertDescription>
         </Alert>
       )}
-
-      {/* Actions */}
-      <div className="flex flex-wrap gap-2 pt-2">
-        <Button size="sm" onClick={handleConnect} disabled={isLaunching}>
-          {isLaunching ? (
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          ) : isConnected ? (
-            <RefreshCw className="mr-2 h-4 w-4" />
-          ) : (
-            <LogIn className="mr-2 h-4 w-4" />
-          )}
-          {connectLabel}
-        </Button>
-
-        <Button size="sm" variant="outline" onClick={() => { void handleOpenPlatform() }}>
-          <ExternalLink className="mr-2 h-4 w-4" />
-          Open Platform
-        </Button>
-      </div>
-
-      <ManualAccessKeyInput className="pt-1" />
     </div>
   )
 }

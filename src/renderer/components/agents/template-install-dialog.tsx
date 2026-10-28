@@ -1,163 +1,178 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Loader2 } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import {
   Dialog,
-  DialogContent,
   DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
 } from '@renderer/components/ui/dialog'
 import { Button } from '@renderer/components/ui/button'
-import { Input } from '@renderer/components/ui/input'
-import { SkillInstallDialog } from '@renderer/components/agents/skill-install-dialog'
+import { Progress } from '@renderer/components/ui/progress'
+import {
+  StatusDialogContent,
+  StatusDialogHeader,
+  StatusDialogTitle,
+} from '@renderer/components/agents/status-dialog'
 import { useInstallAgentFromSkillset } from '@renderer/hooks/use-agent-templates'
-import { useDeleteAgent } from '@renderer/hooks/use-agents'
-import { apiFetch } from '@renderer/lib/api'
-import type { ApiAgent, ApiDiscoverableAgent } from '@shared/lib/types/api'
+import type { ApiAgentTemplateInstallResult, ApiDiscoverableAgent } from '@shared/lib/types/api'
+
+type Phase = 'installing' | 'error'
 
 interface TemplateInstallDialogProps {
   template: ApiDiscoverableAgent | null
   onClose: () => void
-  /** Called after the agent is fully installed (after secrets step if required). */
-  onInstalled: (agent: ApiAgent, meta: { hasOnboarding?: boolean }) => void | Promise<void>
+  /** Called after the agent is fully installed. */
+  onInstalled: (agent: ApiAgentTemplateInstallResult) => void | Promise<void>
 }
 
 /**
- * Lightweight template-install dialog that handles the name step + required
- * env vars. Pure UI: it only fires `onInstalled` on success — callers decide
- * what to do with the new agent (select it, track, kick off onboarding, etc).
+ * Paced install progress. The install request emits no progress events, so the
+ * bar eases toward 90% and holds. When `active` goes false the last value is
+ * kept, not reset — the dialog stays mounted through its close animation, and
+ * a bar snapping back to 0% right at the success moment reads as a failure.
+ */
+function useSimulatedProgress(active: boolean) {
+  const [percent, setPercent] = useState(0)
+  useEffect(() => {
+    if (!active) return
+    setPercent(0)
+    const startedAt = performance.now()
+    const id = window.setInterval(() => {
+      const seconds = (performance.now() - startedAt) / 1000
+      setPercent(90 * (1 - Math.exp(-seconds / 4)))
+    }, 150)
+    return () => window.clearInterval(id)
+  }, [active])
+  return percent
+}
+
+/**
+ * Install progress for a marketplace template. There is nothing to fill in —
+ * the agent takes the template's own name — so opening this dialog starts the
+ * install immediately and hands off the moment it lands. The progress bar is
+ * simulated (see useSimulatedProgress); the dialog still closes as soon as the
+ * request actually finishes.
  */
 export function TemplateInstallDialog({ template, onClose, onInstalled }: TemplateInstallDialogProps) {
-  const [name, setName] = useState('')
+  const [phase, setPhase] = useState<Phase>('installing')
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const install = useInstallAgentFromSkillset()
-  const deleteAgent = useDeleteAgent()
-  const [secretsPrompt, setSecretsPrompt] = useState<{
-    agent: ApiAgent
-    requiredEnvVars: Array<{ name: string; description: string }>
-    hasOnboarding?: boolean
-  } | null>(null)
 
-  useEffect(() => {
-    if (template) setName(template.name)
-    else {
-      setName('')
-      install.reset()
+  // Reset during render, not in the install effect: the effect runs after
+  // paint, so a dialog reopened after a failure would flash the previous
+  // error for a frame.
+  const [lastTemplate, setLastTemplate] = useState(template)
+  if (template !== lastTemplate) {
+    setLastTemplate(template)
+    if (template) {
+      setPhase('installing')
+      setErrorMessage(null)
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- install.reset is stable enough; reinit on template change
-  }, [template])
+  }
 
-  const handleSubmit = useCallback(
-    async (e: React.FormEvent) => {
-      e.preventDefault()
-      if (!template || !name.trim()) return
+  // One install per opening. A re-render must not fire a second one, and the
+  // ref (not state) is what makes that true even under StrictMode double-invoke.
+  const startedFor = useRef<string | null>(null)
+  // The parent clears `template` on close, but the content stays mounted
+  // through the close animation. Keep showing the last one for that frame.
+  const shownRef = useRef<ApiDiscoverableAgent | null>(null)
+  if (template) shownRef.current = template
+  const shown = shownRef.current
+
+  const run = useCallback(
+    async (target: ApiDiscoverableAgent) => {
+      let agent: ApiAgentTemplateInstallResult
       try {
-        const agent = await install.mutateAsync({
-          skillsetId: template.skillsetId,
-          agentPath: template.path,
-          agentName: name.trim(),
-          agentVersion: template.version,
+        agent = await install.mutateAsync({
+          skillsetId: target.skillsetId,
+          agentPath: target.path,
+          agentName: target.name,
+          agentVersion: target.version,
         })
-
-        if (agent.requiredEnvVars && agent.requiredEnvVars.length > 0) {
-          setSecretsPrompt({
-            agent,
-            requiredEnvVars: agent.requiredEnvVars,
-            hasOnboarding: agent.hasOnboarding,
-          })
-          return
-        }
-
-        await onInstalled(agent, { hasOnboarding: agent.hasOnboarding })
-        onClose()
       } catch (error) {
         console.error('Failed to install agent from skillset:', error)
+        setErrorMessage(error instanceof Error ? error.message : 'Something went wrong.')
+        setPhase('error')
+        return
       }
-    },
-    [template, name, install, onInstalled, onClose],
-  )
-
-  const handleSecretsSubmit = useCallback(
-    async (envVars: Record<string, string>) => {
-      if (!secretsPrompt) return
-      const { agent, hasOnboarding } = secretsPrompt
-      setSecretsPrompt(null)
-
-      for (const [key, value] of Object.entries(envVars)) {
-        if (value && typeof value === 'string') {
-          try {
-            await apiFetch(`/api/agents/${encodeURIComponent(agent.slug)}/secrets`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ key, value }),
-            })
-          } catch (error) {
-            console.error(`Failed to save secret ${key}:`, error)
-          }
-        }
-      }
-
-      await onInstalled(agent, { hasOnboarding })
+      // Close before onInstalled — that path may open the onboarding
+      // "Setting up your agent..." dialog; stacking both looks broken.
       onClose()
+      // The dialog is already closed, so its error phase can't render a
+      // failure here; the agent itself installed fine, so a toast is the
+      // right weight.
+      try {
+        await onInstalled(agent)
+      } catch (error) {
+        console.error('Post-install handoff failed:', error)
+        toast.error(`${target.name} was installed, but opening it failed.`)
+      }
     },
-    [secretsPrompt, onInstalled, onClose],
+    [install, onClose, onInstalled],
   )
+
+  useEffect(() => {
+    if (!template) {
+      startedFor.current = null
+      return
+    }
+    const id = `${template.skillsetId}/${template.path}`
+    if (startedFor.current === id) return
+    startedFor.current = id
+    void run(template)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the template; `run` changes identity every render
+  }, [template])
+
+  const open = !!template
+  const percent = useSimulatedProgress(open && phase === 'installing')
+  // The only way to close mid-install is success — complete the bar for the
+  // close animation instead of holding wherever the simulation got to.
+  const shownPercent = open ? percent : 100
 
   return (
-    <>
-      <Dialog open={!!template && !secretsPrompt} onOpenChange={(open) => { if (!open) onClose() }}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Install {template?.name}</DialogTitle>
-            <DialogDescription>
-              {template?.description || `From ${template?.skillsetName}`}
-            </DialogDescription>
-          </DialogHeader>
-          <form onSubmit={handleSubmit} className="space-y-4 pt-2">
-            <Input
-              placeholder="Agent name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              autoFocus
-              disabled={install.isPending}
-            />
-            {install.error && (
-              <p className="text-sm text-destructive">{install.error.message}</p>
-            )}
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={onClose} disabled={install.isPending}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={!name.trim() || install.isPending}>
-                {install.isPending ? (
-                  <>
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Installing...
-                  </>
-                ) : (
-                  'Install'
-                )}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+    <Dialog
+      open={open}
+      onOpenChange={(nowOpen) => {
+        // No dismissing mid-install: the request is already in flight, and a
+        // half-installed agent behind a closed dialog is worse than waiting.
+        if (!nowOpen && phase !== 'installing') onClose()
+      }}
+    >
+      <StatusDialogContent
+        open={open}
+        hideClose={phase === 'installing'}
+        // The error phase renders a real DialogDescription and must keep
+        // Radix's default wiring so screen readers announce the message; the
+        // installing phase has none, so suppress the missing-description
+        // warning there.
+        {...(phase === 'error' ? {} : { 'aria-describedby': undefined })}
+      >
+        <StatusDialogHeader>
+          <StatusDialogTitle shimmer={phase !== 'error'}>
+            {phase === 'error' ? `Couldn't install ${shown?.name}` : `Installing ${shown?.name}...`}
+          </StatusDialogTitle>
+          {phase === 'error' && <DialogDescription>{errorMessage}</DialogDescription>}
+        </StatusDialogHeader>
 
-      {secretsPrompt && (
-        <SkillInstallDialog
-          open={!!secretsPrompt}
-          onOpenChange={(open) => {
-            if (!open) {
-              deleteAgent.mutate(secretsPrompt.agent.slug)
-              setSecretsPrompt(null)
-              onClose()
-            }
-          }}
-          skillName="agent template"
-          requiredEnvVars={secretsPrompt.requiredEnvVars}
-          onInstall={handleSecretsSubmit}
-        />
-      )}
-    </>
+        {phase === 'error' ? (
+          <div className="flex justify-center pt-2">
+            <Button type="button" variant="outline" onClick={onClose}>
+              Close
+            </Button>
+          </div>
+        ) : (
+          // 21rem = the content width of the original max-w-sm card; the bar
+          // keeps that width inside the larger dialog.
+          <div
+            className="mx-auto flex w-full max-w-[21rem] items-center gap-2.5 pt-2"
+            data-testid="template-install-status"
+          >
+            <span className="sr-only">Installing…</span>
+            <Progress percent={shownPercent} className="h-1 flex-1" />
+            <span className="text-xs tabular-nums text-muted-foreground">
+              {Math.round(shownPercent)}%
+            </span>
+          </div>
+        )}
+      </StatusDialogContent>
+    </Dialog>
   )
 }

@@ -60,8 +60,8 @@ export function useTypewriterPlaceholder(examples: readonly string[], timings?: 
 export const DISABLED: readonly string[] = []
 
 export const DEFAULT_AGENT_PROMPT_EXAMPLES: readonly string[] = [
-  'Search LinkedIn for senior backend engineers in NYC with 5+ years of Python experience. Reach out to the top 10 candidates with personalized intro messages.',
-  'Every Monday morning, pull highlights from my Granola meetings, Linear issues, and Slack DMs. Send me a briefing of key decisions and blockers from last week.',
-  'At the end of every month, reconcile expenses from my Gmail receipts against our QuickBooks ledger. Flag anything missing, duplicated, or out of policy.',
-  'Every morning, scan new Linear issues and customer feedback from our support inbox. Cluster them into themes and post a daily summary in our #product Slack channel.',
+  'Be my recruiter. Source senior backend engineers on LinkedIn, screen them against our hiring bar, and open personalized intros with the strongest candidates.',
+  'You are my chief of staff. Stay across my Granola meetings, Linear issues, and Slack DMs, and brief me every Monday on what got decided and what is blocked.',
+  'I need a bookkeeper. Reconcile the receipts in my Gmail against our QuickBooks ledger each month and flag anything missing, duplicated, or out of policy.',
+  'Act as our product analyst. Watch new Linear issues and our support inbox, cluster the feedback into themes, and post a daily read on what users are struggling with in #product.',
 ]

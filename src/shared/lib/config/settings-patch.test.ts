@@ -1,0 +1,284 @@
+import { describe, expect, it, vi } from 'vitest'
+import type { AppSettings } from './settings'
+import {
+  applySettingsPatch,
+  settingsPatchSchema,
+  validateSettingsTransition,
+  type SettingsApplyContext,
+  type SettingsPatch,
+  type SettingsTransitionContext,
+} from './settings-patch'
+
+function currentSettings(): AppSettings {
+  return {
+    container: {
+      containerRunner: 'docker',
+      agentImage: 'superagent:latest',
+      resourceLimits: { cpu: 2, memory: '4g' },
+      runtimeSettings: {
+        docker: { network: 'bridge' },
+        lima: { vmMemory: '4GiB', cpu: '4' },
+      },
+    },
+    app: {
+      showMenuBarIcon: true,
+      hostBrowserProvider: 'chrome',
+    },
+    apiKeys: {
+      anthropicApiKey: 'sk-old',
+      openrouterApiKey: 'or-old',
+    },
+    llmProvider: 'anthropic',
+    webProvider: 'exa',
+    models: {
+      summarizerModel: 'haiku',
+      agentModel: 'opus',
+      browserModel: 'sonnet',
+      dashboardBuilderModel: 'opus',
+      agentEffort: 'medium',
+    },
+    auth: { signupMode: 'open' },
+    agentCapabilities: { subagents: 'allow', workflows: 'review' },
+    skillsets: [],
+    platformAuth: {
+      token: 'secret',
+      tokenPreview: 'sec…ret',
+      email: 'test@example.com',
+      label: null,
+      orgId: null,
+      orgName: null,
+      role: null,
+      userId: null,
+      memberId: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    },
+  }
+}
+
+const applyContext: SettingsApplyContext = {
+  now: new Date('2026-08-03T12:34:56.000Z'),
+  getProviderDefaultModels: vi.fn(() => ({
+    summarizerModel: 'new-haiku',
+    agentModel: 'new-opus',
+    browserModel: 'new-sonnet',
+    dashboardBuilderModel: 'new-opus',
+  })),
+}
+
+const transitionContext: SettingsTransitionContext = {
+  hasRunningAgents: false,
+  hostTotalMemoryBytes: 64 * 1024 ** 3,
+  supportsCustomAgentImage: (runner) => runner !== 'lambda-microvm',
+  offersRuntime: () => true,
+}
+
+function parsePatch(input: unknown): SettingsPatch {
+  return settingsPatchSchema.parse(input)
+}
+
+describe('settingsPatchSchema', () => {
+  it('rejects unknown root, nested, and server-owned fields', () => {
+    expect(settingsPatchSchema.safeParse({ futureRoot: true }).success).toBe(false)
+    expect(settingsPatchSchema.safeParse({ app: { futureAppField: true } }).success).toBe(false)
+    expect(
+      settingsPatchSchema.safeParse({ app: { faviconUpdatedAt: 'user-controlled' } }).success,
+    ).toBe(false)
+  })
+
+  it('accepts API log auto-delete including Never (0)', () => {
+    expect(
+      settingsPatchSchema.safeParse({ app: { apiLogAutoDeleteDays: 0 } }).success,
+    ).toBe(true)
+    expect(
+      settingsPatchSchema.safeParse({ app: { apiLogAutoDeleteDays: 60 } }).success,
+    ).toBe(true)
+  })
+
+  it('rejects negative or fractional API log auto-delete', () => {
+    expect(
+      settingsPatchSchema.safeParse({ app: { apiLogAutoDeleteDays: -5 } }).success,
+    ).toBe(false)
+    expect(
+      settingsPatchSchema.safeParse({ app: { apiLogAutoDeleteDays: 3.7 } }).success,
+    ).toBe(false)
+  })
+
+  it('accepts null and empty-string clear semantics', () => {
+    expect(
+      settingsPatchSchema.safeParse({
+        webProvider: null,
+        app: { hostBrowserProvider: null, faviconDataUrl: '' },
+        apiKeys: { anthropicApiKey: '' },
+      }).success,
+    ).toBe(true)
+  })
+})
+
+describe('applySettingsPatch', () => {
+  it('deep-merges container limits while preserving unrelated runtime settings', () => {
+    const before = currentSettings()
+    const after = applySettingsPatch(
+      before,
+      parsePatch({ container: { resourceLimits: { cpu: 6 } } }),
+      applyContext,
+    )
+
+    expect(after.container.resourceLimits).toEqual({ cpu: 6, memory: '4g' })
+    expect(after.container.runtimeSettings).toEqual(before.container.runtimeSettings)
+    expect(before.container.resourceLimits).toEqual({ cpu: 2, memory: '4g' })
+  })
+
+  it('normalizes app clear semantics and owns the favicon timestamp', () => {
+    const after = applySettingsPatch(
+      currentSettings(),
+      parsePatch({
+        app: { hostBrowserProvider: null, faviconDataUrl: '' },
+      }),
+      applyContext,
+    )
+
+    expect(after.app?.hostBrowserProvider).toBeUndefined()
+    expect(after.app?.faviconDataUrl).toBeUndefined()
+    expect(after.app?.faviconUpdatedAt).toBe('2026-08-03T12:34:56.000Z')
+  })
+
+  it('applies API-key set/delete semantics without mutating the prior object', () => {
+    const before = currentSettings()
+    const after = applySettingsPatch(
+      before,
+      parsePatch({ apiKeys: { anthropicApiKey: '', genericApiKey: 'generic-new' } }),
+      applyContext,
+    )
+
+    expect(after.apiKeys).toEqual({ openrouterApiKey: 'or-old', genericApiKey: 'generic-new' })
+    expect(before.apiKeys).toEqual({ anthropicApiKey: 'sk-old', openrouterApiKey: 'or-old' })
+  })
+
+  it('patches canonical global prices, resets one model, and preserves unrelated rates', () => {
+    const price = { inputPerMtok: 7, outputPerMtok: 21 }
+    const before = { ...currentSettings(), modelPricing: { custom: price } }
+    const after = applySettingsPatch(before, parsePatch({ modelPricing: { 'openai/gpt-5.5': price } }), applyContext)
+    expect(after.modelPricing).toEqual({ custom: price, 'gpt-5.5': price })
+    const reset = applySettingsPatch(after, parsePatch({ modelPricing: { 'gpt-5.5': null } }), applyContext)
+    expect(reset.modelPricing).toEqual({ custom: price })
+    expect(before.modelPricing).toEqual({ custom: price })
+  })
+
+  it('moves prices from older catalog clients into the global map', () => {
+    const after = applySettingsPatch(currentSettings(), parsePatch({
+      modelCatalog: { openrouter: { overrides: [{ id: 'openai/gpt-5.5', disabled: true, pricing: { inputPerMtok: 7, outputPerMtok: 21 } }] } },
+      modelPricing: { 'gpt-5.5': { inputPerMtok: 8, outputPerMtok: 24 } },
+    }), applyContext)
+    expect(after.modelCatalog?.openrouter.overrides).toEqual([{ id: 'openai/gpt-5.5', disabled: true }])
+    expect(after.modelPricing).toEqual({ 'gpt-5.5': { inputPerMtok: 8, outputPerMtok: 24 } })
+    expect(settingsPatchSchema.safeParse({ modelPricing: { custom: { inputPerMtok: -1, outputPerMtok: 2 } } }).success).toBe(false)
+  })
+
+  it('resets models to provider defaults unless the patch supplies models explicitly', () => {
+    const before = currentSettings()
+    const defaults = applySettingsPatch(
+      before,
+      parsePatch({ llmProvider: 'bedrock' }),
+      applyContext,
+    )
+    const explicit = applySettingsPatch(
+      before,
+      parsePatch({ llmProvider: 'bedrock', models: { agentModel: 'pinned-opus' } }),
+      applyContext,
+    )
+
+    expect(defaults.models).toMatchObject({ agentModel: 'new-opus', browserModel: 'new-sonnet' })
+    expect(explicit.models).toMatchObject({ agentModel: 'pinned-opus', browserModel: 'sonnet' })
+  })
+
+  it('preserves settings fields owned by other flows, including unknown future fields', () => {
+    const before = {
+      ...currentSettings(),
+      futureOwnedSetting: { token: 'do-not-drop' },
+    } as AppSettings & { futureOwnedSetting: { token: string } }
+
+    const after = applySettingsPatch(
+      before,
+      parsePatch({ shareAnalytics: false }),
+      applyContext,
+    ) as AppSettings & { futureOwnedSetting: { token: string } }
+
+    expect(after.platformAuth).toEqual(before.platformAuth)
+    expect(after.futureOwnedSetting).toEqual({ token: 'do-not-drop' })
+  })
+})
+
+describe('validateSettingsTransition', () => {
+  function problemsFor(
+    before: AppSettings,
+    patchInput: unknown,
+    context: Partial<SettingsTransitionContext> = {},
+  ) {
+    const patch = parsePatch(patchInput)
+    const after = applySettingsPatch(before, patch, applyContext)
+    return validateSettingsTransition({
+      before,
+      after,
+      patch,
+      context: { ...transitionContext, ...context },
+    })
+  }
+
+  it('allows an unchanged merged resource limit while agents are running', () => {
+    expect(
+      problemsFor(currentSettings(), { container: { resourceLimits: { cpu: 2 } } }, {
+        hasRunningAgents: true,
+      }),
+    ).toEqual([])
+  })
+
+  it('returns a 409 transition problem for an effective resource change', () => {
+    expect(
+      problemsFor(currentSettings(), { container: { resourceLimits: { cpu: 8 } } }, {
+        hasRunningAgents: true,
+      }),
+    ).toContainEqual(expect.objectContaining({ status: 409, includeRunningAgentIds: true }))
+  })
+
+  it('rejects an image change for a runner whose image is deployment-managed', () => {
+    expect(
+      problemsFor(currentSettings(), {
+        container: { containerRunner: 'lambda-microvm', agentImage: 'custom:v2' },
+      }),
+    ).toContainEqual(expect.objectContaining({ status: 400 }))
+  })
+
+  it('rejects switching to a runner this build doesn’t offer', () => {
+    const offersOnlyLima = { offersRuntime: (runner: string) => runner === 'lima' }
+
+    expect(problemsFor(currentSettings(), { container: { containerRunner: 'podman' } }, offersOnlyLima)).toContainEqual({
+      status: 400,
+      message: "The podman container runner isn't available in this build of the app.",
+    })
+    expect(problemsFor(currentSettings(), { container: { containerRunner: 'lima' } }, offersOnlyLima)).toEqual([])
+  })
+
+  it('says so before asking to stop running agents, which wouldn’t help', () => {
+    const problems = problemsFor(currentSettings(), { container: { containerRunner: 'podman' } }, {
+      offersRuntime: (runner) => runner === 'lima',
+      hasRunningAgents: true,
+    })
+    expect(problems[0]).toEqual(expect.objectContaining({ status: 400 }))
+  })
+
+  it('leaves the runner the settings already hold alone, whatever this build offers', () => {
+    // currentSettings() holds docker.
+    expect(problemsFor(currentSettings(), { container: { containerRunner: 'docker' } }, { offersRuntime: () => false })).toEqual([])
+  })
+
+  it('rejects a requested Lima VM size at or above host memory', () => {
+    expect(
+      problemsFor(
+        currentSettings(),
+        { container: { runtimeSettings: { lima: { vmMemory: '16GiB' } } } },
+        { hostTotalMemoryBytes: 16 * 1024 ** 3 },
+      ),
+    ).toContainEqual(expect.objectContaining({ status: 400 }))
+  })
+})

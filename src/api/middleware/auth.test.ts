@@ -44,6 +44,12 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
   validateProxyToken: (token: string) => mockValidateProxyToken(token),
 }))
 
+vi.mock('@shared/lib/platform-attribution', () => ({
+  runWithRequestUser: (_userId: string, fn: () => unknown) => fn(),
+  runWithOptionalUser: (_userId: string | null | undefined, fn: () => unknown) => fn(),
+}))
+vi.mock('@shared/lib/services/agent-owner', () => ({ getAgentOwnerUserId: () => null }))
+
 // Import after mocks
 import {
   Authenticated,
@@ -59,6 +65,8 @@ import {
   HasNotificationAccess,
   Or,
   EntityAgentRole,
+  getAuthorizedAgentRole,
+  getRequestDeviceId,
 } from './auth'
 
 // ---------------------------------------------------------------------------
@@ -127,6 +135,7 @@ describe('Auth Middleware', () => {
       const app = buildAppNoParam(Authenticated())
       const res = await request(app, '/')
       expect(res.status).toBe(401)
+      expect(res.headers.get('WWW-Authenticate')).toBe('Bearer realm="workspace"')
       expect(await res.json()).toEqual({ error: 'Unauthorized' })
     })
 
@@ -183,6 +192,68 @@ describe('Auth Middleware', () => {
   })
 
   // =========================================================================
+  // getRequestDeviceId()
+  // =========================================================================
+
+  describe('getRequestDeviceId()', () => {
+    function buildDeviceIdApp() {
+      let captured: string | null | undefined
+      const app = new Hono()
+      app.get('/', Authenticated(), (c) => {
+        captured = getRequestDeviceId(c)
+        return c.json({ ok: true })
+      })
+      return { app, getCaptured: () => captured }
+    }
+
+    it('returns the deviceId for a mobile session carrying one', async () => {
+      mockGetSession.mockResolvedValue({
+        user: { id: 'user-1', role: 'user' },
+        session: { id: 'sess-1', userId: 'user-1', deviceId: 'device-family-1' },
+      })
+      const { app, getCaptured } = buildDeviceIdApp()
+
+      const res = await request(app, '/')
+      expect(res.status).toBe(200)
+      expect(getCaptured()).toBe('device-family-1')
+    })
+
+    it('returns null for a browser/desktop session without a deviceId', async () => {
+      mockGetSession.mockResolvedValue({
+        user: { id: 'user-1', role: 'user' },
+        session: { id: 'sess-1', userId: 'user-1', deviceId: null },
+      })
+      const { app, getCaptured } = buildDeviceIdApp()
+
+      const res = await request(app, '/')
+      expect(res.status).toBe(200)
+      expect(getCaptured()).toBeNull()
+    })
+
+    it('returns null when the session object omits deviceId entirely', async () => {
+      mockGetSession.mockResolvedValue({
+        user: { id: 'user-1', role: 'user' },
+        session: { id: 'sess-1', userId: 'user-1' },
+      })
+      const { app, getCaptured } = buildDeviceIdApp()
+
+      const res = await request(app, '/')
+      expect(res.status).toBe(200)
+      expect(getCaptured()).toBeNull()
+    })
+
+    it('returns null in local (non-auth) mode where no session is stored', async () => {
+      mockIsAuthMode.mockReturnValue(false)
+      const { app, getCaptured } = buildDeviceIdApp()
+
+      const res = await request(app, '/')
+      expect(res.status).toBe(200)
+      expect(getCaptured()).toBeNull()
+      expect(mockGetSession).not.toHaveBeenCalled()
+    })
+  })
+
+  // =========================================================================
   // AgentRead()
   // =========================================================================
 
@@ -209,10 +280,14 @@ describe('Auth Middleware', () => {
       mockAclQuery('viewer')
       const app = new Hono()
       setUser(app, { id: 'user-1', role: 'user' })
-      app.get('/:id', AgentRead(), (c) => c.json({ ok: true }))
+      app.get('/:id', AgentRead(), (c) => c.json({
+        ok: true,
+        authorizedRole: getAuthorizedAgentRole(c),
+      }))
 
       const res = await request(app)
       expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true, authorizedRole: 'viewer' })
     })
 
     it('allows user with user role', async () => {
@@ -465,6 +540,7 @@ describe('Auth Middleware', () => {
       expect(res.status).toBe(401)
       expect(await res.json()).toEqual({ error: 'Unauthorized' })
     })
+
 
     it('returns 401 when Authorization header is missing', async () => {
       const app = new Hono()
@@ -768,13 +844,38 @@ describe('Auth Middleware', () => {
     })
 
     it('allows admin users without agent access check', async () => {
+      mockLimit.mockResolvedValueOnce([{ agentSlug: 'test-agent', recipientUserId: null }])
       const app = new Hono()
       setUser(app, { id: 'admin-1', role: 'admin' })
       app.get('/:id', HasNotificationAccess(), (c) => c.json({ ok: true }))
 
       const res = await request(app, '/notif-1')
       expect(res.status).toBe(200)
-      expect(mockSelect).not.toHaveBeenCalled()
+      // The notification row only: no role lookup.
+      expect(mockSelect).toHaveBeenCalledTimes(1)
+    })
+
+    it("hides a mention addressed to someone else, even from an admin", async () => {
+      for (const user of [{ id: 'user-1', role: 'user' }, { id: 'admin-1', role: 'admin' }]) {
+        mockLimit.mockResolvedValueOnce([{ agentSlug: 'test-agent', recipientUserId: 'user-2' }])
+        const app = new Hono()
+        setUser(app, user)
+        app.get('/:id', HasNotificationAccess(), (c) => c.json({ ok: true }))
+
+        const res = await request(app, '/notif-1')
+        expect(res.status).toBe(404)
+      }
+    })
+
+    it('allows the recipient of a mention', async () => {
+      mockLimit.mockResolvedValueOnce([{ agentSlug: 'test-agent', recipientUserId: 'user-1' }])
+      mockLimit.mockResolvedValueOnce([{ role: 'viewer' }])
+      const app = new Hono()
+      setUser(app, { id: 'user-1', role: 'user' })
+      app.get('/:id', HasNotificationAccess(), (c) => c.json({ ok: true }))
+
+      const res = await request(app, '/notif-1')
+      expect(res.status).toBe(200)
     })
 
     it('allows when user has access to notification agent', async () => {
@@ -1326,6 +1427,20 @@ describe('Auth Middleware', () => {
       const body = await res.json()
       expect(body.entity).toEqual(entity)
       expect(mockSelect).not.toHaveBeenCalled()
+    })
+
+    it('marks local-mode entity access as owner access', async () => {
+      mockIsAuthMode.mockReturnValue(false)
+      mockLookup.mockResolvedValue({ agentSlug: 'my-agent', name: 'My Entity' })
+      const app = new Hono()
+      app.get('/:entityId', TestEntityRole('viewer'), (c) => c.json({
+        role: getAuthorizedAgentRole(c),
+      }))
+
+      const res = await request(app, '/entity-1')
+
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ role: 'owner' })
     })
 
     it('passes when user has sufficient role', async () => {

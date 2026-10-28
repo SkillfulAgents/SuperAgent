@@ -1,14 +1,18 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, act } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { AgentActivityIndicator } from './agent-activity-indicator'
+import type { BackgroundTaskRef } from '@renderer/lib/background-task-label'
+import { parsePlatformErrorResponse } from '@shared/lib/llm-provider/platform-error-presentation'
+import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 
 // Mock useMessageStream
 const mockStreamState = {
   isActive: false,
   isStreaming: false,
   streamingMessage: null,
-  streamingToolUse: null,
+  streamingToolUses: [],
   pendingSecretRequests: [] as any[],
   pendingConnectedAccountRequests: [] as any[],
   pendingQuestionRequests: [] as any[],
@@ -17,6 +21,7 @@ const mockStreamState = {
   pendingBrowserInputRequests: [] as any[],
   error: null as string | null,
   apiErrorCode: null as string | null,
+  errorPresentation: null as ProviderErrorPresentation | null,
   browserActive: false,
   activeStartTime: null as number | null,
   isCompacting: false,
@@ -24,6 +29,7 @@ const mockStreamState = {
   activeSubagents: [] as any[],
   completedSubagents: null as Set<string> | null,
   slashCommands: [],
+  backgroundTasks: [] as BackgroundTaskRef[],
 }
 
 vi.mock('@renderer/hooks/use-message-stream', () => ({
@@ -32,8 +38,10 @@ vi.mock('@renderer/hooks/use-message-stream', () => ({
 
 // Mock useMessages
 const mockMessages: any[] = []
+const mockStopBackgroundTask = { mutateAsync: vi.fn().mockResolvedValue({ success: true }) }
 vi.mock('@renderer/hooks/use-messages', () => ({
   useMessages: () => ({ data: mockMessages }),
+  useStopBackgroundTask: () => mockStopBackgroundTask,
 }))
 
 // Mock useElapsedTimer
@@ -46,6 +54,25 @@ vi.mock('@shared/lib/utils', () => ({
   cn: (...args: unknown[]) => args.filter(Boolean).join(' '),
 }))
 
+const platformAuth = { connected: false as boolean }
+const BILLING_URL = 'https://platform.example.com/dashboard/organizations/org_123?tab=billing'
+
+vi.mock('@renderer/hooks/use-platform-auth', () => ({
+  usePlatformAuthStatus: () => ({ data: platformAuth }),
+}))
+
+// Mock the unified pending-request store — the indicator derives awaiting
+// from its blocking projection (same predicate as the server status).
+type MockPendingRequest = { id: string; kind: string; blocking: boolean; autoApproved: boolean }
+let mockPendingUserRequests: MockPendingRequest[] = []
+vi.mock('@shared/lib/tools/requests/use-pending-user-requests', () => ({
+  usePendingUserRequests: () => ({ data: mockPendingUserRequests }),
+}))
+
+function blockingRequest(kind: string, overrides: Partial<MockPendingRequest> = {}): MockPendingRequest {
+  return { id: `req-${kind}`, kind, blocking: true, autoApproved: false, ...overrides }
+}
+
 describe('AgentActivityIndicator', () => {
   beforeEach(() => {
     // Reset to defaults
@@ -53,6 +80,7 @@ describe('AgentActivityIndicator', () => {
       isActive: false,
       error: null,
       apiErrorCode: null,
+      errorPresentation: null,
       activeStartTime: null,
       activeSubagents: [],
       completedSubagents: null,
@@ -63,8 +91,11 @@ describe('AgentActivityIndicator', () => {
       pendingRemoteMcpRequests: [],
       pendingBrowserInputRequests: [],
       isCompacting: false,
+      backgroundTasks: [],
     })
     mockMessages.length = 0
+    mockPendingUserRequests = []
+    platformAuth.connected = false
   })
 
   it('returns null when not active and no error', () => {
@@ -78,18 +109,66 @@ describe('AgentActivityIndicator', () => {
     mockStreamState.error = 'API rate limit exceeded'
     mockStreamState.apiErrorCode = 'rate_limit'
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('LLM Provider Error')).toBeInTheDocument()
-    expect(screen.getByText('API rate limit exceeded')).toBeInTheDocument()
+    // The shared RequestError banner, labelled so the provider is named.
+    expect(screen.getByTestId('provider-error-card')).toHaveTextContent('LLM Provider Error: API rate limit exceeded')
+    // The hint is folded away until asked for — clicking the banner opens it.
+    expect(screen.queryByText(/external LLM provider API/)).not.toBeInTheDocument()
+    act(() => { screen.getByTestId('provider-error-card').click() })
     expect(screen.getByText(/external LLM provider API/)).toBeInTheDocument()
+    expect(screen.getByTestId('provider-error-card')).toHaveClass('bg-red-50', 'dark:bg-red-950')
+    // Opaque in dark: the transcript scrolls behind this in the overlay footer.
+    expect(screen.getByTestId('provider-error-card')).not.toHaveClass('dark:bg-red-950/30')
+    // Selectable despite the app-wide user-select: none — errors get copied.
+    expect(screen.getByTestId('provider-error-card')).toHaveClass('select-text', '[&_*]:select-text')
+  })
+
+  it('shows an orange spend-limit card for a platform spend cap', () => {
+    mockStreamState.error = 'API Error: Request rejected (429) · A spend cap for this workspace was reached. It resets within 30 days. Ask a workspace admin to raise it.'
+    mockStreamState.apiErrorCode = 'rate_limit'
+    // Presentation is authored server-side by PlatformLlmProvider.presentationForTurnError
+    // and arrives on the session_error event.
+    mockStreamState.errorPresentation = parsePlatformErrorResponse(429, mockStreamState.error, BILLING_URL)
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    const card = screen.getByTestId('provider-error-card')
+    expect(card).toHaveTextContent('Spend Limit Reached')
+    expect(card).not.toHaveTextContent('LLM Provider Error')
+    expect(card).toHaveAttribute('data-severity', 'warning')
+    expect(card).toHaveClass('bg-orange-50', 'dark:bg-orange-950')
+    expect(screen.getByRole('link', { name: /raise spend limit/i })).toBeInTheDocument()
+  })
+
+  it('shows the provider card for a generic SDK code when a presentation is attached', () => {
+    mockStreamState.error = 'API Error: 402'
+    mockStreamState.apiErrorCode = 'unknown'
+    mockStreamState.errorPresentation = { severity: 'error', message: '**Attached**', icon: 'info' }
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByTestId('provider-error-card')).toHaveTextContent('Attached')
+  })
+
+  it('renders nothing for a provider error routed to the composer placement', () => {
+    mockStreamState.error = 'API Error: 402 insufficient balance'
+    mockStreamState.apiErrorCode = 'billing_error'
+    mockStreamState.errorPresentation = { severity: 'error', message: '**Routed**', icon: 'info', placement: 'composer' }
+    const { container } = render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(container.innerHTML).toBe('')
   })
 
   it('shows generic error alert when no apiErrorCode', () => {
     mockStreamState.error = 'The agent process was terminated unexpectedly.'
     mockStreamState.apiErrorCode = null
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
-    expect(screen.getByText('Error')).toBeInTheDocument()
-    expect(screen.getByText('The agent process was terminated unexpectedly.')).toBeInTheDocument()
+    expect(screen.getByTestId('error-card')).toHaveTextContent('Error: The agent process was terminated unexpectedly.')
+    expect(screen.queryByText('Send another message to retry.')).not.toBeInTheDocument()
+    act(() => { screen.getByTestId('error-card').click() })
     expect(screen.getByText('Send another message to retry.')).toBeInTheDocument()
+    // ...and folds back up.
+    act(() => { screen.getByTestId('error-card').click() })
+    expect(screen.queryByText('Send another message to retry.')).not.toBeInTheDocument()
+    expect(screen.getByTestId('error-card')).toHaveClass('bg-red-50', 'dark:bg-red-950')
+    // Opaque in dark: the transcript scrolls behind this in the overlay footer.
+    expect(screen.getByTestId('error-card')).not.toHaveClass('dark:bg-red-950/30')
+    // Selectable despite the app-wide user-select: none — errors get copied.
+    expect(screen.getByTestId('error-card')).toHaveClass('select-text', '[&_*]:select-text')
   })
 
   it('shows "Working..." status when active with no todo', () => {
@@ -98,6 +177,25 @@ describe('AgentActivityIndicator', () => {
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Working...')).toBeInTheDocument()
     expect(screen.getByTestId('activity-indicator')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /activity details/i })).not.toBeInTheDocument()
+  })
+
+  it('stacks the active indicator behind the composer with a frosted surface', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+    const indicator = screen.getByTestId('activity-indicator')
+    expect(indicator).toHaveClass(
+      'rounded-t-2xl',
+      'border-b-0',
+      'border-border/70',
+      'bg-background/85',
+      'backdrop-blur-md',
+      'supports-[backdrop-filter]:bg-background/65',
+      'pb-8',
+    )
+    expect(indicator.parentElement).toHaveClass('-mb-5')
   })
 
   it('shows elapsed timer when active', () => {
@@ -142,9 +240,9 @@ describe('AgentActivityIndicator', () => {
     expect(screen.getByText('Add tests')).toBeInTheDocument()
 
     // Shows status indicators
-    expect(screen.getByText('✓')).toBeInTheDocument()
-    expect(screen.getByText('→')).toBeInTheDocument()
-    expect(screen.getByText('○')).toBeInTheDocument()
+    expect(screen.getByTestId('todo-status-completed')).toBeInTheDocument()
+    expect(screen.getByTestId('todo-status-in-progress')).toBeInTheDocument()
+    expect(screen.getByTestId('todo-status-pending')).toBeInTheDocument()
   })
 
   it('does not show todo list when all items are completed', () => {
@@ -181,7 +279,7 @@ describe('AgentActivityIndicator', () => {
   it('shows "Waiting for input..." when pending secret requests exist', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingSecretRequests = [{ toolUseId: 't1', secretName: 'API_KEY' }]
+    mockPendingUserRequests = [blockingRequest('secret')]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
@@ -191,19 +289,28 @@ describe('AgentActivityIndicator', () => {
   it('shows "Waiting for input..." when pending question requests exist', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingQuestionRequests = [{
-      toolUseId: 't1',
-      questions: [{ question: 'Pick one', header: 'DB', options: [], multiSelect: false }],
-    }]
+    mockPendingUserRequests = [blockingRequest('question')]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
+
+    const indicator = screen.getByTestId('activity-indicator')
+    expect(indicator).toHaveClass(
+      'rounded-2xl',
+      'pb-3',
+      'border-border/70',
+      'bg-background/85',
+      'backdrop-blur-md',
+    )
+    expect(indicator).not.toHaveClass('border-b-0', 'pb-8')
+    expect(indicator.parentElement).toHaveClass('mb-2')
+    expect(indicator.parentElement).not.toHaveClass('-mb-5')
   })
 
   it('shows "Waiting for input..." when pending connected account requests exist', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingConnectedAccountRequests = [{ toolUseId: 't1', toolkit: 'github' }]
+    mockPendingUserRequests = [blockingRequest('connected_account')]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
@@ -212,7 +319,7 @@ describe('AgentActivityIndicator', () => {
   it('shows "Waiting for input..." when pending file requests exist', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingFileRequests = [{ toolUseId: 't1', description: 'Upload CSV' }]
+    mockPendingUserRequests = [blockingRequest('file')]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
@@ -221,7 +328,7 @@ describe('AgentActivityIndicator', () => {
   it('shows "Waiting for input..." when pending remote MCP requests exist', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingRemoteMcpRequests = [{ toolUseId: 't1', url: 'https://example.com' }]
+    mockPendingUserRequests = [blockingRequest('remote_mcp')]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
@@ -230,7 +337,7 @@ describe('AgentActivityIndicator', () => {
   it('shows "Waiting for input..." when pending browser input requests exist', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingBrowserInputRequests = [{ toolUseId: 't1', message: 'Login', requirements: [] }]
+    mockPendingUserRequests = [blockingRequest('browser_input')]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
@@ -246,9 +353,52 @@ describe('AgentActivityIndicator', () => {
     expect(screen.queryByText('Waiting for input...')).not.toBeInTheDocument()
   })
 
+  it('shows "Waiting for input..." when a proxy review is pending', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockPendingUserRequests = [blockingRequest('proxy_review')]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
+    expect(screen.queryByText('Working...')).not.toBeInTheDocument()
+  })
+
+  it.each(['script_run', 'computer_use', 'capability_review'])(
+    'shows "Waiting for input..." for %s — kinds the per-type list used to omit',
+    (kind) => {
+      mockStreamState.isActive = true
+      mockStreamState.activeStartTime = Date.now()
+      mockPendingUserRequests = [blockingRequest(kind)]
+
+      render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+      expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
+      expect(screen.queryByText('Working...')).not.toBeInTheDocument()
+    },
+  )
+
+  it('a non-blocking entry is not a wait — the indicator keeps "Working..."', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockPendingUserRequests = [blockingRequest('secret', { blocking: false })]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByText('Working...')).toBeInTheDocument()
+    expect(screen.queryByText('Waiting for input...')).not.toBeInTheDocument()
+  })
+
+  it('an auto-approved entry is not a wait — the indicator keeps "Working..."', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockPendingUserRequests = [blockingRequest('script_run', { autoApproved: true })]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByText('Working...')).toBeInTheDocument()
+    expect(screen.queryByText('Waiting for input...')).not.toBeInTheDocument()
+  })
+
   it('does not show "Waiting for input..." when not active even if pending requests exist', () => {
     mockStreamState.isActive = false
-    mockStreamState.pendingSecretRequests = [{ toolUseId: 't1', secretName: 'KEY' }]
+    mockPendingUserRequests = [blockingRequest('secret')]
 
     const { container } = render(
       <AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />
@@ -295,7 +445,7 @@ describe('AgentActivityIndicator', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
     mockStreamState.isCompacting = true
-    mockStreamState.pendingSecretRequests = [{ toolUseId: 't1', secretName: 'KEY' }]
+    mockPendingUserRequests = [blockingRequest('secret')]
 
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
@@ -305,7 +455,7 @@ describe('AgentActivityIndicator', () => {
   it('"Waiting for input..." takes priority over TodoWrite activeForm', () => {
     mockStreamState.isActive = true
     mockStreamState.activeStartTime = Date.now()
-    mockStreamState.pendingSecretRequests = [{ toolUseId: 't1', secretName: 'KEY' }]
+    mockPendingUserRequests = [blockingRequest('secret')]
     mockMessages.push({
       id: 'msg-1',
       type: 'assistant',
@@ -324,5 +474,797 @@ describe('AgentActivityIndicator', () => {
     render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
     expect(screen.getByText('Waiting for input...')).toBeInTheDocument()
     expect(screen.queryByText('Setting things up')).not.toBeInTheDocument()
+  })
+
+  // --- TaskCreate / TaskUpdate support ---
+
+  it('builds todo list from TaskCreate tool calls', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockMessages.push({
+      id: 'msg-1',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [
+        {
+          id: 'tc-1',
+          name: 'TaskCreate',
+          input: { subject: 'Set up database', activeForm: 'Setting up database' },
+          result: 'Task #1 created successfully: Set up database',
+        },
+        {
+          id: 'tc-2',
+          name: 'TaskCreate',
+          input: { subject: 'Write API routes', activeForm: 'Writing API routes' },
+          result: 'Task #2 created successfully: Write API routes',
+        },
+        {
+          id: 'tc-3',
+          name: 'TaskCreate',
+          input: { subject: 'Add tests', activeForm: 'Adding tests' },
+          result: 'Task #3 created successfully: Add tests',
+        },
+      ],
+      createdAt: new Date(),
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.getByText('Set up database')).toBeInTheDocument()
+    expect(screen.getByText('Write API routes')).toBeInTheDocument()
+    expect(screen.getByText('Add tests')).toBeInTheDocument()
+    expect(screen.getAllByTestId('todo-status-pending')).toHaveLength(3)
+  })
+
+  it('applies TaskUpdate status changes to task list', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockMessages.push(
+      {
+        id: 'msg-1',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [
+          {
+            id: 'tc-1',
+            name: 'TaskCreate',
+            input: { subject: 'Set up database', activeForm: 'Setting up database' },
+            result: 'Task #1 created successfully',
+          },
+          {
+            id: 'tc-2',
+            name: 'TaskCreate',
+            input: { subject: 'Write API routes', activeForm: 'Writing API routes' },
+            result: 'Task #2 created successfully',
+          },
+        ],
+        createdAt: new Date(),
+      },
+      {
+        id: 'msg-2',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [
+          {
+            id: 'tc-3',
+            name: 'TaskUpdate',
+            input: { taskId: '1', status: 'completed' },
+            result: 'Updated task #1 status',
+          },
+          {
+            id: 'tc-4',
+            name: 'TaskUpdate',
+            input: { taskId: '2', status: 'in_progress' },
+            result: 'Updated task #2 status',
+          },
+        ],
+        createdAt: new Date(),
+      },
+    )
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+    // Task 1 completed, task 2 in progress
+    expect(screen.getByTestId('todo-status-completed')).toBeInTheDocument()
+    expect(screen.getByTestId('todo-status-in-progress')).toBeInTheDocument()
+    // Shows activeForm of in_progress task as status text
+    expect(screen.getByText('Writing API routes')).toBeInTheDocument()
+  })
+
+  it('hides task list when all TaskCreate tasks are completed', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockMessages.push({
+      id: 'msg-1',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [
+        {
+          id: 'tc-1',
+          name: 'TaskCreate',
+          input: { subject: 'Task A', activeForm: 'Doing A' },
+          result: 'Task #1 created successfully',
+        },
+        {
+          id: 'tc-2',
+          name: 'TaskUpdate',
+          input: { taskId: '1', status: 'completed' },
+          result: 'Updated task #1 status',
+        },
+      ],
+      createdAt: new Date(),
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.getByText('Working...')).toBeInTheDocument()
+    expect(screen.queryByText('Task A')).not.toBeInTheDocument()
+  })
+
+  it('truncates to 5 visible tasks, prioritizing not-done', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockMessages.push({
+      id: 'msg-1',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [
+        // 7 tasks: 3 completed, 4 pending
+        ...[1, 2, 3, 4, 5, 6, 7].map((n) => ({
+          id: `tc-create-${n}`,
+          name: 'TaskCreate',
+          input: { subject: `Task ${n}` },
+          result: `Task #${n} created successfully`,
+        })),
+        ...[1, 2, 3].map((n) => ({
+          id: `tc-update-${n}`,
+          name: 'TaskUpdate',
+          input: { taskId: String(n), status: 'completed' },
+          result: `Updated task #${n} status`,
+        })),
+      ],
+      createdAt: new Date(),
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+    // All 4 pending tasks should be visible
+    expect(screen.getByText('Task 4')).toBeInTheDocument()
+    expect(screen.getByText('Task 5')).toBeInTheDocument()
+    expect(screen.getByText('Task 6')).toBeInTheDocument()
+    expect(screen.getByText('Task 7')).toBeInTheDocument()
+    // 1 completed task fills the remaining slot (Task 3 is newest completed)
+    expect(screen.getByText('Task 3')).toBeInTheDocument()
+    // The other 2 completed tasks are hidden
+    expect(screen.queryByText('Task 1')).not.toBeInTheDocument()
+    expect(screen.queryByText('Task 2')).not.toBeInTheDocument()
+    // Shows the overflow toggle
+    expect(screen.getByText('Show more')).toBeInTheDocument()
+  })
+
+  it('shows all tasks when toggle is clicked', async () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockMessages.push({
+      id: 'msg-1',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [
+        ...[1, 2, 3, 4, 5, 6].map((n) => ({
+          id: `tc-create-${n}`,
+          name: 'TaskCreate',
+          input: { subject: `Task ${n}` },
+          result: `Task #${n} created successfully`,
+        })),
+      ],
+      createdAt: new Date(),
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+    // 1 task hidden
+    expect(screen.queryByText('Task 6')).not.toBeInTheDocument()
+    expect(screen.getByText('Show more')).toBeInTheDocument()
+
+    // Click toggle
+    act(() => { screen.getByText('Show more').click() })
+
+    // All tasks now visible
+    expect(screen.getByText('Task 6')).toBeInTheDocument()
+    expect(screen.queryByText('Show more')).not.toBeInTheDocument()
+    // The toggle flips to its collapse label
+    expect(screen.getByText('Show less')).toBeInTheDocument()
+
+    // ...and back: the toggle survives being expanded rather than vanishing
+    act(() => { screen.getByText('Show less').click() })
+    expect(screen.queryByText('Task 6')).not.toBeInTheDocument()
+    expect(screen.getByText('Show more')).toBeInTheDocument()
+  })
+
+  it('prefers TaskCreate/TaskUpdate over TodoWrite when both exist', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockMessages.push(
+      {
+        id: 'msg-1',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'tc-1',
+          name: 'TodoWrite',
+          input: {
+            todos: [{ content: 'Old todo item', status: 'in_progress', activeForm: 'Old active form' }],
+          },
+          result: 'ok',
+        }],
+        createdAt: new Date(),
+      },
+      {
+        id: 'msg-2',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'tc-2',
+          name: 'TaskCreate',
+          input: { subject: 'New task item', activeForm: 'New active form' },
+          result: 'Task #1 created successfully',
+        }],
+        createdAt: new Date(),
+      },
+    )
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+    expect(screen.getByText('New task item')).toBeInTheDocument()
+    expect(screen.queryByText('Old todo item')).not.toBeInTheDocument()
+  })
+
+  it('shows one row per running background task', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = [
+      { taskId: 'bg-1', startedAt: Date.now() - 5000 },
+    ]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    const rows = screen.getAllByTestId('background-task-row')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toHaveTextContent('Background command')
+  })
+
+  it('shows a row for each of several background tasks', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = [
+      { taskId: 'bg-1', startedAt: Date.now() - 5000 },
+      { taskId: 'bg-2', startedAt: Date.now() - 3000 },
+    ]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getAllByTestId('background-task-row')).toHaveLength(2)
+  })
+
+  it('names a background command after the Bash call that launched it', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = [
+      { taskId: 'bg_abc', startedAt: Date.now() - 5000 },
+    ]
+    mockMessages.push({
+      id: 'msg-bash',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [{
+        id: 'tc-bash',
+        name: 'Bash',
+        input: { command: 'npm run build', run_in_background: true },
+        result: 'Command running in background with ID: bg_abc. Output is being written to /tmp/x.',
+      }],
+      createdAt: new Date(),
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    const row = screen.getByTestId('background-task-row')
+    expect(row).toHaveTextContent('Background command')
+    expect(row).toHaveTextContent('npm run build')
+  })
+
+  it('does not show background rows when no background tasks', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = []
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.queryByTestId('background-task-row')).not.toBeInTheDocument()
+  })
+
+  it('names a Monitor watch after its description and counts it as a monitor', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    // The runtime lists a command monitor as a shell task.
+    mockStreamState.backgroundTasks = [
+      { taskId: 'b8ezoj4kh', startedAt: Date.now() - 4000, taskType: 'local_bash', description: 'probe ticks' },
+    ]
+    mockMessages.push({
+      id: 'msg-monitor',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [{
+        id: 'tc-monitor',
+        name: 'Monitor',
+        input: { description: 'Errors in deploy.log', command: 'tail -f deploy.log | grep --line-buffered ERROR', timeout_ms: 1800000 },
+        result: 'Monitor started (task b8ezoj4kh, expires in 30m unless the source ends first).',
+        backgroundTaskId: 'b8ezoj4kh',
+      }],
+      createdAt: new Date(),
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    const row = screen.getByTestId('background-task-row')
+    expect(row).toHaveTextContent('Monitor Errors in deploy.log')
+    expect(screen.getByTestId('stop-task-button')).toHaveAttribute('aria-label', 'Stop Monitor: Errors in deploy.log')
+
+    act(() => { screen.getByRole('button', { name: 'Collapse activity details' }).click() })
+    // Its own count, not one of the background processes.
+    expect(screen.getByTestId('activity-summary-ticker')).toHaveTextContent(/^1 monitor$/)
+  })
+
+  it('labels a background workflow as a workflow', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = [
+      { taskId: 'wf-1', startedAt: Date.now() - 4000, isWorkflow: true },
+    ]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getByTestId('background-task-row')).toHaveTextContent('Background workflow')
+  })
+
+  it('stops a background task from its row', async () => {
+    const user = userEvent.setup()
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = [
+      { taskId: 'bg-1', startedAt: Date.now() - 5000 },
+    ]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    await user.click(screen.getByTestId('stop-task-button'))
+
+    expect(mockStopBackgroundTask.mutateAsync).toHaveBeenCalledWith({
+      sessionId: 's-1',
+      agentSlug: 'agent-1',
+      taskId: 'bg-1',
+    })
+  })
+
+  it('keeps the row and offers a retry when the stop fails', async () => {
+    const user = userEvent.setup()
+    mockStopBackgroundTask.mutateAsync.mockRejectedValueOnce(new Error('nope'))
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = [
+      { taskId: 'bg-1', startedAt: Date.now() - 5000 },
+    ]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    await user.click(screen.getByTestId('stop-task-button'))
+
+    expect(await screen.findByText('Stop failed')).toBeInTheDocument()
+    expect(screen.getByTestId('background-task-row')).toBeInTheDocument()
+    expect(screen.getByTestId('stop-task-button')).toHaveAttribute('aria-label', expect.stringMatching(/^Retry:/))
+  })
+
+  it('folds a background subagent into its named subagent row', () => {
+    // The named row already represents it; a background row too would show
+    // the same work twice.
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = [
+      { taskId: 'agent-bg', startedAt: Date.now() - 5000, isSubagent: true },
+    ]
+    mockStreamState.activeSubagents = [
+      { parentToolId: 'tc-bg', agentId: 'agent-bg', progressSummary: null },
+    ]
+    mockMessages.push({
+      id: 'msg-1',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [{
+        id: 'tc-bg',
+        name: 'Agent',
+        input: { subagent_type: 'Explore', description: 'Map the repo' },
+        subagent: { agentId: 'agent-bg', status: 'async_launched' },
+      }],
+      createdAt: new Date(),
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    expect(screen.getAllByTestId('subagent-activity-row')).toHaveLength(1)
+    expect(screen.queryByTestId('background-task-row')).not.toBeInTheDocument()
+  })
+
+  it('gives a background subagent with no named row a row of its own', () => {
+    // Launched in an earlier turn (or by another subagent): no subagent row
+    // represents it, but the runtime lists it, so it must be visible and
+    // stoppable. Labelled from the runtime's description.
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = [
+      { taskId: 'a1b2c3', startedAt: Date.now() - 5000, isSubagent: true, taskType: 'local_agent', description: 'Implement attribution changes' },
+      { taskId: 'bg-1', startedAt: Date.now() - 3000 },
+    ]
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    const rows = screen.getAllByTestId('background-task-row')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toHaveAttribute('data-task-id', 'a1b2c3')
+    expect(rows[0]).toHaveTextContent('Background agent')
+    expect(rows[0]).toHaveTextContent('Implement attribution changes')
+  })
+
+  it('keeps a completed subagent row live while the runtime still lists its task', () => {
+    // A subagent reports completion when its own turn ends; background work
+    // it started (a dev server) keeps it a live task until the runtime drops it.
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = [
+      { taskId: 'agent-done', startedAt: Date.now() - 5000, isSubagent: true },
+    ]
+    mockStreamState.activeSubagents = [
+      { parentToolId: 'tc-done', agentId: 'agent-done', progressSummary: null },
+    ]
+    mockStreamState.completedSubagents = new Set(['tc-done'])
+    mockMessages.push({
+      id: 'msg-1',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [{
+        id: 'tc-done',
+        name: 'Agent',
+        input: { subagent_type: 'general-purpose', description: 'Implement attribution changes' },
+        subagent: { agentId: 'agent-done', status: 'async_launched' },
+      }],
+      createdAt: new Date(),
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    const row = screen.getByTestId('subagent-activity-row')
+    expect(row).toHaveAttribute('data-tracer-live', 'true')
+    expect(row).toHaveTextContent('background work still running')
+    expect(row).not.toHaveTextContent('✓')
+    expect(screen.getByTestId('stop-task-button')).toBeInTheDocument()
+    expect(screen.queryByTestId('background-task-row')).not.toBeInTheDocument()
+  })
+
+  it('collapses activity details into an active-only summary', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockStreamState.backgroundTasks = [
+      { taskId: 'bg-1', startedAt: Date.now() - 5000 },
+      { taskId: 'bg-2', startedAt: Date.now() - 4000 },
+      { taskId: 'wf-1', startedAt: Date.now() - 3000, isWorkflow: true },
+      { taskId: 'agent-running', startedAt: Date.now() - 2000, isSubagent: true },
+    ]
+    mockStreamState.activeSubagents = [
+      { parentToolId: 'tc-running', agentId: 'agent-running', progressSummary: null },
+      { parentToolId: 'tc-completed', agentId: 'agent-completed', progressSummary: null },
+    ]
+    mockStreamState.completedSubagents = new Set(['tc-completed'])
+    mockMessages.push({
+      id: 'msg-1',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [
+        {
+          id: 'tc-running',
+          name: 'Agent',
+          input: { subagent_type: 'Explore', description: 'Running subagent' },
+          subagent: { agentId: 'agent-running', status: 'async_launched' },
+        },
+        {
+          id: 'tc-completed',
+          name: 'Agent',
+          input: { subagent_type: 'Review', description: 'Finished subagent' },
+          subagent: { agentId: 'agent-completed', status: 'async_launched' },
+        },
+        {
+          id: 'tc-todos',
+          name: 'TodoWrite',
+          input: {
+            todos: [
+              { content: 'Pending one', status: 'pending', activeForm: 'Pending one' },
+              { content: 'Pending two', status: 'pending', activeForm: 'Pending two' },
+              { content: 'In progress', status: 'in_progress', activeForm: 'Doing work' },
+              { content: 'Already done', status: 'completed', activeForm: 'Already done' },
+            ],
+          },
+          result: 'ok',
+        },
+      ],
+      createdAt: new Date(),
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+    const collapseButton = screen.getByRole('button', { name: 'Collapse activity details' })
+    expect(collapseButton).toHaveAttribute('aria-expanded', 'true')
+    // Sits in the header row, last, so it centers against the orb and the
+    // summary can never run under it — rather than floating over the row.
+    expect(collapseButton.parentElement).toHaveAttribute('data-testid', 'activity-indicator-header')
+    expect(collapseButton.parentElement?.lastElementChild).toBe(collapseButton)
+    expect(collapseButton.querySelector('svg')).toHaveClass('rotate-180')
+    expect(screen.getByText('Running subagent')).toBeInTheDocument()
+    expect(screen.getByText('Finished subagent')).toBeInTheDocument()
+    expect(screen.getByText('Already done')).toBeInTheDocument()
+    expect(screen.queryByText('2 background processes, 1 background workflow, 1 subagent, 3 pending tasks')).not.toBeInTheDocument()
+
+    act(() => { collapseButton.click() })
+
+    const expandButton = screen.getByRole('button', { name: 'Expand activity details' })
+    expect(expandButton).toHaveAttribute('aria-expanded', 'false')
+    expect(expandButton.querySelector('svg')).not.toHaveClass('rotate-180')
+    const summary = screen.getByTestId('activity-summary-ticker')
+    expect(summary).toHaveTextContent('2 background processes, 1 background workflow, 1 subagent, 3 pending tasks')
+    expect(summary).toHaveClass('text-xs', 'italic', 'whitespace-nowrap')
+    expect(summary).toHaveAttribute('data-overflowing', 'false')
+    expect(summary.parentElement).toBe(screen.getByTestId('activity-indicator-header'))
+    expect(screen.queryByText('Running subagent')).not.toBeInTheDocument()
+    expect(screen.queryByText('Finished subagent')).not.toBeInTheDocument()
+    expect(screen.queryByText('Already done')).not.toBeInTheDocument()
+
+    act(() => { expandButton.click() })
+
+    expect(screen.getByRole('button', { name: 'Collapse activity details' })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('Running subagent')).toBeInTheDocument()
+  })
+
+  it('turns an overflowing collapsed summary into a measured ticker', () => {
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockMessages.push({
+      id: 'msg-1',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [{
+        id: 'tc-todos',
+        name: 'TodoWrite',
+        input: {
+          todos: [{ content: 'A pending task', status: 'pending', activeForm: 'Working' }],
+        },
+        result: 'ok',
+      }],
+      createdAt: new Date(),
+    })
+
+    const clientWidth = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.getAttribute('data-testid') === 'activity-summary-ticker' ? 100 : 0
+    })
+    const scrollWidth = vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute('data-activity-summary-ticker-content') ? 260 : 0
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    act(() => { screen.getByRole('button', { name: 'Collapse activity details' }).click() })
+
+    const ticker = screen.getByTestId('activity-summary-ticker')
+    expect(ticker).toHaveAttribute('data-overflowing', 'true')
+    expect(ticker.style.getPropertyValue('--activity-summary-ticker-distance')).toBe('160px')
+    expect(ticker.style.getPropertyValue('--activity-summary-ticker-duration')).toBe('8s')
+
+    clientWidth.mockRestore()
+    scrollWidth.mockRestore()
+  })
+
+  describe('subagent status', () => {
+    it('shows lifecycle-only subagents launched inside a Skill', () => {
+      mockStreamState.isActive = true
+      mockStreamState.activeStartTime = Date.now()
+      mockStreamState.activeSubagents = [{
+        parentToolId: 'nested-agent-tool',
+        agentId: 'nested-agent-id',
+        subagentType: 'code-reviewer',
+        description: 'Review the changes',
+        progressSummary: 'Inspecting tests',
+      }]
+      mockStreamState.completedSubagents = new Set()
+      mockMessages.push({
+        id: 'msg-1',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'skill-tool',
+          name: 'Skill',
+          input: { skill: 'code-review' },
+        }],
+        createdAt: new Date(),
+      })
+
+      render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.getByText('code-reviewer')).toBeInTheDocument()
+      expect(screen.getByText('Review the changes')).toBeInTheDocument()
+      expect(screen.getByText('Inspecting tests')).toBeInTheDocument()
+    })
+
+    const renderWithSubagent = (opts: { result?: unknown; subagentStatus?: string; completed?: boolean }) => {
+      mockStreamState.isActive = true
+      mockStreamState.activeStartTime = Date.now()
+      mockStreamState.activeSubagents = [{ parentToolId: 'tc-sub', progressSummary: null }]
+      mockStreamState.completedSubagents = opts.completed ? new Set(['tc-sub']) : new Set()
+      mockMessages.push({
+        id: 'msg-1',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'tc-sub',
+          name: 'Agent',
+          input: { subagent_type: 'Explore', description: 'Explore workspace' },
+          ...(opts.result !== undefined ? { result: opts.result } : {}),
+          ...(opts.subagentStatus ? { subagent: { agentId: 'a1', status: opts.subagentStatus } } : {}),
+        }],
+        createdAt: new Date(),
+      })
+      render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+    }
+
+    it('shows a launched background subagent as running, not completed', () => {
+      // The Agent tool returns an immediate async_launched result — that launch
+      // ack must not be mistaken for completion while the subagent still runs.
+      renderWithSubagent({ result: { status: 'async_launched' }, subagentStatus: 'async_launched', completed: false })
+      expect(screen.getByText('Explore')).toBeInTheDocument()
+      expect(screen.queryByText('✓')).not.toBeInTheDocument()
+    })
+
+    it('marks a background subagent completed once the subagent_completed SSE arrives', () => {
+      renderWithSubagent({ result: { status: 'async_launched' }, subagentStatus: 'async_launched', completed: true })
+      expect(screen.getByText('Explore')).toBeInTheDocument()
+      expect(screen.getByText('✓')).toBeInTheDocument()
+    })
+
+    it('shows no collapsed summary when every detail is completed', () => {
+      renderWithSubagent({ result: { status: 'async_launched' }, subagentStatus: 'async_launched', completed: true })
+
+      act(() => { screen.getByRole('button', { name: 'Collapse activity details' }).click() })
+
+      expect(screen.queryByTestId('activity-summary-ticker')).not.toBeInTheDocument()
+      expect(screen.queryByText('No active items')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Expand activity details' })).toBeInTheDocument()
+    })
+
+    it('marks a foreground subagent completed when its tool result lands', () => {
+      // Synchronous subagents have no async_launched status; their result is completion.
+      renderWithSubagent({ result: 'done', completed: false })
+      expect(screen.getByText('Explore')).toBeInTheDocument()
+      expect(screen.getByText('✓')).toBeInTheDocument()
+    })
+
+    it('keeps activity on one line and provides a static keyboard and touch disclosure', async () => {
+      // A wrapped second line breaks the tree's row rhythm — the elbows are
+      // pinned to a single line box — so the progress summary joins the row
+      // behind a dot instead of stacking under it. The popover is the complete,
+      // non-moving fallback when that line is clipped.
+      const user = userEvent.setup()
+      const fullActivityText = 'web-browser Gather UniFi WiFi events · Scrolling Lobby AP detail panel'
+      const matchMedia = vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({
+        matches: query === '(prefers-reduced-motion: reduce)',
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      }))
+      const clientWidth = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.classList.contains('hover-scroll-text') ? 100 : 0
+      })
+      const scrollWidth = vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockImplementation(function (this: HTMLElement) {
+        return this.classList.contains('hover-scroll-text-content') ? 320 : 0
+      })
+
+      mockStreamState.isActive = true
+      mockStreamState.activeStartTime = Date.now()
+      mockStreamState.activeSubagents = [{
+        parentToolId: 'tc-sub',
+        agentId: 'a1',
+        subagentType: 'web-browser',
+        description: 'Gather UniFi WiFi events',
+        progressSummary: 'Scrolling Lobby AP detail panel',
+      }]
+      mockStreamState.completedSubagents = new Set()
+      mockMessages.push({
+        id: 'msg-1',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'tc-sub',
+          name: 'Agent',
+          input: { subagent_type: 'web-browser', description: 'Gather UniFi WiFi events' },
+          subagent: { agentId: 'a1', status: 'async_launched' },
+        }],
+        createdAt: new Date(),
+      })
+
+      render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+      const line = screen.getByText('web-browser').closest('.hover-scroll-text') as HTMLElement | null
+      expect(line).not.toBeNull()
+      expect(line).toHaveTextContent(fullActivityText)
+      expect(line).toHaveAttribute('data-overflowing', 'true')
+      expect(line).toHaveAttribute('data-scrolling', 'false')
+
+      const disclosure = screen.getByRole('button', { name: `Show full activity: ${fullActivityText}` })
+      expect(disclosure).toContainElement(line)
+      expect(disclosure).toHaveAttribute('title', fullActivityText)
+
+      disclosure.focus()
+      await user.keyboard('{Enter}')
+      expect(screen.getByTestId('subagent-activity-full-text')).toHaveTextContent(fullActivityText)
+      expect(screen.getByTestId('subagent-activity-full-text')).toHaveClass('motion-reduce:!animate-none')
+
+      await user.keyboard('{Escape}')
+      expect(screen.queryByTestId('subagent-activity-full-text')).not.toBeInTheDocument()
+
+      // A click is the same activation path used by a touch tap.
+      await user.click(disclosure)
+      expect(screen.getByTestId('subagent-activity-full-text')).toHaveTextContent(fullActivityText)
+
+      matchMedia.mockRestore()
+      clientWidth.mockRestore()
+      scrollWidth.mockRestore()
+    })
+
+    it('reopens the original subagent row while a SendMessage resume is running', () => {
+      mockStreamState.isActive = true
+      mockStreamState.activeStartTime = Date.now()
+      mockStreamState.activeSubagents = [
+        {
+          parentToolId: 'agent-tool',
+          agentId: 'agent-1',
+          subagentType: 'Explore',
+          description: 'Explore workspace',
+          progressSummary: null,
+        },
+        {
+          parentToolId: 'send-tool',
+          agentId: 'agent-1',
+          subagentType: 'Explore',
+          description: 'Explore workspace',
+          progressSummary: 'Checking follow-up files',
+        },
+      ]
+      mockStreamState.completedSubagents = new Set(['agent-tool'])
+      mockMessages.push({
+        id: 'msg-agent',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'agent-tool',
+          name: 'Agent',
+          input: { subagent_type: 'Explore', description: 'Explore workspace' },
+          result: 'FIRST_DONE',
+          subagent: { agentId: 'agent-1', status: 'completed' },
+        }],
+        createdAt: new Date(),
+      }, {
+        id: 'msg-send',
+        type: 'assistant',
+        content: { text: '' },
+        toolCalls: [{
+          id: 'send-tool',
+          name: 'SendMessage',
+          input: { to: 'agent-1', message: 'Continue exploring' },
+          result: '{"success":true,"resumedAgentId":"agent-1"}',
+        }],
+        createdAt: new Date(),
+      })
+
+      render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+      expect(screen.getAllByText('Explore')).toHaveLength(1)
+      expect(screen.getByText('Checking follow-up files')).toBeInTheDocument()
+      expect(screen.queryByText('✓')).not.toBeInTheDocument()
+    })
   })
 })

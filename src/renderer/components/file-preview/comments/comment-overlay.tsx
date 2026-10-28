@@ -1,0 +1,135 @@
+import { useState, useRef, useEffect, useLayoutEffect } from 'react'
+import { MessageSquarePlus } from 'lucide-react'
+import { Button } from '@renderer/components/ui/button'
+import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
+import { useFilePreview } from '@renderer/context/file-preview-context'
+import { isComposing, isSubmitEnter } from '@renderer/lib/enter-key'
+import { useCommentMic } from './use-comment-mic'
+import { describeAnchor } from './anchor'
+import type { CommentAnchor } from './kinds'
+
+interface CommentOverlayProps {
+  anchor: CommentAnchor
+  /** Where the box opens, in its positioned parent's coordinates. */
+  rect: DOMRect
+  filePath: string
+  agentSlug: string
+  onClose: () => void
+  /** The editor. Otherwise a "Comment" chip, which calls `onEdit`. */
+  autoEdit?: boolean
+  /** Start the mic as the editor opens, when voice input is set up. */
+  autoListen?: boolean
+  /** The "Comment" chip was clicked. */
+  onEdit?: () => void
+}
+
+export function CommentOverlay({ anchor, rect, filePath, agentSlug, onClose, onEdit, autoEdit = false, autoListen = false }: CommentOverlayProps) {
+  const [commentText, setCommentText] = useState('')
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const { addComment } = useFilePreview()
+  const { voiceInput, listening, voiceModeOn } = useCommentMic(setCommentText, autoListen)
+  const canAdd = !voiceInput.isFinalizing && (!!commentText.trim() || voiceInput.isRecording)
+
+  useEffect(() => {
+    if (autoEdit && textareaRef.current) {
+      textareaRef.current.focus()
+    }
+  }, [autoEdit])
+
+  // Slide the overlay left, before it paints, so it ends 8px inside the pane that clips it.
+  // Re-runs when the editor opens or its anchor moves.
+  const overlayRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const overlay = overlayRef.current
+    let pane = overlay?.parentElement
+    while (pane && getComputedStyle(pane).overflowX === 'visible') pane = pane.parentElement
+    if (!overlay || !pane) return
+    overlay.style.marginLeft = ''
+    const right = pane.getBoundingClientRect().left + pane.clientWidth - 8
+    overlay.style.marginLeft = `${Math.min(0, right - overlay.getBoundingClientRect().right)}px`
+  }, [autoEdit, rect.x])
+
+  const handleAdd = async () => {
+    if (!canAdd) return
+    const text = listening ? (await voiceInput.stopRecording()) || commentText : commentText
+    if (!textareaRef.current || !text.trim()) return
+    addComment({
+      filePath,
+      agentSlug,
+      text: text.trim(),
+      anchor,
+    })
+    setCommentText('')
+    onClose()
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (isComposing(e.nativeEvent)) return
+    if (isSubmitEnter(e.nativeEvent)) {
+      e.preventDefault()
+      void handleAdd()
+    }
+    if (e.key === 'Escape' && !e.defaultPrevented) {
+      e.preventDefault()
+      onClose()
+    }
+  }
+
+  if (!autoEdit) {
+    return (
+      <div
+        ref={overlayRef}
+        data-comment-overlay
+        className="absolute z-30"
+        style={{ left: rect.x, top: rect.y + 4 }}
+      >
+        <button
+          onClick={onEdit}
+          className="flex items-center gap-1 px-2 py-1 text-xs rounded-md bg-primary text-primary-foreground shadow-md hover:bg-primary/90 transition-colors"
+        >
+          <MessageSquarePlus className="h-3 w-3" />
+          Comment
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div
+      ref={overlayRef}
+      data-comment-overlay
+      className="absolute z-30 w-64"
+      style={{ left: rect.x, top: rect.y + 4 }}
+    >
+      <div className="rounded-lg border border-border bg-popover p-2 shadow-lg space-y-2">
+        <div className="text-xs text-muted-foreground bg-muted/50 rounded p-1.5 truncate">
+          {describeAnchor(anchor)}
+        </div>
+        <textarea
+          ref={textareaRef}
+          value={commentText}
+          onChange={(e) => setCommentText(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="Add your comment..."
+          className="w-full text-xs rounded border border-border bg-background p-2 resize-none focus:outline-none focus:ring-1 focus:ring-primary"
+          rows={3}
+        />
+        <VoiceInputError error={voiceInput.error} onDismiss={voiceInput.clearError} />
+        <div className="flex justify-end gap-1">
+          <VoiceInputButton voiceInput={voiceInput} message={commentText} disabled={voiceModeOn} size="xs" />
+          <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            className="h-6 text-xs"
+            onClick={() => void handleAdd()}
+            disabled={!canAdd}
+          >
+            Add
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}

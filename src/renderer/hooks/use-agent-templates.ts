@@ -1,9 +1,24 @@
 import { useEffect, useRef } from 'react'
 import { apiFetch } from '@renderer/lib/api'
+import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { downloadBlob } from '@renderer/lib/download'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
-import type { ApiAgent, ApiDiscoverableAgent, ApiItemStatus } from '@shared/lib/types/api'
+import { useSkillsets } from '@renderer/hooks/use-skillsets'
+import type { ApiAgentTemplateInstallResult, ApiDiscoverableAgent, ApiItemStatus } from '@shared/lib/types/api'
+import { AGENT_PACKAGE_EXTENSION } from '@shared/lib/utils/package-extensions'
+import {
+  hostExportStatusSchema,
+  type HostExportStatus,
+} from '@shared/lib/services/export-status-schema'
+
+export const HOST_EXPORT_STATUS_QUERY_KEY = ['host-export-status'] as const
+const HOST_EXPORT_STATUS_POLL_MS = 2000
+
+/** Normalize discoverable agent path `agents/<dir>/` → `<dir>` (website template_slug). */
+export function slugFromAgentPath(path: string): string {
+  return path.replace(/^agents\//, '').replace(/\/$/, '')
+}
 
 // Alias preserves the prior export name for downstream consumers while we
 // route everything through the canonical `ApiItemStatus`.
@@ -12,6 +27,16 @@ type ApiAgentTemplateStatus = ApiItemStatus
 // Module-level flag ensures the background refresh fires only once across all
 // component instances that call useDiscoverableAgents().
 let refreshPromise: Promise<void> | null = null
+const DISCOVERABLE_REFRESH_KEY = ['discoverable-agents-refresh'] as const
+type DiscoverableRefreshState = 'idle' | 'pending' | 'done'
+
+/** Empty first catalog + refresh still in flight. Consumers treat this as loading. */
+export function isWaitingOnDiscoverableRefresh(
+  agents: ApiDiscoverableAgent[] | undefined,
+  refreshState: DiscoverableRefreshState | undefined,
+): boolean {
+  return Array.isArray(agents) && agents.length === 0 && refreshState !== 'done'
+}
 
 /**
  * Fetch discoverable agents from skillsets.
@@ -21,9 +46,12 @@ let refreshPromise: Promise<void> | null = null
  */
 export function useDiscoverableAgents() {
   const queryClient = useQueryClient()
+  const { data: skillsets, isLoading: skillsetsLoading } = useSkillsets()
+  const hasSkillsets = !!(skillsets && skillsets.length > 0)
 
-  return useQuery<ApiDiscoverableAgent[]>({
+  const query = useQuery<ApiDiscoverableAgent[]>({
     queryKey: ['discoverable-agents'],
+    enabled: hasSkillsets,
     queryFn: async () => {
       const res = await apiFetch('/api/agents/discoverable-agents')
       if (!res.ok) throw new Error('Failed to fetch discoverable agents')
@@ -32,6 +60,7 @@ export function useDiscoverableAgents() {
 
       // Kick off a single background refresh the first time any component fetches
       if (!refreshPromise) {
+        queryClient.setQueryData(DISCOVERABLE_REFRESH_KEY, 'pending')
         refreshPromise = apiFetch('/api/agents/discoverable-agents?refresh=true')
           .then(async (refreshRes) => {
             if (refreshRes.ok) {
@@ -43,14 +72,57 @@ export function useDiscoverableAgents() {
             }
           })
           .catch(() => { /* ignore background refresh failures */ })
+          .finally(() => {
+            queryClient.setQueryData(DISCOVERABLE_REFRESH_KEY, 'done')
+          })
+      } else {
+        void refreshPromise.finally(() => {
+          queryClient.setQueryData(DISCOVERABLE_REFRESH_KEY, 'done')
+        })
       }
 
       return agents
     },
   })
+
+  const { data: refreshState } = useQuery<DiscoverableRefreshState>({
+    queryKey: DISCOVERABLE_REFRESH_KEY,
+    queryFn: () => 'idle',
+    enabled: false,
+    staleTime: Infinity,
+  })
+  const waitingOnRefresh = isWaitingOnDiscoverableRefresh(query.data, refreshState)
+
+  return {
+    ...query,
+    // Skillsets gate this query, so their fetch is part of the catalog's load.
+    isLoading: skillsetsLoading || query.isLoading || waitingOnRefresh,
+  }
+}
+
+export function useHostExportStatus(enabled = true) {
+  return useQuery<HostExportStatus>({
+    queryKey: HOST_EXPORT_STATUS_QUERY_KEY,
+    queryFn: async () => {
+      const res = await apiFetch('/api/agents/export-status')
+      if (!res.ok) throw new Error('Failed to fetch export status')
+      return hostExportStatusSchema.parse(await res.json())
+    },
+    enabled,
+    refetchInterval: (query) => (query.state.data?.inProgress ? HOST_EXPORT_STATUS_POLL_MS : false),
+  })
+}
+
+function markHostExportBusy(queryClient: QueryClient) {
+  queryClient.setQueryData(HOST_EXPORT_STATUS_QUERY_KEY, { inProgress: true })
+}
+
+function settleHostExportStatus(queryClient: QueryClient) {
+  void queryClient.invalidateQueries({ queryKey: HOST_EXPORT_STATUS_QUERY_KEY })
 }
 
 export function useExportAgentTemplate() {
+  const queryClient = useQueryClient()
   const { track } = useAnalyticsTracking()
 
   return useMutation<void, Error, { agentSlug: string; agentName: string }>({
@@ -64,12 +136,19 @@ export function useExportAgentTemplate() {
         throw new Error(data.error || 'Failed to export template')
       }
 
-      await downloadBlob(res, `${agentName || agentSlug}-template.zip`)
+      await downloadBlob(res, `${agentName || agentSlug}-template${AGENT_PACKAGE_EXTENSION}`)
+    },
+    onMutate: () => {
+      markHostExportBusy(queryClient)
+    },
+    onSettled: () => {
+      settleHostExportStatus(queryClient)
     },
   })
 }
 
 export function useExportAgentFull() {
+  const queryClient = useQueryClient()
   const { track } = useAnalyticsTracking()
 
   return useMutation<void, Error, { agentSlug: string; agentName: string }>({
@@ -83,83 +162,42 @@ export function useExportAgentFull() {
         throw new Error(data.error || 'Failed to export agent')
       }
 
-      await downloadBlob(res, `${agentName || agentSlug}-full.zip`)
+      await downloadBlob(res, `${agentName || agentSlug}-full${AGENT_PACKAGE_EXTENSION}`)
+    },
+    onMutate: () => {
+      markHostExportBusy(queryClient)
+    },
+    onSettled: () => {
+      settleHostExportStatus(queryClient)
     },
   })
 }
 
-export type ImportProgress = { phase: 'uploading' | 'processing'; percent: number }
-
-const CHUNK_SIZE = 50 * 1024 * 1024 // 50MB — under Cloudflare's 100MB limit
+export type ImportProgress = UploadProgress
 
 export function useImportAgentTemplate() {
   const queryClient = useQueryClient()
   const { track } = useAnalyticsTracking()
 
   return useMutation<
-    ApiAgent & { hasOnboarding?: boolean; requiredEnvVars?: Array<{ name: string; description: string }> },
+    ApiAgentTemplateInstallResult,
     Error,
     { file: File; mode?: 'template' | 'full'; onProgress?: (p: ImportProgress) => void }
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ file, mode, onProgress }) => {
-      if (file.size <= CHUNK_SIZE) {
-        // Small file — single request (existing behavior)
-        const formData = new FormData()
-        formData.append('file', file)
-        if (mode) formData.append('mode', mode)
-
-        onProgress?.({ phase: 'uploading', percent: 100 })
-        const res = await apiFetch('/api/agents/import-template', {
-          method: 'POST',
-          body: formData,
-        })
-        if (!res.ok) {
-          const data = await res.json()
-          throw new Error(data.error || 'Failed to import template')
-        }
-        onProgress?.({ phase: 'processing', percent: 100 })
-        return res.json()
-      }
-
-      // Large file — chunked upload
-      const uploadId = crypto.randomUUID()
-      const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
-
-      for (let i = 0; i < totalChunks; i++) {
-        const start = i * CHUNK_SIZE
-        const end = Math.min(start + CHUNK_SIZE, file.size)
-        const chunkBlob = file.slice(start, end)
-
-        const formData = new FormData()
-        formData.append('chunk', chunkBlob)
-        formData.append('uploadId', uploadId)
-        formData.append('chunkIndex', String(i))
-        formData.append('totalChunks', String(totalChunks))
-        formData.append('mode', mode || 'template')
-
-        onProgress?.({ phase: 'uploading', percent: (i / totalChunks) * 100 })
-
-        const res = await apiFetch('/api/agents/import-template', {
-          method: 'POST',
-          body: formData,
-        })
-        if (!res.ok) {
-          const data = await res.json()
-          throw new Error(data.error || 'Failed to upload chunk')
-        }
-
-        // Last chunk returns the final agent result
-        if (i === totalChunks - 1) {
-          onProgress?.({ phase: 'processing', percent: 100 })
-          return res.json()
-        }
-      }
-
-      // Should not reach here, but satisfy TypeScript
-      throw new Error('Unexpected end of chunked upload')
+      return uploadFileChunked<ApiAgentTemplateInstallResult>({
+        url: '/api/agents/import-template',
+        file,
+        fields: { mode: mode || 'template' },
+        onProgress,
+      })
     },
-    onSuccess: () => {
-      track('agent_created', { source: 'file_import' })
+    onSuccess: (result) => {
+      track('agent_created', {
+        source: 'file_import',
+        has_template_prompt: Boolean(result.templatePrompt),
+      })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
     },
@@ -171,7 +209,7 @@ export function useInstallAgentFromSkillset() {
   const { track } = useAnalyticsTracking()
 
   return useMutation<
-    ApiAgent & { hasOnboarding?: boolean; requiredEnvVars?: Array<{ name: string; description: string }> },
+    ApiAgentTemplateInstallResult,
     Error,
     {
       skillsetId: string
@@ -180,6 +218,7 @@ export function useInstallAgentFromSkillset() {
       agentVersion: string
     }
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ skillsetId, agentPath, agentName, agentVersion }) => {
       const res = await apiFetch('/api/agents/install-from-skillset', {
         method: 'POST',
@@ -192,8 +231,11 @@ export function useInstallAgentFromSkillset() {
       }
       return res.json()
     },
-    onSuccess: () => {
-      track('agent_created', { source: 'skillset' })
+    onSuccess: (result) => {
+      track('agent_created', {
+        source: 'skillset',
+        has_template_prompt: Boolean(result.templatePrompt),
+      })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       queryClient.invalidateQueries({ queryKey: ['discoverable-agents'] })
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
@@ -246,7 +288,7 @@ export function useAgentTemplateStatus(agentSlug: string | null) {
     templateRefreshSet.add(agentSlug)
 
     let cancelled = false
-    apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-refresh`, { method: 'POST' })
+    apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-refresh?background=1`, { method: 'POST' })
       .then(async (r) => {
         if (cancelled || !r.ok) return
         const fresh = await r.json() as ApiAgentTemplateStatus
@@ -271,6 +313,7 @@ export function useRefreshAgentTemplateStatus() {
     Error,
     { agentSlug: string }
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug }) => {
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-refresh`, {
         method: 'POST',
@@ -352,6 +395,7 @@ export function useCreateAgentTemplatePR() {
     Error,
     { agentSlug: string; title: string; body: string; newVersion?: string }
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug, title, body, newVersion }) => {
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-create-pr`, {
         method: 'POST',
@@ -413,6 +457,7 @@ export function usePublishAgentTemplate() {
       newVersion?: string
     }
   >({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async ({ agentSlug, skillsetId, title, body, newVersion }) => {
       const res = await apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/template-publish`, {
         method: 'POST',

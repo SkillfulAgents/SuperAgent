@@ -1,0 +1,61 @@
+import { z } from 'zod'
+import type { ModelDefinition } from '../llm-provider/model-catalog-schema'
+
+// Keep in sync with agent-container/src/subagent-model-catalog-schema.ts. The
+// container is a standalone package and cannot import host @shared modules.
+export const MAX_SUBAGENT_MODELS = 32
+
+export const subagentModelDefinitionSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  blurb: z.string().optional(),
+  family: z.string().optional(),
+  isLatest: z.boolean().optional(),
+  supportsWebSearch: z.boolean().optional(),
+  supportsWebFetch: z.boolean().optional(),
+  supportsImageInput: z.boolean().optional(),
+  promptHints: z.array(z.string().min(1)).optional(),
+  pricing: z
+    .object({
+      inputPerMtok: z.number().nonnegative(),
+      outputPerMtok: z.number().nonnegative(),
+    })
+    .optional(),
+  contextWindow: z.number().int().positive().optional(),
+})
+
+export const subagentModelCatalogSchema = z
+  .array(subagentModelDefinitionSchema)
+  .max(MAX_SUBAGENT_MODELS)
+
+export type SubagentModelDefinition = z.infer<typeof subagentModelDefinitionSchema>
+
+export function getSubagentModelCatalog(catalog: readonly ModelDefinition[]): SubagentModelDefinition[] {
+  const latestModels = catalog.filter((model) => model.isLatest === true)
+  if (latestModels.length > MAX_SUBAGENT_MODELS) {
+    console.warn(
+      `[SubagentModels] Catalog exposes ${latestModels.length} latest models; only the first ${MAX_SUBAGENT_MODELS} are available to subagents.`,
+    )
+  }
+
+  return subagentModelCatalogSchema.parse(
+    latestModels
+      .slice(0, MAX_SUBAGENT_MODELS)
+      .map((model) => ({
+        id: model.id,
+        label: model.label,
+        blurb: model.blurb,
+        family: model.family,
+        isLatest: model.isLatest,
+        supportsWebSearch: model.supportsWebSearch,
+        supportsWebFetch: model.supportsWebFetch,
+        supportsImageInput: model.supportsImageInput,
+        promptHints: model.promptHints,
+        pricing: model.pricing && {
+          inputPerMtok: model.pricing.inputPerMtok,
+          outputPerMtok: model.pricing.outputPerMtok,
+        },
+        contextWindow: model.contextWindow,
+      })),
+  )
+}

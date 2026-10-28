@@ -5,9 +5,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 // ============================================================================
 
 const mockSpawn = vi.fn()
+const mockExecFile = vi.fn()
 vi.mock('child_process', () => ({
   execSync: vi.fn(),
   spawn: (...args: any[]) => mockSpawn(...args),
+  execFile: (...args: any[]) => mockExecFile(...args),
 }))
 
 vi.mock('fs', () => ({
@@ -40,6 +42,14 @@ vi.mock('./base-container-client', () => ({
   BaseContainerClient: class {
     config: any
     constructor(config: any) { this.config = config }
+    protected agentIdentityForEnv() { return { id: this.config.agentId } }
+    // Stands in for the real merge, which these tests don't exercise: they
+    // cover where the env file lands and how its path is translated. What the
+    // merge itself produces (provider env, ENABLE_TOOL_SEARCH, precedence) is
+    // covered in base-container-client.test.ts.
+    protected buildAgentEnv(extra?: Record<string, string>) {
+      return { CLAUDE_CONFIG_DIR: '/workspace/.claude', ...this.config.envVars, ...extra }
+    }
   },
   checkCommandAvailable: vi.fn(),
   execWithPath: vi.fn(),
@@ -58,8 +68,15 @@ vi.mock('@shared/lib/config/data-dir', () => ({
   getDataDir: vi.fn(() => 'C:\\Users\\testuser\\.superagent'),
 }))
 
+vi.mock('@shared/lib/error-reporting', () => ({
+  captureException: vi.fn(),
+  captureMessage: vi.fn(),
+  addErrorBreadcrumb: vi.fn(),
+}))
+
 import * as fs from 'fs'
 import { execWithPath, writeEnvFile } from './base-container-client'
+import { captureMessage } from '@shared/lib/error-reporting'
 
 // ============================================================================
 // Import module under test — AFTER mocks
@@ -73,11 +90,20 @@ import {
   ensureWSL2Ready,
   stopWSL2Distro,
   WSL2ContainerClient,
+  classifyProbeCurlExit,
+  classifyProbeWgetResult,
+  killWSL2PullProcesses,
 } from './wsl2-container-client'
 
 const mockedFs = vi.mocked(fs)
 const mockedExecWithPath = vi.mocked(execWithPath)
 const mockedWriteEnvFile = vi.mocked(writeEnvFile)
+const mockedCaptureMessage = vi.mocked(captureMessage)
+
+// Drive owner check (stat -c %u /mnt/c): drives already mount as the agent user.
+function mockDrivesOwnedByAgent() {
+  mockedExecWithPath.mockResolvedValueOnce({ stdout: '1000\n', stderr: '' })
+}
 
 // ============================================================================
 // windowsToWSLPath
@@ -92,7 +118,7 @@ describe('windowsToWSLPath', () => {
     expect(windowsToWSLPath('C:/Users/foo/bar')).toBe('/mnt/c/Users/foo/bar')
   })
 
-  it('handles different drive letters', () => {
+  it('handles different drive letters', async () => {
     expect(windowsToWSLPath('D:\\Data\\stuff')).toBe('/mnt/d/Data/stuff')
   })
 
@@ -104,7 +130,7 @@ describe('windowsToWSLPath', () => {
     expect(windowsToWSLPath('/usr/local/bin')).toBe('/usr/local/bin')
   })
 
-  it('handles root of drive', () => {
+  it('handles root of drive', async () => {
     expect(windowsToWSLPath('C:\\')).toBe('/mnt/c/')
   })
 })
@@ -193,6 +219,7 @@ describe('ensureWSL2Ready', () => {
     mockedExecWithPath.mockResolvedValueOnce({ stdout: 'nerdctl version', stderr: '' })
     // Mount health check: test -d /mnt/c/Windows
     mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    mockDrivesOwnedByAgent()
 
     // Mock bundled rootfs
     Object.defineProperty(process, 'resourcesPath', {
@@ -219,6 +246,7 @@ describe('ensureWSL2Ready', () => {
     mockedExecWithPath.mockResolvedValueOnce({ stdout: 'nerdctl version', stderr: '' })
     // Mount health check: test -d /mnt/c/Windows
     mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    mockDrivesOwnedByAgent()
 
     await ensureWSL2Ready()
 
@@ -272,6 +300,7 @@ describe('ensureWSL2Ready', () => {
     mockedExecWithPath.mockResolvedValueOnce({ stdout: 'nerdctl version', stderr: '' })
     // Mount health check: test -d /mnt/c/Windows
     mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    mockDrivesOwnedByAgent()
 
     await ensureWSL2Ready()
 
@@ -354,6 +383,7 @@ describe('ensureWSL2Ready', () => {
     mockedExecWithPath.mockResolvedValueOnce({ stdout: 'nerdctl version', stderr: '' })
     // Mount health check passes on retry
     mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    mockDrivesOwnedByAgent()
 
     // Mock bundled rootfs
     Object.defineProperty(process, 'resourcesPath', {
@@ -400,6 +430,105 @@ describe('ensureWSL2Ready', () => {
     mockedFs.existsSync.mockReturnValue(true)
 
     await expect(ensureWSL2Ready()).rejects.toThrow('cannot mount the Windows filesystem')
+  })
+
+  describe('Windows drive ownership', () => {
+    const rootOwned = { stdout: '0\n', stderr: '' }
+    const ok = { stdout: '', stderr: '' }
+    const execCalls = () => mockedExecWithPath.mock.calls.map((c) => c[0] as string)
+
+    // Everything before the owner check, for a provisioned distro in `state`.
+    function mockReadyUpToOwnerCheck(state: 'Running' | 'Stopped') {
+      mockWSLList([{ name: WSL2_DISTRO_NAME, state }])
+      mockWSLList([{ name: WSL2_DISTRO_NAME, state }])
+      if (state === 'Stopped') mockedExecWithPath.mockResolvedValueOnce({ stdout: 'starting', stderr: '' })
+      // Provisioning check, nerdctl version, mount health check
+      mockedExecWithPath.mockResolvedValueOnce(ok)
+      mockedExecWithPath.mockResolvedValueOnce({ stdout: 'nerdctl version', stderr: '' })
+      mockedExecWithPath.mockResolvedValueOnce(ok)
+    }
+
+    // A `sh -s` child that exits once the script has been piped in.
+    function mockSpawnScript() {
+      const { EventEmitter } = require('events')
+      const proc = new EventEmitter()
+      proc.stdout = new EventEmitter()
+      proc.stderr = new EventEmitter()
+      proc.stdin = { write: vi.fn(), end: vi.fn(() => process.nextTick(() => proc.emit('close', 0))) }
+      mockSpawn.mockReturnValueOnce(proc)
+      return proc
+    }
+
+    it('leaves the distro alone when drives already mount as the agent user', async () => {
+      mockReadyUpToOwnerCheck('Running')
+      mockDrivesOwnedByAgent()
+
+      await ensureWSL2Ready()
+
+      expect(mockSpawn).not.toHaveBeenCalled()
+      expect(execCalls().some((c) => c.includes('--terminate'))).toBe(false)
+    })
+
+    it('rewrites wsl.conf and restarts the distro when drives are root-owned', async () => {
+      mockReadyUpToOwnerCheck('Running')
+      mockedExecWithPath.mockResolvedValueOnce(rootOwned)
+      const confWrite = mockSpawnScript()
+      // nerdctl ps -q: nothing running
+      mockedExecWithPath.mockResolvedValueOnce(ok)
+      // wsl --terminate
+      mockedExecWithPath.mockResolvedValueOnce(ok)
+      // Second pass: the distro boots with the new automount options
+      mockReadyUpToOwnerCheck('Stopped')
+      mockDrivesOwnedByAgent()
+
+      await ensureWSL2Ready()
+
+      const script = confWrite.stdin.write.mock.calls[0][0] as string
+      expect(script).toContain('[boot]')
+      expect(script).toContain('[automount]\noptions = "uid=1000,gid=1000"')
+      expect(execCalls().filter((c) => c.includes('--terminate'))).toEqual([`wsl --terminate ${WSL2_DISTRO_NAME}`])
+      expect(execCalls()).toContain(`wsl -d ${WSL2_DISTRO_NAME} -- echo starting`)
+    })
+
+    it('defers the restart while containers are running', async () => {
+      mockReadyUpToOwnerCheck('Running')
+      mockedExecWithPath.mockResolvedValueOnce(rootOwned)
+      const confWrite = mockSpawnScript()
+      mockedExecWithPath.mockResolvedValueOnce({ stdout: 'abc123\n', stderr: '' })
+
+      await ensureWSL2Ready()
+
+      expect(confWrite.stdin.write).toHaveBeenCalledWith(expect.stringContaining('[automount]'))
+      expect(execCalls().some((c) => c.includes('--terminate'))).toBe(false)
+    })
+
+    it('restarts at most once when WSL ignores the automount options', async () => {
+      mockReadyUpToOwnerCheck('Running')
+      mockedExecWithPath.mockResolvedValueOnce(rootOwned)
+      mockSpawnScript()
+      mockedExecWithPath.mockResolvedValueOnce(ok)
+      mockedExecWithPath.mockResolvedValueOnce(ok)
+      // Second pass: still root-owned
+      mockReadyUpToOwnerCheck('Stopped')
+      mockedExecWithPath.mockResolvedValueOnce(rootOwned)
+
+      await ensureWSL2Ready()
+
+      expect(execCalls().filter((c) => c.includes('--terminate')).length).toBe(1)
+      expect(mockSpawn).toHaveBeenCalledTimes(1)
+      expect(mockedCaptureMessage).toHaveBeenCalledWith(
+        'WSL2 automount uid option did not take effect after restart',
+        expect.objectContaining({ level: 'warning' }),
+      )
+    })
+
+    it('does not fail readiness when the owner check errors', async () => {
+      mockReadyUpToOwnerCheck('Running')
+      mockedExecWithPath.mockRejectedValueOnce(new Error('stat: not found'))
+
+      await expect(ensureWSL2Ready()).resolves.toBeUndefined()
+      expect(execCalls().some((c) => c.includes('--terminate'))).toBe(false)
+    })
   })
 })
 
@@ -564,7 +693,7 @@ describe('WSL2ContainerClient.buildEnvFile', () => {
     })
   }
 
-  it('translates Windows env file path to WSL2 path', () => {
+  it('translates Windows env file path to WSL2 path', async () => {
     mockedWriteEnvFile.mockReturnValue({
       flag: '--env-file "C:\\Users\\testuser\\.superagent\\tmp\\superagent-env-test-agent-123"',
       filePath: 'C:\\Users\\testuser\\.superagent\\tmp\\superagent-env-test-agent-123',
@@ -572,12 +701,12 @@ describe('WSL2ContainerClient.buildEnvFile', () => {
     })
 
     const client = createClient()
-    const result = client.testBuildEnvFile()
+    const result = await client.testBuildEnvFile()
 
     expect(result.flag).toBe('--env-file "/mnt/c/Users/testuser/.superagent/tmp/superagent-env-test-agent-123"')
   })
 
-  it('translates paths with different drive letters', () => {
+  it('translates paths with different drive letters', async () => {
     mockedWriteEnvFile.mockReturnValue({
       flag: '--env-file "D:\\Data\\tmp\\env-file"',
       filePath: 'D:\\Data\\tmp\\env-file',
@@ -585,12 +714,12 @@ describe('WSL2ContainerClient.buildEnvFile', () => {
     })
 
     const client = createClient()
-    const result = client.testBuildEnvFile()
+    const result = await client.testBuildEnvFile()
 
     expect(result.flag).toBe('--env-file "/mnt/d/Data/tmp/env-file"')
   })
 
-  it('handles forward-slash Windows paths', () => {
+  it('handles forward-slash Windows paths', async () => {
     mockedWriteEnvFile.mockReturnValue({
       flag: '--env-file "C:/Users/testuser/tmp/env-file"',
       filePath: 'C:/Users/testuser/tmp/env-file',
@@ -598,12 +727,12 @@ describe('WSL2ContainerClient.buildEnvFile', () => {
     })
 
     const client = createClient()
-    const result = client.testBuildEnvFile()
+    const result = await client.testBuildEnvFile()
 
     expect(result.flag).toBe('--env-file "/mnt/c/Users/testuser/tmp/env-file"')
   })
 
-  it('passes through the cleanup function from writeEnvFile', () => {
+  it('passes through the cleanup function from writeEnvFile', async () => {
     const mockCleanup = vi.fn()
     mockedWriteEnvFile.mockReturnValue({
       flag: '--env-file "C:\\tmp\\env"',
@@ -612,13 +741,13 @@ describe('WSL2ContainerClient.buildEnvFile', () => {
     })
 
     const client = createClient()
-    const result = client.testBuildEnvFile()
+    const result = await client.testBuildEnvFile()
 
     result.cleanup()
     expect(mockCleanup).toHaveBeenCalledOnce()
   })
 
-  it('passes agent envVars and additional envVars to writeEnvFile', () => {
+  it('passes agent envVars and additional envVars to writeEnvFile', async () => {
     mockedWriteEnvFile.mockReturnValue({
       flag: '--env-file "C:\\tmp\\env"',
       filePath: 'C:\\tmp\\env',
@@ -626,20 +755,19 @@ describe('WSL2ContainerClient.buildEnvFile', () => {
     })
 
     const client = createClient({ agentId: 'my-agent', envVars: { FOO: 'bar' } })
-    client.testBuildEnvFile({ EXTRA: 'val' })
+    await client.testBuildEnvFile({ EXTRA: 'val' })
 
     expect(mockedWriteEnvFile).toHaveBeenCalledOnce()
     const [envVars, agentId] = mockedWriteEnvFile.mock.calls[0]
     expect(agentId).toBe('my-agent')
     expect(envVars).toMatchObject({
-      ANTHROPIC_API_KEY: 'test-key',
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       FOO: 'bar',
       EXTRA: 'val',
     })
   })
 
-  it('writes to the .superagent/tmp directory under homedir', () => {
+  it('writes to the .superagent/tmp directory under homedir', async () => {
     mockedWriteEnvFile.mockReturnValue({
       flag: '--env-file "C:\\tmp\\env"',
       filePath: 'C:\\tmp\\env',
@@ -647,7 +775,7 @@ describe('WSL2ContainerClient.buildEnvFile', () => {
     })
 
     const client = createClient()
-    client.testBuildEnvFile()
+    await client.testBuildEnvFile()
 
     const [, , tmpDir] = mockedWriteEnvFile.mock.calls[0]
     // path.join on test platform — check key components
@@ -655,7 +783,7 @@ describe('WSL2ContainerClient.buildEnvFile', () => {
     expect(tmpDir).toContain('tmp')
   })
 
-  it('handles paths with spaces', () => {
+  it('handles paths with spaces', async () => {
     mockedWriteEnvFile.mockReturnValue({
       flag: '--env-file "C:\\Users\\Test User\\AppData\\tmp\\env-file"',
       filePath: 'C:\\Users\\Test User\\AppData\\tmp\\env-file',
@@ -663,7 +791,7 @@ describe('WSL2ContainerClient.buildEnvFile', () => {
     })
 
     const client = createClient()
-    const result = client.testBuildEnvFile()
+    const result = await client.testBuildEnvFile()
 
     expect(result.flag).toBe('--env-file "/mnt/c/Users/Test User/AppData/tmp/env-file"')
   })
@@ -704,6 +832,7 @@ describe('WSL2ContainerClient.handleRunError', () => {
     mockedExecWithPath.mockResolvedValueOnce({ stdout: 'ok', stderr: '' })
     // Mount health check: test -d /mnt/c/Windows
     mockedExecWithPath.mockResolvedValueOnce({ stdout: '', stderr: '' })
+    mockDrivesOwnedByAgent()
   }
 
   it('returns true and provisions on ENOENT error', async () => {
@@ -748,12 +877,60 @@ describe('WSL2ContainerClient.handleRunError', () => {
     expect(result).toBe(true)
   })
 
-  it('returns false on unrecognized error (e.g., network error)', async () => {
+  /** Health-probe (static isRunning) sequence: wsl --list --verbose, then nerdctl version. */
+  function mockHealthProbe(distroState: 'Running' | 'Stopped') {
+    const header = '  NAME                   STATE           VERSION'
+    const line = `  ${WSL2_DISTRO_NAME.padEnd(23)}${distroState}         2`
+    mockedExecWithPath.mockResolvedValueOnce({ stdout: `${header}\n${line}`, stderr: '' })
+    if (distroState === 'Running') {
+      mockedExecWithPath.mockResolvedValueOnce({ stdout: 'ok', stderr: '' })
+    }
+  }
+
+  it('returns false on unrecognized error when the distro is healthy (probe decides)', async () => {
+    mockHealthProbe('Running')
     const client = createClient()
     const result = await client.testHandleRunError(new Error('Connection refused'))
     expect(result).toBe(false)
-    // Should not have called ensureWSL2Ready
-    expect(mockedExecWithPath).not.toHaveBeenCalled()
+    // Only the two probe commands ran — no provisioning.
+    expect(mockedExecWithPath).toHaveBeenCalledTimes(2)
+  })
+
+  it('provisions on an unrecognized error when the probe finds the distro down', async () => {
+    mockHealthProbe('Stopped')
+    mockEnsureWSL2ReadySuccess()
+    const client = createClient()
+    const result = await client.testHandleRunError(new Error('Connection refused'))
+    expect(result).toBe(true)
+  })
+
+  it('provisions on a tagged image-create failure when the distro died mid-pull', async () => {
+    // The pull error text ("not running") would string-match, but tagged
+    // errors defer to the probe — which finds the distro genuinely down.
+    mockHealthProbe('Stopped')
+    mockEnsureWSL2ReadySuccess()
+    const client = createClient()
+    const result = await client.testHandleRunError(
+      Object.assign(new Error('Image pull failed with exit code 1: The distro is not running'), {
+        isImageCreateError: true,
+        sentryCaptured: true,
+      })
+    )
+    expect(result).toBe(true)
+  })
+
+  it('never provisions for a registry "not found" create failure on a healthy distro', async () => {
+    mockHealthProbe('Running')
+    const client = createClient()
+    const result = await client.testHandleRunError(
+      Object.assign(new Error('Image pull failed with exit code 1: ghcr.io/x/y:9.9.9: not found'), {
+        isImageCreateError: true,
+        sentryCaptured: true,
+      })
+    )
+    expect(result).toBe(false)
+    // Only the two probe commands ran — no provisioning for a registry 404.
+    expect(mockedExecWithPath).toHaveBeenCalledTimes(2)
   })
 
   it('returns false when provisioning fails', async () => {
@@ -779,5 +956,211 @@ describe('WSL2ContainerClient.handleRunError', () => {
     const client = createClient()
     const result = await client.testHandleRunError('some random string error')
     expect(result).toBe(false)
+  })
+})
+
+// ============================================================================
+// Host-port reachability probe (firewall detection for the host-browser
+// CDP proxy)
+// ============================================================================
+
+describe('classifyProbeCurlExit', () => {
+  it('maps exit 0 to reachable', () => {
+    expect(classifyProbeCurlExit(0)).toBe('reachable')
+  })
+
+  it('maps connection-refused (7) and timeout (28) to unreachable', () => {
+    expect(classifyProbeCurlExit(7)).toBe('unreachable')
+    expect(classifyProbeCurlExit(28)).toBe('unreachable')
+  })
+
+  it('maps everything else to unknown so a broken probe cannot fail a working setup', () => {
+    expect(classifyProbeCurlExit(127)).toBe('unknown') // curl not installed
+    expect(classifyProbeCurlExit(56)).toBe('unknown') // TCP connected, transfer broke
+    expect(classifyProbeCurlExit(1)).toBe('unknown')
+    expect(classifyProbeCurlExit(null)).toBe('unknown')
+    expect(classifyProbeCurlExit(undefined)).toBe('unknown')
+  })
+})
+
+describe('classifyProbeWgetResult', () => {
+  // stderr strings below are verbatim busybox v1.37.0 output from the shipped distro
+  it('maps exit 0 to reachable', () => {
+    expect(classifyProbeWgetResult(0, '')).toBe('reachable')
+  })
+
+  it('maps connection-refused stderr to unreachable', () => {
+    const stderr =
+      "Connecting to 127.0.0.1:1 (127.0.0.1:1)\nwget: can't connect to remote host (127.0.0.1): Connection refused"
+    expect(classifyProbeWgetResult(1, stderr)).toBe('unreachable')
+  })
+
+  it('maps timeout stderr (firewall drop) to unreachable', () => {
+    expect(classifyProbeWgetResult(1, 'wget: download timed out')).toBe('unreachable')
+    expect(
+      classifyProbeWgetResult(1, "wget: can't connect to remote host: Connection timed out"),
+    ).toBe('unreachable')
+  })
+
+  it('maps an HTTP error response to reachable (the server answered)', () => {
+    expect(
+      classifyProbeWgetResult(1, 'wget: server returned error: HTTP/1.1 404 Not Found'),
+    ).toBe('reachable')
+  })
+
+  it('maps everything else to unknown so a broken probe cannot fail a working setup', () => {
+    expect(classifyProbeWgetResult(127, 'wget: not found')).toBe('unknown') // wget missing too
+    expect(classifyProbeWgetResult(1, "wget: bad address 'no-such-host:1'")).toBe('unknown')
+    expect(classifyProbeWgetResult(1, '')).toBe('unknown')
+    expect(classifyProbeWgetResult(null, '')).toBe('unknown')
+    expect(classifyProbeWgetResult(undefined, '')).toBe('unknown')
+  })
+})
+
+describe('WSL2ContainerClient.probeHostPortFromRunner', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  function createClient() {
+    return new WSL2ContainerClient({ agentId: 'test-agent' } as any)
+  }
+
+  function mockProbeResults(...errs: (Error | null)[]) {
+    for (const err of errs) {
+      mockExecFile.mockImplementationOnce((...args: any[]) => {
+        const cb = args[args.length - 1]
+        cb(err, err ? undefined : { stdout: '', stderr: '' })
+      })
+    }
+  }
+
+  const curlMissing = () =>
+    Object.assign(new Error('curl: not found'), { code: 127, stderr: '/bin/sh: curl: not found' })
+
+  it('probes the endpoint via curl inside the distro', async () => {
+    mockProbeResults(null)
+
+    const result = await createClient().probeHostPortFromRunner('172.22.192.1', 9222)
+
+    expect(result).toBe('reachable')
+    expect(mockExecFile).toHaveBeenCalledTimes(1)
+    const [file, cmdArgs] = mockExecFile.mock.calls[0]
+    expect(file).toBe('wsl')
+    expect(cmdArgs).toContain(WSL2_DISTRO_NAME)
+    expect(cmdArgs).toContain('curl')
+    expect(cmdArgs).toContain('http://172.22.192.1:9222/json/version')
+  })
+
+  it('reports unreachable when curl times out (firewall drop) without falling back', async () => {
+    mockProbeResults(Object.assign(new Error('curl timed out'), { code: 28 }))
+
+    expect(await createClient().probeHostPortFromRunner('172.22.192.1', 9222)).toBe('unreachable')
+    expect(mockExecFile).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports unreachable when the connection is refused', async () => {
+    mockProbeResults(Object.assign(new Error('connection refused'), { code: 7 }))
+
+    expect(await createClient().probeHostPortFromRunner('172.22.192.1', 9222)).toBe('unreachable')
+  })
+
+  it('reports unknown when wsl itself cannot run (non-numeric error code)', async () => {
+    mockProbeResults(Object.assign(new Error('spawn wsl ENOENT'), { code: 'ENOENT' }))
+
+    expect(await createClient().probeHostPortFromRunner('172.22.192.1', 9222)).toBe('unknown')
+    expect(mockExecFile).toHaveBeenCalledTimes(1)
+  })
+
+  it('falls back to busybox wget when curl is missing and reports reachable on success', async () => {
+    mockProbeResults(curlMissing(), null)
+
+    const result = await createClient().probeHostPortFromRunner('172.22.192.1', 9222)
+
+    expect(result).toBe('reachable')
+    expect(mockExecFile).toHaveBeenCalledTimes(2)
+    const [file, cmdArgs] = mockExecFile.mock.calls[1]
+    expect(file).toBe('wsl')
+    expect(cmdArgs).toContain('wget')
+    expect(cmdArgs).toContain('http://172.22.192.1:9222/json/version')
+    // -q would swallow the stderr the classifier needs
+    expect(cmdArgs).not.toContain('-q')
+  })
+
+  it('reports unreachable when the wget fallback is refused', async () => {
+    mockProbeResults(
+      curlMissing(),
+      Object.assign(new Error('wget failed'), {
+        code: 1,
+        stderr:
+          "Connecting to 172.22.192.1:9222 (172.22.192.1:9222)\nwget: can't connect to remote host (172.22.192.1): Connection refused",
+      }),
+    )
+
+    expect(await createClient().probeHostPortFromRunner('172.22.192.1', 9222)).toBe('unreachable')
+  })
+
+  it('reports unreachable when the wget fallback times out (firewall drop)', async () => {
+    mockProbeResults(
+      curlMissing(),
+      Object.assign(new Error('wget failed'), { code: 1, stderr: 'wget: download timed out' }),
+    )
+
+    expect(await createClient().probeHostPortFromRunner('172.22.192.1', 9222)).toBe('unreachable')
+  })
+
+  it('reports unknown when wget is missing as well', async () => {
+    mockProbeResults(
+      curlMissing(),
+      Object.assign(new Error('wget: not found'), { code: 127, stderr: '/bin/sh: wget: not found' }),
+    )
+
+    expect(await createClient().probeHostPortFromRunner('172.22.192.1', 9222)).toBe('unknown')
+  })
+})
+
+// ============================================================================
+// killWSL2PullProcesses — clears in-distro nerdctl pulls that outlive their
+// host-side wsl.exe parent (they hold containerd's ingest lock, wedging any
+// subsequent pull of the same image). Called by the pull stall watchdog.
+// ============================================================================
+
+describe('killWSL2PullProcesses', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('pkills nerdctl pull processes inside the distro', async () => {
+    vi.mocked(execWithPath).mockResolvedValue({ stdout: '', stderr: '' })
+
+    await killWSL2PullProcesses()
+
+    expect(execWithPath).toHaveBeenCalledWith(
+      `wsl -d ${WSL2_DISTRO_NAME} -- pkill -f "nerdctl [p]ull"`
+    )
+  })
+
+  it('resolves quietly when no pull process matched (pkill exit 1)', async () => {
+    vi.mocked(execWithPath).mockRejectedValue(
+      Object.assign(new Error('Command failed: pkill -f "nerdctl [p]ull"'), { code: 1 })
+    )
+
+    await expect(killWSL2PullProcesses()).resolves.toBeUndefined()
+  })
+
+  it('rethrows failures other than pkill no-match (e.g. WSL not responding)', async () => {
+    vi.mocked(execWithPath).mockRejectedValue(
+      Object.assign(new Error('The Windows Subsystem for Linux instance has terminated.'), { code: 4294967295 })
+    )
+
+    await expect(killWSL2PullProcesses()).rejects.toThrow('has terminated')
+  })
+
+  it('rethrows spawn failures without a numeric exit code', async () => {
+    vi.mocked(execWithPath).mockRejectedValue(
+      Object.assign(new Error('spawn wsl ENOENT'), { code: 'ENOENT' })
+    )
+
+    await expect(killWSL2PullProcesses()).rejects.toThrow('ENOENT')
   })
 })

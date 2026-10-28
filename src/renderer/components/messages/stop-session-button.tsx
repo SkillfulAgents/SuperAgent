@@ -1,5 +1,6 @@
 import { X } from 'lucide-react'
 import { useInterruptSession } from '@renderer/hooks/use-messages'
+import { exitSessionVoiceMode } from '@renderer/lib/voice-mode-handoff'
 import { cn } from '@shared/lib/utils/cn'
 
 interface StopSessionButtonProps {
@@ -13,7 +14,10 @@ export function StopSessionButton({ sessionId, agentSlug }: StopSessionButtonPro
   return (
     <button
       type="button"
-      onClick={() => interrupt.mutate({ sessionId, agentSlug })}
+      onClick={() => {
+        exitSessionVoiceMode(sessionId)
+        interrupt.mutate({ sessionId, agentSlug })
+      }}
       disabled={interrupt.isPending}
       aria-label="Stop session"
       title="Stop session"

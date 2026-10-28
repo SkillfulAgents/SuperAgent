@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { BrowserTabBar, type BrowserTabInfo } from './browser-tab-bar'
 
@@ -17,9 +17,7 @@ describe('BrowserTabBar', () => {
   const defaultProps = {
     tabs: makeTabs(3),
     viewingTargetId: 'target-0',
-    autoFollow: true,
     onTabClick: vi.fn(),
-    onToggleAutoFollow: vi.fn(),
   }
 
   it('renders all tabs', () => {
@@ -45,13 +43,36 @@ describe('BrowserTabBar', () => {
     expect(screen.getByText('Tab 3')).toBeInTheDocument()
   })
 
-  it('highlights the viewing tab with bg-background class', () => {
+  it('raises the viewing tab as a card (bg-background on the tab shell)', () => {
     render(<BrowserTabBar {...defaultProps} viewingTargetId="target-1" />)
-    const viewingButton = screen.getByText('Tab 1').closest('button')!
-    expect(viewingButton.className).toContain('bg-background')
+    const viewingTab = screen.getByText('Tab 1').closest('[data-testid="browser-tab"]')!
+    expect(viewingTab.className).toContain('bg-background')
+    expect(viewingTab).toHaveAttribute('data-active')
 
-    const otherButton = screen.getByText('Tab 2').closest('button')!
-    expect(otherButton.className).not.toContain('bg-background')
+    const otherTab = screen.getByText('Tab 2').closest('[data-testid="browser-tab"]')!
+    expect(otherTab).not.toHaveAttribute('data-active')
+  })
+
+  it('renders the trailing control at the right end of the strip', () => {
+    render(<BrowserTabBar {...defaultProps} trailing={<button>hide</button>} />)
+    expect(screen.getByText('hide')).toBeInTheDocument()
+  })
+
+  it('renders the strip with no tabs so the drawer controls stay reachable', () => {
+    render(<BrowserTabBar {...defaultProps} tabs={[]} trailing={<button>hide</button>} />)
+    expect(screen.getByTestId('browser-tab-bar')).toBeInTheDocument()
+    expect(screen.getByText('hide')).toBeInTheDocument()
+    expect(screen.queryByTestId('browser-tab')).toBeNull()
+  })
+
+  it('shows a per-tab close on every tab but the agent-active one', async () => {
+    const onCloseTab = vi.fn()
+    const user = userEvent.setup()
+    render(<BrowserTabBar {...defaultProps} onCloseTab={onCloseTab} />)
+
+    expect(screen.queryByLabelText('Close Tab 0')).toBeNull()
+    await user.click(screen.getByLabelText('Close Tab 1'))
+    expect(onCloseTab).toHaveBeenCalledWith('target-1')
   })
 
   it('shows agent-active indicator (blue dot) on active tab', () => {
@@ -75,38 +96,10 @@ describe('BrowserTabBar', () => {
     expect(onTabClick).toHaveBeenCalledWith('target-2')
   })
 
-  it('shows Eye icon and blue text when autoFollow is true', () => {
-    render(<BrowserTabBar {...defaultProps} autoFollow={true} />)
-    const toggleButton = screen.getByTitle('Auto-following agent (click to pin)')
-    expect(toggleButton.className).toContain('text-blue-500')
-  })
 
-  it('shows EyeOff icon when autoFollow is false', () => {
-    render(<BrowserTabBar {...defaultProps} autoFollow={false} />)
-    const toggleButton = screen.getByTitle('Not following agent (click to follow)')
-    expect(toggleButton).toBeInTheDocument()
-  })
 
-  it('calls onToggleAutoFollow when toggle button is clicked', async () => {
-    const onToggleAutoFollow = vi.fn()
-    const user = userEvent.setup()
-    render(<BrowserTabBar {...defaultProps} onToggleAutoFollow={onToggleAutoFollow} />)
 
-    await user.click(screen.getByTitle('Auto-following agent (click to pin)'))
-    expect(onToggleAutoFollow).toHaveBeenCalledOnce()
-  })
 
-  it('shows loading spinner when loading is true', () => {
-    const { container } = render(<BrowserTabBar {...defaultProps} loading={true} />)
-    const spinner = container.querySelector('.animate-spin')
-    expect(spinner).toBeInTheDocument()
-  })
-
-  it('does not show loading spinner when loading is false', () => {
-    const { container } = render(<BrowserTabBar {...defaultProps} loading={false} />)
-    const spinner = container.querySelector('.animate-spin')
-    expect(spinner).not.toBeInTheDocument()
-  })
 
   it('right-click on tab shows context menu with Close tab', async () => {
     const user = userEvent.setup()
@@ -135,5 +128,26 @@ describe('BrowserTabBar', () => {
     await user.pointer({ keys: '[MouseRight]', target: screen.getByText('Tab 1') })
     await user.click(await screen.findByText('Close tab'))
     expect(onCloseTab).toHaveBeenCalledWith('target-1')
+  })
+
+  it('shows the favicon when the tab has one and a globe when it does not', () => {
+    const tabs: BrowserTabInfo[] = [
+      { targetId: 't1', index: 0, url: 'https://github.com', title: 'GitHub', faviconUrl: 'https://github.com/favicon.svg', active: true },
+      { targetId: 't2', index: 1, url: 'https://example.com', title: 'Example', active: false },
+    ]
+    render(<BrowserTabBar {...defaultProps} tabs={tabs} />)
+    const icon = screen.getByTestId('browser-tab-favicon')
+    expect(icon).toHaveAttribute('src', 'https://github.com/favicon.svg')
+    expect(screen.getAllByTestId('browser-tab-globe')).toHaveLength(1)
+  })
+
+  it('falls back to the globe when the favicon fails to load', () => {
+    const tabs: BrowserTabInfo[] = [
+      { targetId: 't1', index: 0, url: 'https://internal.test', title: 'Internal', faviconUrl: 'https://internal.test/favicon.ico', active: true },
+    ]
+    render(<BrowserTabBar {...defaultProps} tabs={tabs} />)
+    fireEvent.error(screen.getByTestId('browser-tab-favicon'))
+    expect(screen.queryByTestId('browser-tab-favicon')).toBeNull()
+    expect(screen.getByTestId('browser-tab-globe')).toBeInTheDocument()
   })
 })

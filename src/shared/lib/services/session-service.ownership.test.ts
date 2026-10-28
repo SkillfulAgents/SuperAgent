@@ -1,0 +1,276 @@
+/**
+ * Session ownership: a session id only ever "belongs to" the agent that owns it.
+ *
+ * A process-wide registry keyed by session id alone has no agent dimension,
+ * so any route that reaches one has to establish ownership itself.
+ * `sessionIsKnown` is that check, and these tests pin the three properties it
+ * has to hold:
+ *
+ *   1. a session of ANOTHER agent never passes;
+ *   2. a session that exists only on disk, or only in metadata, still passes
+ *      (the two halves are written at different times);
+ *   3. an id that isn't a real key — an inherited `Object.prototype` name, or a
+ *      path that escapes the agent's session directory — never passes.
+ */
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import * as fs from 'fs'
+import * as path from 'path'
+import * as os from 'os'
+import { createLocalSessionStore } from '@shared/lib/agent-actor/local-session-store'
+
+let tmpDir: string
+
+function workspaceDir(slug: string): string {
+  return path.join(tmpDir, 'agents', slug, 'workspace')
+}
+function sessionsDir(slug: string): string {
+  return path.join(workspaceDir(slug), '.claude', 'projects', '-workspace')
+}
+function makeAgent(slug: string): void {
+  fs.mkdirSync(sessionsDir(slug), { recursive: true })
+}
+function writeTranscript(slug: string, sessionId: string): void {
+  fs.writeFileSync(path.join(sessionsDir(slug), `${sessionId}.jsonl`), '{}\n')
+}
+
+beforeEach(() => {
+  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'session-own-')))
+  process.env.SUPERAGENT_DATA_DIR = tmpDir
+})
+
+afterEach(() => {
+  fs.rmSync(tmpDir, { recursive: true, force: true })
+  delete process.env.SUPERAGENT_DATA_DIR
+  vi.restoreAllMocks()
+})
+
+async function importService() {
+  return import('./session-service')
+}
+
+// Names inherited from Object.prototype. A membership test written with `in`
+// (or a truthiness test on a bare index read) answers "yes" for every one of
+// them, which turns an ownership gate into a no-op for these ids.
+const INHERITED_KEYS = [
+  'constructor',
+  'toString',
+  'hasOwnProperty',
+  'valueOf',
+  'isPrototypeOf',
+  'propertyIsEnumerable',
+  'toLocaleString',
+]
+
+describe('isSessionRegistered', () => {
+  it('is true only for a session actually registered for that agent', async () => {
+    const { registerSession, isSessionRegistered } = await importService()
+    makeAgent('agent-a')
+    makeAgent('agent-b')
+    await registerSession(createLocalSessionStore('agent-a'), 'session-a', 'A')
+    await registerSession(createLocalSessionStore('agent-b'), 'session-b', 'B')
+
+    expect(await isSessionRegistered(createLocalSessionStore('agent-a'), 'session-a')).toBe(true)
+    expect(await isSessionRegistered(createLocalSessionStore('agent-a'), 'session-b')).toBe(false)
+    expect(await isSessionRegistered(createLocalSessionStore('agent-b'), 'session-a')).toBe(false)
+  })
+
+  it.each(INHERITED_KEYS)('is false for the inherited key %s', async (key) => {
+    const { registerSession, isSessionRegistered } = await importService()
+    makeAgent('agent-a')
+    await registerSession(createLocalSessionStore('agent-a'), 'session-a', 'A')
+
+    expect(await isSessionRegistered(createLocalSessionStore('agent-a'), key)).toBe(false)
+  })
+
+  it('is false for inherited keys even when the agent has no metadata at all', async () => {
+    const { isSessionRegistered } = await importService()
+    makeAgent('empty-agent')
+
+    expect(await isSessionRegistered(createLocalSessionStore('empty-agent'), 'constructor')).toBe(false)
+  })
+})
+
+describe('getSessionMetadata', () => {
+  it.each(INHERITED_KEYS)('returns null for the inherited key %s', async (key) => {
+    const { registerSession, getSessionMetadata } = await importService()
+    makeAgent('agent-a')
+    await registerSession(createLocalSessionStore('agent-a'), 'session-a', 'A')
+
+    expect(await getSessionMetadata(createLocalSessionStore('agent-a'), key)).toBeNull()
+  })
+})
+
+describe('sessionIsKnown', () => {
+  it('accepts a session with a transcript but no metadata entry', async () => {
+    const { sessionIsKnown } = await importService()
+    makeAgent('agent-a')
+    writeTranscript('agent-a', 'on-disk-only')
+
+    expect(await sessionIsKnown(createLocalSessionStore('agent-a'), 'on-disk-only')).toBe(true)
+  })
+
+  it('accepts a just-registered session whose transcript does not exist yet', async () => {
+    const { registerSession, sessionIsKnown } = await importService()
+    makeAgent('agent-a')
+    await registerSession(createLocalSessionStore('agent-a'), 'brand-new', 'New Session')
+
+    expect(await sessionIsKnown(createLocalSessionStore('agent-a'), 'brand-new')).toBe(true)
+  })
+
+  it('rejects another agent’s session, by transcript or by metadata', async () => {
+    const { registerSession, sessionIsKnown } = await importService()
+    makeAgent('agent-a')
+    makeAgent('agent-b')
+    writeTranscript('agent-b', 'b-on-disk')
+    await registerSession(createLocalSessionStore('agent-b'), 'b-registered', 'B')
+
+    expect(await sessionIsKnown(createLocalSessionStore('agent-a'), 'b-on-disk')).toBe(false)
+    expect(await sessionIsKnown(createLocalSessionStore('agent-a'), 'b-registered')).toBe(false)
+  })
+
+  // A forged transcript is no longer refused HERE, and that is the point of
+  // the change this file was rewritten for. `sessionIsKnown` answers "is this
+  // a session of this agent" from this agent's own directory, so an agent that
+  // writes a file named after someone else's session gets `true` — for its own,
+  // empty, same-named session. What that buys the forger is nothing: every
+  // registry it could then reach is keyed by agent AND session, so it lands in
+  // the forger's own namespace. Live sessions are isolated by construction:
+  // each agent's `LiveSessions` (src/shared/lib/agent-actor/live/live-sessions.ts)
+  // holds only that agent's sessions.
+  //
+  // The property that used to be enforced here is now proven where it actually
+  // matters, end to end, against real routes and real live sessions:
+  //   src/api/routes/session-scope.integration.test.ts
+  //     — "a forged transcript does not buy access to another agent's live session"
+  //   e2e/auth/specs/session-scope-roles.spec.ts
+  it('answers for this agent\u2019s own directory, so a forged id names only the forger\u2019s own session', async () => {
+    const { sessionIsKnown } = await importService()
+    makeAgent('agent-a')
+    makeAgent('agent-b')
+    writeTranscript('agent-b', 'victim-session')
+
+    expect(await sessionIsKnown(createLocalSessionStore('agent-b'), 'victim-session')).toBe(true)
+    expect(await sessionIsKnown(createLocalSessionStore('agent-a'), 'victim-session')).toBe(false)
+
+    writeTranscript('agent-a', 'victim-session')
+
+    // Both are now true, and they are two different sessions.
+    expect(await sessionIsKnown(createLocalSessionStore('agent-a'), 'victim-session')).toBe(true)
+    expect(await sessionIsKnown(createLocalSessionStore('agent-b'), 'victim-session')).toBe(true)
+  })
+
+  it('lets two agents hold the same session id', async () => {
+    // The legitimate version of the case above: one exported agent imported
+    // twice. Both copies carry the same transcript ids and both must work.
+    const { registerSession, sessionIsKnown } = await importService()
+    makeAgent('clone-one')
+    makeAgent('clone-two')
+    await registerSession(createLocalSessionStore('clone-one'), 'shared-session', 'Copy')
+    await registerSession(createLocalSessionStore('clone-two'), 'shared-session', 'Copy')
+
+    expect(await sessionIsKnown(createLocalSessionStore('clone-one'), 'shared-session')).toBe(true)
+    expect(await sessionIsKnown(createLocalSessionStore('clone-two'), 'shared-session')).toBe(true)
+  })
+
+  it('keeps a session of another agent out, by transcript or by metadata', async () => {
+    const { registerSession, sessionIsKnown } = await importService()
+    makeAgent('agent-a')
+    makeAgent('agent-b')
+    writeTranscript('agent-b', 'b-on-disk')
+    await registerSession(createLocalSessionStore('agent-b'), 'b-registered', 'B')
+
+    expect(await sessionIsKnown(createLocalSessionStore('agent-a'), 'b-on-disk')).toBe(false)
+    expect(await sessionIsKnown(createLocalSessionStore('agent-a'), 'b-registered')).toBe(false)
+  })
+
+  it('rejects an unknown session id', async () => {
+    const { sessionIsKnown } = await importService()
+    makeAgent('agent-a')
+
+    expect(await sessionIsKnown(createLocalSessionStore('agent-a'), 'never-existed')).toBe(false)
+  })
+
+  it.each(INHERITED_KEYS)('rejects the inherited key %s', async (key) => {
+    const { registerSession, sessionIsKnown } = await importService()
+    makeAgent('agent-a')
+    await registerSession(createLocalSessionStore('agent-a'), 'session-a', 'A')
+
+    expect(await sessionIsKnown(createLocalSessionStore('agent-a'), key)).toBe(false)
+  })
+
+  it('rejects — without throwing — an id that escapes the agent’s session directory', async () => {
+    const { sessionIsKnown } = await importService()
+    makeAgent('agent-a')
+    makeAgent('agent-b')
+    writeTranscript('agent-b', 'b-session')
+
+    // Resolves onto agent-b's real transcript. A raw sessionExists() call throws
+    // 'Invalid session ID' here; the gate has to answer false, because a caller
+    // that lets the throw escape hands the request to whatever its catch does.
+    const escaping = '../../../../../agent-b/workspace/.claude/projects/-workspace/b-session'
+    await expect(sessionIsKnown(createLocalSessionStore('agent-a'), escaping)).resolves.toBe(false)
+  })
+
+  it('rejects a bare traversal id without throwing', async () => {
+    const { sessionIsKnown } = await importService()
+    makeAgent('agent-a')
+
+    await expect(sessionIsKnown(createLocalSessionStore('agent-a'), '../../../etc/passwd')).resolves.toBe(false)
+  })
+
+  it('rejects a symlink whose real target is another agent’s transcript', async () => {
+    const { sessionIsKnown } = await importService()
+    makeAgent('agent-a')
+    makeAgent('agent-b')
+    writeTranscript('agent-b', 'b-session')
+
+    // The agent plants a link in its OWN directory, named after a session it
+    // does not own, pointing at the victim's real transcript. Lexical
+    // containment passes (the link's path is local); real-path containment must
+    // not.
+    fs.symlinkSync(
+      path.join(sessionsDir('agent-b'), 'b-session.jsonl'),
+      path.join(sessionsDir('agent-a'), 'stolen.jsonl'),
+    )
+
+    await expect(sessionIsKnown(createLocalSessionStore('agent-a'), 'stolen')).resolves.toBe(false)
+  })
+
+  it('excludes a symlinked transcript from the listing and the summary', async () => {
+    const { getSessionSummary, listSessions } = await importService()
+    makeAgent('agent-a')
+    makeAgent('agent-b')
+    writeTranscript('agent-a', 'real')
+    writeTranscript('agent-b', 'victim')
+
+    // A link in agent-a's own dir, named like a session, pointing at agent-b's
+    // transcript. It must never enter a listing — the home-card tail reads the
+    // latest listed session's CONTENT, so a listed link would leak it.
+    fs.symlinkSync(
+      path.join(sessionsDir('agent-b'), 'victim.jsonl'),
+      path.join(sessionsDir('agent-a'), 'stolen.jsonl'),
+    )
+
+    expect((await getSessionSummary(createLocalSessionStore('agent-a'))).sessionIds).toEqual(['real'])
+    expect((await listSessions(createLocalSessionStore('agent-a'))).map((s) => s.id)).toEqual(['real'])
+  })
+
+  it('rejects a session reached through a symlinked -workspace ancestor', async () => {
+    const { sessionIsKnown, sessionExists } = await importService()
+    makeAgent('agent-a')
+    makeAgent('agent-b')
+    writeTranscript('agent-b', 'victim')
+
+    // The attacker replaces its OWN -workspace directory with a symlink to the
+    // victim's. Every id then resolves into the victim's dir. Anchoring the
+    // containment on the attacker's session dir would pass (base and candidate
+    // both resolve through the same link); anchoring on the workspace catches
+    // it, because the workspace is the bind-mount point the container can't
+    // replace.
+    fs.rmSync(sessionsDir('agent-a'), { recursive: true, force: true })
+    fs.symlinkSync(sessionsDir('agent-b'), sessionsDir('agent-a'))
+
+    await expect(sessionExists(createLocalSessionStore('agent-a'), 'victim')).resolves.toBe(false)
+    await expect(sessionIsKnown(createLocalSessionStore('agent-a'), 'victim')).resolves.toBe(false)
+  })
+})

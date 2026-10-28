@@ -3,13 +3,29 @@ import { Loader2 } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { RequestError } from '@renderer/components/messages/request-error'
+import { RequestError } from '@shared/lib/tools/requests/request-error'
 import { useSavePlatformAccessKey } from '@renderer/hooks/use-platform-auth'
 
-export function ManualAccessKeyInput({ className, prefixText }: { className?: string; prefixText?: string }) {
+export function ManualAccessKeyInput({
+  className,
+  prefixText,
+  disabled = false,
+  disabledReason,
+}: {
+  className?: string
+  prefixText?: string
+  disabled?: boolean
+  disabledReason?: string
+}) {
   const [showInput, setShowInput] = useState(false)
   const [key, setKey] = useState('')
   const saveKey = useSavePlatformAccessKey()
+
+  if (disabled) {
+    return disabledReason ? (
+      <p className={`text-sm text-muted-foreground ${className ?? ''}`}>{disabledReason}</p>
+    ) : null
+  }
 
   if (!showInput) {
     return (

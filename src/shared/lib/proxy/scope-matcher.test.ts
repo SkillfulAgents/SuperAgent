@@ -1,5 +1,52 @@
 import { describe, it, expect } from 'vitest'
-import { matchScopes } from './scope-matcher'
+import { matchScopes, isValidApiScope, describeTie, graphqlRootField } from './scope-matcher'
+import { SCOPE_MAPS } from './scope-maps'
+import { getScopeDescription, getScopeLabel } from './scope-metadata'
+
+describe('graphqlRootField', () => {
+  const field = (body: unknown) => graphqlRootField(new TextEncoder().encode(JSON.stringify(body)).buffer as ArrayBuffer)
+  const twoOps = 'query A { issues { nodes { id } } } mutation B { issueDelete(id: "1") { success } }'
+
+  it('reads the one root field the server runs, by its real name', () => {
+    expect(field({ query: 'mutation { issueDelete(id: "1") { success } }' })).toBe('Mutation: issueDelete')
+    expect(field({ query: '{ issues { nodes { id } } }' })).toBe('Query: issues')
+    // An alias names the result, not the operation the server runs.
+    expect(field({ query: 'mutation { issues: issueDelete(id: "1") { success } }' })).toBe('Mutation: issueDelete')
+    expect(field({ query: twoOps, operationName: 'B' })).toBe('Mutation: issueDelete')
+  })
+
+  it('names nothing unless one field of the operation the server runs is selected', () => {
+    expect(field({ query: twoOps })).toBeUndefined()
+    expect(field({ query: 'query A { issues { nodes { id } } } mutation A { issueDelete(id: "1") { success } }', operationName: 'A' })).toBeUndefined()
+    expect(field({ query: 'query A { issues { nodes { id } } }', operationName: 'B' })).toBeUndefined()
+    expect(field({ query: 'mutation { issueCreate(input: {}) { success } issueDelete(id: "1") { success } }' })).toBeUndefined()
+    expect(field({ query: 'mutation { ...F } fragment F on Mutation { issueDelete(id: "1") { success } }' })).toBeUndefined()
+    expect(field({ query: 'mutation { ... on Mutation { issueDelete(id: "1") { success } } }' })).toBeUndefined()
+    expect(field({ query: 'mutation { issueDelete(id: "1") { success } }', extensions: {} })).toBeUndefined()
+    expect(field([{ query: 'mutation { issueDelete(id: "1") { success } }' }])).toBeUndefined()
+    expect(field({ query: 'mutation {' })).toBeUndefined()
+    expect(field({ query: `{ issues(filter: "${'x'.repeat(64_000)}") { nodes { id } } }` })).toBeUndefined()
+  })
+})
+
+describe('describeTie', () => {
+  const entry = (pathPattern: string, description: string) => ({ method: 'GET', pathPattern, sufficientScopes: ['read'], description })
+
+  it('names the call when the endpoints agree', () => {
+    expect(describeTie([entry('/a/*', 'Get a thing'), entry('/a/*', 'Get a thing')])).toEqual({ endpointDescription: 'Get a thing' })
+  })
+
+  it('names the endpoint whose last segment is literal', () => {
+    expect(describeTie([entry('/a/x/*', 'Get x by id'), entry('/a/*/meta', 'Describe a thing')]))
+      .toEqual({ endpointDescription: 'Describe a thing' })
+  })
+
+  it('names nothing when the deciding endpoints disagree', () => {
+    const ambiguous = { endpointDescription: undefined, endpointAmbiguous: true }
+    expect(describeTie([entry('/graphql', 'Query: issues'), entry('/graphql', 'Mutation: issueDelete')])).toEqual(ambiguous)
+    expect(describeTie([entry('/a/*', 'Update'), entry('/a/*', 'Void')])).toEqual(ambiguous)
+  })
+})
 
 describe('matchScopes', () => {
   it('exact match: gmail GET /gmail/v1/users/me/messages returns correct scopes', () => {
@@ -28,6 +75,56 @@ describe('matchScopes', () => {
     expect(deleteResult.scopes).not.toContain('gmail.readonly')
     // GET /messages/* has more scopes
     expect(getResult.scopes).toContain('gmail.readonly')
+  })
+
+  it('method-agnostic ("*"): slack GET /api/conversations.history matches the POST-or-GET RPC entry', () => {
+    // Slack is RPC-style: the path identifies the operation and the same scope
+    // applies whether the agent calls it via GET or POST. Both must resolve to
+    // the *:history scopes so the user gets a specific "Always allow" option
+    // instead of falling back to the broad "all slack requests" suggestion.
+    const get = matchScopes('slack', 'GET', '/api/conversations.history')
+    const post = matchScopes('slack', 'POST', '/api/conversations.history')
+    expect(get.matched).toBe(true)
+    expect(post.matched).toBe(true)
+    expect(get.scopes).toContain('channels:history')
+    expect(get.scopes.sort()).toEqual(post.scopes.sort())
+  })
+
+  it('matches a Google Sheets batch update action', () => {
+    const result = matchScopes(
+      'googlesheets',
+      'POST',
+      '/v4/spreadsheets/spreadsheet-123:batchUpdate',
+    )
+
+    expect(result.matched).toBe(true)
+    expect(result.scopes).toEqual(['drive', 'drive.file', 'spreadsheets'])
+    expect(result.scopes.map((scope) => getScopeLabel('googlesheets', scope))).toEqual([
+      'destructive',
+      'write',
+      'write',
+    ])
+    expect(result.endpointDescription).toMatch(/Applies one or more updates/)
+  })
+
+  it.each([
+    ['googlesheets', '/v4/spreadsheets/spreadsheet-123:getByDataFilter', 'spreadsheets'],
+    ['googlesheets', '/v4/spreadsheets/spreadsheet-123/values/Sheet1!A1:B2:append', 'spreadsheets'],
+    ['googlesheets', '/v4/spreadsheets/spreadsheet-123/values/Sheet1!A1:B2:clear', 'spreadsheets'],
+    ['googlesheets', '/v4/spreadsheets/spreadsheet-123/sheets/sheet-456:copyTo', 'spreadsheets'],
+    ['googledocs', '/v1/documents/document-123:batchUpdate', 'documents'],
+    ['googleslides', '/v1/presentations/presentation-123:batchUpdate', 'presentations'],
+    ['googledrive', '/drive/v3/files/file-123/accessproposals/proposal-456:resolve', 'drive'],
+  ])('matches %s action path %s', (toolkit, path, expectedScope) => {
+    const result = matchScopes(toolkit, 'POST', path)
+
+    expect(result.matched).toBe(true)
+    expect(result.scopes).toContain(expectedScope)
+  })
+
+  it('does not let a partial-segment wildcard match an empty or different action', () => {
+    expect(matchScopes('googlesheets', 'POST', '/v4/spreadsheets/:batchUpdate').matched).toBe(false)
+    expect(matchScopes('googlesheets', 'POST', '/v4/spreadsheets/id:notBatchUpdate').matched).toBe(false)
   })
 
   it('unknown endpoint: gmail GET /gmail/v1/unknown/path returns matched: false', () => {
@@ -91,13 +188,66 @@ describe('matchScopes', () => {
     expect(result.scopes).toContain('drive.readonly')
   })
 
+  it('matches Google Drive file uploads under /upload/drive/v3', () => {
+    const result = matchScopes('googledrive', 'POST', '/upload/drive/v3/files')
+    expect(result.matched).toBe(true)
+    expect(result.scopes).toEqual(['drive', 'drive.appdata', 'drive.file'])
+    expect(result.endpointDescription).toMatch(/Creates a file/)
+  })
+
+  it('matches Canva Connect paths under /rest/v1', () => {
+    const list = matchScopes('canva', 'GET', '/rest/v1/designs')
+    expect(list.matched).toBe(true)
+    expect(list.scopes).toEqual(['design:meta:read'])
+
+    const create = matchScopes('canva', 'POST', '/rest/v1/designs')
+    expect(create.matched).toBe(true)
+    expect(create.scopes).toEqual(['design:content:write'])
+
+    const exportJob = matchScopes('canva', 'POST', '/rest/v1/exports')
+    expect(exportJob.matched).toBe(true)
+    expect(exportJob.scopes).toEqual(['design:content:read'])
+  })
+
+  it('matches X user-lane paths with one distinguishing scope per row', () => {
+    const bookmarks = matchScopes('twitter', 'GET', '/2/users/123/bookmarks')
+    expect(bookmarks.matched).toBe(true)
+    expect(bookmarks.scopes).toEqual(['bookmark.read'])
+
+    const post = matchScopes('twitter', 'POST', '/2/tweets')
+    expect(post.matched).toBe(true)
+    expect(post.scopes).toEqual(['tweet.write'])
+
+    // Group DM conversation ids carry a dash; one segment, one wildcard.
+    const dm = matchScopes('twitter', 'GET', '/2/dm_conversations/123-456/dm_events')
+    expect(dm.matched).toBe(true)
+    expect(dm.scopes).toEqual(['dm.read'])
+
+    // Block writes are not in the platform table, so they do not match here either.
+    expect(matchScopes('twitter', 'POST', '/2/users/123/blocking').matched).toBe(false)
+  })
+
+  it('matches Plaid bridge paths to product-style scopes', () => {
+    const balances = matchScopes('plaid', 'POST', '/accounts/balance/get')
+    expect(balances.matched).toBe(true)
+    expect(balances.scopes).toEqual(['accounts.read'])
+
+    const sync = matchScopes('plaid', 'POST', '/transactions/sync')
+    expect(sync.matched).toBe(true)
+    expect(sync.scopes).toEqual(['transactions.read'])
+
+    // Plaid is POST-only; /item/remove is reachable only through the bridge's revoke route.
+    expect(matchScopes('plaid', 'GET', '/accounts/get').matched).toBe(false)
+    expect(matchScopes('plaid', 'POST', '/item/remove').matched).toBe(false)
+  })
+
   it('empty path returns matched: false', () => {
     const result = matchScopes('gmail', 'GET', '')
     expect(result.matched).toBe(false)
     expect(result.scopes).toEqual([])
   })
 
-  it('descriptions: prefers curated SCOPE_DESCRIPTIONS over endpoint description', () => {
+  it('descriptions: prefers curated SCOPE_METADATA over endpoint description', () => {
     // gmail.readonly is curated; the curated description is scope-level
     // ("View your email messages…"), not the endpoint-level "Lists the messages
     // in the user's mailbox." that scope-maps.ts has on this entry.
@@ -113,9 +263,9 @@ describe('matchScopes', () => {
   })
 
   it('descriptions: falls back to endpoint description for uncurated scopes', () => {
-    // Use a provider/scope that exists but isn't in SCOPE_DESCRIPTIONS — we
+    // Use a provider/scope that exists but isn't in SCOPE_METADATA — we
     // cover all 40 providers, so any fallback should be impossible. Verify the
-    // mechanism: if scope-descriptions ever loses an entry, the endpoint
+    // mechanism: if scope-metadata ever loses an entry, the endpoint
     // description still appears. Simulate by checking that EVERY description
     // is a non-empty string, and that the format is plausible.
     const result = matchScopes('gmail', 'GET', '/gmail/v1/users/me/profile')
@@ -131,8 +281,163 @@ describe('matchScopes', () => {
     )
   })
 
+  it('endpointDescription: undefined when equally specific endpoints disagree', () => {
+    const result = matchScopes('linear', 'POST', '/graphql')
+    expect(result.matched).toBe(true)
+    expect(result.endpointDescription).toBeUndefined()
+    expect(result.endpointAmbiguous).toBe(true)
+  })
+
+  it('narrows a GraphQL path to the root field the request runs', () => {
+    const graphql = (query: string) => new TextEncoder().encode(JSON.stringify({ query })).buffer as ArrayBuffer
+    const result = matchScopes('linear', 'POST', '/graphql', undefined, graphql('mutation { issueDelete(id: "1") { success } }'))
+    expect(result.endpointDescription).toBe('Mutation: issueDelete - Delete an issue')
+    expect(result.endpointAmbiguous).toBeUndefined()
+    expect(result.scopes).toEqual(['write'])
+    // A field the map does not list keeps the whole tie.
+    expect(matchScopes('linear', 'POST', '/graphql', undefined, graphql('mutation { notAMappedField }')).endpointAmbiguous).toBe(true)
+  })
+
+  it('endpointDescription: only GraphQL paths list operations that disagree', () => {
+    for (const [toolkit, map] of Object.entries(SCOPE_MAPS)) {
+      const byPath = new Map<string, Set<string>>()
+      for (const e of map.scopeMap) {
+        const key = `${e.method} ${e.pathPattern}`
+        byPath.set(key, (byPath.get(key) ?? new Set()).add(e.description ?? ''))
+      }
+      for (const [path, descriptions] of byPath) {
+        if (descriptions.size > 1) expect([...descriptions].every((d) => /^(Query|Mutation): /.test(d)), `${toolkit} ${path}`).toBe(true)
+      }
+    }
+    // Mailchimp's batch subscribe belongs to POST /lists/{id}, which the map does not list.
+    expect(matchScopes('mailchimp', 'POST', '/3.0/lists/list-1').matched).toBe(false)
+  })
+
+  it('endpointDescription: a literal last segment names a tie, and the scopes stay the union', () => {
+    const result = matchScopes('salesforce', 'GET', '/services/data/v59.0/sobjects/Account/describe')
+    expect(result.endpointDescription).toBe('Describe an SObject (metadata, fields, relationships)')
+    expect(result.endpointAmbiguous).toBeUndefined()
+    expect(result.scopes.sort()).toEqual(['api', 'metadata.read', 'sobjects.read'])
+  })
+
+  it('endpointDescription: kept when member and organization entries share one wording', () => {
+    expect(matchScopes('linkedin', 'DELETE', '/rest/posts/urn:li:share:1').endpointDescription).toBe('Delete a post')
+  })
+
   it('endpointDescription: undefined for unmatched requests', () => {
     const result = matchScopes('gmail', 'GET', '/gmail/v1/unknown/path')
     expect(result.endpointDescription).toBeUndefined()
+  })
+})
+
+describe('isValidApiScope', () => {
+  it('accepts a real scope declared by the toolkit', () => {
+    expect(isValidApiScope('gmail', 'gmail.readonly')).toBe(true)
+  })
+
+  it('rejects a scope not in the toolkit scope set', () => {
+    expect(isValidApiScope('gmail', 'gmail:read')).toBe(false)
+    expect(isValidApiScope('gmail', 'not-a-real-scope')).toBe(false)
+  })
+
+  it('does not leak scopes across toolkits', () => {
+    // A real gmail scope is not valid for a different toolkit.
+    expect(isValidApiScope('slack', 'gmail.readonly')).toBe(false)
+  })
+
+  it.each(['*', '*read', '*write', '*destructive'])('accepts the %s sentinel on any toolkit', (sentinel) => {
+    expect(isValidApiScope('gmail', sentinel)).toBe(true)
+    // Sentinels are valid even when the toolkit is unknown.
+    expect(isValidApiScope('totally-unknown-toolkit', sentinel)).toBe(true)
+    expect(isValidApiScope(undefined, sentinel)).toBe(true)
+  })
+
+  it('rejects non-sentinel scopes for an unknown or missing toolkit', () => {
+    expect(isValidApiScope('totally-unknown-toolkit', 'gmail.readonly')).toBe(false)
+    expect(isValidApiScope(undefined, 'gmail.readonly')).toBe(false)
+  })
+
+  it('rejects empty or non-string scopes', () => {
+    expect(isValidApiScope('gmail', '')).toBe(false)
+    expect(isValidApiScope('gmail', null as unknown as string)).toBe(false)
+    expect(isValidApiScope('gmail', undefined as unknown as string)).toBe(false)
+    expect(isValidApiScope('gmail', 123 as unknown as string)).toBe(false)
+  })
+})
+
+describe('scope fallbacks', () => {
+  const DRIVE_FILE = '/drive/v3/files/1bEkZcF74h0aByyTJRAGE8cxGwQrMOCWLsv3R7M6ANXE'
+  const GOOGLEAPIS = 'www.googleapis.com'
+
+  it('classifies a Drive file read made with a Gmail token as namespaced Drive scopes', () => {
+    const result = matchScopes('gmail', 'GET', DRIVE_FILE, GOOGLEAPIS)
+    expect(result.matched).toBe(true)
+    expect(result.scopes).toContain('googledrive:drive.readonly')
+    expect(result.scopes.every((s) => s.startsWith('googledrive:'))).toBe(true)
+    expect(Object.keys(result.descriptions).every((s) => s.startsWith('googledrive:'))).toBe(true)
+    expect(result.endpointDescription).toBeTruthy()
+  })
+
+  it.each(['googledocs', 'googlesheets', 'googleslides'])('%s falls back to Drive for exports', (toolkit) => {
+    const result = matchScopes(toolkit, 'GET', '/drive/v3/files/abc/export', GOOGLEAPIS)
+    expect(result.scopes).toContain('googledrive:drive.readonly')
+  })
+
+  it('does not fall back when the request host is not the fallback provider host', () => {
+    expect(matchScopes('gmail', 'GET', DRIVE_FILE, 'gmail.googleapis.com').matched).toBe(false)
+    expect(matchScopes('gmail', 'GET', DRIVE_FILE, 'evil.example.com').matched).toBe(false)
+  })
+
+  it('matches the fallback provider host in any case', () => {
+    expect(matchScopes('gmail', 'GET', DRIVE_FILE, 'WWW.GoogleApis.com').scopes)
+      .toContain('googledrive:drive.readonly')
+  })
+
+  it('does not fall back without a target host', () => {
+    expect(matchScopes('gmail', 'GET', DRIVE_FILE).matched).toBe(false)
+  })
+
+  it('does not fall back for a toolkit that declares no fallbacks, even on a shared host', () => {
+    expect(matchScopes('googlecalendar', 'GET', DRIVE_FILE, GOOGLEAPIS).matched).toBe(false)
+  })
+
+  it("prefers the toolkit's own map over a fallback", () => {
+    const result = matchScopes('gmail', 'GET', '/gmail/v1/users/me/messages', GOOGLEAPIS)
+    expect(result.scopes).toContain('gmail.readonly')
+    expect(result.scopes.some((s) => s.includes(':'))).toBe(false)
+  })
+
+  it("a borrowed scope inherits the fallback provider's risk label and description", () => {
+    expect(getScopeLabel('gmail', 'googledrive:drive.readonly')).toBe('read')
+    expect(getScopeLabel('gmail', 'googledrive:drive.file')).toBe('write')
+    expect(getScopeDescription('gmail', 'googledrive:drive.readonly')).toBe(
+      getScopeDescription('googledrive', 'drive.readonly'),
+    )
+  })
+
+  it('a borrowed key outside the declared fallbacks has no label', () => {
+    expect(getScopeLabel('googlecalendar', 'googledrive:drive.file')).toBeUndefined()
+  })
+
+  it('accepts a borrowed scope key only through a declared fallback', () => {
+    expect(isValidApiScope('gmail', 'googledrive:drive.readonly')).toBe(true)
+    expect(isValidApiScope('googlecalendar', 'googledrive:drive.readonly')).toBe(false)
+    expect(isValidApiScope('gmail', 'googledrive:gmail.send')).toBe(false)
+    expect(isValidApiScope('gmail', 'googledrive:not-a-scope')).toBe(false)
+    expect(isValidApiScope('gmail', 'drive.readonly')).toBe(false)
+  })
+
+  it('keeps native scopes that contain ":" valid', () => {
+    expect(isValidApiScope('slack', 'chat:write')).toBe(true)
+  })
+})
+
+describe('googledrive endpoint descriptions', () => {
+  it.each([
+    ['GET', '/drive/v3/files/abc', /file's metadata or content/],
+    ['DELETE', '/drive/v3/files/abc', /deletes a file/],
+    ['PATCH', '/drive/v3/files/abc', /Updates a file/],
+  ])('%s %s describes the file operation, not another method', (method, path, re) => {
+    expect(matchScopes('googledrive', method, path).endpointDescription).toMatch(re)
   })
 })

@@ -1,0 +1,22 @@
+{
+  "sessionId": "b7a9ca3b-a698-4817-9e72-237b4b77236b",
+  "agentSlug": "untitled-axa382",
+  "description": "Sequential subagents of different types: first web-browser (example.com), then dashboard-builder (Hello World HTML). Tests that subagentType is correctly propagated for different agent types.",
+  "subagents": [
+    {
+      "parentToolId": "toolu_01ACcjV2xdc7gzf5smRR4rpZ",
+      "taskId": "a527fba4d6dcab0ea",
+      "agentId": "a527fba4d6dcab0ea",
+      "subagentType": "web-browser",
+      "description": "Navigate to example.com"
+    },
+    {
+      "parentToolId": "toolu_015125AKeHyGkFDBQCk8cXwv",
+      "taskId": "afc605889f6e5c4a4",
+      "agentId": "afc605889f6e5c4a4",
+      "subagentType": "dashboard-builder",
+      "description": "Create Hello World dashboard"
+    }
+  ],
+  "totalEntries": 119
+}

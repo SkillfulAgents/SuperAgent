@@ -79,8 +79,9 @@ DELETE /sessions/:id             // End session
 
 // File System API
 GET    /files/*                 // Browse directory or get file info
-GET    /files/*/content         // Download file content
-POST   /files/*/upload          // Upload file to path
+GET    /workspace-files/content/* // Download file content
+POST   /workspace-files/upload/*  // Upload file to path
+DELETE /workspace-files/delete/*  // Remove a confined transfer path
 DELETE /files/*                 // Delete file or directory
 POST   /files/*/mkdir           // Create directory
 GET    /files/tree              // Get file tree (with depth limit)

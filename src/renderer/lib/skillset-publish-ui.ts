@@ -18,6 +18,10 @@ type SubmitDialogCopy = {
   pendingButton: string
 }
 
+export function isSkillsetPublishable(mode: PublishMode): boolean {
+  return mode !== 'none'
+}
+
 export function isPullRequestPublishMode(mode: PublishMode): boolean {
   return mode === 'pull_request'
 }

@@ -1,14 +1,19 @@
 
 import { useState, useRef, useMemo, useEffect } from 'react'
 import { cn } from '@shared/lib/utils/cn'
-import { Bot, ChevronDown, ChevronRight, CheckCircle, XCircle, Loader2, StopCircle } from 'lucide-react'
-import { ToolCallItem, StreamingToolCallItem } from './tool-call-item'
+import { ChevronDown, ChevronRight, Workflow } from 'lucide-react'
+import { StreamingToolCallItem, StatusIndicator } from './tool-call-item'
+import { flattenAssistantMessages, TranscriptItems, TranscriptText, type FlatItem } from './agent-transcript'
 import { useSubagentMessages } from '@renderer/hooks/use-messages'
 import { parseToolResult } from '@renderer/lib/parse-tool-result'
 import type { ApiToolCall, ApiMessage } from '@shared/lib/types/api'
 import type { SubagentInfo } from '@renderer/hooks/use-message-stream'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import { formatElapsed } from '@renderer/hooks/use-elapsed-timer'
+import { formatModelSlug } from '@renderer/lib/model-label'
+import { modelSlugFromAgentType } from '@shared/lib/workflows/workflow-schemas'
+
+const SUBAGENT_LABEL_CLASS =
+  'font-sans font-normal shrink-0 text-sm text-foreground/65 group-hover:text-foreground leading-none transition-colors'
 
 interface SubAgentBlockProps {
   toolCall: ApiToolCall
@@ -21,18 +26,15 @@ interface SubAgentBlockProps {
 
 type SubagentStatus = 'running' | 'completed' | 'error' | 'cancelled'
 
-function formatDuration(ms: number): string {
-  const seconds = Math.floor(ms / 1000)
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  const remainingSeconds = seconds % 60
-  return `${minutes}m ${remainingSeconds}s`
-}
-
 function formatTokens(tokens: number): string {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
   if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`
   return `${tokens}`
+}
+
+export function displaySubagentType(subagentType: string): string {
+  const slug = modelSlugFromAgentType(subagentType)
+  return slug ? formatModelSlug(slug) : subagentType
 }
 
 export function SubAgentBlock({
@@ -43,11 +45,12 @@ export function SubAgentBlock({
   activeSubagent,
   isCompleted,
 }: SubAgentBlockProps) {
-  // Determine subagent ID: prefer SSE-discovered agentId (stable, cached once via FIFO)
-  // over API-based agentId (from resolveInterruptedSubagents, which re-sorts by mtime
-  // on every refetch and can flip during active streaming).
+  // Determine subagent ID: prefer the SSE-discovered ID from the selected
+  // original or resumed run over the API-based ID (from
+  // resolveInterruptedSubagents, which re-sorts by mtime on every refetch and
+  // can flip during active streaming).
   // Latch the ID once resolved — it should never revert to null.
-  const sseAgentId = activeSubagent?.parentToolId === toolCall.id ? activeSubagent.agentId : null
+  const sseAgentId = activeSubagent?.agentId ?? null
   const computedSubagentId = sseAgentId
     ?? toolCall.subagent?.agentId
     ?? null
@@ -59,7 +62,17 @@ export function SubAgentBlock({
 
   // Determine status
   let status: SubagentStatus = 'cancelled'
-  if (toolCall.result !== null && toolCall.result !== undefined) {
+  const isResumedRun = !!activeSubagent && activeSubagent.parentToolId !== toolCall.id
+  if (
+    isSessionActive &&
+    activeSubagent &&
+    !isCompleted &&
+    (isResumedRun || toolCall.result === null || toolCall.result === undefined)
+  ) {
+    // activeSubagent may be a later SendMessage run for the same stable agent.
+    // Its live lifecycle takes precedence over the original Agent tool result.
+    status = 'running'
+  } else if (toolCall.result !== null && toolCall.result !== undefined) {
     // Background agents return an immediate "async_launched" result — don't treat as completed
     // unless we've received a subagent_completed SSE event (isCompleted) for this tool
     if (toolCall.subagent?.status === 'async_launched' && isSessionActive && !isCompleted) {
@@ -80,17 +93,17 @@ export function SubAgentBlock({
   // Fetch subagent messages — poll while running so concurrent background agents stay updated
   const { data: subMessages } = useSubagentMessages(sessionId, agentSlug, subagentId)
 
-  // Extract streaming state from activeSubagent (only if this block is the active one)
-  const isActiveSubagent = activeSubagent?.parentToolId === toolCall.id
-  const subagentStreamingMessage = isActiveSubagent ? activeSubagent?.streamingMessage : null
-  const subagentStreamingToolUse = isActiveSubagent ? activeSubagent?.streamingToolUse : null
+  // The parent selects this block's original or resumed run. A SendMessage
+  // run has a different tool id but still streams into the same Agent block.
+  const subagentStreamingMessage = activeSubagent?.streamingMessage ?? null
+  const subagentStreamingToolUse = activeSubagent?.streamingToolUse ?? null
 
   // Auto-expand when streaming content arrives
   useEffect(() => {
-    if (isActiveSubagent && (subagentStreamingMessage || subagentStreamingToolUse)) {
+    if (subagentStreamingMessage || subagentStreamingToolUse) {
       setExpanded(true)
     }
-  }, [isActiveSubagent, subagentStreamingMessage, subagentStreamingToolUse])
+  }, [subagentStreamingMessage, subagentStreamingToolUse])
 
   // Check if streaming text is already persisted (same dedup pattern as main agent)
   const isStreamingMessagePersisted = useMemo(() => {
@@ -115,56 +128,33 @@ export function SubAgentBlock({
     )
   }, [subMessages, subagentStreamingToolUse])
 
-  // Extract display info from input
+  // Extract display info — prefer live SSE data (available immediately from task_started),
+  // fall back to tool_use input (available once the tool call is fully streamed)
   const input = toolCall.input as { subagent_type?: string; description?: string }
-  const subagentType = input.subagent_type || 'Agent'
-  const description = input.description || ''
+  const subagentType = activeSubagent?.subagentType || input.subagent_type || 'Agent'
+  const subagentDisplayType = displaySubagentType(subagentType)
+  const description = activeSubagent?.description || input.description || ''
 
-  // Extract summary text from the tool result (available immediately from the main messages,
-  // no need to wait for subagent JSONL refetch)
+  // Extract summary text — prefer persisted tool_result, fall back to SSE-delivered resultText.
+  // A background launch's tool_result is its launch acknowledgement ("Async
+  // agent launched successfully…"), not what the agent reported.
+  const isLaunchAck = toolCall.subagent?.status === 'async_launched'
   const resultText = useMemo(() => {
-    if (toolCall.result == null) return null
-    const parsed = parseToolResult(toolCall.result)
-    return parsed.text
-  }, [toolCall.result])
+    if (toolCall.result != null && !isLaunchAck) {
+      const parsed = parseToolResult(toolCall.result)
+      return parsed.text
+    }
+    if (activeSubagent?.resultText) {
+      return activeSubagent.resultText
+    }
+    return null
+  }, [toolCall.result, isLaunchAck, activeSubagent?.resultText])
 
   // Stats from completed subagent
   const stats = toolCall.subagent
 
-  const StatusIcon = {
-    running: Loader2,
-    completed: CheckCircle,
-    error: XCircle,
-    cancelled: StopCircle,
-  }[status]
-
-  const statusColor = {
-    running: 'text-blue-500',
-    completed: 'text-green-500',
-    error: 'text-red-500',
-    cancelled: 'text-gray-400',
-  }[status]
-
   // Flatten assistant messages into individual renderable items (text blocks + tool calls)
-  type FlatItem =
-    | { kind: 'text'; key: string; text: string }
-    | { kind: 'tool'; key: string; toolCall: ApiToolCall; messageCreatedAt: Date | string }
-
-  const flatItems = useMemo<FlatItem[]>(() => {
-    const assistantMessages = subMessages?.filter(
-      (m): m is ApiMessage => m.type === 'assistant'
-    ) ?? []
-    const items: FlatItem[] = []
-    for (const msg of assistantMessages) {
-      if (msg.content.text) {
-        items.push({ kind: 'text', key: `text-${msg.id}`, text: msg.content.text })
-      }
-      for (const tc of msg.toolCalls ?? []) {
-        items.push({ kind: 'tool', key: `tool-${tc.id}`, toolCall: tc, messageCreatedAt: msg.createdAt })
-      }
-    }
-    return items
-  }, [subMessages])
+  const flatItems = useMemo<FlatItem[]>(() => flattenAssistantMessages(subMessages), [subMessages])
 
   // Check if the result text is already present in the persisted flat items (dedup)
   const isResultInFlatItems = useMemo(() => {
@@ -188,41 +178,43 @@ export function SubAgentBlock({
     || !!(subagentStreamingToolUse && !isStreamingToolUsePersisted)
 
   return (
-    <div className="border rounded-md bg-muted/30 text-sm">
-      {/* Header */}
+    <div className="text-sm border border-border/70 rounded-md overflow-hidden">
+      {/* Header — matches ToolCallItem collapsed row */}
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-muted/50 transition-colors"
+        className={cn('flex w-full items-center gap-2 pl-2 pr-2 py-1.5 group hover:bg-muted/50 transition-colors', expanded && 'bg-muted/50')}
       >
-        <StatusIcon
-          className={cn(
-            'h-4 w-4 shrink-0',
-            statusColor,
-            isRunning && 'animate-spin'
-          )}
-        />
-        <Bot className="h-4 w-4 shrink-0 text-muted-foreground" />
-        <span className="font-mono font-medium truncate">
-          {subagentType}
+        <Workflow className="h-3.5 w-3.5 shrink-0 text-foreground/45 group-hover:text-foreground transition-colors" />
+        <span className={SUBAGENT_LABEL_CLASS}>Sub-agent:</span>
+        <span className={SUBAGENT_LABEL_CLASS}>
+          {subagentDisplayType}
         </span>
         {description && (
-          <span className="text-muted-foreground truncate text-xs">
-            {description}
-          </span>
+          <>
+            <span aria-hidden className="shrink-0 text-foreground/40 group-hover:text-muted-foreground text-sm leading-none transition-colors">→</span>
+            <span className="text-muted-foreground/70 group-hover:text-muted-foreground truncate text-xs leading-none transition-colors">
+              {description}
+            </span>
+          </>
         )}
-        <span className="shrink-0 ml-auto">
-          {expanded ? (
-            <ChevronDown className="h-4 w-4 text-muted-foreground" />
-          ) : (
-            <ChevronRight className="h-4 w-4 text-muted-foreground" />
-          )}
+        <span className="relative ml-auto flex h-4 w-4 shrink-0 items-center justify-center">
+          <span className="transition-opacity group-hover:opacity-0">
+            <StatusIndicator status={status} />
+          </span>
+          <span className="absolute inset-0 flex items-center justify-center text-muted-foreground/60 opacity-0 transition-opacity group-hover:text-muted-foreground group-hover:opacity-100">
+            {expanded ? (
+              <ChevronDown className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5" />
+            )}
+          </span>
         </span>
       </button>
 
       {/* Body - subagent messages */}
       {expanded && (
-        <div className="px-3 pb-3">
-          <div className="border-l-2 border-blue-300 dark:border-blue-700 pl-3 space-y-3">
+        <div className="border-t border-border/70 bg-muted/50 px-3 py-3">
+          <div className="space-y-3">
             {totalItems === 0 && isRunning && !hasStreamingContent && (
               <div className="text-xs text-muted-foreground italic py-2">
                 Sub-agent is working...
@@ -238,36 +230,17 @@ export function SubAgentBlock({
             {hasMore && !showAll && (
               <button
                 onClick={() => setShowAll(true)}
-                className="text-xs text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 font-medium transition-colors py-1"
+                className="text-xs text-foreground hover:text-foreground/70 font-medium transition-colors py-1"
               >
                 Show all ({totalItems} items)
               </button>
             )}
 
-            {visibleItems.map((item) =>
-              item.kind === 'text' ? (
-                <div key={item.key} className="prose prose-sm max-w-none break-words dark:prose-invert text-xs">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {item.text}
-                  </ReactMarkdown>
-                </div>
-              ) : (
-                <ToolCallItem
-                  key={item.key}
-                  toolCall={item.toolCall}
-                  messageCreatedAt={item.messageCreatedAt}
-                  agentSlug={agentSlug}
-                />
-              )
-            )}
+            <TranscriptItems items={visibleItems} agentSlug={agentSlug} isSessionActive={isSessionActive} />
 
             {/* Streaming text from subagent (not yet persisted) */}
             {subagentStreamingMessage && !isStreamingMessagePersisted && (
-              <div className="prose prose-sm max-w-none break-words dark:prose-invert text-xs">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {subagentStreamingMessage}
-                </ReactMarkdown>
-              </div>
+              <TranscriptText mode="streaming" agentSlug={agentSlug}>{subagentStreamingMessage}</TranscriptText>
             )}
 
             {/* Streaming tool use from subagent (not yet persisted) */}
@@ -280,23 +253,29 @@ export function SubAgentBlock({
 
             {/* Result summary from tool_result (available immediately, no JSONL refetch needed) */}
             {resultText && !isResultInFlatItems && !isRunning && (
-              <div className="prose prose-sm max-w-none break-words dark:prose-invert text-xs">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {resultText}
-                </ReactMarkdown>
-              </div>
+              <TranscriptText mode="settled" agentSlug={agentSlug}>{resultText}</TranscriptText>
             )}
           </div>
 
-          {/* Stats footer */}
+          {/* Stats footer — show live usage while running, final stats when completed */}
           {stats && status !== 'running' && (
             <div className="mt-2 text-xs text-muted-foreground italic">
-              {stats.totalDurationMs != null && formatDuration(stats.totalDurationMs)}
+              {stats.totalDurationMs != null && formatElapsed(stats.totalDurationMs)}
               {stats.totalTokens != null && (
                 <>{stats.totalDurationMs != null && ' · '}{formatTokens(stats.totalTokens)} tokens</>
               )}
               {stats.totalToolUseCount != null && (
                 <> · {stats.totalToolUseCount} tool call{stats.totalToolUseCount !== 1 ? 's' : ''}</>
+              )}
+            </div>
+          )}
+          {isRunning && activeSubagent?.usage && (
+            <div className="mt-2 text-xs text-muted-foreground italic">
+              {formatElapsed(activeSubagent.usage.duration_ms)}
+              {' · '}{formatTokens(activeSubagent.usage.total_tokens)} tokens
+              {' · '}{activeSubagent.usage.tool_uses} tool call{activeSubagent.usage.tool_uses !== 1 ? 's' : ''}
+              {activeSubagent.lastToolName && (
+                <> · <span className="font-mono">{activeSubagent.lastToolName}</span></>
               )}
             </div>
           )}

@@ -1,19 +1,30 @@
 
 import { cn } from '@shared/lib/utils/cn'
-import { CheckCircle, XCircle, ChevronDown, ChevronRight, Loader2, Wrench, StopCircle } from 'lucide-react'
-import { useState, useRef } from 'react'
-import { getToolRenderer } from './tool-renderers'
-import { parseToolResult } from '@renderer/lib/parse-tool-result'
+import { Check, X, Ban, ChevronDown, ChevronRight, FileText, ImageOff, Loader2, Search } from 'lucide-react'
+import { useState, useRef, useMemo, useEffect, memo } from 'react'
+import { getToolPresentation } from '@shared/lib/tools/registry'
+import { getToolRenderer } from '@shared/lib/tools/renderers'
+import {
+  parseToolResult,
+  type ParsedToolResultDocument,
+  type ParsedToolResultImage,
+} from '@renderer/lib/parse-tool-result'
+import { Skeleton } from '@renderer/components/ui/skeleton'
 import { useElapsedTimer } from '@renderer/hooks/use-elapsed-timer'
 import type { ApiToolCall } from '@shared/lib/types/api'
-import { formatToolName } from '@shared/lib/tool-definitions/types'
+import { formatToolName } from '@shared/lib/tools/types'
+import { formatFileSize } from '@shared/lib/utils/format-file-size'
 
-export { formatToolName } from '@shared/lib/tool-definitions/types'
+export { formatToolName } from '@shared/lib/tools/types'
 
 interface ToolCallItemProps {
   toolCall: ApiToolCall
   messageCreatedAt?: Date | string
   agentSlug?: string
+  /** With agentSlug, authorizes media refs in this result to become requests
+   * against this session — the result itself is not trusted to say where its
+   * images live (see parse-tool-result). */
+  sessionId?: string
   isSessionActive?: boolean
 }
 
@@ -34,116 +45,314 @@ function getStatus(toolCall: ApiToolCall, isSessionActive?: boolean): ToolCallSt
   return 'success'
 }
 
-function isUserInputTool(name: string): boolean {
-  return name === 'AskUserQuestion' || name.startsWith('mcp__user-input__')
+function ToolNameWithSummary({ name, summary, active = false }: { name: string; summary?: string | null; active?: boolean }) {
+  return (
+    <>
+      <span className={cn(
+        'font-sans font-normal shrink-0 text-sm leading-none transition-colors',
+        active ? 'text-foreground' : 'text-foreground/65 group-hover:text-foreground'
+      )}>
+        {name}
+      </span>
+      {summary && (
+        <>
+          <span aria-hidden className="shrink-0 text-foreground/40 group-hover:text-muted-foreground text-sm leading-none transition-colors">→</span>
+          <span className="text-muted-foreground/70 group-hover:text-muted-foreground truncate text-xs leading-none transition-colors">
+            {summary}
+          </span>
+        </>
+      )}
+    </>
+  )
 }
 
-export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionActive }: ToolCallItemProps) {
+export function StatusIndicator({ status }: { status: string }) {
+  if (status === 'success' || status === 'completed') {
+    return (
+      <span className="h-4 w-4 shrink-0 rounded-full bg-green-100 dark:bg-green-950/60 flex items-center justify-center">
+        <Check className="h-2.5 w-2.5 text-green-600 dark:text-green-400" strokeWidth={2.5} />
+      </span>
+    )
+  }
+  if (status === 'error') {
+    return (
+      <span className="h-4 w-4 shrink-0 rounded-full bg-zinc-200 dark:bg-zinc-700 flex items-center justify-center">
+        <X className="h-2.5 w-2.5 text-muted-foreground" strokeWidth={2.5} />
+      </span>
+    )
+  }
+  if (status === 'running') {
+    return (
+      <span className="h-4 w-4 shrink-0 flex items-center justify-center">
+        <Loader2 className="h-3 w-3 text-gray-400 animate-spin" />
+      </span>
+    )
+  }
+  return (
+    <span className="h-4 w-4 shrink-0 rounded-full bg-zinc-200 dark:bg-zinc-700 flex items-center justify-center">
+      <Ban className="h-2.5 w-2.5 text-muted-foreground" strokeWidth={2.5} />
+    </span>
+  )
+}
+
+/** A tool result's image. Refs load from the media endpoint the first time the
+ * card is expanded — the expanded branch is what mounts this, so nothing is
+ * fetched for a collapsed call, and the immutable response is cached for every
+ * later expand.
+ *
+ * An <img> error event carries no reason: offline, a 5xx, a decode failure and
+ * an actually-deleted image all arrive the same way. So the failure state says
+ * only that it didn't load and offers a retry, rather than asserting the
+ * transcript no longer has it. */
+function ToolResultImage({ image }: { image: ParsedToolResultImage }) {
+  const [failed, setFailed] = useState(false)
+  const [loaded, setLoaded] = useState(false)
+  const [attempt, setAttempt] = useState(0)
+
+  if (failed) {
+    return (
+      <div
+        role="status"
+        aria-live="polite"
+        className="flex items-center gap-2 rounded border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground"
+      >
+        <ImageOff className="h-3.5 w-3.5 shrink-0" />
+        <span>Couldn&apos;t load image</span>
+        <button
+          type="button"
+          onClick={() => {
+            setFailed(false)
+            setLoaded(false)
+            setAttempt((n) => n + 1)
+          }}
+          className="underline underline-offset-2 hover:text-foreground transition-colors"
+        >
+          Retry
+        </button>
+      </div>
+    )
+  }
+
+  // Cache-busting is for the fetched kind only: a query suffix on a data: URL
+  // becomes part of the base64 payload and breaks an image that was fine. An
+  // inline retry is just a remount, which `key` below already forces.
+  const src =
+    image.isRef && attempt > 0
+      ? `${image.src}${image.src.includes('?') ? '&' : '?'}retry=${attempt}`
+      : image.src
+
+  // Inline images arrive with the payload and paint immediately; only a fetched
+  // one has a gap worth covering.
+  const pending = image.isRef && !loaded
+  const sized = image.width !== undefined && image.height !== undefined
+
+  return (
+    <div
+      className="relative overflow-hidden rounded border"
+      style={
+        sized
+          ? // The exact box, held from first paint: the width the image will
+            // actually occupy, and its own aspect ratio for the height. Without
+            // this the element is a 2px sliver until the bytes land and then
+            // displaces everything below it.
+            { width: image.width, maxWidth: '100%', aspectRatio: `${image.width} / ${image.height}` }
+          : // Nothing to go on — reserve enough that the card doesn't collapse.
+            { minHeight: pending ? '8rem' : undefined }
+      }
+    >
+      {pending && <Skeleton className="absolute inset-0 h-full w-full rounded-none" />}
+      <img
+        key={attempt}
+        src={src}
+        alt="Tool result"
+        {...(sized ? { width: image.width, height: image.height } : {})}
+        loading="lazy"
+        decoding="async"
+        onLoad={() => setLoaded(true)}
+        onError={() => setFailed(true)}
+        className={cn(
+          'block max-w-full',
+          sized ? 'h-full w-full' : 'h-auto',
+          // Held invisible rather than unmounted, so the browser is actually
+          // fetching it while the skeleton shows.
+          pending && 'opacity-0'
+        )}
+      />
+    </div>
+  )
+}
+
+type DocumentLoadState = { status: 'loading' } | { status: 'failed' } | { status: 'ready'; url: string }
+
+/** A tool result's PDF (the Read tool on a .pdf), shown in the browser's own
+ * viewer. Like images, this mounts only in the expanded branch, so nothing is
+ * fetched for a collapsed call.
+ *
+ * The bytes are fetched here and handed to the frame as a blob: URL rather
+ * than pointing the frame at the source directly: a fetch fails observably (an
+ * iframe's failure is not — a 410 from the media endpoint would paint its JSON
+ * error inside the card), and the inline and fetched shapes converge on one
+ * URL kind that the viewer renders reliably (a data: frame is not). */
+function ToolResultDocument({ document }: { document: ParsedToolResultDocument }) {
+  const [state, setState] = useState<DocumentLoadState>({ status: 'loading' })
+  const [attempt, setAttempt] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    let objectUrl: string | null = null
+    const controller = new AbortController()
+    setState({ status: 'loading' })
+    ;(async () => {
+      try {
+        // Same request shape as apiFetch (and the <img> above): the API base
+        // is already in `src`, and credentials follow the browser default.
+        const response = await fetch(document.src, { signal: controller.signal })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const bytes = await response.blob()
+        if (cancelled) return
+        objectUrl = URL.createObjectURL(new Blob([bytes], { type: document.mimeType }))
+        setState({ status: 'ready', url: objectUrl })
+      } catch {
+        if (!cancelled) setState({ status: 'failed' })
+      }
+    })()
+    return () => {
+      cancelled = true
+      controller.abort()
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [document.src, document.mimeType, attempt])
+
+  const label = document.title ?? 'PDF document'
+
+  if (state.status === 'failed') {
+    return (
+      <div
+        role="status"
+        aria-live="polite"
+        className="flex items-center gap-2 rounded border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground"
+      >
+        <FileText className="h-3.5 w-3.5 shrink-0" />
+        <span>Couldn&apos;t load {label}</span>
+        <button
+          type="button"
+          onClick={() => setAttempt((n) => n + 1)}
+          className="underline underline-offset-2 hover:text-foreground transition-colors"
+        >
+          Retry
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="overflow-hidden rounded border" data-testid="tool-result-document">
+      <div className="flex items-center gap-2 border-b border-border/70 bg-background px-2 py-1 text-xs text-muted-foreground">
+        <FileText className="h-3.5 w-3.5 shrink-0" />
+        <span className="truncate">{label}</span>
+        {document.bytes !== undefined && (
+          <span className="ml-auto shrink-0 tabular-nums">{formatFileSize(document.bytes)}</span>
+        )}
+      </div>
+      <div className="relative h-[28rem] w-full bg-background">
+        {state.status === 'loading' && <Skeleton className="absolute inset-0 h-full w-full rounded-none" />}
+        {state.status === 'ready' && (
+          <iframe
+            key={attempt}
+            src={state.url}
+            title={label}
+            className="h-full w-full border-0"
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, sessionId, isSessionActive }: ToolCallItemProps) {
   const [expanded, setExpanded] = useState(false)
   const status = getStatus(toolCall, isSessionActive)
-  const renderer = getToolRenderer(toolCall.name)
-  const isPendingUserInput = status === 'running' && isUserInputTool(toolCall.name)
+  const renderer = useMemo(() => getToolRenderer(toolCall.name, toolCall.input), [toolCall.name, toolCall.input])
+  const isPendingUserInput = status === 'running' && getToolPresentation(toolCall.name).showWaitingForInput
   const elapsed = useElapsedTimer(status === 'running' && !isPendingUserInput ? (messageCreatedAt ?? null) : null)
-
-  const StatusIcon = {
-    running: Loader2,
-    success: CheckCircle,
-    error: XCircle,
-    cancelled: StopCircle,
-  }[status]
-
-  const statusColor = {
-    running: 'text-gray-400',
-    success: 'text-green-500',
-    error: 'text-red-500',
-    cancelled: 'text-gray-400',
-  }[status]
-
-  // Get custom icon if available
-  const ToolIcon = renderer?.icon || Wrench
+  const ToolIcon = renderer?.icon || Search
 
   // Get summary for collapsed view
-  const summary = renderer?.getSummary?.(toolCall.input)
+  const summary = useMemo(() => renderer?.getSummary?.(toolCall.input), [renderer, toolCall.input])
 
   // Format input for display (fallback)
-  const inputStr = typeof toolCall.input === 'string'
-    ? toolCall.input
-    : JSON.stringify(toolCall.input, null, 2)
+  const inputStr = useMemo(
+    () => (typeof toolCall.input === 'string' ? toolCall.input : JSON.stringify(toolCall.input, null, 2)),
+    [toolCall.input]
+  )
 
   // Parse result into text + images
-  const parsed = parseToolResult(toolCall.result)
+  const parsed = useMemo(
+    () => parseToolResult(toolCall.result, agentSlug && sessionId ? { agentSlug, sessionId } : undefined),
+    [toolCall.result, agentSlug, sessionId]
+  )
   const resultStr = parsed.text
   const resultImages = parsed.images
+  const resultDocuments = parsed.documents
 
   // Get custom expanded view if available
   const CustomExpandedView = renderer?.ExpandedView
 
   return (
-    <div className="border rounded-md bg-muted/30 text-sm" data-testid={`tool-call-${toolCall.name}`}>
-      {/* Header row */}
+    <div className="text-sm border border-border/70 rounded-md overflow-hidden" data-testid={`tool-call-${toolCall.name}`}>
       <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-muted/50 transition-colors"
+        type="button"
+        aria-expanded={expanded}
+        aria-label={`${expanded ? 'Collapse' : 'Expand'} ${toolCall.name} tool call`}
+        data-testid={`tool-call-toggle-${toolCall.name}`}
+        onClick={() => setExpanded((current) => !current)}
+        className={cn('flex w-full items-center gap-2 pl-2 pr-2 py-1.5 group hover:bg-muted/50 transition-colors', expanded && 'bg-muted/50')}
       >
-        {/* Status indicator */}
-        <StatusIcon
-          className={cn(
-            'h-4 w-4 shrink-0',
-            statusColor,
-            status === 'running' && 'animate-spin'
-          )}
-        />
-
-        {/* Tool icon */}
-        <ToolIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-
-        {/* Tool name and summary */}
-        <span className="font-mono font-medium truncate">
-          {renderer?.displayName || formatToolName(toolCall.name)}
-        </span>
-
-        {/* Summary in collapsed view */}
-        {summary && (
-          <span className="text-muted-foreground truncate text-xs">
-            {summary}
-          </span>
-        )}
-
-        {/* Custom collapsed content */}
-        {renderer?.CollapsedContent && (
-          <renderer.CollapsedContent
-            input={toolCall.input}
-            result={resultStr}
-            isError={toolCall.isError ?? false}
-            agentSlug={agentSlug}
-          />
-        )}
-
-        {/* Elapsed timer for running tool calls / waiting label for user input */}
+        <ToolIcon className="h-3.5 w-3.5 shrink-0 text-foreground/45 group-hover:text-foreground transition-colors" />
         {isPendingUserInput && (
-          <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-            waiting for user input
+          <span className="font-sans font-normal shrink-0 text-sm text-foreground/65 group-hover:text-foreground leading-none transition-colors">
+            Waiting for input:
           </span>
+        )}
+        <ToolNameWithSummary
+          name={renderer?.displayName || formatToolName(toolCall.name)}
+          summary={summary}
+        />
+        {renderer?.CollapsedContent && (
+          <>
+            {!summary && <span aria-hidden className="shrink-0 text-muted-foreground/60 group-hover:text-muted-foreground text-sm leading-none transition-colors">→</span>}
+            <renderer.CollapsedContent
+              input={toolCall.input}
+              result={resultStr}
+              isError={toolCall.isError ?? false}
+              agentSlug={agentSlug}
+            />
+          </>
         )}
         {elapsed && (
-          <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
+          <span className="shrink-0 text-2xs text-muted-foreground/70 tabular-nums ml-auto">
             {elapsed}
           </span>
         )}
-
-        {/* Expand chevron */}
-        <span className={cn('shrink-0', !elapsed && !isPendingUserInput && 'ml-auto')}>
-          {expanded ? (
-            <ChevronDown className="h-4 w-4 text-muted-foreground" />
-          ) : (
-            <ChevronRight className="h-4 w-4 text-muted-foreground" />
-          )}
+        <span className={cn(
+          'relative shrink-0 flex h-4 w-4 items-center justify-center',
+          !elapsed && 'ml-auto'
+        )}>
+          <span className="transition-opacity group-hover:opacity-0">
+            <StatusIndicator status={status} />
+          </span>
+          <span className="absolute inset-0 flex items-center justify-center text-muted-foreground/60 opacity-0 transition-opacity group-hover:text-muted-foreground group-hover:opacity-100">
+            {expanded ? (
+              <ChevronDown className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5" />
+            )}
+          </span>
         </span>
       </button>
 
-      {/* Expanded content */}
       {expanded && (
-        <div className="px-3 pb-3">
+        <div className="border-t border-border/70 bg-muted/50 px-3 py-3">
           {CustomExpandedView ? (
             <CustomExpandedView
               input={toolCall.input}
@@ -156,7 +365,7 @@ export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionA
             <div className="space-y-2">
               {/* Input */}
               <div>
-                <div className="text-xs font-medium text-muted-foreground mb-1">Input</div>
+                <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Input</div>
                 <pre className="bg-background rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto">
                   {inputStr}
                 </pre>
@@ -165,13 +374,13 @@ export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionA
               {/* Output */}
               {resultStr && (
                 <div>
-                  <div className="text-xs font-medium text-muted-foreground mb-1">
+                  <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">
                     {toolCall.isError ? 'Error' : 'Output'}
                   </div>
                   <pre
                     className={cn(
-                      'rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto',
-                      toolCall.isError ? 'bg-red-50 text-red-800 dark:bg-red-950 dark:text-red-200' : 'bg-background'
+                      'bg-background rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto',
+                      toolCall.isError && 'text-red-800 dark:text-red-200'
                     )}
                   >
                     {resultStr}
@@ -184,12 +393,15 @@ export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionA
           {resultImages.length > 0 && (
             <div className="mt-2 space-y-2">
               {resultImages.map((img, i) => (
-                <img
-                  key={i}
-                  src={`data:${img.mimeType};base64,${img.data}`}
-                  alt="Tool result"
-                  className="max-w-full rounded border"
-                />
+                <ToolResultImage key={`${i}:${img.src}`} image={img} />
+              ))}
+            </div>
+          )}
+          {/* Render PDFs (Read on a .pdf) from tool results */}
+          {resultDocuments.length > 0 && (
+            <div className="mt-2 space-y-2">
+              {resultDocuments.map((doc, i) => (
+                <ToolResultDocument key={`${i}:${doc.src}`} document={doc} />
               ))}
             </div>
           )}
@@ -199,78 +411,59 @@ export function ToolCallItem({ toolCall, messageCreatedAt, agentSlug, isSessionA
   )
 }
 
+// Memoized: a persisted tool call's props are stable across refetches (React
+// Query structural sharing), so collapsed rows don't re-render when the parent
+// MessageItem re-renders (e.g. while a sibling subagent streams).
+export const ToolCallItem = memo(ToolCallItemComponent)
+
 // Component for displaying a tool call while its input is being streamed
 export function StreamingToolCallItem({ name, partialInput }: StreamingToolCallItemProps) {
   const startTimeRef = useRef(new Date())
   const elapsed = useElapsedTimer(startTimeRef.current)
   const renderer = getToolRenderer(name)
 
-  // Get custom icon if available
-  const ToolIcon = renderer?.icon || Wrench
-
   // Get custom streaming view if available
   const CustomStreamingView = renderer?.StreamingView
+  const ToolIcon = renderer?.icon || Search
 
-  // Try to get summary from partial input
+  // Parse the partial input at most once and reuse it for both the summary and
+  // the pretty-printed fallback. Skip the parse entirely when nothing consumes
+  // it (a CustomStreamingView renders the body and there's no summary getter).
   let summary: string | null = null
-  if (renderer?.getSummary) {
-    try {
-      const parsed = JSON.parse(partialInput)
-      summary = renderer.getSummary(parsed)
-    } catch {
-      // Can't parse yet, no summary
-    }
-  }
-
-  // Fallback: Try to pretty-print the partial JSON if it's valid
   let displayInput = partialInput
-  if (partialInput) {
+  if (partialInput && (renderer?.getSummary || !CustomStreamingView)) {
     try {
       const parsed = JSON.parse(partialInput)
-      displayInput = JSON.stringify(parsed, null, 2)
+      if (!CustomStreamingView) displayInput = JSON.stringify(parsed, null, 2)
+      if (renderer?.getSummary) summary = renderer.getSummary(parsed)
     } catch {
-      // Show raw partial input as-is
-      displayInput = partialInput
+      // Partial/invalid JSON mid-stream — keep the raw partialInput, no summary.
     }
   }
 
   return (
-    <div className="border rounded-md bg-muted/30 text-sm">
-      {/* Header row - always expanded during streaming */}
-      <div className="w-full flex items-center gap-2 px-3 py-2">
-        {/* Status indicator - streaming */}
-        <Loader2 className="h-4 w-4 shrink-0 text-gray-400 animate-spin" />
-
-        {/* Tool icon */}
-        <ToolIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-
-        {/* Tool name */}
-        <span className="font-mono font-medium truncate">
-          {renderer?.displayName || formatToolName(name)}
-        </span>
-
-        {/* Summary if available */}
-        {summary && (
-          <span className="text-muted-foreground truncate text-xs">
-            {summary}
-          </span>
-        )}
-
-        {/* Elapsed timer */}
-        <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
+    <div className="text-sm border border-border/70 rounded-md overflow-hidden">
+      <div className="flex w-full items-center gap-2 pl-2 pr-2 py-1.5 bg-muted/50">
+        <ToolIcon className="h-3.5 w-3.5 shrink-0 text-foreground" />
+        <ToolNameWithSummary
+          name={renderer?.displayName || formatToolName(name)}
+          summary={summary}
+          active
+        />
+        <span className="shrink-0 text-2xs text-muted-foreground/70 tabular-nums ml-auto">
           {elapsed}
         </span>
+        <StatusIndicator status="running" />
       </div>
 
-      {/* Always show input during streaming */}
-      <div className="px-3 pb-3">
+      <div className="border-t border-border/70 bg-muted/50 px-3 py-3">
         {CustomStreamingView ? (
           <CustomStreamingView partialInput={partialInput} />
         ) : (
           // Fallback: generic display
           <div className="space-y-2">
             <div>
-              <div className="text-xs font-medium text-muted-foreground mb-1">Input</div>
+              <div className="text-xs font-medium tracking-wider text-muted-foreground mb-1">Input</div>
               <pre className="bg-background rounded p-2 text-xs overflow-x-auto max-h-40 overflow-y-auto whitespace-pre-wrap break-all">
                 {displayInput || <span className="text-muted-foreground italic">Waiting for input...</span>}
                 <span className="animate-pulse">|</span>

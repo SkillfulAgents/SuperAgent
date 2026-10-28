@@ -1,0 +1,661 @@
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest'
+import type { AgentStoreDirectory } from '@shared/lib/agent-actor/store-directory'
+import { AgentInputRequests, CLAIM_LEASE_MS, type UserInputRequestTransition } from './agent-input-requests'
+import { UserInputRequestManager } from './request-manager'
+import type { PendingUserInputRequestInput } from './request-schema'
+
+/**
+ * The actors' stores without the actors: one per slug, created on first use,
+ * as the registry would, each reporting its transitions to `report` where the
+ * agent's live sessions would hear them.
+ */
+function inMemoryStores(report: (transition: UserInputRequestTransition) => void): AgentStoreDirectory<AgentInputRequests> {
+  const stores = new Map<string, AgentInputRequests>()
+  return {
+    get: (slug) => {
+      let store = stores.get(slug)
+      if (!store) {
+        store = new AgentInputRequests(slug, { report })
+        stores.set(slug, store)
+      }
+      return store
+    },
+    peek: (slug) => stores.get(slug),
+    all: () => [...stores.values()],
+  }
+}
+
+function secretRequest(overrides: Partial<PendingUserInputRequestInput> = {}): PendingUserInputRequestInput {
+  return {
+    id: 'tool-1',
+    kind: 'secret',
+    scope: { agentSlug: 'agent-a', sessionId: 'session-1' },
+    blocking: true,
+    payload: { secretName: 'API_KEY', reason: 'Need it' },
+    ...overrides,
+  } as PendingUserInputRequestInput
+}
+
+describe('UserInputRequestManager', () => {
+  let manager: UserInputRequestManager
+  let agents: AgentStoreDirectory<AgentInputRequests>
+  /** Every transition any store reported. */
+  let reported: Mock<(transition: UserInputRequestTransition) => void>
+
+  beforeEach(() => {
+    manager = new UserInputRequestManager()
+    reported = vi.fn()
+    agents = inMemoryStores(reported)
+    manager.attachAgents(agents)
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  describe('register', () => {
+    it('parses and stores a request, defaulting autoApproved to false', () => {
+      const stored = manager.register(secretRequest())
+      expect(stored).not.toBeNull()
+      expect(stored!.kind).toBe('secret')
+      expect(stored!.autoApproved).toBe(false)
+      expect(manager.getOpenRequestsForSession('agent-a', 'session-1')).toHaveLength(1)
+    })
+
+    it('is first-delivery-wins: re-registering an open id returns the original unchanged', () => {
+      const first = manager.register(secretRequest({ payload: { secretName: 'FIRST' } }))
+      const second = manager.register(secretRequest({ payload: { secretName: 'SECOND' } }))
+      expect(second).toBe(first)
+      const open = manager.getOpenRequestsForSession('agent-a', 'session-1')
+      expect(open).toHaveLength(1)
+      expect((open[0].payload as { secretName?: string }).secretName).toBe('FIRST')
+    })
+
+    it('upgrades a recovered synthetic when the real registration replays', () => {
+      // GET-messages recovery can synthesize a payload-less stub before the
+      // stream event lands (the recovery read races the container stream).
+      // The real registration must replace the stub — and emit the 'created'
+      // transition, because the stub's was filtered off the wire, so this is
+      // the first event clients can actually render.
+      manager.register(secretRequest({ payload: { recovered: true } }))
+      const upgraded = manager.register(
+        secretRequest({ payload: { secretName: 'API_KEY', reason: 'Need it' } }),
+      )
+
+      expect((upgraded!.payload as { secretName?: string }).secretName).toBe('API_KEY')
+      expect((upgraded!.payload as { recovered?: boolean }).recovered).toBeUndefined()
+      expect(manager.stats.open).toBe(1)
+      const transitions = reported.mock.calls.map(([t]) => t)
+      expect(transitions.map((t) => t.type)).toEqual(['created', 'created'])
+      expect((transitions[1].request.payload as { secretName?: string }).secretName).toBe('API_KEY')
+    })
+
+    it('never downgrades: a recovered synthetic cannot replace a real entry', () => {
+      const first = manager.register(secretRequest({ payload: { secretName: 'REAL' } }))
+      const second = manager.register(secretRequest({ payload: { recovered: true } }))
+      expect(second).toBe(first)
+      const third = manager.register(secretRequest({ payload: { recovered: true } }))
+      expect(third).toBe(first)
+    })
+
+    it('a second recovered synthetic does not re-emit over an existing one', () => {
+      const first = manager.register(secretRequest({ payload: { recovered: true } }))
+      const second = manager.register(secretRequest({ payload: { recovered: true } }))
+      expect(second).toBe(first)
+      expect(reported.mock.calls.map(([t]) => t.type)).toEqual(['created'])
+    })
+
+    it('drops a malformed envelope without throwing (shadow mode must never break delivery)', () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+      const stored = manager.register({
+        id: '',
+        kind: 'secret',
+        scope: {},
+        blocking: true,
+        payload: {},
+      } as PendingUserInputRequestInput)
+      expect(stored).toBeNull()
+      expect(manager.stats.open).toBe(0)
+      expect(consoleError).toHaveBeenCalledTimes(1)
+    })
+
+    it('tolerates malformed payload fields instead of rejecting the request', () => {
+      const stored = manager.register(
+        secretRequest({ payload: { secretName: 42, reason: { nested: true } } }),
+      )
+      expect(stored).not.toBeNull()
+      expect((stored!.payload as { secretName?: string }).secretName).toBeUndefined()
+    })
+  })
+
+  describe('resolve', () => {
+    it('removes the request and records the outcome', () => {
+      manager.register(secretRequest())
+      const resolved = manager.resolve('agent-a', 'tool-1', 'answered')
+      expect(resolved?.kind).toBe('secret')
+      expect(manager.stats.open).toBe(0)
+      // Kind AND scope survive on the trail: a settled request stays as
+      // route-bound as it was open, so the decision gate can validate it.
+      expect(manager.stats.recentResolutions).toEqual([
+        {
+          id: 'tool-1',
+          kind: 'secret',
+          scope: { agentSlug: 'agent-a', sessionId: 'session-1' },
+          outcome: 'answered',
+        },
+      ])
+    })
+
+    it('getRecentResolution returns the agent\'s settled record, newest first, then nothing', () => {
+      expect(manager.getRecentResolution('agent-a', 'tool-1')).toBeUndefined()
+      manager.register(secretRequest())
+      manager.resolve('agent-a', 'tool-1', 'declined')
+      expect(manager.getRecentResolution('agent-a', 'tool-1')).toEqual({
+        id: 'tool-1',
+        kind: 'secret',
+        scope: { agentSlug: 'agent-a', sessionId: 'session-1' },
+        outcome: 'declined',
+      })
+      // Each agent's trail is its own: another agent settling the same id
+      // leaves this agent's record as it was.
+      manager.register(secretRequest({ scope: { agentSlug: 'agent-b', sessionId: 'session-2' } }))
+      manager.resolve('agent-b', 'tool-1', 'answered')
+      expect(manager.getRecentResolution('agent-b', 'tool-1')).toMatchObject({
+        scope: { agentSlug: 'agent-b', sessionId: 'session-2' },
+        outcome: 'answered',
+      })
+      expect(manager.getRecentResolution('agent-a', 'tool-1')).toMatchObject({ outcome: 'declined' })
+    })
+
+    it('is idempotent: unknown ids are a no-op returning null', () => {
+      expect(manager.resolve('agent-a', 'never-registered', 'answered')).toBeNull()
+      manager.register(secretRequest())
+      manager.resolve('agent-a', 'tool-1', 'answered')
+      expect(manager.resolve('agent-a', 'tool-1', 'answered')).toBeNull()
+      expect(manager.stats.recentResolutions).toHaveLength(1)
+    })
+  })
+
+  describe('resolveIfInStore', () => {
+    it('refuses to settle a request that lives on a different store', () => {
+      manager.register({
+        id: 'cu-1',
+        kind: 'computer_use',
+        scope: { agentSlug: 'agent-a', sessionId: 'session-1' },
+        blocking: true,
+        payload: { method: 'click' },
+      })
+      // A stray main-path tool_result deletes blindly from the stream store —
+      // it must not evict the computer-use entry its own store still holds.
+      expect(manager.resolveIfInStore('agent-a', 'cu-1', 'stream', 'answered')).toBeNull()
+      expect(manager.stats.open).toBe(1)
+      expect(manager.resolveIfInStore('agent-a', 'cu-1', 'computer_use', 'answered')).not.toBeNull()
+      expect(manager.stats.open).toBe(0)
+    })
+  })
+
+  describe('store-scoped clears', () => {
+    beforeEach(() => {
+      manager.register(secretRequest({ id: 'stream-1' }))
+      manager.register({
+        id: 'cu-1',
+        kind: 'computer_use',
+        scope: { agentSlug: 'agent-a', sessionId: 'session-1' },
+        blocking: true,
+        payload: { method: 'click' },
+      })
+      manager.register({
+        id: 'review-1',
+        kind: 'proxy_review',
+        scope: { agentSlug: 'agent-a' },
+        blocking: true,
+        payload: { toolkit: 'slack' },
+      })
+      manager.register(secretRequest({ id: 'other-session', scope: { agentSlug: 'agent-a', sessionId: 'session-2' } }))
+    })
+
+    it('clearSessionStreamRequests wipes only the session\'s stream store (turn-boundary mirror)', () => {
+      manager.clearSessionStreamRequests('agent-a', 'session-1', 'cancelled')
+      expect(manager.getOpenRequestsForSession('agent-a', 'session-1').map((r) => r.id)).toEqual(['cu-1'])
+      expect(manager.getOpenRequestsForSession('agent-a', 'session-2')).toHaveLength(1)
+      expect(manager.getAgentScopedRequests('agent-a')).toHaveLength(1)
+    })
+
+    it('dropSessionRequests removes every session-scoped entry but leaves agent-scoped reviews', () => {
+      manager.dropSessionRequests('agent-a', 'session-1')
+      expect(manager.getOpenRequestsForSession('agent-a', 'session-1')).toHaveLength(0)
+      expect(manager.getOpenRequestsForSession('agent-a', 'session-2')).toHaveLength(1)
+      expect(manager.getAgentScopedRequests('agent-a')).toHaveLength(1)
+    })
+  })
+
+  describe('awaiting projection', () => {
+    it('a session-scoped blocking request makes the session awaiting', () => {
+      manager.register(secretRequest())
+      expect(manager.isSessionAwaiting('agent-a', 'session-1')).toBe(true)
+      expect(manager.isSessionAwaiting('agent-a', 'session-2')).toBe(false)
+      manager.resolve('agent-a', 'tool-1', 'answered')
+      expect(manager.isSessionAwaiting('agent-a', 'session-1')).toBe(false)
+    })
+
+    it('auto-approved requests never count as real waits', () => {
+      manager.register(
+        secretRequest({ id: 'auto-1', kind: 'script_run', autoApproved: true, payload: {} }),
+      )
+      expect(manager.isSessionAwaiting('agent-a', 'session-1')).toBe(false)
+      expect(manager.isAgentAwaiting('agent-a')).toBe(false)
+    })
+
+    it('an agent-scoped review blocks every session of that agent', () => {
+      manager.register({
+        id: 'review-1',
+        kind: 'proxy_review',
+        scope: { agentSlug: 'agent-a' },
+        blocking: true,
+        payload: { toolkit: 'slack' },
+      })
+      expect(manager.isSessionAwaiting('agent-a', 'any-session-of-a')).toBe(true)
+      expect(manager.isSessionAwaiting('agent-b', 'any-session-of-b')).toBe(false)
+      expect(manager.isAgentAwaiting('agent-a')).toBe(true)
+    })
+  })
+
+  describe('two agents holding the same session id do not cross-talk', () => {
+    // A session id is unique only WITHIN an agent. Import/clone gives each
+    // agent its own copy of the same id, so every session-scoped read and
+    // sweep must match the agent too — otherwise one agent's turn boundary
+    // settles another agent's parked request (the SUP-479 class, reopened at
+    // the request registry once duplicate ids across agents became legal).
+    beforeEach(() => {
+      // Same session id 'shared', one live request under each agent.
+      manager.register(secretRequest({ id: 'a-req', scope: { agentSlug: 'agent-a', sessionId: 'shared' } }))
+      manager.register(secretRequest({ id: 'b-req', scope: { agentSlug: 'agent-b', sessionId: 'shared' } }))
+    })
+
+    it('getOpenRequestsForSession returns only the asking agent’s request', () => {
+      expect(manager.getOpenRequestsForSession('agent-a', 'shared').map((r) => r.id)).toEqual(['a-req'])
+      expect(manager.getOpenRequestsForSession('agent-b', 'shared').map((r) => r.id)).toEqual(['b-req'])
+    })
+
+    it('clearSessionStreamRequests settles only the asking agent’s stream entry', () => {
+      manager.clearSessionStreamRequests('agent-a', 'shared', 'cancelled')
+      expect(manager.getOpenRequest('agent-a', 'a-req')).toBeNull()
+      expect(manager.getOpenRequest('agent-b', 'b-req')).not.toBeNull()
+    })
+
+    it('dropSessionRequests drops only the asking agent’s entry', () => {
+      manager.dropSessionRequests('agent-a', 'shared')
+      expect(manager.getOpenRequest('agent-a', 'a-req')).toBeNull()
+      expect(manager.getOpenRequest('agent-b', 'b-req')).not.toBeNull()
+    })
+
+    it('getStoreIdsForSession lists only the asking agent’s ids', () => {
+      expect(manager.getStoreIdsForSession('agent-a', 'shared', 'stream')).toEqual(['a-req'])
+      expect(manager.getStoreIdsForSession('agent-b', 'shared', 'stream')).toEqual(['b-req'])
+    })
+
+    it('isSessionAwaiting is answered per agent, not by the bare id', () => {
+      expect(manager.isSessionAwaiting('agent-a', 'shared')).toBe(true)
+      expect(manager.isSessionAwaiting('agent-b', 'shared')).toBe(true)
+      manager.resolve('agent-a', 'a-req', 'answered')
+      // agent-a's wait is settled; agent-b's identically-named session is not.
+      expect(manager.isSessionAwaiting('agent-a', 'shared')).toBe(false)
+      expect(manager.isSessionAwaiting('agent-b', 'shared')).toBe(true)
+    })
+  })
+
+  describe('transitions reported by the stores (the unified wire feed)', () => {
+    it('reports exactly one created per accepted registration and one resolved per settlement', () => {
+      manager.register(secretRequest())
+      // First-delivery-wins duplicate must NOT re-emit.
+      manager.register(secretRequest({ payload: { secretName: 'DUP' } }))
+      manager.resolve('agent-a', 'tool-1', 'answered')
+      // Idempotent resolve of an unknown id must not emit.
+      manager.resolve('agent-a', 'tool-1', 'answered')
+
+      expect(reported.mock.calls.map(([t]) => ({ type: t.type, id: t.request.id, outcome: t.outcome }))).toEqual([
+        { type: 'created', id: 'tool-1', outcome: undefined },
+        { type: 'resolved', id: 'tool-1', outcome: 'answered' },
+      ])
+    })
+
+    it('a malformed registration reports nothing', () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      manager.register({ id: '', kind: 'secret', scope: {}, blocking: true, payload: {} } as PendingUserInputRequestInput)
+      expect(reported).not.toHaveBeenCalled()
+    })
+
+    it('store-scoped clears report resolved with the boundary outcome', () => {
+      manager.register(secretRequest({ id: 'clear-1' }))
+      manager.register(secretRequest({ id: 'clear-2' }))
+      manager.clearSessionStreamRequests('agent-a', 'session-1', 'superseded')
+      const outcomes = reported.mock.calls
+        .map(([t]) => t)
+        .filter((t) => t.type === 'resolved')
+        .map((t) => ({ id: t.request.id, outcome: t.outcome }))
+      expect(outcomes).toEqual([
+        { id: 'clear-1', outcome: 'superseded' },
+        { id: 'clear-2', outcome: 'superseded' },
+      ])
+    })
+
+    it('a throwing sink is swallowed by the store and does not break the mutation', () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const store = new AgentInputRequests('agent-a', {
+        report: () => {
+          throw new Error('sink boom')
+        },
+      })
+      const stored = store.register(secretRequest())
+      expect(stored).not.toBeNull()
+      expect(store.getOpenRequest('tool-1')).not.toBeNull()
+      expect(store.resolve('tool-1', 'answered')).not.toBeNull()
+      expect(store.getOpenRequest('tool-1')).toBeNull()
+    })
+  })
+
+  describe('getSnapshotForScope', () => {
+    it("a session scope unions its own requests with the agent's agent-scoped reviews", () => {
+      manager.register(secretRequest({ id: 'mine-1' }))
+      manager.register(secretRequest({ id: 'other-1', scope: { agentSlug: 'agent-a', sessionId: 'session-other' } }))
+      manager.register({
+        id: 'review-1',
+        kind: 'proxy_review',
+        scope: { agentSlug: 'agent-a' },
+        blocking: true,
+        payload: { toolkit: 'slack' },
+      } as PendingUserInputRequestInput)
+      manager.register({
+        id: 'review-b',
+        kind: 'proxy_review',
+        scope: { agentSlug: 'agent-b' },
+        blocking: true,
+        payload: { toolkit: 'github' },
+      } as PendingUserInputRequestInput)
+
+      const ids = manager.getSnapshotForScope('agent-a', 'session-1').map((r) => r.id).sort()
+      expect(ids).toEqual(['mine-1', 'review-1'])
+    })
+
+    it("a session view never crosses agents — another agent's sessionId returns none of its requests", () => {
+      // The sessionId reaches getSnapshotForScope from an unvalidated query
+      // param behind an AgentRead gate on the AGENT only; matching on
+      // sessionId alone would hand agent-a's viewer agent-b's payloads.
+      manager.register(
+        secretRequest({ id: 'foreign-1', scope: { agentSlug: 'agent-b', sessionId: 'session-b' } }),
+      )
+      manager.register({
+        id: 'review-a',
+        kind: 'proxy_review',
+        scope: { agentSlug: 'agent-a' },
+        blocking: true,
+        payload: { toolkit: 'slack' },
+      } as PendingUserInputRequestInput)
+
+      const ids = manager.getSnapshotForScope('agent-a', 'session-b').map((r) => r.id)
+      expect(ids).toEqual(['review-a'])
+    })
+
+    it('an agent scope returns everything in the agent, sessions included', () => {
+      manager.register(secretRequest({ id: 'mine-1' }))
+      manager.register({
+        id: 'review-1',
+        kind: 'proxy_review',
+        scope: { agentSlug: 'agent-a' },
+        blocking: true,
+        payload: { toolkit: 'slack' },
+      } as PendingUserInputRequestInput)
+      const ids = manager.getSnapshotForScope('agent-a').map((r) => r.id).sort()
+      expect(ids).toEqual(['mine-1', 'review-1'])
+    })
+
+    it('recovery synthetics ARE in the snapshot — a recovered wait is still a blocking wait', () => {
+      // They stay off the WIRE (no renderable payload to push), but the
+      // snapshot is the awaiting-status source for clients: excluding them
+      // made the activity indicator read "Working…" while the server and the
+      // transcript-rendered card both said awaiting input. The per-kind card
+      // guards drop the payload-less entries, so no broken card renders.
+      manager.register(secretRequest({ id: 'live-1' }))
+      manager.register(secretRequest({ id: 'recovered-1', payload: { recovered: true } }))
+      const ids = manager.getSnapshotForScope('agent-a', 'session-1').map((r) => r.id).sort()
+      expect(ids).toEqual(['live-1', 'recovered-1'])
+    })
+  })
+
+  describe('claimRequest / releaseClaim', () => {
+    it('hands the request to the FIRST caller and null to every other', () => {
+      manager.register(secretRequest())
+
+      const first = manager.claimRequest('agent-a', 'tool-1')
+      const second = manager.claimRequest('agent-a', 'tool-1')
+
+      expect(first?.request.id).toBe('tool-1')
+      // The whole point: two deciders that both read an open request would both
+      // act on it. Exactly one may win.
+      expect(second).toBeNull()
+      expect(manager.stats.claimed).toBe(1)
+    })
+
+    it('returns null for an id that is not open', () => {
+      expect(manager.claimRequest('agent-a', 'never-existed')).toBeNull()
+      manager.register(secretRequest())
+      manager.resolve('agent-a', 'tool-1', 'answered')
+      expect(manager.claimRequest('agent-a', 'tool-1')).toBeNull()
+    })
+
+    it('a claim does not hide the request from any reader', () => {
+      // A claim is an in-flight decision, not a settlement — if the claimer
+      // dies the human is still waiting, so the card, the snapshot and the
+      // awaiting light must all still show it.
+      manager.register(secretRequest())
+      manager.claimRequest('agent-a', 'tool-1')
+
+      expect(manager.getOpenRequest('agent-a', 'tool-1')).not.toBeNull()
+      expect(manager.isSessionAwaiting('agent-a', 'session-1')).toBe(true)
+      expect(manager.getSnapshotForScope('agent-a', 'session-1')).toHaveLength(1)
+      expect(manager.stats.open).toBe(1)
+    })
+
+    it('releaseClaim makes it claimable again — a bailed decision must not strand it', () => {
+      manager.register(secretRequest())
+      const claim = manager.claimRequest('agent-a', 'tool-1')!
+
+      manager.releaseClaim('agent-a', 'tool-1', claim.token)
+
+      expect(manager.claimRequest('agent-a', 'tool-1')?.request.id).toBe('tool-1')
+    })
+
+    it('releaseClaim with another holder\'s token leaves the claim held', () => {
+      manager.register(secretRequest())
+      manager.claimRequest('agent-a', 'tool-1')
+
+      manager.releaseClaim('agent-a', 'tool-1', 'not-the-token')
+
+      expect(manager.claimRequest('agent-a', 'tool-1')).toBeNull()
+    })
+
+    it('a claim nobody gives back lapses with its lease, and its late release frees nothing', () => {
+      vi.useFakeTimers()
+      try {
+        manager.register(secretRequest())
+        const lost = manager.claimRequest('agent-a', 'tool-1')!
+        vi.advanceTimersByTime(CLAIM_LEASE_MS - 1)
+        expect(manager.claimRequest('agent-a', 'tool-1')).toBeNull()
+
+        vi.advanceTimersByTime(1)
+        const next = manager.claimRequest('agent-a', 'tool-1')!
+        expect(next.request.id).toBe('tool-1')
+
+        // The first holder comes back late: the request stays the second's.
+        manager.releaseClaim('agent-a', 'tool-1', lost.token)
+        expect(manager.claimRequest('agent-a', 'tool-1')).toBeNull()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('releaseClaim on an unknown or already-settled id is a no-op', () => {
+      manager.register(secretRequest())
+      const claim = manager.claimRequest('agent-a', 'tool-1')!
+      manager.resolve('agent-a', 'tool-1', 'answered')
+
+      expect(() => manager.releaseClaim('agent-a', 'tool-1', claim.token)).not.toThrow()
+      expect(() => manager.releaseClaim('agent-a', 'never-existed', claim.token)).not.toThrow()
+      expect(manager.stats.claimed).toBe(0)
+    })
+
+    it('resolve drops the claim, so a re-registered id does not inherit it', () => {
+      // Callers release in a finally, but the success path settles instead —
+      // if resolve leaked the claim, the next request to reuse the toolUseId
+      // would be born undecidable.
+      manager.register(secretRequest())
+      manager.claimRequest('agent-a', 'tool-1')
+      manager.resolve('agent-a', 'tool-1', 'answered')
+      expect(manager.stats.claimed).toBe(0)
+
+      manager.register(secretRequest())
+      expect(manager.claimRequest('agent-a', 'tool-1')?.request.id).toBe('tool-1')
+    })
+
+    it('reset clears claims', () => {
+      manager.register(secretRequest())
+      manager.claimRequest('agent-a', 'tool-1')
+      manager.reset()
+      expect(manager.stats.claimed).toBe(0)
+    })
+  })
+
+  describe('routing', () => {
+    it('registers into the store of the agent the scope names and finds it again through that agent', () => {
+      manager.register(secretRequest())
+      expect(agents.peek('agent-a')!.getOpenRequest('tool-1')?.id).toBe('tool-1')
+      expect(manager.getOpenRequest('agent-a', 'tool-1')?.scope.agentSlug).toBe('agent-a')
+      expect(manager.claimRequest('agent-a', 'tool-1')?.request.id).toBe('tool-1')
+      expect(manager.resolve('agent-a', 'tool-1', 'answered')?.id).toBe('tool-1')
+      expect(manager.getOpenRequest('agent-a', 'tool-1')).toBeNull()
+      expect(manager.getRecentResolution('agent-a', 'tool-1')?.outcome).toBe('answered')
+    })
+
+    it('drops an envelope that names no agent: there is no store for it', () => {
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+      expect(manager.register(secretRequest({ scope: { sessionId: 'session-1' } }))).toBeNull()
+      expect(manager.stats.open).toBe(0)
+      expect(consoleError).toHaveBeenCalledTimes(1)
+    })
+
+    it('a read for an agent nothing has registered under finds nothing and creates no store', () => {
+      expect(manager.getOpenRequestsForSession('agent-z', 'session-1')).toEqual([])
+      expect(manager.isSessionAwaiting('agent-z', 'session-1')).toBe(false)
+      expect(manager.getSnapshotForScope('agent-z')).toEqual([])
+      expect(agents.peek('agent-z')).toBeUndefined()
+    })
+
+    it('an id open in two agents is addressed by agent', () => {
+      manager.register(secretRequest({ scope: { agentSlug: 'agent-a', sessionId: 's' } }))
+      manager.register(secretRequest({ scope: { agentSlug: 'agent-b', sessionId: 's' } }))
+      expect(manager.getOpenRequestsForAgent('agent-a')).toHaveLength(1)
+      expect(manager.getOpenRequestsForAgent('agent-b')).toHaveLength(1)
+
+      expect(manager.getOpenRequest('agent-a', 'tool-1')?.scope.agentSlug).toBe('agent-a')
+      expect(manager.getOpenRequest('agent-b', 'tool-1')?.scope.agentSlug).toBe('agent-b')
+      expect(manager.claimRequest('agent-b', 'tool-1')?.request.scope.agentSlug).toBe('agent-b')
+      expect(manager.claimRequest('agent-a', 'tool-1')?.request.scope.agentSlug).toBe('agent-a')
+      expect(manager.enrichOpenRequestPayload('agent-b', 'tool-1', 'secret', { note: 1 })).toBe(true)
+      expect(manager.getOpenRequest('agent-a', 'tool-1')?.payload).not.toHaveProperty('note')
+
+      // Settling the named agent's copy leaves the other's open.
+      expect(manager.resolveIfInStore('agent-b', 'tool-1', 'stream', 'answered')?.scope.agentSlug).toBe('agent-b')
+      expect(manager.getOpenRequestsForAgent('agent-b')).toHaveLength(0)
+      expect(manager.getOpenRequest('agent-a', 'tool-1')?.scope.agentSlug).toBe('agent-a')
+      expect(manager.resolve('agent-a', 'tool-1', 'declined')?.scope.agentSlug).toBe('agent-a')
+      expect(manager.getOpenRequest('agent-a', 'tool-1')).toBeNull()
+      expect(manager.stats.open).toBe(0)
+    })
+
+    it('attaching stores that already hold requests announces nothing and answers as before', () => {
+      manager.register(secretRequest({ scope: { agentSlug: 'agent-a', sessionId: 's' } }))
+      manager.register(secretRequest({ scope: { agentSlug: 'agent-b', sessionId: 's' } }))
+      manager.register(secretRequest({ id: 'tool-2', scope: { agentSlug: 'agent-b', sessionId: 's' } }))
+      reported.mockClear()
+
+      // What a registry rebuilt over surviving state does: attach the same
+      // stores to the router again.
+      manager.attachAgents(agents)
+
+      expect(reported).not.toHaveBeenCalled()
+      expect(manager.getOpenRequest('agent-a', 'tool-1')?.scope.agentSlug).toBe('agent-a')
+      expect(manager.getOpenRequest('agent-b', 'tool-2')?.scope.agentSlug).toBe('agent-b')
+      expect(manager.getOpenRequest('agent-b', 'tool-1')?.scope.agentSlug).toBe('agent-b')
+      expect(manager.resolve('agent-a', 'tool-1', 'answered')?.scope.agentSlug).toBe('agent-a')
+      expect(manager.getOpenRequest('agent-b', 'tool-1')?.scope.agentSlug).toBe('agent-b')
+    })
+
+    it('a named agent that does not hold the id is a miss, not a fallback to whoever does', () => {
+      manager.register(secretRequest())
+      expect(manager.getOpenRequest('agent-z', 'tool-1')).toBeNull()
+      expect(manager.resolveIfInStore('agent-z', 'tool-1', 'stream', 'answered')).toBeNull()
+      expect(manager.resolveRequestsByParent('agent-z', 'task-1', 'invalidated')).toEqual([])
+      expect(manager.getOpenRequest('agent-a', 'tool-1')?.scope.agentSlug).toBe('agent-a')
+    })
+
+    it('sweeps that span agents reach every store; the dead-subagent sweep stays in the named agent', () => {
+      manager.register(secretRequest({ id: 'a-1', parentToolUseId: 'task-1' }))
+      manager.register(secretRequest({ id: 'b-1', scope: { agentSlug: 'agent-b', sessionId: 's' }, parentToolUseId: 'task-1' }))
+      manager.register({ id: 'r-1', kind: 'proxy_review', scope: { agentSlug: 'agent-b' }, blocking: true, payload: {} })
+      expect(manager.getOpenRequestsForStore('review').map((r) => r.id)).toEqual(['r-1'])
+      expect(manager.resolveRequestsByParent('agent-a', 'task-1').map((r) => r.id)).toEqual(['a-1'])
+      expect(manager.getOpenRequest('agent-b', 'b-1')).not.toBeNull()
+      expect(manager.resolveRequestsByParent('agent-b', 'task-1').map((r) => r.id)).toEqual(['b-1'])
+      expect(manager.stats.open).toBe(1)
+    })
+  })
+
+  describe('shadow diagnostics', () => {
+    it('verifyReviewSettlerParity accepts settlers backed by open review entries', () => {
+      manager.register({
+        id: 'review-1',
+        kind: 'proxy_review',
+        scope: { agentSlug: 'agent-a' },
+        blocking: true,
+        payload: { toolkit: 'slack' },
+      })
+      agents.get('agent-a').verifyReviewSettlerParity({ context: 'test', settlerIds: ['review-1'] })
+      expect(manager.stats.mismatches).toBe(0)
+    })
+
+    it('verifyReviewSettlerParity accepts review entries without settlers', () => {
+      // Feeders other than requestReview own no promise — an entry without a
+      // settler is a legitimate pending review, not a mismatch.
+      manager.register({
+        id: 'review-1',
+        kind: 'proxy_review',
+        scope: { agentSlug: 'agent-a' },
+        blocking: true,
+        payload: { toolkit: 'slack' },
+      })
+      agents.get('agent-a').verifyReviewSettlerParity({ context: 'test', settlerIds: [] })
+      expect(manager.stats.mismatches).toBe(0)
+    })
+
+    it('verifyReviewSettlerParity throws under vitest on an orphaned settler', () => {
+      // A settler without a registry entry is a parked proxied call no sweep
+      // can ever reach.
+      expect(() =>
+        agents.get('agent-a').verifyReviewSettlerParity({ context: 'test', settlerIds: ['review-orphan'] }),
+      ).toThrow(/shadow mismatch/)
+      expect(manager.stats.mismatches).toBe(1)
+    })
+
+    it('reset wipes requests and diagnostics', () => {
+      manager.register(secretRequest())
+      manager.resolve('agent-a', 'tool-1', 'answered')
+      manager.reset()
+      expect(manager.stats).toEqual({
+        open: 0,
+        claimed: 0,
+        mismatches: 0,
+        recentResolutions: [],
+      })
+    })
+  })
+})

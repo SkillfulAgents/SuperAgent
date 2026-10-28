@@ -53,7 +53,7 @@ export function RunnerSetupErrorPanel({ error, className }: RunnerSetupErrorPane
         <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
         <div className="flex-1 min-w-0 space-y-3">
           <div>
-            <p className="text-sm font-semibold text-destructive">{payload.title}</p>
+            <p className="text-sm font-medium text-destructive">{payload.title}</p>
             <p className="text-sm text-muted-foreground mt-1">{payload.remediation}</p>
           </div>
 

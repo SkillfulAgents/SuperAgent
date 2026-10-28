@@ -1,23 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 
 import { apiFetch } from '@renderer/lib/api'
 import { useUpdateSettings } from '@renderer/hooks/use-settings'
-import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
+import { useLoginWindow } from '@renderer/hooks/use-login-window'
+import type {
+  PlatformAuthSource,
+  PlatformAuthStatus as SharedPlatformAuthStatus,
+} from '@shared/lib/services/platform-auth-service'
 
 export const PLATFORM_AUTH_CHOICE_STORAGE_KEY = 'superagent-auth-choice'
 
-export interface PlatformAuthStatus {
-  connected: boolean
-  tokenPreview: string | null
-  email: string | null
-  label: string | null
-  orgId: string | null
-  orgName: string | null
-  role: string | null
-  createdAt: string | null
-  updatedAt: string | null
+export type { PlatformAuthSource }
+
+export interface PlatformAuthStatus extends SharedPlatformAuthStatus {
   platformBaseUrl: string
+  /** AUTH_MODE + PLATFORM_TOKEN — same predicate as server resolveAuthSettings. */
+  platformControlled?: boolean
 }
 
 export interface PlatformAuthCallbackParams {
@@ -26,9 +25,26 @@ export interface PlatformAuthCallbackParams {
   error?: string | null
 }
 
+// Run env-managed auto-sync at most once per process.
+let envSkillsetSyncFired = false
+
+function triggerPlatformSkillsetSync(queryClient: QueryClient): void {
+  void apiFetch('/api/skillsets/sync-remote', {
+    method: 'POST',
+    body: JSON.stringify({ provider: 'platform' }),
+  })
+    .then(() => queryClient.invalidateQueries({ queryKey: ['skillsets'] }))
+    .catch(() => {})
+}
+
 export function usePlatformAuthStatus() {
-  return useQuery<PlatformAuthStatus>({
+  const queryClient = useQueryClient()
+  const query = useQuery<PlatformAuthStatus>({
     queryKey: ['platform-auth'],
+    // Matches the server-side introspection TTL: the status only changes via
+    // connect/revoke (which invalidate this key explicitly), so remounts within
+    // the window shouldn't re-hit the endpoint.
+    staleTime: 5 * 60 * 1000,
     queryFn: async () => {
       const res = await apiFetch('/api/platform-auth')
       if (!res.ok) {
@@ -38,10 +54,22 @@ export function usePlatformAuthStatus() {
       return res.json()
     },
   })
+
+  // AUTH_MODE skips OAuth complete; mirror auto-sync once on first connect.
+  useEffect(() => {
+    if (envSkillsetSyncFired) return
+    const status = query.data
+    if (!status?.connected || status.source !== 'env') return
+    envSkillsetSyncFired = true
+    triggerPlatformSkillsetSync(queryClient)
+  }, [query.data, queryClient])
+
+  return query
 }
 
 function useInitiatePlatformLogin() {
   return useMutation<{ loginUrl: string; platformBaseUrl: string }, Error>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async () => {
       const res = await apiFetch('/api/platform-auth/initiate', {
         method: 'POST',
@@ -49,23 +77,6 @@ function useInitiatePlatformLogin() {
       if (!res.ok) {
         const error = await res.json().catch(() => ({}))
         throw new Error(error.error || 'Failed to start platform login')
-      }
-      return res.json()
-    },
-  })
-}
-
-function useRevokePlatformToken() {
-  return useMutation<{ success: boolean }, Error, { clearLocal?: boolean } | undefined>({
-    mutationFn: async (options) => {
-      const res = await apiFetch('/api/platform-auth/revoke', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(options ?? {}),
-      })
-      if (!res.ok) {
-        const error = await res.json().catch(() => ({}))
-        throw new Error(error.error || 'Failed to revoke platform token')
       }
       return res.json()
     },
@@ -86,12 +97,22 @@ function usePlatformAuthCallbackListener(
 
     const handleCallback = (params: PlatformAuthCallbackParams) => {
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
+      queryClient.resetQueries({ queryKey: ['platform-billing'] })
+      queryClient.resetQueries({ queryKey: ['provider-model-availability'] })
+      queryClient.resetQueries({ queryKey: ['settings', 'llm-connections'] })
+      queryClient.resetQueries({ queryKey: ['settings', 'models'] })
+      // A changed token marks running agents stale; nothing else refetches the agent list for it.
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
+      // Reset, not invalidate: this key holds another account's deployment URL
+      // behind a live "Open" button, and invalidation keeps serving stale data
+      // while the refetch runs. Reset drops it and refetches from scratch.
+      queryClient.resetQueries({ queryKey: ['cloud-workspace'] })
       callbackRef.current?.(params)
     }
 
-    window.electronAPI.onPlatformAuthCallback(handleCallback)
+    const unsubscribe = window.electronAPI.onPlatformAuthCallback(handleCallback)
     return () => {
-      window.electronAPI?.removePlatformAuthCallback?.()
+      unsubscribe?.()
     }
   }, [queryClient])
 }
@@ -114,11 +135,99 @@ export interface PlatformConnectOptions {
   successMessage?: string | ((wasConnected: boolean) => string | null) | null
 }
 
+// ---------------------------------------------------------------------------
+// Download-carried enrollment ("Continue as X"): the main process may recover
+// a single-use nonce from the installer's surroundings. When it resolves, the
+// onboarding button offers one-click sign-in; redeeming runs through the same
+// completion path as the manual access-key flow.
+// ---------------------------------------------------------------------------
+
+export interface DownloadNonceOffer {
+  available: boolean
+  email?: string
+  orgName?: string
+  avatarUrl?: string
+}
+
+export function useDownloadNonceOffer(enabled: boolean) {
+  return useQuery<DownloadNonceOffer>({
+    queryKey: ['download-nonce-offer'],
+    enabled,
+    // The offer only changes through redeem/dismiss, which update the cache
+    // directly.
+    staleTime: Infinity,
+    queryFn: async () => {
+      const res = await apiFetch('/api/platform-auth/download-nonce')
+      if (!res.ok) return { available: false }
+      return res.json()
+    },
+  })
+}
+
+export function useRedeemDownloadNonce() {
+  const queryClient = useQueryClient()
+  const applyPlatformDefaults = useApplyPlatformDefaults()
+
+  return useMutation<unknown, Error>({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async () => {
+      const res = await apiFetch('/api/platform-auth/download-nonce/redeem', {
+        method: 'POST',
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || 'Failed to sign in.')
+      }
+      return res.json()
+    },
+    onSuccess: async () => {
+      window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
+      queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
+      queryClient.resetQueries({ queryKey: ['platform-billing'] })
+      queryClient.resetQueries({ queryKey: ['provider-model-availability'] })
+      queryClient.resetQueries({ queryKey: ['settings', 'llm-connections'] })
+      queryClient.resetQueries({ queryKey: ['settings', 'models'] })
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
+      // Reset, not invalidate: this key holds another account's deployment URL
+      // behind a live "Open" button, and invalidation keeps serving stale data
+      // while the refetch runs. Reset drops it and refetches from scratch.
+      queryClient.resetQueries({ queryKey: ['cloud-workspace'] })
+      queryClient.setQueryData<DownloadNonceOffer>(['download-nonce-offer'], { available: false })
+      await applyPlatformDefaults().catch(() => {})
+
+      triggerPlatformSkillsetSync(queryClient)
+    },
+    onError: () => {
+      // Whatever went wrong (expired, consumed elsewhere, offline), the offer
+      // may be gone — refetch so the button falls back to the normal flow.
+      queryClient.invalidateQueries({ queryKey: ['download-nonce-offer'] })
+    },
+  })
+}
+
+export function useDismissDownloadNonce() {
+  const queryClient = useQueryClient()
+
+  return useMutation<unknown, Error>({
+    meta: { skipGlobalErrorToast: true },
+    mutationFn: async () => {
+      const res = await apiFetch('/api/platform-auth/download-nonce/dismiss', {
+        method: 'POST',
+      })
+      return res.ok ? res.json() : {}
+    },
+    onSuccess: () => {
+      queryClient.setQueryData<DownloadNonceOffer>(['download-nonce-offer'], { available: false })
+    },
+  })
+}
+
 export function useSavePlatformAccessKey() {
   const queryClient = useQueryClient()
   const applyPlatformDefaults = useApplyPlatformDefaults()
 
   return useMutation<unknown, Error, string>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (token: string) => {
       const res = await apiFetch('/api/platform-auth/complete', {
         method: 'POST',
@@ -134,15 +243,18 @@ export function useSavePlatformAccessKey() {
     onSuccess: async () => {
       window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
       queryClient.invalidateQueries({ queryKey: ['platform-auth'] })
+      queryClient.resetQueries({ queryKey: ['platform-billing'] })
+      queryClient.resetQueries({ queryKey: ['provider-model-availability'] })
+      queryClient.resetQueries({ queryKey: ['settings', 'llm-connections'] })
+      queryClient.resetQueries({ queryKey: ['settings', 'models'] })
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
+      // Reset, not invalidate: this key holds another account's deployment URL
+      // behind a live "Open" button, and invalidation keeps serving stale data
+      // while the refetch runs. Reset drops it and refetches from scratch.
+      queryClient.resetQueries({ queryKey: ['cloud-workspace'] })
       await applyPlatformDefaults().catch(() => {})
 
-      // Auto-sync provider-owned skillsets after platform auth is ready.
-      void apiFetch('/api/skillsets/sync-remote', {
-        method: 'POST',
-        body: JSON.stringify({ provider: 'platform' }),
-      })
-        .then(() => queryClient.invalidateQueries({ queryKey: ['skillsets'] }))
-        .catch(() => {})
+      triggerPlatformSkillsetSync(queryClient)
     },
   })
 }
@@ -153,8 +265,7 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
   const platformAuth = platformAuthQuery.data
   const applyPlatformDefaults = useApplyPlatformDefaults()
   const initiateLogin = useInitiatePlatformLogin()
-  const revokePlatformToken = useRevokePlatformToken()
-  const [isLaunching, setIsLaunching] = useState(false)
+  const { open, close, pending, canCancel } = useLoginWindow()
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const wasConnected = !!platformAuth?.connected
@@ -164,8 +275,21 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
   const successMessageRef = useRef(options?.successMessage)
   successMessageRef.current = options?.successMessage
 
+  // In a browser window the login callback is a deep link that lands in the
+  // desktop app, so nothing here ever ends the launch. A token saved by any
+  // path (access key included) bumps updatedAt and ends the wait.
+  const updatedAt = platformAuth?.updatedAt
+  const seenUpdatedAtRef = useRef(updatedAt)
+  useEffect(() => {
+    if (updatedAt === seenUpdatedAtRef.current) return
+    seenUpdatedAtRef.current = updatedAt
+    // On desktop the callback owns the launch; a metadata refresh mid-login must not end it.
+    if (window.electronAPI?.onPlatformAuthCallback) return
+    close()
+  }, [updatedAt, close])
+
   usePlatformAuthCallbackListener((params) => {
-    setIsLaunching(false)
+    close()
     if (params.success) {
       window.localStorage.setItem(PLATFORM_AUTH_CHOICE_STORAGE_KEY, 'platform')
       setError(null)
@@ -181,13 +305,7 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
         setError(err instanceof Error ? err.message : 'Failed to apply platform defaults.')
       })
 
-      // Auto-sync provider-owned skillsets after successful connection.
-      void apiFetch('/api/skillsets/sync-remote', {
-        method: 'POST',
-        body: JSON.stringify({ provider: 'platform' }),
-      })
-        .then(() => queryClient.invalidateQueries({ queryKey: ['skillsets'] }))
-        .catch(() => {})
+      triggerPlatformSkillsetSync(queryClient)
 
       onSuccessRef.current?.(params)
       return
@@ -197,27 +315,25 @@ export function usePlatformConnect(options?: PlatformConnectOptions) {
   })
 
   const handleConnect = useCallback(async () => {
-    const popup = prepareOAuthPopup()
     setError(null)
     setMessage(null)
-    setIsLaunching(true)
 
     try {
-      if (wasConnected) {
-        await revokePlatformToken.mutateAsync({ clearLocal: false }).catch(() => ({ success: false }))
-      }
-      const result = await initiateLogin.mutateAsync()
-      await popup.navigate(result.loginUrl)
+      await open(async () => {
+        // Starting or cancelling login must not revoke the working key.
+        // The platform cleans up prior keys for this client instance during issuance.
+        return (await initiateLogin.mutateAsync()).loginUrl
+      })
     } catch (err) {
-      popup.close()
-      setIsLaunching(false)
       setError(err instanceof Error ? err.message : 'Failed to open platform login.')
     }
-  }, [initiateLogin, revokePlatformToken, wasConnected])
+  }, [open, initiateLogin])
 
   return {
     handleConnect,
-    isLaunching: isLaunching || initiateLogin.isPending,
+    cancelConnect: close,
+    canCancel,
+    isLaunching: pending,
     error,
     message,
     isConnected: !!platformAuth?.connected,

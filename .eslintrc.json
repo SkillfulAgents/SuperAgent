@@ -1,4 +1,6 @@
 {
+  "root": true,
+  "ignorePatterns": ["src/api/llm-sdk-bundle.ts"],
   "env": {
     "browser": true,
     "es2021": true,
@@ -26,6 +28,11 @@
     "no-template-curly-in-string": "error",
     "react/jsx-no-target-blank": "error",
     "local-rules/no-unhandled-throwing-builtins": "warn",
+    "local-rules/no-path-containment-startswith": "warn",
+    "local-rules/no-agent-internals-outside-actor": "error",
+    "local-rules/agent-actor-escape-hatch-tally": "warn",
+    "local-rules/no-db-transaction": "error",
+    "local-rules/no-sync-drizzle-terminator": "error",
     "react-hooks/rules-of-hooks": "error",
     "react-hooks/exhaustive-deps": "warn",
     "no-extra-semi": "off",
@@ -38,7 +45,49 @@
     {
       "files": ["**/*.test.ts", "**/*.test.tsx"],
       "rules": {
-        "local-rules/no-unhandled-throwing-builtins": "off"
+        "local-rules/no-unhandled-throwing-builtins": "off",
+        "local-rules/no-path-containment-startswith": "off",
+        "local-rules/no-agent-internals-outside-actor": "off",
+        "local-rules/agent-actor-escape-hatch-tally": "off",
+        "local-rules/no-db-transaction": "off",
+        "local-rules/no-sync-drizzle-terminator": "off"
+      }
+    },
+    {
+      "files": ["e2e/**/*.ts"],
+      "rules": {
+        "local-rules/no-brittle-playwright-selectors": "error",
+        "local-rules/no-agent-internals-outside-actor": "off",
+        "local-rules/agent-actor-escape-hatch-tally": "off",
+        "local-rules/no-db-transaction": "off",
+        "local-rules/no-sync-drizzle-terminator": "off"
+      }
+    },
+    {
+      "files": ["src/shared/lib/**/*.ts", "src/api/**/*.ts"],
+      "excludedFiles": ["**/*.test.ts"],
+      "parserOptions": { "project": true },
+      "rules": {
+        "@typescript-eslint/no-floating-promises": "error",
+        "@typescript-eslint/no-misused-promises": ["error", { "checksConditionals": false, "checksSpreads": false }],
+        "local-rules/no-floating-work": "error"
+      }
+    },
+    {
+      "files": ["src/**/testing/**/*.ts"],
+      "rules": {
+        "local-rules/no-floating-work": "off"
+      }
+    },
+    {
+      "files": ["src/**/*.ts", "src/**/*.tsx"],
+      "excludedFiles": ["src/shared/lib/facts/server-facts.ts", "**/*.test.ts", "**/*.test.tsx"],
+      "rules": {
+        "no-restricted-properties": [
+          "error",
+          { "object": "process", "property": "mas", "message": "Ask a capability instead (docs/facts.md). Only src/shared/lib/facts/server-facts.ts reads how the app was distributed." },
+          { "object": "process", "property": "windowsStore", "message": "Ask a capability instead (docs/facts.md). Only src/shared/lib/facts/server-facts.ts reads how the app was distributed." }
+        ]
       }
     }
   ],

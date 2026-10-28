@@ -10,37 +10,44 @@ import { tool } from '@anthropic-ai/claude-agent-sdk'
 import { readFile } from 'fs/promises'
 import { z } from 'zod'
 import { resizeScreenshot } from '../image-utils'
+import {
+  BROWSER_OPEN_LOCATIONS,
+  isLoopbackBrowserUrl,
+} from '../browser-location'
+import { hostAuthHeaders } from '../host-auth'
 import { tabManager } from '../tab-manager'
+import { formatUrlDigest, formatUrlDigestBrief, formatFillReadback, formatScrollDigest, type UrlDigest, type ScrollInfo } from '../browser-digest'
+import { parseObservation, EMPTY_OBSERVATION } from '../page-observer'
+import { landedElsewhere, pageWarnings } from '../page-status'
+import { formatActionEffect, type ActionEffect, type ActionVerb, type EffectTreeDiff } from '../action-settle'
+import { classifyWaitTarget, formatWaitResult } from '../wait-target'
+import { stripAnsi, extractScreenshotPath } from '../browser-output'
+import { redactToolResult } from '../injected-secrets'
+
+/** The effect line for a mutating action's result, from the server's settle-and-diff (and tree diff, when one was read). */
+function effectText(data: Record<string, unknown> | undefined, verb: ActionVerb, fallbackSettleMs: number, opts: { valueReadBack?: boolean } = {}): string {
+  const effect = (data?.effect as ActionEffect | undefined) ?? null
+  const settleMs = typeof data?.settleMs === 'number' ? data.settleMs : fallbackSettleMs
+  const treeDiff = (data?.treeDiff as EffectTreeDiff | undefined) ?? null
+  return formatActionEffect(effect, { settleMs, verb, treeDiff, valueReadBack: opts.valueReadBack })
+}
+
+function ageText(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  return s < 120 ? `${s}s ago` : `${Math.round(s / 60)} min ago`
+}
 
 const CONTAINER_URL = `http://localhost:${process.env.PORT || '3000'}`
-
-// Helper to get the current session ID from the environment
-// The session ID is set by the MCP server context when tools are invoked
-let currentSessionId: string | null = null
-
-export function setCurrentBrowserSessionId(sessionId: string | null): void {
-  currentSessionId = sessionId
-}
-
-async function browserFetch(
-  endpoint: string,
-  body: Record<string, unknown>
-): Promise<{ success: boolean; data?: unknown; error?: string }> {
-  try {
-    const response = await fetch(`${CONTAINER_URL}/browser/${endpoint}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: currentSessionId, ...body }),
-    })
-    const data = await response.json() as Record<string, unknown>
-    if (!response.ok) {
-      return { success: false, error: (data.error as string) || `HTTP ${response.status}` }
-    }
-    return { success: true, data }
-  } catch (error: any) {
-    return { success: false, error: error.message || 'Request failed' }
-  }
-}
+// Conditional on purpose: it has to agree with the prompt, which tells a parent
+// with a web-browser subagent to delegate rather than read. An unconditional
+// "required" here would either undo that saving or train the model to ignore
+// these hints — including in the no-subagent case where the read is the only
+// source of browsing guidance. It is attached once per browser launch (the
+// open that started a browser), never on tab switches or navigations inside
+// a live browser: repeated on every open, it told the web-browser subagent
+// up to 50 times a session to consider delegating to itself (mining theme 31).
+export const BROWSER_USE_GUIDANCE_HINT =
+  'Guidance: if you will drive the browser yourself rather than delegate to the web-browser agent, read `/opt/gamut/docs/browser-use.md` before interacting (unless you already read it in this conversation).'
 
 function errorResult(message: string) {
   return {
@@ -54,17 +61,7 @@ function getTabWarning(): string {
   return tabManager.formatTabWarning(tabManager.getTabCount())
 }
 
-export function stripAnsi(str: string): string {
-  // eslint-disable-next-line no-control-regex
-  return str.replace(/\x1b\[[0-9;]*m/g, '')
-}
-
-export function extractScreenshotPath(output: string): string {
-  const clean = stripAnsi(output).trim()
-  // Extract file path - look for an absolute path ending with .png or .jpg/.jpeg
-  const match = clean.match(/(\/\S+\.(?:png|jpe?g))/i)
-  return match ? match[1] : clean
-}
+export { stripAnsi, extractScreenshotPath }
 
 async function readScreenshotAsBase64(filePath: string): Promise<{ data: string; mimeType: string } | null> {
   try {
@@ -79,54 +76,115 @@ async function readScreenshotAsBase64(filePath: string): Promise<{ data: string;
   }
 }
 
-export const browserOpenTool = tool(
+/**
+ * Build the browser tool set for one session/process.
+ *
+ * `getSessionId` is read at call time on every request: a ClaudeCodeProcess's
+ * session id changes whenever its SDK query (re)starts, and a module-global id
+ * shared across processes is exactly the race that stranded browser sub-agents
+ * in "Browser is owned by session <other>" loops (see browser-tools-audit.md).
+ */
+export function createBrowserTools(getSessionId: () => string | null) {
+  async function browserFetch(
+    endpoint: string,
+    body: Record<string, unknown>
+  ): Promise<{ success: boolean; data?: unknown; error?: string }> {
+    try {
+      // In-process self-call to our own server: needs the host token now that
+      // the API rejects unauthenticated callers.
+      const response = await fetch(`${CONTAINER_URL}/browser/${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...hostAuthHeaders() },
+        body: JSON.stringify({ sessionId: getSessionId(), ...body }),
+      })
+      const data = await response.json() as Record<string, unknown>
+      if (!response.ok) {
+        return { success: false, error: (data.error as string) || `HTTP ${response.status}` }
+      }
+      return { success: true, data }
+    } catch (error: any) {
+      return { success: false, error: error.message || 'Request failed' }
+    }
+  }
+
+  const browserOpenTool = tool(
   'browser_open',
   `Open a headless browser and navigate to a URL. The user can see the browser live in their interface and interact with it directly.
 
-Use this to start browsing a website. The browser preserves cookies/sessions via a persistent profile, so the user only needs to log in once.`,
+Use this to start browsing a website. The browser preserves cookies/sessions via a persistent profile, so the user only needs to log in once.
+
+Omit location to keep using the current browser where it is; when no browser is live, the user's configured provider is used. Set location="container" for dashboards, development servers, and other URLs served inside the agent container. Set location="configured" to intentionally switch back to the user's configured provider. Changing location closes the current browser before opening the requested one.`,
   {
     url: z.string().describe('The URL to navigate to'),
+    location: z
+      .enum(BROWSER_OPEN_LOCATIONS)
+      .optional()
+      .describe('Where to run the browser. Omit to keep the current location (or use settings when no browser is live); "configured" explicitly selects the provider in settings; "container" forces bundled Chromium for private container ports.'),
   },
   async (args) => {
-    // Warn if the agent is trying to open a localhost URL — the browser runs outside
-    // the container and cannot reach servers running inside it (e.g. dashboards).
-    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(args.url)
-    const localhostWarning = isLocalhost
-      ? '\n\nWARNING: This is a localhost URL. The browser runs outside the container and cannot access servers running inside it. If you are trying to view a dashboard, stop — the user can already see dashboards through the Superagent UI. Use get_dashboard_logs to debug any issues instead.'
-      : ''
-
-    const result = await browserFetch('open', { url: args.url })
+    const result = await browserFetch('open', { url: args.url, location: args.location })
     if (!result.success) {
       return {
-        content: [{ type: 'text' as const, text: `Error: ${result.error}${localhostWarning}` }],
+        content: [{ type: 'text' as const, text: `Error: ${result.error}` }],
         isError: true,
       }
     }
     const data = result.data as Record<string, unknown> | undefined
+    const activeLocation = data?.location === 'container' ? 'container' : 'host'
+    const locationText = activeLocation === 'container'
+      ? 'bundled Chromium inside the agent container'
+      : 'the configured browser provider'
+    const switchText = data?.switchedFrom
+      ? ` The previous ${data.switchedFrom} browser was closed before switching locations.`
+      : ''
+    const localhostWarning = isLoopbackBrowserUrl(args.url) && activeLocation === 'host'
+      ? '\n\nWARNING: This URL points at the host browser\'s own loopback interface. If you meant a service inside the agent container, reopen it with location="container".'
+      : ''
+    const guide = data?.launched === true ? `\n\n${BROWSER_USE_GUIDANCE_HINT}` : ''
 
     if (data?.switchedToExisting) {
       return {
         content: [
           {
             type: 'text' as const,
-            text: `Switched to existing tab ${data.tabIndex} which already has ${data.url} open. Use browser_snapshot to see the page content.${localhostWarning}`,
+            text: `Switched to existing tab ${data.tabId} in ${locationText}, which already has ${data.url} open. Use browser_snapshot to see the page content.${localhostWarning}`,
           },
         ],
       }
+    }
+
+    // Report where the browser landed, not what was asked for. The server's
+    // page probe is the source; when it could not run (dead page, eval
+    // blocked) fall back to the old intent-shaped text and say so. The result
+    // is an error only for Chrome's own error page — everything else is a
+    // fact the agent weighs itself.
+    const page = (data?.page ? parseObservation(JSON.stringify(data.page)) : null) ?? EMPTY_OBSERVATION
+    if (page.url) {
+      const title = page.title ? JSON.stringify(page.title.slice(0, 120)) : 'an untitled page'
+      const redirect = landedElsewhere(args.url, page.url) ? ` (redirected from ${args.url})` : ''
+      const http = page.httpStatus > 0 ? ` · HTTP ${page.httpStatus}` : ''
+      const warns = pageWarnings(page, null)
+      const unreachable = Boolean(page.netError)
+      const text =
+        `Loaded ${title} at ${page.url}${redirect}${http} in ${locationText}.${switchText}` +
+        warns.map(w => `\n⚠ ${w}`).join('') +
+        (warns.length > 0 && page.preview ? `\nPage text: ${JSON.stringify(page.preview.slice(0, 400))}` : '') +
+        ` The user can see the browser live. Use browser_snapshot to see the page content.${localhostWarning}${guide}`
+      return { content: [{ type: 'text' as const, text }], ...(unreachable ? { isError: true } : {}) }
     }
 
     return {
       content: [
         {
           type: 'text' as const,
-          text: `Browser opened and navigating to ${args.url}. The user can see the browser live. Use browser_snapshot to see the page content.${localhostWarning}`,
+          text: `Browser opened in ${locationText} and navigating to ${args.url}.${switchText} The landing page could not be read — take a browser_snapshot to see where you are; its status line shows the URL, title and HTTP status.${localhostWarning}${guide}`,
         },
       ],
     }
   }
 )
 
-export const browserCloseTool = tool(
+const browserCloseTool = tool(
   'browser_close',
   `Close the browser and free resources. Call this when you're done browsing.`,
   {},
@@ -141,13 +199,18 @@ export const browserCloseTool = tool(
   }
 )
 
-export const browserSnapshotTool = tool(
+const browserSnapshotTool = tool(
   'browser_snapshot',
   `Get an accessibility tree snapshot of the current page. Returns interactive elements with refs (like @e1, @e2) that you can use with browser_click and browser_fill.
 
-Use interactive=true (default) to get clickable/fillable elements with refs.
-Use compact=true (default) to reduce output size.
-Use json=true to get structured JSON output with a refs dictionary.`,
+The default view shows interactive elements only — it drops ALL static text (prices, prose, error messages, table values). A footer says how much text was dropped and what the page's live regions (alerts, status, toasts) currently say. To read a page's text without refs (articles, docs, search results, listings), use browser_read — smaller and faster than any snapshot. Two knobs handle what the default view misses:
+- fullText=true: adds the static text to the same compact tree, beside the refs; refs are identical in both views. Use it when text and controls must be read together — a form's validation errors next to its fields, a table whose rows have buttons. Not browser_eval innerText scrapers, not screenshots.
+- scope: limit the snapshot to a CSS-selected region (e.g. "form", "#main", ".modal", a dialog selector). Combine with fullText on large pages — it slashes output and avoids truncation. Refs stay valid for the rest of the page.
+
+Refs are stable: an element keeps its ref across snapshots and actions until it is removed from the page or the page navigates.
+
+Frames — cross-origin ones such as Stripe payment frames included — are normally merged into the tree with working refs; use those refs like any other. A frame whose contents the tree could not read is listed below the tree.
+Very large snapshots are truncated with a note rather than failing — scope to recover the rest.`,
   {
     interactive: z
       .boolean()
@@ -164,12 +227,29 @@ Use json=true to get structured JSON output with a refs dictionary.`,
       .optional()
       .default(false)
       .describe('Return structured JSON with refs dictionary (default: false)'),
+    scope: z
+      .string()
+      .optional()
+      .describe('CSS selector to limit the snapshot to one region, e.g. "form", "#main", ".modal". Greatly reduces size on large pages; refs elsewhere stay valid.'),
+    fullText: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe('Add the page\'s static text (prices, prose, validation errors, table values) to the compact interactive tree. Same refs as the default view (default: false).'),
+    includeUrls: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe('Inline link/element URLs — disambiguates junk-labeled links and avoids extra "get attr href" calls (default: false).'),
   },
   async (args) => {
     const result = await browserFetch('snapshot', {
       interactive: args.interactive,
       compact: args.compact,
       json: args.json,
+      scope: args.scope,
+      fullText: args.fullText,
+      includeUrls: args.includeUrls,
     })
     if (!result.success) return errorResult(result.error!)
 
@@ -187,9 +267,11 @@ Use json=true to get structured JSON output with a refs dictionary.`,
   }
 )
 
-export const browserClickTool = tool(
+const browserClickTool = tool(
   'browser_click',
-  `Click an element on the page by its ref (e.g., @e1). Get refs from browser_snapshot.`,
+  `Click an element on the page by its ref (e.g., @e1). Get refs from browser_snapshot.
+
+The result reports what the click changed: navigation, dialogs, announcements, and — when the page's controls changed — the elements added, changed or removed, with their refs, so a menu or dialog that opened can be used without another snapshot.`,
   {
     ref: z.string().describe('Element ref from snapshot (e.g., "@e1")'),
   },
@@ -197,9 +279,17 @@ export const browserClickTool = tool(
     const result = await browserFetch('click', { ref: args.ref })
     if (!result.success) return errorResult(result.error!)
     const data = result.data as Record<string, unknown> | undefined
-    const tabInfo = data?.tabInfo as { activeIndex: number; activeUrl: string; tabCount: number } | undefined
+    const tabInfo = data?.tabInfo as { activeId: string; activeUrl: string; tabCount: number } | undefined
+    const digest = (data?.digest as UrlDigest | undefined) ?? null
 
-    let text = `Clicked ${args.ref}. Use browser_snapshot to see the updated page.`
+    // A click that opened a new tab did its work there; the effect line is about
+    // this tab and would only read as "nothing happened".
+    // A challenge wall (or a site that served one) gets a human-like mouse
+    // path; it explains the slower click and a "covered by" error.
+    const human = data?.humanInput === true ? ' (human-like mouse path: this site served a challenge page)' : ''
+    // A new tab in front: its notice says where the agent is; the URL digest
+    // compared two different tabs.
+    let text = `Clicked ${args.ref}.${human}${tabInfo ? '' : formatUrlDigest(digest)}${tabInfo ? '' : effectText(data, 'click', 300)}`
     if (tabInfo) {
       text += tabManager.formatTabNotification(tabInfo)
     } else {
@@ -212,7 +302,7 @@ export const browserClickTool = tool(
   }
 )
 
-export const browserFillTool = tool(
+const browserFillTool = tool(
   'browser_fill',
   `Fill an input field by its ref (e.g., @e2) with a value. Get refs from browser_snapshot.`,
   {
@@ -225,7 +315,9 @@ export const browserFillTool = tool(
       value: args.value,
     })
     if (!result.success) return errorResult(result.error!)
-    let text = `Filled ${args.ref} with "${args.value}".`
+    const data = result.data as Record<string, unknown> | undefined
+    const committed = typeof data?.committedValue === 'string' ? data.committedValue : null
+    let text = `Filled ${args.ref}.${formatFillReadback(args.value, committed)}${effectText(data, 'fill', 200, { valueReadBack: true })}`
     text += getTabWarning()
     return {
       content: [
@@ -238,7 +330,7 @@ export const browserFillTool = tool(
   }
 )
 
-export const browserScrollTool = tool(
+const browserScrollTool = tool(
   'browser_scroll',
   `Scroll the page in a given direction.`,
   {
@@ -256,7 +348,9 @@ export const browserScrollTool = tool(
       amount: args.amount,
     })
     if (!result.success) return errorResult(result.error!)
-    let text = `Scrolled ${args.direction}${args.amount ? ` by ${args.amount}px` : ''}.`
+    const data = result.data as Record<string, unknown> | undefined
+    const scrollInfo = (data?.scrollInfo as ScrollInfo | undefined) ?? null
+    let text = `Scrolled ${args.direction}${args.amount ? ` by ${args.amount}px` : ''}.${formatScrollDigest(scrollInfo)}`
     text += getTabWarning()
     return {
       content: [
@@ -269,40 +363,49 @@ export const browserScrollTool = tool(
   }
 )
 
-export const browserWaitTool = tool(
+const browserWaitTool = tool(
   'browser_wait',
-  `Wait for a CSS selector to appear on the page. Only use this when you need to wait for a specific element to render (e.g. after triggering dynamic content). Do NOT use for "networkidle", "load", or "domcontentloaded" — browser_open already waits for the page to load.`,
+  `Wait for a CSS selector to appear on the page, or for a number of milliseconds. The result says how long it actually took — a selector that is already present matches in ~0 ms, which is not a delay.
+
+Playwright locator syntax (text=…, role=…, :has-text(…)) is not CSS and is refused. To wait for text use browser_run(["wait","--text","<text>"]); for a URL, browser_run(["wait","--url","<pattern>"]). "networkidle"/"load"/"domcontentloaded" are accepted but rarely useful — browser_open already waits for the page to load.`,
   {
     for: z
       .string()
       .describe(
-        'CSS selector to wait for (e.g. "#results", ".loaded"). Avoid "networkidle"/"load"/"domcontentloaded" — browser_open already handles page load.'
+        'CSS selector to wait for (e.g. "#results", ".loaded"), or a number of milliseconds to sleep (e.g. "1500").'
       ),
   },
   async (args) => {
+    const target = classifyWaitTarget(args.for)
+    if (target.kind === 'rejected') return errorResult(target.reason)
     const result = await browserFetch('wait', { for: args.for })
     if (!result.success) return errorResult(result.error!)
+    const data = result.data as Record<string, unknown> | undefined
+    const elapsedMs = typeof data?.elapsedMs === 'number' ? data.elapsedMs : 0
     return {
       content: [
-        { type: 'text' as const, text: `Wait condition "${args.for}" satisfied.` },
+        { type: 'text' as const, text: formatWaitResult(target, elapsedMs, data?.timedOut === true, typeof data?.url === 'string' ? data.url : undefined) },
       ],
     }
   }
 )
 
-export const browserPressTool = tool(
+const browserPressTool = tool(
   'browser_press',
-  `Press a keyboard key. Use this for Enter (submit forms), Tab (next field), Escape (close dialogs), or key combos like "Control+a".`,
+  `Press ONE keyboard key (or a modifier combo). Use this for Enter (submit forms), Tab (next field), Escape (close dialogs), or key combos like "Control+a".
+
+This cannot type text — multi-character strings are rejected. To type into the currently focused element (e.g. fields inside payment iframes), use browser_type; to replace an input's content by ref, use browser_fill.`,
   {
-    key: z.string().describe('Key to press (e.g., "Enter", "Tab", "Escape", "Control+a", "ArrowDown")'),
+    key: z.string().describe('A single key or modifier combo (e.g., "Enter", "Tab", "Escape", "Control+a", "ArrowDown") — never a text string'),
   },
   async (args) => {
     const result = await browserFetch('press', { key: args.key })
     if (!result.success) return errorResult(result.error!)
     const data = result.data as Record<string, unknown> | undefined
-    const tabInfo = data?.tabInfo as { activeIndex: number; activeUrl: string; tabCount: number } | undefined
+    const tabInfo = data?.tabInfo as { activeId: string; activeUrl: string; tabCount: number } | undefined
+    const digest = (data?.digest as UrlDigest | undefined) ?? null
 
-    let text = `Pressed "${args.key}".`
+    let text = `Pressed "${args.key}".${tabInfo ? '' : formatUrlDigestBrief(digest)}${tabInfo ? '' : effectText(data, 'press', 50)}`
     if (tabInfo) {
       text += tabManager.formatTabNotification(tabInfo)
     } else {
@@ -315,9 +418,11 @@ export const browserPressTool = tool(
   }
 )
 
-export const browserScreenshotTool = tool(
+const browserScreenshotTool = tool(
   'browser_screenshot',
-  `Take a screenshot of the current page. Returns the screenshot image and the file path where it was saved. Use full=true to capture the entire scrollable page. Use annotate=true to overlay numbered labels on interactive elements — each label [N] corresponds to ref @eN, so you can click elements by their visual label.`,
+  `Take a screenshot of the current page. Returns the screenshot image and the file path where it was saved. Use full=true to capture the entire scrollable page. Use annotate=true to overlay numbered labels on interactive elements — each label [N] corresponds to ref @eN, so you can click elements by their visual label.
+
+When no pixel has changed since the last screenshot of this tab (same full/viewport mode), no new image is attached: the result names the earlier file and its age instead. Read that file if the image is no longer in your context, or pass force=true to always get a new capture. annotate=true always captures.`,
   {
     full: z
       .boolean()
@@ -329,13 +434,27 @@ export const browserScreenshotTool = tool(
       .optional()
       .default(false)
       .describe('Overlay numbered labels on interactive elements matching snapshot refs (default: false)'),
+    force: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe('Always capture and attach a new image, even when the page looks unchanged since the last screenshot (default: false)'),
   },
   async (args) => {
-    const result = await browserFetch('screenshot', { full: args.full, annotate: args.annotate })
+    const result = await browserFetch('screenshot', { full: args.full, annotate: args.annotate, force: args.force })
     if (!result.success) return errorResult(result.error!)
     const data = result.data as Record<string, unknown>
+    if (data.unchanged === true && typeof data.previousPath === 'string') {
+      const age = typeof data.previousAgeMs === 'number' ? ageText(data.previousAgeMs) : 'earlier'
+      return {
+        content: [{
+          type: 'text' as const,
+          text: `Screenshot unchanged: no pixel differs from ${data.previousPath} (captured ${age}), so no new image is attached. Read that file if it is not in your context; force=true captures a new one.`,
+        }],
+      }
+    }
     const rawOutput = data.output ? String(data.output) : ''
-    const filePath = rawOutput ? extractScreenshotPath(rawOutput) : ''
+    const filePath = typeof data.path === 'string' ? data.path : rawOutput ? extractScreenshotPath(rawOutput) : ''
 
     const content: Array<{ type: 'image'; data: string; mimeType: string } | { type: 'text'; text: string }> = []
 
@@ -359,25 +478,29 @@ export const browserScreenshotTool = tool(
   }
 )
 
-export const browserSelectTool = tool(
+const browserSelectTool = tool(
   'browser_select',
-  `Select an option from a <select> dropdown element by its ref. Get refs from browser_snapshot.`,
+  `Select an option in a NATIVE <select> element by its ref, using the option's value or visible label. The committed value is verified by read-back and returned — if nothing committed, this errors instead of pretending.
+
+Custom dropdowns (divs with role=combobox/listbox) will NOT work with this tool. For those: browser_click the trigger (its result lists the options that appeared, with refs), type into the popup's filter input if it has one, click the option's ref, and check the click's result for the committed state.`,
   {
     ref: z.string().describe('Select element ref from snapshot (e.g., "@e3")'),
-    value: z.string().describe('The option value to select'),
+    value: z.string().describe('The option value or visible label to select'),
   },
   async (args) => {
     const result = await browserFetch('select', { ref: args.ref, value: args.value })
     if (!result.success) return errorResult(result.error!)
+    const data = result.data as Record<string, unknown> | undefined
+    const committed = data?.committedValue
     return {
       content: [
-        { type: 'text' as const, text: `Selected "${args.value}" in ${args.ref}.` },
+        { type: 'text' as const, text: `Selected "${args.value}" in ${args.ref} — the element's value is now "${committed}".${effectText(data, 'select', 300, { valueReadBack: true })}` },
       ],
     }
   }
 )
 
-export const browserHoverTool = tool(
+const browserHoverTool = tool(
   'browser_hover',
   `Hover over an element by its ref. Useful for triggering dropdown menus, tooltips, or hover states. Get refs from browser_snapshot.`,
   {
@@ -386,19 +509,156 @@ export const browserHoverTool = tool(
   async (args) => {
     const result = await browserFetch('hover', { ref: args.ref })
     if (!result.success) return errorResult(result.error!)
+    const data = result.data as Record<string, unknown> | undefined
+    const effect = effectText(data, 'hover', 300)
     return {
       content: [
-        { type: 'text' as const, text: `Hovered over ${args.ref}. Use browser_snapshot to see any changes.` },
+        { type: 'text' as const, text: `Hovered over ${args.ref}.${effect || ' Use browser_snapshot to see any changes.'}` },
       ],
     }
   }
 )
 
-export const browserRunTool = tool(
+const browserUploadTool = tool(
+  'browser_upload',
+  `Upload a local file into a web page <input type="file"> using Playwright setInputFiles.
+
+Use this instead of browser_run("upload ..."). The agent-browser upload command is known to create zero-byte uploads on some sites.
+
+The selector must target the actual file input element, such as input[type="file"] or input.dz-hidden-input. Hidden file inputs are supported.`,
+  {
+    filePath: z.string().describe('Path to the local file to upload, usually under /workspace/uploads/...'),
+    selector: z
+      .string()
+      .optional()
+      .default('input[type="file"]')
+      .describe('CSS selector for the target <input type="file"> element. Defaults to input[type="file"].'),
+  },
+  async (args) => {
+    const result = await browserFetch('upload', {
+      filePath: args.filePath,
+      selector: args.selector,
+    })
+    if (!result.success) return errorResult(result.error!)
+
+    const data = result.data as Record<string, any>
+    const file = data.file as { name?: string; size?: number } | undefined
+    let text = file?.name
+      ? `Uploaded ${file.name} (${file.size ?? 'unknown'} bytes) to ${args.selector}.`
+      : `Uploaded file to ${args.selector}.`
+    text += getTabWarning()
+
+    return {
+      content: [{ type: 'text' as const, text }],
+    }
+  }
+)
+
+const browserDownloadTool = tool(
+  'browser_download',
+  `Download a file or page asset (image, PDF, CSV, ...) into the workspace THROUGH the browser — the browser's cookies and login state apply, so this works for assets behind a login that curl/fetch outside the browser cannot reach. The bytes travel over the browser connection, so it also works when the browser runs outside the container (host Chrome, remote providers).
+
+Files are saved under /workspace/downloads/ and the saved path is returned.
+
+- Get the asset URL from the page first: browser_snapshot with includeUrls, browser_run("get attr @eN src"), or browser_eval (e.g. document.querySelector('img.profile-photo').src).
+- Supports http(s) URLs, blob: URLs (files the page generated — fetched from the current page), and data: URLs.
+- Links/buttons that trigger a browser download can also just be clicked — those files land in /workspace/downloads/ too.`,
+  {
+    url: z.string().describe('URL of the file to download — an <img> src, <a> href, blob: or data: URL'),
+    filename: z
+      .string()
+      .optional()
+      .describe('Optional filename to save as (basename only). Derived from the URL/response headers when omitted.'),
+  },
+  async (args) => {
+    const result = await browserFetch('download', { url: args.url, filename: args.filename })
+    if (!result.success) return errorResult(result.error!)
+    const data = result.data as { file?: { name: string; path: string; size: number; contentType: string | null } }
+    const file = data.file
+    if (!file) return errorResult('Download did not return file info')
+
+    let text = `Downloaded to ${file.path} (${file.size} bytes${file.contentType ? `, ${file.contentType}` : ''}).`
+    if (file.contentType === 'text/html') {
+      text += '\nWARNING: the response is an HTML page, not a file asset — this is usually a login or error page. Check the URL or your session.'
+    }
+    return {
+      content: [{ type: 'text' as const, text }],
+    }
+  }
+)
+
+const browserTypeTool = tool(
+  'browser_type',
+  `Type text with REAL keystrokes into the currently focused element — or pass a ref to focus that element first.
+
+Use this when browser_fill cannot work:
+- Fields inside payment iframes (Stripe card number/expiry/CVC) normally have refs in the snapshot: pass the ref, or browser_click it first and type without a ref. If the snapshot lists the frame as unreadable, focus the field with browser_run mouse (move x y, down, up) and type without a ref; verify with a screenshot.
+- Keystroke-listening widgets that ignore programmatic fill: OTP digit boxes, typeaheads, autocomplete inputs.
+
+Notes: this APPENDS to existing content (it does not clear first — use browser_fill to replace, or browser_press "Control+a" then type). When a ref is provided, the field's value is read back and returned.`,
+  {
+    text: z.string().describe('The text to type with real key events'),
+    ref: z.string().optional().describe('Optional element ref to focus before typing (e.g. "@e4"). Omit when the target is inside a payment iframe — focus it by clicking first.'),
+  },
+  async (args) => {
+    const result = await browserFetch('type', { text: args.text, ref: args.ref })
+    if (!result.success) return errorResult(result.error!)
+    const data = result.data as Record<string, unknown> | undefined
+    let text: string
+    if (data && typeof data.committedValue === 'string') {
+      text = `Typed ${args.text.length} chars into ${args.ref} — field value is now: "${data.committedValue}".${effectText(data, 'type', 300, { valueReadBack: true })}`
+    } else if (args.ref) {
+      // The field took focus and the keys, but its value could not be read
+      // afterwards (a site that swaps the input for another on focus).
+      text = `Typed ${args.text.length} chars after focusing ${args.ref}; the field's value could not be read back afterwards.${effectText(data, 'type', 300)}`
+    } else {
+      text = `Typed ${args.text.length} chars into the focused element. If the field is inside a payment iframe, verify visually with browser_screenshot.${effectText(data, 'type', 300)}`
+    }
+    text += getTabWarning()
+    return {
+      content: [{ type: 'text' as const, text }],
+    }
+  }
+)
+
+const browserEvalTool = tool(
+  'browser_eval',
+  `Run JavaScript in the page and return the result. Prefer this over browser_run("eval ...").
+
+- A single expression returns its value (e.g. document.title). A multi-line/statement body runs in a fresh scope — use \`return\` to produce a value (top-level return and await are supported; const/let won't collide across calls). Bare function expressions are auto-invoked.
+- Return JSON-serializable data — for structured results, end with JSON.stringify(...).
+- TOP FRAME ONLY: elements inside cross-origin iframes (e.g. Stripe payment frames) are unreachable from JavaScript. Use their refs from browser_snapshot (browser_click / browser_fill / browser_type) instead.
+- Output is capped at ~8000 chars — query only the fields you need instead of dumping HTML.`,
+  {
+    script: z.string().describe('JavaScript to evaluate. An expression (document.title) returns its value; a statement body should use return, e.g. "const n = document.querySelectorAll(\'a\').length; return n;"'),
+  },
+  async (args) => {
+    const result = await browserFetch('eval', { script: args.script })
+    if (!result.success) return errorResult(result.error!)
+    const data = result.data as Record<string, unknown>
+    const output = data.output ? String(data.output) : ''
+    let text = output || '(no output)'
+    // A statement body runs inside an async IIFE, and the CLI prints `null`
+    // for a body that completes without `return` (undefined → JSON null).
+    // The note is only informative in that case; on any other output it was
+    // a 100% false positive in the mined sessions (theme 4).
+    if (data.wrapped && (output === '' || output === 'null')) {
+      text += '\n(note: a statement body that does not `return` also yields null — add `return` if you expected a value back)'
+    }
+    text += getTabWarning()
+    return {
+      content: [{ type: 'text' as const, text }],
+    }
+  }
+)
+
+const browserRunTool = tool(
   'browser_run',
   `Run any agent-browser CLI command. Use this for advanced browser operations not covered by the dedicated tools.
 
-Pass the command string WITHOUT the "agent-browser" prefix.
+Provide EXACTLY ONE of (never include the "agent-browser" prefix):
+- args (PREFERRED whenever any argument contains spaces or quotes): pre-tokenized argv array. Each element reaches the CLI verbatim — no quoting or escaping rules to get wrong. Examples: {"args": ["type", "@e1", "chat isn't enough"]} · {"args": ["frame", "iframe[title=\\"Payment frame\\"]"]} · {"args": ["find", "role", "button", "click", "--name", "View demo"]}
+- command: a single command-line string, fine for simple commands like {"command": "get url"}. Shell-style quoting; when in doubt, use args.
 
 Available commands:
 - dblclick <ref> — Double-click element
@@ -408,31 +668,39 @@ Available commands:
 - check/uncheck <ref> — Toggle checkbox
 - scrollintoview <ref> — Scroll element into view
 - drag <srcRef> <tgtRef> — Drag and drop
-- upload <ref> <files> — Upload files
-- eval <js> — Run JavaScript
+- eval <js> — Run JavaScript (prefer the dedicated browser_eval tool)
 - get text/html/value/attr/title/url/count/box <ref> — Get element info
 - is visible/enabled/checked <ref> — Check element state
 - find role/text/label/placeholder/alt/title/testid <query> <action> — Semantic locators
 - back / forward / reload — Navigation
-- tab / tab new / tab <n> / tab close — Tab management
+- tab / tab new [--label <name>] [url] / tab <id|label> / tab close [<id|label>] — Tab management. Tabs have STABLE string ids like t1, t2 (shown by "tab"); bare integers are rejected
 - frame <sel> / frame main — Switch frames
 - dialog accept/dismiss — Handle dialogs
 - set viewport/device/geo/offline/headers/media — Browser settings
 - cookies / cookies set/clear — Cookie management
 - storage local/session [get/set/clear] — Storage management
 - mouse move/down/up/wheel — Low-level mouse control
-- network route/unroute/requests — Network interception
+- network route/unroute/requests — Network interception; \`network requests\` lists what was requested since your last action (to record traffic to a file, use browser_capture_traffic)
 - console / errors — Debug info
+- a11y — Accessibility audit of the current page (axe-core): violations by severity with the offending elements
 - wait <selector|ms|--text|--url|--load|--fn> — Wait for conditions`,
   {
-    command: z.string().describe('The agent-browser command to run (without "agent-browser" prefix)'),
+    command: z.string().optional().describe('Command string for simple commands, e.g. "get url". Provide either this or args, not both.'),
+    args: z.array(z.string()).optional().describe('Pre-tokenized argv — preferred when any argument contains spaces or quotes, e.g. ["fill", "@e1", "hello world"]. Provide either this or command, not both.'),
   },
   async (args) => {
-    const result = await browserFetch('run', { command: args.command })
+    if ((args.command === undefined) === (args.args === undefined)) {
+      return errorResult('Provide exactly one of "command" (string) or "args" (array of strings).')
+    }
+    const result = await browserFetch('run', { command: args.command, args: args.args })
     if (!result.success) return errorResult(result.error!)
     const data = result.data as Record<string, unknown>
-    let text = data.output ? String(data.output) : 'Command executed.'
-    const tabInfo = data.tabInfo as { activeIndex: number; activeUrl: string; tabCount: number } | undefined
+    // Read verbs (console, errors, cookies, get value/attr, network requests)
+    // legitimately return nothing. "Command executed." read as a clean
+    // result — three mined sessions laundered it into "no console errors"
+    // verdicts. Say what came back: nothing.
+    let text = data.output ? String(data.output) : '(no output)'
+    const tabInfo = data.tabInfo as { activeId: string; activeUrl: string; tabCount: number } | undefined
     if (tabInfo) {
       text += tabManager.formatTabNotification(tabInfo)
     } else {
@@ -446,75 +714,203 @@ Available commands:
   }
 )
 
-export const browserGetStateTool = tool(
+const browserGetStateTool = tool(
   'browser_get_state',
-  `Get the current state of the browser in one call. Returns the current URL, a screenshot image, and an accessibility snapshot. Use this to quickly check what the browser is showing without needing multiple tool calls.`,
-  {},
-  async () => {
-    const [urlResult, screenshotResult, snapshotResult] = await Promise.all([
-      browserFetch('run', { command: 'get url' }),
-      browserFetch('screenshot', { full: false }),
-      browserFetch('snapshot', { interactive: true, compact: true }),
-    ])
+  `Get the current state of the browser in one call. Returns the current URL, a screenshot image, and an accessibility snapshot. Use this to quickly check what the browser is showing without needing multiple tool calls. Takes the snapshot tool's scope/fullText/includeUrls knobs; pass screenshot=false to skip the image and get just URL + snapshot.`,
+  {
+    scope: z
+      .string()
+      .optional()
+      .describe('CSS selector to limit the snapshot to one region (same as browser_snapshot).'),
+    fullText: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe('Include the page\'s static text in the snapshot (same as browser_snapshot; default: false).'),
+    includeUrls: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe('Inline link URLs in the snapshot (default: false).'),
+    screenshot: z
+      .boolean()
+      .optional()
+      .default(true)
+      .describe('Capture and return a screenshot image (default: true). Set false when you only need URL + snapshot.'),
+  },
+  async (args) => {
+    // One observation, in order: the snapshot first (its page probe carries
+    // the URL, so no separate `get url`), then the screenshot. The old version
+    // fired `get url`, screenshot and snapshot in parallel with no shared
+    // instant, so "Current URL" could name a different page than the snapshot
+    // beside it, and a dead browser printed the same CDP error three times
+    // inside a success-shaped result (transcript-mining theme 23).
+    const snapshotResult = await browserFetch('snapshot', {
+      interactive: true,
+      compact: true,
+      scope: args.scope,
+      fullText: args.fullText,
+      includeUrls: args.includeUrls,
+    })
+    // get_state promises an image: never the "unchanged" answer.
+    const screenshotResult = args.screenshot === false ? null : await browserFetch('screenshot', { full: false, force: true })
 
     const content: Array<{ type: 'image'; data: string; mimeType: string } | { type: 'text'; text: string }> = []
     const parts: string[] = []
+    const failures: string[] = []
 
-    if (urlResult.success) {
-      const data = urlResult.data as Record<string, unknown>
-      parts.push(`**Current URL:** ${data.output || 'unknown'}`)
-    } else {
-      parts.push(`**Current URL:** Error - ${urlResult.error}`)
+    const snapshotData = snapshotResult.success ? (snapshotResult.data as Record<string, unknown>) : null
+    const page = snapshotData?.page ? parseObservation(JSON.stringify(snapshotData.page)) : null
+    if (page?.url) {
+      parts.push(`**Current URL:** ${page.url}`)
     }
 
-    if (screenshotResult.success) {
+    // The screenshot leg delivered something only when an image reached the
+    // result. A route success whose file cannot be read or resized is a
+    // failure like any other (review: it used to leave isError unset with
+    // nothing delivered).
+    let screenshotFailure: string | null = null
+    if (screenshotResult === null) {
+      // screenshot=false: nothing to report
+    } else if (screenshotResult.success) {
       const data = screenshotResult.data as Record<string, unknown>
       const rawOutput = data.output ? String(data.output) : ''
-      const filePath = rawOutput ? extractScreenshotPath(rawOutput) : ''
-      if (filePath) {
+      const filePath = typeof data.path === 'string' ? data.path : rawOutput ? extractScreenshotPath(rawOutput) : ''
+      if (!filePath) {
+        screenshotFailure = 'no screenshot path returned'
+      } else {
         const image = await readScreenshotAsBase64(filePath)
         if (image) {
           content.push({ type: 'image' as const, data: image.data, mimeType: image.mimeType })
+          parts.push(`**Screenshot:** ${filePath}`)
+        } else {
+          screenshotFailure = `screenshot file could not be read: ${filePath}`
         }
-        parts.push(`**Screenshot:** ${filePath}`)
-      } else {
-        parts.push(`**Screenshot:** No screenshot path returned`)
       }
     } else {
-      parts.push(`**Screenshot:** Error - ${screenshotResult.error}`)
+      screenshotFailure = screenshotResult.error ?? 'unknown error'
     }
 
-    if (snapshotResult.success) {
-      const data = snapshotResult.data as Record<string, unknown>
-      const tabCount = typeof data.tabCount === 'number' ? data.tabCount : 0
-      const snapshot = data.snapshot
-        ? String(data.snapshot)
-        : JSON.stringify(data, null, 2)
+    if (snapshotData) {
+      const tabCount = typeof snapshotData.tabCount === 'number' ? snapshotData.tabCount : 0
+      const snapshot = snapshotData.snapshot
+        ? String(snapshotData.snapshot)
+        : JSON.stringify(snapshotData, null, 2)
       parts.push(`**Accessibility Snapshot:**\n${snapshot}`)
       const tabStatus = tabManager.formatTabStatus(tabCount)
       if (tabStatus) parts.push(tabStatus.trim())
-    } else {
-      parts.push(`**Accessibility Snapshot:** Error - ${snapshotResult.error}`)
+    }
+
+    if (!snapshotData) failures.push(`snapshot: ${snapshotResult.error}`)
+    if (screenshotFailure !== null) failures.push(`screenshot: ${screenshotFailure}`)
+
+    // One line per distinct cause: a dead browser fails every leg with the
+    // same message, which is one fact, not two.
+    const requested = screenshotResult === null ? 1 : 2
+    const allFailed = failures.length === requested
+    if (failures.length > 0) {
+      const causes = new Map<string, string[]>()
+      for (const f of failures) {
+        const [leg, ...rest] = f.split(': ')
+        const cause = rest.join(': ')
+        causes.set(cause, [...(causes.get(cause) ?? []), leg])
+      }
+      for (const [cause, legs] of causes) {
+        parts.push(`**Error (${legs.join(' and ')}):** ${cause}`)
+      }
     }
 
     content.push({ type: 'text' as const, text: parts.join('\n\n') })
 
-    return { content }
+    return allFailed ? { content, isError: true } : { content }
   }
 )
 
-export const browserTools = [
-  browserOpenTool,
-  browserCloseTool,
-  browserSnapshotTool,
-  browserClickTool,
-  browserFillTool,
-  browserScrollTool,
-  browserWaitTool,
-  browserPressTool,
-  browserScreenshotTool,
-  browserSelectTool,
-  browserHoverTool,
-  browserRunTool,
-  browserGetStateTool,
-]
+const browserReadTool = tool(
+  'browser_read',
+  `Read the current page's visible text as light markdown — headings (#), list items (-) and table rows (| a | b |) — with no refs, roles or attributes. THE way to read articles, docs, search results, listings and other text-heavy pages: on a long article it is a fraction of the size of browser_snapshot(fullText) and several times faster.
+
+- Only rendered text: anything the page hides (closed menus and dialogs, collapsed sections, other tabs' panels) is left out, so what you read is what is on screen or reachable by scrolling.
+- Long pages: outline=true returns just the headings; section="<heading text>" returns the sections whose heading contains that text. Use them instead of reading 40,000 chars at once.
+- No refs: to act on something you read, take browser_snapshot (scope it to the region). For text next to controls — form validation errors, table rows with buttons — browser_snapshot(fullText) is the better fit.
+- To count, total or group many items (labels across 100 rows, prices across a grid), compute it with browser_eval over the DOM rather than tallying the read by hand.
+- A dialog or banner open on top of the page is named under the status line; iframes the read did not enter are listed at the end with how much of the viewport each covers.
+- The top document only: text inside iframes (embedded widgets, payment frames) is not included. Link targets are not included — use browser_snapshot(includeUrls) for those.`,
+  {
+    outline: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe('Return only the page\'s headings as an indented outline (default: false)'),
+    section: z
+      .string()
+      .optional()
+      .describe('Return only the sections whose heading contains this text (case-insensitive), each up to the next heading of the same level'),
+  },
+  async (args) => {
+    const result = await browserFetch('read', { outline: args.outline, section: args.section })
+    if (!result.success) return errorResult(result.error!)
+    const data = result.data as Record<string, unknown>
+    const text = typeof data.text === 'string' && data.text ? data.text : '(the page has no visible text)'
+    return {
+      content: [{ type: 'text' as const, text: text + getTabWarning() }],
+    }
+  }
+)
+
+const browserCaptureTrafficTool = tool(
+  'browser_capture_traffic',
+  `Record the network traffic of the active tab while you use the site, and save it as a HAR file in the workspace. Use it to find the JSON endpoints a site's pages are built from, so a task that repeats (a scheduled report, a widget, a price check) can call them directly with a script instead of driving the browser every run.
+
+1. action="start", then do the steps you want recorded in this tab (search, open a result, page through results — run each flow twice with different inputs so the varying parameters show).
+2. action="stop" saves /workspace/captures/<label>-<time>.har and lists the responses that look like data (JSON/XML/CSV, first-party first) with method, status, URL and size.
+
+The recording has no Cookie or Set-Cookie headers and none of the headers the browser adds on the wire (Origin, sec-*, Accept-Encoding) — the recorder does not see them; the result lists the names of the cookies the browser holds for the site instead. Values that look like secrets (auth/token/session headers and parameters, JWTs) are replaced with [REDACTED] (REDACTED inside URLs); names are kept. Each data endpoint's response body is also saved as its own pretty-printed file, listed in the result. Requests in other tabs are not recorded.`,
+  {
+    action: z.enum(['start', 'stop']).describe('"start" begins recording; "stop" saves the HAR and summarises it'),
+    label: z.string().optional().describe('Short name for the saved file on stop, e.g. "zillow-search" (default: "traffic")'),
+  },
+  async (args) => {
+    const result = await browserFetch('capture-traffic', { action: args.action, label: args.label })
+    if (!result.success) return errorResult(result.error!)
+    const data = result.data as Record<string, unknown>
+    const text = args.action === 'start'
+      ? `Recording network traffic in this tab${typeof data.url === 'string' && data.url ? ` (started on ${data.url})` : ''}. Do the steps to record, then call browser_capture_traffic with action="stop".`
+      : String(data.summary ?? `Saved to ${data.path}.`)
+    return { content: [{ type: 'text' as const, text }] }
+  }
+)
+
+  return [
+    browserOpenTool,
+    browserCloseTool,
+    browserSnapshotTool,
+    browserReadTool,
+    browserClickTool,
+    browserFillTool,
+    browserScrollTool,
+    browserWaitTool,
+    browserPressTool,
+    browserScreenshotTool,
+    browserSelectTool,
+    browserHoverTool,
+    browserUploadTool,
+    browserDownloadTool,
+    browserTypeTool,
+    browserEvalTool,
+    browserRunTool,
+    browserGetStateTool,
+    browserCaptureTrafficTool,
+  ].map(withRedactedResults)
+}
+
+/**
+ * Every browser tool's text passes here on its way to the agent: a password
+ * or code the host injected (request_login) comes back from `get value`,
+ * `eval`, a code field's snapshot line, the console, or a URL a GET form put
+ * it in — whether the server read it from the CLI or from the tab list.
+ */
+function withRedactedResults<T extends { handler: (...args: any[]) => Promise<any> }>(definition: T): T {
+  const handler = definition.handler
+  return { ...definition, handler: (async (...args: unknown[]) => redactToolResult(await handler(...args))) as T['handler'] }
+}

@@ -1,0 +1,319 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { Hono } from 'hono'
+import { HelperConfigurationError } from '@shared/lib/llm-provider/helper-error'
+
+// ---------------------------------------------------------------------------
+// Mock dependencies
+// ---------------------------------------------------------------------------
+
+const state = vi.hoisted(() => ({
+  providerId: 'anthropic',
+  helperError: null as Error | null,
+  hasDefault: false,
+  configured: true,
+  browserModel: 'sonnet',
+  resolvedModel: 'claude-sonnet-5',
+  resolveModel: vi.fn(),
+  helperModel: undefined as string | undefined,
+}))
+
+const mockCreate = vi.fn()
+
+vi.mock('../middleware/auth', () => ({
+  Authenticated: () => async (_c: unknown, next: () => Promise<void>) => next(),
+}))
+
+vi.mock('@shared/lib/llm-provider/helpers', () => ({
+  configuredHelperModel: () => state.helperModel,
+  getConfiguredLlmClient: async () => {
+    if (state.helperError) throw state.helperError
+    return { messages: { create: mockCreate } }
+  },
+}))
+
+vi.mock('@shared/lib/llm-provider', () => ({
+  getActiveLlmProvider: () => ({
+    id: state.providerId,
+    getApiKeyStatus: () => ({ isConfigured: state.configured }),
+  }),
+  resolveActiveProviderModel: (selection: string, purpose: string) => {
+    state.resolveModel(selection, purpose)
+    return state.resolvedModel
+  },
+}))
+
+vi.mock('@shared/lib/config/settings', () => ({
+  getEffectiveModels: () => ({ browserModel: state.browserModel }),
+  getSettings: () => state.hasDefault ? { llmDefault: { llmProviderId: 'sub', model: 'sonnet' } } : {},
+}))
+
+vi.mock('@shared/lib/llm-provider/connections', () => ({
+  resolveHelperSelection: async () => { throw state.helperError },
+}))
+
+import llm from './llm'
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function createApp() {
+  const app = new Hono()
+  app.route('/api/llm', llm)
+  return app
+}
+
+async function post(app: ReturnType<typeof createApp>, path: string, body: unknown) {
+  const req = new Request(`http://localhost${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  return app.fetch(req)
+}
+
+async function get(app: ReturnType<typeof createApp>, path: string) {
+  return app.fetch(new Request(`http://localhost${path}`))
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe('LLM proxy endpoint', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    state.helperError = null
+    state.hasDefault = false
+    state.providerId = 'anthropic'
+    state.configured = true
+    state.helperModel = undefined
+    state.browserModel = 'sonnet'
+    state.resolvedModel = 'claude-sonnet-5'
+  })
+
+  it.each(['config', 'v1/messages'])('reports unavailable helpers on %s', async path => {
+    state.hasDefault = true
+    state.helperError = new HelperConfigurationError()
+    const app = createApp()
+    const res = path === 'config' ? await get(app, '/api/llm/config')
+      : await post(app, '/api/llm/v1/messages', { messages: [{ role: 'user', content: 'hi' }] })
+    expect(res.status).toBe(path === 'config' ? 200 : 503)
+    expect(await res.json()).toMatchObject({ error: state.helperError.message })
+    expect(mockCreate).not.toHaveBeenCalled()
+  })
+
+  it('does not expose unexpected client initialization errors', async () => {
+    state.helperError = new Error('private credential details')
+    const res = await post(createApp(), '/api/llm/v1/messages', { messages: [] })
+    expect(res.status).toBe(503)
+    expect(await res.json()).toEqual({ error: 'LLM provider not configured. Check Gamut settings.' })
+  })
+
+  describe('GET /api/llm/config', () => {
+    it('returns provider config', async () => {
+      const app = createApp()
+      const res = await get(app, '/api/llm/config')
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.configured).toBe(true)
+      expect(body.defaultModel).toBe('claude-sonnet-5')
+      expect(body.provider).toBe('anthropic')
+      expect(state.resolveModel).toHaveBeenCalledWith('sonnet', 'browser')
+    })
+
+    it.each([
+      ['platform', 'grok', 'grok-4.7'],
+      ['bedrock', 'sonnet', 'us.anthropic.claude-sonnet-5'],
+      ['generic', 'custom/qwen3', 'custom/qwen3'],
+    ])('returns the resolved %s catalog default', async (providerId, browserModel, resolvedModel) => {
+      state.providerId = providerId
+      state.browserModel = browserModel
+      state.resolvedModel = resolvedModel
+
+      const res = await get(createApp(), '/api/llm/config')
+
+      expect(res.status).toBe(200)
+      await expect(res.json()).resolves.toMatchObject({
+        provider: providerId,
+        defaultModel: resolvedModel,
+      })
+      expect(state.resolveModel).toHaveBeenCalledWith(browserModel, 'browser')
+    })
+  })
+
+  describe('POST /api/llm/v1/messages', () => {
+    it('forwards request to SDK and returns response', async () => {
+      const mockResponse = {
+        id: 'msg_123',
+        type: 'message',
+        content: [{ type: 'text', text: 'Hello!' }],
+      }
+      mockCreate.mockResolvedValue(mockResponse)
+
+      const app = createApp()
+      const res = await post(app, '/api/llm/v1/messages', {
+        messages: [{ role: 'user', content: 'hi' }],
+        max_tokens: 100,
+      })
+
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.content[0].text).toBe('Hello!')
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'claude-sonnet-5',
+          messages: [{ role: 'user', content: 'hi' }],
+          max_tokens: 100,
+        }),
+      )
+      expect(state.resolveModel).toHaveBeenCalledWith('sonnet', 'browser')
+    })
+
+    it('uses the resolved Generic catalog default when model is omitted', async () => {
+      state.providerId = 'generic'
+      state.browserModel = 'custom/qwen3'
+      state.resolvedModel = 'custom/qwen3'
+      mockCreate.mockResolvedValue({ content: [] })
+
+      await post(createApp(), '/api/llm/v1/messages', {
+        messages: [{ role: 'user', content: 'hi' }],
+        max_tokens: 10,
+      })
+
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ model: 'custom/qwen3' }),
+      )
+    })
+
+    it('uses the global helper model when no explicit model is requested', async () => {
+      state.helperModel = 'global-helper-model'
+      mockCreate.mockResolvedValue({ content: [] })
+      const res = await post(createApp(), '/api/llm/v1/messages', {
+        messages: [{ role: 'user', content: 'hi' }], max_tokens: 10,
+      })
+      expect(res.status).toBe(200)
+      expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({ model: 'global-helper-model' }))
+    })
+
+    it('preserves an explicit model even when the helper has another default', async () => {
+      state.helperModel = 'global-helper-model'
+      mockCreate.mockResolvedValue({ content: [] })
+
+      const app = createApp()
+      await post(app, '/api/llm/v1/messages', {
+        model: 'claude-opus-4-7',
+        messages: [{ role: 'user', content: 'hi' }],
+        max_tokens: 10,
+      })
+
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ model: 'claude-opus-4-7' }),
+      )
+    })
+
+    it('returns 400 for missing messages', async () => {
+      const app = createApp()
+      const res = await post(app, '/api/llm/v1/messages', { max_tokens: 10 })
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.error).toContain('messages')
+    })
+
+    it('returns 400 for invalid JSON', async () => {
+      const app = createApp()
+      const req = new Request('http://localhost/api/llm/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: 'not json',
+      })
+      const res = await app.fetch(req)
+      expect(res.status).toBe(400)
+    })
+
+    it('strips auth-related fields from body', async () => {
+      mockCreate.mockResolvedValue({ content: [] })
+
+      const app = createApp()
+      await post(app, '/api/llm/v1/messages', {
+        messages: [{ role: 'user', content: 'hi' }],
+        max_tokens: 10,
+        apiKey: 'stolen-key',
+        baseURL: 'https://evil.com',
+        api_key: 'also-stolen',
+        base_url: 'https://also-evil.com',
+      })
+
+      const calledWith = mockCreate.mock.calls[0][0]
+      expect(calledWith.apiKey).toBeUndefined()
+      expect(calledWith.baseURL).toBeUndefined()
+      expect(calledWith.api_key).toBeUndefined()
+      expect(calledWith.base_url).toBeUndefined()
+    })
+
+    // API version 2026-10-21 rejects these even at their defaults.
+    it('drops sampling parameters dashboard code may still send', async () => {
+      mockCreate.mockResolvedValue({ content: [] })
+
+      const app = createApp()
+      await post(app, '/api/llm/v1/messages', {
+        messages: [{ role: 'user', content: 'hi' }],
+        max_tokens: 10,
+        temperature: 0.2,
+        top_p: 0.9,
+        top_k: 40,
+      })
+
+      const calledWith = mockCreate.mock.calls[0][0]
+      expect(calledWith).not.toHaveProperty('temperature')
+      expect(calledWith).not.toHaveProperty('top_p')
+      expect(calledWith).not.toHaveProperty('top_k')
+      expect(calledWith.max_tokens).toBe(10)
+    })
+
+    it('returns streaming SSE response when stream: true', async () => {
+      const mockEvents = [
+        { type: 'message_start', message: { id: 'msg_1' } },
+        { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Hi' } },
+        { type: 'message_stop' },
+      ]
+      mockCreate.mockResolvedValue({
+        [Symbol.asyncIterator]: async function* () {
+          for (const event of mockEvents) yield event
+        },
+      })
+
+      const app = createApp()
+      const res = await post(app, '/api/llm/v1/messages', {
+        messages: [{ role: 'user', content: 'hi' }],
+        max_tokens: 100,
+        stream: true,
+      })
+
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type')).toBe('text/event-stream')
+
+      const text = await res.text()
+      expect(text).toContain('event: message_start')
+      expect(text).toContain('event: content_block_delta')
+      expect(text).toContain('event: message_stop')
+      expect(text).toContain('"text":"Hi"')
+    })
+
+    it('passes through SDK errors with status code', async () => {
+      const sdkError = new Error('Rate limit exceeded')
+      ;(sdkError as any).status = 429
+      mockCreate.mockRejectedValue(sdkError)
+
+      const app = createApp()
+      const res = await post(app, '/api/llm/v1/messages', {
+        messages: [{ role: 'user', content: 'hi' }],
+        max_tokens: 10,
+      })
+
+      expect(res.status).toBe(429)
+      const body = await res.json()
+      expect(body.error).toContain('Rate limit')
+    })
+  })
+})

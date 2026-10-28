@@ -1,400 +1,1226 @@
 
-import { useMemo, useState } from 'react'
-import { TemplateInstallDialog } from '@renderer/components/agents/template-install-dialog'
-import { TemplateCard } from '@renderer/components/agents/template-card'
-import { useAgents } from '@renderer/hooks/use-agents'
-import { useUserSettings } from '@renderer/hooks/use-user-settings'
+import { Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
+import { WidgetActionRow, WidgetBoard, WidgetSizePopover, type GridRect, type WidgetItem, type WidgetSizeKey } from './widget-grid'
+import { useListedAgents, useStartAgent, useStopAgent } from '@renderer/hooks/use-agents'
+import { useUserSettings, useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
+import { useMarkSessionNotificationsRead } from '@renderer/hooks/use-notifications'
+import { useHomeCardHealth } from '@renderer/hooks/use-home-card-health'
 import { applyAgentOrder } from '@renderer/lib/agent-ordering'
-import { useDiscoverableAgents } from '@renderer/hooks/use-agent-templates'
-import { useUsageData } from '@renderer/hooks/use-usage'
-import { useSessions } from '@renderer/hooks/use-sessions'
-import { useSelection } from '@renderer/context/selection-context'
-import { AgentStatus, getAgentActivityStatus } from '@renderer/components/agents/agent-status'
-import { WorkingDots, AwaitingDot } from '@renderer/components/agents/status-indicators'
+import { lazyWithReload } from '@renderer/lib/lazy-with-reload'
+import { useNotableSessions } from '@renderer/hooks/use-sessions'
+import { LazyHalftone } from '@renderer/components/agents/halftone'
+import { ActivitySparkChart, CronSparkChart } from '@renderer/components/activity/activity-spark-chart'
+import {
+  type HomeCardCron,
+  type HomeCardHealthData,
+  type HomeCardWebhook,
+} from '@shared/lib/types/home-card-health-schema'
+import { agentAvatarState, getAgentActivityStatus } from '@shared/lib/types/agent-activity-status'
+import { WorkingDots, AwaitingDot, UnreadDot } from '@renderer/components/agents/status-indicators'
 import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
+import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { useCreateUntitledAgent } from '@renderer/hooks/use-create-untitled-agent'
 import { SidebarTrigger } from '@renderer/components/ui/sidebar'
 import { Button } from '@renderer/components/ui/button'
+import { AppLink } from '@renderer/components/ui/app-link'
+import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { ContextMenuItem, ContextMenuSwitchItem } from '@renderer/components/ui/context-menu'
 import { useSidebar } from '@renderer/components/ui/sidebar'
 import { useFullScreen } from '@renderer/hooks/use-fullscreen'
-import { useImagePalette } from '@renderer/hooks/use-image-palette'
-import {
-  pickDashboardSwatch,
-  buildGradient,
-  deriveForegroundColor,
-} from './dashboard-card-colors'
-import { isElectron, getPlatform, getApiBaseUrl } from '@renderer/lib/env'
-import { Plus, Bot, Loader2, Clock, CalendarClock, SquareMousePointer, Search } from 'lucide-react'
+import { useIsMobile } from '@renderer/hooks/use-mobile'
+import { DashboardCard } from './dashboard-card'
+import { WidgetCard } from '@renderer/components/widgets/widget-card'
+import type { ApiAgentWidget } from '@shared/lib/types/api'
+import { HomeEmptyClouds } from './home-empty-clouds'
+import { PwaInstallBanner } from './pwa-install-banner'
+import { isElectron, getPlatform } from '@renderer/lib/env'
+import { Plus, Loader2, Search, Power, Square, Check, ArrowRight, ChevronUp, ChevronDown, LayoutGrid, LayoutPanelTop, Minimize, Waypoints, MoreVertical, Sparkle, SquareMousePointer, Eye, EyeOff } from 'lucide-react'
 import { useSearch } from '@renderer/context/search-context'
-import { AreaChart, Area, ResponsiveContainer, Tooltip } from 'recharts'
-import type { ApiAgent, ApiAgentDashboard } from '@shared/lib/types/api'
-import type { ApiDiscoverableAgent } from '@shared/lib/types/api'
-import type { DailyUsageEntry } from '@shared/lib/types/usage'
+import { cn } from '@shared/lib/utils/cn'
+import type { ApiAgent } from '@shared/lib/types/api'
+import { formatLastRun } from '@renderer/lib/last-run'
 import { useRenderTracker } from '@renderer/lib/perf'
+import { toast } from 'sonner'
 
-export function formatRelativeTime(date: Date | string | null | undefined): string | null {
-  if (!date) return null
-  const now = Date.now()
-  const then = new Date(date).getTime()
-  const diffMs = now - then
-  const absDiff = Math.abs(diffMs)
-  const isFuture = diffMs < 0
+// Code-split: the graph pulls in @xyflow/react + d3-force, which nobody
+// should pay for on a cards-only page load.
+const AgentGraph = lazyWithReload(() =>
+  import('./graph/agent-graph').then((m) => ({ default: m.AgentGraph })),
+)
 
-  if (absDiff < 60_000) return 'just now'
-  const mins = Math.floor(absDiff / 60_000)
-  if (mins < 60) return isFuture ? `in ${mins}m` : `${mins}m ago`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return isFuture ? `in ${hours}h` : `${hours}h ago`
-  const days = Math.floor(hours / 24)
-  if (days < 30) return isFuture ? `in ${days}d` : `${days}d ago`
-  const months = Math.floor(days / 30)
-  return isFuture ? `in ${months}mo` : `${months}mo ago`
+// Per-status ink color for the card's halftone banner. Motion/form (the motif)
+// distinguishes agents; color just reflects activity state.
+const HALFTONE_INK: Record<ReturnType<typeof getAgentActivityStatus>, string> = {
+  sleeping: 'text-muted-foreground/50',
+  idle: 'text-muted-foreground',
+  working: 'text-foreground',
+  awaiting_input: 'text-orange-500',
 }
 
-/** Extract per-agent daily cost from the global usage data */
-function useAgentUsageSpark(agentSlug: string, dailyUsage: DailyUsageEntry[] | undefined) {
-  return useMemo(() => {
-    if (!dailyUsage?.length) return null
-    const points = dailyUsage.map((day) => {
-      const agentEntry = day.byAgent.find((a) => a.agentSlug === agentSlug)
-      return { date: day.date, tokens: agentEntry?.totalTokens ?? 0 }
-    })
-    if (points.every((p) => p.tokens === 0)) return null
-    return points
-  }, [agentSlug, dailyUsage])
+function hashSlug(s: string): number {
+  let h = 2166136261
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = (h * 16777619) >>> 0
+  }
+  return h
 }
 
-function formatTokenCount(tokens: number): string {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
-  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(0)}k`
-  return String(tokens)
-}
-
-function UsageSparkBackground({ data, agentSlug }: { data: { date: string; tokens: number }[]; agentSlug: string }) {
-  // Unique gradient IDs per agent to avoid SVG ID collisions
-  const fillId = `sparkFill-${agentSlug}`
-  return (
-    <div
-      className="absolute bottom-0 left-1/3 -right-px -bottom-px h-[60%]"
-      style={{ maskImage: 'linear-gradient(to right, transparent 0%, black 30%)', WebkitMaskImage: 'linear-gradient(to right, transparent 0%, black 30%)' }}
-    >
-      <ResponsiveContainer width="100%" height="100%">
-      <AreaChart
-        data={data}
-        margin={{ top: 0, right: 0, bottom: 0, left: 0 }}
-      >
-        <defs>
-          <linearGradient id={fillId} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.15} />
-            <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0.02} />
-          </linearGradient>
-        </defs>
-        <Tooltip
-          cursor={false}
-          content={({ active, payload }) => {
-            if (!active || !payload?.[0]) return null
-            const d = payload[0].payload as { date: string; tokens: number }
-            return (
-              <div className="rounded border bg-popover px-2 py-1 text-xs shadow-sm">
-                <span className="text-muted-foreground">{d.date}</span>{' '}
-                <span className="font-medium">{formatTokenCount(d.tokens)} tokens</span>
-              </div>
-            )
-          }}
-        />
-        <Area
-          type="monotone"
-          dataKey="tokens"
-          stroke="hsl(var(--primary))"
-          strokeWidth={1}
-          strokeOpacity={0.3}
-          fill={`url(#${fillId})`}
-          isAnimationActive={false}
-        />
-      </AreaChart>
-      </ResponsiveContainer>
-    </div>
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
   )
+
+  useEffect(() => {
+    const media = window.matchMedia?.('(prefers-reduced-motion: reduce)')
+    if (!media) return
+    const update = () => setReduced(media.matches)
+    update()
+    media.addEventListener?.('change', update)
+    return () => media.removeEventListener?.('change', update)
+  }, [])
+
+  return reduced
 }
 
-const statusTabBg = {
-  sleeping: 'bg-muted',
-  idle: 'bg-muted',
-  working: 'bg-green-100 dark:bg-green-900/40',
-  awaiting_input: 'bg-orange-100 dark:bg-orange-900/40',
-} as const
-
-function StatusTab({ status, hasActiveSessions, hasSessionsAwaitingInput }: {
-  status: 'running' | 'stopped'
-  hasActiveSessions: boolean
-  hasSessionsAwaitingInput: boolean
-}) {
-  const activityStatus = getAgentActivityStatus(status, hasActiveSessions, hasSessionsAwaitingInput)
-  return (
-    <div className={`absolute top-0 right-4 z-20 rounded-b-md px-2.5 py-1 ${statusTabBg[activityStatus]}`}>
-      <AgentStatus status={status} hasActiveSessions={hasActiveSessions} hasSessionsAwaitingInput={hasSessionsAwaitingInput} size="sm" workingDotClassName="bg-foreground" />
-    </div>
-  )
+// State label for the top-right status/control chip.
+const AGENT_STATE_TAG: Record<'sleeping' | 'idle' | 'working' | 'awaiting', string> = {
+  sleeping: 'Sleeping',
+  idle: 'Idle',
+  working: 'Working…',
+  awaiting: 'Needs input',
 }
 
-function AgentCard({ agent, dailyUsage }: { agent: ApiAgent; dailyUsage?: DailyUsageEntry[] }) {
-  useRenderTracker('AgentCard')
-  const { setAgent } = useSelection()
-  const lastWorked = formatRelativeTime(agent.lastActivityAt)
-  const nextRun = formatRelativeTime(agent.nextScheduledTaskAt)
-  const dashboardCount = agent.dashboardCount ?? 0
-  const scheduledTaskCount = agent.scheduledTaskCount ?? 0
-  const sparkData = useAgentUsageSpark(agent.slug, dailyUsage)
-  const totalTokens = sparkData?.reduce((sum, d) => sum + d.tokens, 0) ?? 0
+function AgentCardPowerButton({ agent }: { agent: ApiAgent }) {
+  const startAgent = useStartAgent()
+  const stopAgent = useStopAgent()
+  const isRunning = agent.status === 'running'
+  const isPending = isRunning ? stopAgent.isPending : startAgent.isPending
+  const tagState: 'sleeping' | 'idle' | 'working' | 'awaiting' = !isRunning
+    ? 'sleeping'
+    : agent.hasSessionsAwaitingInput
+      ? 'awaiting'
+      : agent.hasActiveSessions
+        ? 'working'
+        : 'idle'
+  const label = AGENT_STATE_TAG[tagState]
 
-  // Only fetch sessions when there are notable ones to show
-  const hasNotable = agent.hasActiveSessions || agent.hasSessionsAwaitingInput || agent.hasUnreadNotifications
-  const { data: sessions } = useSessions(hasNotable ? agent.slug : null, { staleTime: 30_000 })
-
-  const notableSessions = useMemo(() => {
-    if (!sessions) return []
-    return sessions.filter(
-      (s) => s.isActive || s.isAwaitingInput || (!s.isActive && !s.isAwaitingInput && s.hasUnreadNotifications)
-    )
-  }, [sessions])
-
-  // Always show active/awaiting sessions; cap unread-only notifications at 3
-  const MAX_UNREAD_ROWS = 3
-  const { visibleSessions, collapsedUnreadCount } = useMemo(() => {
-    const active: typeof notableSessions = []
-    const unread: typeof notableSessions = []
-    for (const s of notableSessions) {
-      if (s.isActive || s.isAwaitingInput) {
-        active.push(s)
-      } else {
-        unread.push(s)
-      }
+  const activate = (e: React.SyntheticEvent) => {
+    e.stopPropagation()
+    if (isPending) return
+    if (isRunning) {
+      stopAgent.mutate(agent.slug)
+    } else {
+      startAgent.mutate(agent.slug)
     }
-    const shownUnread = unread.slice(0, MAX_UNREAD_ROWS)
-    const collapsed = unread.length - shownUnread.length
-    return { visibleSessions: [...active, ...shownUnread], collapsedUnreadCount: collapsed }
-  }, [notableSessions])
-
-  return (
-    <div className="flex flex-col">
-      <AgentContextMenu agent={agent}>
-        <button
-          onClick={() => setAgent(agent.slug)}
-          className="relative text-left p-4 rounded-lg border bg-card hover:border-accent-foreground/20 transition-colors flex flex-col gap-3 z-10 h-24 overflow-hidden"
-        >
-          {/* Spark chart background */}
-          {sparkData && <UsageSparkBackground data={sparkData} agentSlug={agent.slug} />}
-
-          {/* Status tab dropping from top-right */}
-          <StatusTab
-            status={agent.status}
-            hasActiveSessions={agent.hasActiveSessions ?? false}
-            hasSessionsAwaitingInput={agent.hasSessionsAwaitingInput ?? false}
-          />
-
-          {/* Content sits above the chart */}
-          <div className="relative z-10 flex flex-col gap-3 flex-1 justify-between">
-            {/* Header: name */}
-            <div className="flex items-center gap-2 min-w-0 pr-20">
-              <span className="font-medium truncate">{agent.name}</span>
-            </div>
-
-            {/* Description */}
-            {agent.description && (
-              <p className="text-xs text-muted-foreground line-clamp-2">{agent.description}</p>
-            )}
-
-            {/* Details row */}
-            <div className="flex items-center gap-3 flex-wrap text-xs text-muted-foreground">
-              {/* Last worked */}
-              {lastWorked && (
-                <span className="flex items-center gap-1">
-                  <Clock className="h-3 w-3" />
-                  {lastWorked}
-                </span>
-              )}
-
-              {/* Scheduled tasks */}
-              {scheduledTaskCount > 0 && (
-                <span className="flex items-center gap-1" title={nextRun ? `Next run: ${nextRun}` : undefined}>
-                  <CalendarClock className="h-3 w-3" />
-                  {scheduledTaskCount} task{scheduledTaskCount !== 1 ? 's' : ''}
-                  {nextRun && <span className="text-muted-foreground/70">&middot; {nextRun}</span>}
-                </span>
-              )}
-
-              {/* Dashboard count (each dashboard also gets its own card below) */}
-              {dashboardCount > 0 && (
-                <span className="flex items-center gap-1">
-                  <SquareMousePointer className="h-3 w-3" />
-                  {dashboardCount} dashboard{dashboardCount !== 1 ? 's' : ''}
-                </span>
-              )}
-
-              {/* Usage tokens */}
-              {sparkData && (
-                <span className="flex items-center gap-1">
-                  {formatTokenCount(totalTokens)} tokens/7d
-                </span>
-              )}
-            </div>
-          </div>
-        </button>
-      </AgentContextMenu>
-
-      {/* Session appendages — each tucks up behind the rounded corners of the one above */}
-      {visibleSessions.map((session, i) => {
-        const isAwaiting = session.isAwaitingInput
-        const isWorking = session.isActive && !session.isAwaitingInput
-        const hasUnread = !session.isActive && !session.isAwaitingInput && session.hasUnreadNotifications
-
-        const colors = isAwaiting
-          ? 'bg-orange-50 border-orange-200 dark:bg-orange-900 dark:border-orange-800'
-          : isWorking
-          ? 'bg-green-50 border-green-200 dark:bg-green-900 dark:border-green-800'
-          : 'bg-blue-50 border-blue-200 dark:bg-blue-950 dark:border-blue-800'
-
-        return (
-          <div
-            key={session.id}
-            className="relative px-1"
-            style={{ marginTop: -6, zIndex: visibleSessions.length + 1 - i }}
-          >
-            <button
-              onClick={() => setAgent(agent.slug, { kind: 'session', id: session.id })}
-              className={`w-full flex items-center gap-2 px-3 py-1.5 pt-3 text-left text-xs border rounded-b-lg transition-colors hover:brightness-95 ${colors}`}
-            >
-              {isAwaiting ? (
-                <AwaitingDot />
-              ) : isWorking ? (
-                <WorkingDots dotClassName="bg-foreground" />
-              ) : hasUnread ? (
-                <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500" />
-              ) : null}
-              <span className="truncate font-medium">{session.name}</span>
-              <span className="ml-auto shrink-0 text-muted-foreground">
-                {isAwaiting ? 'needs input' : isWorking ? 'working' : 'new message'}
-              </span>
-            </button>
-          </div>
-        )
-      })}
-
-      {/* Collapsed unread notification summary */}
-      {collapsedUnreadCount > 0 && (
-        <div
-          className="relative px-1"
-          style={{ marginTop: -6, zIndex: 0 }}
-        >
-          <button
-            onClick={() => setAgent(agent.slug)}
-            className="w-full flex items-center gap-2 px-3 py-1.5 pt-3 text-left text-xs border rounded-b-lg transition-colors hover:brightness-95 bg-blue-50 border-blue-200 dark:bg-blue-950 dark:border-blue-800"
-          >
-            <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500" />
-            <span className="font-medium">{collapsedUnreadCount} more notification{collapsedUnreadCount !== 1 ? 's' : ''}</span>
-          </button>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function DashboardCard({
-  dashboard,
-  agentSlug,
-}: {
-  dashboard: ApiAgentDashboard
-  agentSlug: string
-}) {
-  const { setAgent } = useSelection()
-
-  const handleClick = () => {
-    setAgent(agentSlug, { kind: 'dashboard', slug: dashboard.slug })
   }
 
-  // Prefix with getApiBaseUrl() so the <img> resolves to the dynamic Electron
-  // API port (and to same-origin in web mode). Bare `/api/...` would resolve
-  // against the renderer's origin and 404.
-  const screenshotUrl = dashboard.hasScreenshot
-    ? `${getApiBaseUrl()}/api/agents/${encodeURIComponent(agentSlug)}/artifacts/${encodeURIComponent(dashboard.slug)}/screenshot.png`
-    : null
-
-  const { status: paletteStatus, palette } = useImagePalette(screenshotUrl)
-  const swatch = palette ? pickDashboardSwatch(palette) : null
-
-  // Hold off on rendering the overlay while we're still extracting colours —
-  // otherwise the first paint uses theme defaults and flashes when the palette
-  // resolves. Once we're ready (or failed), render with whatever we have.
-  const overlayReady = !screenshotUrl || paletteStatus !== 'loading'
-
   return (
-    // Outer div holds the grid's layout slot at a fixed 96px — the button
-    // inside grows via absolute positioning on hover, overlaying rows below
-    // rather than pushing them. z-index sits on the outer div (not the
-    // animating button) with an asymmetric transition: it snaps to 20 on
-    // mouseenter but waits 420ms on mouseleave, so the card stays above
-    // sibling rows for the full duration of the shrink-back animation.
-    <div className="relative h-24 group z-0 hover:z-20 [transition:z-index_0s_420ms] hover:[transition:z-index_0s]">
+    // Frosted status chip with a white-bordered stop/power button inside. It's a
+    // flex item in the card's control row (see AgentCard), so the kebab aligns
+    // with it natively.
+    <div className="flex items-center gap-1.5 rounded-md border border-border/50 bg-white/10 py-0.5 pl-1.5 pr-0.5 text-xs backdrop-blur-sm">
+      <span className="leading-none text-muted-foreground">{label}</span>
       <button
-        onClick={handleClick}
-        className="absolute inset-x-0 top-0 h-24 group-hover:h-40 group-hover:scale-x-[1.04] group-hover:shadow-lg rounded-lg border bg-card hover:border-accent-foreground/20 text-left overflow-hidden origin-top [transition:transform_150ms_ease-out,height_300ms_cubic-bezier(0.2,0.8,0.2,1)_120ms,box-shadow_250ms_ease-out,border-color_200ms_ease-out]"
-      >
-        {screenshotUrl ? (
-          <img
-            src={screenshotUrl}
-            alt=""
-            className="absolute inset-0 h-full w-full object-cover object-top"
-            loading="lazy"
-            draggable={false}
-          />
-        ) : (
-          <div className="absolute inset-0 flex items-center justify-center bg-muted/40">
-            <SquareMousePointer className="h-8 w-8 text-muted-foreground/50" />
-          </div>
+        type="button"
+        disabled={isPending}
+        aria-label={isRunning ? 'Stop agent' : 'Wake up agent'}
+        title={isRunning ? 'Stop agent' : 'Wake up agent'}
+        onClick={activate}
+        className={cn(
+          'flex h-5 w-5 shrink-0 items-center justify-center rounded border bg-background text-foreground shadow-sm',
+          'cursor-pointer transition-colors hover:bg-muted',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+          'disabled:cursor-wait disabled:opacity-60'
         )}
-        {overlayReady && (
-          <>
-            <div
-              className="absolute inset-0"
-              style={{ background: buildGradient(swatch) }}
-            />
-            <div
-              className="relative z-10 flex h-full flex-col justify-end p-3"
-              style={swatch ? { color: deriveForegroundColor(swatch) } : undefined}
-            >
-              <div className="flex items-center gap-1.5 min-w-0">
-                <SquareMousePointer className="h-3.5 w-3.5 shrink-0 opacity-70" />
-                <span className="font-medium text-sm truncate">{dashboard.name}</span>
-              </div>
-            </div>
-          </>
+      >
+        {isPending ? (
+          <Loader2 className="h-3 w-3 animate-spin" />
+        ) : isRunning ? (
+          <Square className="h-2.5 w-2.5 fill-current" />
+        ) : (
+          <Power className="h-2.5 w-2.5" />
         )}
       </button>
     </div>
   )
 }
 
+// Baked halftone render settings + per-state motion (chosen during exploration;
+// the dev tweak panel that produced them lives on the animation-experiments-draft
+// branch). flow_3d is the working/idle/sleeping identity; pulse (in orange ink,
+// via HALFTONE_INK) is the needs-input state.
+const HALFTONE_STATE: Record<'sleeping' | 'idle' | 'working', { speed: number; dim: number; contrast: number }> = {
+  // Clear separation: sleeping/idle are slow + faint + soft; working is notably
+  // faster, fuller, and higher-contrast (bolder, denser dots).
+  sleeping: { speed: 0.25, dim: 0.4, contrast: 1.35 },
+  idle: { speed: 0.4, dim: 0.5, contrast: 1.4 },
+  working: { speed: 0.9, dim: 1, contrast: 1.95 },
+}
+
+function AgentCardMatrix({
+  slug,
+  status,
+  hasActiveSessions,
+  hasSessionsAwaitingInput,
+  className,
+}: {
+  slug: string
+  status: 'running' | 'stopped'
+  hasActiveSessions: boolean
+  hasSessionsAwaitingInput: boolean
+  /** Banner geometry (aspect ratio or fixed height); defaults to the wide strip. */
+  className?: string
+}) {
+  const activityStatus = getAgentActivityStatus(status, hasActiveSessions, hasSessionsAwaitingInput)
+  const stateTweak = activityStatus === 'awaiting_input' ? undefined : HALFTONE_STATE[activityStatus]
+  return (
+    <div
+      aria-hidden="true"
+      className={cn('w-full overflow-hidden', className ?? 'aspect-[32/9]', HALFTONE_INK[activityStatus])}
+    >
+      <LazyHalftone
+        motif={activityStatus === 'awaiting_input' ? 'pulse' : 'flow_3d'}
+        state={activityStatus === 'working' ? 'working' : activityStatus === 'awaiting_input' ? 'alert' : 'idle'}
+        speed={stateTweak?.speed}
+        dim={stateTweak?.dim}
+        spacing={5}
+        maxRadius={1.3}
+        vignette={0.4}
+        contrast={stateTweak?.contrast ?? 1.6}
+        speedScale={1}
+        seed={hashSlug(slug)}
+      />
+    </div>
+  )
+}
+
+interface NotableSession {
+  id: string
+  name: string
+  isActive?: boolean
+  isAwaitingInput?: boolean
+  hasUnreadNotifications?: boolean
+  hasUnreadMention?: boolean
+  lastActivityAt?: Date | string
+}
+
+/**
+ * Strip a leading agent-name prefix from a session name — inside the agent's
+ * own card it's redundant ("Test Agent One Story Session" → "Story Session").
+ * Matches the longest run of the agent's leading words (so partial prefixes
+ * like "Test Agent Linear…" under "Test Agent One" still strip), but requires
+ * at least two words (or the full single-word name) to avoid false positives.
+ */
+function stripAgentPrefix(sessionName: string, agentName: string): string {
+  const sessionWords = sessionName.trim().split(/\s+/)
+  const agentWords = agentName.trim().split(/\s+/).filter(Boolean)
+  if (agentWords.length === 0) return sessionName
+  let matched = 0
+  while (
+    matched < agentWords.length &&
+    matched < sessionWords.length &&
+    sessionWords[matched].toLowerCase() === agentWords[matched].toLowerCase()
+  ) {
+    matched++
+  }
+  if (matched < Math.min(2, agentWords.length)) return sessionName
+  const rest = sessionWords.slice(matched).join(' ').replace(/^[\s:–—\-·]+/, '')
+  return rest.length >= 3 ? rest : sessionName
+}
+
+/** Compact relative age: 4m, 1h, 2d. */
+function compactAgo(date: Date | string | undefined): string | null {
+  if (!date) return null
+  const mins = Math.max(0, Math.round((Date.now() - new Date(date).getTime()) / 60_000))
+  if (mins < 1) return 'now'
+  if (mins < 60) return `${mins}m`
+  const hours = Math.round(mins / 60)
+  if (hours < 24) return `${hours}h`
+  return `${Math.round(hours / 24)}d`
+}
+
+type SessionState = 'awaiting' | 'working' | 'mention' | 'unread'
+
+// Notification-row prefix describing what happened in the session.
+const SESSION_STATE_PREFIX: Record<SessionState, string> = {
+  awaiting: 'Input needed',
+  working: 'Working',
+  mention: 'Mentioned you',
+  unread: 'New message',
+}
+
+function sessionState(s: NotableSession): SessionState {
+  if (s.isAwaitingInput) return 'awaiting'
+  if (s.isActive) return 'working'
+  return s.hasUnreadMention ? 'mention' : 'unread'
+}
+
+function SessionStateDot({ state }: { state: SessionState }) {
+  // The dots have different intrinsic footprints (awaiting reserves 12px for
+  // its ping halo, the mention @ is 14px, unread is a bare 6px). Center each
+  // in one fixed 14px box so the dot centers — and the text start — align
+  // across rows.
+  const dot =
+    state === 'awaiting' ? <AwaitingDot />
+      : state === 'working' ? <WorkingDots dotClassName="bg-foreground" />
+        : <UnreadDot mention={state === 'mention'} />
+  return <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">{dot}</span>
+}
+
+/**
+ * Notifications section: a frosted panel (matching the title pill / health
+ * chips) of hairline-divided rows — state dot, name, and a right-aligned
+ * compact timestamp. Sizes to its content and scrolls when the list outgrows
+ * the space available in the card.
+ */
+function AgentCardSessions({
+  agentSlug,
+  agentDisplaySlug,
+  agentName,
+  sessions,
+}: {
+  agentSlug: string
+  agentDisplaySlug: string
+  agentName: string
+  sessions: NotableSession[] | undefined
+}) {
+  const navigate = useNavigate()
+  const markRead = useMarkSessionNotificationsRead()
+  const notable = useMemo(
+    () => (sessions ?? []).filter((s) => s.isActive || s.isAwaitingInput || s.hasUnreadNotifications),
+    [sessions]
+  )
+  if (notable.length === 0) return null
+  const open = (id: string) => {
+    void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agentSlug, sessionId: id } })
+  }
+  // Show up to three rows as-is; with four or more, show two and collapse the
+  // rest into a trailing "{X} more →" row.
+  const visible = notable.length > 3 ? notable.slice(0, 2) : notable
+  const moreCount = notable.length - visible.length
+
+  return (
+    <div className="pointer-events-auto flex max-h-full min-h-0 flex-col overflow-hidden rounded-md border border-border/50 bg-white/10 backdrop-blur-sm">
+      <div className="min-h-0 overflow-y-auto px-2 py-1">
+        {visible.map((s) => {
+          const st = sessionState(s)
+          const right = compactAgo(s.lastActivityAt) ?? ''
+          return (
+            <div
+              key={s.id}
+              className="group/row flex h-6 w-full items-center gap-2.5 text-xs"
+            >
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  open(s.id)
+                }}
+                className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <SessionStateDot state={st} />
+                <span className="truncate text-foreground">
+                  <span className="text-muted-foreground">{SESSION_STATE_PREFIX[st]}: </span>
+                  {stripAgentPrefix(s.name, agentName)}
+                </span>
+              </button>
+              {st === 'unread' || st === 'mention' || st === 'awaiting' ? (
+                /* Time stamp sits flush right; the action buttons are collapsed
+                   to zero width until the row is hovered/focused, then expand
+                   and slide in from the right, nudging the stamp left. */
+                <span className="flex shrink-0 items-center">
+                  <span className="text-muted-foreground tabular-nums">{right}</span>
+                  <span className="flex max-w-0 translate-x-1 items-center gap-0.5 overflow-hidden opacity-0 transition-all duration-200 ease-out group-hover/row:max-w-16 group-hover/row:translate-x-0 group-hover/row:pl-1.5 group-hover/row:opacity-100 group-focus-within/row:max-w-16 group-focus-within/row:translate-x-0 group-focus-within/row:pl-1.5 group-focus-within/row:opacity-100">
+                    {(st === 'unread' || st === 'mention') && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          markRead.mutate(s.id)
+                        }}
+                        aria-label="Mark as read"
+                        title="Mark as read"
+                        className="inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <Check className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        open(s.id)
+                      }}
+                      aria-label="Open session"
+                      title="Open session"
+                      className="inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <ArrowRight className="h-3.5 w-3.5" />
+                    </button>
+                  </span>
+                </span>
+              ) : (
+                <span className="shrink-0 text-muted-foreground tabular-nums">{right}</span>
+              )}
+            </div>
+          )
+        })}
+        {moreCount > 0 && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              void navigate({ to: '/agents/$slug', params: { slug: agentDisplaySlug } })
+            }}
+            className="group/row flex h-6 w-full cursor-pointer items-center justify-end gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <span>{moreCount} more</span>
+            <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground opacity-60 transition-all group-hover/row:opacity-100">
+              <ArrowRight className="h-3.5 w-3.5" />
+            </span>
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+type HealthSlide = { kind: 'cron' | 'webhook'; id: string; name: string }
+
+/**
+ * Rotating health carousel for the card's bottom row. One full-width slide at
+ * a time — each cron's run history (CronSparkChart) and each webhook's daily
+ * volume (ActivitySparkChart), fed by the real /api/activity rollups — so
+ * labels get the whole row instead of clipping. Auto-advances every few
+ * seconds, pauses on hover; the pager steps through slides; a slide click
+ * opens that trigger's page.
+ */
+function AgentHealthCarousel({
+  agent,
+  crons,
+  webhooks,
+  health,
+}: {
+  agent: ApiAgent
+  crons: HomeCardCron[]
+  webhooks: HomeCardWebhook[]
+  health?: HomeCardHealthData
+}) {
+  const navigate = useNavigate()
+  const slides = useMemo<HealthSlide[]>(
+    () => [
+      ...crons.map((c) => ({ kind: 'cron' as const, id: c.id, name: c.name ?? c.scheduleExpression })),
+      ...webhooks.map((w) => ({ kind: 'webhook' as const, id: w.id, name: w.name ?? w.triggerType })),
+    ],
+    [crons, webhooks]
+  )
+  const count = slides.length
+  const [index, setIndex] = useState(0)
+  const [hovered, setHovered] = useState(false)
+  const [focusWithin, setFocusWithin] = useState(false)
+  const reduceMotion = usePrefersReducedMotion()
+  const paused = hovered || focusWithin || reduceMotion
+
+  useEffect(() => {
+    if (paused || count < 2) return
+    const t = setInterval(() => setIndex((i) => (i + 1) % count), 4000)
+    return () => clearInterval(t)
+  }, [paused, count])
+
+  if (count === 0) return null
+  const active = slides[index % count]
+
+  const openSlide = (s: HealthSlide) => {
+    if (s.kind === 'cron') {
+      void navigate({ to: '/agents/$slug/tasks/$taskId', params: { slug: agent.slug, taskId: s.id } })
+    } else {
+      void navigate({ to: '/agents/$slug/webhooks/$webhookId', params: { slug: agent.slug, webhookId: s.id } })
+    }
+  }
+
+  const renderSlide = (s: HealthSlide) => {
+    const chart: ReactNode =
+      s.kind === 'cron' ? (
+        <CronSparkChart label={s.name} data={health?.cronByTaskId[s.id] ?? []} />
+      ) : (
+        <ActivitySparkChart label={s.name} data={health?.webhookByTriggerId[s.id] ?? []} />
+      )
+    return (
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation()
+          openSlide(s)
+        }}
+        className="flex w-full cursor-pointer items-center gap-2 text-left text-xs"
+      >
+        <span className="min-w-0 flex-1 truncate">
+          <span className="text-foreground">{s.name}</span>{' '}
+          <span className="text-muted-foreground">{s.kind === 'cron' ? 'Cron' : 'Webhook'}</span>
+        </span>
+        <span className="shrink-0">{chart}</span>
+      </button>
+    )
+  }
+
+  return (
+    <div
+      className="pointer-events-auto mt-auto flex shrink-0 items-center gap-1.5"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocusCapture={() => setFocusWithin(true)}
+      onBlurCapture={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocusWithin(false)
+      }}
+    >
+      {/* The frosted panel (title's bg-white/10 + backdrop-blur) lives on the
+          container so the halftone reads softly through it and never flashes.
+          A single content layer slides up inside it on each change — nothing
+          underneath to bleed through. */}
+      <div className="relative min-w-0 flex-1 overflow-hidden rounded-md border border-border/50 bg-white/10 backdrop-blur-sm">
+        <div
+          key={active.id}
+          className={cn('px-2 py-1.5', !reduceMotion && 'animate-in slide-in-from-bottom-full duration-300')}
+        >
+          {renderSlide(active)}
+        </div>
+      </div>
+      {/* Fixed-width up/down pager outside the chip. Unlike a dot per slide,
+          its footprint doesn't grow with the trigger count, so the chip keeps
+          its width however many crons + webhooks an agent has. The position is
+          announced to screen readers only. */}
+      {count > 1 && (
+        <span className="flex shrink-0 items-center text-muted-foreground">
+          <span aria-live="polite" className="sr-only">
+            {(index % count) + 1} of {count}
+          </span>
+          <span className="flex flex-col">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                setIndex((i) => (i - 1 + count) % count)
+              }}
+              aria-label="Previous health row"
+              className="inline-flex h-3 w-5 cursor-pointer items-center justify-center rounded-t transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <ChevronUp className="h-3 w-3" />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                setIndex((i) => (i + 1) % count)
+              }}
+              aria-label="Next health row"
+              className="inline-flex h-3 w-5 cursor-pointer items-center justify-center rounded-b transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <ChevronDown className="h-3 w-3" />
+            </button>
+          </span>
+        </span>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Small-card title meta as a ticker: a single line that continuously scrolls
+ * "Last run X · {N} new notifications" (orange needs-input dot wins over blue
+ * unread), looping seamlessly via a duplicated run.
+ */
+function TickerTitleMeta({
+  lastRun,
+  notifCount,
+  notifState,
+}: {
+  lastRun: string
+  notifCount: number
+  notifState: SessionState
+}) {
+  const run = (
+    <span className="flex items-center gap-1.5 pr-8 text-muted-foreground">
+      <span>{lastRun}</span>
+      <SessionStateDot state={notifState} />
+      <span>
+        {notifCount} new notification{notifCount !== 1 ? 's' : ''}
+      </span>
+    </span>
+  )
+  return (
+    <div className="relative h-4 overflow-hidden text-xs">
+      <div className="home-title-ticker flex w-max items-center whitespace-nowrap group-hover/widget:[animation-play-state:paused] group-focus-within/widget:[animation-play-state:paused]">
+        {run}
+        {run}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Agent card, size-aware for the widget grid:
+ *   S (1×1) — full-bleed halftone glance tile: title + last run + state pill.
+ *   W (2×1) — banner strip, notifications in the middle, cron + webhook charts
+ *             sharing one row pinned to the bottom.
+ */
+function AgentCard({
+  agent,
+  size = 'W',
+  additionalOptions,
+  onArrange,
+  disableTouchLongPress,
+  crons = [],
+  webhooks = [],
+  health,
+}: {
+  agent: ApiAgent
+  size?: WidgetSizeKey
+  additionalOptions?: ReactNode
+  onArrange?: () => void
+  disableTouchLongPress?: boolean
+  crons?: HomeCardCron[]
+  webhooks?: HomeCardWebhook[]
+  health?: HomeCardHealthData
+}) {
+  useRenderTracker('AgentCard')
+  const lastRun = formatLastRun(agent.lastActivityAt) ?? 'Last run never'
+
+  const isSmall = size === 'S'
+
+  // Fetch sessions whenever there are notable ones — the Wide card lists them,
+  // the Small card rotates a count into the title.
+  const hasNotable = agent.hasActiveSessions || agent.hasSessionsAwaitingInput || agent.hasUnreadNotifications
+  const { data: sessions } = useNotableSessions(hasNotable ? agent.slug : null, {
+    limit: 100,
+    staleTime: 30_000,
+  })
+
+  // Notification summary for the Small card's rotating title meta. Orange
+  // (needs input) wins over the purple @ (mentioned you), which wins over blue (unread).
+  const notifSessions = useMemo(
+    () => (sessions ?? []).filter((s) => s.isAwaitingInput || s.hasUnreadNotifications),
+    [sessions]
+  )
+  const notifState: SessionState | null = notifSessions.some((s) => s.isAwaitingInput)
+    ? 'awaiting'
+    : notifSessions.some((s) => s.hasUnreadMention)
+      ? 'mention'
+      : notifSessions.length > 0
+        ? 'unread'
+        : null
+
+  const titleOverlay = (
+    <div className="pointer-events-none absolute bottom-2 left-4 z-10 flex max-w-[calc(100%-2rem)] items-center gap-2 rounded-md bg-white/10 px-2.5 py-1 backdrop-blur-sm">
+      <AgentAvatar agent={agent} state={agentAvatarState(agent)} size={34} />
+      <div className="min-w-0">
+        <div className="truncate text-sm font-normal text-foreground">{agent.name}</div>
+        {isSmall && notifState ? (
+          <TickerTitleMeta lastRun={lastRun} notifCount={notifSessions.length} notifState={notifState} />
+        ) : (
+          <div className="truncate text-xs text-muted-foreground">{lastRun}</div>
+        )}
+      </div>
+    </div>
+  )
+
+  return (
+    <AgentContextMenu
+      agent={agent}
+      additionalOptions={additionalOptions}
+      onArrange={onArrange}
+      disableTouchLongPress={disableTouchLongPress}
+    >
+      <div
+        className="relative flex h-full w-full flex-col gap-3 overflow-hidden rounded-lg border bg-card p-4 text-left shadow-sm transition-[box-shadow,transform,border-color] duration-150 hover:border-accent-foreground/20 group-hover/widget:-translate-y-0.5 group-hover/widget:shadow-md"
+      >
+        {/* Keep navigation as a sibling of the card controls so the DOM never
+            nests buttons inside a button. Interactive rows sit above this
+            transparent hit target and handle their own actions. */}
+        <AppLink
+          to="/agents/$slug"
+          params={{ slug: agent.displaySlug }}
+          draggable={false}
+          data-widget-drag-surface=""
+          aria-label={`Open ${agent.name}`}
+          onKeyDown={(event) => {
+            if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
+            event.preventDefault()
+            const rect = event.currentTarget.getBoundingClientRect()
+            event.currentTarget.dispatchEvent(
+              new MouseEvent('contextmenu', {
+                bubbles: true,
+                cancelable: true,
+                clientX: rect.right,
+                clientY: rect.top,
+              })
+            )
+          }}
+          className="absolute inset-0 z-20 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        />
+
+        {/* The card has one visible control row and one menu surface: its
+            right-click/long-press context menu. The focused card link also
+            opens that menu with the standard Shift+F10 keyboard gesture. */}
+        <div className="absolute top-2 right-4 z-30">
+          <AgentCardPowerButton agent={agent} />
+        </div>
+
+        {isSmall ? (
+          /* Glance tile: the halftone fills the card, content overlays it. */
+          <>
+            <div className="absolute inset-0">
+              <AgentCardMatrix
+                slug={agent.slug}
+                status={agent.status}
+                hasActiveSessions={agent.hasActiveSessions ?? false}
+                hasSessionsAwaitingInput={agent.hasSessionsAwaitingInput ?? false}
+                className="h-full"
+              />
+            </div>
+            {titleOverlay}
+          </>
+        ) : (
+          /* Wide: same glance-tile footing as Small — halftone fills the card,
+             title in the bottom-left corner — with the notifications + health
+             carousel overlaid on top. The content reserves top space (pt-5) so
+             it clears the status chip and bottom space (pb-11) so it clears
+             the title pill. */
+          <>
+            <div className="absolute inset-0">
+              <AgentCardMatrix
+                slug={agent.slug}
+                status={agent.status}
+                hasActiveSessions={agent.hasActiveSessions ?? false}
+                hasSessionsAwaitingInput={agent.hasSessionsAwaitingInput ?? false}
+                className="h-full"
+              />
+            </div>
+            <div className="pointer-events-none relative z-30 flex min-h-0 flex-1 flex-col gap-1.5 pt-5 pb-11">
+              {/* Notifications sit directly above the cron/webhook carousel
+                  (bottom-aligned); any slack opens up above them. Scrolls when
+                  the list overflows. */}
+              <div className="flex min-h-0 flex-1 flex-col justify-end">
+                <AgentCardSessions
+                  agentSlug={agent.slug}
+                  agentDisplaySlug={agent.displaySlug}
+                  agentName={agent.name}
+                  sessions={sessions}
+                />
+              </div>
+              {/* Rotating cron/webhook health carousel (renders nothing when
+                  the agent has no triggers). */}
+              <AgentHealthCarousel agent={agent} crons={crons} webhooks={webhooks} health={health} />
+            </div>
+            {titleOverlay}
+          </>
+        )}
+      </div>
+    </AgentContextMenu>
+  )
+}
+
+/**
+ * Widget-grid key for an artifact tile (dashboard screenshot or widget — one
+ * tile per artifact either way). Agents use their bare slug.
+ */
+const dashKey = (agentSlug: string, dashSlug: string) => `dash::${agentSlug}::${dashSlug}`
+
+function dashboardAgentSlugFromKey(id: string): string | null {
+  if (!id.startsWith('dash::')) return null
+  const rest = id.slice('dash::'.length)
+  const separator = rest.indexOf('::')
+  return separator === -1 ? null : rest.slice(0, separator)
+}
+
+/** A card the user hid from the home grid, as listed in the options menu. */
+interface HiddenHomeCard {
+  id: string
+  name: string
+  /** The owning agent for app tiles; the agent itself for agent cards. */
+  agent: ApiAgent
+  kind: 'agent' | 'app'
+}
+
+function HomeArrangeMenu({
+  onArrange,
+  disabled,
+  hiddenCards,
+  onUnhide,
+  onUnhideAll,
+}: {
+  onArrange: () => void
+  disabled: boolean
+  hiddenCards: HiddenHomeCard[]
+  onUnhide: (id: string) => void
+  onUnhideAll: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label="Home options"
+          title="Home options"
+          data-testid="home-options-trigger"
+          className="app-no-drag flex h-8 w-8 items-center justify-center rounded-md border border-input bg-background text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <MoreVertical className="h-4 w-4" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className={cn('p-1', hiddenCards.length > 0 ? 'w-60' : 'w-40')}>
+        <button
+          type="button"
+          data-testid="home-arrange-action"
+          disabled={disabled}
+          onClick={() => {
+            setOpen(false)
+            onArrange()
+          }}
+          className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
+        >
+          <LayoutPanelTop className="h-4 w-4" />
+          Arrange
+        </button>
+        {hiddenCards.length > 0 && (
+          <div className="mt-1 border-t pt-1" data-testid="home-hidden-cards">
+            <div className="flex items-center justify-between px-2 py-1">
+              <span className="text-xs text-muted-foreground">Hidden</span>
+              {hiddenCards.length > 1 && (
+                <button
+                  type="button"
+                  data-testid="home-unhide-all"
+                  onClick={onUnhideAll}
+                  className="rounded-sm px-1 text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  Show all
+                </button>
+              )}
+            </div>
+            <div className="max-h-64 overflow-y-auto">
+              {hiddenCards.map((card) => (
+                <button
+                  key={card.id}
+                  type="button"
+                  data-testid={`home-unhide-${card.id}`}
+                  aria-label={`Show ${card.name}`}
+                  onClick={() => onUnhide(card.id)}
+                  className="group/unhide flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted"
+                >
+                  {card.kind === 'agent' ? (
+                    <AgentAvatar agent={card.agent} state={agentAvatarState(card.agent)} size={16} />
+                  ) : (
+                    <SquareMousePointer className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  )}
+                  <span className="min-w-0 flex-1 truncate">
+                    {card.name}
+                    {card.kind === 'app' && (
+                      <span className="text-muted-foreground"> · {card.agent.name}</span>
+                    )}
+                  </span>
+                  <EyeOff className="h-3.5 w-3.5 shrink-0 text-muted-foreground group-hover/unhide:hidden" />
+                  <Eye className="hidden h-3.5 w-3.5 shrink-0 text-foreground group-hover/unhide:block" />
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+/**
+ * The empty state's ghost board: the card grid this page becomes, at whisper
+ * opacity. Mirrors WidgetBoard's geometry — square cells around its 232px
+ * target, 16px gaps, Small = 1x1 and Wide = 2x1 (dense-packed so the wide
+ * ghosts don't strand holes) — with each ghost sketching the real card's
+ * landmarks: title pill bottom-left, status chip top-right. The top-left wide
+ * cell is the one live element: the real create button sits where its title
+ * pill would. Rows fade out toward the bottom (see .home-empty-skeleton) so a
+ * clipped last row never shows a cut card edge.
+ */
+const SKELETON_PATTERN: WidgetSizeKey[] = ['W', 'S', 'S', 'S', 'S', 'W', 'S', 'W', 'S', 'S', 'W', 'S']
+
+function HomeEmptySkeletonBoard({
+  onCreate,
+  isCreating,
+  ctaRef,
+}: {
+  onCreate: () => void
+  isCreating: boolean
+  /** The live cell, exposed so the bloom can centre itself on it. */
+  ctaRef?: React.Ref<HTMLDivElement>
+}) {
+  return (
+    <div
+      data-testid="home-empty-skeleton"
+      className="home-empty-skeleton relative grid gap-4 [grid-auto-flow:dense]"
+      style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gridAutoRows: '216px' }}
+    >
+      {/* The live cell — a wide card with the same ghost shell as the rest,
+          its title-pill position holding the actual call to action. Second
+          row, second slot on md+; below md it auto-places at the row start,
+          because pinning columns 2-3 on a 2-column board would conjure an
+          implicit third column and squeeze every row. */}
+      <div
+        ref={ctaRef}
+        className="relative rounded-lg border border-border/40 bg-card/25 [grid-row:2] [grid-column:span_2] md:[grid-column:2/span_2]"
+      >
+        <div aria-hidden="true" className="absolute top-2 right-4 h-6 w-20 rounded-md bg-muted/30" />
+        {/* Backgrounded like the ghost title pills it stands in for; hover
+            firms it up so it still declares itself interactive. */}
+        <Button
+          variant="secondary"
+          className="absolute bottom-3 left-4 bg-muted/40 hover:bg-muted/40 text-foreground"
+          onClick={onCreate}
+          disabled={isCreating}
+          data-testid="home-empty-create-button"
+        >
+          <Sparkle className="h-4 w-4 mr-1" />
+          Create your first agent
+        </Button>
+      </div>
+      {SKELETON_PATTERN.map((size, i) => (
+        <div
+          key={i}
+          aria-hidden="true"
+          className={cn(
+            'pointer-events-none relative rounded-lg border border-border/40 bg-card/25',
+            size === 'W' && 'col-span-2',
+          )}
+        >
+          <div className="absolute bottom-2 left-4 h-9 w-32 rounded-md bg-muted/40" />
+          <div className="absolute top-2 right-4 h-6 w-20 rounded-md bg-muted/30" />
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export function HomePage() {
   useRenderTracker('HomePage')
-  const { data: agents, isLoading: agentsLoading } = useAgents()
+  const { data: agents, isLoading: agentsLoading } = useListedAgents()
   const { data: userSettings } = useUserSettings()
-  const { data: discoverableAgents } = useDiscoverableAgents()
-  const { data: usageData } = useUsageData(7)
+  const updateSettings = useUpdateUserSettings()
+  const isMobile = useIsMobile()
+  const layoutTarget = isMobile ? 'mobile' : 'desktop'
+  // Cards vs. graph view — URL-driven (`/?view=graph`) so back/forward
+  // navigation and reloads restore the selection; absent = cards.
+  const navigate = useNavigate()
+  const routeSearch = useRouteSearch({ strict: false }) as { view?: string }
+  const view: 'cards' | 'graph' = routeSearch.view === 'graph' ? 'graph' : 'cards'
+
+  // agentOrder (sidebar drag order) drives the initial flow-pack order of
+  // uncustomized boards; once the user drags/resizes here, the layout for the
+  // current breakpoint wins.
   const orderedAgents = useMemo(
     () => applyAgentOrder(agents ?? [], userSettings?.agentOrder),
     [agents, userSettings?.agentOrder]
   )
+
+  const hasAgents = orderedAgents.length > 0
+
+  // Desktop and phone layouts are intentionally independent. A phone without a
+  // customized layout starts from the desktop map and is responsively re-packed
+  // by WidgetBoard, but its first save forks into homeGridMobileLayout.
+  const [localDesktopLayout, setLocalDesktopLayout] = useState<Record<string, GridRect> | null>(null)
+  const [localMobileLayout, setLocalMobileLayout] = useState<Record<string, GridRect> | null>(null)
+  const layoutMutationVersion = useRef({ desktop: 0, mobile: 0 })
+  const savedDesktopLayout = localDesktopLayout ?? userSettings?.homeGridLayout
+  const savedMobileLayout =
+    localMobileLayout ?? userSettings?.homeGridMobileLayout ?? savedDesktopLayout
+  const savedLayout = isMobile ? savedMobileLayout : savedDesktopLayout
+  // Arrange mode stages its layout locally. Done persists the staged map once;
+  // Cancel drops it and restores the last saved geometry.
+  const [isArranging, setIsArranging] = useState(false)
+  const [arrangeLayout, setArrangeLayout] = useState<Record<string, GridRect> | null>(null)
+  const [arrangeTarget, setArrangeTarget] = useState<'desktop' | 'mobile' | null>(null)
+  const displayedLayout = arrangeLayout ?? savedLayout
+
+  // Agents whose associated app/dashboard card is toggled off. localHidden is a
+  // session override that wins over the server value, so the toggle takes effect
+  // immediately and isn't clobbered by the post-save refetch.
+  const [localHidden, setLocalHidden] = useState<Set<string> | null>(null)
+  const hiddenMutationVersion = useRef(0)
+  const hiddenApps = useMemo(
+    () => localHidden ?? new Set(userSettings?.hiddenAppCards ?? []),
+    [localHidden, userSettings?.hiddenAppCards]
+  )
+  const [arrangeHiddenApps, setArrangeHiddenApps] = useState<Set<string> | null>(null)
+  const displayedHiddenApps = arrangeHiddenApps ?? hiddenApps
+
+  // Individual cards (agents or app tiles, by grid id) hidden from the board.
+  // Same local-override + arrange-staging shape as hiddenApps above.
+  const [localHiddenCards, setLocalHiddenCards] = useState<Set<string> | null>(null)
+  const hiddenCardsMutationVersion = useRef(0)
+  const hiddenCards = useMemo(
+    () => localHiddenCards ?? new Set(userSettings?.hiddenHomeCards ?? []),
+    [localHiddenCards, userSettings?.hiddenHomeCards]
+  )
+  const [arrangeHiddenCards, setArrangeHiddenCards] = useState<Set<string> | null>(null)
+  const displayedHiddenCards = arrangeHiddenCards ?? hiddenCards
+  // The toast's Undo fires after later renders; read the live set, not the
+  // one captured when the card was hidden.
+  const displayedHiddenCardsRef = useRef(displayedHiddenCards)
+  displayedHiddenCardsRef.current = displayedHiddenCards
+
+  const { widgetItems, dashboardsById, agentWidgetsById, agentsWithApp } = useMemo(() => {
+    const items: WidgetItem[] = []
+    const dashes = new Map<string, { agentSlug: string; dashboard: { slug: string; name: string } }>()
+    const widgets = new Map<string, { agentSlug: string; widget: ApiAgentWidget }>()
+    const withApp = new Set<string>()
+    for (const agent of orderedAgents) {
+      if (!displayedHiddenCards.has(agent.slug)) {
+        items.push({ id: agent.slug, rect: displayedLayout?.[agent.slug], defaultSize: 'W' })
+      }
+      const dashboards = Array.isArray(agent.dashboards) ? agent.dashboards : []
+      const agentWidgets = Array.isArray(agent.widgets) ? agent.widgets : []
+      if (dashboards.length > 0 || agentWidgets.length > 0) withApp.add(agent.slug)
+      if (displayedHiddenApps.has(agent.slug)) continue // app card toggled off — skip its dashboard/widget tiles
+      // One tile per artifact: an artifact with a widget shows the widget
+      // (its own default footprint) instead of the dashboard screenshot.
+      for (const w of agentWidgets) {
+        const id = dashKey(agent.slug, w.slug)
+        if (displayedHiddenCards.has(id)) continue
+        items.push({ id, rect: displayedLayout?.[id], defaultSize: w.size === 'medium' ? 'W' : 'S' })
+        widgets.set(id, { agentSlug: agent.slug, widget: w })
+      }
+      for (const d of dashboards) {
+        const id = dashKey(agent.slug, d.slug)
+        if (widgets.has(id) || displayedHiddenCards.has(id)) continue
+        items.push({ id, rect: displayedLayout?.[id], defaultSize: 'S' })
+        dashes.set(id, { agentSlug: agent.slug, dashboard: d })
+      }
+    }
+    return { widgetItems: items, dashboardsById: dashes, agentWidgetsById: widgets, agentsWithApp: withApp }
+  }, [orderedAgents, displayedLayout, displayedHiddenApps, displayedHiddenCards])
+
+  // Hidden cards that still exist, in board order, for the options menu.
+  // Entries for deleted agents/artifacts are simply never listed.
+  const hiddenCardList = useMemo(() => {
+    const list: HiddenHomeCard[] = []
+    for (const agent of orderedAgents) {
+      if (hiddenCards.has(agent.slug)) list.push({ id: agent.slug, name: agent.name, agent, kind: 'agent' })
+      const artifacts = new Map<string, string>()
+      for (const w of Array.isArray(agent.widgets) ? agent.widgets : []) artifacts.set(w.slug, w.name)
+      for (const d of Array.isArray(agent.dashboards) ? agent.dashboards : []) {
+        if (!artifacts.has(d.slug)) artifacts.set(d.slug, d.name)
+      }
+      for (const [slug, name] of artifacts) {
+        const id = dashKey(agent.slug, slug)
+        if (hiddenCards.has(id)) list.push({ id, name, agent, kind: 'app' })
+      }
+    }
+    return list
+  }, [orderedAgents, hiddenCards])
+
+  const agentBySlug = useMemo(() => new Map(orderedAgents.map((a) => [a.slug, a])), [orderedAgents])
+
+  // Card view owns a compact automation+activity projection. The full graph
+  // topology is fetched only by the lazily mounted AgentGraph.
+  const { data: cardHealth } = useHomeCardHealth(view === 'cards' && hasAgents)
+  const { cronsByAgent, webhooksByAgent } = useMemo(() => {
+    const cronsMap = new Map<string, HomeCardCron[]>()
+    const webhooksMap = new Map<string, HomeCardWebhook[]>()
+    for (const cron of cardHealth?.crons ?? []) {
+      const list = cronsMap.get(cron.agentSlug) ?? []
+      list.push(cron)
+      cronsMap.set(cron.agentSlug, list)
+    }
+    for (const webhook of cardHealth?.webhooks ?? []) {
+      const list = webhooksMap.get(webhook.agentSlug) ?? []
+      list.push(webhook)
+      webhooksMap.set(webhook.agentSlug, list)
+    }
+    return { cronsByAgent: cronsMap, webhooksByAgent: webhooksMap }
+  }, [cardHealth])
+
+  const commitLayout = (
+    layout: Record<string, GridRect>,
+    target: 'desktop' | 'mobile' = layoutTarget
+  ) => {
+    // WidgetBoard only knows about currently rendered items. Preserve saved
+    // geometry for any missing item whose owning agent still exists. This
+    // covers intentionally hidden cards and transiently incomplete dashboard
+    // inventories without retaining entries for agents that were deleted.
+    const nextLayout = { ...layout }
+    const targetSavedLayout = target === 'mobile' ? savedMobileLayout : savedDesktopLayout
+    for (const [id, rect] of Object.entries(targetSavedLayout ?? {})) {
+      if (id in nextLayout) continue
+      const ownerSlug = dashboardAgentSlugFromKey(id) ?? id
+      if (agentBySlug.has(ownerSlug)) nextLayout[id] = rect
+    }
+
+    const version = ++layoutMutationVersion.current[target]
+    const setLocalLayout = target === 'mobile' ? setLocalMobileLayout : setLocalDesktopLayout
+    setLocalLayout(nextLayout)
+    updateSettings.mutate(
+      target === 'mobile'
+        ? { homeGridMobileLayout: nextLayout }
+        : { homeGridLayout: nextLayout },
+      {
+        onError: (error) => {
+          toast.error('Failed to save the home layout', { description: error.message })
+        },
+        onSettled: () => {
+          if (version === layoutMutationVersion.current[target]) setLocalLayout(null)
+        },
+      }
+    )
+  }
+
+  const commitHiddenApps = (next: Set<string>) => {
+    const version = ++hiddenMutationVersion.current
+    setLocalHidden(next)
+    updateSettings.mutate(
+      { hiddenAppCards: [...next] },
+      {
+        onError: (error) => {
+          toast.error('Failed to update app-card visibility', { description: error.message })
+        },
+        onSettled: () => {
+          if (version === hiddenMutationVersion.current) setLocalHidden(null)
+        },
+      }
+    )
+  }
+
+  const commitHiddenCards = (next: Set<string>) => {
+    const version = ++hiddenCardsMutationVersion.current
+    setLocalHiddenCards(next)
+    updateSettings.mutate(
+      { hiddenHomeCards: [...next] },
+      {
+        onError: (error) => {
+          toast.error('Failed to update hidden cards', { description: error.message })
+        },
+        onSettled: () => {
+          if (version === hiddenCardsMutationVersion.current) setLocalHiddenCards(null)
+        },
+      }
+    )
+  }
+
+  const setCardHidden = (id: string, hidden: boolean) => {
+    const current = displayedHiddenCardsRef.current
+    if (current.has(id) === hidden) return
+    const next = new Set(current)
+    if (hidden) next.add(id)
+    else next.delete(id)
+    if (isArranging) {
+      setArrangeHiddenCards(next)
+      return
+    }
+    commitHiddenCards(next)
+  }
+
+  const hideCard = (id: string, name: string) => {
+    setCardHidden(id, true)
+    if (isArranging) return
+    toast(`${name} hidden from Home`, {
+      description: 'Show it again from the ⋮ menu beside New Agent.',
+      action: { label: 'Undo', onClick: () => setCardHidden(id, false) },
+    })
+  }
+
+  const toggleAppCard = (agentSlug: string) => {
+    const next = new Set(displayedHiddenApps)
+    if (next.has(agentSlug)) next.delete(agentSlug)
+    else next.add(agentSlug)
+    if (isArranging) {
+      setArrangeHiddenApps(next)
+      return
+    }
+    commitHiddenApps(next)
+  }
+
   const { createUntitledAgent, isPending: isCreatingAgent } = useCreateUntitledAgent()
-  const { setAgent } = useSelection()
-  const [templateToInstall, setTemplateToInstall] = useState<ApiDiscoverableAgent | null>(null)
+  // The empty state's live card — the bloom anchors to it.
+  const emptyCtaRef = useRef<HTMLDivElement>(null)
   const { state: sidebarState } = useSidebar()
   const isFullScreen = useFullScreen()
   const needsTrafficLightPadding = isElectron() && getPlatform() === 'darwin' && sidebarState === 'collapsed' && !isFullScreen
 
-  const hasAgents = orderedAgents.length > 0
-  const hasTemplates = discoverableAgents && discoverableAgents.length > 0
   const { openSearch } = useSearch()
   const isMac = getPlatform() === 'darwin'
+  const setView = (next: 'cards' | 'graph') => {
+    if (next === view) return
+    if (next === 'graph') {
+      setArrangeLayout(null)
+      setArrangeTarget(null)
+      setIsArranging(false)
+    }
+    void navigate({
+      to: '/',
+      search: (prev: Record<string, unknown>) => ({
+        ...prev,
+        view: next === 'graph' ? ('graph' as const) : undefined,
+      }),
+    })
+  }
+  const beginArrange = () => {
+    if (!hasAgents) return
+    setArrangeLayout(null)
+    setArrangeHiddenApps(new Set(hiddenApps))
+    setArrangeHiddenCards(new Set(hiddenCards))
+    setArrangeTarget(layoutTarget)
+    setIsArranging(true)
+  }
+  const cancelArrange = () => {
+    setArrangeLayout(null)
+    setArrangeHiddenApps(null)
+    setArrangeHiddenCards(null)
+    setArrangeTarget(null)
+    setIsArranging(false)
+  }
+  const finishArrange = () => {
+    const nextLayout = arrangeLayout
+    const nextHiddenApps = arrangeHiddenApps
+    const nextHiddenCards = arrangeHiddenCards
+    const target = arrangeTarget ?? layoutTarget
+    setArrangeLayout(null)
+    setArrangeHiddenApps(null)
+    setArrangeHiddenCards(null)
+    setArrangeTarget(null)
+    setIsArranging(false)
+    if (nextLayout) commitLayout(nextLayout, target)
+    if (
+      nextHiddenApps &&
+      (nextHiddenApps.size !== hiddenApps.size ||
+        [...nextHiddenApps].some((agentSlug) => !hiddenApps.has(agentSlug)))
+    ) {
+      commitHiddenApps(nextHiddenApps)
+    }
+    if (
+      nextHiddenCards &&
+      (nextHiddenCards.size !== hiddenCards.size ||
+        [...nextHiddenCards].some((id) => !hiddenCards.has(id)))
+    ) {
+      commitHiddenCards(nextHiddenCards)
+    }
+  }
+  const handleBoardCommit = (layout: Record<string, GridRect>) => {
+    if (isArranging) {
+      setArrangeLayout(layout)
+      return
+    }
+    commitLayout(layout, layoutTarget)
+  }
+
+  // A live breakpoint change repacks the board into a different coordinate
+  // system. End the transaction instead of allowing mobile geometry to be
+  // committed to the desktop setting (or vice versa).
+  useEffect(() => {
+    if (!isArranging || arrangeTarget === null || arrangeTarget === layoutTarget) return
+    setArrangeLayout(null)
+    setArrangeHiddenApps(null)
+    setArrangeHiddenCards(null)
+    setArrangeTarget(null)
+    setIsArranging(false)
+  }, [arrangeTarget, isArranging, layoutTarget])
 
   return (
     <div className="h-full flex flex-col">
@@ -418,83 +1244,241 @@ export function HomePage() {
             </kbd>
           </button>
         </div>
+        <div className="app-no-drag flex items-center gap-0.5 rounded-md border p-0.5">
+          <button
+            type="button"
+            onClick={() => setView('cards')}
+            title="Card view"
+            aria-pressed={view === 'cards'}
+            data-testid="home-view-cards"
+            className={`rounded p-1 transition-colors ${view === 'cards' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+          >
+            <LayoutGrid className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setView('graph')}
+            title="Graph view"
+            aria-pressed={view === 'graph'}
+            data-testid="home-view-graph"
+            className={`rounded p-1 transition-colors ${view === 'graph' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+          >
+            <Waypoints className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </header>
 
-      <div className="flex-1 overflow-y-auto p-6">
-        <div className="max-w-4xl mx-auto space-y-8">
-          {/* Agents Section */}
-          <section>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold">Your Agents</h2>
-              <Button
-                size="sm"
-                onClick={() => { void createUntitledAgent() }}
-                className="app-no-drag"
-                disabled={isCreatingAgent}
-              >
+      {view === 'graph' ? (
+        <div className="min-h-0 flex-1">
+          {agentsLoading ? (
+            <div className="flex h-full items-center justify-center text-muted-foreground">
+              <Loader2 className="h-5 w-5 animate-spin" />
+            </div>
+          ) : hasAgents ? (
+            <Suspense
+              fallback={
+                <div className="flex h-full items-center justify-center text-muted-foreground">
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                </div>
+              }
+            >
+              <AgentGraph />
+            </Suspense>
+          ) : (
+            <div
+              className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground"
+              data-testid="graph-empty-state"
+            >
+              <Waypoints className="h-8 w-8" />
+              <p className="text-sm">No agents yet — the graph lights up once you create one.</p>
+              <Button size="sm" onClick={() => { void createUntitledAgent({ surface: 'home' }) }} disabled={isCreatingAgent}>
                 <Plus className="h-4 w-4 mr-1" />
                 New Agent
               </Button>
             </div>
+          )}
+        </div>
+      ) : (
+      <div className="flex-1 overflow-y-auto px-4 py-6 md:p-6">
+        <div className="max-w-7xl mx-auto space-y-8">
+          {/* Mobile web/PWA only — "Install Gamut" prompt; renders nothing on desktop/Electron. */}
+          <PwaInstallBanner />
+
+          {/* Agents Section — relative so the empty state's ghost board can
+              anchor to the section's full footprint. */}
+          <section className="relative">
+            {/* No header on the empty state: with nothing to title, arrange, or
+                add to, the row is chrome around a void — and its New Agent
+                button only competes with the empty state's own call to action.
+                Kept while loading so resolving to a populated board doesn't
+                shift the layout. */}
+            {(hasAgents || agentsLoading) && (
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-medium">Your Agents</h2>
+              {isArranging ? (
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={cancelArrange}>
+                    Cancel
+                  </Button>
+                  <Button size="sm" onClick={finishArrange}>
+                    Done
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => { void createUntitledAgent({ surface: 'home' }) }}
+                    className="app-no-drag"
+                    disabled={isCreatingAgent}
+                  >
+                    <Plus className="h-4 w-4 mr-1" />
+                    New Agent
+                  </Button>
+                  <HomeArrangeMenu
+                    onArrange={beginArrange}
+                    disabled={!hasAgents}
+                    hiddenCards={hiddenCardList}
+                    onUnhide={(id) => setCardHidden(id, false)}
+                    onUnhideAll={() => commitHiddenCards(new Set())}
+                  />
+                </div>
+              )}
+            </div>
+            )}
 
             {agentsLoading ? (
               <div className="flex items-center justify-center py-12 text-muted-foreground">
                 <Loader2 className="h-5 w-5 animate-spin" />
               </div>
+            ) : hasAgents && widgetItems.length === 0 ? (
+              <div
+                className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed py-12 text-center text-sm text-muted-foreground"
+                data-testid="home-all-hidden"
+              >
+                <EyeOff className="h-5 w-5" />
+                <p>Everything here is hidden. Show cards again from the ⋮ menu beside New Agent.</p>
+              </div>
             ) : hasAgents ? (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                {orderedAgents.flatMap((agent) => {
-                  const dashboards = agent.dashboards ?? []
-                  const cells = [
-                    <AgentCard key={agent.slug} agent={agent} dailyUsage={usageData?.daily} />,
-                  ]
-                  for (const d of dashboards) {
-                    cells.push(
-                      <DashboardCard
-                        key={`${agent.slug}::dashboard::${d.slug}`}
-                        dashboard={d}
-                        agentSlug={agent.slug}
-                      />
+              <WidgetBoard
+                items={widgetItems}
+                onCommit={handleBoardCommit}
+                arranging={isArranging}
+                dragEnabled={!isMobile || isArranging}
+                disableContextMenu={isMobile && isArranging}
+                renderItem={(id, size, onResize) => {
+                  const agentWidget = agentWidgetsById.get(id)
+                  if (agentWidget) {
+                    return (
+                      <div className="relative h-full transition-transform duration-150 group-hover/widget:-translate-y-0.5">
+                        <WidgetCard widget={agentWidget.widget} agentSlug={agentWidget.agentSlug} variant="fill" />
+                        <div className="absolute right-4 top-2 z-30 flex h-[26px] items-center">
+                          <WidgetSizePopover
+                            size={size}
+                            onPick={onResize}
+                            extra={(close) => (
+                              <WidgetActionRow
+                                label="Hide from Home"
+                                icon={<EyeOff />}
+                                onClick={() => {
+                                  close()
+                                  hideCard(id, agentWidget.widget.name)
+                                }}
+                              />
+                            )}
+                          />
+                        </div>
+                      </div>
                     )
                   }
-                  return cells
-                })}
-              </div>
+                  const dash = dashboardsById.get(id)
+                  if (dash) {
+                    return (
+                      <div className="relative h-full transition-transform duration-150 group-hover/widget:-translate-y-0.5">
+                        <DashboardCard dashboard={dash.dashboard} agentSlug={dash.agentSlug} variant="fill" align={size === 'S' ? 'top-left' : 'top'} />
+                        <div className="absolute right-4 top-2 z-30 flex h-[26px] items-center">
+                          <WidgetSizePopover
+                            size={size}
+                            onPick={onResize}
+                            extra={(close) => (
+                              <WidgetActionRow
+                                label="Hide from Home"
+                                icon={<EyeOff />}
+                                onClick={() => {
+                                  close()
+                                  hideCard(id, dash.dashboard.name)
+                                }}
+                              />
+                            )}
+                          />
+                        </div>
+                      </div>
+                    )
+                  }
+                  const agent = agentBySlug.get(id)
+                  if (!agent) return null
+                  return (
+                    <AgentCard
+                      agent={agent}
+                      size={size}
+                      onArrange={beginArrange}
+                      disableTouchLongPress={isMobile && isArranging}
+                      additionalOptions={
+                        <>
+                          <ContextMenuSwitchItem
+                            checked={size === 'S'}
+                            onCheckedChange={() => {
+                              onResize(size === 'W' ? 'S' : 'W')
+                            }}
+                          >
+                            <Minimize className="h-4 w-4 mr-2" />
+                            Compact View
+                          </ContextMenuSwitchItem>
+                          {agentsWithApp.has(agent.slug) && (
+                            <ContextMenuSwitchItem
+                              checked={!displayedHiddenApps.has(agent.slug)}
+                              onCheckedChange={() => {
+                                toggleAppCard(agent.slug)
+                              }}
+                            >
+                              <SquareMousePointer className="h-4 w-4 mr-2" />
+                              Show app
+                            </ContextMenuSwitchItem>
+                          )}
+                          <ContextMenuItem
+                            onClick={() => hideCard(agent.slug, agent.name)}
+                            data-testid="hide-agent-card-item"
+                          >
+                            <EyeOff className="h-4 w-4 mr-2" />
+                            Hide from Home
+                          </ContextMenuItem>
+                        </>
+                      }
+                      crons={cronsByAgent.get(agent.slug)}
+                      webhooks={webhooksByAgent.get(agent.slug)}
+                      health={cardHealth}
+                    />
+                  )
+                }}
+              />
             ) : (
-              <div className="text-center py-12 border rounded-lg bg-muted/30">
-                <Bot className="h-10 w-10 mx-auto text-muted-foreground mb-3" />
-                <p className="text-muted-foreground mb-4">No agents yet</p>
-                <Button onClick={() => { void createUntitledAgent() }} disabled={isCreatingAgent}>
-                  <Plus className="h-4 w-4 mr-1" />
-                  Create your first agent
-                </Button>
+              /* The empty state IS the ghost board: faint card outlines in
+                 both widget sizes, with the top-right cell alive — it carries
+                 the real call to action where a card's title pill would sit,
+                 and the colour bloom glows behind that corner of the board. */
+              <div className="relative" data-testid="home-empty-state">
+                <HomeEmptyClouds anchorTo={emptyCtaRef} fill={0.625} masked={false} />
+                <HomeEmptySkeletonBoard
+                  ctaRef={emptyCtaRef}
+                  onCreate={() => { void createUntitledAgent({ surface: 'home' }) }}
+                  isCreating={isCreatingAgent}
+                />
               </div>
             )}
           </section>
-
-          {/* Templates Section */}
-          {hasTemplates && (
-            <section>
-              <h2 className="text-lg font-semibold mb-4">Agent Templates</h2>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                {discoverableAgents.map((template) => (
-                  <TemplateCard
-                    key={`${template.skillsetId}::${template.path}`}
-                    template={template}
-                    onClick={() => setTemplateToInstall(template)}
-                  />
-                ))}
-              </div>
-            </section>
-          )}
         </div>
       </div>
-
-      <TemplateInstallDialog
-        template={templateToInstall}
-        onClose={() => setTemplateToInstall(null)}
-        onInstalled={(agent) => setAgent(agent.slug)}
-      />
+      )}
     </div>
   )
 }

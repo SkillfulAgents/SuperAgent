@@ -5,6 +5,10 @@ import { SessionPage } from '../pages/session.page'
 
 
 test.describe('User Input Requests', () => {
+  // Agent creation in beforeEach alone takes ~25s under parallel CI load, which
+  // left these tests a few seconds of the default 30s budget.
+  test.describe.configure({ timeout: 60_000 })
+
   let appPage: AppPage
   let agentPage: AgentPage
   let sessionPage: SessionPage
@@ -20,7 +24,8 @@ test.describe('User Input Requests', () => {
 
     // Use unique agent name per test
     testAgentName = `Input Agent ${testInfo.workerIndex}-${Date.now()}`
-    await agentPage.createAgent(testAgentName)
+    // Nothing here re-selects the agent by name, so skip the sidebar wait.
+    await agentPage.createAgent(testAgentName, { waitForSidebarName: false })
   })
 
   test('secret request: provide a secret', async ({ page }) => {
@@ -83,7 +88,7 @@ test.describe('User Input Requests', () => {
     await sessionPage.waitForInputEnabled(15000)
   })
 
-  test('composer is replaced by the request card while a question is pending', async ({ page }) => {
+  test('composer is hidden behind the request card while a question is pending', async ({ page }) => {
     // Composer should be visible before the request arrives
     await expect(sessionPage.getMessageInput()).toBeVisible()
     await expect(page.locator('[data-testid="pending-request-slot"]')).toHaveCount(0)
@@ -91,9 +96,10 @@ test.describe('User Input Requests', () => {
     await sessionPage.sendMessage('ask question')
     await sessionPage.waitForQuestionRequest()
 
-    // While the question is pending, the composer is unmounted and the
-    // pending-request slot occupies its position.
-    await expect(sessionPage.getMessageInput()).toHaveCount(0)
+    // While the question is pending, the composer stays mounted (so a draft,
+    // or voice mode, survives the card) but hidden, and the pending-request
+    // slot occupies its position.
+    await expect(sessionPage.getMessageInput()).toBeHidden()
     await expect(page.locator('[data-testid="pending-request-slot"]')).toBeVisible()
 
     // Answer the question and verify the composer returns and the slot is gone.
@@ -135,16 +141,16 @@ test.describe('User Input Requests', () => {
 
     await sessionPage.clickStackNext()
     await expect(container).toContainText('Which cloud provider do you prefer?')
-    expect(await sessionPage.getStackPagination()).toEqual({ index: 1, total: 3 })
+    await sessionPage.expectStackPagination({ index: 1, total: 3 })
 
     await sessionPage.clickStackNext()
     await expect(container).toContainText('Preferred language?')
-    expect(await sessionPage.getStackPagination()).toEqual({ index: 2, total: 3 })
+    await sessionPage.expectStackPagination({ index: 2, total: 3 })
 
     // Walking back returns to the prior question with the chevron index in sync.
     await sessionPage.clickStackPrev()
     await expect(container).toContainText('Which cloud provider do you prefer?')
-    expect(await sessionPage.getStackPagination()).toEqual({ index: 1, total: 3 })
+    await sessionPage.expectStackPagination({ index: 1, total: 3 })
   })
 
   test('multi-question request: bottom Next button stays in sync with header chevrons', async ({ page }) => {
@@ -285,6 +291,35 @@ test.describe('User Input Requests', () => {
     await sessionPage.waitForInputEnabled(15000)
   })
 
+  test('parallel holdback: a declined request stays settled across reload', async ({ page }) => {
+    // Real-CLI parallel semantics: no tool_result reaches the transcript
+    // until BOTH siblings settle, so cleanup must come from the decision
+    // route's explicit settle. Regression: the declined secret stayed open in
+    // the registry — the snapshot kept serving it, a reload resurrected the
+    // card, and the stale card could save a value despite the decline.
+    await sessionPage.sendMessage('ask parallel holdback')
+
+    await sessionPage.waitForSecretRequest('DATABASE_URL')
+    await sessionPage.waitForQuestionRequest()
+
+    await sessionPage.declineSecret('DATABASE_URL')
+    await expect(sessionPage.getSecretRequests()).toHaveCount(0, { timeout: 10000 })
+    // The sibling question is still parked — the turn is NOT over.
+    await expect(sessionPage.getQuestionRequests()).toHaveCount(1)
+
+    // Reload mid-park: the still-open question must come back from the
+    // snapshot; the declined secret must NOT.
+    await page.reload()
+    await sessionPage.waitForQuestionRequest()
+    await expect(sessionPage.getSecretRequests()).toHaveCount(0)
+
+    // Answering the survivor releases the held sibling results and the turn
+    // completes normally.
+    await sessionPage.answerQuestion('AWS')
+    await expect(sessionPage.getQuestionRequests()).toHaveCount(0, { timeout: 10000 })
+    await sessionPage.waitForInputEnabled(15000)
+  })
+
   test('script run request: approve execution', async ({ page }) => {
     // No global toggle needed — permissions are now per-agent via ComputerUsePermissionManager
     // With no cached permission, the request will be shown to the user for approval
@@ -295,10 +330,12 @@ test.describe('User Input Requests', () => {
     // Wait for the script run request UI to appear
     await sessionPage.waitForScriptRunRequest()
 
-    // Verify content is shown
+    // Verify content is shown. The mock scenario picks a platform-valid
+    // script type (the live session auto-rejects mismatches), so assert per platform.
+    const expectedScript = process.platform === 'win32' ? 'Get-ComputerInfo' : 'sw_vers'
     const request = sessionPage.getScriptRunRequests().first()
-    await expect(request).toContainText('sw_vers')
-    await expect(request).toContainText('Check macOS version')
+    await expect(request).toContainText(expectedScript)
+    await expect(request).toContainText('Check OS version')
 
     // Approve execution
     await sessionPage.approveScriptRun()

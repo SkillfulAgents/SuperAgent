@@ -29,8 +29,16 @@ const ProxyReviewContextSchema = z.object({
   notificationId: z.string().min(1).optional(),
 })
 
+const PlatformNotificationContextSchema = z.object({
+  kind: z.literal('platform_notification'),
+  // Platform-side notification id (ntf_…) — clicking the OS notification
+  // opens /notifications/$id and write-through-marks the row read.
+  platformNotificationId: z.string().min(1),
+})
+
 export const NotificationActionContextSchema = z.discriminatedUnion('kind', [
   ProxyReviewContextSchema,
+  PlatformNotificationContextSchema,
 ])
 
 export type NotificationActionContext = z.infer<typeof NotificationActionContextSchema>

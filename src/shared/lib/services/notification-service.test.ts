@@ -12,9 +12,6 @@ vi.mock('../db', () => ({
   get db() {
     return testDb
   },
-  get sqlite() {
-    return testSqlite
-  },
 }))
 
 import {
@@ -22,6 +19,8 @@ import {
   getUnreadCount,
   getSessionIdsWithUnreadNotifications,
   getUnreadNotificationsByAgents,
+  deleteNotificationsBySessionIds,
+  listNotifications,
   USER_ACTIONABLE_NOTIFICATION_TYPES,
   type NotificationType,
 } from './notification-service'
@@ -59,9 +58,10 @@ describe('notification-service', () => {
   })
 
   describe('USER_ACTIONABLE_NOTIFICATION_TYPES', () => {
-    it('contains exactly the two types that drive UI badges', () => {
+    it('contains exactly the types that drive UI badges', () => {
       expect([...USER_ACTIONABLE_NOTIFICATION_TYPES].sort()).toEqual([
         'session_complete',
+        'session_mention',
         'session_waiting',
       ])
     })
@@ -142,6 +142,46 @@ describe('notification-service', () => {
       const map = await getUnreadNotificationsByAgents(['agent-a', 'agent-b'])
       expect(map.has('agent-a')).toBe(true)
       expect(map.has('agent-b')).toBe(false)
+    })
+  })
+
+  // SUP-228: retention cleanup must remove notification rows for deleted sessions.
+  describe('deleteNotificationsBySessionIds', () => {
+    it('removes rows for the given session ids and leaves others intact', async () => {
+      await createNotification({ type: 'session_complete', sessionId: 's1', agentSlug: 'a', title: 't', body: 'b' })
+      await createNotification({ type: 'session_waiting', sessionId: 's2', agentSlug: 'a', title: 't', body: 'b' })
+      await createNotification({ type: 'session_complete', sessionId: 's3', agentSlug: 'a', title: 't', body: 'b' })
+
+      // s3 simulates a session whose filesystem delete failed — it must survive.
+      const deleted = await deleteNotificationsBySessionIds(['s1', 's2'])
+      expect(deleted).toBe(2)
+
+      const remaining = await listNotifications(50)
+      const sessionIds = remaining.map((n) => n.sessionId)
+      expect(sessionIds).toEqual(['s3'])
+    })
+
+    it('removes every notification type for a session (not just actionable ones)', async () => {
+      await seedOneOfEachType('a', 'sess')
+      // sessionIds are `sess-<type>`; delete two of them.
+      const deleted = await deleteNotificationsBySessionIds([
+        'sess-session_complete',
+        'sess-session_webhook',
+      ])
+      expect(deleted).toBe(2)
+      const remaining = await listNotifications(50)
+      expect(remaining.map((n) => n.sessionId).sort()).toEqual([
+        'sess-session_chat_integration',
+        'sess-session_scheduled',
+        'sess-session_waiting',
+      ])
+    })
+
+    it('is a no-op on an empty list (returns 0, deletes nothing)', async () => {
+      await createNotification({ type: 'session_complete', sessionId: 's1', agentSlug: 'a', title: 't', body: 'b' })
+      const deleted = await deleteNotificationsBySessionIds([])
+      expect(deleted).toBe(0)
+      expect((await listNotifications(50)).length).toBe(1)
     })
   })
 })

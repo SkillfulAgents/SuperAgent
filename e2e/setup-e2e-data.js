@@ -26,11 +26,13 @@ fs.mkdirSync(resolvedDir, { recursive: true })
 
 // Remove DB files
 for (const file of ['superagent.db', 'superagent.db-wal', 'superagent.db-shm']) {
-  try { fs.unlinkSync(path.join(resolvedDir, file)) } catch {}
+  try { fs.unlinkSync(path.join(resolvedDir, file)) } catch { /* may not exist */ }
 }
 
-// Remove agents directory
-try { fs.rmSync(path.join(resolvedDir, 'agents'), { recursive: true }) } catch {}
+// Remove agents directory. The database above is removed with it, so the
+// data migration that imports agent directories runs again at the next
+// launch and finds nothing; every E2E agent is created through the API.
+try { fs.rmSync(path.join(resolvedDir, 'agents'), { recursive: true }) } catch { /* may not exist */ }
 
 // Seed a fake skillset on disk so /discoverable-skills returns content
 // without needing a real git remote.
@@ -41,6 +43,8 @@ try { fs.rmSync(path.join(resolvedDir, 'agents'), { recursive: true }) } catch {
 // up the directory tree and operates on the project's repo instead, silently
 // rewriting our actual origin URL. Real `git init` keeps git scoped here.
 const SKILLSET_ID = 'e2e-test-skillset'
+const SKILLSET_CREDENTIAL_ID = 'skillcred_e2e-private'
+const SKILLSET_TEST_TOKEN = 'github_pat_e2e_placeholder'
 const SKILLSET_REPO_DIR = path.join(resolvedDir, 'skillset-cache', SKILLSET_ID)
 const SKILLSET_FAKE_URL = 'https://localhost.invalid/e2e-test-skillset'
 fs.rmSync(SKILLSET_REPO_DIR, { recursive: true, force: true })
@@ -56,12 +60,6 @@ const SKILLSET_INDEX = {
       name: 'e2e-plain-skill',
       path: 'skills/e2e-plain-skill/SKILL.md',
       description: 'A plain skill that needs no configuration',
-      version: '1.0.0',
-    },
-    {
-      name: 'e2e-env-skill',
-      path: 'skills/e2e-env-skill/SKILL.md',
-      description: 'A skill that requires an API key to run',
       version: '1.0.0',
     },
   ],
@@ -88,26 +86,6 @@ This skill is seeded for end-to-end tests.
 `,
 )
 
-const ENV_SKILL_DIR = path.join(SKILLSET_REPO_DIR, 'skills', 'e2e-env-skill')
-fs.mkdirSync(ENV_SKILL_DIR, { recursive: true })
-fs.writeFileSync(
-  path.join(ENV_SKILL_DIR, 'SKILL.md'),
-  `---
-name: e2e-env-skill
-description: A skill that requires an API key to run
-metadata:
-  version: 1.0.0
-  required_env_vars:
-    - name: E2E_TEST_API_KEY
-      description: Fake API key for E2E tests
----
-
-# E2E Env Skill
-
-This skill requires an environment variable to be configured.
-`,
-)
-
 // Commit the seed and add a fake origin. The commit makes this a valid git
 // repo so subsequent `git remote set-url` / `git fetch` calls stay scoped to
 // this directory rather than walking up to the host project.
@@ -115,6 +93,91 @@ const GIT_AUTHOR = ['-c', 'user.email=e2e@local', '-c', 'user.name=E2E Setup', '
 execFileSync('git', [...GIT_AUTHOR, 'add', '.'], { cwd: SKILLSET_REPO_DIR, stdio: 'pipe' })
 execFileSync('git', [...GIT_AUTHOR, 'commit', '-q', '-m', 'seed'], { cwd: SKILLSET_REPO_DIR, stdio: 'pipe' })
 execFileSync('git', ['remote', 'add', 'origin', SKILLSET_FAKE_URL], { cwd: SKILLSET_REPO_DIR, stdio: 'pipe' })
+
+// Seed a public-provider skillset (no .git, uses .skillset-cache-meta.json marker).
+// Must equal DEFAULT_PUBLIC_SKILLSET.id (src/shared/lib/skillset-provider/default-public-skillset.ts):
+// the signup template handoff only matches entries from the default public skillset.
+const PUBLIC_SKILLSET_ID = 'github-com-skillfulagents-public-skillset'
+const PUBLIC_SKILLSET_DIR = path.join(resolvedDir, 'skillset-cache', PUBLIC_SKILLSET_ID)
+fs.rmSync(PUBLIC_SKILLSET_DIR, { recursive: true, force: true })
+fs.mkdirSync(PUBLIC_SKILLSET_DIR, { recursive: true })
+
+fs.writeFileSync(
+  path.join(PUBLIC_SKILLSET_DIR, 'index.json'),
+  JSON.stringify({
+    skillset_name: 'E2E Public Skillset',
+    description: 'Public skillset seeded for Playwright tests',
+    version: '1.0.0',
+    skills: [
+      {
+        name: 'e2e-public-skill',
+        path: 'skills/e2e-public-skill/SKILL.md',
+        description: 'A skill from the public skillset',
+        version: '1.0.0',
+      },
+    ],
+    agents: [
+      {
+        name: 'E2E Onboarding Template',
+        path: 'agents/e2e-onboarding-template/',
+        description: 'An agent template that exercises the onboarding handoff',
+        version: '1.0.0',
+      },
+    ],
+  }, null, 2),
+)
+
+const PUBLIC_SKILL_DIR = path.join(PUBLIC_SKILLSET_DIR, 'skills', 'e2e-public-skill')
+fs.mkdirSync(PUBLIC_SKILL_DIR, { recursive: true })
+fs.writeFileSync(
+  path.join(PUBLIC_SKILL_DIR, 'SKILL.md'),
+  `---
+name: e2e-public-skill
+description: A skill from the public skillset
+metadata:
+  version: 1.0.0
+---
+
+# E2E Public Skill
+
+This skill is seeded from a public provider for end-to-end tests.
+`,
+)
+
+const PUBLIC_AGENT_DIR = path.join(PUBLIC_SKILLSET_DIR, 'agents', 'e2e-onboarding-template')
+fs.mkdirSync(path.join(PUBLIC_AGENT_DIR, '.claude', 'skills', 'agent-onboarding'), { recursive: true })
+fs.writeFileSync(
+  path.join(PUBLIC_AGENT_DIR, 'AGENTS.md'),
+  `---
+name: E2E Onboarding Template
+description: An agent template that exercises the onboarding handoff
+---
+
+# E2E Onboarding Template
+
+This agent is seeded for end-to-end tests.
+`,
+)
+fs.writeFileSync(
+  path.join(PUBLIC_AGENT_DIR, '.claude', 'skills', 'agent-onboarding', 'SKILL.md'),
+  `---
+name: agent-onboarding
+description: Helps configure a freshly-installed agent.
+---
+
+Help the user configure this agent.
+`,
+)
+
+fs.writeFileSync(
+  path.join(PUBLIC_SKILLSET_DIR, '.skillset-cache-meta.json'),
+  JSON.stringify({
+    provider: 'public',
+    cachedAt: new Date().toISOString(),
+    sourceUrl: 'https://localhost.invalid/e2e-public-skillset',
+  }, null, 2),
+)
+console.log(`[E2E Setup] Seeded public skillset at: ${PUBLIC_SKILLSET_DIR}`)
 
 // Build settings
 const settings = {
@@ -124,6 +187,22 @@ const settings = {
     resourceLimits: { cpu: 1, memory: '512m' },
   },
   app: { setupCompleted: true },
+  // E2E runs must never emit real analytics events.
+  shareAnalytics: false,
+  // The direct-Anthropic builtin catalog deliberately declares no
+  // supportedSpeeds (no proxy maps the X-Superagent-Speed header in direct
+  // mode), so the composer's Speed section would never render under the mock.
+  // Expose one via a user-level catalog override — E2E data only, the builtin
+  // catalog stays speed-free.
+  modelCatalog: {
+    anthropic: {
+      overrides: [
+        { id: 'claude-opus-4-8', supportedSpeeds: ['slow', 'normal', 'fast'] },
+        { id: 'claude-opus-5', supportedSpeeds: ['slow', 'normal', 'fast'] },
+        { id: 'claude-opus-5-5', supportedSpeeds: ['slow', 'normal', 'fast'] },
+      ],
+    },
+  },
   skillsets: [
     {
       id: SKILLSET_ID,
@@ -132,8 +211,27 @@ const settings = {
       description: 'Fake skillset seeded for Playwright tests',
       addedAt: new Date().toISOString(),
       provider: 'github',
+      providerData: { credentialId: SKILLSET_CREDENTIAL_ID },
+    },
+    {
+      id: PUBLIC_SKILLSET_ID,
+      url: 'https://localhost.invalid/e2e-public-skillset',
+      name: 'E2E Public Skillset',
+      description: 'Public skillset seeded for Playwright tests',
+      addedAt: new Date().toISOString(),
+      provider: 'public',
     },
   ],
+  skillsetCredentials: {
+    [SKILLSET_CREDENTIAL_ID]: {
+      id: SKILLSET_CREDENTIAL_ID,
+      type: 'token',
+      token: SKILLSET_TEST_TOKEN,
+      tokenPreview: '••••lder',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+  },
 }
 
 if (process.env.AUTH_MODE === 'true') {

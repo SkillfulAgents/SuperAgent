@@ -1,14 +1,46 @@
+import { fetchPlatformBillingInfo } from '../services/platform-billing-service'
+import { SUBSCRIPTION_CREDIT_COPY, subscriptionCreditScope } from '../services/platform-billing-copy'
+import { usageSnapshot, type UsageLimit } from './usage-schema'
 import Anthropic from '@anthropic-ai/sdk'
-import { BaseLlmProvider, type ModelOption, type ModelPurpose } from './base-llm-provider'
-import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
-import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
+import { createHash } from 'node:crypto'
+import { BaseLlmProvider, type AgentIdentity } from './base-llm-provider'
+import { orgBillingUrl, parsePlatformErrorResponse } from './platform-error-presentation'
+import type { ProviderErrorPresentation } from './error-presentation'
+import { rewriteLoopbackForContainer } from './container-url'
+import type { ModelDefinition } from './model-catalog-schema'
+import { PLATFORM_CATALOG, PLATFORM_DEFAULT_MODEL_OPTIONS } from './builtin-catalogs'
+import { PLATFORM_CATALOG_DEFAULT_MODELS } from './model-catalog-defaults'
+import type { ModelAvailability } from './model-availability-schema'
+import { parseModelNotInPlan, platformModelAvailability } from './platform-plan-policy'
+import { actingPlanPolicy } from './platform-plan-account'
+import { platformPlanCache } from './platform-plan-cache'
+import { getPlatformContainerToken } from '@shared/lib/platform-attribution/container-token'
+import { getPlatformAccessToken, getPlatformAuthStatus } from '@shared/lib/services/platform-auth-service'
+import { getPlatformBaseUrl, getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import type { ApiKeyStatus } from '../config/settings'
+
+// Display names are user-controlled free text headed for an HTTP header via
+// an env file: collapse control chars (the env-file writer drops \r\n outright,
+// silently corrupting multi-word values otherwise) and cap by code point so a
+// later slice can't split a surrogate pair.
+export function sanitizeAgentName(name: string): string {
+  // eslint-disable-next-line no-control-regex
+  const flattened = name.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/ {2,}/g, ' ').trim()
+  return Array.from(flattened).slice(0, 200).join('')
+}
 
 export class PlatformLlmProvider extends BaseLlmProvider {
   readonly id = 'platform' as const
-  readonly name = 'Platform'
+  readonly name = 'Gamut Platform'
+  readonly defaultModelOptions = PLATFORM_DEFAULT_MODEL_OPTIONS
+  readonly catalogDefaultModels = PLATFORM_CATALOG_DEFAULT_MODELS
   // Not used — getApiKeyStatus/getEffectiveApiKey are both overridden to
   // read the platform token instead of a settings-stored API key.
+  // The platform proxy handles deferred tool loading for the non-Anthropic
+  // models it serves: it expands the CLI's `tool_reference` blocks on the
+  // Anthropic-wire upstreams, and the Responses codec rebuilds every tool
+  // (dropping `defer_loading`) for the xAI/OpenAI ones.
+  override toolSearchEnv() { return 'true' as const }
   protected readonly settingsKeyField = 'anthropicApiKey' as const
   protected readonly envVarName = 'PLATFORM_TOKEN'
 
@@ -27,47 +59,97 @@ export class PlatformLlmProvider extends BaseLlmProvider {
     return getPlatformAccessToken() ?? process.env[this.envVarName] ?? undefined
   }
 
+  override readonly supportsUsage = true
+  override readonly supportsModelAvailability = true
+
+  override async getUsage() {
+    // Fetch within the request's member attribution scope. Never cache globally.
+    const billing = await fetchPlatformBillingInfo({ signal: AbortSignal.timeout(10_000), reportErrors: false })
+    if (!billing.configured) return usageSnapshot([])
+    const limits: UsageLimit[] = []
+    if (billing.seat) {
+      // Pooled orgs report the shared pool under `seat`; only the wording changes.
+      const copy = SUBSCRIPTION_CREDIT_COPY[subscriptionCreditScope(billing)]
+      const { balanceCents, startingBalanceCents } = billing.seat
+      if (startingBalanceCents > 0) limits.push({ kind: 'window', id: 'seat', label: copy.allowance,
+        usedPercent: Math.max(0, (1 - balanceCents / startingBalanceCents) * 100),
+        ...(billing.subscription.currentPeriodEnd && Number.isFinite(Date.parse(billing.subscription.currentPeriodEnd)) ? { resetsAt: billing.subscription.currentPeriodEnd } : {}) })
+      limits.push({ kind: 'balance', id: 'seat-credits', label: copy.credits, remaining: balanceCents / 100, unit: 'USD' })
+    }
+    limits.push({ kind: 'balance', id: 'organization-credits', label: 'Organization credits', remaining: billing.orgPool.poolBalanceCents / 100, unit: 'USD' })
+    return usageSnapshot(limits)
+  }
+
   createClient(): Anthropic {
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) throw new Error('Platform token not configured. Please log in to the platform.')
     return new Anthropic({
-      apiKey: '',
       baseURL: getPlatformProxyBaseUrl(),
       authToken: apiKey,
     })
   }
 
-  getAvailableModels(): ModelOption[] {
-    return [
-      { value: 'claude-haiku-4-5', label: 'Claude 4.5 Haiku' },
-      { value: 'claude-sonnet-4-6', label: 'Claude 4.6 Sonnet' },
-      { value: 'claude-opus-4-6', label: 'Claude 4.6 Opus' },
-      { value: 'claude-opus-4-7', label: 'Claude 4.7 Opus' },
-    ]
+  getBuiltinCatalog(): ModelDefinition[] {
+    return PLATFORM_CATALOG
   }
 
-  getDefaultModel(purpose: ModelPurpose): string {
-    switch (purpose) {
-      case 'summarizer': return 'claude-haiku-4-5'
-      case 'agent': return 'claude-opus-4-7'
-      case 'browser': return 'claude-sonnet-4-6'
-    }
+  override getModelAvailabilityRevision(): string | null {
+    const auth = getPlatformAuthStatus()
+    if (!auth.connected) return null
+    return createHash('sha256')
+      .update(JSON.stringify([getPlatformBaseUrl(), auth.orgId, auth.userId, auth.memberId, auth.updatedAt]))
+      .digest('hex')
   }
 
-  getContainerEnvVars(): Record<string, string | undefined> {
+  // The acting account's plan policy, cached per account and read with its
+  // identity from `/v1/account`; model selection reads it on every turn.
+  override async getModelAvailability(catalog: ModelDefinition[], options: { fresh?: boolean } = {}): Promise<ModelAvailability | null> {
+    const auth = getPlatformAuthStatus()
+    if (!auth.connected) return null
+    return platformModelAvailability(await actingPlanPolicy(options), catalog, orgBillingUrl(getPlatformBaseUrl(), auth.orgId))
+  }
+
+  // A plan refusal proves a cached policy stale (a downgrade, or a policy read
+  // before one): forget them all, so the next selection reads the account again.
+  override noteTurnError(_status: number | undefined, body: unknown): void {
+    if (parseModelNotInPlan(body)) platformPlanCache.clear()
+  }
+
+  async getContainerEnvVars(agent?: AgentIdentity): Promise<Record<string, string | undefined>> {
     const proxyUrl = getPlatformProxyBaseUrl()
-    const containerUrl = proxyUrl.replace('://localhost', '://host.docker.internal')
+    const containerUrl = rewriteLoopbackForContainer(proxyUrl)
+
+    const authToken = await getPlatformContainerToken(agent?.id) ?? this.getEffectiveApiKey()
+
+    // Agent identity rides into the container as plain env vars; the container
+    // folds them into ANTHROPIC_CUSTOM_HEADERS itself (see agent-container/src/
+    // attribution-headers.ts) because the env file transport strips newlines,
+    // which the multi-header ANTHROPIC_CUSTOM_HEADERS format needs.
+    const agentName = agent?.name && sanitizeAgentName(agent.name)
+
     return {
       ANTHROPIC_API_KEY: '',
       ANTHROPIC_BASE_URL: containerUrl,
-      ANTHROPIC_AUTH_TOKEN: this.getEffectiveApiKey(),
+      ANTHROPIC_AUTH_TOKEN: authToken,
+      ...(agent && {
+        SUPERAGENT_AGENT_ID: agent.id,
+        ...(agentName && { SUPERAGENT_AGENT_NAME: agentName }),
+      }),
     }
+  }
+
+  protected override parseErrorResponseOverride(
+    status: number | undefined,
+    body: unknown,
+  ): ProviderErrorPresentation | null {
+    const auth = getPlatformAuthStatus()
+    const billingUrl = auth.connected ? orgBillingUrl(getPlatformBaseUrl(), auth.orgId) : null
+    return parsePlatformErrorResponse(status, body, billingUrl)
   }
 
   async validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
     try {
       const client = new Anthropic({
-        apiKey: '',
         baseURL: getPlatformProxyBaseUrl(),
         authToken: apiKey,
       })

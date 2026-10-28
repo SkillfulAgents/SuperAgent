@@ -6,6 +6,18 @@
  */
 
 import { ContentBlock, JsonlMessageEntry, JsonlSystemEntry } from '@shared/lib/types/agent'
+import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
+import type { IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
+import { makeThinkingBlockId } from '@shared/lib/utils/thinking-block-id'
+import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
+import { parseMonitorNotification, type MonitorNotification } from '@shared/lib/utils/monitor-notifications'
+
+export interface TransformedThinkingBlock {
+  /** Stable live↔persisted identity when the SDK message id is available. */
+  id?: string
+  text: string
+  durationMs?: number
+}
 
 export interface TransformedMessage {
   id: string
@@ -24,15 +36,40 @@ export interface TransformedMessage {
       totalTokens?: number
       totalToolUseCount?: number
     }
+    /** The runtime's task id for a Bash call run in the background, or a Monitor's watch. */
+    backgroundTaskId?: string
   }>
   createdAt: Date
   sender?: {
+    image?: string | null
     id: string
     name: string
     email: string
   }
+  /** Host-recorded card data for a message an integration delivered; attached at serve time. */
+  integration?: IntegrationMessageDisplay
   /** SDK error code when assistant message failed due to LLM provider error */
   apiError?: string
+  /** Provider-authored copy for the apiError, attached at serve time (see agents route). */
+  errorPresentation?: ProviderErrorPresentation
+  /** User message delivered mid-turn (queued/steering input) — does not end the turn it appears in */
+  queued?: boolean
+  /** Copied into this session by a fork; the thread marks the fork point after the last one */
+  forked?: boolean
+  /**
+   * Summarized extended-thinking blocks, in order. Only present when the
+   * transcript carries non-empty text (CLI 2.1.181+ — older transcripts persist
+   * the block with an empty string, which is skipped). `durationMs` is derived
+   * from entry timestamps (see thinkingByEntry) and absent when underivable.
+   */
+  thinking?: TransformedThinkingBlock[]
+  /** Per-model-response token usage, de-duplicated by the merge pass above. */
+  usage?: {
+    inputTokens: number
+    outputTokens: number
+    cacheCreationInputTokens: number
+    cacheReadInputTokens: number
+  }
 }
 
 export interface TransformedCompactBoundary {
@@ -42,6 +79,7 @@ export interface TransformedCompactBoundary {
   trigger: string
   preTokens?: number
   createdAt: Date
+  forked?: boolean
 }
 
 export interface TransformedMemoryRecall {
@@ -49,9 +87,46 @@ export interface TransformedMemoryRecall {
   type: 'memory_recall'
   memoryPaths: string[]
   createdAt: Date
+  forked?: boolean
 }
 
-export type TransformedItem = TransformedMessage | TransformedCompactBoundary | TransformedMemoryRecall
+/**
+ * Host-persisted informational banner (e.g. "prompt blocked by hook"). The CLI
+ * emits these on the live stream only; the host appends them to the transcript
+ * so they survive reloads.
+ */
+export interface TransformedInformational {
+  id: string
+  type: 'informational'
+  content: string
+  level?: string
+  createdAt: Date
+  forked?: boolean
+}
+
+/**
+ * One batch of a Monitor watch's output, where the runtime delivered it (see
+ * monitor-notifications.ts). The notification itself is hidden like every
+ * task notification; this is what stands in for it.
+ */
+export interface TransformedMonitorEvent {
+  id: string
+  type: 'monitor_event'
+  taskId: string
+  description: string | null
+  events: string[]
+  status: string | null
+  endReason: string | null
+  createdAt: Date
+  forked?: boolean
+}
+
+export type TransformedItem =
+  | TransformedMessage
+  | TransformedCompactBoundary
+  | TransformedMemoryRecall
+  | TransformedInformational
+  | TransformedMonitorEvent
 
 /**
  * Parse a user message that may contain SDK-injected slash command XML tags.
@@ -117,10 +192,20 @@ export function isToolResultOnlyMessage(entry: JsonlMessageEntry): boolean {
 export function isTaskNotificationMessage(entry: JsonlMessageEntry): boolean {
   if (entry.type !== 'user') return false
 
+  if (entry.origin?.kind === 'task-notification') return true
+
+  // TODO deprecate 2026-08-01: XML fallback for JSONL files written before SDK 0.3.144 added the origin field
   const content = entry.message.content
   if (typeof content !== 'string') return false
+  // Match both the bare `<task-notification>` form and attributed variants
+  // (`<task-notification id="..." type="workflow-complete" ...>`).
+  return /^<task-notification[\s>]/.test(content.trimStart())
+}
 
-  return content.trimStart().startsWith('<task-notification>')
+/** A task notification carrying a Monitor watch's output: hidden, but shown as a monitor_event item. */
+export function monitorNotificationOf(entry: JsonlMessageEntry): MonitorNotification | null {
+  if (!isTaskNotificationMessage(entry)) return null
+  return parseMonitorNotification(entry.message.content)
 }
 
 /**
@@ -139,15 +224,57 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
   // Pre-pass: identify compact boundaries, memory recalls, and pair them with their summary messages
   const compactBoundaries = new Map<number, { boundary: JsonlSystemEntry; summaryContent: string }>()
   const memoryRecalls = new Map<number, JsonlSystemEntry>()
+  const informationals = new Map<number, JsonlSystemEntry>()
   const skipIndices = new Set<number>()
 
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i]
     if (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'memory_recall') {
-      memoryRecalls.set(i, entry as JsonlSystemEntry)
+      const sysEntry = entry as JsonlSystemEntry
       skipIndices.add(i)
+      // Dedupe by uuid: resume history replay re-appends system entries
+      // verbatim too (see the message-entry dedup below)
+      const isDuplicate = [...memoryRecalls.values()].some((e) => e.uuid === sysEntry.uuid)
+      if (!isDuplicate) {
+        memoryRecalls.set(i, sysEntry)
+      }
+    } else if (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'informational') {
+      const sysEntry = entry as JsonlSystemEntry
+      skipIndices.add(i)
+      // Dedupe by uuid: for some hook shapes (continue:false) the CLI persists
+      // the banner itself with the SAME uuid it streamed, and the host appends
+      // its own copy from the stream — keep whichever landed first.
+      const isDuplicate = [...informationals.values()].some((e) => e.uuid === sysEntry.uuid)
+      if (!isDuplicate) {
+        informationals.set(i, sysEntry)
+      }
+      // The CLI also records a synthetic user entry carrying the same stop
+      // text just before the banner ("Operation stopped by hook: ...") —
+      // hide it; the banner is the user-facing surface. Checked for duplicate
+      // copies too: when the host's appended banner lands before the CLI's,
+      // the synthetic user entry precedes the CLI copy that dedupe drops.
+      const prev = i > 0 ? entries[i - 1] : null
+      if (
+        prev &&
+        prev.type === 'user' &&
+        typeof (prev as JsonlMessageEntry).message.content === 'string' &&
+        (prev as JsonlMessageEntry).message.content === sysEntry.content
+      ) {
+        skipIndices.add(i - 1)
+      }
     } else if (entry.type === 'system' && (entry as JsonlSystemEntry).subtype === 'compact_boundary') {
       const sysEntry = entry as JsonlSystemEntry
+      // Dedupe replayed copies (same uuid). Today a duplicate is also masked
+      // by boundaryBeforeUuid keying on the NEXT message's uuid (the replayed
+      // pair overwrites the original slot), but that only holds when the
+      // following entry replays too — dedupe explicitly instead. The replayed
+      // summary user message needs no pairing here: the standalone
+      // isCompactSummary skip below hides it.
+      const isDuplicate = [...compactBoundaries.values()].some((e) => e.boundary.uuid === sysEntry.uuid)
+      if (isDuplicate) {
+        skipIndices.add(i)
+        continue
+      }
       let summaryContent = ''
 
       // Look ahead for the next isCompactSummary user message (within a few entries)
@@ -172,13 +299,27 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
     }
   }
 
-  // Filter to only message entries for the main transform pipeline
+  // Filter to only message entries for the main transform pipeline.
+  // Dedupe by uuid: when a session is resumed into a fresh CLI process, the
+  // CLI can re-append the prior history to the transcript VERBATIM (same
+  // uuids, same message.ids). Without this, the merge-by-message.id pass
+  // below would stack the replayed content blocks onto the original
+  // messages (tripled text, duplicated tool calls).
   const messageEntries: JsonlMessageEntry[] = []
+  const seenUuids = new Set<string>()
 
   for (let i = 0; i < entries.length; i++) {
     if (skipIndices.has(i)) continue
     const entry = entries[i]
     if (entry.type === 'user' || entry.type === 'assistant') {
+      // "No response requested." and friends: the CLI's stand-in for a turn
+      // that produced no model output. Nothing to show.
+      if (isSyntheticPlaceholderMessage(entry)) continue
+      const uuid = (entry as JsonlMessageEntry).uuid
+      if (uuid) {
+        if (seenUuids.has(uuid)) continue
+        seenUuids.add(uuid)
+      }
       messageEntries.push(entry as JsonlMessageEntry)
     }
   }
@@ -189,8 +330,28 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
   const mergedEntries: JsonlMessageEntry[] = []
   const assistantMessageIds = new Map<string, number>() // message.id -> index in mergedEntries
 
+  // Extended-thinking blocks per merged entry. Extracted here — before the merge
+  // collapses per-block entries — because the duration is derived from entry
+  // timestamps: the CLI writes an assistant entry when its content block
+  // completes, so (thinking entry ts − previous entry ts) ≈ how long the agent
+  // thought. Old transcripts (pre CLI 2.1.181) persist the block with an empty
+  // string (signature only) — those are skipped, they carry nothing to show.
+  const thinkingByEntry = new Map<JsonlMessageEntry, TransformedThinkingBlock[]>()
+  let prevEntryTs: number | null = null
+  // message.id of the entry prevEntryTs came from (null for user entries).
+  // Some provider paths flush ALL of a message's block entries in one burst at
+  // response completion, with thinking ordered after its sibling text block —
+  // a gap measured against a sibling of the same message is milliseconds of
+  // write jitter, not thinking time, and must not become a "Thought for 0s".
+  let prevEntryMessageId: string | null = null
+
   for (const entry of messageEntries) {
     const messageId = entry.message.id
+    let target = entry
+    // Offset of this entry's content inside the merged message. The live SDK
+    // identifies content blocks by their index in the complete assistant
+    // message, so the persisted path must count preceding merged blocks too.
+    let mergedContentOffset = 0
     if (entry.type === 'assistant' && messageId) {
       const existingIndex = assistantMessageIds.get(messageId)
       if (existingIndex !== undefined) {
@@ -200,10 +361,23 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
         const newContent = entry.message.content
 
         if (Array.isArray(existingContent) && Array.isArray(newContent)) {
+          mergedContentOffset = existingContent.length
           // Append new content blocks to existing
           ;(existing.message.content as ContentBlock[]).push(...(newContent as ContentBlock[]))
         }
+        // Transcript snapshots for one provider response repeat the same input
+        // usage while output_tokens grows. Keep the latest/highest snapshot so
+        // consumers can count this response once without understating it.
+        const existingUsage = existing.message.usage
+        const incomingUsage = entry.message.usage
+        if (
+          incomingUsage &&
+          (!existingUsage || incomingUsage.output_tokens >= existingUsage.output_tokens)
+        ) {
+          existing.message.usage = { ...incomingUsage }
+        }
         // Keep the original entry's uuid and timestamp for correct ordering
+        target = existing
       } else {
         // First time seeing this message.id - clone to avoid mutating original
         const clonedEntry = {
@@ -217,10 +391,51 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
         }
         assistantMessageIds.set(messageId, mergedEntries.length)
         mergedEntries.push(clonedEntry)
+        target = clonedEntry
       }
     } else {
       // User messages or messages without id - keep as-is
       mergedEntries.push(entry)
+    }
+
+    const entryTs = new Date(entry.timestamp).getTime()
+    if (entry.type === 'assistant' && Array.isArray(entry.message.content)) {
+      const blocks = (entry.message.content as ContentBlock[])
+        // typeof guard: this runs server-side on raw JSONL — a malformed
+        // non-string `thinking` must be skipped, not throw and 500 the route
+        .map((block, blockIndex) => ({ block, blockIndex: mergedContentOffset + blockIndex }))
+        .filter(
+          (item): item is { block: ContentBlock & { thinking: string }; blockIndex: number } =>
+            item.block.type === 'thinking' &&
+            typeof (item.block as { thinking?: unknown }).thinking === 'string' &&
+            !!(item.block as { thinking: string }).thinking.trim(),
+        )
+      if (blocks.length > 0) {
+        // Only derivable when the previous entry is a different message (user
+        // entry or another assistant response) — an intra-message gap is write
+        // jitter. Underivable durations are omitted (header reads "Thought").
+        const prevIsSameMessage = messageId !== undefined && prevEntryMessageId === messageId
+        const durationMs =
+          prevEntryTs !== null && !prevIsSameMessage && Number.isFinite(entryTs) && entryTs > prevEntryTs
+            ? entryTs - prevEntryTs
+            : undefined
+        const list = thinkingByEntry.get(target) ?? []
+        // The duration covers the whole entry — if one entry carries several
+        // thinking blocks (rare), attach it to the first
+        blocks.forEach(({ block, blockIndex }, i) => {
+          const id = makeThinkingBlockId(messageId, blockIndex)
+          list.push({
+            ...(id && { id }),
+            text: block.thinking,
+            ...(i === 0 && durationMs !== undefined && { durationMs }),
+          })
+        })
+        thinkingByEntry.set(target, list)
+      }
+    }
+    if (Number.isFinite(entryTs)) {
+      prevEntryTs = entryTs
+      prevEntryMessageId = entry.type === 'assistant' ? (messageId ?? null) : null
     }
   }
 
@@ -251,9 +466,11 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
   // This allows us to insert boundaries/recalls at the correct position in the output
   const boundaryBeforeUuid = new Map<string, TransformedCompactBoundary>()
   const recallBeforeUuid = new Map<string, TransformedMemoryRecall[]>()
+  const informationalBeforeUuid = new Map<string, TransformedInformational[]>()
   // Also track items that appear at the very end (no following message)
   const trailingBoundaries: TransformedCompactBoundary[] = []
   const trailingRecalls: TransformedMemoryRecall[] = []
+  const trailingInformationals: TransformedInformational[] = []
 
   for (const [idx, { boundary, summaryContent }] of compactBoundaries) {
     const item: TransformedCompactBoundary = {
@@ -263,6 +480,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       trigger: boundary.compactMetadata?.trigger || 'auto',
       preTokens: boundary.compactMetadata?.preTokens,
       createdAt: new Date(boundary.timestamp),
+      ...(boundary.forkedFrom && { forked: true }),
     }
 
     // Find the next non-skipped message entry after this boundary
@@ -289,6 +507,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       type: 'memory_recall',
       memoryPaths: sysEntry.memory_paths || [],
       createdAt: new Date(sysEntry.timestamp),
+      ...(sysEntry.forkedFrom && { forked: true }),
     }
 
     let nextUuid: string | null = null
@@ -310,6 +529,35 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
     }
   }
 
+  for (const [idx, sysEntry] of informationals) {
+    const item: TransformedInformational = {
+      id: sysEntry.uuid,
+      type: 'informational',
+      content: sysEntry.content || '',
+      level: sysEntry.level,
+      createdAt: new Date(sysEntry.timestamp),
+      ...(sysEntry.forkedFrom && { forked: true }),
+    }
+
+    let nextUuid: string | null = null
+    for (let j = idx + 1; j < entries.length; j++) {
+      if (skipIndices.has(j)) continue
+      const nextEntry = entries[j]
+      if (nextEntry.type === 'user' || nextEntry.type === 'assistant') {
+        nextUuid = (nextEntry as JsonlMessageEntry).uuid
+        break
+      }
+    }
+
+    if (nextUuid) {
+      const existing = informationalBeforeUuid.get(nextUuid) || []
+      existing.push(item)
+      informationalBeforeUuid.set(nextUuid, existing)
+    } else {
+      trailingInformationals.push(item)
+    }
+  }
+
   // Transform merged message entries, inserting boundaries at correct positions
   const result: TransformedItem[] = []
 
@@ -326,16 +574,37 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       result.push(boundary)
     }
 
+    // Insert any informational banners that precede this message
+    const infos = informationalBeforeUuid.get(entry.uuid)
+    if (infos) {
+      result.push(...infos)
+    }
+
     // Skip user messages that only contain tool results
     if (isToolResultOnlyMessage(entry)) continue
 
-    // Skip SDK-injected task notification messages (sub-agent results)
-    if (isTaskNotificationMessage(entry)) continue
+    // Skip SDK-injected task notification messages (sub-agent results). A
+    // Monitor's output is the one kind that is shown, in its own item.
+    if (isTaskNotificationMessage(entry)) {
+      const monitor = monitorNotificationOf(entry)
+      if (monitor) {
+        result.push({
+          id: entry.uuid,
+          type: 'monitor_event',
+          ...monitor,
+          createdAt: new Date(entry.timestamp),
+          ...(entry.forkedFrom && { forked: true }),
+        })
+      }
+      continue
+    }
 
     const content = entry.message.content
     let text = ''
     let messageType: 'user' | 'assistant' = entry.type
     const toolCalls: TransformedMessage['toolCalls'] = []
+    // Extracted during the merge pass (needs per-entry timestamps for durations)
+    const thinking = thinkingByEntry.get(entry)
 
     if (typeof content === 'string') {
       text = content
@@ -360,6 +629,12 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
               }
             : undefined
 
+          // A backgrounded Bash call's result is its (empty) stdout; the id
+          // the runtime assigned is what lets the UI name the running task.
+          // A Monitor call's result names its watch the same way.
+          const backgroundTaskId = block.name === 'Monitor'
+            ? toolResult?.toolUseResult?.taskId
+            : toolResult?.toolUseResult?.backgroundTaskId
           toolCalls.push({
             id: block.id,
             name: block.name,
@@ -367,6 +642,7 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
             result: resultContent,
             isError: toolResult?.isError,
             subagent,
+            ...(typeof backgroundTaskId === 'string' && backgroundTaskId ? { backgroundTaskId } : {}),
           })
         }
       }
@@ -393,12 +669,24 @@ export function transformMessages(entries: (JsonlMessageEntry | JsonlSystemEntry
       toolCalls,
       createdAt: new Date(entry.timestamp),
       ...(entry.error && { apiError: entry.error }),
+      ...(entry.isQueuedCommand && { queued: true }),
+      ...(entry.forkedFrom && { forked: true }),
+      ...(thinking && thinking.length > 0 && { thinking }),
+      ...(entry.message.usage && {
+        usage: {
+          inputTokens: entry.message.usage.input_tokens ?? 0,
+          outputTokens: entry.message.usage.output_tokens ?? 0,
+          cacheCreationInputTokens: entry.message.usage.cache_creation_input_tokens ?? 0,
+          cacheReadInputTokens: entry.message.usage.cache_read_input_tokens ?? 0,
+        },
+      }),
     })
   }
 
   // Append any system items that appear after all messages
   result.push(...trailingRecalls)
   result.push(...trailingBoundaries)
+  result.push(...trailingInformationals)
 
   return result
 }

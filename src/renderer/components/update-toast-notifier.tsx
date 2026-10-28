@@ -20,7 +20,7 @@ export function UpdateToastNotifier() {
       // toastIdRef is null after dismissal, so a fresh toast is created.
       toastIdRef.current = toast(`Version ${status.version} is available`, {
         id: toastIdRef.current ?? undefined,
-        description: 'A new version of Superagent is ready to download.',
+        description: 'A new version of Gamut is ready to download.',
         duration: Infinity,
         closeButton: true,
         onDismiss,
@@ -48,7 +48,7 @@ export function UpdateToastNotifier() {
     } else if (status.state === 'downloaded') {
       toast(`Version ${status.version ?? ''} is ready to install`, {
         id: toastIdRef.current,
-        description: 'Restart Superagent to apply the update.',
+        description: 'Restart Gamut to apply the update.',
         duration: Infinity,
         closeButton: true,
         onDismiss,

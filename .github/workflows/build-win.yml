@@ -6,7 +6,7 @@ on:
 
 jobs:
   build-win:
-    runs-on: windows-latest
+    runs-on: blacksmith-4vcpu-windows-2025
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -14,18 +14,50 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Build Windows app
+      - name: Build and sign Windows app
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PLATFORM_BASE_URL: ${{ secrets.PLATFORM_BASE_URL }}
           PLATFORM_PROXY_URL: ${{ secrets.PLATFORM_PROXY_URL }}
+          PLATFORM_AUTH_ISSUER_URL: ${{ secrets.PLATFORM_AUTH_ISSUER_URL }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_CODE_SIGNING_ENDPOINT: ${{ secrets.AZURE_CODE_SIGNING_ENDPOINT }}
+          AZURE_CODE_SIGNING_ACCOUNT: ${{ secrets.AZURE_CODE_SIGNING_ACCOUNT }}
+          AZURE_CODE_SIGNING_PROFILE: ${{ secrets.AZURE_CODE_SIGNING_PROFILE }}
+          AZURE_CODE_SIGNING_PUBLISHER: ${{ secrets.AZURE_CODE_SIGNING_PUBLISHER }}
         run: npm run dist:win
+
+      - name: Enforce release artifact size limit
+        shell: bash
+        run: |
+          # A size budget, not a platform limit: the R2 feed upload is multipart
+          # and GitHub release assets go to 2 GiB. It catches an installer that
+          # balloons unnoticed (the Windows one carries both x64 and arm64).
+          limit=$((400 * 1024 * 1024))
+          bad=0
+          for f in release/*.exe release/*.dmg release/*.zip; do
+            [ -e "$f" ] || continue
+            size=$(wc -c < "$f")
+            printf '%6d MiB  %s\n' "$((size / 1048576))" "$(basename "$f")"
+            if [ "$size" -gt "$limit" ]; then
+              echo "::error file=$f::$(basename "$f") is $((size / 1048576)) MiB, over the 400 MiB release-artifact size budget"
+              bad=1
+            fi
+          done
+          [ "$bad" -eq 0 ] || exit 1
 
       - name: Upload Windows Installer
         uses: actions/upload-artifact@v4

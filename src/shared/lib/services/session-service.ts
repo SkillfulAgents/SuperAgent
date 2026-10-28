@@ -1,26 +1,51 @@
 /**
  * Session Service
  *
- * File-based operations for sessions.
- * Sessions are stored as JSONL files by Claude Code SDK.
+ * Stored sessions: the JSONL transcripts the CLI writes and the metadata
+ * document beside them, read and edited through the agent's `SessionStore`
+ * — its workspace file operations, its configuration documents, and the
+ * directory the CLI writes transcripts to. Nothing here knows where the
+ * workspace is; a local actor and a remote one bring their own store.
  */
 
-import * as fs from 'fs'
-import * as path from 'path'
 import pLimit from 'p-limit'
 import {
-  getAgentsDir,
-  getAgentSessionsDir,
-  getAgentSessionMetadataPath,
-  getSessionJsonlPath,
-  listDirectories,
-  directoryExists,
-  fileExists,
-  readFileOrNull,
-  writeFile,
-  readJsonlFile,
-  ensureDirectory,
-} from '@shared/lib/utils/file-storage'
+  isSessionIdWellFormed,
+  transcriptPath,
+  type SessionStore,
+} from '@shared/lib/agent-actor/session-store'
+import {
+  isAbsentFile,
+  iterateLinesBackward,
+  readChunkFor,
+  readJsonl,
+  readTailLines,
+  streamJsonl,
+  streamLines,
+} from '@shared/lib/agent-actor/jsonl-files'
+import { MESSAGES_PAGE_MAX_BYTES } from '@shared/lib/messages-page'
+import type { LlmProviderId } from '@shared/lib/llm-provider/provider-types'
+import { ConfigDocError, type ConfigDoc } from '@shared/lib/agent-actor/config-schema'
+import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
+import { parseJsonl, parseJsonlLine } from '@shared/lib/utils/file-storage'
+import {
+  transformMessages,
+  isToolResultOnlyMessage,
+  isTaskNotificationMessage,
+  monitorNotificationOf,
+  type TransformedItem,
+} from '@shared/lib/utils/message-transform'
+import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
+import { findDeltaWindowStart } from '@shared/lib/messages-delta'
+import { background } from '@shared/lib/background'
+import {
+  sortSessionsByActivity,
+  type SessionActivityFields,
+} from '@shared/lib/session-ordering'
+import { replaceInlineMediaWithRefs } from './session-media'
+import { sessionMetadataHolds } from './session-metadata-holds'
+import { isHiddenAutomatedSession, sessionOrigin } from './session-visibility'
+import type { SlashCommandInfo } from '@shared/lib/container/types'
 import {
   SessionInfo,
   SessionMetadata,
@@ -28,70 +53,309 @@ import {
   JsonlEntry,
   JsonlMessageEntry,
   JsonlSystemEntry,
+  JsonlAttachmentEntry,
   ContentBlock,
 } from '@shared/lib/types/agent'
+import { captureException } from '@shared/lib/error-reporting'
+import {
+  getSessionSummaryCacheSlot,
+  applyActivity,
+  recordSessionActivity,
+  type SessionActivityEntry,
+  SESSION_SUMMARY_CACHE_TTL_MS,
+  type SessionSummaryCacheValue,
+} from './session-summary-cache'
+
+// A session id is unique within its agent, not across the install: it comes
+// from the container, and an agent can write any id it likes into its own
+// workspace. The registries keyed by session id are keyed by agent AND
+// session, so a forged transcript resolves to an empty slot in the forging
+// agent's OWN namespace and reaches nothing.
+//
+// What remains is containment: an id that cannot name a file directly under
+// this agent's transcripts directory (`..`, an absolute path, a separator) is
+// not one of its sessions, and must not reach a registry or the store.
+// Path-shape validation, NOT an existence check: it answers true for any
+// well-formed id whether or not a session by that name exists — callers that
+// need "does this session exist / is it really this agent's" use
+// sessionExists / sessionIsKnown, which layer those on top.
+//
+// Lexical only: it touches no storage, because it runs once per transcript in
+// the listing/summary hot loops, whose op budget the perf suite pins exactly.
+// The LINK escape (a link inside the agent's own directory resolving to
+// another agent's transcript) is caught on the content/action gates instead —
+// see {@link sessionFileRealPathWithinAgent} — because those are the paths
+// that actually read or mutate the file, and they are off the listing hot path.
+
+// Lexical containment PLUS link resolution: the id names a file whose REAL
+// location is inside this agent's own workspace. The workspace is mounted
+// read/write into the container, so the agent can plant a link — named after
+// another agent's session, OR replacing a whole directory like `-workspace` —
+// that resolves to another agent's transcript: a name that looks local but
+// escapes on read. Use this on every gate that goes on to serve or act on the
+// transcript (never in a listing loop): it costs a real-path lookup, but a
+// session that fails it must not be readable.
+//
+// The store's `resolve` anchors containment on the WORKSPACE, the mount point
+// the container cannot replace: a link swapped in for the transcripts
+// directory still resolves to a location outside it. A transcript that is not
+// there is not an escape: there is nothing to disclose, and the read that
+// follows answers "not found" on its own.
+export async function sessionFileRealPathWithinAgent(store: SessionStore, sessionId: string): Promise<boolean> {
+  if (!isSessionIdWellFormed(sessionId)) return false
+  try {
+    await store.files.resolve(transcriptPath(store, sessionId))
+    return true
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) return false
+    throw error
+  }
+}
+
+/**
+ * Whether something is at the session's transcript path, by the same rules as
+ * {@link sessionFileRealPathWithinAgent}. `resolve` answers null for a path
+ * that is not there, so the containment check is the existence check as well:
+ * one realpath, where a resolve and then a stat would be two round trips.
+ */
+async function transcriptResolves(store: SessionStore, sessionId: string): Promise<boolean> {
+  if (!isSessionIdWellFormed(sessionId)) return false
+  try {
+    return (await store.files.resolve(transcriptPath(store, sessionId))) !== null
+  } catch (error) {
+    if (error instanceof WorkspaceFileError) return false
+    throw error
+  }
+}
+
+/**
+ * How long a registered session may exist without a transcript before it is
+ * taken for deleted. A registration precedes the first transcript write by
+ * moments (every flow that registers a session sends it a message at once),
+ * so a metadata entry that is still alone after this long belongs to a
+ * transcript the agent removed, or the CLI's retention cleanup did. Such an
+ * entry is dropped from listings and, in the background, from the document.
+ */
+export const NEW_SESSION_GRACE_MS = 60 * 60 * 1000
 
 // ============================================================================
 // Session Metadata (custom names, starred status)
 // ============================================================================
 
 /**
- * Read session metadata map from file
+ * Strict read of the session metadata map: returns `{}` ONLY when the
+ * document is absent; a present-but-unusable document (torn/corrupt) THROWS
+ * `ConfigDocError`.
+ *
+ * This is what the read-modify-write helper below relies on, so a transiently
+ * unreadable document aborts the write instead of being overwritten with a
+ * near-empty map — the permanent-data-loss mechanism. Do NOT use this on
+ * read-only display paths; use {@link readSessionMetadata}, which degrades
+ * gracefully.
  */
-async function readSessionMetadata(agentSlug: string): Promise<SessionMetadataMap> {
-  const metadataPath = getAgentSessionMetadataPath(agentSlug)
-  const content = await readFileOrNull(metadataPath)
+async function readSessionMetadataStrict(store: SessionStore): Promise<SessionMetadataMap> {
+  const doc = await store.config.get('sessionMetadata')
+  return (doc ?? {}) as SessionMetadataMap
+}
 
-  if (!content) {
-    return {}
-  }
-
+/**
+ * Read session metadata map for READ-ONLY consumers (listing, display, lookup).
+ *
+ * Missing document → `{}`; corrupt/torn document → log + capture + `{}` (so
+ * the sessions view degrades to auto-titles instead of crashing). Returning
+ * `{}` here is safe ONLY because these callers never write — the destructive
+ * overwrite came from a write that followed a swallowed bad read, and writes
+ * go through {@link mutateSessionMetadata}, which re-throws on corruption.
+ * Any other failure propagates.
+ */
+export async function readSessionMetadata(store: SessionStore): Promise<SessionMetadataMap> {
   try {
-    return JSON.parse(content) as SessionMetadataMap
-  } catch {
-    console.warn(`Failed to parse session metadata for agent ${agentSlug}`)
-    return {}
+    return await readSessionMetadataStrict(store)
+  } catch (error) {
+    if (error instanceof ConfigDocError && error.code === 'corrupt') {
+      console.error(
+        `Corrupt session metadata for agent ${store.slug}; using empty map for read-only access (NOT overwriting)`,
+        error
+      )
+      captureException(error, {
+        tags: { area: 'session-metadata', op: 'read' },
+        extra: { agentSlug: store.slug },
+      })
+      return {}
+    }
+    throw error
   }
 }
 
 /**
- * Write session metadata map to file
+ * Serialized read-modify-write of an agent's session metadata map.
+ *
+ * The store's `update` serializes concurrent mutations (lost-update
+ * protection), re-reads fresh with the STRICT reader (so a corrupt document
+ * throws and aborts the write rather than clobbering), and persists atomically
+ * (an interrupted write never leaves a torn file). The `mutator` returns
+ * `false` to signal "no change" and skip the write entirely (no empty
+ * document is materialized for a no-op).
  */
-async function writeSessionMetadata(
-  agentSlug: string,
-  metadata: SessionMetadataMap
+async function mutateSessionMetadata(
+  store: SessionStore,
+  mutator: (metadata: SessionMetadataMap) => boolean | void
 ): Promise<void> {
-  const metadataPath = getAgentSessionMetadataPath(agentSlug)
-  await writeFile(metadataPath, JSON.stringify(metadata, null, 2))
+  await store.config.update('sessionMetadata', async (current) => {
+    // A copy: the mutator edits in place, and handing the document it was
+    // given back to `update` means "nothing changed".
+    const metadata = { ...(current ?? {}) } as SessionMetadataMap
+    const changed = mutator(metadata)
+    const newest = dropStoredSlashCommands(metadata)
+    if (newest) await seedAgentSlashCommands(store, newest)
+    return changed === false && !newest ? null : (metadata as ConfigDoc<'sessionMetadata'>)
+  })
+}
+
+/** Earlier builds copied the agent's whole slash-command list into every session's entry; returns the newest copy. */
+function newestStoredSlashCommands(metadata: SessionMetadataMap): SlashCommandInfo[] | null {
+  let newest: { createdAt: string; commands: SlashCommandInfo[] } | null = null
+  for (const entry of Object.values(metadata)) {
+    if (!entry.slashCommands) continue
+    const createdAt = entry.createdAt ?? ''
+    if (!newest || createdAt > newest.createdAt) newest = { createdAt, commands: entry.slashCommands }
+  }
+  return newest?.commands ?? null
+}
+
+/** Drops every session entry's copy; returns the newest copy dropped. */
+function dropStoredSlashCommands(metadata: SessionMetadataMap): SlashCommandInfo[] | null {
+  const newest = newestStoredSlashCommands(metadata)
+  if (!newest) return null
+  for (const [sessionId, entry] of Object.entries(metadata)) {
+    if (!entry.slashCommands) continue
+    const rest = { ...entry }
+    delete rest.slashCommands
+    metadata[sessionId] = rest
+  }
+  return newest
+}
+
+/** A dropped copy becomes the agent's when it has none yet, so a cold session's composer keeps its commands. */
+async function seedAgentSlashCommands(store: SessionStore, commands: SlashCommandInfo[]): Promise<void> {
+  try {
+    await store.config.update('slashCommands', (current) => (current === null ? (commands as ConfigDoc<'slashCommands'>) : null))
+  } catch (error) {
+    console.error(`[SessionService] Failed to keep slash commands for agent ${store.slug}:`, error)
+  }
 }
 
 /**
- * Update metadata for a single session
+ * The slash commands the agent's container last listed, shared by every
+ * session. Without a usable agent copy, the newest copy an earlier build left
+ * in a session entry. Read-only: a corrupt agent copy is skipped, not thrown,
+ * so a viewer still attaches.
+ */
+export async function readAgentSlashCommands(store: SessionStore): Promise<SlashCommandInfo[]> {
+  try {
+    const commands = (await store.config.get('slashCommands')) as SlashCommandInfo[] | null
+    if (commands?.length) return commands
+  } catch (error) {
+    if (!(error instanceof ConfigDocError && error.code === 'corrupt')) throw error
+    console.error(`[SessionService] Corrupt slash commands for agent ${store.slug}; using session metadata`, error)
+  }
+  return newestStoredSlashCommands(await readSessionMetadata(store)) ?? []
+}
+
+export async function storeAgentSlashCommands(store: SessionStore, commands: SlashCommandInfo[]): Promise<void> {
+  await store.config.update('slashCommands', (current) =>
+    current !== null && JSON.stringify(current) === JSON.stringify(commands) ? null : (commands as ConfigDoc<'slashCommands'>))
+}
+
+/**
+ * Update metadata for a single session. Returns the session's previous
+ * metadata entry (undefined when it had none), captured under the same
+ * serialization as the write, so callers can tell whether an update actually
+ * changed a value without racing a concurrent update.
+ *
+ * An update whose every value is already stored writes nothing: the document
+ * is rewritten whole (temp file, fsync, rename, directory fsync), which on a
+ * network volume costs a round trip per step.
  */
 export async function updateSessionMetadata(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string,
   updates: Partial<SessionMetadata>
+): Promise<SessionMetadata | undefined> {
+  let previous: SessionMetadata | undefined
+  await mutateSessionMetadata(store, (metadata) => {
+    previous = Object.hasOwn(metadata, sessionId) ? metadata[sessionId] : undefined
+    if (previous && sessionMetadataHolds(previous, updates)) return false
+    metadata[sessionId] = {
+      ...previous,
+      ...updates,
+    }
+  })
+  return previous
+}
+
+export async function recordErrorProvider(
+  store: SessionStore,
+  sessionId: string,
+  messageId: string,
+  provider: LlmProviderId,
 ): Promise<void> {
-  const metadata = await readSessionMetadata(agentSlug)
+  await mutateSessionMetadata(store, (metadata) => {
+    const previous = metadata[sessionId]
+    if (previous?.errorProviders?.[messageId] === provider) return false
+    metadata[sessionId] = { ...previous, errorProviders: { ...previous?.errorProviders, [messageId]: provider } }
+  })
+}
 
-  metadata[sessionId] = {
-    ...metadata[sessionId],
-    ...updates,
-  }
+export type AutomationStatusResult = 'updated' | 'not-automation' | 'already-final'
 
-  await writeSessionMetadata(agentSlug, metadata)
+/**
+ * Record the terminal outcome of an automation turn (cron, webhook, or a
+ * widget-repair session).
+ *
+ * Guard rules live inside the serialized mutator (single locked
+ * read-then-maybe-write, no TOCTOU):
+ * - non-automation sessions are untouched — callers can cache the
+ *   'not-automation' result and skip future calls for that session;
+ * - promoted sessions that never tracked an outcome predate automation
+ *   status — a later interactive turn's result is not the automation's;
+ * - a finalized outcome (anything but 'running') is never overwritten.
+ */
+export async function finalizeAutomationStatus(
+  store: SessionStore,
+  sessionId: string,
+  automationStatus: 'succeeded' | 'failed'
+): Promise<AutomationStatusResult> {
+  let result: AutomationStatusResult = 'not-automation'
+  await mutateSessionMetadata(store, (metadata) => {
+    const meta = metadata[sessionId]
+    // Every session kind that sets automationStatus: 'running' at creation
+    // must be listed here, or its status never leaves 'running' — and a guard
+    // built on that ("is a repair already in flight?") would block forever.
+    if (!meta?.isScheduledExecution && !meta?.isWebhookExecution && !meta?.isWidgetRepair) return false
+    if (meta.promotedToInteractive && !meta.automationStatus) return false
+    if (meta.automationStatus && meta.automationStatus !== 'running') {
+      result = 'already-final'
+      return false
+    }
+    metadata[sessionId] = { ...meta, automationStatus }
+    result = 'updated'
+  })
+  return result
 }
 
 /**
  * Get metadata for a single session
  */
 export async function getSessionMetadata(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string
 ): Promise<SessionMetadata | null> {
-  const metadata = await readSessionMetadata(agentSlug)
-  return metadata[sessionId] || null
+  const metadata = await readSessionMetadata(store)
+  // Own-property check for the same reason as isSessionRegistered: a bare index
+  // read returns an inherited Object.prototype member for ids like 'constructor'.
+  const entry = Object.hasOwn(metadata, sessionId) ? metadata[sessionId] : null
+  return entry
 }
 
 /**
@@ -99,29 +363,36 @@ export async function getSessionMetadata(
  * This ensures the session appears in listings before the JSONL file exists
  */
 export async function registerSession(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string,
-  name?: string
+  name?: string,
+  initialMetadata?: Partial<SessionMetadata>,
 ): Promise<void> {
-  const metadata = await readSessionMetadata(agentSlug)
-
-  metadata[sessionId] = {
-    name: name || 'New Session',
-    createdAt: new Date().toISOString(),
-  }
-
-  await writeSessionMetadata(agentSlug, metadata)
+  // Containment is checked here for the same reason transcript writes check
+  // it: an externally supplied id must not become a durable metadata key.
+  transcriptPath(store, sessionId)
+  await mutateSessionMetadata(store, (metadata) => {
+    metadata[sessionId] = {
+      ...initialMetadata,
+      name: name || 'New Session',
+      createdAt: new Date().toISOString(),
+    }
+  })
 }
 
 /**
  * Check if a session is registered (exists in metadata)
+ *
+ * `Object.hasOwn`, not `in` / a bare index read: the metadata map is an ordinary
+ * object, so every `Object.prototype` name ('constructor', 'toString', …) would
+ * otherwise answer "registered" and walk straight through any gate built on this.
  */
 export async function isSessionRegistered(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string
 ): Promise<boolean> {
-  const metadata = await readSessionMetadata(agentSlug)
-  return sessionId in metadata
+  const metadata = await readSessionMetadata(store)
+  return Object.hasOwn(metadata, sessionId)
 }
 
 // ============================================================================
@@ -136,91 +407,392 @@ function isMessageEntry(entry: JsonlEntry): entry is JsonlMessageEntry {
 }
 
 /**
- * Parse session info from JSONL entries
+ * Convert a `queued_command` attachment entry into a synthetic user message
+ * entry. The CLI records user messages that arrive mid-turn (queued/steering
+ * input) this way instead of as regular `user` entries, so without this
+ * conversion queued messages would be invisible in the transcript even though
+ * the agent acted on them. Returns the entry unchanged when it isn't a
+ * user-typed queued command (task notifications, meta/system injections).
  */
-function parseSessionInfo(
+function normalizeQueuedCommandEntry(entry: JsonlEntry): JsonlEntry {
+  if (entry.type !== 'attachment') return entry
+  const { attachment, forkedFrom } = entry as JsonlAttachmentEntry
+  if (
+    !attachment ||
+    attachment.type !== 'queued_command' ||
+    attachment.commandMode !== 'prompt' ||
+    attachment.isMeta ||
+    attachment.prompt === undefined
+  ) {
+    return entry
+  }
+  return {
+    type: 'user',
+    // source_uuid is the CLI's queue-entry id; prefer it since it's also the
+    // uuid the SDK uses when replaying this message on session resume.
+    uuid: attachment.source_uuid ?? entry.uuid,
+    parentUuid: entry.parentUuid ?? null,
+    sessionId: entry.sessionId ?? '',
+    timestamp: entry.timestamp,
+    message: {
+      role: 'user',
+      content: attachment.prompt,
+    },
+    isQueuedCommand: true,
+    // The fork stamp sits on the attachment line; the rebuilt message keeps it.
+    ...(forkedFrom && { forkedFrom }),
+  } satisfies JsonlMessageEntry
+}
+
+// A stored createdAt is a bare string (sessionMetadataSchema is lenient by
+// design), so junk must fall through to the caller's next date source rather
+// than become an Invalid Date.
+function parseStoredDate(value: string | undefined): Date | null {
+  if (!value) return null
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+/**
+ * Build the SessionInfo for a session whose transcript exists, from its
+ * metadata entry and one stat of the transcript — never its contents, which
+ * routinely reach 100MB+. Shared by every list and getSession so the list and
+ * a single-session read report the same name and timestamps.
+ */
+function sessionFromTranscriptStat(
   sessionId: string,
   agentSlug: string,
-  entries: JsonlEntry[],
-  metadata?: SessionMetadata
+  meta: SessionMetadata | undefined,
+  stat: { birthtimeMs?: number; mtimeMs: number },
 ): SessionInfo {
-  const messages = entries.filter(isMessageEntry)
-
-  // Get timestamps
-  let createdAt = new Date()
-  let lastActivityAt = new Date()
-
-  if (messages.length > 0) {
-    createdAt = new Date(messages[0].timestamp)
-    lastActivityAt = new Date(messages[messages.length - 1].timestamp)
-  }
-
-  // Generate name from first user message if no custom name
-  let name = metadata?.name || 'New Session'
-  if (!metadata?.name && messages.length > 0) {
-    const firstUserMessage = messages.find(
-      (m) => m.type === 'user' && typeof m.message.content === 'string'
-    )
-    if (firstUserMessage && typeof firstUserMessage.message.content === 'string') {
-      // Use first 50 chars of first message as name
-      const content = firstUserMessage.message.content
-      name = content.substring(0, 50).trim()
-      if (content.length > 50) {
-        name += '...'
-      }
-    }
-  }
-
   return {
     id: sessionId,
     agentSlug,
-    name,
-    createdAt,
-    lastActivityAt,
-    messageCount: messages.length,
+    name: meta?.name || 'New Session',
+    createdAt: resolveSessionCreatedAt(meta, stat),
+    lastActivityAt: new Date(stat.mtimeMs),
+    origin: sessionOrigin(meta),
   }
+}
+
+/**
+ * Build the SessionInfo for a session that is registered in metadata but whose
+ * JSONL transcript doesn't exist yet: a just-created session still settling
+ * before the agent has streamed its first message (the transcript is written
+ * asynchronously, after the create response returns). Shared by getSession
+ * and listSessions so a single-session read and the list agree on a session's
+ * existence and fields rather than drifting. Callers gate on
+ * {@link metadataOnlySession}.
+ */
+function emptySessionFromMetadata(
+  sessionId: string,
+  agentSlug: string,
+  meta: SessionMetadata
+): SessionInfo {
+  const createdAt = parseStoredDate(meta.createdAt) ?? new Date()
+  return {
+    id: sessionId,
+    agentSlug,
+    name: meta.name || 'New Session',
+    createdAt,
+    lastActivityAt: createdAt,
+    origin: sessionOrigin(meta),
+  }
+}
+
+/**
+ * What a metadata entry with no transcript means. `new`: registered a moment
+ * ago, the transcript is about to appear, and the session is listed from its
+ * metadata. `orphaned`: registered longer ago than {@link NEW_SESSION_GRACE_MS}
+ * and still without a transcript — the transcript was deleted, and the entry
+ * is treated as deleted too. `unregistered`: no `createdAt`, so it never
+ * described a session on its own (a rename or star recorded against a
+ * transcript that predates registration) and is never listed. A `createdAt`
+ * that does not parse says nothing about age, so the entry is kept.
+ */
+function metadataOnlySession(
+  meta: SessionMetadata | undefined,
+  now: number,
+): 'new' | 'orphaned' | 'unregistered' {
+  if (!meta?.createdAt) return 'unregistered'
+  const createdAt = parseStoredDate(meta.createdAt)
+  if (!createdAt) return 'new'
+  return now - createdAt.getTime() > NEW_SESSION_GRACE_MS ? 'orphaned' : 'new'
+}
+
+/**
+ * Drop the metadata of sessions a listing found orphaned. Runs after the
+ * listing has answered, and decides every id under the document's
+ * serialization, transcript check included: an entry is removed only when
+ * its transcript is still absent and it is still older than the grace
+ * window at that moment, so a transcript that appeared while the prune
+ * waited for the document, or a re-registration, survives. Failures are
+ * reported and otherwise ignored: the next listing finds the same orphans.
+ */
+function pruneOrphanedMetadata(store: SessionStore, sessionIds: string[]): void {
+  if (sessionIds.length === 0) return
+  background(store.config
+    .update('sessionMetadata', async (current) => {
+      const metadata = { ...(current ?? {}) } as SessionMetadataMap
+      const now = Date.now()
+      let changed = false
+      for (const sessionId of sessionIds) {
+        if (!Object.hasOwn(metadata, sessionId)) continue
+        if (metadataOnlySession(metadata[sessionId], now) !== 'orphaned') continue
+        if ((await store.files.stat(transcriptPath(store, sessionId))) !== null) continue
+        delete metadata[sessionId]
+        changed = true
+      }
+      return changed ? (metadata as ConfigDoc<'sessionMetadata'>) : null
+    })
+    .then(() => undefined)
+    .catch((error) => {
+      console.warn(`Could not prune orphaned session metadata for agent ${store.slug}:`, error)
+      captureException(error, { tags: { area: 'session-metadata', op: 'prune-orphans' }, extra: { agentSlug: store.slug } })
+    }), { name: 'session-service.prune-orphaned-metadata' })
+}
+
+// Prefer metadata createdAt; birthtime is unsupported (epoch 0) on network
+// filesystems like S3 Files / EFS used by the k8s / microVM runtime, and
+// absent from a store that keeps none.
+function resolveSessionCreatedAt(
+  meta: SessionMetadata | undefined,
+  stat: { birthtimeMs?: number; mtimeMs: number },
+): Date {
+  const recorded = parseStoredDate(meta?.createdAt)
+  if (recorded) return recorded
+  // Same rounding Node applies when it derives stat.birthtime from the ns value.
+  if (stat.birthtimeMs !== undefined && stat.birthtimeMs > 0) return new Date(Math.round(stat.birthtimeMs))
+  return new Date(stat.mtimeMs)
 }
 
 // ============================================================================
 // Session Operations
 // ============================================================================
 
+function summaryFromActivityMap(activityBySession: ReadonlyMap<string, SessionActivityEntry>): {
+  sessionIds: string[]
+  sessionCount: number
+  lastActivityAt: Date | null
+} {
+  const sessionIds = [...activityBySession.keys()]
+  let latestMs: number | null = null
+  for (const { mtimeMs } of activityBySession.values()) {
+    if (latestMs === null || mtimeMs > latestMs) latestMs = mtimeMs
+  }
+  return {
+    sessionIds,
+    sessionCount: sessionIds.length,
+    lastActivityAt: latestMs === null ? null : new Date(latestMs),
+  }
+}
+
+/** Whether the transcripts directory exists: one stat. */
+async function transcriptsDirectoryExists(store: SessionStore): Promise<boolean> {
+  try {
+    return (await store.files.stat(store.transcriptsDir))?.kind === 'directory'
+  } catch {
+    return false
+  }
+}
+
+/** Whether a transcript exists: one stat, false for any failure. */
+async function transcriptExists(store: SessionStore, jsonlPath: string): Promise<boolean> {
+  try {
+    return (await store.files.stat(jsonlPath))?.kind === 'file'
+  } catch {
+    return false
+  }
+}
+
+async function getSessionsDirectoryMtime(store: SessionStore): Promise<number | null> {
+  try {
+    const stat = await store.files.stat(store.transcriptsDir)
+    return stat?.kind === 'directory' ? stat.mtimeMs : null
+  } catch {
+    // Fail soft, as the existence check does.
+    return null
+  }
+}
+
 /**
- * Lightweight session summary from filesystem stats only (no JSONL parsing).
- * Returns session IDs, count, and latest activity time.
+ * Stat one transcript for the summary build. A file deleted between the
+ * listing and the stat (deleteSession racing a scan) is not an error — it
+ * drops out of the build. Anything else is: the build's result is cached for
+ * minutes, so treating a transient network-filesystem failure (ESTALE, EIO, a
+ * timeout) as "no such session" would hide or misorder that session until
+ * the next reconciliation. Retry once, then let the build fail; nothing is
+ * cached and the next read rebuilds.
  */
-export async function getSessionSummary(agentSlug: string): Promise<{
+async function statTranscriptForSummary(store: SessionStore, jsonlPath: string) {
+  try {
+    return await store.files.stat(jsonlPath)
+  } catch {
+    return store.files.stat(jsonlPath)
+  }
+}
+
+/**
+ * Names of the `.jsonl` transcript files directly in the transcripts
+ * directory. Links are never listed by the store: a real session transcript
+ * is always a regular file the container wrote, and a link named like a
+ * session is an escape attempt (it resolves to another agent's transcript).
+ * Dropping it here keeps it out of every listing consumer at once, including
+ * the home-card tail that goes on to READ the latest session's content.
+ *
+ * KNOWN RESIDUAL (accepted, out of scope): this drops linked ENTRIES, but a
+ * listing still follows a linked ANCESTOR (an agent that replaced its own
+ * transcripts directory with a link), so such a listing reflects another
+ * agent's directory. Fully closing it needs a per-listing real-path lookup
+ * on the perf-pinned path — see the note in getLatestVisibleSessionTail, the
+ * one place it reaches content.
+ */
+async function readSessionTranscriptNames(store: SessionStore): Promise<string[]> {
+  const entries = await store.files.list(store.transcriptsDir)
+  return entries.filter((e) => e.kind === 'file' && e.name.endsWith('.jsonl')).map((e) => e.name)
+}
+
+function sessionIdOfTranscript(name: string): string {
+  return name.slice(0, -'.jsonl'.length)
+}
+
+async function buildSessionActivityMap(
+  store: SessionStore,
+  directoryMtimeMs: number | null,
+): Promise<Map<string, SessionActivityEntry>> {
+  if (directoryMtimeMs === null) return new Map()
+
+  const jsonlFiles = await readSessionTranscriptNames(store)
+  const limit = pLimit(10)
+  const stats = await Promise.all(
+    jsonlFiles.map((file) => limit(async () => {
+      const sessionId = sessionIdOfTranscript(file)
+      if (!isSessionIdWellFormed(sessionId)) return null
+      const stat = await statTranscriptForSummary(store, transcriptPath(store, sessionId))
+      if (!stat) return null
+      return {
+        sessionId,
+        entry: { mtimeMs: stat.mtimeMs, birthtimeMs: stat.birthtimeMs ?? 0, size: stat.size },
+      }
+    })),
+  )
+
+  const activityBySession = new Map<string, SessionActivityEntry>()
+  for (const result of stats) {
+    if (result) activityBySession.set(result.sessionId, result.entry)
+  }
+  return activityBySession
+}
+
+/**
+ * The per-agent activity map behind {@link getSessionSummary} and
+ * {@link listSessionsFromSummary}: one entry per transcript in the store.
+ * The first read (and structural/TTL reconciliation) stats every transcript;
+ * warm reads validate the directory with one stat and use stream-maintained
+ * per-session entries. Callers must treat the returned map as read-only.
+ *
+ * Invalidation: the directory's mtime (a transcript added or removed), the
+ * TTL, and the writes the live sessions and the transcript appends record
+ * through `recordSessionActivity`. Nothing watches the directory.
+ */
+async function loadSessionActivityMap(
+  store: SessionStore,
+): Promise<ReadonlyMap<string, SessionActivityEntry>> {
+  const slot = getSessionSummaryCacheSlot(store)
+  const directoryMtimeMs = await getSessionsDirectoryMtime(store)
+  const now = Date.now()
+  if (
+    slot.value &&
+    slot.value.directoryMtimeMs === directoryMtimeMs &&
+    now - slot.value.builtAtMs < SESSION_SUMMARY_CACHE_TTL_MS
+  ) {
+    return slot.value.activityBySession
+  }
+
+  if (slot.loading) {
+    const loaded = await slot.loading
+    if (
+      slot.value === loaded &&
+      loaded.directoryMtimeMs === directoryMtimeMs &&
+      Date.now() - loaded.builtAtMs < SESSION_SUMMARY_CACHE_TTL_MS
+    ) {
+      return loaded.activityBySession
+    }
+    return loadSessionActivityMap(store)
+  }
+
+  const revision = slot.revision
+  const loading = buildSessionActivityMap(store, directoryMtimeMs)
+    .then((activityBySession): SessionSummaryCacheValue => {
+      if (slot.revision !== revision) {
+        if (slot.loading === loading) slot.loading = undefined
+        return { directoryMtimeMs, builtAtMs: Date.now(), revision, activityBySession }
+      }
+      for (const [sessionId, mutation] of slot.pending) {
+        if (mutation.deleted) {
+          activityBySession.delete(sessionId)
+        } else if (mutation.activityAtMs !== undefined) {
+          const entry = activityBySession.get(sessionId)
+          if (entry) applyActivity(entry, mutation.activityAtMs)
+        }
+      }
+      slot.pending.clear()
+      const value = { directoryMtimeMs, builtAtMs: Date.now(), revision, activityBySession }
+      slot.value = value
+      // Clear the in-flight marker before awaiters resume. Any subsequent
+      // mutation can update the completed value directly and need not linger
+      // in the pending map until the next TTL rebuild.
+      if (slot.loading === loading) slot.loading = undefined
+      return value
+    })
+  slot.loading = loading
+  try {
+    const loaded = await loading
+    if (slot.value !== loaded) return loadSessionActivityMap(store)
+    return loaded.activityBySession
+  } finally {
+    if (slot.loading === loading) slot.loading = undefined
+  }
+}
+
+/**
+ * Lightweight session summary from file stats only (no JSONL parsing).
+ * Returns session IDs, count, and latest activity time. Warm reads cost one
+ * directory stat; see {@link loadSessionActivityMap}.
+ */
+export async function getSessionSummary(store: SessionStore): Promise<{
   sessionIds: string[]
   sessionCount: number
   lastActivityAt: Date | null
 }> {
-  const sessionsDir = getAgentSessionsDir(agentSlug)
+  return summaryFromActivityMap(await loadSessionActivityMap(store))
+}
 
-  if (!(await directoryExists(sessionsDir))) {
-    return { sessionIds: [], sessionCount: 0, lastActivityAt: null }
+export type SessionSortBy = 'last_activity_at'
+
+export const SESSIONS_LIST_MAX_LIMIT = 100
+
+export interface ListSessionsOptions {
+  excludeAutomated?: boolean
+  sortBy?: SessionSortBy
+  limit?: number
+}
+
+/**
+ * Return a deterministically ordered copy of a session list.
+ *
+ * Keep this shared between the full sessions endpoint, its notable projection,
+ * and aggregate agent responses. In particular, callers must visibility-filter
+ * before invoking this helper and applying a limit.
+ */
+export function sortSessionsNewestFirst<T extends SessionActivityFields>(
+  sessions: readonly T[],
+  sortBy: SessionSortBy = 'last_activity_at',
+): T[] {
+  switch (sortBy) {
+    case 'last_activity_at':
+      return sortSessionsByActivity(sessions, 'newest')
   }
-
-  const files = await fs.promises.readdir(sessionsDir)
-  const jsonlFiles = files.filter((f) => f.endsWith('.jsonl'))
-
-  const limit = pLimit(10)
-  const stats = await Promise.all(
-    jsonlFiles.map((file) => limit(async () => {
-      const stat = await fs.promises.stat(path.join(sessionsDir, file))
-      return { sessionId: path.basename(file, '.jsonl'), mtimeMs: stat.mtimeMs }
-    }))
-  )
-
-  let lastActivityAt: Date | null = null
-  const sessionIds: string[] = []
-  for (const { sessionId, mtimeMs } of stats) {
-    sessionIds.push(sessionId)
-    if (!lastActivityAt || mtimeMs > lastActivityAt.getTime()) {
-      lastActivityAt = new Date(mtimeMs)
-    }
-  }
-
-  return { sessionIds, sessionCount: jsonlFiles.length, lastActivityAt }
 }
 
 /**
@@ -228,35 +800,29 @@ export async function getSessionSummary(agentSlug: string): Promise<{
  * Does NOT read full JSONL file contents — safe for large session directories.
  */
 export async function listSessions(
-  agentSlug: string,
-  options?: { excludeAutomated?: boolean },
+  store: SessionStore,
+  options?: ListSessionsOptions,
 ): Promise<SessionInfo[]> {
-  const sessionsDir = getAgentSessionsDir(agentSlug)
-
   // Read session metadata (includes newly created sessions without JSONL yet)
-  const metadata = await readSessionMetadata(agentSlug)
+  const metadata = await readSessionMetadata(store)
 
-  const isAutomated = (sessionId: string) => {
-    const meta = metadata[sessionId]
-    return meta?.isScheduledExecution || meta?.isWebhookExecution || meta?.isChatIntegrationSession
-  }
+  const isAutomated = (sessionId: string) => isHiddenAutomatedSession(metadata[sessionId])
 
   // Track which sessions we've processed
   const processedSessionIds = new Set<string>()
   const sessions: SessionInfo[] = []
 
   // First, process sessions with JSONL files
-  if (await directoryExists(sessionsDir)) {
-    const files = await fs.promises.readdir(sessionsDir)
-    const jsonlFiles = files.filter((f) => f.endsWith('.jsonl'))
+  if (await transcriptsDirectoryExists(store)) {
+    const jsonlFiles = await readSessionTranscriptNames(store)
 
     const limit = pLimit(10)
     const statResults = await Promise.all(
       jsonlFiles.map((file) => limit(async () => {
-        const sessionId = path.basename(file, '.jsonl')
-        const jsonlPath = path.join(sessionsDir, file)
+        const sessionId = sessionIdOfTranscript(file)
+        if (!isSessionIdWellFormed(sessionId)) return { sessionId, stat: null }
         try {
-          const stat = await fs.promises.stat(jsonlPath)
+          const stat = await store.files.stat(transcriptPath(store, sessionId))
           return { sessionId, stat }
         } catch (error) {
           console.warn(`Failed to stat session ${sessionId}:`, error)
@@ -270,6 +836,8 @@ export async function listSessions(
       const { sessionId, stat } = result
       processedSessionIds.add(sessionId)
 
+      if (!stat || !isSessionIdWellFormed(sessionId)) continue
+
       // Skip empty JSONL files that aren't registered in metadata
       // These are typically created by Claude SDK for subagent directories
       if (stat.size === 0 && !metadata[sessionId]) {
@@ -281,78 +849,200 @@ export async function listSessions(
         continue
       }
 
-      sessions.push({
-        id: sessionId,
-        agentSlug,
-        name: metadata[sessionId]?.name || 'New Session',
-        createdAt: stat.birthtime,
-        lastActivityAt: new Date(stat.mtimeMs),
-        messageCount: 0,
-      })
+      sessions.push(sessionFromTranscriptStat(sessionId, store.slug, metadata[sessionId], stat))
     }
   }
 
   // Then, add sessions from metadata that don't have JSONL files yet
-  // (newly created sessions where Claude hasn't written yet)
+  // (newly created sessions where the agent hasn't streamed yet)
+  const now = Date.now()
+  const orphaned: string[] = []
   for (const [sessionId, sessionMeta] of Object.entries(metadata)) {
-    if (!processedSessionIds.has(sessionId) && sessionMeta.createdAt) {
-      // Skip scheduled/webhook sessions when requested
-      if (options?.excludeAutomated && isAutomated(sessionId)) {
-        continue
-      }
-
-      const createdAt = new Date(sessionMeta.createdAt)
-      sessions.push({
-        id: sessionId,
-        agentSlug,
-        name: sessionMeta.name || 'New Session',
-        createdAt,
-        lastActivityAt: createdAt,
-        messageCount: 0,
-      })
+    if (processedSessionIds.has(sessionId)) continue
+    if (!isSessionIdWellFormed(sessionId)) continue
+    const kind = metadataOnlySession(sessionMeta, now)
+    if (kind === 'unregistered') continue
+    if (kind === 'orphaned') {
+      orphaned.push(sessionId)
+      continue
     }
+    // Skip scheduled/webhook sessions when requested
+    if (options?.excludeAutomated && isAutomated(sessionId)) {
+      continue
+    }
+
+    sessions.push(emptySessionFromMetadata(sessionId, store.slug, sessionMeta))
   }
+  pruneOrphanedMetadata(store, orphaned)
 
-  // Sort by last activity, newest first
-  sessions.sort((a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime())
+  // Visibility filtering above must happen before ordering and limiting: a
+  // newer hidden automation must never consume a mobile client's limit.
+  const ordered = sortSessionsNewestFirst(sessions, options?.sortBy)
 
-  return sessions
+  return options?.limit === undefined
+    ? ordered
+    : ordered.slice(0, options.limit)
 }
 
 /**
- * Get a single session's info
+ * The same visible list as {@link listSessions}, built from the session summary
+ * cache instead of a stat of every transcript.
+ *
+ * Warm cost is one directory stat (the cache validation) plus the metadata
+ * read — or nothing beyond the directory stat when the caller passes the map
+ * it already holds. This is what request-path consumers should use: the
+ * agents list hydrates every agent per poll, and on network filesystems each
+ * transcript stat is a round trip. Freshness is that of the summary cache —
+ * structural changes (new/deleted transcripts) reconcile via directory mtime
+ * and invalidation, appends via recordSessionActivity — i.e. exactly the
+ * fidelity of the agent card's lastActivityAt.
+ *
+ * Applies the same rules as listSessions: unregistered empty transcripts
+ * skipped, orphaned registrations dropped, visibility filtered BEFORE
+ * ordering and limit.
  */
-export async function getSession(
-  agentSlug: string,
-  sessionId: string
-): Promise<SessionInfo | null> {
-  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+export async function listSessionsFromSummary(
+  store: SessionStore,
+  options?: ListSessionsOptions & { metadata?: SessionMetadataMap },
+): Promise<SessionInfo[]> {
+  const metadata = options?.metadata ?? (await readSessionMetadata(store))
+  const activity = await loadSessionActivityMap(store)
+  const metaFor = (sessionId: string): SessionMetadata | undefined =>
+    Object.hasOwn(metadata, sessionId) ? metadata[sessionId] : undefined
+  const isAutomated = (sessionId: string) => isHiddenAutomatedSession(metaFor(sessionId))
 
-  if (!(await fileExists(jsonlPath))) {
-    return null
+  const sessions: SessionInfo[] = []
+  for (const [sessionId, entry] of activity) {
+    const meta = metaFor(sessionId)
+    // Same rule as listSessions: an unregistered empty JSONL is an SDK
+    // subagent artifact, not a session.
+    if (entry.size === 0 && !meta) continue
+    if (options?.excludeAutomated && isAutomated(sessionId)) continue
+    sessions.push(sessionFromTranscriptStat(sessionId, store.slug, meta, entry))
   }
 
-  const metadata = await getSessionMetadata(agentSlug, sessionId)
-  const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
+  // Registered sessions whose agent has not streamed yet (no transcript).
+  const now = Date.now()
+  const orphaned: string[] = []
+  for (const [sessionId, sessionMeta] of Object.entries(metadata)) {
+    if (activity.has(sessionId)) continue
+    if (!isSessionIdWellFormed(sessionId)) continue
+    const kind = metadataOnlySession(sessionMeta, now)
+    if (kind === 'unregistered') continue
+    if (kind === 'orphaned') {
+      orphaned.push(sessionId)
+      continue
+    }
+    if (options?.excludeAutomated && isAutomated(sessionId)) continue
+    sessions.push(emptySessionFromMetadata(sessionId, store.slug, sessionMeta))
+  }
+  pruneOrphanedMetadata(store, orphaned)
 
-  return parseSessionInfo(sessionId, agentSlug, entries, metadata || undefined)
+  const ordered = sortSessionsNewestFirst(sessions, options?.sortBy)
+  return options?.limit === undefined ? ordered : ordered.slice(0, options.limit)
+}
+
+/**
+ * Build SessionInfo for a specific set of session ids without enumerating
+ * the transcripts directory — one metadata read plus one stat per requested
+ * id. The badge/toolbar consumers ("notable sessions") only ever need a
+ * handful of live/unread ids; listSessions stats EVERY transcript, which is
+ * 20k stats for a 20k-session agent. Unknown ids (no transcript, no metadata
+ * registration) are skipped.
+ */
+export async function listSessionsByIds(
+  store: SessionStore,
+  sessionIds: string[],
+  options?: { excludeAutomated?: boolean },
+): Promise<SessionInfo[]> {
+  if (sessionIds.length === 0) return []
+  const metadata = await readSessionMetadata(store)
+  const isAutomated = (sessionId: string) => isHiddenAutomatedSession(metadata[sessionId])
+  const limit = pLimit(10)
+  const now = Date.now()
+  const sessions = await Promise.all(
+    [...new Set(sessionIds)].map((sessionId) =>
+      limit(async (): Promise<SessionInfo | null> => {
+        if (!isSessionIdWellFormed(sessionId)) return null
+        if (options?.excludeAutomated && isAutomated(sessionId)) return null
+        let stat: Awaited<ReturnType<typeof store.files.stat>>
+        try {
+          stat = await store.files.stat(transcriptPath(store, sessionId))
+        } catch {
+          stat = null
+        }
+        if (stat) {
+          // Same rule as listSessions: unregistered empty JSONLs are SDK
+          // subagent artifacts, not sessions.
+          if (stat.size === 0 && !metadata[sessionId]) return null
+          return sessionFromTranscriptStat(sessionId, store.slug, metadata[sessionId], stat)
+        }
+        const meta = metadata[sessionId]
+        if (meta && metadataOnlySession(meta, now) === 'new') {
+          return emptySessionFromMetadata(sessionId, store.slug, meta)
+        }
+        return null
+      }),
+    ),
+  )
+  return sessions.filter((s): s is SessionInfo => s !== null)
+}
+
+/**
+ * Get a single session's info: metadata plus one stat of the transcript, the
+ * same fields the session list reports. Never reads the transcript itself.
+ */
+export async function getSession(
+  store: SessionStore,
+  sessionId: string,
+  already?: { metadata: SessionMetadata | null },
+): Promise<SessionInfo | null> {
+  // Content-serving path (the single-session route reads this): link-aware,
+  // so a planted link to another agent's transcript resolves to null, not that
+  // agent's session summary.
+  if (!(await sessionFileRealPathWithinAgent(store, sessionId))) return null
+  const metadata = already ? already.metadata : await getSessionMetadata(store, sessionId)
+
+  let stat: Awaited<ReturnType<typeof store.files.stat>>
+  try {
+    stat = await store.files.stat(transcriptPath(store, sessionId))
+  } catch {
+    stat = null
+  }
+  if (stat?.kind === 'file') {
+    return sessionFromTranscriptStat(sessionId, store.slug, metadata ?? undefined, stat)
+  }
+
+  // No transcript yet, but the session is registered → it was just created and
+  // the agent hasn't streamed its first message (which is what writes the
+  // JSONL). Report it as an empty session, matching listSessions, instead of
+  // 404ing a session that genuinely exists. Registration (the metadata write)
+  // is synchronous in the create path, so by the time a client navigates to a
+  // new session it is always readable here. A registration older than the
+  // grace window with no transcript is a deleted session; a genuine 404 means
+  // the session is in neither store — truly missing.
+  if (metadata && metadataOnlySession(metadata, Date.now()) === 'new') {
+    return emptySessionFromMetadata(sessionId, store.slug, metadata)
+  }
+
+  return null
 }
 
 /**
  * Get all messages from a session
  */
 export async function getSessionMessages(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string
 ): Promise<JsonlMessageEntry[]> {
-  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  const jsonlPath = transcriptPath(store, sessionId)
 
-  if (!(await fileExists(jsonlPath))) {
+  if (!(await transcriptExists(store, jsonlPath))) {
     return []
   }
 
-  const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
-  return entries.filter(isMessageEntry)
+  const entries = await readJsonl<JsonlEntry>(store.files, jsonlPath)
+  return entries.map(normalizeQueuedCommandEntry).filter(isMessageEntry)
 }
 
 /**
@@ -364,7 +1054,7 @@ function isMessageOrSystemDisplayEntry(
   if (entry.type === 'user' || entry.type === 'assistant') return true
   if (entry.type === 'system') {
     const subtype = (entry as JsonlSystemEntry).subtype
-    return subtype === 'compact_boundary' || subtype === 'memory_recall'
+    return subtype === 'compact_boundary' || subtype === 'memory_recall' || subtype === 'informational'
   }
   return false
 }
@@ -373,65 +1063,1158 @@ function isMessageOrSystemDisplayEntry(
  * Get all messages from a session including compact boundary markers
  */
 export async function getSessionMessagesWithCompact(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string
 ): Promise<(JsonlMessageEntry | JsonlSystemEntry)[]> {
-  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  const jsonlPath = transcriptPath(store, sessionId)
 
-  if (!(await fileExists(jsonlPath))) {
+  if (!(await transcriptExists(store, jsonlPath))) {
     return []
   }
 
-  const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
-  return entries.filter(isMessageOrSystemDisplayEntry)
+  const entries = await readJsonl<JsonlEntry>(store.files, jsonlPath)
+  return entries.map(normalizeQueuedCommandEntry).filter(isMessageOrSystemDisplayEntry)
+}
+
+export interface SessionMessagesPage {
+  messages: TransformedItem[]
+  nextCursor: string | null
+}
+
+// Hard bound on how deep paging can reach: every cursor request re-scans from
+// EOF, so history beyond this many raw JSONL lines is unreachable (walk is
+// O(depth²)). Lifting it needs an offset-carrying cursor that seeks instead.
+const MAX_TAIL_LINES = 50_000
+// Soft cap on the raw bytes a single page window may materialize. A window
+// that hits it is served short with a nextCursor, and the client's existing
+// scroll-up paging fetches the rest — this is what makes the endpoint's
+// per-request memory bounded regardless of transcript geometry (a single turn
+// with huge tool results used to pull the whole file into one window). Soft:
+// the scan runs past it until the window holds at least two display items
+// (one sacrificial head plus one servable), so a single item larger than the
+// budget still serves instead of yielding an empty page. A request's
+// `max_bytes` can lower it, never raise it (the route clamps to this value).
+const MESSAGES_PAGE_BYTE_BUDGET = MESSAGES_PAGE_MAX_BYTES
+// Ceiling on the window — the structural memory bound. The true per-request
+// bound is O(hardCap + one turn's span + largest single row): the cap yields
+// only to three exceptions, each bounded by content that must be materialized
+// to serve anything at all — (a) at least one complete servable display item
+// (a session whose newest turn just wrote a huge tool-result run must still
+// render), (b) closing an assistant merge group whose entries straddle the
+// boundary (a cut group's item id vanishes on the next window and terminates
+// pagination), and (c) a single JSONL row, which has to be assembled whole
+// even to classify it. Multi-MB embedded content stops hitting this path
+// entirely when large payloads move behind references (the media-ref
+// follow-up ticket).
+const MESSAGES_PAGE_HARD_CAP_FACTOR = 2
+// A cursor page's window extends at least this far past the cursor line so
+// tool_use blocks near the page's newest edge still meet their tool_result
+// entries (results land within the same turn, typically adjacent lines). The
+// boundary is then rounded UP to the next line start, so any row that BEGINS
+// inside the grace region is included whole — a fixed byte end would cut a
+// large result row mid-line and drop it as malformed. The old implementation
+// read from the cursor to EOF; results starting beyond the grace region are
+// not attached — bounded staleness on a historical page, never on the
+// trailing page (whose window always ends at EOF).
+const CURSOR_WINDOW_GRACE_BYTES = 512 * 1024
+
+function pageCursor(messages: TransformedItem[], hasOlder: boolean): string | null {
+  return hasOlder && messages[0] ? messages[0].id : null
+}
+
+/** A cursor that names a row the window merged into another item.
+ *
+ * On resume the CLI can re-append a few rows of earlier history verbatim
+ * (same uuids, same message ids). The whole-file transform dedupes the copy;
+ * a page window holding only the copy cannot, and renders a re-appended
+ * tool-call row of a split assistant response as an item of its own, under
+ * its own uuid — a phantom. Served as a page's first item, that uuid becomes
+ * the next cursor. The scan anchors it at the deepest copy, the original row,
+ * whose window merges it into its response under the head row's uuid: the
+ * cursor names no item, though its row is right there. Only a phantom can
+ * produce such a cursor (a real item's id is its head row's uuid). */
+function isPhantomCursor(
+  entries: (JsonlMessageEntry | JsonlSystemEntry)[],
+  transformed: TransformedItem[],
+  cursor: string
+): boolean {
+  const row = entries.find((e) => e.uuid === cursor)
+  if (row?.type !== 'assistant' || !row.message.id) return false
+  const itemIds = new Set(transformed.map((item) => item.id))
+  return entries.some((e) => e.type === 'assistant' && e.message.id === row.message.id && itemIds.has(e.uuid))
+}
+
+/** Number of leading items whose head row lies at or before the newest copy
+ * of `cursor` in `entries` — the items older than that copy, when the copy
+ * itself merged into one of them. */
+function countItemsThrough(
+  entries: (JsonlMessageEntry | JsonlSystemEntry)[],
+  transformed: TransformedItem[],
+  cursor: string
+): number {
+  const headPos = new Map<string, number>()
+  let cursorPos = -1
+  for (const [i, e] of entries.entries()) {
+    if (!headPos.has(e.uuid)) headPos.set(e.uuid, i)
+    if (e.uuid === cursor) cursorPos = i
+  }
+  if (cursorPos === -1) return -1
+  let count = 0
+  for (const [i, item] of transformed.entries()) {
+    const pos = headPos.get(item.id)
+    if (pos !== undefined && pos <= cursorPos) count = i + 1
+  }
+  return count
+}
+
+/** Tail-window read + parse + transform shared by the page and delta readers.
+ *
+ * `signal` aborts the read/parse work mid-flight (throws AbortError): the
+ * callers are HTTP routes whose clients cancel superseded refetches, and without
+ * the signal every abandoned request still pays full transcript reads server-side. */
+async function readTransformedTail(
+  store: SessionStore,
+  jsonlPath: string,
+  maxLines: number,
+  signal?: AbortSignal,
+  /** True replaces inline base64 images with refs (see session-media); the
+   * default keeps them inline, which is what pre-`media=ref` clients expect. */
+  media?: boolean
+): Promise<{
+  transformed: TransformedItem[]
+  entries: (JsonlMessageEntry | JsonlSystemEntry)[]
+  reachedStart: boolean
+}> {
+  const { lines, offsets, reachedStart } = await readTailLines(store.files, jsonlPath, maxLines, signal)
+  // An abort landing on the last chunk read still saves the parse/transform
+  // below — on large transcripts that is seconds of synchronous work.
+  signal?.throwIfAborted()
+  const entries: (JsonlMessageEntry | JsonlSystemEntry)[] = []
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    const parsed = parseJsonlLine<JsonlEntry>(line)
+    if (!parsed) continue
+    const normalized = normalizeQueuedCommandEntry(parsed)
+    if (
+      isMessageOrSystemDisplayEntry(normalized) &&
+      !('isMeta' in normalized && normalized.isMeta)
+    ) {
+      if (media) {
+        replaceInlineMediaWithRefs(normalized, { line, lineOffset: offsets[i]! })
+      }
+      entries.push(normalized)
+    }
+  }
+  return { transformed: transformMessages(entries), entries, reachedStart }
+}
+
+/** tool_use ids of tool_result blocks recorded after the anchor entry — new
+ * lines the client hasn't seen, whose parent assistant items (possibly before
+ * the anchor) they mutate. */
+function toolResultIdsAfterEntry(
+  entries: (JsonlMessageEntry | JsonlSystemEntry)[],
+  anchorUuid: string
+): Set<string> {
+  const ids = new Set<string>()
+  const anchorIdx = entries.findIndex((e) => e.uuid === anchorUuid)
+  for (let i = anchorIdx + 1; i < entries.length; i++) {
+    const entry = entries[i]
+    if (entry.type !== 'user') continue
+    const content = (entry as JsonlMessageEntry).message.content
+    if (!Array.isArray(content)) continue
+    for (const block of content as ContentBlock[]) {
+      if (block.type === 'tool_result') ids.add(block.tool_use_id)
+    }
+  }
+  return ids
+}
+
+/** Bookkeeping for the backward display-item count. Mirrors the parts of
+ * transformMessages that decide whether an entry STARTS a new display item;
+ * only counters, uuids, and message ids are retained — never entry content. */
+interface DisplayCountState {
+  seenUuids: Set<string>
+  seenAssistantMessageIds: Set<string>
+  /** Content of an informational banner whose synthetic user copy (the
+   * adjacent older entry with identical string content) must not count. */
+  pendingInformationalContent: string | null
+}
+
+/** Whether this (already normalized) entry starts a new display item, by the
+ * same rules transformMessages applies (uuid dedup, assistant merge by
+ * message.id, meta/tool-result-only/task-notification/compact-summary skips).
+ * Entries are visited NEWEST-FIRST, so "first occurrence" checks invert: the
+ * newest copy of a duplicate uuid / merged message.id is the one counted.
+ * That can place a count on a different line than the forward transform
+ * keeps, which shifts the window boundary by at most the affected item —
+ * absorbed by the sacrificial head item the page slicing drops when the
+ * window's deepest item may be partial. */
+function countsAsDisplayStart(entry: JsonlEntry, state: DisplayCountState): boolean {
+  if (!isMessageOrSystemDisplayEntry(entry)) return false
+  if ('isMeta' in entry && entry.isMeta) return false
+  if (isSyntheticPlaceholderMessage(entry)) return false
+
+  if (entry.type === 'system') {
+    const sys = entry as JsonlSystemEntry
+    if (state.seenUuids.has(sys.uuid)) return false
+    state.seenUuids.add(sys.uuid)
+    state.pendingInformationalContent =
+      sys.subtype === 'informational' ? (sys.content ?? '') : null
+    return true
+  }
+
+  const msg = entry as JsonlMessageEntry
+  const pendingInfo = state.pendingInformationalContent
+  state.pendingInformationalContent = null
+  if (
+    pendingInfo !== null &&
+    msg.type === 'user' &&
+    typeof msg.message.content === 'string' &&
+    msg.message.content === pendingInfo
+  ) {
+    // The CLI's synthetic stop-text copy directly before an informational
+    // banner — hidden by the transform, the banner is the visible surface.
+    return false
+  }
+  if (msg.uuid) {
+    if (state.seenUuids.has(msg.uuid)) return false
+    state.seenUuids.add(msg.uuid)
+  }
+  if (msg.type === 'user') {
+    if (msg.isCompactSummary) return false
+    if (isToolResultOnlyMessage(msg)) return false
+    if (isTaskNotificationMessage(msg)) return monitorNotificationOf(msg) !== null
+    return true
+  }
+  const messageId = msg.message.id
+  if (messageId) {
+    if (state.seenAssistantMessageIds.has(messageId)) return false
+    state.seenAssistantMessageIds.add(messageId)
+  }
+  return true
+}
+
+/** Pass 1 found no window: the cursor's id vanished, or lies deeper than the
+ * line cap. Nothing is read; the page terminates. */
+interface PageWindowNotFound {
+  found: false
+  /** The scan ran to the file start (so the id is truly gone, not just deep). */
+  reachedStart: boolean
+}
+
+interface PageWindowFound {
+  /** Cursor located (always true for the no-cursor trailing page). */
+  found: true
+  /** Byte offset of the window's first line. */
+  startOffset: number
+  /** Exclusive end of the window; undefined = read to EOF (trailing page). */
+  endOffset: number | undefined
+  /** Window start coincides with the file start. */
+  reachedStart: boolean
+  /** The window's deepest display item may be partially merged (an assistant
+   * group whose older entries lie below the window start) — page slicing must
+   * sacrifice it. False when the deepest item is single-entry (user, system,
+   * id-less assistant): those are complete wherever the window starts, and
+   * dropping them would lose data (an empty page behind a huge tool-result
+   * run, a trailing system item swallowed by display reordering). */
+  dropHead: boolean
+  /** Bytes the window read (pass 2) is expected to cover — to EOF as of the
+   * scan when `endOffset` is undefined. Sizes that read's chunks. */
+  readBytes: number
+}
+
+type PageWindowScan = PageWindowFound | PageWindowNotFound
+
+/** Smallest recorded line-start offset at or past the grace distance, so the
+ * window end lands on a line boundary: any row BEGINNING inside the grace
+ * region is included whole. undefined = grace reaches past the newest scanned
+ * line, read to EOF. `lineOffsets` is newest-first (descending). */
+function graceEndOffset(lineOffsets: number[], cursorLineEnd: number): number | undefined {
+  const target = cursorLineEnd + CURSOR_WINDOW_GRACE_BYTES
+  for (let i = lineOffsets.length - 1; i >= 0; i--) {
+    if (lineOffsets[i]! >= target) return lineOffsets[i]
+  }
+  return undefined
+}
+
+/** How a row behaves at the extension boundary after a counting stop.
+ *
+ * 'system': a system display item — the run continues, and the row becomes
+ * the window's deepest COMPLETE item. 'filtered': removed by readEntriesRange
+ * or skipped by the transform before ordering (meta rows, non-display entry
+ * types, malformed lines, compact summaries, an informational's synthetic
+ * user copy) — invisible to transform adjacency, so it cannot split a logical
+ * system run and the extension walks through it. 'settle': acts as an anchor
+ * in the transform (a real user/assistant row, including tool-result-only
+ * ones, which genuinely split the system-attachment grouping) — the run ends
+ * just above it. */
+function classifyExtensionRow(
+  normalized: JsonlEntry | undefined,
+  state: DisplayCountState
+): 'system' | 'filtered' | 'settle' {
+  if (normalized === undefined) return 'filtered'
+  if (!isMessageOrSystemDisplayEntry(normalized)) return 'filtered'
+  if ('isMeta' in normalized && normalized.isMeta) return 'filtered'
+  if (isSyntheticPlaceholderMessage(normalized)) return 'filtered'
+  if (normalized.type === 'system') {
+    const sys = normalized as JsonlSystemEntry
+    // Mirror countsAsDisplayStart's synthetic-copy tracking so the copy of an
+    // informational consumed here is recognized on the next (older) line.
+    state.pendingInformationalContent =
+      sys.subtype === 'informational' ? (sys.content ?? '') : null
+    return 'system'
+  }
+  const msg = normalized as JsonlMessageEntry
+  const pendingInfo = state.pendingInformationalContent
+  state.pendingInformationalContent = null
+  if (msg.type === 'user') {
+    if (
+      pendingInfo !== null &&
+      typeof msg.message.content === 'string' &&
+      msg.message.content === pendingInfo
+    ) {
+      return 'filtered'
+    }
+    if (msg.isCompactSummary) return 'filtered'
+  }
+  return 'settle'
+}
+
+/** Pass 1 of the paged read: walk backward from EOF, parsing each line
+ * transiently to count display-item starts (and locate the cursor), retaining
+ * only offsets and id sets. Counting stops at `limit + 1` items, the byte
+ * budget (two-item floor), or unconditionally at the hard cap; the whole scan
+ * is bounded by MAX_TAIL_LINES and the file start. Never materializes
+ * entries, so scan depth costs CPU, not memory.
+ *
+ * Cursor resolution is canonical: the forward transform deduplicates uuids to
+ * their OLDEST occurrence, so the scan keeps byte-searching below the first
+ * match and re-anchors on every deeper verified occurrence (a resume-replayed
+ * transcript otherwise paginates in a cycle, serving the same pages forever).
+ * Between matches, lines are only JSON-parsed when their raw bytes contain
+ * the quoted cursor id — the search is memchr, not a parse of the transcript.
+ *
+ * When counting stops on a system entry, the scan extends through the rest of
+ * the contiguous system run: the transform reorders adjacent system items
+ * (recalls, then boundaries, then informationals) regardless of file order,
+ * and a window boundary inside the run makes pagination skip the reordered
+ * items entirely. */
+async function scanMessagesPageWindow(
+  store: SessionStore,
+  jsonlPath: string,
+  opts: {
+    limit: number
+    cursor?: string
+    byteBudget: number
+    signal?: AbortSignal
+    /** `'shallowest'`: anchor at the newest verified occurrence of the cursor
+     * and treat deeper copies as ordinary rows. For a phantom cursor (see
+     * `isPhantomCursor`), where the copy nearest EOF is the row the client
+     * saw. Default: the deepest occurrence, the transform's canonical one. */
+    anchor?: 'deepest' | 'shallowest'
+  }
+): Promise<PageWindowScan> {
+  const { limit, cursor, byteBudget, signal } = opts
+  const anchorShallowest = opts.anchor === 'shallowest'
+  const hardCap = byteBudget * MESSAGES_PAGE_HARD_CAP_FACTOR
+  const cursorNeedle = cursor !== undefined ? Buffer.from(JSON.stringify(cursor)) : null
+  // Items needed below the cursor (or below EOF): the page plus the head
+  // item that slicing sacrifices when the window start may cut it.
+  const targetItems = limit + 1
+  // Line-start offsets of every scanned line, for grace-boundary placement on
+  // (re-)anchor. Bounded by MAX_TAIL_LINES numbers. Cursor pages only.
+  const lineOffsets: number[] | null = cursorNeedle ? [] : null
+
+  let mode: 'searching' | 'counting' | 'extending' | 'settled' =
+    cursorNeedle ? 'searching' : 'counting'
+  let anchored = cursorNeedle === null
+  let state: DisplayCountState = {
+    seenUuids: new Set(),
+    seenAssistantMessageIds: new Set(),
+    pendingInformationalContent: null,
+  }
+  let endOffset: number | undefined
+  let linesScanned = 0
+  let displayCount = 0
+  let windowBytes = 0
+  let startOffset = 0
+  let hitLineCap = false
+  // Conservative default: with nothing counted, treat the head as partial.
+  let deepestCountedIsGroup = true
+  // message.id of an assistant merge group whose span may extend below the
+  // current line — set while walking its (possibly interleaved) turn.
+  let openGroupId: string | null = null
+  // While the cursor is a system item, rows below it may belong to the same
+  // contiguous system run and reorder display-AFTER the cursor (recalls sort
+  // before boundaries before informationals regardless of file order). Such
+  // rows must not satisfy the item count: a page counted from them can
+  // transform to empty and terminate paging while older history exists.
+  // Suppression lifts at the first anchor row below the cursor's run; every
+  // item counted after that is provably display-before the cursor.
+  let suppressUntilAnchorRow = false
+  // The transform keeps only the NEWEST compact boundary before each anchor
+  // (a single-slot map keyed by the next message), so deeper boundaries in
+  // the same span collapse away and must not count as display items.
+  let boundaryCountedSinceAnchor = false
+  // End of the newest line: the file's end as this scan saw it.
+  let scanEnd: number | undefined
+
+  for await (const { line, offset } of iterateLinesBackward(store.files, jsonlPath, signal)) {
+    linesScanned++
+    if (linesScanned > MAX_TAIL_LINES) {
+      // Same reachability contract as the old tail reader: history deeper
+      // than MAX_TAIL_LINES raw lines from EOF cannot be paged to.
+      hitLineCap = true
+      break
+    }
+    scanEnd ??= offset + line.length + 1
+    lineOffsets?.push(offset)
+
+    if (cursorNeedle && line.includes(cursorNeedle)) {
+      const parsed = parseJsonlLine<JsonlEntry>(line)
+      const normalized = parsed !== undefined ? normalizeQueuedCommandEntry(parsed) : undefined
+      if (
+        normalized !== undefined &&
+        (normalized as { uuid?: string }).uuid === cursor &&
+        !(anchored && anchorShallowest)
+      ) {
+        // (Re-)anchor at this occurrence — the deepest seen so far wins.
+        mode = 'counting'
+        anchored = true
+        state = {
+          seenUuids: new Set(),
+          seenAssistantMessageIds: new Set(),
+          pendingInformationalContent: null,
+        }
+        displayCount = 0
+        windowBytes = 0
+        deepestCountedIsGroup = true
+        openGroupId = null
+        suppressUntilAnchorRow = normalized.type === 'system'
+        boundaryCountedSinceAnchor = false
+        startOffset = offset
+        endOffset = graceEndOffset(lineOffsets!, offset + line.length + 1)
+        continue
+      }
+      // A quoted-id byte match inside content or parentUuid parses to a
+      // different uuid — not an occurrence.
+    }
+
+    if (mode === 'searching' || mode === 'settled') continue
+
+    const parsed = parseJsonlLine<JsonlEntry>(line)
+    const normalized = parsed !== undefined ? normalizeQueuedCommandEntry(parsed) : undefined
+
+    if (mode === 'extending') {
+      const kind = classifyExtensionRow(normalized, state)
+      if (kind !== 'settle') {
+        // Cap-exempt: the transform reorders an entire contiguous system run
+        // as one unit, so a cap-placed boundary inside it loses items exactly
+        // like a cut merge group would. Bounded by the run's span — system
+        // and filtered rows are small.
+        windowBytes += line.length + 1
+        startOffset = offset
+        if (kind === 'system') deepestCountedIsGroup = false
+        continue
+      }
+      mode = 'settled'
+      if (!cursorNeedle) break
+      continue
+    }
+
+    // counting
+    windowBytes += line.length + 1
+    startOffset = offset
+    const msgEntry =
+      normalized !== undefined && (normalized.type === 'user' || normalized.type === 'assistant')
+        ? (normalized as JsonlMessageEntry)
+        : undefined
+    const pendingInfoBefore = state.pendingInformationalContent
+    // Checked BEFORE the classifier registers this row's uuid: a
+    // byte-identical replayed row shares its original's uuid, and the
+    // transform keys system-item anchors BY uuid — a duplicate row is the
+    // same anchor, not a new one. Treating it as new would reset the
+    // boundary-collapse span and lift system-cursor suppression, letting the
+    // page target be satisfied by items that never display.
+    const isDuplicateRow =
+      msgEntry !== undefined && !!msgEntry.uuid && state.seenUuids.has(msgEntry.uuid)
+    const counted = normalized !== undefined && countsAsDisplayStart(normalized, state)
+    // An anchor row is one the transform attaches system items to — a real
+    // message entry, not a filtered/skipped one (meta rows, compact
+    // summaries, an informational's synthetic user copy) and not a replayed
+    // duplicate of an anchor already seen.
+    const isAnchorRow =
+      msgEntry !== undefined &&
+      !isDuplicateRow &&
+      !('isMeta' in msgEntry && msgEntry.isMeta) &&
+      !msgEntry.isCompactSummary &&
+      !(
+        pendingInfoBefore !== null &&
+        msgEntry.type === 'user' &&
+        typeof msgEntry.message.content === 'string' &&
+        msgEntry.message.content === pendingInfoBefore
+      )
+    if (isAnchorRow) {
+      suppressUntilAnchorRow = false
+      boundaryCountedSinceAnchor = false
+    }
+    if (counted && !suppressUntilAnchorRow) {
+      const isBoundary =
+        normalized!.type === 'system' &&
+        (normalized as JsonlSystemEntry).subtype === 'compact_boundary'
+      if (isBoundary && boundaryCountedSinceAnchor) {
+        // Collapsed by the transform — the newest boundary in this span,
+        // already counted, is the only one that displays.
+      } else {
+        if (isBoundary) boundaryCountedSinceAnchor = true
+        displayCount++
+        deepestCountedIsGroup = msgEntry?.type === 'assistant' && !!msgEntry.message.id
+      }
+    }
+    // Merge-group span tracking. An assistant group's older entries can lie
+    // below queued/system/filtered rows interleaved inside its turn, so a
+    // window boundary placed while a group is "open" would cut it — the cut
+    // item gets a non-canonical id that vanishes from the next (deeper)
+    // window, terminating the client's pagination. No stop condition may fire
+    // while a group is open; a group closes at the first row that proves the
+    // turn boundary (a different assistant response, or a non-queued user
+    // row), which bounds the overshoot by one turn's span.
+    if (msgEntry !== undefined) {
+      if (msgEntry.type === 'assistant') {
+        openGroupId = msgEntry.message.id ?? null
+      } else if (!msgEntry.isQueuedCommand && !('isMeta' in msgEntry && msgEntry.isMeta)) {
+        openGroupId = null
+      }
+    }
+    const groupOpen = openGroupId !== null
+    if (displayCount >= targetItems && !groupOpen) {
+      mode = 'extending'
+    } else if (windowBytes >= byteBudget && displayCount >= 2 && !groupOpen) {
+      // The budget stop waits for two items: one sacrificial head plus at
+      // least one servable item, so a single display item larger than the
+      // budget is still delivered instead of an empty page.
+      mode = 'extending'
+    } else if (
+      windowBytes >= hardCap &&
+      !groupOpen &&
+      displayCount >= (deepestCountedIsGroup ? 2 : 1)
+    ) {
+      // The hard cap has its own floor: at least one servable item (two when
+      // the deepest item is a merge group the head-drop would sacrifice), so
+      // a run of non-display rows at EOF — a turn's freshly written tool
+      // results — cannot produce an empty terminal page while visible
+      // history exists. Routed through extension rather than settling
+      // directly, so a cap landing on a system run still completes the run.
+      mode = 'extending'
+    }
+  }
+
+  if (!anchored) {
+    // Cursor never found: vanished id, or deeper than the line cap.
+    return { found: false, reachedStart: !hitLineCap }
+  }
+  return {
+    found: true,
+    startOffset,
+    endOffset,
+    reachedStart: startOffset === 0,
+    dropHead: deepestCountedIsGroup,
+    readBytes: Math.max(0, (endOffset ?? scanEnd ?? startOffset) - startOffset),
+  }
+}
+
+/** Pass 2 of the paged read: parse + normalize + filter the entries of a byte
+ * range chosen by pass 1. Identical filtering to readTransformedTail; memory
+ * is bounded by the range, which pass 1 bounded by the byte budget. Reads in
+ * chunks of `chunkBytes` (the range's expected size, clamped): a window pass 1
+ * sized within READ_CHUNK_MAX comes back in one read. */
+async function readEntriesRange(
+  store: SessionStore,
+  jsonlPath: string,
+  startOffset: number,
+  endOffset: number | undefined,
+  signal?: AbortSignal,
+  media?: boolean,
+  chunkBytes?: number
+): Promise<(JsonlMessageEntry | JsonlSystemEntry)[]> {
+  const entries: (JsonlMessageEntry | JsonlSystemEntry)[] = []
+  // Rows arrive in file order from a line-boundary start, so accumulating
+  // their lengths reproduces each row's absolute offset — what media refs
+  // address into. The +1 is the newline the reader strips.
+  let lineOffset = startOffset
+  // The signal is threaded into the reader itself (checked per chunk): a
+  // multi-MB row spans many chunks before it ever surfaces as a line here.
+  for await (const line of streamLines(
+    store.files,
+    jsonlPath,
+    { start: startOffset, end: endOffset },
+    signal,
+    chunkBytes
+  )) {
+    const offset = lineOffset
+    lineOffset += line.length + 1
+    const parsed = parseJsonlLine<JsonlEntry>(line)
+    if (!parsed) continue
+    const normalized = normalizeQueuedCommandEntry(parsed)
+    if (
+      isMessageOrSystemDisplayEntry(normalized) &&
+      !('isMeta' in normalized && normalized.isMeta)
+    ) {
+      // Before the entries accumulate: the window holds every row at once, so
+      // dropping the base64 here keeps it out of the page's peak memory too,
+      // not just off the wire.
+      if (media) {
+        replaceInlineMediaWithRefs(normalized, { line, lineOffset: offset })
+      }
+      entries.push(normalized)
+    }
+  }
+  return entries
+}
+
+/** Trailing (or `cursor`-before) display page.
+ *
+ * Two passes, O(window) memory: a backward index scan picks the window's byte
+ * range without materializing anything (see scanMessagesPageWindow), then a
+ * forward read parses only that range and hands it to the same
+ * transformMessages the whole-file path uses — so page content matches the
+ * old grow-and-re-read implementation, while a transcript's size no longer
+ * sets the request's memory footprint. Pages truncated by the byte budget are
+ * valid short pages: nextCursor points at their first item and the client's
+ * scroll-up paging walks the rest. */
+export async function getSessionMessagesPage(
+  store: SessionStore,
+  sessionId: string,
+  opts: {
+    limit: number
+    cursor?: string
+    signal?: AbortSignal
+    byteBudget?: number
+    /** `'ref'` replaces inline base64 images with media refs (see session-media). */
+    media?: 'ref'
+  }
+): Promise<SessionMessagesPage> {
+  const jsonlPath = transcriptPath(store, sessionId)
+  const { limit, cursor, signal } = opts
+  const byteBudget = opts.byteBudget ?? MESSAGES_PAGE_BYTE_BUDGET
+
+  // No existence pre-check: a registered session that has not streamed yet
+  // has no transcript and pages as empty, and a stat before every read is a
+  // wasted round trip on network filesystems. The backward scan yields
+  // nothing for a missing file; the forward read then fails to open it and
+  // the absence is answered with the same empty terminal page.
+  let scan: PageWindowScan
+  let entries: (JsonlMessageEntry | JsonlSystemEntry)[]
+  try {
+    scan = await scanMessagesPageWindow(store, jsonlPath, { limit, cursor, byteBudget, signal })
+    signal?.throwIfAborted()
+    if (!scan.found) {
+      // Vanished id (or cursor deeper than MAX_TAIL_LINES): terminate paging.
+      // Never point the client at a newer message — it would loop on
+      // already-loaded pages.
+      if (!scan.reachedStart) {
+        console.warn(
+          `getSessionMessagesPage: cursor ${cursor} not found within ` +
+          `${MAX_TAIL_LINES} tail lines of session ${sessionId}; ending pagination`
+        )
+      }
+      return { messages: [], nextCursor: null }
+    }
+    entries = await readEntriesRange(
+      store,
+      jsonlPath,
+      scan.startOffset,
+      scan.endOffset,
+      signal,
+      opts.media === 'ref',
+      readChunkFor(scan.readBytes)
+    )
+  } catch (error) {
+    if (isAbsentFile(error)) {
+      return { messages: [], nextCursor: null }
+    }
+    throw error
+  }
+  signal?.throwIfAborted()
+  let transformed = transformMessages(entries)
+  let reachedStart = scan.reachedStart
+  let dropHead = scan.dropHead && !reachedStart
+
+  if (cursor) {
+    let idx = transformed.findIndex((item) => item.id === cursor)
+    if (idx === -1 && isPhantomCursor(entries, transformed, cursor)) {
+      // The client saw the cursor's row as an item of its own: the copy
+      // nearest EOF, which the deepest-anchored window merges away. Re-anchor
+      // at that copy and page from there, so the history between the original
+      // and the copy is served rather than skipped.
+      console.warn(
+        `getSessionMessagesPage: cursor ${cursor} is a replayed row of a merged ` +
+        `response in session ${sessionId}; paging from its newest copy`
+      )
+      try {
+        scan = await scanMessagesPageWindow(store, jsonlPath, { limit, cursor, byteBudget, signal, anchor: 'shallowest' })
+        signal?.throwIfAborted()
+        if (!scan.found) return { messages: [], nextCursor: null }
+        entries = await readEntriesRange(
+          store,
+          jsonlPath,
+          scan.startOffset,
+          scan.endOffset,
+          signal,
+          opts.media === 'ref',
+          readChunkFor(scan.readBytes)
+        )
+      } catch (error) {
+        if (isAbsentFile(error)) return { messages: [], nextCursor: null }
+        throw error
+      }
+      signal?.throwIfAborted()
+      transformed = transformMessages(entries)
+      reachedStart = scan.reachedStart
+      dropHead = scan.dropHead && !reachedStart
+      idx = transformed.findIndex((item) => item.id === cursor)
+      // The copy renders as the phantom when its original lies outside this
+      // window; when the original is inside, the copy merges into it and the
+      // page is everything up to the copy's position instead.
+      if (idx === -1) idx = countItemsThrough(entries, transformed, cursor)
+    }
+    if (idx === -1) {
+      // The index scan located the cursor's line but the transform of the
+      // materialized window disagrees — a concurrent rewrite between the two
+      // passes. Terminate like a vanished cursor rather than serving a
+      // mislabeled page.
+      console.warn(
+        `getSessionMessagesPage: cursor ${cursor} vanished between scan and ` +
+        `read for session ${sessionId}; ending pagination`
+      )
+      return { messages: [], nextCursor: null }
+    }
+    const start = Math.max(dropHead ? 1 : 0, idx - limit)
+    const messages = transformed.slice(start, idx)
+    const hasOlder = messages.length > 0 && (!reachedStart || start > 0)
+    // Sequential walks end here when a cap truncates the page to empty.
+    if (messages.length === 0 && !reachedStart) {
+      console.warn(
+        `getSessionMessagesPage: pagination for session ${sessionId} hit a ` +
+        `scan cap below cursor ${cursor}; deeper history is unreachable`
+      )
+    }
+    return { messages, nextCursor: pageCursor(messages, hasOlder) }
+  }
+
+  const usable = dropHead ? transformed.slice(1) : transformed
+  const messages = usable.slice(-limit)
+  const hasOlder = messages.length > 0 && (!reachedStart || usable.length > messages.length)
+  if (messages.length === 0 && !reachedStart) {
+    console.warn(
+      `getSessionMessagesPage: window for session ${sessionId} hit the byte ` +
+      `hard cap before a complete display item; serving an empty page`
+    )
+  }
+  return { messages, nextCursor: pageCursor(messages, hasOlder) }
+}
+
+export interface SessionMessagesDelta {
+  messages: TransformedItem[]
+  /** Last settled item in the server's current view — the client's next `after`. */
+  anchor: string | null
+  /** Anchor not found within a bounded tail (file rewritten by deletion or
+   * retention cleanup, or the anchor is deeper than a live tail can be):
+   * the client must fall back to a full page fetch. */
+  resync?: true
+}
+
+const DELTA_INITIAL_TAIL_LINES = 128
+// The anchor is by definition near EOF (the last settled item of a page the
+// client already holds); a miss deeper than this is drift, answered with
+// resync rather than an unbounded scan.
+const DELTA_MAX_TAIL_LINES = 10_000
+
+/** Forward delta: transformed display items at-or-after the `after` anchor, as
+ * upserts (full current versions — new lines can mutate items the client
+ * already holds, e.g. a tool_result attaching to an earlier assistant item).
+ *
+ * The window widens backward past the anchor to the first still-mutable item
+ * (open tool call in the live turn, trailing assistant message still merging
+ * streamed blocks) so a stale anchor still yields every pending upsert. A
+ * tail window that cuts an assistant message mid-merge gives the partial item
+ * a different id, so an anchor inside a cut group misses and forces growth —
+ * anchors always resolve against complete items. */
+export async function getSessionMessagesDelta(
+  store: SessionStore,
+  sessionId: string,
+  opts: { after: string; signal?: AbortSignal; media?: 'ref' }
+): Promise<SessionMessagesDelta> {
+  const jsonlPath = transcriptPath(store, sessionId)
+  if (!(await transcriptExists(store, jsonlPath))) {
+    return { messages: [], anchor: null, resync: true }
+  }
+
+  const { after, signal } = opts
+  let maxLines = DELTA_INITIAL_TAIL_LINES
+
+  for (let attempt = 0; attempt < 32; attempt++) {
+    const { transformed, entries, reachedStart } = await readTransformedTail(
+      store,
+      jsonlPath,
+      maxLines,
+      signal,
+      opts.media === 'ref'
+    )
+    const canGrow = !reachedStart && maxLines < DELTA_MAX_TAIL_LINES
+
+    const idx = transformed.findIndex((item) => item.id === after)
+    if (idx === -1) {
+      if (canGrow) {
+        maxLines = Math.min(DELTA_MAX_TAIL_LINES, maxLines * 2)
+        continue
+      }
+      return { messages: [], anchor: null, resync: true }
+    }
+
+    const windowStart = findDeltaWindowStart(transformed)
+    let start = Math.min(idx, windowStart)
+    // Every tool_result recorded after the anchor must have its parent
+    // assistant item in the response: the result may have closed a call the
+    // client still holds open (e.g. it anchored past a call that annotation
+    // stamped as settled while the raw transcript still had it open), and
+    // only the parent item's upsert carries the resolution.
+    const lateResultIds = toolResultIdsAfterEntry(entries, after)
+    if (lateResultIds.size > 0) {
+      // A parent deeper than the current window would be silently skipped by
+      // the scan below — grow until every late result's parent is in view.
+      // When growth is exhausted, proceed WITHOUT the parent's upsert instead
+      // of resyncing: with the file fully read the id is a genuine orphan
+      // (its tool_use was rewritten away), and at the bounded-tail cap the
+      // parent sits deeper than any anchor the client could still hold open —
+      // a permanent orphan there would otherwise turn every poll into a
+      // resync + full-fetch cycle, recreating the cascade this delta exists
+      // to prevent.
+      if (!reachedStart && canGrow) {
+        const windowToolIds = new Set<string>()
+        for (const item of transformed) {
+          if (item.type !== 'assistant') continue
+          for (const toolCall of item.toolCalls) windowToolIds.add(toolCall.id)
+        }
+        if ([...lateResultIds].some((id) => !windowToolIds.has(id))) {
+          maxLines = Math.min(DELTA_MAX_TAIL_LINES, maxLines * 2)
+          continue
+        }
+      }
+      for (let i = 0; i < start; i++) {
+        const item = transformed[i]
+        if (item.type === 'assistant' && item.toolCalls.some((tc) => lateResultIds.has(tc.id))) {
+          start = i
+          break
+        }
+      }
+    }
+    // Item 0 of a window that didn't reach the file start may be a partially
+    // merged assistant message (its leading block entries cut off) — never
+    // serve it; grow until the window has context before the response.
+    if (start === 0 && !reachedStart) {
+      if (canGrow) {
+        maxLines = Math.min(DELTA_MAX_TAIL_LINES, maxLines * 2)
+        continue
+      }
+      return { messages: [], anchor: null, resync: true }
+    }
+
+    return {
+      messages: transformed.slice(start),
+      anchor: windowStart > 0 ? transformed[windowStart - 1].id : null,
+    }
+  }
+
+  throw new Error('getSessionMessagesDelta exceeded tail growth attempts')
+}
+
+// Tail-window sizing for findLastSessionEntry: start small (covers the last
+// few turns of a typical transcript), escalate when the window has no match,
+// and cap before falling back to a full parse.
+const TAIL_WINDOW_INITIAL_BYTES = 256 * 1024
+const TAIL_WINDOW_GROWTH_FACTOR = 4
+const TAIL_WINDOW_MAX_BYTES = 4 * 1024 * 1024
+
+/**
+ * Read the last `windowBytes` of a session transcript and return the entries
+ * parsed from the complete lines inside that window (same normalization and
+ * filtering as getSessionMessagesWithCompact). Returns null when the file does
+ * not exist.
+ *
+ * When the window starts mid-file, everything up to and including the first
+ * newline is discarded: that prefix is (almost always) the tail of a line
+ * whose start lies outside the window. If the window happens to start exactly
+ * on a line boundary this discards one complete line — harmless, because
+ * callers never conclude "absent" from a partial window (see
+ * findLastSessionEntry). Discarding to a newline also guarantees the decoded
+ * text never starts inside a multi-byte UTF-8 sequence.
+ */
+async function readSessionEntriesFromTail(
+  store: SessionStore,
+  jsonlPath: string,
+  windowBytes: number,
+  endOffset?: number,
+): Promise<{
+  entries: (JsonlMessageEntry | JsonlSystemEntry)[]
+  coveredWholeFile: boolean
+} | null> {
+  let file: Awaited<ReturnType<typeof store.files.open>>
+  try {
+    file = await store.files.open(jsonlPath)
+  } catch (error) {
+    if (isAbsentFile(error)) return null
+    throw error
+  }
+  try {
+    const size = await file.size()
+    // Callers may anchor a read to a transcript byte offset captured at turn
+    // completion. Clamp it to the current file size so truncation/replacement
+    // degrades to the surviving prefix without crossing into a later turn.
+    const effectiveEnd = endOffset == null
+      ? size
+      : Math.min(size, Math.max(0, Math.floor(endOffset)))
+    const offset = Math.max(0, effectiveEnd - windowBytes)
+    const length = effectiveEnd - offset
+    // A read that comes up short means the file shrank under us; parse what we got.
+    const raw = await file.readAt(offset, length)
+    let window = Buffer.isBuffer(raw) ? raw : Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength)
+    if (offset > 0) {
+      const firstNewline = window.indexOf(0x0a) // '\n'
+      if (firstNewline === -1) {
+        // One line larger than the whole window — no complete line to parse.
+        return { entries: [], coveredWholeFile: false }
+      }
+      window = window.subarray(firstNewline + 1)
+    }
+    const entries = parseJsonl<JsonlEntry>(window.toString('utf-8'))
+      .map(normalizeQueuedCommandEntry)
+      .filter(isMessageOrSystemDisplayEntry)
+    return { entries, coveredWholeFile: offset === 0 }
+  } finally {
+    await file.close()
+  }
+}
+
+/**
+ * Find the newest transcript entry matching `predicate`, over the same entry
+ * set getSessionMessagesWithCompact produces, without parsing the whole file.
+ * Transcripts routinely reach 100MB+, so callers that only need the most
+ * recent entry (e.g. the reply of a just-finished turn) should not pay a full
+ * parse — especially inside retry loops.
+ *
+ * Equivalence with the full parse: every transcript entry is line-local (one
+ * JSONL line maps to at most one entry; normalization and filtering never
+ * merge or reorder lines, and compact boundaries are ordinary standalone
+ * lines), so the newest matching entry within a complete-line tail window is
+ * exactly the entry a full parse would select. A window with no match is only
+ * trusted when it covered the whole file; otherwise the window escalates.
+ * Unanchored reads finally fall back to the existing streaming full parse so
+ * they remain exact. Anchored reads deliberately stop at the tail budget:
+ * materializing an arbitrarily large captured prefix would defeat the bounded
+ * reader, and their caller supports omitting request context.
+ *
+ * `endOffset` constrains the search to a byte position captured from this same
+ * transcript. It is the ordering primitive for completion-notification context:
+ * unlike timestamps, file offsets do not compare host and container clocks.
+ */
+export async function findLastSessionEntry(
+  store: SessionStore,
+  sessionId: string,
+  predicate: (entry: JsonlMessageEntry | JsonlSystemEntry) => boolean,
+  options: { endOffset?: number | null } = {},
+): Promise<JsonlMessageEntry | JsonlSystemEntry | null> {
+  const jsonlPath = transcriptPath(store, sessionId)
+  const endOffset = options.endOffset == null || !Number.isFinite(options.endOffset)
+    ? undefined
+    : Math.max(0, Math.floor(options.endOffset))
+
+  for (
+    let windowBytes = TAIL_WINDOW_INITIAL_BYTES;
+    windowBytes <= TAIL_WINDOW_MAX_BYTES;
+    windowBytes *= TAIL_WINDOW_GROWTH_FACTOR
+  ) {
+    const tail = await readSessionEntriesFromTail(store, jsonlPath, windowBytes, endOffset)
+    if (tail === null) return null // no transcript file
+    for (let i = tail.entries.length - 1; i >= 0; i--) {
+      if (predicate(tail.entries[i])) return tail.entries[i]
+    }
+    if (tail.coveredWholeFile) return null
+  }
+
+  // An anchored lookup must never turn its captured byte offset into an
+  // unbounded Buffer + UTF-16 string. Missing context is an explicit supported
+  // outcome for completion summaries, so stop after the 4 MB tail budget.
+  if (endOffset !== undefined) {
+    return null
+  }
+
+  // Unanchored callers keep exact pre-existing behavior via the line-streaming
+  // whole-file parser (never one readFile-sized string).
+  const entries = await getSessionMessagesWithCompact(store, sessionId)
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (predicate(entries[i])) return entries[i]
+  }
+  return null
 }
 
 /**
  * Delete a session (removes JSONL file and metadata)
  */
 export async function deleteSession(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string
 ): Promise<boolean> {
-  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+  const jsonlPath = transcriptPath(store, sessionId)
+  const jsonlExisted = await transcriptExists(store, jsonlPath)
 
-  if (!(await fileExists(jsonlPath))) {
-    return false
+  if (jsonlExisted) {
+    try {
+      await store.files.delete(jsonlPath)
+    } catch (error) {
+      // The file existed when we checked, so this is a genuine failure
+      // (permissions, lock, I/O error), not a benign "already gone". Report it
+      // and bail WITHOUT touching metadata — deleting the metadata while the
+      // JSONL remains would orphan the transcript (it would re-surface as an
+      // unnamed session in listings).
+      captureException(error, {
+        tags: { area: 'session-delete', op: 'unlink' },
+        extra: { agentSlug: store.slug, sessionId },
+      })
+      throw error
+    }
+  } else {
+    // No transcript to remove — e.g. it was deleted by the CLI's retention
+    // cleanup while the metadata entry lingered. Just clear the dangling
+    // metadata.
+    console.warn(
+      `deleteSession: no JSONL transcript for ${store.slug}/${sessionId}; removing metadata only`
+    )
   }
 
-  // Remove JSONL file
-  await fs.promises.unlink(jsonlPath)
-
-  // Remove from metadata
-  const metadata = await readSessionMetadata(agentSlug)
-  if (metadata[sessionId]) {
+  // Remove from metadata regardless, so dangling entries can be cleared. Done
+  // under the serialized read-modify-write so a concurrent registration/rename
+  // can't lose updates, and a corrupt metadata document aborts (throws) rather
+  // than being rewritten without this entry's siblings.
+  let hadMetadata = false
+  await mutateSessionMetadata(store, (metadata) => {
+    hadMetadata = Object.hasOwn(metadata, sessionId)
+    if (!hadMetadata) return false // nothing to delete — skip the write
     delete metadata[sessionId]
-    await writeSessionMetadata(agentSlug, metadata)
+    return true
+  })
+
+  const deleted = jsonlExisted || hadMetadata
+  return deleted
+}
+
+/**
+ * Delete multiple sessions in a single batch (one metadata read/write cycle).
+ * Returns the IDs of sessions whose JSONL files were actually removed.
+ */
+export async function deleteSessionsBatch(
+  store: SessionStore,
+  sessionIds: string[]
+): Promise<string[]> {
+  if (sessionIds.length === 0) return []
+
+  const deleted: string[] = []
+
+  for (const sessionId of sessionIds) {
+    try {
+      // An absent transcript is a no-op for the store, and counts as deleted:
+      // its metadata entry is dangling and goes with the batch.
+      await store.files.delete(transcriptPath(store, sessionId))
+      deleted.push(sessionId)
+    } catch (error: unknown) {
+      // Keep this session's metadata: its transcript is still there.
+      console.error(`Failed to delete session file ${sessionId}:`, error)
+    }
   }
 
-  return true
+  // Drop metadata only for the sessions whose JSONL was actually removed, in a
+  // single serialized + atomic read-modify-write.
+  if (deleted.length > 0) {
+    await mutateSessionMetadata(store, (metadata) => {
+      let changed = false
+      for (const sessionId of deleted) {
+        if (Object.hasOwn(metadata, sessionId)) {
+          delete metadata[sessionId]
+          changed = true
+        }
+      }
+      return changed
+    })
+  }
+
+  return deleted
 }
 
 /**
  * Update session name
  */
 export async function updateSessionName(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string,
   name: string
 ): Promise<void> {
-  await updateSessionMetadata(agentSlug, sessionId, { name })
+  await updateSessionMetadata(store, sessionId, { name })
 }
 
 /**
- * Check if a session exists
+ * Whether this agent has a transcript for `sessionId`.
+ *
+ * Never throws, and never answers true for an id that is not this agent's:
+ * `sessionFileRealPathWithinAgent` rejects a traversal-shaped id (which would
+ * otherwise throw out of `transcriptPath` into the caller's `catch` and, on
+ * the routes that gate delete/interrupt on this, answer 500 instead of a
+ * clean 404) and a link whose real target escapes the agent's workspace.
  */
 export async function sessionExists(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string
 ): Promise<boolean> {
-  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
-  return fileExists(jsonlPath)
+  if (!(await sessionFileRealPathWithinAgent(store, sessionId))) return false
+  return transcriptExists(store, transcriptPath(store, sessionId))
+}
+
+/**
+ * Whether `sessionId` names a session OF THIS AGENT — a written transcript, or a
+ * registration for one whose agent hasn't streamed its first message yet. This
+ * is the rule getSession returns non-null on, but it costs one realpath (plus a
+ * metadata read while there is no transcript) instead of a full transcript
+ * pass. Use it for 404 guards that don't go on to read any SessionInfo field.
+ * Unlike getSession it does not stat what is at the transcript path, so a
+ * directory the agent put there counts; the agent owns that directory, and the
+ * id is its own either way.
+ *
+ * Both halves are needed: the transcript lands only once the first turn writes,
+ * and the metadata entry covers the window from `registerSession` up to then.
+ *
+ * It is also the ownership gate for every route that acts on a session by id —
+ * above all through the agent's live sessions, which take any id they are
+ * handed. Authorizing the agent in the URL says nothing about the session id in
+ * it, so without this a caller with a role on their own agent has it act on an
+ * id that is not one of its sessions.
+ *
+ * Never throws. An id that cannot name a file under this agent's transcripts
+ * directory cannot be one of its sessions. Letting a throw escape would hand
+ * the request to the caller's `catch`, and interrupt's deliberately marks the
+ * session interrupted on the error path — the exact thing the gate exists to
+ * stop.
+ */
+export async function sessionIsKnown(
+  store: SessionStore,
+  sessionId: string
+): Promise<boolean> {
+  if (!isSessionIdWellFormed(sessionId)) return false
+  try {
+    if (await transcriptResolves(store, sessionId)) return true
+    const metadata = await getSessionMetadata(store, sessionId)
+    return metadata !== null && metadataOnlySession(metadata, Date.now()) === 'new'
+  } catch {
+    return false
+  }
 }
 
 // ============================================================================
@@ -439,38 +2222,11 @@ export async function sessionExists(
 // ============================================================================
 
 /**
- * Ensure session directory exists for an agent
+ * Ensure the transcripts directory exists for an agent
  * This is called when starting a container to ensure Claude has a place to write
  */
-export async function ensureSessionsDirectory(agentSlug: string): Promise<void> {
-  const sessionsDir = getAgentSessionsDir(agentSlug)
-  await ensureDirectory(sessionsDir)
-}
-
-// ============================================================================
-// Session Lookup (for routes without agent context)
-// ============================================================================
-
-/**
- * Find which agent a session belongs to by scanning all agents
- * Returns { agentSlug, sessionInfo } or null if not found
- */
-export async function findSessionAcrossAgents(
-  sessionId: string
-): Promise<{ agentSlug: string; session: SessionInfo } | null> {
-  const agentsDir = getAgentsDir()
-
-  // List all agent directories
-  const slugs = await listDirectories(agentsDir)
-
-  for (const slug of slugs) {
-    const session = await getSession(slug, sessionId)
-    if (session) {
-      return { agentSlug: slug, session }
-    }
-  }
-
-  return null
+export async function ensureSessionsDirectory(store: SessionStore): Promise<void> {
+  await store.files.mkdir(store.transcriptsDir)
 }
 
 // ============================================================================
@@ -485,20 +2241,38 @@ export async function findSessionAcrossAgents(
  * For user messages: removes the single entry matching the uuid.
  */
 export async function removeMessage(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string,
   messageUuid: string
 ): Promise<boolean> {
-  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
-  if (!(await fileExists(jsonlPath))) return false
+  const jsonlPath = transcriptPath(store, sessionId)
+  if (!(await transcriptExists(store, jsonlPath))) return false
 
-  const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
+  // Find the target entry by id. Regular messages match by top-level uuid;
+  // queued (mid-turn) messages surface in the UI with id = the queued_command
+  // attachment's source_uuid (see normalizeQueuedCommandEntry), so match the
+  // underlying attachment entry as well.
+  const matchesTargetId = (e: JsonlEntry): boolean =>
+    ('uuid' in e && e.uuid === messageUuid) ||
+    (e.type === 'attachment' && (e as JsonlAttachmentEntry).attachment?.source_uuid === messageUuid)
 
-  // Find the target entry by uuid
-  const target = entries.find(
-    (e): e is JsonlMessageEntry =>
-      'uuid' in e && e.uuid === messageUuid
-  )
+  // Transcripts run to tens (sometimes hundreds) of MB, so never materialize
+  // the whole file: stream once to find the target, once more to collect the
+  // associated tool_use ids if needed, then stream-rewrite.
+  let target: JsonlEntry | undefined
+  try {
+    for await (const entry of streamJsonl<JsonlEntry>(store.files, jsonlPath)) {
+      if (matchesTargetId(entry)) {
+        target = entry
+        break
+      }
+    }
+  } catch (error) {
+    // Transcript deleted between the existence check and the read: the old
+    // full-read implementation treated this as "not found".
+    if (isAbsentFile(error)) return false
+    throw error
+  }
   if (!target) return false
 
   // Collect message IDs and tool_use IDs to remove
@@ -510,7 +2284,7 @@ export async function removeMessage(
     messageIdsToRemove.add(target.message.id)
 
     // Collect tool_use IDs from all entries with this message.id
-    for (const entry of entries) {
+    for await (const entry of streamJsonl<JsonlEntry>(store.files, jsonlPath)) {
       if (!('message' in entry)) continue
       const e = entry as JsonlMessageEntry
       if (e.type === 'assistant' && e.message.id === target.message.id) {
@@ -526,14 +2300,12 @@ export async function removeMessage(
     }
   }
 
-  // Filter entries
-  const filtered = entries.filter((entry) => {
-    if (!('uuid' in entry)) return true // keep non-message entries
+  await rewriteTranscript(store, jsonlPath, (entry) => {
+    // Remove the target entry (user message or queued_command attachment)
+    if (matchesTargetId(entry)) return 'drop'
+    if (!('uuid' in entry)) return 'keep' // keep non-message entries
     const e = entry as JsonlMessageEntry
-
-    // Remove the target entry (user message) or all entries with same message.id (assistant)
-    if (e.uuid === messageUuid) return false
-    if (e.type === 'assistant' && e.message.id && messageIdsToRemove.has(e.message.id)) return false
+    if (e.type === 'assistant' && e.message.id && messageIdsToRemove.has(e.message.id)) return 'drop'
 
     // Remove tool_result user entries referencing removed tool calls
     if (e.type === 'user' && toolUseIdsToRemove.size > 0) {
@@ -541,18 +2313,67 @@ export async function removeMessage(
       if (Array.isArray(content)) {
         const blocks = content as ContentBlock[]
         if (blocks.every((b) => b.type === 'tool_result' && toolUseIdsToRemove.has(b.tool_use_id))) {
-          return false
+          return 'drop'
         }
       }
     }
 
-    return true
+    return 'keep'
   })
-
-  // Write back
-  const jsonl = filtered.map((e) => JSON.stringify(e)).join('\n') + (filtered.length > 0 ? '\n' : '')
-  await writeFile(jsonlPath, jsonl)
+  recordSessionActivity(store, sessionId)
   return true
+}
+
+/**
+ * Stream-rewrite a transcript, deciding per entry whether to keep, drop, or
+ * replace its line. Kept lines are copied through byte-for-byte from the
+ * original file (never parse-and-restringified, which could alter number
+ * formatting or unicode escapes); blank/malformed lines are copied through
+ * untouched. The store writes the output whole and atomically in place of
+ * the original, flushed to disk, so a failure mid-rewrite leaves the
+ * transcript exactly as it was.
+ *
+ * Like the read-modify-write it replaces, this takes no lock against
+ * concurrent transcript appends — callers rely on the same exclusivity
+ * assumption as before.
+ */
+async function rewriteTranscript(
+  store: SessionStore,
+  jsonlPath: string,
+  mapEntry: (entry: JsonlEntry) => JsonlEntry | 'keep' | 'drop'
+): Promise<void> {
+  const newline = Buffer.from('\n')
+  async function* lines(): AsyncGenerator<Uint8Array> {
+    for await (const raw of streamLines(store.files, jsonlPath)) {
+      const entry = parseJsonlLine<JsonlEntry>(raw)
+      if (entry === undefined) {
+        // Blank or malformed line (mid-write artifact): copy through untouched
+        yield raw
+        yield newline
+        continue
+      }
+      const result = mapEntry(entry)
+      if (result === 'drop') continue
+      if (result === 'keep') {
+        yield raw
+        yield newline
+        continue
+      }
+      yield Buffer.from(JSON.stringify(result) + '\n', 'utf-8')
+    }
+  }
+  const source = lines()
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const { done, value } = await source.next()
+      if (done) controller.close()
+      else controller.enqueue(value)
+    },
+    async cancel() {
+      await source.return(undefined)
+    },
+  })
+  await store.files.write(jsonlPath, body, { flush: true })
 }
 
 /**
@@ -563,24 +2384,18 @@ export async function removeMessage(
  * remaining content blocks, the entire entry is removed.
  */
 export async function removeToolCall(
-  agentSlug: string,
+  store: SessionStore,
   sessionId: string,
   toolCallId: string
 ): Promise<boolean> {
-  const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
-  if (!(await fileExists(jsonlPath))) return false
+  const jsonlPath = transcriptPath(store, sessionId)
+  if (!(await transcriptExists(store, jsonlPath))) return false
 
-  const entries = await readJsonlFile<JsonlEntry>(jsonlPath)
-  let found = false
-
-  // Process entries: remove the tool_use block and tool_result entries
-  const filtered: JsonlEntry[] = []
-
-  for (const entry of entries) {
-    if (!('message' in entry)) {
-      filtered.push(entry)
-      continue
-    }
+  // Decide what to do with one entry: remove the tool_use block from assistant
+  // entries and the tool_result block from user entries, dropping an entry
+  // whose content would become empty. Untouched entries are kept verbatim.
+  const mapEntry = (entry: JsonlEntry): JsonlEntry | 'keep' | 'drop' => {
+    if (!('message' in entry)) return 'keep'
     const e = entry as JsonlMessageEntry
 
     // Remove tool_result user entries for this tool call
@@ -590,10 +2405,8 @@ export async function removeToolCall(
         (b) => !(b.type === 'tool_result' && b.tool_use_id === toolCallId)
       )
       if (remaining.length < blocks.length) {
-        found = true
-        if (remaining.length === 0) continue // drop entire entry
-        filtered.push({ ...e, message: { ...e.message, content: remaining } })
-        continue
+        if (remaining.length === 0) return 'drop' // drop entire entry
+        return { ...e, message: { ...e.message, content: remaining } }
       }
     }
 
@@ -604,20 +2417,35 @@ export async function removeToolCall(
         (b) => !(b.type === 'tool_use' && b.id === toolCallId)
       )
       if (remaining.length < blocks.length) {
-        found = true
-        if (remaining.length === 0) continue // drop entire entry
-        filtered.push({ ...e, message: { ...e.message, content: remaining } })
-        continue
+        if (remaining.length === 0) return 'drop' // drop entire entry
+        return { ...e, message: { ...e.message, content: remaining } }
       }
     }
 
-    filtered.push(entry)
+    return 'keep'
   }
 
+  // First streaming pass: bail out (and leave the file untouched) unless some
+  // entry actually references this tool call — matches the old behavior of
+  // only writing when `found`.
+  let found = false
+  try {
+    for await (const entry of streamJsonl<JsonlEntry>(store.files, jsonlPath)) {
+      if (mapEntry(entry) !== 'keep') {
+        found = true
+        break
+      }
+    }
+  } catch (error) {
+    // Transcript deleted between the existence check and the read: the old
+    // full-read implementation treated this as "not found".
+    if (isAbsentFile(error)) return false
+    throw error
+  }
   if (!found) return false
 
-  const jsonl = filtered.map((e) => JSON.stringify(e)).join('\n') + (filtered.length > 0 ? '\n' : '')
-  await writeFile(jsonlPath, jsonl)
+  await rewriteTranscript(store, jsonlPath, mapEntry)
+  recordSessionActivity(store, sessionId)
   return true
 }
 
@@ -627,12 +2455,12 @@ export async function removeToolCall(
  * instead of loading all sessions for the agent.
  */
 async function getSessionsByMetadata(
-  agentSlug: string,
+  store: SessionStore,
   predicate: (meta: SessionMetadata) => boolean,
 ): Promise<SessionInfo[]> {
-  const metadata = await readSessionMetadata(agentSlug)
+  const metadata = await readSessionMetadata(store)
 
-  // Find matching session IDs from metadata (fast — no filesystem I/O)
+  // Find matching session IDs from metadata (fast — no storage I/O)
   const matchingIds: string[] = []
   for (const [sessionId, meta] of Object.entries(metadata)) {
     if (predicate(meta)) matchingIds.push(sessionId)
@@ -641,28 +2469,20 @@ async function getSessionsByMetadata(
 
   // Only stat the matching JSONL files
   const sessions: SessionInfo[] = []
+  const now = Date.now()
   for (const sessionId of matchingIds) {
-    const jsonlPath = getSessionJsonlPath(agentSlug, sessionId)
+    const meta = metadata[sessionId]
+    let stat: Awaited<ReturnType<typeof store.files.stat>>
     try {
-      const stat = await fs.promises.stat(jsonlPath)
-      sessions.push({
-        id: sessionId,
-        agentSlug,
-        name: metadata[sessionId]?.name || 'New Session',
-        createdAt: stat.birthtime,
-        lastActivityAt: new Date(stat.mtimeMs),
-        messageCount: 0,
-      })
+      stat = await store.files.stat(transcriptPath(store, sessionId))
     } catch {
+      stat = null
+    }
+    if (stat) {
+      sessions.push(sessionFromTranscriptStat(sessionId, store.slug, meta, stat))
+    } else if (meta && metadataOnlySession(meta, now) !== 'orphaned') {
       // JSONL doesn't exist yet — use metadata createdAt
-      sessions.push({
-        id: sessionId,
-        agentSlug,
-        name: metadata[sessionId]?.name || 'New Session',
-        createdAt: new Date(metadata[sessionId]?.createdAt || Date.now()),
-        lastActivityAt: new Date(metadata[sessionId]?.createdAt || Date.now()),
-        messageCount: 0,
-      })
+      sessions.push(emptySessionFromMetadata(sessionId, store.slug, meta))
     }
   }
 
@@ -673,18 +2493,38 @@ async function getSessionsByMetadata(
  * Get all sessions created by a scheduled task.
  */
 export async function getSessionsByScheduledTask(
-  agentSlug: string,
+  store: SessionStore,
   scheduledTaskId: string
 ): Promise<SessionInfo[]> {
-  return getSessionsByMetadata(agentSlug, (meta) => meta.scheduledTaskId === scheduledTaskId)
+  return getSessionsByMetadata(store, (meta) => meta.scheduledTaskId === scheduledTaskId)
+}
+
+/**
+ * Get the session for a specific scheduled task execution slot.
+ */
+export async function getSessionForScheduledExecution(
+  store: SessionStore,
+  scheduledTaskId: string,
+  scheduledExecutionAt: Date,
+): Promise<SessionInfo | null> {
+  const executionAt = scheduledExecutionAt.toISOString()
+  const sessions = await getSessionsByMetadata(
+    store,
+    (meta) =>
+      meta.isScheduledExecution === true &&
+      meta.scheduledTaskId === scheduledTaskId &&
+      meta.scheduledExecutionAt === executionAt,
+  )
+
+  return sessions[0] ?? null
 }
 
 /**
  * Get all sessions that were spawned by a webhook trigger.
  */
 export async function getSessionsByWebhookTrigger(
-  agentSlug: string,
+  store: SessionStore,
   webhookTriggerId: string
 ): Promise<SessionInfo[]> {
-  return getSessionsByMetadata(agentSlug, (meta) => meta.webhookTriggerId === webhookTriggerId)
+  return getSessionsByMetadata(store, (meta) => meta.webhookTriggerId === webhookTriggerId)
 }

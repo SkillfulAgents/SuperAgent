@@ -2,6 +2,7 @@ import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type {
   GlobalSettingsResponse,
+  ModelPickerSettingsResponse,
   ContainerSettings,
   AppPreferences,
   ModelSettings,
@@ -11,11 +12,12 @@ import type {
   AnalyticsTarget,
   LlmProviderId,
 } from '@shared/lib/config/settings'
-import type { ComputerUseSettings } from '@shared/lib/computer-use/types'
+import type { SettingsPatch } from '@shared/lib/config/settings-patch'
 import type { RunnerAvailability } from '@shared/lib/container/client-factory'
 import type { RunnerSetupRemediation } from '@shared/lib/container/wsl2-setup-errors'
+import type { ModelSearchResult } from '@shared/lib/llm-provider'
 
-export type { GlobalSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, AuthSettings, VoiceSettings, AnalyticsTarget, LlmProviderId, RunnerAvailability, RunnerSetupRemediation }
+export type { GlobalSettingsResponse, ModelPickerSettingsResponse, ContainerSettings, AppPreferences, ModelSettings, AgentLimitsSettings, AuthSettings, VoiceSettings, AnalyticsTarget, LlmProviderId, RunnerAvailability, RunnerSetupRemediation }
 
 export function useSettings(options?: { enabled?: boolean }) {
   return useQuery<GlobalSettingsResponse>({
@@ -30,38 +32,111 @@ export function useSettings(options?: { enabled?: boolean }) {
   })
 }
 
-export interface UpdateSettingsParams {
-  container?: Partial<ContainerSettings>
-  app?: Partial<AppPreferences>
-  llmProvider?: LlmProviderId
-  apiKeys?: {
-    anthropicApiKey?: string
-    openrouterApiKey?: string
-    bedrockApiKey?: string
-    bedrockAccessKeyId?: string
-    bedrockSecretAccessKey?: string
-    bedrockRegion?: string
-    composioApiKey?: string
-    composioUserId?: string
-    browserbaseApiKey?: string
-    browserbaseProjectId?: string
-    deepgramApiKey?: string
-    openaiApiKey?: string
-  }
-  models?: Partial<ModelSettings>
-  agentLimits?: Partial<AgentLimitsSettings>
-  customEnvVars?: Record<string, string>
-  auth?: Partial<AuthSettings>
-  voice?: Partial<VoiceSettings>
-  computerUse?: Partial<ComputerUseSettings>
-  shareAnalytics?: boolean
-  analyticsTargets?: AnalyticsTarget[]
-  shareErrorReports?: boolean
+/**
+ * The global guidance appended to every agent's system prompt. Readable by
+ * every signed-in user (unlike `useSettings()`); admins write it through
+ * `useUpdateSettings()`, whose `['settings']` invalidation refreshes this.
+ */
+export function useGlobalInstructions() {
+  return useQuery<{ globalInstructions: string }>({
+    queryKey: ['settings', 'global-instructions'],
+    queryFn: async () => {
+      const res = await apiFetch('/api/settings/global-instructions')
+      if (!res.ok) throw new Error('Failed to fetch global guidance')
+      return res.json()
+    },
+  })
 }
+
+/** Default-on preference; treat missing as enabled. */
+export function isWarmStartOnTypeEnabled(
+  settings?: Pick<GlobalSettingsResponse, 'app'> | null,
+): boolean {
+  return settings?.app?.warmStartOnType !== false
+}
+
+/** Default-on MicroVM preference; treat missing as enabled. */
+export function isAutoResumeOnUnexpectedDeathEnabled(
+  settings?: Pick<GlobalSettingsResponse, 'app'> | null,
+): boolean {
+  return settings?.app?.autoResumeOnUnexpectedDeath !== false
+}
+
+/**
+ * Whether warm-start-on-type should fire. Returns false until settings have
+ * loaded so a disabled preference cannot race a speculative start.
+ */
+export function useWarmStartOnTypeEnabled(): boolean {
+  const { data, isSuccess } = useSettings()
+  if (!isSuccess) return false
+  return isWarmStartOnTypeEnabled(data)
+}
+
+/**
+ * Picker-safe model settings served to EVERY authenticated user. The composer
+ * and default-model pickers must read this — not `useSettings()`, whose
+ * endpoint is admin-gated in auth mode and leaves non-admins with an empty
+ * catalog. The `['settings', …]` key keeps it refreshed by the same broad
+ * invalidations the settings mutations already fire (e.g. a catalog edit).
+ */
+export function useModelSettings(agentSlug?: string, llmProviderId?: string | null) {
+  return useQuery<ModelPickerSettingsResponse>({
+    queryKey: ['settings', 'models', ...(agentSlug ? [agentSlug, llmProviderId] : [])],
+    queryFn: async () => {
+      // The two reads are independent, so both start now. They are still
+      // checked in order, so a failed settings read wins as it did when the
+      // reads ran back to back; the catch only keeps an abandoned connection
+      // read from surfacing as an unhandled rejection.
+      const query = llmProviderId ? `?llmProviderId=${encodeURIComponent(llmProviderId)}` : ''
+      const settingsRequest = apiFetch('/api/settings/models')
+      const connectionRequest = agentSlug
+        ? apiFetch(`/api/agents/${encodeURIComponent(agentSlug)}/llm-connections${query}`)
+        : undefined
+      void connectionRequest?.catch(() => {})
+      const res = await settingsRequest
+      if (!res.ok) throw new Error('Failed to fetch model settings')
+      const data: ModelPickerSettingsResponse = await res.json()
+      if (connectionRequest) {
+        const response = await connectionRequest
+        if (!response.ok) throw new Error('Failed to fetch saved model connection')
+        data.connections = (await response.json()).connections
+      }
+      return data
+    },
+    staleTime: 60000,
+  })
+}
+
+export function useProviderModelSearch(
+  providerId: LlmProviderId,
+  query: string,
+  options?: { enabled?: boolean; llmProviderId?: string },
+) {
+  const trimmedQuery = query.trim()
+  return useQuery<ModelSearchResult[]>({
+    queryKey: ['settings', 'llm-provider-model-search', providerId, options?.llmProviderId, trimmedQuery],
+    queryFn: async () => {
+      const res = await apiFetch(
+        options?.llmProviderId
+          ? `/api/llm-connections/${encodeURIComponent(options.llmProviderId)}/models/search?q=${encodeURIComponent(trimmedQuery)}`
+          : `/api/settings/llm-providers/${providerId}/models/search?q=${encodeURIComponent(trimmedQuery)}`,
+      )
+      const body = await res.json().catch(() => ({})) as { data?: ModelSearchResult[]; error?: string }
+      if (!res.ok) throw new Error(body.error || 'Failed to search provider models')
+      return Array.isArray(body.data) ? body.data : []
+    },
+    enabled: options?.enabled !== false && trimmedQuery.length >= 2,
+    staleTime: 5 * 60 * 1000,
+  })
+}
+
+/** Inferred from the same runtime schema enforced by PUT /api/settings. */
+export type UpdateSettingsParams = SettingsPatch
 
 export interface UpdateSettingsError {
   error: string
   runningAgents?: string[]
+  status: number
 }
 
 export function useUpdateSettings() {
@@ -76,7 +151,7 @@ export function useUpdateSettings() {
       })
 
       if (!res.ok) {
-        const error = await res.json()
+        const error: UpdateSettingsError = { ...(await res.json()), status: res.status }
         throw error
       }
 
@@ -84,6 +159,10 @@ export function useUpdateSettings() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] })
+      queryClient.invalidateQueries({ queryKey: ['runtime-status'] })
+      // Voice provider / key / default voice live in these settings, and the
+      // speaker buttons and Voice tab gate on the derived status.
+      queryClient.invalidateQueries({ queryKey: ['voice-configured'] })
     },
   })
 }
@@ -130,6 +209,7 @@ export function useRefreshAvailability() {
   const queryClient = useQueryClient()
 
   return useMutation({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async () => {
       const res = await apiFetch('/api/settings/refresh-availability', {
         method: 'POST',
@@ -145,8 +225,10 @@ export function useRefreshAvailability() {
 
 export function useStartRunner() {
   const queryClient = useQueryClient()
+  const { data: settings } = useSettings()
 
-  return useMutation<StartRunnerResponse, Error, string>({
+  const mutation = useMutation<StartRunnerResponse, Error, string>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (runner) => {
       const res = await apiFetch('/api/settings/start-runner', {
         method: 'POST',
@@ -157,6 +239,12 @@ export function useStartRunner() {
       const data = await res.json()
 
       if (!res.ok) {
+        if (Array.isArray(data?.runnerAvailability)) {
+          queryClient.setQueryData(['settings'], (old: unknown) => {
+            if (!old || typeof old !== 'object') return old
+            return { ...old, runnerAvailability: data.runnerAvailability }
+          })
+        }
         if (data?.setupError) {
           throw new RunnerSetupFailedError(data.setupError)
         }
@@ -165,16 +253,34 @@ export function useStartRunner() {
 
       return data
     },
-    onSuccess: () => {
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] })
     },
   })
+
+  const activeRunner = mutation.variables
+  const readinessStatus = settings?.runtimeReadiness?.status
+  const isProvisioning = (runner: string) =>
+    activeRunner === runner &&
+    (mutation.isPending ||
+      readinessStatus === 'CHECKING' ||
+      readinessStatus === 'PULLING_IMAGE')
+
+  // Drop stale cancel/fail once that runner is available (other surface may have succeeded).
+  const displayError =
+    activeRunner &&
+    settings?.runnerAvailability?.some((r) => r.runner === activeRunner && r.available)
+      ? null
+      : mutation.error
+
+  return { ...mutation, isProvisioning, displayError }
 }
 
 export function useRestartRunner() {
   const queryClient = useQueryClient()
 
   return useMutation<StartRunnerResponse, Error, string>({
+    meta: { skipGlobalErrorToast: true },
     mutationFn: async (runner) => {
       // Immediately invalidate so the next poll sees the runner as stopped
       queryClient.invalidateQueries({ queryKey: ['settings'] })

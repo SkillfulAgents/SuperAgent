@@ -1,3 +1,4 @@
+import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connection-runtime'
 /**
  * Task Scheduler
  *
@@ -5,26 +6,46 @@
  * Handles both one-time ('at') and recurring ('cron') tasks.
  */
 
-import { containerManager } from '@shared/lib/container/container-manager'
+import { agentRegistry } from '@shared/lib/agent-actor'
+import type { AgentActor } from '@shared/lib/agent-actor'
 import { getEffectiveModels } from '@shared/lib/config/settings'
-import { messagePersister } from '@shared/lib/container/message-persister'
+import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
+import { runWithOptionalUser } from '@shared/lib/platform-attribution'
 import {
   getDueTasks,
   markTaskExecuted,
   markTaskFailed,
+  recordTaskSkip,
+  rescheduleAfterFailure,
   updateNextExecution,
 } from '@shared/lib/services/scheduled-task-service'
 import type { ScheduledTask } from '@shared/lib/services/scheduled-task-service'
-import type { EffortLevel } from '@shared/lib/container/types'
 import { getNextCronTime } from '@shared/lib/services/schedule-parser'
-import {
-  registerSession,
-  updateSessionMetadata,
-} from '@shared/lib/services/session-service'
 import { getSecretEnvVars } from '@shared/lib/services/secrets-service'
 import { agentExists } from '@shared/lib/services/agent-service'
+import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
+import { deliverSessionWake } from './wake-delivery'
 
+/**
+ * How long an overdue session wake keeps retrying (via the normal poll loop)
+ * before being marked failed. Unlike regular one-shot tasks, a wake may be
+ * days in the making — a transient failure at fire time (runtime restarting,
+ * machine waking from sleep) must not permanently kill it.
+ */
+const WAKE_RETRY_WINDOW_MS = 6 * 60 * 60 * 1000
+
+/**
+ * Whether a recurring task's previous run still occupies its slot: busy and not
+ * parked on user input. A parked run has nobody to answer it, so it frees the
+ * slot; a run whose turn ended with background work still going stays active
+ * and keeps it.
+ */
+async function isRunBusy(actor: AgentActor, sessionId: string): Promise<boolean> {
+  const live = await actor.sessions.live(sessionId)
+  return live.isActive && !live.isAwaitingInput
+}
 
 class TaskScheduler {
   private intervalId: NodeJS.Timeout | null = null
@@ -45,19 +66,33 @@ class TaskScheduler {
     this.isRunning = true
     console.log('[TaskScheduler] Starting scheduler...')
 
-    // Execute overdue tasks immediately on startup
-    await this.executeOverdueTasks()
-
-    // Start periodic polling
+    // Install the periodic poll loop FIRST, unconditionally. The poll loop is
+    // the scheduler's natural retry: it re-scans every interval and is the same
+    // code path that runs in steady state. Installing it before the immediate
+    // catch-up scan means a transient failure in that scan (e.g. a SQLite hiccup
+    // in getDueTasks — SUP-224) can no longer prevent polling from running, so
+    // the scheduler self-heals on the next tick instead of wedging.
     this.intervalId = setInterval(() => {
-      this.executeOverdueTasks().catch((error) => {
+      background(this.executeOverdueTasks().catch((error) => {
         console.error('[TaskScheduler] Error in polling cycle:', error)
-      })
+        captureException(error, { tags: { component: 'task-scheduler', phase: 'poll' } })
+      }), { name: 'task-scheduler.run-overdue' })
     }, this.pollIntervalMs)
 
     console.log(
       `[TaskScheduler] Scheduler started, polling every ${this.pollIntervalMs / 1000}s`
     )
+
+    // Best-effort immediate catch-up scan so overdue tasks run now rather than
+    // waiting up to one poll interval. A failure here is non-fatal: report it and
+    // let the poll loop above retry — startup is NOT wedged and isActive() stays
+    // true.
+    try {
+      await this.executeOverdueTasks()
+    } catch (error) {
+      console.error('[TaskScheduler] Initial overdue scan failed; poll loop will retry:', error)
+      captureException(error, { tags: { component: 'task-scheduler', phase: 'initial-scan' } })
+    }
   }
 
   /**
@@ -109,12 +144,24 @@ class TaskScheduler {
             `[TaskScheduler] Failed to execute task ${task.id}:`,
             error
           )
-          // For recurring tasks, schedule next execution even on failure
-          // For one-time tasks, mark as failed
-          if (task.isRecurring) {
+          captureException(error, {
+            tags: { component: 'task-scheduler', phase: 'execute-task' },
+            extra: { taskId: task.id, agentSlug: task.agentSlug, isRecurring: task.isRecurring },
+          })
+          // For recurring tasks, schedule the next attempt without recording an
+          // execution: lastSessionId keeps pointing at the previous run so the
+          // overlap guard stays armed. For one-time tasks, mark as failed.
+          if (!task.isRecurring && task.resumeSessionId &&
+              Date.now() - task.nextExecutionAt.getTime() < WAKE_RETRY_WINDOW_MS) {
+            // Session wakes stay pending on transient failure so the poll loop
+            // retries them; they only fail once overdue past the retry window.
+            console.log(
+              `[TaskScheduler] Wake ${task.id} failed transiently; leaving pending for retry`
+            )
+          } else if (task.isRecurring) {
             try {
               const nextTime = getNextCronTime(task.scheduleExpression, task.timezone || undefined)
-              await updateNextExecution(task.id, nextTime, '')
+              await rescheduleAfterFailure(task.id, nextTime)
               console.log(
                 `[TaskScheduler] Recurring task ${task.id} failed but scheduled next: ${nextTime.toISOString()}`
               )
@@ -139,9 +186,52 @@ class TaskScheduler {
    * Execute a single scheduled task.
    */
   private async executeTask(task: ScheduledTask): Promise<void> {
+    // Attribute to task creator (baked into ANTHROPIC token on cold start).
+    return runWithOptionalUser(task.createdByUserId, () => this.executeTaskInner(task))
+  }
+
+  private async executeTaskInner(task: ScheduledTask): Promise<void> {
     console.log(
       `[TaskScheduler] Executing task ${task.id} for agent ${task.agentSlug}`
     )
+
+    if (task.resumeSessionId) {
+      await this.executeSessionWake(task, task.resumeSessionId)
+      return
+    }
+
+    const actor = agentRegistry.get(task.agentSlug)
+
+    const existingSession = await actor.sessions.forScheduledExecution(task.id, task.nextExecutionAt)
+
+    if (existingSession) {
+      console.log(
+        `[TaskScheduler] Task ${task.id} already has session ${existingSession.id}; reconciling task status`
+      )
+      await this.recordTaskExecution(task, existingSession.id)
+      return
+    }
+
+    // Overlap guard: while the previous run of this recurring task is still
+    // busy, hold this fire rather than start a second concurrent session.
+    // Holding leaves nextExecutionAt alone: the task stays due, each poll
+    // re-checks, and the first free poll fires once and re-anchors to the next
+    // cron boundary. One scalar means at most one pending fire per task.
+    if (task.isRecurring && task.lastSessionId && await isRunBusy(actor, task.lastSessionId)) {
+      console.log(
+        `[TaskScheduler] Task ${task.id} held: previous run ${task.lastSessionId} is still busy`
+      )
+      // A hold is not a failure: a failed skip write must not reach the failure
+      // path, which would advance the schedule and drop the held fire.
+      await recordTaskSkip(task.id).catch((error) => {
+        console.error(`[TaskScheduler] Failed to record skip for task ${task.id}:`, error)
+        captureException(error, {
+          tags: { component: 'task-scheduler', phase: 'record-skip' },
+          extra: { taskId: task.id, agentSlug: task.agentSlug },
+        })
+      })
+      return
+    }
 
     // Verify agent still exists
     if (!(await agentExists(task.agentSlug))) {
@@ -153,58 +243,106 @@ class TaskScheduler {
     }
 
     // Start the container if not running
-    const client = await containerManager.ensureRunning(task.agentSlug)
+    await actor.container.start()
 
     // Get available env vars for the agent
     const availableEnvVars = await getSecretEnvVars(task.agentSlug)
 
-    // Create a new session with the scheduled prompt
+    // Create a new session with the scheduled prompt.
+    // Model/effort/speed preference order: task override > agent default > global default.
     const models = getEffectiveModels()
-    const containerSession = await client.createSession({
-      availableEnvVars:
-        availableEnvVars.length > 0 ? availableEnvVars : undefined,
-      initialMessage: task.prompt,
-      model: task.model || models.agentModel,
-      browserModel: models.browserModel,
-      ...(task.effort ? { effort: task.effort as EffortLevel } : {}),
-    })
-
-    const sessionId = containerSession.id
-    const sessionName = task.name || 'Scheduled Task'
-
-    // Register the session
-    await registerSession(task.agentSlug, sessionId, sessionName)
-
-    // Update session metadata to mark it as created from a scheduled task
-    await updateSessionMetadata(task.agentSlug, sessionId, {
-      isScheduledExecution: true,
-      scheduledTaskId: task.id,
-      scheduledTaskName: task.name || undefined,
-    })
-
-    // Subscribe to the session for SSE updates
-    await messagePersister.subscribeToSession(
-      sessionId,
-      client,
-      sessionId,
-      task.agentSlug
+    const agentPrefs = await readAgentPreferences(task.agentSlug)
+    const resolved = await resolveConnectionRuntimeInherit(
+      { model: task.model,
+      llmProviderId: task.llmProviderId, effort: task.effort, speed: task.speed },
+      agentPrefs,
+      models,
     )
-    messagePersister.markSessionActive(sessionId, task.agentSlug)
+    const { id: sessionId } = await actor.sessions.start({
+      create: {
+        availableEnvVars:
+          availableEnvVars.length > 0 ? availableEnvVars : undefined,
+        initialMessage: task.prompt,
+        model: resolved.model,
+        llmProviderId: resolved.llmProviderId,
+        browserModel: models.browserModel,
+        dashboardBuilderModel: models.dashboardBuilderModel,
+        metadata: { isAutomated: true },
+        effort: resolved.effort,
+        ...(resolved.speed ? { speed: resolved.speed } : {}),
+      },
+      name: task.name || 'Scheduled Task',
+      metadata: {
+        isScheduledExecution: true,
+        scheduledTaskId: task.id,
+        scheduledTaskName: task.name || undefined,
+        scheduledExecutionAt: task.nextExecutionAt.toISOString(),
+        automationStatus: 'running',
+      },
+    })
 
     console.log(
       `[TaskScheduler] Task ${task.id} started, session: ${sessionId}`
     )
 
     // Trigger scheduled session started notification
-    notificationManager.triggerScheduledSessionStarted(
+    background(notificationManager.triggerScheduledSessionStarted(
       sessionId,
       task.agentSlug,
+      task.id,
       task.name || undefined
     ).catch((err) => {
       console.error('[TaskScheduler] Failed to trigger scheduled notification:', err)
-    })
+    }), { name: 'task-scheduler.notify-session-started' })
 
-    // Update task status
+    await this.recordTaskExecution(task, sessionId)
+  }
+
+  /**
+   * Fire a session wake: resume the existing target session with a system
+   * message instead of creating a new session. Delivery (claim, guards, send,
+   * record) lives in deliverSessionWake, shared with the manual "Wake now"
+   * route so the two paths can never double-deliver. Transient delivery
+   * errors propagate to the caller's retry handling.
+   */
+  private async executeSessionWake(task: ScheduledTask, sessionId: string): Promise<void> {
+    const result = await deliverSessionWake(task, 'scheduled')
+
+    switch (result.outcome) {
+      case 'delivered':
+        console.log(`[TaskScheduler] Wake ${task.id} resumed session ${sessionId}`)
+        break
+      case 'reconciled':
+        console.log(
+          `[TaskScheduler] Wake ${task.id} already delivered to session ${sessionId}; reconciled task status`
+        )
+        break
+      case 'in-flight':
+        // Another delivery (e.g. a "Wake now" click) holds the claim — its
+        // completion records the execution; nothing to do here.
+        console.log(`[TaskScheduler] Wake ${task.id} delivery already in flight; skipping`)
+        break
+      case 'not-pending':
+        // Fresh read shows the task already reached a terminal state (a manual
+        // wake won the race) — the due-task batch was just stale.
+        console.log(`[TaskScheduler] Wake ${task.id} is ${result.status}; skipping`)
+        break
+      case 'session-missing':
+        console.error(
+          `[TaskScheduler] Wake ${task.id} target session ${sessionId} no longer exists`
+        )
+        await markTaskFailed(task.id, 'Session no longer exists')
+        break
+      case 'agent-missing':
+        console.error(
+          `[TaskScheduler] Agent ${task.agentSlug} no longer exists, marking wake as failed`
+        )
+        await markTaskFailed(task.id, 'Agent no longer exists')
+        break
+    }
+  }
+
+  private async recordTaskExecution(task: ScheduledTask, sessionId: string): Promise<void> {
     if (task.isRecurring) {
       // Update next execution time for recurring tasks
       const nextTime = getNextCronTime(task.scheduleExpression, task.timezone || undefined)

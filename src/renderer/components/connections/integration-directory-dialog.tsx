@@ -1,7 +1,7 @@
 import { apiFetch } from '@renderer/lib/api'
-import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import type { RemoteMcpServer } from '@renderer/hooks/use-remote-mcps'
 import { useQuery } from '@tanstack/react-query'
 import {
   Dialog,
@@ -23,34 +23,159 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@renderer/components/ui/select'
-import { HighlightMatch } from '@renderer/components/ui/highlight-match'
-import { Loader2, Plus, Search } from 'lucide-react'
+import { ArrowRight, Loader2, Plus, Search, SearchX } from 'lucide-react'
 import { IntegrationList, IntegrationRow } from './integration-row'
 import { mcpDraftSchema, type McpDraft, type McpAuthType } from './mcp-draft-schema'
-import {
-  useInitiateConnection,
-  useInvalidateConnectedAccounts,
-} from '@renderer/hooks/use-connected-accounts'
+import { useConnectAccount, type NewApiConnection } from '@renderer/hooks/use-connect-account'
 import {
   useAddRemoteMcp,
   useInitiateMcpOAuth,
   useInvalidateRemoteMcps,
+  useMcpOAuthRedirectUris,
 } from '@renderer/hooks/use-remote-mcps'
 import { useMcpOAuthListener } from '@renderer/hooks/use-mcp-oauth-listener'
-import type { Provider } from '@shared/lib/composio/providers'
+import { useLoginWindow } from '@renderer/hooks/use-login-window'
+import type { Provider } from '@shared/lib/account-providers/service-catalog'
 import { COMMON_MCP_SERVERS, type CommonMcpServer } from '@shared/lib/mcp/common-servers'
+import { McpSetupGuide } from './mcp-setup-guide'
+import { McpAdvancedClientFields } from './mcp-advanced-client-fields'
+import { LoginButton } from './login-button'
 
-export type DirectoryTab = 'apis' | 'mcps'
+export type DirectoryTab = 'all' | 'apis' | 'mcps'
+
+const SEARCH_PLACEHOLDER: Record<DirectoryTab, string> = {
+  all: 'Search all connections...',
+  apis: 'Search APIs...',
+  mcps: 'Search MCP servers...',
+}
+
+function useProviders() {
+  return useQuery<{ providers: Provider[] }>({
+    queryKey: ['providers'],
+    queryFn: async () => {
+      const res = await apiFetch('/api/providers')
+      if (!res.ok) throw new Error('Failed to fetch providers')
+      return res.json()
+    },
+  })
+}
+
+function filterProviders(providers: Provider[] | undefined, filter: string): Provider[] {
+  const list = Array.isArray(providers) ? providers : []
+  const q = filter.trim().toLowerCase()
+  if (!q) return list
+  return list.filter((p) =>
+    p.displayName.toLowerCase().includes(q) ||
+    p.slug.toLowerCase().includes(q) ||
+    p.description.toLowerCase().includes(q)
+  )
+}
+
+function filterMcpServers(filter: string): readonly CommonMcpServer[] {
+  const q = filter.trim().toLowerCase()
+  if (!q) return COMMON_MCP_SERVERS
+  return COMMON_MCP_SERVERS.filter((s) =>
+    s.displayName.toLowerCase().includes(q) ||
+    s.slug.toLowerCase().includes(q) ||
+    s.description.toLowerCase().includes(q) ||
+    s.category.toLowerCase().includes(q)
+  )
+}
+
+// Shown under a scoped tab's empty state when the *other* directory has hits,
+// so a search on APIs/MCPs can't dead-end on a service that does exist.
+function CrossDirectoryHint({ count, noun, query, onSeeAll }: {
+  count: number
+  noun: string
+  query: string
+  onSeeAll: () => void
+}) {
+  if (count === 0) return null
+  // Rendered as the chin of DirectoryEmptyState — the parent owns the border
+  // radius and clips this strip, so no rounding of its own.
+  return (
+    <button
+      type="button"
+      onClick={onSeeAll}
+      data-testid="directory-see-all"
+      className="relative -mt-3 flex w-full items-center justify-between gap-2 rounded-b-lg bg-[#E5F2FF] px-3 pb-2 pt-5 text-left text-[11px] text-[#0A7CFF] transition-opacity hover:opacity-80"
+    >
+      <span className="truncate">{`${count} ${noun}${count === 1 ? ' matches' : 's match'} \u201C${query}\u201D.`}</span>
+      <span className="flex items-center gap-1 font-medium shrink-0">
+        View
+        <ArrowRight className="h-3 w-3" />
+      </span>
+    </button>
+  )
+}
+
+// Browse-time footer note. Hidden while a search is active — there the empty
+// chips already carry the "nothing here, try this instead" message.
+function DirectoryFooterNote({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <div className={cn('rounded-lg bg-[#E5F2FF] px-3 py-2.5 text-[11px] text-[#0A7CFF]', className)}>
+      {children}
+    </div>
+  )
+}
+
+// A section with no matches keeps a card-shaped slot, greyed out. It renders as
+// a grid cell and mirrors a connection card's icon square + name + subtitle
+// structure exactly, so it matches on both width and height by construction.
+function DirectoryEmptyState({ noun, query, chin }: { noun: string; query: string; chin?: ReactNode }) {
+  return (
+    <div className="relative">
+      {/* bg-background under the muted tint keeps this layer opaque, so the
+          chin tucked behind it can't bleed through. */}
+      <div className="relative z-10 rounded-lg border bg-background shadow-sm">
+        <div className="flex items-center gap-3 rounded-lg bg-muted/50 p-3">
+          <div className="h-7 w-7 rounded-md bg-muted flex items-center justify-center shrink-0">
+            <SearchX className="h-4 w-4 text-muted-foreground/60" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-medium truncate">{`No ${noun} matches`}</div>
+            <div className="text-[11px] text-muted-foreground mt-0.5 truncate">
+              {`Ask your agent about other ways to connect ${query}.`}
+            </div>
+          </div>
+        </div>
+      </div>
+      {chin}
+    </div>
+  )
+}
+
+// Section header for the combined "All" tab, sized a clear step above the
+// card names underneath it.
+function DirectorySectionHeading({ title, description }: { title: string; description: string }) {
+  return (
+    <div className="px-1 pt-2 space-y-0.5">
+      <h3 className="text-xs font-medium">{title}</h3>
+      <p className="text-[11px] text-muted-foreground">{description}</p>
+    </div>
+  )
+}
+
+export type { NewApiConnection } from '@renderer/hooks/use-connect-account'
+
+export interface NewMcpConnection {
+  mcpId: string
+  name: string
+  tools: Array<{ name: string; description?: string }>
+}
 
 interface IntegrationDirectoryDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   initialTab?: DirectoryTab
+  initialFilter?: string
+  onApiConnected?: (connection: NewApiConnection) => void
+  onMcpConnected?: (connection: NewMcpConnection) => void
 }
 
-export function IntegrationDirectoryDialog({ open, onOpenChange, initialTab = 'apis' }: IntegrationDirectoryDialogProps) {
+export function IntegrationDirectoryDialog({ open, onOpenChange, initialTab = 'all', initialFilter = '', onApiConnected, onMcpConnected }: IntegrationDirectoryDialogProps) {
   const [tab, setTab] = useState<DirectoryTab>(initialTab)
-  const [filter, setFilter] = useState('')
+  const [filter, setFilter] = useState(initialFilter)
   const prevOpen = useRef(open)
 
   // Reset only when the dialog transitions from closed → open, not when the
@@ -58,17 +183,28 @@ export function IntegrationDirectoryDialog({ open, onOpenChange, initialTab = 'a
   useEffect(() => {
     if (open && !prevOpen.current) {
       setTab(initialTab)
-      setFilter('')
+      setFilter(initialFilter)
     }
     prevOpen.current = open
-  }, [open, initialTab])
+  }, [open, initialTab, initialFilter])
 
-  const handleTabChange = (v: string) => {
-    setTab(v as DirectoryTab)
-    setFilter('')
-  }
+  // The query survives a tab switch — CrossDirectoryHint hands it to the All
+  // tab, and clearing it there would throw away what the user just typed.
+  const handleTabChange = (v: string) => setTab(v as DirectoryTab)
+
+  const seeAllForFilter = useCallback(() => setTab('all'), [])
 
   const close = useCallback(() => onOpenChange(false), [onOpenChange])
+
+  const handleApiConnected = useCallback((connection: NewApiConnection) => {
+    onOpenChange(false)
+    onApiConnected?.(connection)
+  }, [onOpenChange, onApiConnected])
+
+  const handleMcpConnected = useCallback((connection: NewMcpConnection) => {
+    onOpenChange(false)
+    onMcpConnected?.(connection)
+  }, [onOpenChange, onMcpConnected])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -81,26 +217,35 @@ export function IntegrationDirectoryDialog({ open, onOpenChange, initialTab = 'a
           <DialogDescription className="sr-only">Connect APIs or MCP servers to your agents</DialogDescription>
         </DialogHeader>
         <Tabs value={tab} onValueChange={handleTabChange} className="flex flex-col gap-4 mt-4 min-h-[50vh]">
-          <div className="flex items-center gap-2">
-            <TabsList>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <TabsList className="self-start">
+              <TabsTrigger value="all" data-testid="directory-tab-all">All</TabsTrigger>
               <TabsTrigger value="apis" data-testid="directory-tab-apis">APIs</TabsTrigger>
               <TabsTrigger value="mcps" data-testid="directory-tab-mcps">MCPs</TabsTrigger>
             </TabsList>
-            <div className="relative ml-auto w-56">
+            <div className="relative w-full sm:ml-auto sm:w-56">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder={tab === 'apis' ? 'Search APIs...' : 'Search MCP servers...'}
+                placeholder={SEARCH_PLACEHOLDER[tab]}
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
                 className="pl-8"
               />
             </div>
           </div>
+          <TabsContent value="all" className="mt-0">
+            <AllPanel
+              filter={filter}
+              onApiConnected={handleApiConnected}
+              onMcpConnected={handleMcpConnected}
+              fallbackClose={close}
+            />
+          </TabsContent>
           <TabsContent value="apis" className="mt-0">
-            <ApisPanel filter={filter} onConnected={close} />
+            <ApisPanel filter={filter} onConnected={handleApiConnected} fallbackClose={close} onSeeAll={seeAllForFilter} />
           </TabsContent>
           <TabsContent value="mcps" className="mt-0">
-            <McpsPanel filter={filter} onAdded={close} />
+            <McpsPanel filter={filter} onConnected={handleMcpConnected} fallbackClose={close} onSeeAll={seeAllForFilter} />
           </TabsContent>
         </Tabs>
       </DialogContent>
@@ -108,100 +253,53 @@ export function IntegrationDirectoryDialog({ open, onOpenChange, initialTab = 'a
   )
 }
 
+// --- All panel ---
+
+// Renders both directories in one scroll area. Each panel keeps its own
+// connect/OAuth state; only the section chrome and scrolling move up here.
+function AllPanel({ filter, onApiConnected, onMcpConnected, fallbackClose }: {
+  filter: string
+  onApiConnected: (connection: NewApiConnection) => void
+  onMcpConnected: (connection: NewMcpConnection) => void
+  fallbackClose: () => void
+}) {
+  // Both sections always render, each carrying its own empty state, so a search
+  // shows what each directory has to say rather than silently dropping one.
+  return (
+    <div className="max-h-[50vh] overflow-y-auto pr-1 space-y-5">
+      <ApisPanel embedded filter={filter} onConnected={onApiConnected} fallbackClose={fallbackClose} />
+      <McpsPanel embedded filter={filter} onConnected={onMcpConnected} fallbackClose={fallbackClose} />
+      {!filter.trim() && (
+        <DirectoryFooterNote>
+          Don&apos;t see what you&apos;re looking for? Add any MCP server by URL, or ask your agent about connecting to a specific service.
+        </DirectoryFooterNote>
+      )}
+    </div>
+  )
+}
+
 // --- APIs panel ---
 
-function ApisPanel({ filter, onConnected }: { filter: string; onConnected: () => void }) {
-  const { data: providersData, isLoading } = useQuery<{ providers: Provider[] }>({
-    queryKey: ['providers'],
-    queryFn: async () => {
-      const res = await apiFetch('/api/providers')
-      if (!res.ok) throw new Error('Failed to fetch providers')
-      return res.json()
-    },
+function ApisPanel({ filter, onConnected, fallbackClose, embedded = false, onSeeAll }: { filter: string; onConnected: (connection: NewApiConnection) => void; fallbackClose: () => void; embedded?: boolean; onSeeAll?: () => void }) {
+  const { data: providersData, isLoading } = useProviders()
+  // A sign-in that names no account still worked; close and let the lists refresh.
+  const { connect, connecting, canCancel, cancel: cancelOAuthFlow, error } = useConnectAccount({
+    location: 'connections_tab',
+    onConnected,
+    onConnectedWithoutAccount: fallbackClose,
   })
-  const initiateConnection = useInitiateConnection()
-  const invalidateAccounts = useInvalidateConnectedAccounts()
 
-  const [connecting, setConnecting] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    const handleComplete = (success: boolean) => {
-      setConnecting(null)
-      if (success) {
-        invalidateAccounts()
-        onConnected()
-      }
-    }
-
-    if (window.electronAPI) {
-      window.electronAPI.onOAuthCallback(async (params) => {
-        if (params.error || params.status === 'failed') {
-          handleComplete(false)
-          return
-        }
-        if (params.connectionId && params.toolkit) {
-          try {
-            const res = await apiFetch('/api/connected-accounts/complete', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                connectionId: params.connectionId,
-                toolkit: params.toolkit,
-              }),
-            })
-            handleComplete(res.ok)
-          } catch {
-            handleComplete(false)
-          }
-        } else {
-          handleComplete(false)
-        }
-      })
-      return () => { window.electronAPI?.removeOAuthCallback() }
-    }
-
-    const handleMessage = (event: MessageEvent) => {
-      if (event.data?.type === 'oauth-callback') {
-        handleComplete(event.data.success)
-      }
-    }
-    window.addEventListener('message', handleMessage)
-    return () => window.removeEventListener('message', handleMessage)
-  }, [invalidateAccounts, onConnected])
-
-  const filtered = useMemo(() => {
-    const providers = Array.isArray(providersData?.providers) ? providersData.providers : []
-    if (!filter.trim()) return providers
-    const q = filter.toLowerCase()
-    return providers.filter((p) =>
-      p.displayName.toLowerCase().includes(q) ||
-      p.slug.toLowerCase().includes(q) ||
-      p.description.toLowerCase().includes(q)
-    )
-  }, [providersData, filter])
-
-  const handleConnect = async (slug: string) => {
-    setConnecting(slug)
-    setError(null)
-    const popup = prepareOAuthPopup()
-    try {
-      const isElectron = !!window.electronAPI
-      const result = await initiateConnection.mutateAsync({
-        providerSlug: slug,
-        electron: isElectron,
-        location: 'connections_tab',
-      })
-      await popup.navigate(result.redirectUrl)
-    } catch (err) {
-      popup.close()
-      setError(err instanceof Error ? err.message : 'Failed to connect')
-      setConnecting(null)
-    }
-  }
+  const filtered = useMemo(() => filterProviders(providersData?.providers, filter), [providersData, filter])
+  const mcpMatchCount = useMemo(() => filterMcpServers(filter).length, [filter])
 
   return (
     <div className="space-y-3">
+      {embedded && (
+        <DirectorySectionHeading
+          title="APIs"
+          description="The most reliable and robust connections — check here first."
+        />
+      )}
       {error && (
         <div className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
           {error}
@@ -213,9 +311,17 @@ function ApisPanel({ filter, onConnected }: { filter: string; onConnected: () =>
           Loading APIs...
         </div>
       ) : filtered.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No APIs match your search.</p>
+        <IntegrationList variant="grid">
+          <DirectoryEmptyState
+            noun="API"
+            query={filter.trim()}
+            chin={onSeeAll && (
+              <CrossDirectoryHint count={mcpMatchCount} noun="MCP server" query={filter.trim()} onSeeAll={onSeeAll} />
+            )}
+          />
+        </IntegrationList>
       ) : (
-        <div className="max-h-[50vh] overflow-y-auto pr-1">
+        <div className={cn(!embedded && 'max-h-[50vh] overflow-y-auto pr-1')}>
           <IntegrationList variant="grid">
             {filtered.map((provider) => {
               const pending = connecting === provider.slug
@@ -225,31 +331,35 @@ function ApisPanel({ filter, onConnected }: { filter: string; onConnected: () =>
                   boxed
                   iconSlug={provider.slug}
                   iconFallback="oauth"
-                  name={<HighlightMatch text={provider.displayName} query={filter} />}
+                  name={provider.displayName}
                   subtitle={provider.description}
                   right={
-                    <Button
+                    <LoginButton
                       size="icon"
                       variant="outline"
                       className="h-7 w-7"
-                      onClick={() => handleConnect(provider.slug)}
+                      onClick={() => { void connect(provider.slug) }}
                       disabled={connecting !== null}
                       aria-label={`Connect ${provider.displayName}`}
                       data-testid={`directory-connect-api-${provider.slug}`}
-                    >
-                      {pending ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <Plus className="h-3.5 w-3.5" />
-                      )}
-                    </Button>
+                      icon={<Plus className="h-3.5 w-3.5" />}
+                      // Icon-only, so the announcement carries the pending text.
+                      pendingLabel={<span className="sr-only">{`Connecting ${provider.displayName}…`}</span>}
+                      pending={pending}
+                      canCancel={pending && canCancel}
+                      onCancel={cancelOAuthFlow}
+                      cancelSide="left"
+                      cancelTestId={`directory-cancel-api-${provider.slug}`}
+                    />
                   }
                 />
               )
             })}
-            <div className="col-span-2 rounded-lg bg-muted/50 px-3 py-2.5 text-[11px] text-muted-foreground">
-              Don&apos;t see the API you&apos;re looking for? Check MCPs or ask your agent about connecting to a specific service.
-            </div>
+            {!embedded && !filter.trim() && (
+              <DirectoryFooterNote className="sm:col-span-2">
+                Don&apos;t see the API you&apos;re looking for? Check MCPs or ask your agent about connecting to a specific service.
+              </DirectoryFooterNote>
+            )}
           </IntegrationList>
         </div>
       )}
@@ -267,47 +377,59 @@ type DraftState = Omit<McpDraft, 'authType' | 'token' | 'clientName' | 'clientId
   clientSecret: string
 }
 
-function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void }) {
+function McpsPanel({ filter, onConnected, fallbackClose, embedded = false, onSeeAll }: { filter: string; onConnected: (connection: NewMcpConnection) => void; fallbackClose: () => void; embedded?: boolean; onSeeAll?: () => void }) {
   const addMcp = useAddRemoteMcp()
   const initiateOAuth = useInitiateMcpOAuth()
   const invalidateRemoteMcps = useInvalidateRemoteMcps()
+  const { data: redirectUris } = useMcpOAuthRedirectUris()
 
   const [error, setError] = useState<string | null>(null)
   const [draft, setDraft] = useState<DraftState | null>(null)
   const [submitting, setSubmitting] = useState(false)
-  const [oauthPending, setOauthPending] = useState(false)
+  const loginWindow = useLoginWindow()
+  const closeLoginWindow = loginWindow.close
+  const oauthPending = loginWindow.waiting
+  const draftRef = useRef(draft)
+  draftRef.current = draft
+
+  const cancelMcpOAuth = useCallback(() => {
+    closeLoginWindow()
+    setError(null)
+  }, [closeLoginWindow])
+
+  const handleMcpReady = useCallback((server: RemoteMcpServer) => {
+    invalidateRemoteMcps()
+    const tools = (server.tools || []).map((t) => ({ name: t.name, description: t.description }))
+    onConnected({ mcpId: server.id, name: server.name, tools })
+  }, [invalidateRemoteMcps, onConnected])
 
   useMcpOAuthListener(oauthPending, ({ success, error: oauthError }) => {
-    setOauthPending(false)
-    setSubmitting(false)
+    closeLoginWindow()
     if (success) {
-      invalidateRemoteMcps()
+      const draftUrl = draftRef.current?.url?.trim()
       setDraft(null)
-      onAdded()
+      // Refetch to find the newly created server
+      apiFetch('/api/remote-mcps').then((res) => res.json()).then((data: { servers: RemoteMcpServer[] }) => {
+        const newServer = Array.isArray(data.servers) ? data.servers.find((s) => s.url === draftUrl) : undefined
+        if (newServer) {
+          handleMcpReady(newServer)
+        } else {
+          invalidateRemoteMcps()
+          fallbackClose()
+        }
+      }).catch(() => {
+        invalidateRemoteMcps()
+        fallbackClose()
+      })
     } else {
       setError(oauthError || 'OAuth authorization failed')
     }
   })
 
-  const filtered = useMemo(() => {
-    if (!filter.trim()) return COMMON_MCP_SERVERS
-    const q = filter.toLowerCase()
-    return COMMON_MCP_SERVERS.filter((s) =>
-      s.displayName.toLowerCase().includes(q) ||
-      s.slug.toLowerCase().includes(q) ||
-      s.description.toLowerCase().includes(q) ||
-      s.category.toLowerCase().includes(q)
-    )
-  }, [filter])
-
-  const grouped = useMemo(() => {
-    const map: Record<string, CommonMcpServer[]> = {}
-    for (const s of filtered) {
-      if (!map[s.category]) map[s.category] = []
-      map[s.category].push(s)
-    }
-    return map
-  }, [filtered])
+  const filtered = useMemo(() => filterMcpServers(filter), [filter])
+  // Cached under the same key ApisPanel uses — only needed to size the hint.
+  const { data: providersData } = useProviders()
+  const apiMatchCount = useMemo(() => filterProviders(providersData?.providers, filter).length, [providersData, filter])
 
   const handlePickServer = (server: CommonMcpServer) => {
     setError(null)
@@ -329,6 +451,7 @@ function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void })
   }
 
   const cancelDraft = () => {
+    cancelMcpOAuth()
     setDraft(null)
     setError(null)
   }
@@ -344,61 +467,55 @@ function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void })
     }
     const valid = parsed.data
 
-    setSubmitting(true)
     try {
       if (valid.authType === 'oauth') {
-        const popup = prepareOAuthPopup()
-        try {
-          const isElectron = !!window.electronAPI
+        // The login window's own pending flag keeps the form busy, through
+        // the wait for useMcpOAuthListener.
+        const outcome = await loginWindow.open(async () => {
           const clientNameOverride = valid.clientName.trim()
           const clientIdOverride = valid.clientId.trim()
           const clientSecretOverride = valid.clientSecret.trim()
           const result = await initiateOAuth.mutateAsync({
             name: valid.name,
             url: valid.url,
-            electron: isElectron,
+            electron: !!window.electronAPI,
             clientName: clientNameOverride.length > 0 ? clientNameOverride : undefined,
             clientId: clientIdOverride.length > 0 ? clientIdOverride : undefined,
             clientSecret: clientSecretOverride.length > 0 ? clientSecretOverride : undefined,
           })
-          if (result.redirectUrl) {
-            setOauthPending(true)
-            await popup.navigate(result.redirectUrl)
-            // Keep dialog open and spinner running until useMcpOAuthListener fires.
-            return
-          }
-          popup.close()
+          return result.redirectUrl
+        })
+        if (outcome === 'no-url') {
           setDraft(null)
-          onAdded()
-        } catch (err) {
-          popup.close()
-          throw err
+          fallbackClose()
         }
       } else {
-        await addMcp.mutateAsync({
+        setSubmitting(true)
+        const result = await addMcp.mutateAsync({
           name: valid.name,
           url: valid.url,
           authType: valid.authType,
           accessToken: valid.authType === 'bearer' ? valid.token.trim() : undefined,
         })
         setDraft(null)
-        onAdded()
+        handleMcpReady(result.server)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add MCP server')
     } finally {
-      // Only clear submitting if we're not waiting on OAuth — the listener
-      // clears both states itself.
-      if (!oauthPending) setSubmitting(false)
+      if (valid.authType !== 'oauth') setSubmitting(false)
     }
   }
 
   const renderDraftBody = () => {
     if (!draft) return null
     const canSubmit = mcpDraftSchema.safeParse(draft).success
-    const busy = submitting || oauthPending
+    const busy = submitting || loginWindow.pending
+    // Provider-side setup for the picked catalog row, if it has any.
+    const setup = COMMON_MCP_SERVERS.find((s) => s.slug === draft.sourceSlug)?.setup
     return (
       <div className="space-y-2">
+        {setup && <McpSetupGuide guide={setup} redirectUri={draft.authType === 'oauth' ? redirectUris?.preferred : undefined} />}
         <div>
           <Label className="text-xs font-normal text-muted-foreground/70">Name</Label>
           <Input
@@ -449,48 +566,16 @@ function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void })
           </div>
         )}
         {draft.authType === 'oauth' && (
-          <details className="group rounded-md pt-2">
-            <summary className="cursor-pointer list-none text-xs text-muted-foreground/70 hover:text-muted-foreground select-none">
-              <span className="inline-block transition-transform group-open:rotate-90">›</span>
-              <span className="ml-1">Advanced</span>
-            </summary>
-            <div className="mt-2 space-y-2">
-              <div>
-                <Label className="text-xs font-normal text-muted-foreground/70">Client Name</Label>
-                <Input
-                  value={draft.clientName}
-                  onChange={(e) => setDraft({ ...draft, clientName: e.target.value })}
-                  placeholder="Override OAuth client_name (optional)"
-                  className="mt-1"
-                  data-testid="mcp-form-client-name"
-                />
-              </div>
-              <div>
-                <Label className="text-xs font-normal text-muted-foreground/70">Client ID</Label>
-                <Input
-                  value={draft.clientId}
-                  onChange={(e) => setDraft({ ...draft, clientId: e.target.value })}
-                  placeholder="Provide your own OAuth client_id (optional)"
-                  className="mt-1"
-                  data-testid="mcp-form-client-id"
-                />
-                <p className="mt-1 text-[11px] text-muted-foreground/70">
-                  For servers that don&apos;t support open dynamic client registration and have issued you a client ID directly.
-                </p>
-              </div>
-              <div>
-                <Label className="text-xs font-normal text-muted-foreground/70">Client Secret</Label>
-                <Input
-                  type="password"
-                  value={draft.clientSecret}
-                  onChange={(e) => setDraft({ ...draft, clientSecret: e.target.value })}
-                  placeholder="OAuth client_secret (optional, only if your provider requires one)"
-                  className="mt-1"
-                  data-testid="mcp-form-client-secret"
-                />
-              </div>
-            </div>
-          </details>
+          <McpAdvancedClientFields
+            values={{
+              clientName: draft.clientName,
+              clientId: draft.clientId,
+              clientSecret: draft.clientSecret,
+            }}
+            onChange={(next) => setDraft({ ...draft, ...next })}
+            defaultOpen={setup?.requiresClientId}
+            testIdPrefix="mcp-form"
+          />
         )}
         {error && (
           <div className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
@@ -498,21 +583,20 @@ function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void })
           </div>
         )}
         <div className="flex justify-end pt-2">
-          <Button size="sm" onClick={submitDraft} disabled={!canSubmit || busy} data-testid="mcp-form-submit">
-            {busy ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                {oauthPending
-                  ? 'Waiting for OAuth...'
-                  : draft.authType === 'oauth' ? 'Connecting...' : 'Adding...'}
-              </>
-            ) : (
-              <>
-                <Plus className="h-3.5 w-3.5 mr-1.5" />
-                Connect Server
-              </>
-            )}
-          </Button>
+          <LoginButton
+            size="sm"
+            onClick={submitDraft}
+            disabled={!canSubmit}
+            data-testid="mcp-form-submit"
+            icon={<Plus className="h-3.5 w-3.5" />}
+            label="Connect Server"
+            pendingLabel={oauthPending ? 'Waiting for OAuth…' : draft.authType === 'oauth' ? 'Connecting…' : 'Adding…'}
+            pending={busy}
+            canCancel={loginWindow.canCancel}
+            onCancel={cancelMcpOAuth}
+            cancelSide="left"
+            cancelTestId="directory-cancel-mcp-oauth"
+          />
         </div>
       </div>
     )
@@ -560,49 +644,57 @@ function McpsPanel({ filter, onAdded }: { filter: string; onAdded: () => void })
     )
   }
 
+  const searching = filter.trim().length > 0
+  const customCard = renderMcpCard(
+    'custom',
+    undefined,
+    'blocks',
+    'Custom MCP',
+    'Add any MCP server by URL',
+    handlePickCustom,
+    'Add a custom MCP server',
+  )
+
   return (
     <div className="space-y-3">
+      {embedded && (
+        <DirectorySectionHeading
+          title="MCPs"
+          description="Wider coverage for everything else, including servers you run yourself."
+        />
+      )}
       {error && !draft && (
         <div className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
           {error}
         </div>
       )}
-      <div className="space-y-4 max-h-[50vh] overflow-y-auto pr-1">
+      <div className={cn('space-y-4', !embedded && 'max-h-[50vh] overflow-y-auto pr-1')}>
         <IntegrationList variant="grid">
-          {renderMcpCard(
-            'custom',
-            undefined,
-            'blocks',
-            'Custom MCP',
-            'Add any MCP server by URL',
-            handlePickCustom,
-            'Add a custom MCP server',
+          {filtered.length === 0 && (
+            <DirectoryEmptyState
+              noun="MCP"
+              query={filter.trim()}
+              chin={onSeeAll && (
+                <CrossDirectoryHint count={apiMatchCount} noun="API" query={filter.trim()} onSeeAll={onSeeAll} />
+              )}
+            />
           )}
+          {/* Browsing, Custom MCP leads as the entry point; searching, it
+              trails the real matches as the "none of these?" fallback. */}
+          {!searching && customCard}
+          {filtered.map((server) =>
+            renderMcpCard(
+              server.slug,
+              server.slug,
+              'mcp',
+              server.displayName,
+              server.description,
+              () => handlePickServer(server),
+              `Connect ${server.displayName}`,
+            ),
+          )}
+          {searching && customCard}
         </IntegrationList>
-        {Object.keys(grouped).length === 0 ? (
-          <p className="text-sm text-muted-foreground">No MCP servers match your search.</p>
-        ) : (
-          Object.entries(grouped).map(([category, servers]) => (
-            <div key={category} className="space-y-1.5">
-              <p className="text-[11px] uppercase tracking-wide font-medium text-muted-foreground px-1">
-                {category}
-              </p>
-              <IntegrationList variant="grid">
-                {servers.map((server) =>
-                  renderMcpCard(
-                    server.slug,
-                    server.slug,
-                    'mcp',
-                    <HighlightMatch text={server.displayName} query={filter} />,
-                    server.description,
-                    () => handlePickServer(server),
-                    `Connect ${server.displayName}`,
-                  ),
-                )}
-              </IntegrationList>
-            </div>
-          ))
-        )}
       </div>
     </div>
   )

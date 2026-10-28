@@ -24,7 +24,8 @@ docker run -p 3000:3000 \
 
 - `PORT` - Server port (default: 3000)
 - `ANTHROPIC_API_KEY` - Your Anthropic API key
-- `ANTHROPIC_BASE_URL` - Custom API base URL (optional)
+- `ANTHROPIC_BASE_URL` - Custom LLM API base URL (optional)
+- `PLATFORM_BASE_URL` / `PLATFORM_AUTH_TOKEN` - Platform service proxy URL and attributed token, supplied by the host whenever Platform is connected, independently of the LLM provider
 
 ## API Reference
 
@@ -123,14 +124,19 @@ GET /files/path/to/dir
 ```http
 GET /files/path/to/file.txt/content
 ```
+Returns a streamed `application/octet-stream` response with `Content-Length` and
+`Cache-Control: private, no-store`. Text files remain compatible because their
+original bytes are returned unchanged.
 
 #### Upload File
 ```http
 POST /files/path/to/file.txt/upload
-Content-Type: text/plain
+Content-Type: application/octet-stream
 
-file content here
+raw file bytes
 ```
+The request body is streamed to a same-directory temporary file and atomically
+renamed into place. `text/plain` callers remain supported.
 
 #### Delete File/Directory
 ```http

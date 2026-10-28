@@ -1,0 +1,794 @@
+// @vitest-environment jsdom
+import { useState } from 'react'
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen, fireEvent } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import {
+  ModelFamilyList,
+  findCatalogModel,
+  familyDisplayName,
+  formatTokenThreshold,
+  longContextWarningText,
+  splitVendorTabs,
+  vendorDefault,
+  webToolsWarning,
+} from './model-family-list'
+import type { ModelDefinition } from '@shared/lib/llm-provider'
+import type { EffortLevel } from '@shared/lib/container/types'
+
+const ALL: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
+const STD: EffortLevel[] = ['low', 'medium', 'high']
+
+// Authored oldest→newest within each family, mirroring the real catalogs.
+const CATALOG: ModelDefinition[] = [
+  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
+  { id: 'claude-opus-4-6', label: 'Opus 4.6', family: 'opus', icon: 'anthropic', supportedEfforts: ALL },
+  { id: 'claude-opus-4-7', label: 'Opus 4.7', family: 'opus', icon: 'anthropic', supportedEfforts: ALL },
+  { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', icon: 'anthropic', supportedEfforts: ALL },
+  { id: 'claude-opus-5', label: 'Opus 5', family: 'opus', isLatest: true, isDefault: true, icon: 'anthropic', supportedEfforts: ALL },
+  { id: 'gpt-5.4', label: 'GPT-5.4', family: 'gpt', icon: 'openai', supportedEfforts: STD, supportsWebSearch: false, contextWindow: 1_050_000, longContextPriceCliff: { thresholdTokens: 272_000, inputMultiplier: 2, outputMultiplier: 1.5 } },
+  { id: 'gpt-5.5', label: 'GPT-5.5', family: 'gpt', icon: 'openai', supportedEfforts: STD, supportsWebSearch: false, contextWindow: 1_050_000, longContextPriceCliff: { thresholdTokens: 272_000, inputMultiplier: 2, outputMultiplier: 1.5 } },
+  { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', family: 'gpt', icon: 'openai', supportedEfforts: STD, supportsWebSearch: false, contextWindow: 1_050_000, longContextPriceCliff: { thresholdTokens: 272_000, inputMultiplier: 2, outputMultiplier: 1.5 } },
+  { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', family: 'gpt', icon: 'openai', supportedEfforts: STD, supportsWebSearch: false, contextWindow: 1_050_000, longContextPriceCliff: { thresholdTokens: 272_000, inputMultiplier: 2, outputMultiplier: 1.5 } },
+  { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', family: 'gpt', isLatest: true, isDefault: true, icon: 'openai', supportedEfforts: STD, supportsWebSearch: false, contextWindow: 1_050_000, longContextPriceCliff: { thresholdTokens: 272_000, inputMultiplier: 2, outputMultiplier: 1.5 } },
+]
+
+/** All data-testids in DOM order. */
+function testIds(container: HTMLElement): string[] {
+  return Array.from(container.querySelectorAll('[data-testid]')).map((el) => el.getAttribute('data-testid')!)
+}
+
+describe('familyDisplayName', () => {
+  it('title-cases normal families and upper-cases acronyms', () => {
+    expect(familyDisplayName('opus')).toBe('Opus')
+    expect(familyDisplayName('sonnet')).toBe('Sonnet')
+    expect(familyDisplayName('gpt')).toBe('GPT')
+    expect(familyDisplayName('glm')).toBe('GLM')
+    expect(familyDisplayName('muse-wonder')).toBe('Muse Wonder')
+    expect(familyDisplayName('gemini-argon')).toBe('Gemini Argon')
+    expect(familyDisplayName('muse')).toBe('Muse Spark')
+    expect(familyDisplayName('muse-contributor')).toBe('Muse Spark Contributor')
+  })
+})
+
+describe('formatTokenThreshold', () => {
+  it('formats thousands and millions compactly', () => {
+    expect(formatTokenThreshold(272_000)).toBe('272K')
+    expect(formatTokenThreshold(1_050_000)).toBe('1.05M')
+    expect(formatTokenThreshold(500)).toBe('500')
+  })
+})
+
+describe('longContextWarningText', () => {
+  const cliff = { thresholdTokens: 272_000, inputMultiplier: 2, outputMultiplier: 1.5 }
+
+  it('frames the threshold as a share of the context window when known', () => {
+    expect(longContextWarningText(cliff, 1_050_000)).toBe(
+      'Beyond about 26% of the context window, requests cost roughly 2× as much. Starting a new session resets this.',
+    )
+  })
+
+  it('falls back to a token count when the context window is unknown', () => {
+    expect(longContextWarningText(cliff)).toBe(
+      'Beyond ~272K tokens of context, requests cost roughly 2× as much. Starting a new session resets this.',
+    )
+  })
+})
+
+describe('webToolsWarning', () => {
+  it('warns for both when supportsWebSearch is false and no vendor is set', () => {
+    const w = webToolsWarning(CATALOG.find((m) => m.id === 'gpt-5.5'), false)!
+    expect(w).toMatch(/Web search and fetch aren.t available on this model/)
+    expect(w).toMatch(/Set a provider under Settings . Web Search to use them on any model/)
+  })
+
+  it('warns fetch-only when search works but native fetch does not', () => {
+    const w = webToolsWarning(
+      {
+        id: 'gpt-5.5',
+        label: 'GPT-5.5',
+        supportedEfforts: STD,
+        supportsWebSearch: true,
+        supportsWebFetch: false,
+      },
+      false,
+    )!
+    expect(w).toMatch(/Native web fetch isn.t available/)
+    expect(w).toMatch(/Set a provider under Settings . Web Search to use fetch/)
+    expect(w).toMatch(/search still works/)
+  })
+
+  it('returns null for Claude, when both are supported, or when a vendor is set', () => {
+    expect(webToolsWarning(CATALOG.find((m) => m.id === 'claude-sonnet-4-6'), false)).toBeNull()
+    expect(
+      webToolsWarning(
+        {
+          id: 'gpt-5.5',
+          label: 'GPT-5.5',
+          supportedEfforts: STD,
+          supportsWebSearch: true,
+          supportsWebFetch: true,
+        },
+        false,
+      ),
+    ).toBeNull()
+    expect(webToolsWarning(CATALOG.find((m) => m.id === 'gpt-5.5'), true)).toBeNull()
+  })
+})
+
+describe('vendorDefault', () => {
+  it('returns the catalog-declared provider defaults', () => {
+    expect(vendorDefault(CATALOG, 'anthropic')?.id).toBe('claude-opus-5')
+    expect(vendorDefault(CATALOG, 'openai')?.id).toBe('gpt-5.6-sol')
+  })
+  it('does not infer latest when a catalog explicitly declares a different default', () => {
+    const catalog: ModelDefinition[] = [
+      { id: 'stable', label: 'Stable', isDefault: true, icon: 'test', supportedEfforts: STD },
+      { id: 'new', label: 'New', isLatest: true, icon: 'test', supportedEfforts: STD },
+    ]
+    expect(vendorDefault(catalog, 'test')?.id).toBe('stable')
+  })
+  it('returns undefined when the vendor has no declared default', () => {
+    const custom: ModelDefinition[] = [
+      { id: 'a', label: 'A', icon: 'uploaded:x.png', supportedEfforts: STD },
+      { id: 'b', label: 'B', icon: 'uploaded:x.png', supportedEfforts: STD },
+    ]
+    expect(vendorDefault(custom, 'other')).toBeUndefined()
+    expect(vendorDefault(custom, 'anthropic')).toBeUndefined()
+  })
+})
+
+describe('findCatalogModel', () => {
+  it('matches an exact concrete id', () => {
+    expect(findCatalogModel('claude-opus-4-7', CATALOG)?.id).toBe('claude-opus-4-7')
+  })
+  it('resolves a bare family alias to that family latest', () => {
+    expect(findCatalogModel('opus', CATALOG)?.id).toBe('claude-opus-5')
+  })
+  it('returns undefined for unknown / empty selections', () => {
+    expect(findCatalogModel('nope', CATALOG)).toBeUndefined()
+    expect(findCatalogModel(undefined, CATALOG)).toBeUndefined()
+  })
+})
+
+describe('ModelFamilyList', () => {
+  it('collapses a lineage family to one row with version pin chips, newest-first', async () => {
+    const onPick = vi.fn()
+    const user = userEvent.setup()
+    const { container } = render(<ModelFamilyList catalog={CATALOG} value="opus" onPick={onPick} />)
+    // One row for the whole Opus line…
+    const row = screen.getByTestId('model-family-opus')
+    expect(row).toHaveTextContent('Opus')
+    // …with a chip per version (family prefix stripped), newest-first.
+    const ids = Array.from(container.querySelectorAll('[data-testid^="model-pinned-claude-opus"]')).map(
+      (el) => el.getAttribute('data-testid'),
+    )
+    expect(ids).toEqual([
+      'model-pinned-claude-opus-5',
+      'model-pinned-claude-opus-4-8',
+      'model-pinned-claude-opus-4-7',
+      'model-pinned-claude-opus-4-6',
+    ])
+    expect(screen.getByTestId('model-pinned-claude-opus-4-7')).toHaveTextContent('4.7')
+    // Chip pins that concrete version; the row label picks the family latest.
+    await user.click(screen.getByTestId('model-pinned-claude-opus-4-7'))
+    expect(onPick).toHaveBeenLastCalledWith('claude-opus-4-7')
+    await user.click(row)
+    expect(onPick).toHaveBeenLastCalledWith('claude-opus-5')
+    // Clicking the row's empty stretch (not a chip) also picks the latest.
+    await user.click(screen.getByTestId('model-family-opus-fill'))
+    expect(onPick).toHaveBeenLastCalledWith('claude-opus-5')
+  })
+
+  it('lists family rows priciest-first regardless of catalog order, unpriced last', () => {
+    // Authored cheapest-first like the real Claude catalog, plus an unpriced custom family.
+    const priced: ModelDefinition[] = [
+      { id: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku', isLatest: true, icon: 'anthropic', supportedEfforts: STD, pricing: { inputPerMtok: 1, outputPerMtok: 5 } },
+      { id: 'claude-sonnet-5', label: 'Sonnet 5', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: STD, pricing: { inputPerMtok: 2, outputPerMtok: 10 } },
+      { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', icon: 'anthropic', supportedEfforts: ALL, pricing: { inputPerMtok: 5, outputPerMtok: 25 } },
+      { id: 'claude-opus-5', label: 'Opus 5', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ALL, pricing: { inputPerMtok: 5, outputPerMtok: 25 } },
+      { id: 'mystery-1', label: 'Mystery 1', family: 'mystery', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
+      { id: 'claude-fable-5-1', label: 'Fable 5.1', family: 'fable', isLatest: true, icon: 'anthropic', supportedEfforts: ALL, pricing: { inputPerMtok: 10, outputPerMtok: 50 } },
+    ]
+    const { container } = render(<ModelFamilyList catalog={priced} value="opus" onPick={vi.fn()} />)
+    // Lineage families render `model-family-*` rows; the unpriced non-lineage one is a plain pinned row.
+    const rows = testIds(container).filter((id) => /^model-family-[a-z]+$/.test(id) || id === 'model-pinned-mystery-1')
+    expect(rows).toEqual([
+      'model-family-fable',
+      'model-family-opus',
+      'model-family-sonnet',
+      'model-family-haiku',
+      'model-pinned-mystery-1',
+    ])
+    // Version chips inside a row stay newest-first (same price tier).
+    const opusChips = Array.from(container.querySelectorAll('[data-testid^="model-pinned-claude-opus"]')).map(
+      (el) => el.getAttribute('data-testid'),
+    )
+    expect(opusChips).toEqual(['model-pinned-claude-opus-5', 'model-pinned-claude-opus-4-8'])
+  })
+
+  it('puts the family latest first among same-priced rows even when authored newest-first', () => {
+    const grok: ModelDefinition[] = [
+      { id: 'grok-4.6', label: 'Grok 4.6', family: 'grok', isLatest: true, icon: 'xai', supportedEfforts: STD, pricing: { inputPerMtok: 2, outputPerMtok: 6 } },
+      { id: 'grok-4.5', label: 'Grok 4.5', family: 'grok', icon: 'xai', supportedEfforts: STD, pricing: { inputPerMtok: 2, outputPerMtok: 6 } },
+    ]
+    const { container } = render(<ModelFamilyList catalog={grok} value="grok-4.6" onPick={vi.fn()} />)
+    expect(testIds(container).filter((id) => id.startsWith('model-pinned-grok'))).toEqual([
+      'model-pinned-grok-4.6',
+      'model-pinned-grok-4.5',
+    ])
+  })
+
+  it('orders non-lineage sub-lines by price, newest-first on ties', () => {
+    const gpt: ModelDefinition[] = [
+      { id: 'gpt-5.4', label: 'GPT-5.4', family: 'gpt', icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 2.5, outputPerMtok: 15 } },
+      { id: 'gpt-5.5', label: 'GPT-5.5', family: 'gpt', icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 5, outputPerMtok: 30 } },
+      { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', family: 'gpt', icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 1, outputPerMtok: 6 } },
+      { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', family: 'gpt', isLatest: true, icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 5, outputPerMtok: 30 } },
+      { id: 'gpt-6-astra', label: 'GPT-6 Astra', family: 'gpt', icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 10, outputPerMtok: 50 } },
+      // A cheap newer tier must not float above the flagships just for being newest.
+      { id: 'gpt-6-mini', label: 'GPT-6 Mini', family: 'gpt', icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 0.5, outputPerMtok: 2 } },
+    ]
+    const { container } = render(<ModelFamilyList catalog={gpt} value="gpt-5.5" onPick={vi.fn()} />)
+    const rows = testIds(container).filter(
+      (id) => /^model-family-gpt-[\d.]+$/.test(id) || /^model-pinned-gpt-5\.[45]$/.test(id),
+    )
+    // GPT-6 line (Astra, its priciest, ranks the line) → 5.6 line (Sol) → 5.5 → 5.4.
+    expect(rows).toEqual([
+      'model-family-gpt-6',
+      'model-family-gpt-5.6',
+      'model-pinned-gpt-5.5',
+      'model-pinned-gpt-5.4',
+    ])
+  })
+
+  it('picks the concrete id of a chosen version directly, no drill-in', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    render(<ModelFamilyList catalog={CATALOG} value="opus" onPick={onPick} />)
+    await user.click(await screen.findByTestId('model-pinned-claude-opus-4-7'))
+    expect(onPick).toHaveBeenCalledWith('claude-opus-4-7')
+  })
+
+  it('shows all vendor models flat at once (Sonnet selected still lists every Opus version)', () => {
+    render(<ModelFamilyList catalog={CATALOG} value="claude-sonnet-4-6" onPick={vi.fn()} />)
+    // Nothing is collapsed: a different family's versions are present without a click.
+    expect(screen.getByTestId('model-pinned-claude-opus-4-8')).toBeInTheDocument()
+    expect(screen.getByTestId('model-pinned-claude-sonnet-4-6')).toBeInTheDocument()
+  })
+
+  it('collapses non-lineage models sharing a versioned label base (GPT-5.6 tiers) into one chip row', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    const platformStyle: ModelDefinition[] = [
+      { id: 'gpt-5.4', label: 'GPT-5.4', family: 'gpt', icon: 'openai', supportedEfforts: STD },
+      { id: 'gpt-5.5', label: 'GPT-5.5', family: 'gpt', icon: 'openai', supportedEfforts: STD },
+      { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', family: 'gpt', icon: 'openai', supportedEfforts: STD },
+      { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', family: 'gpt', icon: 'openai', supportedEfforts: STD },
+      { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', family: 'gpt', isLatest: true, icon: 'openai', supportedEfforts: STD },
+    ]
+    render(<ModelFamilyList catalog={platformStyle} value="gpt-5.5" onPick={onPick} />)
+    // One row for the 5.6 line, chips per tier (newest-first), suffix-only labels.
+    const row = screen.getByTestId('model-family-gpt-5.6')
+    expect(row).toHaveTextContent('GPT-5.6')
+    expect(screen.getByTestId('model-pinned-gpt-5.6-sol')).toHaveTextContent('Sol')
+    expect(screen.getByTestId('model-pinned-gpt-5.6-terra')).toHaveTextContent('Terra')
+    expect(screen.getByTestId('model-pinned-gpt-5.6-luna')).toHaveTextContent('Luna')
+    // 5.5 and 5.4 stay single rows (their labels carry no variant word).
+    expect(screen.getByTestId('model-pinned-gpt-5.5')).toHaveTextContent('GPT-5.5')
+    expect(screen.getByTestId('model-pinned-gpt-5.4')).toHaveTextContent('GPT-5.4')
+    // Row click picks the line's latest tier; a chip pins a specific one.
+    await user.click(row)
+    expect(onPick).toHaveBeenLastCalledWith('gpt-5.6-sol')
+    await user.click(screen.getByTestId('model-pinned-gpt-5.6-luna'))
+    expect(onPick).toHaveBeenLastCalledWith('gpt-5.6-luna')
+  })
+
+  it('renders the Muse Spark tiers as two lineage rows with version chips', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    // Mirrors the platform catalog: authored oldest→newest per family.
+    const museCatalog: ModelDefinition[] = [
+      { id: 'muse-spark-1.2', label: 'Muse Spark 1.2', family: 'muse', icon: 'meta', supportedEfforts: STD },
+      { id: 'muse-spark-1.3', label: 'Muse Spark 1.3', family: 'muse', isLatest: true, isDefault: true, icon: 'meta', supportedEfforts: STD },
+      { id: 'muse-spark-1.2-contributor', label: 'Muse Spark Contributor 1.2', family: 'muse-contributor', icon: 'meta', supportedEfforts: STD, dataUsedForProductImprovement: true },
+      { id: 'muse-spark-1.3-contributor', label: 'Muse Spark Contributor 1.3', family: 'muse-contributor', isLatest: true, icon: 'meta', supportedEfforts: STD, dataUsedForProductImprovement: true },
+    ]
+    render(<ModelFamilyList catalog={museCatalog} value="muse-spark-1.3" onPick={onPick} />)
+    // One row per tier…
+    const standard = screen.getByTestId('model-family-muse')
+    const contributor = screen.getByTestId('model-family-muse-contributor')
+    expect(standard).toHaveTextContent('Muse Spark')
+    expect(contributor).toHaveTextContent('Muse Spark Contributor')
+    // …each with bare-version chips: the family name is stripped from both.
+    expect(screen.getByTestId('model-pinned-muse-spark-1.3')).toHaveTextContent('1.3')
+    expect(screen.getByTestId('model-pinned-muse-spark-1.2')).toHaveTextContent('1.2')
+    expect(screen.getByTestId('model-pinned-muse-spark-1.3-contributor')).toHaveTextContent('1.3')
+    expect(screen.getByTestId('model-pinned-muse-spark-1.2-contributor')).toHaveTextContent('1.2')
+    expect(screen.getByTestId('model-pinned-muse-spark-1.3-contributor')).not.toHaveTextContent('Contributor')
+    // Each row picks its own tier's latest; chips pin a version.
+    await user.click(contributor)
+    expect(onPick).toHaveBeenLastCalledWith('muse-spark-1.3-contributor')
+    await user.click(screen.getByTestId('model-pinned-muse-spark-1.2'))
+    expect(onPick).toHaveBeenLastCalledWith('muse-spark-1.2')
+  })
+
+  it('renders the GPT tiers as lineage rows, strongest first, with bare-version chips', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    // Mirrors the Platform catalog: one family per OpenAI tier.
+    const gptTiers: ModelDefinition[] = [
+      { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', family: 'gpt-luna', icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 1, outputPerMtok: 6 } },
+      { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', family: 'gpt-terra', isLatest: true, icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 2.5, outputPerMtok: 15 } },
+      { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', family: 'gpt-sol', familyAliases: ['gpt'], icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 5, outputPerMtok: 30 } },
+      { id: 'gpt-6-luna', label: 'GPT-6 Luna', family: 'gpt-luna', isLatest: true, icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 0.1, outputPerMtok: 0.5 } },
+      { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol', family: 'gpt-sol', familyAliases: ['gpt'], isLatest: true, icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 2, outputPerMtok: 10 } },
+      { id: 'gpt-6-astra', label: 'GPT-6 Astra', family: 'gpt-astra', isLatest: true, icon: 'openai', supportedEfforts: STD, pricing: { inputPerMtok: 10, outputPerMtok: 50 } },
+    ]
+    const { container } = render(<ModelFamilyList catalog={gptTiers} value="gpt-6.1-sol" onPick={onPick} />)
+    expect(testIds(container).filter((id) => /^model-family-gpt-[a-z]+$/.test(id))).toEqual([
+      'model-family-gpt-astra',
+      'model-family-gpt-sol',
+      'model-family-gpt-terra',
+      'model-family-gpt-luna',
+    ])
+    expect(screen.getByTestId('model-family-gpt-sol')).toHaveTextContent('GPT Sol')
+    expect(screen.getByTestId('model-pinned-gpt-6.1-sol')).toHaveTextContent(/^6\.1$/)
+    expect(screen.getByTestId('model-pinned-gpt-5.6-sol')).toHaveTextContent(/^5\.6$/)
+    await user.click(screen.getByTestId('model-family-gpt-luna'))
+    expect(onPick).toHaveBeenLastCalledWith('gpt-6-luna')
+  })
+
+  it('shows a stored legacy family alias as that family\'s latest', () => {
+    const catalog: ModelDefinition[] = [
+      { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', family: 'gpt-sol', familyAliases: ['gpt'], icon: 'openai', supportedEfforts: STD },
+      { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol', family: 'gpt-sol', familyAliases: ['gpt'], isLatest: true, icon: 'openai', supportedEfforts: STD },
+    ]
+    expect(findCatalogModel('gpt', catalog)?.id).toBe('gpt-6.1-sol')
+    render(<ModelFamilyList catalog={catalog} value="gpt" onPick={vi.fn()} offerLatest />)
+    expect(screen.getByTestId('model-latest-chip-gpt-sol').className).toContain('shadow-sm')
+    expect(screen.getByTestId('model-pinned-gpt-6.1-sol').className).not.toContain('shadow-sm')
+  })
+
+  it('offers a per-family "latest" alias row in settings mode', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    render(<ModelFamilyList catalog={CATALOG} value="gpt-5.5" onPick={onPick} offerLatest />)
+    await user.click(screen.getByTestId('model-latest-gpt'))
+    expect(onPick).toHaveBeenCalledWith('gpt') // stores the bare alias (rides upgrades)
+  })
+
+  // Platform-shaped: eight labs, authored in catalog order (not tab order).
+  const EIGHT_LABS: ModelDefinition[] = [
+    ...CATALOG,
+    { id: 'grok-4.7', label: 'Grok 4.7', family: 'grok', isDefault: true, icon: 'xai', supportedEfforts: STD },
+    { id: 'gemini-4-argon', label: 'Gemini 4 Argon', family: 'gemini-argon', isDefault: true, icon: 'gemini', supportedEfforts: STD },
+    { id: 'kimi-k3', label: 'Kimi K3', family: 'kimi', isDefault: true, icon: 'kimi', supportedEfforts: STD },
+    { id: 'muse-wonder-1.0', label: 'Muse Wonder 1.0', family: 'muse-wonder', isDefault: true, icon: 'meta', supportedEfforts: STD },
+    { id: 'glm-5.3-flash', label: 'GLM-5.3 Flash', family: 'glm', isDefault: true, icon: 'zai', supportedEfforts: STD },
+    { id: 'deepseek-v4.1-flash', label: 'DeepSeek V4.1 Flash', family: 'deepseek', isDefault: true, icon: 'deepseek', supportedEfforts: STD },
+  ]
+
+  it('over six labs: five tabs in lab order, the open-model labs behind a More tab', () => {
+    render(<ModelFamilyList catalog={EIGHT_LABS} value="claude-opus-5" onPick={vi.fn()} />)
+    const tabs = Array.from(document.querySelectorAll('[data-testid^="model-vendor-tab-"]')).map((el) =>
+      el.getAttribute('data-testid'),
+    )
+    expect(tabs).toEqual([
+      'model-vendor-tab-anthropic',
+      'model-vendor-tab-openai',
+      'model-vendor-tab-xai',
+      'model-vendor-tab-gemini',
+      'model-vendor-tab-meta',
+      'model-vendor-tab-more',
+    ])
+    expect(screen.getByTestId('model-vendor-tab-gemini')).toHaveAccessibleName('Google')
+    expect(screen.getByTestId('model-vendor-tab-more')).toHaveAccessibleName('More')
+  })
+
+  it('More tab lists each extra lab as a section and picks nothing on its own', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    render(<ModelFamilyList catalog={EIGHT_LABS} value="claude-opus-5" onPick={onPick} />)
+    await user.click(screen.getByTestId('model-vendor-tab-more'))
+    expect(onPick).not.toHaveBeenCalled()
+    const sections = Array.from(document.querySelectorAll('[data-testid^="model-vendor-section-"]'))
+    expect(sections.map((el) => el.textContent)).toEqual(['Moonshot AI', 'Z.AI', 'DeepSeek'])
+    expect(screen.queryByTestId('model-pinned-claude-opus-5')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('model-pinned-glm-5.3-flash'))
+    expect(onPick).toHaveBeenLastCalledWith('glm-5.3-flash')
+  })
+
+  it('opens on the More tab when the selection lives there', () => {
+    render(<ModelFamilyList catalog={EIGHT_LABS} value="deepseek-v4.1-flash" onPick={vi.fn()} />)
+    expect(screen.getByTestId('model-vendor-tab-more')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('model-pinned-deepseek-v4.1-flash')).toBeInTheDocument()
+  })
+
+  it('splitVendorTabs keeps six labs as six tabs', () => {
+    const six = ['anthropic', 'openai', 'xai', 'gemini', 'meta', 'kimi']
+    expect(splitVendorTabs(six)).toEqual({ tabs: six, more: [] })
+    expect(splitVendorTabs([...six, 'zai'])).toEqual({ tabs: six.slice(0, 5), more: ['kimi', 'zai'] })
+  })
+
+  it('hides vendor tabs when the catalog has a single vendor', () => {
+    const claudeOnly = CATALOG.filter((m) => m.icon === 'anthropic')
+    render(<ModelFamilyList catalog={claudeOnly} value="claude-opus-4-8" onPick={vi.fn()} />)
+    expect(screen.queryByTestId('model-vendor-tab-anthropic')).not.toBeInTheDocument()
+  })
+
+  it('vendor tabs are icon-only with the name as accessible label', () => {
+    render(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-8" onPick={vi.fn()} />)
+    const tab = screen.getByTestId('model-vendor-tab-openai')
+    expect(tab).toHaveAccessibleName('OpenAI')
+    expect(tab).not.toHaveTextContent(/OpenAI/) // name lives in the tooltip, not the tab
+    expect(screen.getByTestId('model-vendor-tab-anthropic')).toHaveAccessibleName('Anthropic')
+  })
+
+  it('opens on the selection vendor tab and filters the list to it', () => {
+    render(<ModelFamilyList catalog={CATALOG} value="gpt-5.5" onPick={vi.fn()} />)
+    expect(screen.getByTestId('model-vendor-tab-openai')).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByTestId('model-pinned-gpt-5.5')).toBeInTheDocument()
+    expect(screen.queryByTestId('model-pinned-claude-opus-4-8')).not.toBeInTheDocument()
+  })
+
+  it('switching vendor tab swaps the model list and picks the declared vendor default', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    // Stateful harness: the auto-pick really moves the selection, as it does
+    // live — the follow-up tab click must see the moved selection.
+    function Harness() {
+      const [value, setValue] = useState('claude-opus-4-8')
+      return (
+        <ModelFamilyList
+          catalog={CATALOG}
+          value={value}
+          onPick={(v) => {
+            onPick(v)
+            setValue(v)
+          }}
+        />
+      )
+    }
+    render(<Harness />)
+    expect(screen.getByTestId('model-pinned-claude-opus-4-8')).toBeInTheDocument()
+    expect(screen.queryByTestId('model-pinned-gpt-5.5')).not.toBeInTheDocument()
+
+    // Cross-vendor click: list swaps AND the vendor's explicit default is selected —
+    // a tab click is a selection, not just a filter.
+    await user.click(screen.getByTestId('model-vendor-tab-openai'))
+    expect(screen.getByTestId('model-pinned-gpt-5.6-sol')).toBeInTheDocument()
+    expect(screen.queryByTestId('model-pinned-claude-opus-4-8')).not.toBeInTheDocument()
+    expect(onPick).toHaveBeenLastCalledWith('gpt-5.6-sol')
+
+    // Round-trip back: the Anthropic models return with their declared default picked.
+    await user.click(screen.getByTestId('model-vendor-tab-anthropic'))
+    expect(screen.getByTestId('model-pinned-claude-opus-5')).toBeInTheDocument()
+    expect(onPick).toHaveBeenLastCalledWith('claude-opus-5')
+  })
+
+  it('clicking the tab that owns the selection never re-picks (a pin survives)', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    render(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-7" onPick={onPick} />)
+    // The pinned 4.7 (not the flagship 4.8) must not be clobbered.
+    await user.click(screen.getByTestId('model-vendor-tab-anthropic'))
+    expect(onPick).not.toHaveBeenCalled()
+  })
+
+  it('single-model xAI and Kimi tabs select their declared defaults', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    const withSingleModelVendors: ModelDefinition[] = [
+      ...CATALOG,
+      { id: 'grok-4.5', label: 'Grok 4.5', family: 'grok', isDefault: true, icon: 'xai', supportedEfforts: STD },
+      { id: 'kimi-k3', label: 'Kimi K3', family: 'kimi', isDefault: true, icon: 'kimi', supportedEfforts: STD },
+    ]
+    render(<ModelFamilyList catalog={withSingleModelVendors} value="claude-opus-4-8" onPick={onPick} />)
+    // The motivating confusion: one model listed, tab highlighted, nothing
+    // selected. The tab click now IS the selection.
+    await user.click(screen.getByTestId('model-vendor-tab-xai'))
+    expect(onPick).toHaveBeenLastCalledWith('grok-4.5')
+    await user.click(screen.getByTestId('model-vendor-tab-kimi'))
+    expect(onPick).toHaveBeenLastCalledWith('kimi-k3')
+  })
+
+  it('tab auto-pick stores the declared concrete id in settings mode', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    const withStandalone: ModelDefinition[] = [
+      ...CATALOG,
+      { id: 'local-llama', label: 'Llama 3 8B', isDefault: true, icon: 'uploaded:my-provider.png', supportedEfforts: STD },
+    ]
+    render(<ModelFamilyList catalog={withStandalone} value="opus" onPick={onPick} offerLatest />)
+    // The default remains concrete even on alias-capable settings surfaces;
+    // the catalog, not family-alias inference, controls the choice.
+    await user.click(screen.getByTestId('model-vendor-tab-openai'))
+    expect(onPick).toHaveBeenLastCalledWith('gpt-5.6-sol')
+    // Family-less defaults are concrete too.
+    await user.click(screen.getByTestId('model-vendor-tab-other'))
+    expect(onPick).toHaveBeenLastCalledWith('local-llama')
+  })
+
+  it('only filters when a vendor has no declared default', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    const withoutOpenAiDefault = CATALOG.map((model) =>
+      model.icon === 'openai' ? { ...model, isDefault: undefined } : model,
+    )
+    render(
+      <ModelFamilyList
+        catalog={withoutOpenAiDefault}
+        value="claude-opus-4-8"
+        onPick={onPick}
+      />,
+    )
+
+    await user.click(screen.getByTestId('model-vendor-tab-openai'))
+    expect(screen.getByTestId('model-pinned-gpt-5.5')).toBeInTheDocument()
+    expect(onPick).not.toHaveBeenCalled()
+  })
+
+  it('warns when a non-Claude model lacks web tools and no vendor is set, and not for Claude', () => {
+    const { rerender } = render(<ModelFamilyList catalog={CATALOG} value="gpt-5.5" onPick={vi.fn()} />)
+    expect(screen.getByTestId('model-no-websearch-warning')).toHaveTextContent(/search and fetch/)
+
+    rerender(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-8" onPick={vi.fn()} />)
+    expect(screen.queryByTestId('model-no-websearch-warning')).not.toBeInTheDocument()
+  })
+
+  it('warns when the picked model feeds the provider’s product improvement, and not otherwise', () => {
+    // Two entries on one vendor tab so the warning is proven to follow the
+    // SELECTION, not merely the presence of such a model in the catalog.
+    const museCatalog: ModelDefinition[] = [
+      {
+        id: 'muse-spark-1.2',
+        label: 'Muse Spark 1.2',
+        family: 'muse',
+        isLatest: true,
+        isDefault: true,
+        icon: 'meta',
+        supportedEfforts: STD,
+      },
+      {
+        id: 'muse-spark-1.2-contributor',
+        label: 'Muse Spark Contributor 1.2',
+        family: 'muse-contributor',
+        isLatest: true,
+        icon: 'meta',
+        supportedEfforts: STD,
+        dataUsedForProductImprovement: true,
+      },
+    ]
+
+    const { rerender } = render(
+      <ModelFamilyList catalog={museCatalog} value="muse-spark-1.2-contributor" onPick={vi.fn()} />,
+    )
+    expect(screen.getByTestId('model-data-use-warning')).toHaveTextContent(
+      /may be used by the provider to improve its products/,
+    )
+    expect(screen.getByTestId('model-data-use-warning')).toHaveTextContent(/Avoid customer data/)
+
+    rerender(<ModelFamilyList catalog={museCatalog} value="muse-spark-1.2" onPick={vi.fn()} />)
+    expect(screen.queryByTestId('model-data-use-warning')).not.toBeInTheDocument()
+  })
+
+  it('warns fetch-only for Platform Responses models (search works, native fetch does not)', () => {
+    const platformCatalog: ModelDefinition[] = [
+      {
+        id: 'grok-4.5',
+        label: 'Grok 4.5',
+        family: 'grok',
+        isLatest: true,
+        icon: 'xai',
+        supportedEfforts: STD,
+        supportsWebSearch: true,
+        supportsWebFetch: false,
+        contextWindow: 500_000,
+      },
+    ]
+    const { rerender } = render(
+      <ModelFamilyList catalog={platformCatalog} value="grok-4.5" onPick={vi.fn()} />,
+    )
+    expect(screen.getByTestId('model-no-websearch-warning')).toHaveTextContent(/Native web fetch/)
+    expect(screen.getByTestId('model-no-websearch-warning')).toHaveTextContent(/search still works/)
+
+    rerender(
+      <ModelFamilyList catalog={platformCatalog} value="grok-4.5" onPick={vi.fn()} webProvider="exa" />,
+    )
+    expect(screen.queryByTestId('model-no-websearch-warning')).not.toBeInTheDocument()
+  })
+
+  it('clears the warning on a non-Claude model when a web vendor is configured', () => {
+    render(
+      <ModelFamilyList catalog={CATALOG} value="gpt-5.5" onPick={vi.fn()} webProvider="exa" />,
+    )
+    expect(screen.queryByTestId('model-no-websearch-warning')).not.toBeInTheDocument()
+  })
+
+  it('treats a "native" provider id as no vendor (still warns)', () => {
+    render(
+      <ModelFamilyList catalog={CATALOG} value="gpt-5.5" onPick={vi.fn()} webProvider="native" />,
+    )
+    expect(screen.getByTestId('model-no-websearch-warning')).toBeInTheDocument()
+  })
+
+  it('notes the long-context price cliff for GPT at the end of the list, and not for flat-priced Claude', () => {
+    const { rerender } = render(<ModelFamilyList catalog={CATALOG} value="gpt-5.5" onPick={vi.fn()} />)
+    const note = screen.getByTestId('model-long-context-cliff-warning')
+    // Plain-language footnote naming the family generation (shared label
+    // prefix); mechanics live behind the hover tooltip.
+    expect(note).toHaveTextContent('Long chats cost more on GPT-5 models')
+    expect(screen.getByTestId('model-long-context-cliff-info')).toBeInTheDocument()
+
+    rerender(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-8" onPick={vi.fn()} />)
+    expect(screen.queryByTestId('model-long-context-cliff-warning')).not.toBeInTheDocument()
+  })
+
+  it('marks alias semantics with the Latest chip in settings mode, not a "· latest" label suffix', () => {
+    // The chip replaced the interim text suffix — the row label must stay bare
+    // so the chip is the single latest-vs-pin signal.
+    render(<ModelFamilyList catalog={CATALOG} value="opus" onPick={vi.fn()} offerLatest />)
+    expect(screen.getByTestId('model-latest-opus')).not.toHaveTextContent('· latest')
+    expect(screen.getByTestId('model-latest-chip-opus')).toBeInTheDocument()
+  })
+
+  it('hides version chips on touch, where a gear on the selected row opens a nested version menu', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    render(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-8" onPick={onPick} />)
+
+    // Chips are display-none whenever ANY coarse pointer exists (has-touch:,
+    // any-pointer — not the primary-pointer touch: variant): invisible chips
+    // must never be tap targets, and on hybrid touch laptops the primary
+    // pointer is a fine mouse while the finger is still there to mis-tap.
+    expect(screen.getByTestId('model-pinned-claude-opus-4-7').parentElement!.className).toContain(
+      'has-touch:hidden',
+    )
+
+    // Only the selected row gets the gear; it's touch-only via CSS.
+    expect(screen.queryByTestId('model-family-sonnet-versions')).not.toBeInTheDocument()
+    const gear = screen.getByTestId('model-family-opus-versions')
+    expect(gear.className).toContain('has-touch:inline-flex')
+
+    // Gear toggles the nested menu: a "· latest" row plus one row per version.
+    expect(screen.queryByTestId('model-version-claude-opus-4-7')).not.toBeInTheDocument()
+    await user.click(gear)
+    expect(screen.getByTestId('model-family-opus-menu-latest')).toHaveTextContent('Opus · latest')
+    await user.click(screen.getByTestId('model-version-claude-opus-4-7'))
+    expect(onPick).toHaveBeenLastCalledWith('claude-opus-4-7')
+    // The latest menu row repeats the row-label action (latest concrete id in
+    // composer mode).
+    await user.click(screen.getByTestId('model-family-opus-menu-latest'))
+    expect(onPick).toHaveBeenLastCalledWith('claude-opus-5')
+    // …and toggles closed.
+    await user.click(gear)
+    expect(screen.queryByTestId('model-version-claude-opus-4-7')).not.toBeInTheDocument()
+  })
+
+  it('closes the nested version menu when the selection leaves the row', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    // Stateful harness: picking really moves the selection between rows.
+    function Harness() {
+      const [value, setValue] = useState('claude-opus-4-8')
+      return (
+        <ModelFamilyList
+          catalog={CATALOG}
+          value={value}
+          onPick={(v) => {
+            onPick(v)
+            setValue(v)
+          }}
+        />
+      )
+    }
+    render(<Harness />)
+    await user.click(screen.getByTestId('model-family-opus-versions'))
+    expect(screen.getByTestId('model-version-claude-opus-4-7')).toBeInTheDocument()
+
+    // Move the selection to Sonnet, then back to Opus: the menu must come back
+    // CLOSED — stale-open state would shift the rows mid-interaction.
+    await user.click(screen.getByTestId('model-family-sonnet'))
+    expect(screen.queryByTestId('model-version-claude-opus-4-7')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('model-family-opus'))
+    expect(screen.queryByTestId('model-version-claude-opus-4-7')).not.toBeInTheDocument()
+  })
+
+  it('standalone models keep their own brand icon on the row', () => {
+    const withStandalone: ModelDefinition[] = [
+      ...CATALOG,
+      { id: 'local-llama', label: 'Llama 3 8B', icon: 'uploaded:my-provider.png', supportedEfforts: STD },
+    ]
+    render(<ModelFamilyList catalog={withStandalone} value="claude-opus-4-8" onPick={vi.fn()} />)
+    // Uploaded icons pool the model under the "Other" tab, where the row icon
+    // is the only thing distinguishing same-named custom-provider models.
+    fireEvent.click(screen.getByTestId('model-vendor-tab-other'))
+    expect(screen.getByTestId('model-option-local-llama').querySelector('img, svg')).not.toBeNull()
+  })
+
+  it('the nested version menu stores the bare alias from its latest row in settings mode', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    render(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-7" onPick={onPick} offerLatest />)
+    await user.click(screen.getByTestId('model-latest-opus-versions'))
+    // The pinned selection's version row carries the check, not the latest row.
+    await user.click(screen.getByTestId('model-latest-opus-menu-latest'))
+    expect(onPick).toHaveBeenLastCalledWith('opus')
+  })
+
+  it('hides the web-tools warning when browsing a tab that does not own the selection', async () => {
+    const user = userEvent.setup()
+    render(<ModelFamilyList catalog={CATALOG} value="gpt-5.5" onPick={vi.fn()} />)
+    expect(screen.getByTestId('model-no-websearch-warning')).toBeInTheDocument()
+    // On the Anthropic tab the warning's "this model" copy would read as being
+    // about the Claude models on screen — hide it like the cliff note.
+    await user.click(screen.getByTestId('model-vendor-tab-anthropic'))
+    expect(screen.queryByTestId('model-no-websearch-warning')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('model-vendor-tab-openai'))
+    expect(screen.getByTestId('model-no-websearch-warning')).toBeInTheDocument()
+  })
+
+  it('hides the cliff note when browsing a tab that does not own the selection', async () => {
+    const user = userEvent.setup()
+    render(<ModelFamilyList catalog={CATALOG} value="gpt-5.5" onPick={vi.fn()} />)
+    expect(screen.getByTestId('model-long-context-cliff-warning')).toBeInTheDocument()
+    // Switch to the Anthropic tab — the GPT selection's note would read as
+    // being about Claude models, so it hides until you're back on OpenAI.
+    await user.click(screen.getByTestId('model-vendor-tab-anthropic'))
+    expect(screen.queryByTestId('model-long-context-cliff-warning')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('model-vendor-tab-openai'))
+    expect(screen.getByTestId('model-long-context-cliff-warning')).toBeInTheDocument()
+  })
+
+  it('shows a Latest chip on lineage rows in settings mode: lit for alias, unlit for pin', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    // Alias selected: Latest chip is the active one, no version chip lit.
+    const { rerender } = render(<ModelFamilyList catalog={CATALOG} value="opus" onPick={onPick} offerLatest />)
+    const latestChip = screen.getByTestId('model-latest-chip-opus')
+    expect(latestChip).toHaveTextContent('Latest')
+    expect(latestChip.className).toContain('shadow-sm')
+    expect(screen.getByTestId('model-pinned-claude-opus-4-8').className).not.toContain('shadow-sm')
+    await user.click(latestChip)
+    expect(onPick).toHaveBeenLastCalledWith('opus')
+
+    // Pinned: the version chip is lit instead of Latest.
+    rerender(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-7" onPick={onPick} offerLatest />)
+    expect(screen.getByTestId('model-latest-chip-opus').className).not.toContain('shadow-sm')
+    expect(screen.getByTestId('model-pinned-claude-opus-4-7').className).toContain('shadow-sm')
+  })
+
+  it('renders the family alias as a "GPT · Latest" chip row in settings mode, versions unsuffixed', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    render(<ModelFamilyList catalog={CATALOG} value="gpt" onPick={onPick} offerLatest />)
+    // Alias row: label + Latest chip, no "· latest" text suffix.
+    const aliasRow = screen.getByTestId('model-latest-gpt')
+    expect(aliasRow).toHaveTextContent('GPT')
+    expect(aliasRow).not.toHaveTextContent('· latest')
+    await user.click(screen.getByTestId('model-latest-chip-gpt'))
+    expect(onPick).toHaveBeenLastCalledWith('gpt')
+    // Version rows drop the "· pinned" suffix; state reads from highlights.
+    expect(screen.getByTestId('model-pinned-gpt-5.5')).not.toHaveTextContent('pinned')
+  })
+
+  it('omits Latest chips in composer mode (concrete picks only)', () => {
+    render(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-8" onPick={vi.fn()} />)
+    expect(screen.queryByTestId('model-latest-chip-opus')).not.toBeInTheDocument()
+  })
+
+  it('offers a "latest" row only when offerLatest is set', async () => {
+    const user = userEvent.setup()
+    const onPick = vi.fn()
+    render(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-8" onPick={onPick} offerLatest />)
+    await user.click(await screen.findByTestId('model-latest-opus'))
+    expect(onPick).toHaveBeenCalledWith('opus') // stores the bare alias (rides upgrades)
+  })
+
+  it('omits the "latest" row in composer mode (offerLatest off)', async () => {
+    render(<ModelFamilyList catalog={CATALOG} value="claude-opus-4-8" onPick={vi.fn()} />)
+    await screen.findByTestId('model-pinned-claude-opus-4-8')
+    expect(screen.queryByTestId('model-latest-opus')).not.toBeInTheDocument()
+  })
+})

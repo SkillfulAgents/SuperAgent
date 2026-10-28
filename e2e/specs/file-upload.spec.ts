@@ -2,10 +2,18 @@ import { test, expect } from '@playwright/test'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
+import { timestampedUploadNamePattern } from '../helpers/upload-filename'
 import * as path from 'path'
 import * as fs from 'fs'
 import * as os from 'os'
 
+function attachmentPreview(page: import('@playwright/test').Page, fileName: string) {
+  return page.getByTestId('attachment-preview').filter({ hasText: fileName })
+}
+
+function filePill(page: import('@playwright/test').Page, fileName: string) {
+  return page.getByTestId('file-pill').filter({ hasText: timestampedUploadNamePattern(fileName) })
+}
 
 test.describe('File & Folder Upload', () => {
   let appPage: AppPage
@@ -49,16 +57,15 @@ test.describe('File & Folder Upload', () => {
     await fileInput.setInputFiles(filePath)
 
     // Verify attachment preview appears
-    await expect(page.getByText('test-doc.txt')).toBeVisible()
+    await expect(attachmentPreview(page, 'test-doc.txt')).toBeVisible()
 
     // Send message with the attachment
     await sessionPage.sendMessage('Here is a file')
     await sessionPage.waitForUserMessageCount(2, 15000)
 
     // Verify the file pill renders in the sent message
-    const pill = page.locator('.file-pill').first()
+    const pill = filePill(page, 'test-doc.txt').first()
     await expect(pill).toBeVisible({ timeout: 5000 })
-    await expect(pill).toContainText('test-doc.txt')
   })
 
   test('send message with only attachment and no text', async ({ page }) => {
@@ -69,7 +76,7 @@ test.describe('File & Folder Upload', () => {
     const fileInput = page.locator('input[type="file"]:not([webkitdirectory])')
     await fileInput.setInputFiles(filePath)
 
-    await expect(page.getByText('data.csv')).toBeVisible()
+    await expect(attachmentPreview(page, 'data.csv')).toBeVisible()
 
     // Click send without typing text — on session page, Enter submits
     await page.locator('[data-testid="send-button"]').click()
@@ -77,7 +84,7 @@ test.describe('File & Folder Upload', () => {
     await sessionPage.waitForUserMessageCount(2, 15000)
 
     // File pill should render
-    await expect(page.locator('.file-pill').first()).toBeVisible({ timeout: 5000 })
+    await expect(filePill(page, 'data.csv').first()).toBeVisible({ timeout: 5000 })
   })
 
   test('attachment can be removed before sending', async ({ page }) => {
@@ -88,14 +95,14 @@ test.describe('File & Folder Upload', () => {
     await fileInput.setInputFiles(filePath)
 
     // Verify preview appears
-    await expect(page.getByText('removable.txt')).toBeVisible()
+    const removablePreview = attachmentPreview(page, 'removable.txt')
+    await expect(removablePreview).toBeVisible()
 
     // Click the X button next to the attachment
-    const attachmentRow = page.getByText('removable.txt').locator('..').locator('..')
-    await attachmentRow.locator('button').click()
+    await removablePreview.getByTestId('attachment-remove').click()
 
     // Verify attachment is gone
-    await expect(page.getByText('removable.txt')).not.toBeVisible()
+    await expect(removablePreview).not.toBeVisible()
   })
 
   test('multiple files can be attached and sent', async ({ page }) => {
@@ -108,18 +115,18 @@ test.describe('File & Folder Upload', () => {
     await fileInput.setInputFiles([file1, file2])
 
     // Verify both previews appear
-    await expect(page.getByText('first.txt')).toBeVisible()
-    await expect(page.getByText('second.md')).toBeVisible()
+    await expect(attachmentPreview(page, 'first.txt')).toBeVisible()
+    await expect(attachmentPreview(page, 'second.md')).toBeVisible()
 
     await sessionPage.sendMessage('Two files attached')
     await sessionPage.waitForUserMessageCount(2, 15000)
 
     // Both file pills should render
-    const pills = page.locator('.file-pill')
+    const pills = page.getByTestId('file-pill')
     await expect(pills).toHaveCount(2, { timeout: 5000 })
   })
 
-  test('file pill renders as download link', async ({ page }) => {
+  test('file pill opens the preview pane when clicked', async ({ page }) => {
     const filePath = path.join(tmpDir, 'report.pdf')
     fs.writeFileSync(filePath, 'fake pdf content')
 
@@ -129,9 +136,15 @@ test.describe('File & Folder Upload', () => {
     await sessionPage.sendMessage('Check this report')
     await sessionPage.waitForUserMessageCount(2, 15000)
 
-    // Regular file pill should be an <a> link (not a <span> which is for folders)
-    const pill = page.locator('.file-pill').first()
+    // Regular file pill is a clickable button (folders render a non-interactive span).
+    const pill = filePill(page, 'report.pdf').first()
     await expect(pill).toBeVisible({ timeout: 5000 })
-    await expect(pill).toHaveAttribute('href', /.*/)
+    await expect(pill).toHaveAttribute('role', 'button')
+
+    // Clicking it opens the file preview pane with the file in a tab.
+    await pill.click()
+    const tabBar = page.getByTestId('file-tab-bar')
+    await expect(tabBar).toBeVisible({ timeout: 5000 })
+    await expect(tabBar).toContainText(timestampedUploadNamePattern('report.pdf'))
   })
 })

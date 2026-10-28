@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useUserSettings } from './use-user-settings'
 
 export function useTheme() {
@@ -24,4 +24,28 @@ export function useTheme() {
   useEffect(() => {
     window.electronAPI?.setNativeTheme(themeSetting)
   }, [themeSetting])
+}
+
+/**
+ * Reads back the `dark` class that useTheme() applies to <html>.
+ *
+ * For components that must resolve the theme in JS rather than in CSS —
+ * canvas painters, Monaco, anything handed an explicit color. Prefer a
+ * Tailwind `dark:` variant whenever the value can live in a stylesheet.
+ */
+export function useIsDark(): boolean {
+  const [isDark, setIsDark] = useState(
+    () => typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
+  )
+
+  useEffect(() => {
+    const el = document.documentElement
+    const observer = new MutationObserver(() => setIsDark(el.classList.contains('dark')))
+    observer.observe(el, { attributes: true, attributeFilter: ['class'] })
+    // useTheme() may have toggled the class between our initial read and here.
+    setIsDark(el.classList.contains('dark'))
+    return () => observer.disconnect()
+  }, [])
+
+  return isDark
 }

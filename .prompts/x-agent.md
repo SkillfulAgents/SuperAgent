@@ -54,8 +54,8 @@ Naming (matches existing `mcp__user-input__schedule_task` convention):
 ### 1.2 Permission / review system (reuse as-is)
 `src/shared/lib/proxy/review-manager.ts` is exactly the model we want:
 - `reviewManager.requestReview({ agentSlug, toolkit, method, targetPath, matchedScopes, scopeDescriptions })` returns a `Promise<'allow' | 'deny'>`.
-- It broadcasts `proxy_review_request` SSE events via `broadcastReview(agentSlug, …)`, with a 5-min timeout.
-- Frontend picks these up via `src/renderer/hooks/use-proxy-reviews.ts` and shows `proxy-review-request-item.tsx`.
+- It registers the review in `userInputRequestManager`, which emits `user_request_created` on the global SSE stream, with a 5-min timeout.
+- Frontend picks these up from the pending-requests snapshot (`src/renderer/hooks/use-pending-user-requests.ts`) and shows `proxy-review-request-item.tsx`.
 
 For persistent "remember" decisions, there are two existing stores in `src/shared/lib/db/schema.ts`:
 - `apiScopePolicies` — per-account scope policy (gmail, etc.). Good pattern to copy.

@@ -1,8 +1,10 @@
 name: Agent E2E Test
 
 on:
+  # Every PR, whatever its base: a stacked PR must get this gate too, not only
+  # the one at the bottom of the stack that targets main. detect-changes diffs
+  # against the PR's own base branch, so a stacked PR is judged on its own diff.
   pull_request:
-    branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
@@ -19,11 +21,12 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       agent-changed: ${{ steps.check.outputs.agent-changed }}
+      container-changed: ${{ steps.check.outputs.container-changed }}
     steps:
       - uses: actions/checkout@v6
         with: { fetch-depth: 0 }
 
-      - name: Check if agent-container changed
+      - name: Check if container-related files changed
         id: check
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -31,16 +34,25 @@ jobs:
           else
             DIFF_BASE="HEAD~1"
           fi
+
           if git diff --name-only "$DIFF_BASE" HEAD | grep -qE '^agent-container/'; then
             echo "agent-changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "agent-changed=false" >> "$GITHUB_OUTPUT"
           fi
 
+          # Run Agent E2E for changes anywhere in the container/runtime path,
+          # not just when the agent image itself changes.
+          if git diff --name-only "$DIFF_BASE" HEAD | grep -qE '^(agent-container/|src/shared/lib/container/|src/renderer/components/settings/container-setup-dialog\.tsx$|src/renderer/components/wizard/docker-setup-step\.tsx$|src/api/routes/runtime-status\.ts$|src/renderer/hooks/use-runtime-status\.ts$|docker-compose\.yml$|\.qagent/|\.github/workflows/(agent-e2e-test|build-app-container|build-container)\.yml$)'; then
+            echo "container-changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "container-changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
   happy-path:
     needs: detect-changes
-    if: ${{ github.event_name == 'workflow_dispatch' || (!github.event.pull_request.draft && !github.event.pull_request.head.repo.fork) }}
-    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || (!github.event.pull_request.draft && !github.event.pull_request.head.repo.fork && needs.detect-changes.outputs.container-changed == 'true') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       QAGENT_VERSION: v0.1.2
@@ -52,10 +64,19 @@ jobs:
       # ── Checkout & toolchain ────────────────────────────────────
       - uses: actions/checkout@v6
 
+      # Host Node stays on 20: qagent v0.1.2's hook loader trips Node 22's
+      # require(esm)-in-cycle restriction when loading .qagent/hooks/*.ts.
+      # The app under test runs in Docker (node:22-slim) regardless, so
+      # product coverage is unaffected. Bump to 22 once qagent supports it.
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: "npm"
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
 
       - name: Resolve agent image tag
         id: agent-image
@@ -221,7 +242,7 @@ jobs:
 
   deploy-report:
     needs: happy-path
-    if: always() && needs.happy-path.result != 'cancelled'
+    if: always() && needs.happy-path.result != 'cancelled' && needs.happy-path.result != 'skipped'
     runs-on: ubuntu-latest
     permissions:
       contents: write

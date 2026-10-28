@@ -1,12 +1,13 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, type ManagedConnector } from './chat-integration-manager'
-import { MockChatClientConnector } from './mock-connector'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, type ManagedConnector } from './chat-delivery'
+import { MockChatAgentIntegration } from './mock-connector'
+import { createdEvent } from './user-request-fixtures'
 import type { ChatIntegration } from '@shared/lib/db/schema'
 
 // ── Test helpers ────────────────────────────────────────────────────────
 
 function createManagedConnector(overrides?: Partial<ManagedConnector>): ManagedConnector {
-  const connector = new MockChatClientConnector()
+  const connector = new MockChatAgentIntegration()
   return {
     connector,
     integration: {
@@ -23,10 +24,6 @@ function createManagedConnector(overrides?: Partial<ManagedConnector>): ManagedC
       updatedAt: new Date(),
     } as ChatIntegration,
     chatId: 'chat-123',
-    sseUnsubscribe: null,
-    messageUnsubscribe: null,
-    interactiveUnsubscribe: null,
-    errorUnsubscribe: null,
     streamingState: {
       currentMessageId: null,
       accumulatedText: '',
@@ -38,8 +35,8 @@ function createManagedConnector(overrides?: Partial<ManagedConnector>): ManagedC
   }
 }
 
-function getMock(managed: ManagedConnector): MockChatClientConnector {
-  return managed.connector as MockChatClientConnector
+function getMock(managed: ManagedConnector): MockChatAgentIntegration {
+  return managed.connector as MockChatAgentIntegration
 }
 
 /** Simulate a sequence of SSE events */
@@ -54,6 +51,11 @@ async function processEvents(
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
+
+// NOTE: the indicator is PAINTED only by the per-session tick (it reads
+// getSessionActivity) — covered in perpetual-thinking.repro.test.ts. Events only
+// ever CLEAR; the four immediate clears (card-show, first reply token, session_idle,
+// session_error) are covered in the 'immediate clears' suite at the bottom of this file.
 
 describe('processSSEEvent', () => {
   let managed: ManagedConnector
@@ -138,13 +140,6 @@ describe('processSSEEvent', () => {
       // State should be reset
       expect(managed.streamingState.accumulatedText).toBe('')
       expect(managed.streamingState.currentMessageId).toBeNull()
-    })
-
-    it('shows typing indicator', async () => {
-      await processSSEEvent(managed, { type: 'stream_start' })
-
-      const mock = getMock(managed)
-      expect(mock.typingIndicators.length).toBe(1)
     })
   })
 
@@ -300,48 +295,72 @@ describe('processSSEEvent', () => {
       expect(mock.sentMessages.length).toBe(0) // no tool summary
     })
 
-    it('forwards user_question_request to sendUserRequestCard', async () => {
-      await processSSEEvent(managed, {
-        type: 'user_question_request',
-        toolUseId: 'tu-1',
-        questions: [{ question: 'Which DB?' }],
-      })
+    it('forwards a question request to sendUserRequestCard', async () => {
+      await processSSEEvent(managed, createdEvent('question', { questions: [{ question: 'Which DB?' }] }))
 
       const mock = getMock(managed)
       expect(mock.sentCards.length).toBe(1)
-      expect(mock.sentCards[0].event.type).toBe('user_question_request')
+      expect(mock.sentCards[0].event).toMatchObject({
+        type: 'question_request',
+        toolUseId: 'tu-1',
+        questions: [{ question: 'Which DB?' }],
+      })
     })
 
-    it('forwards secret_request to sendUserRequestCard', async () => {
-      await processSSEEvent(managed, {
+    it('forwards a secret request to sendUserRequestCard', async () => {
+      await processSSEEvent(managed, createdEvent('secret', { secretName: 'API_KEY' }, { id: 'tu-2' }))
+
+      const mock = getMock(managed)
+      expect(mock.sentCards.length).toBe(1)
+      expect(mock.sentCards[0].event).toMatchObject({
         type: 'secret_request',
         toolUseId: 'tu-2',
         secretName: 'API_KEY',
       })
+    })
 
-      const mock = getMock(managed)
-      expect(mock.sentCards.length).toBe(1)
-      expect(mock.sentCards[0].event.type).toBe('secret_request')
+    it('ignores the legacy per-type event — handling both wires would double-send every card', async () => {
+      // Both wires fire until Phase 8 removes the legacy emission.
+      await processSSEEvent(managed, { type: 'secret_request', toolUseId: 'tu-2', secretName: 'API_KEY' })
+      expect(getMock(managed).sentCards.length).toBe(0)
+    })
+
+    it('stays quiet for an auto-approved ask — nothing is waiting on the user', async () => {
+      // The host is already executing it (`isRealWait` is false). Chat's only
+      // rendering for script_run is "go approve this in the app", which would
+      // send the user to a screen with nothing on it.
+      await processSSEEvent(
+        managed,
+        createdEvent('script_run', { script: 'sw_vers', explanation: 'check', scriptType: 'shell' }, { autoApproved: true }),
+      )
+      expect(getMock(managed).sentCards.length).toBe(0)
+    })
+
+    it('stays quiet for a review — those are agent-scoped and render off the global channel', async () => {
+      await processSSEEvent(managed, createdEvent('proxy_review', { toolkit: 'github', displayText: 'Allow?' }))
+      expect(getMock(managed).sentCards.length).toBe(0)
+    })
+
+    it('threads the originating sessionId into sendUserRequestCard', async () => {
+      await processSSEEvent(managed, createdEvent('secret', { secretName: 'K' }), false, 'sess-42')
+      expect(getMock(managed).sentCards[0]?.sessionId).toBe('sess-42')
+    })
+
+    it('sends no sessionId when the caller has none', async () => {
+      await processSSEEvent(managed, createdEvent('secret', { secretName: 'K' }), false)
+      expect(getMock(managed).sentCards[0]?.sessionId).toBeUndefined()
     })
   })
 
   // ── Typing indicator ────────────────────────────────────────────
 
   describe('typing indicator', () => {
-    it('sends typing on stream_start', async () => {
-      await processSSEEvent(managed, { type: 'stream_start' })
-      expect(getMock(managed).typingIndicators.length).toBe(1)
-    })
-
-    it('refreshes typing on messages_updated only when streaming', async () => {
-      // No accumulated text — should NOT send typing
-      await processSSEEvent(managed, { type: 'messages_updated' })
-      expect(getMock(managed).typingIndicators.length).toBe(0)
-
-      // With accumulated text — should send typing
+    it('does not re-show "Thinking…" on messages_updated (would clobber the streaming draft)', async () => {
+      // Even mid-stream, messages_updated must not re-send the thinking draft over
+      // already-streamed content — the thinking indicator is a pre-stream-only state.
       managed.streamingState.accumulatedText = 'some text'
       await processSSEEvent(managed, { type: 'messages_updated' })
-      expect(getMock(managed).typingIndicators.length).toBe(1)
+      expect(getMock(managed).typingIndicators.length).toBe(0)
     })
 
     it('does not send typing on tool_use_ready', async () => {
@@ -349,7 +368,7 @@ describe('processSSEEvent', () => {
         { type: 'tool_use_start', toolId: 't1', toolName: 'Bash' },
         { type: 'tool_use_ready', toolId: 't1', toolName: 'Bash' },
       ])
-      // No typing from tool_use_ready (only from stream_start)
+      // No typing from tool_use_ready
       expect(getMock(managed).typingIndicators.length).toBe(0)
     })
   })
@@ -597,22 +616,28 @@ describe('all user request event types', () => {
     managed = createManagedConnector()
   })
 
-  const userRequestEvents = [
-    { type: 'file_request', toolUseId: 'tu-1', description: 'Upload a CSV' },
-    { type: 'connected_account_request', toolUseId: 'tu-2', provider: 'github' },
-    { type: 'remote_mcp_request', toolUseId: 'tu-3', serverName: 'my-mcp' },
-    { type: 'browser_input_request', toolUseId: 'tu-4', url: 'https://example.com' },
-    { type: 'script_run_request', toolUseId: 'tu-5', script: 'npm test' },
-    { type: 'computer_use_request', toolUseId: 'tu-6', action: 'screenshot' },
+  // Every kind chat renders, and the card type each must arrive as. A kind
+  // missing from this table is one nobody would notice going silent.
+  const userRequestKinds = [
+    { kind: 'question', cardType: 'question_request', payload: { questions: [{ question: 'Which DB?' }] } },
+    { kind: 'secret', cardType: 'secret_request', payload: { secretName: 'API_KEY' } },
+    { kind: 'file', cardType: 'file_request', payload: { description: 'Upload a CSV' } },
+    { kind: 'connected_account', cardType: 'connected_account_request', payload: { toolkit: 'github' } },
+    { kind: 'remote_mcp', cardType: 'remote_mcp_request', payload: { url: 'https://example.com/mcp', name: 'my-mcp' } },
+    { kind: 'browser_input', cardType: 'browser_input_request', payload: { message: 'Sign in' } },
+    { kind: 'script_run', cardType: 'script_run_request', payload: { script: 'npm test', explanation: 'x', scriptType: 'shell' } },
+    { kind: 'capability_review', cardType: 'capability_review_request', payload: { capability: 'subagents', toolName: 'Task' } },
+    { kind: 'computer_use', cardType: 'computer_use_request', payload: { method: 'screenshot', permissionLevel: 'use_application' } },
   ]
 
-  for (const event of userRequestEvents) {
-    it(`forwards ${event.type} to sendUserRequestCard`, async () => {
-      await processSSEEvent(managed, event)
+  for (const { kind, cardType, payload } of userRequestKinds) {
+    it(`forwards a ${kind} request as ${cardType}`, async () => {
+      await processSSEEvent(managed, createdEvent(kind, payload))
 
       const mock = getMock(managed)
       expect(mock.sentCards.length).toBe(1)
-      expect(mock.sentCards[0].event.type).toBe(event.type)
+      expect(mock.sentCards[0].event.type).toBe(cardType)
+      expect(mock.sentCards[0].event.toolUseId).toBe('tu-1')
     })
   }
 
@@ -700,7 +725,6 @@ describe('edge cases', () => {
 
     const mock = getMock(managed)
     expect(mock.finalizedMessages.length).toBe(1) // Only one finalization
-    expect(mock.typingIndicators.length).toBe(2) // Typing sent for both
   })
 
   it('handles session_idle followed by more streaming', async () => {
@@ -751,7 +775,7 @@ describe('edge cases', () => {
 
 describe('multi-session isolation', () => {
   it('two sessions sharing a connector have independent streaming state', async () => {
-    const sharedConnector = new MockChatClientConnector()
+    const sharedConnector = new MockChatAgentIntegration()
 
     const session1 = createManagedConnector({
       connector: sharedConnector,
@@ -772,7 +796,7 @@ describe('multi-session isolation', () => {
   })
 
   it('finalizing one session does not affect the other', async () => {
-    const sharedConnector = new MockChatClientConnector()
+    const sharedConnector = new MockChatAgentIntegration()
 
     const session1 = createManagedConnector({
       connector: sharedConnector,
@@ -802,7 +826,7 @@ describe('multi-session isolation', () => {
   })
 
   it('pending tool messages are independent per session', async () => {
-    const sharedConnector = new MockChatClientConnector()
+    const sharedConnector = new MockChatAgentIntegration()
 
     const session1 = createManagedConnector({
       connector: sharedConnector,
@@ -830,7 +854,7 @@ describe('multi-session isolation', () => {
   })
 
   it('messages are sent to the correct chatId', async () => {
-    const sharedConnector = new MockChatClientConnector()
+    const sharedConnector = new MockChatAgentIntegration()
 
     const session1 = createManagedConnector({
       connector: sharedConnector,
@@ -856,7 +880,7 @@ describe('multi-session isolation', () => {
   })
 
   it('tool input accumulation is independent per session', async () => {
-    const sharedConnector = new MockChatClientConnector()
+    const sharedConnector = new MockChatAgentIntegration()
 
     const session1 = createManagedConnector({
       connector: sharedConnector,
@@ -885,7 +909,7 @@ describe('multi-session isolation', () => {
   })
 
   it('interleaved streaming across sessions produces correct output', async () => {
-    const sharedConnector = new MockChatClientConnector()
+    const sharedConnector = new MockChatAgentIntegration()
 
     const session1 = createManagedConnector({
       connector: sharedConnector,
@@ -928,5 +952,278 @@ describe('multi-session isolation', () => {
     // Cross-contamination check
     expect(aliceTexts).not.toContain('Bob')
     expect(bobTexts).not.toContain('Alice')
+  })
+})
+
+// ── No-streaming connector (iMessage-style) ─────────────────────────────
+// iMessage connector's sendStreamingUpdate is a no-op and
+// finalizeStreamingMessage sends the full text as a new message.
+// Verify the SSE pipeline still delivers the final text correctly.
+
+describe('no-streaming connector (iMessage-style)', () => {
+  function createNoStreamManaged(): ManagedConnector {
+    const connector = new MockChatAgentIntegration()
+    // Override to mimic iMessage no-streaming behavior
+    connector.sendStreamingUpdate = async (_chatId, _text, existingId) => {
+      return existingId || `noop-${Date.now()}`
+    }
+    connector.finalizeStreamingMessage = async (chatId, _messageId, finalText) => {
+      await connector.sendMessage(chatId, { text: finalText })
+    }
+    return {
+      connector,
+      integration: {
+        id: 'imessage-test',
+        agentSlug: 'test-agent',
+        provider: 'imessage',
+        name: 'iMessage Bot',
+        config: '{}',
+        showToolCalls: false,
+        status: 'active',
+        errorMessage: null,
+        createdByUserId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      } as ChatIntegration,
+      chatId: 'chat-imsg',
+      streamingState: {
+        currentMessageId: null,
+        accumulatedText: '',
+        lastUpdateTime: 0,
+      },
+      currentToolInput: '',
+      pendingToolMessages: [],
+    }
+  }
+
+  it('delivers complete text on session_idle without intermediate stream updates', async () => {
+    const managed = createNoStreamManaged()
+    managed.streamingState.lastUpdateTime = 0
+
+    await processEvents(managed, [
+      { type: 'stream_start' },
+      { type: 'stream_delta', text: 'Hello from ' },
+      { type: 'stream_delta', text: 'iMessage!' },
+      { type: 'session_idle' },
+    ])
+
+    const mock = managed.connector as MockChatAgentIntegration
+    // No intermediate stream updates recorded (sendStreamingUpdate is no-op)
+    expect(mock.streamUpdates.length).toBe(0)
+    // Final text delivered via sendMessage (from finalizeStreamingMessage)
+    expect(mock.sentMessages.length).toBe(1)
+    expect(mock.sentMessages[0].message.text).toBe('Hello from iMessage!')
+  })
+
+  it('delivers text via sendMessage when no currentMessageId existed', async () => {
+    const managed = createNoStreamManaged()
+    managed.streamingState.accumulatedText = 'Quick reply'
+    managed.streamingState.currentMessageId = null
+
+    await processSSEEvent(managed, { type: 'session_idle' })
+
+    const mock = managed.connector as MockChatAgentIntegration
+    expect(mock.sentMessages.length).toBe(1)
+    expect(mock.sentMessages[0].message.text).toBe('Quick reply')
+  })
+
+  it('handles text → tool → text cycle correctly', async () => {
+    const managed = createNoStreamManaged()
+    const outputLog: string[] = []
+    const mock = managed.connector as MockChatAgentIntegration
+    const origSend = mock.sendMessage.bind(mock)
+    mock.sendMessage = async (chatId: string, message: { text: string }) => {
+      outputLog.push(message.text)
+      return origSend(chatId, message)
+    }
+
+    managed.streamingState.lastUpdateTime = 0
+    await processEvents(managed, [
+      { type: 'stream_start' },
+      { type: 'stream_delta', text: 'Let me check...' },
+      { type: 'tool_use_start', toolId: 't1', toolName: 'Bash' },
+      { type: 'tool_use_streaming', partialInput: '{"command":"ls"}' },
+      { type: 'tool_use_ready', toolId: 't1', toolName: 'Bash' },
+      { type: 'stream_start' },
+      { type: 'stream_delta', text: 'Here are the results.' },
+      { type: 'session_idle' },
+    ])
+
+    expect(outputLog.some(t => t.includes('Let me check...'))).toBe(true)
+    expect(outputLog.some(t => t.includes('Here are the results.'))).toBe(true)
+  })
+})
+
+// ── deliver_file (tool_result_ready) ──────────────────────────────────────
+// Files are delivered off the tool RESULT (which validates existence in the
+// container), not the streamed input — see ELECTRON-39.
+describe('deliver_file delivery', () => {
+  const DELIVER = 'mcp__user-input__deliver_file'
+  let workspaceDir: string
+  let managed: ManagedConnector
+  let prevDataDir: string | undefined
+
+  beforeEach(async () => {
+    const os = await import('os')
+    const fs = await import('fs')
+    const path = await import('path')
+    prevDataDir = process.env.SUPERAGENT_DATA_DIR
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sa-deliver-'))
+    process.env.SUPERAGENT_DATA_DIR = dataDir
+    managed = createManagedConnector()
+    // getAgentWorkspaceDir resolves to {dataDir}/agents/{agentSlug}/workspace
+    workspaceDir = path.join(dataDir, 'agents', managed.integration.agentSlug, 'workspace')
+    fs.mkdirSync(workspaceDir, { recursive: true })
+  })
+
+  afterEach(() => {
+    if (prevDataDir === undefined) delete process.env.SUPERAGENT_DATA_DIR
+    else process.env.SUPERAGENT_DATA_DIR = prevDataDir
+  })
+
+  it('does NOT deliver the file on tool_use_ready (streamed input)', async () => {
+    await processEvents(managed, [
+      { type: 'tool_use_start', toolId: 't1', toolName: DELIVER },
+      { type: 'tool_use_streaming', partialInput: '{"filePath":"/workspace/out.txt"}' },
+      { type: 'tool_use_ready', toolId: 't1', toolName: DELIVER },
+    ])
+    const mock = getMock(managed)
+    expect(mock.sentFiles.length).toBe(0)
+    expect(mock.sentMessages.length).toBe(0)
+  })
+
+  it('delivers the file on a successful tool_result_ready', async () => {
+    const fs = await import('fs')
+    const path = await import('path')
+    fs.writeFileSync(path.join(workspaceDir, 'out.txt'), 'hello')
+
+    await processSSEEvent(managed, {
+      type: 'tool_result_ready',
+      toolName: DELIVER,
+      toolUseId: 't1',
+      filePath: '/workspace/out.txt',
+      description: 'a report',
+      isError: false,
+    })
+
+    const mock = getMock(managed)
+    expect(mock.sentFiles.length).toBe(1)
+    expect(mock.sentFiles[0].filename).toBe('out.txt')
+    expect(mock.sentFiles[0].caption).toBe('a report')
+  })
+
+  it('does NOT deliver when the tool_result is an error', async () => {
+    await processSSEEvent(managed, {
+      type: 'tool_result_ready',
+      toolName: DELIVER,
+      toolUseId: 't1',
+      filePath: '/workspace/missing.txt',
+      isError: true,
+    })
+
+    const mock = getMock(managed)
+    expect(mock.sentFiles.length).toBe(0)
+    expect(mock.sentMessages.length).toBe(0)
+  })
+
+  it('falls back to a text message (no throw) when a success result points at a missing host file', async () => {
+    // Success result but the file isn't host-visible (benign ENOENT) — graceful fallback.
+    await processSSEEvent(managed, {
+      type: 'tool_result_ready',
+      toolName: DELIVER,
+      toolUseId: 't1',
+      filePath: '/workspace/not-on-host.txt',
+      isError: false,
+    })
+
+    const mock = getMock(managed)
+    expect(mock.sentFiles.length).toBe(0)
+    expect(mock.sentMessages.length).toBe(1)
+    expect(mock.sentMessages[0].message.text).toContain('not-on-host.txt')
+  })
+})
+
+// ── The four immediate clears ──────────────────────────────────────────────
+// Events never PAINT — they only ever CLEAR, the moment the session transitions
+// into a non-busy state, so the settle is instant instead of up to one tick late.
+// The tick backstops anything these miss. `indicatorShown` is set true to model an
+// indicator that the tick had already painted.
+
+describe('processSSEEvent: immediate clears', () => {
+  let managed: ManagedConnector
+
+  beforeEach(() => {
+    managed = createManagedConnector()
+  })
+
+  const cardKinds = [
+    'question',
+    'secret',
+    'file',
+    'connected_account',
+    'remote_mcp',
+    'browser_input',
+    'script_run',
+    'capability_review',
+    'computer_use',
+  ]
+
+  for (const kind of cardKinds) {
+    it(`clears the indicator the moment a ${kind} card is shown`, async () => {
+      managed.indicatorShown = true
+      await processSSEEvent(managed, createdEvent(kind))
+      expect(getMock(managed).stoppedWorking).toContain('chat-123')
+      expect(managed.indicatorShown).toBe(false)
+    })
+  }
+
+  it('does NOT clear the indicator for a card it stays quiet about', async () => {
+    // An auto-approved run keeps the session 'working': settling the indicator
+    // there would paint the agent as idle mid-turn.
+    managed.indicatorShown = true
+    await processSSEEvent(managed, createdEvent('script_run', {}, { autoApproved: true }))
+    expect(getMock(managed).stoppedWorking).not.toContain('chat-123')
+    expect(managed.indicatorShown).toBe(true)
+  })
+
+  it('clears on the first reply stream_delta (the stream owns the surface)', async () => {
+    managed.indicatorShown = true
+    await processSSEEvent(managed, { type: 'stream_delta', text: 'Hello' })
+    expect(getMock(managed).stoppedWorking).toContain('chat-123')
+    expect(managed.indicatorShown).toBe(false)
+  })
+
+  it('clears on session_idle', async () => {
+    managed.indicatorShown = true
+    await processSSEEvent(managed, { type: 'session_idle' })
+    expect(getMock(managed).stoppedWorking).toContain('chat-123')
+  })
+
+  it('clears on session_error (no perpetual leak)', async () => {
+    managed.indicatorShown = true
+    await processSSEEvent(managed, { type: 'session_error', apiErrorCode: 'overloaded_error' })
+    expect(getMock(managed).stoppedWorking).toContain('chat-123')
+  })
+
+  it('a clear is idempotent: a second clearing event makes no extra connector call', async () => {
+    managed.indicatorShown = true
+    await processSSEEvent(managed, { type: 'session_idle' })
+    await processSSEEvent(managed, { type: 'session_idle' })
+    expect(getMock(managed).stoppedWorking).toEqual(['chat-123']) // exactly one
+  })
+
+  it('does NOT clear on stream_start or tool events (only the four clears settle)', async () => {
+    managed.indicatorShown = true
+    await processSSEEvent(managed, { type: 'stream_start' })
+    await processSSEEvent(managed, { type: 'tool_use_start' })
+    expect(getMock(managed).stoppedWorking).toEqual([])
+    expect(managed.indicatorShown).toBe(true)
+  })
+
+  it('an empty stream_delta does not clear (no real token yet)', async () => {
+    managed.indicatorShown = true
+    await processSSEEvent(managed, { type: 'stream_delta', text: '' })
+    expect(getMock(managed).stoppedWorking).toEqual([])
+    expect(managed.indicatorShown).toBe(true)
   })
 })

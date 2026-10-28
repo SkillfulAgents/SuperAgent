@@ -5,8 +5,14 @@
  * These types represent the "flattened" format returned by API routes.
  */
 
-import type { EffortLevel, HealthCheckResult } from '@shared/lib/container/types'
-import type { SessionUsage } from '@shared/lib/types/agent'
+import type { EffortLevel, HealthCheckResult , SpeedLevel } from '@shared/lib/container/types'
+import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
+import type { SessionOrigin, SessionUsage } from '@shared/lib/types/agent'
+import type { ApiAgentWidget } from '@shared/lib/widgets/widget-schema'
+import type { IntegrationMessageDisplay } from '@shared/lib/agent-integrations/message-display-schema'
+import type { AgentAvatar } from './agent-avatar'
+
+export type { ApiAgentWidget }
 
 // ============================================================================
 // Agent API Types
@@ -16,34 +22,69 @@ import type { SessionUsage } from '@shared/lib/types/agent'
  * Agent response from API - flattened format
  */
 export interface ApiAgent {
+  /** Canonical opaque id — folder name, DB key, URL resolution key. Never changes. */
   slug: string
+  /** Decorative `{slug(name)}-{id}` projection for URLs/links; recomputed from the current name. */
+  displaySlug: string
   name: string
+  /** The workspace's Team Brain agent, reached from its own sidebar item rather than the agent list, and the drive it keeps. */
+  teamBrain?: { volumeId: string }
+  /** Older deployments omit avatar metadata; hide avatar UI when unavailable. */
+  avatar?: AgentAvatar | null
   description?: string
   instructions?: string // Only included in single-agent response
   createdAt: Date
   status: 'running' | 'stopped'
   containerPort: number | null
   healthWarnings?: HealthCheckResult[]
+  /** Running on a container env that a setting change replaced. A stop clears it. */
+  stale?: boolean
   templateStatus?: ApiAgentTemplateStatus
   // Summary fields (included in list response)
   hasActiveSessions?: boolean
   hasSessionsAwaitingInput?: boolean
   hasUnreadNotifications?: boolean
+  /** One of its sessions has an unread notification that tags the viewer. */
+  hasUnreadMention?: boolean
   sessionCount?: number
   lastActivityAt?: Date | null
-  scheduledTaskCount?: number
-  nextScheduledTaskAt?: Date | null
-  chatIntegrationCount?: number
-  dashboardCount?: number
-  dashboardNames?: string[]
-  dashboardSlugs?: string[]
   dashboards?: ApiAgentDashboard[]
+  /** Home-screen widgets (see @shared/lib/widgets/widget-schema). */
+  widgets?: ApiAgentWidget[]
+  /** Opt-in expansion from GET /api/agents?include_latest_visible_session_tail=true. */
+  latestVisibleSession?: ApiLatestVisibleSession | null
+  /** Attention on visible sessions other than latestVisibleSession. Null means unavailable. */
+  attentionOutsideLatest?: ApiAttentionOutsideLatest | null
+}
+
+/** Response returned when an agent template has been installed or imported. */
+export interface ApiAgentTemplateInstallResult extends ApiAgent {
+  hasOnboarding?: boolean
+  /** Optional root PROMPT.md contents to prefill on the new agent's home page. */
+  templatePrompt?: string
+  /** Optional `first_prompt` from the onboarding skill frontmatter. */
+  onboardingFirstPrompt?: string
 }
 
 export interface ApiAgentDashboard {
   slug: string
   name: string
   hasScreenshot?: boolean
+}
+
+export interface ApiLatestVisibleSession {
+  session: ApiSession
+  messageTail: ApiTranscriptPage
+}
+
+export interface ApiAttentionOutsideLatest {
+  hasUnreadNotification: boolean
+  hasPendingInput: boolean
+}
+
+export interface ApiTranscriptPage {
+  messages: ApiMessageOrBoundary[]
+  nextCursor: string | null
 }
 
 /**
@@ -72,6 +113,18 @@ export interface ApiDiscoverableAgent {
   description: string
   version: string
   path: string
+  /** Long-form markdown for the details page. */
+  details?: string
+  /** Marketplace category, e.g. "Marketing", "Customer Success". */
+  category?: string
+  /** kebab-case lucide icon name, e.g. "badge-dollar-sign". */
+  icon?: string
+  /** The template's orb, when its skillset names one. */
+  avatar?: AgentAvatar
+  tags?: string[]
+  /** Services the template connects to; `slug` matches the service-icon set. */
+  worksWith?: { type: string; slug: string }[]
+  developer?: { name: string; url?: string }
 }
 
 // ============================================================================
@@ -87,20 +140,41 @@ export interface ApiSession {
   name: string
   createdAt: Date
   lastActivityAt: Date
-  messageCount: number
+  /** Original source; older servers may omit it. Promotion does not change it. */
+  origin?: SessionOrigin
   isActive?: boolean
   isAwaitingInput?: boolean
   hasUnreadNotifications?: boolean
+  /** An unread notification that tags the viewer: drawn as an @, not a dot. */
+  hasUnreadMention?: boolean
   lastUsage?: SessionUsage
   // Present when session was created by a scheduled task or webhook trigger
   scheduledTaskId?: string
   scheduledTaskName?: string
   webhookTriggerId?: string
   webhookTriggerName?: string
+  // Present when another agent created this session through x-agent.
+  invokedByAgentSlug?: string
+  invokedByAgentName?: string
+  // Automatic widget repairs also appear in the inbound invocation history.
+  isWidgetRepair?: boolean
+  widgetRepairSlug?: string
+  // Present when this session was forked from another. Name resolves from the
+  // parent's metadata on the single-session GET; undefined when the parent is gone.
+  forkedFromSessionId?: string
+  forkedFromSessionName?: string
   // Last effort level used on this session (seeds the composer selector)
   effort?: EffortLevel
+  // Last processing speed used on this session (seeds the composer selector)
+  speed?: SpeedLevel
   // Last model used on this session (seeds the composer selector)
   model?: string
+  llmProviderId?: string | null
+  // Present when the session has a pending scheduled wake (long sleep):
+  // it will auto-resume at pendingWakeAt with pendingWakeNote echoed back.
+  pendingWakeAt?: string
+  pendingWakeTaskId?: string
+  pendingWakeNote?: string
 }
 
 // ============================================================================
@@ -123,6 +197,8 @@ export interface ApiToolCall {
     totalTokens?: number
     totalToolUseCount?: number
   }
+  /** The runtime's task id for a Bash call run in the background, or a Monitor's watch. */
+  backgroundTaskId?: string
 }
 
 /**
@@ -136,6 +212,7 @@ export interface ApiMessageContent {
  * Message response from API
  */
 export interface ApiMessageSender {
+  image?: string | null
   id: string
   name: string
   email: string
@@ -148,14 +225,42 @@ export interface ApiMessage {
   toolCalls: ApiToolCall[]
   createdAt: Date
   sender?: ApiMessageSender
+  /**
+   * Present on a message an integration delivered (Slack, Linear, …). Written
+   * by the host beside the transcript, never parsed from the message text, so
+   * `content.text` stays exactly what the agent received.
+   */
+  integration?: IntegrationMessageDisplay
   /** SDK error code when assistant message failed due to LLM provider error */
   apiError?: string
+  /** Provider-authored copy for the apiError (severity, icon, markdown + CTA link). */
+  errorPresentation?: ProviderErrorPresentation
+  /**
+   * User message delivered mid-turn (queued/steering input). It does NOT end
+   * the turn it appears in — turn-boundary logic (elapsed times, running tool
+   * detection) must skip it.
+   */
+  queued?: boolean
+  /** Copied into this session by a fork. The thread draws the fork point after the last one. */
+  forked?: boolean
+  /**
+   * Summarized extended-thinking blocks persisted in the session transcript,
+   * in order. Absent when the turn had no thinking or the transcript predates
+   * thinking-text persistence. `durationMs` is derived from transcript entry
+   * timestamps and absent when underivable.
+   */
+  thinking?: Array<{ id?: string; text: string; durationMs?: number }>
+  /** Per-model-response token usage preserved from the session transcript. */
+  usage?: {
+    inputTokens: number
+    outputTokens: number
+    cacheCreationInputTokens: number
+    cacheReadInputTokens: number
+  }
 }
 
-/**
- * SDK error codes that indicate an external LLM provider issue
- * (as opposed to application-level errors like max_output_tokens).
- */
+// SDK codes split: NON_UPSTREAM = not an API error; PROVIDER = upstream with a generic banner; the
+// rest of the enum is upstream, provider-facing only with a presentation. api.test.ts pins the enum.
 export const PROVIDER_ERROR_CODES = new Set([
   'authentication_failed',
   'billing_error',
@@ -163,6 +268,25 @@ export const PROVIDER_ERROR_CODES = new Set([
   'invalid_request',
   'server_error',
 ])
+
+export const NON_UPSTREAM_ERROR_CODES = new Set(['max_output_tokens'])
+
+// Upstream = any code not in NON_UPSTREAM (so `unknown`, `overloaded`, … count).
+// Null = the turn failed for a non-API reason (container died, tool failure).
+export function isUpstreamApiErrorCode(apiErrorCode: string | null | undefined): apiErrorCode is string {
+  return typeof apiErrorCode === 'string' && !NON_UPSTREAM_ERROR_CODES.has(apiErrorCode)
+}
+
+// The server only attaches a presentation when the active provider recognized
+// the error, so its presence outranks a generic SDK code (the CLI tags some
+// upstream denials, e.g. a 402, as `unknown`).
+export function isProviderFacingError(
+  apiErrorCode: string | null | undefined,
+  presentation?: ProviderErrorPresentation | null,
+): boolean {
+  if (presentation) return true
+  return typeof apiErrorCode === 'string' && PROVIDER_ERROR_CODES.has(apiErrorCode)
+}
 
 /**
  * Compact boundary marker in API response
@@ -174,6 +298,7 @@ export interface ApiCompactBoundary {
   trigger: string
   preTokens?: number
   createdAt: Date
+  forked?: boolean
 }
 
 /**
@@ -184,12 +309,44 @@ export interface ApiMemoryRecall {
   type: 'memory_recall'
   memoryPaths: string[]
   createdAt: Date
+  forked?: boolean
+}
+
+/**
+ * Host-persisted informational banner in API response (e.g. a hook blocked a
+ * prompt before it reached the model)
+ */
+export interface ApiInformational {
+  id: string
+  type: 'informational'
+  content: string
+  level?: string
+  createdAt: Date
+  forked?: boolean
+}
+
+/**
+ * One batch of a Monitor watch's output, shown where the runtime delivered it
+ * (see monitor-notifications.ts)
+ */
+export interface ApiMonitorEvent {
+  id: string
+  type: 'monitor_event'
+  /** The watch's task id: the Monitor call's backgroundTaskId. */
+  taskId: string
+  description: string | null
+  events: string[]
+  /** Set on the batch that ended the watch (completed, failed, …). */
+  status: string | null
+  endReason: string | null
+  createdAt: Date
+  forked?: boolean
 }
 
 /**
  * Union type for all message-like items in the API response
  */
-export type ApiMessageOrBoundary = ApiMessage | ApiCompactBoundary | ApiMemoryRecall
+export type ApiMessageOrBoundary = ApiMessage | ApiCompactBoundary | ApiMemoryRecall | ApiInformational | ApiMonitorEvent
 
 // ============================================================================
 // Secret API Types
@@ -247,7 +404,6 @@ export interface ApiDiscoverableSkill {
   description: string
   version: string
   path: string
-  requiredEnvVars?: Array<{ name: string; description: string }>
 }
 
 /**
@@ -273,10 +429,15 @@ export interface ApiSkillsetConfig {
   skillCount: number
   agentCount: number
   addedAt: string
-  provider?: 'github' | 'platform'
+  provider?: 'github' | 'platform' | 'public'
   badgeLabel?: string
   showUrl: boolean
-  publishMode: 'pull_request' | 'hosted_submit'
+  publishMode: 'pull_request' | 'hosted_submit' | 'none'
+  credential?: {
+    type: 'token'
+    tokenPreview: string
+  }
+  error?: string
 }
 
 // ============================================================================
@@ -301,8 +462,10 @@ export interface ApiScheduledTask {
   lastSessionId: string | null
   createdBySessionId: string | null
   timezone: string | null
+  llmProviderId?: string | null
   model: string | null
   effort: string | null
+  speed: string | null
   createdAt: Date
   cancelledAt: Date | null
   pausedAt: Date | null
@@ -317,42 +480,16 @@ export interface ApiScheduledTask {
  */
 export interface ApiNotification {
   id: string
-  type: 'session_complete' | 'session_waiting' | 'session_scheduled'
+  type: 'session_complete' | 'session_waiting' | 'session_scheduled' | 'session_webhook' | 'session_chat_integration' | 'session_mention'
   sessionId: string
   agentSlug: string
   title: string
   body: string
   isRead: boolean
+  /** Set on a mention: it is this user's alone. */
+  recipientUserId?: string | null
+  /** The message a mention points at. */
+  messageUuid?: string | null
   createdAt: Date
   readAt: Date | null
-}
-
-// ============================================================================
-// Connected Account API Types
-// ============================================================================
-
-/**
- * Provider info
- */
-export interface ApiProvider {
-  slug: string
-  displayName: string
-  icon?: string
-}
-
-/**
- * Connected account response
- */
-export interface ApiConnectedAccount {
-  id: string
-  composioConnectionId: string
-  toolkitSlug: string
-  displayName: string
-  status: 'active' | 'revoked' | 'expired'
-  createdAt: Date
-  updatedAt: Date
-  provider?: ApiProvider
-  // Only present when fetched for a specific agent
-  mappingId?: string
-  mappedAt?: Date
 }

@@ -1,0 +1,149 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
+
+import { and, desc, eq } from 'drizzle-orm'
+
+import { db } from '@shared/lib/db'
+import { authAccount } from '@shared/lib/db/schema'
+import { getPlatformAccessToken, getStoredPlatformMemberId } from '@shared/lib/services/platform-auth-service'
+import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
+import { decodeOrgIdFromToken } from '@shared/lib/platform-auth/decode-org-id'
+
+import { getRequestUserId, runOutsideRequestUser } from './request-context'
+
+// Re-export so existing consumers keep importing from here.
+export { decodeOrgIdFromToken }
+export { runWithOptionalUser, runWithRequestUser } from './request-context'
+
+const PLATFORM_PROVIDER_ID = 'platform'
+
+async function getPlatformAccountIdForUserId(userId: string): Promise<string | null> {
+  const rows = await db
+    .select({ accountId: authAccount.accountId })
+    .from(authAccount)
+    .where(and(eq(authAccount.userId, userId), eq(authAccount.providerId, PLATFORM_PROVIDER_ID)))
+    .orderBy(desc(authAccount.updatedAt))
+    .limit(1)
+    .all()
+  return rows[0]?.accountId ?? null
+}
+
+// The acting member for the current request: prefer the Better Auth
+// `authAccount` row (env / platform-OAuth path), then fall back to the
+// member id persisted with a settings-stored connection (single-connection
+// case). Opaque `plat_sa_` access keys are not org-scoped, so memberId is
+// unused for them — this only matters if an org-scoped token lives in settings.
+async function resolveMemberIdForUserId(userId: string): Promise<string | null> {
+  return (await getPlatformAccountIdForUserId(userId)) ?? getStoredPlatformMemberId()
+}
+
+// Org JWTs carry the acting member as `<token>::<memberId>` (proxy splits
+// on `::` pre-verification). Opaque access keys pass through unchanged.
+export interface Attribution {
+  applyTo(headers: Headers): void
+  bearerToken(): string
+  getKey(): string
+  /** Acting member id for org-scoped tokens; null in opaque-access-key mode. */
+  actingMemberId(): string | null
+}
+
+class PlatformAttribution implements Attribution {
+  constructor(
+    private readonly token: string,
+    private readonly memberId: string | null,
+    private readonly orgScoped: boolean,
+  ) {}
+
+  applyTo(headers: Headers): void {
+    headers.set('Authorization', `Bearer ${this.bearerToken()}`)
+  }
+
+  bearerToken(): string {
+    return this.orgScoped && this.memberId
+      ? `${this.token}::${this.memberId}`
+      : this.token
+  }
+
+  getKey(): string {
+    if (!this.orgScoped) return 'access_key'
+    return this.memberId ? `member:${this.memberId}` : 'org'
+  }
+
+  actingMemberId(): string | null {
+    return this.orgScoped ? this.memberId : null
+  }
+}
+
+function buildAttribution(memberId: string | null): Attribution | null {
+  const token = getPlatformAccessToken()
+  if (!token) return null
+  const orgScoped = decodeOrgIdFromToken(token) !== null
+  if (orgScoped && !memberId) return null
+  return new PlatformAttribution(token, memberId, orgScoped)
+}
+
+const attributionContext = new AsyncLocalStorage<{ auth: Attribution }>()
+
+// Eager override: stores a pre-resolved Attribution; takes precedence over
+// the request-user scope. Use when the natural request user isn't who we
+// want to attribute to (see proxy.ts: attribute by connected_account owner).
+export function runWithAttribution<T>(
+  auth: Attribution | null,
+  fn: () => Promise<T> | T,
+): Promise<T> | T {
+  return auth ? attributionContext.run({ auth }, fn) : fn()
+}
+
+/**
+ * Run fn, and every async operation it schedules, with no attribution and no
+ * request user. Host-wide background work (the webhook relay's claim loop)
+ * sends its own explicit `::member` bearer; started from inside a request or
+ * a runWithAttribution scope, it would otherwise inherit that scope and the
+ * fetch interceptor would rewrite its Authorization header.
+ */
+export function runOutsideAttribution<T>(fn: () => T): T {
+  return attributionContext.exit(() => runOutsideRequestUser(fn))
+}
+
+async function fromCurrentRequest(): Promise<Attribution | null> {
+  const userId = getRequestUserId()
+  return userId ? buildAttribution(await resolveMemberIdForUserId(userId)) : null
+}
+
+// True when the active platform token is an org JWT, so every proxy call must
+// carry a per-request acting member. Opaque access keys and an unconfigured
+// token return false.
+function requiresActingMember(): boolean {
+  const token = getPlatformAccessToken()
+  return token !== null && decodeOrgIdFromToken(token) !== null
+}
+
+export const attribution = {
+  fromCurrentRequest,
+  async fromUserId(userId: string): Promise<Attribution | null> {
+    return buildAttribution(await resolveMemberIdForUserId(userId))
+  },
+  async fromResourceCreator(ownerUserId: string | null): Promise<Attribution | null> {
+    return ownerUserId ? buildAttribution(await getPlatformAccountIdForUserId(ownerUserId)) : null
+  },
+  // For callers that already hold a member id (e.g. the recorded minting member).
+  fromMemberId(memberId: string): Attribution | null {
+    return buildAttribution(memberId)
+  },
+  async current(): Promise<Attribution | null> {
+    return attributionContext.getStore()?.auth ?? (await fromCurrentRequest())
+  },
+  // Container cold start: ambient scope, else the agent owner, else the stored
+  // member. Same fallback chain as trigger minting (SUP-765); null only when
+  // nothing resolves, so callers never bake a bare org token by accident (SUP-805).
+  async forAgent(agentSlug: string): Promise<Attribution | null> {
+    const ambient = attributionContext.getStore()?.auth ?? (await fromCurrentRequest())
+    if (ambient) return ambient
+    const ownerUserId = await getAgentOwnerUserId(agentSlug)
+    return buildAttribution(
+      ownerUserId ? await resolveMemberIdForUserId(ownerUserId) : getStoredPlatformMemberId(),
+    )
+  },
+  requiresActingMember,
+} as const
+
+export { installPlatformFetchInterceptor } from './install-fetch-interceptor'

@@ -1,0 +1,28 @@
+{
+  "agentSlug": "probe",
+  "sdkVersion": "0.3.272",
+  "cliVersion": "2.1.272",
+  "capturedAt": "2026-09-14",
+  "model": "claude-haiku-4-5-20251001",
+  "startActive": true,
+  "subagents": [],
+  "source": "scratch probe (probe-bg-idle.mjs): direct Agent SDK query() with streaming input, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1, includePartialMessages, perTaskStopAffordance; same wrapper shape as the host captures (t = ms since start, message.content = SDK frame)",
+  "description": "Real capture (2026-09-14, SDK 0.3.272 / CLI 2.1.272). Same as sdk272-bg-subagent-no-idle, but the host called query.interrupt() 1.5s after the lead turn result, while only the background subagent was live (a Stop pressed with no foreground turn). The interrupt resolved {still_queued: []} and produced NO result, NO idle and no interrupt_receipt on the stream; the subagent kept running (perTaskStopAffordance), then the normal completion wake followed: background_tasks_changed:0, terminal task signals, running, wake result, idle.",
+  "backgroundTasks": [
+    {
+      "taskId": "a4cf793cda3536a51",
+      "taskType": "local_agent",
+      "startedT": 2516,
+      "prematureIdleT": null,
+      "realCompletionT": 19143
+    },
+    {
+      "taskId": "b57r8x30h",
+      "taskType": "local_bash",
+      "startedT": 7414,
+      "prematureIdleT": null,
+      "realCompletionT": 12416
+    }
+  ],
+  "interruptT": 5082
+}

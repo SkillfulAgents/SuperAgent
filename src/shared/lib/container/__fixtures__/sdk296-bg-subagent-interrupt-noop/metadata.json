@@ -1,0 +1,32 @@
+{
+  "sessionId": "f683e365-d120-4982-9bae-42ed19220d9f",
+  "agentSlug": "probe",
+  "sdkVersion": "0.3.296",
+  "cliVersion": "2.1.296",
+  "capturedAt": "2026-10-10",
+  "model": "claude-haiku-4-5-20251001",
+  "startActive": true,
+  "subagents": [],
+  "source": "capture-fixtures.mjs (.claude/skills/update-claude-deps): direct Agent SDK query() with streaming input, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1, includePartialMessages, perTaskStopAffordance; host capture wrapper (t = ms since start, message.content = SDK frame)",
+  "description": "Real capture (SDK 0.3.296 / CLI 2.1.296). As bg-subagent-no-idle, but the host calls query.interrupt() 1.5s after the lead turn result, while only the background subagent is live (a Stop pressed with no foreground turn).",
+  "backgroundTasks": [
+    {
+      "taskId": "adb79c839fac6128f",
+      "taskType": "local_agent",
+      "startedT": 2630,
+      "prematureIdleT": null,
+      "realCompletionT": 12605
+    },
+    {
+      "taskId": "bg7mjsy76",
+      "taskType": "local_bash",
+      "startedT": 6944,
+      "prematureIdleT": null,
+      "realCompletionT": 11945,
+      "parentTaskId": "adb79c839fac6128f"
+    }
+  ],
+  "interruptT": 5036,
+  "settledT": 13422,
+  "totalEntries": 91
+}

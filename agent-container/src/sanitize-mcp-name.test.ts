@@ -60,6 +60,13 @@ describe('sanitizeMcpName', () => {
     expect(RESERVED_MCP_NAMES.has('user_input')).toBe(true)
     expect(RESERVED_MCP_NAMES.has('browser')).toBe(true)
     expect(RESERVED_MCP_NAMES.has('dashboards')).toBe(true)
-    expect(RESERVED_MCP_NAMES.size).toBe(3)
+    expect(RESERVED_MCP_NAMES.has('rules')).toBe(true)
+    expect(RESERVED_MCP_NAMES.size).toBe(4)
   })
+})
+
+
+it('reserves integration namespaces even for a user name with the same spelling', () => {
+  expect(sanitizeMcpName('Agent-Integration-abc')).toBe('remote_agent_integration_abc')
+  expect(sanitizeMcpName('agent_integration_abc', true)).toBe('agent_integration_abc')
 })

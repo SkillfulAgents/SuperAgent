@@ -1,10 +1,18 @@
+import { useEffect, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 
 import { Button } from '@renderer/components/ui/button'
-import { RequestError } from '@renderer/components/messages/request-error'
+import { LoginButton, useFocusAfterCancel } from '@renderer/components/connections/login-button'
+import { LoginWindowCancel } from '@renderer/components/connections/login-window-cancel'
+import { RequestError } from '@shared/lib/tools/requests/request-error'
 import { ManualAccessKeyInput } from '@renderer/components/settings/manual-access-key-input'
 import { useSettings, useUpdateSettings } from '@renderer/hooks/use-settings'
-import { usePlatformConnect } from '@renderer/hooks/use-platform-auth'
+import {
+  useDismissDownloadNonce,
+  useDownloadNonceOffer,
+  usePlatformConnect,
+  useRedeemDownloadNonce,
+} from '@renderer/hooks/use-platform-auth'
 
 interface WelcomeStepProps {
   onChoosePlatform?: () => void
@@ -16,14 +24,56 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
   const updateSettings = useUpdateSettings()
   const {
     handleConnect,
+    cancelConnect,
+    canCancel,
     isLaunching,
     error: platformError,
+    isConnected: isPlatformConnected,
+    platformAuth,
+    isLoadingPlatformAuth,
   } = usePlatformConnect({
     successMessage: null,
     onSuccess: () => {
       onChoosePlatform?.()
     },
   })
+
+  // When platform access is already provisioned (e.g. AUTH_MODE deployments
+  // running with an org-issued PLATFORM_TOKEN), skip the legacy access-key
+  // exchange entirely. The org picker on `/auth/superagent` is irrelevant
+  // there because the token is fixed to one org by deployment.
+  const autoAdvancedRef = useRef(false)
+  useEffect(() => {
+    if (autoAdvancedRef.current) return
+    if (!isPlatformConnected) return
+    autoAdvancedRef.current = true
+    onChoosePlatform?.()
+  }, [isPlatformConnected, onChoosePlatform])
+
+  const isPlatformAvailable = !isLoadingPlatformAuth && Boolean(platformAuth?.platformBaseUrl)
+  // Cancel sits on the help line, which unmounts with it; focus returns to the launch area.
+  const { targetRef: launchAreaRef, arm: focusLaunchAreaAfterCancel } = useFocusAfterCancel<HTMLDivElement>(isLaunching)
+
+  // Installer-carried enrollment: when the main process recovered a download
+  // nonce, the primary button becomes one-click "Continue as <email>". No
+  // nonce (or any failure) leaves the flow exactly as before.
+  const { data: nonceOffer } = useDownloadNonceOffer(isPlatformAvailable && !isPlatformConnected)
+  const redeemNonce = useRedeemDownloadNonce()
+  const dismissNonce = useDismissDownloadNonce()
+  const nonceEmail = nonceOffer?.available ? nonceOffer.email : undefined
+  // Broken/blocked avatar URLs degrade to the text-only button.
+  const [avatarFailed, setAvatarFailed] = useState(false)
+  const nonceAvatarUrl = !avatarFailed && nonceOffer?.available ? nonceOffer.avatarUrl : undefined
+
+  async function handleContinueAsOffer() {
+    try {
+      await redeemNonce.mutateAsync()
+      onChoosePlatform?.()
+    } catch {
+      // The mutation exposes the error below; the offer query refetches and
+      // the button falls back to the regular flow if the nonce is gone.
+    }
+  }
 
   async function handleManualSetup() {
     try {
@@ -42,47 +92,117 @@ export function WelcomeStep({ onChoosePlatform, onContinueToManualSetup }: Welco
       <div className="space-y-4">
         <h2 className="text-4xl font-normal">Build your<br />agent workforce</h2>
         <p className="text-sm text-muted-foreground mt-1 max-w-sm">
-          Superagent is the most powerful and secure way to build and manage AI teammates that actually get the job done.
+          Gamut is the most powerful and secure way to build and manage AI teammates that actually get the job done.
         </p>
       </div>
 
       <div className="flex flex-col gap-8">
-        <div className="space-y-3">
-          <div className="flex items-center gap-3">
-            <Button
-              type="button"
-              variant="default"
-              size="lg"
-              onClick={() => void handleConnect()}
-              data-testid="wizard-platform-login"
-              disabled={isLaunching}
-              className="w-full max-w-[380px]"
-            >
-              {isLaunching ? (
-                <><Loader2 className="h-4 w-4 animate-spin mr-2" />Logging in...</>
+        {isPlatformAvailable && (
+          <div className="space-y-3">
+            <div ref={launchAreaRef} tabIndex={-1} className="flex items-center gap-3 rounded-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+              {nonceEmail ? (
+                <Button
+                  type="button"
+                  variant="default"
+                  size="lg"
+                  onClick={() => void handleContinueAsOffer()}
+                  data-testid="wizard-platform-login"
+                  disabled={redeemNonce.isPending}
+                  className="w-full max-w-[380px]"
+                >
+                  {redeemNonce.isPending ? (
+                    <><Loader2 className="h-4 w-4 animate-spin mr-2" />Signing in...</>
+                  ) : (
+                    <>
+                      {nonceAvatarUrl && (
+                        <img
+                          src={nonceAvatarUrl}
+                          alt=""
+                          className="h-5 w-5 rounded-full object-cover mr-2 shrink-0"
+                          onError={() => setAvatarFailed(true)}
+                        />
+                      )}
+                      <span className="truncate">{`Continue as ${nonceEmail}`}</span>
+                    </>
+                  )}
+                </Button>
               ) : (
-                'Get Started'
+                // Cancel shares the help line below, so the wizard places it.
+                <LoginButton
+                  type="button"
+                  variant="default"
+                  size="lg"
+                  onClick={() => void handleConnect()}
+                  data-testid="wizard-platform-login"
+                  className="w-full max-w-[380px]"
+                  label="Get Started"
+                  pendingLabel="Logging in…"
+                  pending={isLaunching}
+                  canCancel={canCancel}
+                  onCancel={cancelConnect}
+                  cancelSide="none"
+                />
               )}
-            </Button>
+            </div>
+            {nonceEmail && !redeemNonce.isPending && (
+              <p className="text-sm text-muted-foreground">
+                Not you?{' '}
+                <button
+                  type="button"
+                  onClick={() => dismissNonce.mutate()}
+                  data-testid="wizard-nonce-dismiss"
+                  className="underline underline-offset-2 hover:text-foreground transition-colors"
+                >
+                  Use a different account
+                </button>
+              </p>
+            )}
+            {isLaunching && (
+              <div className="flex items-center gap-3 max-w-[380px] text-sm text-muted-foreground">
+                <ManualAccessKeyInput prefixText="Log in issues?" className="flex-1" />
+                <LoginWindowCancel
+                  visible={canCancel}
+                  onCancel={() => {
+                    focusLaunchAreaAfterCancel()
+                    cancelConnect()
+                  }}
+                  testId="wizard-cancel-login"
+                />
+              </div>
+            )}
           </div>
-          {isLaunching && (
-            <ManualAccessKeyInput prefixText="Log in issues?" className="text-sm text-muted-foreground" />
-          )}
-        </div>
-        <RequestError message={platformError ?? null} />
-        <p className="text-sm text-muted-foreground">
-          Need to bring your own keys?{' '}
-          <button
+        )}
+        <RequestError message={platformError ?? redeemNonce.error?.message ?? null} />
+        {isPlatformAvailable ? (
+          <p className="text-sm text-muted-foreground">
+            Need to bring your own keys?{' '}
+            <button
+              type="button"
+              onClick={() => void handleManualSetup()}
+              data-testid="wizard-manual-setup"
+              disabled={updateSettings.isPending}
+              className="underline underline-offset-2 hover:text-foreground transition-colors disabled:opacity-50"
+            >
+              {updateSettings.isPending ? <Loader2 className="inline h-3 w-3 animate-spin mr-1" /> : null}
+              Start BYOK setup
+            </button>
+          </p>
+        ) : (
+          <Button
             type="button"
+            variant="default"
+            size="lg"
             onClick={() => void handleManualSetup()}
             data-testid="wizard-manual-setup"
-            disabled={updateSettings.isPending}
-            className="underline underline-offset-2 hover:text-foreground transition-colors disabled:opacity-50"
+            disabled={isLoadingPlatformAuth || updateSettings.isPending}
+            className="w-full max-w-[380px]"
           >
-            {updateSettings.isPending ? <Loader2 className="inline h-3 w-3 animate-spin mr-1" /> : null}
-            Start BYOK setup
-          </button>
-        </p>
+            {(isLoadingPlatformAuth || updateSettings.isPending) ? (
+              <Loader2 className="h-4 w-4 animate-spin mr-2" />
+            ) : null}
+            Get Started
+          </Button>
+        )}
       </div>
 
     </div>

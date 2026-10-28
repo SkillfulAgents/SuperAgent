@@ -2,17 +2,124 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  SignJWT,
+  createLocalJWKSet,
+  exportJWK,
+  generateKeyPair,
+  type GenerateKeyPairResult,
+  type JSONWebKeySet,
+} from 'jose'
+
+// Skillset reconciliation walks the agents this suite writes to the temp data
+// dir; those directories are the agents that exist.
+vi.mock('@shared/lib/agent-actor/agent-catalog', async () => {
+  const { directoryExists, getAgentDir, getAgentsDir, listDirectories } = await import('@shared/lib/utils/file-storage')
+  return {
+    agentCatalog: {
+      list: () => listDirectories(getAgentsDir()),
+      exists: (slug: string) => directoryExists(getAgentDir(slug)),
+    },
+    identityFromInstructions: () => ({}),
+  }
+})
+
+// A token change reaches the host through `@shared/lib/agent-actor`, which
+// re-exports the container-host singleton and runs the real agent registry
+// against it.
+const mockMarkAgentsStale = vi.fn()
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return { containerHost: hostFromManagerMock({ markAgentsStale: mockMarkAgentsStale }) }
+})
+
+const mockEnsureManagedPlatformConnection = vi.fn(async () => {})
+vi.mock('@shared/lib/llm-provider/connection-settings', () => ({
+  ensureManagedPlatformConnection: () => mockEnsureManagedPlatformConnection(),
+}))
+
+const mockDbGet = vi.fn()
+vi.mock('@shared/lib/db', () => ({
+  db: {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          orderBy: () => ({
+            limit: () => ({
+              get: mockDbGet,
+            }),
+          }),
+        }),
+      }),
+    }),
+  },
+}))
 
 import { clearSettingsCache, getSettings, updateSettings } from '@shared/lib/config/settings'
 import { getAgentsDir } from '@shared/lib/utils/file-storage'
 import type { SkillsetConfig, InstalledSkillMetadata, InstalledAgentMetadata } from '@shared/lib/types/skillset'
 
 import {
+  _resetEnvManagedPlatformStatusForTest,
   getPlatformAccessToken,
+  getPlatformAuthStatus,
+  getPlatformAuthStatusForUser,
+  getEnrichedPlatformAuthStatus,
+  initEnvManagedPlatformStatus,
   savePlatformAuth,
+  refreshStoredPlatformAccount,
   revokePlatformToken,
+  verifyPlatformOrgAccessTokenSigned,
 } from './platform-auth-service'
+import { _setOidcJwksResolverForTest } from '@shared/lib/auth/oidc-jwt'
+import { platformPlanCache } from '@shared/lib/llm-provider/platform-plan-cache'
+import {
+  readCloudWorkspaceRecord,
+  writeCloudWorkspaceRecord,
+} from '@shared/lib/platform-auth/cloud-workspace-record'
+
+const TEST_ISSUER = 'https://auth.test.example'
+const TEST_KID = 'platform-oidc-main'
+const TEST_AUDIENCE = 'platform-org-runtime'
+
+let testKeyPair: GenerateKeyPairResult
+let testJwksResolver: ReturnType<typeof createLocalJWKSet>
+
+interface SignTokenOverrides {
+  issuer?: string
+  audience?: string
+  expiresInSeconds?: number
+  signWithKey?: GenerateKeyPairResult['privateKey']
+  kid?: string
+  omitOrgId?: boolean
+}
+
+async function signTestOrgToken(orgId: string, overrides: SignTokenOverrides = {}): Promise<string> {
+  const now = Math.floor(Date.now() / 1000)
+  const ttl = overrides.expiresInSeconds ?? 3600
+  const payload: Record<string, unknown> = overrides.omitOrgId ? {} : { orgId }
+  return new SignJWT(payload)
+    .setProtectedHeader({
+      alg: 'RS256',
+      typ: 'JWT',
+      kid: overrides.kid ?? TEST_KID,
+    })
+    .setIssuer(overrides.issuer ?? TEST_ISSUER)
+    .setAudience(overrides.audience ?? TEST_AUDIENCE)
+    .setIssuedAt(now)
+    .setExpirationTime(now + ttl)
+    .sign(overrides.signWithKey ?? testKeyPair.privateKey)
+}
+
+beforeAll(async () => {
+  testKeyPair = await generateKeyPair('RS256')
+  const jwk = await exportJWK(testKeyPair.publicKey)
+  const jwks: JSONWebKeySet = {
+    keys: [{ ...jwk, alg: 'RS256', kid: TEST_KID, use: 'sig' }],
+  }
+  testJwksResolver = createLocalJWKSet(jwks)
+})
 
 describe('platform-auth-service', () => {
   let tempDir: string
@@ -20,13 +127,178 @@ describe('platform-auth-service', () => {
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'superagent-platform-auth-'))
     process.env.SUPERAGENT_DATA_DIR = tempDir
+    process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
+      {
+        id: 'platform',
+        type: 'oidc',
+        issuer: TEST_ISSUER,
+        clientId: 'superagent-test',
+      },
+    ])
     clearSettingsCache()
+    _setOidcJwksResolverForTest(testJwksResolver as unknown as Parameters<typeof _setOidcJwksResolverForTest>[0])
+    _resetEnvManagedPlatformStatusForTest()
+    mockDbGet.mockReturnValue(null)
+    mockEnsureManagedPlatformConnection.mockClear()
   })
 
   afterEach(() => {
     clearSettingsCache()
     fs.rmSync(tempDir, { recursive: true, force: true })
     delete process.env.SUPERAGENT_DATA_DIR
+    delete process.env.AUTH_MODE
+    delete process.env.PLATFORM_TOKEN
+    delete process.env.PLATFORM_PROXY_URL
+    delete process.env.AUTH_PROVIDERS_JSON
+    _setOidcJwksResolverForTest(null)
+    _resetEnvManagedPlatformStatusForTest()
+    vi.restoreAllMocks()
+  })
+
+  it('falls back to PLATFORM_TOKEN env in auth mode when settings have no record', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = 'env-managed-platform-token'
+
+    expect(getPlatformAccessToken('local')).toBe('env-managed-platform-token')
+  })
+
+  it('creates the managed connection on login before returning', async () => {
+    process.env.AUTH_MODE = 'false'
+    await savePlatformAuth('local', { token: 'platform-login-test-token', orgId: 'org_test' })
+    expect(mockEnsureManagedPlatformConnection).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns null when not in auth mode and no settings record exists', async () => {
+    process.env.PLATFORM_TOKEN = 'should-be-ignored-when-auth-mode-off'
+    delete process.env.AUTH_MODE
+
+    expect(getPlatformAccessToken('local')).toBeNull()
+  })
+
+  it('leaves the disconnected status contract unchanged', async () => {
+    const status = (await getPlatformAuthStatusForUser('local'))
+
+    expect(status.connected).toBe(false)
+    expect(status).not.toHaveProperty('orgIconUrl')
+  })
+
+  it('returns env-managed status with verified orgId after init', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+
+    await initEnvManagedPlatformStatus()
+
+    expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({
+      connected: true,
+      label: 'Managed by organization',
+      orgId: 'org_env',
+      source: 'env',
+    })
+  })
+
+  it('warns and reports tokens with bad signature, returning orgId: null', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const otherKey = await generateKeyPair('RS256')
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env', { signWithKey: otherKey.privateKey })
+
+    await initEnvManagedPlatformStatus()
+
+    expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({
+      connected: true,
+      orgId: null,
+      source: 'env',
+    })
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('[platform-auth] invalid PLATFORM_TOKEN: signature verification failed'),
+    )
+  })
+
+  it('rejects tokens with the wrong issuer', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env', { issuer: 'https://attacker.example' })
+
+    await initEnvManagedPlatformStatus()
+
+    expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({ orgId: null, source: 'env' })
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('[platform-auth] invalid PLATFORM_TOKEN: claim validation failed: iss'),
+    )
+  })
+
+  it('rejects tokens with the wrong audience', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env', { audience: 'platform-other-runtime' })
+
+    await initEnvManagedPlatformStatus()
+
+    expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({ orgId: null, source: 'env' })
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('[platform-auth] invalid PLATFORM_TOKEN: claim validation failed: aud'),
+    )
+  })
+
+  it('rejects expired tokens', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env', { expiresInSeconds: -10 })
+
+    await initEnvManagedPlatformStatus()
+
+    expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({ orgId: null, source: 'env' })
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('[platform-auth] invalid PLATFORM_TOKEN: token expired'),
+    )
+  })
+
+  it('rejects tokens missing orgId claim', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('placeholder', { omitOrgId: true })
+
+    await initEnvManagedPlatformStatus()
+
+    expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({ orgId: null, source: 'env' })
+    expect(warn).toHaveBeenCalled()
+  })
+
+  it('warns when no issuer is configured and stores orgId: null', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    delete process.env.AUTH_PROVIDERS_JSON
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+
+    await initEnvManagedPlatformStatus()
+
+    expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({ orgId: null, source: 'env' })
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('[platform-auth] invalid PLATFORM_TOKEN: no issuer configured'),
+    )
+  })
+
+  it('verifyPlatformOrgAccessTokenSigned returns full claims for a valid token', async () => {
+    const token = await signTestOrgToken('org_X')
+    const verified = await verifyPlatformOrgAccessTokenSigned(token, { issuer: TEST_ISSUER })
+    expect(verified).toMatchObject({ orgId: 'org_X', iss: TEST_ISSUER, aud: TEST_AUDIENCE, kid: TEST_KID })
+  })
+
+  it('uses env-managed platform token before saved settings in auth mode', async () => {
+    await savePlatformAuth('local', {
+      token: 'plat_settings_token_1234567890abcdef',
+      orgId: 'org_settings',
+    })
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+
+    await initEnvManagedPlatformStatus()
+
+    expect(getPlatformAccessToken('local')).toBe(process.env.PLATFORM_TOKEN)
+    expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({
+      orgId: 'org_env',
+      source: 'env',
+    })
   })
 
   it('stores a token and exposes only redacted status', async () => {
@@ -51,6 +323,448 @@ describe('platform-auth-service', () => {
     const onDisk = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
     expect(onDisk.platformAuth).toBeDefined()
     expect(onDisk.platformAuth.token).toBe('plat_superagent_token_1234567890abcdef')
+  })
+
+  it('persists and exposes platform userId and memberId', async () => {
+    const status = await savePlatformAuth('local', {
+      token: 'plat_superagent_token_1234567890abcdef',
+      userId: 'auth_user_uuid_123',
+      memberId: 'sub_member_456',
+    })
+
+    expect(status).toMatchObject({
+      userId: 'auth_user_uuid_123',
+      memberId: 'sub_member_456',
+    })
+    expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({
+      userId: 'auth_user_uuid_123',
+      memberId: 'sub_member_456',
+    })
+  })
+
+  it('defaults userId and memberId to null when metadata is provided without them', async () => {
+    // OAuth-path save (metadata present) from a platform that does not yet
+    // return user_id/member_id — no introspection, fields stay null.
+    await savePlatformAuth('local', {
+      token: 'plat_superagent_token_1234567890abcdef',
+      orgId: 'org_test_123',
+    })
+
+    expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({
+      userId: null,
+      memberId: null,
+    })
+  })
+
+  it('introspects and enriches a token-only (manual paste) save', async () => {
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          memberId: 'sub_member_1',
+          orgId: 'org_resolved',
+          orgName: 'Resolved Org',
+          role: 'admin',
+          userId: 'user_resolved',
+          email: 'resolved@example.com',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+
+    const status = await savePlatformAuth('local', {
+      token: 'plat_superagent_token_1234567890abcdef',
+    })
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'http://proxy.test/v1/account',
+      expect.objectContaining({
+        headers: { Authorization: 'Bearer plat_superagent_token_1234567890abcdef' },
+      }),
+    )
+    expect(status).toMatchObject({
+      email: 'resolved@example.com',
+      orgId: 'org_resolved',
+      orgName: 'Resolved Org',
+      role: 'admin',
+      userId: 'user_resolved',
+      memberId: 'sub_member_1',
+    })
+  })
+
+  it('rejects an invalid token-only save with a clear error', async () => {
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: 'Invalid or revoked access token' } }), {
+        status: 401,
+      }),
+    )
+
+    await expect(
+      savePlatformAuth('local', { token: 'plat_bad_token_000000000000000000000000' }),
+    ).rejects.toMatchObject({
+      name: 'PlatformRequestError',
+      status: 400,
+      message: 'This access key is invalid or has been revoked.',
+    })
+
+    // Nothing should have been persisted for a rejected key.
+    expect((await getPlatformAuthStatusForUser('local')).connected).toBe(false)
+  })
+
+  it('refreshStoredPlatformAccount updates the record when identity changed', async () => {
+    // Seed a record with metadata (orgId present → no introspection on save).
+    await savePlatformAuth('local', {
+      token: 'plat_superagent_token_1234567890abcdef',
+      email: 'old@example.com',
+      orgId: 'org_old',
+      orgName: 'Old Org',
+      role: 'member',
+      userId: 'user_old',
+      memberId: 'sub_old',
+    })
+
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          memberId: 'sub_new',
+          orgId: 'org_new',
+          orgName: 'New Org',
+          role: 'admin',
+          userId: 'user_new',
+          email: 'new@example.com',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+
+    const updated = await refreshStoredPlatformAccount()
+    expect(updated).toBe(true)
+    expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({
+      email: 'new@example.com',
+      orgId: 'org_new',
+      role: 'admin',
+      userId: 'user_new',
+      memberId: 'sub_new',
+    })
+  })
+
+  it('refreshStoredPlatformAccount is a no-op when identity is unchanged', async () => {
+    await savePlatformAuth('local', {
+      token: 'plat_superagent_token_1234567890abcdef',
+      email: 'same@example.com',
+      orgId: 'org_same',
+      orgName: 'Same Org',
+      role: 'member',
+      userId: 'user_same',
+      memberId: 'sub_same',
+    })
+    const before = (await getPlatformAuthStatusForUser('local')).updatedAt
+
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          memberId: 'sub_same',
+          orgId: 'org_same',
+          orgName: 'Same Org',
+          role: 'member',
+          userId: 'user_same',
+          email: 'same@example.com',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+
+    const updated = await refreshStoredPlatformAccount()
+    expect(updated).toBe(false)
+    expect((await getPlatformAuthStatusForUser('local')).updatedAt).toBe(before) // record not rewritten
+  })
+
+  // ---------------------------------------------------------------------------
+  // OIDC account enrichment for env-managed deployments
+  // ---------------------------------------------------------------------------
+
+  function makeIdToken(claims: Record<string, unknown>): string {
+    const header = Buffer.from(JSON.stringify({ alg: 'RS256' })).toString('base64url')
+    const payload = Buffer.from(JSON.stringify(claims)).toString('base64url')
+    return `${header}.${payload}.fake-signature`
+  }
+
+  it('env-managed status returns userId from OIDC id_token when user_id claim is present', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    await initEnvManagedPlatformStatus()
+
+    mockDbGet.mockReturnValue({
+      idToken: makeIdToken({
+        sub: 'sub_member_123',
+        'https://platform.skillfulagents.dev/claims/user_id': 'uuid-platform-user',
+      }),
+    })
+
+    const status = (await getPlatformAuthStatusForUser('ba-user-id'))
+    expect(status.userId).toBe('uuid-platform-user')
+    expect(status.source).toBe('env')
+  })
+
+  it('env-managed status returns userId: null when user_id claim is absent from id_token', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    await initEnvManagedPlatformStatus()
+
+    mockDbGet.mockReturnValue({
+      idToken: makeIdToken({ sub: 'sub_member_123' }),
+    })
+
+    const status = (await getPlatformAuthStatusForUser('ba-user-id'))
+    expect(status.userId).toBeNull()
+  })
+
+  it('env-managed status returns userId: null when no platform account exists', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    await initEnvManagedPlatformStatus()
+
+    mockDbGet.mockReturnValue(null)
+    mockEnsureManagedPlatformConnection.mockClear()
+
+    const status = (await getPlatformAuthStatusForUser('ba-user-id'))
+    expect(status.userId).toBeNull()
+  })
+
+  it('env-managed status returns userId: null when no idToken is stored', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    await initEnvManagedPlatformStatus()
+
+    mockDbGet.mockReturnValue({ idToken: null })
+
+    const status = (await getPlatformAuthStatusForUser('ba-user-id'))
+    expect(status.userId).toBeNull()
+  })
+
+  it('env-managed status does not query account table when no userId is provided', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    await initEnvManagedPlatformStatus()
+
+    mockDbGet.mockClear()
+    const status = getPlatformAuthStatus()
+    expect(status.userId).toBeNull()
+    expect(mockDbGet).not.toHaveBeenCalled()
+  })
+
+  // ---------------------------------------------------------------------------
+  // Env-managed (org-JWT) account enrichment via /v1/account introspection
+  // ---------------------------------------------------------------------------
+
+  it('enriches env-managed status with the safe workspace icon from /v1/account', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    await initEnvManagedPlatformStatus()
+
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          memberId: 'sub_member_1',
+          orgId: 'org_env',
+          orgName: 'Acme Inc',
+          orgIconUrl: 'https://cdn.example.com/workspaces/acme.png?token=do-not-forward#avatar',
+          role: 'owner',
+          userId: 'user_1',
+          email: 'owner@example.com',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+
+    const status = await getEnrichedPlatformAuthStatus('ba-user')
+
+    expect(fetchSpy).toHaveBeenCalledWith('http://proxy.test/v1/account', expect.anything())
+    expect(status).toMatchObject({
+      source: 'env',
+      email: 'owner@example.com',
+      orgName: 'Acme Inc',
+      orgIconUrl: 'https://cdn.example.com/workspaces/acme.png',
+      role: 'owner',
+    })
+    // env-managed connections have no "last changed" anchor; updatedAt stays null.
+    expect(status.updatedAt).toBeNull()
+  })
+
+  it('keeps the plan policy a member\'s account read carries, keyed by that member (SUP-1124)', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    await initEnvManagedPlatformStatus()
+    platformPlanCache.clear()
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          memberId: 'sub_member_2',
+          orgId: 'org_env',
+          userId: 'user_2',
+          plan: { id: 'pro-30', name: 'Pro 30' },
+          deniedModels: ['claude-fable-'],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+
+    await getEnrichedPlatformAuthStatus('ba-user-plan')
+
+    const load = vi.fn(async () => null)
+    expect(await platformPlanCache.get(platformPlanCache.key('org_env', 'sub_member_2'), load))
+      .toEqual({ planName: 'Pro 30', deniedModels: ['claude-fable-'] })
+    expect(load).not.toHaveBeenCalled()
+  })
+
+  it('returns a null workspace icon when /v1/account has no icon field', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    await initEnvManagedPlatformStatus()
+
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          memberId: 'sub_member_1',
+          orgId: 'org_env',
+          orgName: 'Acme Inc',
+          role: 'owner',
+          userId: 'user_1',
+          email: 'owner@example.com',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+
+    const status = await getEnrichedPlatformAuthStatus('ba-user')
+
+    expect(status).toMatchObject({
+      connected: true,
+      source: 'env',
+      orgName: 'Acme Inc',
+      orgIconUrl: null,
+    })
+  })
+
+  it.each([
+    '/private/workspace/icon.png',
+    'file:///private/workspace/icon.png',
+    'data:image/png;base64,c2VjcmV0',
+    'https://user:secret@cdn.example.com/icon.png',
+    'https://localhost/icon.png',
+    'https://127.0.0.1/icon.png',
+  ])('does not forward an unsafe workspace icon value: %s', async (orgIconUrl) => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    await initEnvManagedPlatformStatus()
+
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          memberId: 'sub_member_1',
+          orgId: 'org_env',
+          orgName: 'Acme Inc',
+          orgIconUrl,
+          role: 'owner',
+          userId: 'user_1',
+          email: 'owner@example.com',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+
+    const status = await getEnrichedPlatformAuthStatus('ba-user')
+
+    expect(status.orgIconUrl).toBeNull()
+  })
+
+  it('falls back to the base env-managed status when introspection fails', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    await initEnvManagedPlatformStatus()
+
+    vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: 'nope' } }), { status: 401 }),
+    )
+
+    const status = await getEnrichedPlatformAuthStatus('ba-user')
+
+    expect(status).toMatchObject({
+      source: 'env',
+      email: null,
+      orgName: null,
+      role: null,
+    })
+  })
+
+  it('memoizes introspection per user within the TTL (second read does not re-fetch)', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    await initEnvManagedPlatformStatus()
+
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          memberId: 'sub_member_1',
+          orgId: 'org_env',
+          orgName: 'Acme Inc',
+          role: 'owner',
+          userId: 'user_1',
+          email: 'owner@example.com',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+
+    await getEnrichedPlatformAuthStatus('ba-user')
+    const second = await getEnrichedPlatformAuthStatus('ba-user')
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(second).toMatchObject({ email: 'owner@example.com', orgName: 'Acme Inc', role: 'owner' })
+  })
+
+  it('caches a failed introspection so it is not retried within the TTL', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    await initEnvManagedPlatformStatus()
+
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: 'nope' } }), { status: 401 }),
+    )
+
+    await getEnrichedPlatformAuthStatus('ba-user')
+    const second = await getEnrichedPlatformAuthStatus('ba-user')
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(second).toMatchObject({ source: 'env', email: null, orgName: null, role: null })
+  })
+
+  it('does not introspect for settings-stored (opaque key) connections', async () => {
+    await savePlatformAuth('local', {
+      token: 'plat_superagent_token_1234567890abcdef',
+      email: 'stored@example.com',
+      orgId: 'org_stored',
+      orgName: 'Stored Org',
+      role: 'member',
+    })
+
+    const fetchSpy = vi.spyOn(global, 'fetch')
+
+    const status = await getEnrichedPlatformAuthStatus('local')
+
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(status).toMatchObject({ source: 'settings', orgName: 'Stored Org', email: 'stored@example.com' })
+    expect(status).not.toHaveProperty('orgIconUrl')
   })
 
   // Helpers for the org-switch / lifecycle tests below.
@@ -228,5 +942,86 @@ describe('platform-auth-service', () => {
       getAgentsDir(), 'agent-c', 'workspace', '.claude', 'skills', 'stale-skill',
     )
     expect(fs.existsSync(skillDir)).toBe(false)
+  })
+
+  describe('stale agents on token change', () => {
+    beforeEach(() => {
+      mockMarkAgentsStale.mockClear()
+    })
+
+    it('marks running agents stale when the saved token differs from the stored one', async () => {
+      await savePlatformAuth('local', { token: 'plat_first_token_00000000000000000', orgId: 'org_x' })
+      expect(mockMarkAgentsStale).toHaveBeenCalledTimes(1)
+
+      await savePlatformAuth('local', { token: 'plat_second_token_1111111111111111', orgId: 'org_x' })
+      expect(mockMarkAgentsStale).toHaveBeenCalledTimes(2)
+    })
+
+    it('does not mark agents stale on a same-token metadata re-save', async () => {
+      await savePlatformAuth('local', { token: 'plat_first_token_00000000000000000', orgId: 'org_x', role: 'owner' })
+      mockMarkAgentsStale.mockClear()
+
+      // The refreshStoredPlatformAccount path: same token, new metadata.
+      await savePlatformAuth('local', { token: 'plat_first_token_00000000000000000', orgId: 'org_x', role: 'admin' })
+      expect(mockMarkAgentsStale).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('cloud-workspace token invalidation on identity change', () => {
+    function seedCloudToken() {
+      writeCloudWorkspaceRecord({
+        deploymentUrl: 'https://ws.example.com',
+        orgId: 'org_x',
+        token: 'deploy_session_token',
+        tokenPreview: 'deploy...oken',
+        expiresAt: new Date(Date.now() + 24 * 3600_000).toISOString(),
+        updatedAt: new Date().toISOString(),
+        userId: 'user_a',
+        memberId: 'sub_a',
+        tokenFingerprint: 'fingerprint_a',
+      })
+    }
+
+    it('clears the deployment token when the acting user/member changes (same org)', async () => {
+      await savePlatformAuth('local', {
+        token: 'plat_sa_member_a_0000000000000000',
+        orgId: 'org_x',
+        userId: 'user_a',
+        memberId: 'sub_a',
+      })
+      seedCloudToken()
+      expect(readCloudWorkspaceRecord()).not.toBeNull()
+
+      // Reconnect as a DIFFERENT member of the SAME org.
+      await savePlatformAuth('local', {
+        token: 'plat_sa_member_b_1111111111111111',
+        orgId: 'org_x',
+        userId: 'user_b',
+        memberId: 'sub_b',
+      })
+      expect(readCloudWorkspaceRecord()).toBeNull()
+    })
+
+    it('keeps the deployment token on a same-identity metadata refresh', async () => {
+      await savePlatformAuth('local', {
+        token: 'plat_sa_member_a_0000000000000000',
+        orgId: 'org_x',
+        userId: 'user_a',
+        memberId: 'sub_a',
+        role: 'owner',
+      })
+      seedCloudToken()
+
+      // Same principal, only role/email changed (the refreshStoredPlatformAccount path).
+      await savePlatformAuth('local', {
+        token: 'plat_sa_member_a_0000000000000000',
+        orgId: 'org_x',
+        userId: 'user_a',
+        memberId: 'sub_a',
+        role: 'admin',
+        email: 'user_a@example.com',
+      })
+      expect(readCloudWorkspaceRecord()).not.toBeNull()
+    })
   })
 })

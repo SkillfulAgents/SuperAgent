@@ -1,0 +1,26 @@
+{
+  "sessionId": "aa162586-deb7-4cf9-8f88-b5bbf2c54bca",
+  "agentSlug": "n991x0zvad",
+  "description": "Real, verbatim SUPERAGENT_CAPTURE_DIR capture (2026-07-28, SDK 0.3.219 / CLI 2.1.219) of a foreground Agent completing and then being resumed in a later turn through SendMessage. The resumed run reuses task_id aa5ac0a289c66aab7 with a new SendMessage tool_use_id. Its background_tasks_changed and task_started frames arrive before the SendMessage acknowledgement, and terminal task_updated/task_notification frames arrive later. Regression guard: the acknowledgement must not complete the resumed run; it stays registered as background work until the terminal task frames.",
+  "sdkVersion": "0.3.219",
+  "cliVersion": "2.1.219",
+  "capturedAt": "2026-07-28",
+  "startActive": true,
+  "subagents": [
+    {
+      "parentToolId": "toolu_01LjfLvFWK7qEDX78wcwA1Dv",
+      "taskId": "aa5ac0a289c66aab7",
+      "agentId": "aa5ac0a289c66aab7",
+      "subagentType": "general-purpose",
+      "description": "Resume capture probe"
+    },
+    {
+      "parentToolId": "toolu_013QkiCfFtWVBaaJvWXqgf8B",
+      "taskId": "aa5ac0a289c66aab7",
+      "agentId": "aa5ac0a289c66aab7",
+      "subagentType": "general-purpose",
+      "description": "Resume capture probe"
+    }
+  ],
+  "totalEntries": 170
+}

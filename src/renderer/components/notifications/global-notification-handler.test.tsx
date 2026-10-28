@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, cleanup } from '@testing-library/react'
+import { act, render, cleanup, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 // ---------------------------------------------------------------------------
@@ -8,16 +8,24 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 // ---------------------------------------------------------------------------
 
 // Mock EventSource
-class MockEventSource {
+class MockEventSource extends EventTarget {
   static instances: MockEventSource[] = []
+  static CONNECTING = 0
+  static OPEN = 1
+  static CLOSED = 2
   onmessage: ((event: { data: string }) => void) | null = null
+  onopen: (() => void) | null = null
   onerror: (() => void) | null = null
   url: string
+  readyState = MockEventSource.OPEN
   constructor(url: string) {
+    super()
     this.url = url
     MockEventSource.instances.push(this)
   }
-  close() {}
+  close() {
+    this.readyState = MockEventSource.CLOSED
+  }
 }
 
 vi.stubGlobal('EventSource', MockEventSource)
@@ -31,14 +39,17 @@ vi.mock('@renderer/lib/os-notifications', () => ({
   showOSNotification: vi.fn(),
 }))
 
-vi.mock('@renderer/context/selection-context', () => ({
-  useSelection: vi.fn(() => ({ view: { kind: 'home' }, setAgent: vi.fn() })),
+vi.mock('@renderer/lib/api', () => ({
+  apiFetch: vi.fn(() => Promise.resolve({ ok: true })),
+}))
+
+vi.mock('@renderer/router/use-route-location', () => ({
+  useRouteLocation: vi.fn(() => ({ selectedAgentSlug: null, view: { kind: 'home' } })),
 }))
 
 vi.mock('@renderer/context/user-context', () => ({
   useUser: () => ({
     isAuthMode: false,
-    user: null,
     canAccessAgent: () => true,
   }),
 }))
@@ -47,15 +58,28 @@ vi.mock('@renderer/hooks/use-notifications', () => ({
   useUnreadNotificationCount: () => ({ data: { count: 0 } }),
 }))
 
+vi.mock('@renderer/hooks/use-platform-notifications', () => ({
+  usePlatformUnreadCount: () => ({ data: { count: 0 } }),
+}))
+
+// The global setup mocks useNavigate as an unobservable no-op; the platform
+// notification click path needs an assertable spy.
+const mockNavigate = vi.hoisted(() => vi.fn())
+vi.mock('@tanstack/react-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/react-router')>()
+  return { ...actual, useNavigate: () => mockNavigate }
+})
+
 vi.mock('@renderer/hooks/use-user-settings', () => ({
-  useUserSettings: () => ({ data: undefined }),
+  useUserSettings: vi.fn(() => ({ data: undefined })),
 }))
 
 vi.mock('@renderer/hooks/use-mount-warnings', () => ({
   setMountWarning: vi.fn(),
 }))
 
-import { GlobalNotificationHandler } from './global-notification-handler'
+import { STREAM_RECONNECT_MS } from '@renderer/lib/stream-liveness'
+import { GlobalNotificationHandler, isRefetchableAfterOutage } from './global-notification-handler'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -73,21 +97,95 @@ function simulateSSEMessage(es: MockEventSource, data: unknown) {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
+describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
   let queryClient: QueryClient
 
-  beforeEach(() => {
+  beforeEach(async () => {
     MockEventSource.instances = []
     queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })
+
+    // Reset module-level mocks that individual tests override with
+    // `mockReturnValue`. vi.mock factories are NOT reset between tests, so
+    // without this an override (a selected session, `notifyWhenUnfocused`,
+    // etc.) leaks into later tests and makes them order-dependent.
+    const { useRouteLocation } = await import('@renderer/router/use-route-location')
+    const { useUserSettings } = await import('@renderer/hooks/use-user-settings')
+    const { apiFetch } = await import('@renderer/lib/api')
+    vi.mocked(useRouteLocation).mockReturnValue({
+      view: { kind: 'home' },
+      setAgent: vi.fn(),
+    } as unknown as ReturnType<typeof useRouteLocation>)
+    vi.mocked(useUserSettings).mockReturnValue({
+      data: undefined,
+    } as unknown as ReturnType<typeof useUserSettings>)
+    // restoreAllMocks (afterEach) wipes the factory implementation, so
+    // re-establish it: the handler does apiFetch(...).then(...) and a bare
+    // undefined return would throw.
+    vi.mocked(apiFetch).mockResolvedValue({ ok: true } as unknown as Response)
   })
 
   afterEach(() => {
     cleanup()
+    // Tests stub OS focus/visibility on `document`; undo so the next test
+    // starts from the real jsdom defaults instead of an inherited
+    // unfocused/visible state. restoreAllMocks restores the `hasFocus` spy;
+    // `visibilityState` is redefined as an own accessor, so delete it to fall
+    // back to the prototype getter.
+    vi.restoreAllMocks()
+    Reflect.deleteProperty(document, 'visibilityState')
   })
 
-  it('session_awaiting_input with review data invalidates proxy-reviews query', async () => {
+  it('runtime_readiness_changed patches same-status progress and refetches only on a status change', () => {
+    const pulling = (percent: number) => ({
+      status: 'PULLING_IMAGE',
+      message: 'Pulling agent image',
+      pullProgress: { status: `Pulling image... ${percent}%`, percent, completedLayers: 3, totalLayers: 7 },
+    })
+    queryClient.setQueryData(['runtime-status'], { runtimeReadiness: pulling(44), hasRunningAgents: false })
+    queryClient.setQueryData(['settings'], { runtimeReadiness: pulling(44), app: { theme: 'dark' } })
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+
+    simulateSSEMessage(getLatestEventSource(), { type: 'runtime_readiness_changed', readiness: pulling(45) })
+    expect(invalidate).not.toHaveBeenCalled()
+    expect(queryClient.getQueryData(['runtime-status'])).toEqual({ runtimeReadiness: pulling(45), hasRunningAgents: false })
+    expect(queryClient.getQueryData(['settings'])).toEqual({ runtimeReadiness: pulling(45), app: { theme: 'dark' } })
+
+    const ready = { status: 'READY', message: 'Ready', pullProgress: null }
+    simulateSSEMessage(getLatestEventSource(), { type: 'runtime_readiness_changed', readiness: ready })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['settings'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['runtime-status'] })
+  })
+
+  it('invalidates the current roster on changes and rejects malformed hints', () => {
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    simulateSSEMessage(getLatestEventSource(), { type: 'agent_members_changed', agentSlug: 'shared-agent' })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['agent-members', 'shared-agent'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
+    invalidate.mockClear()
+    simulateSSEMessage(getLatestEventSource(), { type: 'agent_members_changed', agentSlug: 42 })
+    expect(invalidate).not.toHaveBeenCalled()
+  })
+
+  it('drops revoked data, updates roles immediately, and leaves the active agent', async () => {
+    const { useRouteLocation } = await import('@renderer/router/use-route-location')
+    vi.mocked(useRouteLocation).mockReturnValue({ selectedAgentSlug: 'launch-0123456789', view: { kind: 'agent' } } as unknown as ReturnType<typeof useRouteLocation>)
+    queryClient.setQueryData(['agents'], [{ slug: '0123456789', displaySlug: 'launch-0123456789' }])
+    queryClient.setQueryData(['agent-members', '0123456789'], [{ id: 'peer' }])
+    queryClient.setQueryData(['agents', 'launch-0123456789'], { name: 'Private' })
+    queryClient.setQueryData(['my-agent-roles'], { '0123456789': { role: 'viewer' }, other: { role: 'user' } })
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    await act(async () => simulateSSEMessage(getLatestEventSource(), { type: 'agent_access_revoked', agentSlug: '0123456789' }))
+    expect(mockNavigate).toHaveBeenCalledWith({ to: '/' })
+    expect(queryClient.getQueryData(['my-agent-roles'])).toEqual({ other: { role: 'user' } })
+    expect(queryClient.getQueryData(['agent-members', '0123456789'])).toBeUndefined()
+    expect(queryClient.getQueryData(['agents', 'launch-0123456789'])).toBeUndefined()
+  })
+
+  it('user_request_created/resolved invalidate the unified store', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
     render(
@@ -98,80 +196,30 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
 
     const es = getLatestEventSource()
 
+    // A dashboard-triggered review can exist with NO session anywhere — this
+    // global event is its only push signal. Every review surface (in-chat
+    // cards AND the dashboard panel) reads the unified store now.
     simulateSSEMessage(es, {
-      type: 'session_awaiting_input',
-      agentSlug: 'my-agent',
-      review: {
-        type: 'proxy_review_request',
-        reviewId: 'r-123',
+      type: 'user_request_created',
+      request: {
+        id: 'rev-1',
+        kind: 'proxy_review',
+        scope: { agentSlug: 'my-agent' },
+        blocking: true,
+        autoApproved: false,
+        payload: {},
       },
     })
-
-    // Should have invalidated proxy-reviews for this agent
-    const proxyReviewCalls = invalidateSpy.mock.calls.filter(
-      (call) => {
-        const opts = call[0] as { queryKey?: unknown[] }
-        return opts.queryKey?.[0] === 'proxy-reviews'
-      }
-    )
-    expect(proxyReviewCalls.length).toBe(1)
-    expect((proxyReviewCalls[0][0] as { queryKey: unknown[] }).queryKey).toEqual(['proxy-reviews', 'my-agent'])
-  })
-
-  it('session_awaiting_input WITHOUT review data does NOT invalidate proxy-reviews', () => {
-    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
-
-    render(
-      <QueryClientProvider client={queryClient}>
-        <GlobalNotificationHandler />
-      </QueryClientProvider>
-    )
-
-    const es = getLatestEventSource()
-
-    // Normal session awaiting input (not a proxy review — e.g., user input request)
     simulateSSEMessage(es, {
-      type: 'session_awaiting_input',
-      agentSlug: 'my-agent',
+      type: 'user_request_resolved',
+      requestId: 'rev-1',
+      kind: 'proxy_review',
+      outcome: 'answered',
+      scope: { agentSlug: 'my-agent' },
     })
 
-    const proxyReviewCalls = invalidateSpy.mock.calls.filter(
-      (call) => {
-        const opts = call[0] as { queryKey?: unknown[] }
-        return opts.queryKey?.[0] === 'proxy-reviews'
-      }
-    )
-    expect(proxyReviewCalls.length).toBe(0)
-  })
-
-  it('proxy_review_resolved event also invalidates proxy-reviews', () => {
-    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
-
-    render(
-      <QueryClientProvider client={queryClient}>
-        <GlobalNotificationHandler />
-      </QueryClientProvider>
-    )
-
-    const es = getLatestEventSource()
-
-    simulateSSEMessage(es, {
-      type: 'session_awaiting_input',
-      agentSlug: 'my-agent',
-      review: {
-        type: 'proxy_review_resolved',
-        reviewId: 'r-123',
-        decision: 'allow',
-      },
-    })
-
-    const proxyReviewCalls = invalidateSpy.mock.calls.filter(
-      (call) => {
-        const opts = call[0] as { queryKey?: unknown[] }
-        return opts.queryKey?.[0] === 'proxy-reviews'
-      }
-    )
-    expect(proxyReviewCalls.length).toBe(1)
+    const keys = invalidateSpy.mock.calls.map((call) => (call[0] as { queryKey?: unknown[] }).queryKey?.[0])
+    expect(keys.filter((k) => k === 'pending-user-requests')).toHaveLength(2)
   })
 
   // SECURITY: focus-aware gate — when an actionable session_waiting fires
@@ -222,11 +270,11 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
     // selection mock returns view.kind=home, so isViewingNotificationSession is false
     // for ANY session — to make this test meaningful we need to assert that the
     // visibility-only gate is what's used. Switch view to the same session.
-    const { useSelection } = await import('@renderer/context/selection-context')
-    vi.mocked(useSelection).mockReturnValue({
+    const { useRouteLocation } = await import('@renderer/router/use-route-location')
+    vi.mocked(useRouteLocation).mockReturnValue({
       view: { kind: 'session', id: 'sess-1' },
       setAgent: vi.fn(),
-    } as unknown as ReturnType<typeof useSelection>)
+    } as unknown as ReturnType<typeof useRouteLocation>)
 
     render(
       <QueryClientProvider client={queryClient}>
@@ -245,6 +293,144 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
     })
 
     expect(showOSNotification).not.toHaveBeenCalled()
+  })
+
+  it('session_complete fires when notifyWhenUnfocused is on and window unfocused', async () => {
+    const { showOSNotification } = await import('@renderer/lib/os-notifications')
+    vi.mocked(showOSNotification).mockClear()
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+
+    const { useRouteLocation } = await import('@renderer/router/use-route-location')
+    vi.mocked(useRouteLocation).mockReturnValue({
+      view: { kind: 'session', id: 'sess-1' },
+      setAgent: vi.fn(),
+    } as unknown as ReturnType<typeof useRouteLocation>)
+
+    const { useUserSettings } = await import('@renderer/hooks/use-user-settings')
+    vi.mocked(useUserSettings).mockReturnValue({
+      data: {
+        notifications: {
+          enabled: true,
+          sessionComplete: true,
+          sessionWaiting: true,
+          sessionScheduled: true,
+          notifyWhenUnfocused: true,
+        },
+      },
+    } as unknown as ReturnType<typeof useUserSettings>)
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    const es = getLatestEventSource()
+    simulateSSEMessage(es, {
+      type: 'os_notification',
+      notificationType: 'session_complete',
+      sessionId: 'sess-1',
+      agentSlug: 'my-agent',
+      title: 'Demo Agent finished',
+      body: 'The report is ready.',
+    })
+
+    expect(showOSNotification).toHaveBeenCalledWith(
+      'Demo Agent finished',
+      'The report is ready.',
+      undefined,
+      expect.objectContaining({
+        context: expect.objectContaining({
+          agentSlug: 'my-agent',
+          sessionId: 'sess-1',
+        }),
+      }),
+    )
+  })
+
+  it('session_complete suppressed when notifyWhenUnfocused is off and viewing session', async () => {
+    const { showOSNotification } = await import('@renderer/lib/os-notifications')
+    vi.mocked(showOSNotification).mockClear()
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+
+    const { useRouteLocation } = await import('@renderer/router/use-route-location')
+    vi.mocked(useRouteLocation).mockReturnValue({
+      view: { kind: 'session', id: 'sess-1' },
+      setAgent: vi.fn(),
+    } as unknown as ReturnType<typeof useRouteLocation>)
+
+    const { useUserSettings } = await import('@renderer/hooks/use-user-settings')
+    vi.mocked(useUserSettings).mockReturnValue({
+      data: undefined,
+    } as unknown as ReturnType<typeof useUserSettings>)
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    const es = getLatestEventSource()
+    simulateSSEMessage(es, {
+      type: 'os_notification',
+      notificationType: 'session_complete',
+      sessionId: 'sess-1',
+      agentSlug: 'my-agent',
+      title: 'Done',
+      body: 'Session complete',
+    })
+
+    expect(showOSNotification).not.toHaveBeenCalled()
+  })
+
+  it('marks the DB notification read (no popup) when actively viewing the focused session', async () => {
+    const { showOSNotification } = await import('@renderer/lib/os-notifications')
+    const { apiFetch } = await import('@renderer/lib/api')
+    vi.mocked(showOSNotification).mockClear()
+    vi.mocked(apiFetch).mockClear()
+
+    // Window focused + visible, user is looking at sess-1.
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+
+    const { useRouteLocation } = await import('@renderer/router/use-route-location')
+    vi.mocked(useRouteLocation).mockReturnValue({
+      view: { kind: 'session', id: 'sess-1' },
+      setAgent: vi.fn(),
+    } as unknown as ReturnType<typeof useRouteLocation>)
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    const es = getLatestEventSource()
+    simulateSSEMessage(es, {
+      type: 'os_notification',
+      notificationType: 'session_complete',
+      notificationId: 'notif-9',
+      sessionId: 'sess-1',
+      agentSlug: 'my-agent',
+      title: 'Done',
+      body: 'Session complete',
+    })
+
+    // No OS popup (the user is watching it live), but the backend-created
+    // record is marked read so the unread badge doesn't inflate.
+    expect(showOSNotification).not.toHaveBeenCalled()
+    expect(apiFetch).toHaveBeenCalledWith('/api/notifications/notif-9/read', { method: 'POST' })
   })
 
   it('also invalidates sessions query (for sidebar awaiting_input indicator)', () => {
@@ -272,5 +458,697 @@ describe('GlobalNotificationHandler — proxy review SSE pathway', () => {
     )
     expect(sessionCalls.length).toBe(1)
     expect((sessionCalls[0][0] as { queryKey: unknown[] }).queryKey).toEqual(['sessions', 'my-agent'])
+  })
+
+  it('session_input_provided optimistically clears the awaiting flag in every cached projection', () => {
+    const sessionBase = {
+      agentSlug: 'my-agent',
+      name: 'S',
+      createdAt: new Date(),
+      lastActivityAt: new Date(),
+      isActive: true,
+    }
+    queryClient.setQueryData(['sessions', 'my-agent'], [
+      { ...sessionBase, id: 'sess-1', isAwaitingInput: true },
+      { ...sessionBase, id: 'sess-2' },
+    ])
+    queryClient.setQueryData(['session', 'sess-1', 'my-agent'], {
+      ...sessionBase, id: 'sess-1', isAwaitingInput: true,
+    })
+    const agentBase = { slug: 'my-agent', displaySlug: 'my-agent', name: 'My Agent', status: 'running' }
+    queryClient.setQueryData(['agents'], [{ ...agentBase, hasSessionsAwaitingInput: true }])
+    queryClient.setQueryData(['agents', 'my-agent'], { ...agentBase, hasSessionsAwaitingInput: true })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'session_input_provided',
+      agentSlug: 'my-agent',
+      sessionId: 'sess-1',
+    })
+
+    // Patched synchronously — no refetch round-trip involved.
+    const sessions = queryClient.getQueryData<{ id: string; isAwaitingInput?: boolean }[]>(['sessions', 'my-agent'])
+    expect(sessions?.[0].isAwaitingInput).toBe(false)
+    const detail = queryClient.getQueryData<{ isAwaitingInput?: boolean }>(['session', 'sess-1', 'my-agent'])
+    expect(detail?.isAwaitingInput).toBe(false)
+    const agents = queryClient.getQueryData<{ hasSessionsAwaitingInput?: boolean }[]>(['agents'])
+    expect(agents?.[0].hasSessionsAwaitingInput).toBe(false)
+    const agentDetail = queryClient.getQueryData<{ hasSessionsAwaitingInput?: boolean }>(['agents', 'my-agent'])
+    expect(agentDetail?.hasSessionsAwaitingInput).toBe(false)
+  })
+
+  it('session_awaiting_input optimistically raises the awaiting flag on session and rollup', () => {
+    const sessionBase = {
+      agentSlug: 'my-agent',
+      name: 'S',
+      createdAt: new Date(),
+      lastActivityAt: new Date(),
+      isActive: true,
+    }
+    queryClient.setQueryData(['sessions', 'my-agent'], [{ ...sessionBase, id: 'sess-1' }])
+    queryClient.setQueryData(['agents'], [
+      { slug: 'my-agent', displaySlug: 'my-agent', name: 'My Agent', status: 'running' },
+    ])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'session_awaiting_input',
+      agentSlug: 'my-agent',
+      sessionId: 'sess-1',
+    })
+
+    const sessions = queryClient.getQueryData<{ isAwaitingInput?: boolean }[]>(['sessions', 'my-agent'])
+    expect(sessions?.[0].isAwaitingInput).toBe(true)
+    const agents = queryClient.getQueryData<{ hasSessionsAwaitingInput?: boolean }[]>(['agents'])
+    expect(agents?.[0].hasSessionsAwaitingInput).toBe(true)
+  })
+
+  it('session_idle optimistically clears working AND awaiting flags (teardown broadcasts no input_provided)', () => {
+    const sessionBase = {
+      agentSlug: 'my-agent',
+      name: 'S',
+      createdAt: new Date(),
+      lastActivityAt: new Date(),
+    }
+    queryClient.setQueryData(['sessions', 'my-agent'], [
+      { ...sessionBase, id: 'sess-1', isActive: true, isAwaitingInput: true },
+    ])
+    queryClient.setQueryData(['agents'], [
+      {
+        slug: 'my-agent',
+        displaySlug: 'my-agent',
+        name: 'My Agent',
+        status: 'running',
+        hasActiveSessions: true,
+        hasSessionsAwaitingInput: true,
+      },
+    ])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'session_idle',
+      agentSlug: 'my-agent',
+      sessionId: 'sess-1',
+      isActive: false,
+    })
+
+    const sessions = queryClient.getQueryData<{ isActive?: boolean; isAwaitingInput?: boolean }[]>(['sessions', 'my-agent'])
+    expect(sessions?.[0]).toMatchObject({ isActive: false, isAwaitingInput: false })
+    const agents = queryClient.getQueryData<{ hasActiveSessions?: boolean; hasSessionsAwaitingInput?: boolean }[]>(['agents'])
+    expect(agents?.[0]).toMatchObject({ hasActiveSessions: false, hasSessionsAwaitingInput: false })
+  })
+
+  it('actionable os_notification optimistically raises the unread dot on session and agent', () => {
+    queryClient.setQueryData(['sessions', 'my-agent'], [
+      {
+        id: 'sess-1',
+        agentSlug: 'my-agent',
+        name: 'S',
+        createdAt: new Date(),
+        lastActivityAt: new Date(),
+        isActive: false,
+      },
+    ])
+    queryClient.setQueryData(['agents'], [
+      { slug: 'my-agent', displaySlug: 'my-agent', name: 'My Agent', status: 'running' },
+    ])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'os_notification',
+      notificationType: 'session_complete',
+      sessionId: 'sess-1',
+      agentSlug: 'my-agent',
+      title: 'Done',
+      body: 'Session complete',
+    })
+
+    const sessions = queryClient.getQueryData<{ hasUnreadNotifications?: boolean }[]>(['sessions', 'my-agent'])
+    expect(sessions?.[0].hasUnreadNotifications).toBe(true)
+    const agents = queryClient.getQueryData<{ hasUnreadNotifications?: boolean }[]>(['agents'])
+    expect(agents?.[0].hasUnreadNotifications).toBe(true)
+  })
+
+  it('does not raise the unread dot when the popup is suppressed by the active session view', async () => {
+    // Viewing sess-1 with the tab visible — the handler marks the record read
+    // instead of popping, so the dot must not be raised either.
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+    const { useRouteLocation } = await import('@renderer/router/use-route-location')
+    vi.mocked(useRouteLocation).mockReturnValue({
+      view: { kind: 'session', id: 'sess-1' },
+      setAgent: vi.fn(),
+    } as unknown as ReturnType<typeof useRouteLocation>)
+
+    queryClient.setQueryData(['sessions', 'my-agent'], [
+      {
+        id: 'sess-1',
+        agentSlug: 'my-agent',
+        name: 'S',
+        createdAt: new Date(),
+        lastActivityAt: new Date(),
+        isActive: false,
+      },
+    ])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'os_notification',
+      notificationType: 'session_complete',
+      notificationId: 'notif-1',
+      sessionId: 'sess-1',
+      agentSlug: 'my-agent',
+      title: 'Done',
+      body: 'Session complete',
+    })
+
+    const sessions = queryClient.getQueryData<{ hasUnreadNotifications?: boolean }[]>(['sessions', 'my-agent'])
+    expect(sessions?.[0].hasUnreadNotifications).toBeUndefined()
+  })
+
+  it('suppressed notification clears an already-cached unread dot once the record is marked read', async () => {
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'visible',
+    })
+    const { useRouteLocation } = await import('@renderer/router/use-route-location')
+    vi.mocked(useRouteLocation).mockReturnValue({
+      view: { kind: 'session', id: 'sess-1' },
+      setAgent: vi.fn(),
+    } as unknown as ReturnType<typeof useRouteLocation>)
+
+    // Simulates the top-of-case ['sessions'] refetch having landed with the
+    // server's committed unread row while the user is watching the session.
+    queryClient.setQueryData(['sessions', 'my-agent'], [
+      {
+        id: 'sess-1',
+        agentSlug: 'my-agent',
+        name: 'S',
+        createdAt: new Date(),
+        lastActivityAt: new Date(),
+        isActive: false,
+        hasUnreadNotifications: true,
+      },
+    ])
+    queryClient.setQueryData(['agents'], [
+      { slug: 'my-agent', displaySlug: 'my-agent', name: 'My Agent', status: 'running', hasUnreadNotifications: true },
+    ])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'os_notification',
+      notificationType: 'session_complete',
+      notificationId: 'notif-1',
+      sessionId: 'sess-1',
+      agentSlug: 'my-agent',
+      title: 'Done',
+      body: 'Session complete',
+    })
+
+    // The mark-read POST is async — the dot comes off once it resolves.
+    await waitFor(() => {
+      const sessions = queryClient.getQueryData<{ hasUnreadNotifications?: boolean }[]>(['sessions', 'my-agent'])
+      expect(sessions?.[0].hasUnreadNotifications).toBe(false)
+    })
+    const agents = queryClient.getQueryData<{ hasUnreadNotifications?: boolean }[]>(['agents'])
+    expect(agents?.[0].hasUnreadNotifications).toBe(false)
+  })
+
+  it('platform_notifications_changed refreshes the proxy-live inbox queries', () => {
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), { type: 'platform_notifications_changed' })
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['platform-notifications'] })
+  })
+
+  it('session_mention_withdrawn refreshes the inbox, the session list and the agent rows', () => {
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'session_mention_withdrawn', agentSlug: 'agent-x', sessionId: 'sess-1', recipientUserId: 'user-b',
+    })
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['notifications'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['sessions', 'agent-x'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
+  })
+
+  it('webhook_relay_changed replaces the cached relay status', () => {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+    const status = { available: false, unavailableReason: 'platform_disconnected', transport: 'idle', lastClaimAt: null }
+
+    simulateSSEMessage(getLatestEventSource(), { type: 'webhook_relay_changed', status })
+
+    expect(queryClient.getQueryData(['webhook-relay'])).toEqual(status)
+  })
+
+  it('platform_notification pops an OS notification whose click opens the detail route', async () => {
+    const { showOSNotification } = await import('@renderer/lib/os-notifications')
+    vi.mocked(showOSNotification).mockClear()
+    mockNavigate.mockClear()
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    const platformNotificationId = 'ntf_00000001-1111-1111-1111-111111111111'
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'os_notification',
+      notificationType: 'platform_notification',
+      platformNotificationId,
+      title: 'Welcome',
+      body: 'markdown body',
+      actionContext: { kind: 'platform_notification', platformNotificationId },
+    })
+
+    // The proxy-live inbox/badge refresh fires alongside the popup.
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['platform-notifications'] })
+
+    expect(showOSNotification).toHaveBeenCalledTimes(1)
+    const [title, body, onClick] = vi.mocked(showOSNotification).mock.calls[0]
+    expect(title).toBe('Welcome')
+    expect(body).toBe('markdown body')
+
+    // Web Notifications wire the click straight to the detail route (the
+    // write-through mark-read happens there on open).
+    expect(onClick).toBeTypeOf('function')
+    onClick!()
+    expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/notifications/$id',
+      params: { id: platformNotificationId },
+    })
+  })
+
+  it('platform_notification popup respects the settings toggle', async () => {
+    const { showOSNotification } = await import('@renderer/lib/os-notifications')
+    vi.mocked(showOSNotification).mockClear()
+
+    const { useUserSettings } = await import('@renderer/hooks/use-user-settings')
+    vi.mocked(useUserSettings).mockReturnValue({
+      data: { notifications: { enabled: true, platformNotification: false } },
+    } as unknown as ReturnType<typeof useUserSettings>)
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'os_notification',
+      notificationType: 'platform_notification',
+      platformNotificationId: 'ntf_00000001-1111-1111-1111-111111111111',
+      title: 'Welcome',
+      body: 'markdown body',
+    })
+
+    expect(showOSNotification).not.toHaveBeenCalled()
+  })
+
+  it('applies agent status events directly and refreshes only that agent\'s artifacts', () => {
+    queryClient.setQueryData(['agents'], [{
+      slug: 'agent-a',
+      displaySlug: 'agent-a-display',
+      name: 'Agent A',
+      status: 'stopped',
+      containerPort: null,
+      sessionCount: 9,
+    }])
+    queryClient.setQueryData(['agents', 'agent-a'], {
+      slug: 'agent-a',
+      displaySlug: 'agent-a-display',
+      name: 'Agent A',
+      status: 'stopped',
+      containerPort: null,
+      sessionCount: 9,
+    })
+    queryClient.setQueryData(['artifacts', 'agent-a'], [])
+    queryClient.setQueryData(['artifacts', 'agent-a-display'], [])
+    queryClient.setQueryData(['artifacts', 'agent-b'], [])
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'agent_status_changed',
+      agentSlug: 'agent-a',
+      status: 'running',
+    })
+
+    expect(queryClient.getQueryData<Array<{ status: string; sessionCount: number }>>(['agents'])?.[0])
+      .toMatchObject({ status: 'running', sessionCount: 9 })
+    expect(queryClient.getQueryData<{ status: string }>(['agents', 'agent-a'])?.status).toBe('running')
+    expect(queryClient.getQueryState(['artifacts', 'agent-a'])?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(['artifacts', 'agent-a-display'])?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(['artifacts', 'agent-b'])?.isInvalidated).toBe(false)
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['agents'] })
+  })
+
+  describe('session lifecycle refetches', () => {
+    beforeEach(() => vi.useFakeTimers())
+    afterEach(() => vi.useRealTimers())
+
+    const callsWith = (spy: { mock: { calls: unknown[][] } }, queryKey: unknown[]) =>
+      spy.mock.calls.filter(([filters]) => JSON.stringify(filters) === JSON.stringify({ queryKey })).length
+
+    it('refreshes the event\'s own agent at once and confirms list-wide state once per burst', () => {
+      queryClient.setQueryData(['artifacts', 'agent-a'], [])
+      queryClient.setQueryData(['artifacts', 'agent-c'], [])
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+      render(
+        <QueryClientProvider client={queryClient}>
+          <GlobalNotificationHandler />
+        </QueryClientProvider>
+      )
+      const es = getLatestEventSource()
+      simulateSSEMessage(es, { type: 'session_active', agentSlug: 'agent-a', sessionId: 's1' })
+      simulateSSEMessage(es, { type: 'session_active', agentSlug: 'agent-b', sessionId: 's2' })
+      simulateSSEMessage(es, { type: 'session_idle', agentSlug: 'agent-a', sessionId: 's1' })
+
+      // The event's own agent: its sessions, its detail, its artifacts.
+      expect(callsWith(invalidateSpy, ['sessions', 'agent-a'])).toBe(2)
+      expect(callsWith(invalidateSpy, ['agents', 'agent-a'])).toBe(2)
+      expect(queryClient.getQueryState(['artifacts', 'agent-a'])?.isInvalidated).toBe(true)
+      expect(queryClient.getQueryState(['artifacts', 'agent-c'])?.isInvalidated).toBe(false)
+
+      // The full list, todos and automation lists only confirm the echo: they
+      // wait for the batch, then run once for the whole burst.
+      expect(callsWith(invalidateSpy, ['agents'])).toBe(0)
+      expect(callsWith(invalidateSpy, ['todos'])).toBe(0)
+      act(() => {
+        vi.advanceTimersByTime(500)
+      })
+      expect(callsWith(invalidateSpy, ['agents'])).toBe(1)
+      expect(callsWith(invalidateSpy, ['todos'])).toBe(1)
+      expect(callsWith(invalidateSpy, ['webhook-trigger-sessions'])).toBe(1)
+      expect(callsWith(invalidateSpy, ['scheduled-task-sessions'])).toBe(1)
+    })
+
+    it('runs queued confirmations when the stream is torn down', () => {
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+      const { unmount } = render(
+        <QueryClientProvider client={queryClient}>
+          <GlobalNotificationHandler />
+        </QueryClientProvider>
+      )
+      simulateSSEMessage(getLatestEventSource(), { type: 'session_idle', agentSlug: 'agent-a', sessionId: 's1' })
+      expect(callsWith(invalidateSpy, ['agents'])).toBe(0)
+
+      unmount()
+      expect(callsWith(invalidateSpy, ['agents'])).toBe(1)
+    })
+  })
+
+  it('marks only the announced dashboard thumbnail ready without a refetch', () => {
+    queryClient.setQueryData(['agents'], [{
+      slug: 'agent-a',
+      displaySlug: 'agent-a',
+      name: 'Agent A',
+      status: 'running',
+      containerPort: 3456,
+      dashboards: [
+        { slug: 'sales', name: 'Sales' },
+        { slug: 'support', name: 'Support' },
+      ],
+    }])
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'dashboard_screenshot_ready',
+      agentSlug: 'agent-a',
+      dashboardSlug: 'sales',
+    })
+
+    expect(queryClient.getQueryData<Array<{ dashboards: Array<Record<string, unknown>> }>>(['agents'])?.[0].dashboards)
+      .toEqual([
+        { slug: 'sales', name: 'Sales', hasScreenshot: true },
+        { slug: 'support', name: 'Support' },
+      ])
+    expect(invalidateSpy).not.toHaveBeenCalled()
+  })
+
+  it('applies a pushed dashboard status to cached artifacts and refetches the list', () => {
+    queryClient.setQueryData(['agents'], [{
+      slug: 'agent-a',
+      displaySlug: 'agent-a-display',
+      name: 'Agent A',
+      status: 'running',
+      containerPort: 3456,
+    }])
+    queryClient.setQueryData(['artifacts', 'agent-a'], [
+      { slug: 'sales', name: 'Sales', description: '', status: 'starting', port: 5000 },
+      { slug: 'support', name: 'Support', description: '', status: 'stopped', port: 0 },
+    ])
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'dashboard_status_changed',
+      agentSlug: 'agent-a',
+      dashboardSlug: 'sales',
+      status: 'running',
+    })
+
+    expect(queryClient.getQueryData<Array<{ slug: string; status: string }>>(['artifacts', 'agent-a']))
+      .toEqual([
+        expect.objectContaining({ slug: 'sales', status: 'running' }),
+        expect.objectContaining({ slug: 'support', status: 'stopped' }),
+      ])
+    expect(queryClient.getQueryState(['artifacts', 'agent-a'])?.isInvalidated).toBe(true)
+  })
+
+  it('agent_updated refreshes saved appearance in list and detail queries on other clients', () => {
+    queryClient.setQueryData(['agents'], [])
+    queryClient.setQueryData(['agents', 'agent-a'], {})
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    simulateSSEMessage(getLatestEventSource(), { type: 'agent_updated', agentSlug: 'agent-a' })
+    expect(queryClient.getQueryState(['agents'])?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(['agents', 'agent-a'])?.isInvalidated).toBe(true)
+  })
+
+  it("volume_attention_changed refreshes every agent's drives and the drive list, so a status pill follows sync", () => {
+    queryClient.setQueryData(['mounts', 'agent-a'], [])
+    queryClient.setQueryData(['mounts', 'agent-b'], [])
+    queryClient.setQueryData(['volume-definitions'], [])
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    simulateSSEMessage(getLatestEventSource(), { type: 'volume_attention_changed' })
+    for (const key of [['mounts', 'agent-a'], ['mounts', 'agent-b'], ['volume-definitions']]) {
+      expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true)
+    }
+  })
+
+  it('agent_created invalidates visible agents and personal roles together', () => {
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    // Producer contract: x-agent create broadcasts this exact shape after ACL writes.
+    simulateSSEMessage(getLatestEventSource(), {
+      type: 'agent_created',
+      agentSlug: 'new-helper',
+    })
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
+  })
+
+  it('only refreshes collaboration and drive queries on reconnect, not first open', () => {
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+
+    const es = getLatestEventSource()
+    es.onopen?.()
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['agent-members'] })
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['agent-invite-candidates'] })
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['mounts'] })
+
+    invalidateSpy.mockClear()
+    es.onerror?.()
+    es.onopen?.()
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agent-members'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agent-invite-candidates'] })
+    // A drive's status change sent during the gap is not sent again.
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['mounts'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['volume-definitions'] })
+    // Mount and a browser-handled reconnect are not outages.
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
+  })
+})
+
+describe('stream healing', () => {
+  let queryClient: QueryClient
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    MockEventSource.instances = []
+    queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+  })
+
+  function renderHandler() {
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <GlobalNotificationHandler />
+      </QueryClientProvider>
+    )
+  }
+
+  async function killLatest() {
+    const es = getLatestEventSource()
+    es.readyState = MockEventSource.CLOSED
+    await act(async () => {
+      es.dispatchEvent(new Event('error'))
+    })
+  }
+
+  async function advance(ms: number) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms)
+    })
+  }
+
+  it('error at readyState 2 reopens and the reopen refetches everything mounted except LLM-backed queries', async () => {
+    renderHandler()
+    expect(MockEventSource.instances).toHaveLength(1)
+
+    await killLatest()
+    await advance(STREAM_RECONNECT_MS)
+
+    expect(MockEventSource.instances).toHaveLength(2)
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+    getLatestEventSource().onopen?.()
+    expect(invalidateSpy).toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
+    expect(isRefetchableAfterOutage({ queryKey: ['sessions', 'a1'] })).toBe(true)
+    for (const key of ['agent-template-publish-info', 'agent-template-pr-info', 'skill-publish-info', 'skill-pr-info']) {
+      expect(isRefetchableAfterOutage({ queryKey: [key, 'a1'] })).toBe(false)
+    }
+
+    // A later transient reconnect on the same stream is not an outage.
+    invalidateSpy.mockClear()
+    getLatestEventSource().onopen?.()
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
+  })
+
+  it('reopen delay doubles per consecutive fatal close and resets on open', async () => {
+    renderHandler()
+
+    await killLatest()
+    await advance(STREAM_RECONNECT_MS)
+    expect(MockEventSource.instances).toHaveLength(2)
+
+    // Second consecutive fatal close: 2s, not 1s.
+    await killLatest()
+    await advance(STREAM_RECONNECT_MS)
+    expect(MockEventSource.instances).toHaveLength(2)
+    await advance(STREAM_RECONNECT_MS)
+    expect(MockEventSource.instances).toHaveLength(3)
+
+    // A successful open resets the ladder to 1s.
+    getLatestEventSource().onopen?.()
+    await killLatest()
+    await advance(STREAM_RECONNECT_MS)
+    expect(MockEventSource.instances).toHaveLength(4)
+  })
+
+  it('unmount does not reopen after a fatal close', async () => {
+    const { unmount } = renderHandler()
+    expect(MockEventSource.instances).toHaveLength(1)
+
+    const first = getLatestEventSource()
+    first.readyState = MockEventSource.CLOSED
+    unmount()
+    await act(async () => {
+      first.dispatchEvent(new Event('error'))
+      await vi.advanceTimersByTimeAsync(STREAM_RECONNECT_MS)
+    })
+
+    expect(MockEventSource.instances).toHaveLength(1)
   })
 })

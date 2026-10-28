@@ -1,8 +1,8 @@
 import type { Context, Next } from 'hono'
 import { sql } from 'drizzle-orm'
-import { getSettings, DEFAULT_AUTH_SETTINGS, type AuthSettings } from '@shared/lib/config/settings'
 import { db } from '@shared/lib/db'
 import { user } from '@shared/lib/db/schema'
+import { getAuthSettings } from '@shared/lib/auth/auth-settings'
 
 // Per-email failed login attempt tracking
 const accountLockouts = new Map<string, { count: number; lockedUntil: number }>()
@@ -10,11 +10,6 @@ const accountLockouts = new Map<string, { count: number; lockedUntil: number }>(
 /** Exported for testing: clear all lockout state */
 export function clearLockouts() {
   accountLockouts.clear()
-}
-
-export function getAuthSettings(): AuthSettings {
-  const settings = getSettings()
-  return { ...DEFAULT_AUTH_SETTINGS, ...settings.auth }
 }
 
 export function validatePasswordComplexity(password: string): string | null {
@@ -52,7 +47,7 @@ export async function authEnforcementMiddleware(c: Context, next: Next) {
     // (needed to bootstrap the system — first user becomes admin)
     let isFirstUser = false
     try {
-      const result = db.select({ count: sql<number>`count(*)` }).from(user).get()
+      const result = await db.select({ count: sql<number>`count(*)` }).from(user).get()
       isFirstUser = !result || result.count === 0
     } catch {
       // DB not ready — allow signup (Better Auth will handle it)
@@ -122,7 +117,7 @@ export async function authEnforcementMiddleware(c: Context, next: Next) {
       // Pre-check ban status so we return a meaningful message
       // instead of Better Auth's generic "No reason"
       try {
-        const bannedUser = db
+        const bannedUser = await db
           .select({ banned: user.banned, banReason: user.banReason })
           .from(user)
           .where(sql`lower(${user.email}) = ${email}`)

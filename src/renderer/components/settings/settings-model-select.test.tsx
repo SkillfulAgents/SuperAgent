@@ -1,0 +1,396 @@
+// @vitest-environment jsdom
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+
+// No provider locks a model here (model locks have their own tests).
+vi.mock('@renderer/hooks/use-model-lock', () => ({ useModelLock: () => undefined }))
+
+const useSettingsMock = vi.fn()
+vi.mock('@renderer/hooks/use-settings', () => ({
+  useModelSettings: () => useSettingsMock(),
+}))
+
+const useUserMock = vi.fn(() => ({ isAuthMode: false, isAdmin: false }))
+vi.mock('@renderer/context/user-context', () => ({
+  useUser: () => useUserMock(),
+}))
+
+import { ModelPickerPopover, SettingsModelSelect } from './settings-model-select'
+import { DialogContext, type DialogContextType } from '@renderer/context/dialog-context'
+import type { EffortLevel } from '@shared/lib/container/types'
+import type { ModelDefinition } from '@shared/lib/llm-provider'
+import { connectionInfoSchema } from '@shared/lib/llm-provider/connection-schema'
+
+const ALL: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
+const STD: EffortLevel[] = ['low', 'medium', 'high']
+const CATALOG: ModelDefinition[] = [
+  { id: 'claude-haiku-4-5', label: 'Haiku 4.5', family: 'haiku', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
+  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', family: 'sonnet', isLatest: true, icon: 'anthropic', supportedEfforts: STD },
+  { id: 'claude-opus-4-6', label: 'Opus 4.6', family: 'opus', icon: 'anthropic', supportedEfforts: ALL },
+  { id: 'claude-opus-4-7', label: 'Opus 4.7', family: 'opus', icon: 'anthropic', supportedEfforts: ALL },
+  { id: 'claude-opus-4-8', label: 'Opus 4.8', family: 'opus', isLatest: true, icon: 'anthropic', supportedEfforts: ALL },
+  // A model with no native web tools: the only shape that surfaces the web-tools warning.
+  { id: 'glm-4-6', label: 'GLM 4.6', family: 'glm', icon: 'anthropic', supportedEfforts: STD, supportsWebSearch: false },
+]
+
+function settingsWith(web: { webProvider: string; webProviderIsDefault?: boolean }) {
+  return {
+    data: {
+      llmProvider: 'anthropic',
+      llmProviderStatus: [
+        {
+          id: 'anthropic',
+          name: 'Anthropic',
+          isConfigured: true,
+          catalog: CATALOG,
+          defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
+        },
+      ],
+      ...web,
+    },
+  }
+}
+
+beforeEach(() => {
+  HTMLElement.prototype.hasPointerCapture = () => false
+  HTMLElement.prototype.scrollIntoView = () => {}
+  useSettingsMock.mockReturnValue({
+    data: {
+      llmProvider: 'anthropic',
+      llmProviderStatus: [
+        {
+          id: 'anthropic',
+          name: 'Anthropic',
+          isConfigured: true,
+          catalog: CATALOG,
+          defaultModels: { agent: 'opus', summarizer: 'haiku', browser: 'sonnet' },
+        },
+      ],
+    },
+  })
+})
+
+describe('SettingsModelSelect (flat picker)', () => {
+  it('names the version "latest" resolves to and the connection in the trigger tooltip', async () => {
+    const settings = settingsWith({ webProvider: 'native' }).data
+    useSettingsMock.mockReturnValue({ data: { ...settings, connections: [connectionInfoSchema.parse({
+      id: 'max', name: 'Claude Max', provider: 'claude-subscription', userId: 'u1', ownerName: 'Jeremy', managed: false,
+      isConfigured: true, catalog: CATALOG, modelOverrides: [], defaultModel: 'opus', browserModel: null, dashboardModel: null,
+      canManage: true, canDelete: true,
+    })], defaultSelection: { llmProviderId: 'max', model: 'opus' } } })
+    render(<SettingsModelSelect model="opus" llmProviderId="max" onModelChange={vi.fn()} onSelectionChange={vi.fn()} />)
+    await userEvent.hover(screen.getByTestId('settings-model-trigger'))
+    const tooltip = await screen.findByRole('tooltip')
+    const latest = CATALOG.find(m => m.family === 'opus' && m.isLatest)
+    expect(tooltip).toHaveTextContent(`Opus · latest (${latest?.label})`)
+    expect(tooltip).toHaveTextContent('Claude Max · Jeremy')
+  })
+
+  it('does not use an agent-only catalog for direct API settings', async () => {
+    const settings = settingsWith({ webProvider: 'native' }).data
+    useSettingsMock.mockReturnValue({ data: { ...settings, connections: [
+      { id: 'subscription', name: 'Subscription', userId: null, supportsDirectApi: false, catalog: CATALOG, defaultModel: 'opus' },
+    ], defaultSelection: { llmProviderId: 'subscription', model: 'opus' } } })
+    const onSelectionChange = vi.fn()
+    render(<SettingsModelSelect model="opus" llmProviderId="subscription" directApiOnly globalOnly onModelChange={vi.fn()} onSelectionChange={onSelectionChange} />)
+    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Select model')
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    expect(screen.queryByTestId('model-latest-opus')).not.toBeInTheDocument()
+    expect(onSelectionChange).not.toHaveBeenCalled()
+  })
+
+  it('keeps the legacy selection visible when no connections are configured yet', async () => {
+    const settings = settingsWith({ webProvider: 'native' }).data
+    useSettingsMock.mockReturnValue({ data: { ...settings, connections: [], defaultSelection: null } })
+    const onModelChange = vi.fn()
+    const onSelectionChange = vi.fn()
+    render(<SettingsModelSelect model="haiku" onModelChange={onModelChange} onSelectionChange={onSelectionChange} />)
+    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Haiku · latest')
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    await userEvent.click(screen.getByTestId('model-latest-opus'))
+    expect(onModelChange).toHaveBeenCalledWith('opus')
+    expect(onSelectionChange).not.toHaveBeenCalled()
+  })
+
+  it('blocks model picks while a connection save is pending, then uses the saved connection', async () => {
+    const choices = [
+      { id: 'old', name: 'Old', defaultModel: 'sonnet', catalog: CATALOG },
+      { id: 'new', name: 'New', defaultModel: 'haiku', catalog: [
+        ...CATALOG.map(m => ({ ...m, isDefault: m.family === 'opus' || m.family === 'haiku' })),
+      ] },
+    ]
+    useSettingsMock.mockReturnValue({ data: { connections: choices, defaultSelection: { llmProviderId: 'old', model: 'sonnet' } } })
+    const onSelectionChange = vi.fn()
+    const props = { model: 'sonnet', llmProviderId: 'old', onSelectionChange, onModelChange: vi.fn() }
+    const { rerender } = render(<SettingsModelSelect {...props} />)
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    await userEvent.click(screen.getByLabelText('Connection'))
+    await userEvent.click(screen.getByRole('option', { name: 'New' }))
+    expect(onSelectionChange).toHaveBeenLastCalledWith({ llmProviderId: 'new', model: 'haiku' })
+    rerender(<SettingsModelSelect {...props} disabled />)
+    expect(screen.getByLabelText('Connection')).toBeDisabled()
+    expect(screen.getByTestId('model-latest-opus')).toBeDisabled()
+    await userEvent.click(screen.getByTestId('model-latest-opus'))
+    expect(onSelectionChange).toHaveBeenCalledTimes(1)
+    rerender(<SettingsModelSelect {...props} model="haiku" llmProviderId="new" />)
+    await userEvent.click(screen.getByTestId('model-latest-opus'))
+    expect(onSelectionChange).toHaveBeenLastCalledWith({ llmProviderId: 'new', model: 'opus' })
+    // A failed save unlocks the authoritative selection too.
+    rerender(<SettingsModelSelect {...props} disabled />)
+    rerender(<SettingsModelSelect {...props} />)
+    await userEvent.click(screen.getByTestId('model-latest-haiku'))
+    expect(onSelectionChange).toHaveBeenLastCalledWith({ llmProviderId: 'old', model: 'haiku' })
+  })
+
+  it('stores the bare family alias when "latest" is picked', async () => {
+    const user = userEvent.setup()
+    const onModelChange = vi.fn()
+    render(<SettingsModelSelect model="claude-haiku-4-5" onModelChange={onModelChange} />)
+
+    await user.click(screen.getByTestId('settings-model-trigger'))
+    await user.click(await screen.findByTestId('model-latest-opus'))
+
+    expect(onModelChange).toHaveBeenCalledWith('opus')
+  })
+
+  it('stores the concrete id when a specific version is pinned', async () => {
+    const user = userEvent.setup()
+    const onModelChange = vi.fn()
+    render(<SettingsModelSelect model="claude-haiku-4-5" onModelChange={onModelChange} />)
+
+    await user.click(screen.getByTestId('settings-model-trigger'))
+    await user.click(await screen.findByTestId('model-pinned-claude-opus-4-7'))
+
+    expect(onModelChange).toHaveBeenCalledWith('claude-opus-4-7')
+  })
+
+  it('marks a bare alias selection as "latest" in the trigger', () => {
+    render(<SettingsModelSelect model="opus" onModelChange={vi.fn()} />)
+    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Opus · latest')
+  })
+
+  it('marks a concrete id selection as "pinned" in the trigger', () => {
+    render(<SettingsModelSelect model="claude-opus-4-8" onModelChange={vi.fn()} />)
+    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Opus 4.8 · pinned')
+  })
+
+  it('does not render the effort section when includeEffort is false', async () => {
+    const user = userEvent.setup()
+    render(<SettingsModelSelect model="claude-haiku-4-5" onModelChange={vi.fn()} includeEffort={false} />)
+
+    await user.click(screen.getByTestId('settings-model-trigger'))
+    expect(screen.queryByText('Effort')).not.toBeInTheDocument()
+  })
+
+  it('hides xhigh/max effort for the selected Sonnet model', async () => {
+    const user = userEvent.setup()
+    render(
+      <SettingsModelSelect
+        model="claude-sonnet-4-6"
+        onModelChange={vi.fn()}
+        includeEffort
+        effort="medium"
+        onEffortChange={vi.fn()}
+      />,
+    )
+    await user.click(screen.getByTestId('settings-model-trigger'))
+    expect(screen.getByTestId('effort-option-high')).toBeInTheDocument()
+    expect(screen.queryByTestId('effort-option-xhigh')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('effort-option-max')).not.toBeInTheDocument()
+  })
+
+  describe('App Default footer', () => {
+    beforeEach(() => {
+  HTMLElement.prototype.hasPointerCapture = () => false
+  HTMLElement.prototype.scrollIntoView = () => {}
+      useUserMock.mockReturnValue({ isAuthMode: false, isAdmin: false })
+      useSettingsMock.mockReturnValue({
+        data: {
+          llmProvider: 'anthropic',
+          llmProviderStatus: [
+            { id: 'anthropic', name: 'Anthropic', isConfigured: true, catalog: CATALOG },
+          ],
+          models: { agentModel: 'opus', agentEffort: 'high' },
+        },
+      })
+    })
+
+    it('does not render without the appDefault prop', async () => {
+      const user = userEvent.setup()
+      render(<SettingsModelSelect model="opus" onModelChange={vi.fn()} />)
+      await user.click(screen.getByTestId('settings-model-trigger'))
+      expect(screen.queryByTestId('settings-model-app-default')).not.toBeInTheDocument()
+    })
+
+    it('disables the reset action while already following the global default', async () => {
+      const user = userEvent.setup()
+      render(
+        <SettingsModelSelect
+          model="opus"
+          onModelChange={vi.fn()}
+          appDefault={{ isOverride: false, onUseAppDefault: vi.fn() }}
+        />,
+      )
+      await user.click(screen.getByTestId('settings-model-trigger'))
+      const reset = screen.getByTestId('settings-model-app-default')
+      expect(reset).toHaveTextContent('Reset to Global Default')
+      expect(reset).toBeDisabled()
+    })
+
+    it('resets to the global default when an override exists', async () => {
+      const user = userEvent.setup()
+      const onUseAppDefault = vi.fn()
+      render(
+        <SettingsModelSelect
+          model="claude-haiku-4-5"
+          onModelChange={vi.fn()}
+          appDefault={{ isOverride: true, onUseAppDefault }}
+        />,
+      )
+      await user.click(screen.getByTestId('settings-model-trigger'))
+      const reset = screen.getByTestId('settings-model-app-default')
+      expect(reset).toBeEnabled()
+      await user.click(reset)
+      expect(onUseAppDefault).toHaveBeenCalledTimes(1)
+    })
+
+    it('links admins to the LLM Provider settings tab', async () => {
+      const user = userEvent.setup()
+      const openSettings = vi.fn()
+      const dialogs: DialogContextType = { openSettings, closeSettings: vi.fn(), openWizard: vi.fn() }
+      render(
+        <DialogContext.Provider value={dialogs}>
+          <SettingsModelSelect
+            model="opus"
+            onModelChange={vi.fn()}
+            appDefault={{ isOverride: false, onUseAppDefault: vi.fn() }}
+          />
+        </DialogContext.Provider>,
+      )
+      await user.click(screen.getByTestId('settings-model-trigger'))
+      await user.click(screen.getByTestId('settings-model-app-default-change'))
+      expect(openSettings).toHaveBeenCalledWith('llm')
+    })
+
+    it('hides the settings link from non-admin members in auth mode', async () => {
+      useUserMock.mockReturnValue({ isAuthMode: true, isAdmin: false })
+      const user = userEvent.setup()
+      const dialogs: DialogContextType = { openSettings: vi.fn(), closeSettings: vi.fn(), openWizard: vi.fn() }
+      render(
+        <DialogContext.Provider value={dialogs}>
+          <SettingsModelSelect
+            model="opus"
+            onModelChange={vi.fn()}
+            appDefault={{ isOverride: false, onUseAppDefault: vi.fn() }}
+          />
+        </DialogContext.Provider>,
+      )
+      await user.click(screen.getByTestId('settings-model-trigger'))
+      expect(screen.getByTestId('settings-model-app-default')).toBeInTheDocument()
+      expect(screen.queryByTestId('settings-model-app-default-change')).not.toBeInTheDocument()
+    })
+  })
+
+  describe('web-tools warning reads the active vendor', () => {
+    it('stays hidden when a host vendor is active', async () => {
+      useSettingsMock.mockReturnValue(settingsWith({ webProvider: 'platform', webProviderIsDefault: true }))
+      const user = userEvent.setup()
+      render(<SettingsModelSelect model="glm-4-6" onModelChange={vi.fn()} />)
+
+      await user.click(screen.getByTestId('settings-model-trigger'))
+      expect(screen.queryByTestId('model-no-websearch-warning')).not.toBeInTheDocument()
+    })
+
+    it('shows when the active vendor is native and the model has no web tools', async () => {
+      useSettingsMock.mockReturnValue(settingsWith({ webProvider: 'native', webProviderIsDefault: true }))
+      const user = userEvent.setup()
+      render(<SettingsModelSelect model="glm-4-6" onModelChange={vi.fn()} />)
+
+      await user.click(screen.getByTestId('settings-model-trigger'))
+      expect(await screen.findByTestId('model-no-websearch-warning')).toBeInTheDocument()
+    })
+  })
+
+  it.each([1, 2])('only implicitly binds a non-summarizer picker with a single connection (%i available)', async count => {
+    const settings = settingsWith({ webProvider: 'native' }).data
+    useSettingsMock.mockReturnValue({ data: { ...settings, connections: [
+      ...Array.from({ length: count }, (_, i) => ({ id: `provider-${i}`, name: `Provider ${i}`, userId: null, supportsDirectApi: true, catalog: CATALOG, defaultModel: 'haiku' })),
+    ], defaultSelection: null } })
+    const onSelectionChange = vi.fn()
+    const onModelChange = vi.fn()
+    render(<SettingsModelSelect model={undefined} onModelChange={onModelChange} onSelectionChange={onSelectionChange} />)
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    await userEvent.click(screen.getByTestId('model-latest-haiku'))
+    if (count === 1) {
+      expect(onSelectionChange).toHaveBeenCalledWith({ llmProviderId: 'provider-0', model: 'haiku' })
+      expect(onModelChange).not.toHaveBeenCalled()
+    } else {
+      expect(onSelectionChange).not.toHaveBeenCalled()
+      expect(onModelChange).toHaveBeenCalledWith('haiku')
+    }
+  })
+
+  it.each([1, 2])('recovers a missing helper selection with %i API-capable providers', async count => {
+    const settings = settingsWith({ webProvider: 'native' }).data
+    const connections = [
+      { id: 'sub', name: 'Subscription', userId: null, supportsDirectApi: false, catalog: CATALOG, defaultModel: 'opus' },
+      ...Array.from({ length: count }, (_, i) => ({ id: `api-${i}`, name: `API ${i}`, userId: null, supportsDirectApi: true, catalog: CATALOG, defaultModel: 'haiku' })),
+    ]
+    useSettingsMock.mockReturnValue({ data: { ...settings, connections, defaultSelection: { llmProviderId: 'sub', model: 'opus' } } })
+    const choose = vi.fn()
+    render(<SettingsModelSelect model={undefined} directApiOnly globalOnly onModelChange={vi.fn()} onSelectionChange={choose} />)
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    await userEvent.click(screen.getByTestId('model-latest-haiku'))
+    expect(choose).toHaveBeenCalledWith({ llmProviderId: 'api-0', model: 'haiku' })
+    expect(screen.getByRole('combobox')).toHaveTextContent('API 0')
+    await userEvent.click(screen.getByRole('combobox'))
+    expect(screen.getByRole('option', { name: 'Subscription' })).toHaveAttribute('aria-disabled', 'true')
+  })
+})
+
+describe('ModelPickerPopover', () => {
+  it('uses the caller catalog without reading settings', async () => {
+    useSettingsMock.mockClear()
+    const onPick = vi.fn()
+    render(<ModelPickerPopover catalog={CATALOG} model="claude-opus-4-7" onPick={onPick} />)
+    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Opus 4.7 · pinned')
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    await userEvent.click(screen.getByTestId('model-latest-haiku'))
+    expect(onPick).toHaveBeenCalledWith('haiku')
+    expect(useSettingsMock).not.toHaveBeenCalled()
+  })
+
+  it('labels an empty selection with emptyLabel and picks it back as an empty string', async () => {
+    const onPick = vi.fn()
+    const { rerender } = render(<ModelPickerPopover catalog={CATALOG} model="" onPick={onPick} emptyLabel="Use session model" />)
+    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Use session model')
+    rerender(<ModelPickerPopover catalog={CATALOG} model="sonnet" onPick={onPick} emptyLabel="Use session model" />)
+    expect(screen.getByTestId('settings-model-trigger')).toHaveTextContent('Sonnet · latest')
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    await userEvent.click(screen.getByTestId('settings-model-empty'))
+    expect(onPick).toHaveBeenCalledWith('')
+  })
+
+  it('omits the empty row when no emptyLabel is given', async () => {
+    render(<ModelPickerPopover catalog={CATALOG} model="sonnet" onPick={vi.fn()} />)
+    await userEvent.click(screen.getByTestId('settings-model-trigger'))
+    expect(screen.queryByTestId('settings-model-empty')).toBeNull()
+  })
+
+  it('flags a saved model the provider says cannot run on the trigger, in its words (SUP-1143)', async () => {
+    const modelLock = {
+      isLocked: (m: ModelDefinition) => m.family === 'opus',
+      reason: (m: ModelDefinition) => `${m.label} isn't included in your Pro 30 plan.`,
+      action: { label: 'Upgrade', run: vi.fn() },
+    }
+    const { rerender } = render(<ModelPickerPopover catalog={CATALOG} model="opus" onPick={vi.fn()} modelLock={modelLock} />)
+    const trigger = screen.getByTestId('settings-model-trigger')
+    expect(trigger).toHaveAttribute('data-locked', 'true')
+    expect(trigger).toHaveAccessibleName(/Opus 4\.8 isn't included in your Pro 30 plan\./)
+    await userEvent.click(trigger)
+    expect(screen.getByTestId('model-unavailable-warning')).toHaveTextContent("Opus 4.8 isn't included in your Pro 30 plan.")
+    rerender(<ModelPickerPopover catalog={CATALOG} model="sonnet" onPick={vi.fn()} modelLock={modelLock} />)
+    expect(screen.getByTestId('settings-model-trigger')).not.toHaveAttribute('data-locked')
+  })
+})

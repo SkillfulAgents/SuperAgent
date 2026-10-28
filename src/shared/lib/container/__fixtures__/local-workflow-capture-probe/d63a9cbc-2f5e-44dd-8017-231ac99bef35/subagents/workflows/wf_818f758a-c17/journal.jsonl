@@ -1,0 +1,6 @@
+{"type":"started","key":"v2:7c593f29b2814d0f751018b8742e28ca49b092df824941af79ff1342343f62a2","agentId":"a682ec6403fb0c730"}
+{"type":"started","key":"v2:236d7e7a06153e627024e6cacfbe9795d57d6e9c4f191d1c0086b8c467e0b352","agentId":"ae6ffae379942dd19"}
+{"type":"result","key":"v2:7c593f29b2814d0f751018b8742e28ca49b092df824941af79ff1342343f62a2","agentId":"a682ec6403fb0c730","result":"beta"}
+{"type":"result","key":"v2:236d7e7a06153e627024e6cacfbe9795d57d6e9c4f191d1c0086b8c467e0b352","agentId":"ae6ffae379942dd19","result":"alpha"}
+{"type":"started","key":"v2:1f2627d145b4c924b30f3ac3022ecf99d3a404be1db09ac7c7aaf21748555ef5","agentId":"a7720e731ec4c42db"}
+{"type":"result","key":"v2:1f2627d145b4c924b30f3ac3022ecf99d3a404be1db09ac7c7aaf21748555ef5","agentId":"a7720e731ec4c42db","result":"alpha-beta"}

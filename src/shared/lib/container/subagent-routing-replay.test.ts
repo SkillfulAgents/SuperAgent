@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { attachLiveSessionsHarness, createStreamClient } from '@shared/lib/agent-actor/testing/live-sessions-harness'
 import * as path from 'path'
 import * as os from 'os'
 import { promises as fs } from 'fs'
-import type { ContainerClient, StreamMessage } from './types'
+import type { StreamMessage } from './types'
 
 // ----- Mocks for external dependencies (real fs is intentionally NOT mocked) -----
 
@@ -10,7 +11,9 @@ vi.mock('@shared/lib/services/scheduled-task-service', () => ({
   createScheduledTask: vi.fn(),
 }))
 vi.mock('@shared/lib/services/session-service', () => ({
+  getSessionMetadata: vi.fn(() => Promise.resolve(null)),
   updateSessionMetadata: vi.fn(() => Promise.resolve()),
+  finalizeAutomationStatus: vi.fn(() => Promise.resolve('not-automation')),
 }))
 vi.mock('@shared/lib/notifications/notification-manager', () => ({
   notificationManager: {
@@ -110,41 +113,9 @@ async function loadFixture(): Promise<{
   return { meta, streamEntries, fsSnapshotFiles }
 }
 
-// ----- Mock container client that replays captured messages -----
+// ----- The agent's live sessions, over test doubles -----
 
-function createReplayClient(): {
-  client: ContainerClient
-  send: (message: StreamMessage) => void
-} {
-  let callback: ((message: StreamMessage) => void) | null = null
-  const client = {
-    subscribeToStream: vi.fn((_sid: string, cb: (message: StreamMessage) => void) => {
-      callback = cb
-      return { unsubscribe: vi.fn(), ready: Promise.resolve() }
-    }),
-    start: vi.fn(),
-    stop: vi.fn(),
-    stopSync: vi.fn(),
-    getInfoFromRuntime: vi.fn(),
-    getInfo: vi.fn(),
-    fetch: vi.fn(),
-    waitForHealthy: vi.fn(),
-    isHealthy: vi.fn(),
-    getStats: vi.fn(),
-    createSession: vi.fn(),
-    getSession: vi.fn(() => Promise.resolve(null)),
-    deleteSession: vi.fn(),
-    sendMessage: vi.fn(),
-    getMessages: vi.fn(),
-    interruptSession: vi.fn(),
-    on: vi.fn(),
-    off: vi.fn(),
-  } as unknown as ContainerClient
-  return {
-    client,
-    send: (m) => callback?.(m),
-  }
-}
+const live = attachLiveSessionsHarness()
 
 // ----- The harness itself -----
 
@@ -159,6 +130,7 @@ describe('subagent routing replay — sequential subagents across state reset', 
 
   afterEach(async () => {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+    live.reset()
     vi.clearAllMocks()
   })
 
@@ -176,23 +148,21 @@ describe('subagent routing replay — sequential subagents across state reset', 
     }
     mockSessionsDir.value = sessionsRoot
 
-    // Import the persister AFTER mocks are configured.
-    // message-persister is a module-level singleton, so import fresh per test.
-    vi.resetModules()
-    const { messagePersister } = await import('./message-persister')
-    const { client, send } = createReplayClient()
+    // The agent's live sessions, fresh per test (reset after each).
+    const sessions = live.sessions(meta.agentSlug)
+    const client = createStreamClient()
 
     // Collect SSE events
-    const cleanup = messagePersister.addSSEClient(meta.sessionId, (data) => {
+    const cleanup = sessions.listen(meta.sessionId, (data) => {
       sseEvents.push(data as Record<string, unknown>)
     })
 
     // Subscribe (mirrors what happens on app launch / session resume)
-    await messagePersister.subscribeToSession(meta.sessionId, client, meta.sessionId, meta.agentSlug)
+    await sessions.subscribe(meta.sessionId, client, meta.sessionId)
 
     // Replay the captured stream
     for (const entry of streamEntries) {
-      send(entry.message)
+      client.emit(entry.message.content)
       // Yield to the microtask queue so async FS discovery can run
       await new Promise((r) => setImmediate(r))
     }
@@ -201,7 +171,7 @@ describe('subagent routing replay — sequential subagents across state reset', 
     await new Promise((r) => setTimeout(r, 100))
 
     cleanup()
-    messagePersister.unsubscribeFromSession(meta.sessionId)
+    sessions.unsubscribe(meta.sessionId)
 
     // ----- Assertions -----
 

@@ -1,6 +1,11 @@
+import { slideToConfirm } from '../helpers/slide-to-confirm'
 import { Page, expect } from '@playwright/test'
 
 export type AgentActivityStatus = 'sleeping' | 'idle' | 'working' | 'awaiting_input'
+
+type CreateAgentOptions = {
+  waitForSidebarName?: boolean
+}
 
 /**
  * Page object for agent-related operations
@@ -21,7 +26,9 @@ export class AgentPage {
    * click the agent breadcrumb so the caller lands on agent-home (where
    * agent-settings-button lives) rather than the first session view.
    */
-  async createAgent(prompt: string) {
+  async createAgent(prompt: string, options: CreateAgentOptions = {}) {
+    const { waitForSidebarName = true } = options
+
     await this.clickCreateAgent()
 
     // Wait until we've actually landed on the fresh Untitled agent's AgentHome
@@ -40,11 +47,38 @@ export class AgentPage {
     await expect(this.page.locator('[data-testid="agent-settings-button"]')).toBeVisible()
 
     // The agent is created as "Untitled" then renamed async after session
-    // creation. Wait for the rename to land so downstream selectAgent(name)
-    // lookups by visible text match. We accept any non-"Untitled" value — in
-    // E2E the LLM is unconfigured so the server fallback yields the prompt's
-    // first ~5 words, matching what the test passed in.
-    await expect(this.page.locator('[data-testid="agent-breadcrumb"]')).not.toHaveText('Untitled', { timeout: 15000 })
+    // creation. Downstream tests that re-select agents by name need the
+    // sidebar row to be indexed, but session-only tests can avoid coupling to
+    // the sidebar refresh.
+    await expect(this.page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(prompt, { timeout: 15000 })
+    if (waitForSidebarName) {
+      await this.waitForAgentInSidebar(prompt)
+    }
+  }
+
+  private async waitForAgentInSidebar(name: string) {
+    const row = this.getAgentItem(name)
+
+    try {
+      await expect(row).toBeVisible({ timeout: 5000 })
+      return
+    } catch {
+      // The agent detail can observe the async rename before the sidebar list
+      // has refreshed under heavier parallel load. Reloading the current agent
+      // route forces a fresh /api/agents read without changing the selected
+      // agent.
+      await Promise.all([
+        this.page
+          .waitForResponse((response) => response.url().includes('/api/agents') && response.status() === 200, {
+            timeout: 15000,
+          })
+          .catch(() => undefined),
+        this.page.reload(),
+      ])
+      await expect(this.page.locator('[data-testid="new-agent-button"]')).toBeVisible({ timeout: 15000 })
+      await expect(this.page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(name, { timeout: 15000 })
+      await expect(row).toBeVisible({ timeout: 15000 })
+    }
   }
 
   /**
@@ -80,13 +114,19 @@ export class AgentPage {
    * expansion — so callers that need to reach session sub-items must
    * expand explicitly.
    *
-   * No-op if the agent is already expanded.
+   * The chevron renders once the agent has something to expand. A session
+   * created through the API a moment ago is listed by the sessions endpoint
+   * as soon as its metadata is written but counted by the agents endpoint
+   * only once its transcript lands, so the chevron can appear a beat after
+   * the row does: wait for it rather than probe once. No-op if the agent is
+   * already expanded.
    */
   async expandAgent(name: string) {
     const li = this.getAgentLi(name)
-    const expandChevron = li.locator('button[aria-label="Expand"]').first()
-    if (await expandChevron.isVisible({ timeout: 500 }).catch(() => false)) {
-      await expandChevron.click()
+    const chevron = li.locator('button[aria-label="Expand"], button[aria-label="Collapse"]').first()
+    await chevron.waitFor({ state: 'visible', timeout: 15000 })
+    if ((await chevron.getAttribute('aria-label')) === 'Expand') {
+      await chevron.click()
     }
   }
 
@@ -103,36 +143,32 @@ export class AgentPage {
    * Get the agent item element
    */
   getAgentItem(name: string) {
-    const slug = this.getSlugFromName(name)
-    // Try data-testid first, fall back to button with name text
-    const byTestId = this.page.locator(`[data-testid="agent-item-${slug}"]`)
-    const byText = this.page.locator(`button:has-text("${name}")`, { hasText: name }).first()
-    // Use or() to try both selectors
-    return byTestId.or(byText)
+    return this.page.locator('[data-testid^="agent-item-"]', { hasText: name }).first()
   }
 
   /**
-   * Open the agent settings dialog
+   * Open the agent menu (the three-dot on the agent header). It is the same
+   * menu a right-click on the sidebar row opens.
    */
-  async openSettings() {
+  async openAgentMenu() {
     await this.page.locator('[data-testid="agent-settings-button"]').click()
-    await expect(this.page.locator('[data-testid="agent-settings-dialog"]')).toBeVisible()
+    await expect(this.page.locator('[data-testid="agent-context-menu"]')).toBeVisible()
   }
 
   /**
-   * Delete the current agent via settings
+   * Delete the current agent via the agent menu
    */
   async deleteAgent() {
-    await this.openSettings()
+    await this.openAgentMenu()
 
-    // Click delete button
-    await this.page.locator('[data-testid="delete-agent-button"]').click()
+    // Click delete item
+    await this.page.locator('[data-testid="delete-agent-item"]').click()
 
-    // Confirm deletion - use a longer timeout since deletion may take time
-    await this.page.locator('[data-testid="confirm-button"]').click()
+    // Confirm deletion by sliding the handle across its track
+    await slideToConfirm(this.page, 'confirm-delete-agent-button')
 
-    // Wait for settings dialog to close (with longer timeout for deletion to complete)
-    await expect(this.page.locator('[data-testid="agent-settings-dialog"]')).not.toBeVisible({ timeout: 10000 })
+    // Wait for the confirm dialog to close (with longer timeout for deletion to complete)
+    await expect(this.page.locator('[data-testid="confirm-delete-agent-button"]')).not.toBeVisible({ timeout: 10000 })
   }
 
   /**
@@ -158,4 +194,10 @@ export class AgentPage {
     const statusElement = this.getStatus()
     await expect(statusElement).toHaveAttribute('data-status', status, { timeout })
   }
+}
+
+export function getCurrentAgentSlug(page: Page) {
+  const match = page.url().match(/\/agents\/([^/?#]+)/)
+  expect(match).toBeTruthy()
+  return match![1]
 }

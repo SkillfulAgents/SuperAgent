@@ -1,3 +1,5 @@
+import { assertConnectionSelectionAccess } from '@shared/lib/llm-provider/connection-runtime'
+import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 /**
  * Webhook Triggers API Routes
  *
@@ -15,12 +17,13 @@ import {
   updateWebhookTriggerRuntimeOptions,
 } from '@shared/lib/services/webhook-trigger-service'
 import { promptUpdateSchema } from './trigger-prompt-schema'
-import { RuntimeOptionsSchema } from '@shared/lib/container/runtime-options'
-import {
-  getSessionsByWebhookTrigger,
-} from '@shared/lib/services/session-service'
-import { messagePersister } from '@shared/lib/container/message-persister'
-import { Authenticated, EntityAgentRole } from '../middleware/auth'
+import { RuntimeOptionsPatchSchema } from '@shared/lib/container/runtime-options'
+import { agentRegistry } from '@shared/lib/agent-actor'
+import { withSessionStatus } from '@shared/lib/session-status'
+import { getCurrentUserId } from '@shared/lib/auth/config'
+import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { toPublicWebhookTrigger } from '@shared/lib/webhook-triggers/public'
+import { Authenticated, EntityAgentRole, getAuthorizedAgentRole } from '../middleware/auth'
 
 const webhookTriggersRouter = new Hono()
 
@@ -36,8 +39,8 @@ const TriggerAgentRole = EntityAgentRole({
 // GET /api/webhook-triggers/:triggerId - Get a single trigger
 webhookTriggersRouter.get('/:triggerId', TriggerAgentRole('viewer'), async (c) => {
   try {
-    const trigger = c.get('webhookTrigger' as never)
-    return c.json(trigger)
+    const trigger = c.get('webhookTrigger' as never) as Awaited<ReturnType<typeof getWebhookTrigger>>
+    return c.json(toPublicWebhookTrigger(trigger!, getAuthorizedAgentRole(c)))
   } catch (error) {
     console.error('Failed to fetch webhook trigger:', error)
     return c.json({ error: 'Failed to fetch webhook trigger' }, 500)
@@ -48,12 +51,9 @@ webhookTriggersRouter.get('/:triggerId', TriggerAgentRole('viewer'), async (c) =
 webhookTriggersRouter.get('/:triggerId/sessions', TriggerAgentRole('viewer'), async (c) => {
   try {
     const trigger = c.get('webhookTrigger' as never) as Awaited<ReturnType<typeof getWebhookTrigger>>
-    const sessions = await getSessionsByWebhookTrigger(trigger!.agentSlug, trigger!.id)
-    const sessionsWithStatus = sessions.map((session) => ({
-      ...session,
-      isActive: messagePersister.isSessionActive(session.id),
-    }))
-    return c.json(sessionsWithStatus)
+    const actor = agentRegistry.get(trigger!.agentSlug)
+    const sessions = await actor.sessions.byWebhookTrigger(trigger!.id)
+    return c.json(withSessionStatus(sessions, await actor.live()))
   } catch (error) {
     console.error('Failed to fetch sessions for webhook trigger:', error)
     return c.json({ error: 'Failed to fetch sessions' }, 500)
@@ -69,7 +69,9 @@ webhookTriggersRouter.post('/:triggerId/pause', TriggerAgentRole('user'), async 
       return c.json({ error: 'Trigger is not active' }, 400)
     }
     const updated = await getWebhookTrigger(trigger!.id)
-    return c.json(updated)
+    if (!updated) throw new Error('Webhook trigger disappeared after pause')
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'paused' })
+    return c.json(toPublicWebhookTrigger(updated, getAuthorizedAgentRole(c)))
   } catch (error) {
     console.error('Failed to pause webhook trigger:', error)
     return c.json({ error: 'Failed to pause webhook trigger' }, 500)
@@ -85,7 +87,9 @@ webhookTriggersRouter.post('/:triggerId/resume', TriggerAgentRole('user'), async
       return c.json({ error: 'Trigger is not paused' }, 400)
     }
     const updated = await getWebhookTrigger(trigger!.id)
-    return c.json(updated)
+    if (!updated) throw new Error('Webhook trigger disappeared after resume')
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'resumed' })
+    return c.json(toPublicWebhookTrigger(updated, getAuthorizedAgentRole(c)))
   } catch (error) {
     console.error('Failed to resume webhook trigger:', error)
     return c.json({ error: 'Failed to resume webhook trigger' }, 500)
@@ -108,35 +112,44 @@ webhookTriggersRouter.patch('/:triggerId/prompt', TriggerAgentRole('user'), asyn
     }
 
     const refreshed = await getWebhookTrigger(trigger!.id)
-    return c.json(refreshed)
+    if (!refreshed) throw new Error('Webhook trigger disappeared after prompt update')
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'updated', details: { field: 'prompt' } })
+    return c.json(toPublicWebhookTrigger(refreshed, getAuthorizedAgentRole(c)))
   } catch (error) {
     console.error('Failed to update webhook trigger prompt:', error)
     return c.json({ error: 'Failed to update prompt' }, 500)
   }
 })
 
-// PATCH /api/webhook-triggers/:triggerId/runtime-options - Update model and/or effort
+// PATCH /api/webhook-triggers/:triggerId/runtime-options - Update model, effort, and/or speed
 webhookTriggersRouter.patch('/:triggerId/runtime-options', TriggerAgentRole('user'), async (c) => {
   try {
     const trigger = c.get('webhookTrigger' as never) as Awaited<ReturnType<typeof getWebhookTrigger>>
     const body = await c.req.json().catch(() => ({}))
-    const parsed = RuntimeOptionsSchema.partial().safeParse(body)
+    const parsed = RuntimeOptionsPatchSchema.safeParse(body)
     if (!parsed.success) {
       return c.json({ error: parsed.error.issues[0]?.message ?? 'Invalid runtime options' }, 400)
     }
 
-    const updates: { model?: string | null; effort?: string | null } = {}
+    const updates: { llmProviderId?: string | null; model?: string | null; effort?: string | null; speed?: string | null } = {}
+    if ('llmProviderId' in body) updates.llmProviderId = parsed.data.llmProviderId ?? null
     if ('model' in body) updates.model = parsed.data.model ?? null
     if ('effort' in body) updates.effort = parsed.data.effort ?? null
+    if ('speed' in body) updates.speed = parsed.data.speed ?? null
 
+    await assertConnectionSelectionAccess(updates.llmProviderId, trigger?.llmProviderId)
     const updated = await updateWebhookTriggerRuntimeOptions(trigger!.id, updates)
     if (!updated) {
       return c.json({ error: 'Trigger not found or cancelled' }, 404)
     }
 
     const refreshed = await getWebhookTrigger(trigger!.id)
-    return c.json(refreshed)
+    if (!refreshed) throw new Error('Webhook trigger disappeared after runtime options update')
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'updated', details: { field: 'runtime-options' } })
+    return c.json(toPublicWebhookTrigger(refreshed, getAuthorizedAgentRole(c)))
   } catch (error) {
+    const runtimeError = findAgentRuntimeError(error)
+    if (runtimeError) return runtimeError.toHttpResponse()
     console.error('Failed to update webhook trigger runtime options:', error)
     return c.json({ error: 'Failed to update runtime options' }, 500)
   }
@@ -151,6 +164,8 @@ webhookTriggersRouter.delete('/:triggerId', TriggerAgentRole('user'), async (c) 
     if (!cancelled) {
       return c.json({ error: 'Webhook trigger not found or already cancelled' }, 404)
     }
+
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'trigger', objectId: trigger!.id, action: 'deleted' })
 
     return c.body(null, 204)
   } catch (error) {

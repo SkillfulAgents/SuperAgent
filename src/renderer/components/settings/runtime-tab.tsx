@@ -1,7 +1,17 @@
+import { providerEnvVarsError } from '@shared/lib/llm-provider/provider-env'
 import { useState, useEffect, useMemo } from 'react'
 import { Input } from '@renderer/components/ui/input'
 import { Label } from '@renderer/components/ui/label'
+import { Switch } from '@renderer/components/ui/switch'
 import { Button } from '@renderer/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@renderer/components/ui/dialog'
 import {
   Select,
   SelectContent,
@@ -10,10 +20,21 @@ import {
   SelectValue,
 } from '@renderer/components/ui/select'
 import { Alert, AlertDescription, AlertTitle } from '@renderer/components/ui/alert'
-import { useSettings, useUpdateSettings, useStartRunner, useRestartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
-import { AlertCircle, AlertTriangle, Play, Loader2, RefreshCw, Plus, X } from 'lucide-react'
+import {
+  useSettings,
+  useUpdateSettings,
+  useStartRunner,
+  useRestartRunner,
+  useRefreshAvailability,
+  isWarmStartOnTypeEnabled,
+  isAutoResumeOnUnexpectedDeathEnabled,
+} from '@renderer/hooks/use-settings'
+import { AlertCircle, AlertTriangle, Play, Download, Loader2, RefreshCw, Plus, X } from 'lucide-react'
 import { RunnerSetupErrorPanel, getRunnerSetupPayload } from '@renderer/components/settings/runner-setup-error-panel'
+import { RuntimeProvisionProgress } from '@renderer/components/runtime/runtime-provision-progress'
 import { DEFAULT_LIMA_VM_MEMORY, VALID_LIMA_VM_MEMORY_OPTIONS } from '@shared/lib/container/types'
+import { assessVmMemory } from '@shared/lib/container/vm-memory'
+import { findReservedEnvVarKeys } from '@shared/lib/container/reserved-env-vars'
 import { getDefaultAgentImage } from '@shared/lib/config/version'
 
 const CPU_LIMIT_OPTIONS = [1, 2, 4, 6, 8]
@@ -33,6 +54,10 @@ const RUNNER_LABELS: Record<string, string> = {
   podman: 'Podman',
   lima: 'Built-in Runtime',
   wsl2: 'Built-in Runtime',
+}
+
+function normalizeEnvVarName(name: string): string {
+  return name.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_')
 }
 
 /**
@@ -83,6 +108,12 @@ export function RuntimeTab() {
   const [maxThinkingTokens, setMaxThinkingTokens] = useState<string | null>(null)
   const [maxTurns, setMaxTurns] = useState<string | null>(null)
   const [maxBudgetUsd, setMaxBudgetUsd] = useState<string | null>(null)
+  const [customEnvVarsDraft, setCustomEnvVarsDraft] = useState<Record<string, string>>({})
+  const [isAddEnvDialogOpen, setIsAddEnvDialogOpen] = useState(false)
+  const [newEnvName, setNewEnvName] = useState('')
+  const [newEnvValue, setNewEnvValue] = useState('')
+  const [customEnvError, setCustomEnvError] = useState<string | null>(null)
+  const [dialogEnvError, setDialogEnvError] = useState<string | null>(null)
 
   // Local form state — runtime-specific settings (keyed by field key)
   const [runtimeSettingsForm, setRuntimeSettingsForm] = useState<Record<string, string>>({})
@@ -102,6 +133,19 @@ export function RuntimeTab() {
     [containerRunner]
   )
 
+  // Sizing guardrail for the built-in runtime's VM memory: options at or above
+  // the machine's physical RAM are disabled (the server refuses them too), and
+  // picks above half of it get an inline warning — that configuration starves
+  // the host and gets agents OOM-killed mid-turn.
+  const hostTotalMemoryBytes = settings?.hostTotalMemoryBytes
+  const assessVmMemoryOption = (value: string) =>
+    hostTotalMemoryBytes ? assessVmMemory(value, hostTotalMemoryBytes) : ({ level: 'ok' } as const)
+  const vmMemoryAssessment = useMemo(() => {
+    const selected = runtimeSettingsForm.vmMemory
+    if (!selected || !hostTotalMemoryBytes) return { level: 'ok' } as const
+    return assessVmMemory(selected, hostTotalMemoryBytes)
+  }, [runtimeSettingsForm.vmMemory, hostTotalMemoryBytes])
+
   // Check if runtime-specific settings have changed
   const runtimeSettingsChanged = useMemo(() => {
     return currentRunnerFields.some((field) => {
@@ -113,27 +157,33 @@ export function RuntimeTab() {
 
   // Compute runner availability map with detailed status
   const runnerAvailabilityMap = useMemo(() => {
-    const map = new Map<string, { installed: boolean; running: boolean; available: boolean; canStart: boolean }>()
+    const map = new Map<string, { installed: boolean; running: boolean; available: boolean; canStart: boolean; supportsCustomAgentImage: boolean }>()
     settings?.runnerAvailability?.forEach((r) => {
       map.set(r.runner, {
         installed: r.installed,
         running: r.running,
         available: r.available,
         canStart: r.canStart,
+        supportsCustomAgentImage: r.supportsCustomAgentImage ?? true,
       })
     })
     return map
   }, [settings?.runnerAvailability])
+
+  // Runners whose image is fixed by the deployment (e.g. lambda-microvm) ignore
+  // settings.container.agentImage — lock the field so edits aren't misleading.
+  const agentImageLocked =
+    runnerAvailabilityMap.get(containerRunner)?.supportsCustomAgentImage === false
 
   const noRunnersAvailable = useMemo(() => {
     if (!settings?.runnerAvailability) return false
     return settings.runnerAvailability.every((r) => !r.available)
   }, [settings?.runnerAvailability])
 
-  // Check if any runner is installed but not running
+  // Check if any runner can be started or first-installed via startRunner
   const hasStartableRunner = useMemo(() => {
     if (!settings?.runnerAvailability) return false
-    return settings.runnerAvailability.some((r) => r.installed && !r.running && r.canStart)
+    return settings.runnerAvailability.some((r) => !r.running && r.canStart)
   }, [settings?.runnerAvailability])
 
   // Derive runner list from server-reported availability (only shows eligible runners)
@@ -147,25 +197,29 @@ export function RuntimeTab() {
     }))
   }, [settings?.runnerAvailability])
 
-  const handleStartRunner = async (runner: string) => {
-    try {
-      await startRunner.mutateAsync(runner)
-    } catch (error) {
-      console.error('Failed to start runner:', error)
-    }
-  }
-
-  // Initialize form values when settings load
+  // Sync each persisted field from its primitive value so availability-only
+  // settings refetches do not reset an in-progress dropdown selection.
   useEffect(() => {
-    if (settings) {
-      setContainerRunner(settings.container.containerRunner)
-      setAgentImage(settings.container.agentImage)
-      setCpuLimit(settings.container.resourceLimits.cpu.toString())
-      setMemoryLimit(settings.container.resourceLimits.memory)
-      setHasChanges(false)
-      setAutoSleepMinutes(null)
-    }
-  }, [settings])
+    if (!settings) return
+    setContainerRunner(settings.container.containerRunner)
+  }, [settings?.container.containerRunner])
+
+  useEffect(() => {
+    if (!settings) return
+    setAgentImage(settings.container.agentImage)
+    setCpuLimit(settings.container.resourceLimits.cpu.toString())
+    setMemoryLimit(settings.container.resourceLimits.memory)
+    setAutoSleepMinutes(null)
+  }, [
+    settings?.container.agentImage,
+    settings?.container.resourceLimits.cpu,
+    settings?.container.resourceLimits.memory,
+  ])
+
+  useEffect(() => {
+    if (!settings || updateSettings.isPending) return
+    setCustomEnvVarsDraft(settings.customEnvVars ?? {})
+  }, [settings?.customEnvVars, updateSettings.isPending])
 
   // Initialize runtime settings form when runner changes or settings load
   useEffect(() => {
@@ -177,25 +231,35 @@ export function RuntimeTab() {
       form[field.key] = saved[field.key] || field.defaultValue
     }
     setRuntimeSettingsForm(form)
-  }, [containerRunner, settings])
+  }, [containerRunner, settings?.container.runtimeSettings])
 
   // Check for changes (main settings only — runtime settings have their own save)
   useEffect(() => {
-    if (!settings) return
+    if (!settings || !containerRunner) return
 
     const changed =
       containerRunner !== settings.container.containerRunner ||
-      agentImage !== settings.container.agentImage ||
+      (!agentImageLocked && agentImage !== settings.container.agentImage) ||
       cpuLimit !== settings.container.resourceLimits.cpu.toString() ||
       memoryLimit !== settings.container.resourceLimits.memory
 
     setHasChanges(changed)
-  }, [containerRunner, agentImage, cpuLimit, memoryLimit, settings])
+  }, [containerRunner, agentImage, cpuLimit, memoryLimit, settings, agentImageLocked])
 
   const latestAgentImage = getDefaultAgentImage()
   const trimmedAgentImage = agentImage.trim()
-  const agentImageMissing = trimmedAgentImage.length === 0
+  const agentImageMissing = !agentImageLocked && trimmedAgentImage.length === 0
   const isLatestAgentImage = trimmedAgentImage === latestAgentImage
+
+  const handleStartRunner = async (runner: string) => {
+    startRunner.reset()
+    try {
+      await startRunner.mutateAsync(runner)
+      setContainerRunner(runner)
+    } catch (error) {
+      console.error('Failed to start runner:', error)
+    }
+  }
 
   const handleSave = async () => {
     if (agentImageMissing) return
@@ -203,7 +267,10 @@ export function RuntimeTab() {
       await updateSettings.mutateAsync({
         container: {
           containerRunner,
-          agentImage: trimmedAgentImage,
+          // A locked field never submits edits — keep whatever is persisted.
+          agentImage: agentImageLocked
+            ? (settings?.container.agentImage ?? trimmedAgentImage)
+            : trimmedAgentImage,
           resourceLimits: {
             cpu: parseInt(cpuLimit, 10) || 1,
             memory: memoryLimit,
@@ -222,6 +289,57 @@ export function RuntimeTab() {
       setCpuLimit(settings.container.resourceLimits.cpu.toString())
       setMemoryLimit(settings.container.resourceLimits.memory)
     }
+  }
+
+  const persistCustomEnvVars = async (updated: Record<string, string>) => {
+    // Remember the last-good draft so a rejected save can be rolled back instead
+    // of leaving the bad value on screen as if it had saved (SUP-239 bug 1).
+    const previous = customEnvVarsDraft
+    setCustomEnvVarsDraft(updated)
+
+    // Mirror the server-side reserved-runtime-var guard (SUP-210) client-side so
+    // the rejection is instant and the offending row never lingers.
+    const reserved = findReservedEnvVarKeys(updated)
+    const providerError = providerEnvVarsError(updated)
+    if (reserved.length > 0 || providerError) {
+      setCustomEnvVarsDraft(previous)
+      setCustomEnvError(
+        providerError ?? `customEnvVars may not override reserved runtime variables: ${reserved.join(', ')}`
+      )
+      return
+    }
+
+    setCustomEnvError(null)
+    try {
+      await updateSettings.mutateAsync({ customEnvVars: updated })
+    } catch (error) {
+      // The server did not persist (e.g. 400) — revert so the draft reflects
+      // what is actually saved rather than the rejected value.
+      setCustomEnvVarsDraft(previous)
+      const message =
+        error && typeof error === 'object' && 'error' in error && typeof error.error === 'string'
+          ? error.error
+          : 'Failed to save custom environment variables'
+      setCustomEnvError(message)
+      console.error('Failed to save custom env vars:', error)
+    }
+  }
+
+  const handleAddCustomEnvVar = async () => {
+    const envName = normalizeEnvVarName(newEnvName)
+    if (!envName) {
+      setDialogEnvError('Environment variable name is required.')
+      return
+    }
+    if (envName in customEnvVarsDraft) {
+      setDialogEnvError('That environment variable already exists.')
+      return
+    }
+
+    await persistCustomEnvVars({ ...customEnvVarsDraft, [envName]: newEnvValue })
+    setNewEnvName('')
+    setNewEnvValue('')
+    setIsAddEnvDialogOpen(false)
   }
 
   // Save runtime-specific settings and restart the runtime
@@ -279,7 +397,7 @@ export function RuntimeTab() {
             {hasStartableRunner && (
               <div className="flex gap-2 mt-2">
                 {settings?.runnerAvailability
-                  ?.filter((r) => r.installed && !r.running && r.canStart)
+                  ?.filter((r) => !r.running && r.canStart)
                   .map((r) => (
                     <Button
                       key={r.runner}
@@ -290,36 +408,41 @@ export function RuntimeTab() {
                     >
                       {startRunner.isPending ? (
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      ) : (
+                      ) : r.installed ? (
                         <Play className="h-4 w-4 mr-2" />
+                      ) : (
+                        <Download className="h-4 w-4 mr-2" />
                       )}
-                      Start {r.runner.charAt(0).toUpperCase() + r.runner.slice(1)}
+                      {r.installed ? 'Start' : 'Install'}{' '}
+                      {RUNNER_LABELS[r.runner] || r.runner.charAt(0).toUpperCase() + r.runner.slice(1)}
                     </Button>
                   ))}
               </div>
             )}
             {!hasStartableRunner && (
-              <p className="text-xs">Please install a container runtime to use Superagent.</p>
+              <p className="text-xs">Please install a container runtime to use Gamut.</p>
             )}
           </AlertDescription>
         </Alert>
       )}
 
-      {/* Image pull progress */}
-      {settings?.runtimeReadiness?.status === 'PULLING_IMAGE' && (
+      {/* Image pull / runtime install progress */}
+      {(settings?.runtimeReadiness?.status === 'PULLING_IMAGE' ||
+        (settings?.runtimeReadiness?.status === 'CHECKING' && settings.runtimeReadiness.pullProgress)) && (
         <Alert>
           <Loader2 className="h-4 w-4 animate-spin" />
-          <AlertTitle>Pulling Agent Image</AlertTitle>
+          <AlertTitle>
+            {settings.runtimeReadiness.status === 'PULLING_IMAGE' ? 'Pulling Agent Image' : 'Setting Up Runtime'}
+          </AlertTitle>
           <AlertDescription className="space-y-2">
-            <p>{settings.runtimeReadiness.pullProgress?.status || 'Downloading...'}</p>
-            {settings.runtimeReadiness.pullProgress?.percent != null && (
-              <div className="mt-2 h-2 w-full bg-muted rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-primary transition-all duration-300"
-                  style={{ width: `${settings.runtimeReadiness.pullProgress.percent}%` }}
-                />
-              </div>
-            )}
+            <RuntimeProvisionProgress
+              progress={
+                settings.runtimeReadiness.pullProgress ?? {
+                  status: settings.runtimeReadiness.message || 'Working...',
+                  percent: null,
+                }
+              }
+            />
           </AlertDescription>
         </Alert>
       )}
@@ -337,13 +460,13 @@ export function RuntimeTab() {
         <div className="flex items-start gap-2 p-3 text-sm bg-yellow-500/10 border border-yellow-500/20 rounded-md">
           <AlertCircle className="h-4 w-4 text-yellow-500 mt-0.5 shrink-0" />
           <p className="text-yellow-700 dark:text-yellow-400">
-            Some settings cannot be changed while agents are running. Stop all agents to modify container runner or resource limits.
+            Some settings cannot be changed while agents are running. Stop all agents to modify container runtime or resource limits.
           </p>
         </div>
       )}
 
       <div className="space-y-2">
-        <Label htmlFor="container-runner">Container Runner</Label>
+        <Label htmlFor="container-runner">Container Runtime</Label>
         <div className="flex gap-2">
           <Select
             value={containerRunner}
@@ -351,7 +474,7 @@ export function RuntimeTab() {
             disabled={isLoading || hasRunningAgents}
           >
             <SelectTrigger id="container-runner" className={`flex-1 ${hasRunningAgents ? 'bg-muted' : ''}`}>
-              <SelectValue placeholder="Select a container runner" />
+              <SelectValue placeholder="Select a container runtime" />
             </SelectTrigger>
             <SelectContent>
               {containerRunners.map((runner) => {
@@ -382,21 +505,26 @@ export function RuntimeTab() {
               })}
             </SelectContent>
           </Select>
-          {/* Show start button if selected runner is installed but not running */}
-          {runnerAvailabilityMap.get(containerRunner)?.installed &&
-            !runnerAvailabilityMap.get(containerRunner)?.running &&
+          {/* Show start/install when selected runner canStart (incl. apple first-install) */}
+          {!runnerAvailabilityMap.get(containerRunner)?.running &&
             runnerAvailabilityMap.get(containerRunner)?.canStart && (
             <Button
               variant="outline"
               size="icon"
               onClick={() => handleStartRunner(containerRunner)}
               disabled={startRunner.isPending}
-              title={`Start ${containerRunner}`}
+              title={
+                runnerAvailabilityMap.get(containerRunner)?.installed
+                  ? `Start ${containerRunner}`
+                  : `Install ${containerRunner}`
+              }
             >
               {startRunner.isPending ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
+              ) : runnerAvailabilityMap.get(containerRunner)?.installed ? (
                 <Play className="h-4 w-4" />
+              ) : (
+                <Download className="h-4 w-4" />
               )}
             </Button>
           )}
@@ -424,16 +552,16 @@ export function RuntimeTab() {
               Restarting {RUNNER_LABELS[containerRunner] || containerRunner}...
             </span>
           )}
-          {startRunner.error && getRunnerSetupPayload(startRunner.error) ? (
+          {startRunner.displayError && getRunnerSetupPayload(startRunner.displayError) ? (
             <div className="mt-2">
-              <RunnerSetupErrorPanel error={startRunner.error} />
+              <RunnerSetupErrorPanel error={startRunner.displayError} />
             </div>
-          ) : startRunner.error ? (
+          ) : startRunner.displayError ? (
             <span className="text-destructive block mt-1">
-              {startRunner.error.message}
+              {startRunner.displayError.message}
             </span>
           ) : null}
-          {startRunner.isSuccess && startRunner.data?.message && (
+          {startRunner.isSuccess && startRunner.data?.message && !startRunner.displayError && (
             <span className="text-green-600 dark:text-green-400 block mt-1">
               {startRunner.data.message}
             </span>
@@ -466,11 +594,16 @@ export function RuntimeTab() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {field.options.map((opt) => (
-                      <SelectItem key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </SelectItem>
-                    ))}
+                    {field.options.map((opt) => {
+                      const oversized =
+                        field.key === 'vmMemory' && assessVmMemoryOption(opt.value).level === 'refuse'
+                      return (
+                        <SelectItem key={opt.value} value={opt.value} disabled={oversized}>
+                          {opt.label}
+                          {oversized ? ' (exceeds system memory)' : ''}
+                        </SelectItem>
+                      )
+                    })}
                   </SelectContent>
                 </Select>
               ) : (
@@ -485,6 +618,14 @@ export function RuntimeTab() {
                 />
               )}
               <p className="text-xs text-muted-foreground">{field.description}</p>
+              {field.key === 'vmMemory' && vmMemoryAssessment.level === 'warn' && (
+                <p className="text-xs text-yellow-600 dark:text-yellow-400">
+                  {vmMemoryAssessment.message}
+                </p>
+              )}
+              {field.key === 'vmMemory' && vmMemoryAssessment.level === 'refuse' && (
+                <p className="text-xs text-destructive">{vmMemoryAssessment.message}</p>
+              )}
             </div>
           ))}
 
@@ -513,7 +654,7 @@ export function RuntimeTab() {
               </Button>
               <Button
                 onClick={handleSaveRuntimeSettings}
-                disabled={isRestarting || runtimeSaveBlocked}
+                disabled={isRestarting || runtimeSaveBlocked || vmMemoryAssessment.level === 'refuse'}
               >
                 {isRestarting ? (
                   <>
@@ -536,21 +677,26 @@ export function RuntimeTab() {
           value={agentImage}
           onChange={(e) => setAgentImage(e.target.value)}
           placeholder="ghcr.io/skillfulagents/superagent-agent-container-base:latest"
-          disabled={isLoading}
+          disabled={isLoading || agentImageLocked}
+          className={agentImageLocked ? 'bg-muted' : ''}
         />
         <p className="text-xs text-muted-foreground">
-          Docker image to use for agent containers.
+          {agentImageLocked
+            ? 'Agent image is managed by the deployment for this runner and cannot be changed here.'
+            : 'Docker image to use for agent containers.'}
         </p>
-        <Button
-          type="button"
-          variant="link"
-          size="sm"
-          className="h-auto px-0 text-xs"
-          onClick={() => setAgentImage(latestAgentImage)}
-          disabled={isLoading || isLatestAgentImage}
-        >
-          Use default
-        </Button>
+        {!agentImageLocked && (
+          <Button
+            type="button"
+            variant="link"
+            size="sm"
+            className="h-auto px-0 text-xs"
+            onClick={() => setAgentImage(latestAgentImage)}
+            disabled={isLoading || isLatestAgentImage}
+          >
+            Use default
+          </Button>
+        )}
         {agentImageMissing && (
           <p className="text-xs text-destructive">Agent image is required.</p>
         )}
@@ -645,6 +791,43 @@ export function RuntimeTab() {
           <span className="text-sm text-muted-foreground">minutes</span>
         </div>
       </div>
+
+      {/* Warm-start on typing */}
+      <div className="flex items-start justify-between gap-4">
+        <div className="space-y-0.5 min-w-0">
+          <Label htmlFor="warm-start-on-type">Warm start on typing</Label>
+          <p className="text-xs text-muted-foreground">
+            Start the agent container in the background when you begin typing a first message, so it is ready on send.
+          </p>
+        </div>
+        <Switch
+          id="warm-start-on-type"
+          checked={isWarmStartOnTypeEnabled(settings)}
+          onCheckedChange={(checked: boolean) => {
+            updateSettings.mutate({ app: { warmStartOnType: checked } })
+          }}
+          disabled={isLoading}
+        />
+      </div>
+
+      {containerRunner === 'lambda-microvm' && (
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-0.5 min-w-0">
+            <Label htmlFor="auto-resume-on-unexpected-death">Auto-resume mid-turn sessions</Label>
+            <p className="text-xs text-muted-foreground">
+              If the MicroVM dies while a session is still working, continue the turn instead of showing a connection-lost error.
+            </p>
+          </div>
+          <Switch
+            id="auto-resume-on-unexpected-death"
+            checked={isAutoResumeOnUnexpectedDeathEnabled(settings)}
+            onCheckedChange={(checked: boolean) => {
+              updateSettings.mutate({ app: { autoResumeOnUnexpectedDeath: checked } })
+            }}
+            disabled={isLoading}
+          />
+        </div>
+      )}
 
       {/* Agent Limits */}
       <div className="space-y-4 pt-2">
@@ -759,66 +942,148 @@ export function RuntimeTab() {
       </div>
 
       {/* Custom Environment Variables */}
-      <div className="space-y-4 pt-2">
+      <div className="space-y-4 pt-2" data-testid="runtime-custom-env">
         <div className="space-y-0.5">
           <Label className="text-base">Custom Environment Variables</Label>
           <p className="text-xs text-muted-foreground">
-            Set additional environment variables for the agent process. These are passed to the Claude Code CLI. Changes apply to new sessions.
+            Set shared environment variables for agent tools and the agent runtime. Changes apply to new sessions. Configure LLM credentials and endpoints on each connection in Settings → LLM → Edit connection → Custom environment variables.
           </p>
         </div>
 
         <div className="space-y-2">
-          {Object.entries(settings?.customEnvVars ?? {}).map(([key, value]) => (
-            <div key={key} className="flex items-center gap-2">
+          {Object.entries(customEnvVarsDraft).map(([key, value]) => (
+            <div
+              key={key}
+              className="flex items-center gap-2"
+              data-testid="custom-env-var-row"
+              data-env-var-key={key}
+            >
               <Input
                 value={key}
                 className="font-mono text-sm flex-[2]"
                 disabled
+                data-testid="custom-env-var-key"
               />
               <Input
                 value={value}
                 className="font-mono text-sm flex-[3]"
+                maxLength={4096}
                 onChange={(e) => {
-                  const updated = { ...settings?.customEnvVars, [key]: e.target.value }
-                  updateSettings.mutate({ customEnvVars: updated })
+                  setCustomEnvVarsDraft((prev) => ({ ...prev, [key]: e.target.value }))
                 }}
                 onBlur={(e) => {
-                  const updated = { ...settings?.customEnvVars, [key]: e.target.value }
-                  updateSettings.mutate({ customEnvVars: updated })
+                  const val = e.target.value
+                  setCustomEnvVarsDraft((prev) => {
+                    const updated = { ...prev, [key]: val }
+                    persistCustomEnvVars(updated)
+                    return updated
+                  })
                 }}
+                disabled={isLoading || updateSettings.isPending}
+                data-testid="custom-env-var-value"
               />
               <Button
                 variant="ghost"
                 size="icon"
                 className="shrink-0"
-                onClick={() => {
-                  const updated = { ...settings?.customEnvVars }
+                data-testid="custom-env-var-delete"
+                onClick={async () => {
+                  const updated = { ...customEnvVarsDraft }
                   delete updated[key]
-                  updateSettings.mutate({ customEnvVars: updated })
+                  await persistCustomEnvVars(updated)
                 }}
+                disabled={isLoading || updateSettings.isPending}
               >
                 <X className="h-4 w-4" />
               </Button>
             </div>
           ))}
 
+          {customEnvError && (
+            <p className="text-xs text-destructive">{customEnvError}</p>
+          )}
+
           <Button
             variant="outline"
             size="sm"
-            onClick={() => {
-              const name = prompt('Environment variable name (e.g., CLAUDE_CODE_MAX_OUTPUT_TOKENS):')
-              if (!name?.trim()) return
-              const envName = name.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_')
-              const updated = { ...settings?.customEnvVars, [envName]: '' }
-              updateSettings.mutate({ customEnvVars: updated })
-            }}
-            disabled={isLoading}
+            onClick={() => setIsAddEnvDialogOpen(true)}
+            disabled={isLoading || updateSettings.isPending}
           >
             <Plus className="h-4 w-4 mr-2" />
             Add Variable
           </Button>
         </div>
       </div>
+
+      <Dialog
+        open={isAddEnvDialogOpen}
+        onOpenChange={(open) => {
+          setIsAddEnvDialogOpen(open)
+          if (!open) {
+            setNewEnvName('')
+            setNewEnvValue('')
+            setDialogEnvError(null)
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add Custom Environment Variable</DialogTitle>
+            <DialogDescription>
+              These variables apply across providers. For LLM credentials and endpoints, edit the connection in Settings → LLM.
+            </DialogDescription>
+          </DialogHeader>
+
+          <form onSubmit={(e) => { e.preventDefault(); handleAddCustomEnvVar() }}>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="custom-env-name">Variable Name</Label>
+                <Input
+                  id="custom-env-name"
+                  value={newEnvName}
+                  onChange={(e) => { setNewEnvName(e.target.value); setDialogEnvError(null) }}
+                  placeholder="CLAUDE_CODE_MAX_OUTPUT_TOKENS"
+                  className="font-mono text-sm"
+                  maxLength={256}
+                  autoFocus
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="custom-env-value">Value</Label>
+                <Input
+                  id="custom-env-value"
+                  value={newEnvValue}
+                  onChange={(e) => setNewEnvValue(e.target.value)}
+                  placeholder="32000"
+                  className="font-mono text-sm"
+                  maxLength={4096}
+                />
+              </div>
+
+              {dialogEnvError && (
+                <p className="text-xs text-destructive">{dialogEnvError}</p>
+              )}
+            </div>
+
+            <DialogFooter className="mt-4">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsAddEnvDialogOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={isLoading || updateSettings.isPending}
+              >
+                Add Variable
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       {/* Data Location - Read Only */}
       <div className="space-y-2">

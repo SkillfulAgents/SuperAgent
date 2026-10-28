@@ -1,0 +1,180 @@
+import { describe, it, expect } from 'vitest'
+import { formatComments } from './comment-bar'
+import type { FileComment } from '@renderer/context/file-preview-context'
+import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
+import { parseUserMessageParts } from '@shared/lib/utils/user-message-parts'
+
+describe('formatComments', () => {
+  it('formats text selection comments with quoted context', () => {
+    const comments: FileComment[] = [
+      { id: '1', filePath: '/workspace/report.md', agentSlug: 'test-agent', text: 'Please double-check this', anchor: { kind: 'text', quote: 'revenue grew by 15%' } },
+    ]
+    const result = formatComments('/workspace/report.md', comments)
+    expect(result).toContain('File feedback on `report.md`')
+    expect(result).toContain('> "revenue grew by 15%"')
+    expect(result).toContain('Please double-check this')
+  })
+
+  it('formats image annotation comments with coordinates', () => {
+    const comments: FileComment[] = [
+      { id: '1', filePath: '/workspace/screenshot.png', agentSlug: 'test-agent', text: 'Button misaligned', anchor: { kind: 'point', x: 45.3, y: 72.8 } },
+    ]
+    const result = formatComments('/workspace/screenshot.png', comments)
+    expect(result).toContain('File feedback on `screenshot.png`')
+    expect(result).toContain('At position (45%, 73%)')
+    expect(result).toContain('Button misaligned')
+  })
+
+  it('formats video comments with a timestamp and in-frame position', () => {
+    const comments: FileComment[] = [
+      { id: '1', filePath: '/workspace/clip.mp4', agentSlug: 'test-agent', text: 'Cut this scene', anchor: { kind: 'time', seconds: 75.4, point: { x: 30.2, y: 60.9 } } },
+    ]
+    const result = formatComments('/workspace/clip.mp4', comments)
+    expect(result).toContain('File feedback on `clip.mp4`')
+    expect(result).toContain('At 1:15.40 at position (30%, 61%)\nCut this scene')
+  })
+
+  it('formats a video comment with a timestamp but no in-frame position', () => {
+    const comments: FileComment[] = [
+      { id: '1', filePath: '/workspace/clip.mp4', agentSlug: 'test-agent', text: 'Audio drops out', anchor: { kind: 'time', seconds: 5 } },
+    ]
+    const result = formatComments('/workspace/clip.mp4', comments)
+    expect(result).toContain('At 0:05.00\nAudio drops out')
+    expect(result).not.toContain('position')
+  })
+
+  it('formats multiple comments with blank line separators', () => {
+    const comments: FileComment[] = [
+      { id: '1', filePath: '/workspace/doc.md', agentSlug: 'test-agent', text: 'Fix typo', anchor: { kind: 'text', quote: 'teh' } },
+      { id: '2', filePath: '/workspace/doc.md', agentSlug: 'test-agent', text: 'Expand this section', anchor: { kind: 'text', quote: 'Conclusion' } },
+    ]
+    const result = formatComments('/workspace/doc.md', comments)
+    const lines = result.split('\n')
+    // Should have a blank line between comments
+    expect(lines.some(l => l === '')).toBe(true)
+    expect(result).toContain('> "teh"')
+    expect(result).toContain('> "Conclusion"')
+  })
+
+  it('labels a whole-file comment', () => {
+    const comments: FileComment[] = [
+      { id: '1', filePath: '/workspace/file.txt', agentSlug: 'test-agent', text: 'General feedback here', anchor: { kind: 'file' } },
+    ]
+    const result = formatComments('/workspace/file.txt', comments)
+    expect(result).toContain('Whole file\nGeneral feedback here')
+    expect(result).not.toContain('>')
+    expect(result).not.toContain('At position')
+  })
+
+  it('handles mixed comment types', () => {
+    const comments: FileComment[] = [
+      { id: '1', filePath: '/workspace/doc.md', agentSlug: 'test-agent', text: 'Wrong number', anchor: { kind: 'text', quote: '42%' } },
+      { id: '2', filePath: '/workspace/doc.md', agentSlug: 'test-agent', text: 'Logo off-center', anchor: { kind: 'point', x: 50, y: 10 } },
+    ]
+    const result = formatComments('/workspace/doc.md', comments)
+    expect(result).toContain('> "42%"')
+    expect(result).toContain('At position (50%, 10%)')
+  })
+
+  it('formats cell comments with a Row:Col_Name identifier, column position and value', () => {
+    const comments: FileComment[] = [
+      {
+        id: '1',
+        filePath: '/workspace/contacts.csv',
+        agentSlug: 'test-agent',
+        text: 'This email looks malformed',
+        anchor: { kind: 'cell', cell: { row: 3, col: 2, column: 'Email', value: 'john@@example' } },
+      },
+    ]
+    const result = formatComments('/workspace/contacts.csv', comments)
+    expect(result).toContain('File feedback on `contacts.csv`')
+    expect(result).toContain('At cell 3:Email (col 3, value: "john@@example")\nThis email looks malformed')
+  })
+
+  it('formats cell comments without a value', () => {
+    const comments: FileComment[] = [
+      {
+        id: '1',
+        filePath: '/workspace/data.csv',
+        agentSlug: 'test-agent',
+        text: 'Missing value here',
+        anchor: { kind: 'cell', cell: { row: 5, col: 0, column: 'Name' } },
+      },
+    ]
+    const result = formatComments('/workspace/data.csv', comments)
+    expect(result).toContain('At cell 5:Name (col 1)\nMissing value here')
+    expect(result).not.toContain('value:')
+  })
+
+  it('marks a comment on an empty cell as empty rather than dropping it', () => {
+    const comments: FileComment[] = [
+      {
+        id: '1',
+        filePath: '/workspace/data.csv',
+        agentSlug: 'test-agent',
+        text: 'should not be blank',
+        anchor: { kind: 'cell', cell: { row: 2, col: 1, column: 'Email', value: '' } },
+      },
+    ]
+    const result = formatComments('/workspace/data.csv', comments)
+    expect(result).toContain('At cell 2:Email (col 2, empty cell)')
+  })
+
+  it('escapes double quotes inside a cell value', () => {
+    const comments: FileComment[] = [
+      {
+        id: '1',
+        filePath: '/workspace/specs.csv',
+        agentSlug: 'test-agent',
+        text: 'check this',
+        anchor: { kind: 'cell', cell: { row: 4, col: 0, column: 'Size', value: '27" monitor' } },
+      },
+    ]
+    const result = formatComments('/workspace/specs.csv', comments)
+    expect(result).toContain('value: "27\\" monitor"')
+  })
+
+  it('disambiguates duplicate column names via the column position', () => {
+    const comments: FileComment[] = [
+      { id: '1', filePath: '/d.csv', agentSlug: 'test-agent', text: 'a', anchor: { kind: 'cell', cell: { row: 1, col: 1, column: 'Email', value: 'x' } } },
+      { id: '2', filePath: '/d.csv', agentSlug: 'test-agent', text: 'b', anchor: { kind: 'cell', cell: { row: 1, col: 2, column: 'Email', value: 'y' } } },
+    ]
+    const result = formatComments('/d.csv', comments)
+    expect(result).toContain('At cell 1:Email (col 2, value: "x")')
+    expect(result).toContain('At cell 1:Email (col 3, value: "y")')
+  })
+
+  it('truncates very long cell values', () => {
+    const long = 'x'.repeat(500)
+    const comments: FileComment[] = [
+      {
+        id: '1',
+        filePath: '/workspace/data.csv',
+        agentSlug: 'test-agent',
+        text: 'too long',
+        anchor: { kind: 'cell', cell: { row: 1, col: 0, column: 'Blob', value: long } },
+      },
+    ]
+    const result = formatComments('/workspace/data.csv', comments)
+    expect(result).toContain('…')
+    expect(result).not.toContain(long)
+  })
+
+  it('extracts filename from full path', () => {
+    const result = formatComments('/workspace/deep/nested/file.pdf', [
+      { id: '1', filePath: '/workspace/deep/nested/file.pdf', agentSlug: 'test-agent', text: 'test', anchor: { kind: 'file' } },
+    ])
+    expect(result).toContain('`file.pdf`')
+  })
+
+  it('keeps feedback that quotes the attached-files marker whole in the sent bubble', () => {
+    const comments: FileComment[] = [
+      { id: '1', filePath: '/workspace/readme.md', agentSlug: 'test-agent', text: 'reword this', anchor: { kind: 'text', quote: 'Messages end with [Attached files:] and a list' } },
+      { id: '2', filePath: '/workspace/readme.md', agentSlug: 'test-agent', text: 'second comment', anchor: { kind: 'text', quote: 'plain' } },
+    ]
+    const feedback = formatComments('/workspace/readme.md', comments)
+    const parts = parseUserMessageParts(appendAttachedFiles(feedback, ['/workspace/uploads/a.png']))
+    expect(parts.text).toBe(feedback)
+    expect(parts.attachedFiles).toEqual(['/workspace/uploads/a.png'])
+  })
+})

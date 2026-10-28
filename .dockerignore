@@ -7,3 +7,20 @@ release
 .next
 agent-container/node_modules
 agent-container/dist
+
+# Local dev/test artifacts — keep them out of the build context (and, for
+# anything COPY'd wholesale, out of the image)
+build
+coverage
+test-results
+playwright-report
+.e2e-data
+tmp
+data
+superagent.db
+superagent.db-*
+*.md
+!README.md
+!docs/**/*.md
+!src/**/*.md
+!agent-container/**/*.md

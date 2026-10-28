@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ExternalLink, FileDown, Pencil, Trash2 } from 'lucide-react'
+import { ExternalLink, PanelRightOpen, Pencil, Trash2 } from 'lucide-react'
 import { FileTypeIcon } from '@renderer/components/ui/file-type-icon'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
@@ -28,20 +28,14 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@renderer/components/ui/alert-dialog'
-import { getApiBaseUrl } from '@renderer/lib/env'
-import { useBookmarks, useUpdateBookmarks, type Bookmark } from '@renderer/hooks/use-bookmarks'
+import { useBookmarks, useUpdateBookmarks } from '@renderer/hooks/use-bookmarks'
+import { useFilePreview } from '@renderer/context/file-preview-context'
+import { bookmarkTarget, type Bookmark } from '@shared/lib/utils/bookmarks'
+import { getPathName } from '@shared/lib/utils/workspace-path'
 
 interface HomeBookmarksProps {
   agentSlug: string
   isOwner?: boolean
-}
-
-function getFilename(filePath: string): string {
-  return filePath.split('/').pop() || filePath
-}
-
-function getRelativePath(filePath: string): string {
-  return filePath.replace(/^\/workspace\//, '')
 }
 
 function faviconUrl(link: string): string | null {
@@ -73,42 +67,53 @@ function LinkIcon({ link }: { link: string }) {
 
 function BookmarkRow({
   bookmark,
-  agentSlug,
   isOwner,
   onRename,
   onDelete,
+  onOpenFile,
+  onOpenFolder,
 }: {
   bookmark: Bookmark
-  agentSlug: string
   isOwner: boolean
   onRename: () => void
   onDelete: () => void
+  onOpenFile: (filePath: string) => void
+  onOpenFolder: (folderPath: string) => void
 }) {
-  const inner = bookmark.link ? (
+  const target = bookmarkTarget(bookmark)
+  // A bookmark carrying none of link/file/folder is not one the type allows and
+  // not one the server stores; if the API returns one anyway, draw nothing.
+  if (!target) return null
+
+  const inner = target.kind === 'link' ? (
     <a
-      href={bookmark.link}
+      href={target.url}
       target="_blank"
       rel="noopener noreferrer"
       className="group flex items-center gap-3 py-2.5 px-1 hover:bg-muted/50 transition-colors"
     >
-      <LinkIcon link={bookmark.link} />
+      <LinkIcon link={target.url} />
       <span className="text-xs font-medium truncate">{bookmark.name}</span>
       <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity ml-auto" />
     </a>
-  ) : bookmark.file ? (
-    <a
-      href={`${getApiBaseUrl()}/api/agents/${agentSlug}/files/${getRelativePath(bookmark.file)}`}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="group flex items-center gap-3 py-2.5 px-1 hover:bg-muted/50 transition-colors"
+  ) : (
+    <button
+      type="button"
+      onClick={() => target.kind === 'folder' ? onOpenFolder(target.path) : onOpenFile(target.path)}
+      className="group flex w-full items-center gap-3 py-2.5 px-1 text-left hover:bg-muted/50 transition-colors"
+      title={`${target.kind === 'folder' ? 'Browse' : 'Preview'} ${getPathName(target.path)}`}
+      aria-label={bookmark.name}
     >
-      <FileTypeIcon filename={getFilename(bookmark.file)} size={16} />
+      <FileTypeIcon
+        filename={getPathName(target.path)}
+        size="md"
+        folder={target.kind === 'folder'}
+        className="text-muted-foreground"
+      />
       <span className="text-xs font-medium truncate">{bookmark.name}</span>
-      <FileDown className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity ml-auto" />
-    </a>
-  ) : null
-
-  if (!inner) return null
+      <PanelRightOpen className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity ml-auto" />
+    </button>
+  )
 
   if (!isOwner) return inner
 
@@ -133,6 +138,7 @@ function BookmarkRow({
 }
 
 export function HomeBookmarks({ agentSlug, isOwner = false }: HomeBookmarksProps) {
+  const { openFile, openFolder } = useFilePreview()
   const { data: bookmarks } = useBookmarks(agentSlug)
   const updateBookmarks = useUpdateBookmarks(agentSlug)
   const [renameIndex, setRenameIndex] = useState<number | null>(null)
@@ -167,12 +173,13 @@ export function HomeBookmarks({ agentSlug, isOwner = false }: HomeBookmarksProps
       <div className="divide-y divide-border/50">
         {bookmarks.map((bookmark, i) => (
           <BookmarkRow
-            key={bookmark.link ?? bookmark.file ?? i}
+            key={bookmark.link ?? bookmark.file ?? bookmark.folder ?? i}
             bookmark={bookmark}
-            agentSlug={agentSlug}
             isOwner={isOwner}
             onRename={() => { setNewName(bookmark.name); setRenameIndex(i) }}
             onDelete={() => setDeleteIndex(i)}
+            onOpenFile={(filePath) => openFile(filePath, agentSlug)}
+            onOpenFolder={(folderPath) => openFolder(folderPath, agentSlug)}
           />
         ))}
       </div>

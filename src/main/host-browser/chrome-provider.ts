@@ -3,10 +3,46 @@ import fs from 'fs'
 import path from 'path'
 import net from 'net'
 import os from 'os'
-import { getDataDir, getAgentDownloadsDir } from '@shared/lib/config/data-dir'
-import { listChromeProfiles, copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
+import { getDataDir } from '@shared/lib/config/data-dir'
+import { drivesUserChrome } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
+import {
+  ChromeProfileAccessError,
+  listChromeProfiles,
+  copyChromeProfileData,
+  reportChromeProfileAccessError,
+} from '@shared/lib/browser/chrome-profile'
+import { agentRegistry, containerHost } from '@shared/lib/agent-actor'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo } from './types'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { readJsonFileStrictSync, writeFileAtomicSync, CorruptFileError } from '@shared/lib/utils/file-storage'
+import { waitForBrowserProfileCleanup, markProfileInUse, unmarkProfileInUse } from './profile-maintenance'
+import { GooglePasskeyRecovery } from './google-passkey-recovery'
+import { requestChromeClose } from './chrome-cdp-close'
+import { z } from 'zod'
+
+// Chrome's DevTools Protocol has no auth token: any host/process that can reach
+// the CDP port gets full remote control of the dedicated browser profile (read
+// pages, cookies/session, drive navigation). So CDP must never bind to all
+// interfaces (0.0.0.0). We bind it to loopback and, for runners whose containers
+// reach the host through a real bridge interface rather than the host loopback
+// (e.g. socket_vmnet Lima, WSL2/nerdctl, native Docker bridge), forward to it via
+// a proxy bound to that single host-internal interface — never the LAN.
+// Loopback-forwarding runners (Docker Desktop, user-mode Lima, rootless Podman)
+// need no proxy.
+const CDP_LOOPBACK_ADDRESS = '127.0.0.1'
+const CDP_VERSION_TIMEOUT_MS = 2000
+const GRACEFUL_CLOSE_TIMEOUT_MS = 5000
+const cdpVersionSchema = z.object({ webSocketDebuggerUrl: z.string().min(1) })
+
+/** True if `ip` is assigned to a local network interface (i.e. bindable by this host). */
+function isLocalInterfaceAddress(ip: string): boolean {
+  const interfaces = os.networkInterfaces()
+  for (const addrs of Object.values(interfaces)) {
+    if (addrs?.some((addr) => addr.address === ip)) return true
+  }
+  return false
+}
 
 interface BrowserCandidate {
   browser: string
@@ -196,10 +232,15 @@ export class ChromeProvider implements HostBrowserProvider {
 
   private instances: Map<string, BrowserInstance> = new Map()
   private detectedPath: string | null = null
+  private passkeyRecovery = new GooglePasskeyRecovery()
 
   onExternalClose: ((instanceId: string) => void) | null = null
 
   detect(): HostBrowserProviderStatus {
+    // Unavailable rather than absent, so Settings says why.
+    if (!drivesUserChrome(getServerFacts())) {
+      return { id: this.id, name: this.name, available: false, reason: 'Not available in the Mac App Store edition' }
+    }
     const candidate = BROWSER_CANDIDATES[process.platform]
     if (!candidate) {
       return { id: this.id, name: this.name, available: false, reason: 'Unsupported platform' }
@@ -226,6 +267,7 @@ export class ChromeProvider implements HostBrowserProvider {
     // Check if an instance already exists and its port is still open
     const existing = this.instances.get(instanceId)
     if (existing && await this.isPortOpen(existing.port)) {
+      await this.watchPasskeyRecovery(instanceId, existing.port)
       return { port: existing.proxyPort ?? existing.port }
     }
 
@@ -244,6 +286,34 @@ export class ChromeProvider implements HostBrowserProvider {
       throw err
     }
 
+    // Claim this profile BEFORE waiting on the sweep: if the sweep hasn't
+    // started yet, the mark makes it skip this profile; if it's already
+    // running, the await keeps us out of its way. Marking after the await
+    // would leave a window where a sweep firing right now could delete
+    // directories under a spawning Chrome. On success the claim is held until
+    // stop()/handleExit; on ANY launch failure it's released here, so no
+    // throw site inside the claimed phase can leak it (a leaked claim would
+    // make the sweep skip this profile until the next restart — the exact
+    // wrong outcome when the failure was disk pressure).
+    markProfileInUse(instanceId)
+    try {
+      return await this.launchClaimed(instanceId, options)
+    } catch (err) {
+      // Idempotent with the release in stop() for failure paths that got far
+      // enough to call it.
+      unmarkProfileInUse(instanceId)
+      throw err
+    }
+  }
+
+  /** The launch phase that runs with the profile claim held. The caller owns
+   *  the claim: it is released there if this throws, and by stop()/handleExit
+   *  once the instance is registered and running. */
+  private async launchClaimed(instanceId: string, options?: Record<string, string>): Promise<BrowserConnectionInfo> {
+    // If the startup profile-storage sweep is still running, let it finish
+    // before touching (or launching Chrome onto) this profile dir.
+    await waitForBrowserProfileCleanup()
+
     const port = await this.findFreePort()
     const profileId = options?.chromeProfileId
 
@@ -255,41 +325,73 @@ export class ChromeProvider implements HostBrowserProvider {
     const userDataDir = path.join(getDataDir(), 'host-browser-profiles', instanceId)
     fs.mkdirSync(userDataDir, { recursive: true })
 
+    // Remove stale Chrome lock files left behind by a previous crash. If the old
+    // instance is still alive we already checked and stopped it above (lines 227-235),
+    // so any remaining lock is orphaned and will cause Chrome to exit with code 0
+    // thinking another instance owns this data dir.
+    for (const lockName of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+      const lockPath = path.join(userDataDir, lockName)
+      try { fs.rmSync(lockPath, { force: true }) } catch { /* ignore */ }
+    }
+
     if (profileId) {
       const destProfileDir = path.join(userDataDir, 'Default')
       // Only copy the user's Chrome profile on first launch. Subsequent launches
       // should keep the session data (cookies, local storage, etc.) that the
       // agent accumulated during its browsing sessions.
       const alreadyHasProfile = fs.existsSync(path.join(destProfileDir, 'Cookies'))
-      if (!alreadyHasProfile && copyChromeProfileData(profileId, destProfileDir)) {
-        console.log(`[ChromeProvider] Copied Chrome profile "${profileId}" for instance ${instanceId}`)
+      try {
+        if (!alreadyHasProfile && await copyChromeProfileData(profileId, destProfileDir)) {
+          console.log(`[ChromeProvider] Copied Chrome profile "${profileId}" for instance ${instanceId}`)
+        }
+      } catch (error) {
+        // A profile this app may not read: launch without its logins rather
+        // than not at all.
+        if (!(error instanceof ChromeProfileAccessError)) throw error
+        console.warn(`[ChromeProvider] Launching instance ${instanceId} without Chrome profile "${profileId}":`, error)
+        reportChromeProfileAccessError(error)
       }
     }
 
     // Set Chrome download preferences so files go to the agent's workspace
-    // instead of the user's ~/Downloads folder.
-    const downloadDir = getAgentDownloadsDir(instanceId)
+    // instead of the user's ~/Downloads folder. The host browser runs on this
+    // machine, so this is a host-only feature: it takes the workspace's host
+    // path from the container host rather than asking the actor.
+    const downloadDir = path.join(containerHost.workspaceHostPath(instanceId), 'downloads')
+    fs.mkdirSync(downloadDir, { recursive: true })
     const prefsDir = path.join(userDataDir, 'Default')
     const prefsPath = path.join(prefsDir, 'Preferences')
     fs.mkdirSync(prefsDir, { recursive: true })
-    let prefs: Record<string, unknown> = {}
+    // Read Chrome's existing Preferences fail-closed: a missing file is
+    // a fresh profile (→ {}), but a present-but-corrupt one must NOT be silently
+    // replaced with just `{ download }` — that would wipe every other Chrome
+    // preference. On corruption, skip the download tweak rather than clobber.
+    let prefs: Record<string, unknown>
     try {
-      prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf-8'))
-    } catch {
-      // No existing preferences file
+      prefs = readJsonFileStrictSync(prefsPath, z.object({}).loose(), {}) as Record<string, unknown>
+    } catch (error) {
+      if (error instanceof CorruptFileError) {
+        console.warn(`[ChromeProvider] Corrupt Chrome Preferences at ${prefsPath}; leaving it untouched`)
+        prefs = null as unknown as Record<string, unknown>
+      } else {
+        throw error
+      }
     }
-    prefs.download = {
-      ...(prefs.download as Record<string, unknown> | undefined),
-      default_directory: downloadDir,
-      prompt_for_download: false,
+    if (prefs) {
+      prefs.download = {
+        ...(prefs.download as Record<string, unknown> | undefined),
+        default_directory: downloadDir,
+        prompt_for_download: false,
+      }
+      // Atomic write so an interrupted write can't truncate Chrome's Preferences.
+      writeFileAtomicSync(prefsPath, JSON.stringify(prefs, null, 2))
     }
-    fs.writeFileSync(prefsPath, JSON.stringify(prefs, null, 2))
 
     const headless = options?.chromeHeadless === 'true'
 
     const chromeArgs = [
       `--remote-debugging-port=${port}`,
-      '--remote-debugging-address=0.0.0.0',
+      `--remote-debugging-address=${CDP_LOOPBACK_ADDRESS}`,
       '--no-first-run',
       '--no-default-browser-check',
       `--user-data-dir=${userDataDir}`,
@@ -298,7 +400,18 @@ export class ChromeProvider implements HostBrowserProvider {
       '--disable-backgrounding-occluded-windows',
       '--disable-renderer-backgrounding',
       '--disable-background-timer-throttling',
-      '--disable-features=CalculateNativeWinOcclusion,WebContentsOcclusion',
+      // Chrome honors only the LAST --disable-features occurrence, so every
+      // disabled feature must live in this single flag.
+      // CalculateNativeWinOcclusion/WebContentsOcclusion: occlusion throttling
+      // (see above). The optimization-guide features stop Chrome from
+      // downloading the on-device Gemini Nano model (4 GB per profile) and
+      // per-page optimization hints into these automation profiles.
+      '--disable-features=CalculateNativeWinOcclusion,WebContentsOcclusion,OptimizationGuideOnDeviceModel,OptimizationGuideModelDownloading,OptimizationHints,TextSafetyClassifier',
+      // Component updater re-downloads browser-level components (safe-browsing
+      // lists, TTS engines, CRX caches, optimization-guide model store —
+      // ~130 MB) into every per-agent user-data-dir. None of it is needed for
+      // automation; disabling it keeps each profile at just its session state.
+      '--disable-component-update',
       // Start with about:blank instead of chrome://newtab so agent-browser's
       // target discovery sees a trackable page and reuses it rather than
       // creating an extra tab (it filters out chrome:// URLs).
@@ -439,27 +552,51 @@ export class ChromeProvider implements HostBrowserProvider {
       })
     }
 
-    // Chrome on Windows ignores --remote-debugging-address=0.0.0.0 and always
-    // binds its CDP port to 127.0.0.1. This means containers running inside WSL2
-    // (via nerdctl) cannot reach Chrome directly — only Docker Desktop's special
-    // networking layer makes host 127.0.0.1 ports accessible from containers.
-    // To work around this, we run a lightweight TCP proxy on 0.0.0.0 that forwards
-    // to Chrome's 127.0.0.1 CDP port, making it reachable from any network interface.
+    // Expose Chrome's loopback CDP port to the agent container. Some runners
+    // route containers to the host through a real bridge-gateway interface
+    // (Lima vmnet, WSL2/nerdctl, native Docker/Podman bridge) rather than the
+    // host's loopback, so those containers cannot reach 127.0.0.1 on the host.
+    // For them we run a lightweight TCP proxy that forwards to Chrome's loopback
+    // CDP port. (On Windows, Chrome also always binds CDP to 127.0.0.1 and
+    // ignores --remote-debugging-address, so the proxy is required there too.)
+    //
+    // SECURITY: the proxy binds ONLY that single host-internal bridge interface,
+    // never 0.0.0.0 — CDP is unauthenticated, so an all-interfaces bind would
+    // hand full browser control to anything on the LAN. Loopback-forwarding
+    // runners (Docker Desktop) report no bridge IP, so we skip the proxy and the
+    // container reaches Chrome's loopback port directly.
     let proxyPort: number | null = null
     let proxyServer: net.Server | null = null
-    if (process.platform === 'win32') {
-      proxyPort = await this.findFreePort()
-      proxyServer = net.createServer((client) => {
-        const target = net.connect(port, '127.0.0.1')
-        client.pipe(target)
-        target.pipe(client)
-        client.on('error', () => target.destroy())
-        target.on('error', () => client.destroy())
-      })
-      await new Promise<void>((resolve, reject) => {
-        proxyServer!.listen(proxyPort!, '0.0.0.0', () => resolve())
-        proxyServer!.on('error', reject)
-      })
+    let proxyHost: string | null = null
+    const bridgeIp = await this.getHostBridgeIp(instanceId)
+    if (bridgeIp) {
+      try {
+        proxyPort = await this.findFreePort()
+        proxyHost = bridgeIp
+        proxyServer = net.createServer((client) => {
+          const target = net.connect(port, CDP_LOOPBACK_ADDRESS)
+          client.pipe(target)
+          target.pipe(client)
+          client.on('error', () => target.destroy())
+          target.on('error', () => client.destroy())
+        })
+        await new Promise<void>((resolve, reject) => {
+          proxyServer!.listen(proxyPort!, proxyHost!, () => resolve())
+          proxyServer!.on('error', reject)
+        })
+      } catch (err) {
+        // Chrome is already spawned but the instance isn't registered yet, so the
+        // normal stop()/exit cleanup can't reach it. Tear down the half-open proxy
+        // and the orphaned browser before failing the launch. Killing Chrome makes
+        // earlyExitPromise reject, but the launch race that would consume it hasn't
+        // started — attach a no-op catch so that rejection isn't left unhandled.
+        earlyExitPromise.catch(() => {})
+        proxyServer?.close()
+        this.killSpawnedChrome(browserProcess, chromePid)
+        throw new Error(
+          `Failed to bind host-browser CDP proxy on ${bridgeIp}: ${err instanceof Error ? err.message : String(err)}`
+        )
+      }
     }
 
     const instance: BrowserInstance = {
@@ -480,12 +617,14 @@ export class ChromeProvider implements HostBrowserProvider {
     const handleExit = (reason: string) => {
       console.log(`[ChromeProvider] Browser for instance ${instanceId} exited (${reason})`)
       const wasIntentional = instance.stoppingIntentionally
+      this.passkeyRecovery.stop(instanceId)
       instance.proxyServer?.close()
       if (instance.externalCloseWatcher) {
         clearInterval(instance.externalCloseWatcher)
         instance.externalCloseWatcher = null
       }
       this.instances.delete(instanceId)
+      unmarkProfileInUse(instanceId)
       if (!wasIntentional) {
         console.log(`[ChromeProvider] Browser for instance ${instanceId} closed externally, notifying listeners`)
         Promise.resolve(this.onExternalClose?.(instanceId)).catch((err) => {
@@ -530,7 +669,7 @@ export class ChromeProvider implements HostBrowserProvider {
           profileId,
           spawnArgs: [
             `--remote-debugging-port=${port}`,
-            '--remote-debugging-address=0.0.0.0',
+            `--remote-debugging-address=${CDP_LOOPBACK_ADDRESS}`,
             `--user-data-dir=${userDataDir}`,
           ],
           ...diagnostics,
@@ -554,13 +693,57 @@ export class ChromeProvider implements HostBrowserProvider {
       }, 1000)
     }
 
-    const exposedPort = proxyPort ?? port
+    // Chrome is up and the proxy is bound, but on bridged runners the container
+    // still has to cross the host firewall to reach the proxy (on Windows,
+    // Defender or third-party AV commonly drops WSL2→host traffic on the
+    // vEthernet interface). That block only manifests at connect time inside
+    // the container, where nothing reports to Sentry — so probe the proxy from
+    // the runner's network side and fail the launch loudly with an actionable
+    // message instead.
+    if (proxyHost && proxyPort) {
+      const probe = await this.probeProxyFromRunner(instanceId, proxyHost, proxyPort)
+      if (probe === 'unreachable') {
+        const err = new Error(
+          `Chrome launched on the host, but the agent cannot reach it: connections from the container network to the browser's debugging proxy on ${proxyHost}:${proxyPort} are being blocked — most likely by a firewall on the host machine` +
+          (process.platform === 'win32'
+            ? ' (Windows Defender Firewall or third-party antivirus blocking inbound connections on the "vEthernet (WSL)" interface). Ask the user to allow this app through Windows Firewall for all network profiles (including Public), then try again — or switch Browser Host to the built-in browser in Settings.'
+            : '. Ask the user to allow this app through the host firewall, or switch Browser Host to the built-in browser in Settings.'),
+        )
+        captureException(err, {
+          tags: { component: 'browser', operation: 'cdp-proxy-reachability' },
+          extra: { instanceId, proxyHost, proxyPort, chromePort: port, platform: process.platform },
+        })
+        await this.stop(instanceId)
+        throw err
+      }
+    }
 
-    console.log(`[ChromeProvider] Chrome CDP on port ${port}${proxyPort ? `, proxy on 0.0.0.0:${proxyPort}` : ''} for instance ${instanceId} (pid ${chromePid})`)
+    const exposedPort = proxyPort ?? port
+    await this.watchPasskeyRecovery(instanceId, port)
+
+    console.log(`[ChromeProvider] Chrome CDP on ${CDP_LOOPBACK_ADDRESS}:${port}${proxyPort ? `, proxy on ${proxyHost}:${proxyPort}` : ''} for instance ${instanceId} (pid ${chromePid})`)
     return { port: exposedPort, downloadDir }
   }
 
+  // Google's passkey prompt opens a native WebAuthn dialog that swallows the viewer's CDP clicks.
+  private async watchPasskeyRecovery(instanceId: string, port: number): Promise<void> {
+    try {
+      const response = await fetch(`http://${CDP_LOOPBACK_ADDRESS}:${port}/json/version`, {
+        signal: AbortSignal.timeout(CDP_VERSION_TIMEOUT_MS),
+      })
+      const { webSocketDebuggerUrl } = cdpVersionSchema.parse(await response.json())
+      this.passkeyRecovery.watch(instanceId, webSocketDebuggerUrl)
+    } catch (err) {
+      console.warn('[ChromeProvider] Google passkey recovery unavailable:', err)
+      captureException(err, {
+        tags: { component: 'browser', operation: 'passkey-recovery-watch' },
+        extra: { instanceId, port },
+      })
+    }
+  }
+
   async stop(instanceId: string): Promise<void> {
+    this.passkeyRecovery.stop(instanceId)
     const instance = this.instances.get(instanceId)
     if (instance) {
       instance.stoppingIntentionally = true
@@ -570,7 +753,14 @@ export class ChromeProvider implements HostBrowserProvider {
         instance.externalCloseWatcher = null
       }
 
-      if (instance.process && !instance.process.killed) {
+      // Browser.close first: a signal skips Chrome's cookie flush, losing
+      // logins from the last ~30s. Signals below only handle a Chrome that
+      // did not exit on its own.
+      if (await requestChromeClose(`http://${CDP_LOOPBACK_ADDRESS}:${instance.port}`)) {
+        await this.waitForExit(instance, GRACEFUL_CLOSE_TIMEOUT_MS)
+      }
+
+      if (instance.process && !instance.process.killed && !this.hasExited(instance.process)) {
         // linux/win32: we own the child process. Kill via the ChildProcess
         // and wait for the 'exit' event so the next launch() doesn't race
         // with a still-dying Chrome.
@@ -600,6 +790,7 @@ export class ChromeProvider implements HostBrowserProvider {
       }
     }
     this.instances.delete(instanceId)
+    unmarkProfileInUse(instanceId)
   }
 
   async stopAll(): Promise<void> {
@@ -667,12 +858,92 @@ export class ChromeProvider implements HostBrowserProvider {
     try { process.kill(pid, 0); return true } catch { return false }
   }
 
+  private hasExited(child: ChildProcess): boolean {
+    return (child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null
+  }
+
+  private async waitForExit(instance: BrowserInstance, timeoutMs: number): Promise<void> {
+    const child = instance.process
+    if (!child) return this.waitForPidExit(instance.pid, timeoutMs)
+    if (this.hasExited(child)) return
+    await new Promise<void>((resolve) => {
+      const timeout = setTimeout(resolve, timeoutMs)
+      child.once('exit', () => {
+        clearTimeout(timeout)
+        resolve()
+      })
+    })
+  }
+
   private async waitForPidExit(pid: number, timeoutMs: number): Promise<void> {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
       if (!(await this.pidAlive(pid))) return
       await new Promise((r) => setTimeout(r, 100))
     }
+  }
+
+  /**
+   * The host interface IP to bind the CDP forwarding proxy to, or null to skip
+   * the proxy and let the container reach Chrome's loopback CDP port directly.
+   *
+   * The active runner reports the gateway its containers use to reach the host
+   * (this same value feeds `--add-host host.docker.internal`). But we can only
+   * bind a proxy there if that gateway is an address THIS host actually has an
+   * interface for:
+   *   - socket_vmnet/shared bridges, WSL2's vEthernet, docker0 → a real, bindable
+   *     host interface that does NOT forward loopback → bind the proxy there.
+   *   - Lima's user-mode / VZ-NAT networking (the bundled default) → the gateway
+   *     (e.g. 192.168.5.2) is virtual (gvproxy/VZ framework, not a host interface),
+   *     so binding it throws EADDRNOTAVAIL. It also needs no proxy: that mode
+   *     forwards the gateway to the host's loopback, so the container reaches
+   *     Chrome's 127.0.0.1 CDP directly — exactly how it already reaches
+   *     HOST_APP_URL. Like Docker Desktop, return null here.
+   */
+  /** Best-effort teardown of a Chrome that was spawned but not yet registered
+   *  (e.g. the CDP proxy failed to bind), so it isn't orphaned. */
+  private killSpawnedChrome(proc: ChildProcess | null, pid: number): void {
+    try {
+      if (proc && !proc.killed) proc.kill()
+      else if (pid > 0) process.kill(pid)
+    } catch {
+      /* already gone */
+    }
+  }
+
+  /** Ask the active runner to probe the CDP proxy from its network side.
+   *  Any failure to run the probe itself means 'unknown' — only a positive
+   *  "connection refused / timed out" verdict may fail a launch. */
+  private async probeProxyFromRunner(
+    instanceId: string,
+    host: string,
+    port: number,
+  ): Promise<'reachable' | 'unreachable' | 'unknown'> {
+    try {
+      return await agentRegistry.get(instanceId).container.probeHostPort(host, port)
+    } catch (error) {
+      console.warn('[ChromeProvider] CDP proxy reachability probe failed to run:', error)
+      return 'unknown'
+    }
+  }
+
+  private async getHostBridgeIp(instanceId: string): Promise<string | null> {
+    let ip: string | null = null
+    try {
+      ip = await agentRegistry.get(instanceId).container.hostBridgeIp()
+    } catch (error) {
+      console.warn('[ChromeProvider] Could not resolve host bridge IP for CDP proxy:', error)
+      return null
+    }
+    if (!ip) return null
+    if (!isLocalInterfaceAddress(ip)) {
+      console.log(
+        `[ChromeProvider] CDP: bridge IP ${ip} is not a bindable host interface ` +
+        `(user-mode networking forwards it to host loopback); using loopback-direct, no proxy`
+      )
+      return null
+    }
+    return ip
   }
 
   private async findFreePort(): Promise<number> {

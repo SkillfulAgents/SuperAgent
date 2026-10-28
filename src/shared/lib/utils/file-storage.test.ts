@@ -3,7 +3,9 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import {
-  generateAgentSlug,
+  nameToSlugBase,
+  displaySlug,
+  isMintedAgentId,
   parseMarkdownWithFrontmatter,
   serializeMarkdownWithFrontmatter,
   listDirectories,
@@ -12,19 +14,21 @@ import {
   removeDirectory,
   ensureDirectory,
   readFileOrNull,
-  writeFile,
   parseJsonl,
   readJsonlFile,
   streamJsonlFile,
+  createJsonArrayStringifyTransform,
   getAgentsDir,
   getAgentDir,
   getAgentWorkspaceDir,
-  getAgentClaudeMdPath,
+  getAgentInstructionsPath,
+  writeFile,
   getAgentEnvPath,
   getAgentSessionMetadataPath,
   getAgentClaudeConfigDir,
   getAgentSessionsDir,
   getSessionJsonlPath,
+  copyDirectoryFiltered,
 } from './file-storage'
 
 // ============================================================================
@@ -47,70 +51,61 @@ afterEach(async () => {
 // Slug Generation Tests
 // ============================================================================
 
-describe('generateAgentSlug', () => {
-  it('converts name to lowercase slug with random suffix', () => {
-    const slug = generateAgentSlug('My Cool Agent')
-    expect(slug).toMatch(/^my-cool-agent-[a-z0-9]{6}$/)
+describe('nameToSlugBase', () => {
+  it('lowercases and hyphenates a name', () => {
+    expect(nameToSlugBase('My Cool Agent')).toBe('my-cool-agent')
   })
 
-  it('replaces special characters with hyphens', () => {
-    const slug = generateAgentSlug('Test @#$ Agent!!!')
-    expect(slug).toMatch(/^test-agent-[a-z0-9]{6}$/)
+  it('collapses runs of special characters to single hyphens and trims edges', () => {
+    expect(nameToSlugBase('Test @#$ Agent!!!')).toBe('test-agent')
+    expect(nameToSlugBase('---Test---')).toBe('test')
+    expect(nameToSlugBase('Tëst Àgènt')).toBe('t-st-g-nt')
   })
 
-  it('removes leading and trailing hyphens', () => {
-    const slug = generateAgentSlug('---Test---')
-    expect(slug).toMatch(/^test-[a-z0-9]{6}$/)
+  it('keeps digits and only ever emits [a-z0-9-]', () => {
+    expect(nameToSlugBase('GPT 4 Bot')).toBe('gpt-4-bot')
+    expect(nameToSlugBase('Agent 007')).toBe('agent-007')
   })
 
-  it('handles empty name', () => {
-    const slug = generateAgentSlug('')
-    expect(slug).toMatch(/^[a-z0-9]{6}$/)
+  it('returns an empty string when nothing alphanumeric survives', () => {
+    expect(nameToSlugBase('')).toBe('')
+    expect(nameToSlugBase('@#$%^&*()')).toBe('')
   })
 
-  it('handles name with only special characters', () => {
-    const slug = generateAgentSlug('@#$%^&*()')
-    expect(slug).toMatch(/^[a-z0-9]{6}$/)
-  })
-
-  it('truncates long names to 50 characters', () => {
-    const longName = 'a'.repeat(100)
-    const slug = generateAgentSlug(longName)
-    // Base should be truncated to 50, plus hyphen and 6-char suffix
-    expect(slug.length).toBeLessThanOrEqual(50 + 1 + 6)
-  })
-
-  it('generates different slugs for same name (random suffix)', () => {
-    const slug1 = generateAgentSlug('Test')
-    const slug2 = generateAgentSlug('Test')
-    // Very unlikely to be the same due to random suffix
-    expect(slug1).not.toBe(slug2)
-  })
-
-  it('handles unicode characters', () => {
-    const slug = generateAgentSlug('Tëst Àgènt')
-    expect(slug).toMatch(/^t-st-g-nt-[a-z0-9]{6}$/)
-  })
-
-  it('handles numbers in name', () => {
-    const slug = generateAgentSlug('Agent 007')
-    expect(slug).toMatch(/^agent-007-[a-z0-9]{6}$/)
+  it('truncates the base to 50 characters', () => {
+    expect(nameToSlugBase('a'.repeat(100))).toHaveLength(50)
   })
 })
 
-describe('generateUniqueAgentSlug', () => {
-  it('generates a unique slug when no collision', async () => {
-    // Mock getDataDir to use our test directory
-    vi.mock('@/lib/config/data-dir', () => ({
-      getDataDir: () => testDir,
-    }))
+describe('isMintedAgentId', () => {
+  it('accepts a bare 10-char [a-z0-9] id', () => {
+    expect(isMintedAgentId('k7x9m2ab3c')).toBe(true)
+  })
 
-    // Dynamically re-import to pick up the mock
-    const { generateUniqueAgentSlug: genSlug } = await import('./file-storage')
-    const slug = await genSlug('Test Agent')
-    expect(slug).toMatch(/^test-agent-[a-z0-9]{6}$/)
+  it('rejects legacy / wrong-length / out-of-charset strings', () => {
+    expect(isMintedAgentId('abc123')).toBe(false) // 6-char legacy suffix
+    expect(isMintedAgentId('untitled-h45k3n')).toBe(false) // legacy compound
+    expect(isMintedAgentId('k7x9m2ab3')).toBe(false) // 9 chars
+    expect(isMintedAgentId('K7X9M2AB3C')).toBe(false) // uppercase
+    expect(isMintedAgentId('')).toBe(false)
+  })
+})
 
-    vi.resetModules()
+describe('displaySlug', () => {
+  const id = 'k7x9m2ab3c' // 10-char minted id
+
+  it('projects {base}-{id} for a named, minted agent', () => {
+    expect(displaySlug('GPT 4 Bot', id)).toBe(`gpt-4-bot-${id}`)
+  })
+
+  it('returns the bare id when the name slugifies to empty', () => {
+    expect(displaySlug('', id)).toBe(id)
+    expect(displaySlug('🙂', id)).toBe(id)
+  })
+
+  it('returns legacy folder ids verbatim — never re-prettified (would break resolution)', () => {
+    expect(displaySlug('Renamed Agent', 'untitled-h45k3n')).toBe('untitled-h45k3n')
+    expect(displaySlug('Renamed Agent', 'abc123')).toBe('abc123')
   })
 })
 
@@ -148,6 +143,11 @@ This is the body.`
     const result = parseMarkdownWithFrontmatter('')
     expect(result.frontmatter).toEqual({})
     expect(result.body).toBe('')
+  })
+
+  it('keeps a quoted blank value a string rather than the number 0', () => {
+    const result = parseMarkdownWithFrontmatter('---\nname: "  "\n---\nBody')
+    expect(result.frontmatter).toEqual({ name: '  ' })
   })
 
   it('parses boolean values', () => {
@@ -548,6 +548,45 @@ describe('readJsonlFile', () => {
     const result = await readJsonlFile(path.join(testDir, 'nonexistent.jsonl'))
     expect(result).toEqual([])
   })
+
+  async function stringifyJsonArray(items: unknown[]): Promise<string> {
+    const { Readable, pipeline } = await import('stream')
+    const chunks: Buffer[] = []
+    const stringify = createJsonArrayStringifyTransform()
+    stringify.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)))
+    await new Promise<void>((resolve, reject) => {
+      pipeline(Readable.from(items), stringify, (err) => {
+        if (err) reject(err)
+        else resolve()
+      })
+    })
+    return Buffer.concat(chunks).toString('utf-8')
+  }
+
+  it('pipes objects into a JSON array', async () => {
+    expect(JSON.parse(await stringifyJsonArray([{ id: 1 }, { id: 2 }]))).toEqual([{ id: 1 }, { id: 2 }])
+  })
+
+  it('pipes an empty iterable into []', async () => {
+    expect(await stringifyJsonArray([])).toBe('[]')
+  })
+
+  it('serializes undefined elements as null', async () => {
+    expect(JSON.parse(await stringifyJsonArray([undefined, 1]))).toEqual([null, 1])
+  })
+
+  it('parses rows wider than a read chunk without a whole-file string', async () => {
+    const filePath = path.join(testDir, 'wide-read.jsonl')
+    const padding = 'x'.repeat(64 * 1024 + 137)
+    await fs.promises.writeFile(
+      filePath,
+      `${JSON.stringify({ id: 1, padding })}\n${JSON.stringify({ id: 2 })}\n`
+    )
+
+    const result = await readJsonlFile<{ id: number; padding?: string }>(filePath)
+    expect(result.map((r) => r.id)).toEqual([1, 2])
+    expect(result[0].padding).toHaveLength(padding.length)
+  })
 })
 
 describe('streamJsonlFile', () => {
@@ -599,6 +638,87 @@ describe('streamJsonlFile', () => {
 
     expect(results).toEqual([{ id: 1 }, { id: 2 }])
   })
+
+  // Lines are split in the raw bytes, so chunk boundaries are the interesting
+  // failure surface: the stream reads 64KiB at a time and transcript rows are
+  // routinely wider than that.
+  const CHUNK_SIZE = 64 * 1024
+
+  it('reassembles rows wider than a read chunk', async () => {
+    const filePath = path.join(testDir, 'wide.jsonl')
+    const rows = [0, 1, 2].map((id) =>
+      JSON.stringify({ id, padding: 'x'.repeat(CHUNK_SIZE + 137) })
+    )
+    await fs.promises.writeFile(filePath, `${rows.join('\n')}\n`)
+
+    const results: { id: number; padding: string }[] = []
+    for await (const item of streamJsonlFile<{ id: number; padding: string }>(filePath)) {
+      results.push(item)
+    }
+
+    expect(results.map((r) => r.id)).toEqual([0, 1, 2])
+    expect(results.every((r) => r.padding.length === CHUNK_SIZE + 137)).toBe(true)
+  })
+
+  it('decodes a multi-byte character split across a chunk boundary', async () => {
+    const filePath = path.join(testDir, 'multibyte.jsonl')
+    // "€" is three bytes. Everything ahead of it is ASCII, so one measurement
+    // solves for the padding that lands its first byte at CHUNK_SIZE - 1.
+    const note = '€ mid-boundary'
+    const build = (width: number) => JSON.stringify({ padding: 'x'.repeat(width), note })
+    const row = build(CHUNK_SIZE - 1 - build(0).indexOf(note))
+    expect(Buffer.from(row, 'utf-8').indexOf(Buffer.from(note, 'utf-8'))).toBe(CHUNK_SIZE - 1)
+    await fs.promises.writeFile(filePath, `${row}\n`)
+
+    const results: { note: string }[] = []
+    for await (const item of streamJsonlFile<{ note: string }>(filePath)) {
+      results.push(item)
+    }
+
+    expect(results).toHaveLength(1)
+    expect(results[0].note).toBe(note)
+  })
+
+  it('skips blank lines and tolerates CRLF endings', async () => {
+    const filePath = path.join(testDir, 'crlf.jsonl')
+    await fs.promises.writeFile(filePath, '\r\n{"id": 1}\r\n   \r\n{"id": 2}\r\n')
+
+    const results: { id: number }[] = []
+    for await (const item of streamJsonlFile<{ id: number }>(filePath)) {
+      results.push(item)
+    }
+
+    expect(results).toEqual([{ id: 1 }, { id: 2 }])
+  })
+
+  it('closes the file handle when the consumer stops early', async () => {
+    const filePath = path.join(testDir, 'early-break.jsonl')
+    await fs.promises.writeFile(filePath, '{"id": 1}\n{"id": 2}\n{"id": 3}\n')
+
+    let closed = false
+    const realOpen = fs.promises.open
+    const openSpy = vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+      const handle = await (realOpen as typeof fs.promises.open)(
+        ...(args as Parameters<typeof fs.promises.open>)
+      )
+      const realClose = handle.close.bind(handle)
+      handle.close = async () => {
+        closed = true
+        return realClose()
+      }
+      return handle
+    })
+
+    try {
+      for await (const item of streamJsonlFile<{ id: number }>(filePath)) {
+        expect(item).toEqual({ id: 1 })
+        break // abandon the iterator mid-file
+      }
+      expect(closed).toBe(true)
+    } finally {
+      openSpy.mockRestore()
+    }
+  })
 })
 
 // ============================================================================
@@ -621,8 +741,8 @@ describe('path helpers', () => {
     expect(getAgentWorkspaceDir('my-agent')).toMatch(/\/agents\/my-agent\/workspace$/)
   })
 
-  it('getAgentClaudeMdPath returns path ending with CLAUDE.md', () => {
-    expect(getAgentClaudeMdPath('my-agent')).toMatch(/\/agents\/my-agent\/workspace\/CLAUDE\.md$/)
+  it('getAgentInstructionsPath returns path ending with AGENTS.md', () => {
+    expect(getAgentInstructionsPath('my-agent')).toMatch(/\/agents\/my-agent\/workspace\/AGENTS\.md$/)
   })
 
   it('getAgentEnvPath returns path ending with .env', () => {
@@ -645,5 +765,47 @@ describe('path helpers', () => {
     expect(getSessionJsonlPath('my-agent', 'session-123')).toMatch(
       /\/agents\/my-agent\/workspace\/\.claude\/projects\/-workspace\/session-123\.jsonl$/
     )
+  })
+
+  it('getSessionJsonlPath rejects session ids that escape the sessions directory', () => {
+    expect(() => getSessionJsonlPath('my-agent', '../outside')).toThrow('Invalid session ID')
+    expect(() => getSessionJsonlPath('my-agent', '/tmp/outside')).toThrow('Invalid session ID')
+  })
+})
+
+describe('copyDirectoryFiltered', () => {
+  it('skips symlinks by default', async () => {
+    const src = path.join(testDir, 'src')
+    const dest = path.join(testDir, 'dest')
+    await fs.promises.mkdir(path.join(src, 'subagents'), { recursive: true })
+    await fs.promises.writeFile(path.join(src, 'subagents', 'agent-1.jsonl'), '{}\n')
+    await fs.promises.symlink(path.join(src, 'subagents', 'agent-1.jsonl'), path.join(src, 'link.jsonl'))
+
+    await copyDirectoryFiltered(src, dest)
+
+    await expect(fs.promises.readFile(path.join(dest, 'subagents', 'agent-1.jsonl'), 'utf8')).resolves.toBe('{}\n')
+    await expect(fs.promises.lstat(path.join(dest, 'link.jsonl'))).rejects.toThrow()
+  })
+
+  it('does not follow a source-root symlink', async () => {
+    const outside = path.join(testDir, 'outside')
+    const src = path.join(testDir, 'src-link')
+    const dest = path.join(testDir, 'dest-root')
+    await fs.promises.mkdir(outside)
+    await fs.promises.writeFile(path.join(outside, 'secret.txt'), 'host-secret')
+    await fs.promises.symlink(outside, src)
+    await copyDirectoryFiltered(src, dest)
+    await expect(fs.promises.readFile(path.join(dest, 'secret.txt'), 'utf8')).rejects.toThrow()
+  })
+
+  it('follows a source-root symlink when followSymlinks is on', async () => {
+    const outside = path.join(testDir, 'outside-follow')
+    const src = path.join(testDir, 'src-link-follow')
+    const dest = path.join(testDir, 'dest-follow')
+    await fs.promises.mkdir(outside)
+    await fs.promises.writeFile(path.join(outside, 'template.md'), 'from-target')
+    await fs.promises.symlink(outside, src)
+    await copyDirectoryFiltered(src, dest, undefined, { followSymlinks: true })
+    await expect(fs.promises.readFile(path.join(dest, 'template.md'), 'utf8')).resolves.toBe('from-target')
   })
 })

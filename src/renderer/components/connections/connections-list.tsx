@@ -2,40 +2,83 @@ import { useEffect, useMemo, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { Switch } from '@renderer/components/ui/switch'
 import { Button } from '@renderer/components/ui/button'
-import { Loader2, Plus } from 'lucide-react'
-import { IntegrationDirectoryDialog } from '@renderer/components/connections/integration-directory-dialog'
-import { IntegrationList } from '@renderer/components/connections/integration-row'
-import { IntegrationRowActions } from '@renderer/components/connections/integration-row-actions'
+import { Loader2, Plus, X } from 'lucide-react'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@renderer/components/ui/alert-dialog'
+import { IntegrationDirectoryDialog, type NewApiConnection, type NewMcpConnection } from '@renderer/components/connections/integration-directory-dialog'
+import { IntegrationList, RowHoverChevron } from '@renderer/components/connections/integration-row'
+import { ConnectionDetailPage } from '@renderer/components/connections/connection-detail-page'
+import { ConnectionLogsView } from '@renderer/components/connections/connection-logs-view'
 import { ConnectionRow } from '@renderer/components/connections/connection-row'
+import { ScopePolicyEditor } from '@renderer/components/settings/scope-policy-editor'
+import { ToolPolicyEditor } from '@renderer/components/settings/tool-policy-editor'
+import { ConnectionSuccessHeader } from '@renderer/components/connections/connection-success-header'
+import { getProvider } from '@shared/lib/account-providers/service-catalog'
 import {
   useConnectedAccounts,
   useAgentConnectedAccounts,
   useAssignAccountsToAgent,
+  useRemoveAgentAccountMapping,
   useRemoveAgentConnectedAccount,
 } from '@renderer/hooks/use-connected-accounts'
+import { useOAuthReconnect } from '@renderer/hooks/use-oauth-reconnect'
 import {
   useRemoteMcps,
   useAgentRemoteMcps,
   useAssignMcpToAgent,
+  useRemoveAgentMcpMapping,
   useRemoveMcpFromAgent,
 } from '@renderer/hooks/use-remote-mcps'
 import { buildUnifiedRows, type UnifiedRow } from '@renderer/components/connections/unified-rows'
 import { startViewTransition } from '@renderer/lib/view-transition'
+import { useUser } from '@renderer/context/user-context'
+import {
+  isForeignAgentConnectedAccount,
+  isForeignAgentRemoteMcp,
+  isPublicAgentConnectedAccount,
+  isPublicAgentRemoteMcp,
+} from '@shared/lib/agent-connections/public'
 
 interface ConnectionsListProps {
   agentSlug: string
+  /** Key of the row whose detail page is shown instead of the list. */
+  detailRowKey: string | null
+  detailView: 'details' | 'logs'
+  /** Breadcrumb label for the detail page's Back button. */
+  detailBackLabel?: string
+  onDetailRowKeyChange: (key: string | null) => void
+  onDetailViewChange: (view: 'details' | 'logs') => void
 }
 
-export function ConnectionsList({ agentSlug }: ConnectionsListProps) {
+export function ConnectionsList({ agentSlug, detailRowKey, detailView, detailBackLabel, onDetailRowKeyChange, onDetailViewChange }: ConnectionsListProps) {
   return (
     <div className="flex flex-col gap-4">
-      <AllConnectionsList agentSlug={agentSlug} />
+      <AllConnectionsList
+        agentSlug={agentSlug}
+        detailRowKey={detailRowKey}
+        detailView={detailView}
+        detailBackLabel={detailBackLabel}
+        onDetailRowKeyChange={onDetailRowKeyChange}
+        onDetailViewChange={onDetailViewChange}
+      />
     </div>
   )
 }
 
 export function NewIntegrationButton() {
   const [open, setOpen] = useState(false)
+  const [newApi, setNewApi] = useState<NewApiConnection | null>(null)
+  const [newMcp, setNewMcp] = useState<NewMcpConnection | null>(null)
+
+  const provider = newApi ? getProvider(newApi.toolkit) : null
 
   return (
     <>
@@ -51,17 +94,47 @@ export function NewIntegrationButton() {
       <IntegrationDirectoryDialog
         open={open}
         onOpenChange={setOpen}
-        initialTab="apis"
+        onApiConnected={setNewApi}
+        onMcpConnected={setNewMcp}
       />
+      {newApi && (
+        <ScopePolicyEditor
+          accountId={newApi.accountId}
+          toolkit={newApi.toolkit}
+          open
+          onOpenChange={(isOpen) => { if (!isOpen) setNewApi(null) }}
+          header={
+            <ConnectionSuccessHeader
+              toolkit={newApi.toolkit}
+              displayName={provider?.displayName || newApi.toolkit}
+            />
+          }
+        />
+      )}
+      {newMcp && (
+        <ToolPolicyEditor
+          mcpId={newMcp.mcpId}
+          mcpName={newMcp.name}
+          tools={newMcp.tools}
+          open
+          onOpenChange={(isOpen) => { if (!isOpen) setNewMcp(null) }}
+          allowSaveWithoutChanges
+        />
+      )}
     </>
   )
 }
 
 interface AllConnectionsListProps {
   agentSlug: string
+  detailRowKey: string | null
+  detailView: 'details' | 'logs'
+  detailBackLabel?: string
+  onDetailRowKeyChange: (key: string | null) => void
+  onDetailViewChange: (view: 'details' | 'logs') => void
 }
 
-function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
+function AllConnectionsList({ agentSlug, detailRowKey, detailView, detailBackLabel, onDetailRowKeyChange, onDetailViewChange }: AllConnectionsListProps) {
   const { data: allAccountsData, isLoading: isLoadingAllAccounts } = useConnectedAccounts()
   const { data: agentAccountsData, isLoading: isLoadingAgentAccounts } = useAgentConnectedAccounts(agentSlug)
   const { data: allMcpsData, isLoading: isLoadingAllMcps } = useRemoteMcps()
@@ -71,6 +144,20 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
   const removeAccount = useRemoveAgentConnectedAccount()
   const assignMcp = useAssignMcpToAgent()
   const removeMcp = useRemoveMcpFromAgent()
+  const removeSharedAccount = useRemoveAgentAccountMapping()
+  const removeSharedMcp = useRemoveAgentMcpMapping()
+  const { canAdminAgent } = useUser()
+  const canRemoveShared = canAdminAgent(agentSlug)
+  // The shared row awaiting confirmation. Unlinking a connection someone else
+  // owns is one-way for the person doing it — only the owner can re-share it —
+  // so it asks first, unlike the reversible grant switch.
+  const [sharedPendingRemoval, setSharedPendingRemoval] = useState<UnifiedRow | null>(null)
+  const {
+    reconnect: oauthReconnect,
+    pendingAccountId,
+    canCancelPendingReconnect,
+    cancelReconnect,
+  } = useOAuthReconnect()
 
   // Optimistic overrides keyed by row.key. Keeps the row visually in its new
   // section while the mutation is in-flight so the View Transition can animate
@@ -89,8 +176,14 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
     const rows = buildUnifiedRows({
       allAccounts,
       allMcps,
-      agentAccountIds: new Set(agentAccounts.map((a) => a.id)),
-      agentMcpIds: new Set(agentMcps.map((m) => m.id)),
+      agentAccountIds: new Set(
+        agentAccounts.filter(isPublicAgentConnectedAccount).map((account) => account.id),
+      ),
+      agentMcpIds: new Set(
+        agentMcps.filter(isPublicAgentRemoteMcp).map((mcp) => mcp.id),
+      ),
+      foreignAccounts: agentAccounts.filter(isForeignAgentConnectedAccount),
+      foreignMcps: agentMcps.filter(isForeignAgentRemoteMcp),
       grantOverrides,
     })
 
@@ -107,10 +200,14 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
   useEffect(() => {
     if (Object.keys(grantOverrides).length === 0) return
     const agentAccountIds = new Set(
-      (Array.isArray(agentAccountsData?.accounts) ? agentAccountsData.accounts : []).map((a) => a.id),
+      (Array.isArray(agentAccountsData?.accounts) ? agentAccountsData.accounts : [])
+        .filter(isPublicAgentConnectedAccount)
+        .map((account) => account.id),
     )
     const agentMcpIds = new Set(
-      (Array.isArray(agentMcpsData?.mcps) ? agentMcpsData.mcps : []).map((m) => m.id),
+      (Array.isArray(agentMcpsData?.mcps) ? agentMcpsData.mcps : [])
+        .filter(isPublicAgentRemoteMcp)
+        .map((mcp) => mcp.id),
     )
     setGrantOverrides((prev) => {
       let changed = false
@@ -132,6 +229,8 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
     isLoadingAllAccounts || isLoadingAgentAccounts || isLoadingAllMcps || isLoadingAgentMcps
 
   const handleToggle = async (row: UnifiedRow, next: boolean) => {
+    if (row.foreign) return
+
     // Optimistic flip wrapped in View Transitions so the row animates to its
     // new section. flushSync forces the optimistic state into the DOM before
     // startViewTransition snapshots the "before" image — without it the
@@ -157,16 +256,39 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
         }
       }
     } catch {
-      // Revert the optimistic override so the row snaps back.
-      setGrantOverrides((prev) => {
-        const n = { ...prev }
-        delete n[row.key]
-        return n
+      // Revert the optimistic override so the row snaps back. Must go through
+      // the same view-transition queue as the optimistic set: the browser runs
+      // update callbacks in queue order but defers them past snapshot capture,
+      // so a fast failure would otherwise revert BEFORE the optimistic set
+      // lands and leave the row stuck in its new section.
+      startViewTransition(() => {
+        flushSync(() => {
+          setGrantOverrides((prev) => {
+            const n = { ...prev }
+            delete n[row.key]
+            return n
+          })
+        })
       })
     }
   }
 
+  const confirmSharedRemoval = async () => {
+    const row = sharedPendingRemoval
+    if (!row?.mappingId) return
+    setSharedPendingRemoval(null)
+    const removal = row.type === 'oauth' ? removeSharedAccount : removeSharedMcp
+    // Caught only to keep the rejection handled — neither hook opts out of the
+    // global error toast, so a failure is reported there and the row stays put.
+    await removal.mutateAsync({ agentSlug, mappingId: row.mappingId }).catch(() => {})
+  }
+
   const isRowPending = (row: UnifiedRow): boolean => {
+    if (row.foreign) {
+      const removal = row.type === 'oauth' ? removeSharedAccount : removeSharedMcp
+      return removal.isPending && removal.variables?.mappingId === row.mappingId
+    }
+
     if (row.type === 'oauth') {
       if (assignAccounts.isPending && assignAccounts.variables?.accountIds.includes(row.id)) return true
       if (removeAccount.isPending && removeAccount.variables?.accountId === row.id) return true
@@ -177,6 +299,36 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
     return false
   }
 
+  // Resolve the selected row from the freshest data so the detail page stays
+  // live across renames; clear the selection once the row is truly gone.
+  const selectedRow = detailRowKey
+    ? [...grantedRows, ...notGrantedRows].find((r) => r.key === detailRowKey && !r.foreign) ?? null
+    : null
+  if (detailRowKey && !selectedRow && !isLoading) {
+    // Defer clearing to next tick to avoid setState during render.
+    queueMicrotask(() => onDetailRowKeyChange(null))
+  }
+
+  if (selectedRow) {
+    if (detailView === 'logs') {
+      return (
+        <ConnectionLogsView
+          row={selectedRow}
+          onBack={() => onDetailViewChange('details')}
+        />
+      )
+    }
+    return (
+      <ConnectionDetailPage
+        row={selectedRow}
+        backLabel={detailBackLabel}
+        onBack={() => onDetailRowKeyChange(null)}
+        onViewLogs={() => onDetailViewChange('logs')}
+        agentSlug={agentSlug}
+      />
+    )
+  }
+
   const renderRow = (row: UnifiedRow) => {
     const pending = isRowPending(row)
     return (
@@ -184,17 +336,48 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
         key={row.key}
         row={row}
         viewTransitionName={`integration-${row.key}`}
+        onActivate={row.foreign ? undefined : () => onDetailRowKeyChange(row.key)}
+        ariaLabel={row.foreign ? undefined : `Open ${row.name} connection details`}
+        onReconnect={!row.foreign && row.type === 'oauth' && row.accountStatus && row.accountStatus !== 'active' && row.toolkit
+          ? () => oauthReconnect(row.id, row.toolkit!)
+          : undefined}
+        onCancelReconnect={
+          pendingAccountId === row.id && canCancelPendingReconnect
+            ? cancelReconnect
+            : undefined
+        }
+        reconnecting={pendingAccountId === row.id}
         right={
-          <>
-            <IntegrationRowActions
-              type={row.type}
-              id={row.id}
-              name={row.name}
-              toolkit={row.toolkit}
-              mcpTools={row.mcpTools}
-              agentSlug={agentSlug}
-              hideRemoveFromAgent
-            />
+          row.foreign ? (
+            <>
+              <span className="text-xs text-muted-foreground">Shared</span>
+              {canRemoveShared && row.mappingId && (
+                pending ? (
+                  <Loader2
+                    className="h-4 w-4 animate-spin text-muted-foreground"
+                    aria-label="Removing shared connection"
+                    data-testid={`connection-shared-remove-${row.mappingId}-pending`}
+                  />
+                ) : (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 text-muted-foreground hover:text-foreground"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setSharedPendingRemoval(row)
+                    }}
+                    aria-label={`Remove ${row.name} from this agent`}
+                    data-testid={`connection-shared-remove-${row.mappingId}`}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                )
+              )}
+            </>
+          ) : <>
+            {/* Sits before the Switch; -ml-2 swallows the flex gap while hidden. */}
+            <RowHoverChevron className="-ml-2 group-hover:ml-0 group-focus-visible:ml-0" />
             {pending ? (
               <Loader2
                 className="h-4 w-4 animate-spin text-muted-foreground"
@@ -218,8 +401,38 @@ function AllConnectionsList({ agentSlug }: AllConnectionsListProps) {
 
   const hasAny = grantedRows.length > 0 || notGrantedRows.length > 0
 
+  const removalDialog = (
+    <AlertDialog
+      open={sharedPendingRemoval !== null}
+      onOpenChange={(open) => { if (!open) setSharedPendingRemoval(null) }}
+    >
+      <AlertDialogContent data-testid="connection-shared-remove-dialog">
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            Remove {sharedPendingRemoval?.name} from this agent?
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            This agent will lose access to the connection immediately. The
+            connection itself stays with the member who shared it — only they
+            can share it back.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={() => { void confirmSharedRemoval() }}
+            data-testid="connection-shared-remove-confirm"
+          >
+            Remove
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+
   return (
     <div className="space-y-6">
+      {removalDialog}
       {isLoading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />

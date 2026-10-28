@@ -1,0 +1,9 @@
+{
+  "sessionId": "d6ca7b70-e1cc-4761-8313-03cd62502479",
+  "agentSlug": "he-9simt4",
+  "description": "Real repro of the premature-idle-on-queued-message bug (2026-06-11, CLI 2.1.170). User asks 'What're quarks?' and queues 'and whats the colour thing ?' while the agent streams its final response. The message arrives too late to be steered into the running query, so the CLI completes the query (result success at 17:49:28.447, queue-operation dequeue at the same ms) WITHOUT emitting session_state_changed — a CLI run starts in 'running' and only publishes its first transition. The container then starts a continuation run (system init at 28.520, +73ms) for the queued message; the ONLY state event of the entire session is the final idle at 17:49:39.475, 2ms after the second result. Assembled from the session transcript JSONL (real uuids, message ids, text, timestamps) and the container's docker log ordering; result payloads and stream deltas reconstructed in the shape of real captures (results are not persisted to transcripts). The capabilities hello at t=1 is what the fixed container emits on WebSocket connect.",
+  "subagents": [],
+  "totalEntries": 20,
+  "firstResultUuid": "f31b9c44-1111-4f29-9f3a-aaaaaaaaaaa1",
+  "queuedUserMessageUuid": "5c8d1ceb-5018-44c6-ab98-7227a5b59768"
+}

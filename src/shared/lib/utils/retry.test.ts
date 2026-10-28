@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { withRetry } from './retry'
+import { withRetry, NonRetryableError } from './retry'
 
 describe('withRetry', () => {
   it('returns result on first successful attempt', async () => {
@@ -154,5 +154,23 @@ describe('withRetry', () => {
 
     await expect(withRetry(fn, 1, 5)).rejects.toThrow('fail')
     expect(fn).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not retry when fn throws a NonRetryableError', async () => {
+    const fn = vi.fn().mockRejectedValue(new NonRetryableError('not found'))
+
+    await expect(withRetry(fn, 3, 5)).rejects.toBeInstanceOf(NonRetryableError)
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries regular errors but bails out on NonRetryableError mid-loop', async () => {
+    const fn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('transient'))
+      .mockRejectedValueOnce(new NonRetryableError('terminal'))
+      .mockResolvedValue('unreachable')
+
+    await expect(withRetry(fn, 5, 5)).rejects.toThrow('terminal')
+    expect(fn).toHaveBeenCalledTimes(2)
   })
 })

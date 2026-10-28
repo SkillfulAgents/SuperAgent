@@ -12,58 +12,34 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  # Extract version from tag
+  # Extract version + update channel from tag
   prepare:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      channel: ${{ steps.version.outputs.channel }}
     steps:
-      - name: Extract version from tag
+      - name: Extract version + channel from tag
         id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+        run: |
+          echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+          # Channel = the prerelease identifier (rc/beta/alpha) so electron-builder
+          # writes rc-*.yml for prereleases and latest-*.yml for stable. Matches the
+          # app's runtime autoUpdater.channel derivation in auto-updater.ts.
+          if [[ "$GITHUB_REF_NAME" =~ -([a-zA-Z]+) ]]; then
+            echo "channel=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
+          else
+            echo "channel=latest" >> $GITHUB_OUTPUT
+          fi
 
   # Build and push agent container with version tag
   build-agent-container:
-    runs-on: ubuntu-latest
     needs: prepare
-    env:
-      IMAGE_NAME: ${{ github.repository_owner }}/superagent-agent-container-base
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-
-      - name: Build and push container image
-        uses: docker/build-push-action@v7
-        with:
-          context: ./agent-container
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+    uses: ./.github/workflows/agent-container-image.yml
+    with:
+      tags: |
+        type=semver,pattern={{version}}
+        type=semver,pattern={{major}}.{{minor}}
 
   # Build and push app containers with version tags (regular + auth)
   build-app-container:
@@ -117,13 +93,41 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: AUTH_MODE=${{ matrix.auth_mode }}
+          # Read-only: every release bumps package.json's version, which busts
+          # the npm ci layers, so exporting cache here cost minutes and never hit.
           cache-from: type=gha,scope=app-${{ matrix.auth_mode }}
-          cache-to: type=gha,mode=max,scope=app-${{ matrix.auth_mode }}
+
+  # Kick gamut-infra's release-ingest: crane copy the -auth image to ECR,
+  # build the MicroVM agent image, register the release_registry row. Needs
+  # both container images published first.
+  dispatch-release-ingest:
+    runs-on: ubuntu-latest
+    needs: [prepare, build-agent-container, build-app-container]
+    steps:
+      - name: Dispatch superagent-release to gamut-infra
+        env:
+          # Fine-grained PAT (or GitHub App token) with contents:write on
+          # SkillfulAgents/gamut-infra — repository_dispatch requires it.
+          GH_TOKEN: ${{ secrets.GAMUT_INFRA_DISPATCH_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          gh api repos/SkillfulAgents/gamut-infra/dispatches \
+            -f event_type=superagent-release \
+            -f "client_payload[version]=$VERSION"
+
+  # The built-in Lima runtime's VM image, which the macOS build bundles
+  lima-image:
+    uses: ./.github/workflows/lima-image.yml
 
   # Build macOS Electron app (signed + notarized)
   build-mac:
-    runs-on: macos-26
-    needs: prepare
+    # Not GitHub's macos-26 (3 cores): on the same commit, dist:mac took 25 min
+    # there and 14 min on Blacksmith's 6 vCPU runner.
+    runs-on: blacksmith-12vcpu-macos-26
+    # The app bundles the agent image this release publishes (dist:mac's
+    # download:agent-image), so it waits for it: ~35 s when the layers are
+    # cached from main. lima-image builds the built-in runtime's VM image.
+    needs: [prepare, lima-image, build-agent-container]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -131,11 +135,22 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Download the Lima VM image
+        uses: actions/download-artifact@v4
+        with:
+          name: lima-image-arm64
+          path: build/lima-image
 
       - name: Decode Apple API Key
         env:
@@ -143,6 +158,19 @@ jobs:
         run: |
           echo "$APPLE_API_KEY_BASE64" | base64 --decode > /tmp/AuthKey.p8
           echo "APPLE_API_KEY=/tmp/AuthKey.p8" >> $GITHUB_ENV
+
+      # Write the update channel into package.json's build.publish.channel via
+      # Node (value comes from an env var, never a CLI arg) so it can't be mangled
+      # by Windows arg-passing — the `-c.publish.channel=` electron-builder flag
+      # got split into `-c .publish.channel=rc` through npm -> cmd.exe -> the
+      # electron-builder.cmd shim and was read as a config-file path (SUP-283).
+      - name: Set update channel
+        shell: bash
+        env:
+          UPDATE_CHANNEL: ${{ needs.prepare.outputs.channel }}
+        run: |
+          node -e "const fs=require('fs'),p=require('./package.json');p.build.publish.channel=process.env.UPDATE_CHANNEL;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          echo "build.publish.channel set to $UPDATE_CHANNEL"
 
       - name: Build and sign macOS app
         env:
@@ -154,7 +182,59 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PLATFORM_BASE_URL: ${{ secrets.PLATFORM_BASE_URL }}
           PLATFORM_PROXY_URL: ${{ secrets.PLATFORM_PROXY_URL }}
+          PLATFORM_AUTH_ISSUER_URL: ${{ secrets.PLATFORM_AUTH_ISSUER_URL }}
+          LIMA_IMAGE_DIR: build/lima-image
+          # A release never ships without its agent image.
+          AGENT_IMAGE_REQUIRED: 'true'
+          # Notarization is most of this step and electron-builder logs only
+          # its end: this timestamps the zip, the submission (upload and
+          # Apple's processing, whose log then gives the upload time) and the
+          # staple. Credentials print masked.
+          DEBUG: electron-notarize*
         run: npm run dist:mac
+
+      # Electron 44+ needs macOS 13, and the packaged app says so
+      # (LSMinimumSystemVersion), but the feed has to say it too or the updater
+      # installs a build that macOS 12 then refuses to open. electron-updater
+      # compares the field against os.release(), the Darwin kernel version, so
+      # macOS 13 is 22.0.0 ("13.0" is not semver and is ignored). electron-builder
+      # has no option for it (electron-userland/electron-builder#8569).
+      - name: Pin the macOS floor in the update feed
+        run: |
+          node -e "
+            const fs = require('fs'), yaml = require('js-yaml')
+            const feeds = fs.readdirSync('release').filter((f) => f.endsWith('-mac.yml'))
+            if (feeds.length === 0) throw new Error('no *-mac.yml feed in release/')
+            for (const f of feeds) {
+              const path = 'release/' + f
+              const info = yaml.load(fs.readFileSync(path, 'utf8'))
+              info.minimumSystemVersion = '22.0.0'
+              fs.writeFileSync(path, yaml.dump(info, { lineWidth: -1 }))
+              console.log(path + ': minimumSystemVersion=' + info.minimumSystemVersion)
+            }
+          "
+
+      - name: Enforce release artifact size limit
+        shell: bash
+        run: |
+          # A size budget, not a platform limit: the R2 feed upload is multipart
+          # and GitHub release assets go to 2 GiB. It catches an installer that
+          # balloons unnoticed. The macOS app carries the agent image
+          # (scripts/fetch-agent-image.ts, ~545 MiB with zstd layers) and the built-in runtime's
+          # VM image with its packages installed, which it also ships to repair
+          # it: a DMG of ~1165 MiB.
+          limit=$((1300 * 1024 * 1024))
+          bad=0
+          for f in release/*.exe release/*.dmg release/*.zip; do
+            [ -e "$f" ] || continue
+            size=$(wc -c < "$f")
+            printf '%6d MiB  %s\n' "$((size / 1048576))" "$(basename "$f")"
+            if [ "$size" -gt "$limit" ]; then
+              echo "::error file=$f::$(basename "$f") is $((size / 1048576)) MiB, over the $((limit / 1048576)) MiB release-artifact size budget"
+              bad=1
+            fi
+          done
+          [ "$bad" -eq 0 ] || exit 1
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
@@ -167,10 +247,43 @@ jobs:
             release/*.yaml
             release/*.blockmap
           retention-days: 5
+          # The DMG and ZIP are compressed already (2.3 GB with the agent
+          # image): deflating them again only costs time here and in create-release.
+          compression-level: 0
+
+  # Build the Mac App Store package, upload it to App Store Connect, and hand it
+  # to TestFlight: Team (internal) gets it as soon as Apple has processed it, and
+  # Beta (external) once Beta App Review approves it. Every release of a version
+  # (0.6.0-rc.1, rc.2, 0.6.0) is the same TestFlight version, 0.6.0, so only its
+  # first build needs a full review; Apple may approve later ones without one.
+  # A full release also leaves its App Store version ready with its build;
+  # submitting it for review stays a person's step. Like build-mac it bundles
+  # the agent image this release publishes, so it waits for it. create-release
+  # doesn't wait for this job: a Store problem never holds up the direct
+  # release, and the package isn't one of its files (its artifact name doesn't
+  # match `*-release-artifacts`).
+  build-mas:
+    needs: [prepare, lima-image, build-agent-container]
+    uses: ./.github/workflows/build-mas.yml
+    secrets: inherit
+    with:
+      # Higher for every upload, re-runs included: 412.1, 412.2, 413.1.
+      build-number: ${{ github.run_number }}.${{ github.run_attempt }}
+      app-store-connect: upload
+      artifact-name: Gamut-MAS-${{ needs.prepare.outputs.version }}
+      testflight-groups: Team,Beta
+      # Testers see 0.6.0 (412.1); this says which release that is.
+      what-to-test: Gamut ${{ needs.prepare.outputs.version }}
+      # A full release also leaves the App Store version ready to submit with its
+      # build: the version being prepared takes this number, or a new one is made
+      # once the last is out. An rc leaves it alone.
+      app-store-version: ${{ needs.prepare.outputs.channel == 'latest' && needs.prepare.outputs.version || '' }}
+      # Written only where empty, so an edit made before submitting stays.
+      whats-new: Bug fixes and improvements.
 
   # Build Windows Electron app
   build-win:
-    runs-on: windows-latest
+    runs-on: blacksmith-4vcpu-windows-2025
     needs: prepare
     steps:
       - name: Checkout
@@ -179,18 +292,60 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Build Windows app
+      # See build-mac: set the channel via Node from an env var so Windows
+      # arg-passing can't mangle a `-c.publish.channel=` CLI flag (SUP-283).
+      - name: Set update channel
+        shell: bash
+        env:
+          UPDATE_CHANNEL: ${{ needs.prepare.outputs.channel }}
+        run: |
+          node -e "const fs=require('fs'),p=require('./package.json');p.build.publish.channel=process.env.UPDATE_CHANNEL;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          echo "build.publish.channel set to $UPDATE_CHANNEL"
+
+      - name: Build and sign Windows app
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PLATFORM_BASE_URL: ${{ secrets.PLATFORM_BASE_URL }}
           PLATFORM_PROXY_URL: ${{ secrets.PLATFORM_PROXY_URL }}
+          PLATFORM_AUTH_ISSUER_URL: ${{ secrets.PLATFORM_AUTH_ISSUER_URL }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_CODE_SIGNING_ENDPOINT: ${{ secrets.AZURE_CODE_SIGNING_ENDPOINT }}
+          AZURE_CODE_SIGNING_ACCOUNT: ${{ secrets.AZURE_CODE_SIGNING_ACCOUNT }}
+          AZURE_CODE_SIGNING_PROFILE: ${{ secrets.AZURE_CODE_SIGNING_PROFILE }}
+          AZURE_CODE_SIGNING_PUBLISHER: ${{ secrets.AZURE_CODE_SIGNING_PUBLISHER }}
         run: npm run dist:win
+
+      - name: Enforce release artifact size limit
+        shell: bash
+        run: |
+          # A size budget, not a platform limit: the R2 feed upload is multipart
+          # and GitHub release assets go to 2 GiB. It catches an installer that
+          # balloons unnoticed (the Windows one carries both x64 and arm64).
+          limit=$((400 * 1024 * 1024))
+          bad=0
+          for f in release/*.exe release/*.dmg release/*.zip; do
+            [ -e "$f" ] || continue
+            size=$(wc -c < "$f")
+            printf '%6d MiB  %s\n' "$((size / 1048576))" "$(basename "$f")"
+            if [ "$size" -gt "$limit" ]; then
+              echo "::error file=$f::$(basename "$f") is $((size / 1048576)) MiB, over the 400 MiB release-artifact size budget"
+              bad=1
+            fi
+          done
+          [ "$bad" -eq 0 ] || exit 1
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
@@ -203,27 +358,31 @@ jobs:
             release/*.yaml
             release/*.blockmap
           retention-days: 5
+          # Compressed already, as on macOS.
+          compression-level: 0
 
   # Create GitHub Release with all artifacts
   create-release:
     runs-on: ubuntu-latest
     needs: [prepare, build-agent-container, build-app-container, build-mac, build-win]
+    # Mapped from the secret so the R2 upload step can self-gate on its presence
+    # (the `secrets` context isn't available in a step `if:` condition).
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Download mac artifacts
+      # Both builds' artifacts at once (they hold no file with the same name but
+      # builder-debug.yml, electron-builder's debug dump).
+      - name: Download mac and win artifacts
         uses: actions/download-artifact@v4
         with:
-          name: mac-release-artifacts
+          pattern: '*-release-artifacts'
+          merge-multiple: true
           path: ./release-artifacts
 
-      - name: Download win artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: win-release-artifacts
-          path: ./release-artifacts
-
+      # The release only, as a draft: its files go up in the next step.
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -232,12 +391,129 @@ jobs:
           draft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
-          files: |
-            ./release-artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Dual-publish bridge (SUP-286): the owned R2 feed (updates.gamutagents.com)
+      # alongside the GitHub release. The release's files and R2's binaries
+      # upload at the same time; R2's feed metadata (latest*.yml) waits until
+      # every R2 binary is up AND the GitHub release is published, so R2 never
+      # advertises a version whose binaries are missing, and an R2 failure can
+      # never block the primary (GitHub) feed. An R2 failure DOES fail the job
+      # (in the feed step): from 0.5.21 to 0.5.22 the Windows installer was
+      # over wrangler's 300 MiB cap, nothing (not even latest.yml) reached R2,
+      # and continue-on-error hid it — the generic feed silently stopped
+      # updating. R2 is skipped if the Cloudflare account isn't configured.
+      #
+      # Uploads go through R2's S3 API, where the AWS CLI splits large files
+      # into multipart uploads: wrangler's `r2 object put` refuses anything over
+      # 300 MiB, and the Windows installer (x64 + arm64 in one exe) passed that
+      # with Electron 45. The S3 API takes its own keys — an R2 API token with
+      # Object Read & Write on gamut-releases — not CLOUDFLARE_API_TOKEN.
+      - name: Upload the release files to GitHub and the binaries to R2
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          # Newer AWS CLIs attach checksums to every request by default; only
+          # send them where the S3 API requires them.
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+        run: |
+          shopt -s nullglob
+          files=(./release-artifacts/*)
+
+          # --clobber: a re-run of this job replaces what a failed run uploaded.
+          gh release upload "$GITHUB_REF_NAME" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber &
+          github=$!
+
+          r2=skipped
+          if [ -n "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            # Missing keys must fail the job: a silently skipped upload is how
+            # the feed went stale before (see above). The feed step fails it,
+            # after the GitHub release is published.
+            if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+              echo "::error::R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are not set; the R2 feed would not get this release."
+              r2=failed
+            else
+              endpoint="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
+              pids=()
+              names=()
+              for f in "${files[@]}"; do
+                name="$(basename "$f")"
+                case "$name" in *.yml|*.yaml) continue ;; esac
+                echo "→ R2: $name ($(( $(wc -c < "$f") / 1048576 )) MiB)"
+                aws s3 cp "$f" "s3://gamut-releases/$name" --endpoint-url "$endpoint" --only-show-errors &
+                pids+=("$!")
+                names+=("$name")
+              done
+              r2=ok
+              for i in "${!pids[@]}"; do
+                if ! wait "${pids[$i]}"; then
+                  echo "::error::R2 upload failed for ${names[$i]}"
+                  r2=failed
+                fi
+              done
+              echo "R2 binaries: $r2 after ${SECONDS}s"
+            fi
+          fi
+          echo "R2_BINARIES=$r2" >> "$GITHUB_ENV"
+
+          if ! wait "$github"; then
+            echo "::error::Uploading the release files to GitHub failed; the release stays a draft."
+            exit 1
+          fi
+          echo "GitHub release files: uploaded after ${SECONDS}s"
 
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit "$GITHUB_REF_NAME" --draft=false --repo "$GITHUB_REPOSITORY"
+
+      - name: Upload release feed to Cloudflare R2
+        if: ${{ env.CLOUDFLARE_ACCOUNT_ID != '' }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+        run: |
+          if [ "$R2_BINARIES" != "ok" ]; then
+            echo "::error::Not uploading feed metadata: the R2 binary uploads failed (see the previous upload step). The R2 feed still points at the previous version."
+            exit 1
+          fi
+          endpoint="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          shopt -s nullglob
+          failed=()
+          for f in ./release-artifacts/*.yml ./release-artifacts/*.yaml; do
+            name="$(basename "$f")"
+            # builder-debug.yml is electron-builder's debug dump, not a feed file.
+            [ "$name" = "builder-debug.yml" ] && continue
+            echo "→ R2: $name"
+            if ! aws s3 cp "$f" "s3://gamut-releases/$name" --endpoint-url "$endpoint" --only-show-errors; then
+              echo "::error::R2 upload failed for $name"
+              failed+=("$name")
+            fi
+          done
+
+          if [ "${#failed[@]}" -ne 0 ]; then
+            echo "::error::Feed metadata upload failed (${failed[*]}); clients on the R2 feed will not see this release."
+            exit 1
+          fi
+
+      # Differential updates need the feed to answer one request for many byte
+      # ranges with 206 multipart/byteranges; otherwise every update silently
+      # downloads the whole file, as every macOS update did until gamut-releases#2.
+      # Last, so it never holds a release back; a failure still fails the job.
+      - name: Check the feed serves differential updates
+        if: ${{ env.CLOUDFLARE_ACCOUNT_ID != '' }}
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          status=0
+          for name in "Gamut-${VERSION}-arm64.zip" "Gamut-${VERSION}-Setup.exe"; do
+            node scripts/check-feed-ranges.mjs "https://updates.gamutagents.com/$name" "./release-artifacts/$name" || status=1
+          done
+          exit "$status"

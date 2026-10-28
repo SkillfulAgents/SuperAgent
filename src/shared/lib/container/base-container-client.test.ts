@@ -1,8 +1,119 @@
-import { describe, it, expect, afterEach } from 'vitest'
+vi.mock('./host-token-store', () => ({ getOrCreateHostToken: () => 'host-test-token' }))
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { writeEnvFile, parseMemoryValue, shellQuote, isConnectionError, getEnhancedPath } from './base-container-client'
+import { writeEnvFile, parseMemoryValue, shellQuote, isConnectionError, getEnhancedPath, BaseContainerClient, refusedVolumeFlags, execWithPath, shellEscape, spawnWithPath } from './base-container-client'
+import type { ContainerInfo, ContainerConfig, StreamMessage } from './types'
+
+const enableToolSearch = vi.fn((): boolean | undefined => true)
+vi.mock('@shared/lib/config/settings', () => ({
+  getSettings: () => ({ enableToolSearch: enableToolSearch() }),
+}))
+const getContainerEnvVars = vi.fn((): Record<string, string> => ({ ANTHROPIC_API_KEY: 'provider-key' }))
+const platformToken = vi.fn(async (_agentId: string): Promise<string | undefined> => undefined)
+vi.mock('../platform-attribution/container-token', () => ({
+  getPlatformContainerToken: (agentId: string) => platformToken(agentId),
+}))
+vi.mock('../platform-auth/config', () => ({
+  getPlatformProxyBaseUrl: () => 'http://localhost:8080',
+}))
+const toolSearchEnv = vi.fn((): 'true' | 'false' => 'true')
+vi.mock('@shared/lib/llm-provider', () => ({
+  getActiveLlmProvider: () => ({ getContainerEnvVars, toolSearchEnv }),
+}))
+
+/** Minimal concrete subclass to exercise protected run-error classification. */
+class TestContainerClient extends BaseContainerClient {
+  protected getRunnerCommand(): string {
+    return 'docker'
+  }
+  // Expose protected predicates for testing.
+  public testIsPortConflictError(error: unknown): boolean {
+    return this.isPortConflictError(error)
+  }
+  public testBuildAgentEnv(extra?: Record<string, string>): Promise<Record<string, string>> {
+    return this.buildAgentEnv(extra)
+  }
+}
+
+describe('buildAgentEnv', () => {
+  afterEach(() => {
+    enableToolSearch.mockReturnValue(true)
+    toolSearchEnv.mockReturnValue('true')
+    platformToken.mockReset().mockResolvedValue(undefined)
+    getContainerEnvVars.mockReset().mockReturnValue({ ANTHROPIC_API_KEY: 'provider-key' })
+  })
+
+  it('merges provider env, constants, config.envVars and per-start extra (later wins)', async () => {
+    const client = new TestContainerClient({
+      agentId: 'a',
+      envVars: { FROM_CONFIG: 'c', ANTHROPIC_API_KEY: 'from-config' }, // config beats provider
+    })
+    const env = await client.testBuildAgentEnv({ FROM_EXTRA: 'e', FROM_CONFIG: 'from-extra' }) // extra beats config
+    expect(env.ANTHROPIC_API_KEY).toBe('from-config')
+    expect(env.FROM_CONFIG).toBe('from-extra')
+    expect(env.FROM_EXTRA).toBe('e')
+    expect(env.CLAUDE_CONFIG_DIR).toBe('/workspace/.claude')
+    expect(env.ENABLE_TOOL_SEARCH).toBe('true')
+  })
+
+  it.each([
+    { ANTHROPIC_API_KEY: 'direct-key' },
+    { ANTHROPIC_BASE_URL: 'https://other-provider.example', ANTHROPIC_AUTH_TOKEN: 'other-token' },
+    { CLAUDE_CODE_USE_BEDROCK: '1', AWS_BEARER_TOKEN_BEDROCK: 'bedrock-key' },
+  ] as Record<string, string>[])('supplies independent Platform service credentials with LLM env %j', async (llmEnv) => {
+    platformToken.mockResolvedValue('platform-token::agent-owner')
+    getContainerEnvVars.mockReturnValue(llmEnv)
+    const client = new TestContainerClient({
+      agentId: 'my-agent',
+      envVars: { PLATFORM_BASE_URL: 'https://wrong.example' },
+    })
+    const env = await client.testBuildAgentEnv({ PLATFORM_AUTH_TOKEN: 'wrong-token' })
+    expect(env).toMatchObject(llmEnv)
+    expect(env.PLATFORM_BASE_URL).toBe('http://host.docker.internal:8080')
+    expect(env.PLATFORM_AUTH_TOKEN).toBe('platform-token::agent-owner')
+    expect(platformToken).toHaveBeenCalledWith('my-agent')
+  })
+
+  it('omits Platform service credentials when disconnected, including old custom overrides', async () => {
+    const client = new TestContainerClient({ agentId: 'a', envVars: { PLATFORM_AUTH_TOKEN: 'stale' } })
+    const env = await client.testBuildAgentEnv({ PLATFORM_BASE_URL: 'https://stale.example' })
+    expect(env).not.toHaveProperty('PLATFORM_BASE_URL')
+    expect(env).not.toHaveProperty('PLATFORM_AUTH_TOKEN')
+    expect(env.ANTHROPIC_API_KEY).toBe('provider-key')
+  })
+
+  it('sets ENABLE_TOOL_SEARCH=false only when the setting is explicitly false', async () => {
+    enableToolSearch.mockReturnValue(false)
+    const env = await new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
+    expect(env.ENABLE_TOOL_SEARCH).toBe('false')
+  })
+
+  // Unset reads as on behind any custom base URL (CLI 2.1.304+), so a
+  // provider's 'false' must reach the container as an explicit value.
+  it("passes a provider's 'false' through", async () => {
+    toolSearchEnv.mockReturnValue('false')
+    const env = await new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
+    expect(env.ENABLE_TOOL_SEARCH).toBe('false')
+  })
+
+  // The setting is a master switch, not a way to force tool search onto an
+  // endpoint that rejects deferred tools.
+  it('keeps ENABLE_TOOL_SEARCH=false over the provider value when the setting is off', async () => {
+    enableToolSearch.mockReturnValue(false)
+    toolSearchEnv.mockReturnValue('true')
+    const env = await new TestContainerClient({ agentId: 'a', envVars: {} }).testBuildAgentEnv()
+    expect(env.ENABLE_TOOL_SEARCH).toBe('false')
+  })
+
+  it('passes the agent identity to the provider so it can attribute LLM usage', async () => {
+    await new TestContainerClient({ agentId: 'my-agent', envVars: {} }).testBuildAgentEnv()
+    expect(getContainerEnvVars).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'my-agent' })
+    )
+  })
+})
 
 describe('writeEnvFile', () => {
   const cleanups: (() => void)[] = []
@@ -414,6 +525,55 @@ describe('parseMemoryValue', () => {
 // shellQuote
 // ============================================================================
 
+describe('shellEscape', () => {
+  // The workspace -v value runs through a real shell, so its path must stay one literal word.
+  it.skipIf(process.platform === 'win32')('keeps a path with shell syntax literal through a real shell', async () => {
+    const { stdout } = await execWithPath(`printf %s ${shellEscape("/tmp/a$(echo pwned) b'c")}`)
+    expect(stdout).toBe("/tmp/a$(echo pwned) b'c")
+  })
+})
+
+describe('spawnWithPath', () => {
+  it.skipIf(process.platform === 'win32')('spawns an unquoted path that contains a space', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'spawn path '))
+    const bin = path.join(dir, 'print args')
+    fs.writeFileSync(bin, '#!/bin/sh\nfor a in "$@"; do echo "$a"; done\n', { mode: 0o755 })
+    try {
+      const proc = spawnWithPath(bin, ['a b', 'c'])
+      const out = await new Promise<string>((resolve, reject) => {
+        let s = ''
+        proc.stdout!.on('data', (d) => { s += d })
+        proc.on('error', reject)
+        proc.on('close', () => resolve(s))
+      })
+      expect(out).toBe('a b\nc\n')
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('quotes a path with a space on Windows, where spawn goes through a shell', async () => {
+    const spawn = vi.fn(() => ({}))
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+    vi.resetModules()
+    vi.doMock('child_process', async (importOriginal) => ({ ...(await importOriginal<typeof import('child_process')>()), spawn }))
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    try {
+      const { spawnWithPath: spawnOnWindows } = await import('./base-container-client')
+      spawnOnWindows('C:\\Users\\John Doe\\.superagent\\bin\\wsl-nerdctl.cmd', ['ps'])
+      expect(spawn).toHaveBeenCalledWith(
+        '"C:\\Users\\John Doe\\.superagent\\bin\\wsl-nerdctl.cmd"',
+        ['ps'],
+        expect.objectContaining({ shell: true }),
+      )
+    } finally {
+      Object.defineProperty(process, 'platform', platform)
+      vi.doUnmock('child_process')
+      vi.resetModules()
+    }
+  })
+})
+
 describe('shellQuote', () => {
   // Note: shellQuote checks the module-level `isWindows` constant which is
   // set at module load time from process.platform. On macOS/Linux this will
@@ -568,5 +728,355 @@ describe('getEnhancedPath', () => {
     // Every separator should be the platform delimiter
     const parts = enhanced.split(path.delimiter)
     expect(parts.length).toBeGreaterThan(1)
+  })
+})
+
+// ============================================================================
+// subscribeToStream error handling (ELECTRON-Q unhandled rejection)
+// ============================================================================
+
+/**
+ * Minimal concrete client whose getInfoFromRuntime reports the container as
+ * stopped, so subscribeToStream's getPortOrThrow throws "Container is not
+ * running" — the exact path that used to leak an unhandled rejection.
+ */
+class StoppedTestClient extends BaseContainerClient {
+  protected getRunnerCommand(): string {
+    return 'docker'
+  }
+  async getInfoFromRuntime(): Promise<ContainerInfo> {
+    return { status: 'stopped', port: null }
+  }
+}
+
+function makeStoppedClient(): StoppedTestClient {
+  return new StoppedTestClient({ agentId: 'test-agent' } as ContainerConfig)
+}
+
+describe('subscribeToStream failure handling', () => {
+  it('does not throw or emit an unhandled error when no error listener is attached', async () => {
+    const client = makeStoppedClient()
+    // No 'error' listener registered — a bare emit('error') would throw here.
+    const { ready } = client.subscribeToStream('sess-1', () => {})
+
+    // The discarded-promise scenario from the live sessions' reattach: only catch `ready`.
+    await expect(ready).rejects.toThrow('Container is not running')
+  })
+
+  it('routes a connection_closed message through the callback on setup failure', async () => {
+    const client = makeStoppedClient()
+    const messages: StreamMessage[] = []
+
+    const { ready } = client.subscribeToStream('sess-2', (m) => messages.push(m))
+
+    await ready.catch(() => {}) // swallow the expected rejection
+
+    expect(messages).toHaveLength(1)
+    expect(messages[0].type).toBe('connection_closed')
+    expect(messages[0].sessionId).toBe('sess-2')
+  })
+
+  it('still emits error when a listener IS attached', async () => {
+    const client = makeStoppedClient()
+    const errors: unknown[] = []
+    client.on('error', (err) => errors.push(err))
+
+    const { ready } = client.subscribeToStream('sess-3', () => {})
+    await ready.catch(() => {})
+
+    expect(errors).toHaveLength(1)
+    expect((errors[0] as Error).message).toContain('Container is not running')
+  })
+})
+
+// ============================================================================
+// fetch() port caching — one runtime inspect per container lifetime, not per
+// request (every proxied dashboard asset used to pay a CLI spawn)
+// ============================================================================
+
+class RunningTestClient extends BaseContainerClient {
+  infoCalls = 0
+  protected getRunnerCommand(): string {
+    return 'docker'
+  }
+  async getInfoFromRuntime(): Promise<ContainerInfo> {
+    this.infoCalls++
+    return { status: 'running', port: 4123 }
+  }
+  // The real implementation lazily persists a per-agent token file on disk
+  getHostAuthHeaders(): Record<string, string> {
+    return {}
+  }
+}
+
+describe('BaseContainerClient.fetch port caching', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('resolves the port from the runtime once and reuses it across fetches', async () => {
+    const client = new RunningTestClient({ agentId: 'test-agent' } as ContainerConfig)
+    const fetchMock = vi.fn(async () => new Response('ok'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await client.fetch('/artifacts')
+    await client.fetch('/artifacts')
+    await client.fetch('/health')
+
+    expect(client.infoCalls).toBe(1)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock).toHaveBeenNthCalledWith(1, 'http://127.0.0.1:4123/artifacts', expect.anything())
+  })
+
+  it('clears the cached port on a connection error and re-resolves on the next fetch', async () => {
+    const client = new RunningTestClient({ agentId: 'test-agent' } as ContainerConfig)
+    const fetchMock = vi
+      .fn(async () => new Response('ok'))
+      .mockResolvedValueOnce(new Response('ok'))
+      .mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:4123'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await client.fetch('/artifacts')
+    await expect(client.fetch('/artifacts')).rejects.toThrow('ECONNREFUSED')
+    await client.fetch('/artifacts')
+
+    // First fetch primes the cache, the refused fetch clears it, the third
+    // re-resolves — two inspects total, never one per request.
+    expect(client.infoCalls).toBe(2)
+  })
+
+  it('session-scoped calls clear a stale cached port on connection failure', async () => {
+    const client = new RunningTestClient({ agentId: 'test-agent' } as ContainerConfig)
+    const fetchMock = vi
+      .fn(async () => new Response('{}'))
+      .mockResolvedValueOnce(new Response('ok'))
+      .mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:4123'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await client.fetch('/artifacts')
+    // Container was recreated on another port: the very next session call
+    // fails once, clears the cache, and the call after re-resolves the port.
+    await expect(client.getSession('sess-1')).rejects.toThrow('ECONNREFUSED')
+    await client.getSession('sess-1')
+
+    expect(client.infoCalls).toBe(2)
+  })
+
+  it('does not clear the cached port on HTTP-level failures', async () => {
+    const client = new RunningTestClient({ agentId: 'test-agent' } as ContainerConfig)
+    const fetchMock = vi.fn(async () => new Response('nope', { status: 500 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await client.fetch('/artifacts')
+    await client.fetch('/artifacts')
+
+    expect(client.infoCalls).toBe(1)
+  })
+})
+
+// ============================================================================
+// run-error classification (port races, inaccessible mounts)
+// ============================================================================
+
+describe('BaseContainerClient.isPortConflictError', () => {
+  const client = new TestContainerClient({ agentId: 'test-agent' })
+
+  it('matches docker "port is already allocated"', () => {
+    expect(client.testIsPortConflictError(new Error('Error: port is already allocated'))).toBe(true)
+  })
+
+  it('matches "address already in use"', () => {
+    expect(client.testIsPortConflictError(new Error('listen tcp 0.0.0.0:4000: bind: address already in use'))).toBe(true)
+  })
+
+  it('matches docker "Bind for ... failed"', () => {
+    expect(client.testIsPortConflictError(new Error('Bind for 0.0.0.0:4000 failed: port is already allocated'))).toBe(true)
+  })
+
+  it('reads from a .stderr property', () => {
+    expect(client.testIsPortConflictError({ stderr: 'failed to bind host port for 0.0.0.0:4000' })).toBe(true)
+  })
+
+  it('does not match unrelated errors', () => {
+    expect(client.testIsPortConflictError(new Error('no such image'))).toBe(false)
+  })
+})
+
+// ============================================================================
+// ensureImageExistsWithRecovery — SUP-291: the image BUILD step runs before
+// start()'s run-retry loop, so a dirty/unreachable runtime must get the same
+// one-shot self-heal the run step gets (else a scheduled task firing against a
+// not-yet-healed Lima VM hard-fails on a missing ha.sock).
+// ============================================================================
+
+describe('BaseContainerClient.ensureImageExistsWithRecovery', () => {
+  function makeClient() {
+    return new TestContainerClient({ agentId: 'test-agent' }) as any
+  }
+
+  it('builds once and never calls recovery when the build succeeds', async () => {
+    const client = makeClient()
+    const build = vi.spyOn(client, 'ensureImageExists').mockResolvedValue(undefined)
+    const recover = vi.spyOn(client, 'handleRunError').mockResolvedValue(true)
+
+    await client.ensureImageExistsWithRecovery()
+
+    expect(build).toHaveBeenCalledTimes(1)
+    expect(recover).not.toHaveBeenCalled()
+  })
+
+  it('self-heals and retries the build once when recovery succeeds', async () => {
+    const client = makeClient()
+    const buildErr = new Error('Container build failed with code 255: stat …/ha.sock: no such file or directory')
+    const build = vi.spyOn(client, 'ensureImageExists')
+      .mockRejectedValueOnce(buildErr)
+      .mockResolvedValueOnce(undefined)
+    const recover = vi.spyOn(client, 'handleRunError').mockResolvedValue(true)
+
+    await expect(client.ensureImageExistsWithRecovery()).resolves.toBeUndefined()
+
+    expect(recover).toHaveBeenCalledWith(buildErr)
+    expect(build).toHaveBeenCalledTimes(2)
+  })
+
+  it('rethrows the original build error when recovery is a no-op (e.g. non-Lima runner)', async () => {
+    const client = makeClient()
+    const buildErr = new Error('Dockerfile syntax error')
+    const build = vi.spyOn(client, 'ensureImageExists').mockRejectedValueOnce(buildErr)
+    const recover = vi.spyOn(client, 'handleRunError').mockResolvedValue(false) // base default
+
+    await expect(client.ensureImageExistsWithRecovery()).rejects.toThrow('Dockerfile syntax error')
+
+    expect(recover).toHaveBeenCalledTimes(1)
+    expect(build).toHaveBeenCalledTimes(1) // not retried
+  })
+
+  it('propagates a second build failure after recovery (one retry, no loop)', async () => {
+    const client = makeClient()
+    const build = vi.spyOn(client, 'ensureImageExists')
+      .mockRejectedValueOnce(new Error('first: ha.sock missing'))
+      .mockRejectedValueOnce(new Error('second: still broken'))
+    vi.spyOn(client, 'handleRunError').mockResolvedValue(true)
+
+    await expect(client.ensureImageExistsWithRecovery()).rejects.toThrow('second: still broken')
+    expect(build).toHaveBeenCalledTimes(2)
+  })
+})
+
+// ============================================================================
+// isHealthy — the /health probe must be bounded (it gates the request hot path
+// via ensureRunning's stale-cache liveness check; an unresponsive port-forward
+// would otherwise hang the caller indefinitely).
+// ============================================================================
+
+describe('BaseContainerClient.isHealthy', () => {
+  const client = new TestContainerClient({ agentId: 'test-agent' })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('passes an AbortSignal to the /health fetch (bounded probe)', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true }) as Response)
+    vi.stubGlobal('fetch', fetchMock)
+
+    await client.isHealthy(4001)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:4001/health',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    )
+  })
+
+  it('returns true when the probe responds ok', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true }) as Response))
+    await expect(client.isHealthy(4001)).resolves.toBe(true)
+  })
+
+  it('returns false (not throw) when the probe aborts/times out', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new DOMException('The operation was aborted', 'AbortError')
+    }))
+    await expect(client.isHealthy(4001)).resolves.toBe(false)
+  })
+
+  it('returns false when no port is known', async () => {
+    await expect(client.isHealthy(0)).resolves.toBe(false)
+  })
+})
+
+describe('BaseContainerClient.observeUnexpectedDeath', () => {
+  const client = new TestContainerClient({ agentId: 'test-agent' })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('ignores a healthy container with a still-running session', async () => {
+    vi.spyOn(client, 'isHealthy').mockResolvedValue(true)
+    vi.spyOn(client, 'getSession').mockResolvedValue({ isRunning: true } as never)
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['s1'] })).resolves.toEqual({
+      action: 'ignore',
+      liveSessionIds: ['s1'],
+    })
+  })
+
+  it('settles dead sessions and ignores siblings that are still running', async () => {
+    vi.spyOn(client, 'isHealthy').mockResolvedValue(true)
+    vi.spyOn(client, 'getSession').mockImplementation(async (sessionId: string) => {
+      if (sessionId === 'live') return { isRunning: true } as never
+      return { isRunning: false } as never
+    })
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['live', 'dead'] })).resolves.toEqual({
+      action: 'ignore',
+      liveSessionIds: ['live'],
+    })
+  })
+
+  it('settles when the container is unhealthy', async () => {
+    vi.spyOn(client, 'isHealthy').mockResolvedValue(false)
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['s1'] })).resolves.toEqual({
+      action: 'settle',
+    })
+  })
+
+  it('settles when health check throws', async () => {
+    vi.spyOn(client, 'isHealthy').mockRejectedValue(new Error('health exploded'))
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['s1'] })).resolves.toEqual({
+      action: 'settle',
+    })
+  })
+
+  it('treats a failed session probe as not live and keeps live siblings', async () => {
+    vi.spyOn(client, 'isHealthy').mockResolvedValue(true)
+    vi.spyOn(client, 'getSession').mockImplementation(async (sessionId: string) => {
+      if (sessionId === 'dead') throw new Error('probe failed')
+      return { isRunning: true } as never
+    })
+    await expect(client.observeUnexpectedDeath({ sessionIds: ['live', 'dead'] })).resolves.toEqual({
+      action: 'ignore',
+      liveSessionIds: ['live'],
+    })
+  })
+})
+
+describe('refusedVolumeFlags', () => {
+  const flags = '--device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined'
+
+  it('is true when the runtime names a volume flag in stderr, and never reads the command line', () => {
+    expect(refusedVolumeFlags({ stderr: 'error gathering device information while adding custom device "/dev/fuse": no such file' }, flags)).toBe(true)
+    expect(refusedVolumeFlags({ stderr: 'unknown flag: --security-opt' }, flags)).toBe(true)
+    // Node's exec error: the message repeats the command with the flags, stderr holds the runtime's words.
+    const pullDenied = Object.assign(new Error(`Command failed: docker run ${flags} img`), { stderr: 'pull access denied for img' })
+    expect(refusedVolumeFlags(pullDenied, flags)).toBe(false)
+    expect(refusedVolumeFlags({ stderr: '' }, flags)).toBe(false)
+    // Apple's flags carry the short word root, which any stderr can contain.
+    expect(refusedVolumeFlags({ stderr: 'process running as root exited' }, '--user root --cap-add CAP_SYS_ADMIN')).toBe(false)
+  })
+
+  // WSL writes UTF-16LE, so its stderr arrives with a null between every character.
+  it('matches a runtime error execWithPath read with nulls in it', async () => {
+    const error = await execWithPath(`printf 'u\\0n\\0k\\0n\\0o\\0w\\0n\\0 \\0f\\0l\\0a\\0g\\0:\\0 \\0-\\0-\\0d\\0e\\0v\\0i\\0c\\0e' >&2; exit 1`).catch((e) => e)
+    expect(refusedVolumeFlags(error, flags)).toBe(true)
   })
 })

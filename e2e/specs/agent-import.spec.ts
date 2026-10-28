@@ -6,9 +6,11 @@ import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
 import { buildAgentTemplateZip } from '../helpers/agent-template-zip'
-
-const ONBOARDING_MESSAGE =
-  'This agent was just set up from a template. Please run the agent-onboarding skill to help me configure it.'
+import {
+  ONBOARDING_MESSAGE,
+  armTranscriptNotFoundWatch,
+  expectOnboardingSessionToOpenCleanly,
+} from '../helpers/onboarding-session'
 
 /**
  * Covers the AgentHome → import → onboarding-session flow refactored to use
@@ -41,7 +43,7 @@ test.describe('Agent Import Onboarding', () => {
 
   test('importing a template with the onboarding skill creates an onboarding session', async ({ page }) => {
     const agentName = `Imported Onboarding ${Date.now()}`
-    const zipPath = buildAgentTemplateZip(
+    const zipPath = await buildAgentTemplateZip(
       path.join(tmpDir, 'with-onboarding.zip'),
       { name: agentName, withOnboardingSkill: true },
     )
@@ -58,14 +60,14 @@ test.describe('Agent Import Onboarding', () => {
     // Upload the fixture zip into the dialog's hidden file input, then submit.
     await dialog.locator('input[type="file"]').setInputFiles(zipPath)
     await expect(dialog.getByText('with-onboarding.zip')).toBeVisible()
+    await armTranscriptNotFoundWatch(page)
     await dialog.locator('button[type="submit"]').click()
 
     // Dialog closes, then `useStartOnboardingSession` creates the onboarding
-    // session and `selectSession` routes to it — the message list renders.
+    // session and `selectSession` routes to it — the message list renders,
+    // and the first user message in it is the onboarding prompt.
     await expect(dialog).not.toBeVisible({ timeout: 15000 })
-    await expect(sessionPage.getMessageList()).toBeVisible({ timeout: 15000 })
-
-    // The first user message in the new session is the onboarding prompt.
+    await expectOnboardingSessionToOpenCleanly(page)
     await sessionPage.expectUserMessage(ONBOARDING_MESSAGE)
 
     // The imported agent is now selected in the sidebar.
@@ -74,7 +76,7 @@ test.describe('Agent Import Onboarding', () => {
 
   test('onboarding setup dialog is visible while the session is being created', async ({ page }) => {
     const agentName = `Imported Onboarding Dialog ${Date.now()}`
-    const zipPath = buildAgentTemplateZip(
+    const zipPath = await buildAgentTemplateZip(
       path.join(tmpDir, 'onboarding-dialog.zip'),
       { name: agentName, withOnboardingSkill: true },
     )
@@ -87,6 +89,7 @@ test.describe('Agent Import Onboarding', () => {
     await expect(dialog).toBeVisible()
 
     await dialog.locator('input[type="file"]').setInputFiles(zipPath)
+    await armTranscriptNotFoundWatch(page)
     await dialog.locator('button[type="submit"]').click()
 
     // MockContainerClient delays onboarding session creation by 2 s —
@@ -97,13 +100,13 @@ test.describe('Agent Import Onboarding', () => {
 
     // After the delay resolves, the dialog disappears and the session appears.
     await expect(setupDialog).not.toBeVisible({ timeout: 15000 })
-    await expect(sessionPage.getMessageList()).toBeVisible({ timeout: 15000 })
+    await expectOnboardingSessionToOpenCleanly(page)
     await sessionPage.expectUserMessage(ONBOARDING_MESSAGE)
   })
 
   test('importing a template without the onboarding skill skips session creation', async ({ page }) => {
     const agentName = `Imported Plain ${Date.now()}`
-    const zipPath = buildAgentTemplateZip(
+    const zipPath = await buildAgentTemplateZip(
       path.join(tmpDir, 'plain.zip'),
       { name: agentName, withOnboardingSkill: false },
     )
@@ -125,6 +128,32 @@ test.describe('Agent Import Onboarding', () => {
     await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agentName, { timeout: 15000 })
     await expect(page.locator('[data-testid="home-message-input"]')).toBeVisible()
     await expect(sessionPage.getMessageList()).not.toBeVisible()
+    await expect(agentPage.getAgentItem(agentName)).toBeVisible()
+  })
+
+  test('importing a branded .agent package file works like a .zip', async ({ page }) => {
+    const agentName = `Imported Branded ${Date.now()}`
+    // Same zip bytes exports now produce — only the extension differs.
+    const packagePath = await buildAgentTemplateZip(
+      path.join(tmpDir, 'branded.agent'),
+      { name: agentName, withOnboardingSkill: false },
+    )
+
+    await agentPage.clickCreateAgent()
+    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText('Untitled', { timeout: 10000 })
+
+    await page.getByRole('button', { name: 'Import an Agent — Import' }).click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toBeVisible()
+
+    // The relaxed extension guard must accept the file (no "Only .agent or
+    // .zip" toast) and show it as ready to import.
+    await dialog.locator('input[type="file"]').setInputFiles(packagePath)
+    await expect(dialog.getByText('branded.agent')).toBeVisible()
+    await dialog.locator('button[type="submit"]').click()
+    await expect(dialog).not.toBeVisible({ timeout: 15000 })
+
+    await expect(page.locator('[data-testid="agent-breadcrumb"]')).toHaveText(agentName, { timeout: 15000 })
     await expect(agentPage.getAgentItem(agentName)).toBeVisible()
   })
 })

@@ -1,9 +1,15 @@
 import type { Context, Next, MiddlewareHandler } from 'hono'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
+import { SESSION_CHALLENGE } from '@shared/lib/auth/session-challenge'
+import { runWithOptionalUser, runWithRequestUser } from '@shared/lib/platform-attribution'
 import { db } from '@shared/lib/db'
 import { agentAcl, connectedAccounts, remoteMcpServers, notifications } from '@shared/lib/db/schema'
+import { getAgentOwnerUserId } from '@shared/lib/services/agent-owner'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
+// The catalog leaf, not the actor package index: the index loads the
+// container layer, which every route test would then have to mock.
+import { agentCatalog } from '@shared/lib/agent-actor/agent-catalog'
 
 // Lazy import to avoid pulling in better-auth ESM at import time
 let _getAuth: (() => ReturnType<typeof import('@shared/lib/auth/index').getAuth>) | null = null
@@ -18,6 +24,82 @@ async function getAuthLazy() {
 // Re-export from shared types so existing consumers (webhook-triggers.ts etc.) keep working
 export { type AgentRole, ROLE_HIERARCHY, hasMinRole } from '@shared/lib/types/agent'
 import { type AgentRole, hasMinRole } from '@shared/lib/types/agent'
+import type { MeetingParticipantPrincipal } from '@shared/lib/meeting-integrations/participant-credential'
+
+const AUTHORIZED_AGENT_ROLE_CONTEXT_KEY = 'authorizedAgentRole'
+const REQUEST_SESSION_CONTEXT_KEY = 'requestSession'
+const MEETING_PARTICIPANT_CONTEXT_KEY = 'meetingParticipant'
+
+/**
+ * The meeting bot's page acting for the person who started the meeting (see
+ * meeting-integrations/participant-credential.ts). Set by Authenticated() when
+ * the request carries the participant cookie instead of a session, and only
+ * on the routes the page needs; the agent role middlewares then confine it to
+ * the meeting's agent and session, and the account-based middlewares refuse it.
+ */
+export function getMeetingParticipant(c: Context): MeetingParticipantPrincipal | null {
+  return (c.get(MEETING_PARTICIPANT_CONTEXT_KEY as never) as MeetingParticipantPrincipal | undefined) ?? null
+}
+
+/** Grants decided by the account rather than an agent role are never the participant's to use. */
+function refuseMeetingParticipant(c: Context): Response | undefined {
+  return getMeetingParticipant(c) ? c.json({ error: 'Forbidden' }, 403) : undefined
+}
+
+/**
+ * What a participant credential may touch: its own agent, its own session
+ * when the route names one, and never owner-level operations. The agent slug
+ * is the canonical id ResolveAgent() produced; the credential stores the same.
+ */
+export function meetingParticipantMayAccess(participant: MeetingParticipantPrincipal, agentSlug: string, sessionId: string | undefined, minRole: AgentRole): boolean {
+  if (participant.agentSlug !== agentSlug) return false
+  if (sessionId !== undefined && sessionId !== participant.sessionId) return false
+  return minRole !== 'owner'
+}
+
+function participantAgentGate(c: Context, minRole: AgentRole, next: Next): Promise<Response | void> | Response | undefined {
+  const participant = getMeetingParticipant(c)
+  if (!participant) return undefined
+  if (!meetingParticipantMayAccess(participant, resolvedAgentSlug(c), c.req.param('sessionId'), minRole)) return c.json({ error: 'Forbidden' }, 403)
+  setAuthorizedAgentRole(c, 'user')
+  return next()
+}
+
+/**
+ * The shape of the Better Auth session row we consume. `deviceId` is a
+ * session additionalField (mobile device family, set by
+ * mintInstalledClientSession) — persisted and returned by getSession but not
+ * part of the base inferred type, hence the widening here (same pattern as
+ * mobile-pairing.ts).
+ */
+interface RequestSessionInfo {
+  id: string
+  userId: string
+  deviceId?: string | null
+}
+
+/**
+ * Mobile device-family id of the calling session, or null (browser/desktop/
+ * local mode). Only meaningful after Authenticated() ran in auth mode.
+ */
+export function getRequestDeviceId(c: Context): string | null {
+  const session = c.get(REQUEST_SESSION_CONTEXT_KEY as never) as RequestSessionInfo | undefined
+  return session?.deviceId ?? null
+}
+
+function setAuthorizedAgentRole(c: Context, role: AgentRole): void {
+  c.set(AUTHORIZED_AGENT_ROLE_CONTEXT_KEY as never, role as never)
+}
+
+/**
+ * Read the role established by AgentRead/AgentUser/AgentAdmin or
+ * EntityAgentRole. Returns null when no role-aware middleware ran so callers
+ * can default to the least-privileged response shape.
+ */
+export function getAuthorizedAgentRole(c: Context): AgentRole | null {
+  const role = c.get(AUTHORIZED_AGENT_ROLE_CONTEXT_KEY as never) as AgentRole | undefined
+  return role ?? null
+}
 
 /**
  * Authenticated — verifies user session and attaches user to context.
@@ -25,14 +107,27 @@ import { type AgentRole, hasMinRole } from '@shared/lib/types/agent'
  */
 export function Authenticated(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
-    if (!isAuthMode()) return next()
+    if (!isAuthMode()) {
+      return runWithRequestUser('local', () => next())
+    }
 
     const auth = await getAuthLazy()
     const session = await auth.api.getSession({ headers: c.req.raw.headers })
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+    if (!session) {
+      // A meeting bot's page has no account; its cookie stands for the person who
+      // started the meeting, on the routes the page needs and nowhere else.
+      const { authenticateMeetingParticipant, meetingParticipantMayRequest } = await import('@shared/lib/meeting-integrations/participant-credential')
+      const participant = await authenticateMeetingParticipant(c.req.header('cookie'))
+      if (!participant) return c.json({ error: 'Unauthorized' }, 401, { 'WWW-Authenticate': SESSION_CHALLENGE })
+      if (!meetingParticipantMayRequest(c.req.method, c.req.path)) return c.json({ error: 'Forbidden' }, 403)
+      c.set('user' as never, { id: participant.userId } as never)
+      c.set(MEETING_PARTICIPANT_CONTEXT_KEY as never, participant as never)
+      return runWithRequestUser(participant.userId, () => next())
+    }
 
     c.set('user' as never, session.user as never)
-    return next()
+    c.set(REQUEST_SESSION_CONTEXT_KEY as never, session.session as never)
+    return runWithRequestUser(session.user.id, () => next())
   }
 }
 
@@ -59,6 +154,52 @@ function isAdmin(user: { role?: string }): boolean {
   return user.role === 'admin'
 }
 
+/**
+ * ResolveAgent — resolve the `:id` route param (which may be a decorative
+ * display slug, a bare id, or a legacy compound folder name) to the canonical
+ * agent id, stash it on the context as `agentId`, and 404 if no such agent
+ * exists.
+ *
+ * Runs in BOTH auth and non-auth modes (the URL form is independent of auth)
+ * and MUST run before any AgentRead/AgentUser/AgentAdmin check, since the ACL
+ * tables are keyed on the canonical id. Subsumes the old agent-existence guard.
+ */
+export function ResolveAgent(): MiddlewareHandler {
+  return async (c: Context, next: Next) => {
+    const id = await agentCatalog.resolve(c.req.param('id') ?? '')
+    if (!id) return c.json({ error: 'Agent not found' }, 404)
+    c.set('agentId' as never, id as never)
+    return next()
+  }
+}
+
+/**
+ * Read the canonical agent id resolved by {@link ResolveAgent}. Route handlers
+ * under a `:id` path should use this instead of `c.req.param('id')`, which may
+ * be a decorative display slug. Throws if ResolveAgent() did not run.
+ */
+export function getAgentId(c: Context): string {
+  const id = c.get('agentId' as never) as string | undefined
+  if (!id) throw new Error('agentId not resolved — ResolveAgent() middleware missing?')
+  return id
+}
+
+// Resolved id if ResolveAgent() ran, else the raw param (preserves behavior for
+// any ACL middleware mounted without ResolveAgent in front).
+function resolvedAgentSlug(c: Context): string {
+  return (c.get('agentId' as never) as string | undefined) ?? c.req.param('id')!
+}
+
+/** AgentRead's policy for a collection of already-resolved IDs, in one ACL query. */
+export async function getReadableAgentIds(c: Context, agentIds: readonly string[]): Promise<Set<string>> {
+  if (!isAuthMode()) return new Set(agentIds)
+  const user = getUser(c)
+  if (isAdmin(user)) return new Set(agentIds)
+  if (!agentIds.length) return new Set()
+  const rows = await db.select({ agentSlug: agentAcl.agentSlug, role: agentAcl.role }).from(agentAcl)
+    .where(and(eq(agentAcl.userId, user.id), inArray(agentAcl.agentSlug, [...agentIds]))).all()
+  return new Set(rows.filter(row => hasMinRole(row.role, 'viewer')).map(row => row.agentSlug))
+}
 
 /**
  * AgentRead — user has any role on the agent (viewer+).
@@ -66,15 +207,24 @@ function isAdmin(user: { role?: string }): boolean {
  */
 export function AgentRead(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
-    if (!isAuthMode()) return next()
+    if (!isAuthMode()) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
+    const scoped = participantAgentGate(c, 'viewer', next)
+    if (scoped !== undefined) return scoped
 
     const user = getUser(c)
-    if (isAdmin(user)) return next()
-    const agentSlug = c.req.param('id')!
+    if (isAdmin(user)) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
+    const agentSlug = resolvedAgentSlug(c)
     const role = await getUserAgentRole(user.id, agentSlug)
-    if (!hasMinRole(role, 'viewer')) {
+    if (!role || !hasMinRole(role, 'viewer')) {
       return c.json({ error: 'Forbidden' }, 403)
     }
+    setAuthorizedAgentRole(c, role)
     return next()
   }
 }
@@ -85,15 +235,24 @@ export function AgentRead(): MiddlewareHandler {
  */
 export function AgentUser(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
-    if (!isAuthMode()) return next()
+    if (!isAuthMode()) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
+    const scoped = participantAgentGate(c, 'user', next)
+    if (scoped !== undefined) return scoped
 
     const user = getUser(c)
-    if (isAdmin(user)) return next()
-    const agentSlug = c.req.param('id')!
+    if (isAdmin(user)) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
+    const agentSlug = resolvedAgentSlug(c)
     const role = await getUserAgentRole(user.id, agentSlug)
-    if (!hasMinRole(role, 'user')) {
+    if (!role || !hasMinRole(role, 'user')) {
       return c.json({ error: 'Forbidden' }, 403)
     }
+    setAuthorizedAgentRole(c, role)
     return next()
   }
 }
@@ -104,15 +263,24 @@ export function AgentUser(): MiddlewareHandler {
  */
 export function AgentAdmin(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
-    if (!isAuthMode()) return next()
+    if (!isAuthMode()) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
+    const scoped = participantAgentGate(c, 'owner', next)
+    if (scoped !== undefined) return scoped
 
     const user = getUser(c)
-    if (isAdmin(user)) return next()
-    const agentSlug = c.req.param('id')!
+    if (isAdmin(user)) {
+      setAuthorizedAgentRole(c, 'owner')
+      return next()
+    }
+    const agentSlug = resolvedAgentSlug(c)
     const role = await getUserAgentRole(user.id, agentSlug)
-    if (!hasMinRole(role, 'owner')) {
+    if (!role || !hasMinRole(role, 'owner')) {
       return c.json({ error: 'Forbidden' }, 403)
     }
+    setAuthorizedAgentRole(c, role)
     return next()
   }
 }
@@ -124,6 +292,8 @@ export function IsAdmin(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
     if (!isAuthMode()) return next()
 
+    const refused = refuseMeetingParticipant(c)
+    if (refused) return refused
     const user = getUser(c)
     if (!isAdmin(user)) {
       return c.json({ error: 'Forbidden' }, 403)
@@ -165,14 +335,20 @@ export function EntityAgentRole<T extends { agentSlug: string }>(opts: {
       }
       c.set(opts.contextKey as never, entity as never)
 
-      if (!isAuthMode()) return next()
+      if (!isAuthMode()) {
+        setAuthorizedAgentRole(c, 'owner')
+        return next()
+      }
 
+      const refused = refuseMeetingParticipant(c)
+      if (refused) return refused
       const user = getUser(c)
       const role = await getUserAgentRole(user.id, entity.agentSlug)
-      if (!hasMinRole(role, minRole)) {
+      if (!role || !hasMinRole(role, minRole)) {
         return c.json({ error: 'Forbidden' }, 403)
       }
 
+      setAuthorizedAgentRole(c, role)
       return next()
     }
   }
@@ -190,6 +366,8 @@ export function OwnsAccount(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
     if (!isAuthMode()) return next()
 
+    const refused = refuseMeetingParticipant(c)
+    if (refused) return refused
     const user = getUser(c)
     const accountId = c.req.param('id')!
     const row = await db
@@ -213,6 +391,8 @@ export function UsersMcpServer(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
     if (!isAuthMode()) return next()
 
+    const refused = refuseMeetingParticipant(c)
+    if (refused) return refused
     const user = getUser(c)
     const mcpId = c.req.param('id')!
     const row = await db
@@ -237,6 +417,8 @@ export function OwnsAccountByParam(param: string): MiddlewareHandler {
   return async (c: Context, next: Next) => {
     if (!isAuthMode()) return next()
 
+    const refused = refuseMeetingParticipant(c)
+    if (refused) return refused
     const user = getUser(c)
     if (isAdmin(user)) return next()
 
@@ -264,6 +446,8 @@ export function OwnsMcpByParam(param: string): MiddlewareHandler {
   return async (c: Context, next: Next) => {
     if (!isAuthMode()) return next()
 
+    const refused = refuseMeetingParticipant(c)
+    if (refused) return refused
     const user = getUser(c)
     if (isAdmin(user)) return next()
 
@@ -285,23 +469,28 @@ export function OwnsMcpByParam(param: string): MiddlewareHandler {
 /**
  * HasNotificationAccess — user has access to the notification's agent.
  * Admins can access any notification. Regular users need an agentAcl entry
- * for the notification's agentSlug. Expects `:id` route param.
+ * for the notification's agentSlug. A targeted row (a mention) is its
+ * recipient's alone, admins included. Expects `:id` route param.
  */
 export function HasNotificationAccess(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
     if (!isAuthMode()) return next()
 
+    const refused = refuseMeetingParticipant(c)
+    if (refused) return refused
     const user = getUser(c)
-    if (isAdmin(user)) return next()
 
     const notificationId = c.req.param('id')!
     const row = await db
-      .select({ agentSlug: notifications.agentSlug })
+      .select({ agentSlug: notifications.agentSlug, recipientUserId: notifications.recipientUserId })
       .from(notifications)
       .where(eq(notifications.id, notificationId))
       .limit(1)
 
-    if (!row[0]) return c.json({ error: 'Not found' }, 404)
+    if (!row[0] || (row[0].recipientUserId && row[0].recipientUserId !== user.id)) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+    if (isAdmin(user)) return next()
 
     const role = await getUserAgentRole(user.id, row[0].agentSlug)
     if (!role) return c.json({ error: 'Forbidden' }, 403)
@@ -315,16 +504,19 @@ export function HasNotificationAccess(): MiddlewareHandler {
 // ---------------------------------------------------------------------------
 
 /**
- * IsAgent — validates synthetic bearer token from a container.
- * Works in both auth and non-auth modes (containers always use proxy tokens).
+ * Gate for container→host routes. Validates the agent proxy token, stashes `agentSlug` (SUP-216),
+ * and runs under the agent owner's attribution scope so billed proxy calls (`/v1/browserbase`,
+ * `/v1/exa`) carry `token::memberId`. Single-user installs have no ACL row → null scope.
  */
 export function IsAgent(): MiddlewareHandler {
   return async (c: Context, next: Next) => {
     const token = c.req.header('Authorization')?.replace('Bearer ', '')
-    if (!token || !(await validateProxyToken(token))) {
+    const agentSlug = token ? await validateProxyToken(token) : null
+    if (!token || !agentSlug) {
       return c.json({ error: 'Unauthorized' }, 401)
     }
-    return next()
+    c.set('agentSlug' as never, agentSlug as never)
+    return runWithOptionalUser(await getAgentOwnerUserId(agentSlug), () => next())
   }
 }
 

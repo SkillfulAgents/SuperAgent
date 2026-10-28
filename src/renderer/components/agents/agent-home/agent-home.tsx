@@ -1,29 +1,52 @@
+import { AgentMemberStack } from '@renderer/components/agents/agent-member-stack'
+import { Plus } from 'lucide-react'
 
 import { useState, useRef, useMemo, useCallback, useEffect } from 'react'
+import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
-import { ArrowUp, Loader2, Eye, Settings2, Maximize2, Minimize2, Search, Check } from 'lucide-react'
-import { useCreateSession, useSessions } from '@renderer/hooks/use-sessions'
+import { ArrowUp, Loader2, Eye, Maximize2, Minimize2, MoreVertical, Search } from 'lucide-react'
+import { useSessions } from '@renderer/hooks/use-sessions'
+import { agentAvatarState } from '@shared/lib/types/agent-activity-status'
+import { AgentAvatarPicker } from '@renderer/components/agents/agent-avatar/agent-avatar-picker'
+import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import { useScheduledTasks } from '@renderer/hooks/use-scheduled-tasks'
 import { VoiceInputButton, VoiceInputError } from '@renderer/components/ui/voice-input-button'
-import { RelatedSessions, type SortOrder } from '@renderer/components/sessions/related-sessions'
+import { VoiceModeButton } from '@renderer/components/ui/voice-mode-button'
+import { readAloud } from '@renderer/lib/voice/services/read-aloud'
+import { VOICE_MODE_ENTERED_MESSAGE } from '@shared/lib/voice/voice-mode-messages'
+import { UploadError } from '@renderer/components/ui/upload-error'
+import { AgentRuntimeErrorView } from '@shared/lib/agent-runtime-errors/agent-runtime-error-view'
+import { RelatedSessions, toSessionItem, type SortOrder } from '@renderer/components/sessions/related-sessions'
 import { SortPopover } from '@renderer/components/sessions/sort-popover'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
-import { useSelection } from '@renderer/context/selection-context'
+import { useNavTransient } from '@renderer/context/nav-transient-context'
+import { useAnalyticsTracking } from '@renderer/context/analytics-context'
+import { useFilePreview } from '@renderer/context/file-preview-context'
+import { useNavigate } from '@tanstack/react-router'
 import { useUser } from '@renderer/context/user-context'
+import { AgentSharePopover, type AgentSharePopoverHandle } from '@renderer/components/agents/agent-share-popover'
+import { AgentContextMenu } from '@renderer/components/agents/agent-context-menu'
+import { SystemPromptDialog } from '@renderer/components/agents/system-prompt-dialog'
 import { toast } from 'sonner'
-import { apiFetch } from '@renderer/lib/api'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
-import { useMessageComposer } from '@renderer/hooks/use-message-composer'
+import { useNewSessionComposer } from '@renderer/hooks/use-new-session-composer'
 import { ChatComposerBox } from '@renderer/components/messages/chat-composer-box'
-import { ComposerOptions, useComposerOptions } from '@renderer/components/messages/composer-options'
+import { useIsMobile } from '@renderer/hooks/use-mobile'
+import { ComposerOptions } from '@renderer/components/messages/composer-options'
+import { AgentDefaultFooter } from '@renderer/components/messages/agent-default-footer'
+import { InlineEditableTitle, type InlineEditableTitleHandle } from '@renderer/components/ui/inline-editable-title'
 import { HomeTriggers } from './home-triggers'
 import { HomeSkills } from './home-skills'
 import { HomeExtras } from './home-extras'
 import { HomeConnections } from './home-connections'
+import { HomeAgentIntegrations } from './home-agent-integrations'
 import { HomeVolumes } from './home-volumes'
+import { HomeHooks } from './home-hooks'
 import { HomeBookmarks } from './home-bookmarks'
+import { DashboardCard } from '@renderer/components/home/dashboard-card'
+import { HomeWidgets } from './home-widgets'
 import { useUpdateAgent, useDeleteAgent, type ApiAgent } from '@renderer/hooks/use-agents'
 import { AgentCreationAids, type ImportResult } from '@renderer/components/agents/agent-creation-aids'
 import { useStartOnboardingSession } from '@renderer/hooks/use-start-onboarding-session'
@@ -34,87 +57,112 @@ import {
 } from '@renderer/hooks/use-typewriter-placeholder'
 import { UNTITLED_AGENT_NAME } from '@renderer/hooks/use-create-untitled-agent'
 import { useRenameUntitledAgent } from '@renderer/hooks/use-rename-untitled-agent'
+import { useWarmStartOnType } from '@renderer/hooks/use-warm-start-on-type'
+import { useWarmStartOnTypeEnabled } from '@renderer/hooks/use-settings'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { formatDistanceToNow } from 'date-fns'
+import { useNewSessionCarryover } from '@renderer/lib/new-session-carryover'
+import { useDraftsStore } from '@renderer/context/drafts-context'
+import { completeAgentTemplateHandoff } from '@renderer/lib/agent-template-handoff'
+import { ScrollAwarePageTitle } from '@renderer/components/layout/scroll-aware-title'
 
 interface AgentHomeProps {
   agent: ApiAgent
-  onSessionCreated: (sessionId: string, initialMessage: string) => void
-  onOpenSettings?: (tab?: string) => void
+  onSessionCreated: (sessionId: string, initialMessage: string, messageUuid: string, options?: { voiceMode?: boolean }) => void
 }
 
-export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHomeProps) {
+export function AgentHome({ agent, onSessionCreated }: AgentHomeProps) {
   useRenderTracker('AgentHome')
-  const { setView, setAgent, consumePendingDraft } = useSelection()
+  // The new-agent morph tag lives in NavTransientContext — above the router, so
+  // it survives in-app nav and dies on hard reload. justCreatedSlug producer =
+  // use-create-untitled-agent.
+  const { justCreatedSlug, setJustCreatedSlug, pendingAgentHomeAction, setPendingAgentHomeAction } = useNavTransient()
+  const { openFolder } = useFilePreview()
+  const navigate = useNavigate()
+  const [introStagger] = useState(() => {
+    if (justCreatedSlug !== agent.slug) return false
+    return !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  })
+  const [introPlaying, setIntroPlaying] = useState(!introStagger)
+  useEffect(() => {
+    if (!introStagger) return
+    const t = setTimeout(() => setIntroPlaying(true), 1000)
+    return () => clearTimeout(t)
+  }, [introStagger])
+  // One-shot: consume the morph tag immediately once introStagger has captured it
+  // at mount, so it can't replay if AgentHome unmounts mid-animation — e.g. the
+  // user sends the first message within ~2s, the index leaf unmounts, and a
+  // deferred clear would be cancelled, stranding the tag and re-animating on
+  // return. The animation runs off local introStagger/introPlaying state.
+  useEffect(() => {
+    if (introStagger) setJustCreatedSlug(null)
+  }, [introStagger, setJustCreatedSlug])
   const startOnboardingSession = useStartOnboardingSession()
-  const { canUseAgent, canAdminAgent } = useUser()
+  const draftsStore = useDraftsStore()
+  const { canUseAgent, canAdminAgent, isAuthMode, isAdmin } = useUser()
   const isViewOnly = !canUseAgent(agent.slug)
   const isOwner = canAdminAgent(agent.slug)
+  const replacedDashboards = useMemo(
+    () => new Set((Array.isArray(agent.widgets) ? agent.widgets : []).filter((w) => w.hasDashboard).map((w) => w.slug)),
+    [agent.widgets],
+  )
   const [isExpanded, setIsExpanded] = useState(false)
   const [sessionSearchOpen, setSessionSearchOpen] = useState(false)
   const [sessionSearch, setSessionSearch] = useState('')
   const [sessionSort, setSessionSort] = useState<SortOrder>('newest')
   const { data: sessionsData } = useSessions(agent.slug)
-  // First-session Opus default: when the session list has finished loading
-  // and is empty, the brand-new agent's first session should default to Opus
-  // regardless of the user's "Default Model" setting. Passed as a preferred
-  // family — the user can still pick a different model in the dropdown.
-  const isFirstSession = Array.isArray(sessionsData) && sessionsData.length === 0
-  const composerOptions = useComposerOptions(
-    isFirstSession ? { preferredFamily: 'opus' } : {}
-  )
+  const carryover = useNewSessionCarryover(agent.slug)
   const sessionSearchRef = useRef<HTMLInputElement>(null)
-  const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
+  const composerTextareaRef = useRef<HTMLDivElement>(null)
+  const isMobile = useIsMobile()
+  const { track } = useAnalyticsTracking()
   // Tracks an explicit user collapse so the auto-expand effect doesn't fight it.
   // Reset when the message clears (e.g. after submit).
   const userCollapsedRef = useRef(false)
-  const createSession = useCreateSession()
   const updateAgent = useUpdateAgent()
   const deleteAgent = useDeleteAgent()
   const renameUntitledAgent = useRenameUntitledAgent()
-  // Tracks whether a name has already been assigned (e.g. by the voice agent)
-  // so the post-submit deriveAgentName fallback doesn't clobber it.
-  const nameAssignedRef = useRef(false)
-  const [isEditingName, setIsEditingName] = useState(false)
-  const [editedName, setEditedName] = useState(agent.name)
+  // Agent-scoped dialogs opened from HomeExtras. Header settings are a
+  // popover on the gear now; the sidebar context menu keeps the full dialog.
+  const [systemPromptOpen, setSystemPromptOpen] = useState(false)
+  const titleRef = useRef<InlineEditableTitleHandle>(null)
+  // The three-dot button opens the title's context menu (see below).
+  const menuTriggerRef = useRef<HTMLDivElement>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const shareRef = useRef<AgentSharePopoverHandle>(null)
+  const openExport = useCallback(() => shareRef.current?.openExport(), [])
+  // Same panel the HomeExtras "Agent Directory" row opens.
+  const openDirectory = useCallback(() => openFolder('/workspace', agent.slug), [openFolder, agent.slug])
 
-  const handleStartRename = () => {
-    setEditedName(agent.name)
-    setIsEditingName(true)
-  }
-
-  const handleCancelRename = () => {
-    setIsEditingName(false)
-    setEditedName(agent.name)
-  }
-
-  const handleSaveRename = async () => {
-    const trimmed = editedName.trim()
-    if (!trimmed || trimmed === agent.name) {
-      handleCancelRename()
-      return
-    }
-    try {
-      await updateAgent.mutateAsync({ slug: agent.slug, name: trimmed })
-      setIsEditingName(false)
-    } catch (error) {
-      console.error('Failed to rename agent:', error)
-      toast.error('Failed to rename agent', {
-        description: error instanceof Error ? error.message : 'Please try again.',
-      })
-    }
-  }
-
+  // "Export Agent" / "Agent Directory" chosen from a menu away from this page
+  // (sidebar row, home card, breadcrumb) navigates here with the action
+  // parked in NavTransient; run it now that its surface is mounted.
+  //
+  // Not synchronously, though: the composer below focuses itself on the
+  // animation frame after it mounts (see MarkdownComposerEditor's autoFocus),
+  // and the Share popover is non-modal, so if it opens before that frame the
+  // composer's focus lands outside it and Radix dismisses it as an outside
+  // interaction. Whether the popover or the focus came first depended on how
+  // this page mounted, which made "Export Agent" from the sidebar flaky.
+  // Frame callbacks run in the order they were requested, so deferring the
+  // action by one frame always puts it after that autofocus. No cleanup on
+  // purpose: clearing the parked action re-runs this effect, and cancelling
+  // the frame there would drop the action.
+  useEffect(() => {
+    if (pendingAgentHomeAction?.slug !== agent.slug) return
+    const { action } = pendingAgentHomeAction
+    setPendingAgentHomeAction(null)
+    requestAnimationFrame(() => {
+      if (action === 'export') openExport()
+      else openDirectory()
+    })
+  }, [pendingAgentHomeAction, agent.slug, setPendingAgentHomeAction, openExport, openDirectory])
+  const handleOpenSettings = useCallback((tab?: string) => {
+    if (tab === 'system-prompt') setSystemPromptOpen(true)
+  }, [])
   const sessions = useMemo(() => {
     if (!Array.isArray(sessionsData)) return []
-    return sessionsData.map((s) => ({
-      id: s.id,
-      name: s.name,
-      createdAt: typeof s.createdAt === 'string' ? s.createdAt : new Date(s.createdAt).toISOString(),
-      isActive: s.isActive,
-      isAwaitingInput: s.isAwaitingInput,
-      hasUnreadNotifications: s.hasUnreadNotifications,
-    }))
+    return sessionsData.map(toSessionItem)
   }, [sessionsData])
 
   const { data: scheduledTasksData } = useScheduledTasks(agent.slug, 'pending')
@@ -126,59 +174,35 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const isPulling = readiness?.status === 'PULLING_IMAGE'
   const apiKeyConfigured = runtimeStatus?.apiKeyConfigured !== false
 
-  const composer = useMessageComposer({
+  const { composer, composerOptions, createSession, isDisabled } = useNewSessionComposer({
     agentSlug: agent.slug,
-    uploadFile: useCallback(async ({ file }: { file: File }) => {
-      const formData = new FormData()
-      formData.append('file', file)
-      const res = await apiFetch(
-        `/api/agents/${agent.slug}/upload-file`,
-        { method: 'POST', body: formData }
-      )
-      if (!res.ok) throw new Error('Failed to upload file')
-      return res.json() as Promise<{ path: string }>
-    }, [agent.slug]),
-    uploadFolder: useCallback(async ({ sourcePath }: { sourcePath: string }) => {
-      const res = await apiFetch(
-        `/api/agents/${agent.slug}/upload-folder`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sourcePath }),
-        }
-      )
-      if (!res.ok) throw new Error('Failed to upload folder')
-      return res.json() as Promise<{ path: string }>
-    }, [agent.slug]),
-    onSubmit: useCallback(async (content: string) => {
-      const shouldRename =
-        agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && !nameAssignedRef.current
-      const session = await createSession.mutateAsync({
-        agentSlug: agent.slug,
-        message: content,
-        ...composerOptions.toRuntimeOptions(),
-      })
-      onSessionCreated(session.id, content)
-      // Fire rename after the session is created + navigated — the mutation
-      // survives AgentHome unmounting since the queryClient is app-scoped.
-      if (shouldRename) {
-        nameAssignedRef.current = true
+    draftKey: `agent:${agent.slug}`,
+    initialAttachments: carryover?.attachments,
+    initialOptions: {
+      initialModel: carryover?.model,
+      initialEffort: carryover?.effort,
+      initialSpeed: carryover?.speed,
+    },
+    // The default-model card sits next to this composer; untouched selections track its edits.
+    followDefaults: true,
+    submitDisabled: !isRuntimeReady,
+    agentRuntimeErrorsShownInline: true,
+    onSessionCreated: ({ session, content }) => {
+      // Preserve the server's message identity for the optimistic pending copy.
+      onSessionCreated(session.id, content, session.initialMessageUuid)
+      // This mutation survives navigation because its query client is app-scoped.
+      if (agent.name === UNTITLED_AGENT_NAME && sessions.length === 0) {
         renameUntitledAgent.mutate({ slug: agent.slug, prompt: content })
       }
-    }, [createSession, agent.slug, agent.name, onSessionCreated, composerOptions, sessions.length, renameUntitledAgent]),
-    submitDisabled: createSession.isPending || !isRuntimeReady,
-    keepMessageUntilComplete: true,
-    draftKey: `agent:${agent.slug}`,
+    },
   })
 
-  // Consume any pending draft from voice agent flow
-  useEffect(() => {
-    const draft = consumePendingDraft()
-    if (draft) {
-      composer.setMessage(draft)
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- only run on mount
-  }, [])
+  const warmStartEnabled = useWarmStartOnTypeEnabled()
+  const { noteProgrammaticChange } = useWarmStartOnType({
+    agentSlug: agent.slug,
+    message: composer.message,
+    enabled: warmStartEnabled,
+  })
 
   // Reset the manual-collapse flag once the message clears.
   useEffect(() => {
@@ -196,14 +220,36 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
     }
   }, [composer.message, isExpanded])
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
-      composer.handleSubmit(e)
+      if (!composer.canSubmit) return
+      void composer.handleSubmit(e)
     }
   }
 
-  const isDisabled = createSession.isPending || composer.isUploading || !isRuntimeReady
+  // Voice mode from the home page: the session opens with the voice-mode
+  // notice as its first message, and its composer comes up listening. The
+  // composer button and the empty-state "Brainstorm with Voice" card both land here.
+  const startVoiceSession = useCallback(async (origin: 'home' | 'home_card') => {
+    if (isDisabled) return
+    // Audio output is unlocked here, inside the click, for the reply to use.
+    readAloud.unlockAudio()
+    try {
+      const session = await createSession.mutateAsync({
+        agentSlug: agent.slug,
+        message: VOICE_MODE_ENTERED_MESSAGE,
+        inputMode: 'voice',
+        ...composerOptions.toRuntimeOptions(),
+      })
+      onSessionCreated(session.id, VOICE_MODE_ENTERED_MESSAGE, session.initialMessageUuid, { voiceMode: true })
+      track('voice_mode_entered', { origin })
+    } catch (error) {
+      console.error('Failed to start a voice session:', error)
+      readAloud.releaseUnlockedAudio()
+      track('voice_mode_start_failed', { origin })
+    }
+  }, [isDisabled, createSession, agent.slug, composerOptions, onSessionCreated, track])
 
   const isFreshUntitled = agent.name === UNTITLED_AGENT_NAME && sessions.length === 0
   const typewriterPlaceholder = useTypewriterPlaceholder(
@@ -213,28 +259,25 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
     ? typewriterPlaceholder
     : 'How can I help? Press cmd+enter to send'
 
-  const handleVoiceResult = useCallback(
-    ({ name, prompt }: { name: string; prompt: string }) => {
-      if (prompt) composer.setMessage(prompt)
-      if (name && agent.name === UNTITLED_AGENT_NAME) {
-        nameAssignedRef.current = true
-        updateAgent.mutate({ slug: agent.slug, name })
-      }
-    },
-    [composer, agent.name, agent.slug, updateAgent],
-  )
-
   const handleImportComplete = useCallback(
-    async ({ agent: imported, hasOnboarding }: ImportResult) => {
-      setAgent(imported.slug)
-      if (agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && agent.slug !== imported.slug) {
-        deleteAgent.mutate(agent.slug)
-      }
-      if (hasOnboarding) {
-        await startOnboardingSession(imported.slug)
-      }
+    async (imported: ImportResult) => {
+      await completeAgentTemplateHandoff({
+        draftsStore,
+        agentSlug: imported.slug,
+        hasOnboarding: imported.hasOnboarding,
+        templatePrompt: imported.templatePrompt,
+        onboardingFirstPrompt: imported.onboardingFirstPrompt,
+        noteProgrammaticChange,
+        openAgent: () => {
+          void navigate({ to: '/agents/$slug', params: { slug: imported.slug } })
+          if (agent.name === UNTITLED_AGENT_NAME && sessions.length === 0 && agent.slug !== imported.slug) {
+            deleteAgent.mutate(agent.slug)
+          }
+        },
+        startOnboardingSession,
+      })
     },
-    [setAgent, agent.slug, agent.name, sessions.length, deleteAgent, startOnboardingSession],
+    [draftsStore, noteProgrammaticChange, navigate, agent.slug, agent.name, sessions.length, deleteAgent, startOnboardingSession],
   )
 
   const formatDate = useCallback(
@@ -245,65 +288,115 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
   const showRightColumn = isOwner
 
   return (
-    <div className="flex-1 flex flex-col overflow-y-auto px-10 py-10 bg-background">
-      <div className={`grid gap-10 items-start ${showRightColumn ? 'grid-cols-1 xl:grid-cols-[1fr_minmax(320px,400px)] w-full max-w-6xl mx-auto' : 'max-w-2xl mx-auto'}`}>
+    <>
+    <div
+      data-testid="agent-home"
+      // Surfaces the one-shot new-agent intro state for tests/debugging without
+      // coupling to CSS classes: absent when no morph, 'pending' while the
+      // "Creating" beat holds, 'playing' once the staggered slide-in runs.
+      data-intro={introStagger ? (introPlaying ? 'playing' : 'pending') : undefined}
+      className={cn(
+        'flex-1 flex flex-col overflow-y-auto overscroll-contain px-4 py-6 md:px-10 md:py-10 bg-background',
+        introStagger && 'agent-home-intro relative',
+        introPlaying && 'intro-play'
+      )}
+    >
+      {introStagger && !introPlaying && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-background">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Creating
+          </div>
+        </div>
+      )}
+      <div
+        data-testid="agent-home-layout"
+        className={cn(
+          'grid gap-10 items-start w-full mx-auto',
+          showRightColumn
+            ? 'grid-cols-1 max-w-6xl xl:grid-cols-[1fr_minmax(320px,400px)]'
+            : 'xl:max-w-2xl',
+        )}
+      >
         {/* Left Column — Chat composer + Sessions */}
         <div className="space-y-6 w-full min-w-0 xl:min-w-[480px] xl:max-w-[720px]">
-          <div className="flex items-center justify-between gap-2">
-            {isEditingName && isOwner ? (
-              <div className="flex items-center gap-2 flex-1 min-w-0">
-                <Input
-                  value={editedName}
-                  onChange={(e) => setEditedName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault()
-                      handleSaveRename()
-                    } else if (e.key === 'Escape') {
-                      e.preventDefault()
-                      handleCancelRename()
-                    }
+          <ScrollAwarePageTitle className="flex items-center justify-between gap-2 intro-step intro-step-1">
+            {isOwner
+              ? <AgentAvatarPicker agent={agent} state={agentAvatarState(agent, sessionsData)} size={39} />
+              : <AgentAvatar agent={agent} state={agentAvatarState(agent, sessionsData)} size={39} />}
+            <AgentContextMenu
+              agent={agent}
+              onRename={() => titleRef.current?.startEditing()}
+              onExport={openExport}
+              onOpenDirectory={openDirectory}
+              onOpenChange={setMenuOpen}
+            >
+              <div ref={menuTriggerRef} className="flex-1 min-w-0 cursor-context-menu">
+                <InlineEditableTitle
+                  ref={titleRef}
+                  value={agent.name}
+                  canEdit={isOwner}
+                  isSaving={updateAgent.isPending}
+                  onSave={async (name) => {
+                    await updateAgent.mutateAsync({ slug: agent.slug, name })
                   }}
-                  autoFocus
-                  disabled={updateAgent.isPending}
-                  className="h-9 text-xl font-semibold"
-                  data-testid="agent-name-input"
+                  onError={(error) => {
+                    console.error('Failed to rename agent:', error)
+                    toast.error('Failed to rename agent', {
+                      description: error instanceof Error ? error.message : 'Please try again.',
+                    })
+                  }}
+                  displayClassName="text-xl font-medium"
+                  inputClassName="h-9 text-xl font-medium"
+                  saveButtonClassName="h-8 w-8"
+                  ariaLabel="Rename agent"
+                  saveAriaLabel="Save name"
+                  displayTestId="agent-name"
+                  inputTestId="agent-name-input"
+                  saveButtonTestId="agent-name-save"
                 />
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  className="h-8 w-8 shrink-0"
-                  onClick={handleSaveRename}
-                  disabled={updateAgent.isPending}
-                  aria-label="Save name"
-                  data-testid="agent-name-save"
-                >
-                  {updateAgent.isPending ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Check className="h-4 w-4" />
-                  )}
-                </Button>
               </div>
-            ) : isOwner ? (
-              <button
-                type="button"
-                className="text-xl font-semibold truncate text-left cursor-pointer hover:opacity-80"
-                onClick={handleStartRename}
-                data-testid="agent-name"
-              >
-                {agent.name}
-              </button>
-            ) : (
-              <h1 className="text-xl font-semibold truncate" data-testid="agent-name">
-                {agent.name}
-              </h1>
-            )}
-            <Button type="button" size="icon" variant="ghost" className="h-8 w-8 shrink-0" onClick={() => onOpenSettings?.()} aria-label="Agent settings" data-testid="agent-settings-button">
-              <Settings2 className="h-4 w-4" />
+            </AgentContextMenu>
+            {isAuthMode ? (
+              <AgentMemberStack
+                agentSlug={agent.slug}
+                renderShareControl={(isOwner || isAdmin) ? (isShared) => (
+                  <AgentSharePopover ref={shareRef} agentSlug={agent.slug} agentName={agent.name} trigger={isShared ? (
+                    <Button type="button" size="icon" variant="outline" className="h-8 w-8 shrink-0 rounded-full bg-background ring-2 ring-background focus-visible:ring-ring" aria-label="Share agent" title="Invite, publish, or export" data-testid="agent-share-button">
+                      <Plus className="h-4 w-4" />
+                    </Button>
+                  ) : undefined} />
+                ) : undefined}
+              />
+            ) : isOwner && <AgentSharePopover ref={shareRef} agentSlug={agent.slug} agentName={agent.name} />}
+            {/* Three-dot = the same agent menu a right-click on the title (or
+                the sidebar row) opens, so the two never drift apart. A click
+                replays as a contextmenu event on the title's trigger, anchored
+                under this button; Rename hands off to the inline title above. */}
+            <Button
+              type="button"
+              size="icon"
+              variant="outline"
+              className="h-8 w-8 shrink-0"
+              aria-label="Agent menu"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              data-testid="agent-settings-button"
+              onClick={(event) => {
+                const rect = event.currentTarget.getBoundingClientRect()
+                menuTriggerRef.current?.dispatchEvent(
+                  new MouseEvent('contextmenu', {
+                    bubbles: true,
+                    cancelable: true,
+                    clientX: rect.left,
+                    clientY: rect.bottom + 4,
+                  })
+                )
+              }}
+            >
+              <MoreVertical className="h-4 w-4" />
             </Button>
-          </div>
+          </ScrollAwarePageTitle>
           {isViewOnly ? (
             <div className="flex items-center justify-center gap-2 text-sm font-medium text-muted-foreground border rounded-lg p-6" data-testid="view-only-banner">
               <Eye className="h-5 w-5" />
@@ -331,24 +424,33 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                 onChoice={composer.mountDialog.onChoice}
                 folderName={composer.mountDialog.folderName}
               />
+              {composer.chipDialog}
               <form
                 onSubmit={composer.handleSubmit}
-                className={composer.isDragOver ? 'rounded-2xl ring-2 ring-primary ring-inset' : ''}
+                className={cn('intro-step intro-step-2', composer.isDragOver && 'rounded-2xl ring-2 ring-primary ring-inset')}
                 {...composer.dragHandlers}
               >
                 <ChatComposerBox
                   textareaRef={composerTextareaRef}
                   attachments={composer.attachments}
                   onRemoveAttachment={composer.removeAttachment}
+                  onRetryAttachment={composer.retryAttachment}
                   value={composer.message}
-                  onChange={(e) => composer.setMessage(e.target.value)}
+                  onChange={composer.setMessage}
                   onKeyDown={handleKeyDown}
                   onPaste={composer.handlePaste}
                   placeholder={composerPlaceholder}
                   disabled={isDisabled}
                   rows={2}
-                  autoFocus
+                  autoFocus={!isMobile}
                   dataTestId="home-message-input"
+                  secureSecrets={{
+                    agentSlug: agent.slug,
+                    potentialSecrets: composer.potentialSecrets,
+                    onDismiss: composer.dismissPotentialSecret,
+                    onSecure: composer.securePotentialSecret,
+                  }}
+                  chipContext={composer.chipContext}
                   textareaClassName={`transition-[min-height] duration-300 ease-in-out ${isExpanded ? 'min-h-[50vh] max-h-[50vh]' : 'min-h-[60px] max-h-[120px]'}`}
                   leftActions={(
                     <>
@@ -358,7 +460,17 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                         onRecentFileAttach={(file) => composer.addFiles([{ file }])}
                         disabled={isDisabled}
                       />
-                      <ComposerOptions state={composerOptions} disabled={isDisabled} />
+                      <ComposerOptions
+                        state={composerOptions}
+                        disabled={isDisabled}
+                        footer={
+                          <AgentDefaultFooter
+                            agentSlug={agent.slug}
+                            state={composerOptions}
+                            agentHomeLink={false}
+                          />
+                        }
+                      />
                     </>
                   )}
                   topRightActions={(
@@ -381,6 +493,9 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                   rightActions={(
                     <>
                       <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} />
+                      {!isFreshUntitled && (
+                        <VoiceModeButton onClick={() => void startVoiceSession('home')} disabled={isDisabled} />
+                      )}
                       {isFreshUntitled ? (
                         <Button
                           type="submit"
@@ -416,20 +531,25 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                     </>
                   )}
                   footer={(
-                    <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2 justify-center" />
+                    <>
+                      <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} className="mt-2 justify-center" />
+                      <UploadError error={composer.uploadError} onDismiss={composer.clearUploadError} className="mt-2 justify-center" />
+                      <AgentRuntimeErrorView error={createSession.error} className="mt-2" />
+                    </>
                   )}
                 />
               </form>
 
+              <div className="space-y-6 intro-step intro-step-3">
               {/* Bookmarks */}
               <HomeBookmarks agentSlug={agent.slug} isOwner={isOwner} />
 
               {/* Sessions list / creation aids */}
-              <div className={sessions.length > 0 ? 'pt-2' : '-mt-5'}>
+              <div className={sessions.length > 0 ? 'pt-2' : ''}>
                 {sessions.length > 0 ? (
                   <>
                     <div className="flex items-center gap-2">
-                      <h2 className="text-sm font-medium text-muted-foreground flex-1">Sessions</h2>
+                      <h2 className="text-sm font-medium text-muted-foreground flex-1">Recent Sessions</h2>
                       <SortPopover value={sessionSort} onChange={setSessionSort} ariaLabel="Sort sessions" />
                       <Button
                         type="button"
@@ -469,10 +589,11 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
                   </>
                 ) : (
                   <AgentCreationAids
-                    onVoiceResult={handleVoiceResult}
+                    onStartVoiceMode={() => void startVoiceSession('home_card')}
                     onImportComplete={handleImportComplete}
                   />
                 )}
+              </div>
               </div>
             </>
           )}
@@ -481,19 +602,60 @@ export function AgentHome({ agent, onSessionCreated, onOpenSettings }: AgentHome
         {/* Right Column — Triggers + Connections + Skills + Volumes */}
         {showRightColumn && (
           <div className="space-y-3">
+            <HomeWidgets agentSlug={agent.slug} />
+            {(Array.isArray(agent.dashboards) ? agent.dashboards : [])
+              // An artifact with a widget shows the widget instead of its screenshot.
+              .filter((d) => !replacedDashboards.has(d.slug))
+              .map((d) => (
+                <DashboardCard
+                  key={d.slug}
+                  dashboard={d}
+                  agentSlug={agent.slug}
+                />
+              ))}
             <HomeTriggers
+              className="intro-step intro-step-4"
               agentSlug={agent.slug}
               scheduledTasks={scheduledTasks}
-              onSelectTask={(taskId: string) => setView({ kind: 'task', id: taskId })}
-              onSelectWebhook={(webhookId: string) => setView({ kind: 'webhook', id: webhookId })}
+              onSelectTask={(taskId: string) => {
+                void navigate({ to: '/agents/$slug/tasks/$taskId', params: { slug: agent.slug, taskId } })
+              }}
+              onSelectWebhook={(webhookId: string) => {
+                void navigate({ to: '/agents/$slug/webhooks/$webhookId', params: { slug: agent.slug, webhookId } })
+              }}
+              onSelectCompletedTasks={() => {
+                void navigate({ to: '/agents/$slug/completed-tasks', params: { slug: agent.slug } })
+              }}
+              onSelectInboundXAgent={() => {
+                void navigate({ to: '/agents/$slug/called-from-agents', params: { slug: agent.slug } })
+              }}
             />
-            <HomeConnections agentSlug={agent.slug} />
-            <HomeSkills agentSlug={agent.slug} />
-            <HomeVolumes agentSlug={agent.slug} />
-            <HomeExtras agentSlug={agent.slug} onOpenSettings={onOpenSettings} />
+            <HomeConnections className="intro-step intro-step-5" agentSlug={agent.slug} />
+            <HomeSkills className="intro-step intro-step-6" agentSlug={agent.slug} onRunSkill={(skillPath) => {
+              const text = `/${skillPath} `
+              composer.setMessage(text)
+              composerTextareaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+              setTimeout(() => {
+                const el = composerTextareaRef.current
+                if (el) {
+                  el.focus()
+                }
+              }, 0)
+            }} />
+            <HomeAgentIntegrations className="intro-step intro-step-7" agentSlug={agent.slug} />
+            <HomeVolumes className="intro-step intro-step-8" agentSlug={agent.slug} />
+            <HomeExtras className="intro-step intro-step-9" agentSlug={agent.slug} onOpenSettings={handleOpenSettings} />
+            <HomeHooks className="intro-step intro-step-9" agentSlug={agent.slug} isOwner={isOwner} />
           </div>
         )}
       </div>
     </div>
+
+      <SystemPromptDialog
+        agent={agent}
+        open={systemPromptOpen}
+        onOpenChange={setSystemPromptOpen}
+      />
+    </>
   )
 }

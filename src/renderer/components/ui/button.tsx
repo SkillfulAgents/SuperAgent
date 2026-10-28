@@ -36,24 +36,35 @@ const buttonVariants = cva(
   }
 )
 
-export interface ButtonProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
-    VariantProps<typeof buttonVariants> {
-  asChild?: boolean
-  loading?: boolean
-}
+export type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> &
+  VariantProps<typeof buttonVariants> & {
+    loading?: boolean
+  } & (
+    | {
+        asChild?: false
+        /** Leading icon. The spinner takes its place while `loading`. */
+        icon?: React.ReactNode
+      }
+    // Slot renders a single child, so a sibling icon slot cannot be added.
+    | { asChild: true; icon?: never }
+  )
 
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant, size, asChild = false, loading, children, ...props }, ref) => {
+  ({ className, variant, size, asChild = false, loading, icon, children, ...props }, ref) => {
     const Comp = asChild && !loading ? Slot : "button"
+    const spinner = <Loader2 className="animate-spin" />
     return (
       <Comp
         className={cn(buttonVariants({ variant, size, className }))}
         ref={ref}
-        disabled={loading || props.disabled}
         {...props}
+        disabled={loading || props.disabled}
       >
-        {loading && <Loader2 className="h-4 w-4 animate-spin" />}
+        {icon !== undefined ? (
+          <span className="inline-flex shrink-0">{loading ? spinner : icon}</span>
+        ) : (
+          loading && spinner
+        )}
         {children}
       </Comp>
     )

@@ -6,6 +6,7 @@ import { Hono } from 'hono'
 // ---------------------------------------------------------------------------
 
 const mockAll = vi.fn()
+const mockAccount = vi.fn()
 const mockWhere = vi.fn()
 const mockDbFrom = vi.fn()
 const mockInsertValues = vi.fn()
@@ -23,6 +24,7 @@ vi.mock('@shared/lib/db', () => ({
 }))
 
 vi.mock('@shared/lib/db/schema', () => ({
+  connectedAccounts: { id: 'id', toolkitSlug: 'toolkit_slug' },
   apiScopePolicies: {
     accountId: 'account_id',
     scope: 'scope',
@@ -45,6 +47,7 @@ vi.mock('../middleware/auth', () => ({
 }))
 
 import policies from './policies'
+import { getScopeDescriptors } from '@shared/lib/proxy/scope-catalog'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -74,6 +77,7 @@ describe('policies routes', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     app = createApp()
+    mockAccount.mockReturnValue({ toolkitSlug: 'github' })
     mockInsertValues.mockReturnValue({ run: vi.fn() })
     mockDeleteWhere.mockReturnValue({ run: mockDeleteRun })
   })
@@ -88,7 +92,7 @@ describe('policies routes', () => {
         { id: 'p2', accountId: 'acc-1', scope: '*', decision: 'review', createdAt: '2026-01-01', updatedAt: '2026-01-01' },
       ]
       mockDbFrom.mockReturnValue({ where: mockWhere })
-      mockWhere.mockReturnValue({ all: mockAll })
+      mockWhere.mockReturnValue({ all: mockAll, get: mockAccount })
       mockAll.mockReturnValue(mockPolicies)
 
       const res = await makeRequest(app, '/api/policies/scope/acc-1')
@@ -99,11 +103,13 @@ describe('policies routes', () => {
       expect(body.policies[0].decision).toBe('allow')
       expect(body.policies[1].scope).toBe('*')
       expect(body.policies[1].decision).toBe('review')
+      expect(body.scopeMetadata).toEqual(getScopeDescriptors('github'))
+      expect(body.scopeMetadata).toContainEqual(expect.objectContaining({ scope: 'administration:write', label: 'destructive' }))
     })
 
     it('returns empty array when no policies exist', async () => {
       mockDbFrom.mockReturnValue({ where: mockWhere })
-      mockWhere.mockReturnValue({ all: mockAll })
+      mockWhere.mockReturnValue({ all: mockAll, get: mockAccount })
       mockAll.mockReturnValue([])
 
       const res = await makeRequest(app, '/api/policies/scope/acc-nonexistent')
@@ -112,13 +118,22 @@ describe('policies routes', () => {
       expect(body.policies).toEqual([])
     })
 
+    it('returns an authoritative empty catalog for unknown providers', async () => {
+      mockAccount.mockReturnValue({ toolkitSlug: 'future-provider' })
+      mockDbFrom.mockReturnValue({ where: mockWhere })
+      mockWhere.mockReturnValue({ all: mockAll, get: mockAccount })
+      mockAll.mockReturnValue([])
+      const res = await makeRequest(app, '/api/policies/scope/acc-1')
+      expect((await res.json()).scopeMetadata).toEqual([])
+    })
+
     it('passes the correct accountId to the query', async () => {
       mockDbFrom.mockReturnValue({ where: mockWhere })
-      mockWhere.mockReturnValue({ all: mockAll })
+      mockWhere.mockReturnValue({ all: mockAll, get: mockAccount })
       mockAll.mockReturnValue([])
 
       await makeRequest(app, '/api/policies/scope/my-account-id-123')
-      expect(mockWhere).toHaveBeenCalledOnce()
+      expect(mockWhere).toHaveBeenCalledTimes(2)
       const whereArg = mockWhere.mock.calls[0][0]
       expect(whereArg.val).toBe('my-account-id-123')
     })
@@ -181,7 +196,7 @@ describe('policies routes', () => {
         { id: 'p1', mcpId: 'mcp-1', toolName: 'search', decision: 'allow', createdAt: '2026-01-01', updatedAt: '2026-01-01' },
       ]
       mockDbFrom.mockReturnValue({ where: mockWhere })
-      mockWhere.mockReturnValue({ all: mockAll })
+      mockWhere.mockReturnValue({ all: mockAll, get: mockAccount })
       mockAll.mockReturnValue(mockPolicies)
 
       const res = await makeRequest(app, '/api/policies/tool/mcp-1')
@@ -194,7 +209,7 @@ describe('policies routes', () => {
 
     it('returns empty array when no policies exist', async () => {
       mockDbFrom.mockReturnValue({ where: mockWhere })
-      mockWhere.mockReturnValue({ all: mockAll })
+      mockWhere.mockReturnValue({ all: mockAll, get: mockAccount })
       mockAll.mockReturnValue([])
 
       const res = await makeRequest(app, '/api/policies/tool/mcp-nonexistent')
@@ -350,43 +365,34 @@ describe('policies routes', () => {
   })
 
   // =========================================================================
-  // Transaction atomicity
+  // Batch atomicity
   // =========================================================================
-  describe('PUT uses transaction for atomicity', () => {
-    it('scope PUT deletes then inserts within a transaction', async () => {
+  describe('PUT replaces the set in one batch', () => {
+    it('scope PUT runs the delete and the inserts inside one atomic unit', async () => {
+      // On better-sqlite3 a batch is a transaction; the statements are built
+      // first and executed, in order, only once the unit has begun.
       const operations: string[] = []
-      const mockTransaction = vi.fn((fn: () => void) => {
-        operations.push('transaction_start')
-        fn()
-        operations.push('transaction_end')
+      const mockTransaction = vi.fn((fn: () => unknown) => {
+        operations.push('batch_start')
+        const result = fn()
+        operations.push('batch_end')
+        return result
       })
-      // Override db.transaction for this test
       const { db } = await import('@shared/lib/db')
       const origTransaction = db.transaction
       db.transaction = mockTransaction as typeof db.transaction
-      mockDeleteWhere.mockImplementation(() => {
-        operations.push('delete')
-        return { run: mockDeleteRun }
-      })
-      mockInsertValues.mockImplementation(() => {
-        operations.push('insert')
-        return { run: vi.fn() }
-      })
+      mockDeleteWhere.mockImplementation(() => ({ run: () => operations.push('delete') }))
+      mockInsertValues.mockImplementation(() => ({ run: () => operations.push('insert') }))
 
       await makeRequest(app, '/api/policies/scope/acc-1', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          policies: [{ scope: 'test', decision: 'allow' }],
+          policies: [{ scope: 'test', decision: 'allow' }, { scope: 'other', decision: 'block' }],
         }),
       })
 
-      expect(operations).toEqual([
-        'transaction_start',
-        'delete',
-        'insert',
-        'transaction_end',
-      ])
+      expect(operations).toEqual(['batch_start', 'delete', 'insert', 'insert', 'batch_end'])
       db.transaction = origTransaction
     })
   })

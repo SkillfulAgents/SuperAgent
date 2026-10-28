@@ -5,6 +5,8 @@
  * and managing skills from shared git repositories.
  */
 
+import type { AgentAvatar } from './agent-avatar'
+
 // ============================================================================
 // Skillset Index (from repository index.json)
 // ============================================================================
@@ -31,10 +33,26 @@ export interface SkillsetIndex {
 // ============================================================================
 
 /** Skill provider type */
-export type SkillProvider = 'github' | 'platform'
+export type SkillProvider = 'github' | 'platform' | 'public'
 
 /** Provider-specific serialized data owned by the concrete provider */
 export type SkillsetProviderData = Record<string, unknown>
+
+/** A secret credential stored separately from skillset/provider metadata. */
+export interface SkillsetCredential {
+  id: string
+  type: 'token'
+  token: string
+  tokenPreview: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** Request-scoped credential used while validating a repository. Never persisted. */
+export type SkillsetCredentialInput = {
+  type: 'token'
+  token: string
+}
 
 /** A configured skillset in user settings */
 export interface SkillsetConfig {
@@ -71,17 +89,10 @@ export interface InstalledSkillMetadata {
 // SKILL.md Frontmatter Metadata
 // ============================================================================
 
-/** A required environment variable declared in SKILL.md frontmatter */
-export interface RequiredEnvVar {
-  name: string
-  description: string
-}
-
 /** Parsed metadata section from SKILL.md frontmatter */
 export interface SkillFrontmatterMetadata {
   name?: string
   version?: string
-  required_env_vars?: RequiredEnvVar[]
 }
 
 // ============================================================================
@@ -134,19 +145,42 @@ export interface DiscoverableSkill {
   description: string
   version: string
   path: string // path within skillset repo
-  requiredEnvVars?: RequiredEnvVar[]
 }
 
 // ============================================================================
 // Agent Template Types (for skillset-based agent sharing)
 // ============================================================================
 
-/** An agent entry within a skillset's index.json */
+/** A service an agent template connects to, as declared in index.json. */
+export interface SkillsetAgentConnection {
+  type: string // 'api_account' | 'mcp' | …
+  slug: string // matches public/service-icons/<slug>.svg where one exists
+}
+
+/**
+ * An agent entry within a skillset's index.json.
+ *
+ * The marketplace fields below are optional: they were added to the public
+ * skillset after the format shipped, so a repo on the older shape still loads
+ * (see SkillsetIndexAgentSchema).
+ */
 export interface SkillsetIndexAgent {
   name: string
   path: string // e.g. "agents/research-assistant/"
   description: string
   version: string
+  /** Long-form markdown for the template details page. */
+  details?: string
+  createdAt?: string
+  /** Marketplace category, e.g. "Marketing", "Customer Success". */
+  category?: string
+  /** kebab-case lucide icon name, e.g. "badge-dollar-sign". */
+  icon?: string
+  /** The template's orb; agents installed from it start with this avatar. */
+  avatar?: AgentAvatar
+  tags?: string[]
+  works_with?: SkillsetAgentConnection[]
+  developer?: { name: string; url?: string }
 }
 
 /** Metadata stored in workspace/.skillset-agent-metadata.json */
@@ -209,4 +243,12 @@ export interface DiscoverableAgent {
   description: string
   version: string
   path: string // path within skillset repo
+  // Marketplace presentation, absent on skillsets still on the older index shape.
+  details?: string
+  category?: string
+  icon?: string
+  avatar?: AgentAvatar
+  tags?: string[]
+  worksWith?: SkillsetAgentConnection[]
+  developer?: { name: string; url?: string }
 }
