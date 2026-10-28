@@ -9,7 +9,7 @@ vi.mock('./delivery-store', async () => ({ deliveryStore: (await import('./testi
  *
  * This drives the real restore path (addIntegration -> connectIntegration ->
  * restore loop) against an in-memory DB seeded with one active and one archived
- * session, and asserts a listener (`LiveSessions.listen`) is wired only for
+ * session, and asserts the manager follows only
  * the active session. It also covers the new active-only listing helper directly.
  */
 
@@ -86,7 +86,6 @@ import {
   listAgentIntegrationSessions,
   listActiveAgentIntegrationSessions,
 } from '@shared/lib/services/agent-integration-session-service'
-import { LiveSessions } from '@shared/lib/agent-actor/live/live-sessions'
 
 describe('SUP-233 reconnect restore ignores archived sessions', () => {
   beforeEach(async () => {
@@ -133,14 +132,10 @@ describe('SUP-233 reconnect restore ignores archived sessions', () => {
     }))
     await archiveAgentIntegrationSession(archivedRowId)
 
-    const listen = vi
-      .spyOn(LiveSessions.prototype, 'listen')
-      .mockReturnValue(() => {})
-
     // Drives connectIntegration -> restore loop.
     await agentIntegrationManager.addIntegration(integrationId)
 
-    const subscribedSessionIds = listen.mock.calls.map((c) => c[0])
+    const subscribedSessionIds = [...(agentIntegrationManager as unknown as { sessionFollowers: Map<string, unknown> }).sessionFollowers.keys()]
     expect(subscribedSessionIds).toContain('active-agent-session')
     expect(subscribedSessionIds).not.toContain('archived-agent-session')
   })

@@ -1,19 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { EventEmitter } from 'events'
 
+import type { AgentSocketRequest } from './agent-socket'
 import {
   artifactWebSocketForwardHeaders,
   parseArtifactWebSocketRoute,
 } from './artifact-stream-proxy'
 
-function request(headers: Record<string, string>) {
+function request(headers: Record<string, string>): AgentSocketRequest {
   return {
-    headers,
-    socket: Object.assign(new EventEmitter(), {
-      encrypted: false,
-      remoteAddress: '127.0.0.1',
-    }),
-  } as any
+    url: new URL('http://gamut.example/api/agents/a/artifacts/slides/'),
+    headers: new Headers(headers),
+    encrypted: false,
+    remoteAddress: '127.0.0.1',
+  }
 }
 
 describe('artifact WebSocket route', () => {
