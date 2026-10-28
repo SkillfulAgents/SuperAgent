@@ -1,4 +1,5 @@
 import Analytics, { type AnalyticsInstance } from 'analytics'
+import { clientFacts, serverFacts } from '@renderer/lib/facts'
 import amplitudePlugin from '@analytics/amplitude'
 import googleAnalyticsPlugin from '@analytics/google-analytics'
 import mixpanelPlugin from '@analytics/mixpanel'
@@ -56,12 +57,24 @@ function dedupeByName<T extends { name: string }>(plugins: T[]): T[] {
   })
 }
 
+/** This window's distribution (direct | mac-app-store | windows-store), or null for a browser or before facts settle. */
+function clientDistribution(): string | null {
+  try {
+    return clientFacts().distribution ?? serverFacts()?.distribution ?? null
+  } catch {
+    return null
+  }
+}
+
 export function getAnalyticsMetadata() {
   const platform = isElectron() ? 'electron' : 'web'
   const metadata: Record<string, string> = {
     versionId: __APP_VERSION__,
     platform,
   }
+  // The Store build shares versionId with the direct build; the stamp tells them apart.
+  const distribution = clientDistribution()
+  if (distribution) metadata.distribution = distribution
 
   if (platform === 'electron') {
     metadata.os = navigator.platform

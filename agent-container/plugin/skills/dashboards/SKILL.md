@@ -36,6 +36,7 @@ Dashboards live in `/workspace/artifacts/<slug>/`:
 /workspace/artifacts/my-dashboard/
 ├── package.json        # Must have name, description, and start script
 ├── index.js            # Entry point (for plain dashboards)
+├── tokens.css          # Design tokens (plain dashboards; see DESIGN.md)
 └── dashboard.log       # Auto-generated stdout/stderr log
 ```
 
@@ -93,6 +94,7 @@ The template structure:
 ├── index.html
 └── src/
     ├── main.jsx
+    ├── tokens.css       # Design tokens (see DESIGN.md)
     └── App.jsx          # Edit this to build your dashboard
 ```
 
@@ -213,9 +215,9 @@ The following APIs are automatically available in all dashboards (injected by th
 
 ## Design and Accessibility
 
+- **Follow the design system in `/opt/gamut/plugin/skills/dashboards/DESIGN.md`** — read it before building UI. Both scaffolds ship its tokens as `tokens.css`: build with those variables and `.sa-*` classes rather than defining your own palette, so the dashboard matches the app in light and dark mode.
 - Build mobile-first responsive layouts with grid or flexbox.
 - Establish hierarchy through typography, spacing, and grouping.
-- Use a small, consistent set of CSS custom properties for color, spacing, radius, and typography.
 - Meet WCAG AA contrast and never communicate state through color alone.
 - Use semantic HTML, proper headings, and associated labels; reach for ARIA only when native semantics are insufficient.
 - Provide loading, empty, error, and stale-data states rather than blank areas.

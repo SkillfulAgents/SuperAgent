@@ -86,6 +86,11 @@ const lenientBooleanRecord = z
  * stored map is lenient instead: it keeps a switch for an experiment that has
  * since been retired, and readers ignore it (see `experimentEnabled`).
  */
+/** The Team Brain page's saved Views are read leniently, so a malformed write would erase them; refuse it instead. */
+export const teamBrainViewsWriteSchema = z.object({
+  teamBrainViews: z.array(z.string()).optional(),
+})
+
 export const experimentSettingsWriteSchema = z.object({
   experiments: z
     .record(z.string().refine(isKnownExperiment, 'Unknown experiment'), z.boolean())
@@ -197,6 +202,9 @@ export const userSettingsSchema = z.object({
   // Home graph view: the "Details" toggle (pin every resource's detail card
   // + count chips open). Absent = off.
   graphShowDetails: z.boolean().optional(),
+  // Team Brain home page: which groups of the brain's own files its tree shows
+  // ('about', 'archive'). Absent = none.
+  teamBrainViews: lenientArray(z.string()),
   // Home page widget grid: per-card position + footprint in grid cells,
   // keyed by card id (agent slug or dashboard key). Absent = never customized
   // (the board auto-packs responsively until the user drags/resizes).
