@@ -56,11 +56,12 @@ test('Electron decodes HEIC/HEIF previews and retries a failed drawer preview', 
       expect(preview.headers()['content-type']).toBe('image/jpeg')
       expect((await preview.body()).subarray(0, 3)).toEqual(Buffer.from([0xff, 0xd8, 0xff]))
 
+      // A single upload is saved as a JPEG, so the download is the converted file.
       const downloadUrl = new URL(previewUrl)
       downloadUrl.searchParams.delete('inline')
       const download = await page.request.get(downloadUrl.href)
       expect(download.ok()).toBeTruthy()
-      expect(await download.body()).toEqual(original)
+      expect((await download.body()).subarray(0, 3)).toEqual(Buffer.from([0xff, 0xd8, 0xff]))
     }
 
     await session.sendMessage('Check these photos')

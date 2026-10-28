@@ -19,7 +19,6 @@ import { streamSSE } from 'hono/streaming'
 import { getConnInfo } from '@hono/node-server/conninfo'
 import type Anthropic from '@anthropic-ai/sdk'
 import { createHash, randomUUID } from 'crypto'
-import { Worker } from 'node:worker_threads'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
@@ -80,6 +79,7 @@ import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTri
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { HEIC_PREVIEW_MAX_SOURCE_BYTES } from '@shared/lib/utils/heic-preview'
+import { HEIC_EXTENSIONS, heicUploadAsJpeg, queueHeicPreview, runHeicPreviewWorker } from './heic-jpeg'
 import { servedRange } from '@shared/lib/utils/http-range'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { isSystemMessageText } from '@shared/lib/utils/system-message'
@@ -6367,6 +6367,9 @@ async function handleFileUpload(agentSlug: string, file: File, relativePath?: st
   if (file.size > MAX_UPLOAD_TOTAL_SIZE) {
     throw new UploadTooLargeError(file.size, MAX_UPLOAD_TOTAL_SIZE)
   }
+  // A folder upload keeps its file names, so only a single file is swapped for its JPEG.
+  const jpeg = relativePath ? undefined : await heicUploadAsJpeg(file.name, file)
+  if (jpeg) file = new File([jpeg.data], jpeg.name)
   const uploadPath = resolveUploadDestPath(file.name, relativePath)
 
   // Stream into the workspace instead of Buffer.from(await file.arrayBuffer()) —
@@ -6895,13 +6898,9 @@ agents.post('/:id/folders/reveal-path', AgentAdmin(), async (c) => {
   }
 })
 
-const HEIC_EXTENSIONS = new Set(['.heic', '.heif'])
 const HEIC_PREVIEW_CACHE_BYTES = 64 * 1024 * 1024
-const HEIC_PREVIEW_MAX_PIXELS = 50_000_000
-const HEIC_PREVIEW_TIMEOUT_MS = 30_000
 const heicPreviewCache = new Map<string, Uint8Array>()
 let heicPreviewCacheBytes = 0
-let heicPreviewQueue: Promise<void> = Promise.resolve()
 
 function cachedHeicPreview(key: string): Uint8Array | undefined {
   const preview = heicPreviewCache.get(key)
@@ -6926,72 +6925,6 @@ function cacheHeicPreview(key: string, preview: Uint8Array) {
   }
   heicPreviewCache.set(key, preview)
   heicPreviewCacheBytes += preview.byteLength
-}
-
-function heicPreviewWorkerUrl(): URL {
-  try {
-    // Electron emits CommonJS; the web build and unbundled source use ESM.
-    const filename = process.versions.electron ? './heic-preview-worker.cjs' : './heic-preview-worker.mjs'
-    return new URL(filename, import.meta.url)
-  } catch (error) {
-    throw new Error('Failed to resolve HEIC preview worker', { cause: error })
-  }
-}
-
-function runHeicPreviewWorker(input: Uint8Array): Promise<Uint8Array> {
-  return new Promise((resolve, reject) => {
-    const inputBuffer = input.buffer as ArrayBuffer
-    const worker = new Worker(heicPreviewWorkerUrl(), {
-      workerData: {
-        input: inputBuffer,
-        maxPixels: HEIC_PREVIEW_MAX_PIXELS,
-        quality: 85,
-      },
-      transferList: [inputBuffer],
-      resourceLimits: {
-        maxOldGenerationSizeMb: 384,
-        maxYoungGenerationSizeMb: 64,
-        stackSizeMb: 4,
-      },
-    })
-    let settled = false
-    let timedOut = false
-    let workerError: Error | undefined
-    let result: { output?: ArrayBuffer; error?: string } | undefined
-    const timeout = setTimeout(() => {
-      if (settled) return
-      timedOut = true
-      background(worker.terminate().catch((error) => {
-        if (settled) return
-        settled = true
-        reject(error)
-      }), { name: 'heic-preview.terminate-worker' })
-    }, HEIC_PREVIEW_TIMEOUT_MS)
-
-    worker.once('message', (message: { output?: ArrayBuffer; error?: string }) => {
-      result = message
-    })
-    worker.once('error', (error) => {
-      workerError = error
-    })
-    worker.once('exit', (code) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timeout)
-      if (timedOut) reject(new Error('HEIC preview conversion timed out'))
-      else if (workerError) reject(workerError)
-      else if (code !== 0) reject(new Error(`HEIC preview worker exited with code ${code}`))
-      else if (result?.error) reject(new Error(result.error))
-      else if (result?.output) resolve(new Uint8Array(result.output))
-      else reject(new Error('HEIC preview worker returned no image'))
-    })
-  })
-}
-
-function queueHeicPreview<T>(task: () => Promise<T>): Promise<T> {
-  const queued = heicPreviewQueue.then(task)
-  heicPreviewQueue = queued.then(() => undefined, () => undefined)
-  return queued
 }
 
 async function renderHeicPreview(actor: AgentActor, resolvedPath: string, stat: FileStat): Promise<Uint8Array> {
