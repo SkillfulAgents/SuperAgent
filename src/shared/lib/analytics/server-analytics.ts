@@ -1,4 +1,5 @@
 import { getTenantId } from './tenant-id'
+import { getServerFacts } from '../facts/server-facts'
 import { getSettings, type AnalyticsTarget } from '../config/settings'
 import { DEFAULT_AMPLITUDE_KEY } from './constants'
 import { background } from '../background'
@@ -26,6 +27,7 @@ function getBaseProperties(): Record<string, unknown> {
     versionId: appVersion ?? 'unknown',
     platform: 'server',
     tenantId: getTenantId(),
+    distribution: getServerFacts().distribution,
   }
 }
 
