@@ -20,6 +20,7 @@ import { background } from '@shared/lib/background'
 import { createMemoryOps } from './memory-ops'
 import { matchesTranscriptQuery } from './transcript-query'
 import { createSessionDelivery, notAcceptedError, type SessionDelivery } from './delivery'
+import { recoverFromContainer } from './recover-from-container'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import { createAgentState, releaseAgentState, type AgentState } from './agent-state'
 import { createLocalSessionStore } from './local-session-store'
@@ -303,6 +304,16 @@ function createSessionOps(
     grantCapability: async (sessionId, capability) => live.grantCapability(sessionId, capability),
 
     attach: (sessionId, options) => delivery.attach(sessionId, options),
+    recover: () => recoverFromContainer({
+      containerStatus: async () => deps.containerHost.runtime(slug).getCachedInfo().status,
+      fetch: (path) => client().fetch(path),
+      attach: (sessionId) => delivery.attach(sessionId),
+      recoverAwaitingInput: (sessionId, unresolved) => live.recoverAwaitingInput(sessionId, unresolved),
+      takeStoredCoalesced: () => live.takeStoredCoalesced(),
+      sendHeld: (sessionId, message) => live.inDeliveryTurn(sessionId, async () => {
+        await client().sendMessage(sessionId, message.text, message.uuid, { shouldQuery: message.shouldQuery ?? true })
+      }),
+    }),
 
     deferNaming: async (sessionId) => {
       state.deferredNaming.add(sessionId)

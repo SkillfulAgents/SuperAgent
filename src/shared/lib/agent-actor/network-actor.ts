@@ -120,6 +120,17 @@ function decodeValue(value: unknown, source: StreamSource, signal: AbortSignal |
   }
 }
 
+const noWireStreams: StreamSource = { get: () => { throw new TypeError('This value carries no streams') } }
+
+/** A value with no streams in it as JSON-safe wire data, keeping what structured clone keeps. */
+export function encodeWire(value: unknown, where: string): unknown {
+  return encodeValue(value, where, { add: () => { throw new TypeError(`${where} cannot cross: no streams here`) } }, false)
+}
+
+export function decodeWire(value: unknown): unknown {
+  return decodeValue(value, noWireStreams, undefined)
+}
+
 // ============================================================================
 // Bodies
 // ============================================================================
