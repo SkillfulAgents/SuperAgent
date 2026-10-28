@@ -86,7 +86,8 @@ async function onDelete(db: AppDatabase, table: string): Promise<string | undefi
 }
 
 describe('0061 user ownership FKs', () => {
-  it('keeps every live, local and unowned row with its children, and drops what a deleted user left', async () => {
+  // Off is how `drizzle-kit migrate` runs it: libsql's migrate() turns foreign keys off, so nothing cascades.
+  it.each(['ON', 'OFF'] as const)('keeps every live, local and unowned row with its children, and drops what a deleted user left (foreign keys %s)', async (foreignKeys) => {
     expect(fksMigration).toBeGreaterThan(0)
     handle = await createTestDatabase({ migrations: migrationBundle.slice(0, fksMigration) })
     const db = handle.db
@@ -98,7 +99,10 @@ describe('0061 user ownership FKs', () => {
     await db.run(sql`INSERT INTO agent_acl (id, user_id, agent_slug, role, created_at) VALUES ('acl-ada', 'ada', 'agent', 'owner', 1), ('acl-gone', 'gone', 'agent', 'owner', 1)`)
     await db.run(sql`INSERT INTO user_settings (user_id, settings, updated_at) VALUES ('ada', '{}', 1), ('local', '{}', 1), ('gone', '{}', 1)`)
 
+    await db.run(sql.raw(`PRAGMA foreign_keys = ${foreignKeys}`))
+    expect(await db.all(sql`PRAGMA foreign_keys`)).toEqual([{ foreign_keys: foreignKeys === 'ON' ? 1 : 0 }])
     await migrateFromBundle(db)
+    await db.run(sql`PRAGMA foreign_keys = ON`)
 
     expect(await owners(db, 'connected_accounts')).toEqual({ 'acct-ada': 'ada', 'acct-local': null, 'acct-none': null })
     expect(await owners(db, 'remote_mcp_servers')).toEqual({ 'mcp-ada': 'ada', 'mcp-local': null, 'mcp-none': null })

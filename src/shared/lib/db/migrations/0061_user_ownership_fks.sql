@@ -11,6 +11,10 @@
 -- children of connected_accounts and remote_mcp_servers are therefore set
 -- aside first and put back once both parents are rebuilt. Every statement
 -- leaves the foreign keys satisfied, so no check is deferred.
+--
+-- Nothing here relies on a cascade either: `drizzle-kit migrate` runs on
+-- libsql, whose migrate() turns foreign keys off, so each delete names the
+-- rows it removes and only children of surviving parents are put back.
 
 -- Non-auth mode now stores no owner (as account sync always has) instead of
 -- the 'local' sentinel, which has no user row to reference.
@@ -18,18 +22,18 @@ UPDATE `connected_accounts` SET `user_id` = NULL WHERE `user_id` = 'local';--> s
 UPDATE `remote_mcp_servers` SET `user_id` = NULL WHERE `user_id` = 'local';--> statement-breakpoint
 
 -- Rows whose owner is already deleted: what the cascade would have removed.
--- Their children go with them through the children's own FKs.
+-- Their children are left out of the copies below.
 DELETE FROM `connected_accounts` WHERE `user_id` IS NOT NULL AND `user_id` NOT IN (SELECT `id` FROM `user`);--> statement-breakpoint
 DELETE FROM `remote_mcp_servers` WHERE `user_id` IS NOT NULL AND `user_id` NOT IN (SELECT `id` FROM `user`);--> statement-breakpoint
 DELETE FROM `agent_acl` WHERE `user_id` NOT IN (SELECT `id` FROM `user`);--> statement-breakpoint
 DELETE FROM `user_settings` WHERE `user_id` <> 'local' AND `user_id` NOT IN (SELECT `id` FROM `user`);--> statement-breakpoint
 
-CREATE TABLE `__saved_agent_connected_accounts` AS SELECT * FROM `agent_connected_accounts`;--> statement-breakpoint
-CREATE TABLE `__saved_api_scope_policies` AS SELECT * FROM `api_scope_policies`;--> statement-breakpoint
-CREATE TABLE `__saved_agent_remote_mcps` AS SELECT * FROM `agent_remote_mcps`;--> statement-breakpoint
-CREATE TABLE `__saved_mcp_tool_policies` AS SELECT * FROM `mcp_tool_policies`;--> statement-breakpoint
-CREATE TABLE `__saved_proxy_rules` AS SELECT * FROM `proxy_rules`;--> statement-breakpoint
-CREATE TABLE `__saved_proxy_rule_versions` AS SELECT * FROM `proxy_rule_versions`;--> statement-breakpoint
+CREATE TABLE `__saved_agent_connected_accounts` AS SELECT * FROM `agent_connected_accounts` WHERE `connected_account_id` IN (SELECT `id` FROM `connected_accounts`);--> statement-breakpoint
+CREATE TABLE `__saved_api_scope_policies` AS SELECT * FROM `api_scope_policies` WHERE `account_id` IN (SELECT `id` FROM `connected_accounts`);--> statement-breakpoint
+CREATE TABLE `__saved_agent_remote_mcps` AS SELECT * FROM `agent_remote_mcps` WHERE `remote_mcp_id` IN (SELECT `id` FROM `remote_mcp_servers`);--> statement-breakpoint
+CREATE TABLE `__saved_mcp_tool_policies` AS SELECT * FROM `mcp_tool_policies` WHERE `mcp_id` IN (SELECT `id` FROM `remote_mcp_servers`);--> statement-breakpoint
+CREATE TABLE `__saved_proxy_rules` AS SELECT * FROM `proxy_rules` WHERE `account_id` IN (SELECT `id` FROM `connected_accounts`) OR `mcp_id` IN (SELECT `id` FROM `remote_mcp_servers`);--> statement-breakpoint
+CREATE TABLE `__saved_proxy_rule_versions` AS SELECT * FROM `proxy_rule_versions` WHERE `rule_id` IN (SELECT `id` FROM `__saved_proxy_rules`);--> statement-breakpoint
 DELETE FROM `proxy_rule_versions`;--> statement-breakpoint
 DELETE FROM `proxy_rules`;--> statement-breakpoint
 DELETE FROM `agent_connected_accounts`;--> statement-breakpoint

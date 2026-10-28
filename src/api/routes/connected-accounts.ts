@@ -142,6 +142,23 @@ async function nameFinishedGrant(
   return { displayName, reconnectAccountId }
 }
 
+/**
+ * Revoke the remote connection a reconnect replaced, through the provider that
+ * issued it. Connection ids are only unique per provider, so after a provider
+ * switch the new provider must not be handed the old id: it can name another
+ * account's connection there.
+ */
+function deleteReplacedConnection(
+  replaced: Pick<ConnectedAccount, 'providerName' | 'providerConnectionId' | 'toolkitSlug'>,
+  providerName: string,
+  connectionId: string,
+): void {
+  if (replaced.providerName === providerName && replaced.providerConnectionId === connectionId) return
+  background((async () => {
+    await getAccountProviderByName(replaced.providerName).deleteConnection(replaced.providerConnectionId, replaced.toolkitSlug)
+  })().catch((err) => console.warn('[reconnect] Failed to delete old remote connection:', err)), { name: 'connected-accounts-route.delete-old-connection' })
+}
+
 // POST /api/connected-accounts/initiate - Start OAuth flow
 connectedAccountsRouter.post('/initiate', async (c) => {
   try {
@@ -280,6 +297,8 @@ connectedAccountsRouter.post('/complete', async (c) => {
       const [oldRecord] = await db
         .select({
           providerConnectionId: connectedAccounts.providerConnectionId,
+          providerName: connectedAccounts.providerName,
+          toolkitSlug: connectedAccounts.toolkitSlug,
           userId: connectedAccounts.userId,
         })
         .from(connectedAccounts)
@@ -310,10 +329,7 @@ connectedAccountsRouter.post('/complete', async (c) => {
       await resumeAccountReauthWaits(id)
 
       // Clean up the old remote connection (fire-and-forget)
-      if (oldRecord && oldRecord.providerConnectionId !== connectionId) {
-        background(accountProvider.deleteConnection(oldRecord.providerConnectionId, toolkitSlug)
-          .catch((err) => console.warn('[reconnect] Failed to delete old remote connection:', err)), { name: 'connected-accounts-route.delete-old-connection' })
-      }
+      deleteReplacedConnection(oldRecord, providerName, connectionId)
 
       trackServerEvent('account_oauth_reconnected', { toolkitSlug })
       await logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })
@@ -418,6 +434,8 @@ connectedAccountsRouter.get('/callback', async (c) => {
       const [oldRecord] = await db
         .select({
           providerConnectionId: connectedAccounts.providerConnectionId,
+          providerName: connectedAccounts.providerName,
+          toolkitSlug: connectedAccounts.toolkitSlug,
           userId: connectedAccounts.userId,
         })
         .from(connectedAccounts)
@@ -445,10 +463,7 @@ connectedAccountsRouter.get('/callback', async (c) => {
 
       await resumeAccountReauthWaits(id)
 
-      if (oldRecord && oldRecord.providerConnectionId !== connectionId) {
-        background(accountProvider.deleteConnection(oldRecord.providerConnectionId, toolkitSlug)
-          .catch((err) => console.warn('[reconnect] Failed to delete old remote connection:', err)), { name: 'connected-accounts-route.delete-old-connection' })
-      }
+      deleteReplacedConnection(oldRecord, providerName, connectionId)
 
       trackServerEvent('account_oauth_reconnected', { toolkitSlug })
       await logAuditEvent({ userId: getCurrentUserId(c), object: 'account', objectId: id, action: 'connected', details: { toolkitSlug } })

@@ -661,18 +661,18 @@ export const migrationBundle: readonly MigrationMeta[] = [
   },
   {
     "sql": [
-      "-- Hand-written (SUP-220, SUP-222). schema.ts has always declared a cascading FK\n-- from connected_accounts, remote_mcp_servers and agent_acl to `user`, and the\n-- snapshots claim it exists, but the tables only ever got a bare `user_id`\n-- column (SQLite cannot add a FK with ALTER). Deleting a user left their\n-- accounts, MCP servers (with stored tokens and client secrets) and ACL rows\n-- behind. This rebuilds the three tables with the FK, and scopes the\n-- provider connection id's uniqueness to its provider.\n--\n-- Migrations run in one transaction, where `PRAGMA foreign_keys=OFF` is a\n-- no-op, so dropping a parent table runs its children's ON DELETE CASCADE. The\n-- children of connected_accounts and remote_mcp_servers are therefore set\n-- aside first and put back once both parents are rebuilt. Every statement\n-- leaves the foreign keys satisfied, so no check is deferred.\n\n-- Non-auth mode now stores no owner (as account sync always has) instead of\n-- the 'local' sentinel, which has no user row to reference.\nUPDATE `connected_accounts` SET `user_id` = NULL WHERE `user_id` = 'local';",
+      "-- Hand-written (SUP-220, SUP-222). schema.ts has always declared a cascading FK\n-- from connected_accounts, remote_mcp_servers and agent_acl to `user`, and the\n-- snapshots claim it exists, but the tables only ever got a bare `user_id`\n-- column (SQLite cannot add a FK with ALTER). Deleting a user left their\n-- accounts, MCP servers (with stored tokens and client secrets) and ACL rows\n-- behind. This rebuilds the three tables with the FK, and scopes the\n-- provider connection id's uniqueness to its provider.\n--\n-- Migrations run in one transaction, where `PRAGMA foreign_keys=OFF` is a\n-- no-op, so dropping a parent table runs its children's ON DELETE CASCADE. The\n-- children of connected_accounts and remote_mcp_servers are therefore set\n-- aside first and put back once both parents are rebuilt. Every statement\n-- leaves the foreign keys satisfied, so no check is deferred.\n--\n-- Nothing here relies on a cascade either: `drizzle-kit migrate` runs on\n-- libsql, whose migrate() turns foreign keys off, so each delete names the\n-- rows it removes and only children of surviving parents are put back.\n\n-- Non-auth mode now stores no owner (as account sync always has) instead of\n-- the 'local' sentinel, which has no user row to reference.\nUPDATE `connected_accounts` SET `user_id` = NULL WHERE `user_id` = 'local';",
       "\nUPDATE `remote_mcp_servers` SET `user_id` = NULL WHERE `user_id` = 'local';",
-      "\n\n-- Rows whose owner is already deleted: what the cascade would have removed.\n-- Their children go with them through the children's own FKs.\nDELETE FROM `connected_accounts` WHERE `user_id` IS NOT NULL AND `user_id` NOT IN (SELECT `id` FROM `user`);",
+      "\n\n-- Rows whose owner is already deleted: what the cascade would have removed.\n-- Their children are left out of the copies below.\nDELETE FROM `connected_accounts` WHERE `user_id` IS NOT NULL AND `user_id` NOT IN (SELECT `id` FROM `user`);",
       "\nDELETE FROM `remote_mcp_servers` WHERE `user_id` IS NOT NULL AND `user_id` NOT IN (SELECT `id` FROM `user`);",
       "\nDELETE FROM `agent_acl` WHERE `user_id` NOT IN (SELECT `id` FROM `user`);",
       "\nDELETE FROM `user_settings` WHERE `user_id` <> 'local' AND `user_id` NOT IN (SELECT `id` FROM `user`);",
-      "\n\nCREATE TABLE `__saved_agent_connected_accounts` AS SELECT * FROM `agent_connected_accounts`;",
-      "\nCREATE TABLE `__saved_api_scope_policies` AS SELECT * FROM `api_scope_policies`;",
-      "\nCREATE TABLE `__saved_agent_remote_mcps` AS SELECT * FROM `agent_remote_mcps`;",
-      "\nCREATE TABLE `__saved_mcp_tool_policies` AS SELECT * FROM `mcp_tool_policies`;",
-      "\nCREATE TABLE `__saved_proxy_rules` AS SELECT * FROM `proxy_rules`;",
-      "\nCREATE TABLE `__saved_proxy_rule_versions` AS SELECT * FROM `proxy_rule_versions`;",
+      "\n\nCREATE TABLE `__saved_agent_connected_accounts` AS SELECT * FROM `agent_connected_accounts` WHERE `connected_account_id` IN (SELECT `id` FROM `connected_accounts`);",
+      "\nCREATE TABLE `__saved_api_scope_policies` AS SELECT * FROM `api_scope_policies` WHERE `account_id` IN (SELECT `id` FROM `connected_accounts`);",
+      "\nCREATE TABLE `__saved_agent_remote_mcps` AS SELECT * FROM `agent_remote_mcps` WHERE `remote_mcp_id` IN (SELECT `id` FROM `remote_mcp_servers`);",
+      "\nCREATE TABLE `__saved_mcp_tool_policies` AS SELECT * FROM `mcp_tool_policies` WHERE `mcp_id` IN (SELECT `id` FROM `remote_mcp_servers`);",
+      "\nCREATE TABLE `__saved_proxy_rules` AS SELECT * FROM `proxy_rules` WHERE `account_id` IN (SELECT `id` FROM `connected_accounts`) OR `mcp_id` IN (SELECT `id` FROM `remote_mcp_servers`);",
+      "\nCREATE TABLE `__saved_proxy_rule_versions` AS SELECT * FROM `proxy_rule_versions` WHERE `rule_id` IN (SELECT `id` FROM `__saved_proxy_rules`);",
       "\nDELETE FROM `proxy_rule_versions`;",
       "\nDELETE FROM `proxy_rules`;",
       "\nDELETE FROM `agent_connected_accounts`;",
@@ -710,6 +710,6 @@ export const migrationBundle: readonly MigrationMeta[] = [
     ],
     "bps": true,
     "folderMillis": 1793208365492,
-    "hash": "ad3e8edd3045664f0f5e91da2c4ca20e9389e0c1eca957a4e0c642a5c6d4b21d"
+    "hash": "2c09aa6052f6f77e0b64de33853598c4420a21aa2d310d299f44b11b1693111d"
   }
 ]
