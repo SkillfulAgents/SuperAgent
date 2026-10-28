@@ -10,6 +10,9 @@ import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 
 export const UNTITLED_AGENT_NAME = 'Untitled'
 
+/** A create slower than this shows "Creating agent…"; a quicker one finishes before it would flash. */
+export const CREATE_PROGRESS_DELAY_MS = 400
+
 /** Where the create was started, for `agent_created`'s `surface`. */
 export type CreateUntitledAgentSurface = 'nav' | 'section_plus' | 'home' | 'app_menu'
 
@@ -32,8 +35,18 @@ export function useCreateUntitledAgent() {
   const { track } = useAnalyticsTracking()
 
   const createUntitledAgent = useCallback(async (options: CreateUntitledAgentOptions) => {
+    // A create can take seconds where the agent's runtime first has to start.
+    let progressToast: string | number | undefined
+    const showProgress = setTimeout(() => {
+      progressToast = toast.loading('Creating agent…')
+    }, CREATE_PROGRESS_DELAY_MS)
+    const endProgress = () => {
+      clearTimeout(showProgress)
+      if (progressToast !== undefined) toast.dismiss(progressToast)
+    }
     try {
       const agent = await createAgent.mutateAsync({ name: UNTITLED_AGENT_NAME })
+      endProgress()
       track('agent_created', {
         source: 'new',
         surface: options.surface,
@@ -75,6 +88,7 @@ export function useCreateUntitledAgent() {
 
       return agent
     } catch (error) {
+      endProgress()
       console.error('Failed to create untitled agent:', error)
       toast.error('Failed to create agent', {
         description: error instanceof Error ? error.message : 'Please try again.',

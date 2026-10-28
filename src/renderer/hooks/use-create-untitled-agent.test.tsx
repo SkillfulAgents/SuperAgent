@@ -26,10 +26,10 @@ vi.mock('@renderer/context/nav-transient-context', () => ({
 vi.mock('@renderer/context/analytics-context', () => ({
   useAnalyticsTracking: () => ({ track: mockTrack }),
 }))
-vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
+vi.mock('sonner', () => ({ toast: { error: vi.fn(), loading: vi.fn(() => 'creating-toast'), dismiss: vi.fn() } }))
 
 import { toast } from 'sonner'
-import { useCreateUntitledAgent } from './use-create-untitled-agent'
+import { CREATE_PROGRESS_DELAY_MS, useCreateUntitledAgent } from './use-create-untitled-agent'
 
 const AGENT = { slug: 'untitled-abc', displaySlug: 'untitled' }
 
@@ -37,6 +37,78 @@ beforeEach(() => {
   vi.clearAllMocks()
   mockMutateAsync.mockResolvedValue(AGENT)
   mockUpdateMutateAsync.mockResolvedValue({})
+})
+
+describe('useCreateUntitledAgent progress', () => {
+  it('says the agent is being created when the create is slow, and clears it once the agent exists', async () => {
+    vi.useFakeTimers()
+    try {
+      let finish!: (agent: typeof AGENT) => void
+      mockMutateAsync.mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
+      const { result } = renderHook(() => useCreateUntitledAgent())
+      let creation!: ReturnType<typeof result.current.createUntitledAgent>
+      await act(async () => {
+        creation = result.current.createUntitledAgent({ surface: 'nav' })
+      })
+
+      await act(async () => {
+        vi.advanceTimersByTime(CREATE_PROGRESS_DELAY_MS)
+      })
+      expect(toast.loading).toHaveBeenCalledWith('Creating agent…')
+      expect(toast.dismiss).not.toHaveBeenCalled()
+
+      await act(async () => {
+        finish(AGENT)
+        await creation
+      })
+      expect(toast.dismiss).toHaveBeenCalledWith('creating-toast')
+      expect(mockNavigate).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows no progress for a create that finishes quickly', async () => {
+    vi.useFakeTimers()
+    try {
+      const { result } = renderHook(() => useCreateUntitledAgent())
+      await act(async () => {
+        await result.current.createUntitledAgent({ surface: 'nav' })
+      })
+      await act(async () => {
+        vi.advanceTimersByTime(CREATE_PROGRESS_DELAY_MS * 2)
+      })
+      expect(toast.loading).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clears the progress when the create fails, before saying it failed', async () => {
+    vi.useFakeTimers()
+    try {
+      let fail!: (error: Error) => void
+      mockMutateAsync.mockReturnValueOnce(new Promise((_resolve, reject) => { fail = reject }))
+      const { result } = renderHook(() => useCreateUntitledAgent())
+      let creation!: ReturnType<typeof result.current.createUntitledAgent>
+      await act(async () => {
+        creation = result.current.createUntitledAgent({ surface: 'home' })
+      })
+      await act(async () => {
+        vi.advanceTimersByTime(CREATE_PROGRESS_DELAY_MS)
+      })
+
+      await act(async () => {
+        fail(new Error('Agent limit reached'))
+        await creation
+      })
+      expect(toast.dismiss).toHaveBeenCalledWith('creating-toast')
+      expect(vi.mocked(toast.dismiss).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(toast.error).mock.invocationCallOrder[0])
+      expect(toast.error).toHaveBeenCalledWith('Failed to create agent', { description: 'Agent limit reached' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('useCreateUntitledAgent', () => {
