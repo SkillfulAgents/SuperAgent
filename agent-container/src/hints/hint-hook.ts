@@ -1,4 +1,4 @@
-import type { HookCallback, HookCallbackMatcher, HookInput } from '@anthropic-ai/claude-agent-sdk'
+import type { HookCallback, HookCallbackMatcher, HookInput, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk'
 import { compileTrigger, escapeRegExp, type HintEventInput } from './hint-matchers'
 import type { Hint, HintEvent } from './hint-schema'
 
@@ -28,7 +28,7 @@ export function createHintsHook(hints: Hint[], currentTurn: () => number): HookC
     if (hint.repeat === 'always' || !lastShownTurn.has(hint.name)) return true
     return hint.repeat === 'turn' && lastShownTurn.get(hint.name) !== turn
   }
-  return async (input) => {
+  return async (input): Promise<HookJSONOutput> => {
     const event = toHintEventInput(input)
     if (!event) return {}
     const turn = currentTurn()
