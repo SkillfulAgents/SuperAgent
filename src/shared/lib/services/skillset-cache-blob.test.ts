@@ -58,6 +58,24 @@ describe('skillset cache in the blob store', () => {
     expect(await restoreSkillsetCache(dir)).toBe(false)
   })
 
+  it('reads the store once for repeated restores in one process', async () => {
+    const store = memoryStore()
+    const reads = { count: 0 }
+    setBlobStore({ ...store, get: async (key) => {
+      reads.count++
+      return store.get(key)
+    } })
+    const dir = skillsetDir()
+    await saveSkillsetCache(dir)
+
+    for (let request = 0; request < 3; request++) {
+      fs.rmSync(dir, { recursive: true, force: true })
+      expect(await restoreSkillsetCache(dir)).toBe(true)
+      expect(fs.readFileSync(path.join(dir, 'index.json'), 'utf-8')).toContain('lead-research')
+    }
+    expect(reads.count).toBe(0)
+  })
+
   it('does nothing without a store', async () => {
     const dir = skillsetDir()
     await saveSkillsetCache(dir)
