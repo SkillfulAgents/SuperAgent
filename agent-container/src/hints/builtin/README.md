@@ -12,6 +12,7 @@ triggers:
   - event: UserPromptSubmit
     prompt: \bdeploy\b         # case-insensitive regex on the prompt text
 repeat: turn                   # optional; turn (default) = first match per user message, once = per session, always = every match
+deny: true                     # optional; PreToolUse triggers only. When the hint fires (per repeat), refuse the call with the body as the reason
 ---
 Short text the agent sees when a trigger matches.
 ```
@@ -30,7 +31,7 @@ A hint arrives mid-task with no context beyond the call that matched it, so it h
 2. **No promises the runtime doesn't keep.** "Background commands notify you when they finish" is false for a command that hangs, and an automated session that goes idle may never be woken. State the real behavior: "notifies you only when it exits".
 3. **A check, then a conditional action.** Don't end on a bare "end your turn", "stop" or "kill". Tell the agent what to look at and what to do for each answer ("look once at its output and which step it is on; if it is stuck, find the cause"). The more destructive the action, the stricter the condition.
 4. **General, not shaped to one case.** Keep examples that match the specific bug you saw out of the text; they make a test pass without showing the hint helps elsewhere.
-5. **Mind the timing.** A `PreToolUse` hint does not stop the call it is attached to; the `sleep` still runs. It can only change the next step. If the call itself must not run, use a blocking hook instead.
+5. **Mind the timing.** A `PreToolUse` hint does not stop the call it is attached to; the `sleep` still runs. It can only change the next step. If the call itself must not run, set `deny: true` with `repeat: always`; if the agent must read the warning before the call runs, set `deny: true` with `repeat: turn` or `once` (the retry runs).
 6. **Narrow trigger.** If the advice only applies to long waits, match long waits. A hint that fires where it doesn't apply teaches the agent to ignore it.
 7. **Detail matches the trigger.** A narrow trigger can carry a specific fact (`query` contains ` OR ` → "Sentry has no OR"); a broad one gets general advice (every `execute_sql` → "don't guess columns"). A specific fact on a broad trigger is wrong for most of the calls it fires on, so it is noise there; keep it only if it is true for almost every one of them.
 
