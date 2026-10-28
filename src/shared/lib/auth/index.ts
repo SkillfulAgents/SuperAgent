@@ -142,7 +142,14 @@ function createAuthInstance() {
     databaseHooks: {
       user: {
         delete: {
-          after: async (deletedUser) => {
+          // What a cascade cannot do: revoke provider connections first, then settings and audit.
+          before: async (deletedUser) => {
+            const { beforeUserRemoved } = await import('@shared/lib/services/user-removal-service')
+            await beforeUserRemoved(deletedUser.id)
+          },
+          after: async (deletedUser, ctx) => {
+            const { afterUserRemoved } = await import('@shared/lib/services/user-removal-service')
+            await afterUserRemoved(deletedUser, ctx?.context.session?.user.id ?? null)
             if (typeof deletedUser.avatarOverride !== 'string') return
             const { removeStoredAvatar } = await import('@shared/lib/services/profile-avatar-service')
             await removeStoredAvatar(deletedUser.avatarOverride)

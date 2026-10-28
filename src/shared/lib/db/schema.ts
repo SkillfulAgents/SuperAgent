@@ -183,7 +183,7 @@ export const verification = sqliteTable('verification', {
 // Connected accounts - app-level OAuth connections via pluggable providers (Composio, Nango, …)
 export const connectedAccounts = sqliteTable('connected_accounts', {
   id: text('id').primaryKey(),
-  providerConnectionId: text('provider_connection_id').notNull().unique(),
+  providerConnectionId: text('provider_connection_id').notNull(),
   providerName: text('provider_name').notNull().default('composio'),
   toolkitSlug: text('toolkit_slug').notNull(), // e.g., 'gmail', 'slack', 'github'
   displayName: text('display_name').notNull(), // User-friendly label
@@ -195,6 +195,8 @@ export const connectedAccounts = sqliteTable('connected_accounts', {
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 }, (table) => ({
   userIdIdx: index('connected_accounts_userId_idx').on(table.userId),
+  // Connection ids are opaque per provider: two providers may hand out the same one.
+  providerConnectionUnique: uniqueIndex('connected_accounts_provider_connection_unique').on(table.providerName, table.providerConnectionId),
 }))
 
 // Agent connected accounts - junction table for agent-to-account mappings
@@ -651,8 +653,10 @@ export const agentAcl = sqliteTable('agent_acl', {
 }))
 
 // User settings - per-user preferences (uses 'local' sentinel in non-auth mode)
+// No FK to `user`: the 'local' sentinel has no user row. The Better Auth
+// user-delete hook removes a deleted user's row instead.
 export const userSettings = sqliteTable('user_settings', {
-  userId: text('user_id').primaryKey().references(() => user.id, { onDelete: 'cascade' }),
+  userId: text('user_id').primaryKey(),
   settings: text('settings').notNull(), // JSON blob validated by Zod
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 })
