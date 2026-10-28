@@ -255,6 +255,33 @@ describe('usePendingRequests', () => {
     expect(ofKind(result.current.items, 'proxy_review')).toHaveLength(1)
   })
 
+  it('keeps review and re-auth cards scoped to this session after its turn ends', () => {
+    // A background script started in the turn is still parked on these proxy
+    // calls; hiding the cards would leave the session "needs input" with
+    // nothing to click.
+    mockUnified.data = [
+      unified('proxy_review', 'review-bg', {
+        accountId: 'acct-gh', toolkit: 'github', method: 'GET', targetPath: '/user', matchedScopes: [], scopeDescriptions: {},
+      }),
+      unified('account_reauth_required', 'reauth-bg', {
+        accountId: 'acct-slack', toolkit: 'slack', accountStatus: 'expired', proxyRequestId: 'proxy-request-bg',
+      }),
+      unified('mcp_reauth_required', 'mcp-reauth-bg', {
+        mcpId: 'mcp-fake', mcpName: 'Fake MCP', authType: 'bearer', proxyRequestId: 'mcp-proxy-request-bg',
+      }),
+    ]
+
+    mockStreamState.isActive = true
+    const { result, rerender } = renderHook(() => usePendingRequests(defaultArgs))
+    expect(result.current.count).toBe(3)
+
+    mockStreamState.isActive = false
+    rerender()
+    expect(ofKind(result.current.items, 'proxy_review')).toHaveLength(1)
+    expect(ofKind(result.current.items, 'account_reauth_required')).toHaveLength(1)
+    expect(ofKind(result.current.items, 'mcp_reauth_required')).toHaveLength(1)
+  })
+
   it('derives pending secret request from message history when active', () => {
     mockStreamState.isActive = true
     mockMessagesData.data = [

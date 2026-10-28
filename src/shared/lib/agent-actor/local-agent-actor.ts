@@ -13,7 +13,7 @@ import type { syncAgentConnectionEnvironment } from '@shared/lib/container/conne
 import type { loadDailyUsageData, loadSessionUsageTotals } from '@shared/lib/services/usage-service'
 import type { HostPort } from './host-port'
 import { runComputerUse, runScript } from './host-runs'
-import type { LiveSessions, SessionsRuntime } from './live/live-sessions'
+import type { SessionsRuntime } from './live/live-sessions'
 import type { SessionEvent } from './live/session-channel'
 import { SubagentCapture } from '@shared/lib/container/subagent-capture'
 import { background } from '@shared/lib/background'
@@ -21,7 +21,7 @@ import { createMemoryOps } from './memory-ops'
 import { matchesTranscriptQuery } from './transcript-query'
 import { createSessionDelivery, notAcceptedError, type SessionDelivery } from './delivery'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
-import { createAgentState, releaseAgentState, type AgentState } from './agent-state'
+import { createAgentState, releaseAgentState, releaseSessionState, settleStoppedSession, type AgentState } from './agent-state'
 import { createLocalSessionStore } from './local-session-store'
 import { transcriptPath, type SessionStore } from './session-store'
 import { sessionEvents, sessionFrames } from './session-streams'
@@ -146,7 +146,7 @@ export class LocalAgentActor implements AgentActor {
     this.container = createContainerOps(slug, deps)
     const delivery = createSessionDelivery(slug, this.store, this.state.sessions, deps)
     this.sessions = createSessionOps(slug, this.store, this.state, delivery, deps)
-    this.messages = createMessageOps(slug, this.store, this.state.sessions, delivery, deps)
+    this.messages = createMessageOps(slug, this.store, this.state, delivery, deps)
     this.inputs = createInputOps(slug, this.state, deps)
     this.usage = createUsageOps(this.store, deps)
     this.locks = createLockOps(this.state)
@@ -238,6 +238,7 @@ function createSessionOps(
     rename: (sessionId, name) => deps.sessionService.updateSessionName(store, sessionId, name),
     // The stream lets go first, so an append in flight cannot write the transcript again after it is gone.
     delete: (sessionId) => {
+      releaseSessionState(state, sessionId)
       live.unsubscribe(sessionId)
       state.deferredNaming.delete(sessionId)
       return deps.sessionService.deleteSession(store, sessionId)
@@ -246,6 +247,7 @@ function createSessionOps(
     deleteMany: async (sessionIds) => {
       const idle = sessionIds.filter((sessionId) => !live.isActive(sessionId))
       for (const sessionId of idle) {
+        releaseSessionState(state, sessionId)
         live.unsubscribe(sessionId)
         state.deferredNaming.delete(sessionId)
       }
@@ -314,16 +316,21 @@ function createSessionOps(
 function createMessageOps(
   slug: AgentSlug,
   store: SessionStore,
-  live: LiveSessions,
+  state: AgentState,
   delivery: SessionDelivery,
   deps: LocalActorDeps,
 ): MessageOps {
   const client = () => deps.containerHost.runtime(slug).getClient()
+  const live = state.sessions
   return {
     deliver: (request) => delivery.deliver(request),
     // A message held while the session recovers never reached the container.
     cancelQueued: async (sessionId, uuid) => live.dropCoalesced(sessionId, uuid) || client().cancelQueuedMessage(sessionId, uuid),
-    stop: (sessionId, options) => delivery.stop(sessionId, options),
+    stop: async (sessionId, options) => {
+      const result = await delivery.stop(sessionId, options)
+      if (options.denyReviews && result.path !== 'skipped-idle') settleStoppedSession(state, sessionId)
+      return result
+    },
 
     withCompact: (sessionId) => deps.sessionService.getSessionMessagesWithCompact(store, sessionId),
     page: (sessionId, opts) => deps.sessionService.getSessionMessagesPage(store, sessionId, opts),

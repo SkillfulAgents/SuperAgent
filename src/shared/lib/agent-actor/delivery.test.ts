@@ -529,7 +529,7 @@ describe('stop', () => {
       .toEqual({ path: 'interrupted', interrupted: true, processKept: false, escalated: false })
     expect(client.interruptSession).toHaveBeenCalledWith(SESSION, { scope: 'turn' })
     expect(sessions().isActive(SESSION)).toBe(false)
-    expect(denyAllForAgent).toHaveBeenCalledWith(SLUG)
+    expect(denyAllForAgent).toHaveBeenCalledWith(SLUG, SESSION)
   })
 
   it('leaves an idle session alone when asked to stop only a running one', async () => {

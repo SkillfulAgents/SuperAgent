@@ -65,7 +65,7 @@ import type {
   UserInputRequestOutcome,
 } from '@shared/lib/tools/requests/request-schema'
 import type { SettledUserInputRequest } from '@shared/lib/tools/requests/agent-input-requests'
-import type { ReviewDetails, ReviewOutcome } from '@shared/lib/proxy/review-manager'
+import type { ReviewDetails, ReviewOutcome, ReviewRequest } from '@shared/lib/proxy/review-manager'
 import type { AccountReauthDetails } from '@shared/lib/proxy/account-reauth-manager'
 import type { McpReauthDetails } from '@shared/lib/proxy/mcp-reauth-manager'
 import type { ReauthOutcome } from '@shared/lib/proxy/reauth-waits'
@@ -685,7 +685,10 @@ export interface StopSessionOptions {
    * instead: nothing would be left to stop it with.
    */
   escalateUntracked?: boolean
-  /** Deny the agent's pending API reviews too: the user stopped the agent. */
+  /**
+   * The user stopped the session: deny the API reviews it shows (its own and
+   * the agent-wide ones) and dismiss the calls parked on its own re-auth cards.
+   */
   denyReviews?: boolean
   /**
    * Mark the session stopped only once the container confirms the interrupt:
@@ -781,7 +784,7 @@ export interface ReviewOps {
    * (its request was aborted), or to resume or settle it after a `recheck`.
    * `awaitReview` (proxy/review-request) is the host's way to wait for one.
    */
-  request(details: Omit<ReviewDetails, 'agentSlug'>, options: { id: string; recheck?: boolean }): Promise<ReviewOutcome>
+  request(details: ReviewRequest, options: { id: string; recheck?: boolean }): Promise<ReviewOutcome>
   /** `AgentReviews.requestXAgent` with this agent as the caller. */
   requestXAgent(
     request: {

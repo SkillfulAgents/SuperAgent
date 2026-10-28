@@ -444,7 +444,7 @@ export class LiveSession {
     this.ctx.emit({ type: 'session_active', isActive: true, queuedMidTurn: wasActive })
     this.publish({ type: 'session_active', isActive: true })
     // The boundary settled the last turn's parked requests, so this picks up
-    // only waits that survive a new message: an agent-scoped review.
+    // only waits that survive a new message: a review or re-auth card.
     this.syncAwaiting()
   }
 
@@ -712,6 +712,10 @@ export class LiveSession {
     this.settleTurnBoundaryRequests('ended')
     this.ctx.emit({ type: 'session_idle', isActive: false, outcome, ...(turnOutcome && { turnOutcome }) })
     this.publish({ type: 'session_idle', isActive: false })
+    // A call parked on this session's own card outlives the turn: keep the
+    // session awaiting, which also keeps an automation's stream from being
+    // released (and the card dropped) under it.
+    this.syncAwaiting()
     this.ctx.releaseTransportIfIdle()
   }
 
@@ -781,12 +785,15 @@ export class LiveSession {
 
   /**
    * Recompute whether the session waits on the user, from the request store,
-   * and tell the global feed on the edges. An inactive session never waits:
-   * its parked requests died with its turn, even when a stale entry or an
-   * agent-scoped review is still open.
+   * and tell the global feed on the edges. An inactive session waits only on
+   * a call parked on its own card, which a background script can hold past
+   * the turn; its other requests died with the turn, and an agent-scoped
+   * review is still open in every session.
    */
   syncAwaiting(): void {
-    const awaiting = this.isActive && this.ctx.requests.isSessionAwaiting(this.ctx.sessionId)
+    const awaiting =
+      (this.isActive && this.ctx.requests.isSessionAwaiting(this.ctx.sessionId)) ||
+      this.ctx.requests.hasParkedCall(this.ctx.sessionId)
     if (awaiting === this.isAwaitingInput) return
     this.isAwaitingInput = awaiting
     if (!awaiting) {
@@ -1589,3 +1596,4 @@ export class LiveSession {
     this.releaseStreamWhenIdle = false
   }
 }
+

@@ -772,7 +772,9 @@ export class LiveSessions {
    * best-effort cancel must never block the message.
    */
   async cancelAwaitingInput(sessionId: string): Promise<void> {
-    if (!this.isAwaitingInput(sessionId)) return
+    // An idle session waits only on a call parked on its own card, held by a
+    // background script: there is no turn to stop, and the message starts one.
+    if (!this.isActive(sessionId) || !this.isAwaitingInput(sessionId)) return
     // Taken before the stop: the stop's idle clears the stream store, and
     // computer-use approvals survive that boundary on purpose. Recovered
     // stubs are included: their container-side pending may well be live.
@@ -872,9 +874,10 @@ export class LiveSessions {
     if (!request.blocking || request.autoApproved) return
     const agentSlug = this.deps.slug
     if (request.kind === 'proxy_review' || request.kind === 'x_agent_review') {
-      // Agent-scoped: attributed to the first active session, the awaiting
-      // projection's heuristic. With none (a dashboard-triggered review) the
-      // dashboard panel is the surface.
+      // A review scoped to the session whose call it holds notifies that
+      // session; an agent-scoped one is attributed to the first active
+      // session. With none (a dashboard-triggered review) the dashboard
+      // panel is the surface.
       const sessionId = request.scope.sessionId ?? this.activeIds()[0]
       if (!sessionId) return
       const payload = request.payload as { displayText?: unknown }
@@ -888,8 +891,9 @@ export class LiveSessions {
       })
       return
     }
-    // Agent-scoped reviews and re-auth requests have no session to notify
-    // for; their in-app cards are the prompt.
+    // Agent-scoped requests have no session to notify for, and re-auth cards
+    // are no notification category even when scoped to the calling session;
+    // their in-app cards are the prompt.
     const sessionId = request.scope.sessionId
     if (!sessionId) return
     if (request.kind === 'account_reauth_required' || request.kind === 'mcp_reauth_required') return

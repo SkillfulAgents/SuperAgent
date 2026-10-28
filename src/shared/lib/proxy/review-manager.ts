@@ -23,7 +23,7 @@ export class ReviewManager {
   }
 
   /** Raise a review for the agent a call came from and wait for its decision (see `awaitReview`). */
-  requestReview(details: ReviewDetails, signal?: AbortSignal, options?: { reevaluate?: ReviewReevaluator }): Promise<ReviewResult> {
+  requestReview(details: ReviewRequest & { agentSlug: string }, signal?: AbortSignal, options?: { reevaluate?: ReviewReevaluator }): Promise<ReviewResult> {
     const reviews = this.agents.get(details.agentSlug)
     return awaitReview(reviews, (raise) => reviews.request(details, raise), { signal, ...options })
   }
@@ -98,8 +98,8 @@ export class ReviewManager {
     return this.agents.get(callerAgentSlug).requestXAgent(request, options)
   }
 
-  denyAllForAgent(agentSlug: string): void {
-    this.agents.peek(agentSlug)?.denyAll()
+  denyAllForAgent(agentSlug: string, sessionId?: string): void {
+    this.agents.peek(agentSlug)?.denyAll(sessionId)
   }
 
   rejectAll(): void {

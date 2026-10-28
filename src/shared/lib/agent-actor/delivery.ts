@@ -295,7 +295,7 @@ export function createSessionDelivery(
     const escalated = options.scope === 'turn' && !!options.escalateUntracked && live.hasOnlyUntrackedBackgroundWork(sessionId)
     const scope = escalated ? 'all' : options.scope
     const finish = (result: StopSessionResult) => {
-      if (options.denyReviews) deps.reviewManager.denyAllForAgent(slug)
+      if (options.denyReviews) deps.reviewManager.denyAllForAgent(slug, sessionId)
       return result
     }
     if (runtime().getCachedInfo().status !== 'running') {

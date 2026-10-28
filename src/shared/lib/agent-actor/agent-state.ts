@@ -91,13 +91,18 @@ export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): Agent
   // A review or re-auth wait opening or closing changes whether the agent's sessions wait.
   const live = sessions
   const syncAwaiting = () => live.syncAwaiting()
+  // A proxied call's session is a claim from the agent's own container, used
+  // only to place the card: scoped to that session while it runs, otherwise
+  // (no claim, an ended or unknown session) to the whole agent.
+  const cardSession = (callerSessionId: string | undefined) =>
+    callerSessionId && live.isActive(callerSessionId) ? callerSessionId : undefined
   return {
     store: hooks.sessions.store,
     sessions: live,
     inputRequests,
-    reviews: new AgentReviews(slug, inputRequests, syncAwaiting),
-    accountReauth: createAccountReauthWaits(slug, inputRequests, syncAwaiting),
-    mcpReauth: createMcpReauthWaits(slug, inputRequests, syncAwaiting),
+    reviews: new AgentReviews(slug, inputRequests, syncAwaiting, cardSession),
+    accountReauth: createAccountReauthWaits(slug, inputRequests, syncAwaiting, cardSession),
+    mcpReauth: createMcpReauthWaits(slug, inputRequests, syncAwaiting, cardSession),
     computerUse,
     hostRuns,
     locks: new AgentLocks(),
@@ -106,6 +111,25 @@ export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): Agent
     volumeUploads: new VolumeUploadGuard(),
     deferredNaming: new Set(),
   }
+}
+
+/**
+ * The session is gone: settle the calls parked on its own review and re-auth
+ * cards before its live state drops those cards with it.
+ */
+export function releaseSessionState(state: AgentState, sessionId: string): void {
+  state.reviews.dropSession(sessionId)
+  state.accountReauth.dropSession(sessionId)
+  state.mcpReauth.dropSession(sessionId)
+}
+
+/**
+ * The user stopped the session: dismiss the calls parked on its own re-auth
+ * cards, as the stop denies its reviews.
+ */
+export function settleStoppedSession(state: AgentState, sessionId: string): void {
+  state.accountReauth.dropSession(sessionId, 'The session was stopped.')
+  state.mcpReauth.dropSession(sessionId, 'The session was stopped.')
 }
 
 /**
