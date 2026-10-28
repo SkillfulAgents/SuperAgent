@@ -6,6 +6,7 @@ import type { HostRunActor } from '../host-runs'
 import { createRecordingHostPort, type HostCallAnswers } from '../testing/recording-host-port'
 import type { SessionEvent } from './session-channel'
 import { ToolCalls, type Capability, type ToolCallContext, type ToolUse } from './tool-calls'
+import { MAIN_THREAD_ONLY_TOOL_MESSAGE } from '../../../../../agent-container/src/main-thread-tools'
 
 const mocks = vi.hoisted(() => ({
   capabilities: { subagents: 'allow', workflows: 'review' } as { subagents: string; workflows: string },
@@ -116,8 +117,11 @@ function harness(options: { route?: Route; client?: false; answers?: HostCallAns
       launches.push([toolUseId, input])
     },
   }
+  const calls = new ToolCalls(ctx)
   return {
-    calls: new ToolCalls(ctx),
+    calls,
+    /** The ToolCalls of the attachment that replaces this one. */
+    reattach: () => new ToolCalls(ctx, calls),
     requests,
     host,
     runs,
@@ -505,14 +509,51 @@ describe('ToolCalls', () => {
       expect(h.answered).toEqual([])
     })
 
-    it('runs host tools from the main stream only', async () => {
-      const h = harness({ answers: { hostTool: { status: 'resolved', value: 'ok' } } })
+    it('runs a subagent\'s host tool from whichever delivery comes first, once', async () => {
+      const h = harness({ answers: { hostTool: { status: 'resolved', value: 'Scheduled' } } })
 
+      // Its stream and its complete message both carry the call; either can be the only one.
       h.calls.subagentStreamedToolUse(use('t_sched', 'mcp__user-input__schedule_task', {}), 'toolu_parent')
-      h.calls.subagentMessageToolUse(use('t_sched2', 'mcp__user-input__schedule_task', {}), 'toolu_parent')
+      h.calls.subagentMessageToolUse(use('t_sched', 'mcp__user-input__schedule_task', {}), 'toolu_parent')
+      h.calls.subagentMessageToolUse(use('t_list', 'mcp__user-input__list_triggers', {}), 'toolu_parent')
       await settle()
 
-      expect(h.host.calls).toEqual([])
+      expect(h.host.calls.map(([, request]) => request)).toEqual([
+        expect.objectContaining({ toolUseId: 't_sched', toolName: 'schedule_task' }),
+        expect.objectContaining({ toolUseId: 't_list', toolName: 'list_triggers' }),
+      ])
+      expect(h.answered).toEqual([
+        { toolUseId: 't_sched', how: 'resolve', value: 'Scheduled' },
+        { toolUseId: 't_list', how: 'resolve', value: 'Scheduled' },
+      ])
+    })
+
+    it('runs a host tool once when its second delivery lands on the next attachment', async () => {
+      const h = harness({ answers: { hostTool: { status: 'resolved', value: 'Scheduled' } } })
+
+      h.calls.subagentStreamedToolUse(use('t_sched', 'mcp__user-input__schedule_task', {}), 'toolu_parent')
+      h.reattach().subagentMessageToolUse(use('t_sched', 'mcp__user-input__schedule_task', {}), 'toolu_parent')
+      await settle()
+
+      expect(h.host.calls).toHaveLength(1)
+      expect(h.answered).toEqual([{ toolUseId: 't_sched', how: 'resolve', value: 'Scheduled' }])
+    })
+
+    it('fails a subagent\'s schedule_resume without running it: a wake resumes the main conversation', async () => {
+      const h = harness({ answers: { hostTool: { status: 'resolved', value: 'Wake scheduled' } } })
+
+      h.calls.subagentStreamedToolUse(use('t_wake', 'mcp__user-input__schedule_resume', {}), 'toolu_parent')
+      h.calls.subagentMessageToolUse(use('t_wake', 'mcp__user-input__schedule_resume', {}), 'toolu_parent')
+      h.calls.mainToolUse(use('t_main_wake', 'mcp__user-input__schedule_resume', {}))
+      await settle()
+
+      expect(h.host.calls.map(([, request]) => request)).toEqual([
+        expect.objectContaining({ toolUseId: 't_main_wake', toolName: 'schedule_resume' }),
+      ])
+      expect(h.answered).toEqual([
+        { toolUseId: 't_wake', how: 'reject', value: MAIN_THREAD_ONLY_TOOL_MESSAGE },
+        { toolUseId: 't_main_wake', how: 'resolve', value: 'Wake scheduled' },
+      ])
     })
   })
 
