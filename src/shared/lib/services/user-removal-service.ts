@@ -17,6 +17,7 @@ import { eq } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { connectedAccounts, remoteMcpServers, userSettings, type ConnectedAccount } from '@shared/lib/db/schema'
 import { getAccountProviderByName } from '@shared/lib/account-providers'
+import { attribution, runWithAttribution } from '@shared/lib/platform-attribution'
 import { auditRuleChange, rulesAboutToBeRemoved } from '@shared/lib/proxy/rules/audit-events'
 import type { RuleView } from '@shared/lib/proxy/rules/store'
 import { logAuditEvent } from './audit-log-service'
@@ -39,13 +40,22 @@ interface PendingRemoval {
 /** What `before` read for `after`, by which time the cascade has taken the rows. */
 const pending = new Map<string, PendingRemoval>()
 
+/** Platform member of a user being removed, read from their account row before Better Auth deletes it. */
+const platformMembers = new Map<string, string>()
+
+export function rememberPlatformMember(userId: string, memberId: string): void {
+  platformMembers.set(userId, memberId)
+}
+
 export async function beforeUserRemoved(userId: string): Promise<void> {
   pending.delete(userId)
+  const memberId = platformMembers.get(userId) ?? null
+  platformMembers.delete(userId)
   try {
     const accounts = await db.select().from(connectedAccounts).where(eq(connectedAccounts.userId, userId))
     const mcps = await db.select({ id: remoteMcpServers.id, name: remoteMcpServers.name })
       .from(remoteMcpServers).where(eq(remoteMcpServers.userId, userId))
-    await Promise.all(accounts.map(revokeRemotely))
+    await Promise.all(accounts.map(account => revokeRemotely(account, memberId)))
     const [accountRules, mcpRules, accountAgents, mcpAgents] = await Promise.all([
       Promise.all(accounts.map(account => rulesAboutToBeRemoved({ kind: 'api', targetId: account.id }))),
       Promise.all(mcps.map(mcp => rulesAboutToBeRemoved({ kind: 'mcp', targetId: mcp.id }))),
@@ -65,14 +75,17 @@ export async function beforeUserRemoved(userId: string): Promise<void> {
 }
 
 /** The account's outside state, through the provider that issued its connection. */
-async function revokeRemotely(account: ConnectedAccount): Promise<void> {
+async function revokeRemotely(account: ConnectedAccount, memberId: string | null): Promise<void> {
   try {
     await cancelTriggersForConnectedAccount(account.id)
   } catch (error) {
     console.warn(`[user-removal] Failed to cancel the webhook triggers of account ${account.id}:`, error)
   }
   try {
-    await getAccountProviderByName(account.providerName).deleteConnection(account.providerConnectionId, account.toolkitSlug)
+    // Remove-user has no request user, and the platform proxy deletes a
+    // connection only for the member who owns it: act as the removed member.
+    await runWithAttribution(memberId ? attribution.fromMemberId(memberId) : null, () =>
+      getAccountProviderByName(account.providerName).deleteConnection(account.providerConnectionId, account.toolkitSlug))
   } catch (error) {
     console.warn(`[user-removal] Failed to revoke the ${account.providerName} connection of account ${account.id}:`, error)
   }
