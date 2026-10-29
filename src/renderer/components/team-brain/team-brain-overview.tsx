@@ -49,6 +49,8 @@ import { scheduleOfCron } from '@renderer/lib/team-brain/team-brain-setup-block'
 import { useHumanizedCron } from '@renderer/hooks/use-humanized-cron'
 import { useScheduledTasks, type ApiScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { TeamBrainRadial, TeamBrainRadialLoading } from './team-brain-radial'
+import type { RadialNode } from '@renderer/lib/team-brain/team-brain-radial'
+import { useTeamBrainFocus } from '@renderer/hooks/use-team-brain-focus'
 import { TeamBrainSyncSummaries } from './team-brain-sync-summaries'
 import { TeamBrainHomeComposer } from './team-brain-home-composer'
 import { AgentAccessList, EveryAgentRow } from './team-brain-agent-access'
@@ -181,7 +183,8 @@ function OverviewBody({
   const { data: mounts, isError: mountsUnreadable } = useAgentMounts(agentSlug)
   // A drive still making its first copy has nothing to list yet: it is read once the copy is in, and the tree waits.
   // Until the drive list says which, nothing is read; a list that can't be read now leaves the drive to answer for itself.
-  const copying = mounts?.find((mount) => mount.volumeId === volumeId)?.health === 'preparing'
+  const mount = mounts?.find((each) => each.volumeId === volumeId)
+  const copying = mount?.health === 'preparing'
   const readable = mountsUnreadable || (mounts && !copying) ? volumeId : undefined
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
   const { drive, ready, error, recordGroups } = useTeamBrainDrive(agentSlug, readable, expanded, record, recordLeaving)
@@ -207,6 +210,13 @@ function OverviewBody({
   useEffect(() => {
     if (!filesOpen) onDrawerNarrowChange(false)
   }, [filesOpen, onDrawerNarrowChange])
+  // What the person is looking at goes with their next message.
+  const inFocus = useTeamBrainFocus(mount?.name)
+  const selectFolder = (folder: RadialNode | null) => {
+    // A folder chosen is a new focus, not a click off: the page it replaces goes at once.
+    if (folder) closeFiles()
+    inFocus.folderChosen(folder && { id: folder.id, name: folder.name })
+  }
   const openPage = (file: TeamBrainNode, { path, folder }: { path: string; folder?: TeamBrainNode }) => {
     if (!volumeId) return
     onSettingsOpenChange(false)
@@ -217,6 +227,7 @@ function OverviewBody({
     }
     const url = `${getApiBaseUrl()}/api/volume-definitions/${encodeURIComponent(volumeId)}/file?${new URLSearchParams({ path: file.id })}`
     openFile(`/Team Brain${path}`, PREVIEW_SLUG, undefined, { inlineUrl: `${url}&inline=true`, downloadUrl: url })
+    inFocus.pageOpened(`/Team Brain${path}`, file)
   }
   const toggleSettings = () => {
     if (!settingsOpen) closeFiles()
@@ -282,6 +293,8 @@ function OverviewBody({
               onOpenFile={openPage}
               onOpenCentre={front && (() => openPage(front, { path: `/${front.name}` }))}
               onOpenIndex={index && (() => openPage(index, { path: `/${index.name}` }))}
+              selected={inFocus.folder}
+              onSelectedChange={selectFolder}
               retracting={recordLeaving ? RECORD_SECTIONS : undefined}
               onRetracted={onRecordLeft}
               height={treeHeight}
@@ -341,7 +354,7 @@ function OverviewBody({
             {/* Talk to it, as on Agent Home: a message starts a session with the Team Brain agent. Glass, as the session's
                 composer is, so the tree shows through it as it passes over. */}
             <div data-keeps-drawer onInput={() => filesOpen && onDrawerNarrowChange(true)}>
-              <TeamBrainHomeComposer agent={agent} />
+              <TeamBrainHomeComposer agent={agent} reference={inFocus.reference} onDismissReference={inFocus.dismiss} />
             </div>
           </div>
 

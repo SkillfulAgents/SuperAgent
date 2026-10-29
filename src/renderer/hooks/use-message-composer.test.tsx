@@ -10,6 +10,7 @@ import type { ChipContext } from '@renderer/components/messages/composer-chips'
 import { formatChipMarker } from '@renderer/lib/chip-marker'
 import { parseMentions } from '@shared/lib/utils/mentions'
 import { appendDictationNote } from '@shared/lib/utils/dictation-note'
+import { appendAttachedFiles } from '@shared/lib/utils/attached-files'
 import { DraftsProvider, useDraft } from '@renderer/context/drafts-context'
 
 // --- Mocks ---
@@ -170,6 +171,29 @@ describe('useMessageComposer', () => {
     expect(result.current.message).toBe('')
     expect(result.current.isUploading).toBe(false)
     expect(result.current.canSubmit).toBe(false)
+  })
+
+  it('sends a page or folder in a drive as its path, with or without text', async () => {
+    const reference = { type: 'reference' as const, id: 'team-brain:eng', name: 'eng', path: '/mounts/Team Brain/eng/', kind: 'folder' as const, from: 'Team Brain' }
+    const opts = { ...defaultOptions(), references: [reference] }
+    const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+    expect(result.current.canSubmit).toBe(true)
+
+    await act(async () => {
+      await result.current.handleSubmit({ preventDefault: vi.fn() } as any)
+    })
+
+    expect(appendAttachedFiles).toHaveBeenCalledWith('', ['/mounts/Team Brain/eng/'])
+    expect(opts.onSubmit).toHaveBeenCalledWith(expect.stringContaining('/mounts/Team Brain/eng/'), { silent: false })
+  })
+
+  it('sends a reference ahead of the files uploaded with it', async () => {
+    mockAttachments.attachments = [{ type: 'file', file: new File([''], 'a.txt'), id: '1', upload: { status: 'done', path: '/a', agentSlug: 'test-agent' } }]
+    const reference = { type: 'reference' as const, id: 'team-brain:eng', name: 'eng', path: '/mounts/Team Brain/eng/', kind: 'folder' as const, from: 'Team Brain' }
+    const opts = { ...defaultOptions(), references: [reference] }
+    const { result } = renderHook(() => useMessageComposer(opts), { wrapper: createWrapper() })
+    await act(async () => { await result.current.handleSubmit({ preventDefault: vi.fn() } as any) })
+    expect(appendAttachedFiles).toHaveBeenCalledWith('', ['/mounts/Team Brain/eng/', '/a'])
   })
 
   it('updates message via setMessage', () => {
