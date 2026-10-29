@@ -125,12 +125,13 @@ vi.mock('./team-brain-home-composer', async () => {
   const { createPortal } = await import('react-dom')
   return {
     // With a menu of its own in a portal, as the composer's mention and model pickers are.
-    TeamBrainHomeComposer: ({ agent }: { agent: { slug: string } }) => (
+    TeamBrainHomeComposer: ({ agent, reference, onDismissReference }: { agent: { slug: string }; reference?: { name: string } | null; onDismissReference?: () => void }) => (
       <div data-testid="team-brain-composer">
         {agent.slug}
         <textarea aria-label="Message" />
         <button type="button">Model</button>
         {createPortal(<button type="button">Mention</button>, document.body)}
+        {reference && <button type="button" onClick={onDismissReference}>{reference.name}</button>}
       </div>
     ),
   }
@@ -142,11 +143,13 @@ vi.mock('@renderer/components/tray/tray-manager', async () => {
   const { useFilePreview } = await import('@renderer/context/file-preview-context')
   return {
     TrayManager: ({ narrowDrawer }: { narrowDrawer?: boolean }) => {
-      const { openTabs, isOpen } = useFilePreview()
+      const { openTabs, isOpen, setActiveTab } = useFilePreview()
       return (
         <ul data-testid="drawer-tabs" data-open={isOpen} data-narrow={narrowDrawer || undefined}>
-          {openTabs.map((tab) => (
-            <li key={tab.displayName}>{tab.kind === 'file' && tab.source ? `${tab.displayName} (own source)` : tab.displayName}</li>
+          {openTabs.map((tab, i) => (
+            <li key={tab.displayName}>
+              <button type="button" onClick={() => setActiveTab(i)}>{tab.kind === 'file' && tab.source ? `${tab.displayName} (own source)` : tab.displayName}</button>
+            </li>
           ))}
         </ul>
       )
@@ -300,6 +303,51 @@ describe('TeamBrainOverview', () => {
     width.mockRestore()
   })
 
+  it('puts what is in focus in the composer, and a click off steps the drawer aside before it puts it away', async () => {
+    const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(900)
+    render(<TeamBrainOverview agent={BRAIN} />)
+    const radial = screen.getByTestId('team-brain-radial')
+    await waitFor(() => expect(radial).not.toHaveAttribute('data-entering'), { timeout: 4000 })
+    const drawer = screen.getByTestId('drawer-tabs')
+    const offPage = () => userEvent.click(screen.getByRole('heading', { name: 'Sync summaries' }))
+
+    // A page opened from the tree is the card. One click off steps the drawer aside and keeps it; a second puts both away.
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers/acme'))
+    expect(screen.getByRole('button', { name: 'Acme Corp.md' })).toBeInTheDocument()
+    await offPage()
+    expect(drawer).toHaveAttribute('data-open', 'true')
+    expect(drawer).toHaveAttribute('data-narrow', 'true')
+    expect(screen.getByRole('button', { name: 'Acme Corp.md' })).toBeInTheDocument()
+    await offPage()
+    expect(drawer).toHaveAttribute('data-open', 'false')
+    expect(screen.queryByRole('button', { name: 'Acme Corp.md' })).toBeNull()
+
+    // A folder chosen is the card. ✕ sets it aside until the folder is chosen again.
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers'))
+    await userEvent.click(screen.getByRole('button', { name: 'Customers' }))
+    expect(screen.queryByRole('button', { name: 'Customers' })).toBeNull()
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers'))
+    expect(screen.getByRole('button', { name: 'Customers' })).toBeInTheDocument()
+
+    // ✕ on a page sets it aside only while its tab is the one shown.
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers/acme'))
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers/hooli'))
+    await userEvent.click(screen.getByRole('button', { name: 'Hooli.md' }))
+    expect(screen.queryByRole('button', { name: 'Hooli.md' })).toBeNull()
+    await userEvent.click(within(drawer).getByText('Acme Corp.md (own source)'))
+    expect(screen.getByRole('button', { name: 'Acme Corp.md' })).toBeInTheDocument()
+    await userEvent.click(within(drawer).getByText('Hooli.md (own source)'))
+    expect(screen.getByRole('button', { name: 'Hooli.md' })).toBeInTheDocument()
+
+    // With a page open, choosing a folder puts the page away and the folder is the card.
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers/hooli'))
+    expect(screen.getByRole('button', { name: 'Hooli.md' })).toBeInTheDocument()
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-engineering'))
+    expect(drawer).toHaveAttribute('data-open', 'false')
+    expect(screen.getByRole('button', { name: 'Engineering' })).toBeInTheDocument()
+    width.mockRestore()
+  })
+
   it('under reduced motion, a folder clicked is drawn at its new turn, not left rotated with names on the old side', async () => {
     screenSize.reduced = true
     const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(900)
@@ -416,6 +464,28 @@ describe('TeamBrainOverview', () => {
     expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'true')
     pressBackground()
     expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'false')
+  })
+
+  it('keeps the card and the tree on the same chosen folder when the tree comes back', async () => {
+    const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(900)
+    const page = render(<TeamBrainOverview agent={BRAIN} />)
+    let radial = screen.getByTestId('team-brain-radial')
+    await waitFor(() => expect(radial).not.toHaveAttribute('data-entering'), { timeout: 4000 })
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers'))
+    expect(within(radial).getByTestId('team-brain-radial-node-customers')).toHaveAttribute('data-selected', 'true')
+    // The drive lists empty for a moment and the tree goes; the folder chosen on it is the page's, so it comes back with it.
+    const listed = drive.splice(0)
+    try {
+      page.rerender(<TeamBrainOverview agent={BRAIN} />)
+      expect(screen.queryByTestId('team-brain-radial')).toBeNull()
+    } finally {
+      drive.push(...listed)
+    }
+    page.rerender(<TeamBrainOverview agent={BRAIN} />)
+    radial = await screen.findByTestId('team-brain-radial', undefined, { timeout: 4000 })
+    expect(within(radial).getByTestId('team-brain-radial-node-customers')).toHaveAttribute('data-selected', 'true')
+    expect(screen.getByRole('button', { name: 'Customers' })).toBeInTheDocument()
+    width.mockRestore()
   })
 
   it('waits on the tree\'s middle while the drive lists, says what it is reading from, and lets that go before the tree', () => {
