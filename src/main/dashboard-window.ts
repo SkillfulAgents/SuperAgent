@@ -38,7 +38,7 @@ function installDashboardChrome(win: BrowserWindow, titlePrefix = ''): void {
 export function installPopupHandler(webContents: WebContents) {
   webContents.setWindowOpenHandler(({ url }) => {
     // Handle file download URLs - download directly without opening a popup
-    if (url.includes('/api/agents/') && url.includes('/files/')) {
+    if (url.includes('/api/agents/') && (url.includes('/files/') || url.includes('/mount-files/'))) {
       webContents.downloadURL(url)
       return { action: 'deny' }
     }

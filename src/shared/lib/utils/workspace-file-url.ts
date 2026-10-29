@@ -1,4 +1,4 @@
-import { toWorkspaceRelativePath } from './workspace-path'
+import { isMountPath, parseMountPath, toWorkspaceRelativePath } from './workspace-path'
 
 /** Convert a container workspace path into safely encoded API path segments. */
 export function encodeWorkspaceFilePath(filePath: string): string {
@@ -9,9 +9,14 @@ export function encodeWorkspaceFilePath(filePath: string): string {
     .join('/')
 }
 
-/** The app route that serves a workspace file's bytes. */
+/** The app route that serves a workspace file's bytes, or a drive file's by the path the agent sees it at. */
 export function getAgentFileApiPath(agentSlug: string, filePath: string): string {
-  return `/api/agents/${encodeURIComponent(agentSlug)}/files/${encodeWorkspaceFilePath(filePath)}`
+  const agent = `/api/agents/${encodeURIComponent(agentSlug)}`
+  if (isMountPath(filePath)) {
+    // A path the server would refuse goes whole as one escaped segment, so a `..` reaches its check instead of being resolved away by the URL.
+    return `${agent}/mount-files/${parseMountPath(filePath) ? encodeWorkspaceFilePath(filePath.slice('/mounts/'.length)) : encodeURIComponent(filePath)}`
+  }
+  return `${agent}/files/${encodeWorkspaceFilePath(filePath)}`
 }
 
 /**

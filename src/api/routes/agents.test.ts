@@ -21,6 +21,7 @@ import { runInNewContext } from 'node:vm'
 import { Readable, Writable } from 'node:stream'
 import { createHash } from 'node:crypto'
 import { agentRegistry, WorkspaceFileError } from '@shared/lib/agent-actor'
+import { parseMountPath } from '@shared/lib/utils/workspace-path'
 import { underActorTransport } from '@shared/lib/agent-actor/testing/via-test-transport'
 import type { LiveSessionsAnswers } from '@shared/lib/agent-actor/testing/live-sessions-double'
 import type { WireFrame } from '@shared/lib/agent-actor'
@@ -537,6 +538,7 @@ vi.mock('@shared/lib/services/mount-service', () => ({
   removeMount: vi.fn(async () => true),
   setMountReadOnly: vi.fn(async () => true),
   volumeSummary: () => ({ type: 'local', name: 'code' }),
+  resolveMountPath: vi.fn(async () => null),
 }))
 
 vi.mock('@shared/lib/services/usage-service', () => ({
@@ -864,7 +866,7 @@ import {
 import { getAgent, getAgentRecord, getAgentWithStatus, listAgentsWithStatus, updateAgentAvatar } from '@shared/lib/services/agent-service'
 import { countMembersWithMinRole, countOtherMembers, listAgentMembers } from '@shared/lib/services/agent-members-service'
 import { loginFillAccountSchema } from '../../../agent-container/src/login-schema'
-import { attachMount, removeMount } from '@shared/lib/services/mount-service'
+import { attachMount, removeMount, resolveMountPath } from '@shared/lib/services/mount-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { appendMentions } from '@shared/lib/utils/mentions'
 import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
@@ -11483,6 +11485,85 @@ describe('PUT /api/agents/:id/avatar', () => {
     expect(updateAgentAvatar).not.toHaveBeenCalled()
     expect(globalFeed.publish).not.toHaveBeenCalled()
   })
+})
+
+describe('files in the agent\'s drives, by mount path', () => {
+  // A drive holding team/notes/a.md, answering as a drive does.
+  const file = { size: 5, stream: vi.fn(() => new Response('notes').body!), close: vi.fn(async () => {}) }
+  const drive = {
+    read: vi.fn(async () => file),
+    list: vi.fn(async () => [
+      { name: 'b.md', kind: 'file', size: 1, mtimeMs: 0 },
+      { name: 'sub', kind: 'directory', size: 0, mtimeMs: 0 },
+    ]),
+  }
+  beforeEach(() => {
+    file.stream.mockClear()
+    file.close.mockClear()
+    vi.mocked(resolveMountPath).mockImplementation(async (_slug, containerPath) => {
+      const parsed = parseMountPath(containerPath)
+      if (!parsed) throw new WorkspaceFileError('invalid-path')
+      return parsed.name === 'team' ? { ops: drive as never, path: parsed.path } : null
+    })
+  })
+
+  it('serves a drive file as the drive route does, so it never runs as the app', async () => {
+    const res = await getReq(createApp(), '/api/agents/test-agent/mount-files/team/notes/a.md?inline=true')
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('notes')
+    expect(res.headers.get('content-security-policy')).toBe('sandbox allow-scripts')
+    expect(resolveMountPath).toHaveBeenCalledWith('test-agent', '/mounts/team/notes/a.md')
+    expect(drive.read).toHaveBeenCalledWith('notes/a.md')
+  })
+
+  it('answers HEAD with the size and no body, as the size request on a card asks', async () => {
+    const res = await headReq(createApp(), '/api/agents/test-agent/mount-files/team/notes/a.md')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-length')).toBe('5')
+    expect(await res.text()).toBe('')
+    expect(file.close).toHaveBeenCalled()
+    expect(file.stream).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['a drive the agent does not have', '/other/a.md', undefined, 404],
+    ['an agent slug spelled with escapes', '/team/a.md', undefined, 400, '/api/agents/test%2Dagent/mount-files'],
+    ['a missing file in its drive', '/team/gone.md', new WorkspaceFileError('not-found'), 404],
+    ['a path that leaves the drive', '/team/a%5Cb.md', undefined, 400],
+    ['a malformed escape', '/team/a%E0.md', undefined, 400],
+    ['a drive with no file named', '/team', undefined, 400],
+    ['a drive that cannot be read', '/team/a.md', new Error('socket hang up'), 503],
+  ])('answers %s with its own status', async (_case, path, failure, status, route = '/api/agents/test-agent/mount-files') => {
+    if (failure) drive.read.mockRejectedValueOnce(failure)
+    expect((await getReq(createApp(), `${route}${path}`)).status).toBe(status)
+  })
+
+  it('tells a drive the agent does not have apart from a file missing from its drive', async () => {
+    drive.read.mockRejectedValueOnce(new WorkspaceFileError('not-found'))
+    expect(await (await getReq(createApp(), '/api/agents/test-agent/mount-files/other/a.md')).json()).toEqual({ error: 'Drive not found' })
+    expect(await (await getReq(createApp(), '/api/agents/test-agent/mount-files/team/gone.md')).json()).toEqual({ error: 'File not found' })
+  })
+
+  it.each([
+    ['a drive the agent does not have', '/mounts/other', 404],
+    ['a folder path that leaves the drive', '/mounts/team/../x', 400],
+  ])('answers a folder listing of %s with its own status', async (_case, root, status) => {
+    expect((await getReq(createApp(), `/api/agents/test-agent/folders?${new URLSearchParams({ root })}`)).status).toBe(status)
+  })
+
+  it('lists a drive folder for a viewer, its children at their mount paths, folders first', async () => {
+    mockAuthorizedAgentRole = 'viewer'
+    const res = await getReq(createApp(), `/api/agents/test-agent/folders?${new URLSearchParams({ root: '/mounts/team/notes' })}`)
+    expect(await res.json()).toEqual({
+      root: '/mounts/team/notes', path: '/mounts/team/notes', truncated: false,
+      entries: [
+        { name: 'sub', path: '/mounts/team/notes/sub', type: 'directory' },
+        { name: 'b.md', path: '/mounts/team/notes/b.md', type: 'file' },
+      ],
+    })
+    expect(drive.list).toHaveBeenCalledWith('notes')
+  })
+
 })
 
 describe('drive changes on a running agent', () => {
