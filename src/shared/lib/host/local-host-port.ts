@@ -57,5 +57,6 @@ export const localHostPort = createLocalHostPort({
     global: (event) => globalFeed.publish(event),
     notification: notify,
     analytics: ({ event, properties }) => trackServerEvent(event, properties),
+    usageLimit: async (event) => (await import('./usage-limit-fallback')).continueOnPlatform(event),
   },
 })

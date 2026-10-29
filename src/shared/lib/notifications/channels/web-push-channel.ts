@@ -21,7 +21,7 @@ import type { NotificationEvent } from '../notification-event'
  * Typed against the union so a renamed or mistyped member fails typecheck
  * instead of silently never pushing.
  */
-const PUSHABLE_TYPES = new Set<NotificationType>(['session_complete', 'session_waiting', 'session_mention'])
+const PUSHABLE_TYPES = new Set<NotificationType>(['session_complete', 'session_waiting', 'session_mention', 'session_provider_fallback'])
 
 /**
  * How long the push service may hold an undelivered push for an offline

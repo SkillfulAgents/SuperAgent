@@ -55,6 +55,7 @@ import {
   storedSelection,
   listConnections,
   connectionCatalog,
+  platformFallbackSelection,
 } from './connections'
 import { importLlmConnections } from '../db/data-migrations/0003-import-llm-connections'
 import { runDataMigrations } from '../db/data-migrations'
@@ -990,5 +991,39 @@ describe('a model an agent names for an automation', () => {
     await expect(bindAgentModelChoice('model-a', agent)).rejects.toThrow(
       'Unknown model "model-a". Models available to this agent: deepseek-v4, deepseek-r2.'
     )
+  })
+})
+
+describe('platformFallbackSelection', () => {
+  const subscription = (name: string) => saveConnection({
+    name,
+    provider: 'claude-subscription',
+    config: { apiKeys: { claudeSubscriptionToken: 'sk-ant-oat01-test' } },
+  }, admin)
+
+  it('continues a subscription on the same Platform model, else on the Platform default', async () => {
+    state.settings.fallbackToPlatform = true
+    state.platformToken = 'platform-test-token'
+    await ensureManagedPlatformConnection()
+    const id = await subscription('Personal Claude Max')
+    const platform = (await listConnections(admin)).find(connection => connection.provider === 'platform')!
+
+    const same = await platformFallbackSelection(id, 'sonnet')
+    expect(same?.from.name).toBe('Personal Claude Max')
+    expect(same?.to).toMatchObject({ llmProviderId: platform.id, model: 'sonnet' })
+    expect((await platformFallbackSelection(id, 'model-not-on-platform'))?.to)
+      .toMatchObject({ llmProviderId: platform.id, model: platform.defaultModel })
+  })
+
+  it('does nothing when the setting is off, Platform is signed out, or the connection is not a subscription', async () => {
+    state.platformToken = 'platform-test-token'
+    await ensureManagedPlatformConnection()
+    const id = await subscription('Personal Claude Max')
+    expect(await platformFallbackSelection(id, 'sonnet')).toBeNull()
+
+    state.settings.fallbackToPlatform = true
+    expect(await platformFallbackSelection(await add('Keyed'), 'model-a')).toBeNull()
+    state.platformToken = undefined
+    expect(await platformFallbackSelection(id, 'sonnet')).toBeNull()
   })
 })

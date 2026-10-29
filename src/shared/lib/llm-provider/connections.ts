@@ -24,7 +24,7 @@ import {
   getLlmProvider,
   resolveModelForProvider,
 } from './index'
-import { LLM_PROVIDER_IDS, isOAuthProvider } from './provider-types'
+import { LLM_PROVIDER_IDS, isOAuthProvider, isSubscriptionProvider } from './provider-types'
 import { type ModelDefinition } from './model-catalog-schema'
 import {
   connectionConfigSchema,
@@ -480,6 +480,26 @@ export async function resolveSelectionHierarchy(
   if (!root) throw new Error('Configure a global default connection and model in Settings → LLM')
   if (await isRunnable(root)) return root
   return (await runnableDefaultForConnection(root.connection)) ?? root
+}
+
+/**
+ * Where a subscription's turn continues once its plan hits a usage limit: the
+ * same model on Platform, else Platform's own default. Null when the setting
+ * is off or Platform is not signed in.
+ */
+export async function platformFallbackSelection(
+  connectionId: string,
+  model: string | undefined,
+): Promise<{ from: ConnectionRow; to: ResolvedConnection } | null> {
+  const from = await getConnection(connectionId)
+  if (!from || !isSubscriptionProvider(from.provider)) return null
+  if (!getSettings().fallbackToPlatform) return null
+  const platform = await db.select().from(llmConnections)
+    .where(and(eq(llmConnections.provider, 'platform'), isNull(llmConnections.userId))).get()
+  if (!platform || !providerForConnection(platform).getApiKeyStatus().isConfigured) return null
+  const same = model ? await resolveConnectionSelection({ llmProviderId: platform.id, model }) : null
+  const to = same && await isRunnable(same) ? same : await runnableDefaultForConnection(platform)
+  return to ? { from, to } : null
 }
 
 export const resolveExecutionSelection = resolveSelectionHierarchy

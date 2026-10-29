@@ -172,6 +172,47 @@ describe('turn analytics', () => {
   })
 })
 
+describe('usage limit reports', () => {
+  const emit = (content: Record<string, unknown>) => mockClient.emit(content)
+  const retry = (attempt: number, status: number) =>
+    emit({ type: 'system', subtype: 'api_retry', attempt, max_retries: 10, error_status: status, session_id: SESSION_ID, uuid: `r${attempt}` })
+  const reports = () => live.host.sent('usageLimit')
+
+  it('reports once, on the third 429 retry, while the turn still runs', () => {
+    sessions().markActive(SESSION_ID)
+    retry(1, 429)
+    retry(2, 429)
+    expect(reports()).toEqual([])
+    retry(3, 429)
+    retry(4, 429)
+    emit({ type: 'result', subtype: 'success', is_error: true, terminal_reason: 'api_error', api_error_status: 429, result: 'Usage limit reached' })
+    expect(reports()).toEqual([{ agentSlug: AGENT_SLUG, sessionId: SESSION_ID, turnRunning: true }])
+  })
+
+  it('does not count retries for server errors', () => {
+    sessions().markActive(SESSION_ID)
+    for (let attempt = 1; attempt <= 5; attempt++) retry(attempt, 529)
+    expect(reports()).toEqual([])
+  })
+
+  it('reports a turn that ended with a 429 before three retries', () => {
+    sessions().markActive(SESSION_ID)
+    emit({ type: 'result', subtype: 'success', is_error: true, terminal_reason: 'api_error', api_error_status: 429, result: 'Usage limit reached' })
+    expect(reports()).toEqual([{ agentSlug: AGENT_SLUG, sessionId: SESSION_ID, turnRunning: false }])
+  })
+
+  it('counts each turn from zero', () => {
+    sessions().markActive(SESSION_ID)
+    retry(1, 429)
+    retry(2, 429)
+    emit({ type: 'result', subtype: 'success', num_turns: 1, usage: {} })
+    emit({ type: 'system', subtype: 'session_state_changed', state: 'idle' })
+    sessions().markActive(SESSION_ID)
+    retry(1, 429)
+    expect(reports()).toEqual([])
+  })
+})
+
 describe('turn boundaries are made by their emitters, not by the fan-out', () => {
   const emit = (content: Record<string, unknown>) => mockClient.emit(content)
   const askQuestion = (id: string) => {

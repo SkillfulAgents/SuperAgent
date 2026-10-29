@@ -93,6 +93,7 @@ export function LlmConnectionsTab() {
   const [editing, setEditing] = useState<ConnectionInfo | 'pick' | { provider: LlmProviderId } | null>(null)
   const defaultRequiresSummarizer = data?.connections.find(c => c.id === data.defaultSelection?.llmProviderId)?.supportsDirectApi === false
   const summarizerSelection = data?.summarizerSelection ?? (defaultRequiresSummarizer ? null : data?.defaultSelection)
+  const platformSignedIn = !!data?.connections.some(c => c.provider === 'platform' && c.isConfigured)
   const changeDefault = (purpose: string, selection: ModelSelection | null) =>
     mutation.mutate(
       { path: `/defaults/${purpose}`, method: 'PUT', body: selection },
@@ -229,6 +230,21 @@ export function LlmConnectionsTab() {
                 onCheckedChange={(enableToolSearch) => updateSettings.mutate({ enableToolSearch })}
               />
             </div>
+            {platformSignedIn && (
+              <div className="py-3 px-4 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <label htmlFor="llm-fallback-to-platform" className="text-xs font-medium">
+                    Switch to Gamut Platform at usage limit
+                  </label>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">When a subscription hits its limit, agents continue on the same model with Gamut credits.</p>
+                </div>
+                <Switch
+                  id="llm-fallback-to-platform"
+                  checked={settings?.fallbackToPlatform === true}
+                  onCheckedChange={(fallbackToPlatform) => updateSettings.mutate({ fallbackToPlatform })}
+                />
+              </div>
+            )}
           </div>
         </div>
       )}

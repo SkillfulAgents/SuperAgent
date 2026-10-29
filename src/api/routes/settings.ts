@@ -160,6 +160,7 @@ settings.get('/models', Authenticated(), async (c) => {
     const root = connections.find(connection => connection.id === defaultSelection?.llmProviderId)
     const response: ModelPickerSettingsResponse = {
       enableToolSearch: appSettings.enableToolSearch ?? true,
+      fallbackToPlatform: appSettings.fallbackToPlatform === true,
       modelPricing: appSettings.modelPricing ?? {},
       connections,
       defaultSelection: defaultSelection ? { llmProviderId: defaultSelection.llmProviderId, model: defaultSelection.model } : undefined,
@@ -374,6 +375,7 @@ function buildSettingsResponse(
     analyticsTargets: appSettings.analyticsTargets,
     shareErrorReports: appSettings.shareErrorReports !== false,
     enableToolSearch: appSettings.enableToolSearch !== false,
+    fallbackToPlatform: appSettings.fallbackToPlatform === true,
     agentCapabilities: appSettings.agentCapabilities ?? DEFAULT_AGENT_CAPABILITIES,
     teamBrain: appSettings.teamBrain,
   }

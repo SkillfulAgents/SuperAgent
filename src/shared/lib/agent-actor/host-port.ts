@@ -64,6 +64,11 @@ export interface HostEvents {
   notification: SessionNotification
   /** A product analytics event. */
   analytics: { event: string; properties?: Record<string, unknown> }
+  /**
+   * A turn kept getting 429s from its provider. `turnRunning` is true while
+   * the runtime still retries, false once the turn ended with the 429.
+   */
+  usageLimit: { agentSlug: string; sessionId: string; turnRunning: boolean }
 }
 
 /** A session-scoped host tool the agent called, with its raw streamed input. */

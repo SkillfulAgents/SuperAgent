@@ -19,3 +19,8 @@ export type OAuthProvider = (typeof OAUTH_PROVIDER_IDS)[number]
 export function isOAuthProvider(id: string): id is OAuthProvider {
   return (OAUTH_PROVIDER_IDS as readonly string[]).includes(id)
 }
+
+/** Plans billed by their own vendor, with usage limits of their own. */
+export function isSubscriptionProvider(id: string): boolean {
+  return id === 'claude-subscription' || isOAuthProvider(id)
+}
