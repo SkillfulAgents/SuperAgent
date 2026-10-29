@@ -1,6 +1,6 @@
 /** Real HTTP OIDC discovery, code/PKCE exchange and signed JWKS verification. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
 import type { AppDatabase } from '../db/drivers/types'
 import { auditLog, authAccount, authSession, user } from '../db/schema'
@@ -12,8 +12,13 @@ let handle: TestDatabase
 let testDb: AppDatabase
 let oidc: OidcTestServer
 const authSettings = vi.hoisted(() => ({ requireAdminApproval: false, maxConcurrentSessions: 12 }))
+const captureExceptionMock = vi.hoisted(() => vi.fn())
 
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
+vi.mock('@shared/lib/error-reporting', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@shared/lib/error-reporting')>(),
+  captureException: captureExceptionMock,
+}))
 vi.mock('@shared/lib/config/settings', async (importOriginal) => ({
   ...await importOriginal<typeof import('@shared/lib/config/settings')>(),
   getSettings: () => ({ auth: authSettings }),
@@ -25,6 +30,7 @@ import { handleAuthRequest } from './handler'
 const BASE = 'http://localhost:47891'
 const ORG = 'org_oidc_test'
 const ORG_CLAIM = 'https://platform.skillfulagents.dev/claims/org_id'
+const ROLE_CLAIM = 'https://platform.skillfulagents.dev/claims/role'
 
 function request(endpoint: string, body?: Record<string, unknown>, headers: Record<string, string> = {}) {
   return handleAuthRequest(new Request(`${BASE}/api/auth/${endpoint}`, {
@@ -35,6 +41,7 @@ function request(endpoint: string, body?: Record<string, unknown>, headers: Reco
 }
 
 beforeEach(async () => {
+  captureExceptionMock.mockReset()
   authSettings.requireAdminApproval = false
   authSettings.maxConcurrentSessions = 12
   oidc = await createOidcTestServer()
@@ -292,5 +299,151 @@ describe('direct provider ID-token sign-in', () => {
     expect(sessions).toHaveLength(2)
     expect(sessions.every(session => session.creationMethod === 'oidc')).toBe(true)
     expect(await testDb.select().from(auditLog).where(eq(auditLog.object, 'session'))).toHaveLength(3)
+  })
+})
+
+describe('platform role on join', () => {
+  async function roleOf(email: string) {
+    const [row] = await testDb.select({ role: user.role }).from(user).where(eq(user.email, email))
+    return row?.role
+  }
+  async function signIn(role?: string) {
+    if (role === undefined) delete oidc.state.profile[ROLE_CLAIM]
+    else oidc.state.profile[ROLE_CLAIM] = role
+    const finish = await completeOidcLogin(handleAuthRequest, BASE)
+    expect(finish.headers.get('location')).toBe(`${BASE}/`)
+    return responseCookies(finish)
+  }
+  async function seedOtherMember() {
+    await getAuth().api.signUpEmail({
+      body: { name: 'Earlier Member', email: 'earlier@example.com', password: 'EarlierPassword123!' },
+    })
+  }
+
+  it('promotes nobody for arriving first outside a Platform sign-in', async () => {
+    await getAuth().api.signUpEmail({
+      body: { name: 'Earliest', email: 'earliest@example.com', password: 'EarliestPassword123!' },
+    })
+    expect(await roleOf('earliest@example.com')).toBe('user')
+  })
+
+  it('gives a member who arrives first the user role rather than the first-user admin', async () => {
+    await signIn('member')
+    expect(await roleOf('ada@example.com')).toBe('user')
+  })
+
+  it.each(['owner', 'admin'])('makes a Platform %s who joins later an admin', async (role) => {
+    await seedOtherMember()
+    const cookie = await signIn(role)
+    expect(await roleOf('ada@example.com')).toBe('admin')
+    // The sign-in's own session already sees it.
+    expect(await (await request('get-session', undefined, { cookie })).json()).toMatchObject({ user: { role: 'admin' } })
+  })
+
+  it.each([
+    ['a promotion', 'member', 'admin'],
+    ['a demotion', 'owner', 'user'],
+  ])('keeps %s made in Gamut on later sign-ins', async (_label, platformRole, localRole) => {
+    await seedOtherMember()
+    await signIn(platformRole)
+    await testDb.update(user).set({ role: localRole }).where(eq(user.email, 'ada@example.com'))
+    await signIn(platformRole)
+    expect(await roleOf('ada@example.com')).toBe(localRole)
+  })
+
+  it('keeps the role of an existing password user who links Platform', async () => {
+    await seedOtherMember()
+    await getAuth().api.signUpEmail({
+      body: { name: 'Ada Lovelace', email: 'ada@example.com', password: 'ExistingPassword123!' },
+    })
+    await signIn('owner')
+    expect(await testDb.select().from(authAccount).where(eq(authAccount.providerId, 'platform'))).toHaveLength(1)
+    expect(await roleOf('ada@example.com')).toBe('user')
+  })
+
+  it('keeps the role of a re-invited member whose new membership links to their user', async () => {
+    await seedOtherMember()
+    await signIn('member')
+    await testDb.update(user).set({ role: 'admin' }).where(eq(user.email, 'ada@example.com'))
+    oidc.state.profile.sub = 'sub_member_two'
+    await signIn('member')
+    expect(await testDb.select().from(authAccount).where(eq(authAccount.providerId, 'platform'))).toHaveLength(2)
+    expect(await roleOf('ada@example.com')).toBe('admin')
+  })
+
+  it('keeps the role of an existing user with no account who links Platform', async () => {
+    const now = new Date()
+    await testDb.insert(user).values({
+      id: 'user-without-account', name: 'Ada Lovelace', email: 'ada@example.com', emailVerified: true,
+      role: 'admin', createdAt: now, updatedAt: now,
+    })
+    await signIn('member')
+    expect(await testDb.select().from(authAccount)).toEqual([expect.objectContaining({ userId: 'user-without-account' })])
+    expect(await roleOf('ada@example.com')).toBe('admin')
+  })
+
+  it('does not report a missing role when linking an existing user', async () => {
+    await getAuth().api.signUpEmail({
+      body: { name: 'Ada Lovelace', email: 'ada@example.com', password: 'ExistingPassword123!' },
+    })
+    await signIn(undefined)
+    expect(captureExceptionMock).not.toHaveBeenCalled()
+  })
+
+  it('gives the joining owner their role when a concurrent sign-in links their account first', async () => {
+    // Stands in for a second first sign-in by the same member that finds the
+    // user this sign-in just inserted and links its platform account before
+    // this sign-in's own account insert, which then fails.
+    await testDb.run(sql.raw(`CREATE TRIGGER link_concurrently AFTER INSERT ON user BEGIN
+      INSERT INTO account (id, account_id, provider_id, user_id, updated_at)
+      VALUES ('concurrent-link', 'sub_member_one', 'platform', NEW.id, 0);
+    END`))
+    try {
+      oidc.state.profile[ROLE_CLAIM] = 'owner'
+      await completeOidcLogin(handleAuthRequest, BASE)
+    } finally {
+      await testDb.run(sql.raw('DROP TRIGGER link_concurrently'))
+    }
+    expect(await testDb.select().from(authAccount)).toHaveLength(1)
+    expect(await roleOf('ada@example.com')).toBe('admin')
+    await signIn('owner')
+    expect(await roleOf('ada@example.com')).toBe('admin')
+  })
+
+  it('applies the role from a direct ID-token sign-in too', async () => {
+    await seedOtherMember()
+    oidc.state.profile[ROLE_CLAIM] = 'admin'
+    const response = await request('sign-in/social', {
+      provider: 'platform', idToken: { token: await oidc.idToken() },
+    })
+    expect(response.status).toBe(200)
+    expect(await roleOf('ada@example.com')).toBe('admin')
+  })
+
+  it.each([
+    ['a missing', undefined],
+    ['an unrecognized', 'superuser'],
+  ])('reports %s role and falls back to the first-user bootstrap', async (_label, role) => {
+    await signIn(role)
+    expect(await roleOf('ada@example.com')).toBe('admin')
+    expect(captureExceptionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Unrecognized platform role' }),
+      expect.objectContaining({ tags: { area: 'auth', op: 'platform-role' } }),
+    )
+  })
+
+  it('gives a later member with no role the default role', async () => {
+    await seedOtherMember()
+    await signIn(undefined)
+    expect(await roleOf('ada@example.com')).toBe('user')
+  })
+
+  it('ignores the role claim on a deployment that is not platform-controlled', async () => {
+    vi.stubEnv('PLATFORM_TOKEN', '')
+    resetAuth()
+    await seedOtherMember()
+    await signIn('owner')
+    expect(await roleOf('ada@example.com')).toBe('user')
+    expect(captureExceptionMock).not.toHaveBeenCalled()
   })
 })

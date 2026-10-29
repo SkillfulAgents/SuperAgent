@@ -31,7 +31,7 @@ import {
   markAllAsRead,
   deleteMessageNotifications,
 } from './notification-service'
-import { notifications, agentAcl } from '../db/schema'
+import { notifications, agentAcl, user } from '../db/schema'
 
 const MIKE = 'user-mike'
 const SARA = 'user-sara'
@@ -54,6 +54,7 @@ describe('targeted mention notifications', () => {
   beforeEach(async () => {
     handle = await createTestDatabase()
     testDb = handle.db
+    await testDb.insert(user).values([MIKE, SARA].map(id => ({ id, name: id, email: `${id}@example.com` })))
     await testDb.insert(agentAcl).values([
       { id: 'acl-mike', userId: MIKE, agentSlug: AGENT, role: 'user', createdAt: new Date() },
       { id: 'acl-sara', userId: SARA, agentSlug: AGENT, role: 'user', createdAt: new Date() },

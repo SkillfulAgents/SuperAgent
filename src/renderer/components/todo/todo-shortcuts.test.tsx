@@ -52,6 +52,22 @@ describe('usePlainKeys', () => {
     expect(handler).not.toHaveBeenCalled()
   })
 
+  it('ignores keys while a menu is open, but not past a closed, inert drawer', () => {
+    const handler = vi.fn(() => true)
+    renderHook(() => usePlainKeys(handler))
+    const drawer = document.createElement('div')
+    drawer.setAttribute('role', 'dialog')
+    drawer.setAttribute('inert', '')
+    document.body.appendChild(drawer)
+    press('r')
+    expect(handler).toHaveBeenCalledTimes(1)
+    const menu = document.createElement('div')
+    menu.setAttribute('role', 'menu')
+    document.body.appendChild(menu)
+    press('r')
+    expect(handler).toHaveBeenCalledTimes(1)
+  })
+
   it('stays quiet while disabled, as when a dialog is open', () => {
     const handler = vi.fn(() => true)
     renderHook(() => usePlainKeys(handler, false))

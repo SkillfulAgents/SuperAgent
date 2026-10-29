@@ -81,12 +81,19 @@ const mockProvider = {
   deleteConnection: (...args: unknown[]) => mockDeleteConnection(...args),
   getAccountDisplayName: (...args: unknown[]) => mockGetAccountDisplayName(...args),
 }
+// A second provider that only differs in what it deletes, to tell the two apart.
+const mockNangoDeleteConnection = vi.fn()
+const mockNangoProvider = {
+  ...mockProvider,
+  name: 'nango',
+  deleteConnection: (...args: unknown[]) => mockNangoDeleteConnection(...args),
+}
 
 vi.mock('@shared/lib/account-providers', async () => {
   const catalog = await vi.importActual<typeof import('@shared/lib/account-providers/service-catalog')>('@shared/lib/account-providers/service-catalog')
   return {
     getDefaultAccountProvider: () => mockProvider,
-    getAccountProviderByName: () => mockProvider,
+    getAccountProviderByName: (name: string) => name === 'nango' ? mockNangoProvider : mockProvider,
     isValidProviderName: (name: string) => ['composio', 'nango'].includes(name),
     isProviderSupported: () => true,
     // Shopify keeps its real adapter; other slugs are stubs.
@@ -324,7 +331,7 @@ describe('connected-accounts reconnect flow', () => {
     it('saves a reconnect under the store that was authorized', async () => {
       mockGetConnection.mockResolvedValue({ id: 'ca_other', status: 'ACTIVE' })
       composioGrant('other-store')
-      mockDbSelectLimit.mockResolvedValue([{ id: 'other-acc', providerConnectionId: 'ca_first', displayName: 'other-store.myshopify.com', toolkitSlug: 'shopify' }])
+      mockDbSelectLimit.mockResolvedValue([{ id: 'other-acc', providerConnectionId: 'ca_first', providerName: 'composio', displayName: 'other-store.myshopify.com', toolkitSlug: 'shopify' }])
 
       const res = await app.request('http://localhost/api/connected-accounts/complete', {
         method: 'POST',
@@ -376,7 +383,7 @@ describe('connected-accounts reconnect flow', () => {
     it('updates existing record instead of inserting', async () => {
       mockGetConnection.mockResolvedValue({ id: 'new-conn', status: 'ACTIVE' })
       mockGetAccountDisplayName.mockResolvedValue('My GitHub')
-      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'old-conn', toolkitSlug: 'github' }])
+      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'old-conn', providerName: 'composio', toolkitSlug: 'github' }])
 
       const res = await app.request('http://localhost/api/connected-accounts/complete', {
         method: 'POST',
@@ -407,7 +414,7 @@ describe('connected-accounts reconnect flow', () => {
     it('deletes old remote connection after reconnect', async () => {
       mockGetConnection.mockResolvedValue({ id: 'new-conn', status: 'ACTIVE' })
       mockGetAccountDisplayName.mockResolvedValue('My GitHub')
-      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'old-conn', toolkitSlug: 'github' }])
+      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'old-conn', providerName: 'composio', toolkitSlug: 'github' }])
       mockDeleteConnection.mockResolvedValue(undefined)
 
       await app.request('http://localhost/api/connected-accounts/complete', {
@@ -429,7 +436,7 @@ describe('connected-accounts reconnect flow', () => {
     it('does not delete old connection if IDs match', async () => {
       mockGetConnection.mockResolvedValue({ id: 'same-conn', status: 'ACTIVE' })
       mockGetAccountDisplayName.mockResolvedValue('My GitHub')
-      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'same-conn', toolkitSlug: 'github' }])
+      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'same-conn', providerName: 'composio', toolkitSlug: 'github' }])
 
       await app.request('http://localhost/api/connected-accounts/complete', {
         method: 'POST',
@@ -444,6 +451,28 @@ describe('connected-accounts reconnect flow', () => {
 
       await new Promise((r) => setTimeout(r, 10))
       expect(mockDeleteConnection).not.toHaveBeenCalled()
+    })
+
+    // A Composio account reconnecting after the default moved to Nango: the old id
+    // is Composio's, and in Nango it may name another account's connection.
+    it.each([
+      ['a new id', 'nango-conn'],
+      ['the same opaque id', 'old-conn'],
+    ])('revokes the replaced connection through the provider that issued it (%s)', async (_, connectionId) => {
+      mockGetConnection.mockResolvedValue({ id: connectionId, status: 'ACTIVE' })
+      mockGetAccountDisplayName.mockResolvedValue('My GitHub')
+      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'old-conn', providerName: 'composio', toolkitSlug: 'github' }])
+
+      const res = await app.request('http://localhost/api/connected-accounts/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connectionId, toolkit: 'github', providerName: 'nango', reconnectAccountId: 'existing-acc' }),
+      })
+
+      expect(res.status).toBe(200)
+      await new Promise((r) => setTimeout(r, 10))
+      expect(mockDeleteConnection).toHaveBeenCalledWith('old-conn', 'github')
+      expect(mockNangoDeleteConnection).not.toHaveBeenCalled()
     })
 
     it('creates new record when no reconnectAccountId', async () => {
@@ -474,7 +503,7 @@ describe('connected-accounts reconnect flow', () => {
     it('resumes parked proxy requests after the web OAuth callback activates the account', async () => {
       mockGetConnection.mockResolvedValue({ id: 'new-web-conn', status: 'ACTIVE' })
       mockGetAccountDisplayName.mockResolvedValue('My GitHub')
-      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'old-conn', toolkitSlug: 'github' }])
+      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'old-conn', providerName: 'composio', toolkitSlug: 'github' }])
 
       const res = await app.request(
         'http://localhost/api/connected-accounts/callback' +
@@ -485,6 +514,23 @@ describe('connected-accounts reconnect flow', () => {
       expect(res.status).toBe(200)
       expect(await res.text()).toContain('Connected Successfully!')
       expect(mockCompleteReauthAccount).toHaveBeenCalledWith('existing-acc')
+    })
+
+    it('revokes the replaced connection through the provider that issued it', async () => {
+      mockGetConnection.mockResolvedValue({ id: 'nango-conn', status: 'ACTIVE' })
+      mockGetAccountDisplayName.mockResolvedValue('My GitHub')
+      mockDbSelectLimit.mockResolvedValue([{ providerConnectionId: 'old-conn', providerName: 'composio', toolkitSlug: 'github' }])
+
+      const res = await app.request(
+        'http://localhost/api/connected-accounts/callback' +
+        '?connectedAccountId=nango-conn&status=success&toolkit=github&providerName=nango' +
+        '&reconnectAccountId=existing-acc',
+      )
+
+      expect(res.status).toBe(200)
+      await new Promise((r) => setTimeout(r, 10))
+      expect(mockDeleteConnection).toHaveBeenCalledWith('old-conn', 'github')
+      expect(mockNangoDeleteConnection).not.toHaveBeenCalled()
     })
   })
 
