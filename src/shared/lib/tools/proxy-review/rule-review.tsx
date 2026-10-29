@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, Check, ChevronRight, ShieldCheck, ShieldX, X } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@renderer/components/ui/collapsible'
+import { InlineCode } from '@renderer/components/ui/inline-code'
 import { cn } from '@shared/lib/utils/cn'
 import {
   ruleEffectLabel,
@@ -130,7 +131,7 @@ export function RuleProposalRequestItem({
           : (status === 'allowed' ? 'Added' : 'Rejected'),
         isSuccess: status === 'allowed',
       } : null}
-      readOnly={readOnly ? { extraContent: <p className="mt-2 text-sm text-foreground/80">{proposal.restatement}</p> } : false}
+      readOnly={readOnly ? { extraContent: <p className="mt-2 text-sm text-foreground/80"><InlineCode text={proposal.restatement} /></p> } : false}
       waitingText="Waiting for approval"
       error={error}
       data-testid={isCompleted ? 'rule-proposal-completed' : 'rule-proposal-request'}
@@ -152,14 +153,14 @@ export function RuleProposalRequestItem({
           </p>
           <p className="mt-1 text-xs text-muted-foreground">{effectText}</p>
           <p className="mt-1 leading-6 text-foreground" data-testid="rule-proposal-restatement">
-            {proposal.restatement || 'No independent description could be generated — read the code below before approving.'}
+            {proposal.restatement ? <InlineCode text={proposal.restatement} /> : 'No independent description could be generated — read the code below before approving.'}
           </p>
         </div>
 
         {!deleting && (
           <div>
             <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">The agent&rsquo;s description</p>
-            <p className="mt-1 leading-6 text-foreground/80">{proposal.description}</p>
+            <p className="mt-1 leading-6 text-foreground/80"><InlineCode text={proposal.description} /></p>
           </div>
         )}
 
