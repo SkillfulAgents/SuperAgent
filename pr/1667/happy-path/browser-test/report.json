@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "QA test to verify agent browser capabilities - agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported back.",
+  "steps": [
+    "Step 1 - Navigated to http://localhost:47891 - Application loaded successfully, displaying the Gamut homepage with sidebar showing available agents.",
+    "Step 2 - Clicked on \"QA-20261029-003544-uo60\" agent in sidebar - Agent page opened successfully, showing agent configuration with chat input field ready for interaction.",
+    "Step 3 - Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" into chat input - Message was entered successfully in the textbox.",
+    "Step 4 - Clicked Send message button - Message was transmitted, agent session created with URL session ID, agent began working (status changed to \"Working...\").",
+    "Step 5 - Waited for agent response (4 seconds elapsed) - Agent completed task successfully. Response received: \"The page title is \"Example Domain\". The page loaded normally at https://example.com/ (HTTP 200), and I've closed the browser.\" Agent used 3 tool calls and 160,026 tokens.",
+    "Step 5 (continued) - Verified response mentions \"Example Domain\" - CONFIRMED: Response explicitly states the page title is \"Example Domain\" and shows the HTTP 200 status code. Screenshot captured showing complete response with all details."
+  ],
+  "bugs": [],
+  "durationMs": 60218,
+  "sessionId": "5dd36c01-a092-46e2-a1c9-b3a07e9cc971",
+  "cost": {
+    "inputTokens": 404,
+    "outputTokens": 10884,
+    "cacheCreationTokens": 77741,
+    "cacheReadTokens": 1121092,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.264109
+  }
+}
