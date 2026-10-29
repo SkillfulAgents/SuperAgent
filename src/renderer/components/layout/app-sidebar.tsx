@@ -465,7 +465,7 @@ function AgentLastRun({ date }: { date: ApiAgent['lastActivityAt'] }) {
 
 // The agent row's notification dot, pinned to the avatar's bottom-right like a
 // presence dot: orange while a session waits on the user, otherwise blue for
-// unread, or a small violet @ on white (near-black in dark) when it mentions
+// unread, or a small violet @ when it mentions
 // you. Awaiting aggregates across sessions with the same formula as the agent
 // header's AgentStatus (fresh sessions data when loaded, agent-level flags as
 // fallback), so the sidebar and the top nav never disagree. Unread is
@@ -680,6 +680,8 @@ const AgentMenuItemInner = React.forwardRef<
                 className="min-w-0 outline-none after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
               >
                 <span className="block truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
+                {/* The orb is decorative; its state still needs a text equivalent. */}
+                <span className="sr-only">, {avatarState === 'needs-input' ? 'needs input' : avatarState === 'done' ? 'unread notifications' : avatarState}. </span>
                 <AgentLastRun date={agent.lastActivityAt} />
               </AppLink>
               {isShared && <SidebarMemberIndicator agentSlug={agent.slug} agentName={agent.name} memberCount={memberCount} selected={isSelected} />}
