@@ -1039,6 +1039,20 @@ describe('AppSidebar — notifications', () => {
 // show in the avatar's motion; the trailing slot carries no status.
 // ============================================================================
 describe('AppSidebar — agent row indicator', () => {
+  it.each([
+    { status: 'running', hasActiveSessions: true, label: 'working' },
+    { status: 'running', hasActiveSessions: false, label: 'idle' },
+    { status: 'stopped', hasActiveSessions: false, label: 'sleeping' },
+  ] as const)('names the decorative avatar\'s $label state for screen readers', ({ status, hasActiveSessions, label }) => {
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ status, hasActiveSessions })],
+      isLoading: false,
+      error: null,
+    })
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByTestId('agent-item-test-agent')).toHaveAccessibleName(new RegExp(`\\b${label}\\b`))
+  })
+
   it('falls back to agent-level flags when sessions data is not yet loaded', () => {
     mockUseAgents.mockReturnValue({
       data: [makeAgent({ hasSessionsAwaitingInput: true })],
