@@ -1376,7 +1376,6 @@ Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
       : message.trim().split(/\s+/).slice(0, 6).join(' ').substring(0, 60)
     if (finalName) {
       await agentRegistry.get(agentSlug).sessions.rename(sessionId, finalName)
-      await agentRegistry.get(agentSlug).sessions.broadcastUpdate(sessionId)
     }
   } catch (error) {
     console.error('Failed to update session name:', error)
@@ -2073,6 +2072,8 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     const slug = getAgentId(c)
     const body = await c.req.json()
     const { message } = body
+    // A session the caller names gets no generated name.
+    const name = typeof body.name === 'string' ? body.name.trim() : ''
 
     if (!message?.trim()) {
       return c.json({ error: 'Message is required' }, 400)
@@ -2190,7 +2191,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
           speed: prewarm.speed,
         },
       },
-      name: 'New Session',
+      name: name || 'New Session',
       metadata: initialMetadata,
     })
     const sessionId = containerSession.id
@@ -2203,9 +2204,9 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
 
     await notifySessionMentions(c, mentions, { agentSlug: slug, agentName: agent.name, sessionId, messageUuid: initialMessageUuid })
 
-    if (isSystemMessageText(message.trim())) {
+    if (!name && isSystemMessageText(message.trim())) {
       await actor.sessions.deferNaming(sessionId)
-    } else {
+    } else if (!name) {
       background(generateAndUpdateSessionNameAsync(
         slug,
         sessionId,
@@ -2218,7 +2219,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       {
         id: sessionId,
         agentSlug: slug,
-        name: 'New Session',
+        name: name || 'New Session',
         createdAt: new Date(),
         lastActivityAt: new Date(),
         isActive: true,

@@ -15,6 +15,8 @@ const state = vi.hoisted(() => ({
   start: vi.fn(),
   rename: vi.fn(),
   starting: new Set<string>(),
+  // Agents the person may read but not use.
+  viewerOf: new Set<string>(),
 }))
 
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
@@ -24,6 +26,10 @@ vi.mock('@tanstack/react-router', async (importOriginal) => ({
 vi.mock('@renderer/hooks/use-agents', () => ({
   useAgents: () => ({ data: [{ slug: 'analyst', name: 'Analyst' }, { slug: 'ops', name: 'Ops' }] }),
 }))
+vi.mock('@renderer/context/user-context', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@renderer/context/user-context')>()
+  return { ...actual, useUser: () => ({ ...actual.useUser(), canUseAgent: (slug: string) => !state.viewerOf.has(slug) }) }
+})
 vi.mock('@renderer/hooks/use-user-settings', () => ({ useUserSettings: () => ({ data: undefined }) }))
 vi.mock('@renderer/hooks/use-todos', () => ({
   useTodos: () => ({ data: state.todos, isPending: false, error: null }),
@@ -74,6 +80,7 @@ beforeEach(() => {
   state.create.mockReset()
   state.start.mockReset()
   state.rename.mockReset().mockResolvedValue(undefined)
+  state.viewerOf = new Set()
   state.starting = new Set()
 })
 
@@ -176,6 +183,27 @@ describe('TodoBoard', () => {
     fireEvent.click(screen.getByTestId('todo-rename-submit'))
     await waitFor(() => expect(state.rename).toHaveBeenCalledWith({ id: 'b', title: 'Weekly sales summary' }))
     expect(state.navigate).not.toHaveBeenCalled()
+  })
+
+  it('offers no rename on work whose agent the person can only view', async () => {
+    state.viewerOf = new Set(['analyst'])
+    state.todos = [todo({ id: 'b', column: 'has_updates' })]
+    renderWithProviders(<TodoBoard />)
+    fireEvent.contextMenu(screen.getByText('Task b'))
+    expect(screen.queryByTestId('todo-card-menu')).not.toBeInTheDocument()
+  })
+
+  it('still offers reopen on done work whose agent the person can only view', async () => {
+    state.viewerOf = new Set(['analyst'])
+    state.todos = [todo({ id: 'b', column: 'done' })]
+    renderWithProviders(<TodoBoard />)
+    const show = screen.queryByRole('button', { name: /^Show Done/ })
+    if (show) fireEvent.click(show)
+    fireEvent.contextMenu(screen.getByText('Task b'))
+    expect(screen.queryByTestId('todo-rename-item')).not.toBeInTheDocument()
+    fireEvent.click(await screen.findByTestId('todo-action-reopen'))
+    expect(state.setStatus).toHaveBeenCalledWith({ id: 'b', status: 'active' })
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse Done' }))
   })
 
   it.each(['has_updates', 'needs_input'] as const)('keeps an unsaved rename when working moves to %s', async (column) => {

@@ -17,6 +17,7 @@ import {
   DialogTitle,
 } from '@renderer/components/ui/dialog'
 import { Input } from '@renderer/components/ui/input'
+import { useUser } from '@renderer/context/user-context'
 import { useRenameTodo, type TodoView } from '@renderer/hooks/use-todos'
 import { reopenAction, type TodoActionRunners } from './todo-card-action'
 
@@ -26,8 +27,12 @@ export function TodoCardMenu({ todo, runners, onRename, children }: {
   onRename: (todo: TodoView) => void
   children: ReactNode
 }) {
+  const { canUseAgent } = useUser()
   if (todo.status === 'draft') return <>{children}</>
+  // Renaming started work renames its session, which the server allows from the user role up.
+  const canRename = !(todo.agentSlug && todo.sessionId && !canUseAgent(todo.agentSlug))
   const reopen = reopenAction(todo, runners)
+  if (!canRename && !reopen) return <>{children}</>
 
   return (
     <ContextMenu>
@@ -35,10 +40,12 @@ export function TodoCardMenu({ todo, runners, onRename, children }: {
         <div>{children}</div>
       </ContextMenuTrigger>
       <ContextMenuContent className="w-56 rounded-xl p-2" data-testid="todo-card-menu">
-        <ContextMenuItem data-testid="todo-rename-item" onClick={() => onRename(todo)}>
-          <Pencil className="h-4 w-4 mr-2" />
-          Rename
-        </ContextMenuItem>
+        {canRename && (
+          <ContextMenuItem data-testid="todo-rename-item" onClick={() => onRename(todo)}>
+            <Pencil className="h-4 w-4 mr-2" />
+            Rename
+          </ContextMenuItem>
+        )}
         {reopen && (
           <ContextMenuItem data-testid={reopen.testId} onClick={reopen.run}>
             <reopen.Icon className="h-4 w-4 mr-2" />
