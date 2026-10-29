@@ -8,9 +8,11 @@ import { bashDef, type BashInput } from './definition'
 import { HostTooltip } from '../ui/shared'
 import { hostnameOf } from '../ui/web-result-parse'
 import { identifyDirectSite, identifyServiceCall, type BuiltInService } from './service-call'
+import { isPredictionCall } from './media-call'
+import { MediaCallView, MediaThumbnail } from './media-card'
 import type { CollapsedContentProps, ToolRenderer, ToolRendererProps, StreamingToolRendererProps } from '../renderer-types'
 
-function ExpandedView({ input, result, isError }: ToolRendererProps) {
+export function ExpandedView({ input, result, isError }: ToolRendererProps) {
   const { command } = bashDef.parseInput(input)
 
   return (
@@ -108,6 +110,17 @@ function serviceCallVariant(command: string): ToolRenderer | undefined {
   return renderer
 }
 
+let mediaCallRenderer: ToolRenderer | undefined
+
+/** A media generation create or poll keeps the service row and opens to what it made. */
+function mediaCallVariant(command: string): ToolRenderer | undefined {
+  if (!isPredictionCall(command)) return undefined
+  const service = serviceCallVariant(command)
+  if (!service) return undefined
+  mediaCallRenderer ??= { ...service, ExpandedView: MediaCallView, CollapsedContent: MediaThumbnail }
+  return mediaCallRenderer
+}
+
 /** The fetched site's icon, drawn as Web Fetch draws one: the logo Gamut ships for a known service, else the host's favicon. */
 function DirectSiteIcon({ input, isError }: CollapsedContentProps) {
   const site = useMemo(() => {
@@ -136,7 +149,7 @@ function directSiteVariant(command: string): ToolRenderer | undefined {
 }
 
 /** Most specific first; the first variant that matches wins, and no match keeps the terminal. */
-const VARIANTS = [serviceCallVariant, directSiteVariant]
+const VARIANTS = [mediaCallVariant, serviceCallVariant, directSiteVariant]
 
 export const bashRenderer = {
   ...terminalRenderer,

@@ -211,6 +211,8 @@ describe('generateSystemPrompt rendering', () => {
     expect(guide).toContain('GET /models/{owner}/{name}')
     expect(guide).toContain('POST /models/{owner}/{name}/predictions')
     expect(guide).toContain('403')
+    // The chat card reads this printed line.
+    expect(guide).toContain(`jq -c '{id, model, status, output}'`)
     expect(guide).toMatch(/`Prefer: wait`/)
 
     // The scraped-catalog endpoint and its error-message fallback are gone.
