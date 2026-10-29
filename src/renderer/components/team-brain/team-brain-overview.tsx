@@ -68,6 +68,9 @@ const PREVIEW_SLUG = 'team-brain'
  */
 export function TeamBrainOverview({ agent }: { agent: ApiAgent }) {
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // Once the person clicks or types in the composer, or after one click off the page, an open page's drawer draws at its
+  // narrowest so both fit. Using the drawer, opening another page or putting the drawer away brings back its width.
+  const [drawerNarrow, setDrawerNarrow] = useState(false)
   // The record's groups the tree shows, switched on in the settings' Views and kept in the person's settings; none by
   // default. The override answers at once while the write round-trips, as the home graph's Details switch does. When
   // the last one is switched off, the groups that were showing stay in the tree while they draw back in, then go.
@@ -86,7 +89,16 @@ export function TeamBrainOverview({ agent }: { agent: ApiAgent }) {
   return (
     <FilePreviewProvider sessionId="team-brain" commentsEnabled={false}>
       <WorkflowProvider sessionId="team-brain">
-        <div className="file-preview-container relative flex min-h-0 min-w-0 flex-1" data-testid="file-preview-container">
+        <div
+          className="file-preview-container relative flex min-h-0 min-w-0 flex-1"
+          data-testid="file-preview-container"
+          // A press here outside the page is in the drawer: using it. Presses in a portal (the composer's menus) bubble
+          // here through React from outside this element and are not.
+          onPointerDownCapture={(event) => {
+            const target = event.target
+            if (target instanceof Element && event.currentTarget.contains(target) && !target.closest('[data-team-brain-page]')) setDrawerNarrow(false)
+          }}
+        >
           <OverviewBody
             agent={agent}
             settingsOpen={settingsOpen}
@@ -96,8 +108,10 @@ export function TeamBrainOverview({ agent }: { agent: ApiAgent }) {
             recordLeaving={views.size === 0 && leaving !== null}
             onViewChange={switchView}
             onRecordLeft={() => setLeaving(null)}
+            drawerNarrow={drawerNarrow}
+            onDrawerNarrowChange={setDrawerNarrow}
           />
-          <TrayManager agentSlug={PREVIEW_SLUG} sessionId="team-brain" browserActive={false} filePreviewWideLayout="overlay" />
+          <TrayManager agentSlug={PREVIEW_SLUG} sessionId="team-brain" browserActive={false} filePreviewWideLayout="overlay" narrowDrawer={drawerNarrow} />
         </div>
       </WorkflowProvider>
     </FilePreviewProvider>
@@ -143,6 +157,8 @@ function OverviewBody({
   recordLeaving,
   onViewChange,
   onRecordLeft,
+  drawerNarrow,
+  onDrawerNarrowChange,
 }: {
   agent: ApiAgent
   settingsOpen: boolean
@@ -154,6 +170,8 @@ function OverviewBody({
   recordLeaving: boolean
   onViewChange: (group: RecordGroup, on: boolean) => void
   onRecordLeft: () => void
+  drawerNarrow: boolean
+  onDrawerNarrowChange: (narrow: boolean) => void
 }) {
   const agentSlug = agent.slug
   useMinuteClock()
@@ -186,9 +204,13 @@ function OverviewBody({
   // A page opens in the file drawer from the drive, as the drive's own file browser opens it. A "+N more" past what
   // even an opened folder shows opens as a list of the pages it stands for.
   const { openFile, close: closeFiles, isOpen: filesOpen } = useFilePreview()
+  useEffect(() => {
+    if (!filesOpen) onDrawerNarrowChange(false)
+  }, [filesOpen, onDrawerNarrowChange])
   const openPage = (file: TeamBrainNode, { path, folder }: { path: string; folder?: TeamBrainNode }) => {
     if (!volumeId) return
     onSettingsOpenChange(false)
+    onDrawerNarrowChange(false)
     if (file.more) {
       const list = `data:text/markdown;charset=utf-8,${encodeURIComponent(`# ${folder?.name ?? 'More pages'}\n\n${file.more.map((name) => `- ${name.replace(/\.md$/, '')}`).join('\n')}`)}`
       return openFile(`/Team Brain${path}.md`, PREVIEW_SLUG, undefined, { inlineUrl: list, downloadUrl: list })
@@ -210,7 +232,13 @@ function OverviewBody({
     // through React from outside this element.
     if (!(target instanceof Element) || !event.currentTarget.contains(target)) return
     if (target.closest('[data-drawer-opener]')) return
-    closeFiles()
+    // A click in the composer steps an open page's drawer aside once the press is over, so nothing moves under it. A click
+    // on one of its buttons leaves it, so a picker then opens where it was pressed. A click on nothing steps it aside
+    // first, then puts it away.
+    if (target.closest('[data-keeps-drawer]')) {
+      if (filesOpen && !target.closest('button')) onDrawerNarrowChange(true)
+    } else if (filesOpen && !drawerNarrow) onDrawerNarrowChange(true)
+    else closeFiles()
     // Narrower than xl the panel floats over the page and covers its settings button, so a click off it closes it.
     if (settingsOpen && !wide && !target.closest('#team-brain-settings')) onSettingsOpenChange(false)
   }
@@ -231,7 +259,7 @@ function OverviewBody({
 
   return (
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- a pointer convenience; each drawer has its own close button
-    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background" onClick={closeDrawersOnClickOff}>
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background" onClick={closeDrawersOnClickOff} data-team-brain-page>
       {error && !noDrive && <DriveErrorBanner error={error} partial={ready} />}
       <SettingsPageContainer className={cn(PAGE_WIDTH, 'space-y-8')} scrollContainerRef={scrollRef}>
         {/* The centrepiece: what Team Brain knows, as a tree floating on the page with no frame around it. It fills the
@@ -268,7 +296,8 @@ function OverviewBody({
             columns do, while the tree behind stays exactly where it is. */}
         <div
           // Makes room on the panel's own curves (team-brain.css), so the two move as one.
-          className={cn('team-brain-column relative space-y-4', settingsOpen && 'xl:pr-[392px]')}
+          // While the drawer is narrow (320px) it gets room too, where it sits beside the page rather than over it.
+          className={cn('team-brain-column relative space-y-4', settingsOpen && 'xl:pr-[392px]', drawerNarrow && '[@container(min-width:768px)]:pr-[336px]')}
           style={showSettings && wide && panelHeight ? { minHeight: panelHeight - 2 * PANEL_INSET } : undefined}
           data-settings={settingsOpen ? 'open' : 'closed'}
           data-testid="team-brain-column"
@@ -311,7 +340,9 @@ function OverviewBody({
             </header>
             {/* Talk to it, as on Agent Home: a message starts a session with the Team Brain agent. Glass, as the session's
                 composer is, so the tree shows through it as it passes over. */}
-            <TeamBrainHomeComposer agent={agent} />
+            <div data-keeps-drawer onInput={() => filesOpen && onDrawerNarrowChange(true)}>
+              <TeamBrainHomeComposer agent={agent} />
+            </div>
           </div>
 
           {/* The latest few sessions, on the composer's glass and at its width, as Agent Home has them; See all sessions
