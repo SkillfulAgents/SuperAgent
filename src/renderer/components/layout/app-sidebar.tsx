@@ -465,7 +465,7 @@ function AgentLastRun({ date }: { date: ApiAgent['lastActivityAt'] }) {
 
 // The agent row's notification dot, pinned to the avatar's bottom-right like a
 // presence dot: orange while a session waits on the user, otherwise blue for
-// unread, or a small violet @ on white (near-black in dark) when it mentions
+// unread, or a small violet @ when it mentions
 // you. Awaiting aggregates across sessions with the same formula as the agent
 // header's AgentStatus (fresh sessions data when loaded, agent-level flags as
 // fallback), so the sidebar and the top nav never disagree. Unread is
@@ -680,6 +680,8 @@ const AgentMenuItemInner = React.forwardRef<
                 className="min-w-0 flex-1 outline-none after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-2 focus-visible:after:ring-sidebar-ring"
               >
                 <span className="block truncate text-[13px] font-normal text-sidebar-foreground">{agent.name}</span>
+                {/* The orb is decorative; its state still needs a text equivalent. */}
+                <span className="sr-only">, {avatarState === 'needs-input' ? 'needs input' : avatarState === 'done' ? 'unread notifications' : avatarState}. </span>
                 {/* While the avatar carries a badge, the second line says what
                     that notification says instead of when the agent last ran. */}
                 {badgeKind && agent.notificationPreview ? (
@@ -691,27 +693,29 @@ const AgentMenuItemInner = React.forwardRef<
                 )}
               </AppLink>
               {/* The faces sit flush right, over the empty trailing slot (its
-                  16px plus the 6px gap); when the row's pen or ⌘-hint shows,
+                  16px plus the 6px gap); when the row's controls or ⌘-hint show,
                   they slide left to make room for it, and the options button
                   revealed beside the slot pushes them further. Keyboard focus
                   only (:focus-visible), like the pen: a click on the avatar's
-                  chevron leaves focus in the row without showing the pen. */}
+                  chevron leaves focus in the row without showing the pen.
+                  Viewers also need room for the options button. */}
               {isShared && (
                 <SidebarMemberIndicator
                   agentSlug={agent.slug}
                   agentName={agent.name}
                   memberCount={memberCount}
                   className={cn(
-                    'transition-transform duration-200 ease-out',
+                    'transition-transform duration-200 ease-out group-hover/agent-row:translate-x-0 group-has-[:focus-visible]/agent-row:translate-x-0',
                     hint === null && 'translate-x-[22px]',
-                    canStartSession && 'group-hover/agent-row:translate-x-0 group-has-[:focus-visible]/agent-row:translate-x-0',
                   )}
                 />
               )}
               {/* The 3-dot button and the status slot travel together, so the
                   slot holds the right edge whether or not the button shows
                   (touch never shows it). */}
-              <span className="relative z-10 ml-auto flex shrink-0 items-center">
+              {/* Empty space overlaps the tucked roster: only visible controls
+                  may intercept the pointer, never this wrapper or a hidden pen. */}
+              <span className="pointer-events-none relative z-10 ml-auto flex shrink-0 items-center">
                 {hint === null && (
                   <ContextMenuMoreButton
                     label={`Options for ${agent.name}`}
@@ -741,6 +745,7 @@ const AgentMenuItemInner = React.forwardRef<
                     aria-label={`Open ${agent.name}`}
                     className={cn(
                       'flex items-center transition-opacity',
+                      hint !== null && 'pointer-events-auto',
                       canStartSession && 'group-hover/agent-row:opacity-0 group-focus-within/status-slot:opacity-0'
                     )}
                   >
@@ -757,7 +762,7 @@ const AgentMenuItemInner = React.forwardRef<
                             onClick={(event) => { if (event.detail === 0) warmStart() }}
                             aria-label={`New session with ${agent.name}`}
                             data-testid={`agent-new-session-${agent.slug}`}
-                            className="absolute left-1/2 top-1/2 flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded text-muted-foreground opacity-0 outline-none transition-opacity hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-sidebar-ring group-hover/agent-row:opacity-100"
+                            className="pointer-events-none absolute left-1/2 top-1/2 flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded text-muted-foreground opacity-0 outline-none transition-opacity hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-sidebar-ring group-hover/agent-row:pointer-events-auto group-hover/agent-row:opacity-100"
                           >
                             <SquarePen className="h-3.5 w-3.5" />
                           </AppLink>
