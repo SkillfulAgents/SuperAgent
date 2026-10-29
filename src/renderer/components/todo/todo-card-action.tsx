@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import type { LucideIcon } from 'lucide-react'
-import { Archive, ArchiveRestore, Check, Play } from 'lucide-react'
+import { Archive, ArchiveRestore, Check, Play, Undo2 } from 'lucide-react'
 import { todoUnarchiveStatus, type TodoStatusChange } from '@shared/lib/todos/todo-schema'
 import { useSetTodoStatus, useStartTodo, type TodoView } from '@renderer/hooks/use-todos'
 
@@ -9,9 +9,9 @@ export interface TodoCardAction {
   Icon: LucideIcon
   run: () => void
   /** What the action does to the item. */
-  kind: 'start' | 'done' | 'archive' | 'unarchive'
+  kind: 'start' | 'done' | 'archive' | 'unarchive' | 'reopen'
   /** Its single-key shortcut, the same wherever the item shows it. */
-  shortcut: 'S' | 'D' | 'E' | 'U'
+  shortcut: 'S' | 'D' | 'E' | 'U' | 'R'
   testId: string
   /** Extra icon classes: Play is drawn filled and a step smaller. `!` because Button sizes every icon to 16px. */
   iconClass?: string
@@ -83,4 +83,10 @@ export function cardActionFor(
 export function archiveDraftAction(todo: TodoView | undefined, runners: TodoActionRunners): TodoCardAction | null {
   if (todo?.column !== 'drafts') return null
   return { label: 'Archive', Icon: Archive, kind: 'archive', shortcut: 'E', testId: 'todo-action-archive', run: () => runners.setStatus(todo, 'archived') }
+}
+
+/** Reopening done work, a secondary action like archiving a draft. Done work whose session was deleted has nothing to reopen. */
+export function reopenAction(todo: TodoView | undefined, runners: TodoActionRunners): TodoCardAction | null {
+  if (todo?.column !== 'done' || !todo.sessionId) return null
+  return { label: 'Reopen', Icon: Undo2, kind: 'reopen', shortcut: 'R', testId: 'todo-action-reopen', run: () => runners.setStatus(todo, 'active') }
 }

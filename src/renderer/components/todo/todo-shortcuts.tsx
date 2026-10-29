@@ -23,9 +23,15 @@ export function isTypingTarget(target: EventTarget | null): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
 }
 
+/** Something else has the keyboard: a dialog or a menu is open. A closed drawer stays mounted, but inert. */
+function overlayOpen(): boolean {
+  return [...document.querySelectorAll('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]')]
+    .some((el) => !el.closest('[inert]'))
+}
+
 /**
  * Listen for board-style shortcuts on the window: plain keys only, not while
- * typing, not when something already handled the key.
+ * typing or while a dialog or menu is open, not when something already handled the key.
  * The handler returns true when it used the key.
  */
 export function usePlainKeys(handler: (event: KeyboardEvent) => boolean, enabled = true) {
@@ -36,7 +42,7 @@ export function usePlainKeys(handler: (event: KeyboardEvent) => boolean, enabled
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing) return
       if (event.metaKey || event.ctrlKey || event.altKey) return
-      if (isTypingTarget(event.target)) return
+      if (isTypingTarget(event.target) || overlayOpen()) return
       if (handlerRef.current(event)) event.preventDefault()
     }
     window.addEventListener('keydown', onKeyDown)
@@ -101,6 +107,7 @@ const GROUPS: { title: string; rows: { label: string; keys: string[][] }[] }[] =
       { label: 'Mark done', keys: [['D']] },
       { label: 'Archive (a draft or done item)', keys: [['E']] },
       { label: 'Unarchive', keys: [['U']] },
+      { label: 'Reopen (a done item)', keys: [['R']] },
       { label: 'Show or hide Done', keys: [['G', 'D']] },
       { label: 'Clear selection', keys: [['Esc']] },
     ],
@@ -111,6 +118,7 @@ const GROUPS: { title: string; rows: { label: string; keys: string[][] }[] }[] =
       { label: 'Next / previous that needs you', keys: [['J'], ['K']] },
       { label: 'Mark done', keys: [['D']] },
       { label: 'Archive (once done)', keys: [['E']] },
+      { label: 'Reopen (once done)', keys: [['R']] },
       { label: 'Back to board', keys: [['Esc']] },
     ],
   },
