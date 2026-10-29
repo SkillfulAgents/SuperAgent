@@ -21,6 +21,7 @@ import { runInNewContext } from 'node:vm'
 import { Readable, Writable } from 'node:stream'
 import { createHash } from 'node:crypto'
 import { agentRegistry, WorkspaceFileError } from '@shared/lib/agent-actor'
+import { readAgentSummaries, storeAgentSummary, storedAgentSummariesInUse, type AgentSummary } from '@shared/lib/services/agent-summaries'
 import { underActorTransport } from '@shared/lib/agent-actor/testing/via-test-transport'
 import type { LiveSessionsAnswers } from '@shared/lib/agent-actor/testing/live-sessions-double'
 import type { WireFrame } from '@shared/lib/agent-actor'
@@ -616,6 +617,16 @@ vi.mock('@shared/lib/services/skillset-service', () => ({
   importSkillFromZip: vi.fn(),
   SKILL_MAX_COMPRESSED_SIZE: 100 * 1024 * 1024,
 }))
+
+vi.mock('@shared/lib/services/agent-summaries', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@shared/lib/services/agent-summaries')>()
+  return {
+    ...actual,
+    storedAgentSummariesInUse: vi.fn(() => false),
+    readAgentSummaries: vi.fn(async () => new Map()),
+    storeAgentSummary: vi.fn(async () => {}),
+  }
+})
 
 vi.mock('@shared/lib/services/artifact-service', () => ({
   listArtifactsFromFilesystem: vi.fn(),
@@ -7597,6 +7608,80 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body[0]).not.toHaveProperty('attentionOutsideLatest')
     expect(listSessionsFromSummary).not.toHaveBeenCalled()
     expect(getSessionMessagesPage).not.toHaveBeenCalled()
+  })
+
+  describe('where the deployment stores agent summaries', () => {
+    const storedSummary: AgentSummary = {
+      container: { status: 'running', port: 8080, healthWarnings: [], stale: false },
+      hasActiveSessions: true,
+      hasSessionsAwaitingInput: false,
+      sessionCount: 2,
+      lastActivityAt: '2026-01-01T12:00:00.000Z',
+      visibleSessionIds: ['weekly-report'],
+      dashboards: [{ slug: 'sales-pipeline', name: 'Sales pipeline' }],
+      widgets: [],
+    }
+
+    beforeEach(() => {
+      vi.mocked(storedAgentSummariesInUse).mockReturnValue(true)
+    })
+    afterEach(() => {
+      vi.mocked(storedAgentSummariesInUse).mockReturnValue(false)
+      vi.mocked(readAgentSummaries).mockResolvedValue(new Map())
+    })
+
+    it('builds each row from the stored summary and asks the agent nothing', async () => {
+      vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+      vi.mocked(readAgentSummaries).mockResolvedValue(new Map([['agent-1', storedSummary]]))
+      vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([
+        ['agent-1', new Set(['weekly-report', 'hidden-cron-run'])],
+      ]))
+
+      const res = await getReq(app, '/api/agents')
+      expect(res.status).toBe(200)
+      const body = await res.json()
+
+      expect(body[0]).toMatchObject({
+        slug: 'agent-1',
+        hasActiveSessions: true,
+        hasSessionsAwaitingInput: false,
+        hasUnreadNotifications: true,
+        hasUnreadMention: false,
+        sessionCount: 2,
+        lastActivityAt: '2026-01-01T12:00:00.000Z',
+        dashboards: [{ slug: 'sales-pipeline', name: 'Sales pipeline' }],
+        widgets: [],
+      })
+      expect(getSessionSummary).not.toHaveBeenCalled()
+      expect(readSessionMetadata).not.toHaveBeenCalled()
+      expect(listArtifactsAndWidgets).not.toHaveBeenCalled()
+      expect(storeAgentSummary).not.toHaveBeenCalled()
+    })
+
+    it('summarizes an agent with no stored row from its actor and stores it', async () => {
+      vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+      vi.mocked(getSessionSummary).mockResolvedValue({
+        sessionIds: ['weekly-report'],
+        sessionCount: 1,
+        lastActivityAt: new Date('2026-01-01T12:00:00.000Z'),
+      })
+      vi.mocked(listArtifactsAndWidgets).mockResolvedValue({
+        dashboards: [{ slug: 'sales-pipeline', name: 'Sales pipeline' }] as never,
+        widgets: [],
+      })
+
+      const res = await getReq(app, '/api/agents')
+      expect(res.status).toBe(200)
+      const body = await res.json()
+
+      expect(body[0]).toMatchObject({ sessionCount: 1, dashboards: [{ slug: 'sales-pipeline', name: 'Sales pipeline' }] })
+      expect(storeAgentSummary).toHaveBeenCalledTimes(1)
+      expect(storeAgentSummary).toHaveBeenCalledWith('agent-1', expect.objectContaining({
+        sessionCount: 1,
+        visibleSessionIds: ['weekly-report'],
+        dashboards: [{ slug: 'sales-pipeline', name: 'Sales pipeline' }],
+      }))
+    })
   })
 
   it('returns the latest tail and excludes attention on that session', async () => {

@@ -18,6 +18,7 @@ import { agentSummaries } from '@shared/lib/db/schema'
 import { background } from '@shared/lib/background'
 import type { GlobalFeed } from '@shared/lib/notifications/global-feed'
 import type { AgentLiveSummary, AgentSlug } from '@shared/lib/agent-actor/types'
+import type { ApiAgentDashboard, ApiAgentWidget } from '@shared/lib/types/api'
 
 export const AGENT_SUMMARY_EVENT = 'agent_summary'
 
@@ -27,11 +28,16 @@ export interface AgentSummary {
   hasSessionsAwaitingInput: boolean
   sessionCount: number
   lastActivityAt: string | null
+  /** The sessions an agent list shows (hidden automated ones left out): only their unread notifications count. */
+  visibleSessionIds: string[]
+  dashboards: ApiAgentDashboard[]
+  widgets: ApiAgentWidget[]
 }
 
 export function agentSummaryOf(
   live: AgentLiveSummary,
   sessions: { sessionCount: number; lastActivityAt: Date | null },
+  listing: Pick<AgentSummary, 'visibleSessionIds' | 'dashboards' | 'widgets'>,
 ): AgentSummary {
   const { status, port, healthWarnings, stale } = live.container
   return {
@@ -40,6 +46,7 @@ export function agentSummaryOf(
     hasSessionsAwaitingInput: live.awaitingSessionIds.length > 0 || live.pendingReviews.length > 0,
     sessionCount: sessions.sessionCount,
     lastActivityAt: sessions.lastActivityAt?.toISOString() ?? null,
+    ...listing,
   }
 }
 
@@ -77,12 +84,14 @@ export function startAgentSummaryPublisher(feed: GlobalFeed, summarize: (slug: A
 export function startAgentSummaryWriter(feed: GlobalFeed): () => void {
   return feed.subscribe((event) => {
     if (event.type !== AGENT_SUMMARY_EVENT || !event.agentSlug) return
-    const row = { summary: JSON.stringify(event.summary), updatedAt: new Date() }
-    background(
-      db.insert(agentSummaries).values({ agentSlug: event.agentSlug, ...row }).onConflictDoUpdate({ target: agentSummaries.agentSlug, set: row }).then(() => undefined),
-      { name: 'agent-summaries.write' },
-    )
+    background(storeAgentSummary(event.agentSlug, event.summary as AgentSummary), { name: 'agent-summaries.write' })
   })
+}
+
+/** Store one agent's summary, replacing the one before. */
+export async function storeAgentSummary(slug: AgentSlug, summary: AgentSummary): Promise<void> {
+  const row = { summary: JSON.stringify(summary), updatedAt: new Date() }
+  await db.insert(agentSummaries).values({ agentSlug: slug, ...row }).onConflictDoUpdate({ target: agentSummaries.agentSlug, set: row })
 }
 
 export async function readAgentSummaries(slugs: readonly AgentSlug[]): Promise<Map<AgentSlug, AgentSummary>> {
@@ -100,13 +109,4 @@ export function useStoredAgentSummaries(on: boolean): void {
 
 export function storedAgentSummariesInUse(): boolean {
   return stored
-}
-
-/** An agent no summary was published for yet: nothing has happened to it since the table began. */
-export const NO_AGENT_SUMMARY: AgentSummary = {
-  container: { status: 'stopped', port: null, healthWarnings: [], stale: false },
-  hasActiveSessions: false,
-  hasSessionsAwaitingInput: false,
-  sessionCount: 0,
-  lastActivityAt: null,
 }
