@@ -202,6 +202,15 @@ function createAuthInstance() {
         },
       },
       account: {
+        delete: {
+          // Remove-user deletes the account rows before the user row, so keep the
+          // Platform member id now for the revoke in user.delete.before.
+          before: async (account, ctx) => {
+            if (ctx?.path !== '/admin/remove-user' || account.providerId !== 'platform') return
+            const { rememberPlatformMember } = await import('@shared/lib/services/user-removal-service')
+            rememberPlatformMember(account.userId, account.accountId)
+          },
+        },
         update: {
           after: async (account) => {
             // Auto-clear mustChangePassword when a user changes their password.

@@ -11,7 +11,8 @@ import { and, eq, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
 import type { AppDatabase } from '../db/drivers/types'
-import { agentAcl, agentConnectedAccounts, agentRemoteMcps, auditLog, connectedAccounts, remoteMcpServers, userSettings } from '../db/schema'
+import { agentAcl, agentConnectedAccounts, agentRemoteMcps, auditLog, authAccount, connectedAccounts, remoteMcpServers, userSettings } from '../db/schema'
+import { attribution } from '../platform-attribution'
 
 let handle: TestDatabase
 let testDb: AppDatabase
@@ -146,6 +147,25 @@ describe('removing a user', () => {
 
     expect(mocks.syncAccountAgents.mock.calls).toEqual([[[`${ada.id}-inbox`]]])
     expect(mocks.syncMcpAgents.mock.calls).toEqual([[[`${ada.id}-briefing`]]])
+  })
+
+  it('revokes through the platform proxy as the removed member, whose account row is gone by the user delete', async () => {
+    const admin = await signUp('admin@example.com')
+    const ada = await signUp('ada@example.com')
+    await seedOwned(ada.id)
+    await testDb.insert(authAccount).values({ id: `${ada.id}-platform`, accountId: 'member-ada', providerId: 'platform', userId: ada.id })
+    // A cloud deployment holds an org token; the proxy needs `<token>::<member>` on every call.
+    const orgToken = `header.${Buffer.from(JSON.stringify({ orgId: 'org-acme' })).toString('base64url')}.signature`
+    vi.stubEnv('PLATFORM_TOKEN', orgToken)
+    const bearers: (string | undefined)[] = []
+    mocks.composioDelete.mockImplementation(async () => {
+      bearers.push((await attribution.current())?.bearerToken())
+    })
+
+    const response = await request('admin/remove-user', { userId: ada.id }, { cookie: admin.cookie })
+
+    expect(response.status).toBe(200)
+    expect(bearers).toEqual([`${orgToken}::member-ada`])
   })
 
   it('still removes the user when the provider cannot revoke a connection', async () => {
