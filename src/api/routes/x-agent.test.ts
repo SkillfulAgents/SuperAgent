@@ -586,21 +586,25 @@ describe('/invoke', () => {
     mockCreateSession.mockResolvedValue({ id: 'new-sess-id' })
   })
 
-  it('rejects when caller invokes itself', async () => {
+  it.each([{}, { slug: CALLER_SLUG }])('targets the caller itself (%o)', async (target) => {
     reviewDecisions.push('allow')
-    const res = await authedFetch('/x-agent/invoke', { slug: CALLER_SLUG, prompt: 'hi' })
-    expect(res.status).toBe(400)
-    const body = await res.json()
-    expect(body.error).toMatch(/cannot invoke itself/)
+    const res = await authedFetch('/x-agent/invoke', { ...target, prompt: 'hi' })
+    expect(res.status).toBe(200)
+    expect(mockEnsureRunning).toHaveBeenCalledWith(CALLER_SLUG)
+    expect(mockRegisterSession).toHaveBeenCalledWith(
+      expect.objectContaining({ slug: CALLER_SLUG }),
+      'new-sess-id',
+      expect.any(String),
+      expect.objectContaining({ invokedByAgentSlug: CALLER_SLUG }),
+    )
   })
 
-  it('rejects when calling session was itself invoked by another agent (one-hop rule)', async () => {
+  it.each(['some-other-agent', CALLER_SLUG])('rejects when calling session was itself invoked by %s (one-hop rule)', async (invokedByAgentSlug) => {
     reviewDecisions.push('allow')
     const callerSessionId = 'caller-session-invoked'
-    // Mark the calling session as having been invoked by some other agent
     mockGetSessionMetadata.mockImplementation(async (store: unknown, sessionId: unknown) => {
       if ((store as { slug: string }).slug === CALLER_SLUG && sessionId === callerSessionId) {
-        return { name: 'invoked', createdAt: new Date().toISOString(), invokedByAgentSlug: 'some-other-agent' }
+        return { name: 'invoked', createdAt: new Date().toISOString(), invokedByAgentSlug }
       }
       return null
     })

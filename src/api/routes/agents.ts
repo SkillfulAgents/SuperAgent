@@ -8204,9 +8204,6 @@ agents.patch('/:id/x-agent-policies', AgentAdmin(), async (c) => {
   if (operation === 'list' && targetSlug !== null) {
     return c.json({ error: 'List policies cannot target an agent' }, 400)
   }
-  if (targetSlug === slug) {
-    return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
-  }
   if (targetSlug !== null) {
     const targetAgent = await getAgentRecord(targetSlug)
     if (!targetAgent || !(await callerCanSeeAgent(c, targetSlug))) {
@@ -8236,12 +8233,6 @@ agents.put('/:id/x-agent-policies', AgentAdmin(), async (c) => {
   if (!parsed.success) {
     return c.json({ error: 'Invalid policies payload', details: parsed.error.format() }, 400)
   }
-  // Don't let an agent set a policy targeting itself — meaningless and would create a confusing row
-  for (const p of parsed.data.policies) {
-    if (p.targetSlug === slug) {
-      return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
-    }
-  }
   await replacePoliciesForCaller(slug, parsed.data.policies)
   return c.json({ ok: true })
 })
@@ -8259,9 +8250,6 @@ agents.put('/:id/x-agent-policies/:operation/:target', AgentAdmin(), async (c) =
     return c.json({ error: 'Unknown operation' }, 400)
   }
   const targetSlug = c.req.param('target')
-  if (targetSlug === slug) {
-    return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
-  }
   // AgentAdmin checks role but not existence; assert both ends so a typo'd
   // slug doesn't write phantom rows that nothing references. In auth mode the
   // target must also be VISIBLE to the caller (same anti-topology-leak rule
