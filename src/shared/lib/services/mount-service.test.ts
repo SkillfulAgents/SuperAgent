@@ -6,7 +6,7 @@ import { eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { agents, agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
-import { addMount, agentsWithVolume, attachMount, getMounts, getMountsWithHealth, listVolumes, removeMount, resolveVolume, setMountReadOnly, volumeSummary } from './mount-service'
+import { addMount, agentsWithVolume, attachMount, getMounts, getMountsWithHealth, listVolumes, removeMount, resolveMountPath, resolveVolume, setMountReadOnly, volumeSummary } from './mount-service'
 import { updateVolumeDefinition } from './volume-service'
 import { volumeHealth } from '@shared/lib/volumes/volume-health'
 import { BaseMountableVolume } from '@shared/lib/volumes/base-mountable-volume'
@@ -155,6 +155,23 @@ describe('global drives', () => {
     expect(await resolveVolume('agent-b', global.id)).toBeNull()
     expect(await getMounts('agent-b')).toEqual([other])
     expect(await getMounts('test-agent')).toEqual([team])
+  })
+  it('resolves a mount path by the name each agent sees, a global drive by its derived name', async () => {
+    const hostPath = folder('team')
+    fs.writeFileSync(path.join(hostPath, 'a.txt'), 'team page')
+    const team = await add(hostPath)
+    await addMount('agent-b', 'local', { path: folder('b/team') }, viewer)
+    const read = async (slug: string, containerPath: string) => {
+      const mount = await resolveMountPath(slug, containerPath)
+      return mount && { path: mount.path, entries: (await mount.ops.list('')).map(entry => entry.name) }
+    }
+    expect(await read('test-agent', '/mounts/team/a.txt')).toEqual({ path: 'a.txt', entries: ['a.txt'] })
+    expect(await read('agent-b', '/mounts/team/a.txt')).toEqual({ path: 'a.txt', entries: [] })
+    expect(await read('agent-b', '/mounts/team-2/a.txt')).toBeNull()
+    await updateVolumeDefinition(team.volumeId, { global: 'read' }, viewer)
+    expect(await read('agent-b', '/mounts/team-2/a.txt')).toEqual({ path: 'a.txt', entries: ['a.txt'] })
+    expect(await read('test-agent', '/mounts/missing/a.txt')).toBeNull()
+    await expect(read('test-agent', '/mounts/team/../a.txt')).rejects.toMatchObject({ code: 'invalid-path' })
   })
   it('names the agents a drive reaches: its attachments, or every agent while it is global', async () => {
     await handle.db.insert(agents).values({ slug: 'agent-c', name: 'agent-c', createdAt: new Date() }).run()

@@ -4,6 +4,8 @@ import { db } from '@shared/lib/db'
 import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
 import { agents, agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
 import type { ContainerVolume, MountedVolume, MountSummaryWithHealth, NotMountedVolume } from '@shared/lib/types/mount'
+import { parseMountPath } from '@shared/lib/utils/workspace-path'
+import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { instantiateVolume } from '@shared/lib/volumes/volume-factory'
 import { volumeHealth, volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
 import { prepareVolumeDefinition, selectableVolumes, storedDefinition, VolumeError, type VolumeViewer } from './volume-service'
@@ -124,6 +126,15 @@ export async function resolveVolume(slug: string, mountId: string) {
   if (!row) return null
   const ops = instantiateVolume(row, slug)
   return ops && { ops, readOnly: row.readOnly }
+}
+
+/** A path the agent sees under /mounts, read through the drive it names. The grant is resolveVolume's. */
+export async function resolveMountPath(slug: string, containerPath: string) {
+  const parsed = parseMountPath(containerPath)
+  if (!parsed) throw new WorkspaceFileError('invalid-path')
+  const row = (await getMounts(slug)).find(m => m.name === parsed.name)
+  const ops = row && instantiateVolume(row, slug)
+  return ops ? { ops, path: parsed.path } : null
 }
 
 async function judgeVolumes(slug: string) {
