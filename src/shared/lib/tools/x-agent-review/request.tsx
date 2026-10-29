@@ -48,8 +48,10 @@ export function XAgentReviewRequestItem({
 }: XAgentReviewRequestItemProps) {
   const [status, setStatus] = useState<RequestStatus>('pending')
   const [error, setError] = useState<string | null>(null)
+  const [blocked, setBlocked] = useState(false)
   const [allowMenuOpen, setAllowMenuOpen] = useState(false)
   const completeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const endBlockedRef = useRef<(() => void) | null>(null)
   const isMountedRef = useRef(true)
   const navigate = useNavigate()
 
@@ -58,6 +60,7 @@ export function XAgentReviewRequestItem({
     return () => {
       isMountedRef.current = false
       if (completeTimerRef.current) clearTimeout(completeTimerRef.current)
+      endBlockedRef.current?.()
     }
   }, [])
 
@@ -79,18 +82,18 @@ export function XAgentReviewRequestItem({
     completeTimerRef.current = setTimeout(() => onComplete(), delayMs)
   }
 
+  const postDecision = (decision: 'allow' | 'deny') =>
+    apiFetch(`/api/agents/${agentSlug}/proxy-review/${reviewId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision }),
+    })
+
   const handleDecision = async (decision: 'allow' | 'deny') => {
     setStatus('submitting')
     setError(null)
     try {
-      const response = await apiFetch(
-        `/api/agents/${agentSlug}/proxy-review/${reviewId}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ decision }),
-        },
-      )
+      const response = await postDecision(decision)
       if (!response.ok && response.status !== 404) {
         const data = await response.json()
         throw new Error(data.error || 'Failed to submit decision')
@@ -142,6 +145,25 @@ export function XAgentReviewRequestItem({
       )
       if (!response.ok && response.status !== 404) {
         const data = await response.json()
+        // An Owner blocked this link while the card was open: say so here, then end the request
+        // with Allow Once, which the Block refuses. Leaving the card before then ends it too.
+        if (data.blocked) {
+          if (!isMountedRef.current) {
+            void postDecision('allow')
+            return
+          }
+          endBlockedRef.current = () => {
+            endBlockedRef.current = null
+            void postDecision('allow')
+          }
+          setBlocked(true)
+          setStatus('denied')
+          completeTimerRef.current = setTimeout(() => {
+            endBlockedRef.current?.()
+            onComplete()
+          }, 2000)
+          return
+        }
         throw new Error(data.error || 'Failed to save policy')
       }
       finishWith('allowed', response.ok ? 1500 : 1000)
@@ -183,7 +205,7 @@ export function XAgentReviewRequestItem({
             )}
           </>
         ),
-        statusLabel: status === 'allowed' ? 'Allowed' : 'Denied',
+        statusLabel: status === 'allowed' ? 'Allowed' : blocked ? 'Blocked by policy' : 'Denied',
         isSuccess: status === 'allowed',
       }
     : null
