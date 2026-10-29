@@ -73,7 +73,10 @@ export interface SessionUsage {
   outputTokens: number
   cacheCreationInputTokens: number
   cacheReadInputTokens: number
+  /** 0 when the window is not known yet: clients show no percentage. */
   contextWindow: number
+  /** The model the call ran on, when its frames named it. */
+  model?: string
 }
 
 export interface SessionMetadata {

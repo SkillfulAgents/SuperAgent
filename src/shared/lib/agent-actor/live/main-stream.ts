@@ -28,7 +28,7 @@ export interface FinishedToolUse {
 type StreamEvent = {
   type: string
   index?: number
-  message?: { id?: string }
+  message?: { id?: string; model?: string }
   content_block?: { type: string; id?: string; name?: string }
   delta?: { type: string; text?: string; partial_json?: string; thinking?: string }
   usage?: TokenUsage
@@ -41,7 +41,14 @@ export type TokenUsage = {
   cache_read_input_tokens?: number
 }
 
-const DEFAULT_CONTEXT_WINDOW = 200_000
+/** A context nobody has measured yet: a window of 0 shows as no percentage. */
+const UNMEASURED: SessionUsage = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheCreationInputTokens: 0,
+  cacheReadInputTokens: 0,
+  contextWindow: 0,
+}
 
 export class MainStream {
   /** Text streamed in the current message; cleared once the message is complete. */
@@ -57,12 +64,19 @@ export class MainStream {
   // live block's id matches the persisted one.
   private messageId: string | null = null
   private thinkingBlockIndex: number | null = null
-  /** The window the last result reported (or the catalog says), for context usage. */
-  contextWindow = DEFAULT_CONTEXT_WINDOW
+  /** The model the latest API call ran on: its usage is read against that model's window. */
+  model: string | undefined = undefined
   /** The latest single API call's usage: the context's size as of then. */
   lastUsage: SessionUsage | null = null
 
-  constructor(private readonly sink: MainStreamSink) {}
+  /**
+   * `contextWindowFor` is the session's answer for a model's window. A
+   * window it does not know yet goes out as 0 rather than as a guess.
+   */
+  constructor(
+    private readonly sink: MainStreamSink,
+    private readonly contextWindowFor: (model: string | undefined) => number | undefined,
+  ) {}
 
   /** One stream event. Returns the tool call it finished, for the session to act on. */
   event(event: StreamEvent): FinishedToolUse | null {
@@ -76,6 +90,7 @@ export class MainStream {
         this.isThinking = false
         this.messageId = event.message?.id ?? null
         this.thinkingBlockIndex = null
+        if (event.message?.model) this.model = event.message.model
         // The response is flowing, so any retry resolved.
         this.isRetrying = false
         this.sink.responseStarted()
@@ -165,9 +180,15 @@ export class MainStream {
     this.sink.emit({ type: 'compact_start' })
   }
 
-  /** The compaction summary arrived: clients swap the spinner for the boundary and refetch. */
+  /**
+   * The compaction summary arrived: clients swap the spinner for the boundary
+   * and refetch. The latest call measured the context the summary replaced,
+   * so the size is unmeasured until the next call reports it.
+   */
   compactionEnded(): void {
     this.isCompacting = false
+    this.lastUsage = null
+    this.sink.emit({ type: 'context_usage', ...UNMEASURED })
     this.sink.emit({ type: 'compact_complete' })
     this.sink.emit({ type: 'messages_updated' })
   }
@@ -184,29 +205,31 @@ export class MainStream {
     })
   }
 
-  /** One API call's usage: the context's current size. */
-  reportUsage(usage: TokenUsage): void {
+  /** One API call's usage, and the model it ran on when the frame names it: the context's current size. */
+  reportUsage(usage: TokenUsage, model?: string): void {
+    if (model) this.model = model
     this.lastUsage = {
       inputTokens: usage.input_tokens ?? 0,
       outputTokens: usage.output_tokens ?? 0,
       cacheCreationInputTokens: usage.cache_creation_input_tokens ?? 0,
       cacheReadInputTokens: usage.cache_read_input_tokens ?? 0,
-      contextWindow: this.contextWindow,
+      contextWindow: this.contextWindowFor(this.model) ?? 0,
+      ...(this.model ? { model: this.model } : {}),
     }
     this.sink.emit({ type: 'context_usage', ...this.lastUsage })
   }
 
   /**
-   * The result names the window: the latest call's usage goes out again with
-   * it, and is returned for the session to persist. (Not the result's own
-   * usage, which sums every call in the turn.)
+   * The turn's result: the latest call's usage goes out again, against the
+   * window the session knows now (the result can be what taught it), and is
+   * returned for the session to persist. (Not the result's own usage, which
+   * sums every call in the turn.)
    */
-  settleUsage(contextWindow: number | undefined): SessionUsage | null {
-    if (contextWindow) this.contextWindow = contextWindow
+  settleUsage(): SessionUsage | null {
     if (!this.lastUsage) return null
-    const usage = { ...this.lastUsage, contextWindow: this.contextWindow }
-    this.sink.emit({ type: 'context_usage', ...usage })
-    return usage
+    this.lastUsage = { ...this.lastUsage, contextWindow: this.contextWindowFor(this.lastUsage.model) ?? 0 }
+    this.sink.emit({ type: 'context_usage', ...this.lastUsage })
+    return this.lastUsage
   }
 
   /** A complete assistant message landed: its streamed text is now in the transcript. */
