@@ -22,6 +22,7 @@
  * it: no globals, no wrapped APIs, no state left behind.
  */
 import { z } from 'zod'
+import { PRESENTATIONAL_FRAME_SELECTOR } from './presentational-frames'
 
 // --- Schema (the boundary between page JS, the server and the tools) --------
 
@@ -51,6 +52,11 @@ export const pageObservationSchema = z.object({
   /** Visible role=alert/status, aria-live (not off), <output> texts. */
   liveRegions: z.array(z.string()).default([]),
   iframes: z.array(iframeInfoSchema).default([]),
+  /**
+   * Frames marked role="none"/"presentation", visible or not: the tree does
+   * not read into them while they carry that role (presentational-frames.ts).
+   */
+  presentationalFrames: z.number().default(0),
   /** Visible interactive elements (DOM census, not refs — no snapshot involved). */
   interactive: z.number().default(0),
   /**
@@ -205,7 +211,7 @@ export function observerScript(opts: ObserverOptions = {}): string {
   const markers = JSON.stringify(BLOCKER_MARKERS)
   return (
     '(function(){' +
-    'var o={url:"",title:"",readyState:"",httpStatus:0,contentType:"",textChars:0,contentChars:0,contentHash:0,preview:"",liveRegions:[],iframes:[],interactive:0,stateHash:0,labelHash:0,top:[],focus:"",focusId:"",focusValue:"",focusValueChars:0,focusValueHash:0,blocker:"",netError:"",docStart:0,busy:0,blockerOverlay:false};' +
+    'var o={url:"",title:"",readyState:"",httpStatus:0,contentType:"",textChars:0,contentChars:0,contentHash:0,preview:"",liveRegions:[],iframes:[],presentationalFrames:0,interactive:0,stateHash:0,labelHash:0,top:[],focus:"",focusId:"",focusValue:"",focusValueChars:0,focusValueHash:0,blocker:"",netError:"",docStart:0,busy:0,blockerOverlay:false};' +
     'var ws=function(s){return String(s||"").replace(/[\\u200b\\u200c\\u2060\\ufeff]/g,"").replace(/\\s+/g," ").trim()};var body="";' +
     'var hash=function(s){var h=5381;var lim=Math.min(s.length,' + TEXT_HASH_CAP + ');for(var q=0;q<lim;q++){h=((h<<5)+h+s.charCodeAt(q))|0}return h};' +
     // checkVisibility covers visibility:hidden / opacity:0 — how many dropdowns hide
@@ -241,6 +247,7 @@ export function observerScript(opts: ObserverOptions = {}): string {
     'if(!same){try{same=new URL(f.src||"",location.href).origin===new URL(location.href).origin}catch(e){}}' +
     'var nm=String(f.getAttribute("aria-label")||"");if(!nm){var lb=f.getAttribute("aria-labelledby");if(lb){nm=String(lb).split(/\\s+/).map(function(id){var le=document.getElementById(id);return le?String(le.innerText||le.textContent||""):""}).join(" ").replace(/\\s+/g," ").trim()}}' +
     'if(!nm)nm=String(f.title||"");return{title:nm,host:host,sameOrigin:same}})}catch(e){}' +
+    'try{o.presentationalFrames=document.querySelectorAll(' + JSON.stringify(PRESENTATIONAL_FRAME_SELECTOR) + ').length}catch(e){}' +
     // Interactive census, and the state of every visible control.
     // Focus inside a same-origin frame is the element in the frame.
     'var act=null;try{act=document.activeElement;for(var fg=0;act&&act.tagName==="IFRAME"&&fg<4;fg++){var ad=null;try{ad=act.contentDocument}catch(e){}if(!ad)break;act=ad.activeElement}}catch(e){}var actIx=-1;' +

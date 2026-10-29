@@ -7,6 +7,7 @@ import {
   THIN_TREE_PREVIEW_CHARS,
   type PageObservation,
 } from './page-observer'
+import { PRESENTATIONAL_FRAME_SELECTOR } from './presentational-frames'
 
 // ---------------------------------------------------------------------------
 // A small fake DOM: enough for every querySelector/innerText call the
@@ -230,6 +231,15 @@ describe('observerScript', () => {
     // the URL still says it is the page's own host (mining theme 11: reported cross-origin).
     const { run } = makePage({ href: 'https://app.com/checkout', sel: { iframe: [el({ src: 'https://app.com/widget', title: 'Widget' }), el({ src: '/relative', title: 'Rel' })] } })
     expect(run().iframes).toEqual([{ title: 'Widget', host: 'app.com', sameOrigin: true }, { title: 'Rel', host: '', sameOrigin: true }])
+  })
+
+  it('counts frames marked role="none"/"presentation", visible or not, since the tree does not read into them', () => {
+    const frames = [
+      el({ tag: 'iframe', role: 'none', src: 'https://idmsa.apple.com/appleauth/auth/signin', title: 'Sign In to your Apple Account' }),
+      el({ tag: 'iframe', role: 'presentation', visible: false }),
+    ]
+    expect(makePage({ sel: { [PRESENTATIONAL_FRAME_SELECTOR]: frames } }).run().presentationalFrames).toBe(2)
+    expect(makePage({}).run().presentationalFrames).toBe(0)
   })
 
   it('recognises a challenge wall by the vendor\'s own DOM or a challenge status with its wording — never by wording alone', () => {
