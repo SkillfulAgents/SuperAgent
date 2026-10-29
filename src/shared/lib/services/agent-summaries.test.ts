@@ -24,6 +24,9 @@ const summary = (status: string, sessionCount: number): AgentSummary => ({
   hasSessionsAwaitingInput: false,
   sessionCount,
   lastActivityAt: '2026-10-27T12:00:00.000Z',
+  visibleSessionIds: [],
+  dashboards: [],
+  widgets: [],
 })
 
 describe('agent summaries', () => {

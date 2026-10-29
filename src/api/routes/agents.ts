@@ -206,7 +206,7 @@ import {
   importSkillFromZip,
   SKILL_MAX_COMPRESSED_SIZE,
 } from '@shared/lib/services/skillset-service'
-import { type ArtifactInfo, listArtifactsFromFilesystem, listArtifactsAndWidgets, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
+import { type ArtifactInfo, listArtifactsFromFilesystem, deleteArtifactFromFilesystem, renameArtifactOnFilesystem } from '@shared/lib/services/artifact-service'
 import {
   WIDGET_HTML_CSP,
   renderWidgetDocument,
@@ -226,6 +226,8 @@ import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSe
 import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { annotateIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
+import { readAgentSummaries, storeAgentSummary, storedAgentSummariesInUse, type AgentSummary } from '@shared/lib/services/agent-summaries'
+import { summarizeAgent } from '@shared/lib/services/summarize-agent'
 import { withSessionStatus } from '@shared/lib/session-status'
 import { getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
 import { isValidApiScope } from '@shared/lib/proxy/scope-matcher'
@@ -763,6 +765,18 @@ async function getVisibleSessionExpansion(
  * active/awaiting sessions, last activity, and dashboards.
  * Batch notification lookup upfront, then parallelize per-agent FS operations.
  */
+/**
+ * An agent's summary from its actor. Where summaries are stored, an agent without a row
+ * (nothing has happened to it since the table began) gets one now, so the next list reads it.
+ */
+async function summarizeOnce(slug: string, options: Parameters<typeof summarizeAgent>[1]): Promise<AgentSummary> {
+  const summary = await summarizeAgent(slug, options)
+  if (storedAgentSummariesInUse()) {
+    await storeAgentSummary(slug, summary).catch((error) => console.error(`Failed to store the summary of agent ${slug}:`, error))
+  }
+  return summary
+}
+
 async function enrichAgentsWithSummary(
   agents: ApiAgent[],
   options: AgentSummaryOptions,
@@ -778,6 +792,9 @@ async function enrichAgentsWithSummary(
     isAuthMode() ? getUnreadMentionsByAgents(slugs, options.userId) : new Map<string, Set<string>>(),
   ])
 
+  // Where a deployment stores each agent's summary, the list reads those rows and asks no actor.
+  const stored = storedAgentSummariesInUse() ? await readAgentSummaries(slugs) : new Map<string, AgentSummary>()
+
   const limit = pLimit(5)
   return Promise.all(
     agents.map((agent) => limit(async () => {
@@ -788,68 +805,39 @@ async function enrichAgentsWithSummary(
       const unreadSessionIds = markedIds.size === 0
         ? notifiedIds
         : new Set<string>([...notifiedIds, ...markedIds])
-      const actor = agentRegistry.get(agent.slug)
-      const sessionMetadataPromise = actor.sessions.readMetadata()
-      const visibleSessionExpansionPromise = options.includeLatestVisibleSessionTail
-        ? getVisibleSessionExpansion(
-            agent.slug,
-            unreadSessionIds,
-            sessionMetadataPromise,
-            options.signal,
-          )
-        : Promise.resolve(undefined)
+      const sessionMetadataPromise = options.includeLatestVisibleSessionTail
+        ? agentRegistry.get(agent.slug).sessions.readMetadata()
+        : undefined
 
-      // Only FS operations remain per-agent (parallelized and bounded by the
-      // outer p-limit).
-      const [sessionSummary, { dashboards: artifacts, widgets }, sessionMetadata, visibleSessionExpansion] =
-        await Promise.all([
-          actor.sessions.summary(),
-          // Dashboards and widgets are two halves of the same artifacts, read
-          // in one scan: listing them separately doubled the manifest reads.
-          listArtifactsAndWidgets(agent.slug),
-          sessionMetadataPromise,
-          visibleSessionExpansionPromise,
-        ])
+      const expansionPromise = sessionMetadataPromise
+        ? getVisibleSessionExpansion(agent.slug, unreadSessionIds, sessionMetadataPromise, options.signal)
+        : undefined
+      const [summary, visibleSessionExpansion] = await Promise.all([
+        stored.get(agent.slug) ?? summarizeOnce(agent.slug, { sessionMetadata: sessionMetadataPromise, readLiveAfter: expansionPromise }),
+        expansionPromise,
+      ])
 
-      // Compute session flags from in-memory state (no I/O needed).
       // `unreadByAgent` is already filtered to user-actionable notification types
       // (session_complete / session_waiting). Unread notifications on hidden
-      // automated sessions are skipped: those sessions are excluded from every
-      // session list (`excludeAutomated`), so a flag raised by them would show
-      // an unread indicator with nothing visible behind it — and no way to ever
-      // clear it. (Legacy rows exist from before creation-time suppression;
-      // session_waiting now promotes the session first, but old rows remain.)
-      let hasUnreadNotifications = false
-      // An unread notification that tags the viewer: drawn as an @, not a dot.
-      let hasUnreadMention = false
-      for (const sessionId of sessionSummary.sessionIds) {
-        if (unreadSessionIds.has(sessionId) && !isHiddenAutomatedSession(sessionMetadata[sessionId])) {
-          hasUnreadNotifications = true
-          if (mentionedIds.has(sessionId)) hasUnreadMention = true
-        }
-      }
-      // Live state covers sessions not yet on the filesystem too (a new
-      // session whose .jsonl is not written yet). Pending proxy reviews raise
-      // the flag regardless of session state: dashboard-triggered reviews have
-      // no session but still need the user.
-      const live = await agentRegistry.get(agent.slug).live()
-      const hasActiveSessions = live.activeSessionIds.length > 0
-      const hasSessionsAwaitingInput = live.awaitingSessionIds.length > 0 || live.pendingReviews.length > 0
+      // automated sessions are skipped (the summary's `visibleSessionIds` leaves
+      // them out): those sessions are excluded from every session list
+      // (`excludeAutomated`), so a flag raised by them would show an unread
+      // indicator with nothing visible behind it — and no way to ever clear it.
+      // (Legacy rows exist from before creation-time suppression; session_waiting
+      // now promotes the session first, but old rows remain.)
+      const unreadVisibleIds = summary.visibleSessionIds.filter((id) => unreadSessionIds.has(id))
 
       return {
         ...agent,
-        hasActiveSessions,
-        hasSessionsAwaitingInput,
-        hasUnreadNotifications,
-        hasUnreadMention,
-        sessionCount: sessionSummary.sessionCount,
-        lastActivityAt: sessionSummary.lastActivityAt,
-        dashboards: artifacts.map((a) => ({
-          slug: a.slug,
-          name: a.name || a.slug,
-          ...(a.hasScreenshot ? { hasScreenshot: true } : {}),
-        })),
-        widgets: await widgetRefreshService.decorate(agent.slug, widgets),
+        hasActiveSessions: summary.hasActiveSessions,
+        hasSessionsAwaitingInput: summary.hasSessionsAwaitingInput,
+        hasUnreadNotifications: unreadVisibleIds.length > 0,
+        // An unread notification that tags the viewer: drawn as an @, not a dot.
+        hasUnreadMention: unreadVisibleIds.some((id) => mentionedIds.has(id)),
+        sessionCount: summary.sessionCount,
+        lastActivityAt: summary.lastActivityAt === null ? null : new Date(summary.lastActivityAt),
+        dashboards: summary.dashboards,
+        widgets: summary.widgets,
         ...(options.includeLatestVisibleSessionTail
           ? {
               latestVisibleSession: visibleSessionExpansion?.latestVisibleSession ?? null,

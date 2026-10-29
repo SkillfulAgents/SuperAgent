@@ -11,7 +11,7 @@
  * edit and the host reads them back.
  */
 
-import { NO_AGENT_SUMMARY, readAgentSummaries, storedAgentSummariesInUse } from './agent-summaries'
+import { readAgentSummaries, storedAgentSummariesInUse } from './agent-summaries'
 import {
   parseMarkdownWithFrontmatter,
   serializeMarkdownWithFrontmatter,
@@ -241,7 +241,9 @@ export async function listAgentsWithStatus(options: { slugs?: string[] } = {}): 
 
   if (storedAgentSummariesInUse()) {
     const summaries = await readAgentSummaries(records.map((record) => record.slug))
-    return records.map((record) => toApiAgent(record, (summaries.get(record.slug) ?? NO_AGENT_SUMMARY).container))
+    // An agent with no summary yet (nothing has happened to it since the table began) asks its actor.
+    return Promise.all(records.map(async (record) =>
+      toApiAgent(record, summaries.get(record.slug)?.container ?? (await agentRegistry.get(record.slug).live()).container)))
   }
 
   // The cached container statuses: no docker process is spawned.
