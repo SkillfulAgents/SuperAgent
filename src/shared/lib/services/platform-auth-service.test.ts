@@ -595,6 +595,30 @@ describe('platform-auth-service', () => {
     expect(status.updatedAt).toBeNull()
   })
 
+  it('introspects an account once per token, then serves it from the host state store', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    await initEnvManagedPlatformStatus()
+    const account = () => new Response(
+      JSON.stringify({ memberId: 'sub_member_1', orgId: 'org_env', orgName: 'Acme Inc', role: 'owner', userId: 'user_1', email: 'owner@example.com' }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    )
+    const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(async () => account())
+
+    await getEnrichedPlatformAuthStatus('ba-user-cached')
+    const again = await getEnrichedPlatformAuthStatus('ba-user-cached')
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(again).toMatchObject({ email: 'owner@example.com', orgName: 'Acme Inc' })
+
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env_rotated')
+    await initEnvManagedPlatformStatus()
+    await getEnrichedPlatformAuthStatus('ba-user-cached')
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+  })
+
   it('keeps the plan policy a member\'s account read carries, keyed by that member (SUP-1124)', async () => {
     process.env.AUTH_MODE = 'true'
     process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')

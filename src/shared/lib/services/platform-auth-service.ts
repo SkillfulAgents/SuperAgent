@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { errors as joseErrors } from 'jose'
 import { eq, and, desc } from 'drizzle-orm'
 
@@ -7,6 +8,7 @@ import { fetchPlatformJson } from '@shared/lib/platform-auth/platform-fetch'
 import { PlatformAuthSettingsSchema, PlatformAccountInfoSchema, type ParsedPlatformAccountInfo } from '@shared/lib/types/skillset-schema'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
+import { currentStore } from '@shared/lib/host-state/scope'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getAuthProviderIssuer } from '@shared/lib/auth/provider-config'
 import { verifyOidcJwt } from '@shared/lib/auth/oidc-jwt'
@@ -189,9 +191,6 @@ function buildEnvManagedStatus(envToken: string, orgId: string | null): Platform
 
 // Verifies PLATFORM_TOKEN against the issuer JWKS at startup; warns on failure.
 export async function initEnvManagedPlatformStatus(): Promise<void> {
-  // The env token (and so the org the introspect resolves against) may have
-  // changed since the cache was filled.
-  enrichedAccountCache.clear()
   if (!isAuthMode()) {
     cachedEnvManagedStatus = null
     return
@@ -226,7 +225,7 @@ export async function initEnvManagedPlatformStatus(): Promise<void> {
 
 export function _resetEnvManagedPlatformStatusForTest(): void {
   cachedEnvManagedStatus = undefined
-  enrichedAccountCache.clear()
+  void currentStore().deletePrefix(ENRICHED_ACCOUNT_KEY_PREFIX)
 }
 
 function readRecord(): PlatformAuthRecord | null {
@@ -443,11 +442,28 @@ function normalizeOrgIconUrl(value: string | null): string | null {
 // on every mount/focus, and the membership it reflects changes rarely.
 // Failures are cached too, so a proxy without `/v1/account` org-JWT support
 // doesn't cost a failing round-trip (and a Sentry event) per page view.
+// Kept in the host state store, so every process serving the host shares it;
+// keyed by the token too, so a new token never reads the old one's answer.
 const ENRICHED_ACCOUNT_TTL_MS = 5 * 60 * 1000
-const enrichedAccountCache = new Map<
-  string,
-  { account: EnrichedEnvAccount | null; expiresAt: number }
->()
+const ENRICHED_ACCOUNT_KEY_PREFIX = 'platform-account:'
+
+function enrichedAccountKey(token: string, userId: string): string {
+  const tokenId = createHash('sha256').update(token).digest('hex').slice(0, 16)
+  return `${ENRICHED_ACCOUNT_KEY_PREFIX}${tokenId}:${userId}`
+}
+
+async function enrichedEnvAccount(userId: string): Promise<EnrichedEnvAccount | null> {
+  const token = getPlatformAccessToken()
+  if (!token) return null
+  const store = currentStore()
+  const key = enrichedAccountKey(token, userId)
+  const cached = await store.get(key)
+  if (cached) return JSON.parse(cached.value) as EnrichedEnvAccount | null
+  const account = await introspectEnvManagedAccount(userId)
+  // Another process may have stored it meanwhile: either answer is current.
+  await store.compareAndSet(key, JSON.stringify(account), 0, Date.now() + ENRICHED_ACCOUNT_TTL_MS)
+  return account
+}
 
 async function introspectEnvManagedAccount(userId: string): Promise<EnrichedEnvAccount | null> {
   const token = getPlatformAccessToken()
@@ -495,16 +511,7 @@ export async function getEnrichedPlatformAuthStatus(userId?: string): Promise<Pl
   const base = userId ? await getPlatformAuthStatusForUser(userId) : getPlatformAuthStatus()
   if (base.source !== 'env' || !base.connected || !userId) return base
 
-  let entry = enrichedAccountCache.get(userId)
-  if (!entry || entry.expiresAt <= Date.now()) {
-    entry = {
-      account: await introspectEnvManagedAccount(userId),
-      expiresAt: Date.now() + ENRICHED_ACCOUNT_TTL_MS,
-    }
-    enrichedAccountCache.set(userId, entry)
-  }
-
-  const { account } = entry
+  const account = await enrichedEnvAccount(userId)
   if (!account) return base
 
   return {
