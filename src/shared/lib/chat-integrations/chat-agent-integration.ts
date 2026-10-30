@@ -17,6 +17,8 @@ import { chatIntegrationPolicy, chatSettings } from './chat-policy'
 import { z } from 'zod'
 import type { UserRequestEvent } from '@shared/lib/tools/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
+
+export type ToolOutcome = 'success' | 'error' | 'cancelled'
 import type { ChatProvider } from './config-schema'
 import { incomingMessageSchema } from './message-schema'
 import { captureException } from '@shared/lib/error-reporting'
@@ -228,6 +230,19 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
    * Returns the external message ID.
    */
   abstract sendUserRequestCard(chatId: string, event: UserRequestEvent, sessionId?: string): Promise<string>
+
+  /**
+   * A tool call starts. Default: post its pill text and return that message, which
+   * {@link showToolOutcome} later edits. A connector with its own tool display overrides both.
+   */
+  async showToolStart(chatId: string, _tool: { toolUseId: string; toolName: string; summary: string }, pillText: string): Promise<string> {
+    return this.sendMessage(chatId, { text: pillText })
+  }
+
+  /** A tool call ends. Default: edit its pill to show the outcome. */
+  async showToolOutcome(chatId: string, _toolUseId: string, _outcome: ToolOutcome, pillText: string, messageId: string): Promise<void> {
+    await this.sendStreamingUpdate(chatId, pillText, messageId)
+  }
 
   /**
    * Resolve an open single-question AskUserQuestion card with a free-typed message as the

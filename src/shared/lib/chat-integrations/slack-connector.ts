@@ -11,7 +11,7 @@
  * Working indicator via Slack's status line under the user's message (assistant.threads.setStatus).
  */
 
-import { App as SlackApp, SocketModeReceiver, type Receiver } from '@slack/bolt'
+import { App as SlackApp, SocketModeReceiver, type Receiver, type types as SlackTypes } from '@slack/bolt'
 import { z } from 'zod'
 import type { UserRequestEvent } from '@shared/lib/tools/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
@@ -31,6 +31,7 @@ import {
   type ChatClassifyContext,
   type OutgoingMessage,
   type SystemPromptContext,
+  type ToolOutcome,
 } from './chat-agent-integration'
 import { buildSessionContextPrompt } from './chat-session-context'
 import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
@@ -314,6 +315,35 @@ export function touchAndCapSet(set: Set<string>, key: string, max: number): void
   }
 }
 
+type ToolCard = { id: string; title: string; status: 'running' | ToolOutcome }
+interface ToolGroup { ts: string; cards: ToolCard[] }
+
+/** Slack drops blocks past 50, so a group holds at most this many cards. */
+export const MAX_TOOL_GROUP_CARDS = 50
+
+const TASK_STATUS = { running: 'in_progress', success: 'complete', error: 'error', cancelled: 'error' } as const
+const TOOL_OUTCOME_WORD = { running: 'running', success: 'done', error: 'failed', cancelled: 'stopped' } as const
+
+/** A tool group's cards as Slack `task_card` blocks. A stopped tool reads as an error with a note. */
+export function toolGroupBlocks(cards: ToolCard[]): SlackTypes.TaskCardBlock[] {
+  return cards.map(card => ({
+    type: 'task_card',
+    task_id: card.id,
+    title: card.title,
+    status: TASK_STATUS[card.status],
+    ...(card.status === 'cancelled' ? { output: { type: 'rich_text', elements: [{ type: 'rich_text_section', elements: [{ type: 'text', text: 'Stopped before it finished' }] }] } } : {}),
+  }))
+}
+
+/**
+ * Fallback text for notifications and screen readers: each tool with its outcome. Slack parses this
+ * text, so `&`, `<` and `>` are escaped: a command like `echo <!channel>` must not notify the channel.
+ */
+export function toolGroupText(cards: ToolCard[]): string {
+  const escape = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return cards.map(card => `${escape(card.title)} (${TOOL_OUTCOME_WORD[card.status]})`).join('\n')
+}
+
 /** Map counterpart of {@link touchAndCapSet}: (re)inserts `key` as MRU and evicts the oldest beyond `max`. */
 export function touchAndCapMap<V>(map: Map<string, V>, key: string, value: V, max: number): void {
   map.delete(key)
@@ -469,6 +499,13 @@ export class SlackConnector extends ChatAgentIntegration {
   private lastUserMessageTs: Map<string, string> = new Map()
 
   private status: Map<string, SlackStatus> = new Map()
+  // The tool group a new tool joins, per chat. Any other post or an inbound message closes it.
+  private openToolGroups: Map<string, ToolGroup> = new Map()
+  // When each chat's group was last closed, from one counter that never repeats, so a post can tell it was closed meanwhile.
+  private toolGroupClosedAt: Map<string, number> = new Map()
+  private toolGroupCloses = 0
+  // Each tool's card and the group holding it, kept until the card's outcome arrives.
+  private toolCards: Map<string, { group: ToolGroup; card: ToolCard }> = new Map()
   // One status write per chat at a time, in call order, so a late set cannot revive a cleared line.
   private statusWrites: Map<string, Promise<void>> = new Map()
 
@@ -586,6 +623,11 @@ export class SlackConnector extends ChatAgentIntegration {
       const isNewThreadEntry = routing.isNewThreadEntry
 
       const effectiveChatId = routing.effectiveChatId
+      // Track message ts for the status line (bounded: in-thread sessions
+      // make effectiveChatId per-thread, so this would otherwise grow with threads).
+      // Recorded before any await, so a tool arriving meanwhile starts a new group below this message.
+      touchAndCapMap(this.lastUserMessageTs, effectiveChatId, ts, SlackConnector.MAX_TRACKED_THREADS)
+      this.closeToolGroup(effectiveChatId)
       // Record the reply destination and mark the thread active (both bounded — see
       // MAX_TRACKED_THREADS). For in-thread replies the destination is also encoded
       // in effectiveChatId (composite id), so resolveSlackChannel can recover it by
@@ -607,10 +649,6 @@ export class SlackConnector extends ChatAgentIntegration {
           }
         }
       }
-
-      // Track message ts for the status line (bounded: in-thread sessions
-      // make effectiveChatId per-thread, so this would otherwise grow with threads).
-      touchAndCapMap(this.lastUserMessageTs, effectiveChatId, ts, SlackConnector.MAX_TRACKED_THREADS)
 
       // Resolve real user and channel names
       const userName = await this.resolveUserName(userId)
@@ -863,6 +901,9 @@ export class SlackConnector extends ChatAgentIntegration {
       background(this.setStatus(chatId, anchor, '').catch(() => {}), { name: 'slack-connector.clear-status' })
     }
     this.status.clear()
+    this.openToolGroups.clear()
+    this.toolGroupClosedAt.clear()
+    this.toolCards.clear()
     this.lastUserMessageTs.clear()
     this.threadContextMap.clear()
     this.activeThreads.clear()
@@ -916,9 +957,8 @@ export class SlackConnector extends ChatAgentIntegration {
         ...(threadTs ? { thread_ts: threadTs } : {}),
       })
       lastTs = result.ts || ''
+      this.posted(chatId)
     }
-
-    this.markStatusNotShown(chatId)
 
     return lastTs
   }
@@ -935,7 +975,7 @@ export class SlackConnector extends ChatAgentIntegration {
       ...(threadTs ? { thread_ts: threadTs } : {}),
     } as any)
 
-    this.markStatusNotShown(chatId)
+    this.posted(chatId)
 
     // filesUploadV2 returns files array; extract the message ts if available
     const file = (result as any).files?.[0]
@@ -958,6 +998,7 @@ export class SlackConnector extends ChatAgentIntegration {
         mrkdwn: true,
         ...(threadTs ? { thread_ts: threadTs } : {}),
       })
+      this.posted(chatId)
       return result.ts || ''
     }
 
@@ -999,6 +1040,7 @@ export class SlackConnector extends ChatAgentIntegration {
           mrkdwn: true,
           ...(threadTs ? { thread_ts: threadTs } : {}),
         })
+        this.posted(chatId)
       }
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err)
@@ -1008,7 +1050,7 @@ export class SlackConnector extends ChatAgentIntegration {
       }
     }
 
-    this.markStatusNotShown(chatId)
+    this.posted(chatId)
   }
 
   async startWorking(chatId: string, activity: SessionActivity): Promise<void> {
@@ -1064,8 +1106,62 @@ export class SlackConnector extends ChatAgentIntegration {
     try {
       return await this.postUserRequestCard(chatId, event, sessionId)
     } finally {
-      this.markStatusNotShown(chatId)
+      this.posted(chatId)
     }
+  }
+
+  /** A bot post: the status line may be gone, and the open tool group is no longer the last post. */
+  private posted(chatId: string): void {
+    this.markStatusNotShown(chatId)
+    this.closeToolGroup(chatId)
+  }
+
+  private closeToolGroup(chatId: string): void {
+    this.openToolGroups.delete(chatId)
+    touchAndCapMap(this.toolGroupClosedAt, chatId, ++this.toolGroupCloses, SlackConnector.MAX_TRACKED_THREADS)
+  }
+
+  /** A tool joins the chat's open tool group as a card, or starts a new group below the last post. */
+  async showToolStart(chatId: string, tool: { toolUseId: string; toolName: string; summary: string }): Promise<string> {
+    if (!this.app) throw new Error('Slack app not connected')
+    const { channel, threadTs } = this.resolveChannel(chatId)
+    const card: ToolCard = { id: tool.toolUseId, title: tool.summary ? `${tool.toolName}: ${tool.summary}` : tool.toolName, status: 'running' }
+
+    const open = this.openToolGroups.get(chatId)
+    if (open && open.cards.length < MAX_TOOL_GROUP_CARDS) {
+      // Kept only once the edit lands: a failed edit leaves no card, so no later redraw shows it running forever.
+      const cards = [...open.cards, card]
+      await this.app.client.chat.update({ channel, ts: open.ts, text: toolGroupText(cards), blocks: toolGroupBlocks(cards) })
+      open.cards.push(card)
+      touchAndCapMap(this.toolCards, card.id, { group: open, card }, SlackConnector.MAX_TRACKED_THREADS)
+      return open.ts
+    }
+
+    const closedBefore = this.toolGroupClosedAt.get(chatId)
+    const result = await this.app.client.chat.postMessage({
+      channel,
+      text: toolGroupText([card]),
+      blocks: toolGroupBlocks([card]),
+      ...(threadTs ? { thread_ts: threadTs } : {}),
+    })
+    const group = { ts: result.ts || '', cards: [card] }
+    // A user message or another post that landed during this post closed the group: the next tool goes below it.
+    const closedMeanwhile = this.toolGroupClosedAt.get(chatId) !== closedBefore
+    this.posted(chatId)
+    if (!closedMeanwhile) touchAndCapMap(this.openToolGroups, chatId, group, SlackConnector.MAX_TRACKED_THREADS)
+    touchAndCapMap(this.toolCards, card.id, { group, card }, SlackConnector.MAX_TRACKED_THREADS)
+    return group.ts
+  }
+
+  /** A tool's outcome updates its card in whichever group holds it. No card means its post failed. */
+  async showToolOutcome(chatId: string, toolUseId: string, outcome: ToolOutcome): Promise<void> {
+    if (!this.app) throw new Error('Slack app not connected')
+    const entry = this.toolCards.get(toolUseId)
+    if (!entry) return
+    this.toolCards.delete(toolUseId)
+    entry.card.status = outcome
+    const { channel } = this.resolveChannel(chatId)
+    await this.app.client.chat.update({ channel, ts: entry.group.ts, text: toolGroupText(entry.group.cards), blocks: toolGroupBlocks(entry.group.cards) })
   }
 
   private async postUserRequestCard(chatId: string, event: UserRequestEvent, sessionId?: string): Promise<string> {
@@ -1129,6 +1225,7 @@ export class SlackConnector extends ChatAgentIntegration {
             ...threadOpt,
           })
           lastTs = result.ts || ''
+          this.posted(chatId)
         }
 
         return lastTs

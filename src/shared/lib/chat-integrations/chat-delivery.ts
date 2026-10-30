@@ -1,4 +1,4 @@
-import type { ChatAgentIntegration, IncomingMessage } from './chat-agent-integration'
+import type { ChatAgentIntegration, IncomingMessage, ToolOutcome } from './chat-agent-integration'
 import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import type { SessionActivity } from '../types/agent'
 import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
@@ -335,7 +335,7 @@ export async function processSSEEvent(
           ? `🔧 *${displayName}* — \`${summary}\` ⏳`
           : `🔧 *${displayName}* ⏳`
         try {
-          const messageId = await managed.connector.sendMessage(managed.chatId, { text })
+          const messageId = await managed.connector.showToolStart(managed.chatId, { toolUseId: toolId, toolName: displayName, summary }, text)
           managed.pendingToolMessages.push({ toolId, messageId, text })
         } catch (err) {
           console.error('[ChatAgentIntegration] Failed to send tool call message:', err)
@@ -349,7 +349,7 @@ export async function processSSEEvent(
       const index = managed.pendingToolMessages.findIndex(pending => pending.toolId === data.toolUseId)
       if (index === -1) break
       const [pending] = managed.pendingToolMessages.splice(index, 1)
-      await updateToolMessage(managed, pending, data.isError ? '❌' : '✅')
+      await updateToolMessage(managed, pending, data.isError ? 'error' : 'success')
       break
     }
 
@@ -443,9 +443,11 @@ export async function processSSEEvent(
   }
 }
 
-async function updateToolMessage(managed: ManagedConnector, pending: { messageId: string; text: string }, glyph: string): Promise<void> {
+const TOOL_OUTCOME_GLYPH = { success: '✅', error: '❌', cancelled: '⛔' } as const
+
+async function updateToolMessage(managed: ManagedConnector, pending: ManagedConnector['pendingToolMessages'][number], outcome: ToolOutcome): Promise<void> {
   try {
-    await managed.connector.sendStreamingUpdate(managed.chatId, pending.text.replace(/⏳$/, glyph), pending.messageId)
+    await managed.connector.showToolOutcome(managed.chatId, pending.toolId, outcome, pending.text.replace(/⏳$/, TOOL_OUTCOME_GLYPH[outcome]), pending.messageId)
   } catch {
     // Non-critical
   }
@@ -455,7 +457,7 @@ async function updateToolMessage(managed: ManagedConnector, pending: { messageId
 export async function resolvePendingToolMessages(managed: ManagedConnector): Promise<void> {
   const pending = managed.pendingToolMessages
   managed.pendingToolMessages = []
-  for (const message of pending) await updateToolMessage(managed, message, '⛔')
+  for (const message of pending) await updateToolMessage(managed, message, 'cancelled')
 }
 
 export async function finalizeStreaming(managed: ManagedConnector): Promise<void> {
