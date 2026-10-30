@@ -525,11 +525,22 @@ describe('agent-integration-service', () => {
       expect(row?.sessionTimeout).toBe(4)
     })
 
-    it('defaults sessionTimeout to null when not provided', async () => {
+    it('defaults sessionTimeout to 6 hours when not provided', async () => {
       const id = (await createAgentIntegration({
         agentSlug: 'agent-a',
         provider: 'telegram',
         config: { botToken: 'token-no-timeout' },
+      }))
+      const row = (await getAgentIntegration(id))
+      expect(row?.sessionTimeout).toBe(6)
+    })
+
+    it('keeps an explicit null sessionTimeout (Never)', async () => {
+      const id = (await createAgentIntegration({
+        agentSlug: 'agent-a',
+        provider: 'telegram',
+        config: { botToken: 'token-never-timeout' },
+        sessionTimeout: null,
       }))
       const row = (await getAgentIntegration(id))
       expect(row?.sessionTimeout).toBeNull()

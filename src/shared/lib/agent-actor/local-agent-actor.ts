@@ -338,6 +338,7 @@ function createMessageOps(
     removeToolCall: (sessionId, toolCallId) => deps.sessionService.removeToolCall(store, sessionId, toolCallId),
     appendAssistant: (sessionId, text) => deps.appendAssistantEntry(store, sessionId, text),
     forkedUserUuids: (sessionId) => deps.transcripts.forkedUserUuids(store, sessionId),
+    carryOver: (sessionIds) => deps.transcripts.readConversationCarryOver(store, sessionIds),
     rawLog: (sessionId) => deps.transcripts.openRawLog(store, sessionId),
     media: (...args) => deps.transcripts.openMedia(store, ...args),
 

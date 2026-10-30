@@ -41,6 +41,7 @@ import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reportin
 import { background } from '@shared/lib/background'
 import { recordIntegrationMessage } from '@shared/lib/services/agent-integration-message-service'
 import { INTEGRATION_MESSAGE_DISPLAY_VERSION, INTEGRATION_MESSAGE_LIMITS, clampIntegrationText, type IntegrationMessageDisplay } from './message-display-schema'
+import { carryOverPrompt } from './carry-over-prompt'
 // ── Sentry helpers ─────────────────────────────────────────────────────
 
 const COMPONENT = 'agent-integration'
@@ -473,11 +474,13 @@ export class AgentIntegrationManager {
 
     const displayName = await getLastDisplayName(integrationId, chatId)
     const policy = this.registry.sessionPolicy(integration, { externalId: chatId, displayName: displayName ?? undefined })
+    let rotatedFrom: string | undefined
     const existing = await resolveActiveSession(
       integrationId, chatId, policy.timeoutHours,
-      (archivedId) => {
+      (archivedId, archivedSessionId) => {
         background(this.teardownManagedSession(integrationId, chatId), { name: 'integration-manager.teardown-session' })
         this.lastSessionTouch.delete(archivedId)
+        rotatedFrom = archivedSessionId
       },
     )
     if (existing) return existing.sessionId
@@ -486,11 +489,14 @@ export class AgentIntegrationManager {
 
     const sessionId = crypto.randomUUID()
     await actor.sessions.register(sessionId, policy.name)
+    // No runtime session yet: the first inbound message replaces this one
+    // (it is gone from the container) and carries the lineage forward.
     await actor.sessions.updateMetadata(sessionId, {
       ...policy.metadata,
       isAgentIntegrationSession: true,
       agentIntegrationId: integration.id,
       ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
+      ...(rotatedFrom ? { continuesFromSessionId: rotatedFrom } : {}),
     })
 
     await createIntegrationSession({
@@ -1161,10 +1167,14 @@ export class AgentIntegrationManager {
     const actor = agentRegistry.get(integration.agentSlug)
     await actor.container.start()
     check()
+    // The session a new one replaces, so its conversation carries over. An
+    // explicit reset leaves no active row, so it starts clean.
+    let continuesFrom: string | undefined
     const chatSession = await resolveActiveSession(integrationId, chatId, conn.connector.sessionPolicy(integration, route).timeoutHours,
-      archivedId => {
+      (archivedId, archivedSessionId) => {
         background(this.teardownManagedSession(integrationId, chatId), { name: 'integration-manager.teardown-session' })
         this.lastSessionTouch.delete(archivedId)
+        continuesFrom = archivedSessionId
       })
     // An unaccepted input may follow a replacement mapping after timeout or
     // self-heal. Explicit user resets cancel its row, not other chats' attempts.
@@ -1180,6 +1190,7 @@ export class AgentIntegrationManager {
       } catch (error) {
         if (!this.isSessionGoneError(error)) throw error
         await this.teardownManagedSession(integrationId, chatId, { archive: chatSession!.id })
+        continuesFrom = sessionId
         sessionId = undefined
         sessionRowId = undefined
         await attempt.bind(null)
@@ -1193,7 +1204,7 @@ export class AgentIntegrationManager {
     if (this.connections.get(integrationId) !== conn || this.generationOf(integrationId) !== generation) throw new DeliveryCancelled()
     check()
     if (!sessionId) {
-      await this.startNewChatSession(integration, actor, route, input, attempt, check)
+      await this.startNewChatSession(integration, actor, route, input, attempt, check, continuesFrom)
       return // createSession sends the first input; never send it a second time.
     } else {
       check()
@@ -1232,7 +1243,7 @@ export class AgentIntegrationManager {
       await attempt.bind(null)
       if (!(await this.isAllowed(integrationId, chatId))) return
       check()
-      await this.startNewChatSession(integration, actor, route, input, attempt, check)
+      await this.startNewChatSession(integration, actor, route, input, attempt, check, sessionId)
       return
     }
     if (chatSession) {
@@ -1276,6 +1287,7 @@ export class AgentIntegrationManager {
     input: PreparedIntegrationInput,
     attempt: DeliveryAttempt,
     check: () => void,
+    continuesFrom?: string,
   ): Promise<void> {
     const { getEffectiveModels } = await import('@shared/lib/config/settings')
     const { getSecretEnvVars } = await import('@shared/lib/services/secrets-service')
@@ -1287,7 +1299,8 @@ export class AgentIntegrationManager {
     const availableEnvVars = await getSecretEnvVars(integration.agentSlug)
     // Provider-specific session context (DM vs channel vs thread, delivery
     // semantics) — owned by each connector class, not the manager.
-    const systemPrompt = input.systemPrompt
+    const carried = continuesFrom ? await this.carriedConversation(actor, continuesFrom) : null
+    const systemPrompt = [input.systemPrompt, carried].filter(Boolean).join('\n\n') || undefined
     // Model/effort/speed preference order: integration override > agent default > global default.
     const models = getEffectiveModels()
     const agentPrefs = await readAgentPreferences(integration.agentSlug)
@@ -1335,6 +1348,7 @@ export class AgentIntegrationManager {
       isAgentIntegrationSession: true,
       agentIntegrationId: integration.id,
       ...(integration.createdByUserId ? { createdByUserId: integration.createdByUserId } : {}),
+      ...(continuesFrom ? { continuesFromSessionId: continuesFrom } : {}),
     })
 
     await checkSetup()
@@ -1363,6 +1377,23 @@ export class AgentIntegrationManager {
     await this.subscribeChatSession(integration.id, chatId, sessionId)
     await actor.sessions.attach(sessionId)
     if (this.isCurrentSession(integration.id, chatId, managed, sessionId)) managed.recovered = true
+  }
+
+  /**
+   * The replaced session's conversation, as system-prompt context for its
+   * replacement. Follows one more link back: a session created by an outbound
+   * send holds only those sends, and the summary is in the one before it.
+   * A failed read starts the session without it rather than failing the message.
+   */
+  private async carriedConversation(actor: AgentActor, sessionId: string): Promise<string | null> {
+    try {
+      const earlier = (await actor.sessions.metadata(sessionId))?.continuesFromSessionId
+      const chain = earlier && earlier !== sessionId ? [sessionId, earlier] : [sessionId]
+      return carryOverPrompt(await actor.messages.carryOver(chain))
+    } catch (error) {
+      captureException(error, { tags: { component: COMPONENT, operation: 'carry-over' }, level: 'warning' })
+      return null
+    }
   }
 
   /**
