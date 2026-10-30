@@ -8298,8 +8298,8 @@ describe('GET /api/agents (enriched summary)', () => {
 
   describe('notificationPreview', () => {
     const previews = [
-      { sessionId: 'sess-done', type: 'session_complete' as const, text: 'Filed the\n  weekly update.' },
-      { sessionId: 'sess-waiting', type: 'session_waiting' as const, text: 'Which flight should I book?' },
+      { id: 'notif-done', sessionId: 'sess-done', type: 'session_complete' as const, text: 'Filed the\n  weekly update.' },
+      { id: 'notif-waiting', sessionId: 'sess-waiting', type: 'session_waiting' as const, text: 'Which flight should I book?' },
     ]
 
     beforeEach(() => {
@@ -8317,11 +8317,13 @@ describe('GET /api/agents (enriched summary)', () => {
       mockLiveSessions.awaitingIds.mockReturnValueOnce(['sess-waiting'])
       const body = await (await getReq(app, '/api/agents')).json()
       expect(body[0].notificationPreview).toBe('Which flight should I book?')
+      expect(body[0].notificationPreviewSource).toEqual({ id: 'notif-waiting', sessionId: 'sess-waiting' })
     })
 
     it('otherwise shows the newest unread on one line', async () => {
       const body = await (await getReq(app, '/api/agents')).json()
       expect(body[0].notificationPreview).toBe('Filed the weekly update.')
+      expect(body[0].notificationPreviewSource).toEqual({ id: 'notif-done', sessionId: 'sess-done' })
     })
 
     it('is absent with nothing unread', async () => {
@@ -8329,6 +8331,14 @@ describe('GET /api/agents (enriched summary)', () => {
       vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(new Map())
       const body = await (await getReq(app, '/api/agents')).json()
       expect(body[0]).not.toHaveProperty('notificationPreview')
+      expect(body[0]).not.toHaveProperty('notificationPreviewSource')
+    })
+
+    it('exposes only personal unread reminders on visible, existing sessions', async () => {
+      vi.mocked(getSessionIdsMarkedUnreadByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-done', 'sess-waiting', 'deleted'])]]))
+      vi.mocked(readSessionMetadata).mockResolvedValue({ 'sess-waiting': { isScheduledExecution: true } })
+      const body = await (await getReq(app, '/api/agents')).json()
+      expect(body[0].markedUnreadSessionIds).toEqual(['sess-done'])
     })
   })
 
