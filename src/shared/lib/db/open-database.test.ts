@@ -7,6 +7,10 @@ import { readMigrationFiles } from 'drizzle-orm/migrator'
 import * as schema from './schema'
 
 vi.mock('./data-migrations', () => ({
+  DATA_MIGRATIONS: [
+    { id: 1, name: 'import-agents-from-directories', run: () => {} },
+    { id: 2, name: 'global-model-pricing', run: () => {} },
+  ],
   runDataMigrations: vi.fn(async () => []),
 }))
 
@@ -137,6 +141,69 @@ describe('openDatabase', () => {
 
     await expect(openDatabase()).resolves.toBeDefined()
     expect(isDatabaseOpen()).toBe(true)
+  })
+
+  describe('a database that may already have every migration', () => {
+    // The app's own driver, with its migrate step replaced by a spy: these tests check whether
+    // the open goes into the migration step, not the step itself (covered above).
+    function observedDriver() {
+      const migrate = vi.fn(async () => {})
+      const driver = {
+        name: 'observed',
+        async open() {
+          return { ...(await betterSqlite3(process.env.SUPERAGENT_DB_PATH!).open()), migrate }
+        },
+      }
+      return { driver, migrate }
+    }
+
+    async function recordDataMigrations(ids: number[]) {
+      const db = getDb()
+      for (const id of ids) {
+        await db.insert(schema.dataMigrations).values({ id, name: `migration-${id}`, appliedAt: new Date() }).run()
+      }
+    }
+
+    it('skips the migration step when every schema and data migration is applied', async () => {
+      await openDatabase()
+      await recordDataMigrations([1, 2])
+      await closeDatabase()
+      vi.mocked(runDataMigrations).mockClear()
+      const { driver, migrate } = observedDriver()
+
+      const db = await openDatabase({ driver })
+
+      expect(migrate).not.toHaveBeenCalled()
+      expect(runDataMigrations).not.toHaveBeenCalled()
+      expect(getDb()).toBe(db)
+    })
+
+    it('runs the data migrations when one is missing from the ledger', async () => {
+      await openDatabase()
+      await recordDataMigrations([1])
+      await closeDatabase()
+      vi.mocked(runDataMigrations).mockClear()
+      const { driver, migrate } = observedDriver()
+
+      const db = await openDatabase({ driver })
+
+      expect(migrate).toHaveBeenCalledTimes(1)
+      expect(runDataMigrations).toHaveBeenCalledWith(db)
+    })
+
+    it('migrates when the database lacks the newest schema migration', async () => {
+      await openDatabase()
+      await recordDataMigrations([1, 2])
+      const newest = (await migrationRows(getDb())).at(-1)!
+      await getDb().run(sql`DELETE FROM ${sql.identifier(MIGRATIONS_TABLE)} WHERE hash = ${newest.hash}`)
+      await closeDatabase()
+      const { driver, migrate } = observedDriver()
+
+      await openDatabase({ driver })
+
+      expect(migrate).toHaveBeenCalledTimes(1)
+      expect(runDataMigrations).toHaveBeenCalled()
+    })
   })
 
   it('opens once when two callers race', async () => {

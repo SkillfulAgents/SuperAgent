@@ -12,7 +12,8 @@ import { getDatabasePath, getDataDir } from '@shared/lib/config/data-dir'
 import { captureException } from '@shared/lib/error-reporting'
 import { betterSqlite3 } from './drivers/better-sqlite3'
 import type { AppDatabase, DatabaseDriver, OpenedDatabase } from './drivers/types'
-import { runDataMigrations } from './data-migrations'
+import { sql } from 'drizzle-orm'
+import { DATA_MIGRATIONS, runDataMigrations } from './data-migrations'
 import { migrationBundle } from './migrations/bundle'
 
 /** The table drizzle's folder migrator has always written; existing installs continue from it. */
@@ -116,6 +117,13 @@ async function open(options: OpenDatabaseOptions): Promise<AppDatabase> {
     throw err
   }
 
+  // A database that already has every migration skips the migration step, which otherwise costs
+  // several round trips on a database across a network. Anything else takes the full step.
+  if (await hasEveryMigration(handle.db)) {
+    opened = handle
+    return handle.db
+  }
+
   try {
     if (handle.migrate) await handle.migrate(migrationBundle, MIGRATIONS_TABLE)
     else await migrateFromBundle(handle.db)
@@ -152,6 +160,30 @@ async function open(options: OpenDatabaseOptions): Promise<AppDatabase> {
 
   opened = handle
   return handle.db
+}
+
+/**
+ * True when the database has every bundled schema migration and every data migration, read in
+ * one query: the migration step would apply nothing. Uses the migrators' own rules: a schema
+ * migration is applied when its time is not newer than the newest journal row, a data
+ * migration when its id is in the ledger. A missing table or any other error answers false.
+ */
+async function hasEveryMigration(db: AppDatabase): Promise<boolean> {
+  const ids = DATA_MIGRATIONS.map((migration) => migration.id)
+  // Duplicate ids are a programming error the data migration runner reports.
+  if (migrationBundle.length === 0 || new Set(ids).size !== ids.length) return false
+  const newest = Math.max(...migrationBundle.map((migration) => migration.folderMillis))
+  const applied = ids.length === 0
+    ? sql`0`
+    : sql`(SELECT count(*) FROM data_migrations WHERE id IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)}))`
+  try {
+    const row = await db.get<{ newest: number | string | null; applied: number | string } | undefined>(
+      sql`SELECT (SELECT max(created_at) FROM ${sql.identifier(MIGRATIONS_TABLE)}) AS newest, ${applied} AS applied`,
+    )
+    return row !== undefined && row.newest !== null && Number(row.newest) >= newest && Number(row.applied) === ids.length
+  } catch {
+    return false
+  }
 }
 
 /** Close the database and forget it; `getDb()` throws again until the next `openDatabase()`. */

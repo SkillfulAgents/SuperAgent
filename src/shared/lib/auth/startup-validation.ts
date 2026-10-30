@@ -17,10 +17,9 @@ import { getPublicAuthProviders } from './provider-config'
  * Throws an error if validation fails (case 2).
  */
 export async function validateAuthModeStartup(): Promise<void> {
-  const userTableExists = await hasUserTable()
+  const userCount = await countUsers()
 
-  if (userTableExists) {
-    const userCount = await getUserCount()
+  if (userCount !== null) {
     if (userCount > 0) {
       // Case 1: Normal start — user table has entries
       validateAuthProviders()
@@ -76,11 +75,15 @@ async function hasUserTable(): Promise<boolean> {
   }
 }
 
-async function getUserCount(): Promise<number> {
+/**
+ * How many users there are, or null when there is no user table. Counts first: in a normal start
+ * the table exists, and that is one query instead of two.
+ */
+async function countUsers(): Promise<number | null> {
   try {
     const result = await db.get<{ count: number }>(sql`SELECT COUNT(*) as count FROM user`)
     return result.count
   } catch {
-    return 0
+    return (await hasUserTable()) ? 0 : null
   }
 }
