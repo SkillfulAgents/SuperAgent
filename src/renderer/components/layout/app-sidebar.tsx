@@ -780,12 +780,14 @@ const AgentMenuItemInner = React.forwardRef<
                   />
                 </button>
               ) : (
-                <span className="pointer-events-none absolute left-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center">
+                // A div avoids SidebarMenuButton's last-span text truncation,
+                // which clips the badge overhang and the orb's animated hop.
+                <div className="pointer-events-none absolute left-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center">
                   <AvatarCutout cutout={avatarCutout}>
                     <AgentAvatar agent={agent} state={avatarState} size={AGENT_AVATAR_SIZE} followPointer={SIDEBAR_FOLLOW_REGION} />
                   </AvatarCutout>
                   <AgentAvatarBadge agent={agent} sessions={sessions} isOpen={isOpen} />
-                </span>
+                </div>
               )}
             </div>
           </SidebarMenuButton>
