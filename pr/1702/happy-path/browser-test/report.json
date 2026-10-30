@@ -1,29 +1,25 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Successfully verified that the agent can open a browser, navigate to https://example.com, retrieve the page title, and report it back in the conversation. The response explicitly mentions \"Example Domain\" as expected.",
+  "reason": "Verified that the QA-20261030-004901-2v3e agent successfully opens a browser, navigates to https://example.com, retrieves the page title \"Example Domain\", and returns the correct response through the chat interface.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully showing the Gamut dashboard with two agents listed in the sidebar.",
-    "Took screenshot of the home page — Verified the UI loaded correctly with agent list visible, showing \"QA-20261030-003141-88js\" and \"QA-20261030-003140-adzd\" agents.",
-    "Clicked on the \"QA-20261030-003141-88js\" agent in the sidebar (ref=e53) — Successfully navigated to the agent's configuration page at /agents/qa-20261030-003141-88js-74u6vnc2gl.",
-    "Took screenshot of the agent configuration page — Verified the agent page loaded with message input field, model selector (Opus 5.5 · Medium), and agent configuration panels.",
-    "Clicked on the message input field and typed \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully entered in the textbox (ref=e240).",
-    "Took snapshot after typing the message — Verified the message text was present in the input field.",
-    "Clicked the \"Send message\" button (ref=e404) — Message was sent successfully, creating a new session titled \"Browser Page Title Check\" and the agent started working.",
-    "Took screenshot of the working state — Verified the agent was in \"Working...\" status and the session was created at /agents/qa-20261030-003141-88js-74u6vnc2gl/sessions/246c1301-14eb-423e-9890-a149f9a6f7f3.",
-    "Waited for agent response — Agent completed the task in 4 seconds using 3 tool calls and 159,945 tokens.",
-    "Took snapshot to verify the response — Verified the agent's complete response: \"The page title at https://example.com is \"Example Domain\". The page loaded normally, and I've closed the browser.\" The response explicitly mentions \"Example Domain\" as required.",
-    "Took final screenshot showing complete conversation — Verified the entire conversation thread with the user's message and the agent's response clearly visible, confirming the feature works correctly."
+    "Navigated to http://localhost:47891 — Page loaded successfully, displaying the Gamut application with sidebar containing available agents.",
+    "Found and clicked on the \"QA-20261030-004901-2v3e\" agent in the sidebar — Successfully opened the agent's page and created a new session.",
+    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message was successfully entered into the textbox.",
+    "Clicked the \"Send message\" button — Message was sent successfully, and the agent began processing (page transitioned to session view with \"Working...\" status).",
+    "Waited up to 3 minutes for the agent to complete the task — Agent completed processing in approximately 5 seconds.",
+    "Verified the response for \"Example Domain\" mention — Response confirmed: \"The page title of https://example.com is \"Example Domain\". The page loaded normally, and I've closed the browser.\"",
+    "Took a screenshot of the response — Screenshot captured successfully showing the agent's complete response with the \"Example Domain\" page title."
   ],
   "bugs": [],
-  "durationMs": 62314,
-  "sessionId": "3d57ef13-547a-4475-ac10-b852de71754c",
+  "durationMs": 64673,
+  "sessionId": "bd3120fd-2cc1-4732-afdb-45e3f55d7b2e",
   "cost": {
-    "inputTokens": 350,
-    "outputTokens": 11499,
-    "cacheCreationTokens": 78887,
-    "cacheReadTokens": 958801,
+    "inputTokens": 320,
+    "outputTokens": 9310,
+    "cacheCreationTokens": 75407,
+    "cacheReadTokens": 893516,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.252334
+    "totalCostUsd": 0.23048
   }
 }
