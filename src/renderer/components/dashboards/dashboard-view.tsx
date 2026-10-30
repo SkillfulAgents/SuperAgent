@@ -342,7 +342,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
             canStart={canStart}
           />
           <div className="w-full">
-            <PendingAgentReviews agentSlug={agentSlug} />
+            <PendingAgentReviews agentSlug={agentSlug} readOnly={!canStart} />
           </div>
         </div>
       </div>
@@ -351,7 +351,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      <PendingAgentReviews agentSlug={agentSlug} onReviewResolved={handleRefresh} />
+      <PendingAgentReviews agentSlug={agentSlug} readOnly={!canStart} onReviewResolved={handleRefresh} />
       <AddToDockDialog
         open={dockDialogOpen}
         onOpenChange={setDockDialogOpen}
