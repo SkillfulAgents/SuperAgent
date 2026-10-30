@@ -119,6 +119,11 @@ function optimisticRead(client: QueryClient, target: NotificationReadTarget) {
   })
 
   return {
+    refresh() {
+      // Older servers (or a failed post-write projection) cannot confirm the
+      // remaining unread state. Refresh only this workspace's existing queries.
+      return client.invalidateQueries({ predicate: query => snapshots.some(snapshot => snapshot.query === query) })
+    },
     rollback() {
       for (const { query, before, after } of snapshots) {
         // Authentication/workspace changes can remove the cache while the POST is in flight.
@@ -183,6 +188,7 @@ export function readNotifications(client: QueryClient, target: NotificationReadT
       if (!response.ok) throw new Error('Failed to mark notifications as read')
       const result = notificationReadResponseSchema.parse(await response.json())
       if (result.readState) optimistic.confirm(result.readState)
+      else await optimistic.refresh()
       return result
     } catch (error) {
       optimistic.rollback()
