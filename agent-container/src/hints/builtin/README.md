@@ -12,13 +12,15 @@ triggers:
   - event: UserPromptSubmit
     prompt: \bdeploy\b         # case-insensitive regex on the prompt text
 repeat: turn                   # optional; turn (default) = first match per user message, once = per session, always = every match
+deny: true                     # optional; PreToolUse triggers only. When the hint fires (per repeat), refuse the call with the body as the reason
+requires: platform             # optional; load the hint only when platform services are on (PLATFORM_AUTH_ACTIVE=true)
 ---
 Short text the agent sees when a trigger matches.
 ```
 
 Globs: `*` matches anything, spaces match any whitespace, and a trailing ` *` means "this word, then anything" (`ls *` matches `ls -la`, not `lsof`). A Bash `command` is checked part by part after splitting on `&&`, `||`, `;`, `|` and newlines, and the glob only has to match one part. The split does not understand quotes. Other fields are checked as one value (booleans and numbers as text, e.g. `"true"`); a missing field never matches.
 
-Set `BUILTIN_HINTS=0` in the container env to turn all built-in hints off (read once at start).
+Set `BUILTIN_HINTS=0` in the container env to turn all built-in hints off. `requires` and `BUILTIN_HINTS` are read once at start.
 
 Adding a new event touches: `HINT_EVENTS` and the trigger schemas (`hint-schema.ts`), `HintEventInput` and `compileTrigger` (`hint-matchers.ts`), `toHintEventInput` and `createHintHookMatchers` (`hint-hook.ts`), and the `hooks` block in `claude-code.ts`.
 
@@ -30,7 +32,7 @@ A hint arrives mid-task with no context beyond the call that matched it, so it h
 2. **No promises the runtime doesn't keep.** "Background commands notify you when they finish" is false for a command that hangs, and an automated session that goes idle may never be woken. State the real behavior: "notifies you only when it exits".
 3. **A check, then a conditional action.** Don't end on a bare "end your turn", "stop" or "kill". Tell the agent what to look at and what to do for each answer ("look once at its output and which step it is on; if it is stuck, find the cause"). The more destructive the action, the stricter the condition.
 4. **General, not shaped to one case.** Keep examples that match the specific bug you saw out of the text; they make a test pass without showing the hint helps elsewhere.
-5. **Mind the timing.** A `PreToolUse` hint does not stop the call it is attached to; the `sleep` still runs. It can only change the next step. If the call itself must not run, use a blocking hook instead.
+5. **Mind the timing.** A `PreToolUse` hint does not stop the call it is attached to; the `sleep` still runs. It can only change the next step. If the call itself must not run, set `deny: true` with `repeat: always`; if the agent must read the warning before the call runs, set `deny: true` with `repeat: turn` or `once` (the retry runs).
 6. **Narrow trigger.** If the advice only applies to long waits, match long waits. A hint that fires where it doesn't apply teaches the agent to ignore it.
 7. **Detail matches the trigger.** A narrow trigger can carry a specific fact (`query` contains ` OR ` → "Sentry has no OR"); a broad one gets general advice (every `execute_sql` → "don't guess columns"). A specific fact on a broad trigger is wrong for most of the calls it fires on, so it is noise there; keep it only if it is true for almost every one of them.
 

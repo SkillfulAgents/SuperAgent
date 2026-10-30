@@ -26,13 +26,22 @@ const promptTriggerSchema = z
 
 export const hintTriggerSchema = z.discriminatedUnion('event', [toolTriggerSchema, promptTriggerSchema])
 
-export const hintFrontmatterSchema = z.object({
-  name: z.string().min(1, 'Hint name is required'),
-  description: z.string().min(1, 'Hint description is required'),
-  triggers: z.array(hintTriggerSchema).min(1, 'Hint needs at least one trigger'),
-  /** `turn`: first match per user message. `once`: first match per session. `always`: every match. */
-  repeat: z.enum(['turn', 'once', 'always']).default('turn'),
-})
+export const hintFrontmatterSchema = z
+  .object({
+    name: z.string().min(1, 'Hint name is required'),
+    description: z.string().min(1, 'Hint description is required'),
+    triggers: z.array(hintTriggerSchema).min(1, 'Hint needs at least one trigger'),
+    /** `turn`: first match per user message. `once`: first match per session. `always`: every match. */
+    repeat: z.enum(['turn', 'once', 'always']).default('turn'),
+    /** When the hint fires (per `repeat`), refuse the call with the body as the reason instead of adding it as context. */
+    deny: z.boolean().optional(),
+    /** Load the hint only where this is available. `platform`: platform services are on (PLATFORM_AUTH_ACTIVE). */
+    requires: z.enum(['platform']).optional(),
+  })
+  .refine((hint) => !hint.deny || hint.triggers.every((t) => t.event === 'PreToolUse'), {
+    message: 'A deny hint can only have PreToolUse triggers',
+    path: ['deny'],
+  })
 
 export type HintTrigger = z.infer<typeof hintTriggerSchema>
 export type HintToolTrigger = z.infer<typeof toolTriggerSchema>
