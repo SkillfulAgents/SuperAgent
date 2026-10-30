@@ -58,6 +58,7 @@ let mockWarmStartEnabled = true
 const mockUseAgents = vi.fn()
 vi.mock('@renderer/hooks/use-agents', () => ({
   useAgents: () => mockUseAgents(),
+  useAgent: () => ({ data: undefined }),
   useListedAgents: () => mockUseAgents(),
   useStartAgent: () => ({ mutate: mockStartAgent }),
   useDeleteAgent: () => ({ mutateAsync: vi.fn(), isPending: false }),

@@ -42,6 +42,8 @@ import {
 import { AgentTemplatePublishPanel } from '@renderer/components/agents/agent-template-publish-panel'
 import { AgentTemplateStatus } from '@renderer/components/agents/agent-template-status'
 import { ActivityOrb } from '@renderer/components/messages/activity-orb'
+import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avatar'
+import { useAgent } from '@renderer/hooks/use-agents'
 import {
   ArrowDownToLine,
   ArrowRight,
@@ -199,6 +201,7 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
   const [exportChoice, setExportChoice] = useState<'template' | 'full'>('template')
   const [confirmFullExportOpen, setConfirmFullExportOpen] = useState(false)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const { data: agent } = useAgent(open ? agentSlug : null)
 
   useImperativeHandle(ref, () => ({
     openExport: () => {
@@ -614,9 +617,11 @@ export const AgentSharePopover = forwardRef<AgentSharePopoverHandle, AgentShareP
 
                     {/* The agent, Manus-pill style */}
                     <div className="absolute bottom-4 left-1/2 flex w-max max-w-[75%] -translate-x-1/2 items-center gap-2 rounded-xl border bg-background py-2 pl-3 pr-4 shadow-sm">
-                      {/* The activity card's thought orb as the agent's avatar */}
+                      {/* The agent's avatar, or the thought orb when it has none */}
                       <div className="shrink-0">
-                        <ActivityOrb state="spinning" size={28} />
+                        {agent?.avatar
+                          ? <AgentAvatar agent={agent} state="idle" size={28} />
+                          : <ActivityOrb state="spinning" size={28} />}
                       </div>
                       <p className="min-w-0 truncate text-sm font-medium">{agentName}</p>
                     </div>

@@ -19,8 +19,9 @@ const ARTBOARD = 240
  * costs no React render. Changes of state blend over 0.45s; leaving
  * "working" first plays the dots' gather and regrow. `followPointer` tracks
  * the cursor while idle or done — `true` anywhere, or a selector for an
- * ancestor region — and hands back to the state when it leaves. Reduced
- * motion holds a still frame per state.
+ * ancestor region — and hands back to the state when it leaves.
+ * `rollWithScroll` rolls the face round the rim as a nearby scroller moves.
+ * Reduced motion holds a still frame per state.
  */
 export function OrbAvatar({
   orb,
@@ -29,6 +30,7 @@ export function OrbAvatar({
   restingPhi,
   state = 'idle',
   followPointer = false,
+  rollWithScroll,
   className,
 }: {
   orb: OrbAppearance
@@ -38,9 +40,11 @@ export function OrbAvatar({
   restingPhi: number
   state?: AvatarMotionState
   followPointer?: boolean | string
+  /** Roll the face round the rim as the nearest element matching this selector scrolls: clockwise down, counter-clockwise up. */
+  rollWithScroll?: string
   className?: string
 }) {
-  const layers = useOrbAnimation({ orb, shape, diameter, restingPhi, state, followPointer })
+  const layers = useOrbAnimation({ orb, shape, diameter, restingPhi, state, followPointer, rollWithScroll })
   const scale = diameter / ARTBOARD
   const shaped = shape.name !== 'circle'
   const path = useMemo(() => `path('${shapePath(shape, diameter)}')`, [shape, diameter])
