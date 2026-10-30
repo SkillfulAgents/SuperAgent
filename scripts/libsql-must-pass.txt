@@ -84,3 +84,4 @@ src/shared/lib/auth/user-deletion.integration.test.ts
 src/shared/lib/browser-vault/vault-service.test.ts
 src/api/routes/browser-accounts.test.ts
 src/shared/lib/browser-vault/login-host.test.ts
+src/shared/lib/services/notification-read-state.test.ts

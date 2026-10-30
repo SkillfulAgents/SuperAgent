@@ -1,3 +1,4 @@
+import { agentNotificationPreview } from '@shared/lib/notifications/agent-notification-preview'
 import { assertConnectionSelectionAccess, connectionNeedsAttachment, credentialSource } from '@shared/lib/llm-provider/connection-runtime'
 import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
@@ -841,18 +842,10 @@ async function enrichAgentsWithSummary(
       // order the sidebar badge picks: a question still waiting on the user,
       // then a mention, then anything unread. Rows come newest first and pass
       // the same visibility as the flags above.
-      const previews = previewsByAgent.get(agent.slug) ?? []
-      const awaitingIds = new Set(live.awaitingSessionIds)
-      const visibleUnread = (sessionId: string) =>
-        unreadSessionIds.has(sessionId) && !isHiddenAutomatedSession(sessionMetadata[sessionId])
-      const preview = hasSessionsAwaitingInput
-        ? previews.find(p => p.type === 'session_waiting' && awaitingIds.has(p.sessionId))
-        : hasUnreadMention
-          ? previews.find(p => p.type === 'session_mention' && visibleUnread(p.sessionId))
-          : hasUnreadNotifications
-            ? previews.find(p => visibleUnread(p.sessionId))
-            : undefined
-      const notificationPreview = preview?.text.replace(/\s+/g, ' ').trim()
+      const preview = agentNotificationPreview(
+        previewsByAgent.get(agent.slug) ?? [], unreadSessionIds, sessionMetadata,
+        live.awaitingSessionIds, hasSessionsAwaitingInput, hasUnreadMention, hasUnreadNotifications,
+      )
 
       return {
         ...agent,
@@ -860,7 +853,8 @@ async function enrichAgentsWithSummary(
         hasSessionsAwaitingInput,
         hasUnreadNotifications,
         hasUnreadMention,
-        ...(notificationPreview ? { notificationPreview } : {}),
+        ...preview,
+        markedUnreadSessionIds: sessionSummary.sessionIds.filter(id => markedIds.has(id) && !isHiddenAutomatedSession(sessionMetadata[id])),
         sessionCount: sessionSummary.sessionCount,
         lastActivityAt: sessionSummary.lastActivityAt,
         dashboards: artifacts.map((a) => ({

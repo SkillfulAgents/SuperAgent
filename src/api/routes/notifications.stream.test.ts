@@ -81,6 +81,10 @@ vi.mock('../middleware/auth', () => ({
   HasNotificationAccess: () => async (_c: unknown, next: () => Promise<void>) => next(),
 }))
 
+vi.mock('@shared/lib/services/notification-read-state', () => ({
+  notificationReadAgentSlugs: vi.fn(), confirmNotificationRead: vi.fn(),
+}))
+
 vi.mock('@shared/lib/services/notification-service', () => ({
   listNotifications: vi.fn(),
   countNotifications: vi.fn(),
