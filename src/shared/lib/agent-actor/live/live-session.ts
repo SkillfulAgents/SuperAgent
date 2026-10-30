@@ -31,6 +31,7 @@ import { mergeCanonicalSlashCommands } from '@shared/lib/container/slash-command
 import { slashCommandListSchema } from '@shared/lib/services/session-metadata-schema'
 import { credentialSource } from '@shared/lib/llm-provider/connection-runtime'
 import { getActiveLlmProvider, getLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
+import { modelPricingCandidates } from '@shared/lib/llm-provider/model-pricing-ids'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
 import { isSyntheticPlaceholderMessage, SYNTHETIC_MODEL } from '@shared/lib/utils/synthetic-message'
@@ -178,12 +179,15 @@ const CONNECTION_LOST_ERROR =
 
 /**
  * The window a result's `modelUsage` reports for a model: under the model's
- * own id, under the id it is the canonical model of, or as the only entry.
+ * own id or an id it is a dated or vendor-prefixed form of (OpenRouter
+ * answers `openai/gpt-5.5-20260423` for `openai/gpt-5.5`), under the id it is
+ * the canonical model of, or as the only entry.
  */
 function reportedContextWindow(modelUsage: unknown, model: string): number | undefined {
   if (!modelUsage || typeof modelUsage !== 'object') return undefined
-  const entries = Object.entries(modelUsage as Record<string, { contextWindow?: unknown; canonicalModel?: unknown } | null>)
-  const entry = entries.find(([id]) => id === model)?.[1]
+  const usageById = modelUsage as Record<string, { contextWindow?: unknown; canonicalModel?: unknown } | null>
+  const entries = Object.entries(usageById)
+  const entry = modelPricingCandidates(model).map((id) => Object.hasOwn(usageById, id) ? usageById[id] : undefined).find(Boolean)
     ?? entries.find(([, usage]) => usage?.canonicalModel === model)?.[1]
     ?? (entries.length === 1 ? entries[0][1] : undefined)
   const contextWindow = entry?.contextWindow
@@ -1402,9 +1406,9 @@ export class LiveSession {
   private contextWindowFor(model: string | undefined): number | undefined {
     if (!model) return undefined
     const runtime = this.ctx.modelRuntime()
-    const catalogWindow = runtime
-      ? runtime.modelContextWindows[model]
-      : getModelContextWindow(model, getActiveLlmProvider().id)
+    const catalogWindow = modelPricingCandidates(model)
+      .map((id) => runtime ? runtime.modelContextWindows[id] : getModelContextWindow(id, getActiveLlmProvider().id))
+      .find((window) => window)
     return catalogWindow || this.ctx.knownContextWindow(model)
   }
 

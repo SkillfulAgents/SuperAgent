@@ -568,6 +568,32 @@ describe('the window a call is read against (catalog, result, earlier sessions)'
     expect(usageEvents.at(-1)).toMatchObject({ model: 'gpt-5.6-sol', contextWindow: 1_050_000 })
   })
 
+  it('finds the catalog window for the dated id OpenRouter answers with', () => {
+    mockGetSettings.mockReturnValue({ llmProvider: 'openrouter' })
+    seedAssistantUsage('openai/gpt-5.5-20260423')
+
+    const usageEvents = sseEvents.filter((e) => e.type === 'context_usage')
+    expect(usageEvents.at(-1)).toMatchObject({ model: 'openai/gpt-5.5-20260423', contextWindow: 1_050_000 })
+  })
+
+  it('learns the window of a dated id from its undated modelUsage entry when the result lists several models', () => {
+    mockGetSettings.mockReturnValue({ llmProvider: 'openrouter' })
+    seedAssistantUsage('anthropic/claude-4.6-opus-20260205')
+    sseEvents.length = 0
+
+    mockClient.emit({
+      type: 'result',
+      subtype: 'success',
+      modelUsage: {
+        'claude-haiku-4-5-20251001': { contextWindow: 200_000 },
+        'claude-opus-4-6': { contextWindow: 1_000_000 },
+      },
+    })
+
+    const usageEvents = sseEvents.filter((e) => e.type === 'context_usage')
+    expect(usageEvents.at(-1)).toMatchObject({ model: 'anthropic/claude-4.6-opus-20260205', contextWindow: 1_000_000 })
+  })
+
   it('reads a new session\'s first calls against the window an earlier session\'s result reported', async () => {
     seedAssistantUsage('claude-opus-5-5')
     mockClient.emit({ type: 'result', subtype: 'success', modelUsage: { 'claude-opus-5-5': { contextWindow: 1_000_000 } } })
