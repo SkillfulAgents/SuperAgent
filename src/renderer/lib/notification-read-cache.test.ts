@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { QueryClient } from '@tanstack/react-query'
+import { QueryClient, QueryObserver } from '@tanstack/react-query'
 import { describe, it, expect, vi } from 'vitest'
 import { waitFor } from '@testing-library/react'
 import type { ApiAgent, ApiNotification, ApiSession } from '@shared/lib/types/api'
@@ -81,6 +81,40 @@ describe('optimistic notification reads', () => {
     expect(client.getQueryData<ApiSession>(['session', 's1', 'a'])!.hasUnreadNotifications).toBe(false)
     expect(invalidate).not.toHaveBeenCalled()
     expect(apiFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('refreshes unread state from older servers without guessing which sessions are personal reminders', async () => {
+    const { client } = seed()
+    // Older agents responses do not distinguish notifications from reminders.
+    const legacyAgent = { ...agent(client), markedUnreadSessionIds: undefined }
+    client.setQueryData(['agents'], [legacyAgent])
+    client.setQueryData(['agents', 'agent-a'], legacyAgent)
+    const sessions = client.getQueryData<ApiSession[]>(['sessions', 'a'])!
+    const fetchSessions = vi.fn().mockResolvedValue(sessions.map(session => ({
+      ...session, hasUnreadNotifications: session.id === 'manual', hasUnreadMention: false,
+    })))
+    const observer = new QueryObserver(client, {
+      queryKey: ['sessions', 'a'], queryFn: fetchSessions, staleTime: Infinity,
+    })
+    const unsubscribe = observer.subscribe(() => {})
+    try {
+      const pending = deferred()
+      vi.mocked(apiFetch).mockReturnValueOnce(pending.promise)
+      const operation = readNotifications(client, { kind: 'all' })
+      await waitFor(() => expect(page(client).items[0].isRead).toBe(true))
+      expect(fetchSessions).not.toHaveBeenCalled()
+      expect(client.getQueryData<ApiSession[]>(['sessions', 'a'])!.map(s => s.hasUnreadNotifications)).toEqual([true, true])
+
+      pending.resolve(response())
+      await operation
+      expect(fetchSessions).toHaveBeenCalledTimes(1)
+      expect(client.getQueryData<ApiSession[]>(['sessions', 'a'])!.map(s => s.hasUnreadNotifications)).toEqual([false, true])
+      // Inactive queries refresh when next observed, without extra requests now.
+      expect(client.getQueryState(['agents'])?.isInvalidated).toBe(true)
+    } finally {
+      unsubscribe()
+      client.clear()
+    }
   })
 
   it('does not clear a different preview when reading a session or notification', async () => {
@@ -183,7 +217,7 @@ describe('optimistic notification reads', () => {
     expect(apiFetch).toHaveBeenCalledExactlyOnceWith('/api/notifications/read-by-session/s1', { method: 'POST' })
   })
 
-  it('does not dispatch a queued read to a newly selected workspace', async () => {
+  it.each([true, false])('does not dispatch a queued read to a newly selected workspace (readState: %s)', async (withReadState) => {
     const { client } = seed()
     const pending = deferred()
     vi.mocked(apiFetch).mockReturnValueOnce(pending.promise)
@@ -193,11 +227,12 @@ describe('optimistic notification reads', () => {
     await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1))
     client.clear()
     client.setQueryData(['agents'], [{ slug: 'other-workspace' }])
-    pending.resolve(response(state()))
+    pending.resolve(response(withReadState ? state() : undefined))
     await first
     await rejected
     expect(apiFetch).toHaveBeenCalledTimes(1)
     expect(client.getQueryData(['agents'])).toEqual([{ slug: 'other-workspace' }])
+    expect(client.getQueryState(['agents'])?.isInvalidated).toBe(false)
   })
 
   it('does not resurrect a cleared workspace cache when a write fails', async () => {
