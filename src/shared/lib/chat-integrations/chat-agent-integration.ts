@@ -198,7 +198,8 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
   /**
    * Signal that the agent is busy, labeled by what it is doing (`activity`). The
    * connector owns how that maps to its surface (Telegram labels a draft, Slack
-   * reacts) AND any keep-alive needed to survive provider-side expiry. Called
+   * sets its status line) AND any keep-alive needed to survive provider-side
+   * expiry. Called
    * again with a new activity when the label changes mid-turn. Idempotent — safe
    * to call repeatedly for the same chat.
    */

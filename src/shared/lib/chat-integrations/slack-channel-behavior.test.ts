@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { routeSlackMessage, resolveSlackChannel, touchAndCapSet, touchAndCapMap, reactionsForChat, type SlackMessageRoutingParams } from './slack-connector'
+import { describe, it, expect, vi } from 'vitest'
+import { routeSlackMessage, resolveSlackChannel, touchAndCapSet, touchAndCapMap, statusNeedsSend, SLACK_STATUS_REFRESH_MS, SlackConnector, type SlackMessageRoutingParams } from './slack-connector'
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -503,27 +503,73 @@ describe('touchAndCapMap', () => {
   })
 })
 
-// ── reactionsForChat (thinking-reaction sweep on clear) ──────────────────
-// The working indicator is a :thinking_face: reaction keyed on the user's last
-// message ts. If a second message lands mid-turn the ts changes and a second
-// reaction is added; clearing must sweep EVERY reaction for the chat, not just
-// the latest ts, or the first one is orphaned until disconnect.
+// ── Status line ──────────────────────────────────────────────────────────
 
-describe('reactionsForChat', () => {
-  it('returns all tracked reactions for the chat, extracting the ts', () => {
-    const set = new Set(['C123:1000.1', 'C123:1000.2', 'C999:1000.3'])
-    expect(reactionsForChat(set, 'C123')).toEqual([
-      { key: 'C123:1000.1', ts: '1000.1' },
-      { key: 'C123:1000.2', ts: '1000.2' },
-    ])
+describe('statusNeedsSend', () => {
+  const shown = { anchor: '100.1', label: 'is working…', sentAt: 0, shown: true }
+  it.each([
+    ['nothing recorded', undefined, 'is working…', 0, true],
+    ['label changed', shown, 'is thinking…', 1, true],
+    ['refresh due', shown, 'is working…', SLACK_STATUS_REFRESH_MS, true],
+    ['just under the refresh', shown, 'is working…', SLACK_STATUS_REFRESH_MS - 1, false],
+  ])('%s', (_name, status, label, now, expected) => {
+    expect(statusNeedsSend(status, label, now)).toBe(expected)
+  })
+})
+
+describe('SlackConnector status line', () => {
+  function makeConnector() {
+    const connector = new SlackConnector({ botToken: 'xoxb-fake', appToken: 'xapp-fake' })
+    const setStatus = vi.fn().mockResolvedValue({ ok: true })
+    ;(connector as any).app = {
+      client: {
+        assistant: { threads: { setStatus } },
+        chat: { postMessage: vi.fn().mockResolvedValue({ ok: true, ts: '200.1' }) },
+      },
+    }
+    ;(connector as any).lastUserMessageTs.set('D1', '100.1')
+    return { connector, setStatus }
+  }
+
+  it('a clear issued while a set is in flight leaves no line', async () => {
+    const { connector, setStatus } = makeConnector()
+    let finishSet!: () => void
+    setStatus.mockImplementationOnce(() => new Promise<void>((resolve) => { finishSet = resolve }))
+
+    const start = connector.startWorking('D1', 'thinking')
+    const stop = connector.stopWorking('D1')
+    await vi.waitFor(() => expect(finishSet).toBeDefined())
+    finishSet()
+    await Promise.all([start, stop])
+
+    expect(setStatus.mock.calls.map(([args]) => args.status)).toEqual(['is thinking…', ''])
+    expect(setStatus).toHaveBeenLastCalledWith({ channel_id: 'D1', thread_ts: '100.1', status: '' })
   })
 
-  it('does not match a chat whose id is a prefix of another (colon-delimited)', () => {
-    const set = new Set(['C12:1000.1', 'C123:1000.2'])
-    expect(reactionsForChat(set, 'C12').map((r) => r.ts)).toEqual(['1000.1'])
+  it('re-sends the line after a post, and still clears it at the end', async () => {
+    const { connector, setStatus } = makeConnector()
+    await connector.startWorking('D1', 'working')
+    await connector.sendMessage('D1', { text: 'tool pill' })
+    await vi.waitFor(() => expect((connector as any).statusWrites.size).toBe(0))
+    await connector.startWorking('D1', 'working')
+    await connector.sendMessage('D1', { text: 'another pill' })
+    await connector.stopWorking('D1')
+
+    expect(setStatus.mock.calls.map(([args]) => args.status)).toEqual(['is working…', 'is working…', ''])
   })
 
-  it('returns empty when nothing is tracked for the chat', () => {
-    expect(reactionsForChat(new Set(['C999:1000.1']), 'C123')).toEqual([])
+  it('does not pile up starts behind a failing write', async () => {
+    const { connector, setStatus } = makeConnector()
+    let failSet!: (err: Error) => void
+    setStatus.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { failSet = reject }))
+
+    const first = connector.startWorking('D1', 'working')
+    const second = connector.startWorking('D1', 'working')
+    const stop = connector.stopWorking('D1')
+    await vi.waitFor(() => expect(failSet).toBeDefined())
+    failSet(new Error('timeout'))
+    await Promise.all([first, second, stop])
+
+    expect(setStatus).toHaveBeenCalledTimes(1)
   })
 })

@@ -8,7 +8,7 @@
  * Bolt handlers. See slack-webhooks.ts.
  * Supports streaming via chat.update with throttling.
  * User request cards rendered as Block Kit components.
- * Typing indicator via emoji reactions (Slack doesn't support bot typing).
+ * Working indicator via Slack's status line under the user's message (assistant.threads.setStatus).
  */
 
 import { App as SlackApp, SocketModeReceiver, type Receiver } from '@slack/bolt'
@@ -325,16 +325,25 @@ export function touchAndCapMap<V>(map: Map<string, V>, key: string, value: V, ma
   }
 }
 
-/**
- * Every tracked thinking-reaction for a chat. Reaction keys are `${chatId}:${ts}`;
- * the colon-delimited prefix avoids matching a chat whose id is a prefix of another.
- * Used to sweep ALL reactions on clear so a mid-turn ts change can't orphan one.
- */
-export function reactionsForChat(activeReactions: Set<string>, chatId: string): Array<{ key: string; ts: string }> {
-  const prefix = `${chatId}:`
-  return [...activeReactions]
-    .filter((k) => k.startsWith(prefix))
-    .map((k) => ({ key: k, ts: k.slice(prefix.length) }))
+// ── Status line ─────────────────────────────────────────────────────────
+
+/** The status line shown under the user's message. Slack drops it after 2 minutes without a send. */
+export interface SlackStatus { anchor: string; label: string; sentAt: number; shown: boolean }
+
+export const SLACK_STATUS_REFRESH_MS = 60_000
+
+function slackStatusLabel(activity: SessionActivity): string {
+  switch (activity) {
+    case 'thinking': return 'is thinking…'
+    case 'compacting': return 'is compacting the conversation…'
+    case 'retrying': return 'is retrying…'
+    default: return 'is working…'
+  }
+}
+
+/** Send when the line is not showing, its label changed, or the refresh is due. */
+export function statusNeedsSend(status: SlackStatus | undefined, label: string, now: number): boolean {
+  return !status?.shown || status.label !== label || now - status.sentAt >= SLACK_STATUS_REFRESH_MS
 }
 
 // ── Answer buttons ──────────────────────────────────────────────────────
@@ -456,11 +465,12 @@ export class SlackConnector extends ChatAgentIntegration {
   /** What the host did with each relayed message, keyed by the body Bolt hands the handler. */
   private readonly inputResults = new WeakMap<object, Promise<IntegrationInputResult>>()
 
-  // Track last user message ts per channel for reaction-based typing indicator
+  // Last user message ts per chat: where the status line sits when the reply is not in a thread
   private lastUserMessageTs: Map<string, string> = new Map()
 
-  // Track whether we have a thinking reaction active
-  private activeReactions: Set<string> = new Set() // effectiveChatId:ts
+  private status: Map<string, SlackStatus> = new Map()
+  // One status write per chat at a time, in call order, so a late set cannot revive a cleared line.
+  private statusWrites: Map<string, Promise<void>> = new Map()
 
   // Thread context: maps effective chatId → real channel + thread anchor ts (for answerInThread)
   private threadContextMap: Map<string, { channel: string; threadTs: string }> = new Map()
@@ -598,7 +608,7 @@ export class SlackConnector extends ChatAgentIntegration {
         }
       }
 
-      // Track message ts for reaction-based typing (bounded: in-thread sessions
+      // Track message ts for the status line (bounded: in-thread sessions
       // make effectiveChatId per-thread, so this would otherwise grow with threads).
       touchAndCapMap(this.lastUserMessageTs, effectiveChatId, ts, SlackConnector.MAX_TRACKED_THREADS)
 
@@ -848,13 +858,11 @@ export class SlackConnector extends ChatAgentIntegration {
     // disconnecting is set (see restartInFlight).
     const restart = this.restartInFlight
 
-    // Remove any active reactions (before clearing thread context needed to resolve channels)
-    for (const key of this.activeReactions) {
-      const [effectiveChatId, ts] = key.split(':')
-      const { channel } = this.resolveChannel(effectiveChatId)
-      background(this.removeThinkingReaction(channel, ts).catch(() => {}), { name: 'slack-connector.remove-reaction' })
+    // Clear status lines while the app and thread context can still reach them
+    for (const [chatId, { anchor }] of this.status) {
+      background(this.setStatus(chatId, anchor, '').catch(() => {}), { name: 'slack-connector.clear-status' })
     }
-    this.activeReactions.clear()
+    this.status.clear()
     this.lastUserMessageTs.clear()
     this.threadContextMap.clear()
     this.activeThreads.clear()
@@ -910,8 +918,7 @@ export class SlackConnector extends ChatAgentIntegration {
       lastTs = result.ts || ''
     }
 
-    // Remove thinking reaction now that we've sent a real message
-    await this.clearThinkingReaction(chatId)
+    this.markStatusNotShown(chatId)
 
     return lastTs
   }
@@ -927,6 +934,8 @@ export class SlackConnector extends ChatAgentIntegration {
       initial_comment: caption,
       ...(threadTs ? { thread_ts: threadTs } : {}),
     } as any)
+
+    this.markStatusNotShown(chatId)
 
     // filesUploadV2 returns files array; extract the message ts if available
     const file = (result as any).files?.[0]
@@ -999,44 +1008,67 @@ export class SlackConnector extends ChatAgentIntegration {
       }
     }
 
-    // Remove thinking reaction
-    await this.clearThinkingReaction(chatId)
+    this.markStatusNotShown(chatId)
   }
 
-  async startWorking(chatId: string, _activity: SessionActivity): Promise<void> {
-    if (!this.app) return
-
-    // Slack's surface is a single reaction, so it can't show distinct labels —
-    // the activity is intentionally ignored here (coarse "busy" fidelity).
-    // Slack doesn't support typing indicators for bots.
-    // Workaround: add a :thinking_face: reaction to the user's last message.
-    // The reaction persists until removed, so no keep-alive timer is needed.
-    const lastTs = this.lastUserMessageTs.get(chatId)
-    if (!lastTs) return
-
-    const key = `${chatId}:${lastTs}`
-    if (this.activeReactions.has(key)) return // Already reacting
-
-    const { channel } = this.resolveChannel(chatId)
-    try {
-      await this.app.client.reactions.add({
-        channel,
-        timestamp: lastTs,
-        name: 'thinking_face',
-      })
-      this.activeReactions.add(key)
-    } catch {
-      // Already reacted or message deleted — non-critical
-    }
+  async startWorking(chatId: string, activity: SessionActivity): Promise<void> {
+    // A write in flight: the next tick re-sends, so a slow Slack cannot pile up starts ahead of a clear.
+    if (this.statusWrites.has(chatId)) return
+    await this.enqueueStatus(chatId, async () => {
+      const current = this.status.get(chatId)
+      const anchor = current?.anchor ?? this.resolveChannel(chatId).threadTs ?? this.lastUserMessageTs.get(chatId)
+      if (!anchor) return
+      const label = slackStatusLabel(activity)
+      const now = Date.now()
+      if (!statusNeedsSend(current, label, now)) return
+      await this.setStatus(chatId, anchor, label)
+      this.status.set(chatId, { anchor, label, sentAt: now, shown: true })
+    })
   }
 
   async stopWorking(chatId: string): Promise<void> {
-    await this.clearThinkingReaction(chatId)
+    await this.enqueueStatus(chatId, async () => {
+      const current = this.status.get(chatId)
+      if (!current) return
+      // Cleared even when a post marked it not shown: only a reply in its thread clears it on Slack's side.
+      this.status.delete(chatId)
+      await this.setStatus(chatId, current.anchor, '')
+    })
+  }
+
+  private enqueueStatus(chatId: string, write: () => Promise<void>): Promise<void> {
+    const next: Promise<void> = (this.statusWrites.get(chatId) ?? Promise.resolve()).then(write).catch(() => {}).then(() => {
+      if (this.statusWrites.get(chatId) === next) this.statusWrites.delete(chatId)
+    })
+    this.statusWrites.set(chatId, next)
+    return next
+  }
+
+  /** After a bot post: Slack clears a status line when the bot replies in its thread, so the next tick re-sets it. */
+  private markStatusNotShown(chatId: string): void {
+    background(this.enqueueStatus(chatId, async () => {
+      const current = this.status.get(chatId)
+      if (current) current.shown = false
+    }), { name: 'slack-connector.mark-status' })
+  }
+
+  private async setStatus(chatId: string, anchor: string, status: string): Promise<void> {
+    if (!this.app) throw new Error('Slack app not connected')
+    const { channel } = this.resolveChannel(chatId)
+    await this.app.client.assistant.threads.setStatus({ channel_id: channel, thread_ts: anchor, status })
   }
 
   // ── User request cards ──────────────────────────────────────────────
 
   async sendUserRequestCard(chatId: string, event: UserRequestEvent, sessionId?: string): Promise<string> {
+    try {
+      return await this.postUserRequestCard(chatId, event, sessionId)
+    } finally {
+      this.markStatusNotShown(chatId)
+    }
+  }
+
+  private async postUserRequestCard(chatId: string, event: UserRequestEvent, sessionId?: string): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
     const appLink = withSessionUrl(this.appLink, sessionId)
 
@@ -1263,33 +1295,6 @@ export class SlackConnector extends ChatAgentIntegration {
     } catch (err) {
       console.warn('[SlackConnector] Failed to fetch thread history (non-critical):', err instanceof Error ? err.message : err)
       return null
-    }
-  }
-
-  private async clearThinkingReaction(chatId: string): Promise<void> {
-    // Sweep EVERY tracked reaction for the chat, not just the current ts: if a second
-    // message landed mid-turn the ts changed and a second reaction was added, so
-    // clearing only the latest would orphan the first.
-    const entries = reactionsForChat(this.activeReactions, chatId)
-    if (entries.length === 0) return
-
-    const { channel } = this.resolveChannel(chatId)
-    for (const { key, ts } of entries) {
-      await this.removeThinkingReaction(channel, ts)
-      this.activeReactions.delete(key)
-    }
-  }
-
-  private async removeThinkingReaction(channel: string, ts: string): Promise<void> {
-    if (!this.app) return
-    try {
-      await this.app.client.reactions.remove({
-        channel,
-        timestamp: ts,
-        name: 'thinking_face',
-      })
-    } catch {
-      // Reaction already removed or message deleted — non-critical
     }
   }
 
