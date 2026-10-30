@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Agent successfully opened a browser, navigated to https://example.com, retrieved the page title, and returned a response mentioning \"Example Domain\"",
+  "steps": [
+    "Navigate to http://localhost:47891 — Successfully loaded the Gamut application with the agent sidebar visible",
+    "Find and click the \"QA-20261030-211039-j3st\" agent in the sidebar — Successfully clicked the agent link and loaded the agent configuration page",
+    "Realize agent configuration page is not for chatting; started a new session — Clicked \"New session with QA-20261030-211039-j3st\" to open a proper chat session",
+    "Send message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully submitted in the chat session",
+    "Wait up to 3 minutes for a response — Agent completed its work in approximately 5 seconds (3 tool calls, 159,945 tokens used)",
+    "Verify the response mentions \"Example Domain\" and take a screenshot — Agent response states: \"The page title of https://example.com is \"Example Domain\". The page loaded normally, and I've closed the browser.\" Screenshot captured and shows the complete conversation with the \"Example Domain\" response clearly visible"
+  ],
+  "bugs": [],
+  "durationMs": 81430,
+  "sessionId": "98f0e494-da8a-428f-9bbf-84d935680602",
+  "cost": {
+    "inputTokens": 370,
+    "outputTokens": 13514,
+    "cacheCreationTokens": 76087,
+    "cacheReadTokens": 1059157,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.268964
+  }
+}
