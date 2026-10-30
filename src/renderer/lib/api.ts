@@ -12,6 +12,9 @@ import { AGENT_ID_LENGTH } from '@shared/lib/utils/agent-id'
 // waits for its create, so it never reaches the host before the agent exists.
 const pendingAgentCreates = new Map<string, Promise<unknown>>()
 const AGENT_IN_PATH_RE = /\/agents\/([a-z0-9-]+)/
+// Reads whose answer lists every agent: sent during a create, the answer would leave out the agent
+// the page already shows (and the viewer's role on it, which turns its page view-only).
+const AGENT_LIST_PATHS = new Set(['/api/agents', '/api/agents/my-roles'])
 
 /** Holds every request about agent `id` until `creation` settles. */
 export function holdAgentRequestsUntilCreated(id: string, creation: Promise<unknown>): void {
@@ -21,8 +24,11 @@ export function holdAgentRequestsUntilCreated(id: string, creation: Promise<unkn
   })
 }
 
-function pendingCreateFor(path: string): Promise<unknown> | undefined {
+function pendingCreateFor(path: string, method: string): Promise<unknown> | undefined {
   if (pendingAgentCreates.size === 0) return undefined
+  if (method === 'GET' && AGENT_LIST_PATHS.has(path.split('?')[0])) {
+    return Promise.allSettled([...pendingAgentCreates.values()])
+  }
   const segment = AGENT_IN_PATH_RE.exec(path)?.[1]
   // A display slug ends with the id: `untitled-{id}`.
   return segment ? pendingAgentCreates.get(segment.slice(-AGENT_ID_LENGTH)) : undefined
@@ -41,7 +47,7 @@ export async function apiFetch(
   path: string,
   init?: RequestInit
 ): Promise<Response> {
-  const pending = pendingCreateFor(path)
+  const pending = pendingCreateFor(path, (init?.method ?? 'GET').toUpperCase())
   if (pending) await pending.catch(() => {})
   const baseUrl = getApiBaseUrl()
   const response = await fetch(`${baseUrl}${path}`, init)

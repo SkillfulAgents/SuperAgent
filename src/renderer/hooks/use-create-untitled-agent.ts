@@ -11,6 +11,7 @@ import { useNavTransient } from '@renderer/context/nav-transient-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import { randomAgentAvatar } from '@shared/lib/types/agent-avatar'
 import type { ApiAgent } from '@shared/lib/types/api'
+import type { AgentRoleInfo } from '@renderer/context/user-context'
 import { displaySlug, randomAgentId } from '@shared/lib/utils/agent-id'
 
 export const UNTITLED_AGENT_NAME = 'Untitled'
@@ -59,6 +60,20 @@ export function useCreateUntitledAgent() {
     queryClient.setQueryData(['agents', pending.slug], pending)
     queryClient.setQueryData(['agents', pending.displaySlug], pending)
     queryClient.setQueryData<ApiAgent[]>(['agents'], (agents) => agents && [pending, ...agents])
+    // In auth mode the page is view-only for an agent with no role, and the creator owns it.
+    queryClient.setQueryData<Record<string, AgentRoleInfo>>(['my-agent-roles'], (roles) =>
+      roles && { ...roles, [id]: { role: 'owner', memberCount: 1 } })
+    const forgetPending = () => {
+      queryClient.removeQueries({ queryKey: ['agents', pending.slug], exact: true })
+      queryClient.removeQueries({ queryKey: ['agents', pending.displaySlug], exact: true })
+      queryClient.setQueryData<ApiAgent[]>(['agents'], (agents) => agents?.filter((a) => a.slug !== id))
+      queryClient.setQueryData<Record<string, AgentRoleInfo>>(['my-agent-roles'], (roles) => {
+        if (!roles) return roles
+        const remaining = { ...roles }
+        delete remaining[id]
+        return remaining
+      })
+    }
 
     const creation = createAgent.mutateAsync({ name: UNTITLED_AGENT_NAME, id, avatar })
     holdAgentRequestsUntilCreated(id, creation)
@@ -79,14 +94,19 @@ export function useCreateUntitledAgent() {
       agent = await creation
     } catch (error) {
       console.error('Failed to create untitled agent:', error)
-      queryClient.removeQueries({ queryKey: ['agents', pending.slug], exact: true })
-      queryClient.removeQueries({ queryKey: ['agents', pending.displaySlug], exact: true })
+      forgetPending()
       void queryClient.invalidateQueries({ queryKey: ['agents'], exact: true })
       toast.error('Failed to create agent', {
         description: error instanceof Error ? error.message : 'Please try again.',
       })
       void navigate({ to: '/' })
       return null
+    }
+
+    // A host from before caller-chosen ids mints its own: open the agent it made.
+    if (agent.slug !== id) {
+      forgetPending()
+      void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug }, replace: true })
     }
 
     track('agent_created', {

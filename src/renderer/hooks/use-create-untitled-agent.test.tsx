@@ -107,6 +107,7 @@ describe('useCreateUntitledAgent', () => {
   })
 
   it('takes the agent away and goes home when its create fails', async () => {
+    queryClient.setQueryData(['my-agent-roles'], { [EXISTING.slug]: { role: 'owner', memberCount: 1 } })
     const create = heldCreate()
     const { result } = render()
     let creation!: Promise<unknown>
@@ -120,10 +121,44 @@ describe('useCreateUntitledAgent', () => {
     })
     expect(queryClient.getQueryData(['agents', ID])).toBeUndefined()
     expect(queryClient.getQueryData(['agents', DISPLAY_SLUG])).toBeUndefined()
+    expect(queryClient.getQueryData(['my-agent-roles'])).toEqual({ [EXISTING.slug]: { role: 'owner', memberCount: 1 } })
     expect(toast.error).toHaveBeenCalledWith('Failed to create agent', { description: 'Agent limit reached' })
     expect(mockNavigate).toHaveBeenLastCalledWith({ to: '/' })
     expect(mockTrack).not.toHaveBeenCalled()
     expect(mockUpdateMutateAsync).not.toHaveBeenCalled()
+  })
+
+  it('lets the creator use the new agent before its create answers', async () => {
+    queryClient.setQueryData(['my-agent-roles'], { [EXISTING.slug]: { role: 'owner', memberCount: 1 } })
+    heldCreate()
+    const { result } = render()
+    await act(async () => {
+      void result.current.createUntitledAgent({ surface: 'nav' })
+    })
+
+    expect(queryClient.getQueryData(['my-agent-roles'])).toEqual({
+      [EXISTING.slug]: { role: 'owner', memberCount: 1 },
+      [ID]: { role: 'owner', memberCount: 1 },
+    })
+  })
+
+  it('opens the agent a host made under its own id', async () => {
+    const create = heldCreate()
+    const { result } = render()
+    let creation!: Promise<unknown>
+    await act(async () => {
+      creation = result.current.createUntitledAgent({ surface: 'nav' })
+    })
+
+    const made: ApiAgent = { ...EXISTING, slug: 'p8w2zr5tq1', displaySlug: 'untitled-p8w2zr5tq1', name: 'Untitled' }
+    await act(async () => {
+      create.answer(made)
+      expect(await creation).toBe(made)
+    })
+    expect(mockNavigate).toHaveBeenLastCalledWith({ to: '/agents/$slug', params: { slug: 'untitled-p8w2zr5tq1' }, replace: true })
+    expect(queryClient.getQueryData(['agents', ID])).toBeUndefined()
+    expect(queryClient.getQueryData(['agents', DISPLAY_SLUG])).toBeUndefined()
+    expect(queryClient.getQueryData<ApiAgent[]>(['agents'])?.map((agent) => agent.slug)).toEqual([EXISTING.slug])
   })
 
   it('files the new agent into the requested folder once it exists', async () => {

@@ -392,11 +392,27 @@ describe('apiFetch for an agent whose create has not answered', () => {
   })
 
   it('does not hold requests about other agents', async () => {
-    holdAgentRequestsUntilCreated('m4x7cd9ke2', new Promise<void>(() => {}))
+    let created!: () => void
+    holdAgentRequestsUntilCreated('m4x7cd9ke2', new Promise<void>((resolve) => { created = resolve }))
 
     await apiFetch('/api/agents/sales-a1b2c3d4e5')
-    await apiFetch('/api/agents/my-roles')
 
-    expect(seen).toEqual(['/api/agents/sales-a1b2c3d4e5', '/api/agents/my-roles'])
+    expect(seen).toEqual(['/api/agents/sales-a1b2c3d4e5'])
+    created()
+  })
+
+  it('holds the agent list and the roles until the create answers, but not the create itself', async () => {
+    let created!: () => void
+    holdAgentRequestsUntilCreated('r2t6yw8nq4', new Promise<void>((resolve) => { created = resolve }))
+
+    const create = apiFetch('/api/agents', { method: 'POST', body: '{"name":"Untitled","id":"r2t6yw8nq4"}' })
+    const list = apiFetch('/api/agents?include_latest_visible_session_tail=false')
+    const roles = apiFetch('/api/agents/my-roles')
+    await create
+    expect(seen).toEqual(['/api/agents'])
+
+    created()
+    await Promise.all([list, roles])
+    expect(seen).toEqual(['/api/agents', '/api/agents?include_latest_visible_session_tail=false', '/api/agents/my-roles'])
   })
 })
