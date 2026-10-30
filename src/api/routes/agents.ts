@@ -50,6 +50,7 @@ import {
   deleteAgent,
   agentExists,
   AgentContainerStopError,
+  AgentIdError,
 } from '@shared/lib/services/agent-service'
 import { AGENT_DESCRIPTION_MAX_LENGTH, AGENT_NAME_MAX_LENGTH } from '@shared/lib/services/agent-identity-schema'
 import {
@@ -1435,15 +1436,24 @@ agents.get('/', async (c) => {
 agents.post('/', async (c) => {
   try {
     const body = await c.req.json()
-    const { name, description } = body
+    const { name, description, id } = body
 
     if (!name?.trim()) {
       return c.json({ error: 'Name is required' }, 400)
+    }
+    if (id !== undefined && typeof id !== 'string') {
+      return c.json({ error: 'An agent id must be a string' }, 400)
+    }
+    const avatar = body.avatar === undefined ? undefined : agentAvatarSchema.safeParse(body.avatar)
+    if (avatar && !avatar.success) {
+      return c.json({ error: 'Invalid avatar' }, 400)
     }
 
     const agent = await createAgent({
       name: name.trim(),
       description: description?.trim(),
+      id,
+      avatar: avatar?.data,
     })
 
     await createOwnerAclOrRollback(c, agent.slug)
@@ -1451,6 +1461,7 @@ agents.post('/', async (c) => {
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'agent', objectId: agent.slug, action: 'created', details: { name: name.trim() } })
     return c.json(agent, 201)
   } catch (error) {
+    if (error instanceof AgentIdError) return c.json({ error: error.message }, error.code === 'taken' ? 409 : 400)
     console.error('Failed to create agent:', error)
     return c.json({ error: 'Failed to create agent' }, 500)
   }

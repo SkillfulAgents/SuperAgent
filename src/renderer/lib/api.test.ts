@@ -23,6 +23,7 @@ import {
   clearRedirectStash,
   markDeliberateSignOut,
   clearDeliberateSignOut,
+  holdAgentRequestsUntilCreated,
 } from './api'
 
 const KEY = 'superagent.redirect'
@@ -350,5 +351,68 @@ describe('apiFetch (init passthrough)', () => {
       '/api/x',
       expect.objectContaining({ signal: controller.signal })
     )
+  })
+})
+
+describe('apiFetch for an agent whose create has not answered', () => {
+  const seen: string[] = []
+
+  beforeEach(() => {
+    seen.length = 0
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      seen.push(url)
+      return new Response('{}', { status: 200 })
+    }))
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('sends a request about the agent only once its create has answered', async () => {
+    let created!: () => void
+    holdAgentRequestsUntilCreated('k3v9qm2x7a', new Promise<void>((resolve) => { created = resolve }))
+
+    const byDisplaySlug = apiFetch('/api/agents/untitled-k3v9qm2x7a/sessions')
+    const byId = apiFetch('/api/activity/agents/k3v9qm2x7a')
+    await Promise.resolve()
+    expect(seen).toEqual([])
+
+    created()
+    await Promise.all([byDisplaySlug, byId])
+    expect(seen).toEqual(['/api/agents/untitled-k3v9qm2x7a/sessions', '/api/activity/agents/k3v9qm2x7a'])
+  })
+
+  it('still sends the request when the create failed, so the caller sees the real answer', async () => {
+    holdAgentRequestsUntilCreated('p8w2zr5tq1', Promise.reject(new Error('Agent limit reached')))
+
+    await apiFetch('/api/agents/p8w2zr5tq1')
+
+    expect(seen).toEqual(['/api/agents/p8w2zr5tq1'])
+  })
+
+  it('does not hold requests about other agents', async () => {
+    let created!: () => void
+    holdAgentRequestsUntilCreated('m4x7cd9ke2', new Promise<void>((resolve) => { created = resolve }))
+
+    await apiFetch('/api/agents/sales-a1b2c3d4e5')
+
+    expect(seen).toEqual(['/api/agents/sales-a1b2c3d4e5'])
+    created()
+  })
+
+  it('holds the agent list and the roles until the create answers, but not the create itself', async () => {
+    let created!: () => void
+    holdAgentRequestsUntilCreated('r2t6yw8nq4', new Promise<void>((resolve) => { created = resolve }))
+
+    const create = apiFetch('/api/agents', { method: 'POST', body: '{"name":"Untitled","id":"r2t6yw8nq4"}' })
+    const list = apiFetch('/api/agents?include_latest_visible_session_tail=false')
+    const roles = apiFetch('/api/agents/my-roles')
+    await create
+    expect(seen).toEqual(['/api/agents'])
+
+    created()
+    await Promise.all([list, roles])
+    expect(seen).toEqual(['/api/agents', '/api/agents?include_latest_visible_session_tail=false', '/api/agents/my-roles'])
   })
 })
