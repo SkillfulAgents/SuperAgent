@@ -1,3 +1,4 @@
+import { readNotifications, noteNotificationChange } from '@renderer/lib/notification-read-cache'
 import { collaborationEventSchema } from '@shared/lib/agent-members-schema'
 import { resolveRouteAgentId } from '@renderer/hooks/use-agents'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -159,12 +160,7 @@ export function GlobalNotificationHandler() {
     const metaResult = NotificationMetadataSchema.safeParse(event.context)
     const notificationId = metaResult.success ? metaResult.data.notificationId : undefined
     if (notificationId) {
-      apiFetch(`/api/notifications/${notificationId}/read`, { method: 'POST' })
-        .then((res) => {
-          if (res.ok) {
-            queryClient.invalidateQueries({ queryKey: ['notifications'] })
-          }
-        })
+      readNotifications(queryClient, { kind: 'notification', id: notificationId })
         .catch(() => {
           // Best-effort: a stale notificationId is fine to silently ignore.
         })
@@ -306,6 +302,7 @@ export function GlobalNotificationHandler() {
           }
 
           case 'session_mention_withdrawn': {
+            noteNotificationChange(queryClient, typeof data.agentSlug === 'string' ? data.agentSlug : undefined)
             // The message that tagged this viewer was taken back before it ran.
             queryClient.invalidateQueries({ queryKey: ['notifications'] })
             if (typeof data.agentSlug === 'string') queryClient.invalidateQueries({ queryKey: ['sessions', data.agentSlug] })
@@ -321,6 +318,7 @@ export function GlobalNotificationHandler() {
           }
 
           case 'os_notification': {
+            noteNotificationChange(queryClient, typeof data.agentSlug === 'string' ? data.agentSlug : undefined)
             // Refresh notification list (for badge/dropdown)
             queryClient.invalidateQueries({ queryKey: ['notifications'] })
             if (data.notificationType === 'platform_notification') {
@@ -448,25 +446,7 @@ export function GlobalNotificationHandler() {
               // session the user is watching live. main-content's auto-mark-read
               // only fires on session open / tab refocus, not for notifications
               // that arrive mid-view. (PR #175 follow-up.)
-              apiFetch(`/api/notifications/${data.notificationId}/read`, { method: 'POST' })
-                .then((res) => {
-                  if (res.ok) {
-                    queryClient.invalidateQueries({ queryKey: ['notifications'] })
-                    // The unconditional ['sessions'] invalidation at the top of
-                    // this case refetches the row the server committed BEFORE
-                    // broadcasting — with hasUnreadNotifications still true, so
-                    // a dot lands on the very session the user is watching. Now
-                    // that the record is read, take the dot back off and
-                    // refetch the corrected lists.
-                    if (agentSlug && notificationSessionId) {
-                      applySessionActivityStatus(queryClient, agentSlug, notificationSessionId, {
-                        hasUnreadNotifications: false,
-                        hasUnreadMention: false,
-                      })
-                      queryClient.invalidateQueries({ queryKey: ['sessions', agentSlug] })
-                    }
-                  }
-                })
+              readNotifications(queryClient, { kind: 'notification', id: data.notificationId })
                 .catch(() => {
                   // Best-effort: a stale notificationId is fine to silently ignore.
                 })
