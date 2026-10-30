@@ -119,6 +119,12 @@ export class LiveSessions {
   private readonly capabilityGrants = new Map<string, Set<Capability>>()
   /** The model runtime each session's turns run on, newest last (see `recordRuntime`). */
   private readonly runtimes = new Map<string, SessionModelRuntime>()
+  /**
+   * The context window turn results reported per model, across the agent's
+   * sessions: a session's first calls on a model are read against it before
+   * its own first result. Seeded from a session's saved usage on attach.
+   */
+  private readonly contextWindows = new Map<string, number>()
   private readonly workflows = new Map<string, WorkflowTailers>()
   /** Each session's completion notifications, in turn order; let go once a queue has sent everything. */
   private readonly completions = new Map<string, OrderedSends>()
@@ -470,12 +476,17 @@ export class LiveSessions {
   /**
    * Whether the session is an unpromoted automation (cron, webhook, x-agent,
    * chat): its stream is released once it settles. An unresolved read keeps
-   * the stream rather than guess.
+   * the stream rather than guess. The same read seeds the context window the
+   * session last ran with (see `contextWindows`).
    */
   private resolveStreamPolicy(sessionId: string, state: LiveSession, known?: SessionMetadata | null): void {
     background(
       (known !== undefined ? Promise.resolve(known) : getSessionMetadata(this.deps.store, sessionId))
         .then((meta) => {
+          const saved = meta?.lastUsage
+          if (saved?.model && saved.contextWindow > 0 && !this.contextWindows.has(saved.model)) {
+            this.contextWindows.set(saved.model, saved.contextWindow)
+          }
           // A reattach replaced the state and resolves its own policy.
           if (this.states.get(sessionId) !== state) return
           state.applyStreamPolicy({
@@ -958,6 +969,10 @@ export class LiveSessions {
       emit: (event) => this.emit(sessionId, event),
       isCurrent: () => this.states.get(sessionId) === state,
       modelRuntime: () => this.runtimes.get(sessionId),
+      knownContextWindow: (model) => this.contextWindows.get(model),
+      rememberContextWindow: (model, contextWindow) => {
+        this.contextWindows.set(model, contextWindow)
+      },
       transport: () => this.clients.get(sessionId),
       releaseTransportIfIdle: () => this.releaseIfIdle(sessionId),
       detachTransport: () => this.detach(sessionId),

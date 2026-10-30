@@ -761,3 +761,25 @@ describe.each(['sdk303', 'sdk311'])('%s fork captures replay', (sdk) => {
     expect(during.map((e) => e['parentToolId'])).toEqual(during.map(() => resumeToolId))
   })
 })
+
+describe('context usage on a real capture', () => {
+  afterEach(() => {
+    live.reset()
+    vi.clearAllMocks()
+  })
+
+  it('sends no window until the first result reports it, then reads every call against it', async () => {
+    // Earlier replays on the same agent already taught it Haiku's window.
+    live.reset()
+    // Two turns on Haiku 4.5, which has no catalog window: the lead turn, and
+    // the wake turn after its background Bash completes.
+    const { sseEvents } = await replayTracked('sdk311-bg-bash-premature-idle')
+    const usage = sseEvents.filter((e) => e['type'] === 'context_usage')
+    const learnedAt = usage.findIndex((e) => e['contextWindow'] !== 0)
+
+    expect(learnedAt).toBeGreaterThan(0)
+    expect(usage.slice(0, learnedAt).map((e) => e['contextWindow'])).toEqual(usage.slice(0, learnedAt).map(() => 0))
+    expect(usage.slice(learnedAt).map((e) => e['contextWindow'])).toEqual(usage.slice(learnedAt).map(() => 200_000))
+    expect(usage.at(-1)).toMatchObject({ model: 'claude-haiku-4-5-20251001', contextWindow: 200_000 })
+  })
+})

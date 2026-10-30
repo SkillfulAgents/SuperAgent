@@ -21,6 +21,7 @@ vi.mock('@shared/lib/config/settings', () => ({
 }))
 
 import { attachLiveSessionsHarness, createStreamClient, type StreamClient } from '../testing/live-sessions-harness'
+import { updateSessionMetadata } from '@shared/lib/services/session-service'
 
 const SESSION_ID = 'test-session-1'
 const AGENT_SLUG = 'test-agent'
@@ -389,6 +390,7 @@ describe('context usage from assistant messages', () => {
       type: 'assistant',
       message: {
         role: 'assistant',
+        model: 'claude-opus-5-5',
         content: [{ type: 'text', text: 'Hello' }],
         usage: {
           input_tokens: 1500,
@@ -407,8 +409,25 @@ describe('context usage from assistant messages', () => {
       outputTokens: 200,
       cacheCreationInputTokens: 500,
       cacheReadInputTokens: 1000,
-      contextWindow: 200_000, // default
+      model: 'claude-opus-5-5',
+      // No catalog window for Claude and no result yet: unknown, not a 200K guess.
+      contextWindow: 0,
     })
+  })
+
+  it('does not report the zero usage of a CLI-authored error message', () => {
+    mockClient.emit({
+      type: 'assistant',
+      error: 'model_not_found',
+      message: {
+        role: 'assistant',
+        model: '<synthetic>',
+        content: [{ type: 'text', text: 'There\'s an issue with the selected model.' }],
+        usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+      },
+    })
+
+    expect(sseEvents.filter(e => e.type === 'context_usage')).toHaveLength(0)
   })
 
   it('does not broadcast context_usage when assistant message has no usage', () => {
@@ -450,12 +469,13 @@ describe('context usage from assistant messages', () => {
   })
 })
 
-describe('context window fallback from catalog (non-Claude result events)', () => {
-  function seedAssistantUsage() {
-    mockClient.emit({
+describe('the window a call is read against (catalog, result, earlier sessions)', () => {
+  function seedAssistantUsage(model: string, client: StreamClient = mockClient) {
+    client.emit({
       type: 'assistant',
       message: {
         role: 'assistant',
+        model,
         content: [{ type: 'text', text: 'hi' }],
         usage: {
           input_tokens: 100,
@@ -469,7 +489,7 @@ describe('context window fallback from catalog (non-Claude result events)', () =
 
   it('uses the catalog contextWindow when the SDK omits it (gpt via platform)', () => {
     mockGetSettings.mockReturnValue({ llmProvider: 'platform' })
-    seedAssistantUsage()
+    seedAssistantUsage('gpt-5.6-sol')
     sseEvents.length = 0
 
     mockClient.emit({
@@ -484,7 +504,7 @@ describe('context window fallback from catalog (non-Claude result events)', () =
 
   it('prefers the catalog window over the SDK default for a listed non-Claude model', () => {
     mockGetSettings.mockReturnValue({ llmProvider: 'platform' })
-    seedAssistantUsage()
+    seedAssistantUsage('gpt-5.6-sol')
     sseEvents.length = 0
 
     // The SDK reports a generic 200K default for gpt; the catalog (1.05M) wins.
@@ -500,7 +520,7 @@ describe('context window fallback from catalog (non-Claude result events)', () =
 
   it('uses the SDK window for Claude (no catalog window) — e.g. 1M opus', () => {
     mockGetSettings.mockReturnValue({ llmProvider: 'platform' })
-    seedAssistantUsage()
+    seedAssistantUsage('claude-opus-4-8')
     sseEvents.length = 0
 
     mockClient.emit({
@@ -513,9 +533,9 @@ describe('context window fallback from catalog (non-Claude result events)', () =
     expect(usageEvents.at(-1)).toMatchObject({ contextWindow: 1_000_000 })
   })
 
-  it('keeps the 200K default when neither SDK nor catalog has a window', () => {
+  it('sends no window (0) when neither the SDK nor the catalog has one', () => {
     mockGetSettings.mockReturnValue({ llmProvider: 'platform' })
-    seedAssistantUsage()
+    seedAssistantUsage('totally-unknown-model')
     sseEvents.length = 0
 
     mockClient.emit({
@@ -525,7 +545,128 @@ describe('context window fallback from catalog (non-Claude result events)', () =
     })
 
     const usageEvents = sseEvents.filter((e) => e.type === 'context_usage')
-    expect(usageEvents.at(-1)).toMatchObject({ contextWindow: 200_000 })
+    expect(usageEvents.at(-1)).toMatchObject({ contextWindow: 0 })
+  })
+
+  it('reads the window of the model the latest call ran on, not of the first model in modelUsage', () => {
+    mockGetSettings.mockReturnValue({ llmProvider: 'platform' })
+    seedAssistantUsage('claude-opus-4-8')
+    seedAssistantUsage('gpt-5.6-sol')
+    sseEvents.length = 0
+
+    // The SDK lists every model the session used, in first-use order.
+    mockClient.emit({
+      type: 'result',
+      subtype: 'success',
+      modelUsage: {
+        'claude-opus-4-8': { contextWindow: 1_000_000 },
+        'gpt-5.6-sol': { contextWindow: 200_000 },
+      },
+    })
+
+    const usageEvents = sseEvents.filter((e) => e.type === 'context_usage')
+    expect(usageEvents.at(-1)).toMatchObject({ model: 'gpt-5.6-sol', contextWindow: 1_050_000 })
+  })
+
+  it('finds the catalog window for the dated id OpenRouter answers with', () => {
+    mockGetSettings.mockReturnValue({ llmProvider: 'openrouter' })
+    seedAssistantUsage('openai/gpt-5.5-20260423')
+
+    const usageEvents = sseEvents.filter((e) => e.type === 'context_usage')
+    expect(usageEvents.at(-1)).toMatchObject({ model: 'openai/gpt-5.5-20260423', contextWindow: 1_050_000 })
+  })
+
+  it('learns the window of a dated id from its undated modelUsage entry when the result lists several models', () => {
+    mockGetSettings.mockReturnValue({ llmProvider: 'openrouter' })
+    seedAssistantUsage('anthropic/claude-4.6-opus-20260205')
+    sseEvents.length = 0
+
+    mockClient.emit({
+      type: 'result',
+      subtype: 'success',
+      modelUsage: {
+        'claude-haiku-4-5-20251001': { contextWindow: 200_000 },
+        'claude-opus-4-6': { contextWindow: 1_000_000 },
+      },
+    })
+
+    const usageEvents = sseEvents.filter((e) => e.type === 'context_usage')
+    expect(usageEvents.at(-1)).toMatchObject({ model: 'anthropic/claude-4.6-opus-20260205', contextWindow: 1_000_000 })
+  })
+
+  it('reads a new session\'s first calls against the window an earlier session\'s result reported', async () => {
+    seedAssistantUsage('claude-opus-5-5')
+    mockClient.emit({ type: 'result', subtype: 'success', modelUsage: { 'claude-opus-5-5': { contextWindow: 1_000_000 } } })
+
+    const secondClient = createStreamClient()
+    await sessions().subscribe('test-session-2', secondClient, 'test-session-2')
+    const second = live.collect(AGENT_SLUG, 'test-session-2')
+    try {
+      seedAssistantUsage('claude-opus-5-5', secondClient)
+
+      expect(second.events.filter((e) => e['type'] === 'context_usage')).toEqual([
+        expect.objectContaining({ model: 'claude-opus-5-5', contextWindow: 1_000_000 }),
+      ])
+    } finally {
+      second.stop()
+      sessions().unsubscribe('test-session-2')
+    }
+  })
+
+  it('reads a reattached session\'s first calls against the window its saved usage names', async () => {
+    const savedClient = createStreamClient()
+    await sessions().subscribe('test-session-2', savedClient, 'test-session-2', {
+      lastUsage: {
+        inputTokens: 2,
+        outputTokens: 1_374,
+        cacheCreationInputTokens: 821,
+        cacheReadInputTokens: 957_637,
+        contextWindow: 1_000_000,
+        model: 'claude-opus-5-5',
+      },
+    })
+    const saved = live.collect(AGENT_SLUG, 'test-session-2')
+    try {
+      await new Promise((resolve) => setImmediate(resolve))
+
+      seedAssistantUsage('claude-opus-5-5', savedClient)
+
+      expect(saved.events.filter((e) => e['type'] === 'context_usage')).toEqual([
+        expect.objectContaining({ model: 'claude-opus-5-5', contextWindow: 1_000_000 }),
+      ])
+    } finally {
+      saved.stop()
+      sessions().unsubscribe('test-session-2')
+    }
+  })
+})
+
+describe('context usage across a compaction', () => {
+  it('drops the measured size, live and saved, when the summary replaces the context', () => {
+    mockClient.emit({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        model: 'claude-opus-5-5',
+        content: [{ type: 'text', text: 'hi' }],
+        usage: { input_tokens: 2, output_tokens: 1_374, cache_creation_input_tokens: 821, cache_read_input_tokens: 957_637 },
+      },
+    })
+    mockClient.emit({ type: 'system', subtype: 'status', status: 'compacting' })
+    sseEvents.length = 0
+    vi.mocked(updateSessionMetadata).mockClear()
+
+    mockClient.emit({ type: 'user', isCompactSummary: true, message: { role: 'user', content: 'This session is being continued from a previous conversation.' } })
+    mockClient.emit({ type: 'result', subtype: 'success', modelUsage: { 'claude-opus-5-5': { contextWindow: 1_000_000 } } })
+
+    expect(sseEvents.filter((e) => e.type === 'context_usage')).toEqual([
+      expect.objectContaining({ inputTokens: 0, cacheReadInputTokens: 0, contextWindow: 0 }),
+    ])
+    // Cleared once, and the compact turn's result saves no old size again.
+    const usageWrites = vi.mocked(updateSessionMetadata).mock.calls
+      .map(([, , updates]) => updates)
+      .filter((updates) => 'lastUsage' in updates)
+    expect(usageWrites).toEqual([{ lastUsage: undefined }])
   })
 })
 
@@ -561,7 +702,8 @@ describe('context usage from message_delta stream events', () => {
       outputTokens: 300,
       cacheCreationInputTokens: 0,
       cacheReadInputTokens: 0,
-      contextWindow: 200_000,
+      // No result has reported a window yet.
+      contextWindow: 0,
     })
   })
 
@@ -751,7 +893,7 @@ describe('context usage from message_delta stream events', () => {
       cacheCreationInputTokens: 2659,
       cacheReadInputTokens: 12442,
       outputTokens: 2042,
-      contextWindow: 200_000,
+      contextWindow: 0,
     })
   })
 

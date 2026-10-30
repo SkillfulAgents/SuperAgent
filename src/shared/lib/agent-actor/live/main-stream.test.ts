@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { MainStream } from './main-stream'
 import type { SessionEvent } from './session-channel'
 
-/** A stream over a sink that records what it heard. */
-function recordingStream() {
+/**
+ * A stream over a sink that records what it heard. `windows` stands for the
+ * session's knowledge of model windows: a test can teach it one later.
+ */
+function recordingStream(windows: Record<string, number> = {}) {
   const events: SessionEvent[] = []
   const streamed: string[] = []
   let responsesStarted = 0
@@ -13,11 +16,12 @@ function recordingStream() {
       responsesStarted += 1
     },
     textStreamed: (text) => streamed.push(text),
-  })
+  }, (model) => (model ? windows[model] : undefined))
   return {
     stream,
     events,
     streamed,
+    windows,
     responsesStarted: () => responsesStarted,
     types: () => events.map((e) => e.type),
     clear: () => {
@@ -26,7 +30,10 @@ function recordingStream() {
   }
 }
 
-const messageStart = (id: string | undefined = 'msg_1') => ({ type: 'message_start', message: id ? { id } : {} })
+const messageStart = (id: string | undefined = 'msg_1', model?: string) => ({
+  type: 'message_start',
+  message: { ...(id ? { id } : {}), ...(model ? { model } : {}) },
+})
 const textDelta = (text: string, index = 0) => ({ type: 'content_block_delta', index, delta: { type: 'text_delta', text } })
 const toolStart = (id: string, name: string, index = 0) => ({
   type: 'content_block_start',
@@ -322,20 +329,50 @@ describe('MainStream', () => {
   })
 
   describe('usage', () => {
-    it('reports one call\'s usage as the context size, defaulting missing counts to zero', () => {
-      const { stream, events } = recordingStream()
+    it('reports one call\'s usage against the window of the model it ran on, defaulting missing counts to zero', () => {
+      const { stream, events } = recordingStream({ 'claude-opus-5-5': 1_000_000 })
 
-      stream.reportUsage({ input_tokens: 100, cache_read_input_tokens: 900 })
+      stream.reportUsage({ input_tokens: 100, cache_read_input_tokens: 900 }, 'claude-opus-5-5')
 
       const expected = {
         inputTokens: 100,
         outputTokens: 0,
         cacheCreationInputTokens: 0,
         cacheReadInputTokens: 900,
-        contextWindow: 200_000,
+        contextWindow: 1_000_000,
+        model: 'claude-opus-5-5',
       }
       expect(stream.lastUsage).toEqual(expected)
       expect(events).toEqual([{ type: 'context_usage', ...expected }])
+    })
+
+    it('sends a window the session does not know yet as 0, not as a guess', () => {
+      const { stream } = recordingStream()
+
+      stream.reportUsage({ input_tokens: 2, cache_read_input_tokens: 89_344 }, 'claude-opus-5-5')
+
+      expect(stream.lastUsage).toMatchObject({ contextWindow: 0, model: 'claude-opus-5-5' })
+    })
+
+    it('reads message_delta usage against the model its message_start named', () => {
+      const { stream, events } = recordingStream({ 'gpt-6.1-sol': 272_000 })
+      stream.event(messageStart('msg_1', 'gpt-6.1-sol'))
+      events.length = 0
+
+      stream.event({ type: 'message_delta', usage: { input_tokens: 51_300, cache_read_input_tokens: 39_424, output_tokens: 5 } })
+
+      expect(stream.lastUsage).toMatchObject({ inputTokens: 51_300, cacheReadInputTokens: 39_424, contextWindow: 272_000, model: 'gpt-6.1-sol' })
+      expect(events.map((e) => e.type)).toEqual(['context_usage'])
+    })
+
+    it('reads each call against its own model after a model switch', () => {
+      const { stream } = recordingStream({ 'claude-opus-5-5': 1_000_000, 'gpt-6.1-sol': 272_000 })
+      stream.reportUsage({ input_tokens: 246_207 }, 'claude-opus-5-5')
+
+      stream.event(messageStart('msg_2', 'gpt-6.1-sol'))
+      stream.event({ type: 'message_delta', usage: { input_tokens: 14_573, output_tokens: 1 } })
+
+      expect(stream.lastUsage).toMatchObject({ contextWindow: 272_000, model: 'gpt-6.1-sol' })
     })
 
     it('takes the final usage from message_delta', () => {
@@ -357,12 +394,13 @@ describe('MainStream', () => {
       expect(events).toEqual([])
     })
 
-    it('settles the latest call\'s usage against the window the result names, and returns it', () => {
-      const { stream, events } = recordingStream()
-      stream.reportUsage({ input_tokens: 100, output_tokens: 20 })
+    it('settles the latest call\'s usage against the window the session learned from the result, and returns it', () => {
+      const { stream, events, windows } = recordingStream()
+      stream.reportUsage({ input_tokens: 100, output_tokens: 20 }, 'claude-opus-5-5')
       events.length = 0
+      windows['claude-opus-5-5'] = 1_000_000
 
-      const settled = stream.settleUsage(1_000_000)
+      const settled = stream.settleUsage()
 
       const expected = {
         inputTokens: 100,
@@ -370,27 +408,18 @@ describe('MainStream', () => {
         cacheCreationInputTokens: 0,
         cacheReadInputTokens: 0,
         contextWindow: 1_000_000,
+        model: 'claude-opus-5-5',
       }
       expect(settled).toEqual(expected)
+      expect(stream.lastUsage).toEqual(expected)
       expect(events).toEqual([{ type: 'context_usage', ...expected }])
     })
 
-    it('keeps the window it has when the result names none', () => {
-      const { stream } = recordingStream()
-      stream.contextWindow = 500_000
-      stream.reportUsage({ input_tokens: 1 })
+    it('returns nothing to settle before any usage', () => {
+      const { stream, events } = recordingStream({ 'claude-opus-5-5': 1_000_000 })
 
-      expect(stream.settleUsage(undefined)?.contextWindow).toBe(500_000)
-    })
-
-    it('returns nothing to settle before any usage, but remembers the window for the next report', () => {
-      const { stream, events } = recordingStream()
-
-      expect(stream.settleUsage(1_000_000)).toBeNull()
+      expect(stream.settleUsage()).toBeNull()
       expect(events).toEqual([])
-
-      stream.reportUsage({ input_tokens: 1 })
-      expect(stream.lastUsage?.contextWindow).toBe(1_000_000)
     })
   })
 
@@ -412,7 +441,28 @@ describe('MainStream', () => {
       stream.compactionEnded()
 
       expect(stream.isCompacting).toBe(false)
-      expect(types()).toEqual(['compact_start', 'compact_complete', 'messages_updated'])
+      expect(types()).toEqual(['compact_start', 'context_usage', 'compact_complete', 'messages_updated'])
+    })
+
+    it('leaves the context unmeasured once the summary replaced it', () => {
+      const { stream, events } = recordingStream({ 'claude-opus-5-5': 1_000_000 })
+      stream.reportUsage({ input_tokens: 2, cache_creation_input_tokens: 821, cache_read_input_tokens: 957_637 }, 'claude-opus-5-5')
+      stream.compactionStarted()
+      events.length = 0
+
+      stream.compactionEnded()
+
+      expect(stream.lastUsage).toBeNull()
+      expect(events[0]).toEqual({
+        type: 'context_usage',
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        contextWindow: 0,
+      })
+      // The compact turn's result has nothing old to send again.
+      expect(stream.settleUsage()).toBeNull()
     })
   })
 
