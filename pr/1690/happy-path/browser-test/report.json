@@ -1,24 +1,24 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Browser-based agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and returned the result.",
+  "reason": "Browser use feature verification test - agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported back the correct result with visible tool call cards.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully with Gamut application showing the agent dashboard",
-    "Found and clicked \"QA-20261030-193418-smo2\" agent in the sidebar — Successfully navigated to the agent's page with URL http://localhost:47891/agents/qa-20261030-193418-smo2-2xmllqs1yj",
-    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully entered in the input box and sent by clicking the send button",
-    "Waited for response — Agent responded in 4 seconds with completion of 3 tool calls using 159,947 tokens",
-    "Verified response mentions \"Example Domain\" — Response clearly states: \"The page title of https://example.com is \"Example Domain\". The page loaded normally, and I closed the browser afterward.\"",
-    "Took screenshot of final response — Screenshot page-2026-10-30T19-36-13-197Z.png shows the complete agent response with \"Example Domain\" visible"
+    "Step 1: Navigated to http://localhost:47891 — Successfully loaded the Gamut application home page showing \"Your Agents\" section with two agents listed.",
+    "Step 2: Found and clicked the \"QA-20261030-211123-db0i\" agent in the sidebar — Successfully clicked the agent link and navigated to the agent's configuration page at URL /agents/qa-20261030-211123-db0i-10z4a2or32.",
+    "Step 3: Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Successfully typed the message in the input field and clicked the \"Send message\" button. The message was submitted and the agent status changed to \"working\".",
+    "Step 4: Waited up to 3 minutes for response — Response was received in approximately 25 seconds. The agent status changed to \"idle\" and the response appeared in the chat message log.",
+    "Step 5: Verified response mentions \"Example Domain\" — Confirmed. The response clearly states: 'The page title of https://example.com is \"Example Domain\". The page loaded normally, and I've closed the browser.'",
+    "Screenshot verification — Final screenshot shows the complete conversation with:"
   ],
   "bugs": [],
-  "durationMs": 126617,
-  "sessionId": "f6753d60-01c2-4189-8fd1-60ff750f8735",
+  "durationMs": 80370,
+  "sessionId": "f3644b5d-63b5-47ea-a6a7-927641a9fcd4",
   "cost": {
-    "inputTokens": 434,
-    "outputTokens": 10446,
-    "cacheCreationTokens": 77241,
-    "cacheReadTokens": 1187135,
+    "inputTokens": 494,
+    "outputTokens": 12513,
+    "cacheCreationTokens": 86609,
+    "cacheReadTokens": 1474922,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.267929
+    "totalCostUsd": 0.318812
   }
 }
