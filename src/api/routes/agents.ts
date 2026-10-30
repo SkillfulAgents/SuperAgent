@@ -1,3 +1,4 @@
+import { agentNotificationPreview } from '@shared/lib/notifications/agent-notification-preview'
 import { assertConnectionSelectionAccess, connectionNeedsAttachment, credentialSource } from '@shared/lib/llm-provider/connection-runtime'
 import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
@@ -220,7 +221,7 @@ import {
 } from '@shared/lib/services/widget-service'
 import { widgetRefreshService } from '@shared/lib/services/widget-refresh-service'
 import { widgetSchemeSchema, widgetSizeSchema } from '@shared/lib/widgets/widget-schema'
-import { getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
+import { getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, getUnreadNotificationPreviewsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
@@ -771,11 +772,12 @@ async function enrichAgentsWithSummary(
 
   // Both halves of the unread projection, one query each rather than one per
   // agent — this route hydrates every agent on every poll.
-  const [unreadByAgent, markedUnreadByAgent, mentionsByAgent] = await Promise.all([
+  const [unreadByAgent, markedUnreadByAgent, mentionsByAgent, previewsByAgent] = await Promise.all([
     getUnreadNotificationsByAgents(slugs, options.userId),
     getSessionIdsMarkedUnreadByAgents(slugs, options.userId),
     // Only auth mode has people to mention.
     isAuthMode() ? getUnreadMentionsByAgents(slugs, options.userId) : new Map<string, Set<string>>(),
+    getUnreadNotificationPreviewsByAgents(slugs, options.userId),
   ])
 
   const limit = pLimit(5)
@@ -836,12 +838,23 @@ async function enrichAgentsWithSummary(
       const hasActiveSessions = live.activeSessionIds.length > 0
       const hasSessionsAwaitingInput = live.awaitingSessionIds.length > 0 || live.pendingReviews.length > 0
 
+      // What the newest notification behind the winning flag says, in the same
+      // order the sidebar badge picks: a question still waiting on the user,
+      // then a mention, then anything unread. Rows come newest first and pass
+      // the same visibility as the flags above.
+      const preview = agentNotificationPreview(
+        previewsByAgent.get(agent.slug) ?? [], unreadSessionIds, sessionMetadata,
+        live.awaitingSessionIds, hasSessionsAwaitingInput, hasUnreadMention, hasUnreadNotifications,
+      )
+
       return {
         ...agent,
         hasActiveSessions,
         hasSessionsAwaitingInput,
         hasUnreadNotifications,
         hasUnreadMention,
+        ...preview,
+        markedUnreadSessionIds: sessionSummary.sessionIds.filter(id => markedIds.has(id) && !isHiddenAutomatedSession(sessionMetadata[id])),
         sessionCount: sessionSummary.sessionCount,
         lastActivityAt: sessionSummary.lastActivityAt,
         dashboards: artifacts.map((a) => ({

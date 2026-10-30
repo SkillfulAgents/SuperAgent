@@ -665,7 +665,11 @@ describe('AppSidebar — agent rows', () => {
     expect(link).not.toContainElement(members)
     expect(link.parentElement).toContainElement(members)
     expect(within(members).getAllByRole('img', { hidden: true })).toHaveLength(4)
-    expect(members).not.toHaveTextContent('+')
+    expect(within(members).queryByTestId('sidebar-members-count-test-agent')).toBeNull()
+    // Slides aside for the pen on hover or keyboard focus, not on a click that
+    // leaves focus in the row (the avatar's expand chevron).
+    expect(members.className).toContain('group-has-[:focus-visible]/agent-row:translate-x-0')
+    expect(members.className).not.toContain('focus-within')
     expect(screen.queryByTestId('sidebar-members-other-agent')).toBeNull()
     expect(mockUseAgentMembers).toHaveBeenCalledWith('test-agent', true)
     expect(mockUseAgentMembers).not.toHaveBeenCalledWith('other-agent', expect.anything())
@@ -700,8 +704,25 @@ describe('AppSidebar — agent rows', () => {
         error: null,
       })
       renderWithProviders(<AppSidebar />)
-      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last run about 3 hours ago')
-      expect(screen.getByTestId('agent-item-idle-agent')).toHaveTextContent('Last run never')
+      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last active about 3 hours ago')
+      expect(screen.getByTestId('agent-item-idle-agent')).toHaveTextContent('Never active')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the last run on a sleeping agent\'s row; the avatar shows the sleep', () => {
+    vi.useFakeTimers({ now: new Date('2026-10-09T12:00:00Z'), toFake: ['Date'] })
+    try {
+      mockUseAgents.mockReturnValue({
+        data: [makeAgent({ status: 'stopped', lastActivityAt: new Date('2026-10-09T09:00:00Z') })],
+        isLoading: false,
+        error: null,
+      })
+      renderWithProviders(<AppSidebar />)
+      const row = screen.getByTestId('agent-item-test-agent')
+      expect(row).toHaveTextContent('Last active about 3 hours ago')
+      expect(row).not.toHaveTextContent('Sleeping')
     } finally {
       vi.useRealTimers()
     }
@@ -720,7 +741,7 @@ describe('AppSidebar — agent rows', () => {
       const { rerender, unmount } = renderWithProviders(<AppSidebar />)
       const renders = mockUseAgents.mock.calls.length
       act(() => vi.advanceTimersByTime(60 * 60 * 1000))
-      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last run about 4 hours ago')
+      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last active about 4 hours ago')
       expect(mockUseAgents.mock.calls).toHaveLength(renders)
 
       // An agent-summary refetch lands between clock ticks after a session event.
@@ -730,19 +751,19 @@ describe('AppSidebar — agent rows', () => {
         isLoading: false, error: null,
       })
       rerender(<AppSidebar />)
-      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last run less than a minute ago')
+      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last active less than a minute ago')
       act(() => vi.advanceTimersByTime(75_000))
-      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last run 1 minute ago')
+      expect(screen.getByTestId('agent-item-test-agent')).toHaveTextContent('Last active 1 minute ago')
       unmount()
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it('shows a status indicator for each agent (collapsed)', () => {
+  it('leaves status to the avatar — no trailing status icon on agent rows', () => {
     renderWithProviders(<AppSidebar />)
-    expect(screen.getByTestId('agent-status-running')).toBeInTheDocument()
-    expect(screen.getByTestId('agent-status-stopped')).toBeInTheDocument()
+    expect(screen.queryByTestId('agent-status-running')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('agent-status-stopped')).not.toBeInTheDocument()
   })
 
   it('renders an unread dot at the agent level when collapsed and hasUnreadNotifications', () => {
@@ -1012,16 +1033,30 @@ describe('AppSidebar — notifications', () => {
 })
 
 // ============================================================================
-// AgentRowIndicator: priority + collapse-vs-expand behavior
+// Agent row: avatar badge + right-side status
 // ----------------------------------------------------------------------------
-// The right-side indicator on the agent row aggregates awaiting / working
-// across sessions with the same formula as the top-nav AgentStatus — the two
-// render on the same screen and must agree. Only the unread dot is collapsed
-// away when the agent is expanded (the session sub-rows surface it). Priority
-// is awaiting > working > unread > sleeping/idle. Sleeping/idle (which
-// describe the container itself) always render via <AgentStatus iconOnly>.
+// The notification dot sits on the avatar (like the iOS agent list): orange
+// while a session awaits input, blue for unread. Awaiting aggregates across
+// sessions with the same formula as the top-nav AgentStatus — the two render
+// on the same screen and must agree. Only unread is collapsed away when the
+// agent is expanded (the session sub-rows surface it). Working and sleeping
+// show in the avatar's motion; the trailing slot carries no status.
 // ============================================================================
 describe('AppSidebar — agent row indicator', () => {
+  it.each([
+    { status: 'running', hasActiveSessions: true, label: 'working' },
+    { status: 'running', hasActiveSessions: false, label: 'idle' },
+    { status: 'stopped', hasActiveSessions: false, label: 'sleeping' },
+  ] as const)('names the decorative avatar\'s $label state for screen readers', ({ status, hasActiveSessions, label }) => {
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ status, hasActiveSessions })],
+      isLoading: false,
+      error: null,
+    })
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByTestId('agent-item-test-agent')).toHaveAccessibleName(new RegExp(`\\b${label}\\b`))
+  })
+
   it('falls back to agent-level flags when sessions data is not yet loaded', () => {
     mockUseAgents.mockReturnValue({
       data: [makeAgent({ hasSessionsAwaitingInput: true })],
@@ -1032,8 +1067,7 @@ describe('AppSidebar — agent row indicator', () => {
     mockUseSessions.mockReturnValue({ data: undefined, isLoading: false })
 
     renderWithProviders(<AppSidebar />)
-    const status = screen.getByTestId('agent-status-running')
-    expect(status).toHaveAttribute('data-awaiting', 'true')
+    expect(screen.getByTestId('agent-avatar-badge-test-agent')).toHaveAccessibleName('needs input')
   })
 
   it('does not render the agent-level unread dot when expanded — sessions surface it', () => {
@@ -1049,14 +1083,10 @@ describe('AppSidebar — agent row indicator', () => {
     // Sessions data has no unread, so no session-row dot either. Net: zero
     // accessible "unread notifications" labels.
     expect(screen.queryByLabelText('unread notifications')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('agent-avatar-badge-test-agent')).not.toBeInTheDocument()
   })
 
-  // Regression: the selected agent auto-expands, and the expanded agent row
-  // used to zero out its working/awaiting state — while the top-nav
-  // AgentStatus (agent-header) kept aggregating session activity. Same
-  // screen, two answers: header said "working", sidebar row said idle. The
-  // agent row must keep reporting working/awaiting when expanded.
-  it('shows working on the expanded agent row when a session is active (top-nav parity)', () => {
+  it('shows no dot while working — the avatar\'s motion shows it', () => {
     mockUseAgents.mockReturnValue({
       data: [makeAgent({ hasActiveSessions: true })],
       isLoading: false,
@@ -1069,12 +1099,9 @@ describe('AppSidebar — agent row indicator', () => {
     mockRouteParams = { slug: 'test-agent' }
 
     renderWithProviders(<AppSidebar />)
-    // The agent is expanded — its session sub-row is visible and working…
-    expect(screen.getByTestId('session-item-session-1')).toBeInTheDocument()
-    expect(screen.getByTestId('session-item-session-1').parentElement).toHaveAttribute('data-is-active', 'true')
-    // …and the agent row itself still reports working, like the top nav.
-    const status = screen.getByTestId('agent-status-running')
-    expect(status).toHaveAttribute('data-active', 'true')
+    const agentRow = screen.getByTestId('agent-item-test-agent').closest('li')!
+    expect(within(agentRow).queryByTestId('agent-status-running')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('agent-avatar-badge-test-agent')).not.toBeInTheDocument()
   })
 
   it('shows awaiting on the expanded agent row when a session awaits input (top-nav parity)', () => {
@@ -1090,24 +1117,53 @@ describe('AppSidebar — agent row indicator', () => {
     mockRouteParams = { slug: 'test-agent' }
 
     renderWithProviders(<AppSidebar />)
-    const status = screen.getByTestId('agent-status-running')
-    expect(status).toHaveAttribute('data-awaiting', 'true')
+    expect(screen.getByTestId('agent-avatar-badge-test-agent')).toHaveAccessibleName('needs input')
   })
 
-  it('prioritizes awaiting > working > unread when collapsed', () => {
-    // Both awaiting AND unread set on agent flags. Agent is NOT expanded.
+  it('prioritizes awaiting over unread when collapsed', () => {
     mockUseAgents.mockReturnValue({
       data: [makeAgent({ hasSessionsAwaitingInput: true, hasUnreadNotifications: true })],
       isLoading: false,
       error: null,
     })
     renderWithProviders(<AppSidebar />)
-    // Awaiting wins → agent-status indicator is awaiting; the unread dot is
-    // not rendered (it would be rendered alongside, but the priority code path
-    // returns the AgentStatus indicator for awaiting).
-    const status = screen.getByTestId('agent-status-running')
-    expect(status).toHaveAttribute('data-awaiting', 'true')
+    const badge = screen.getByTestId('agent-avatar-badge-test-agent')
+    expect(badge).toHaveAccessibleName('needs input')
+    expect(badge).toHaveClass('bg-orange-500')
     expect(screen.queryByLabelText('unread notifications')).not.toBeInTheDocument()
+  })
+
+  it('keeps the unread dot on the avatar while the agent is working', () => {
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ hasActiveSessions: true, hasUnreadNotifications: true })],
+      isLoading: false,
+      error: null,
+    })
+    renderWithProviders(<AppSidebar />)
+    const badge = screen.getByTestId('agent-avatar-badge-test-agent')
+    expect(badge).toHaveAccessibleName('unread notifications')
+    expect(badge).toHaveClass('bg-blue-500')
+  })
+
+  it('shows the notification preview in place of the last run while badged', () => {
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ hasUnreadNotifications: true, notificationPreview: 'Drafted the weekly update.' })],
+      isLoading: false,
+      error: null,
+    })
+    renderWithProviders(<AppSidebar />)
+    expect(screen.getByTestId('agent-notification-preview-test-agent')).toHaveTextContent('Drafted the weekly update.')
+  })
+
+  it('keeps the last run when the badge is suppressed on an expanded row', () => {
+    mockUseAgents.mockReturnValue({
+      data: [makeAgent({ hasUnreadNotifications: true, notificationPreview: 'Drafted the weekly update.' })],
+      isLoading: false,
+      error: null,
+    })
+    mockRouteParams = { slug: 'test-agent' }
+    renderWithProviders(<AppSidebar />)
+    expect(screen.queryByTestId('agent-notification-preview-test-agent')).not.toBeInTheDocument()
   })
 })
 
@@ -1719,8 +1775,8 @@ describe('AppSidebar — agent folders', () => {
     expect(follows(button, screen.getByTestId('settings-button'))).toBe(true)
     // The same space above it as above each section header, so the gaps
     // down the list stay uniform.
-    expect(button.closest('li')?.className).toContain('mt-2')
-    expect(screen.getByTestId('agent-folder-f1').closest('li')?.className).toContain('mt-2')
+    expect(button.closest('li')?.className).toContain('mt-4')
+    expect(screen.getByTestId('agent-folder-f1').closest('li')?.className).toContain('mt-4')
   })
 
   it('still renders folders when the user has no agents at all', () => {

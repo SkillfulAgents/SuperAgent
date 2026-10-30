@@ -23,7 +23,7 @@ interface Follow {
 }
 
 function stillFrame(state: OrbState, restingPhi: number): OrbFrame {
-  if (state === 'sleeping') return sleepingFrame(0)
+  if (state === 'sleeping') return sleepingFrame(0, restingPhi)
   if (state === 'done') return doneFrame(2)
   if (state === 'needs-input') return needsInputFrame(0)
   return restFrame(restingPhi)
@@ -153,7 +153,7 @@ export class OrbAnimation {
     const { restingPhi } = this.config
     const phase = (((restingPhi % 360) + 360) % 360) / 360 * 5.3
     if (this.state === 'idle') return idleFrame(t + phase, restingPhi)
-    if (this.state === 'sleeping') return sleepingFrame(t + phase)
+    if (this.state === 'sleeping') return sleepingFrame(t + phase, restingPhi)
     if (this.state === 'done') return doneFrame(t)
     if (this.state === 'needs-input') return needsInputFrame(t)
     return restFrame(restingPhi)
