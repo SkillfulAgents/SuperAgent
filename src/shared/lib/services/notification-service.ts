@@ -206,6 +206,7 @@ export async function getUnreadNotificationsByAgents(agentSlugs: string[], viewe
 }
 
 export interface UnreadNotificationPreview {
+  id: string
   sessionId: string
   type: NotificationType
   /** The start of the body, enough for one truncated line. */
@@ -225,6 +226,7 @@ export async function getUnreadNotificationPreviewsByAgents(agentSlugs: string[]
       sessionId: notifications.sessionId,
       type: notifications.type,
       text: sql<string>`substr(${notifications.body}, 1, 200)`,
+      id: notifications.id,
     })
     .from(notifications)
     .where(and(

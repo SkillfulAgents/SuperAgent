@@ -1,3 +1,4 @@
+import { readNotifications } from '@renderer/lib/notification-read-cache'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ApiNotification } from '@shared/lib/types/api'
@@ -46,65 +47,26 @@ export function useUnreadNotificationCount() {
  */
 export function useMarkNotificationRead() {
   const queryClient = useQueryClient()
-
   return useMutation({
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async (notificationId: string) => {
-      const res = await apiFetch(`/api/notifications/${notificationId}/read`, {
-        method: 'POST',
-      })
-      if (!res.ok) throw new Error('Failed to mark notification as read')
-      return res.json()
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['notifications'] })
-    },
+    mutationFn: (id: string) => readNotifications(queryClient, { kind: 'notification', id }),
   })
 }
 
-/**
- * Mark all notifications as read
- */
+/** Mark all notifications read without a follow-up list request. */
 export function useMarkAllNotificationsRead() {
   const queryClient = useQueryClient()
-
   return useMutation({
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async () => {
-      const res = await apiFetch('/api/notifications/read-all', {
-        method: 'POST',
-      })
-      if (!res.ok) throw new Error('Failed to mark all notifications as read')
-      return res.json()
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['notifications'] })
-    },
+    mutationFn: () => readNotifications(queryClient, { kind: 'all' }),
   })
 }
 
-/**
- * Mark all notifications for a session as read
- */
+/** Mark a session's notifications read; personal unread reminders are separate. */
 export function useMarkSessionNotificationsRead() {
   const queryClient = useQueryClient()
-
   return useMutation({
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async (sessionId: string) => {
-      const res = await apiFetch(`/api/notifications/read-by-session/${sessionId}`, {
-        method: 'POST',
-      })
-      if (!res.ok) throw new Error('Failed to mark session notifications as read')
-      return res.json()
-    },
-    onSuccess: (_, sessionId) => {
-      queryClient.invalidateQueries({ queryKey: ['notifications'] })
-      // Also invalidate sessions so the sidebar's unread dot disappears
-      queryClient.invalidateQueries({ queryKey: ['sessions'] })
-      // The tab title reads the session detail, which has a separate cache key.
-      // Refresh it too so a read notification stays cleared when the tab hides.
-      queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
-    },
+    mutationFn: (sessionId: string) => readNotifications(queryClient, { kind: 'session', sessionId }),
   })
 }

@@ -53,6 +53,10 @@ export interface ApiAgent {
    * unread by hand or a pending proxy review.
    */
   notificationPreview?: string
+  /** Identity of the notification shown, for optimistic read updates. */
+  notificationPreviewSource?: { id: string; sessionId: string }
+  /** Personal reminders survive marking notifications read. */
+  markedUnreadSessionIds?: string[]
   sessionCount?: number
   lastActivityAt?: Date | null
   dashboards?: ApiAgentDashboard[]
