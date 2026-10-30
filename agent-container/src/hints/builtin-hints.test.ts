@@ -48,6 +48,12 @@ const CASES: Array<[string, HintEventInput, string[]]> = [
   ['after a sign-in step', after('mcp__user-input__request_login', { message: 'Sign in to MockMail.', fields: [] }), ['sign-in-verify-way']],
   ['before a sign-in step', before('mcp__user-input__request_login', { message: 'Sign in to MockMail.' }), []],
   ['browser hand-over', before('mcp__user-input__request_browser_input', { message: 'Solve the CAPTCHA.' }), []],
+  ['run faster-whisper with uv', bash('cd /tmp/review && uv run --with faster-whisper python -I scripts/tr.py audio.wav transcript.txt'), ['builtin-transcription', 'uv-run-env-file']],
+  ['write a faster_whisper script', bash("cat > tr.py <<'EOF'\nfrom faster_whisper import WhisperModel\nEOF"), ['builtin-transcription']],
+  ['install openai-whisper', bash('pip install -U openai-whisper'), ['builtin-transcription']],
+  ['whisper command line', bash('whisper meeting.mp3 --model small'), ['builtin-transcription']],
+  ['list a whisper folder', bash('ls whisper-models'), []],
+  ['grep for whisper', bash('grep -r whisper notes/'), []],
 ]
 
 describe('built-in hints: which hints each call triggers', () => {
