@@ -1084,8 +1084,9 @@ agents.get('/discoverable-agents', async (c) => {
     const skillsets = getConfiguredSkillsets()
     const shouldRefresh = c.req.query('refresh') === 'true'
 
+    // The renderer asks for this once per page load, in the background, like opening an agent.
     if (shouldRefresh) {
-      await refreshSkillsetCaches(skillsets)
+      await refreshSkillsetCaches(skillsets, { background: true })
     }
 
     const discoverableAgents = await getDiscoverableAgents(skillsets)
