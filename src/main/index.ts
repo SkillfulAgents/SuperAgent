@@ -349,7 +349,7 @@ function createWindow() {
       // position over IPC whenever the sidebar collapsed, back when an expanded
       // sidebar had a taller header to align with.
       trafficLightPosition: { x: 21, y: 23 },
-      vibrancy: 'sidebar' as const,
+      vibrancy: 'header' as const,
       visualEffectState: 'active' as const,
     }),
     ...(process.platform === 'win32' && {
