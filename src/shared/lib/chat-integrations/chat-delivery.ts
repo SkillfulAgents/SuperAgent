@@ -99,7 +99,8 @@ export const BUSY_ACTIVITIES: ReadonlySet<SessionActivity> = new Set([
  * EVERY call, because on Telegram that re-render is the keep-alive. Non-busy tears
  * it down idempotently. Driven by the per-session tick (the only paint) and the
  * cold-subscribe snapshot. The connector owns how each activity renders (Telegram
- * labels a draft, Slack reacts); the app draws its own indicator and is untouched.
+ * labels a draft, Slack sets its status line); the app draws its own indicator
+ * and is untouched.
  */
 export function reconcileIndicator(managed: ManagedConnector, activity: SessionActivity): void {
   if (BUSY_ACTIVITIES.has(activity)) {
