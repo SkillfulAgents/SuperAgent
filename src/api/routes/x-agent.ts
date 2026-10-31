@@ -239,6 +239,10 @@ async function checkAgentPolicy(
     if (userDecision === 'deny') {
       return { allowed: false, reason: 'Denied by user' }
     }
+    // A Block set while the card was open beats the approval.
+    if (operation !== 'create' && await evaluatePolicy(callerSlug, operation, targetSlug) === 'block') {
+      return { allowed: false, reason: 'Blocked by policy' }
+    }
     return { allowed: true }
   } catch (error) {
     return {
