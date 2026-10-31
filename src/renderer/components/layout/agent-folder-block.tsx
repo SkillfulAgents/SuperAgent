@@ -374,10 +374,10 @@ export function AgentFolderBlock({
   const isAgentTarget = (isOver || isBodyOver) && activeDragType === 'agent'
 
   return (
-    // mt-2: air above each section header. A margin, not padding, so the
+    // mt-4: air above each section header. A margin, not padding, so the
     // header's absolutely placed buttons (top-4 = the header's centre) and the
     // insert line keep their offsets from the block's top edge.
-    <li ref={setNodeRef} style={style} className="group/folder-block relative mt-2 list-none">
+    <li ref={setNodeRef} style={style} className="group/folder-block relative mt-4 list-none">
       {insertEdge && !isDragging && (
         // A folder over a folder is a reorder, not a nest — folders do not
         // nest — so it gets an insert line rather than the fill an agent drop
@@ -490,23 +490,23 @@ export function AgentFolderBlock({
           // the way they always did under the old "Your Agents" label.
           className={cn(isBodyOver && activeDragType === 'agent' && 'rounded-md bg-sidebar-accent/40')}
         >
-          <ul className="flex w-full min-w-0 flex-col gap-2">{children}</ul>
+          <ul className="flex w-full min-w-0 flex-col gap-2.5">{children}</ul>
           {agentCount === 0 && (
             // An empty folder has no rows to aim at, so it needs a body with
             // real height or it cannot be dropped into at all. A grey ghost
-            // orb sits in an agent row's avatar slot (40px row, slot at left
-            // 4px), so the empty state lines up with the rows that will replace
+            // orb sits in an agent row's avatar slot (44px row, slot at left
+            // 8px), so the empty state lines up with the rows that will replace
             // it; beside it, two quiet lines in the section label's type. The
             // body around it carries the fill while an agent is dragged over,
             // and the ghost and text firm up with it.
             <div
-              className="relative flex h-10 min-w-0 flex-col justify-center pl-[42px] pr-2"
+              className="relative flex h-11 min-w-0 flex-col justify-center pl-[50px] pr-2"
               data-testid={`agent-folder-empty-${folder.id}`}
             >
               <span
                 aria-hidden
                 className={cn(
-                  'pointer-events-none absolute left-1 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center transition-opacity',
+                  'pointer-events-none absolute left-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center transition-opacity',
                   isBodyOver ? 'opacity-80' : 'opacity-45'
                 )}
                 data-testid={`section-ghost-${folder.id}`}

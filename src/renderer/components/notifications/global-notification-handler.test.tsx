@@ -40,7 +40,7 @@ vi.mock('@renderer/lib/os-notifications', () => ({
 }))
 
 vi.mock('@renderer/lib/api', () => ({
-  apiFetch: vi.fn(() => Promise.resolve({ ok: true })),
+  apiFetch: vi.fn(() => Promise.resolve({ ok: true, json: async () => ({ success: true }) })),
 }))
 
 vi.mock('@renderer/router/use-route-location', () => ({
@@ -123,7 +123,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     // restoreAllMocks (afterEach) wipes the factory implementation, so
     // re-establish it: the handler does apiFetch(...).then(...) and a bare
     // undefined return would throw.
-    vi.mocked(apiFetch).mockResolvedValue({ ok: true } as unknown as Response)
+    vi.mocked(apiFetch).mockResolvedValue({ ok: true, json: async () => ({ success: true }) } as unknown as Response)
   })
 
   afterEach(() => {
@@ -430,7 +430,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     // No OS popup (the user is watching it live), but the backend-created
     // record is marked read so the unread badge doesn't inflate.
     expect(showOSNotification).not.toHaveBeenCalled()
-    expect(apiFetch).toHaveBeenCalledWith('/api/notifications/notif-9/read', { method: 'POST' })
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/api/notifications/notif-9/read', { method: 'POST' }))
   })
 
   it('also invalidates sessions query (for sidebar awaiting_input indicator)', () => {
@@ -654,6 +654,13 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
   })
 
   it('suppressed notification clears an already-cached unread dot once the record is marked read', async () => {
+    const { apiFetch } = await import('@renderer/lib/api')
+    vi.mocked(apiFetch).mockResolvedValue({ ok: true, json: async () => ({
+      success: true, readState: { count: 0, mentions: 0, agents: [{
+        slug: 'my-agent', hasUnreadNotifications: false, hasUnreadMention: false,
+        markedUnreadSessionIds: [], unreadSessionIds: [], mentionedSessionIds: [],
+      }] },
+    }) } as unknown as Response)
     Object.defineProperty(document, 'visibilityState', {
       configurable: true,
       get: () => 'visible',

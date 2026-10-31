@@ -67,6 +67,28 @@ describe('SlackConnector tool groups', () => {
     expect(postMessage.mock.calls.filter((c: any) => c[0].blocks).map(cardsIn)).toEqual([['t1:in_progress'], ['t2:in_progress']])
   })
 
+  it.each([
+    { format: 'standard markdown', chunkSize: 12000, converted: false },
+    { format: 'converted text', chunkSize: 2500, converted: true },
+  ])('closes the group after each $format chunk, before the last chunk lands', async ({ chunkSize, converted }) => {
+    const { connector, postMessage } = makeConnector()
+    await start(connector, 't1')
+    if (converted) {
+      postMessage.mockRejectedValueOnce(Object.assign(new Error('invalid_blocks'), {
+        code: 'slack_webapi_platform_error', data: { ok: false, error: 'invalid_blocks' },
+      }))
+    }
+    postMessage.mockResolvedValueOnce({ ok: true, ts: '2000.001' })
+    postMessage.mockImplementationOnce(async () => {
+      await start(connector, 't2')
+      return { ok: true, ts: '2000.002' }
+    })
+
+    await connector.sendMessage('D1', { text: 'a'.repeat(chunkSize) + '\n\n' + 'b'.repeat(chunkSize) })
+
+    expect(postMessage.mock.calls.filter((c: any) => c[0].blocks?.[0]?.type === 'task_card').map(cardsIn)).toEqual([['t1:in_progress'], ['t2:in_progress']])
+  })
+
   it('starts a new group past the card limit, and routes the last tool\'s outcome to it', async () => {
     const { connector, postMessage, update } = makeConnector()
 

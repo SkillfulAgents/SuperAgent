@@ -1,5 +1,15 @@
-import { test, expect, type BrowserContext } from '@playwright/test'
+import { test, expect, type BrowserContext, type Locator } from '@playwright/test'
 import { PNG } from 'pngjs'
+
+async function expectRosterHittable(roster: Locator) {
+  await expect.poll(() => roster.evaluate(element => {
+    const bounds = element.getBoundingClientRect()
+    return [0.25, 0.75].every(fraction => element.contains(document.elementFromPoint(
+      bounds.x + bounds.width * fraction,
+      bounds.y + bounds.height / 2,
+    )))
+  })).toBe(true)
+}
 
 test('members share one live roster while invitation and revocation follow permissions', async ({ browser, page, baseURL }) => {
   test.setTimeout(90_000)
@@ -27,19 +37,18 @@ test('members share one live roster while invitation and revocation follow permi
     await expect(ownerStack).toHaveCount(0)
     await expect(page.getByTestId(`sidebar-members-${agent.slug}`)).toHaveCount(0)
 
-    // The stretched name link must not cover the status slot; for a member who
-    // can start sessions, the new-session pen sits on top of the status icon.
+    // The stretched name link must not cover the trailing slot; for a member
+    // who can start sessions, the new-session pen is what a pointer hits there.
     const agentLink = page.getByTestId(`agent-item-${agent.slug}`)
     const agentRow = page.locator('[data-sidebar="menu-button"]').filter({ has: agentLink })
-    const status = agentRow.getByTestId('agent-status')
     const newSession = agentRow.getByTestId(`agent-new-session-${agent.slug}`)
+    await agentLink.hover()
     await newSession.hover()
-    const bounds = (await status.boundingBox())!
+    const bounds = (await newSession.boundingBox())!
     expect(await newSession.evaluate((pen, point) => pen.contains(document.elementFromPoint(point.x, point.y)), {
       x: bounds.x + bounds.width / 2,
       y: bounds.y + bounds.height / 2,
     })).toBe(true)
-    await expect(status).toHaveAttribute('title', 'sleeping')
 
     // Private agents retain Share; the same pane stays open when the first invite makes it shared.
     await page.getByTestId('agent-share-button').click()
@@ -66,6 +75,7 @@ test('members share one live roster while invitation and revocation follow permi
     expect((await users[7].context.request.get(`${endpoint}/members`)).status()).toBe(403)
 
     await viewer.getByTestId(`sidebar-members-${agent.slug}`).click()
+    await expectRosterHittable(viewer.getByTestId(`sidebar-members-${agent.slug}`))
     await expect(viewer.getByTestId(`sidebar-members-invite-${agent.slug}`)).toHaveCount(0)
     await viewer.keyboard.press('Escape')
 
@@ -73,7 +83,12 @@ test('members share one live roster while invitation and revocation follow permi
     await page.goto('/')
     const sidebarStack = page.getByTestId(`sidebar-members-${agent.slug}`)
     const sidebarRoster = page.getByTestId(`sidebar-members-list-${agent.slug}`)
+    // The hidden new-session control must not cover the resting faces, and
+    // the options button must leave the whole roster reachable on hover.
+    await page.mouse.move(500, 100)
+    await expectRosterHittable(sidebarStack)
     await sidebarStack.click()
+    await expectRosterHittable(sidebarStack)
     await page.getByTestId(`sidebar-members-invite-${agent.slug}`).click()
     await expect(sharing.getByTestId('invite-search-input')).toBeFocused()
     await sharing.getByTestId('invite-search-input').fill(users[2].email)
@@ -134,6 +149,15 @@ test('members share one live roster while invitation and revocation follow permi
     const inviteBounds = await mobile.getByTestId('agent-share-button').boundingBox()
     expect(inviteBounds!.x).toBeGreaterThanOrEqual(0)
     expect(inviteBounds!.x + inviteBounds!.width).toBeLessThanOrEqual(390)
+
+    // A finger can open the sidebar roster without hitting the hidden pen.
+    await mobile.keyboard.press('Escape')
+    await mobile.getByRole('button', { name: 'Toggle Sidebar' }).tap()
+    const mobileRoster = mobile.getByTestId(`sidebar-members-${agent.slug}`)
+    await expectRosterHittable(mobileRoster)
+    await mobileRoster.tap()
+    await expect(mobile.getByTestId(`sidebar-members-list-${agent.slug}`).getByRole('listitem')).toHaveCount(7)
+    await expect(mobile).toHaveURL(new RegExp(`/agents/[^/]*${agent.slug}$`))
 
     expect((await page.request.delete(`${endpoint}/access/${users[1].id}`)).ok()).toBeTruthy()
     await expect(viewer).toHaveURL(`${baseURL}/`)

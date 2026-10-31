@@ -397,7 +397,7 @@ const SidebarInset = React.forwardRef<
       {/* The content is clipped here rather than on <main>: Chromium clips to a round
           corner cheaply, but clipping it to <main>'s corner-shape blanked regions of
           the window for single frames (see useInsetRadius). */}
-      <div className="flex flex-1 flex-col md:group-has-[[data-variant=inset]]/sidebar-wrapper:relative md:group-has-[[data-variant=inset]]/sidebar-wrapper:overflow-hidden md:group-has-[[data-variant=inset]]/sidebar-wrapper:rounded-[var(--inset-clip-radius,16px)]">
+      <div data-inset-content className="flex flex-1 flex-col md:group-has-[[data-variant=inset]]/sidebar-wrapper:relative md:group-has-[[data-variant=inset]]/sidebar-wrapper:overflow-hidden md:group-has-[[data-variant=inset]]/sidebar-wrapper:rounded-[var(--inset-clip-radius,16px)]">
         {children}
       </div>
     </main>

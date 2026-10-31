@@ -573,3 +573,82 @@ describe('SlackConnector status line', () => {
     expect(setStatus).toHaveBeenCalledTimes(1)
   })
 })
+
+// ── Standard markdown text ───────────────────────────────────────────────
+
+describe('SlackConnector text', () => {
+  const rejected = Object.assign(new Error('An API error occurred: invalid_blocks'), {
+    code: 'slack_webapi_platform_error', data: { ok: false, error: 'invalid_blocks' },
+  })
+
+  function makeConnector() {
+    const connector = new SlackConnector({ botToken: 'xoxb-fake', appToken: 'xapp-fake' })
+    const postMessage = vi.fn().mockResolvedValue({ ok: true, ts: '200.1' })
+    const update = vi.fn().mockResolvedValue({ ok: true })
+    ;(connector as any).app = { client: { chat: { postMessage, update }, assistant: { threads: { setStatus: vi.fn() } } } }
+    return { connector, postMessage, update }
+  }
+
+  it('posts an answer up to 12,000 chars as one standard-markdown message, tables kept monospace', async () => {
+    const { connector, postMessage } = makeConnector()
+    const answer = '## Result\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n' + 'x'.repeat(5000)
+    await connector.sendMessage('D1', { text: answer })
+
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    const body = postMessage.mock.calls[0][0]
+    expect(body.text).toBeUndefined()
+    expect(body.markdown_text).toContain('## Result')
+    expect(body.markdown_text).toContain('```\nA  B')
+  })
+
+  it('posts as converted text when Slack refuses the markdown blocks', async () => {
+    const { connector, postMessage } = makeConnector()
+    postMessage.mockRejectedValueOnce(rejected)
+    await connector.sendMessage('D1', { text: '## Title\n\n**bold**' })
+
+    expect(postMessage).toHaveBeenLastCalledWith(expect.objectContaining({ text: '*Title*\n\n*bold*', mrkdwn: true }))
+  })
+
+  it('a first streamed post Slack refuses becomes one converted message that stays converted', async () => {
+    const { connector, postMessage, update } = makeConnector()
+    postMessage.mockRejectedValueOnce(rejected)
+    const long = '## Start\n\n' + 'a'.repeat(2000) + '\n\n' + 'b'.repeat(2000)
+    const ts = await connector.sendStreamingUpdate('D1', long)
+    await connector.sendStreamingUpdate('D1', long + ' more', ts)
+
+    expect(postMessage).toHaveBeenCalledTimes(2)
+    expect(postMessage.mock.calls[1][0].text).toMatch(/full response will appear when done\)$/)
+    expect(update).toHaveBeenCalledTimes(1)
+    expect(update.mock.calls[0][0]).toEqual(expect.objectContaining({ ts, text: expect.stringContaining('*Start*') }))
+  })
+
+  it('a final edit Slack refuses finishes as converted text, overflow included', async () => {
+    const { connector, postMessage, update } = makeConnector()
+    update.mockRejectedValueOnce(rejected)
+    await connector.finalizeStreamingMessage('D1', '200.1', '## Done\n\n' + 'a'.repeat(2500) + '\n\n' + 'b'.repeat(2500))
+
+    expect(update).toHaveBeenLastCalledWith(expect.objectContaining({ ts: '200.1', text: expect.stringContaining('*Done*') }))
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    expect(postMessage.mock.calls[0][0]).toEqual(expect.objectContaining({ text: 'b'.repeat(2500), mrkdwn: true }))
+    expect(postMessage.mock.calls[0][0].markdown_text).toBeUndefined()
+  })
+
+  it('a table followed by prose keeps the closing fence on its own line', async () => {
+    const { connector, postMessage } = makeConnector()
+    await connector.sendMessage('D1', { text: '| A | B |\n|---|---|\n| 1 | 2 |\nNext paragraph' })
+
+    expect(postMessage.mock.calls[0][0].markdown_text).toMatch(/```\nNext paragraph$/)
+  })
+
+  it('a streamed message Slack refuses finishes as converted text', async () => {
+    const { connector, update } = makeConnector()
+    update.mockRejectedValueOnce(rejected)
+    await connector.sendStreamingUpdate('D1', '## Many headings', '200.1')
+    await connector.sendStreamingUpdate('D1', '## Many headings, more', '200.1')
+    await connector.finalizeStreamingMessage('D1', '200.1', '## Many headings, done')
+
+    expect(update.mock.calls.map(([args]) => Object.keys(args).includes('markdown_text') ? 'markdown' : args.text)).toEqual([
+      'markdown', '*Many headings*', '*Many headings, more*', '*Many headings, done*',
+    ])
+  })
+})

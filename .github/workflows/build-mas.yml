@@ -135,6 +135,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # For scripts/build-limactl.sh: the Store build's limactl is built from
+      # source, without the private Virtualization.framework class in Lima's
+      # release binary (https://github.com/lima-vm/lima/issues/5705). The script
+      # fetches the Go version Lima's release was built with; any recent Go
+      # starts it.
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+
       - name: Download the Lima VM image
         uses: actions/download-artifact@v4
         with:
@@ -163,6 +174,24 @@ jobs:
           MAS_BUILD_NUMBER: ${{ inputs.build-number }}
           AGENT_IMAGE_REQUIRED: ${{ inputs.require-agent-image }}
         run: npm run dist:mas
+
+      # App Review rejects an app whose binaries reference a private
+      # Virtualization.framework class, as Lima's release limactl does: make sure
+      # the one packaged is the source build.
+      - name: Check the packaged limactl references no private classes
+        shell: bash
+        run: |
+          shopt -s nullglob
+          limactl=(release/mas-arm64/*.app/Contents/Resources/lima/bin/limactl)
+          if [ "${#limactl[@]}" -ne 1 ]; then
+            echo "::error::Expected one limactl in release/mas-arm64, found ${#limactl[@]}"
+            exit 1
+          fi
+          if nm -u "${limactl[0]}" | grep -F '_OBJC_CLASS_$__'; then
+            echo "::error::The packaged limactl references the private classes above, which App Review rejects (see scripts/build-limactl.sh)"
+            exit 1
+          fi
+          echo "limactl references no private classes"
 
       - name: Upload the package
         uses: actions/upload-artifact@v4

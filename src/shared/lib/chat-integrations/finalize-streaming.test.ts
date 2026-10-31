@@ -34,7 +34,7 @@ describe('SlackConnector.finalizeStreamingMessage', () => {
   })
 
   it('splits long messages: updates first chunk, posts the rest', async () => {
-    const longText = 'a'.repeat(2000) + '\n\n' + 'b'.repeat(2000)
+    const longText = 'a'.repeat(7000) + '\n\n' + 'b'.repeat(7000)
 
     await connector.finalizeStreamingMessage('C123', '1000.001', longText)
 
@@ -46,29 +46,29 @@ describe('SlackConnector.finalizeStreamingMessage', () => {
     expect(mockPostMessage).toHaveBeenCalledTimes(1)
     expect(mockPostMessage).toHaveBeenCalledWith(expect.objectContaining({
       channel: 'C123',
-      mrkdwn: true,
+      markdown_text: 'b'.repeat(7000),
     }))
   })
 
   it('does not truncate — full content is preserved across chunks', async () => {
-    const para1 = 'a'.repeat(2500)
-    const para2 = 'b'.repeat(2500)
+    const para1 = 'a'.repeat(7000)
+    const para2 = 'b'.repeat(7000)
     const longText = `${para1}\n\n${para2}`
 
     await connector.finalizeStreamingMessage('C123', '1000.001', longText)
 
-    const updateText: string = mockUpdate.mock.calls[0][0].text
-    const postText: string = mockPostMessage.mock.calls[0][0].text
+    const updateText: string = mockUpdate.mock.calls[0][0].markdown_text
+    const postText: string = mockPostMessage.mock.calls[0][0].markdown_text
     const combined = updateText + postText
 
     expect(combined).not.toContain('truncated')
-    expect(combined).toContain('a'.repeat(2500))
-    expect(combined).toContain('b'.repeat(2500))
+    expect(combined).toContain('a'.repeat(7000))
+    expect(combined).toContain('b'.repeat(7000))
   })
 
   it('preserves thread_ts for follow-up chunks in threaded conversations', async () => {
     // Simulate a thread context by using a composite chatId
-    const longText = 'a'.repeat(2000) + '\n\n' + 'b'.repeat(2000)
+    const longText = 'a'.repeat(7000) + '\n\n' + 'b'.repeat(7000)
 
     await connector.finalizeStreamingMessage('C123|1000.001', '1000.002', longText)
 
@@ -78,7 +78,7 @@ describe('SlackConnector.finalizeStreamingMessage', () => {
   })
 
   it('handles three chunks correctly', async () => {
-    const longText = 'a'.repeat(2500) + '\n\n' + 'b'.repeat(2500) + '\n\n' + 'c'.repeat(2500)
+    const longText = 'a'.repeat(7000) + '\n\n' + 'b'.repeat(7000) + '\n\n' + 'c'.repeat(7000)
 
     await connector.finalizeStreamingMessage('C123', '1000.001', longText)
 

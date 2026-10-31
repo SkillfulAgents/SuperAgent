@@ -36,7 +36,7 @@ import {
 import { buildSessionContextPrompt } from './chat-session-context'
 import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
 import { withSessionUrl, type AppLinkContext } from '@shared/lib/agent-integrations/app-link'
-import { isUnrecoverableSlackError } from './slack-error'
+import { isSlackBlocksRejection, isUnrecoverableSlackError } from './slack-error'
 import { MAX_TRACKED_SLACK_THREADS, type SlackThreadStateStore } from './slack-thread-state'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
@@ -48,6 +48,7 @@ export type SlackConfig = StoredSlackConfig
 // ── Slack limits ────────────────────────────────────────────────────────
 
 const MAX_MESSAGE_LENGTH = 3000 // Slack's mrkdwn rendering gets unreliable past ~4000; be conservative
+const MARKDOWN_TEXT_LENGTH = 12000 // Slack's markdown_text limit
 
 // ── Markdown → Slack mrkdwn ─────────────────────────────────────────────
 
@@ -96,8 +97,17 @@ export function markdownToSlackMrkdwn(md: string): string {
   // Blockquotes: > text → > text (Slack supports this natively)
   // Already compatible, no change needed
 
-  // Tables: convert to monospace pre block
-  result = result.replace(
+  result = tablesToMonospace(result)
+
+  // Clean up excessive newlines
+  result = result.replace(/\n{3,}/g, '\n\n')
+
+  return result.trim()
+}
+
+/** Tables as monospace blocks: Slack's plain-text fallback drops its own tables' content. */
+function tablesToMonospace(md: string): string {
+  return md.replace(
     /(?:^[|].*[|]$\n?)+/gm,
     (match) => {
       const lines = match.trim().split('\n')
@@ -126,14 +136,10 @@ export function markdownToSlackMrkdwn(md: string): string {
         }
       }
       out += '```'
-      return out
+      // Keep the newline the match consumed: a closing fence needs its own line.
+      return match.endsWith('\n') ? out + '\n' : out
     },
   )
-
-  // Clean up excessive newlines
-  result = result.replace(/\n{3,}/g, '\n\n')
-
-  return result.trim()
 }
 
 // ── Session system prompt ───────────────────────────────────────────────
@@ -497,6 +503,8 @@ export class SlackConnector extends ChatAgentIntegration {
 
   // Last user message ts per chat: where the status line sits when the reply is not in a thread
   private lastUserMessageTs: Map<string, string> = new Map()
+  // Messages Slack refused as markdown, so their edits stay converted text. Finalize clears its own, the rest clear at disconnect.
+  private convertedMessages: Set<string> = new Set()
 
   private status: Map<string, SlackStatus> = new Map()
   // The tool group a new tool joins, per chat. Any other post or an inbound message closes it.
@@ -905,6 +913,7 @@ export class SlackConnector extends ChatAgentIntegration {
     this.toolGroupClosedAt.clear()
     this.toolCards.clear()
     this.lastUserMessageTs.clear()
+    this.convertedMessages.clear()
     this.threadContextMap.clear()
     this.activeThreads.clear()
     this.userNameCache.clear()
@@ -944,20 +953,9 @@ export class SlackConnector extends ChatAgentIntegration {
   async sendMessage(chatId: string, message: OutgoingMessage): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
 
-    const { channel, threadTs } = this.resolveChannel(chatId)
-    const mrkdwn = markdownToSlackMrkdwn(message.text || '(empty message)')
-    const chunks = splitChatMessage(mrkdwn, MAX_MESSAGE_LENGTH)
-
     let lastTs = ''
-    for (const chunk of chunks) {
-      const result = await this.app.client.chat.postMessage({
-        channel,
-        text: chunk,
-        mrkdwn: true,
-        ...(threadTs ? { thread_ts: threadTs } : {}),
-      })
-      lastTs = result.ts || ''
-      this.posted(chatId)
+    for (const chunk of splitChatMessage(tablesToMonospace(message.text || '(empty message)'), MARKDOWN_TEXT_LENGTH)) {
+      lastTs = await this.postText(chatId, chunk)
     }
 
     return lastTs
@@ -985,30 +983,19 @@ export class SlackConnector extends ChatAgentIntegration {
   async sendStreamingUpdate(chatId: string, text: string, existingMessageId?: string): Promise<string> {
     if (!this.app) throw new Error('Slack app not connected')
 
-    const { channel, threadTs } = this.resolveChannel(chatId)
-    const truncated = text.length > MAX_MESSAGE_LENGTH
-      ? text.slice(0, MAX_MESSAGE_LENGTH - 60) + '\n\n... (full response will appear when done)'
-      : text
-    const displayText = markdownToSlackMrkdwn(truncated || ':hourglass_flowing_sand: Thinking...')
+    const { channel } = this.resolveChannel(chatId)
+    const md = tablesToMonospace(text)
+    const draft = (limit: number) => (md.length > limit
+      ? md.slice(0, limit - 60) + '\n\n... (full response will appear when done)'
+      : md) || ':hourglass_flowing_sand: Thinking...'
 
     if (!existingMessageId) {
-      const result = await this.app.client.chat.postMessage({
-        channel,
-        text: displayText,
-        mrkdwn: true,
-        ...(threadTs ? { thread_ts: threadTs } : {}),
-      })
-      this.posted(chatId)
-      return result.ts || ''
+      return this.postText(chatId, draft(MARKDOWN_TEXT_LENGTH), () => [markdownToSlackMrkdwn(draft(MAX_MESSAGE_LENGTH))])
     }
 
     // Edit existing message
     try {
-      await this.app.client.chat.update({
-        channel,
-        ts: existingMessageId,
-        text: displayText,
-      })
+      await this.updateText(channel, existingMessageId, draft(MARKDOWN_TEXT_LENGTH), () => markdownToSlackMrkdwn(draft(MAX_MESSAGE_LENGTH)))
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err)
       // Slack returns this when text hasn't changed
@@ -1022,25 +1009,17 @@ export class SlackConnector extends ChatAgentIntegration {
   async finalizeStreamingMessage(chatId: string, messageId: string, finalText: string): Promise<void> {
     if (!this.app) return
 
-    const { channel, threadTs } = this.resolveChannel(chatId)
-    const mrkdwn = markdownToSlackMrkdwn(finalText || '(empty response)')
-    const chunks = splitChatMessage(mrkdwn, MAX_MESSAGE_LENGTH)
+    const { channel } = this.resolveChannel(chatId)
+    const md = tablesToMonospace(finalText || '(empty response)')
 
     try {
-      await this.app.client.chat.update({
-        channel,
-        ts: messageId,
-        text: chunks[0],
-      })
-
-      for (let i = 1; i < chunks.length; i++) {
-        await this.app.client.chat.postMessage({
-          channel,
-          text: chunks[i],
-          mrkdwn: true,
-          ...(threadTs ? { thread_ts: threadTs } : {}),
-        })
-        this.posted(chatId)
+      const [first, ...rest] = splitChatMessage(md, MARKDOWN_TEXT_LENGTH)
+      const converted = () => splitChatMessage(markdownToSlackMrkdwn(md), MAX_MESSAGE_LENGTH)
+      await this.updateText(channel, messageId, first, () => converted()[0])
+      if (this.convertedMessages.delete(messageId)) {
+        await this.postConverted(chatId, converted().slice(1))
+      } else {
+        for (const chunk of rest) await this.postText(chatId, chunk)
       }
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err)
@@ -1051,6 +1030,55 @@ export class SlackConnector extends ChatAgentIntegration {
     }
 
     this.posted(chatId)
+  }
+
+  /** Post standard markdown, or `converted` chunks of today's text when Slack refuses its blocks. Returns the last ts. */
+  private async postText(
+    chatId: string,
+    md: string,
+    converted = () => splitChatMessage(markdownToSlackMrkdwn(md), MAX_MESSAGE_LENGTH),
+  ): Promise<string> {
+    if (!this.app) throw new Error('Slack app not connected')
+    const { channel, threadTs } = this.resolveChannel(chatId)
+    try {
+      const result = await this.app.client.chat.postMessage({ channel, markdown_text: md, ...(threadTs ? { thread_ts: threadTs } : {}) })
+      this.posted(chatId)
+      return result.ts || ''
+    } catch (err: unknown) {
+      if (!isSlackBlocksRejection(err)) throw err
+      console.warn('[SlackConnector] Slack refused the markdown blocks, sending converted text')
+      const ts = await this.postConverted(chatId, converted())
+      this.convertedMessages.add(ts)
+      return ts
+    }
+  }
+
+  /** Post chunks of today's converted text. Returns the last ts. */
+  private async postConverted(chatId: string, chunks: string[]): Promise<string> {
+    if (!this.app) throw new Error('Slack app not connected')
+    const { channel, threadTs } = this.resolveChannel(chatId)
+    let ts = ''
+    for (const chunk of chunks) {
+      ts = (await this.app.client.chat.postMessage({ channel, text: chunk, mrkdwn: true, ...(threadTs ? { thread_ts: threadTs } : {}) })).ts || ''
+      this.posted(chatId)
+    }
+    return ts
+  }
+
+  /** Edit to standard markdown, or to `converted` text once Slack has refused this message's blocks. */
+  private async updateText(channel: string, ts: string, md: string, converted: () => string): Promise<void> {
+    if (!this.app) throw new Error('Slack app not connected')
+    if (!this.convertedMessages.has(ts)) {
+      try {
+        await this.app.client.chat.update({ channel, ts, markdown_text: md })
+        return
+      } catch (err: unknown) {
+        if (!isSlackBlocksRejection(err)) throw err
+        console.warn('[SlackConnector] Slack refused the markdown blocks, sending converted text')
+        this.convertedMessages.add(ts)
+      }
+    }
+    await this.app.client.chat.update({ channel, ts, text: converted() })
   }
 
   async startWorking(chatId: string, activity: SessionActivity): Promise<void> {
