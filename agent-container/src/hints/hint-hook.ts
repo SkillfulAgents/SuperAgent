@@ -1,4 +1,4 @@
-import type { HookCallback, HookCallbackMatcher, HookInput } from '@anthropic-ai/claude-agent-sdk'
+import type { HookCallback, HookCallbackMatcher, HookInput, HookJSONOutput } from '@anthropic-ai/claude-agent-sdk'
 import { compileTrigger, escapeRegExp, type HintEventInput } from './hint-matchers'
 import type { Hint, HintEvent } from './hint-schema'
 
@@ -16,8 +16,9 @@ function toHintEventInput(input: HookInput): HintEventInput | undefined {
 
 /**
  * One hook for UserPromptSubmit, PreToolUse and PostToolUse. Adds the body of
- * every matched hint as additional context; it never blocks. Each hook keeps
- * its own record of shown hints, so create one per session. `currentTurn`
+ * every hint that fires (per `repeat`) as additional context. If one of them
+ * has `deny`, the tool call is refused instead, with the bodies as the reason.
+ * Each hook keeps its own record of fired hints, so create one per session. `currentTurn`
  * returns the session's user-message count.
  */
 export function createHintsHook(hints: Hint[], currentTurn: () => number): HookCallback {
@@ -27,7 +28,7 @@ export function createHintsHook(hints: Hint[], currentTurn: () => number): HookC
     if (hint.repeat === 'always' || !lastShownTurn.has(hint.name)) return true
     return hint.repeat === 'turn' && lastShownTurn.get(hint.name) !== turn
   }
-  return async (input) => {
+  return async (input): Promise<HookJSONOutput> => {
     const event = toHintEventInput(input)
     if (!event) return {}
     const turn = currentTurn()
@@ -37,8 +38,13 @@ export function createHintsHook(hints: Hint[], currentTurn: () => number): HookC
       .map(({ hint }) => hint)
     if (matched.length === 0) return {}
     for (const hint of matched) lastShownTurn.set(hint.name, turn)
+    const content = matched.map((hint) => hint.content).join('\n\n')
+    // The schema allows deny only on PreToolUse triggers.
+    if (matched.some((hint) => hint.deny)) {
+      return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: content } }
+    }
     return {
-      hookSpecificOutput: { hookEventName: event.event, additionalContext: matched.map((hint) => hint.content).join('\n\n') },
+      hookSpecificOutput: { hookEventName: event.event, additionalContext: content },
     }
   }
 }
