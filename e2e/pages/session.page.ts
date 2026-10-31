@@ -282,30 +282,24 @@ export class SessionPage {
    * are paginated to the front.
    */
   async paginateToCard(target: Locator, timeout = 5000) {
-    if (await target.isVisible()) return
-
     const deadline = Date.now() + timeout
-    // Rewind to the first card so we can walk forward deterministically.
-    const prev = this.page.locator('[data-testid="request-stack-prev"]:visible')
-    while (Date.now() < deadline) {
-      if (await prev.count() === 0) break
-      const disabled = await prev.first().isDisabled()
-      if (disabled) break
-      await prev.first().click()
-    }
+    const remaining = () => Math.max(1, deadline - Date.now())
+    let backwards = true
 
-    const next = this.page.locator('[data-testid="request-stack-next"]:visible')
-    while (Date.now() < deadline) {
-      if (await target.isVisible()) return
-      if (await next.count() === 0) break
-      const disabled = await next.first().isDisabled()
-      if (disabled) break
-      await next.first().click()
-    }
-
-    if (!(await target.isVisible())) {
-      throw new Error('paginateToCard: target never became visible in the stack')
-    }
+    await expect.poll(async () => {
+      if (await target.isVisible()) return true
+      const before = await this.getStackPagination()
+      // Cards can be arriving or leaving the stack between renders.
+      if (!before) return false
+      if (before.index === 0) backwards = false
+      else if (before.index === before.total - 1) backwards = true
+      const direction = backwards ? 'prev' : 'next'
+      await this.page.locator(`[data-testid="request-stack-${direction}"]:visible`).first().click({ timeout: remaining() })
+      // A completed click need not have committed the new active card yet.
+      // Observe the transition before another click can skip past the target.
+      await expect.poll(() => this.getStackPagination(), { timeout: remaining() }).not.toEqual(before)
+      return target.isVisible()
+    }, { timeout, message: 'The requested card should become visible in the stack' }).toBe(true)
   }
 
   private async waitForVisibleRequestCard(testId: string, timeout = 15000, card?: Locator) {
