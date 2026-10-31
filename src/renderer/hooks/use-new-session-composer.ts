@@ -1,6 +1,6 @@
 import { useCallback } from 'react'
 import { useComposerOptions, type UseComposerOptionsArgs } from '@renderer/components/messages/composer-options'
-import type { Attachment } from '@renderer/components/messages/attachment-preview'
+import type { Attachment, ReferenceAttachment } from '@renderer/components/messages/attachment-preview'
 import { apiFetch } from '@renderer/lib/api'
 import { uploadFileChunked, type UploadProgress } from '@renderer/lib/upload'
 import { useAgentPreferences } from './use-agent-preferences'
@@ -14,6 +14,7 @@ interface NewSessionComposerOptions {
   agentSlug: string
   draftKey: string
   initialAttachments?: Attachment[]
+  references?: readonly ReferenceAttachment[]
   initialOptions?: Pick<UseComposerOptionsArgs, 'initialModel' | 'initialLlmProviderId' | 'initialEffort' | 'initialSpeed'>
   followDefaults?: boolean
   /** Dispatch waits for each selected agent's preferences before locking its defaults. */
@@ -34,6 +35,7 @@ export function useNewSessionComposer({
   agentSlug,
   draftKey,
   initialAttachments,
+  references,
   initialOptions,
   followDefaults,
   waitForAgentDefaults = false,
@@ -85,6 +87,7 @@ export function useNewSessionComposer({
     keepMessageUntilComplete: true,
     draftKey,
     initialAttachments,
+    references,
   })
 
   return { composer, composerOptions, createSession, isDisabled: disabled || composer.isUploading }
