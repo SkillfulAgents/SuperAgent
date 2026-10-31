@@ -103,10 +103,10 @@ function renderMenu(file: FolderEntry = {
   name: 'notes.md',
   path: '/workspace/reports/notes.md',
   type: 'file',
-}) {
+}, target = folder) {
   return render(
     <FolderEntryContextMenu
-      folder={folder}
+      folder={target}
       entry={file}
       bookmarks={mocks.bookmarks}
       bookmarksLoading={false}
@@ -155,6 +155,18 @@ describe('FolderFileContextMenu', () => {
     expect(screen.queryByRole('button', { name: 'Rename' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Bookmark' })).not.toBeInTheDocument()
+  })
+
+  it('offers copy and download on a drive file, and none of the workspace actions', () => {
+    window.electronAPI = { platform: 'darwin', revealInFolder: mocks.revealInFolder } as unknown as typeof window.electronAPI
+    renderMenu({ name: 'notes.md', path: '/mounts/Team Brain/notes.md', type: 'file' }, { ...folder, rootPath: '/mounts/Team Brain' })
+
+    expect(screen.getByRole('button', { name: 'Copy contents' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Download' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Bookmark' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Rename' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reveal in Finder' })).not.toBeInTheDocument()
   })
 
   it('offers directory actions without file-only copy and download actions', () => {

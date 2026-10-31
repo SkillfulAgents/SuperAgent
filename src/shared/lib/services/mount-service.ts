@@ -4,6 +4,8 @@ import { db } from '@shared/lib/db'
 import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
 import { agents, agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
 import type { ContainerVolume, MountedVolume, MountSummaryWithHealth, NotMountedVolume } from '@shared/lib/types/mount'
+import { parseMountPath } from '@shared/lib/utils/workspace-path'
+import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { instantiateVolume } from '@shared/lib/volumes/volume-factory'
 import { volumeHealth, volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
 import { prepareVolumeDefinition, selectableVolumes, storedDefinition, VolumeError, type VolumeViewer } from './volume-service'
@@ -13,16 +15,26 @@ export { volumeSummary } from '@shared/lib/volumes/volume-health'
 /** How long a container start waits for drives still making their first copy. Past it, the start goes on without them. */
 const FIRST_COPY_WAIT_MS = 20_000
 
-/** Allocate inside the INSERT so concurrent attachments cannot claim the same
- * name. With N existing mounts, N+1 candidate suffixes always suffice. */
-function availableMountName(slug: string, base: string) {
+/** Reserve the current global names, which have no attachment rows. Allocate
+ * inside the INSERT so concurrent attachments still see each other's names.
+ * Attaching a drive the agent already has globally keeps its existing name. */
+async function availableMountName(slug: string, base: string, volumeId?: string) {
+  const globals = (await getMounts(slug)).filter(mount => mount.global)
+  const inheritedName = globals.find(mount => mount.volumeId === volumeId)?.name ?? base
+  const reserved = globals.filter(mount => mount.volumeId !== volumeId).map(mount => mount.name)
+  const candidate = sql`case when n = 1 then ${inheritedName} else ${inheritedName} || '-' || n end`
+  const unreserved = reserved.length > 0
+    ? sql`${candidate} not in (${sql.join(reserved.map(name => sql`${name}`), sql`, `)})`
+    : sql`1`
+  // N occupied names need at most N+1 candidates, counting globals too.
   return sql<string>`(with recursive candidates(n) as (
     select 1 union all select n + 1 from candidates
-    where n <= (select count(*) from ${agentVolumes} where ${agentVolumes.agentSlug} = ${slug})
-  ) select case when n = 1 then ${base} else ${base} || '-' || n end from candidates
+    where n <= (select count(*) from ${agentVolumes} where ${agentVolumes.agentSlug} = ${slug}) + ${reserved.length}
+  ) select ${candidate} from candidates
     where not exists (select 1 from ${agentVolumes}
       where ${agentVolumes.agentSlug} = ${slug}
-      and ${agentVolumes.name} = case when n = 1 then ${base} else ${base} || '-' || n end)
+      and ${agentVolumes.name} = ${candidate})
+    and ${unreserved}
     order by n limit 1)`
 }
 
@@ -74,9 +86,10 @@ export async function addMount(
 ): Promise<MountedVolume> {
   const row = await prepareVolumeDefinition({ type, config, ...options }, viewer)
   const id = randomUUID()
+  const name = await availableMountName(slug, row.name)
   await batch([
     db.insert(volumeDefinitions).values(row),
-    db.insert(agentVolumes).values({ id, agentSlug: slug, volumeId: row.id, name: availableMountName(slug, row.name), createdAt: new Date() }),
+    db.insert(agentVolumes).values({ id, agentSlug: slug, volumeId: row.id, name, createdAt: new Date() }),
   ])
   const mount = (await getMounts(slug)).find(m => m.id === id)
   if (!mount) throw new VolumeError('Drive could not be loaded', 404)
@@ -91,8 +104,9 @@ export async function attachMount(slug: string, volumeId: string, viewer: Volume
   if (!source) throw new VolumeError('Drive not found', 404)
   const stored = storedDefinition(source)
   if (!stored || !instantiateVolume(stored)) throw new VolumeError('Drive configuration is unavailable', 400)
+  const name = await availableMountName(slug, source.name, volumeId)
   const result = await insertWhere(agentVolumes, {
-    id: randomUUID(), agentSlug: slug, volumeId, name: availableMountName(slug, source.name), readOnly, createdAt: new Date(),
+    id: randomUUID(), agentSlug: slug, volumeId, name, readOnly, createdAt: new Date(),
   }, exists(db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(selection)))
     // Asked for read-only, an attachment the agent already had becomes read-only too. It never becomes writable here.
     .onConflictDoUpdate({ target: [agentVolumes.agentSlug, agentVolumes.volumeId], set: { readOnly: sql`${agentVolumes.readOnly} OR excluded.read_only` } }).run()
@@ -124,6 +138,15 @@ export async function resolveVolume(slug: string, mountId: string) {
   if (!row) return null
   const ops = instantiateVolume(row, slug)
   return ops && { ops, readOnly: row.readOnly }
+}
+
+/** A path the agent sees under /mounts, read through the drive it names. The grant is resolveVolume's. */
+export async function resolveMountPath(slug: string, containerPath: string) {
+  const parsed = parseMountPath(containerPath)
+  if (!parsed) throw new WorkspaceFileError('invalid-path')
+  const row = (await getMounts(slug)).find(m => m.name === parsed.name)
+  const ops = row && instantiateVolume(row, slug)
+  return ops ? { ops, path: parsed.path } : null
 }
 
 async function judgeVolumes(slug: string) {
