@@ -13,139 +13,64 @@ function usage(overrides: Partial<SessionUsage> = {}): SessionUsage {
   }
 }
 
-describe('computeContextPercent', () => {
-  describe('new API format (input_tokens includes cached)', () => {
-    it('computes percent when input_tokens is the total', () => {
-      // 40k total tokens, 30k from cache read, 10k from cache creation
-      // input_tokens = 40k (already the total)
-      const result = computeContextPercent(usage({
-        inputTokens: 40_000,
-        cacheCreationInputTokens: 10_000,
-        cacheReadInputTokens: 30_000,
-        contextWindow: 200_000,
-      }))
-      expect(result).toBe(20)
-    })
-
-    it('does not double-count cached tokens', () => {
-      // If we naively summed: 40k + 10k + 30k = 80k → 40%
-      // Correct (new format): 40k → 20%
-      const result = computeContextPercent(usage({
-        inputTokens: 40_000,
-        cacheCreationInputTokens: 10_000,
-        cacheReadInputTokens: 30_000,
-        contextWindow: 200_000,
-      }))
-      expect(result).toBe(20)
-      expect(result).not.toBe(40)
-    })
-
-    it('handles cache hit only (no creation)', () => {
-      const result = computeContextPercent(usage({
-        inputTokens: 50_000,
-        cacheCreationInputTokens: 0,
-        cacheReadInputTokens: 45_000,
-        contextWindow: 200_000,
-      }))
-      expect(result).toBe(25)
-    })
-
-    it('handles cache creation only (no read)', () => {
-      const result = computeContextPercent(usage({
-        inputTokens: 50_000,
-        cacheCreationInputTokens: 45_000,
-        cacheReadInputTokens: 0,
-        contextWindow: 200_000,
-      }))
-      expect(result).toBe(25)
-    })
+describe('computeContextTokens', () => {
+  it('adds the uncached input to what the call read from and wrote to the cache', () => {
+    expect(computeContextTokens(usage({
+      inputTokens: 2,
+      cacheCreationInputTokens: 218,
+      cacheReadInputTokens: 101_514,
+    }))).toBe(101_734)
   })
 
-  describe('old API format (input_tokens is non-cached only)', () => {
-    it('sums input + cache fields when input < cache total', () => {
-      // Old format: input_tokens = 5k (non-cached), cache fields = 35k
-      // Total = 5k + 35k = 40k
-      const result = computeContextPercent(usage({
-        inputTokens: 5_000,
-        cacheCreationInputTokens: 10_000,
-        cacheReadInputTokens: 25_000,
-        contextWindow: 200_000,
-      }))
-      expect(result).toBe(20)
-    })
+  it('keeps the cached part when the uncached input is the larger one (a partial OpenAI cache hit)', () => {
+    // GPT-6 Sol through the translation layer: 51,300 uncached, 39,424 cached.
+    expect(computeContextTokens(usage({
+      inputTokens: 51_300,
+      cacheReadInputTokens: 39_424,
+    }))).toBe(90_724)
   })
 
-  describe('no caching', () => {
-    it('uses input_tokens directly when cache fields are zero', () => {
-      const result = computeContextPercent(usage({
-        inputTokens: 30_000,
-        cacheCreationInputTokens: 0,
-        cacheReadInputTokens: 0,
-        contextWindow: 200_000,
-      }))
-      expect(result).toBe(15)
-    })
-  })
-
-  describe('edge cases', () => {
-    it('returns null when contextWindow is zero', () => {
-      const result = computeContextPercent(usage({
-        inputTokens: 10_000,
-        contextWindow: 0,
-      }))
-      expect(result).toBeNull()
-    })
-
-    it('returns null when contextWindow is negative', () => {
-      const result = computeContextPercent(usage({
-        inputTokens: 10_000,
-        contextWindow: -1,
-      }))
-      expect(result).toBeNull()
-    })
-
-    it('returns 0 when all token fields are zero', () => {
-      const result = computeContextPercent(usage({
-        inputTokens: 0,
-        cacheCreationInputTokens: 0,
-        cacheReadInputTokens: 0,
-        contextWindow: 200_000,
-      }))
-      expect(result).toBe(0)
-    })
-
-    it('allows values over 100%', () => {
-      const result = computeContextPercent(usage({
-        inputTokens: 250_000,
-        contextWindow: 200_000,
-      }))
-      expect(result).toBe(125)
-    })
-
-    it('rounds to nearest integer', () => {
-      const result = computeContextPercent(usage({
-        inputTokens: 1,
-        contextWindow: 3,
-      }))
-      expect(result).toBe(33)
-    })
+  it('is the input alone when nothing was cached', () => {
+    expect(computeContextTokens(usage({ inputTokens: 30_000 }))).toBe(30_000)
   })
 })
 
-describe('computeContextTokens', () => {
-  it('does not double-count cache subsets in the new API format', () => {
-    expect(computeContextTokens(usage({
-      inputTokens: 110_000,
+describe('computeContextPercent', () => {
+  it('divides the context size by the window', () => {
+    expect(computeContextPercent(usage({
+      inputTokens: 5_000,
       cacheCreationInputTokens: 10_000,
-      cacheReadInputTokens: 90_000,
-    }))).toBe(110_000)
+      cacheReadInputTokens: 25_000,
+      contextWindow: 200_000,
+    }))).toBe(20)
   })
 
-  it('adds cache fields in the old API format', () => {
-    expect(computeContextTokens(usage({
-      inputTokens: 10_000,
-      cacheCreationInputTokens: 10_000,
-      cacheReadInputTokens: 90_000,
-    }))).toBe(110_000)
+  it('reads a 1M-window model against its own window', () => {
+    expect(computeContextPercent(usage({
+      inputTokens: 2,
+      cacheCreationInputTokens: 1_451,
+      cacheReadInputTokens: 232_569,
+      contextWindow: 1_000_000,
+    }))).toBe(23)
+  })
+
+  it('returns null when the window is not known yet (0)', () => {
+    expect(computeContextPercent(usage({ inputTokens: 10_000, contextWindow: 0 }))).toBeNull()
+  })
+
+  it('returns null when the window is negative', () => {
+    expect(computeContextPercent(usage({ inputTokens: 10_000, contextWindow: -1 }))).toBeNull()
+  })
+
+  it('returns 0 when all token fields are zero', () => {
+    expect(computeContextPercent(usage())).toBe(0)
+  })
+
+  it('allows values over 100%', () => {
+    expect(computeContextPercent(usage({ inputTokens: 250_000, contextWindow: 200_000 }))).toBe(125)
+  })
+
+  it('rounds to the nearest integer', () => {
+    expect(computeContextPercent(usage({ inputTokens: 1, contextWindow: 3 }))).toBe(33)
   })
 })

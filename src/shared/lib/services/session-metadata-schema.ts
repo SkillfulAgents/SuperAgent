@@ -22,6 +22,7 @@ const sessionUsageSchema = z
     cacheCreationInputTokens: z.number().optional(),
     cacheReadInputTokens: z.number().optional(),
     contextWindow: z.number().optional(),
+    model: z.string().optional(),
   })
   .loose()
 

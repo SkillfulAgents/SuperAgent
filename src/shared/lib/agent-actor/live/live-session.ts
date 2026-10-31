@@ -31,9 +31,10 @@ import { mergeCanonicalSlashCommands } from '@shared/lib/container/slash-command
 import { slashCommandListSchema } from '@shared/lib/services/session-metadata-schema'
 import { credentialSource } from '@shared/lib/llm-provider/connection-runtime'
 import { getActiveLlmProvider, getLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
+import { modelPricingCandidates } from '@shared/lib/llm-provider/model-pricing-ids'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
-import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
+import { isSyntheticPlaceholderMessage, SYNTHETIC_MODEL } from '@shared/lib/utils/synthetic-message'
 import type { SubagentCapture } from '@shared/lib/container/subagent-capture'
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
 import { finalizeAutomationStatus, recordErrorProvider, updateSessionMetadata } from '@shared/lib/services/session-service'
@@ -88,6 +89,10 @@ export interface LiveSessionContext {
   isCurrent(): boolean
   /** The model runtime the session's turns run on, when the container's callback has resolved it. */
   modelRuntime(): SessionModelRuntime | undefined
+  /** The window a turn result reported for the model, on any of the agent's sessions. */
+  knownContextWindow(model: string): number | undefined
+  /** A turn result reported the model's window. */
+  rememberContextWindow(model: string, contextWindow: number): void
   /** The client the stream is attached through, when it is. */
   transport(): ContainerClient | undefined
   /** The session may be done with its stream: release it if nothing still needs it. */
@@ -171,6 +176,23 @@ const TRANSCRIPT_END_WAIT_MS = 1000
 const CONNECTION_LOST_ERROR =
   'The agent stopped unexpectedly because the connection to its runtime was lost. ' +
   'The container may have crashed or run out of memory.'
+
+/**
+ * The window a result's `modelUsage` reports for a model: under the model's
+ * own id or an id it is a dated or vendor-prefixed form of (OpenRouter
+ * answers `openai/gpt-5.5-20260423` for `openai/gpt-5.5`), under the id it is
+ * the canonical model of, or as the only entry.
+ */
+function reportedContextWindow(modelUsage: unknown, model: string): number | undefined {
+  if (!modelUsage || typeof modelUsage !== 'object') return undefined
+  const usageById = modelUsage as Record<string, { contextWindow?: unknown; canonicalModel?: unknown } | null>
+  const entries = Object.entries(usageById)
+  const entry = modelPricingCandidates(model).map((id) => Object.hasOwn(usageById, id) ? usageById[id] : undefined).find(Boolean)
+    ?? entries.find(([, usage]) => usage?.canonicalModel === model)?.[1]
+    ?? (entries.length === 1 ? entries[0][1] : undefined)
+  const contextWindow = entry?.contextWindow
+  return typeof contextWindow === 'number' && contextWindow > 0 ? contextWindow : undefined
+}
 
 export class LiveSession {
   // ---- The turn --------------------------------------------------------------
@@ -282,7 +304,7 @@ export class LiveSession {
       emit,
       responseStarted: () => this.response.beginStreamedText(),
       textStreamed: (text) => this.response.appendStreamedText(text),
-    })
+    }, (model) => this.contextWindowFor(model))
     // The background work, and the process it belongs to, carry over with
     // the level set describing them: the incoming handshake decides whether
     // they are still valid. Being carried, its sink may only use what is the
@@ -1053,7 +1075,10 @@ export class LiveSession {
     // The transcript has the message now.
     this.stream.messagePersisted()
     this.ctx.emit({ type: 'messages_updated' })
-    if (content.message?.usage) this.stream.reportUsage(content.message.usage)
+    // A CLI-authored message made no API call: its zero usage is no context size.
+    if (content.message?.usage && content.message.model !== SYNTHETIC_MODEL) {
+      this.stream.reportUsage(content.message.usage, content.message.model)
+    }
   }
 
   private userFrame(content: FrameContent): void {
@@ -1066,6 +1091,7 @@ export class LiveSession {
     // is not always on the wire.
     if (this.stream.isCompacting || content.isCompactSummary) {
       this.stream.compactionEnded()
+      this.forgetSavedUsage()
       return
     }
     // Tool results settle what each answers; the session waits only on what
@@ -1373,25 +1399,31 @@ export class LiveSession {
   }
 
   /**
-   * The context window comes with the result: the model catalog's when it
-   * has one (non-Claude models: the SDK reports a generic 200K for them),
-   * the SDK's otherwise. The latest call's usage (not the result's sum over
-   * the turn) goes out with it and onto the session's metadata.
+   * The window a model's usage is read against: the catalog's (non-Claude
+   * models, which the SDK reports a generic 200K for), else the one a turn
+   * result reported for the model on any of the agent's sessions.
+   */
+  private contextWindowFor(model: string | undefined): number | undefined {
+    if (!model) return undefined
+    const runtime = this.ctx.modelRuntime()
+    const catalogWindow = modelPricingCandidates(model)
+      .map((id) => runtime ? runtime.modelContextWindows[id] : getModelContextWindow(id, getActiveLlmProvider().id))
+      .find((window) => window)
+    return catalogWindow || this.ctx.knownContextWindow(model)
+  }
+
+  /**
+   * The result reports the window the SDK resolved for each model the
+   * session ran: the latest call's model learns its own from it. That call's
+   * usage (not the result's sum over the turn) then goes out against the
+   * window and onto the session's metadata.
    */
   private resultUsage(content: { modelUsage?: unknown }): void {
     try {
-      let contextWindow: number | undefined
-      const modelUsage = content.modelUsage
-      if (modelUsage && typeof modelUsage === 'object') {
-        const [modelId] = Object.keys(modelUsage)
-        const reported = (modelUsage as Record<string, { contextWindow?: number } | undefined>)[modelId]
-        const catalogWindow = modelId
-          ? this.ctx.modelRuntime()?.modelContextWindows[modelId] ??
-            getModelContextWindow(modelId, getActiveLlmProvider().id)
-          : undefined
-        contextWindow = catalogWindow || reported?.contextWindow || undefined
-      }
-      const lastUsage: SessionUsage | null = this.stream.settleUsage(contextWindow)
+      const model = this.stream.model
+      const reported = model ? reportedContextWindow(content.modelUsage, model) : undefined
+      if (model && reported) this.ctx.rememberContextWindow(model, reported)
+      const lastUsage: SessionUsage | null = this.stream.settleUsage()
       if (lastUsage) {
         background(updateSessionMetadata(this.ctx.store, this.ctx.sessionId, { lastUsage }).catch((error) => {
           console.error('[LiveSession] Failed to persist lastUsage:', error)
@@ -1400,6 +1432,13 @@ export class LiveSession {
     } catch (error) {
       console.error('[LiveSession] Error handling result usage:', error)
     }
+  }
+
+  /** The saved size predates the compaction: a reopened session shows none until the next call reports one. */
+  private forgetSavedUsage(): void {
+    background(updateSessionMetadata(this.ctx.store, this.ctx.sessionId, { lastUsage: undefined }).catch((error) => {
+      console.error('[LiveSession] Failed to clear lastUsage:', error)
+    }), { name: 'live-session.clear-last-usage' })
   }
 
   /**
