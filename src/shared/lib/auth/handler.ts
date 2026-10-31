@@ -1,4 +1,5 @@
 import { getAuth } from './index'
+import { runAuthRequest } from './platform-role'
 
 /**
  * Keep the callback URL registered by existing deployments and identity
@@ -17,5 +18,5 @@ export function handleAuthRequest(request: Request): Promise<Response> {
     url.pathname = `/api/auth/callback/${legacyCallback[1]}`
     request = new Request(url, request)
   }
-  return getAuth().handler(request)
+  return runAuthRequest(() => getAuth().handler(request))
 }

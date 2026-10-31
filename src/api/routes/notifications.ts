@@ -1,3 +1,4 @@
+import { notificationReadAgentSlugs, confirmNotificationRead } from '@shared/lib/services/notification-read-state'
 import { subscribeCollaborationEvents } from '@shared/lib/services/collaboration-events'
 /**
  * Notifications API Routes
@@ -165,13 +166,15 @@ notificationsRouter.get('/unread-count', async (c) => {
 notificationsRouter.post('/:id/read', HasNotificationAccess(), async (c) => {
   try {
     const notificationId = c.req.param('id')
+    const userId = getScopedUserId(c)
+    const slugs = await notificationReadAgentSlugs({ kind: 'notification', id: notificationId }, userId)
     const success = await markAsRead(notificationId)
 
     if (!success) {
       return c.json({ error: 'Notification not found' }, 404)
     }
 
-    return c.json({ success: true })
+    return c.json({ success: true, readState: await confirmNotificationRead(slugs, userId) })
   } catch (error) {
     console.error('Failed to mark notification as read:', error)
     return c.json({ error: 'Failed to mark notification as read' }, 500)
@@ -182,8 +185,9 @@ notificationsRouter.post('/:id/read', HasNotificationAccess(), async (c) => {
 notificationsRouter.post('/read-all', async (c) => {
   try {
     const userId = getScopedUserId(c)
+    const slugs = await notificationReadAgentSlugs({ kind: 'all' }, userId)
     const count = await markAllAsRead(userId)
-    return c.json({ success: true, count })
+    return c.json({ success: true, count, readState: await confirmNotificationRead(slugs, userId) })
   } catch (error) {
     console.error('Failed to mark all notifications as read:', error)
     return c.json({ error: 'Failed to mark all notifications as read' }, 500)
@@ -195,8 +199,9 @@ notificationsRouter.post('/read-by-session/:sessionId', async (c) => {
   try {
     const sessionId = c.req.param('sessionId')
     const userId = getScopedUserId(c)
+    const slugs = await notificationReadAgentSlugs({ kind: 'session', sessionId }, userId)
     const count = await markSessionNotificationsRead(sessionId, userId)
-    return c.json({ success: true, count })
+    return c.json({ success: true, count, readState: await confirmNotificationRead(slugs, userId) })
   } catch (error) {
     console.error('Failed to mark session notifications as read:', error)
     return c.json({ error: 'Failed to mark session notifications as read' }, 500)

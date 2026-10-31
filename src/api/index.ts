@@ -64,7 +64,7 @@ import { sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { user as userTable } from '@shared/lib/db/schema'
 import { authEnforcementMiddleware } from './middleware/auth-enforcement'
-import { getAuthSettings } from '@shared/lib/auth/auth-settings'
+import { getAuthSettings, isPlatformControlledAuth } from '@shared/lib/auth/auth-settings'
 import { getPublicAuthProviders } from '@shared/lib/auth/provider-config'
 import { LocalModeAuth, isContainerFacingPath } from './middleware/local-mode-auth'
 import { armAbortSignal } from './middleware/arm-abort-signal'
@@ -210,6 +210,8 @@ if (isAuthMode()) {
       passwordRequireComplexity: authSettings.passwordRequireComplexity,
       requireAdminApproval: authSettings.requireAdminApproval,
       hasUsers,
+      // Mirrors the sign-up middleware's first-user bypass.
+      firstUserSignupOpen: !hasUsers && !isPlatformControlledAuth(),
     })
   })
 }

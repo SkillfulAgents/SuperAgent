@@ -190,9 +190,9 @@ describe('removing an agent', () => {
   it('keeps the row when the workspace cannot be removed, so the delete can be retried', async () => {
     await writeAgentDirectory('stuck', '---\nname: Stuck\n---\nBody')
     await catalog.insert({ slug: 'stuck', name: 'Stuck', createdAt: new Date() })
-    // A directory without write permission refuses to unlink its children.
-    const workspace = path.join(getAgentDir('stuck'), 'workspace')
-    await fs.promises.chmod(workspace, 0o555)
+    // A read-only parent refuses to unlink the agent directory itself.
+    const agentsDir = path.dirname(getAgentDir('stuck'))
+    await fs.promises.chmod(agentsDir, 0o555)
 
     try {
       await expect(catalog.remove('stuck')).rejects.toThrow()
@@ -200,7 +200,7 @@ describe('removing an agent', () => {
       expect(await catalog.exists('stuck')).toBe(true)
       expect(fs.existsSync(getAgentDir('stuck'))).toBe(true)
     } finally {
-      await fs.promises.chmod(workspace, 0o755)
+      await fs.promises.chmod(agentsDir, 0o755)
     }
 
     await catalog.remove('stuck')

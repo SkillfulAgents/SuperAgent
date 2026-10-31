@@ -15,6 +15,8 @@ const state = vi.hoisted(() => ({
   start: vi.fn(),
   rename: vi.fn(),
   starting: new Set<string>(),
+  // Agents the person may read but not use.
+  viewerOf: new Set<string>(),
 }))
 
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
@@ -24,6 +26,10 @@ vi.mock('@tanstack/react-router', async (importOriginal) => ({
 vi.mock('@renderer/hooks/use-agents', () => ({
   useAgents: () => ({ data: [{ slug: 'analyst', name: 'Analyst' }, { slug: 'ops', name: 'Ops' }] }),
 }))
+vi.mock('@renderer/context/user-context', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@renderer/context/user-context')>()
+  return { ...actual, useUser: () => ({ ...actual.useUser(), canUseAgent: (slug: string) => !state.viewerOf.has(slug) }) }
+})
 vi.mock('@renderer/hooks/use-user-settings', () => ({ useUserSettings: () => ({ data: undefined }) }))
 vi.mock('@renderer/hooks/use-todos', () => ({
   useTodos: () => ({ data: state.todos, isPending: false, error: null }),
@@ -74,6 +80,7 @@ beforeEach(() => {
   state.create.mockReset()
   state.start.mockReset()
   state.rename.mockReset().mockResolvedValue(undefined)
+  state.viewerOf = new Set()
   state.starting = new Set()
 })
 
@@ -168,6 +175,7 @@ describe('TodoBoard', () => {
     expect(screen.queryByTestId('todo-card-menu')).not.toBeInTheDocument()
 
     fireEvent.contextMenu(screen.getByText('Summarize the weekly sales numbers'))
+    expect(screen.queryByTestId('todo-action-reopen')).not.toBeInTheDocument()
     fireEvent.click(await screen.findByTestId('todo-rename-item'))
     const input = await screen.findByTestId('todo-rename-input')
     expect(input).toHaveValue('Summarize the weekly sales numbers')
@@ -175,6 +183,27 @@ describe('TodoBoard', () => {
     fireEvent.click(screen.getByTestId('todo-rename-submit'))
     await waitFor(() => expect(state.rename).toHaveBeenCalledWith({ id: 'b', title: 'Weekly sales summary' }))
     expect(state.navigate).not.toHaveBeenCalled()
+  })
+
+  it('offers no rename on work whose agent the person can only view', async () => {
+    state.viewerOf = new Set(['analyst'])
+    state.todos = [todo({ id: 'b', column: 'has_updates' })]
+    renderWithProviders(<TodoBoard />)
+    fireEvent.contextMenu(screen.getByText('Task b'))
+    expect(screen.queryByTestId('todo-card-menu')).not.toBeInTheDocument()
+  })
+
+  it('still offers reopen on done work whose agent the person can only view', async () => {
+    state.viewerOf = new Set(['analyst'])
+    state.todos = [todo({ id: 'b', column: 'done' })]
+    renderWithProviders(<TodoBoard />)
+    const show = screen.queryByRole('button', { name: /^Show Done/ })
+    if (show) fireEvent.click(show)
+    fireEvent.contextMenu(screen.getByText('Task b'))
+    expect(screen.queryByTestId('todo-rename-item')).not.toBeInTheDocument()
+    fireEvent.click(await screen.findByTestId('todo-action-reopen'))
+    expect(state.setStatus).toHaveBeenCalledWith({ id: 'b', status: 'active' })
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse Done' }))
   })
 
   it.each(['has_updates', 'needs_input'] as const)('keeps an unsaved rename when working moves to %s', async (column) => {
@@ -261,6 +290,41 @@ describe('TodoBoard', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Show Done, 1 items' }))
     fireEvent.click(screen.getByTestId('todo-action-archive'))
     expect(state.setStatus).toHaveBeenCalledWith({ id: 'e', status: 'archived' })
+  })
+
+  it('reopens done work from its right-click menu or with R', async () => {
+    state.todos = [todo({ id: 'e', column: 'done' }), todo({ id: 'gone', column: 'done', sessionId: null })]
+    renderWithProviders(<TodoBoard />)
+    const show = screen.queryByRole('button', { name: /^Show Done/ })
+    if (show) fireEvent.click(show)
+    fireEvent.contextMenu(screen.getByText('Task e'))
+    fireEvent.click(await screen.findByTestId('todo-action-reopen'))
+    expect(state.setStatus).toHaveBeenCalledWith({ id: 'e', status: 'active' })
+
+    state.setStatus.mockReset()
+    fireEvent.mouseEnter(document.querySelector('[data-todo-id="e"]')!)
+    fireEvent.keyDown(window, { key: 'r' })
+    expect(state.setStatus).toHaveBeenCalledWith({ id: 'e', status: 'active' })
+
+    // Work whose session was deleted can't be reopened.
+    state.setStatus.mockReset()
+    fireEvent.mouseEnter(document.querySelector('[data-todo-id="gone"]')!)
+    fireEvent.keyDown(window, { key: 'r' })
+    fireEvent.contextMenu(screen.getByText('Task gone'))
+    await screen.findByTestId('todo-card-menu')
+    expect(screen.queryByTestId('todo-action-reopen')).not.toBeInTheDocument()
+    expect(state.setStatus).not.toHaveBeenCalled()
+  })
+
+  it('a key typed in a card menu does not run the board shortcut', async () => {
+    state.todos = [todo({ id: 'e', column: 'done' })]
+    renderWithProviders(<TodoBoard />)
+    const show = screen.queryByRole('button', { name: /^Show Done/ })
+    if (show) fireEvent.click(show)
+    fireEvent.mouseEnter(screen.getByTestId('todo-card'))
+    fireEvent.contextMenu(screen.getByText('Task e'))
+    fireEvent.keyDown(await screen.findByTestId('todo-card-menu'), { key: 'r' })
+    expect(state.setStatus).not.toHaveBeenCalled()
   })
 
   it('starts a draft that has an agent from its card', () => {

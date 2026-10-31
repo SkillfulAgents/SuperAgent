@@ -133,6 +133,7 @@ describe('the Todo chrome in a session header', () => {
 
   it('marks the item done, by button or by D', () => {
     renderChrome('session-working')
+    expect(screen.queryByTestId('todo-action-reopen')).toBeNull()
     fireEvent.click(screen.getByTestId('todo-action-done'))
     press('d')
     expect(state.setStatus).toHaveBeenCalledTimes(2)
@@ -143,6 +144,15 @@ describe('the Todo chrome in a session header', () => {
     renderChrome('session-finished')
     fireEvent.click(screen.getByTestId('todo-action-archive'))
     expect(state.setStatus).toHaveBeenCalledWith({ id: 'finished', status: 'archived' })
+  })
+
+  it('reopens a finished item, by button or by R', () => {
+    renderChrome('session-finished')
+    expect(screen.getByTestId('todo-action-archive')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('todo-action-reopen'))
+    press('r')
+    expect(state.setStatus).toHaveBeenCalledTimes(2)
+    expect(state.setStatus).toHaveBeenCalledWith({ id: 'finished', status: 'active' })
   })
 
   it('Esc goes back, but not while a dialog has the keyboard', () => {

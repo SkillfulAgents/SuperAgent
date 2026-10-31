@@ -4,8 +4,8 @@ import { z } from 'zod'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { VolumeError } from '@shared/lib/volumes/volume-error'
 
-const { browse, validate } = vi.hoisted(() => ({ browse: vi.fn(), validate: vi.fn() }))
-vi.mock('@shared/lib/volumes/volume-factory', () => ({ browseVolumeFolders: browse, validateVolumeSource: validate }))
+const { browse, create, validate } = vi.hoisted(() => ({ browse: vi.fn(), create: vi.fn(), validate: vi.fn() }))
+vi.mock('@shared/lib/volumes/volume-factory', () => ({ browseVolumeFolders: browse, createVolumeFolder: create, validateVolumeSource: validate }))
 vi.mock('../middleware/auth', () => ({
   Authenticated: (): MiddlewareHandler => async (c, next) => {
     const id = c.req.header('Test-User')
@@ -73,5 +73,30 @@ describe('source connection validation', () => {
     expect(await response.json()).toEqual(result)
     expect(validate).toHaveBeenCalledWith('s3', input, { userId: 'alice', admin: false })
     expect(JSON.stringify(result)).not.toContain('secret')
+  })
+})
+
+describe('setup folder creation', () => {
+  it('authenticates and dispatches the JSON body with the viewer to the type', async () => {
+    const url = '/api/volume-types/example/folders'
+    const init = { method: 'POST', body: JSON.stringify({ accountId: 'account', folderId: 'parent', name: 'Scratch' }) }
+    expect((await app.request(url, init)).status).toBe(401)
+    expect(create).not.toHaveBeenCalled()
+    create.mockResolvedValue({ folder: { id: 'made', name: 'Scratch' } })
+    const response = await app.request(url, { ...init, headers: { 'Test-User': 'alice' } })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ folder: { id: 'made', name: 'Scratch' } })
+    expect(create).toHaveBeenCalledWith('example', { accountId: 'account', folderId: 'parent', name: 'Scratch' }, { userId: 'alice', admin: false })
+    const invalid = z.object({ name: z.string() }).safeParse({})
+    if (invalid.success) throw new Error('Expected invalid input')
+    create.mockRejectedValueOnce(invalid.error)
+    const rejected = await app.request(url, { ...init, headers: { 'Test-User': 'alice' } })
+    expect(rejected.status).toBe(400)
+    expect(await rejected.json()).toEqual({ error: 'Invalid new folder details' })
+    const calls = create.mock.calls.length
+    const malformed = await app.request(url, { method: 'POST', body: '{', headers: { 'Test-User': 'alice' } })
+    expect(malformed.status).toBe(400)
+    expect(await malformed.json()).toEqual({ error: 'Invalid new folder details' })
+    expect(create).toHaveBeenCalledTimes(calls)
   })
 })

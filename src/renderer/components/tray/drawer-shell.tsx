@@ -30,6 +30,8 @@ interface DrawerShellProps {
   wideOverlay?: boolean
   /** Cover the whole tray host, edge to edge, ignoring the persisted width. */
   fullScreen?: boolean
+  /** Draw at the minimum width while true, leaving the saved width as it is. */
+  narrow?: boolean
   defaultWidth?: number
   minWidth?: number
   maxWidth?: number
@@ -44,6 +46,7 @@ export const DrawerShell = forwardRef<DrawerShellHandle, DrawerShellProps>(funct
   responsiveFullWidth = false,
   wideOverlay = false,
   fullScreen = false,
+  narrow = false,
   defaultWidth = DEFAULT_WIDTH,
   minWidth = MIN_WIDTH,
   maxWidth = MAX_WIDTH,
@@ -80,7 +83,8 @@ export const DrawerShell = forwardRef<DrawerShellHandle, DrawerShellProps>(funct
   }, [])
 
   // The overlays cover the content outright. The compact one (globals.css) also zeroes this margin and hides the scrim.
-  const overlap = isOpen && !wideOverlay && !fullScreen ? slideOverWidth(drawerWidth, hostWidth) : 0
+  const shownWidth = narrow ? minWidth : drawerWidth
+  const overlap = isOpen && !wideOverlay && !fullScreen ? slideOverWidth(shownWidth, hostWidth) : 0
 
   const startXRef = useRef(0)
   const startWidthRef = useRef(0)
@@ -131,7 +135,7 @@ export const DrawerShell = forwardRef<DrawerShellHandle, DrawerShellProps>(funct
           className
         )}
         // A negative margin pulls the drawer over the content by the overlap.
-        style={{ width: isOpen ? drawerWidth : 0, maxWidth: '100%', marginLeft: -overlap, contain: 'layout paint', willChange: 'transform' }}
+        style={{ width: isOpen ? shownWidth : 0, maxWidth: '100%', marginLeft: -overlap, contain: 'layout paint', willChange: 'transform' }}
         onTransitionEnd={onTransitionEnd}
         data-testid="tray-drawer"
         data-fullscreen={fullScreen || undefined}

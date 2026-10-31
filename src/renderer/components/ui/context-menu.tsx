@@ -1,10 +1,31 @@
 import * as React from "react"
 import * as ContextMenuPrimitive from "@radix-ui/react-context-menu"
-import { Check, ChevronRight, Circle } from "lucide-react"
+import { Check, ChevronRight, Circle, MoreHorizontal } from "lucide-react"
 
 import { cn } from "@shared/lib/utils"
 
-const ContextMenu = ContextMenuPrimitive.Root
+// Whether this menu is open, for a ContextMenuMoreButton inside its trigger.
+// Radix keeps the state to itself (a context menu has no `open` prop).
+const ContextMenuOpenContext = React.createContext<boolean | null>(null)
+
+const ContextMenu = ({
+  onOpenChange,
+  ...props
+}: React.ComponentProps<typeof ContextMenuPrimitive.Root>) => {
+  const [open, setOpen] = React.useState(false)
+  const handleOpenChange = React.useCallback(
+    (next: boolean) => {
+      setOpen(next)
+      onOpenChange?.(next)
+    },
+    [onOpenChange]
+  )
+  return (
+    <ContextMenuOpenContext.Provider value={open}>
+      <ContextMenuPrimitive.Root onOpenChange={handleOpenChange} {...props} />
+    </ContextMenuOpenContext.Provider>
+  )
+}
 
 // Radix's Trigger already opens the menu on a ~700ms long-press for touch/pen, so
 // it works out of the box on Android. On iOS, though, the text-selection
@@ -27,7 +48,7 @@ const ContextMenuTrigger = React.forwardRef<
     /** Prevent the touch/pen long-press menu without affecting mouse right-click. */
     disableTouchLongPress?: boolean
   }
->(({ className, style, onPointerDown, onPointerMove, onPointerUp, onPointerCancel, onClick, disableTouchLongPress, ...props }, ref) => {
+>(({ className, style, onPointerDown, onPointerMove, onPointerUp, onPointerCancel, onClick, onClickCapture, disableTouchLongPress, ...props }, ref) => {
   const pressStart = React.useRef<{ x: number; y: number } | null>(null)
   const longPressTimer = React.useRef<number>()
 
@@ -109,6 +130,16 @@ const ContextMenuTrigger = React.forwardRef<
     }
     onClick?.(e)
   }
+  // The same, for a trigger that wraps its link (a row with a 3-dot button
+  // beside the link): the link's own onClick runs before the wrapper's, so only
+  // the capture phase gets there first. AppLink drops a passed onClickCapture,
+  // which is why a trigger that IS the link relies on onClick above.
+  const handleClickCapture = (e: React.MouseEvent<HTMLElement>) => {
+    if (e.currentTarget.getAttribute('data-state') === 'open') {
+      e.preventDefault()
+    }
+    onClickCapture?.(e)
+  }
 
   return (
     <ContextMenuPrimitive.Trigger
@@ -122,6 +153,9 @@ const ContextMenuTrigger = React.forwardRef<
       style={{ WebkitTouchCallout: 'none', WebkitUserDrag: 'none', ...style } as React.CSSProperties}
       draggable={false}
       className={cn(
+        // Lets ContextMenuMoreButton (and anything that yields its place to it)
+        // react to this target through the `menu-revealed:` variant.
+        'group/context-menu',
         'touch:select-none touch:[-webkit-user-select:none]',
         'touch:transition-transform touch:duration-150 touch:ease-out touch:data-[pressing]:scale-[0.96]',
         className,
@@ -131,11 +165,89 @@ const ContextMenuTrigger = React.forwardRef<
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerCancel}
       onClick={handleClick}
+      onClickCapture={handleClickCapture}
       {...props}
     />
   )
 })
 ContextMenuTrigger.displayName = ContextMenuPrimitive.Trigger.displayName
+
+// A 3-dot button that opens the same menu a right-click on its target does, for
+// people who never right-click. Render it anywhere INSIDE the trigger's element
+// (beside a link, never in it): hovering any part of the target reveals it, and
+// a click replays as the `contextmenu` event the trigger already listens for, so
+// the two ways in can't drift apart. It shows on hover, while the menu is open,
+// and on keyboard focus; touch keeps the long-press and never shows it. Anything
+// the button takes the place of hides with `menu-revealed:opacity-0`.
+//
+// Placement and look are the caller's (`className`); `anchor` says where the
+// menu lands: `below` hangs it under the button, `beside` opens it from the
+// button's bottom-right corner, for a narrow column where a dropdown would
+// cover the rows underneath.
+const ContextMenuMoreButton = React.forwardRef<
+  HTMLButtonElement,
+  Omit<
+    React.ButtonHTMLAttributes<HTMLButtonElement>,
+    'children' | 'aria-label' | 'aria-haspopup' | 'aria-expanded'
+  > & {
+    /** Accessible name, e.g. "Options for Weekly report". */
+    label: string
+    anchor?: 'below' | 'beside'
+    iconClassName?: string
+  }
+>(({ label, anchor = 'below', className, iconClassName, onClick, onKeyDown, ...props }, ref) => {
+  const open = React.useContext(ContextMenuOpenContext)
+  if (open === null) throw new Error('ContextMenuMoreButton must be rendered inside a <ContextMenu>')
+
+  const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+    // The target is usually a link or a clickable row: the button opens the
+    // menu and nothing else.
+    e.preventDefault()
+    e.stopPropagation()
+    onClick?.(e)
+    const rect = e.currentTarget.getBoundingClientRect()
+    const point =
+      anchor === 'beside'
+        ? { clientX: rect.right, clientY: rect.bottom }
+        : { clientX: rect.left, clientY: rect.bottom + 4 }
+    e.currentTarget.dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, cancelable: true, ...point })
+    )
+  }
+  // Enter and Space press this button. A row's own key handling (a sortable
+  // row's keyboard drag sensor cancels them to pick the row up) must not get
+  // them first, or the click never comes.
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>) => {
+    onKeyDown?.(e)
+    if (e.key === 'Enter' || e.key === ' ') e.stopPropagation()
+  }
+
+  return (
+    <button
+      ref={ref}
+      type="button"
+      aria-label={label}
+      aria-haspopup="menu"
+      aria-expanded={open}
+      data-state={open ? 'open' : 'closed'}
+      className={cn(
+        'inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        // Hidden, and not hittable, until revealed: a finger on a touchscreen
+        // laptop must not land on an invisible button.
+        'pointer-events-none opacity-0 transition-opacity',
+        'menu-revealed:pointer-events-auto menu-revealed:opacity-100 focus-visible:opacity-100',
+        'touch:hidden',
+        className,
+      )}
+      onClick={handleClick}
+      onKeyDown={handleKeyDown}
+      {...props}
+    >
+      <MoreHorizontal className={cn('h-4 w-4', iconClassName)} />
+    </button>
+  )
+})
+ContextMenuMoreButton.displayName = 'ContextMenuMoreButton'
 
 const ContextMenuGroup = ContextMenuPrimitive.Group
 
@@ -345,6 +457,7 @@ ContextMenuShortcut.displayName = "ContextMenuShortcut"
 export {
   ContextMenu,
   ContextMenuTrigger,
+  ContextMenuMoreButton,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuCheckboxItem,

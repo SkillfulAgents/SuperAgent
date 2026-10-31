@@ -119,6 +119,7 @@ Superagent can run in **auth mode** for multi-user deployments with role-based a
 
 - The first user to sign up is automatically promoted to **admin**.
 - Subsequent users sign up as regular users.
+- On a Platform-managed deployment, members join through Platform instead, and each member's first sign-in gives them their Platform role (owners and admins become **admin**, members become **user**) rather than promoting whoever arrives first. It is set at that sign-in only, so a role changed later in Settings > Users stays.
 - Admins can manage users and access global settings (LLM keys, runtime config).
 - Each agent has an **owner** (the creator) who can invite other users as **user** (can chat) or **viewer** (read-only).
 - Auth mode is **web-only** — the Electron desktop app always runs in single-user mode.

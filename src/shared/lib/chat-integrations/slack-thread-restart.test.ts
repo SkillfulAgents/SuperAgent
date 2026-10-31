@@ -6,7 +6,7 @@ import type { AgentIntegrationRecord } from '../agent-integrations/types'
 import { chatProviders } from './providers'
 import * as threadState from './slack-thread-state'
 
-type SlackMessage = { text: string; ts: string; thread_ts?: string; channel?: string }
+type SlackMessage = { text: string; ts: string; thread_ts?: string; channel?: string; channel_type?: string }
 type MessageListener = (event: { message: Record<string, string>; say: unknown }) => Promise<void>
 
 const slack = vi.hoisted(() => ({
@@ -27,7 +27,7 @@ vi.mock('@slack/bolt', async () => {
         auth: { test: async () => ({ ok: true, user_id: 'U_BOT' }) },
         users: { info: async () => ({ user: { real_name: 'Tester' } }) },
         conversations: { info: async () => ({ channel: { name: 'test' } }), replies: slack.replies },
-        chat: { postMessage: slack.postMessage },
+        chat: { postMessage: slack.postMessage, update: vi.fn(async () => ({ ok: true })) },
       }
       event() {}
       action() {}
@@ -206,5 +206,23 @@ describe('Slack thread participation across connector recreation (SUP-861)', () 
     } finally {
       errorLog.mockRestore()
     }
+  })
+})
+
+describe('Slack inbound message and tool groups', () => {
+  it('closes the open tool group before any await, so a tool sent meanwhile starts a new group below the message', async () => {
+    let releaseSave = () => {}
+    const store = { load: vi.fn(async () => []), save: vi.fn(() => new Promise<void>(resolve => { releaseSave = resolve })) }
+    const slackChat = await connect({ answerInThread: true, onlyMentioned: false }, store)
+    const tool = (id: string) => ({ toolUseId: id, toolName: 'Bash', summary: '' })
+
+    await slackChat.connector.showToolStart('C123', tool('t1'))
+    const inbound = slackChat.receive({ text: 'and one more thing', ts: '1000.002' })
+    await slackChat.connector.showToolStart('C123', tool('t2'))
+    releaseSave()
+    await inbound
+
+    const groupPosts = slack.postMessage.mock.calls.filter(([message]) => (message as { blocks?: unknown }).blocks)
+    expect(groupPosts).toHaveLength(2)
   })
 })

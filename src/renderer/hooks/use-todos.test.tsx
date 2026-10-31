@@ -103,9 +103,18 @@ describe('useStartTodo', () => {
     const started = await result.current.mutateAsync(draft())
 
     expect(state.calls[0]).toMatchObject({ path: '/api/todos/t1/claim', method: 'POST' })
-    expect(state.createSession).toHaveBeenCalledWith({ agentSlug: 'analyst', origin: 'todo', message: 'Churn\n\nWhy did it spike?' })
+    expect(state.createSession).toHaveBeenCalledWith({ agentSlug: 'analyst', origin: 'todo', name: 'Churn', message: 'Churn\n\nWhy did it spike?' })
     expect(state.calls).toContainEqual({ path: '/api/todos/t1/start', method: 'POST', body: { sessionId: 'session-9', claim: 'c1' } })
     expect(started).toMatchObject({ column: 'working', sessionId: 'session-9' })
+  })
+
+  it('leaves an untitled draft\'s session to be named from its brief', async () => {
+    state.claimedTodo = { title: '' }
+    state.createSession.mockResolvedValue({ id: 'session-9' })
+    const { result } = renderHook(() => useStartTodo(), { wrapper: wrapper() })
+    await result.current.mutateAsync(draft({ title: '' }))
+
+    expect(state.createSession.mock.calls[0][0].name).toBeUndefined()
   })
 
   it('starts the session on the model, effort and speed picked for the draft', async () => {
@@ -117,6 +126,7 @@ describe('useStartTodo', () => {
     expect(state.createSession).toHaveBeenCalledWith({
       agentSlug: 'analyst',
       origin: 'todo',
+      name: 'Churn',
       message: 'Churn\n\nWhy did it spike?',
       model: 'claude-opus-5-5',
       llmProviderId: 'anthropic-main',
@@ -135,7 +145,7 @@ describe('useStartTodo', () => {
     expect(state.createAgentForPrompt).toHaveBeenCalledWith('Churn\n\nWhy did it spike?')
     expect(state.calls[0]).toEqual({ path: '/api/todos/t1', method: 'PATCH', body: { agentSlug: 'churn-analyst' } })
     expect(state.calls[1]).toMatchObject({ path: '/api/todos/t1/claim', method: 'POST' })
-    expect(state.createSession).toHaveBeenCalledWith({ agentSlug: 'churn-analyst', origin: 'todo', message: 'Churn\n\nWhy did it spike?' })
+    expect(state.createSession).toHaveBeenCalledWith({ agentSlug: 'churn-analyst', origin: 'todo', name: 'Churn', message: 'Churn\n\nWhy did it spike?' })
     expect(state.track).toHaveBeenCalledWith('agent_created', expect.objectContaining({ source: 'new', surface: 'todo' }))
   })
 
@@ -205,6 +215,7 @@ describe('useStartTodo', () => {
     expect(state.createSession).toHaveBeenCalledWith({
       agentSlug: 'analyst',
       origin: 'todo',
+      name: 'Churn',
       message: 'Churn\n\nWhy did it spike?\n\n[Attached files:]\n- /workspace/uploads/note.txt',
     })
   })
@@ -223,6 +234,7 @@ describe('useStartTodo', () => {
     expect(state.createSession).toHaveBeenCalledWith({
       agentSlug: 'analyst',
       origin: 'todo',
+      name: 'Churn',
       message: 'Churn\n\nWhy did it spike?\n\n[Attached drives (read-write):]\n- /mounts/notes (from /tmp/notes)\n\n[Attached files:]\n- /workspace/uploads/notes/',
     })
   })

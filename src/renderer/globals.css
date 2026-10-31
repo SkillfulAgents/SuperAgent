@@ -531,8 +531,8 @@ html[data-keyboard-open] [data-composer-footer] {
 
 /* Windows: pad right side of main content headers to avoid overlapping with the custom
    window controls (144px wide at right-2, so 152px total reserved). */
-.electron-vibrancy-win main > div > header,
-.electron-vibrancy-win main > header {
+.electron-vibrancy-win [data-inset-content] > div > header,
+.electron-vibrancy-win [data-inset-content] > header {
   padding-right: 152px;
 }
 

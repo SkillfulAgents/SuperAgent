@@ -24,6 +24,7 @@ import {
   getUnreadCount,
   getSessionIdsWithUnreadNotifications,
   getUnreadNotificationsByAgents,
+  getUnreadNotificationPreviewsByAgents,
   getSessionIdsWithUnreadMentions,
   getUnreadMentionsByAgents,
   getUnreadMentionCount,
@@ -31,7 +32,7 @@ import {
   markAllAsRead,
   deleteMessageNotifications,
 } from './notification-service'
-import { notifications, agentAcl } from '../db/schema'
+import { notifications, agentAcl, user } from '../db/schema'
 
 const MIKE = 'user-mike'
 const SARA = 'user-sara'
@@ -54,6 +55,7 @@ describe('targeted mention notifications', () => {
   beforeEach(async () => {
     handle = await createTestDatabase()
     testDb = handle.db
+    await testDb.insert(user).values([MIKE, SARA].map(id => ({ id, name: id, email: `${id}@example.com` })))
     await testDb.insert(agentAcl).values([
       { id: 'acl-mike', userId: MIKE, agentSlug: AGENT, role: 'user', createdAt: new Date() },
       { id: 'acl-sara', userId: SARA, agentSlug: AGENT, role: 'user', createdAt: new Date() },
@@ -84,6 +86,27 @@ describe('targeted mention notifications', () => {
 
     await createNotification({ type: 'session_waiting', sessionId: 'session-2', agentSlug: AGENT, title: 'Waiting', body: '' })
     expect(await getSessionIdsWithUnreadNotifications(AGENT, undefined, SARA)).toEqual(new Set(['session-2']))
+  })
+
+  it("previews the newest unread rows a viewer can see, never someone else's mention", async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(new Date('2026-01-01T10:00:00Z'))
+      await mention(MIKE)
+      vi.setSystemTime(new Date('2026-01-01T11:00:00Z'))
+      await createNotification({ type: 'session_complete', sessionId: 'session-2', agentSlug: AGENT, title: 'Done', body: 'x'.repeat(500) })
+    } finally {
+      vi.useRealTimers()
+    }
+
+    const mike = (await getUnreadNotificationPreviewsByAgents([AGENT], MIKE)).get(AGENT)
+    expect(mike?.map((p) => [p.type, p.sessionId])).toEqual([
+      ['session_complete', 'session-2'],
+      ['session_mention', SESSION],
+    ])
+    expect(mike?.[0].text).toHaveLength(200)
+    expect(mike?.[1].text).toBe('@Mike look at this')
+    expect((await getUnreadNotificationPreviewsByAgents([AGENT], SARA)).get(AGENT)?.map((p) => p.type)).toEqual(['session_complete'])
   })
 
   it("opening the session clears a viewer's own mention, never someone else's", async () => {

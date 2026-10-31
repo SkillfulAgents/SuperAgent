@@ -2,11 +2,19 @@ import { useState } from 'react'
 import { cn } from '@shared/lib/utils'
 import { getUserImage, type UserSummary } from '@shared/lib/user-profile-schema'
 import { getApiBaseUrl } from '@renderer/lib/env'
+import { DEFAULT_ORBS, hexMix } from '@renderer/components/agents/agent-avatar/avatar-orbs'
 
-const gradients = [
-  ['#6475dd', '#9a56b1'], ['#187f88', '#3d8c60'], ['#c16747', '#aa4776'],
-  ['#655bc1', '#337cb5'], ['#a26727', '#b35350'], ['#427e62', '#397998'],
-]
+// People without a photo take the agent palette's hues, so faces and orbs
+// read as one set: each colourway's rim, lifted 20% toward its core at the
+// top-left. Amber and Blush are too light for white initials, and White and
+// Black would read as an empty or missing avatar, so they are left out.
+const PERSON_COLOURWAYS: ReadonlySet<string> = new Set([
+  'tonal-red', 'tonal-orange', 'tonal-green', 'tonal-forest', 'tonal-teal', 'tonal-blue',
+  'tonal-cobalt', 'tonal-purple', 'tonal-pink', 'tonal-brown', 'tonal-chocolate', 'tonal-grey',
+])
+const gradients = DEFAULT_ORBS
+  .filter(orb => PERSON_COLOURWAYS.has(orb.name))
+  .map(orb => [hexMix(orb.rim, orb.core, 0.2), orb.rim])
 
 export function userInitials(user: Pick<UserSummary, 'name' | 'email'>): string {
   const words = (user.name?.trim() || user.email?.split('@')[0] || '').split(/\s+/).filter(Boolean)
@@ -30,7 +38,10 @@ export function UserAvatar({ user, size = 28, className }: {
       role="img"
       aria-label={user.name || user.email || 'User'}
       className={cn('relative inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full font-medium text-white select-none', className)}
-      style={{ width: size, height: size, fontSize: Math.max(10, size * 0.34), background: `linear-gradient(145deg, ${from}, ${to})` }}
+      // A 10px floor keeps initials legible on roomy avatars, but under 20px it
+      // overfills the circle, so the small ones (sidebar faces, mention chips)
+      // scale with their size instead.
+      style={{ width: size, height: size, fontSize: size < 20 ? size * 0.42 : Math.max(10, size * 0.34), background: `linear-gradient(145deg, ${from}, ${to})` }}
     >
       {src && src !== failedSrc
         ? <img src={src} alt="" className="h-full w-full object-cover" referrerPolicy="no-referrer" onError={() => setFailedSrc(src)} />

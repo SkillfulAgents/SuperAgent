@@ -118,10 +118,11 @@ describe('session_idle error resilience', () => {
     expect(managed.streamingState.accumulatedText).toBe('')
   })
 
-  it('does not throw when both finalize and fallback sendMessage fail', async () => {
+  it('does not throw when both finalize and fallback sendMessage fail, and still stops pending tools', async () => {
     const managed = createManagedConnector()
     managed.streamingState.accumulatedText = 'Final text'
     managed.streamingState.currentMessageId = 'msg-1'
+    managed.pendingToolMessages = [{ toolId: 't1', messageId: 'pill-1', text: '🔧 *Bash* ⏳' }]
     const mock = getMock(managed)
     mock.finalizeStreamingMessage = async () => { throw new Error('finalize failed') }
     mock.sendMessage = async () => { throw new Error('sendMessage also failed') }
@@ -131,13 +132,15 @@ describe('session_idle error resilience', () => {
 
     // State may not be fully reset since sendMessage threw inside finalizeStreaming,
     // but the outer catch in session_idle prevents the crash
+    expect(mock.streamUpdates.map(u => u.text)).toEqual(['🔧 *Bash* ⛔'])
+    expect(managed.pendingToolMessages).toEqual([])
   })
 
   it('does not throw when sendStreamingUpdate fails during resolvePendingToolMessages', async () => {
     const managed = createManagedConnector()
     managed.pendingToolMessages = [
-      { messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
-      { messageId: 'msg-2', text: '🔧 *Read* ⏳' },
+      { toolId: 't1', messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
+      { toolId: 't2', messageId: 'msg-2', text: '🔧 *Read* ⏳' },
     ]
     const mock = getMock(managed)
     mock.sendStreamingUpdate = async () => { throw new Error('update failed') }
@@ -291,9 +294,9 @@ describe('resolvePendingToolMessages error resilience', () => {
   it('clears all pending messages even when sendStreamingUpdate throws', async () => {
     const managed = createManagedConnector()
     managed.pendingToolMessages = [
-      { messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
-      { messageId: 'msg-2', text: '🔧 *Read* ⏳' },
-      { messageId: 'msg-3', text: '🔧 *Write* ⏳' },
+      { toolId: 't1', messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
+      { toolId: 't2', messageId: 'msg-2', text: '🔧 *Read* ⏳' },
+      { toolId: 't3', messageId: 'msg-3', text: '🔧 *Write* ⏳' },
     ]
     const mock = getMock(managed)
     mock.sendStreamingUpdate = async () => { throw new Error('every update fails') }
@@ -307,8 +310,8 @@ describe('resolvePendingToolMessages error resilience', () => {
   it('processes all messages even when some fail', async () => {
     const managed = createManagedConnector()
     managed.pendingToolMessages = [
-      { messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
-      { messageId: 'msg-2', text: '🔧 *Read* ⏳' },
+      { toolId: 't1', messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
+      { toolId: 't2', messageId: 'msg-2', text: '🔧 *Read* ⏳' },
     ]
     const mock = getMock(managed)
     let callCount = 0

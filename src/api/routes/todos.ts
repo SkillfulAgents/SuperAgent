@@ -51,7 +51,8 @@ import {
   type TodoAttachment,
   type TodoView,
 } from '@shared/lib/todos/todo-schema'
-import { Authenticated, getReadableAgentIds } from '../middleware/auth'
+import type { SessionMetadataMap } from '@shared/lib/types/agent'
+import { Authenticated, canUseAgent, getReadableAgentIds } from '../middleware/auth'
 
 const todosRouter = new Hono()
 
@@ -76,18 +77,37 @@ async function pendingWakesFor(rows: TodoRow[], readableAgents: ReadonlySet<stri
   return new Map(wakes.map((w) => [wakeKey(w.agentSlug, w.resumeSessionId!), w.nextExecutionAt.getTime()]))
 }
 
-async function toView(row: TodoRow, readableAgents: ReadonlySet<string>, wakes: PendingWakes): Promise<TodoView> {
+/** The session metadata of each readable agent that runs some of the started work among `rows`, read once per agent. */
+async function sessionMetadataFor(rows: TodoRow[], readableAgents: ReadonlySet<string>): Promise<ReadonlyMap<string, SessionMetadataMap>> {
+  const slugs = [...new Set(rows.flatMap((row) =>
+    row.sessionId && row.agentSlug && readableAgents.has(row.agentSlug) ? [row.agentSlug] : []))]
+  return new Map(await Promise.all(slugs.map(async (slug) => [slug, await agentRegistry.get(slug).sessions.readMetadata()] as const)))
+}
+
+async function toView(
+  row: TodoRow,
+  readableAgents: ReadonlySet<string>,
+  wakes: PendingWakes,
+  metadata: ReadonlyMap<string, SessionMetadataMap>,
+): Promise<TodoView> {
   // Session state is live, not stored. An agent the person can no longer
   // read tells them nothing about its session.
   const actor = row.agentSlug && row.sessionId && readableAgents.has(row.agentSlug)
     ? agentRegistry.get(row.agentSlug)
     : null
   const live = actor && row.sessionId ? await actor.sessions.live(row.sessionId) : null
+  // A deleted session can leave its name in metadata: use the name only while
+  // the session is known, the same check the rename fallback makes.
+  const sessionName = actor && row.sessionId && (await actor.sessions.isKnown(row.sessionId))
+    ? metadata.get(actor.slug)?.[row.sessionId]?.name
+    : undefined
   const session = live ? { isActive: live.isActive, isAwaitingInput: live.isAwaitingInput } : null
   const column = todoColumn(row.status, session)
   return {
     id: row.id,
-    title: row.title,
+    // Started work is named by its session. The stored title is the draft's
+    // own, or the name the work had when it joined the board.
+    title: sessionName || row.title,
     description: row.description,
     agentSlug: row.agentSlug,
     newAgent: row.newAgent,
@@ -117,7 +137,7 @@ async function toView(row: TodoRow, readableAgents: ReadonlySet<string>, wakes: 
 
 async function viewOf(c: Context, row: TodoRow): Promise<TodoView> {
   const readable = await getReadableAgentIds(c, row.agentSlug ? [row.agentSlug] : [])
-  return await toView(row, readable, await pendingWakesFor([row], readable))
+  return await toView(row, readable, await pendingWakesFor([row], readable), await sessionMetadataFor([row], readable))
 }
 
 async function respond(c: Context, result: TodoWriteResult) {
@@ -143,8 +163,8 @@ todosRouter.get('/', async (c) => {
   const rows = await listTodos(getCurrentUserId(c))
   const agentSlugs = [...new Set(rows.flatMap((row) => (row.agentSlug ? [row.agentSlug] : [])))]
   const readable = await getReadableAgentIds(c, agentSlugs)
-  const wakes = await pendingWakesFor(rows, readable)
-  return c.json({ todos: await Promise.all(rows.map((row) => toView(row, readable, wakes))) })
+  const [wakes, metadata] = await Promise.all([pendingWakesFor(rows, readable), sessionMetadataFor(rows, readable)])
+  return c.json({ todos: await Promise.all(rows.map((row) => toView(row, readable, wakes, metadata))) })
 })
 
 // POST /api/todos — a new draft.
@@ -170,7 +190,7 @@ todosRouter.post('/sessions', async (c) => {
   }
   const result = await addSessionTodo(getCurrentUserId(c), input)
   if (!result) return c.json({ error: 'The todo has changed; reload and try again' }, 409)
-  return c.json(await toView(result.todo, readable, await pendingWakesFor([result.todo], readable)), result.created ? 201 : 200)
+  return c.json(await toView(result.todo, readable, await pendingWakesFor([result.todo], readable), await sessionMetadataFor([result.todo], readable)), result.created ? 201 : 200)
 })
 
 // PATCH /api/todos/:id — edit a draft.
@@ -258,10 +278,22 @@ todosRouter.post('/:id/status', async (c) => {
 })
 
 // POST /api/todos/:id/title — rename started work. Drafts are edited with PATCH.
+// Work with a session renames the session, for everyone on the agent, under
+// the same role check as PATCH /api/agents/:id/sessions/:sessionId.
 todosRouter.post('/:id/title', async (c) => {
   const input = await parseBody(c, renameTodoSchema)
   if (!input) return c.json({ error: 'Invalid title' }, 400)
-  return respond(c, await renameTodo(getCurrentUserId(c), c.req.param('id'), input.title))
+  const userId = getCurrentUserId(c)
+  const todo = await getTodo(userId, c.req.param('id'))
+  if (todo && todo.status !== 'draft' && todo.agentSlug && todo.sessionId) {
+    if (!(await canUseAgent(c, todo.agentSlug))) return c.json({ error: 'Forbidden' }, 403)
+    const sessions = agentRegistry.get(todo.agentSlug).sessions
+    if (await sessions.isKnown(todo.sessionId)) {
+      await sessions.rename(todo.sessionId, input.title)
+      return c.json(await viewOf(c, todo))
+    }
+  }
+  return respond(c, await renameTodo(userId, c.req.param('id'), input.title))
 })
 
 // POST /api/todos/:id/position — reorder within its column.

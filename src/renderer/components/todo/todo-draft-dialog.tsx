@@ -66,6 +66,7 @@ export function keptAttachments(
 ): TodoAttachment[] {
   return chips.flatMap((chip): TodoAttachment[] => {
     if (chip.type === 'saved') return stored.filter((att) => att.id === chip.id)
+    if (chip.type === 'reference') return []
     if (chip.type === 'mount') {
       return [{ id: chip.id, kind: 'mount', name: chip.folderName, size: 0, mimeType: 'inode/mount', hostPath: chip.hostPath }]
     }

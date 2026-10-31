@@ -3,18 +3,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider, onlineManager } from '@tanstack/react-query'
+import { googleDriveCreateFolderSchema } from '@shared/lib/volumes/google-drive-schema'
 
 Element.prototype.scrollIntoView = vi.fn()
 Element.prototype.hasPointerCapture = vi.fn(() => false)
 Element.prototype.releasePointerCapture = vi.fn()
 
-const state = vi.hoisted(() => ({ failTop: false, connects: [] as string[], accounts: [{ id: 'first', displayName: 'Work Drive', status: 'active' }], fetches: 0, teamName: 'Team' }))
+const state = vi.hoisted(() => ({ failTop: false, connects: [] as string[], accounts: [{ id: 'first', displayName: 'Work Drive', status: 'active' }], fetches: 0, teamName: 'Team', created: [] as { accountId: string; folderId: string; name: string }[] }))
 vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: () => false, usesHostFolderPaths: () => false, agentsRunInAppSandbox: () => false }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: false }) }))
 vi.mock('@renderer/hooks/use-connected-accounts', () => ({ useConnectedAccountsByToolkit: () => ({ data: { accounts: state.accounts }, isLoading: false }) }))
 vi.mock('@renderer/lib/api', () => ({
-  apiFetch: async (url: string) => {
+  apiFetch: async (url: string, init?: RequestInit) => {
     state.fetches++
+    if (init?.method === 'POST') {
+      const body = googleDriveCreateFolderSchema.parse(JSON.parse(String(init.body)))
+      state.created.push(body)
+      return Response.json({ folder: { id: `made-${body.name}`, name: body.name } })
+    }
     const folderId = new URL(url, 'http://app').searchParams.get('folderId')
     if (!folderId && state.failTop) return Response.json({ error: 'Google Drive is unavailable' }, { status: 503 })
     if (!folderId) return Response.json({ folders: [{ id: 'mydrive', name: 'My Drive' }, { id: 'shared1', name: 'Shared drive' }] })
@@ -34,7 +40,7 @@ vi.mock('@renderer/hooks/use-connect-account', () => ({
 }))
 import { VolumeSettingsDialog } from './volume-settings-dialog'
 
-beforeEach(() => { state.failTop = false; state.connects = []; state.fetches = 0; state.teamName = 'Team'; state.accounts = [{ id: 'first', displayName: 'Work Drive', status: 'active' }, { id: 'second', displayName: 'Personal Drive', status: 'active' }] })
+beforeEach(() => { state.failTop = false; state.connects = []; state.fetches = 0; state.teamName = 'Team'; state.created = []; state.accounts = [{ id: 'first', displayName: 'Work Drive', status: 'active' }, { id: 'second', displayName: 'Personal Drive', status: 'active' }] })
 afterEach(cleanup)
 async function setup(save = vi.fn()) {
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -173,4 +179,73 @@ describe('Google Drive picker filter', () => {
     expect(screen.getByRole('button', { name: 'Use “Projects”' })).toBeEnabled()
   })
 
+})
+
+describe('Google Drive picker New folder', () => {
+  async function openPicker() {
+    const save = await setup()
+    await chooseAccount()
+    await userEvent.click(screen.getByRole('button', { name: /^Select folder location/ }))
+    await screen.findByRole('button', { name: 'Open Team' })
+    return save
+  }
+  it('makes a folder where the picker is, picks it by the ID Drive returned, and saves it', async () => {
+    const save = await openPicker()
+    await userEvent.type(screen.getByRole('textbox', { name: 'Filter folders' }), 'TE ')
+    await userEvent.click(screen.getByRole('button', { name: 'New folder' }))
+    await userEvent.type(screen.getByRole('textbox', { name: 'New folder name' }), ' Scratch {Enter}')
+    expect(await screen.findByRole('button', { name: 'Scratch' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('textbox', { name: 'Filter folders' })).toHaveValue('')
+    expect(screen.getByRole('button', { name: 'Scratch' })).toHaveFocus()
+    expect(state.created).toEqual([{ accountId: 'first', folderId: 'mydrive', name: 'Scratch' }])
+    await userEvent.click(screen.getByRole('button', { name: 'Use “Scratch”' }))
+    expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent('My Drive / Scratch')
+    await userEvent.click(screen.getByRole('button', { name: 'Create drive' }))
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ source: { type: 'googledrive', config: { accountId: 'first', folderId: 'made-Scratch', folderName: 'Scratch', driveName: 'My Drive' } } }))
+  })
+
+  it('closes an open name row when you open another folder', async () => {
+    await openPicker()
+    await userEvent.click(screen.getByRole('button', { name: 'New folder' }))
+    await userEvent.type(screen.getByRole('textbox', { name: 'New folder name' }), 'Draft')
+    await userEvent.click(screen.getByRole('button', { name: 'Open Team' }))
+    await screen.findByText('No folders in Team')
+    expect(screen.queryByRole('textbox', { name: 'New folder name' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'New folder' })).toBeInTheDocument()
+    expect(state.created).toEqual([])
+  })
+
+  it('forgets a finished create on Cancel and reopens in My Drive', async () => {
+    await openPicker()
+    await userEvent.click(screen.getByRole('button', { name: 'Open Team' }))
+    await screen.findByText('No folders in Team')
+    await userEvent.click(screen.getByRole('button', { name: 'New folder' }))
+    await userEvent.type(screen.getByRole('textbox', { name: 'New folder name' }), 'Inner{Enter}')
+    await screen.findByRole('button', { name: 'Use “Inner”' })
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await userEvent.click(screen.getByRole('button', { name: /^Select folder location/ }))
+    expect(await screen.findByRole('button', { name: 'Use “My Drive”' })).toBeInTheDocument()
+  })
+
+  it('makes a folder inside a shared drive and saves it with that drive', async () => {
+    const save = await openPicker()
+    await userEvent.click(screen.getByRole('button', { name: 'Parent folder' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Open Shared drive' }))
+    await screen.findByText('No folders in Shared drive')
+    await userEvent.click(screen.getByRole('button', { name: 'New folder' }))
+    await userEvent.type(screen.getByRole('textbox', { name: 'New folder name' }), 'Notes{Enter}')
+    await userEvent.click(await screen.findByRole('button', { name: 'Use “Notes”' }))
+    expect(state.created).toEqual([{ accountId: 'first', folderId: 'shared1', name: 'Notes' }])
+    expect(screen.getByTestId('selected-volume-folder')).toHaveTextContent('Shared drive / Notes')
+    await userEvent.click(screen.getByRole('button', { name: 'Create drive' }))
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ source: { type: 'googledrive', config: { accountId: 'first', folderId: 'made-Notes', folderName: 'Notes', driveName: 'Shared drive' } } }))
+  })
+
+  it('offers no New folder at the top, where the drives are', async () => {
+    await openPicker()
+    expect(screen.getByRole('button', { name: 'New folder' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Parent folder' }))
+    await screen.findByText('Shared drive')
+    expect(screen.queryByRole('button', { name: 'New folder' })).not.toBeInTheDocument()
+  })
 })

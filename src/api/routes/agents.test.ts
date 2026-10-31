@@ -639,6 +639,7 @@ vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadMentions: vi.fn(() => Promise.resolve(new Set())),
   getUnreadMentionsByAgents: vi.fn(() => Promise.resolve(new Map())),
   getUnreadNotificationsByAgents: vi.fn(() => Promise.resolve(new Map())),
+  getUnreadNotificationPreviewsByAgents: vi.fn(() => Promise.resolve(new Map())),
   deleteNotificationsBySessionIds: vi.fn(() => Promise.resolve(0)),
   deleteMessageNotifications: vi.fn(() => Promise.resolve([])),
 }))
@@ -870,7 +871,7 @@ import { appendMentions } from '@shared/lib/utils/mentions'
 import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { createScheduledTask, listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem, listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
-import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
+import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, getUnreadNotificationPreviewsByAgents } from '@shared/lib/services/notification-service'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
@@ -8295,6 +8296,52 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body[0].hasUnreadMention).toBe(true)
   })
 
+  describe('notificationPreview', () => {
+    const previews = [
+      { id: 'notif-done', sessionId: 'sess-done', type: 'session_complete' as const, text: 'Filed the\n  weekly update.' },
+      { id: 'notif-waiting', sessionId: 'sess-waiting', type: 'session_waiting' as const, text: 'Which flight should I book?' },
+    ]
+
+    beforeEach(() => {
+      vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+      vi.mocked(getSessionSummary).mockResolvedValue({
+        sessionIds: ['sess-done', 'sess-waiting'],
+        sessionCount: 2,
+        lastActivityAt: new Date(),
+      })
+      vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-done', 'sess-waiting'])]]))
+      vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(new Map([['agent-1', previews]]))
+    })
+
+    it('says what a question still waiting on the user asks, over newer unread', async () => {
+      mockLiveSessions.awaitingIds.mockReturnValueOnce(['sess-waiting'])
+      const body = await (await getReq(app, '/api/agents')).json()
+      expect(body[0].notificationPreview).toBe('Which flight should I book?')
+      expect(body[0].notificationPreviewSource).toEqual({ id: 'notif-waiting', sessionId: 'sess-waiting' })
+    })
+
+    it('otherwise shows the newest unread on one line', async () => {
+      const body = await (await getReq(app, '/api/agents')).json()
+      expect(body[0].notificationPreview).toBe('Filed the weekly update.')
+      expect(body[0].notificationPreviewSource).toEqual({ id: 'notif-done', sessionId: 'sess-done' })
+    })
+
+    it('is absent with nothing unread', async () => {
+      vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+      vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(new Map())
+      const body = await (await getReq(app, '/api/agents')).json()
+      expect(body[0]).not.toHaveProperty('notificationPreview')
+      expect(body[0]).not.toHaveProperty('notificationPreviewSource')
+    })
+
+    it('exposes only personal unread reminders on visible, existing sessions', async () => {
+      vi.mocked(getSessionIdsMarkedUnreadByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-done', 'sess-waiting', 'deleted'])]]))
+      vi.mocked(readSessionMetadata).mockResolvedValue({ 'sess-waiting': { isScheduledExecution: true } })
+      const body = await (await getReq(app, '/api/agents')).json()
+      expect(body[0].markedUnreadSessionIds).toEqual(['sess-done'])
+    })
+  })
+
   it('ignores unread notifications on hidden automated sessions — no session list shows them', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(getSessionSummary).mockResolvedValue({
@@ -10046,6 +10093,14 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     await vi.waitFor(() => expect(updateSessionName).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'session-123', 'Greeting'))
   })
 
+  it('a session the caller names keeps that name and is not named again', async () => {
+    expect((await postJson(app, SESSIONS_URL, { message: 'Weekly report\n\nPull the Q3 numbers', name: 'Weekly report' })).status).toBe(201)
+    expect(registerSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'session-123', 'Weekly report', expect.anything())
+    await new Promise((r) => setTimeout(r, 0))
+    expect(mockLlmMessagesCreate).not.toHaveBeenCalled()
+    expect(updateSessionName).not.toHaveBeenCalled()
+  })
+
   it('a shared agent is told who opened the session', async () => {
     mockIsAuthMode.mockReturnValue(true)
     vi.mocked(countMembersWithMinRole).mockResolvedValue(2)
@@ -10814,6 +10869,7 @@ describe('session existence guards read metadata, not the transcript', () => {
     expect(body).toMatchObject({ id: 'sess-1', name: 'Renamed' })
     expect(body).not.toHaveProperty('messageCount')
     expect(updateSessionName).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1', 'Renamed')
+    expect(globalFeed.publish).toHaveBeenCalledWith({ type: 'session_updated', sessionId: 'sess-1', agentSlug: 'test-agent' })
     // Was one read on each side of the rename.
     expect(getSession).toHaveBeenCalledTimes(1)
   })

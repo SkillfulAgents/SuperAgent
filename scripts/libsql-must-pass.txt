@@ -4,6 +4,7 @@
 src/shared/lib/db/batch.test.ts
 src/shared/lib/db/migrations/bundle.test.ts
 src/shared/lib/db/migrations/agent-avatars.test.ts
+src/shared/lib/db/migrations/user-ownership-fks.test.ts
 src/shared/lib/db/data-migrations/index.test.ts
 src/shared/lib/db/data-migrations/0003-import-llm-connections.test.ts
 src/shared/lib/db/data-migrations/0002-global-model-pricing.test.ts
@@ -79,6 +80,8 @@ src/shared/lib/auth/password-session.integration.test.ts
 src/shared/lib/auth/oidc.integration.test.ts
 src/shared/lib/auth/oidc-issuer-policy.integration.test.ts
 src/shared/lib/auth/oidc-discovery-timeout.integration.test.ts
+src/shared/lib/auth/user-deletion.integration.test.ts
 src/shared/lib/browser-vault/vault-service.test.ts
 src/api/routes/browser-accounts.test.ts
 src/shared/lib/browser-vault/login-host.test.ts
+src/shared/lib/services/notification-read-state.test.ts

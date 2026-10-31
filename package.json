@@ -1,6 +1,6 @@
 {
   "name": "superagent",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "AI agent management platform",
   "author": "Datawizz Inc.",
   "license": "MIT",
@@ -21,13 +21,14 @@
     "check:runtime-deps": "node scripts/check-runtime-dependencies.mjs all",
     "preview": "npm run build && node dist/web/server.mjs",
     "download:lima": "bash scripts/download-lima.sh",
+    "download:lima:mas": "LIMACTL_FROM_SOURCE=1 bash scripts/download-lima.sh",
     "download:wsl-rootfs": "bash scripts/download-wsl-rootfs.sh",
     "download:agent-image": "tsx scripts/fetch-agent-image.ts build/agent-image",
     "build:mediaremote-adapter": "bash scripts/build-mediaremote-adapter.sh",
     "build:spotlight-bridge": "bash scripts/build-spotlight-bridge.sh",
     "dist:mac": "PLATFORM_PROXY_URL=${PLATFORM_PROXY_URL:-https://platformproxy.gamutagents.com} concurrently --kill-others-on-fail --timings npm:download:lima npm:download:agent-image npm:build:mediaremote-adapter npm:build:spotlight-bridge npm:build:electron && electron-builder --mac --publish never",
-    "dist:mas": "PLATFORM_PROXY_URL=${PLATFORM_PROXY_URL:-https://platformproxy.gamutagents.com} AGENT_IMAGE_REQUIRED=${AGENT_IMAGE_REQUIRED:-true} concurrently --kill-others-on-fail --timings npm:download:lima npm:download:agent-image npm:build:spotlight-bridge npm:build:electron && electron-builder --config electron-builder.mas.cjs --mac mas --publish never",
-    "dist:mas-dev": "PLATFORM_PROXY_URL=${PLATFORM_PROXY_URL:-https://platformproxy.gamutagents.com} concurrently --kill-others-on-fail --timings npm:download:lima npm:download:agent-image npm:build:spotlight-bridge npm:build:electron && electron-builder --config electron-builder.mas.cjs --mac mas-dev --publish never",
+    "dist:mas": "PLATFORM_PROXY_URL=${PLATFORM_PROXY_URL:-https://platformproxy.gamutagents.com} AGENT_IMAGE_REQUIRED=${AGENT_IMAGE_REQUIRED:-true} concurrently --kill-others-on-fail --timings npm:download:lima:mas npm:download:agent-image npm:build:spotlight-bridge npm:build:electron && electron-builder --config electron-builder.mas.cjs --mac mas --publish never",
+    "dist:mas-dev": "PLATFORM_PROXY_URL=${PLATFORM_PROXY_URL:-https://platformproxy.gamutagents.com} concurrently --kill-others-on-fail --timings npm:download:lima:mas npm:download:agent-image npm:build:spotlight-bridge npm:build:electron && electron-builder --config electron-builder.mas.cjs --mac mas-dev --publish never",
     "dist:win": "npm run download:wsl-rootfs && npm run build:electron && electron-builder --win --publish never",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src e2e perf --ext .ts,.tsx",
@@ -107,7 +108,7 @@
     "ws": "^8.22.0",
     "yauzl": "^3.3.0",
     "yazl": "^3.3.1",
-    "zod": "~4.3.6"
+    "zod": "~4.6.7"
   },
   "devDependencies": {
     "@analytics/amplitude": "^0.1.3",

@@ -3,6 +3,7 @@ import { eq, and, desc } from 'drizzle-orm'
 
 import { getSettings, mutateSettings, type PlatformAuthSettings } from '@shared/lib/config/settings'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
+import { PLATFORM_CLAIMS } from '@shared/lib/platform-auth/claims'
 import { fetchPlatformJson } from '@shared/lib/platform-auth/platform-fetch'
 import { PlatformAuthSettingsSchema, PlatformAccountInfoSchema, type ParsedPlatformAccountInfo } from '@shared/lib/types/skillset-schema'
 import { captureException } from '@shared/lib/error-reporting'
@@ -324,8 +325,6 @@ function getEnvManagedStatus(): PlatformAuthStatus | null {
   return buildEnvManagedStatus(envToken, null)
 }
 
-const PLATFORM_USER_ID_CLAIM = 'https://platform.skillfulagents.dev/claims/user_id'
-
 /**
  * Extract the platform user_id from a stored OIDC ID token. Returns null if
  * the claim is absent (issuer not yet updated) or the token is malformed.
@@ -335,7 +334,7 @@ function extractUserIdFromIdToken(idToken: string): string | null {
     const payload = JSON.parse(
       Buffer.from(idToken.split('.')[1], 'base64url').toString(),
     )
-    const val = payload[PLATFORM_USER_ID_CLAIM]
+    const val = payload[PLATFORM_CLAIMS.userId]
     return typeof val === 'string' ? val : null
   } catch {
     return null
