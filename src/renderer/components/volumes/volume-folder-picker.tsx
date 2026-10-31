@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import { ArrowLeft, ChevronRight, Folder, FolderOpen, Loader2, Plus } from 'lucide-react'
+import { ArrowLeft, ChevronRight, Folder, FolderOpen, Loader2, Plus, Search } from 'lucide-react'
 import { folderNameError, type VolumeFolders } from '@shared/lib/volumes/volume-folders-schema'
 import { useCreateVolumeFolder, useVolumeFolders } from '@renderer/hooks/use-volume-folders'
 import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
+import { HighlightMatch } from '@renderer/components/ui/highlight-match'
 import { Input } from '@renderer/components/ui/input'
 import { isComposing } from '@renderer/lib/enter-key'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@renderer/components/ui/dialog'
@@ -73,6 +74,7 @@ export function VolumeFolderPicker<Cursor>({ source, accountId, initial, selecte
   const [chosen, setChosen] = useState(initial)
   const [cursor, setCursor] = useState(initial)
   const [highlighted, setHighlighted] = useState<{ id: string; name: string; cursor: Cursor } | null>(null)
+  const [filter, setFilter] = useState('')
   // The name being typed for a new folder or drive, or null while its row is closed.
   const [naming, setNaming] = useState<string | null>(null)
   const [nameError, setNameError] = useState<string | null>(null)
@@ -85,6 +87,8 @@ export function VolumeFolderPicker<Cursor>({ source, accountId, initial, selecte
   const crumbs = source.crumbs(cursor)
   const parent = crumbs.length > 1 ? crumbs[crumbs.length - 2].cursor : null
   const listed = folders.data ? source.folders(folders.data, cursor) : []
+  const filterQuery = filter.trim().toLocaleLowerCase()
+  const shown = listed.filter(folder => folder.name.toLocaleLowerCase().includes(filterQuery))
 
   // Opening inside the first folder happens once per opening of the picker, so stepping back up to the top stays there.
   const entered = useRef(false)
@@ -93,11 +97,11 @@ export function VolumeFolderPicker<Cursor>({ source, accountId, initial, selecte
     if (!entering || !folders.data || folders.isFetching) return
     entered.current = true
     const first = source.folders(folders.data, cursor)[0]
-    if (first) setCursor(first.cursor)
+    if (first) { setCursor(first.cursor); setFilter('') }
   }, [entering, folders.data, folders.isFetching, source, cursor])
 
   const closeNaming = (refocusAfter = true) => { setNaming(null); setNameError(null); create.reset(); setFocusTarget(refocusAfter ? 'new-folder' : null) }
-  const open = (to: Cursor) => { setCursor(to); setHighlighted(null); closeNaming(false) }
+  const open = (to: Cursor) => { setCursor(to); setHighlighted(null); setFilter(''); closeNaming(false) }
   const submitName = () => {
     // Nothing is made into a listing that failed to load: Try again comes first.
     if (naming === null || create.isPending || folders.error) return
@@ -108,13 +112,16 @@ export function VolumeFolderPicker<Cursor>({ source, accountId, initial, selecte
     create.mutate({ query, name: naming.trim() }, {
       onSuccess: folder => {
         setNaming(null)
+        setFilter('')
         setFocusTarget({ folderId: folder.id })
         setHighlighted(source.folders({ folders: [folder] }, cursor)[0])
       },
     })
   }
   const noun = source.noun ?? 'folder'
-  const choice = highlighted && source.confirmLabel(highlighted.cursor) !== null ? highlighted : null
+  // Use only acts on a highlighted row that is on screen, whether typing or a refreshed listing hid it.
+  const visible = shown.find(folder => folder.id === highlighted?.id) ?? null
+  const choice = visible && source.confirmLabel(visible.cursor) !== null ? visible : null
   const target = choice ? choice.cursor : source.confirmLabel(cursor) !== null ? cursor : null
   const confirmLabel = choice ? `Use “${choice.name}”` : source.confirmLabel(cursor)
   const loading = folders.isFetching || entering
@@ -158,22 +165,26 @@ export function VolumeFolderPicker<Cursor>({ source, accountId, initial, selecte
             </ol>
           </nav>
         </div>
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input value={filter} onChange={event => setFilter(event.target.value)} placeholder={`Filter ${noun}s`} aria-label={`Filter ${noun}s`} className="h-9 pl-8 text-sm" />
+        </div>
         <div className="min-h-32 rounded-md border p-1">
           <div className="max-h-64 overflow-y-auto">
             {loading ? <p role="status" className="flex items-center gap-2 p-3 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />Loading {noun}s…</p>
               : folders.error ? <div className="p-3"><p role="alert" className="text-sm text-destructive">{folders.error.message}</p><Button type="button" variant="outline" size="sm" className="mt-2" onClick={() => { void folders.refetch() }}>Try again</Button></div>
-              : listed.length ? listed.map(folder => {
+              : shown.length ? shown.map(folder => {
                 const isHighlighted = highlighted?.id === folder.id
                 return <div key={folder.id} className={cn('flex items-center rounded', isHighlighted ? 'bg-accent text-accent-foreground' : 'hover:bg-muted')}>
                   <button type="button" aria-pressed={isHighlighted} disabled={create.isPending} ref={typeof focusTarget === 'object' && focusTarget?.folderId === folder.id ? focusOnMount : undefined} onClick={() => setHighlighted(isHighlighted ? null : folder)} onDoubleClick={() => { if (source.canOpen?.(folder.cursor) ?? true) open(folder.cursor); else setHighlighted(folder) }}
                     className="flex min-w-0 flex-1 items-center gap-2 rounded px-3 py-2 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                    <Folder className="h-4 w-4 shrink-0" /><span className="min-w-0 flex-1 truncate">{folder.name}</span>
+                    <Folder className="h-4 w-4 shrink-0" /><span className="min-w-0 flex-1 truncate"><HighlightMatch text={folder.name} query={filter.trim()} /></span>
                   </button>
                   {(source.canOpen?.(folder.cursor) ?? true) && <Button type="button" variant="ghost" size="icon" className="mr-0.5 h-8 w-8 shrink-0" aria-label={`Open ${folder.name}`} disabled={create.isPending} onClick={() => open(folder.cursor)}>
                     <ChevronRight className="h-4 w-4" />
                   </Button>}
                 </div>
-              }) : <p className="p-3 text-sm text-muted-foreground">No {noun}s in {crumbs[crumbs.length - 1].name}</p>}
+              }) : <p className="p-3 text-sm text-muted-foreground">{filterQuery && listed.length ? `No ${noun}s match “${filter.trim()}”` : `No ${noun}s in ${crumbs[crumbs.length - 1].name}`}</p>}
           </div>
           {source.canCreate?.(cursor) && (naming !== null || (!loading && !folders.error)) && (naming === null
             ? <button type="button" ref={focusTarget === 'new-folder' ? focusOnMount : undefined} onClick={() => setNaming('')}
