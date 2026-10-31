@@ -136,20 +136,21 @@ export async function touchAgentIntegrationSession(id: string): Promise<boolean>
  * Returns the active session, or null if there is none (or it was rotated).
  *
  * When a session is rotated, it is archived and the returned null signals
- * the caller to create a new session. The archived session's ID is returned
- * via `onArchive` so the caller can do additional cleanup (e.g. SSE teardown).
+ * the caller to create a new session. The archived row's ID and its runtime
+ * session ID are passed to `onArchive` so the caller can clean up (e.g. SSE
+ * teardown) and carry the conversation into the new session.
  */
 export async function resolveActiveSession(
   integrationId: string,
   externalId: string,
   timeoutHours: number | null | undefined,
-  onArchive?: (archivedSessionId: string) => void,
+  onArchive?: (archivedRowId: string, archivedSessionId: string) => void,
 ): Promise<AgentIntegrationSession | null> {
   const session = await getAgentIntegrationSession(integrationId, externalId)
   if (!session) return null
 
   if (isSessionTimedOut(session, timeoutHours)) {
-    onArchive?.(session.id)
+    onArchive?.(session.id, session.sessionId)
     await archiveAgentIntegrationSession(session.id)
     return null
   }

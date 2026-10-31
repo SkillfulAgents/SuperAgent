@@ -14,7 +14,7 @@ import { buildWorkflowTree } from '@shared/lib/workflows/workflow-tree'
 import type { WorkflowTree } from '@shared/lib/workflows/workflow-schemas'
 import type { JsonlEntry } from '@shared/lib/types/agent'
 import { captureException } from '@shared/lib/error-reporting'
-import { isAbsentFile, readJsonl, streamJsonl } from './jsonl-files'
+import { isAbsentFile, iterateLinesBackward, readJsonl, streamJsonl } from './jsonl-files'
 import { sessionDirPath, sessionFilePath, transcriptPath, type SessionStore } from './session-store'
 import type { FileEntry, MediaBlob, SubagentRef } from './types'
 import { WorkspaceFileError, joinWorkspacePath } from './workspace-path'
@@ -239,6 +239,67 @@ export async function forkedUserUuids(store: SessionStore, sessionId: string): P
     if (parsed.success) pairs.push({ newUuid: parsed.data.uuid, oldUuid: parsed.data.forkedFrom.messageUuid })
   }
   return pairs
+}
+
+/** What a replacement session needs of the sessions before it: the newest compact summary and the text turns after it. */
+export interface ConversationCarryOver {
+  summary: string | null
+  /** Oldest first. */
+  recent: Array<{ role: 'user' | 'assistant'; text: string }>
+}
+
+const CARRY_SUMMARY_MAX_CHARS = 20_000
+const CARRY_RECENT_MAX_CHARS = 12_000
+const CARRY_TURN_MAX_CHARS = 2_000
+// Tool output can make one line megabytes long; turns worth carrying are short text.
+const CARRY_LINE_MAX_BYTES = 256 * 1024
+const CARRY_MAX_LINES = 20_000
+
+const carryLineSchema = z.object({
+  type: z.enum(['user', 'assistant']),
+  isCompactSummary: z.boolean().optional(),
+  isMeta: z.boolean().optional(),
+  isSidechain: z.boolean().optional(),
+  message: z.object({
+    content: z.union([z.string(), z.array(z.object({ type: z.string(), text: z.string().optional() }).loose())]),
+  }).loose(),
+}).loose()
+
+function carryText(content: z.infer<typeof carryLineSchema>['message']['content']): string {
+  if (typeof content === 'string') return content.trim()
+  return content.filter((block) => block.type === 'text' && block.text).map((block) => block.text!.trim()).join('\n').trim()
+}
+
+/**
+ * Walk the given transcripts newest first, from each file's end, collecting
+ * text turns until the newest compact summary. Never reads a whole file: a
+ * long-lived chat transcript can be hundreds of MB while its live context is
+ * the last summary plus what follows it.
+ */
+export async function readConversationCarryOver(store: SessionStore, sessionIds: string[]): Promise<ConversationCarryOver> {
+  const recent: ConversationCarryOver['recent'] = []
+  let recentChars = 0
+  for (const sessionId of sessionIds) {
+    let lines = 0
+    for await (const { line } of iterateLinesBackward(store.files, transcriptPath(store, sessionId))) {
+      if (++lines > CARRY_MAX_LINES) break
+      if (line.length > CARRY_LINE_MAX_BYTES) continue
+      let raw: unknown
+      try { raw = JSON.parse(line.toString('utf-8')) } catch { continue }
+      const parsed = carryLineSchema.safeParse(raw)
+      if (!parsed.success || parsed.data.isSidechain) continue
+      const text = carryText(parsed.data.message.content)
+      if (!text) continue
+      if (parsed.data.isCompactSummary) {
+        return { summary: text.slice(0, CARRY_SUMMARY_MAX_CHARS), recent: recent.reverse() }
+      }
+      if (parsed.data.isMeta || recentChars >= CARRY_RECENT_MAX_CHARS) continue
+      const turn = text.slice(0, CARRY_TURN_MAX_CHARS)
+      recent.push({ role: parsed.data.type, text: turn })
+      recentChars += turn.length
+    }
+  }
+  return { summary: null, recent: recent.reverse() }
 }
 
 function isBenignStreamError(error: unknown): boolean {

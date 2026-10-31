@@ -147,6 +147,9 @@ export interface SessionMetadata {
   // Fork lineage: the session this one was copied from (Fork Session). Provenance
   // only — a fork stays interactive; do not add it to the automated-hide list.
   forkedFromSessionId?: string
+  // Chat lineage: the integration session this one replaced (rotation after
+  // inactivity, or a runtime session that was gone). Its context is carried in.
+  continuesFromSessionId?: string
 }
 
 /**

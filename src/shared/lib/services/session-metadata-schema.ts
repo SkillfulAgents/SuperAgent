@@ -86,6 +86,7 @@ export const sessionMetadataSchema = z
     // Fork lineage: the session this one was copied from. Provenance only —
     // a fork is a normal user session, never hidden as automated.
     forkedFromSessionId: z.string().optional(),
+    continuesFromSessionId: z.string().optional(),
   })
   .loose()
 

@@ -23,6 +23,9 @@ const state = vi.hoisted(() => ({
   create: vi.fn(), start: vi.fn(), send: vi.fn(), subscribeStream: vi.fn(), isStreamSubscribed: vi.fn((_sessionId?: string) => false), register: vi.fn(), metadata: vi.fn(),
   broadcast: vi.fn(), isActive: vi.fn((_sessionId?: string) => false),
   recordMessage: vi.fn(async (record: { display: unknown }) => record.display),
+  // A chat whose active mapping timed out: the next lookup archives it and reports the replaced session.
+  rotated: new Map<string, { rowId: string; sessionId: string }>(),
+  carryOver: vi.fn(), sessionMetadata: vi.fn(),
   // Runs before each read of a session's live state: a test can hold the read there.
   beforeLive: undefined as (() => Promise<void>) | undefined,
   // Every delivery the manager asked the actor for, as asked.
@@ -37,7 +40,13 @@ vi.mock('@shared/lib/services/agent-integration-service', () => ({
   updateAgentIntegrationStatus: vi.fn(),
 }))
 vi.mock('@shared/lib/services/agent-integration-session-service', () => ({
-  resolveActiveSession: (id: string, externalId: string) => state.mappings.get(`${id}:${externalId}`),
+  resolveActiveSession: (id: string, externalId: string, _timeoutHours: unknown, onArchive?: (rowId: string, sessionId: string) => void) => {
+    const rotated = state.rotated.get(`${id}:${externalId}`)
+    if (!rotated) return state.mappings.get(`${id}:${externalId}`)
+    state.rotated.delete(`${id}:${externalId}`)
+    onArchive?.(rotated.rowId, rotated.sessionId)
+    return undefined
+  },
   createAgentIntegrationSession: (mapping: { integrationId: string; externalChatId: string; sessionId: string }) => {
     state.mappings.set(`${mapping.integrationId}:${mapping.externalChatId}`, { id: `mapping-${mapping.sessionId}`, ...mapping })
   },
@@ -57,7 +66,7 @@ vi.mock('@shared/lib/agent-actor', async () => {
     container: { start: state.start },
     inputs: { answer: state.answer },
     sessions: {
-      create: state.create, register: state.register, updateMetadata: state.metadata,
+      create: state.create, register: state.register, updateMetadata: state.metadata, metadata: state.sessionMetadata,
       markActive: state.markActive, markIdle: state.markIdle, attach: state.attach,
       // One snapshot of the session, as the actor's live sessions answer it.
       live: async (sessionId: string) => (await state.beforeLive?.(), {
@@ -66,7 +75,7 @@ vi.mock('@shared/lib/agent-actor', async () => {
       }),
     },
     messages: {
-      stop: state.stop, broadcastEvent: state.broadcast,
+      stop: state.stop, broadcastEvent: state.broadcast, carryOver: state.carryOver,
       // The actor's delivery as the manager sees it: the echo reaches the
       // session's viewers with the actor's queued flag, then the message goes.
       deliver: async (request: { sessionId: string; content: string; uuid?: string; echo?: object }) => {
@@ -173,6 +182,9 @@ beforeEach(async () => {
   })
   state.mappings.clear()
   state.streams.clear()
+  state.rotated.clear()
+  state.carryOver.mockReset().mockResolvedValue({ summary: null, recent: [] })
+  state.sessionMetadata.mockReset().mockResolvedValue(null)
   state.create.mockImplementation(async () => ({ id: `session-${state.create.mock.calls.length}` }))
   state.subscribeStream.mockResolvedValue(undefined)
   state.isStreamSubscribed.mockReturnValue(false)
@@ -196,6 +208,42 @@ describe('AgentIntegration host contract', () => {
     expect(state.metadata).toHaveBeenCalledWith('session-1', { isAgentIntegrationSession: true, agentIntegrationId: 'installation-a' })
     expect('sendMessage' in adapter).toBe(false)
     expect(adapter.prepareInput).toHaveBeenCalledTimes(2)
+  })
+
+  describe('rotation after inactivity', () => {
+    it('starts the new session from the replaced session’s summary and records the lineage', async () => {
+      state.rotated.set('installation-a:object-7', { rowId: 'row-old', sessionId: 'old-session' })
+      state.carryOver.mockResolvedValue({ summary: 'The dentist is booked for Tuesday at 9 AM.', recent: [{ role: 'user', text: 'Thanks.' }] })
+      await manager.start()
+      await adapter.input('comment-one')
+      await vi.waitFor(() => expect(state.create).toHaveBeenCalledOnce())
+
+      expect(state.carryOver).toHaveBeenCalledWith(['old-session'])
+      const systemPrompt = state.create.mock.calls[0][0].systemPrompt as string
+      expect(systemPrompt).toContain('The dentist is booked for Tuesday at 9 AM.')
+      expect(systemPrompt).toContain('User: Thanks.')
+      await vi.waitFor(() => expect(state.metadata).toHaveBeenCalledWith('session-1', expect.objectContaining({ continuesFromSessionId: 'old-session' })))
+    })
+
+    it('reads one session further back when the replaced one was opened by an outbound send', async () => {
+      state.rotated.set('installation-a:object-7', { rowId: 'row-outbound', sessionId: 'outbound-session' })
+      state.sessionMetadata.mockResolvedValue({ continuesFromSessionId: 'old-session' })
+      await manager.start()
+      await adapter.input('comment-one')
+      await vi.waitFor(() => expect(state.create).toHaveBeenCalledOnce())
+
+      expect(state.carryOver).toHaveBeenCalledWith(['outbound-session', 'old-session'])
+      expect(state.create.mock.calls[0][0].systemPrompt).toBeUndefined()
+    })
+
+    it('starts a first session without reading any transcript', async () => {
+      await manager.start()
+      await adapter.input('comment-one')
+      await vi.waitFor(() => expect(state.create).toHaveBeenCalledOnce())
+
+      expect(state.carryOver).not.toHaveBeenCalled()
+      expect(state.create.mock.calls[0][0].systemPrompt).toBeUndefined()
+    })
   })
 
   describe('message display', () => {
