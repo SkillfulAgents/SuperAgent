@@ -13,9 +13,9 @@ import { dropboxVolumeConfigSchema } from './dropbox-schema'
 import { GoogleDriveMountableVolume, prepareGoogleDriveVolume } from './google-drive-mountable-volume'
 import { googleDriveVolumeConfigSchema } from './google-drive-schema'
 import { PlatformMountableVolume, preparePlatformVolume } from './platform-mountable-volume'
-import { platformVolumeConfigSchema, storedPlatformVolumeConfigSchema } from './volume-config-schema'
+import { storedPlatformVolumeConfigSchema } from './volume-config-schema'
 import type { BaseMountableVolume } from './base-mountable-volume'
-import type { VolumeFolderBrowser, VolumeSetupViewer } from './volume-folder-browser'
+import type { VolumeFolderBrowser, VolumeFolderCreator, VolumeSetupViewer } from './volume-folder-browser'
 import { VolumeError } from './volume-error'
 
 /** A new volume's type, its checked config, and the name it is given before any clash suffix. */
@@ -30,6 +30,7 @@ interface VolumeTypeEntry {
   instantiate(row: StoredVolume, agentSlug?: string): BaseMountableVolume<unknown> | null
   prepare(config: unknown, creator?: { userId: string | null }): Promise<{ name: string; config: unknown }>
   browseFolders?: VolumeFolderBrowser
+  createFolder?: VolumeFolderCreator
   validate?: (config: unknown, viewer: VolumeSetupViewer) => Promise<VolumeValidation>
 }
 
@@ -39,12 +40,13 @@ function volumeType<C, S = C>(
   schema: z.ZodType<C>,
   create: (row: StoredVolume, config: S, agentSlug?: string) => BaseMountableVolume<unknown>,
   prepare: (config: C, creator?: { userId: string | null }) => Promise<{ name: string; config: S }>,
-  options: { stored?: z.ZodType<S>; browseFolders?: VolumeFolderBrowser; validate?: VolumeTypeEntry['validate'] } = {},
+  options: { stored?: z.ZodType<S>; browseFolders?: VolumeFolderBrowser; createFolder?: VolumeFolderCreator; validate?: VolumeTypeEntry['validate'] } = {},
 ): VolumeTypeEntry {
   // With no stored schema, S defaults to C.
   const stored = options.stored ?? schema as unknown as z.ZodType<S>
   return {
     browseFolders: options.browseFolders,
+    createFolder: options.createFolder,
     validate: options.validate,
     instantiate(row, agentSlug) {
       const config = stored.safeParse(row.config)
@@ -72,10 +74,10 @@ const volumeTypes: Record<VolumeType, VolumeTypeEntry> = {
   dropbox: volumeType(dropboxVolumeConfigSchema, (row, config, agentSlug) => new DropboxMountableVolume(row.id, row.name, config, agentSlug), prepareDropboxVolume,
     { browseFolders: DropboxMountableVolume.browseFolders }),
   googledrive: volumeType(googleDriveVolumeConfigSchema, (row, config, agentSlug) => new GoogleDriveMountableVolume(row.id, row.name, config, agentSlug), prepareGoogleDriveVolume,
-    { browseFolders: GoogleDriveMountableVolume.browseFolders }),
+    { browseFolders: GoogleDriveMountableVolume.browseFolders, createFolder: GoogleDriveMountableVolume.createFolder }),
   local: volumeType(localVolumeConfigSchema, (row, config) => new LocalMountableVolume(row.id, row.name, config), prepareLocalVolume),
-  platform: volumeType(platformVolumeConfigSchema, (row, config, agentSlug) => new PlatformMountableVolume(row.id, row.name, config, agentSlug), preparePlatformVolume,
-    { stored: storedPlatformVolumeConfigSchema, browseFolders: PlatformMountableVolume.browseFolders }),
+  platform: volumeType(storedPlatformVolumeConfigSchema, (row, config, agentSlug) => new PlatformMountableVolume(row.id, row.name, config, agentSlug), preparePlatformVolume,
+    { browseFolders: PlatformMountableVolume.browseFolders, createFolder: PlatformMountableVolume.createFolder }),
 }
 
 function isVolumeType(type: string): type is VolumeType {
@@ -93,21 +95,28 @@ export async function prepareVolume(type: string, config: unknown, creator?: { u
   return { type, ...(await volumeTypes[type].prepare(config, creator)) }
 }
 
+/** A setup step a type may offer, or the error its route answers: 404 for an unknown type, 400 for one without it. */
+function setupStep<K extends 'browseFolders' | 'createFolder' | 'validate'>(type: string, step: K, missing: string): NonNullable<VolumeTypeEntry[K]> {
+  if (!isVolumeType(type)) throw new VolumeError(`Unknown volume type: ${type}`, 404)
+  const run = volumeTypes[type][step]
+  if (!run) throw new VolumeError(missing, 400)
+  return run
+}
+
 /** Setup browsing happens before there is a saved definition. Local deliberately has no
  * server-side browser: selecting a local folder uses the native OS picker. */
 export async function browseVolumeFolders(type: string, query: unknown, viewer: VolumeSetupViewer) {
-  if (!isVolumeType(type)) throw new VolumeError(`Unknown volume type: ${type}`, 404)
-  const browse = volumeTypes[type].browseFolders
-  if (!browse) throw new VolumeError('This volume source does not support folder browsing', 400)
-  return browse(query, viewer)
+  return setupStep(type, 'browseFolders', 'This volume source does not support folder browsing')(query, viewer)
+}
+
+/** A source that can make a folder from the setup picker says so here; the rest offer no New folder. */
+export async function createVolumeFolder(type: string, input: unknown, viewer: VolumeSetupViewer) {
+  return setupStep(type, 'createFolder', 'This volume source does not support creating folders')(input, viewer)
 }
 
 /** Validation before saving remains source-owned, just like setup folder browsing. */
 export async function validateVolumeSource(type: string, config: unknown, viewer: VolumeSetupViewer): Promise<VolumeValidation> {
-  if (!isVolumeType(type)) throw new VolumeError(`Unknown volume type: ${type}`, 404)
-  const validate = volumeTypes[type].validate
-  if (!validate) throw new VolumeError('This source does not support a connection check', 400)
-  return validate(config, viewer)
+  return setupStep(type, 'validate', 'This source does not support a connection check')(config, viewer)
 }
 
 export async function removeVolume(type: string, id: string): Promise<void> {
