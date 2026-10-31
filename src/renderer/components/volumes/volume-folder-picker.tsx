@@ -4,6 +4,7 @@ import type { VolumeFolders } from '@shared/lib/volumes/volume-folders-schema'
 import { useVolumeFolders } from '@renderer/hooks/use-volume-folders'
 import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
+import { HighlightMatch } from '@renderer/components/ui/highlight-match'
 import { Input } from '@renderer/components/ui/input'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@renderer/components/ui/dialog'
 import type { VolumeType } from '@shared/lib/types/mount'
@@ -128,7 +129,7 @@ export function VolumeFolderPicker<Cursor>({ source, accountId, initial, selecte
               return <div key={folder.id} className={cn('flex items-center rounded', isHighlighted ? 'bg-accent text-accent-foreground' : 'hover:bg-muted')}>
                 <button type="button" aria-pressed={isHighlighted} onClick={() => setHighlighted(isHighlighted ? null : folder)} onDoubleClick={() => open(folder.cursor)}
                   className="flex min-w-0 flex-1 items-center gap-2 rounded px-3 py-2 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                  <Folder className="h-4 w-4 shrink-0" /><span className="min-w-0 flex-1 truncate">{folder.name}</span>
+                  <Folder className="h-4 w-4 shrink-0" /><span className="min-w-0 flex-1 truncate"><HighlightMatch text={folder.name} query={filter.trim()} /></span>
                 </button>
                 <Button type="button" variant="ghost" size="icon" className="mr-0.5 h-8 w-8 shrink-0" aria-label={`Open ${folder.name}`} onClick={() => open(folder.cursor)}>
                   <ChevronRight className="h-4 w-4" />
