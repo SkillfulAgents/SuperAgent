@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   refetchAgent: vi.fn(),
   openDashboardExternal: vi.fn(),
   apiFetch: vi.fn(),
+  canUse: true,
 }))
 
 vi.mock('@renderer/hooks/use-agents', () => ({
@@ -62,7 +63,7 @@ vi.mock('@renderer/hooks/use-keep-alive', () => ({
 
 vi.mock('@renderer/context/user-context', () => ({
   useUser: () => ({
-    canUseAgent: () => true,
+    canUseAgent: () => mocks.canUse,
   }),
 }))
 
@@ -71,7 +72,7 @@ vi.mock('@renderer/components/dashboards/add-to-dock-dialog', () => ({
 }))
 
 vi.mock('@renderer/components/dashboards/pending-agent-reviews', () => ({
-  PendingAgentReviews: () => null,
+  PendingAgentReviews: ({ readOnly }: { readOnly?: boolean }) => <div data-testid="pending-agent-reviews" data-read-only={String(!!readOnly)} />,
 }))
 
 vi.mock('@renderer/lib/env', () => ({
@@ -116,6 +117,7 @@ describe('DashboardView restart', () => {
     mocks.dashboardDescription = ''
     mocks.dashboardStartupPhase = undefined
     mocks.dashboardFirstRun = undefined
+    mocks.canUse = true
     mocks.start.mutateAsync.mockResolvedValue({})
     mocks.refetchAgent.mockImplementation(async () => ({
       data: {
@@ -193,6 +195,18 @@ describe('DashboardView restart', () => {
     await act(async () => finishStop())
 
     expect(mocks.start.mutateAsync).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['running', false, 'true'],
+    ['crashed', false, 'true'],
+    ['running', true, 'false'],
+    ['crashed', true, 'false'],
+  ])('on a %s dashboard, canUseAgent=%s shows the agent\'s requests with read-only=%s', (status, canUse, readOnly) => {
+    mocks.dashboardStatus = status
+    mocks.canUse = canUse
+    renderDashboard()
+    expect(screen.getByTestId('pending-agent-reviews')).toHaveAttribute('data-read-only', readOnly)
   })
 
   it('renders the first-run dependency installation state', () => {
