@@ -1114,6 +1114,7 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
         className="overflow-y-auto overscroll-contain h-full"
         style={{ overflowAnchor: 'none' }}
         ref={scrollRef}
+        data-transcript-scroller
         onScroll={handleScroll}
         onWheel={handleWheelGesture}
         onTouchStart={handleTouchStart}
