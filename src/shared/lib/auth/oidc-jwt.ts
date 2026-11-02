@@ -52,7 +52,12 @@ async function issuerKeys(issuer: string): Promise<IssuerKeys> {
     throw new Error(`Invalid issuer URL for JWKS: ${issuer}`, { cause: error })
   }
   if (!jwksStore) return { resolver: createRemoteJWKSet(jwksUrl), stored: null }
-  const stored: JWKSCacheInput = (await jwksStore.store.get(issuer)) ?? {}
+  // The store only saves a download: if it fails, jose fetches the keys.
+  const stored: JWKSCacheInput =
+    (await jwksStore.store.get(issuer).catch((error) => {
+      console.warn('[oidc-jwt] Failed to read the stored issuer key set:', error)
+      return null
+    })) ?? {}
   return {
     resolver: createRemoteJWKSet(jwksUrl, { cacheMaxAge: jwksStore.maxAgeMs, [jwksCache]: stored }),
     stored,

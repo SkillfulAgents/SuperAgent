@@ -33,6 +33,7 @@ function issuerServing(published: { keys: object[] }) {
 afterEach(() => {
   setOidcJwksStore(null)
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 describe('verifyOidcJwt with a stored key set', () => {
@@ -66,5 +67,22 @@ describe('verifyOidcJwt with a stored key set', () => {
 
     expect(download).toHaveBeenCalledOnce()
     expect(store.keys.get(ISSUER)?.jwks.keys.map((key) => key.kid)).toEqual(['platform-oidc-2026-10', 'platform-oidc-2026-11'])
+  })
+
+  it('downloads the keys when the store cannot be read, and stores them', async () => {
+    const current = await signingKey('platform-oidc-main')
+    const download = issuerServing({ keys: [current.jwk] })
+    const store = memoryStore()
+    store.get = async () => {
+      throw new Error('KV unavailable')
+    }
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    setOidcJwksStore(store, { maxAgeMs: 24 * 60 * 60_000 })
+    const { payload } = await verifyOidcJwt(await current.sign(), { issuer: ISSUER })
+
+    expect(payload.org).toBe('org_sales')
+    expect(download).toHaveBeenCalledOnce()
+    expect(store.keys.get(ISSUER)?.jwks.keys).toHaveLength(1)
   })
 })
