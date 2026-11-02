@@ -25,7 +25,6 @@ const state = vi.hoisted(() => ({
   recordMessage: vi.fn(async (record: { display: unknown }) => record.display),
   // A chat whose active mapping timed out: the next lookup archives it and reports the replaced session.
   rotated: new Map<string, { rowId: string; sessionId: string }>(),
-  carryOver: vi.fn(), sessionMetadata: vi.fn(),
   // Runs before each read of a session's live state: a test can hold the read there.
   beforeLive: undefined as (() => Promise<void>) | undefined,
   // Every delivery the manager asked the actor for, as asked.
@@ -66,7 +65,7 @@ vi.mock('@shared/lib/agent-actor', async () => {
     container: { start: state.start },
     inputs: { answer: state.answer },
     sessions: {
-      create: state.create, register: state.register, updateMetadata: state.metadata, metadata: state.sessionMetadata,
+      create: state.create, register: state.register, updateMetadata: state.metadata,
       markActive: state.markActive, markIdle: state.markIdle, attach: state.attach,
       // One snapshot of the session, as the actor's live sessions answer it.
       live: async (sessionId: string) => (await state.beforeLive?.(), {
@@ -75,7 +74,7 @@ vi.mock('@shared/lib/agent-actor', async () => {
       }),
     },
     messages: {
-      stop: state.stop, broadcastEvent: state.broadcast, carryOver: state.carryOver,
+      stop: state.stop, broadcastEvent: state.broadcast,
       // The actor's delivery as the manager sees it: the echo reaches the
       // session's viewers with the actor's queued flag, then the message goes.
       deliver: async (request: { sessionId: string; content: string; uuid?: string; echo?: object }) => {
@@ -183,8 +182,6 @@ beforeEach(async () => {
   state.mappings.clear()
   state.streams.clear()
   state.rotated.clear()
-  state.carryOver.mockReset().mockResolvedValue({ summary: null, recent: [] })
-  state.sessionMetadata.mockReset().mockResolvedValue(null)
   state.create.mockImplementation(async () => ({ id: `session-${state.create.mock.calls.length}` }))
   state.subscribeStream.mockResolvedValue(undefined)
   state.isStreamSubscribed.mockReturnValue(false)
@@ -211,37 +208,33 @@ describe('AgentIntegration host contract', () => {
   })
 
   describe('rotation after inactivity', () => {
-    it('starts the new session from the replaced session’s summary and records the lineage', async () => {
+    it('points the new session to the replaced one', async () => {
       state.rotated.set('installation-a:object-7', { rowId: 'row-old', sessionId: 'old-session' })
-      state.carryOver.mockResolvedValue({ summary: 'The dentist is booked for Tuesday at 9 AM.', recent: [{ role: 'user', text: 'Thanks.' }] })
       await manager.start()
       await adapter.input('comment-one')
       await vi.waitFor(() => expect(state.create).toHaveBeenCalledOnce())
 
-      expect(state.carryOver).toHaveBeenCalledWith(['old-session'])
       const systemPrompt = state.create.mock.calls[0][0].systemPrompt as string
-      expect(systemPrompt).toContain('The dentist is booked for Tuesday at 9 AM.')
-      expect(systemPrompt).toContain('User: Thanks.')
-      await vi.waitFor(() => expect(state.metadata).toHaveBeenCalledWith('session-1', expect.objectContaining({ continuesFromSessionId: 'old-session' })))
+      expect(systemPrompt).toContain('<previous_session>')
+      expect(systemPrompt).toContain('read-session.py old-session')
     })
 
-    it('reads one session further back when the replaced one was opened by an outbound send', async () => {
-      state.rotated.set('installation-a:object-7', { rowId: 'row-outbound', sessionId: 'outbound-session' })
-      state.sessionMetadata.mockResolvedValue({ continuesFromSessionId: 'old-session' })
+    it('still points to the replaced session when the first attempt fails after the rotation', async () => {
+      state.rotated.set('installation-a:object-7', { rowId: 'row-old', sessionId: 'old-session' })
+      adapter.prepareInput.mockRejectedValueOnce(new Error('Attachment download failed'))
+      await manager.start()
+      await adapter.input('comment-one')
+      await vi.waitFor(() => expect(state.create).toHaveBeenCalledOnce(), { timeout: 5_000 })
+
+      expect(adapter.prepareInput).toHaveBeenCalledTimes(2)
+      expect(state.create.mock.calls[0][0].systemPrompt).toContain('read-session.py old-session')
+    })
+
+    it('starts a first session without a pointer', async () => {
       await manager.start()
       await adapter.input('comment-one')
       await vi.waitFor(() => expect(state.create).toHaveBeenCalledOnce())
 
-      expect(state.carryOver).toHaveBeenCalledWith(['outbound-session', 'old-session'])
-      expect(state.create.mock.calls[0][0].systemPrompt).toBeUndefined()
-    })
-
-    it('starts a first session without reading any transcript', async () => {
-      await manager.start()
-      await adapter.input('comment-one')
-      await vi.waitFor(() => expect(state.create).toHaveBeenCalledOnce())
-
-      expect(state.carryOver).not.toHaveBeenCalled()
       expect(state.create.mock.calls[0][0].systemPrompt).toBeUndefined()
     })
   })
