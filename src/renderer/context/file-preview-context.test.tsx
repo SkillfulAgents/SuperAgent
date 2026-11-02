@@ -512,6 +512,17 @@ describe('reopening a file after a stale tab reloads itself', () => {
     expect(result.current.isOpen).toBe(false)
   })
 
+  it('opens a tab that brought its own source from that source again', () => {
+    const source = { inlineUrl: '/api/volume-definitions/v1/file?path=README.md&inline=true', downloadUrl: '/api/volume-definitions/v1/file?path=README.md' }
+    const before = renderHook(() => useFilePreview(), { wrapper })
+    act(() => before.result.current.openFile('/Team Brain/README.md', 'agent-1', undefined, source))
+    act(() => { window.dispatchEvent(new Event(RELOADING_EVENT)) })
+    before.unmount()
+
+    const after = renderHook(() => useFilePreview(), { wrapper })
+    expect(after.result.current.openTabs[0]).toMatchObject({ kind: 'file', filePath: '/Team Brain/README.md', source })
+  })
+
   it('discards the file when a different preview mounts first', () => {
     const before = renderHook(() => useFilePreview(), { wrapper })
     act(() => before.result.current.openFile('/workspace/report.pdf', 'agent-1'))

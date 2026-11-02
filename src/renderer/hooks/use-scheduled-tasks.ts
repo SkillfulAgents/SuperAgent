@@ -5,13 +5,14 @@
  */
 
 import { apiFetch } from '@renderer/lib/api'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ApiScheduledTask } from '@shared/lib/types/api'
 import {
   useAutomationList,
   useAutomationDetail,
   useCancelAutomation,
   useAutomationSessions,
+  automationSessionsQuery,
   type AutomationSessionInfo,
 } from './use-agent-automations'
 
@@ -46,6 +47,16 @@ export function useCancelScheduledTask() {
  */
 export function useScheduledTaskSessions(taskId: string | null) {
   return useAutomationSessions(TYPE, taskId)
+}
+
+/**
+ * Fetch the sessions created by each of these scheduled tasks, together
+ */
+export function useScheduledTasksSessions(taskIds: string[]) {
+  return useQueries({
+    queries: taskIds.map((id) => automationSessionsQuery(TYPE, id)),
+    combine: (results) => results.flatMap((result) => result.data ?? []),
+  })
 }
 
 /**

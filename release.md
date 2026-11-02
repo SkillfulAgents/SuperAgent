@@ -97,6 +97,7 @@ Users can check for updates from **Settings > General > Software Updates**.
 | `test.yml` | Push to main, PRs | Tests, linting, typecheck |
 | `build-mac.yml` | Push to main | Build macOS app (CI validation) |
 | `build-container.yml` | Push to main | Build agent container (`:main` tag) |
+| `agent-container-image.yml` | Called by `build-container.yml`, `release.yml` | Build the agent container on an amd64 and an arm64 runner, then tag the multi-platform image |
 | `build-app-container.yml` | Push to main | Build app container (`:main` tag) |
 | `release.yml` | `v*` tags | Full release: containers + Electron + GitHub Release |
 

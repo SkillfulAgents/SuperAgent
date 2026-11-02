@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SERVER_FACTS_REVISION_PLACEHOLDER, serverFactsSchema, type ServerFacts } from './facts-schema'
 import { currentOs, desktopDistribution, getServerFacts, withServerFacts, withServerFactsRevision } from './server-facts'
 
@@ -60,6 +60,28 @@ describe('getServerFacts', () => {
   it('is the desktop install when Electron main hosts the API', () => {
     stubProcess({ type: 'browser', platform: 'darwin', mas: true })
     expect(getServerFacts()).toEqual({ os: 'darwin', distribution: 'mac-app-store' })
+  })
+
+  describe('a faked distribution', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs()
+    })
+
+    it('is what a mock run asks for, so the web build can show a Store build’s server', () => {
+      stubProcess({ type: undefined, platform: 'darwin' })
+      vi.stubEnv('E2E_MOCK', 'true')
+      vi.stubEnv('SUPERAGENT_FAKE_DISTRIBUTION', 'mac-app-store')
+      expect(getServerFacts()).toEqual({ os: 'darwin', distribution: 'mac-app-store' })
+    })
+
+    it('is ignored outside a mock run, and when it names no distribution', () => {
+      stubProcess({ type: undefined, platform: 'linux' })
+      vi.stubEnv('SUPERAGENT_FAKE_DISTRIBUTION', 'mac-app-store')
+      expect(getServerFacts().distribution).toBe('deployment')
+      vi.stubEnv('E2E_MOCK', 'true')
+      vi.stubEnv('SUPERAGENT_FAKE_DISTRIBUTION', 'app-store')
+      expect(getServerFacts().distribution).toBe('deployment')
+    })
   })
 })
 

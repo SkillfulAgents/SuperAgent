@@ -517,3 +517,22 @@ describe('Google Drive filesystem', () => {
     await expect(prepareGoogleDriveVolume(config, { userId: 'alice' })).rejects.toMatchObject({ code: 'not-a-directory' })
   })
 })
+
+describe('Google Drive setup folder creation', () => {
+  it('makes the folder inside the one the picker is in and answers with what Drive made', async () => {
+    serve({ folders: { parent1: [folder('x', 'Existing')] }, root: folder('parent1', 'Parent') })
+    await expect(GoogleDriveMountableVolume.createFolder({ accountId: 'account', folderId: 'parent1', name: ' Scratch ' }, { userId: 'alice' }))
+      .resolves.toEqual({ folder: { id: 'made', name: 'Scratch' } })
+    const post = request.mock.calls.find(([, req]) => req.method === 'POST')?.[1]
+    expect(post?.json).toEqual({ name: 'Scratch', mimeType: FOLDER, parents: ['parent1'] })
+    expect(requireAccount).toHaveBeenCalledWith('account', { userId: 'alice' })
+  })
+
+  it('refuses a name already in the folder, saying which, and a name with a slash, without writing', async () => {
+    serve({ folders: { parent1: [folder('x', 'Existing')] }, root: folder('parent1', 'Parent') })
+    await expect(GoogleDriveMountableVolume.createFolder({ accountId: 'account', folderId: 'parent1', name: 'Existing' }, { userId: 'alice' }))
+      .rejects.toMatchObject({ status: 409, message: '“Existing” is already used here.' })
+    await expect(GoogleDriveMountableVolume.createFolder({ accountId: 'account', folderId: 'parent1', name: 'a/b' }, { userId: 'alice' })).rejects.toMatchObject({ name: 'ZodError' })
+    expect(calls().filter(call => call.startsWith('POST'))).toEqual([])
+  })
+})

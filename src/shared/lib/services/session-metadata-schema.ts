@@ -33,6 +33,8 @@ const slashCommandInfoSchema = z
   })
   .loose()
 
+export const slashCommandListSchema = z.array(slashCommandInfoSchema)
+
 export const sessionMetadataSchema = z
   .object({
     name: z.string().optional(),

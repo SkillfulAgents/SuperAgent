@@ -46,6 +46,8 @@ import { getOrCreateHostToken } from './host-token-store'
 import { getPlatformContainerToken } from '../platform-attribution/container-token'
 import { getPlatformProxyBaseUrl } from '../platform-auth/config'
 import { rewriteLoopbackForContainer } from '../llm-provider/container-url'
+import { runsInAppSandbox } from '../facts/capabilities'
+import { getServerFacts } from '../facts/server-facts'
 
 /**
  * The integration families whose providers this host can run, by the same
@@ -111,6 +113,9 @@ async function recordSessionRuntime(agentId: string, sessionId: string, runtime:
 
 export function getEnhancedPath(): string {
   const currentPath = process.env.PATH || ''
+  // The App Sandbox refuses to run Homebrew's and the runtimes' binaries, and a
+  // tool that finds one there fails instead of falling back to its own.
+  if (runsInAppSandbox(getServerFacts())) return currentPath
   const platformPaths = COMMON_BINARY_PATHS[process.platform] || []
   const pathsToAdd = platformPaths.filter(p => !currentPath.includes(p))
   return [...pathsToAdd, currentPath].join(path.delimiter)
@@ -2055,9 +2060,9 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
       CLAUDE_CONFIG_DIR: '/workspace/.claude',
       // The setting only switches tool search OFF; whether it may be on is the
       // provider's call, because it depends on the endpoint expanding deferred
-      // tools (see BaseLlmProvider.toolSearchEnv). Undefined leaves the var
-      // unset — the image must not define it either, or unset would read as on.
-      ENABLE_TOOL_SEARCH: settings.enableToolSearch === false ? 'false' : provider.toolSearchEnv,
+      // tools (see BaseLlmProvider.toolSearchEnv). Always set: unset reads as
+      // on behind any custom base URL.
+      ENABLE_TOOL_SEARCH: settings.enableToolSearch === false ? 'false' : provider.toolSearchEnv(),
       ...this.config.envVars,
       ...extra,
       // Platform services stay available with any LLM provider. Pin these after

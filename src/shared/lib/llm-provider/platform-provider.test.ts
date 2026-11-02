@@ -172,7 +172,7 @@ describe('getContainerEnvVars auth token (cold start)', () => {
 describe('PlatformLlmProvider — tool search', () => {
   // The proxy expands the CLI's deferred tools for every model it serves.
   it('turns ENABLE_TOOL_SEARCH on', async () => {
-    expect(new PlatformLlmProvider().toolSearchEnv).toBe('true')
+    expect(new PlatformLlmProvider().toolSearchEnv()).toBe('true')
   })
 })
 

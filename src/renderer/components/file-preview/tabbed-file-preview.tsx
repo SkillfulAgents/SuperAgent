@@ -110,7 +110,7 @@ export function TabbedFilePreview<T extends FileBrowserTab>({
                 onPdfPageChange={onPdfPageChange}
               />
             ) : file?.reason ? (
-              <UnsupportedRenderer filePath={file.path} agentSlug={file.agentSlug ?? ''} reason={file.reason} />
+              <UnsupportedRenderer filePath={file.path} downloadUrl={file.downloadUrl ?? undefined} reason={file.reason} />
             ) : null}
           </div>
         </div>

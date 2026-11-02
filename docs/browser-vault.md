@@ -124,7 +124,10 @@ choice costs the user a hand-over, not the sign-in.
 "Save for later" is on by default (off, with a notice, on an agent others can
 use — its user and owner members, and every admin, who may drive any agent
 (`countOtherMembers`): they could have it sign in as the user). It saves the account
-and grants it to the agent. The card also offers the user's saved accounts for
+and grants it to the agent, also when the user fills a login from their
+password manager (Apple Passwords): the whole login, username and password,
+even on a step that shows only the username, so the next step needs no one.
+The card also offers the user's saved accounts for
 the site (one click fills one and grants it) and "Or sign in with" a provider.
 The buttons are the page's own: the agent lists the "Sign in with Google"
 buttons it sees in request_login's `providers` (known provider ids only), the
@@ -158,8 +161,8 @@ sign-in page again and call request_login with the account's username
   (`saved`).
 - Without it, or when the save fails, what they entered is held in memory
   as a later step's would be (`held`, 30 minutes, this session).
-- A login picked from the password manager is held the same way, never
-  saved: it lives in the password manager.
+- A login picked from the password manager goes by the same "Save for
+  later": saved and granted, else held.
 - An unattended fill the browser closed first opens no card: the agent is
   told to try again with the same account (`vault`).
 

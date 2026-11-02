@@ -110,6 +110,28 @@ describe('labelBackgroundTasks', () => {
     expect(task).toMatchObject({ title: 'Explore', detail: 'Find the config loader' })
   })
 
+  it('names a command Monitor after its description, though the runtime lists it as a shell task', () => {
+    const [task] = labelBackgroundTasks(
+      [{ taskId: 'b8ezoj4kh', startedAt: 1, taskType: 'local_bash', description: 'probe ticks' }],
+      [message([{
+        id: 'tc1',
+        name: 'Monitor',
+        input: { description: 'Errors in deploy.log', command: 'tail -f deploy.log | grep --line-buffered ERROR', timeout_ms: 1800000 },
+        result: 'Monitor started (task b8ezoj4kh, expires in 30m unless the source ends first).',
+        backgroundTaskId: 'b8ezoj4kh',
+      }])] as never,
+    )
+    expect(task).toMatchObject({ title: 'Monitor', detail: 'Errors in deploy.log', isMonitor: true })
+  })
+
+  it('names a WebSocket Monitor from its runtime type when the transcript has no launch', () => {
+    const [task] = labelBackgroundTasks(
+      [{ taskId: 'sgnf3ofuc', startedAt: 1, taskType: 'monitor_ws', description: 'deploy events' }],
+      [message([])] as never,
+    )
+    expect(task).toMatchObject({ title: 'Monitor', detail: 'deploy events', isMonitor: true })
+  })
+
   it('returns nothing for no tasks without touching the transcript', () => {
     expect(labelBackgroundTasks([], [message([])] as never)).toEqual([])
   })

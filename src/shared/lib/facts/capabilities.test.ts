@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import type { ClientFacts, ServerDistribution, ServerFacts } from './facts-schema'
-import { mayDownloadCode, offersRuntime, runsInAppSandbox, updatesItself } from './capabilities'
+import {
+  drivesUserChrome,
+  mayDownloadCode,
+  offersRuntime,
+  readsHostFolders,
+  runsHostGit,
+  runsInAppSandbox,
+  supportsComputerUse,
+  updatesItself,
+} from './capabilities'
 
 const server = (distribution: ServerDistribution): ServerFacts => ({ os: 'darwin', distribution })
 const desktop = (distribution: ClientFacts['distribution']): ClientFacts => ({ shell: 'electron', os: 'darwin', distribution })
@@ -27,6 +36,13 @@ describe('the Mac App Store build', () => {
   it('leaves its updates to the Store', () => {
     expect(updatesItself(desktop('mac-app-store'))).toBe(false)
   })
+
+  it('withholds what reaches outside its container: the desktop, the person’s Chrome, host folders and host git', () => {
+    expect(supportsComputerUse(store)).toBe(false)
+    expect(drivesUserChrome(store)).toBe(false)
+    expect(readsHostFolders(store)).toBe(false)
+    expect(runsHostGit(store)).toBe(false)
+  })
 })
 
 // The Windows Store build is a full-trust package, so it behaves like a direct install.
@@ -35,6 +51,20 @@ describe.each(['direct', 'windows-store', 'deployment'] as const)('a %s server',
     expect(runsInAppSandbox(server(distribution))).toBe(false)
     expect(offersRuntime(server(distribution), 'docker')).toBe(true)
     expect(mayDownloadCode(server(distribution))).toBe(true)
+  })
+
+  it('offers the person’s Chrome, host folders and host git', () => {
+    expect(drivesUserChrome(server(distribution))).toBe(true)
+    expect(readsHostFolders(server(distribution))).toBe(true)
+    expect(runsHostGit(server(distribution))).toBe(true)
+  })
+})
+
+describe('supportsComputerUse', () => {
+  it('is true on a macOS or Windows server outside the sandbox, the OSes with a backend', () => {
+    expect(supportsComputerUse({ os: 'darwin', distribution: 'direct' })).toBe(true)
+    expect(supportsComputerUse({ os: 'win32', distribution: 'windows-store' })).toBe(true)
+    expect(supportsComputerUse({ os: 'linux', distribution: 'deployment' })).toBe(false)
   })
 })
 

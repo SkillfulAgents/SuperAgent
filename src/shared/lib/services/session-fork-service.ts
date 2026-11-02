@@ -98,7 +98,6 @@ export async function forkSession(
   const initialMetadata: Partial<SessionMetadata> = {
     forkedFromSessionId: sourceId,
     ...choices,
-    ...(metadata?.slashCommands ? { slashCommands: metadata.slashCommands } : {}),
     ...(opts.createdByUserId ? { createdByUserId: opts.createdByUserId } : {}),
     ...(opts.createdByDeviceId ? { createdByDeviceId: opts.createdByDeviceId } : {}),
   }

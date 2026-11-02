@@ -1,5 +1,6 @@
 import { queryOptions } from '@tanstack/react-query'
 import { apiJson } from '@renderer/lib/api'
+import type { ApiAgent } from '@shared/lib/types/api'
 
 /**
  * Shared TanStack Query options consumed by route LOADERS.
@@ -23,7 +24,7 @@ import { apiJson } from '@renderer/lib/api'
 export const agentQuery = (slug: string) =>
   queryOptions({
     queryKey: ['agents', slug],
-    queryFn: () => apiJson(`/api/agents/${slug}`),
+    queryFn: () => apiJson<ApiAgent>(`/api/agents/${slug}`),
     // Loader fetch: a 403/404 is definitive (don't retry → the route resolves to
     // notFound immediately); a transient 5xx surfaces on the errorComponent,
     // which offers a manual retry. The component's own useAgent observer keeps

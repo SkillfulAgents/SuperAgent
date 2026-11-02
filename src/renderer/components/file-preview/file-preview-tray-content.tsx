@@ -5,6 +5,7 @@ import { FolderBrowser } from './folder-browser'
 import { FolderHostActions } from './folder-host-actions'
 import { CommentBar } from './comments/comment-bar'
 import { describeWorkspaceFile } from '@renderer/lib/workspace-file'
+import { withPreviewVersion } from '@renderer/lib/file-preview-url'
 import { useFileSize } from '@renderer/hooks/use-file-size'
 
 interface FilePreviewTrayContentProps {
@@ -16,13 +17,21 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
   const { openTabs, activeTabIndex, setActiveTab, setPdfPage, closeTab, commentsFor } = useFilePreview()
   const activeTab = openTabs[activeTabIndex]
   const activeFile = activeTab?.kind === 'file' ? activeTab : null
+  // A tab with its own source (a file outside the agent's workspace) is shown from there, as no agent's file: nothing in
+  // it resolves against a workspace, and it takes no comments.
   const file = activeFile
-    ? describeWorkspaceFile(activeFile.filePath, activeFile.agentSlug, { version: activeFile.version })
+    ? activeFile.source
+      ? {
+        path: activeFile.filePath, apiPath: null,
+        inlineUrl: withPreviewVersion(activeFile.source.inlineUrl, activeFile.version),
+        downloadUrl: activeFile.source.downloadUrl === undefined ? undefined : withPreviewVersion(activeFile.source.downloadUrl, activeFile.version),
+      }
+      : describeWorkspaceFile(activeFile.filePath, activeFile.agentSlug, { version: activeFile.version })
     : null
   const { data: fileSize } = useFileSize(file?.apiPath ?? null, activeFile?.version ?? 0)
   if (!activeTab) return null
 
-  const activeComments = file ? commentsFor(file.path, file.agentSlug) : []
+  const activeComments = file && 'agentSlug' in file ? commentsFor(file.path, file.agentSlug) : []
 
   return (
     <div className="contents" data-testid="file-preview-tray">
@@ -55,7 +64,7 @@ export function FilePreviewTrayContent({ sessionId, onClose }: FilePreviewTrayCo
             </button>
           </div>
         }
-        footer={activeFile && (
+        footer={activeFile && !activeFile.source && (
           <CommentBar
             comments={activeComments}
             filePath={activeFile.filePath}

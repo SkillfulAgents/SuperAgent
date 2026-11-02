@@ -154,6 +154,12 @@ vi.mock('@shared/lib/services/timezone-resolver', () => ({
 
 vi.mock('@shared/lib/services/mount-service', () => ({
   listVolumes: async () => ({ volumes: [], notMounted: [] }),
+  remounted: async () => {},
+}))
+
+const serverFacts = vi.hoisted(() => ({ distribution: 'direct' as 'direct' | 'mac-app-store' }))
+vi.mock('@shared/lib/facts/server-facts', () => ({
+  getServerFacts: () => ({ os: 'darwin', distribution: serverFacts.distribution }),
 }))
 
 import { containerHost } from './container-host'
@@ -244,6 +250,18 @@ describe('ContainerRuntime.ensureRunning — customEnvVars cannot override reser
     expect(envVars.TZ).toBe('America/New_York')
     expect(envVars.HOST_PLATFORM).toBe(process.platform)
     expect(envVars.CLAUDE_CODE_ATTRIBUTION_HEADER).toBe('0')
+  })
+
+  it('tells the container whether agents get computer use, and whether the app is sandboxed', async () => {
+    serverFacts.distribution = 'direct'
+    await containerHost.runtime('test-agent').ensureRunning()
+    expect(mockStart.mock.calls[0][0].envVars).toMatchObject({ HOST_COMPUTER_USE: 'true', HOST_APP_SANDBOX: 'false' })
+  })
+
+  it('withholds computer use from a Mac App Store build’s agents', async () => {
+    serverFacts.distribution = 'mac-app-store'
+    await containerHost.runtime('test-agent').ensureRunning()
+    expect(mockStart.mock.calls[0][0].envVars).toMatchObject({ HOST_COMPUTER_USE: 'false', HOST_APP_SANDBOX: 'true' })
   })
 
   it('still passes non-reserved custom env vars through unchanged', async () => {

@@ -204,10 +204,11 @@ describe('admin impersonation', () => {
 
   async function seedAdminAndTarget(): Promise<{ adminId: string; targetId: string }> {
     const auth = authModule.getAuth()
-    // First user is promoted to admin by the user.create.after hook.
+    // A platform-controlled deployment promotes nobody for signing up first.
     await auth.api.signUpEmail({
       body: { email: 'admin@example.com', password: PASSWORD, name: 'Admin' },
     })
+    sqlite.prepare(`UPDATE user SET role = 'admin' WHERE email = ?`).run('admin@example.com')
     await auth.api.signUpEmail({
       body: { email: 'target@example.com', password: PASSWORD, name: 'Target' },
     })
@@ -359,6 +360,7 @@ describe('persisted creation method', () => {
     await auth.api.signUpEmail({
       body: { email: 'admin2@example.com', password: PASSWORD, name: 'Admin' },
     })
+    sqlite.prepare(`UPDATE user SET role = 'admin' WHERE email = ?`).run('admin2@example.com')
     await auth.api.signUpEmail({
       body: { email: 'target2@example.com', password: PASSWORD, name: 'Target' },
     })

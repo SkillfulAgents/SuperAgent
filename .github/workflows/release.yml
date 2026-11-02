@@ -34,50 +34,12 @@ jobs:
 
   # Build and push agent container with version tag
   build-agent-container:
-    runs-on: ubuntu-latest
     needs: prepare
-    env:
-      IMAGE_NAME: ${{ github.repository_owner }}/superagent-agent-container-base
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-
-      - name: Build and push container image
-        uses: docker/build-push-action@v7
-        with:
-          context: ./agent-container
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # Registry-backed build cache shared with build-container.yml so
-          # release tags reuse main's layers and keep identical digests —
-          # clients then pull only the changed top layers between versions.
-          # NOTE: ref must be lowercase; github.repository_owner is not.
-          cache-from: type=registry,ref=ghcr.io/skillfulagents/superagent-agent-container-base:buildcache
-          cache-to: type=registry,ref=ghcr.io/skillfulagents/superagent-agent-container-base:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
+    uses: ./.github/workflows/agent-container-image.yml
+    with:
+      tags: |
+        type=semver,pattern={{version}}
+        type=semver,pattern={{major}}.{{minor}}
 
   # Build and push app containers with version tags (regular + auth)
   build-app-container:
@@ -159,7 +121,9 @@ jobs:
 
   # Build macOS Electron app (signed + notarized)
   build-mac:
-    runs-on: macos-26
+    # Not GitHub's macos-26 (3 cores): on the same commit, dist:mac took 25 min
+    # there and 14 min on Blacksmith's 6 vCPU runner.
+    runs-on: blacksmith-12vcpu-macos-26
     # The app bundles the agent image this release publishes (dist:mac's
     # download:agent-image), so it waits for it: ~35 s when the layers are
     # cached from main. lima-image builds the built-in runtime's VM image.
@@ -222,6 +186,11 @@ jobs:
           LIMA_IMAGE_DIR: build/lima-image
           # A release never ships without its agent image.
           AGENT_IMAGE_REQUIRED: 'true'
+          # Notarization is most of this step and electron-builder logs only
+          # its end: this timestamps the zip, the submission (upload and
+          # Apple's processing, whose log then gives the upload time) and the
+          # staple. Credentials print masked.
+          DEBUG: electron-notarize*
         run: npm run dist:mac
 
       # Electron 44+ needs macOS 13, and the packaged app says so
@@ -251,7 +220,7 @@ jobs:
           # A size budget, not a platform limit: the R2 feed upload is multipart
           # and GitHub release assets go to 2 GiB. It catches an installer that
           # balloons unnoticed. The macOS app carries the agent image
-          # (scripts/fetch-agent-image.ts, ~730 MiB) and the built-in runtime's
+          # (scripts/fetch-agent-image.ts, ~545 MiB with zstd layers) and the built-in runtime's
           # VM image with its packages installed, which it also ships to repair
           # it: a DMG of ~1165 MiB.
           limit=$((1300 * 1024 * 1024))
@@ -282,9 +251,39 @@ jobs:
           # image): deflating them again only costs time here and in create-release.
           compression-level: 0
 
+  # Build the Mac App Store package, upload it to App Store Connect, and hand it
+  # to TestFlight: Team (internal) gets it as soon as Apple has processed it, and
+  # Beta (external) once Beta App Review approves it. Every release of a version
+  # (0.6.0-rc.1, rc.2, 0.6.0) is the same TestFlight version, 0.6.0, so only its
+  # first build needs a full review; Apple may approve later ones without one.
+  # A full release also leaves its App Store version ready with its build;
+  # submitting it for review stays a person's step. Like build-mac it bundles
+  # the agent image this release publishes, so it waits for it. create-release
+  # doesn't wait for this job: a Store problem never holds up the direct
+  # release, and the package isn't one of its files (its artifact name doesn't
+  # match `*-release-artifacts`).
+  build-mas:
+    needs: [prepare, lima-image, build-agent-container]
+    uses: ./.github/workflows/build-mas.yml
+    secrets: inherit
+    with:
+      # Higher for every upload, re-runs included: 412.1, 412.2, 413.1.
+      build-number: ${{ github.run_number }}.${{ github.run_attempt }}
+      app-store-connect: upload
+      artifact-name: Gamut-MAS-${{ needs.prepare.outputs.version }}
+      testflight-groups: Team,Beta
+      # Testers see 0.6.0 (412.1); this says which release that is.
+      what-to-test: Gamut ${{ needs.prepare.outputs.version }}
+      # A full release also leaves the App Store version ready to submit with its
+      # build: the version being prepared takes this number, or a new one is made
+      # once the last is out. An rc leaves it alone.
+      app-store-version: ${{ needs.prepare.outputs.channel == 'latest' && needs.prepare.outputs.version || '' }}
+      # Written only where empty, so an edit made before submitting stays.
+      whats-new: Bug fixes and improvements.
+
   # Build Windows Electron app
   build-win:
-    runs-on: windows-latest
+    runs-on: blacksmith-4vcpu-windows-2025
     needs: prepare
     steps:
       - name: Checkout

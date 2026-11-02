@@ -138,7 +138,11 @@ vi.mock('@shared/lib/auth/config', () => ({
 
 vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => false }))
 
+const workspaceSettings = vi.hoisted(() => ({ current: {} as { teamBrain?: { agentSlug: string; volumeId: string } } }))
+
 vi.mock('@shared/lib/config/settings', () => ({
+  getTeamBrain: () => workspaceSettings.current.teamBrain ?? null,
+  mutateSettings: (mutate: (settings: typeof workspaceSettings.current) => void) => mutate(workspaceSettings.current),
   getAccountProviderUserId: () => 'test-user',
   getEffectiveAnthropicApiKey: () => 'test-key',
   getEffectiveModels: () => ({ summarizerModel: 'claude-3-haiku' }),
@@ -150,6 +154,13 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 // --- remaining imports pulled in by the agents router -----------------------
 vi.mock('@shared/lib/analytics/server-analytics', () => ({ trackServerEvent: vi.fn() }))
+
+// Team Brain's drive and the agents it comes off.
+const drive = vi.hoisted(() => ({ release: vi.fn(async () => [] as string[]) }))
+vi.mock('@shared/lib/services/volume-service', async (original) => ({
+  ...(await original<typeof import('@shared/lib/services/volume-service')>()),
+  releaseVolume: drive.release,
+}))
 
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
   countActiveTriggersPerAccount: vi.fn().mockResolvedValue({}),
@@ -195,6 +206,7 @@ vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadMentions: vi.fn(() => Promise.resolve(new Set())),
   getUnreadMentionsByAgents: vi.fn(() => Promise.resolve(new Map())),
   getUnreadNotificationsByAgents: vi.fn(() => Promise.resolve(new Map())),
+  getUnreadNotificationPreviewsByAgents: vi.fn(() => Promise.resolve(new Map())),
 }))
 
 vi.mock('@shared/lib/proxy/host-url', () => ({
@@ -326,5 +338,21 @@ describe('SUP-208: DELETE /api/agents/:id — peripheral cleanup precedes worksp
     expect(body.error).toMatch(/container/i)
     // Peripheral cleanup still ran (it precedes the stop); only the workspace survived.
     expect(mockCleanupAgentData).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears the Team Brain record when the agent it names is deleted, and only then', async () => {
+    workspaceSettings.current = { teamBrain: { agentSlug: 'other-agent', volumeId: 'v1' } }
+    expect((await deleteAgentReq()).status).toBe(204)
+    expect(workspaceSettings.current.teamBrain).toEqual({ agentSlug: 'other-agent', volumeId: 'v1' })
+
+    workspaceSettings.current = { teamBrain: { agentSlug: 'test-agent', volumeId: 'v1' } }
+    expect((await deleteAgentReq()).status).toBe(204)
+    expect(workspaceSettings.current.teamBrain).toBeUndefined()
+  })
+
+  it('takes Team Brain\'s drive off every other agent and off global when it is turned off', async () => {
+    workspaceSettings.current = { teamBrain: { agentSlug: 'test-agent', volumeId: 'v1' } }
+    expect((await deleteAgentReq()).status).toBe(204)
+    expect(drive.release).toHaveBeenCalledExactlyOnceWith('v1', 'test-agent')
   })
 })

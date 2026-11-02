@@ -9,7 +9,7 @@ Element.prototype.hasPointerCapture = vi.fn(() => false)
 Element.prototype.releasePointerCapture = vi.fn()
 
 const state = vi.hoisted(() => ({ connects: [] as string[], accounts: [{ id: 'first', displayName: 'Work Dropbox', status: 'active' }] as { id: string; displayName: string; status: string; createdAt?: string }[] }))
-vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: () => false }))
+vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: () => false, usesHostFolderPaths: () => false, agentsRunInAppSandbox: () => false }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: false }) }))
 vi.mock('@renderer/hooks/use-connected-accounts', () => ({ useConnectedAccountsByToolkit: () => ({ data: { accounts: state.accounts }, isLoading: false }) }))
 vi.mock('@renderer/lib/api', () => ({ apiFetch: async () => Response.json({ folders: [] }) }))
@@ -127,4 +127,13 @@ describe('Dropbox volume creation', () => {
     expect(save).toHaveBeenCalledWith(expect.objectContaining({ name: 'My shared files', source: { type: 'dropbox', config: { accountId: 'first', path: '' } } }))
     expect(screen.getByLabelText('Name', { exact: true })).toHaveValue('My shared files')
   })
+})
+
+it('offers no New folder, since Dropbox does not create folders here', async () => {
+  await setup()
+  await userEvent.click(screen.getByRole('radio', { name: 'Work Dropbox' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Next' }))
+  await userEvent.click(screen.getByRole('button', { name: /^Select folder location/ }))
+  await screen.findByText('No folders in Dropbox')
+  expect(screen.queryByRole('button', { name: 'New folder' })).not.toBeInTheDocument()
 })

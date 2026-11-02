@@ -1,3 +1,4 @@
+import { agentNotificationPreview } from '@shared/lib/notifications/agent-notification-preview'
 import { assertConnectionSelectionAccess, connectionNeedsAttachment, credentialSource } from '@shared/lib/llm-provider/connection-runtime'
 import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
@@ -19,7 +20,6 @@ import { streamSSE } from 'hono/streaming'
 import { getConnInfo } from '@hono/node-server/conninfo'
 import type Anthropic from '@anthropic-ai/sdk'
 import { createHash, randomUUID } from 'crypto'
-import { Worker } from 'node:worker_threads'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
@@ -80,6 +80,7 @@ import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTri
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { HEIC_PREVIEW_MAX_SOURCE_BYTES } from '@shared/lib/utils/heic-preview'
+import { HEIC_EXTENSIONS, heicUploadAsJpeg, queueHeicPreview, runHeicPreviewWorker } from './heic-jpeg'
 import { servedRange } from '@shared/lib/utils/http-range'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { isSystemMessageText } from '@shared/lib/utils/system-message'
@@ -151,8 +152,9 @@ import {
 } from '@shared/lib/utils/chunked-upload'
 import { getMountsWithHealth, addMount, attachMount, removeMount, setMountReadOnly, volumeSummary } from '@shared/lib/services/mount-service'
 import { addMountSchema, updateMountSchema } from '@shared/lib/services/mount-schema'
-import { VolumeError } from '@shared/lib/services/volume-service'
+import { releaseVolume, VolumeError } from '@shared/lib/services/volume-service'
 import { volumeViewer } from '../lib/volume-access'
+import { afterMountChange } from '../lib/mount-change'
 import { readAgentHooks, removeAgentHook } from '@shared/lib/services/agent-hooks-service'
 import { removeAgentHookSchema } from '@shared/lib/services/agent-hooks-schema'
 import {
@@ -170,6 +172,7 @@ import {
   listPendingScheduledTasks,
   listCancelledScheduledTasks,
   listCompletedOneTimeTasks,
+  createScheduledTask,
   cancelPendingWakeForSession,
   getPendingWakeForSession,
   listPendingWakesByAgent,
@@ -178,6 +181,8 @@ import { db } from '@shared/lib/db'
 import { scheduledTasks, webhookTriggers, chatIntegrations, connectedAccounts, agentConnectedAccounts, proxyAuditLog, remoteMcpServers, agentRemoteMcps, mcpAuditLog, agentAcl, messageAuthor, apiScopePolicies, mcpToolPolicies } from '@shared/lib/db/schema'
 import { eq, and, inArray, isNotNull, desc, count } from 'drizzle-orm'
 import { isAuthMode } from '@shared/lib/auth/mode'
+import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
+import { validateCronExpression } from '@shared/lib/services/schedule-parser'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { isOwnOrigin } from '@shared/lib/auth/own-origin'
 import { getViewerUserId, ownerScope } from '@shared/lib/auth/ownership'
@@ -216,20 +221,23 @@ import {
 } from '@shared/lib/services/widget-service'
 import { widgetRefreshService } from '@shared/lib/services/widget-refresh-service'
 import { widgetSchemeSchema, widgetSizeSchema } from '@shared/lib/widgets/widget-schema'
-import { getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
+import { getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, getUnreadNotificationPreviewsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { annotateIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
+import { withSessionStatus } from '@shared/lib/session-status'
 import { getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
 import { isValidApiScope } from '@shared/lib/proxy/scope-matcher'
 import { isLabelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
+import { cleanUserReason } from '@shared/lib/proxy/user-reason'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 import {
   deletePolicy,
   deletePoliciesForAgent,
   deleteTargetPolicy,
+  evaluate as evaluateXAgentPolicy,
   listPoliciesForCaller,
   replacePoliciesForCaller,
   replacePoliciesForCallerInputSchema,
@@ -262,7 +270,9 @@ import type { SkillsetConfig } from '@shared/lib/types/skillset'
 import { transformMessages, type TransformedMessage, type TransformedItem } from '@shared/lib/utils/message-transform'
 import { subagentOwnEntries } from '@shared/lib/utils/fork-subagent-transcript'
 import { workflowRoutes } from './workflows'
-import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
+import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, getTeamBrain, mutateSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
+import { readsHostFolders } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { ungrabAC } from '@shared/lib/computer-use/executor'
 import type { PermissionGrantType } from '@shared/lib/computer-use/types'
 import { rejectInput, type HostRunOutcome } from '@shared/lib/agent-actor/host-runs'
@@ -763,11 +773,12 @@ async function enrichAgentsWithSummary(
 
   // Both halves of the unread projection, one query each rather than one per
   // agent — this route hydrates every agent on every poll.
-  const [unreadByAgent, markedUnreadByAgent, mentionsByAgent] = await Promise.all([
+  const [unreadByAgent, markedUnreadByAgent, mentionsByAgent, previewsByAgent] = await Promise.all([
     getUnreadNotificationsByAgents(slugs, options.userId),
     getSessionIdsMarkedUnreadByAgents(slugs, options.userId),
     // Only auth mode has people to mention.
     isAuthMode() ? getUnreadMentionsByAgents(slugs, options.userId) : new Map<string, Set<string>>(),
+    getUnreadNotificationPreviewsByAgents(slugs, options.userId),
   ])
 
   const limit = pLimit(5)
@@ -828,12 +839,23 @@ async function enrichAgentsWithSummary(
       const hasActiveSessions = live.activeSessionIds.length > 0
       const hasSessionsAwaitingInput = live.awaitingSessionIds.length > 0 || live.pendingReviews.length > 0
 
+      // What the newest notification behind the winning flag says, in the same
+      // order the sidebar badge picks: a question still waiting on the user,
+      // then a mention, then anything unread. Rows come newest first and pass
+      // the same visibility as the flags above.
+      const preview = agentNotificationPreview(
+        previewsByAgent.get(agent.slug) ?? [], unreadSessionIds, sessionMetadata,
+        live.awaitingSessionIds, hasSessionsAwaitingInput, hasUnreadMention, hasUnreadNotifications,
+      )
+
       return {
         ...agent,
         hasActiveSessions,
         hasSessionsAwaitingInput,
         hasUnreadNotifications,
         hasUnreadMention,
+        ...preview,
+        markedUnreadSessionIds: sessionSummary.sessionIds.filter(id => markedIds.has(id) && !isHiddenAutomatedSession(sessionMetadata[id])),
         sessionCount: sessionSummary.sessionCount,
         lastActivityAt: sessionSummary.lastActivityAt,
         dashboards: artifacts.map((a) => ({
@@ -1368,7 +1390,6 @@ Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
       : message.trim().split(/\s+/).slice(0, 6).join(' ').substring(0, 60)
     if (finalName) {
       await agentRegistry.get(agentSlug).sessions.rename(sessionId, finalName)
-      await agentRegistry.get(agentSlug).sessions.broadcastUpdate(sessionId)
     }
   } catch (error) {
     console.error('Failed to update session name:', error)
@@ -1530,6 +1551,11 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
     // Clean up x-agent invoke policies referencing this agent (caller or target).
     await deletePoliciesForAgent(slug)
 
+    // Turning Team Brain off: no other agent keeps reading a brain that no longer syncs. The drive and its files stay.
+    const teamBrain = getTeamBrain()
+    // Running agents drop it on their next start.
+    if (teamBrain?.agentSlug === slug) for (const agent of await releaseVolume(teamBrain.volumeId, slug)) await afterMountChange(agent)
+
     // Clean up all peripheral data (triggers, integrations, tasks, ACLs, etc.).
     // This runs BEFORE the irreversible workspace removal: if any peripheral
     // cleanup throws, the route returns 500 with the workspace still intact, so
@@ -1543,6 +1569,9 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
     if (!deleted) {
       return c.json({ error: 'Agent not found' }, 404)
     }
+
+    // The Team Brain record names its agent; with the agent gone there is no Team Brain. Its drive stays.
+    if (getTeamBrain()?.agentSlug === slug) mutateSettings((settings) => { delete settings.teamBrain })
 
     // Remove the agent's dedicated host-browser Chrome profile. The container
     // teardown above only stops the browser on the ACTIVE provider — a Chrome
@@ -1573,6 +1602,7 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
       )
     }
     console.error('Failed to delete agent:', error)
+    captureException(error, { tags: { component: 'agents', operation: 'delete-agent' }, extra: { agentSlug: getAgentId(c) } })
     return c.json({ error: 'Failed to delete agent' }, 500)
   }
 })
@@ -1960,24 +1990,15 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
         isAuthMode() ? getSessionIdsWithUnreadMentions(slug, getCurrentUserId(c)) : new Set<string>(),
       ])
       const live = await actor.live()
-      const active = new Set(live.activeSessionIds)
-      const awaiting = new Set(live.awaitingSessionIds)
       const infos = await actor.sessions.listByIds(
         [...new Set([...live.activeSessionIds, ...unreadIds, ...markedUnreadIds])],
         { excludeAutomated: true },
       )
-      const enriched = infos.map((session) => {
-        const isActive = active.has(session.id)
-        return {
-          ...session,
-          isActive,
-          // The awaiting projection already counts agent-scoped reviews
-          // against every active session of the agent — no review special-case.
-          isAwaitingInput: awaiting.has(session.id),
-          hasUnreadNotifications: unreadIds.has(session.id) || markedUnreadIds.has(session.id),
-          hasUnreadMention: mentionedIds.has(session.id),
-        }
-      })
+      const enriched = withSessionStatus(infos, live).map((session) => ({
+        ...session,
+        hasUnreadNotifications: unreadIds.has(session.id) || markedUnreadIds.has(session.id),
+        hasUnreadMention: mentionedIds.has(session.id),
+      }))
       const ordered = sortSessionsNewestFirst(enriched, sortBy)
       if (sortByRaw === undefined) {
         // Preserve the existing notable-only contract when no explicit order
@@ -2008,17 +2029,10 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
     ])
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
     const live = await actor.live()
-    const active = new Set(live.activeSessionIds)
-    const awaiting = new Set(live.awaitingSessionIds)
-    const sessionsWithStatus = sessionList.map((session) => {
-      const isActive = active.has(session.id)
+    const sessionsWithStatus = withSessionStatus(sessionList, live).map((session) => {
       const wake = wakesBySession.get(session.id)
       return {
         ...session,
-        isActive,
-        // The awaiting projection already counts agent-scoped reviews against
-        // every active session of the agent — no review special-case.
-        isAwaitingInput: awaiting.has(session.id),
         hasUnreadNotifications:
           unreadSessionIds.has(session.id) || markedUnreadSessionIds.has(session.id),
         hasUnreadMention: mentionedSessionIds.has(session.id),
@@ -2072,6 +2086,8 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     const slug = getAgentId(c)
     const body = await c.req.json()
     const { message } = body
+    // A session the caller names gets no generated name.
+    const name = typeof body.name === 'string' ? body.name.trim() : ''
 
     if (!message?.trim()) {
       return c.json({ error: 'Message is required' }, 400)
@@ -2189,7 +2205,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
           speed: prewarm.speed,
         },
       },
-      name: 'New Session',
+      name: name || 'New Session',
       metadata: initialMetadata,
     })
     const sessionId = containerSession.id
@@ -2202,9 +2218,9 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
 
     await notifySessionMentions(c, mentions, { agentSlug: slug, agentName: agent.name, sessionId, messageUuid: initialMessageUuid })
 
-    if (isSystemMessageText(message.trim())) {
+    if (!name && isSystemMessageText(message.trim())) {
       await actor.sessions.deferNaming(sessionId)
-    } else {
+    } else if (!name) {
       background(generateAndUpdateSessionNameAsync(
         slug,
         sessionId,
@@ -2217,7 +2233,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       {
         id: sessionId,
         agentSlug: slug,
-        name: 'New Session',
+        name: name || 'New Session',
         createdAt: new Date(),
         lastActivityAt: new Date(),
         isActive: true,
@@ -4350,7 +4366,7 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
       submitted: filled.result.submitted,
       filled: filled.result.filled,
       failed: filled.result.failed,
-      source: account ? 'form_with_vault' : 'form',
+      fill_method: account ? 'form_with_vault' : 'form',
       saved: savedAccount !== null,
       held: heldLabels.length,
     })
@@ -4444,6 +4460,7 @@ agents.post('/:id/sessions/:sessionId/login-via', AgentUser(), zValidator('json'
     trackServerEvent('login_request_via', { provider: providerOf(provider.site)?.id ?? 'other' })
     return c.json({ success: true, account: { username: account.username, site }, provider: { site: provider.site, username: provider.username } })
   } catch (error) {
+    trackServerEvent('login_request_via_failed', { reason: error instanceof VaultConflictError ? 'conflict' : 'error' })
     if (error instanceof VaultConflictError) return c.json({ error: error.message }, 409)
     console.error('[login-via] Failed:', error instanceof Error ? error.message : 'Unknown error')
     return c.json({ error: 'The account could not be saved' }, 500)
@@ -4475,6 +4492,10 @@ agents.post(
     if (!context.fields.every((field) => field.kind === 'username' || field.kind === 'password')) {
       return c.json({ error: 'This form asks for more than a saved login holds' }, 409)
     }
+    if (body.save) {
+      const refused = await sharedAgentRefusal(c, agentSlug, body.sharedAgentAcknowledged)
+      if (refused) return refused
+    }
     const claim = await agentRegistry.get(agentSlug).inputs.claim(body.toolUseId)
     if (!claim) return c.json({ error: 'This sign-in request is already being handled' }, 409)
     claimed = { id: body.toolUseId, token: claim.token }
@@ -4487,35 +4508,79 @@ agents.post(
     if (expectedOrigin !== context.origin) {
       return c.json({ error: 'The saved login is for a different site than the sign-in form' }, 409)
     }
+    const viewer = getViewerUserId(c)
+    const site = siteOfOrigin(context.origin)
+    // The login's own username, else whose account the last step went in as.
+    const identity = credential.username.trim() || (site ? recentSignInIdentity(agentSlug, sessionId, site) : null) || null
+    // "Save for later" copies the whole login into the vault, also on a step
+    // that shows only the username: the next step then needs no one.
+    const saving = Boolean(body.save && site && identity && credential.password)
+    const shown = noteUsername(identity)
     const values = context.fields.map((field) => (field.kind === 'username' ? credential.username : credential.password))
-    const filled = await fillLoginInContainer(agentSlug, sessionId, body.toolUseId, context, values)
+    const filled = await fillLoginInContainer(agentSlug, sessionId, body.toolUseId, context, values, site
+      ? { ...(shown ? { username: shown } : {}), site, source: 'user', saved: saving, held: [] }
+      : undefined)
     // The browser closed while the user was away: the login they picked is
-    // held a while (not saved: it lives in their password manager), and the
-    // agent's next try signs in with it without asking again.
+    // saved when they chose to, else held a while, and the agent's next try
+    // signs in with it without asking again.
     if (!filled.ok && filled.browserClosed) {
-      const site = siteOfOrigin(context.origin)
-      const username = credential.username || null
-      const holds = site !== null && context.fields.some((field) => field.kind === 'password') && credential.password.length > 0
-      if (holds) holdLoginValues(agentSlug, sessionId, site, { username, values: { password: credential.password }, origin: context.origin, save: null })
-      const shown = noteUsername(username)
-      const kept = holds ? { how: 'held' as const, ...(shown ? { username: shown } : {}) } : null
+      let kept: { how: 'saved' | 'held'; username?: string } | null = null
+      if (saving && site && identity) {
+        try {
+          const savedNow = await saveAndGrant(viewer, agentSlug, { site, origin: context.origin, username: identity, values: { password: credential.password } })
+          kept = { how: 'saved', username: savedNow.username }
+        } catch (error) {
+          // Held instead, below: the agent's next try still needs no one.
+          console.error('[fill-login-credential] Saving the account failed:', error instanceof Error ? error.message : 'Unknown error')
+        }
+      }
+      if (!kept && site !== null && context.fields.some((field) => field.kind === 'password') && credential.password.length > 0) {
+        holdLoginValues(agentSlug, sessionId, site, { username: identity, values: { password: credential.password }, origin: context.origin, save: null })
+        kept = { how: 'held', ...(shown ? { username: shown } : {}) }
+      }
       const answered = await answerLoginRequest(agentSlug, body.toolUseId, { type: 'browser_closed', site: site ?? context.origin, ...(kept ? { kept } : {}) })
       if (!answered) return c.json({ error: 'The agent could not be told. Try again.' }, 502)
       await agentRegistry.get(agentSlug).inputs.complete(sessionId, body.toolUseId, 'answered')
       claimed = null
-      if (site && username) rememberSignInIdentity(agentSlug, sessionId, site, username)
+      if (site && identity) rememberSignInIdentity(agentSlug, sessionId, site, identity)
       trackServerEvent('login_request_browser_closed', { kept: kept?.how ?? 'nothing' })
       return c.json({ success: true, browserClosed: true, ...(kept ? { kept: { how: kept.how, username: kept.username ?? null } } : {}) })
     }
     if (!filled.ok) return c.json({ error: filled.error }, filled.status)
     claimed = null
+
+    let savedAccount: VaultAccount | null = null
+    let saveError: string | undefined
+    if (saving && site && identity) {
+      try {
+        savedAccount = await saveAndGrant(viewer, agentSlug, { site, origin: context.origin, username: identity, values: { password: credential.password } })
+      } catch (error) {
+        // The page has the login either way; the user is told it was not saved.
+        console.error('[fill-login-credential] Saving the account failed:', error instanceof Error ? error.message : 'Unknown error')
+        saveError = error instanceof VaultConflictError ? error.message : 'The account could not be saved'
+      }
+    } else if (body.save) {
+      saveError = identity ? 'The saved login has no password to save' : 'The saved login has no username, so it was not saved'
+    }
+    if (site && identity) rememberSignInIdentity(agentSlug, sessionId, site, identity)
+    // The user signed in with the account themselves: what the vault may fill without them counts from here.
+    const wentIn = fieldsWentIn(filled.result, context.fields.length)
+    if (savedAccount && wentIn.some(Boolean)) {
+      const passwordWentIn = context.fields.some((field, index) => field.kind === 'password' && wentIn[index])
+      await recordAccountUse({ agentSlug, accountId: savedAccount.id, sessionId, userId: viewer, password: passwordWentIn, by: 'user' })
+    }
     trackServerEvent('login_request_filled', {
       submitted: filled.result.submitted,
       filled: filled.result.filled,
       failed: filled.result.failed,
-      source: 'password_manager',
+      fill_method: 'password_manager',
+      saved: savedAccount !== null,
     })
-    return c.json(filled.result)
+    return c.json({
+      ...filled.result,
+      ...(savedAccount && site ? { saved: { username: savedAccount.username, site } } : {}),
+      ...(saveError ? { saveError } : {}),
+    })
   } catch (error) {
     return credentialBrokerErrorResponse(c, error)
   } finally {
@@ -4834,6 +4899,38 @@ agents.post('/:id/sessions/:sessionId/computer-use/revoke', AgentUser(), async (
   }
 })
 
+const BRAIN_UPKEEP_NAME = 'Brain upkeep'
+const BRAIN_UPKEEP_PROMPT = 'Run the maintain-brain skill (scheduled upkeep). Follow your system prompt. If no brain location is set up yet, end quietly without a message or a sync summary.'
+
+const brainUpkeepBodySchema = z.object({ scheduleExpression: z.string().trim().min(1, 'scheduleExpression is required') })
+
+// POST /api/agents/:id/team-brain/upkeep - Schedule the Team Brain's upkeep at
+// set-up, so it never depends on the agent's first turn. Once only.
+agents.post('/:id/team-brain/upkeep', AgentUser(), zValidator('json', brainUpkeepBodySchema), async (c) => {
+  const slug = getAgentId(c)
+  if (getTeamBrain()?.agentSlug !== slug) return c.json({ error: 'This agent is not the Team Brain' }, 400)
+  const { scheduleExpression } = c.req.valid('json')
+  if (!validateCronExpression(scheduleExpression).valid) return c.json({ error: 'Invalid cron expression' }, 400)
+  try {
+    const existing = (await listPendingScheduledTasks(slug)).find((task) => task.name === BRAIN_UPKEEP_NAME)
+    if (existing) return c.json({ taskId: existing.id })
+    const taskId = await createScheduledTask({
+      agentSlug: slug,
+      scheduleType: 'cron',
+      scheduleExpression,
+      prompt: BRAIN_UPKEEP_PROMPT,
+      name: BRAIN_UPKEEP_NAME,
+      createdByUserId: getCurrentUserId(c),
+      timezone: await resolveTimezoneForAgent(slug),
+    })
+    globalFeed.publish({ type: 'scheduled_task_created', taskId, agentSlug: slug })
+    return c.json({ taskId }, 201)
+  } catch (error) {
+    console.error('Failed to schedule Brain upkeep:', error)
+    return c.json({ error: 'Failed to schedule Brain upkeep' }, 500)
+  }
+})
+
 // GET /api/agents/:id/scheduled-tasks - List scheduled tasks for an agent
 agents.get('/:id/scheduled-tasks', AgentRead(), async (c) => {
   try {
@@ -4873,7 +4970,6 @@ agents.get('/:id/scheduled-tasks/completed-sessions', AgentRead(), async (c) => 
     const metadata = await actor.sessions.readMetadata()
     const live = await actor.live()
     const active = new Set(live.activeSessionIds)
-    const awaiting = new Set(live.awaitingSessionIds)
 
     const completedSessionIds = tasks
       .map((task) => task.lastSessionId)
@@ -4887,16 +4983,7 @@ agents.get('/:id/scheduled-tasks/completed-sessions', AgentRead(), async (c) => 
       })
 
     const sessions = await actor.sessions.listByIds(completedSessionIds)
-    const sessionsWithStatus = sessions.map((session) => ({
-      ...session,
-      isActive: active.has(session.id),
-      isAwaitingInput: awaiting.has(session.id),
-    }))
-    sessionsWithStatus.sort(
-      (a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime()
-    )
-
-    return c.json(sessionsWithStatus)
+    return c.json(sortSessionsNewestFirst(withSessionStatus(sessions, live)))
   } catch (error) {
     console.error('Failed to fetch completed one-time sessions:', error)
     return c.json({ error: 'Failed to fetch completed one-time sessions' }, 500)
@@ -6298,6 +6385,9 @@ async function handleFileUpload(agentSlug: string, file: File, relativePath?: st
   if (file.size > MAX_UPLOAD_TOTAL_SIZE) {
     throw new UploadTooLargeError(file.size, MAX_UPLOAD_TOTAL_SIZE)
   }
+  // A folder upload keeps its file names, so only a single file is swapped for its JPEG.
+  const jpeg = relativePath ? undefined : await heicUploadAsJpeg(file.name, file)
+  if (jpeg) file = new File([jpeg.data], jpeg.name)
   const uploadPath = resolveUploadDestPath(file.name, relativePath)
 
   // Stream into the workspace instead of Buffer.from(await file.arrayBuffer()) —
@@ -6422,6 +6512,10 @@ agents.post('/:id/upload-file', AgentUser(), uploadRequestBodyLimit, respondUplo
 // POST /api/agents/:id/sessions/:sessionId/upload-file - Upload a file to the agent workspace
 agents.post('/:id/sessions/:sessionId/upload-file', AgentUser(), uploadRequestBodyLimit, respondUploadFile)
 
+// The Mac App Store build reaches only folders picked in its open panel, and a
+// dropped folder arrives through the web upload instead.
+const FOLDER_BY_PATH_UNAVAILABLE = 'Copying a folder by its path is not available in the Mac App Store edition'
+
 async function handleFolderUpload(agentSlug: string, sourcePath: string) {
   // `sourcePath` is a folder on this machine, chosen in the Electron file
   // picker. Walk it with fs and copy each regular file into the workspace;
@@ -6469,6 +6563,7 @@ agents.post('/:id/upload-folder', AgentUser(), async (c) => {
     const agentSlug = getAgentId(c)
     const { sourcePath } = await c.req.json<{ sourcePath: string }>()
     if (!sourcePath) return c.json({ error: 'No source path provided' }, 400)
+    if (!readsHostFolders(getServerFacts())) return c.json({ error: FOLDER_BY_PATH_UNAVAILABLE }, 400)
     const result = await handleFolderUpload(agentSlug, sourcePath)
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${result.folderName}`, action: 'uploaded' })
     return c.json(result)
@@ -6485,6 +6580,7 @@ agents.post('/:id/sessions/:sessionId/upload-folder', AgentUser(), async (c) => 
     const agentSlug = getAgentId(c)
     const { sourcePath } = await c.req.json<{ sourcePath: string }>()
     if (!sourcePath) return c.json({ error: 'No source path provided' }, 400)
+    if (!readsHostFolders(getServerFacts())) return c.json({ error: FOLDER_BY_PATH_UNAVAILABLE }, 400)
     const result = await handleFolderUpload(agentSlug, sourcePath)
     await logAuditEvent({ userId: getCurrentUserId(c), object: 'file', objectId: `${agentSlug}/${result.folderName}`, action: 'uploaded' })
     return c.json(result)
@@ -6509,11 +6605,6 @@ agents.get('/:id/mounts', AgentRead(), async (c) => {
   }
 })
 
-// A running container keeps the drives it started with until it restarts.
-async function afterMountChange(agentSlug: string, restart?: boolean) {
-  await agentRegistry.get(agentSlug).container.invalidate({ restart })
-}
-
 // POST /api/agents/:id/mounts - Add a mount
 agents.post('/:id/mounts', AgentUser(), async (c) => {
   try {
@@ -6524,7 +6615,7 @@ agents.post('/:id/mounts', AgentUser(), async (c) => {
       const input = addMountSchema.parse(await c.req.json())
       restart = input.restart
       mount = 'volumeId' in input
-        ? await attachMount(agentSlug, input.volumeId, volumeViewer(c))
+        ? await attachMount(agentSlug, input.volumeId, volumeViewer(c), { readOnly: input.readOnly })
         : await addMount(agentSlug, input.type, input.config, volumeViewer(c), { name: input.name, visibility: input.visibility })
     } catch (err) {
       if (err instanceof VolumeError) return c.json({ error: err.message }, err.status)
@@ -6535,7 +6626,7 @@ agents.post('/:id/mounts', AgentUser(), async (c) => {
 
     await afterMountChange(agentSlug, restart)
 
-    await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mount.id}`, action: 'created', details: { type: summary.type, name: summary.name, hostPath: summary.hostPath } })
+    await logAuditEvent({ userId: getCurrentUserId(c), object: 'mount', objectId: `${agentSlug}/${mount.id}`, action: 'created', details: { type: summary.type, name: summary.name, hostPath: summary.hostPath, readOnly: mount.readOnly } })
     return c.json(summary, 201)
   } catch (error) {
     console.error('Failed to add mount:', error)
@@ -6825,13 +6916,9 @@ agents.post('/:id/folders/reveal-path', AgentAdmin(), async (c) => {
   }
 })
 
-const HEIC_EXTENSIONS = new Set(['.heic', '.heif'])
 const HEIC_PREVIEW_CACHE_BYTES = 64 * 1024 * 1024
-const HEIC_PREVIEW_MAX_PIXELS = 50_000_000
-const HEIC_PREVIEW_TIMEOUT_MS = 30_000
 const heicPreviewCache = new Map<string, Uint8Array>()
 let heicPreviewCacheBytes = 0
-let heicPreviewQueue: Promise<void> = Promise.resolve()
 
 function cachedHeicPreview(key: string): Uint8Array | undefined {
   const preview = heicPreviewCache.get(key)
@@ -6856,72 +6943,6 @@ function cacheHeicPreview(key: string, preview: Uint8Array) {
   }
   heicPreviewCache.set(key, preview)
   heicPreviewCacheBytes += preview.byteLength
-}
-
-function heicPreviewWorkerUrl(): URL {
-  try {
-    // Electron emits CommonJS; the web build and unbundled source use ESM.
-    const filename = process.versions.electron ? './heic-preview-worker.cjs' : './heic-preview-worker.mjs'
-    return new URL(filename, import.meta.url)
-  } catch (error) {
-    throw new Error('Failed to resolve HEIC preview worker', { cause: error })
-  }
-}
-
-function runHeicPreviewWorker(input: Uint8Array): Promise<Uint8Array> {
-  return new Promise((resolve, reject) => {
-    const inputBuffer = input.buffer as ArrayBuffer
-    const worker = new Worker(heicPreviewWorkerUrl(), {
-      workerData: {
-        input: inputBuffer,
-        maxPixels: HEIC_PREVIEW_MAX_PIXELS,
-        quality: 85,
-      },
-      transferList: [inputBuffer],
-      resourceLimits: {
-        maxOldGenerationSizeMb: 384,
-        maxYoungGenerationSizeMb: 64,
-        stackSizeMb: 4,
-      },
-    })
-    let settled = false
-    let timedOut = false
-    let workerError: Error | undefined
-    let result: { output?: ArrayBuffer; error?: string } | undefined
-    const timeout = setTimeout(() => {
-      if (settled) return
-      timedOut = true
-      background(worker.terminate().catch((error) => {
-        if (settled) return
-        settled = true
-        reject(error)
-      }), { name: 'heic-preview.terminate-worker' })
-    }, HEIC_PREVIEW_TIMEOUT_MS)
-
-    worker.once('message', (message: { output?: ArrayBuffer; error?: string }) => {
-      result = message
-    })
-    worker.once('error', (error) => {
-      workerError = error
-    })
-    worker.once('exit', (code) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timeout)
-      if (timedOut) reject(new Error('HEIC preview conversion timed out'))
-      else if (workerError) reject(workerError)
-      else if (code !== 0) reject(new Error(`HEIC preview worker exited with code ${code}`))
-      else if (result?.error) reject(new Error(result.error))
-      else if (result?.output) resolve(new Uint8Array(result.output))
-      else reject(new Error('HEIC preview worker returned no image'))
-    })
-  })
-}
-
-function queueHeicPreview<T>(task: () => Promise<T>): Promise<T> {
-  const queued = heicPreviewQueue.then(task)
-  heicPreviewQueue = queued.then(() => undefined, () => undefined)
-  return queued
 }
 
 async function renderHeicPreview(actor: AgentActor, resolvedPath: string, stat: FileStat): Promise<Uint8Array> {
@@ -7806,8 +7827,6 @@ agents.get('/:id/pending-requests', AgentRead(), async (c) => {
 // Re-authentication endpoints
 // =============================================================================
 
-const MAX_DISMISS_REASON_LENGTH = 500
-
 agents.route('/', accountReauth)
 agents.route('/', mcpReauth)
 agents.route('/', agentMemoryRoutes)
@@ -7829,11 +7848,7 @@ agents.post('/:id/reauth-request/:requestId/dismiss', AgentUser(), async (c) => 
   const slug = getAgentId(c)
   const requestId = c.req.param('requestId')
   const body = await c.req.json<{ reason?: string }>().catch(() => ({} as { reason?: string }))
-  // Bounded: this text is forwarded into the proxy's error body and written to
-  // the audit log, so it must not be an unbounded write from the composer.
-  const reason = typeof body.reason === 'string' && body.reason.trim()
-    ? body.reason.trim().slice(0, MAX_DISMISS_REASON_LENGTH)
-    : undefined
+  const reason = cleanUserReason(body.reason)
 
   const open = await agentRegistry.get(slug).inputs.get(requestId)
   if (open) {
@@ -7891,7 +7906,7 @@ agents.post('/:id/reauth-request/:requestId/dismiss', AgentUser(), async (c) => 
 agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
   const slug = getAgentId(c)
   const reviewId = c.req.param('reviewId')
-  const body = await c.req.json<{ decision: 'allow' | 'deny' }>()
+  const body = await c.req.json<{ decision: 'allow' | 'deny'; reason?: string }>()
 
   if (!body.decision || !['allow', 'deny'].includes(body.decision)) {
     return c.json({ error: 'Invalid decision. Must be "allow" or "deny".' }, 400)
@@ -7910,7 +7925,7 @@ agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
   // Pass slug so submitDecision rejects cross-agent attempts. AgentUser()
   // verifies the URL agent only — without this, a user with role on agent A
   // could resolve agent B's review by sending B's reviewId to A's URL.
-  const success = await agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision)
+  const success = await agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision, cleanUserReason(body.reason))
   if (!success) {
     return c.json({ error: 'Review not found or already resolved' }, 404)
   }
@@ -7949,6 +7964,12 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   if (pendingReview?.ruleProposal) {
     return c.json({ error: 'A rule proposal can only be approved or rejected, not saved as a policy' }, 400)
   }
+  // "Always allow" never overwrites a Block, checked on the card's own link when there is a card.
+  const blockedResponse = () => c.json({ error: 'Forbidden: this agent link is blocked', blocked: true }, 403)
+  const checkTarget = pendingReview?.xAgent ? pendingReview.xAgent.targetAgentSlug || null : body.xAgent?.targetSlug ?? null
+  if (body.decision === 'allow' && body.reviewType === 'xagent' && body.xAgent && await evaluateXAgentPolicy(slug, body.xAgent.operation, checkTarget) === 'block') {
+    return blockedResponse()
+  }
 
   const policyDecision = body.decision === 'allow' ? 'allow' : 'block'
   const now = new Date()
@@ -7976,7 +7997,11 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
       // X-Agent review — save to xAgentPolicies. The "caller" is the agent the
       // review is attached to (slug), not the target.
       const { setPolicy: setAgentPolicy } = await import('@shared/lib/services/x-agent-policy-service')
-      await setAgentPolicy(slug, body.xAgent.operation, body.xAgent.targetSlug, policyDecision)
+      const saved = await setAgentPolicy(slug, body.xAgent.operation, body.xAgent.targetSlug, policyDecision, { keepBlock: policyDecision === 'allow' })
+      // A Block written after the check above still wins.
+      if (policyDecision === 'allow' && saved.previousDecision === 'block') {
+        return blockedResponse()
+      }
     } else if (reviewType === 'mcp') {
       // MCP tool review — save to mcpToolPolicies
       // accountId is actually the mcpId for MCP reviews.
@@ -8245,12 +8270,18 @@ agents.put('/:id/x-agent-policies', AgentAdmin(), async (c) => {
   return c.json({ ok: true })
 })
 
-// PUT /api/agents/:id/x-agent-policies/invoke/:target - Upsert ONE invoke
-// policy atomically. The batch PUT above is a whole-form replace: concurrent
+const targetedOperationSchema = z.enum(['invoke', 'read'])
+
+// PUT /api/agents/:id/x-agent-policies/{invoke|read}/:target - Upsert ONE
+// targeted policy atomically. The batch PUT above is a whole-form replace: concurrent
 // single-edge edits through it read-modify-write the full list and the last
 // writer silently drops the other's change. Graph edge edits go through here.
-agents.put('/:id/x-agent-policies/invoke/:target', AgentAdmin(), async (c) => {
+agents.put('/:id/x-agent-policies/:operation/:target', AgentAdmin(), async (c) => {
   const slug = getAgentId(c)
+  const operation = targetedOperationSchema.safeParse(c.req.param('operation'))
+  if (!operation.success) {
+    return c.json({ error: 'Unknown operation' }, 400)
+  }
   const targetSlug = c.req.param('target')
   if (targetSlug === slug) {
     return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
@@ -8269,18 +8300,22 @@ agents.put('/:id/x-agent-policies/invoke/:target', AgentAdmin(), async (c) => {
   if (!parsed.success) {
     return c.json({ error: 'Invalid policy payload', details: parsed.error.format() }, 400)
   }
-  const result = await setPolicy(slug, 'invoke', targetSlug, parsed.data.decision)
+  const result = await setPolicy(slug, operation.data, targetSlug, parsed.data.decision)
   return c.json({ ok: true, ...result })
 })
 
-// DELETE /api/agents/:id/x-agent-policies/invoke/:target - Remove the invoke
+// DELETE /api/agents/:id/x-agent-policies/{invoke|read}/:target - Remove the
 // grant for one target atomically. Preserves 'block' rows: deleting a drawn
 // graph edge revokes a grant, and lifting an explicit block here would
 // silently escalate (effective decision falls back to a global allow).
-agents.delete('/:id/x-agent-policies/invoke/:target', AgentAdmin(), async (c) => {
+agents.delete('/:id/x-agent-policies/:operation/:target', AgentAdmin(), async (c) => {
   const slug = getAgentId(c)
+  const operation = targetedOperationSchema.safeParse(c.req.param('operation'))
+  if (!operation.success) {
+    return c.json({ error: 'Unknown operation' }, 400)
+  }
   const targetSlug = c.req.param('target')
-  const removed = await deleteTargetPolicy(slug, 'invoke', targetSlug, { preserveBlock: true })
+  const removed = await deleteTargetPolicy(slug, operation.data, targetSlug, { preserveBlock: true })
   return c.json({ ok: true, removed })
 })
 

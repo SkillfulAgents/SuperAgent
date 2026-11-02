@@ -64,4 +64,16 @@ describe('seedBrowserProfileFromChrome', () => {
     await seedBrowserProfileFromChrome('a', new InMemoryFileOps())
     expect(copyChromeProfileData).not.toHaveBeenCalled()
   })
+
+  it('copies no profile in the Mac App Store edition, whose sandbox can’t read Chrome’s', async () => {
+    settingsState.chromeProfileId = 'Default'
+    vi.stubEnv('E2E_MOCK', 'true')
+    vi.stubEnv('SUPERAGENT_FAKE_DISTRIBUTION', 'mac-app-store')
+    try {
+      await seedBrowserProfileFromChrome('a', new InMemoryFileOps())
+    } finally {
+      vi.unstubAllEnvs()
+    }
+    expect(copyChromeProfileData).not.toHaveBeenCalled()
+  })
 })

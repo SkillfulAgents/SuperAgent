@@ -6,10 +6,12 @@ import { VolumeDetailsFields, VolumeSetupFooter, VolumeSetupHeader } from './vol
 import { FolderLocationField } from './volume-folder-picker'
 import type { VolumeSetupDefinition, VolumeSetupProps } from './volume-setup'
 
+// The pick comes with its bookmark where the App Sandbox needs one to reopen
+// the folder after a relaunch, so a picked folder is a drive in every build.
 async function selectLocalFolder() {
   if (!canUseHostFeatures()) throw new Error('Local folders are available in the desktop app on this workspace’s computer.')
-  const path = await window.electronAPI?.openDirectory()
-  return path ? localVolumeConfigSchema.parse({ path }) : null
+  const picked = await window.electronAPI?.openDirectory()
+  return picked ? localVolumeConfigSchema.parse(picked) : null
 }
 
 function folderName(path: string) {

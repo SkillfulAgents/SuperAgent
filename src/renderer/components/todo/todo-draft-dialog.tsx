@@ -8,7 +8,7 @@ import { AttachmentPreview, attachmentStatus, type Attachment, type FileAttachme
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { uploadFileChunked } from '@renderer/lib/upload'
 import { HttpError, isRetryableRequestError } from '@renderer/lib/http-error'
-import { canUseHostFeatures } from '@renderer/lib/capabilities'
+import { usesHostFolderPaths } from '@renderer/lib/capabilities'
 import { filesFromClipboard, folderChoice, getItemsFromDataTransfer, type DataTransferResult, type FolderGroup } from '@renderer/lib/file-utils'
 import { MarkdownComposerEditor } from '@renderer/components/messages/markdown-composer-editor'
 import { AttachmentPicker } from '@renderer/components/ui/attachment-picker'
@@ -66,6 +66,7 @@ export function keptAttachments(
 ): TodoAttachment[] {
   return chips.flatMap((chip): TodoAttachment[] => {
     if (chip.type === 'saved') return stored.filter((att) => att.id === chip.id)
+    if (chip.type === 'reference') return []
     if (chip.type === 'mount') {
       return [{ id: chip.id, kind: 'mount', name: chip.folderName, size: 0, mimeType: 'inode/mount', hostPath: chip.hostPath }]
     }
@@ -362,7 +363,7 @@ function DraftForm({ initial, expanded, onToggleExpand, onClose, flushCloseRef }
   })
 
   const receiveFolders = (folders: FolderGroup[]) => {
-    if (!canUseHostFeatures()) {
+    if (!usesHostFolderPaths()) {
       files.addFolders(folders)
       return
     }

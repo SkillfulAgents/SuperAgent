@@ -32,6 +32,7 @@ import {
   transformMessages,
   isToolResultOnlyMessage,
   isTaskNotificationMessage,
+  monitorNotificationOf,
   type TransformedItem,
 } from '@shared/lib/utils/message-transform'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
@@ -43,7 +44,8 @@ import {
 } from '@shared/lib/session-ordering'
 import { replaceInlineMediaWithRefs } from './session-media'
 import { sessionMetadataHolds } from './session-metadata-holds'
-import { isHiddenAutomatedSession } from './session-visibility'
+import { isHiddenAutomatedSession, sessionOrigin } from './session-visibility'
+import type { SlashCommandInfo } from '@shared/lib/container/types'
 import {
   SessionInfo,
   SessionMetadata,
@@ -199,13 +201,70 @@ async function mutateSessionMetadata(
   store: SessionStore,
   mutator: (metadata: SessionMetadataMap) => boolean | void
 ): Promise<void> {
-  await store.config.update('sessionMetadata', (current) => {
+  await store.config.update('sessionMetadata', async (current) => {
     // A copy: the mutator edits in place, and handing the document it was
     // given back to `update` means "nothing changed".
     const metadata = { ...(current ?? {}) } as SessionMetadataMap
     const changed = mutator(metadata)
-    return changed === false ? null : (metadata as ConfigDoc<'sessionMetadata'>)
+    const newest = dropStoredSlashCommands(metadata)
+    if (newest) await seedAgentSlashCommands(store, newest)
+    return changed === false && !newest ? null : (metadata as ConfigDoc<'sessionMetadata'>)
   })
+}
+
+/** Earlier builds copied the agent's whole slash-command list into every session's entry; returns the newest copy. */
+function newestStoredSlashCommands(metadata: SessionMetadataMap): SlashCommandInfo[] | null {
+  let newest: { createdAt: string; commands: SlashCommandInfo[] } | null = null
+  for (const entry of Object.values(metadata)) {
+    if (!entry.slashCommands) continue
+    const createdAt = entry.createdAt ?? ''
+    if (!newest || createdAt > newest.createdAt) newest = { createdAt, commands: entry.slashCommands }
+  }
+  return newest?.commands ?? null
+}
+
+/** Drops every session entry's copy; returns the newest copy dropped. */
+function dropStoredSlashCommands(metadata: SessionMetadataMap): SlashCommandInfo[] | null {
+  const newest = newestStoredSlashCommands(metadata)
+  if (!newest) return null
+  for (const [sessionId, entry] of Object.entries(metadata)) {
+    if (!entry.slashCommands) continue
+    const rest = { ...entry }
+    delete rest.slashCommands
+    metadata[sessionId] = rest
+  }
+  return newest
+}
+
+/** A dropped copy becomes the agent's when it has none yet, so a cold session's composer keeps its commands. */
+async function seedAgentSlashCommands(store: SessionStore, commands: SlashCommandInfo[]): Promise<void> {
+  try {
+    await store.config.update('slashCommands', (current) => (current === null ? (commands as ConfigDoc<'slashCommands'>) : null))
+  } catch (error) {
+    console.error(`[SessionService] Failed to keep slash commands for agent ${store.slug}:`, error)
+  }
+}
+
+/**
+ * The slash commands the agent's container last listed, shared by every
+ * session. Without a usable agent copy, the newest copy an earlier build left
+ * in a session entry. Read-only: a corrupt agent copy is skipped, not thrown,
+ * so a viewer still attaches.
+ */
+export async function readAgentSlashCommands(store: SessionStore): Promise<SlashCommandInfo[]> {
+  try {
+    const commands = (await store.config.get('slashCommands')) as SlashCommandInfo[] | null
+    if (commands?.length) return commands
+  } catch (error) {
+    if (!(error instanceof ConfigDocError && error.code === 'corrupt')) throw error
+    console.error(`[SessionService] Corrupt slash commands for agent ${store.slug}; using session metadata`, error)
+  }
+  return newestStoredSlashCommands(await readSessionMetadata(store)) ?? []
+}
+
+export async function storeAgentSlashCommands(store: SessionStore, commands: SlashCommandInfo[]): Promise<void> {
+  await store.config.update('slashCommands', (current) =>
+    current !== null && JSON.stringify(current) === JSON.stringify(commands) ? null : (commands as ConfigDoc<'slashCommands'>))
 }
 
 /**
@@ -412,6 +471,7 @@ function sessionFromTranscriptStat(
     name: meta?.name || 'New Session',
     createdAt: resolveSessionCreatedAt(meta, stat),
     lastActivityAt: new Date(stat.mtimeMs),
+    origin: sessionOrigin(meta),
   }
 }
 
@@ -436,6 +496,7 @@ function emptySessionFromMetadata(
     name: meta.name || 'New Session',
     createdAt,
     lastActivityAt: createdAt,
+    origin: sessionOrigin(meta),
   }
 }
 
@@ -1222,7 +1283,7 @@ function countsAsDisplayStart(entry: JsonlEntry, state: DisplayCountState): bool
   if (msg.type === 'user') {
     if (msg.isCompactSummary) return false
     if (isToolResultOnlyMessage(msg)) return false
-    if (isTaskNotificationMessage(msg)) return false
+    if (isTaskNotificationMessage(msg)) return monitorNotificationOf(msg) !== null
     return true
   }
   const messageId = msg.message.id

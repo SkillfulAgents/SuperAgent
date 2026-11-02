@@ -349,6 +349,34 @@ describe('slash commands', () => {
     expect(streamStarts).toHaveLength(1)
     expect(streamStarts[0].slashCommands).toBeUndefined()
   })
+
+  it('replaces the commands on a mid-turn commands_changed and tells viewers', () => {
+    sessions().setSlashCommands(SESSION_ID, [{ name: 'compact', description: 'Free up context', argumentHint: '' }])
+    sseEvents.length = 0
+
+    const commands = [
+      { name: 'compact', description: 'Free up context', argumentHint: '' },
+      { name: 'say-banana', description: 'Reply with the word BANANA-OK', argumentHint: '' },
+    ]
+    mockClient.emit({ type: 'system', subtype: 'commands_changed', session_id: 'claude-session-1', commands })
+
+    expect(sessions().slashCommands(SESSION_ID)).toEqual(commands)
+    expect(sseEvents.filter(e => e.type === 'slash_commands_changed')).toEqual([
+      { type: 'slash_commands_changed', slashCommands: commands },
+    ])
+    expect(sseEvents.filter(e => e.type === 'stream_start')).toHaveLength(0)
+  })
+
+  it('ignores a commands_changed without a valid list', () => {
+    const commands = [{ name: 'compact', description: 'Free up context', argumentHint: '' }]
+    sessions().setSlashCommands(SESSION_ID, commands)
+    sseEvents.length = 0
+
+    mockClient.emit({ type: 'system', subtype: 'commands_changed', session_id: 'claude-session-1', commands: [{ name: 1 }] })
+
+    expect(sessions().slashCommands(SESSION_ID)).toEqual(commands)
+    expect(sseEvents.filter(e => e.type === 'slash_commands_changed')).toHaveLength(0)
+  })
 })
 
 // ============================================================================

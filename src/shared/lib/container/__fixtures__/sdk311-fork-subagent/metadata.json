@@ -1,0 +1,31 @@
+{
+  "sessionId": "271cd2c2-113f-4ffa-8a80-b39ab6db7ea9",
+  "agentSlug": "probe",
+  "sdkVersion": "0.3.311",
+  "cliVersion": "2.1.311",
+  "capturedAt": "2026-10-27",
+  "model": "claude-haiku-4-5-20251001",
+  "startActive": true,
+  "subagents": [
+    {
+      "parentToolId": "toolu_017cP9NZwR3grAaGFhvQxBnZ",
+      "taskId": "a98f6d6b799ec3026",
+      "agentId": "a98f6d6b799ec3026",
+      "subagentType": "fork",
+      "description": "fork probe"
+    }
+  ],
+  "source": "capture-fixtures.mjs (.claude/skills/update-claude-deps): direct Agent SDK query() with streaming input, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1, includePartialMessages, perTaskStopAffordance; host capture wrapper (t = ms since start, message.content = SDK frame)",
+  "description": "Real capture (SDK 0.3.311 / CLI 2.1.311). The lead runs a Bash step, then launches a fork (Agent subagent_type \"fork\", CLI 2.1.302+) that runs its own Bash; the lead turn ends while it runs, then the completion wake turn. Snapshots the transcripts: the fork's opens with the parent's launching entry and its directive.",
+  "backgroundTasks": [
+    {
+      "taskId": "a98f6d6b799ec3026",
+      "taskType": "local_agent",
+      "startedT": 2756,
+      "prematureIdleT": null,
+      "realCompletionT": 5165
+    }
+  ],
+  "settledT": 6775,
+  "totalEntries": 104
+}

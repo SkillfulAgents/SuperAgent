@@ -1,3 +1,4 @@
+import { githubVolumeSetup } from './github-volume-setup'
 import { s3VolumeSetup } from './s3-volume-setup'
 import type { VolumeType } from '@shared/lib/types/mount'
 import { localVolumeSetup } from './local-volume-setup'
@@ -8,6 +9,7 @@ import type { VolumeSetupDefinition } from './volume-setup'
 
 /** Add a source's renderer setup here; the dialog and save hooks stay generic. */
 export const volumeSetupRegistry: Record<VolumeType, VolumeSetupDefinition> = {
+  github: githubVolumeSetup,
   local: localVolumeSetup,
   s3: s3VolumeSetup,
   dropbox: dropboxVolumeSetup,

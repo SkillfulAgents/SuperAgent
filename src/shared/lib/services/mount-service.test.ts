@@ -6,8 +6,10 @@ import { eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { agents, agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
-import { addMount, attachMount, getMounts, getMountsWithHealth, listVolumes, removeMount, resolveVolume, setMountReadOnly, volumeSummary } from './mount-service'
+import { addMount, agentsWithVolume, attachMount, getMounts, getMountsWithHealth, listVolumes, removeMount, resolveVolume, setMountReadOnly, volumeSummary } from './mount-service'
 import { updateVolumeDefinition } from './volume-service'
+import { volumeHealth } from '@shared/lib/volumes/volume-health'
+import { BaseMountableVolume } from '@shared/lib/volumes/base-mountable-volume'
 
 let handle: TestDatabase
 let tmpDir: string
@@ -58,6 +60,7 @@ describe('SQLite mount attachments', () => {
     fs.writeFileSync(path.join(hostPath, 'a.txt'), 'shared content')
     const a = await add(hostPath)
     const b = await attachMount('agent-b', a.volumeId, viewer)
+    expect(b.readOnly).toBe(false)
     expect(b.volumeId).toBe(a.volumeId)
     expect(b.id).not.toBe(a.id)
     expect(await handle.db.select().from(volumeDefinitions).all()).toHaveLength(1)
@@ -92,6 +95,13 @@ describe('SQLite mount attachments', () => {
     expect(await setMountReadOnly('test-agent', mount.id, false)).toBe(true)
     expect((await listVolumes('test-agent')).volumes[0]).not.toHaveProperty('readOnly')
   })
+  it('attaches read-only when asked, an attachment the agent already had included', async () => {
+    const mount = await add(folder('brain'))
+    expect((await attachMount('agent-b', mount.volumeId, viewer, { readOnly: true })).readOnly).toBe(true)
+    expect((await attachMount('test-agent', mount.volumeId, viewer, { readOnly: true })).readOnly).toBe(true)
+    expect((await attachMount('test-agent', mount.volumeId, viewer)).readOnly).toBe(true)
+  })
+
   it('detaches only the specified mount and preserves sources and files', async () => {
     const a = await add(folder('keep'))
     const b = await add(folder('detach'))
@@ -146,6 +156,18 @@ describe('global drives', () => {
     expect(await getMounts('agent-b')).toEqual([other])
     expect(await getMounts('test-agent')).toEqual([team])
   })
+  it('names the agents a drive reaches: its attachments, or every agent while it is global', async () => {
+    await handle.db.insert(agents).values({ slug: 'agent-c', name: 'agent-c', createdAt: new Date() }).run()
+    const team = await add(folder('team'))
+    await attachMount('agent-b', team.volumeId, viewer)
+    expect((await agentsWithVolume(team.volumeId)).sort()).toEqual(['agent-b', 'test-agent'])
+    await updateVolumeDefinition(team.volumeId, { global: 'read' }, viewer)
+    expect((await agentsWithVolume(team.volumeId)).sort()).toEqual(['agent-b', 'agent-c', 'test-agent'])
+    await updateVolumeDefinition(team.volumeId, { global: null }, viewer)
+    await removeMount('agent-b', (await getMounts('agent-b'))[0].id)
+    expect(await agentsWithVolume(team.volumeId)).toEqual(['test-agent'])
+    expect(await agentsWithVolume('missing')).toEqual([])
+  })
 })
 
 describe('volume health and stored configuration', () => {
@@ -160,6 +182,32 @@ describe('volume health and stored configuration', () => {
       notMounted: [{ name: 'gone', reason: 'not found' }, { name: 'bad', reason: 'unreadable' }, { name: '', reason: 'invalid name' }],
     })
     expect((await getMountsWithHealth('test-agent')).map(m => m.health)).toEqual(['ok', 'missing', 'missing', 'missing'])
+  })
+  it('waits for a drive making its first copy before listing what to mount, for 20 s at most', async () => {
+    await add(folder('notes'))
+    let copied!: () => void
+    const ready = vi.spyOn(BaseMountableVolume.prototype, 'whenReady').mockReturnValueOnce(new Promise<void>(resolve => { copied = resolve }))
+    let listed = false
+    const listing = listVolumes('test-agent').then(result => { listed = true; return result })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(listed).toBe(false)
+    copied()
+    expect((await listing).volumes).toHaveLength(1)
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      ready.mockReturnValueOnce(new Promise<void>(() => {}))
+      const stuck = listVolumes('test-agent')
+      await vi.advanceTimersByTimeAsync(20_000)
+      expect((await stuck).volumes).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+      ready.mockRestore()
+    }
+  })
+  it('shows a first copy in progress as preparing, and a failed one as missing', () => {
+    expect([volumeHealth(null), volumeHealth('preparing'), volumeHealth('preparing: GitHub refused access'), volumeHealth('not found')])
+      .toEqual(['ok', 'preparing', 'missing', 'missing'])
   })
   it('reports a deleted folder or a root replaced by a symlink as missing', async () => {
     const dir = folder('replaced')

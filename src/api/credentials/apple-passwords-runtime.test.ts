@@ -28,6 +28,20 @@ describe('ApplePasswordsRuntime hardening', () => {
     expect(dependencies.spawnChrome).not.toHaveBeenCalled()
   })
 
+  it('is unavailable in the Mac App Store edition, which can’t drive Chrome, and launches nothing', async () => {
+    vi.stubEnv('E2E_MOCK', 'true')
+    vi.stubEnv('SUPERAGENT_FAKE_DISTRIBUTION', 'mac-app-store')
+    try {
+      const dependencies = runtimeDependencies()
+      const runtime = new ApplePasswordsRuntime(dependencies)
+
+      await expect(runtime.state()).rejects.toMatchObject({ code: 'app_sandbox' })
+      expect(dependencies.spawnChrome).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
   it('does not allow arbitrary WebSocket origins on the loopback debugger', () => {
     const args = applePasswordsChromeArguments('/runtime/profile', 9222)
 

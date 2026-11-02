@@ -98,6 +98,7 @@ const TEMPLATE_EXCLUDE = new Set([
   'node_modules',
   '__pycache__',
   'session-metadata.json',
+  '.slash-commands.json',
   '.superagent-sessions.json',
   '.skillset-agent-metadata.json',
   'bookmarks.json',

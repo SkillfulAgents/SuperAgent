@@ -13,8 +13,11 @@ import {
   removeSkillsetCache,
   ensureSkillsetCached,
   isGitAvailable,
+  HOST_GIT_UNAVAILABLE,
 } from '@shared/lib/services/skillset-service'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
+import { runsHostGit } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import type {
   SkillsetConfig,
   SkillsetCredential,
@@ -29,6 +32,8 @@ async function resolveProvider(
   hasToken: boolean = false,
 ): Promise<SkillProvider | undefined> {
   if (hasToken) {
+    // A token is for a private repository, which only git can clone.
+    if (!runsHostGit(getServerFacts())) throw new Error(HOST_GIT_UNAVAILABLE)
     if (explicit && explicit !== 'github') {
       throw new Error('Repository tokens are currently supported by the GitHub provider only.')
     }
@@ -119,7 +124,8 @@ function configToApiResponse(config: SkillsetConfig, skillCount: number, agentCo
     provider: config.provider,
     badgeLabel: display.badgeLabel,
     showUrl: display.showUrl,
-    publishMode: provider.publishMode,
+    // A pull request needs git and gh on the host; without them nothing offers one.
+    publishMode: provider.publishMode === 'pull_request' && !runsHostGit(getServerFacts()) ? 'none' : provider.publishMode,
     credential: credential ? { type: credential.type, tokenPreview: credential.tokenPreview } : undefined,
     error,
   }

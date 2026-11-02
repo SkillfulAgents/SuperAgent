@@ -29,7 +29,7 @@ export class CodexSubscriptionLlmProvider extends BaseLlmProvider {
   readonly catalogDefaultModels = CODEX_DEFAULT_MODELS
   protected readonly settingsKeyField = undefined
   protected readonly envVarName = ''
-  override readonly toolSearchEnv = 'true' as const
+  override toolSearchEnv() { return 'true' as const }
   override readonly mediaPrompt = CODEX_IMAGE_PROMPT
   override readonly supportsModelSearch = true
   // This integration exposes the subscription through the agent proxy, not a

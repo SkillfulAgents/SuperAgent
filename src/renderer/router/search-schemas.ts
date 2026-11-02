@@ -33,6 +33,12 @@ const connectionDetailKey = z.string().regex(/^(account|mcp)-.+$/)
 // the post-login `redirect` and the settings and connection-detail `from` close-targets.
 const internalPath = z.string().refine(isSafeInternalPath, { message: 'must be a safe internal path' })
 
+// Agent Home. `from` is the page that opened it: the Team Brain page's settings open the Team Brain agent's Agent Home,
+// which every other way in skips for /team-brain.
+export const agentHomeSearchSchema = z.object({
+  from: internalPath.optional(),
+})
+
 // Connections detail overlay on the list. `detail` is the unified-row key;
 // `source` decides the breadcrumb + back-target. They travel together — today
 // both live inside one optional `detail` object on the `connections` AgentView

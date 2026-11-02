@@ -507,6 +507,8 @@ export function LoginForm({
           toolUseId={toolUseId}
           kind="login"
           disabled={busy}
+          // "Save for later" covers a login from the password manager too: the whole login goes to the vault.
+          loginOptions={canSave && save ? { save: true, ...(otherMembers > 0 ? { sharedAgentAcknowledged: true } : {}) } : undefined}
           onFilled={(body) => {
             const key = loginRequestKey(agentSlug, sessionId, toolUseId)
             // Answered in another window first: nothing was filled from here.

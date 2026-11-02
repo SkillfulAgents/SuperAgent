@@ -5,3 +5,7 @@ export class VolumeError extends Error {
     this.name = 'VolumeError'
   }
 }
+
+export class VolumePreparingError extends VolumeError {
+  constructor(readonly reason?: string) { super(reason ? `preparing: ${reason}` : 'preparing', 503) }
+}

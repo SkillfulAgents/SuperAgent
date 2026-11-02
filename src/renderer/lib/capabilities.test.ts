@@ -4,7 +4,18 @@ const { mockIsElectron } = vi.hoisted(() => ({ mockIsElectron: vi.fn(() => true)
 vi.mock('./env', () => ({ isElectron: mockIsElectron }))
 
 import { _resetApiTargetForTest, setActiveTarget } from './api-target'
-import { appUpdatesItself, canUseHostFeatures, computerUseSupported } from './capabilities'
+import {
+  addsToDock,
+  agentsRunInAppSandbox,
+  appUpdatesItself,
+  canUseHostFeatures,
+  computerUseSupported,
+  keepsMacAwake,
+  listsRecentFiles,
+  offersComputerUseSettings,
+  offersPrivateSkillsets,
+  usesHostFolderPaths,
+} from './capabilities'
 import { _setFactsForTest } from './facts'
 import type { ServerFacts } from '@shared/lib/facts/facts-schema'
 
@@ -75,5 +86,65 @@ describe('appUpdatesItself', () => {
     expect(appUpdatesItself()).toBe(true)
     _setFactsForTest({ client: { shell: 'browser', os: null, distribution: null }, server: { os: 'linux', distribution: 'deployment' } })
     expect(appUpdatesItself()).toBe(false)
+  })
+})
+
+describe('what the App Sandbox leaves out', () => {
+  const store = { shell: 'electron', os: 'darwin', distribution: 'mac-app-store' } as const
+  const direct = { shell: 'electron', os: 'darwin', distribution: 'direct' } as const
+
+  function asStoreBuild() {
+    setActiveTarget('local', null)
+    _setFactsForTest({ client: store, server: { os: 'darwin', distribution: 'mac-app-store' } })
+  }
+  function asDirectBuild() {
+    setActiveTarget('local', null)
+    _setFactsForTest({ client: direct, server: { os: 'darwin', distribution: 'direct' } })
+  }
+
+  it('has the Store build driving its own API list it, and hide each feature', () => {
+    asStoreBuild()
+    expect(agentsRunInAppSandbox()).toBe(true)
+    expect(offersComputerUseSettings()).toBe(false)
+    expect(usesHostFolderPaths()).toBe(false)
+    expect(offersPrivateSkillsets()).toBe(false)
+    expect(keepsMacAwake()).toBe(false)
+    expect(addsToDock()).toBe(false)
+  })
+
+  it('offers each feature in a directly distributed build', () => {
+    asDirectBuild()
+    expect(agentsRunInAppSandbox()).toBe(false)
+    expect(offersComputerUseSettings()).toBe(true)
+    expect(usesHostFolderPaths()).toBe(true)
+    expect(offersPrivateSkillsets()).toBe(true)
+    expect(keepsMacAwake()).toBe(true)
+    expect(addsToDock()).toBe(true)
+  })
+
+  it('asks the agents’ machine for agent features: a Store build driving a deployment lists nothing', () => {
+    setActiveTarget('cloud', null)
+    _setFactsForTest({ client: store, server: { os: 'linux', distribution: 'deployment' } })
+    expect(agentsRunInAppSandbox()).toBe(false)
+    expect(offersPrivateSkillsets()).toBe(true)
+  })
+
+  it('asks this window’s app for its own Mac integrations: a Store build keeps them off on any server', () => {
+    setActiveTarget('cloud', null)
+    _setFactsForTest({ client: store, server: { os: 'linux', distribution: 'deployment' } })
+    expect(keepsMacAwake()).toBe(false)
+    expect(addsToDock()).toBe(false)
+  })
+
+  it('lists recent files only where the bridge has them and the sandbox doesn’t hide them', () => {
+    vi.stubGlobal('window', { electronAPI: { getRecentFiles: () => Promise.resolve([]) } })
+    try {
+      _setFactsForTest({ client: direct, server: null })
+      expect(listsRecentFiles()).toBe(true)
+      _setFactsForTest({ client: store, server: null })
+      expect(listsRecentFiles()).toBe(false)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

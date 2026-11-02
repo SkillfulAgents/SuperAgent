@@ -135,12 +135,11 @@ export function useZipFiles(bytes: Uint8Array | null): ((path: string) => Opened
 interface ArchiveRendererProps {
   url: string
   filePath: string
-  agentSlug: string
   downloadUrl?: string
 }
 
 /** A zip as a folder: the list reads names only, and a file is unpacked when it is opened. */
-export function ArchiveRenderer({ url, filePath, agentSlug, downloadUrl }: ArchiveRendererProps) {
+export function ArchiveRenderer({ url, filePath, downloadUrl }: ArchiveRendererProps) {
   const { data, isLoading, error } = useQuery({
     queryKey: ['file-archive', url],
     queryFn: ({ signal }) => loadZip(url, signal),
@@ -161,7 +160,7 @@ export function ArchiveRenderer({ url, filePath, agentSlug, downloadUrl }: Archi
     )
   }
   if (!data.ok) {
-    return <UnsupportedRenderer filePath={filePath} agentSlug={agentSlug} downloadUrl={downloadUrl} reason={REASONS[data.reason]} />
+    return <UnsupportedRenderer filePath={filePath} downloadUrl={downloadUrl} reason={REASONS[data.reason]} />
   }
   if (!open) return LAZY_FALLBACK
 

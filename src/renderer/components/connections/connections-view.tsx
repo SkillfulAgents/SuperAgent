@@ -4,6 +4,13 @@ import { ConnectionsList, NewIntegrationButton } from '@renderer/components/conn
 import { PageTitle, SettingsPageContainer } from '@renderer/components/layout/settings-page'
 import { useRenderTracker } from '@renderer/lib/perf'
 
+/** A detail's Back label: the agent's name when Back goes to its own page, whatever that page carried in its URL. */
+export function detailBackLabel(detail: ConnectionsViewProps['detail'], slugs: readonly (string | undefined)[], agentName: string): string {
+  const toOwnPage = !!detail?.from && slugs.some((slug) => slug && detail.from!.split('?')[0] === `/agents/${encodeURIComponent(slug)}`)
+  if (detail?.from && !toOwnPage) return 'Back'
+  return detail?.source === 'home' ? agentName : `${agentName} Connections`
+}
+
 interface ConnectionsViewProps {
   agentSlug: string
   /** Open detail overlay, decoded from the route's `?detail&source&from` search. */
@@ -73,7 +80,7 @@ export function ConnectionsView({ agentSlug, detail }: ConnectionsViewProps) {
         agentSlug={agentSlug}
         detailRowKey={detail?.rowKey ?? null}
         detailView={detail?.view ?? 'details'}
-        detailBackLabel={detail?.from ? 'Back' : detail?.source === 'home' ? agentName : `${agentName} Connections`}
+        detailBackLabel={detailBackLabel(detail, [agentSlug, agent?.slug, agent?.displaySlug], agentName)}
         onDetailViewChange={setDetailView}
         onDetailRowKeyChange={(key) => {
           if (key) openDetail(key)

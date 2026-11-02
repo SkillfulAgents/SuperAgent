@@ -1,0 +1,1074 @@
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+import { ReadableStream } from 'node:stream/web'
+import * as tar from 'tar'
+import pLimit from 'p-limit'
+import ignore from 'ignore'
+import { background } from '@shared/lib/background'
+import { globalFeed } from '@shared/lib/notifications/global-feed'
+import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
+import { errnoCode } from '@shared/lib/agent-actor/local-file-ops'
+import { readJsonFileStrict, writeJsonFileAtomic } from '@shared/lib/utils/file-storage'
+import { LocalMountableVolume } from './local-mountable-volume'
+import type { VolumeEntry, VolumeFile } from './base-mountable-volume'
+import type { VolumeAttention } from '@shared/lib/types/mount'
+import { VolumeError, VolumePreparingError } from './volume-error'
+import { serialize } from './remote-listing-cache'
+import { throwIfUploadAborted, uploadChunks } from './remote-transfer'
+import { githubBlob, githubCommit, githubHead, githubTarball, githubTree } from './github-client'
+import { githubEditsSchema, type GithubEdits, type GithubFile, type GithubVolumeConfig, type SyncState } from './github-schema'
+import { blobSha, emptySyncState, loadSyncState, loadTrees, saveSyncState, saveTrees, snapshotCollisions, fileBlobSha, volumeFolder } from './github-sync-state'
+import { GITHUB_PUSH_BYTES, mergePath, planPush, type PushChange } from './github-merge'
+
+const syncs = new Map<string, GithubSync>()
+/** A read never shows the branch older than this, as Google Drive's listing cache allows. */
+const FRESH_MS = 30_000
+/** How long a stale read waits for the check before serving the copy. The proxy can hold a request while an account reconnects. */
+const FRESH_WAIT_MS = 5_000
+type GithubVolume = { id: string; name: string; config: GithubVolumeConfig }
+/** Changes this small cost less as single files than as the repository's whole archive. */
+const BLOB_FILES = 32
+const BLOB_BYTES = 8_000_000
+const PUSH_DELAY = 15_000
+/** A drive written to without pause still pushes this long after its first unpushed write. */
+const PUSH_MAX_DELAY = 120_000
+/** rclone keeps a written file's bytes until an hour after last use (its default --vfs-cache-max-age). */
+const SENT_BYTES_KEPT_MS = 60 * 60_000
+/** Open pages hear of a change to a drive's sync state at most this often, however many files a burst of writes touches. */
+const ANNOUNCE_MS = 1_000
+const ADDED = 'added on GitHub too'
+const CONFLICTS = new Set(['conflict markers to resolve', 'edited on GitHub, deleted here', 'deleted on GitHub, edited here', 'changed on GitHub too', ADDED])
+const emptyEdits = (): GithubEdits => ({ version: 1, unpushed: {}, held: {}, stopped: null, ignores: [], links: [], blocked: {}, markers: {} })
+/** A record's own entry: paths like `constructor` must not read through the prototype. */
+const own = <T>(record: Record<string, T>, key: string): T | undefined => Object.hasOwn(record, key) ? record[key] : undefined
+const missing = (error: unknown) => ['ENOENT', 'ENOTDIR', 'EISDIR'].includes(errnoCode(error) ?? '')
+
+export class GithubSync {
+  readonly folder: string
+  private readonly key: string
+  private localVolume: LocalMountableVolume | null = null
+  state = emptySyncState()
+  edits = emptyEdits()
+  private loading: Promise<void> | null = null
+  private prepared = false
+  private caseInsensitive = false
+  private syncing: Promise<void> | null = null
+  private checkedAt = 0
+  private waitUntil = 0
+  private removed = false
+  private failure: string | null = null
+  private clash: string | null = null
+  private timer: ReturnType<typeof setTimeout> | null = null
+  private pendingSince: number | null = null
+  private pushWanted = false
+  /** Per mount and path, every version served since that mount last wrote it. The first is what an upload merges against. */
+  private served = new Map<string, Map<string, (string | null)[]>>()
+  /** Per mount and path, what it last uploaded: its base until it reads again, since it still holds those bytes. */
+  private sent = new Map<string, Map<string, string>>()
+  /** Per mount and path, the size of an upload stored as other bytes (merged or marked): rclone holds it until it downloads the file. */
+  private altered = new Map<string, Map<string, { size: number; until: number }>>()
+  private policyHeld = new Map<string, string>()
+  private rules = new Map<string, string>()
+  /** Versions in `versions/` that GitHub lacks and a served or sent record names: a later upload may merge against one. */
+  private kept = new Set<string>()
+  private githubShas = new WeakMap<SyncState, Set<string>>()
+  /** Every tracked file and folder by its case-folded path, on a disk that ignores case. */
+  private spellings = new WeakMap<SyncState, Map<string, string>>()
+  /** Paths whose large upload is still streaming: a push must neither send nor clear them. */
+  private writing = new Set<string>()
+  /** The status pill open pages last heard of, and the pending announcement of a change to it. */
+  private announced = JSON.stringify([null, null])
+  private announcing: ReturnType<typeof setTimeout> | null = null
+
+  constructor(readonly volume: GithubVolume) {
+    this.folder = volumeFolder(volume.id)
+    this.key = `github:${volume.id}`
+  }
+
+  get local(): LocalMountableVolume {
+    if (!this.localVolume) throw new VolumePreparingError()
+    return this.localVolume
+  }
+
+  get loaded(): Promise<void> {
+    return this.loading ??= this.load().catch(error => { this.loading = null; throw error })
+  }
+  get isReady(): boolean { return this.prepared }
+  get unpushed(): number { return Object.keys(this.edits.unpushed).length }
+  private get pending(): boolean {
+    return Object.keys(this.edits.unpushed).some(name => !own(this.edits.held, name) && !this.policyHeld.has(name))
+  }
+
+  get attention(): VolumeAttention | null {
+    const held = new Map([...[...this.policyHeld].filter(([name]) => own(this.edits.unpushed, name)),
+      ...Object.entries(this.edits.held).map(([name, hold]) => [name, hold.reason] as const)])
+    const unsynced = new Set([...Object.keys(this.edits.unpushed), ...held.keys()]).size
+    for (const [name, reason] of Object.entries(this.edits.blocked)) if (!held.has(name)) held.set(name, reason)
+    const conflicts = [...held.keys()].filter(name => CONFLICTS.has(held.get(name)!))
+    const notSynced = [...held.keys()].filter(name => !CONFLICTS.has(held.get(name)!))
+    const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
+    const badge = this.edits.stopped ? { label: 'Sync stopped', tone: 'error' as const }
+      : this.prepared && this.failure ? { label: 'Sync paused', tone: 'warning' as const }
+      : conflicts.length ? { label: count(conflicts.length, 'conflict', 'conflicts'), tone: 'warning' as const }
+      : notSynced.length ? { label: `${notSynced.length} not synced`, tone: 'warning' as const }
+      : null
+    const reasons = [...conflicts, ...notSynced].map(name => `${name} (${held.get(name)})`)
+    const detail = [this.edits.stopped ?? (this.prepared ? this.failure : null), ...reasons].filter(Boolean).join('\n')
+    if (!badge && !unsynced) return null
+    return { ...(badge ? { badge } : {}), ...(detail ? { detail } : {}), unsynced }
+  }
+
+  private checkRemoved(): void {
+    if (this.removed) throw new WorkspaceFileError('not-found')
+  }
+
+  private async load(): Promise<void> {
+    this.checkRemoved()
+    await fs.rm(path.join(this.folder, 'pull'), { recursive: true, force: true })
+    // The records naming kept versions do not outlive the process.
+    await fs.rm(path.join(this.folder, 'versions'), { recursive: true, force: true })
+    this.state = await loadSyncState(this.folder)
+    this.edits = await readJsonFileStrict(path.join(this.folder, 'edits.json'), githubEditsSchema, emptyEdits())
+    const copy = path.join(this.folder, 'copy')
+    const existing = await fs.lstat(copy).catch(error => {
+      if (errnoCode(error) === 'ENOENT') return null
+      throw error
+    })
+    this.checkRemoved()
+    await fs.mkdir(this.folder, { recursive: true })
+    const probe = path.join(this.folder, `case-${randomUUID()}-a`)
+    try {
+      this.checkRemoved()
+      await fs.writeFile(probe, '')
+      this.caseInsensitive = await fs.stat(probe.slice(0, -1) + 'A').then(() => true, () => false)
+    } finally { await fs.rm(probe, { force: true }) }
+    const resolved = existing && !existing.isSymbolicLink()
+      ? await fs.realpath(copy) : path.join(await fs.realpath(this.folder), 'copy')
+    this.localVolume = new LocalMountableVolume(this.volume.id, this.volume.name, { path: resolved })
+    this.prepared = this.state.base !== null && existing?.isDirectory() === true && !existing.isSymbolicLink()
+  }
+
+  async ready(): Promise<void> {
+    if (!this.removed) await this.loaded.catch(() => {})
+    if (this.removed) throw new WorkspaceFileError('not-found')
+    if (!this.prepared) {
+      if (this.clash) throw new WorkspaceFileError('not-accessible', this.clash)
+      throw new VolumePreparingError(this.failure ?? undefined)
+    }
+  }
+
+  keepFresh(): void {
+    if (this.removed) return
+    background(this.loaded.then(() => { if (this.pending && !this.timer) this.schedulePush() }, () => {}), { name: 'github-sync.schedule-push' })
+    if (this.syncing || this.checkedAt > Date.now() - FRESH_MS) return
+    background(this.run(), { name: 'github-sync.refresh' })
+  }
+
+  /** Settles once a copy exists, or once the attempt at the first one ends. */
+  async firstCopy(): Promise<void> {
+    if (this.removed) return
+    await this.loaded.catch(() => {})
+    if (!this.prepared) await this.run()
+  }
+
+  /** Before a read: a copy checked over 30 s ago waits for the check. Every read waiting on one check shares its 5 s. */
+  async fresh(): Promise<void> {
+    if (this.removed) return
+    await this.loaded.catch(() => {})
+    if (this.pending && !this.timer) this.schedulePush()
+    if (!this.prepared) return this.keepFresh()
+    if (!this.syncing) {
+      if (this.checkedAt > Date.now() - FRESH_MS) return
+      this.waitUntil = Date.now() + FRESH_WAIT_MS
+    }
+    const left = this.waitUntil - Date.now()
+    if (left <= 0) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    await Promise.race([this.run(), new Promise<void>(resolve => { timer = setTimeout(resolve, left) })])
+    clearTimeout(timer)
+  }
+
+  private schedulePush(): void {
+    this.forget()
+    if (this.removed) return
+    if (this.timer) clearTimeout(this.timer)
+    this.pendingSince ??= Date.now()
+    const delay = Math.min(PUSH_DELAY, Math.max(0, this.pendingSince + PUSH_MAX_DELAY - Date.now()))
+    this.timer = setTimeout(() => { this.timer = null; this.pendingSince = null; background(this.run(true), { name: 'github-sync.push' }) }, delay)
+    this.timer.unref?.()
+  }
+
+  async run(push = false): Promise<void> {
+    if (push) this.pushWanted = true
+    if (this.removed) return
+    if (this.syncing) {
+      await this.syncing
+      if (push && this.pushWanted) this.schedulePush()
+      return
+    }
+    this.syncing = (async () => {
+      try {
+        this.checkedAt = Date.now()
+        await this.loaded
+        if (!this.prepared || this.state.base === null) await this.stage()
+        else {
+          const head = await this.checkBranch()
+          await this.pull(head)
+          // A stopped push retries on the drive's next use. With nothing to push, reading the branch again was all a stop needed.
+          this.pushWanted ||= this.edits.stopped !== null && this.unpushed > 0
+          if (this.edits.stopped !== null && !this.unpushed) {
+            await serialize([this.key], async () => {
+              if (this.unpushed) return
+              this.edits.stopped = null
+              await this.saveEdits()
+            })
+          }
+          if (this.pushWanted) { this.pushWanted = false; await this.push() }
+        }
+        this.failure = null
+      } catch (error) {
+        if (this.removed) return
+        this.failure = error instanceof VolumeError || error instanceof WorkspaceFileError ? error.message : 'GitHub copy failed'
+        if (error instanceof VolumeError && (error.status === 503 || error.status === 429) && this.pending) this.schedulePush()
+        console.warn(`[volumes] GitHub sync ${this.volume.id}: ${this.failure}`)
+      } finally {
+        if (this.removed) await removeCopy(this.volume.id)
+        else this.announce()
+      }
+    })().finally(() => { this.syncing = null })
+    await this.syncing
+  }
+
+  private async checkBranch(): Promise<string> {
+    try {
+      return await githubHead(this.volume.config)
+    } catch (error) {
+      if (error instanceof WorkspaceFileError && this.edits.stopped !== error.message) {
+        this.edits.stopped = error.message
+        await this.saveEdits()
+      }
+      throw error
+    }
+  }
+
+  private relative(repositoryPath: string): string {
+    return this.volume.config.path ? repositoryPath.slice(this.volume.config.path.length + 1) : repositoryPath
+  }
+
+  private repositoryPath(name: string): string {
+    return [this.volume.config.path, name].filter(Boolean).join('/')
+  }
+
+  private target(name: string): string { return path.join(this.local.config.path, name) }
+
+  private bytes(name: string): Promise<Buffer | null> {
+    return fs.readFile(this.target(name)).catch(error => { if (missing(error)) return null; throw error })
+  }
+
+  private current(name: string): string | null {
+    const entry = own(this.edits.unpushed, name)
+    return entry ? entry.sha : own(this.state.files, name)?.sha ?? null
+  }
+
+  /** Keeps a version an agent sent or was served on disk until it is no longer named. GitHub's own versions come from GitHub. */
+  private async remember(bytes: Buffer): Promise<string> {
+    const sha = blobSha(bytes)
+    if (this.kept.has(sha) || this.onGithub(sha)) return sha
+    await fs.mkdir(path.join(this.folder, 'versions'), { recursive: true })
+    await fs.writeFile(this.version(sha), bytes)
+    this.kept.add(sha)
+    return sha
+  }
+
+  private version(sha: string): string { return path.join(this.folder, 'versions', sha) }
+
+  /** Whether the copy's file is too large to push: such a file is never merged, so never read whole. */
+  private async oversized(name: string): Promise<boolean> {
+    return ((await fs.lstat(this.target(name)).catch(() => null))?.size ?? 0) > GITHUB_PUSH_BYTES
+  }
+
+  /** Keeps the bytes of a version just recorded as served when only the copy has them: a later upload may merge against it. */
+  private async keepServed(name: string, sha: string | null): Promise<void> {
+    if (!sha || this.kept.has(sha) || this.onGithub(sha) || await this.oversized(name)) return
+    const bytes = await this.bytes(name)
+    if (bytes && blobSha(bytes) === sha) await this.remember(bytes)
+  }
+
+  private onGithub(sha: string): boolean {
+    let shas = this.githubShas.get(this.state)
+    if (!shas) { shas = new Set(Object.values(this.state.files).map(file => file.sha)); this.githubShas.set(this.state, shas) }
+    return shas.has(sha)
+  }
+
+  private async blob(sha: string | null | undefined): Promise<Buffer | null> {
+    if (!sha) return null
+    const kept = this.kept.has(sha) ? await fs.readFile(this.version(sha)).catch(error => { if (missing(error)) return null; throw error }) : null
+    if (kept) return kept
+    const fetched = await githubBlob(this.volume.config, sha)
+    if (blobSha(fetched) !== sha) throw new VolumeError('GitHub blob content did not match its SHA.', 503)
+    return fetched
+  }
+
+  private saveEdits(): Promise<void> {
+    this.checkRemoved()
+    this.announce()
+    return writeJsonFileAtomic(path.join(this.folder, 'edits.json'), githubEditsSchema.parse(this.edits))
+  }
+
+  /** Tells open pages when the drive's status pill changed: a conflict, a stop, or their end. Edits waiting to push change no pill. */
+  private announce(): void {
+    if (this.announcing || this.removed) return
+    this.announcing = setTimeout(() => {
+      this.announcing = null
+      if (this.removed) return
+      const attention = this.attention
+      const pill = JSON.stringify([attention?.badge ?? null, attention?.detail ?? null])
+      if (pill === this.announced) return
+      this.announced = pill
+      globalFeed.publish({ type: 'volume_attention_changed' })
+    }, ANNOUNCE_MS)
+    this.announcing.unref?.()
+  }
+
+  private async save(state: SyncState): Promise<void> {
+    this.checkRemoved()
+    await saveSyncState(this.folder, state)
+    this.state = state
+  }
+
+  private seen(mount: string): Map<string, (string | null)[]> {
+    let map = this.served.get(mount)
+    if (!map) { map = new Map(); this.served.set(mount, map) }
+    return map
+  }
+
+  private sentBy(mount: string): Map<string, string> {
+    let map = this.sent.get(mount)
+    if (!map) { map = new Map(); this.sent.set(mount, map) }
+    return map
+  }
+
+  private unsee(mount: string, name: string): void {
+    this.seen(mount).delete(name)
+    this.sentBy(mount).delete(name)
+    this.altered.get(mount)?.delete(name)
+  }
+
+  /** Records that the bytes kept for `mount`'s upload of `name` are not the `sent` bytes, or that they are. */
+  private storedAs(mount: string, name: string, sent: Buffer, stored: Buffer | null): void {
+    if (stored?.equals(sent)) this.altered.get(mount)?.delete(name)
+    else this.holds(mount, name, sent.length)
+  }
+
+  /** Records that `mount`'s rclone holds `size` bytes of its own for `name`, other than the copy's. */
+  private holds(mount: string, name: string, size: number): void {
+    let map = this.altered.get(mount)
+    if (!map) { map = new Map(); this.altered.set(mount, map) }
+    map.set(name, { size, until: Date.now() + SENT_BYTES_KEPT_MS })
+  }
+
+  /** The size of the bytes of its own `mount`'s rclone may still hold for `name`. */
+  private heldBy(mount: string, name: string): number | undefined {
+    const held = this.altered.get(mount)?.get(name)
+    return held && held.until >= Date.now() ? held.size : undefined
+  }
+
+  /** A mount just made by a container start holds none of the bytes earlier mounts read or sent, so none is a base for its writes. */
+  remounted(mount: string): void {
+    this.served.delete(mount)
+    this.sent.delete(mount)
+    this.altered.delete(mount)
+    this.forget()
+  }
+
+  /**
+   * The copy's entry, except for a mount whose upload of it was stored as other bytes and that has not read it since.
+   * rclone takes the entry it reads back after an upload or a rename as describing the bytes it holds, and calls any
+   * other size corruption: it deletes the file and sends its own bytes again, undoing the merge. So that mount sees
+   * the size it sent, dated a second earlier. Its listings show the stored file, so its next open finds the file
+   * changed and downloads it, and that read ends this.
+   */
+  async stat(mount: string, requested: string): Promise<VolumeEntry> {
+    await this.ready()
+    if (!this.altered.get(mount)?.size) return this.local.stat(requested)
+    const name = await this.canonical(requested)
+    const size = this.heldBy(mount, name)
+    if (size === undefined) {
+      this.altered.get(mount)?.delete(name)
+      return this.local.stat(requested)
+    }
+    const entry = await this.local.stat(requested).catch(error => {
+      if (error instanceof WorkspaceFileError && error.code === 'not-found') return null
+      throw error
+    })
+    if (entry?.kind === 'directory') return entry
+    const second = Math.floor((entry?.mtimeMs ?? Date.now()) / 1000) * 1000
+    return { name: path.posix.basename(requested), kind: 'file', size, mtimeMs: second - 1000 }
+  }
+
+  /** On a disk that ignores case, each part of the path as GitHub or the copy already spells it, so a push never adds a second spelling. */
+  async canonical(name: string): Promise<string> {
+    if (!this.caseInsensitive || own(this.state.files, name)) return name
+    const fold = (value: string) => value.normalize('NFC').toLowerCase()
+    let tracked = this.spellings.get(this.state)
+    if (!tracked) {
+      tracked = new Map()
+      for (const file of Object.keys(this.state.files)) {
+        const parts = file.split('/')
+        for (let i = 1; i <= parts.length; i++) tracked.set(fold(parts.slice(0, i).join('/')), parts.slice(0, i).join('/'))
+      }
+      this.spellings.set(this.state, tracked)
+    }
+    let resolved = ''
+    for (const part of name.split('/')) {
+      const candidate = resolved ? `${resolved}/${part}` : part
+      let spelled = tracked.get(fold(candidate))
+      if (!spelled) {
+        // A folder or file only the copy has: the disk answers to any case, so ask it how it spells the name.
+        const found = (await fs.readdir(this.target(resolved)).catch(() => [] as string[])).find(entry => fold(entry) === fold(part))
+        spelled = found === undefined ? candidate : resolved ? `${resolved}/${found}` : found
+      }
+      resolved = spelled
+    }
+    return resolved
+  }
+
+  private async loadRules(): Promise<void> {
+    for (const { sha } of this.edits.ignores) {
+      if (!this.rules.has(sha)) this.rules.set(sha, (await this.blob(sha))?.toString('utf8') ?? '')
+    }
+  }
+
+  /** Throws while a `.gitignore` above a subfolder drive is unread, so nothing it excludes can push. */
+  private async ignored(name: string): Promise<boolean> {
+    if (name.split('/').some(part => part.toLowerCase() === '.git')) return true
+    if (own(this.state.files, name) || own(this.edits.held, name) || own(this.edits.blocked, name)) return false
+    const sources = this.edits.ignores.map(({ dir, sha }) => {
+      const text = this.rules.get(sha)
+      if (text === undefined) throw new VolumeError('The repository’s .gitignore could not be read.', 503)
+      return { dir, text }
+    })
+    const parts = name.split('/')
+    for (let i = 0; i < parts.length; i++) {
+      const text = (await this.bytes([...parts.slice(0, i), '.gitignore'].join('/')))?.toString('utf8')
+      if (text) sources.push({ dir: this.repositoryPath(parts.slice(0, i).join('/')), text })
+    }
+    let ignored = false
+    const full = this.repositoryPath(name)
+    for (const { dir, text } of sources) {
+      const result = ignore({ ignorecase: this.caseInsensitive }).add(text).test(dir ? full.slice(dir.length + 1) : full)
+      if (result.ignored) ignored = true
+      if (result.unignored) ignored = false
+    }
+    return ignored
+  }
+
+  /** Marks paths unpushed before their operation runs, bumping each counter, so a push never clears an edit it did not send. */
+  private async mark(names: string[], agent: string, groupOf: (name: string) => string | undefined = () => undefined): Promise<boolean> {
+    let marked = false
+    for (const name of names) {
+      if (await this.ignored(name).catch(() => false)) continue
+      const previous = own(this.edits.unpushed, name)
+      const group = groupOf(name) ?? previous?.group
+      const old = previous?.group
+      if (group && old && old !== group) {
+        for (const entry of Object.values(this.edits.unpushed)) if (entry.group === old) entry.group = group
+      }
+      this.policyHeld.delete(name)
+      this.edits.unpushed[name] = {
+        agents: [...new Set([...previous?.agents ?? [], agent].filter(Boolean))], n: (previous?.n ?? 0) + 1,
+        sha: previous ? previous.sha : own(this.state.files, name)?.sha ?? null, ...(group ? { group } : {}),
+      }
+      marked = true
+    }
+    if (marked) await this.saveEdits()
+    return marked
+  }
+
+  async read(mount: string, requested: string): Promise<VolumeFile> {
+    await this.ready()
+    const name = await this.canonical(requested)
+    return serialize([this.key], async () => {
+      const versions = this.seen(mount).get(name) ?? []
+      const sha = this.current(name)
+      await this.keepServed(name, sha)
+      if (versions.at(-1) !== sha) this.seen(mount).set(name, versions.length ? [versions[0], sha] : [sha])
+      this.sentBy(mount).delete(name)
+      this.altered.get(mount)?.delete(name)
+      return this.local.read(requested)
+    })
+  }
+
+  async write(mount: string, agent: string, requested: string, body: globalThis.ReadableStream<Uint8Array>, signal?: AbortSignal, group?: string): Promise<void> {
+    await this.ready()
+    const name = await this.canonical(requested)
+    await this.loadRules().catch(() => {})
+    if (await this.ignored(name).catch(() => false)) return this.local.write(name, body)
+    const chunks = uploadChunks(body, GITHUB_PUSH_BYTES + 1, signal)
+    const first = await chunks.next()
+    const upload = Buffer.from(first.done ? new ArrayBuffer(0) : first.value)
+    if (upload.length > GITHUB_PUSH_BYTES) {
+      // Too large to push: kept as written, and held at push time.
+      let pending: Uint8Array | null = upload
+      try {
+        await serialize([this.key], () => { throwIfUploadAborted(signal); this.writing.add(name); return this.mark([name], agent, () => group) })
+        await this.local.write(name, new globalThis.ReadableStream<Uint8Array>({
+        async pull(controller) {
+          const next = pending ? { done: false, value: pending } : await chunks.next().then(chunk => chunk.done ? chunk : { done: false, value: new Uint8Array(chunk.value) })
+          pending = null
+          if (next.done) controller.close()
+          else controller.enqueue(next.value)
+        },
+        cancel() { background(chunks.return(undefined).catch(() => {}), { name: 'github-sync.cancel-upload' }) },
+        }))
+        const sha = await fileBlobSha(this.target(name))
+        await serialize([this.key], async () => {
+          await this.resolve(name)
+          await this.mark([name], agent, () => group)
+          const entry = own(this.edits.unpushed, name)
+          if (entry) entry.sha = sha
+          this.unsee(mount, name)
+          await this.saveEdits()
+        })
+      } finally { this.writing.delete(name) }
+      return this.schedulePush()
+    }
+    await chunks.return(undefined)
+    const sha = blobSha(upload)
+    const versions = this.seen(mount).get(name) ?? []
+    const base = versions[0] ?? this.sentBy(mount).get(name) ?? this.current(name)
+    const fetched = new Map<string, Buffer | null>()
+    const bytesOf = async (version: string | null | undefined) => {
+      if (!version) return null
+      if (!fetched.has(version)) fetched.set(version, await this.blob(version))
+      return fetched.get(version)!
+    }
+    const needsMerge = () => !own(this.edits.held, name) && this.current(name) !== base && this.current(name) !== sha
+    const held = own(this.edits.held, name)
+    if (needsMerge()) await bytesOf(base)
+    if (held && held.behind !== undefined) await Promise.all([bytesOf(own(this.state.files, name)?.sha), bytesOf(held.behind)])
+    await serialize([this.key], async () => {
+      throwIfUploadAborted(signal)
+      // The same bytes again, with no read since: a replayed upload, already applied.
+      if (!this.seen(mount).has(name) && this.sentBy(mount).get(name) === sha) {
+        this.storedAs(mount, name, upload, await this.bytes(name))
+        return
+      }
+      const hold = own(this.edits.held, name)
+      let out: Buffer = upload
+      let conflict: string | undefined
+      let label: string | undefined
+      const resolving = hold?.behind !== undefined
+      if (resolving) {
+        // A rewrite resolves the conflict, merged with what GitHub changed since the markers were made.
+        const merged = mergePath(await bytesOf(own(this.state.files, name)?.sha), upload, await bytesOf(hold?.behind), this.state.base!)
+        out = merged.content ?? upload
+        conflict = merged.conflict
+        label = merged.label
+      } else if (needsMerge()) {
+        const merged = mergePath(await bytesOf(base), upload, await this.bytes(name), this.state.base!)
+        // GitHub deleted the file and the agent wrote back what it read: the delete stands.
+        if (!merged.content) {
+          this.seen(mount).delete(name)
+          this.sentBy(mount).set(name, await this.remember(upload))
+          this.storedAs(mount, name, upload, null)
+          return
+        }
+        out = merged.content
+        conflict = merged.conflict
+        label = merged.label
+      }
+      await this.mark([name], agent, () => group)
+      await this.local.write(name, new Blob([new Uint8Array(out)]).stream())
+      if (resolving) await this.resolve(name)
+      const entry = own(this.edits.unpushed, name)
+      if (entry) entry.sha = blobSha(out)
+      if (conflict) this.edits.held[name] = { reason: conflict }
+      else delete this.edits.held[name]
+      this.label(name, out, label)
+      this.seen(mount).delete(name)
+      this.sentBy(mount).set(name, await this.remember(upload))
+      this.storedAs(mount, name, upload, out)
+      await this.saveEdits()
+    })
+    this.schedulePush()
+  }
+
+  /** Keeps the record of the marker labels the drive wrote into `name` that `content` still holds, with `added` if a merge just wrote one. */
+  private label(name: string, content: Buffer | null, added?: string): void {
+    const labels = [...new Set([...own(this.edits.markers, name) ?? [], ...added ? [added] : []])].filter(label => content?.includes(label))
+    if (labels.length) this.edits.markers[name] = labels
+    else delete this.edits.markers[name]
+  }
+
+  /** A rewrite of a held path takes GitHub's newer version, recorded while it was held, as its base. */
+  private async resolve(name: string): Promise<void> {
+    const hold = own(this.edits.held, name)
+    delete this.edits.held[name]
+    if (hold?.behind === undefined) return
+    const files = { ...this.state.files }
+    if (hold.behind) files[name] = { sha: hold.behind, mode: own(files, name)?.mode ?? '100644' }
+    else delete files[name]
+    await this.save({ ...this.state, files })
+  }
+
+  async delete(mount: string, agent: string, requested: string, group?: string, expected?: string): Promise<void> {
+    await this.ready()
+    const name = await this.canonical(requested)
+    /** GitHub's version of a conflicted file, which deleting it restores. */
+    const keeping = () => {
+      const hold = own(this.edits.held, name)
+      return hold ? (hold.behind !== undefined ? hold.behind : own(this.state.files, name)?.sha ?? null) : null
+    }
+    let keep = keeping()
+    let kept = await this.blob(keep)
+    const marked = await serialize([this.key], async () => {
+      const found = await this.local.stat(name).catch(error => {
+        // The drive dropped what this mount still holds, as when GitHub deleted a file it wrote back: already gone.
+        if (this.heldBy(mount, name) !== undefined && error instanceof WorkspaceFileError && error.code === 'not-found') return null
+        throw error
+      })
+      if (!found) { this.altered.get(mount)?.delete(name); return false }
+      if (found.kind === 'directory') { await this.local.delete(name); return false }
+      // A move deletes its source only if no other write replaced it after the move read it.
+      if (expected && (this.writing.has(name) || await fileBlobSha(this.target(name)) !== expected)) return false
+      if (own(this.edits.held, name)) {
+        // Deleting a conflicted file keeps GitHub's version and pushes nothing. A pull while it downloaded moves it on.
+        if (keeping() !== keep) {
+          keep = keeping()
+          kept = await this.blob(keep)
+        }
+        const files = { ...this.state.files }
+        if (kept) {
+          await this.local.write(name, new Blob([new Uint8Array(kept)]).stream())
+          files[name] = { sha: keep!, mode: own(files, name)?.mode ?? '100644' }
+        } else {
+          await this.local.delete(name)
+          delete files[name]
+        }
+        await this.save({ ...this.state, files })
+        delete this.edits.held[name]
+        delete this.edits.unpushed[name]
+        delete this.edits.markers[name]
+        this.unsee(mount, name)
+        await this.saveEdits()
+        return false
+      }
+      const marked = await this.mark([name], agent, () => group)
+      await this.local.delete(name)
+      const entry = own(this.edits.unpushed, name)
+      if (entry) entry.sha = null
+      const labelled = Object.hasOwn(this.edits.markers, name)
+      delete this.edits.markers[name]
+      this.unsee(mount, name)
+      if (marked || labelled) await this.saveEdits()
+      return marked
+    })
+    if (marked) this.schedulePush()
+  }
+
+  async mkdir(name: string): Promise<void> {
+    await this.ready()
+    const folder = await this.canonical(name)
+    await serialize([this.key], () => this.local.mkdir(folder))
+  }
+
+  async move(mount: string, agent: string, requestedFrom: string, requestedTo: string): Promise<void> {
+    await this.ready()
+    const from = await this.canonical(requestedFrom)
+    let to = await this.canonical(requestedTo)
+    // A rename that changes only case is one name to the disk and two to GitHub: it keeps the new spelling.
+    if (to === from && requestedTo !== requestedFrom) {
+      const slash = requestedTo.lastIndexOf('/')
+      to = slash < 0 ? requestedTo : `${await this.canonical(requestedTo.slice(0, slash))}/${requestedTo.slice(slash + 1)}`
+    }
+    if (from === to) return
+    const held = [from, to].find(name => own(this.edits.held, name))
+    if (held) throw new WorkspaceFileError('not-accessible', `${held} has a conflict with GitHub. Resolve it before moving it.`)
+    const source = await this.local.stat(from)
+    if (own(this.state.files, to) && source.kind === 'file' && source.size <= GITHUB_PUSH_BYTES) {
+      // A save by rename onto a tracked file merges like a write, so a pulled change to it survives.
+      const bytes = await this.bytes(from)
+      if (!bytes) throw new WorkspaceFileError('not-found')
+      const group = randomUUID()
+      const labels = own(this.edits.markers, from)
+      if (labels) await serialize([this.key], async () => { this.edits.markers[to] = [...new Set([...own(this.edits.markers, to) ?? [], ...labels])] })
+      const held = this.heldBy(mount, from)
+      await this.write(mount, agent, to, new Blob([new Uint8Array(bytes)]).stream(), undefined, group)
+      // rclone moves the bytes it holds for the source, which may be its own rather than the copy's.
+      if (held !== undefined) this.holds(mount, to, held)
+      return this.delete(mount, agent, from, group, blobSha(bytes))
+    }
+    const marked = await serialize([this.key], async () => {
+      const root = this.target(from)
+      const sources = (await this.local.stat(from)).kind === 'file' ? [from]
+        : (await fs.readdir(root, { recursive: true, withFileTypes: true })).filter(entry => !entry.isDirectory())
+          .map(entry => path.relative(this.local.config.path, path.join(entry.parentPath, entry.name)).split(path.sep).join('/'))
+      const pairs = sources.map(source => [source, to + source.slice(from.length)] as const)
+      const held = pairs.flat().find(name => own(this.edits.held, name))
+      if (held) throw new WorkspaceFileError('not-accessible', `${held} has a conflict with GitHub. Resolve it before moving it.`)
+      const shas = new Map(sources.map(source => [source, this.current(source)]))
+      const groups = new Map(pairs.flatMap(pair => { const group = randomUUID(); return pair.map(name => [name, group] as const) }))
+      const marked = await this.mark(pairs.flat(), agent, name => groups.get(name))
+      await this.local.move(from, to)
+      const seen = this.seen(mount)
+      for (const [source, destination] of pairs) {
+        const sha = shas.get(source) ?? await fileBlobSha(this.target(destination))
+        const moved = own(this.edits.unpushed, source), landed = own(this.edits.unpushed, destination)
+        if (moved) moved.sha = null
+        if (landed) landed.sha = sha
+        const labels = own(this.edits.markers, source)
+        delete this.edits.markers[source]
+        if (labels) this.edits.markers[destination] = labels
+        const versions = seen.get(source), sent = this.sentBy(mount).get(source), held = this.heldBy(mount, source)
+        this.unsee(mount, source)
+        this.unsee(mount, destination)
+        // rclone renames the bytes it holds and takes the destination's entry as theirs.
+        if (held !== undefined) this.holds(mount, destination, held)
+        if (versions) seen.set(destination, versions)
+        else if (sent) this.sentBy(mount).set(destination, sent)
+        else {
+          await this.keepServed(destination, sha)
+          seen.set(destination, [sha])
+        }
+      }
+      await this.saveEdits()
+      return marked
+    })
+    if (marked) this.schedulePush()
+  }
+
+  private async snapshot(oid: string): Promise<Record<string, GithubFile>> {
+    this.clash = null
+    const root = this.volume.config.path
+    const known = await loadTrees(this.folder)
+    const all = await githubTree(this.volume.config, oid, known)
+    this.checkRemoved()
+    await saveTrees(this.folder, known)
+    const parts = root ? root.split('/') : []
+    // A subfolder drive also follows the `.gitignore` files of the folders above it.
+    this.edits.ignores = parts.map((_, i) => parts.slice(0, i).join('/')).flatMap(dir => all
+      .filter(entry => entry.type === 'blob' && entry.path === (dir ? `${dir}/.gitignore` : '.gitignore')).map(entry => ({ dir, sha: entry.sha })))
+    const inside = all.filter(entry => !root || entry.path.startsWith(`${root}/`))
+    this.edits.links = inside.filter(entry => entry.mode === '120000' || entry.type === 'commit').map(entry => this.relative(entry.path))
+    const files = Object.fromEntries(inside.filter(entry => entry.type === 'blob' && entry.mode !== '120000')
+      .map(entry => [this.relative(entry.path), { sha: entry.sha, mode: entry.mode, ...(entry.size === undefined ? {} : { size: entry.size }) }]))
+    const collisions = snapshotCollisions(Object.keys(files), this.caseInsensitive).flat()
+    if (collisions.length) {
+      this.clash = `Paths collide on this disk: ${collisions.join(', ')}`
+      throw new WorkspaceFileError('not-accessible', this.clash)
+    }
+    return files
+  }
+
+  private async archive(oid: string, files: Record<string, GithubFile>, destination: string): Promise<void> {
+    this.checkRemoved()
+    await fs.mkdir(destination, { recursive: true })
+    const names = Object.keys(files)
+    if (names.length > BLOB_FILES || names.reduce((bytes, name) => bytes + (files[name].size ?? Infinity), 0) > BLOB_BYTES) {
+      const response = await githubTarball(this.volume.config, oid)
+      this.checkRemoved()
+      if (!(response.body instanceof ReadableStream)) throw new VolumeError('GitHub returned an empty archive.', 503)
+      const root = this.volume.config.path
+      const strip = 1 + (root ? root.split('/').length : 0)
+      const extractor = tar.x({ cwd: destination, strip, strict: true, filter: (name, entry) => {
+        if (this.removed) return false
+        const repositoryPath = name.split('/').slice(1).join('/').replace(/\/$/, '')
+        if (root && !repositoryPath.startsWith(`${root}/`)) return false
+        const relative = this.relative(repositoryPath)
+        return Object.hasOwn(files, relative) && 'type' in entry && entry.type === 'File'
+      } })
+      await pipeline(Readable.fromWeb(response.body), extractor)
+    }
+    // What the archive left out or rewrote (export-ignore, export-subst), or every file of a small change, comes by blob SHA.
+    // Every fetch that started ends before this returns, so none writes into a folder a later attempt has staged.
+    const limit = pLimit(8)
+    let failed = false
+    const fetched = await Promise.allSettled(names.map(name => limit(async () => {
+      if (failed) return
+      const file = files[name]
+      const target = path.join(destination, name)
+      const sha = await fileBlobSha(target).catch(error => {
+        if (errnoCode(error) === 'ENOENT') return null
+        throw error
+      })
+      if (sha === file.sha) return
+      const original = await githubBlob(this.volume.config, file.sha).catch(error => { failed = true; throw error })
+      if (blobSha(original) !== file.sha) { failed = true; throw new VolumeError('GitHub blob content did not match its SHA.', 503) }
+      if (failed) return
+      this.checkRemoved()
+      await fs.mkdir(path.dirname(target), { recursive: true })
+      this.checkRemoved()
+      await fs.writeFile(target, original, { mode: parseInt(file.mode, 8) })
+    })))
+    const failure = fetched.find(result => result.status === 'rejected')
+    if (failure) throw failure.reason
+  }
+
+  private async stage(): Promise<void> {
+    if (Object.keys(this.edits.unpushed).length || Object.keys(this.edits.held).length) {
+      throw new VolumeError('The drive has changes that are not on GitHub, but its copy or sync state is missing.', 409)
+    }
+    this.prepared = false
+    const oid = await githubHead(this.volume.config)
+    const files = await this.snapshot(oid)
+    try {
+      this.checkRemoved()
+      await fs.rm(this.local.config.path, { recursive: true, force: true })
+      await this.archive(oid, files, this.local.config.path)
+      if (this.removed) return
+      await this.save({ ...this.state, base: oid, files })
+      await this.saveEdits()
+      this.prepared = true
+    } catch (error) {
+      if (!this.removed) await fs.rm(this.local.config.path, { recursive: true, force: true })
+      throw error
+    }
+  }
+
+  /** Whether a path GitHub could not place might fit now: what stood in its way is gone, or the agent edited it. */
+  private async unblocked(): Promise<boolean> {
+    for (const name of Object.keys(this.edits.blocked)) {
+      if (Object.hasOwn(this.edits.unpushed, name) || !await this.obstructed(name)) return true
+    }
+    return false
+  }
+
+  /** Whether something on the drive stands where a file GitHub has would go: an entry at its path, or a file at a folder above it. */
+  private async obstructed(name: string): Promise<boolean> {
+    const parts = name.split('/')
+    for (let i = 1; i <= parts.length; i++) {
+      const entry = await fs.lstat(this.target(parts.slice(0, i).join('/'))).catch(() => null)
+      if (!entry) return false
+      if (i === parts.length || !entry.isDirectory()) return true
+    }
+    return false
+  }
+
+  private async pull(head: string): Promise<void> {
+    if (head === this.state.base && !await this.unblocked()) return
+    const files = await this.snapshot(head)
+    const changed = [...new Set([...Object.keys(this.state.files), ...Object.keys(files)])]
+      .filter(name => own(this.state.files, name)?.sha !== own(files, name)?.sha || own(this.state.files, name)?.mode !== own(files, name)?.mode)
+    const incoming = Object.fromEntries(changed.filter(name => Object.hasOwn(files, name)).map(name => [name, files[name]]))
+    const stage = path.join(this.folder, 'pull')
+    try {
+      this.checkRemoved()
+      await fs.rm(stage, { recursive: true, force: true })
+      if (Object.keys(incoming).length) await this.archive(head, incoming, stage)
+      const bases = new Map<string, Buffer | null>()
+      for (const name of changed) {
+        if (Object.hasOwn(this.edits.unpushed, name) && !own(this.edits.held, name) && !await this.oversized(name)) bases.set(name, await this.blob(own(this.state.files, name)?.sha))
+      }
+      if (this.removed) return
+      await serialize([this.key], async () => {
+        const next = { ...files }
+        const removed: string[] = []
+        // A path the drive uses otherwise waits, while the rest of the pull goes on: a local file GitHub has just added
+        // too, or a folder where GitHub now has a file, or the reverse. It is tried again once that changes.
+        const blocked: Record<string, string> = {}
+        for (const name of Object.keys(incoming)) {
+          if (own(this.state.files, name) || own(this.edits.held, name) || Object.hasOwn(this.edits.unpushed, name)) continue
+          const local = await fileBlobSha(this.target(name)).catch(error => { if (missing(error)) return null; throw error })
+          if (local && local !== incoming[name].sha) blocked[name] = ADDED
+        }
+        for (const [name, hold] of Object.entries(this.edits.held)) {
+          hold.behind = own(files, name)?.sha ?? null
+          const tracked = own(this.state.files, name)
+          if (tracked) next[name] = tracked
+          else delete next[name]
+        }
+        const held = new Set(Object.keys(this.edits.held))
+        try {
+          for (const name of changed) {
+            if (held.has(name) || own(blocked, name)) continue
+            if (Object.hasOwn(this.edits.unpushed, name)) {
+              // A file too large to push is never merged: GitHub's change to it waits as a conflict.
+              if (await this.oversized(name)) {
+                this.edits.held[name] = { reason: own(files, name) ? 'changed on GitHub too' : 'deleted on GitHub, edited here' }
+                continue
+              }
+              const local = await this.bytes(name)
+              if (local) await this.remember(local)
+              const remote = own(files, name) ? await fs.readFile(path.join(stage, name)) : null
+              const base = bases.has(name) ? bases.get(name)! : await this.blob(own(this.state.files, name)?.sha)
+              const merged = mergePath(base, local, remote, head)
+              this.label(name, merged.content, merged.label)
+              if (merged.conflict) { this.edits.held[name] = { reason: merged.conflict }; await this.saveEdits() }
+              if (!merged.content) {
+                if (local) { await fs.unlink(this.target(name)); removed.push(name) }
+              } else if (!local?.equals(merged.content)) {
+                await fs.mkdir(path.dirname(this.target(name)), { recursive: true })
+                await this.local.write(name, new Blob([new Uint8Array(merged.content)]).stream())
+              }
+              const sha = merged.content ? blobSha(merged.content) : null
+              if (sha === (own(files, name)?.sha ?? null) && !merged.conflict && !this.writing.has(name)) delete this.edits.unpushed[name]
+              else this.edits.unpushed[name].sha = sha
+            } else if (own(this.state.files, name)?.mode !== own(files, name)?.mode) {
+              const entry = await fs.lstat(this.target(name)).catch(error => { if (missing(error)) return null; throw error })
+              if (entry && !entry.isDirectory()) { this.checkRemoved(); await fs.unlink(this.target(name)); removed.push(name) }
+            }
+          }
+          const parents = new Set(removed.flatMap(name => name.split('/').slice(0, -1).map((_, i, all) => all.slice(0, i + 1).join('/'))))
+          for (const parent of [...parents].sort((a, b) => b.length - a.length)) {
+            this.checkRemoved()
+            await fs.rmdir(this.target(parent)).catch(error => {
+              if (!['ENOENT', 'ENOTDIR', 'ENOTEMPTY'].includes(errnoCode(error) ?? '')) throw error
+            })
+          }
+          for (const name of Object.keys(incoming)) {
+            if (own(this.edits.held, name) || Object.hasOwn(this.edits.unpushed, name) || own(blocked, name)) continue
+            this.checkRemoved()
+            const reason = await fs.mkdir(path.dirname(this.target(name)), { recursive: true })
+              .then(() => { this.checkRemoved(); return fs.rename(path.join(stage, name), this.target(name)) })
+              .then(() => null, async error => {
+                if (!['EISDIR', 'ENOTDIR', 'ENOTEMPTY', 'EEXIST'].includes(errnoCode(error) ?? '')) throw error
+                return (await fs.lstat(this.target(name)).catch(() => null))?.isDirectory() ? 'a folder here, a file on GitHub' : 'a file here, a folder on GitHub'
+              })
+            if (reason) blocked[name] = reason
+          }
+          for (const name of Object.keys(blocked)) {
+            const tracked = own(this.state.files, name)
+            if (tracked) next[name] = tracked
+            else delete next[name]
+          }
+          // Edits that waited on a path GitHub has since let go of push on this run, and leave the pill.
+          if (Object.keys(this.edits.blocked).some(name => !own(blocked, name))) {
+            this.policyHeld.clear()
+            this.pushWanted ||= this.unpushed > 0
+          }
+          this.edits.blocked = blocked
+          await this.save({ ...this.state, base: head, files: next })
+        } finally { if (!this.removed) await this.saveEdits() }
+      })
+    } finally { if (!this.removed) await fs.rm(stage, { recursive: true, force: true }) }
+  }
+
+  private async push(): Promise<void> {
+    let lost: unknown = null
+    const slugs = [...new Set(Object.values(this.edits.unpushed).flatMap(entry => entry.agents))]
+    // Imported here: the agent service loads the container runtime, which loads this module.
+    const { getAgentRecord } = await import('@shared/lib/services/agent-service')
+    const names = new Map(await Promise.all(slugs.map(async slug => [slug, (await getAgentRecord(slug).catch(() => null))?.name ?? slug] as const)))
+    for (let attempt = 0; attempt < 3; attempt++) {
+      lost = null
+      if (!this.state.base) return
+      await this.loadRules()
+      const entries = await serialize([this.key], async () => Object.entries(this.edits.unpushed).map(([name, entry]) => ({ name, ...entry })))
+      const heldGroups = new Set(Object.keys(this.edits.held).map(name => own(this.edits.unpushed, name)?.group).filter(Boolean))
+      const changes: PushChange[] = []
+      const settled: typeof entries = []
+      for (const entry of entries) {
+        const change = { path: this.repositoryPath(entry.name), contents: null, mode: own(this.state.files, entry.name)?.mode ?? '100644', group: entry.group }
+        const blocker = Object.keys(this.edits.blocked).find(path => entry.name === path || entry.name.startsWith(`${path}/`) || path.startsWith(`${entry.name}/`))
+        const hold = own(this.edits.held, entry.name)?.reason ?? (entry.group && heldGroups.has(entry.group) ? 'moved with a held file'
+          : this.edits.links.includes(entry.name) ? 'a link or submodule on GitHub' : this.writing.has(entry.name) ? 'still uploading'
+          : blocker ? this.edits.blocked[blocker] : undefined)
+        if (hold) { changes.push({ ...change, held: hold }); continue }
+        if (await this.ignored(entry.name)) { settled.push(entry); continue }
+        if (((await fs.lstat(this.target(entry.name)).catch(() => null))?.size ?? 0) > GITHUB_PUSH_BYTES) {
+          changes.push({ ...change, held: 'over the size limit' })
+          continue
+        }
+        const contents = await this.bytes(entry.name)
+        if ((contents && blobSha(contents)) === (own(this.state.files, entry.name)?.sha ?? null)) { settled.push(entry); continue }
+        // Only markers the drive wrote hold a file: the same text in a file of the repository's own pushes.
+        if (own(this.edits.markers, entry.name)?.some(label => contents?.includes(label))) { changes.push({ ...change, held: 'conflict markers to resolve' }); continue }
+        changes.push({ ...change, contents })
+      }
+      const plan = planPush(changes)
+      this.policyHeld = new Map([...plan.held].map(([repositoryPath, reason]) => [this.relative(repositoryPath), reason]))
+      await serialize([this.key], async () => {
+        for (const entry of settled) if (own(this.edits.unpushed, entry.name)?.n === entry.n) delete this.edits.unpushed[entry.name]
+        // Nothing GitHub could refuse is left to push, as when every change waits on a conflict or the size limit.
+        if (!plan.batches.length) this.edits.stopped = null
+        await this.saveEdits()
+      })
+      const counters = new Map(entries.map(entry => [entry.name, entry.n]))
+      const agents = new Map(entries.map(entry => [entry.name, entry.agents]))
+      const batches = plan.batches
+      let stale = false
+      for (const batch of batches) {
+        const base = this.state.base!
+        const paths = batch.map(change => this.relative(change.path))
+        const slugs = [...new Set(paths.flatMap(name => agents.get(name) ?? []))]
+        const by = slugs.map(slug => names.get(slug) ?? slug).join(', ') || 'an agent'
+        let oid: string
+        try {
+          oid = await githubCommit(this.volume.config, base, batch, `Update ${paths.length === 1 ? paths[0] : `${paths.length} files`} from ${by}`, slugs)
+        } catch (error) {
+          const head = await githubHead(this.volume.config)
+          if (head !== base || !(error instanceof WorkspaceFileError)) {
+            if (head === base) lost = error
+            stale = true
+            break
+          }
+          this.edits.stopped = error.message
+          await this.saveEdits()
+          return
+        }
+        await serialize([this.key], async () => {
+          const files = { ...this.state.files }
+          for (const change of batch) {
+            const name = this.relative(change.path)
+            const sha = change.contents && blobSha(change.contents)
+            if (sha) files[name] = { sha, mode: change.mode }
+            else delete files[name]
+            if (own(this.edits.unpushed, name)?.n === counters.get(name) && !this.writing.has(name)) delete this.edits.unpushed[name]
+          }
+          await this.save({ ...this.state, base: oid, files })
+          this.edits.stopped = null
+          await this.saveEdits()
+        })
+      }
+      this.forget()
+      if (!stale) {
+        if (batches.flat().some(change => Object.hasOwn(this.edits.unpushed, this.relative(change.path)))) this.schedulePush()
+        return
+      }
+      await this.pull(await githubHead(this.volume.config))
+    }
+    if (lost) throw lost
+    this.schedulePush()
+  }
+
+  /** Drops kept versions nothing names any more, and those GitHub now has. */
+  private forget(): void {
+    if (!this.kept.size) return
+    background(serialize([this.key], async () => {
+      const named = new Set([...this.served.values()].flatMap(paths => [...paths.values()].flat())
+        .concat([...this.sent.values()].flatMap(paths => [...paths.values()]), Object.values(this.edits.unpushed).map(entry => entry.sha)))
+      for (const sha of [...this.kept]) {
+        if (named.has(sha) && !this.onGithub(sha)) continue
+        this.kept.delete(sha)
+        await fs.rm(this.version(sha), { force: true })
+      }
+    }), { name: 'github-sync.forget' })
+  }
+
+  remove(): void {
+    this.removed = true
+    if (this.timer) clearTimeout(this.timer)
+    if (this.announcing) clearTimeout(this.announcing)
+  }
+}
+
+export function githubSync(volume: GithubVolume): GithubSync {
+  let sync = syncs.get(volume.id)
+  if (!sync) { sync = new GithubSync(volume); syncs.set(volume.id, sync) }
+  return sync
+}
+
+export async function removeGithubSync(id: string): Promise<void> {
+  syncs.get(id)?.remove()
+  syncs.delete(id)
+  await removeCopy(id)
+}
+
+async function removeCopy(id: string): Promise<void> {
+  await fs.rm(volumeFolder(id), { recursive: true, force: true })
+    .catch(error => { console.warn(`[volumes] Cannot remove GitHub copy ${id}:`, error) })
+}

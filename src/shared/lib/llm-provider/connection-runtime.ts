@@ -129,7 +129,7 @@ export async function connectionRuntime(resolved: ResolvedConnection, agentId: s
   const runtimeEnv = parseConnectionJson(connectionConfigSchema, connection.config).runtimeEnv
   Object.assign(env, runtimeEnv)
   env.ENABLE_TOOL_SEARCH =
-    getSettings().enableToolSearch === false ? 'false' : (runtimeEnv.ENABLE_TOOL_SEARCH ?? provider.toolSearchEnv ?? '')
+    getSettings().enableToolSearch === false ? 'false' : (runtimeEnv.ENABLE_TOOL_SEARCH ?? provider.toolSearchEnv(wireModel))
   const configuredProxy = await provider.getContainerProxyConfig()
   // Static keys rotate with the connection row. Refreshable credentials carry
   // their own generation, which may be newer than this connection snapshot.

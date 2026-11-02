@@ -2,13 +2,16 @@ import { randomUUID } from 'node:crypto'
 import { and, asc, eq, exists, isNotNull, isNull, sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { batch, changesOf, insertWhere } from '@shared/lib/db/batch'
-import { agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
+import { agents, agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
 import type { ContainerVolume, MountedVolume, MountSummaryWithHealth, NotMountedVolume } from '@shared/lib/types/mount'
 import { instantiateVolume } from '@shared/lib/volumes/volume-factory'
-import { volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
+import { volumeHealth, volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
 import { prepareVolumeDefinition, selectableVolumes, storedDefinition, VolumeError, type VolumeViewer } from './volume-service'
 
 export { volumeSummary } from '@shared/lib/volumes/volume-health'
+
+/** How long a container start waits for drives still making their first copy. Past it, the start goes on without them. */
+const FIRST_COPY_WAIT_MS = 20_000
 
 /** Allocate inside the INSERT so concurrent attachments cannot claim the same
  * name. With N existing mounts, N+1 candidate suffixes always suffice. */
@@ -47,6 +50,16 @@ export async function getMounts(slug: string): Promise<MountedVolume[]> {
   return [...own, ...global]
 }
 
+/** The agents `getMounts` gives this drive: those it is attached to, or every agent while it is global. */
+export async function agentsWithVolume(volumeId: string): Promise<string[]> {
+  const global = await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions)
+    .where(and(eq(volumeDefinitions.id, volumeId), isNotNull(volumeDefinitions.globalAccess), isNull(volumeDefinitions.userId))).get()
+  const rows = global
+    ? await db.select({ agentSlug: agents.slug }).from(agents).all()
+    : await db.select({ agentSlug: agentVolumes.agentSlug }).from(agentVolumes).where(eq(agentVolumes.volumeId, volumeId)).all()
+  return [...new Set(rows.map(row => row.agentSlug))]
+}
+
 function uniqueName(base: string, taken: Set<string>): string {
   if (!taken.has(base)) return base
   let n = 2
@@ -72,16 +85,17 @@ export async function addMount(
 
 /** An existing source is referenced, never copied. Visibility is checked in the
  * INSERT itself, so a concurrent access change cannot be bypassed. */
-export async function attachMount(slug: string, volumeId: string, viewer: VolumeViewer): Promise<MountedVolume> {
+export async function attachMount(slug: string, volumeId: string, viewer: VolumeViewer, { readOnly = false } = {}): Promise<MountedVolume> {
   const selection = and(eq(volumeDefinitions.id, volumeId), selectableVolumes(viewer))
   const source = await db.select().from(volumeDefinitions).where(selection).get()
   if (!source) throw new VolumeError('Drive not found', 404)
   const stored = storedDefinition(source)
   if (!stored || !instantiateVolume(stored)) throw new VolumeError('Drive configuration is unavailable', 400)
   const result = await insertWhere(agentVolumes, {
-    id: randomUUID(), agentSlug: slug, volumeId, name: availableMountName(slug, source.name), createdAt: new Date(),
+    id: randomUUID(), agentSlug: slug, volumeId, name: availableMountName(slug, source.name), readOnly, createdAt: new Date(),
   }, exists(db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(selection)))
-    .onConflictDoNothing({ target: [agentVolumes.agentSlug, agentVolumes.volumeId] }).run()
+    // Asked for read-only, an attachment the agent already had becomes read-only too. It never becomes writable here.
+    .onConflictDoUpdate({ target: [agentVolumes.agentSlug, agentVolumes.volumeId], set: { readOnly: sql`${agentVolumes.readOnly} OR excluded.read_only` } }).run()
   // Idempotent attachment still requires current visibility.
   if (changesOf(result) === 0 && !await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(selection).get()) {
     throw new VolumeError('Drive not found', 404)
@@ -116,7 +130,21 @@ async function judgeVolumes(slug: string) {
   return Promise.all((await getMounts(slug)).map(async row => ({ row, reason: await volumeProblem(row, slug) })))
 }
 
+/** The agent's container just started, so each of its drives is mounted with an empty cache. */
+export async function remounted(slug: string): Promise<void> {
+  for (const row of await getMounts(slug)) instantiateVolume(row, slug)?.remounted()
+}
+
+/** Settles once each of the agent's drives that is copied first has a copy, or has stopped trying for now. */
+export async function firstCopies(slug: string): Promise<void> {
+  await Promise.all((await getMounts(slug)).map(row => instantiateVolume(row, slug)?.whenReady()))
+}
+
 export async function listVolumes(slug: string): Promise<{ volumes: ContainerVolume[]; notMounted: NotMountedVolume[] }> {
+  // A drive joins the container only when it starts, so a start right after adding one waits for its first copy.
+  let timer: ReturnType<typeof setTimeout> | undefined
+  await Promise.race([firstCopies(slug), new Promise<void>(resolve => { timer = setTimeout(resolve, FIRST_COPY_WAIT_MS) })])
+  clearTimeout(timer)
   const judged = await judgeVolumes(slug)
   return {
     volumes: judged.flatMap(({ row, reason }) => {
@@ -126,7 +154,7 @@ export async function listVolumes(slug: string): Promise<{ volumes: ContainerVol
         ...(driver?.caseInsensitive ? { caseInsensitive: true } : {}),
         ...(driver?.ignoreSize ? { ignoreSize: true } : {}),
         ...(driver?.dirCacheSeconds ? { dirCacheSeconds: driver.dirCacheSeconds } : {}),
-        ...(row.readOnly ? { readOnly: true } : {}) }]
+        ...(row.readOnly || driver?.readOnly ? { readOnly: true } : {}) }]
     }),
     notMounted: judged.flatMap(({ row, reason }) => reason === null ? [] : [{ name: row.name, reason }]),
   }
@@ -134,7 +162,7 @@ export async function listVolumes(slug: string): Promise<{ volumes: ContainerVol
 
 export async function getMountsWithHealth(slug: string): Promise<MountSummaryWithHealth[]> {
   return (await judgeVolumes(slug)).map(({ row, reason }) => ({
-    ...volumeSummary(row), volumeId: row.volumeId, volumeName: row.volumeName, readOnly: row.readOnly, health: reason === null ? 'ok' : 'missing',
+    ...volumeSummary(row), volumeId: row.volumeId, volumeName: row.volumeName, readOnly: row.readOnly, health: volumeHealth(reason),
     ...(row.global ? { global: true as const } : {}),
   }))
 }

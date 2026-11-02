@@ -13,6 +13,7 @@ import { getAgentIntegration } from '../services/agent-integration-service'
 import { agentRegistry } from '../agent-actor'
 import { sanitizeUploadFilename } from '../utils/path-safety'
 import { appendAttachedFiles } from '../utils/attached-files'
+import { heicUploadAsJpeg } from '@/api/routes/heic-jpeg'
 import { parseEmailIntegrationConfig, emailMessageSchema, emailSendSchema, type EmailMessage, type EmailSend } from './config-schema'
 import { EmailPolicyError, emailSessionAllowed, agentUserEmails, emailAddress, inboundAllowed, recipientAllowed, wasContacted } from './policy'
 
@@ -94,8 +95,9 @@ export abstract class EmailAgentIntegration extends AgentIntegration {
     for (const file of message.attachments) {
       if (file.size > 5 * 1024 * 1024) throw new Error('Email attachment exceeds limit')
       const bytes = await this.downloadAttachment(file.id)
-      const path = `uploads/email-${message.id}-${file.id}-${sanitizeUploadFilename(file.filename)}`
-      await context.actor.files.putDoc(path, bytes)
+      const jpeg = await heicUploadAsJpeg(file.filename, bytes)
+      const path = `uploads/email-${message.id}-${file.id}-${sanitizeUploadFilename(jpeg?.name ?? file.filename)}`
+      await context.actor.files.putDoc(path, jpeg?.data ?? bytes)
       paths.push(`/workspace/${path}`)
     }
     const text = message.text ?? message.html?.replace(/<[^>]*>/g, ' ') ?? ''

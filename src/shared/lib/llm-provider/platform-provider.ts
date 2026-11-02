@@ -40,7 +40,7 @@ export class PlatformLlmProvider extends BaseLlmProvider {
   // models it serves: it expands the CLI's `tool_reference` blocks on the
   // Anthropic-wire upstreams, and the Responses codec rebuilds every tool
   // (dropping `defer_loading`) for the xAI/OpenAI ones.
-  override readonly toolSearchEnv = 'true' as const
+  override toolSearchEnv() { return 'true' as const }
   protected readonly settingsKeyField = 'anthropicApiKey' as const
   protected readonly envVarName = 'PLATFORM_TOKEN'
 
@@ -84,7 +84,6 @@ export class PlatformLlmProvider extends BaseLlmProvider {
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) throw new Error('Platform token not configured. Please log in to the platform.')
     return new Anthropic({
-      apiKey: '',
       baseURL: getPlatformProxyBaseUrl(),
       authToken: apiKey,
     })
@@ -151,7 +150,6 @@ export class PlatformLlmProvider extends BaseLlmProvider {
   async validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
     try {
       const client = new Anthropic({
-        apiKey: '',
         baseURL: getPlatformProxyBaseUrl(),
         authToken: apiKey,
       })

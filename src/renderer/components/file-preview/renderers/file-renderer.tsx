@@ -76,11 +76,11 @@ export function FileRenderer({
     case 'archive':
       return (
         <Suspense fallback={LAZY_FALLBACK}>
-          <ArchiveRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} agentSlug={agentSlug} downloadUrl={downloadUrl} />
+          <ArchiveRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} downloadUrl={downloadUrl} />
         </Suspense>
       )
 
     default:
-      return <UnsupportedRenderer filePath={filePath} agentSlug={agentSlug} downloadUrl={downloadUrl} />
+      return <UnsupportedRenderer filePath={filePath} downloadUrl={downloadUrl} />
   }
 }

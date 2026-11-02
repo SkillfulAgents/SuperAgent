@@ -3,8 +3,10 @@ import {
   SERVER_FACTS_ELEMENT_ID,
   SERVER_FACTS_REVISION_PLACEHOLDER,
   osOf,
+  serverDistributionSchema,
   type DesktopDistribution,
   type Os,
+  type ServerDistribution,
   type ServerFacts,
 } from './facts-schema'
 
@@ -33,9 +35,21 @@ export function desktopDistribution(): DesktopDistribution | null {
   return 'direct'
 }
 
+/**
+ * The distribution a mock run pretends to be: `SUPERAGENT_FAKE_DISTRIBUTION`,
+ * read only when `E2E_MOCK=true`. It lets the web build show what a Mac App
+ * Store build's server offers, for tests and PR screenshots. It fakes the
+ * server half only; a browser's client half has no distribution.
+ */
+function mockRunDistribution(): ServerDistribution | null {
+  if (process.env.E2E_MOCK !== 'true') return null
+  const parsed = serverDistributionSchema.safeParse(process.env.SUPERAGENT_FAKE_DISTRIBUTION)
+  return parsed.success ? parsed.data : null
+}
+
 /** The facts of the server this process is: a desktop install's API, or a web deployment. */
 export function getServerFacts(): ServerFacts {
-  return { os: currentOs(), distribution: desktopDistribution() ?? 'deployment' }
+  return { os: currentOs(), distribution: mockRunDistribution() ?? desktopDistribution() ?? 'deployment' }
 }
 
 /**

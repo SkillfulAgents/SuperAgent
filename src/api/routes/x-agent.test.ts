@@ -232,6 +232,7 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
       callerSlug, request.targetAgentSlug, request.targetAgentName, request.operation, request.preview, request.fileTransfer,
     ),
     withdraw: vi.fn(),
+    takeDenyReason: vi.fn(),
     getPendingReviewsForAgent: () => [],
   },
 }))
@@ -2483,5 +2484,26 @@ describe('display-slug resolution', () => {
   it('returns 404 for a well-formed display slug whose id does not exist', async () => {
     const res = await authedFetch('/x-agent/invoke', { slug: 'ghost-zzzzzzzzzz', prompt: 'hi' })
     expect(res.status).toBe(404)
+  })
+})
+
+describe('a card approved after a Block is set does not run the operation', () => {
+  // The review only answers "ask". A Block set while the card waits beats the approval, as it would have before the card.
+  beforeEach(async () => {
+    mockGetAgent.mockResolvedValue({ slug: TARGET_SLUG, frontmatter: { name: 'Target', createdAt: '2024-01-01' }, instructions: '' })
+    await grantCallerOwnerTargetAccess()
+  })
+
+  it('refuses a message when a Block on the target lands while the card is open', async () => {
+    authModeEnabled = true
+    const { setPolicy } = await import('@shared/lib/services/x-agent-policy-service')
+    mockRequestXAgentReview.mockImplementationOnce(async () => {
+      await setPolicy(CALLER_SLUG, 'invoke', TARGET_SLUG, 'block')
+      return 'allow'
+    })
+    mockCreateSession.mockResolvedValue({ id: 'new-sess-id', slashCommands: [] })
+    const res = await authedFetch('/x-agent/invoke', { slug: TARGET_SLUG, prompt: 'hi' })
+    expect(res.status).toBe(403)
+    expect(mockCreateSession).not.toHaveBeenCalled()
   })
 })

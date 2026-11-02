@@ -6,9 +6,10 @@ import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { z } from 'zod'
 import { Authenticated, getReadableAgentIds } from '../middleware/auth'
 import { volumeViewer } from '../lib/volume-access'
+import { afterVolumeChange } from '../lib/mount-change'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
-import { createVolumeDefinition, deleteVolumeDefinition, listVolumeDefinitions, updateVolumeDefinition, VolumeError, openVolumeDefinition, listVolumeAttachments } from '@shared/lib/services/volume-service'
+import { createVolumeDefinition, deleteVolumeDefinition, listVolumeDefinitions, reconnectLocalVolume, updateVolumeDefinition, VolumeError, openVolumeDefinition, listVolumeAttachments } from '@shared/lib/services/volume-service'
 
 const routes = new Hono()
 routes.use('*', Authenticated())
@@ -38,7 +39,7 @@ routes.get('/:id/folders', async c => {
   const entries = (await volume.list(path))
     .filter(entry => entry.kind === 'file' || entry.kind === 'directory')
     .sort((a, b) => Number(b.kind === 'directory') - Number(a.kind === 'directory') || a.name.localeCompare(b.name))
-    .map(entry => ({ name: entry.name, path: path ? `${path}/${entry.name}` : entry.name, type: entry.kind }))
+    .map(entry => ({ name: entry.name, path: path ? `${path}/${entry.name}` : entry.name, type: entry.kind, mtimeMs: entry.mtimeMs }))
   return c.json({ root: '', path, entries, truncated: false })
 })
 
@@ -79,6 +80,14 @@ routes.post('/', async c => {
 routes.patch('/:id', async c => {
   const id = c.req.param('id')
   await updateVolumeDefinition(id, await c.req.json(), volumeViewer(c))
+  await logAuditEvent({ userId: getCurrentUserId(c), object: 'volume', objectId: id, action: 'updated' })
+  return c.json({ success: true })
+})
+routes.post('/:id/reconnect', async c => {
+  const id = c.req.param('id')
+  await reconnectLocalVolume(id, await c.req.json(), volumeViewer(c))
+  // An agent that started while the folder couldn't be opened has no mount for it until it restarts.
+  await afterVolumeChange(id)
   await logAuditEvent({ userId: getCurrentUserId(c), object: 'volume', objectId: id, action: 'updated' })
   return c.json({ success: true })
 })
