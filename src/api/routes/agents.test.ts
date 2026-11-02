@@ -7616,6 +7616,7 @@ describe('GET /api/agents (enriched summary)', () => {
       container: { status: 'running', port: 8080, healthWarnings: [], stale: false },
       hasActiveSessions: true,
       hasSessionsAwaitingInput: false,
+      awaitingSessionIds: [],
       sessionCount: 2,
       lastActivityAt: '2026-01-01T12:00:00.000Z',
       visibleSessionIds: ['weekly-report'],
@@ -7657,6 +7658,26 @@ describe('GET /api/agents (enriched summary)', () => {
       expect(readSessionMetadata).not.toHaveBeenCalled()
       expect(listArtifactsAndWidgets).not.toHaveBeenCalled()
       expect(storeAgentSummary).not.toHaveBeenCalled()
+    })
+
+    it('previews the question a stored summary says is waiting, without reading session metadata', async () => {
+      vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+      vi.mocked(readAgentSummaries).mockResolvedValue(new Map([['agent-1', {
+        ...storedSummary,
+        hasSessionsAwaitingInput: true,
+        awaitingSessionIds: ['weekly-report'],
+      }]]))
+      vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['weekly-report'])]]))
+      vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(new Map([['agent-1', [
+        { id: 'notif-waiting', sessionId: 'weekly-report', type: 'session_waiting' as const, text: 'Which quarter should the report cover?' },
+      ]]]))
+
+      const body = await (await getReq(app, '/api/agents')).json()
+
+      expect(body[0].notificationPreview).toBe('Which quarter should the report cover?')
+      expect(body[0].notificationPreviewSource).toEqual({ id: 'notif-waiting', sessionId: 'weekly-report' })
+      expect(readSessionMetadata).not.toHaveBeenCalled()
+      vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(new Map())
     })
 
     it('summarizes an agent with no stored row from its actor and stores it', async () => {

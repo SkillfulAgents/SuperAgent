@@ -22,6 +22,7 @@ const summary = (status: string, sessionCount: number): AgentSummary => ({
   container: { status: status as AgentSummary['container']['status'], port: null, healthWarnings: [], stale: false },
   hasActiveSessions: status === 'running',
   hasSessionsAwaitingInput: false,
+  awaitingSessionIds: [],
   sessionCount,
   lastActivityAt: '2026-10-27T12:00:00.000Z',
   visibleSessionIds: [],
