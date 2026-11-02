@@ -64,6 +64,8 @@ const CASES: Array<[string, HintEventInput, string[]]> = [
   ['playwright CLI install-deps by file path', bash('node node_modules/playwright/cli.js install-deps'), []],
   ['playwright install-deps', bash('npx playwright install-deps'), []],
   ['pip install playwright', bash('pip install playwright'), []],
+  ['npm install playwright into a folder', bash('npm install --prefix /workspace/playwright-tools playwright'), []],
+  ['grep for the install phrase (refused once, retry runs)', bash('grep -rn "playwright install" notes/'), ['playwright-install']],
 ]
 
 describe('built-in hints: which hints each call triggers', () => {
@@ -97,6 +99,7 @@ describe('built-in hints: which hints each call triggers', () => {
     const first = await run('tool-1')
     expect(first).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } })
     expect(JSON.stringify(first)).toContain('/opt/playwright-browsers/chromium-current')
+    expect(JSON.stringify(first)).toContain('run the same command again')
     expect(JSON.stringify(await run('tool-2'))).not.toContain('deny')
 
     turn = 2
