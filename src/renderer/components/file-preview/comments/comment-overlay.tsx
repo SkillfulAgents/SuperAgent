@@ -19,11 +19,11 @@ interface CommentOverlayViewProps {
   onAdd: (text: string) => void
   onClose: () => void
   noun?: CommentNoun
-  /** The editor. Otherwise a chip, which calls `onEdit`. */
+  /** The editor. Otherwise a "Comment" chip, which calls `onEdit`. */
   autoEdit?: boolean
   /** Start the mic as the editor opens, when voice input is set up. */
   autoListen?: boolean
-  /** The chip was clicked. */
+  /** The "Comment" chip was clicked. */
   onEdit?: () => void
 }
 
@@ -104,7 +104,7 @@ export function CommentOverlayView({ label, rect, onAdd, onClose, onEdit, noun =
           className="flex items-center gap-1 px-2 py-1 text-xs rounded-md bg-primary text-primary-foreground shadow-md hover:bg-primary/90 transition-colors"
         >
           <MessageSquarePlus className="h-3 w-3" />
-          {noun === 'reply' ? 'Reply' : 'Comment'}
+          Comment
         </button>
       </div>
     )

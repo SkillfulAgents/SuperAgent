@@ -4,7 +4,7 @@ import { MessageList } from '@renderer/components/messages/message-list'
 import { AgentActivityIndicator } from '@renderer/components/messages/agent-activity-indicator'
 import { TrayManager } from '@renderer/components/tray/tray-manager'
 import type { PendingMessage } from '@renderer/components/messages/pending-message'
-import { useMessageReplies } from '@renderer/components/messages/use-message-replies'
+import { MessageReplyProvider, useMessageReplies } from '@renderer/components/messages/use-message-replies'
 
 interface SessionThreadProps {
   sessionId: string | null
@@ -96,17 +96,19 @@ export function SessionThread({
         data-testid="session-thread-main"
       >
         {sessionId && (
-          <MessageList
-            key={sessionId}
-            sessionId={sessionId}
-            agentSlug={agentSlug}
-            readOnly={readOnly}
-            pendingUserMessages={pendingUserMessages}
-            pendingRequestCount={pendingRequestCount}
-            onPendingMessageAppeared={onPendingMessageAppeared}
-            suppressScrollToBottom={suppressScrollToBottom}
-            bottomInset={overlayFooter ? footerHeight : 0}
-          />
+          <MessageReplyProvider value={replies.action}>
+            <MessageList
+              key={sessionId}
+              sessionId={sessionId}
+              agentSlug={agentSlug}
+              readOnly={readOnly}
+              pendingUserMessages={pendingUserMessages}
+              pendingRequestCount={pendingRequestCount}
+              onPendingMessageAppeared={onPendingMessageAppeared}
+              suppressScrollToBottom={suppressScrollToBottom}
+              bottomInset={overlayFooter ? footerHeight : 0}
+            />
+          </MessageReplyProvider>
         )}
         <div
           ref={footerRef}
