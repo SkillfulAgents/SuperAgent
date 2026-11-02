@@ -645,7 +645,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   private track<T>(work: Promise<T>): Promise<T> {
     this.inFlight.add(work)
     const done = () => this.inFlight.delete(work)
-    work.then(done, done)
+    background(work.then(done, done), { name: 'webhook-relay.in-flight' })
     return work
   }
 
