@@ -151,6 +151,7 @@ vi.mock('@renderer/components/tray/tray-manager', async () => {
               <button type="button" onClick={() => setActiveTab(i)}>{tab.kind === 'file' && tab.source ? `${tab.displayName} (own source)` : tab.displayName}</button>
             </li>
           ))}
+          <li><a href="#linked-page">Linked page</a></li>
         </ul>
       )
     },
@@ -276,6 +277,13 @@ describe('TeamBrainOverview', () => {
     fireEvent.pointerDown(screen.getByRole('button', { name: 'Mention' }))
     expect(drawer).toHaveAttribute('data-narrow', 'true')
     act(() => composer.blur())
+    expect(drawer).toHaveAttribute('data-narrow', 'true')
+    // A press alone leaves it, so nothing moves under the pointer, and so does a click on one of its buttons.
+    fireEvent.pointerDown(drawer)
+    expect(drawer).toHaveAttribute('data-narrow', 'true')
+    await userEvent.click(within(drawer).getByRole('button', { name: 'Acme Corp.md (own source)' }))
+    expect(drawer).toHaveAttribute('data-narrow', 'true')
+    await userEvent.click(within(drawer).getByRole('link', { name: 'Linked page' }))
     expect(drawer).toHaveAttribute('data-narrow', 'true')
     // Using the drawer brings its own width back, and so does opening another page.
     await userEvent.click(drawer)
