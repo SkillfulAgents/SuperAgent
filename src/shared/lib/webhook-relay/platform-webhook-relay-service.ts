@@ -629,6 +629,20 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     })
   }
 
+  async acceptClaimed(consumerId: string, events: readonly RelayEvent[]): Promise<ReadonlyMap<string, RelayAcceptResult>> {
+    const state = this.consumers.get(consumerId)
+    let outcome: RelayAcceptResult | ReadonlyMap<string, RelayAcceptResult> = 'retry'
+    if (state && !state.disposed) {
+      try {
+        outcome = await state.accept(events)
+      } catch (error) {
+        console.error(`[WebhookRelay] Consumer ${consumerId} failed to accept ${events.length} forwarded event(s):`, error)
+        captureException(error, { tags: { area: 'webhook-relay', op: 'accept-claimed' }, extra: { consumerId } })
+      }
+    }
+    return new Map(events.map((event) => [event.id, typeof outcome === 'string' ? outcome : (outcome.get(event.id) ?? 'retry')]))
+  }
+
   async runPass(): Promise<void> {
     if (!this.online) return
     // Retries that came due since the last pass, and acks it left behind.

@@ -16,7 +16,8 @@ import { containerPendingInputsSchema, integrationRequestEventSchema } from './r
 import type { AgentIntegration } from './agent-integration'
 import type { AgentIntegrationRecord, IntegrationStatus, IntegrationInputEvent, IntegrationInputResult, IntegrationRoute, IntegrationSessionContext, IntegrationOutput, IntegrationResponseEvent, PreparedIntegrationInput } from './types'
 import { agentIntegrationRegistry, type AgentIntegrationRegistry } from './registry'
-import { integrationRelays } from './relay-transport'
+import { integrationRelayConsumerId, integrationRelays } from './relay-transport'
+import { getWebhookRelay, type RelayAcceptResult, type RelayEvent, type WebhookRelayService } from '../webhook-relay'
 import type { IntegrationRelayHost, IntegrationTransport } from './transport'
 import { agentRegistry, type AgentActor, type SessionEvent } from '@shared/lib/agent-actor'
 import { deliveryFailure } from '@shared/lib/agent-actor/delivery-errors'
@@ -105,6 +106,8 @@ export class AgentIntegrationManager {
     private readonly registry: AgentIntegrationRegistry = agentIntegrationRegistry,
     /** The webhook relay for one connection, or null while the host has none available. */
     private readonly relayHost: (integrationId: string) => IntegrationRelayHost | null = (integrationId) => integrationRelays.hostFor(integrationId),
+    /** The relay `relayHost` registers connections with: forwarded events are handed to them there. */
+    private readonly relay: () => WebhookRelayService = getWebhookRelay,
   ) {}
 
   private readonly deliveries = new IntegrationDeliveryQueue({
@@ -218,7 +221,11 @@ export class AgentIntegrationManager {
 
   // ── Lifecycle ───────────────────────────────────────────────────────
 
-  async start(): Promise<void> {
+  /**
+   * `agentSlug` connects only that agent's integrations, for a host that runs each agent apart.
+   * With `timers: false` nothing re-checks connections on a timer.
+   */
+  async start(options: { agentSlug?: string; timers?: boolean } = {}): Promise<void> {
     if (this.isRunning) return
     this.isRunning = true
     this.authorizationUnsubscribe = onIntegrationAuthorizationLost(change => {
@@ -226,7 +233,7 @@ export class AgentIntegrationManager {
     })
 
     await this.deliveries.start()
-    const integrations = await listStartupIntegrations()
+    const integrations = (await listStartupIntegrations()).filter(integration => !options.agentSlug || integration.agentSlug === options.agentSlug)
 
     for (const integration of integrations) {
       const generation = this.bumpGeneration(integration.id)
@@ -243,12 +250,14 @@ export class AgentIntegrationManager {
       }
     }
 
-    this.healthCheckInterval = setInterval(() => {
-      background(this.runHealthChecks().catch((err) => {
-        console.error('[AgentIntegrationManager] Health check error:', err)
-        reportError(err, 'health-check')
-      }), { name: 'integration-manager.health-check' })
-    }, HEALTH_CHECK_INTERVAL_MS)
+if (options.timers !== false) {
+      this.healthCheckInterval = setInterval(() => {
+        background(this.runHealthChecks().catch((err) => {
+          console.error('[AgentIntegrationManager] Health check error:', err)
+          reportError(err, 'health-check')
+        }), { name: 'integration-manager.health-check' })
+      }, HEALTH_CHECK_INTERVAL_MS)
+    }
 
     this.subscribeGlobalNotifications()
 
@@ -563,6 +572,18 @@ export class AgentIntegrationManager {
 
   getActiveIntegrationIds(): string[] {
     return [...this.connections.keys()]
+  }
+
+  /**
+   * Events claimed for this integration in another process (see syncIntegrationForwarding). The
+   * integration is connected here first if it is not yet, so its connection accepts them and
+   * answers the chat from this process.
+   */
+  async acceptForwarded(integrationId: string, events: readonly RelayEvent[]): Promise<ReadonlyMap<string, RelayAcceptResult>> {
+    if (this.isRunning && !this.isIntegrationConnected(integrationId)) {
+      await this.addIntegration(integrationId).catch(error => reportError(error, 'accept-forwarded', { integrationId }))
+    }
+    return this.relay().acceptClaimed(integrationRelayConsumerId(integrationId), events)
   }
 
   // ── Connection setup ────────────────────────────────────────────────
