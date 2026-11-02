@@ -62,9 +62,30 @@ function toRecord(row: AgentRow): AgentRecord {
   }
 }
 
+/**
+ * How long a row read from the table is reused. One request looks an agent up several times, and
+ * where the database is a network round trip each lookup costs one. The catalog's own writes drop
+ * the row at once, and nothing else writes the table once it is open, so one process never reads a
+ * stale row; another process's rename or delete shows within this long.
+ */
+const ROW_REUSE_MS = 2_000
+
 export function createAgentCatalog(): AgentCatalog {
-  const rowFor = async (slug: AgentSlug): Promise<AgentRow | undefined> =>
-    db.select().from(agents).where(eq(agents.slug, slug)).get()
+  // Rows read in the last ROW_REUSE_MS, and reads in flight: callers of one slug share a query.
+  const recent = new Map<AgentSlug, { readAt: number; row: Promise<AgentRow | undefined> }>()
+  const forget = (slug: AgentSlug) => recent.delete(slug)
+
+  const rowFor = (slug: AgentSlug): Promise<AgentRow | undefined> => {
+    const cached = recent.get(slug)
+    if (cached && Date.now() - cached.readAt < ROW_REUSE_MS) return cached.row
+    const row = (async () => db.select().from(agents).where(eq(agents.slug, slug)).get())()
+    const entry = { readAt: Date.now(), row }
+    recent.set(slug, entry)
+    row.catch(() => {
+      if (recent.get(slug) === entry) forget(slug)
+    })
+    return row
+  }
 
   // Unused by the table and by every directory, legacy folders included, so a
   // slug never collides with a workspace the table does not know.
@@ -115,6 +136,7 @@ export function createAgentCatalog(): AgentCatalog {
         runtime: LOCAL_RUNTIME,
         workspaceHandle: null,
       }).run()
+      forget(slug)
       return toRecord((await rowFor(slug))!)
     },
     update: async (slug, changes: AgentIdentityChanges) => {
@@ -128,6 +150,7 @@ export function createAgentCatalog(): AgentCatalog {
       }
       if (Object.keys(values).length > 0) {
         await db.update(agents).set(values).where(eq(agents.slug, slug)).run()
+        forget(slug)
       }
       const row = await rowFor(slug)
       return row === undefined ? null : toRecord(row)
@@ -156,6 +179,7 @@ export function createAgentCatalog(): AgentCatalog {
         await removeDirectory(dir)
       }
       await db.delete(agents).where(eq(agents.slug, slug)).run()
+      forget(slug)
     },
   }
 }

@@ -208,3 +208,42 @@ describe('removing an agent', () => {
     expect(fs.existsSync(getAgentDir('stuck'))).toBe(false)
   })
 })
+
+describe('reading rows', () => {
+  async function insertRow(slug: string, name: string) {
+    await testDb.insert(schema.agents).values({
+      slug, name, avatarColor: 'tonal-cobalt', avatarShape: 'circle', description: null,
+      createdAt: new Date('2026-11-02T12:00:00Z'), runtime: 'local', workspaceHandle: null,
+    }).run()
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('serves repeated lookups of one agent within two seconds from one query, then queries again', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    await insertRow('a1b2c3d4e5', 'Sales')
+    const select = vi.spyOn(testDb, 'select')
+
+    await Promise.all([catalog.get('a1b2c3d4e5'), catalog.exists('a1b2c3d4e5')])
+    expect(await catalog.resolve('a1b2c3d4e5')).toBe('a1b2c3d4e5')
+    expect(select).toHaveBeenCalledTimes(1)
+
+    vi.advanceTimersByTime(2_000)
+    expect((await catalog.get('a1b2c3d4e5'))?.name).toBe('Sales')
+    expect(select).toHaveBeenCalledTimes(2)
+  })
+
+  it("reads its own rename and removal back at once", async () => {
+    await insertRow('f6g7h8i9j0', 'Research')
+    expect((await catalog.get('f6g7h8i9j0'))?.name).toBe('Research')
+
+    await catalog.update('f6g7h8i9j0', { name: 'Market research' })
+    expect((await catalog.get('f6g7h8i9j0'))?.name).toBe('Market research')
+
+    await catalog.remove('f6g7h8i9j0')
+    expect(await catalog.exists('f6g7h8i9j0')).toBe(false)
+  })
+})
