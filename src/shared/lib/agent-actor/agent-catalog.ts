@@ -74,9 +74,15 @@ export function createAgentCatalog(): AgentCatalog {
   // Reads started in the last ROW_REUSE_MS, finished or in flight: callers of one slug share a query.
   // Each entry removes itself, so lookups of slugs that do not exist do not pile up.
   const recent = new Map<AgentSlug, Promise<AgentRow | undefined>>()
+  // The database the rows were read from: one opened anew (a test, a reopened file) starts empty.
+  let readFrom: unknown = null
   const forget = (slug: AgentSlug) => recent.delete(slug)
 
   const rowFor = (slug: AgentSlug): Promise<AgentRow | undefined> => {
+    if (readFrom !== db) {
+      recent.clear()
+      readFrom = db
+    }
     const cached = recent.get(slug)
     if (cached) return cached
     const row = (async () => db.select().from(agents).where(eq(agents.slug, slug)).get())()
