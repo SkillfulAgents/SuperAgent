@@ -65,7 +65,7 @@ const CASES: Array<[string, HintEventInput, string[]]> = [
   ['playwright install-deps', bash('npx playwright install-deps'), []],
   ['pip install playwright', bash('pip install playwright'), []],
   ['npm install playwright into a folder', bash('npm install --prefix /workspace/playwright-tools playwright'), []],
-  ['grep for the install phrase (refused once, retry runs)', bash('grep -rn "playwright install" notes/'), ['playwright-install']],
+  ['grep for the install phrase (refused once, retry runs)', bash('grep -rn "playwright install chromium" notes/'), ['playwright-install']],
 ]
 
 describe('built-in hints: which hints each call triggers', () => {
