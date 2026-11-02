@@ -118,13 +118,16 @@ class TriggerManager {
   private syncQueue: Promise<void> = Promise.resolve()
   private resyncTimer: NodeJS.Timeout | null = null
   private failedSyncs = 0
+  /** False when the host calls syncRegistrations() on its own clock (see periodicJobs). */
+  private timers = true
 
-  async start(): Promise<void> {
+  async start(options: { timers?: boolean } = {}): Promise<void> {
     if (this.isRunning) {
       console.log('[TriggerManager] Already running')
       return
     }
     this.isRunning = true
+    this.timers = options.timers ?? true
     console.log('[TriggerManager] Starting...')
     try {
       await this.syncRegistrations()
@@ -171,7 +174,7 @@ class TriggerManager {
   private scheduleResync(delayMs: number): void {
     if (this.resyncTimer) clearTimeout(this.resyncTimer)
     this.resyncTimer = null
-    if (!this.isRunning) return
+    if (!this.isRunning || !this.timers) return
     this.resyncTimer = setTimeout(() => {
       this.resyncTimer = null
       // A failure schedules its own retry.
