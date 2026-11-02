@@ -94,11 +94,12 @@ export function TeamBrainOverview({ agent }: { agent: ApiAgent }) {
         <div
           className="file-preview-container relative flex min-h-0 min-w-0 flex-1"
           data-testid="file-preview-container"
-          // A press here outside the page is in the drawer: using it. Presses in a portal (the composer's menus) bubble
-          // here through React from outside this element and are not.
-          onPointerDownCapture={(event) => {
+          // A click here outside the page is in the drawer: using it. Its width comes back once the press is over, so
+          // nothing moves under the pointer. A click on one of its buttons or links only does what that control does.
+          // Clicks in a portal (the composer's menus) bubble here through React from outside this element and are not.
+          onClickCapture={(event) => {
             const target = event.target
-            if (target instanceof Element && event.currentTarget.contains(target) && !target.closest('[data-team-brain-page]')) setDrawerNarrow(false)
+            if (target instanceof Element && event.currentTarget.contains(target) && !target.closest('[data-team-brain-page], button, a[href]')) setDrawerNarrow(false)
           }}
         >
           <OverviewBody
@@ -113,7 +114,7 @@ export function TeamBrainOverview({ agent }: { agent: ApiAgent }) {
             drawerNarrow={drawerNarrow}
             onDrawerNarrowChange={setDrawerNarrow}
           />
-          <TrayManager agentSlug={PREVIEW_SLUG} sessionId="team-brain" browserActive={false} filePreviewWideLayout="overlay" narrowDrawer={drawerNarrow} />
+          <TrayManager agentSlug={PREVIEW_SLUG} sessionId="team-brain" browserActive={false} filePreviewWideLayout="overlay" narrowDrawer={drawerNarrow} onDrawerResize={() => setDrawerNarrow(false)} />
         </div>
       </WorkflowProvider>
     </FilePreviewProvider>
