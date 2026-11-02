@@ -24,6 +24,7 @@ import {
 } from './tools/schedule-task'
 import { scheduleResumeTool } from './tools/schedule-resume'
 import { webhookRelayAvailable } from './webhook-relay-env'
+import { isComputerUseHost } from './host-desktop-env'
 import {
   getAvailableTriggersTool,
   listTriggersTool,
@@ -77,9 +78,8 @@ export function createUserInputMcpServer(
   // calling session owns it — read at call time, since the id changes on restart.
   getSessionId: () => string | null = () => null,
 ) {
-  // Only expose script execution tool on supported host platforms (macOS/Windows)
-  const hostPlatform = process.env.HOST_PLATFORM
-  const includeScriptRun = hostPlatform === 'darwin' || hostPlatform === 'win32'
+  // Scripts run on the host's desktop, so they come with computer use.
+  const includeScriptRun = isComputerUseHost()
 
   // Every webhook tool needs the host's webhook relay. Composio-catalog
   // triggers also need platform Composio; custom webhook endpoints don't (they

@@ -34,50 +34,12 @@ jobs:
 
   # Build and push agent container with version tag
   build-agent-container:
-    runs-on: ubuntu-latest
     needs: prepare
-    env:
-      IMAGE_NAME: ${{ github.repository_owner }}/superagent-agent-container-base
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-
-      - name: Build and push container image
-        uses: docker/build-push-action@v7
-        with:
-          context: ./agent-container
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # Registry-backed build cache shared with build-container.yml so
-          # release tags reuse main's layers and keep identical digests —
-          # clients then pull only the changed top layers between versions.
-          # NOTE: ref must be lowercase; github.repository_owner is not.
-          cache-from: type=registry,ref=ghcr.io/skillfulagents/superagent-agent-container-base:buildcache
-          cache-to: type=registry,ref=ghcr.io/skillfulagents/superagent-agent-container-base:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
+    uses: ./.github/workflows/agent-container-image.yml
+    with:
+      tags: |
+        type=semver,pattern={{version}}
+        type=semver,pattern={{major}}.{{minor}}
 
   # Build and push app containers with version tags (regular + auth)
   build-app-container:
@@ -153,10 +115,19 @@ jobs:
             -f event_type=superagent-release \
             -f "client_payload[version]=$VERSION"
 
+  # The built-in Lima runtime's VM image, which the macOS build bundles
+  lima-image:
+    uses: ./.github/workflows/lima-image.yml
+
   # Build macOS Electron app (signed + notarized)
   build-mac:
-    runs-on: macos-26
-    needs: prepare
+    # Not GitHub's macos-26 (3 cores): on the same commit, dist:mac took 25 min
+    # there and 14 min on Blacksmith's 6 vCPU runner.
+    runs-on: blacksmith-12vcpu-macos-26
+    # The app bundles the agent image this release publishes (dist:mac's
+    # download:agent-image), so it waits for it: ~35 s when the layers are
+    # cached from main. lima-image builds the built-in runtime's VM image.
+    needs: [prepare, lima-image, build-agent-container]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -174,6 +145,12 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Download the Lima VM image
+        uses: actions/download-artifact@v4
+        with:
+          name: lima-image-arm64
+          path: build/lima-image
 
       - name: Decode Apple API Key
         env:
@@ -206,6 +183,14 @@ jobs:
           PLATFORM_BASE_URL: ${{ secrets.PLATFORM_BASE_URL }}
           PLATFORM_PROXY_URL: ${{ secrets.PLATFORM_PROXY_URL }}
           PLATFORM_AUTH_ISSUER_URL: ${{ secrets.PLATFORM_AUTH_ISSUER_URL }}
+          LIMA_IMAGE_DIR: build/lima-image
+          # A release never ships without its agent image.
+          AGENT_IMAGE_REQUIRED: 'true'
+          # Notarization is most of this step and electron-builder logs only
+          # its end: this timestamps the zip, the submission (upload and
+          # Apple's processing, whose log then gives the upload time) and the
+          # staple. Credentials print masked.
+          DEBUG: electron-notarize*
         run: npm run dist:mac
 
       # Electron 44+ needs macOS 13, and the packaged app says so
@@ -234,15 +219,18 @@ jobs:
         run: |
           # A size budget, not a platform limit: the R2 feed upload is multipart
           # and GitHub release assets go to 2 GiB. It catches an installer that
-          # balloons unnoticed (the Windows one carries both x64 and arm64).
-          limit=$((400 * 1024 * 1024))
+          # balloons unnoticed. The macOS app carries the agent image
+          # (scripts/fetch-agent-image.ts, ~545 MiB with zstd layers) and the built-in runtime's
+          # VM image with its packages installed, which it also ships to repair
+          # it: a DMG of ~1165 MiB.
+          limit=$((1300 * 1024 * 1024))
           bad=0
           for f in release/*.exe release/*.dmg release/*.zip; do
             [ -e "$f" ] || continue
             size=$(wc -c < "$f")
             printf '%6d MiB  %s\n' "$((size / 1048576))" "$(basename "$f")"
             if [ "$size" -gt "$limit" ]; then
-              echo "::error file=$f::$(basename "$f") is $((size / 1048576)) MiB, over the 400 MiB release-artifact size budget"
+              echo "::error file=$f::$(basename "$f") is $((size / 1048576)) MiB, over the $((limit / 1048576)) MiB release-artifact size budget"
               bad=1
             fi
           done
@@ -259,10 +247,43 @@ jobs:
             release/*.yaml
             release/*.blockmap
           retention-days: 5
+          # The DMG and ZIP are compressed already (2.3 GB with the agent
+          # image): deflating them again only costs time here and in create-release.
+          compression-level: 0
+
+  # Build the Mac App Store package, upload it to App Store Connect, and hand it
+  # to TestFlight: Team (internal) gets it as soon as Apple has processed it, and
+  # Beta (external) once Beta App Review approves it. Every release of a version
+  # (0.6.0-rc.1, rc.2, 0.6.0) is the same TestFlight version, 0.6.0, so only its
+  # first build needs a full review; Apple may approve later ones without one.
+  # A full release also leaves its App Store version ready with its build;
+  # submitting it for review stays a person's step. Like build-mac it bundles
+  # the agent image this release publishes, so it waits for it. create-release
+  # doesn't wait for this job: a Store problem never holds up the direct
+  # release, and the package isn't one of its files (its artifact name doesn't
+  # match `*-release-artifacts`).
+  build-mas:
+    needs: [prepare, lima-image, build-agent-container]
+    uses: ./.github/workflows/build-mas.yml
+    secrets: inherit
+    with:
+      # Higher for every upload, re-runs included: 412.1, 412.2, 413.1.
+      build-number: ${{ github.run_number }}.${{ github.run_attempt }}
+      app-store-connect: upload
+      artifact-name: Gamut-MAS-${{ needs.prepare.outputs.version }}
+      testflight-groups: Team,Beta
+      # Testers see 0.6.0 (412.1); this says which release that is.
+      what-to-test: Gamut ${{ needs.prepare.outputs.version }}
+      # A full release also leaves the App Store version ready to submit with its
+      # build: the version being prepared takes this number, or a new one is made
+      # once the last is out. An rc leaves it alone.
+      app-store-version: ${{ needs.prepare.outputs.channel == 'latest' && needs.prepare.outputs.version || '' }}
+      # Written only where empty, so an edit made before submitting stays.
+      whats-new: Bug fixes and improvements.
 
   # Build Windows Electron app
   build-win:
-    runs-on: windows-latest
+    runs-on: blacksmith-4vcpu-windows-2025
     needs: prepare
     steps:
       - name: Checkout
@@ -337,6 +358,8 @@ jobs:
             release/*.yaml
             release/*.blockmap
           retention-days: 5
+          # Compressed already, as on macOS.
+          compression-level: 0
 
   # Create GitHub Release with all artifacts
   create-release:
@@ -350,18 +373,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Download mac artifacts
+      # Both builds' artifacts at once (they hold no file with the same name but
+      # builder-debug.yml, electron-builder's debug dump).
+      - name: Download mac and win artifacts
         uses: actions/download-artifact@v4
         with:
-          name: mac-release-artifacts
+          pattern: '*-release-artifacts'
+          merge-multiple: true
           path: ./release-artifacts
 
-      - name: Download win artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: win-release-artifacts
-          path: ./release-artifacts
-
+      # The release only, as a draft: its files go up in the next step.
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -370,34 +391,28 @@ jobs:
           draft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
-          files: |
-            ./release-artifacts/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "$GITHUB_REF_NAME" --draft=false --repo "$GITHUB_REPOSITORY"
-
-      # Dual-publish bridge (SUP-286): populate the owned R2 feed
-      # (updates.gamutagents.com) AFTER the GitHub release is published, so an
-      # R2 failure can never block the primary (GitHub) feed during the bridge.
-      # It DOES fail this job: from 0.5.21 to 0.5.22 the Windows installer was
-      # over wrangler's 300 MiB cap, the loop died on its first file, nothing
-      # (not even latest.yml) reached R2, and continue-on-error hid it — the
-      # generic feed silently stopped updating. Binaries go first and the feed
-      # metadata (latest*.yml) last, so R2 never advertises a version whose
-      # binaries are missing. Skipped if the Cloudflare account isn't configured.
+      # Dual-publish bridge (SUP-286): the owned R2 feed (updates.gamutagents.com)
+      # alongside the GitHub release. The release's files and R2's binaries
+      # upload at the same time; R2's feed metadata (latest*.yml) waits until
+      # every R2 binary is up AND the GitHub release is published, so R2 never
+      # advertises a version whose binaries are missing, and an R2 failure can
+      # never block the primary (GitHub) feed. An R2 failure DOES fail the job
+      # (in the feed step): from 0.5.21 to 0.5.22 the Windows installer was
+      # over wrangler's 300 MiB cap, nothing (not even latest.yml) reached R2,
+      # and continue-on-error hid it — the generic feed silently stopped
+      # updating. R2 is skipped if the Cloudflare account isn't configured.
       #
       # Uploads go through R2's S3 API, where the AWS CLI splits large files
       # into multipart uploads: wrangler's `r2 object put` refuses anything over
       # 300 MiB, and the Windows installer (x64 + arm64 in one exe) passed that
       # with Electron 45. The S3 API takes its own keys — an R2 API token with
       # Object Read & Write on gamut-releases — not CLOUDFLARE_API_TOKEN.
-      - name: Upload release feed to Cloudflare R2
-        if: ${{ env.CLOUDFLARE_ACCOUNT_ID != '' }}
+      - name: Upload the release files to GitHub and the binaries to R2
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: auto
@@ -406,47 +421,99 @@ jobs:
           AWS_REQUEST_CHECKSUM_CALCULATION: when_required
           AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
         run: |
-          # Missing keys must fail the job: a silently skipped upload is how the
-          # feed went stale before (see above).
-          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
-            echo "::error::R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are not set; the R2 feed would not get this release."
+          shopt -s nullglob
+          files=(./release-artifacts/*)
+
+          # --clobber: a re-run of this job replaces what a failed run uploaded.
+          gh release upload "$GITHUB_REF_NAME" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber &
+          github=$!
+
+          r2=skipped
+          if [ -n "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            # Missing keys must fail the job: a silently skipped upload is how
+            # the feed went stale before (see above). The feed step fails it,
+            # after the GitHub release is published.
+            if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+              echo "::error::R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are not set; the R2 feed would not get this release."
+              r2=failed
+            else
+              endpoint="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
+              pids=()
+              names=()
+              for f in "${files[@]}"; do
+                name="$(basename "$f")"
+                case "$name" in *.yml|*.yaml) continue ;; esac
+                echo "→ R2: $name ($(( $(wc -c < "$f") / 1048576 )) MiB)"
+                aws s3 cp "$f" "s3://gamut-releases/$name" --endpoint-url "$endpoint" --only-show-errors &
+                pids+=("$!")
+                names+=("$name")
+              done
+              r2=ok
+              for i in "${!pids[@]}"; do
+                if ! wait "${pids[$i]}"; then
+                  echo "::error::R2 upload failed for ${names[$i]}"
+                  r2=failed
+                fi
+              done
+              echo "R2 binaries: $r2 after ${SECONDS}s"
+            fi
+          fi
+          echo "R2_BINARIES=$r2" >> "$GITHUB_ENV"
+
+          if ! wait "$github"; then
+            echo "::error::Uploading the release files to GitHub failed; the release stays a draft."
+            exit 1
+          fi
+          echo "GitHub release files: uploaded after ${SECONDS}s"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --repo "$GITHUB_REPOSITORY"
+
+      - name: Upload release feed to Cloudflare R2
+        if: ${{ env.CLOUDFLARE_ACCOUNT_ID != '' }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+        run: |
+          if [ "$R2_BINARIES" != "ok" ]; then
+            echo "::error::Not uploading feed metadata: the R2 binary uploads failed (see the previous upload step). The R2 feed still points at the previous version."
             exit 1
           fi
           endpoint="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
           shopt -s nullglob
           failed=()
-          binaries=()
-          feeds=()
-          for f in ./release-artifacts/*; do
+          for f in ./release-artifacts/*.yml ./release-artifacts/*.yaml; do
             name="$(basename "$f")"
             # builder-debug.yml is electron-builder's debug dump, not a feed file.
             [ "$name" = "builder-debug.yml" ] && continue
-            case "$name" in
-              *.yml|*.yaml) feeds+=("$f") ;;
-              *)            binaries+=("$f") ;;
-            esac
-          done
-
-          upload() {
-            local f="$1" name
-            name="$(basename "$f")"
-            echo "→ R2: $name ($(( $(wc -c < "$f") / 1048576 )) MiB)"
+            echo "→ R2: $name"
             if ! aws s3 cp "$f" "s3://gamut-releases/$name" --endpoint-url "$endpoint" --only-show-errors; then
               echo "::error::R2 upload failed for $name"
               failed+=("$name")
             fi
-          }
-
-          for f in "${binaries[@]}"; do upload "$f"; done
-
-          if [ "${#failed[@]}" -ne 0 ]; then
-            echo "::error::Not uploading feed metadata: ${#failed[@]} binary upload(s) failed (${failed[*]}). The R2 feed still points at the previous version."
-            exit 1
-          fi
-
-          for f in "${feeds[@]}"; do upload "$f"; done
+          done
 
           if [ "${#failed[@]}" -ne 0 ]; then
             echo "::error::Feed metadata upload failed (${failed[*]}); clients on the R2 feed will not see this release."
             exit 1
           fi
+
+      # Differential updates need the feed to answer one request for many byte
+      # ranges with 206 multipart/byteranges; otherwise every update silently
+      # downloads the whole file, as every macOS update did until gamut-releases#2.
+      # Last, so it never holds a release back; a failure still fails the job.
+      - name: Check the feed serves differential updates
+        if: ${{ env.CLOUDFLARE_ACCOUNT_ID != '' }}
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          status=0
+          for name in "Gamut-${VERSION}-arm64.zip" "Gamut-${VERSION}-Setup.exe"; do
+            node scripts/check-feed-ranges.mjs "https://updates.gamutagents.com/$name" "./release-artifacts/$name" || status=1
+          done
+          exit "$status"

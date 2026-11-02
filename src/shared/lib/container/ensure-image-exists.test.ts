@@ -102,16 +102,17 @@ vi.mock('@shared/lib/error-reporting', () => ({
 
 const pullImageMock = vi.fn((_runner: string, _image: string) => Promise.resolve())
 const buildImageMock = vi.fn((_runner: string, _image: string) => Promise.resolve())
-const checkImageExistsMock = vi.fn((_runner: string, _image: string) => Promise.resolve(false))
+const checkImageExistsMock = vi.fn((_runner: string, _image: string, _opts?: { timeoutMs?: number }) => Promise.resolve(false))
 let canBuild = false
 let availableDiskBytes = 100 * 1024 * 1024 * 1024
 vi.mock('./client-factory', () => ({
   canBuildImage: vi.fn(() => canBuild),
   pullImage: (runner: string, image: string) => pullImageMock(runner, image),
   buildImage: (runner: string, image: string) => buildImageMock(runner, image),
-  checkImageExists: (runner: string, image: string) => checkImageExistsMock(runner, image),
+  checkImageExists: (runner: string, image: string, opts?: { timeoutMs?: number }) => checkImageExistsMock(runner, image, opts),
   getAvailableDiskSpace: vi.fn(() => Promise.resolve(availableDiskBytes)),
   MIN_IMAGE_DISK_SPACE_BYTES: 5 * 1024 * 1024 * 1024,
+  IMAGE_COMMAND_TIMEOUT_MS: 60_000,
 }))
 
 vi.mock('@shared/lib/config/settings', () => ({
@@ -280,7 +281,8 @@ describe('ensureImageExists via start()', () => {
 
     await makeClient().start()
 
-    expect(checkImageExistsMock).toHaveBeenCalledWith('docker', IMAGE)
+    // Bounded, so a create that failed because the runtime stopped answering still reaches recovery.
+    expect(checkImageExistsMock).toHaveBeenCalledWith('docker', IMAGE, { timeoutMs: 60_000 })
   })
 
   it('propagates the pull error when the image is genuinely missing and the pull fails', async () => {

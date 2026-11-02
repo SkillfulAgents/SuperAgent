@@ -3,6 +3,7 @@ import { eq, and, desc } from 'drizzle-orm'
 
 import { getSettings, mutateSettings, type PlatformAuthSettings } from '@shared/lib/config/settings'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
+import { PLATFORM_CLAIMS } from '@shared/lib/platform-auth/claims'
 import { fetchPlatformJson } from '@shared/lib/platform-auth/platform-fetch'
 import { PlatformAuthSettingsSchema, PlatformAccountInfoSchema, type ParsedPlatformAccountInfo } from '@shared/lib/types/skillset-schema'
 import { captureException } from '@shared/lib/error-reporting'
@@ -293,6 +294,12 @@ function notifyPlatformServiceAuthChanged(connected: boolean): void {
     .catch((error) =>
       captureException(error, { tags: { area: 'platform-auth', op: 'notify-notifications' } }),
     ), { name: 'platform-auth.notify-platform-notifications' })
+  // Gamut drive keys were issued to the previous member.
+  background(import('../volumes/platform-mountable-volume')
+    .then((mod) => mod.dropPlatformVolumeKeys())
+    .catch((error) =>
+      captureException(error, { tags: { area: 'platform-auth', op: 'notify-volume-keys' } }),
+    ), { name: 'platform-auth.drop-volume-keys' })
   // The webhook relay goes (un)available with the connection, and starts over
   // when the token changes.
   background(import('../webhook-relay')
@@ -318,8 +325,6 @@ function getEnvManagedStatus(): PlatformAuthStatus | null {
   return buildEnvManagedStatus(envToken, null)
 }
 
-const PLATFORM_USER_ID_CLAIM = 'https://platform.skillfulagents.dev/claims/user_id'
-
 /**
  * Extract the platform user_id from a stored OIDC ID token. Returns null if
  * the claim is absent (issuer not yet updated) or the token is malformed.
@@ -329,7 +334,7 @@ function extractUserIdFromIdToken(idToken: string): string | null {
     const payload = JSON.parse(
       Buffer.from(idToken.split('.')[1], 'base64url').toString(),
     )
-    const val = payload[PLATFORM_USER_ID_CLAIM]
+    const val = payload[PLATFORM_CLAIMS.userId]
     return typeof val === 'string' ? val : null
   } catch {
     return null

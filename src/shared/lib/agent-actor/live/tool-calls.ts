@@ -9,22 +9,28 @@
  *   parks on an approval card;
  * - computer use and host scripts either run at once, when a grant covers
  *   them, or park on an approval card;
- * - host tools (schedules, triggers, webhook endpoints) are the host's to run;
+ * - host tools (schedules, triggers, webhook endpoints) are the host's to run,
+ *   whoever calls them, except the main conversation's own (schedule_resume),
+ *   which fail from a subagent;
  * - deliver_file is remembered until its result says the file exists;
  * - a Task/Agent call starts a subagent entry.
  *
  * Calls arrive by three paths, which act on different subsets, in the order
  * they always have: the main agent's stream, a subagent's stream, and a
  * subagent's complete message (which can repeat a call its stream already
- * delivered; registration is first-delivery-wins, and runs claim their request).
+ * delivered; registration is first-delivery-wins, runs claim their request,
+ * and a host tool runs once per call).
  */
 import type { ContainerClient } from '@shared/lib/container/types'
 import { getToolDefinition } from '@shared/lib/tools/registry'
+import { runsHostScripts, supportsComputerUse } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { getBlockingUserInputRequestKind } from '@shared/lib/tools/user-input-tools'
 import type { AgentInputRequests } from '@shared/lib/tools/requests/agent-input-requests'
 import {
   isReplayableUserInputRequest,
   type StreamRequestKind,
+  type UserInputRequestOutcome,
 } from '@shared/lib/tools/requests/request-schema'
 import type { AskUserQuestionInput } from '@shared/lib/tools/ask-user-question/definition'
 import type { RequestSecretInput } from '@shared/lib/tools/request-secret/definition'
@@ -41,7 +47,8 @@ import type { AgentComputerUse } from '@shared/lib/computer-use/agent-permission
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp } from '@shared/lib/computer-use/types'
 import { unwrapComputerRun } from '@shared/lib/computer-use/computer-run'
 import { background } from '@shared/lib/background'
-import { hostToolNameOf, type HostPort, type HostToolName, type HostToolResult } from '../host-port'
+import { MAIN_THREAD_ONLY_TOOLS, MAIN_THREAD_ONLY_TOOL_MESSAGE } from '../../../../../agent-container/src/main-thread-tools'
+import { hostToolNameOf, type HostPort, type HostToolName, type HostToolResult, type LoginDecision } from '../host-port'
 import { runAutoApproved, type HostRunActor } from '../host-runs'
 import type { SessionEvent } from './session-channel'
 
@@ -71,6 +78,12 @@ export interface ToolCallContext {
   rejectInput(toolUseId: string, reason: string): Promise<void>
   /** Recompute whether the session is waiting on the user (on its live state, after any reattach). */
   syncAwaiting(): void
+  /**
+   * A request decided without a card (the vault answered a sign-in): its
+   * transcript result may still be held back by parallel siblings, and must
+   * not be parked again as an ask meanwhile.
+   */
+  settled(toolUseId: string, outcome: UserInputRequestOutcome): void
   capabilityGranted(capability: Capability): boolean
   grantCapability(capability: Capability): void
   /** A Task/Agent call: the subagent gets an entry. */
@@ -120,11 +133,12 @@ const USER_INPUT_REQUESTS: Record<
   login: {
     label: 'sign-in request',
     payload: (input) => {
-      const { message, fields } = input as RequestLoginInput
+      const { message, fields, username } = input as RequestLoginInput
       // The card draws the model's field list only until the container's
       // context arrives; refs never leave the container's side of the tool.
-      return typeof message === 'string' && message.trim() && Array.isArray(fields)
-        ? { message, fields: summarizeLoginFields(fields) }
+      // No fields is a page that offers only "Continue with Google".
+      return typeof message === 'string' && message.trim() && (fields === undefined || Array.isArray(fields))
+        ? { message, fields: summarizeLoginFields(fields), ...(typeof username === 'string' && username.trim() ? { username: username.trim() } : {}) }
         : 'missing message or fields'
     },
   },
@@ -161,10 +175,34 @@ export class ToolCalls {
    * suppresses its own stale card.
    */
   private readonly cancelledReviews: Set<string>
+  /**
+   * request_login calls the host is deciding (answered from the vault, or a
+   * card for the user), by the subagent call that made them, if any. A
+   * result arriving meanwhile removes the id, and so do the session going
+   * away and that subagent ending: the decision then raises no card for a
+   * call nobody can answer.
+   */
+  private readonly loginDecisions: Map<string, string | undefined>
+  /**
+   * Host tool calls already run: a subagent's stream and its complete message
+   * both carry each call, and a schedule_task run twice is saved twice.
+   * Carried across a reattach (the second delivery can land on the next
+   * attachment), and never cleared: an id never recurs.
+   */
+  private readonly hostToolsRun: Set<string>
 
   /** `prior`: the tool calls of the attachment this one replaces. */
   constructor(private readonly ctx: ToolCallContext, prior?: ToolCalls) {
     this.cancelledReviews = prior?.cancelledReviews ?? new Set()
+    this.loginDecisions = prior?.loginDecisions ?? new Map()
+    this.hostToolsRun = prior?.hostToolsRun ?? new Set()
+  }
+
+  /** Stop waiting on the host's sign-in decisions: all of them, or those of the subagent call `parentToolId`. */
+  dropLoginDecisions(parentToolId?: string): void {
+    for (const [toolUseId, parent] of this.loginDecisions) {
+      if (parentToolId === undefined || parent === parentToolId) this.loginDecisions.delete(toolUseId)
+    }
   }
 
   /** A tool call on the main agent's stream. */
@@ -177,8 +215,7 @@ export class ToolCalls {
       this.ctx.host.send('analytics', { event: `agent_${action}`, properties: { agentSlug: this.ctx.agentSlug } })
     }
     this.parkUserInput(toolUse)
-    const hostTool = hostToolNameOf(name)
-    if (hostTool) this.runHostTool(toolUse, hostTool)
+    this.hostTool(toolUse)
     if (this.isScriptRun(name)) this.scriptRun(toolUse)
     if (name.startsWith(COMPUTER_USE_PREFIX)) background(this.computerUse(toolUse), { name: 'tool-calls.computer-use' })
     // Under a 'review' policy the container parks the launch on an approval;
@@ -191,6 +228,7 @@ export class ToolCalls {
   /** A tool call on a subagent's stream. */
   subagentStreamedToolUse(toolUse: ToolUse, parentToolId: string): void {
     this.parkUserInput(toolUse, parentToolId)
+    this.hostTool(toolUse, parentToolId)
     if (this.isScriptRun(toolUse.name)) this.scriptRun(toolUse, parentToolId)
     if (toolUse.name.startsWith(COMPUTER_USE_PREFIX)) background(this.computerUse(toolUse, parentToolId), { name: 'tool-calls.computer-use' })
     if (LAUNCH_TOOLS.has(toolUse.name)) this.ctx.trackSubagentLaunch(toolUse.id, toolUse.input)
@@ -202,6 +240,7 @@ export class ToolCalls {
   subagentMessageToolUse(toolUse: ToolUse, parentToolId: string): void {
     if (LAUNCH_TOOLS.has(toolUse.name)) this.ctx.trackSubagentLaunch(toolUse.id, toolUse.input)
     this.parkUserInput(toolUse, parentToolId)
+    this.hostTool(toolUse, parentToolId)
     if (this.isScriptRun(toolUse.name)) this.scriptRun(toolUse, parentToolId)
     if (toolUse.name.startsWith(COMPUTER_USE_PREFIX)) background(this.computerUse(toolUse, parentToolId), { name: 'tool-calls.computer-use' })
   }
@@ -214,6 +253,7 @@ export class ToolCalls {
     const blocks = Array.isArray(content.message?.content) ? content.message.content : []
     for (const block of blocks as Array<{ type: string; tool_use_id?: string; content?: unknown; is_error?: boolean }>) {
       if (block.type !== 'tool_result' || !block.tool_use_id) continue
+      this.loginDecisions.delete(block.tool_use_id)
       // Its result is in: replaying it to a client that connects later would
       // resurrect a decided card.
       this.ctx.requests.resolveIfInStore(block.tool_use_id, 'stream', block.is_error ? 'declined' : 'answered')
@@ -244,6 +284,7 @@ export class ToolCalls {
     if (!Array.isArray(blocks)) return
     for (const block of blocks as Array<{ type: string; tool_use_id?: string; content?: unknown; is_error?: boolean }>) {
       if (block.type !== 'tool_result' || !block.tool_use_id) continue
+      this.loginDecisions.delete(block.tool_use_id)
       if (!this.ctx.requests.resolveIfInStore(block.tool_use_id, 'stream', block.is_error ? 'declined' : 'answered')) continue
       // Every other tab drops the card off this (the resolving tab already did).
       this.ctx.emit({ type: 'tool_result', toolUseId: block.tool_use_id, result: block.content, isError: block.is_error || false })
@@ -269,6 +310,8 @@ export class ToolCalls {
     for (const { toolUseId, toolName } of unresolved) {
       const kind = getBlockingUserInputRequestKind(toolName)
       if (!kind || this.ctx.requests.getOpenRequest(toolUseId)) continue
+      // The host is deciding it: the vault may answer it, and a card is raised only if not.
+      if (this.loginDecisions.has(toolUseId)) continue
       this.register(kind, toolUseId, { recovered: true })
     }
   }
@@ -316,6 +359,8 @@ export class ToolCalls {
       const card = payload(input ?? {})
       if (typeof card === 'string') {
         console.error(`[LiveSession] ${label}: ${card}`)
+      } else if (kind === 'login') {
+        this.decideLogin(toolUse, card, parentToolUseId)
       } else {
         this.register(kind, toolUse.id, card, { parentToolUseId })
         if (kind === 'browser_input') this.captureBrowserContext(toolUse.id)
@@ -325,6 +370,41 @@ export class ToolCalls {
       console.error(`[LiveSession] Error handling ${label}:`, error)
     }
     this.ctx.syncAwaiting()
+  }
+
+  /**
+   * A sign-in request: the host answers it from the user's vault when it can
+   * (filling a saved account, or listing the agent's accounts on the site),
+   * and only otherwise does a card open for the user. Until it decides, the
+   * session is not waiting on anyone, so nothing notifies the user of a
+   * sign-in that needs nobody.
+   */
+  private decideLogin(toolUse: ToolUse, card: Record<string, unknown>, parentToolUseId?: string): void {
+    // The stream and the complete message both carry the call.
+    if (this.loginDecisions.has(toolUse.id)) return
+    this.loginDecisions.set(toolUse.id, parentToolUseId)
+    background(async () => {
+      let decision: LoginDecision
+      try {
+        decision = await this.ctx.host.call('loginRequest', {
+          agentSlug: this.ctx.agentSlug,
+          sessionId: this.ctx.sessionId,
+          toolUseId: toolUse.id,
+          input: toolUse.input,
+        })
+      } catch (error) {
+        console.error('[LiveSession] Deciding a sign-in request failed:', error instanceof Error ? error.message : error)
+        decision = { action: 'ask', vault: { mode: 'new' } }
+      }
+      // Removed by the call's result: it ended while the host decided.
+      if (!this.loginDecisions.delete(toolUse.id)) return
+      if (decision.action !== 'ask') {
+        this.ctx.settled(toolUse.id, decision.action === 'settled' ? 'answered' : 'cancelled')
+        return
+      }
+      this.register('login', toolUse.id, { ...card, vault: decision.vault, ...(decision.login ? { login: decision.login } : {}) }, { parentToolUseId })
+      this.ctx.syncAwaiting()
+    }, { name: 'tool-calls.decide-login' })
   }
 
   /**
@@ -351,6 +431,22 @@ export class ToolCalls {
         }),
       { name: 'tool-calls.capture-browser-context' },
     )
+  }
+
+  /** A host tool's call, from the main agent or the subagent `parentToolUseId`: run once. */
+  private hostTool(toolUse: ToolUse, parentToolUseId?: string): void {
+    const toolName = hostToolNameOf(toolUse.name)
+    if (!toolName || this.hostToolsRun.has(toolUse.id)) return
+    this.hostToolsRun.add(toolUse.id)
+    if (parentToolUseId && MAIN_THREAD_ONLY_TOOLS.has(toolUse.name)) {
+      // The container's hook denies it first; failing it here unblocks a call
+      // that got past the hook anyway.
+      background(this.ctx.rejectInput(toolUse.id, MAIN_THREAD_ONLY_TOOL_MESSAGE).catch(console.error), {
+        name: 'tool-calls.reject-main-thread-tool',
+      })
+      return
+    }
+    this.runHostTool(toolUse, toolName)
   }
 
   /**
@@ -399,6 +495,10 @@ export class ToolCalls {
       return
     }
     const platform = process.platform
+    if (!runsHostScripts(getServerFacts())) {
+      this.autoReject(toolUse.id, 'Host scripts are not available in the Mac App Store edition, whose sandbox confines what the app runs.')
+      return
+    }
     const supported = VALID_SCRIPT_TYPES[platform]
     if (!supported) {
       this.autoReject(toolUse.id, `Host script execution is not supported on this platform (${platform}). Only macOS and Windows are supported.`)
@@ -448,9 +548,10 @@ export class ToolCalls {
       // permission level, the card and the executor all see that.
       ;({ method, params } = unwrapComputerRun(method, params))
 
-      // macOS and Windows only (the mock E2E runtime drives no machine).
-      if (process.env.E2E_MOCK !== 'true' && process.platform !== 'darwin' && process.platform !== 'win32') {
-        this.autoReject(toolUse.id, `Computer use is not supported on this platform (${process.platform}). macOS and Windows are supported.`)
+      // macOS and Windows outside the Mac App Store edition (the mock E2E
+      // runtime drives no machine).
+      if (process.env.E2E_MOCK !== 'true' && !supportsComputerUse(getServerFacts())) {
+        this.autoReject(toolUse.id, `Computer use is not available on this machine (${process.platform}). It needs macOS or Windows, and is not in the Mac App Store edition.`)
         return
       }
 

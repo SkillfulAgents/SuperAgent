@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- The Mac App Store build's app. Store apps must run in the App Sandbox. -->
+  <key>com.apple.security.app-sandbox</key>
+  <true/>
+  <key>com.apple.security.application-groups</key>
+  <array>
+    <string>HL9SP7TJ3J.so.gamut.app</string>
+  </array>
+  <!-- The local API server, agents' containers, the LLM and the platform. -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+  <key>com.apple.security.network.server</key>
+  <true/>
+  <!-- Voice mode. -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+  <!-- The built-in runtime's VM (Virtualization.framework, through limactl). -->
+  <key>com.apple.security.virtualization</key>
+  <true/>
+  <!-- A folder the person picks in the open panel, kept across launches as a
+       security-scoped bookmark (local drives). -->
+  <key>com.apple.security.files.user-selected.read-write</key>
+  <true/>
+  <key>com.apple.security.files.bookmarks.app-scope</key>
+  <true/>
+</dict>
+</plist>

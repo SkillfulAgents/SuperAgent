@@ -912,6 +912,12 @@ function getOrCreateEventSource(
           streamListeners.get(sessionId)?.forEach((l) => l())
         }
       }
+      else if (data.type === 'slash_commands_changed') {
+        if (Array.isArray(data.slashCommands)) {
+          sessionSlashCommands.set(sessionId, data.slashCommands)
+          streamListeners.get(sessionId)?.forEach((l) => l())
+        }
+      }
       // Streaming events - update streaming state, preserve isActive
       else if (data.type === 'stream_start') {
         if (startedCommandsAwaitingTranscript.size > 0) {

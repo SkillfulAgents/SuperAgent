@@ -16,6 +16,7 @@ import { accountReauthRequestDef } from './account-reauth/definition'
 import { mcpReauthRequestDef } from './mcp-reauth/definition'
 import type { ToolDefinition } from './types'
 import { bashDef } from './bash/definition'
+import { monitorDef } from './monitor/definition'
 import { readDef } from './read/definition'
 import { writeDef } from './write/definition'
 import { globDef } from './glob/definition'
@@ -87,6 +88,7 @@ const definitions: Record<string, ToolDefinition> = {
 
   // Shell/command tools
   Bash: bashDef,
+  Monitor: monitorDef,
 
   // File operations
   Read: readDef,

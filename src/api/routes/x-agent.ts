@@ -232,12 +232,16 @@ async function checkAgentPolicy(
 
   try {
     const reviews = agentRegistry.get(callerSlug).inputs.reviews
-    const userDecision = await awaitReview(reviews, (raise) => reviews.requestXAgent(
+    const { decision: userDecision } = await awaitReview(reviews, (raise) => reviews.requestXAgent(
       { targetAgentSlug: targetSlug ?? '', targetAgentName: targetName, operation, preview, fileTransfer },
       raise,
     ))
     if (userDecision === 'deny') {
       return { allowed: false, reason: 'Denied by user' }
+    }
+    // A Block set while the card was open beats the approval.
+    if (operation !== 'create' && await evaluatePolicy(callerSlug, operation, targetSlug) === 'block') {
+      return { allowed: false, reason: 'Blocked by policy' }
     }
     return { allowed: true }
   } catch (error) {

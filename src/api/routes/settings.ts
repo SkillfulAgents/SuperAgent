@@ -17,6 +17,8 @@ import type { BedrockLlmProvider } from '@shared/lib/llm-provider/bedrock-provid
 import { getDataDir, getAgentsDataDir } from '@shared/lib/config/data-dir'
 import { assertPathWithinDir } from '@shared/lib/utils/path-safety'
 import { Authenticated, IsAdmin } from '../middleware/auth'
+import { addAgentUsers } from '@shared/lib/services/agent-members-service'
+import { isPublicVolume } from '@shared/lib/services/volume-service'
 import { isAuthMode } from '@shared/lib/auth/mode'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
@@ -57,6 +59,8 @@ import {
 } from '@shared/lib/web-provider'
 import { containerHost } from '@shared/lib/agent-actor'
 import { checkAllRunnersAvailability, refreshRunnerAvailability, startRunner, restartRunner, getContainerClientClass, getRunnerDisplayName, SUPPORTED_RUNNERS, type ContainerRunner } from '@shared/lib/container/client-factory'
+import { offersRuntime } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { detectAllProviders } from '../../main/host-browser'
 import { revokePlatformToken } from '@shared/lib/services/platform-auth-service'
 import { resetApplicationTables } from '@shared/lib/db/reset'
@@ -371,6 +375,7 @@ function buildSettingsResponse(
     shareErrorReports: appSettings.shareErrorReports !== false,
     enableToolSearch: appSettings.enableToolSearch !== false,
     agentCapabilities: appSettings.agentCapabilities ?? DEFAULT_AGENT_CAPABILITIES,
+    teamBrain: appSettings.teamBrain,
   }
 }
 
@@ -413,6 +418,11 @@ settings.put(
         }
       }
 
+      // Every member is given the Team Brain, so every member must be able to read its drive.
+      if (body.teamBrain && !(await isPublicVolume(body.teamBrain.volumeId))) {
+        return c.json({ error: 'Team Brain needs a drive everyone in the workspace can add' }, 400)
+      }
+
       // Read FRESH and fail-closed: never merge onto the possibly-
       // corruption-defaulted cache (that is what overwrote real API keys/auth).
       // Applying and validating the candidate below are synchronous, so a valid
@@ -434,6 +444,7 @@ settings.put(
           hostTotalMemoryBytes: os.totalmem(),
           supportsCustomAgentImage: (runner: ContainerRunner) =>
             getContainerClientClass(runner).supportsCustomAgentImage,
+          offersRuntime: (runner: ContainerRunner) => offersRuntime(getServerFacts(), runner),
         },
       })[0]
 
@@ -522,6 +533,11 @@ settings.put(
         action: 'updated',
         details: buildSettingsAuditDetails(currentSettings, newSettings),
       })
+      // The Team Brain is the workspace's: every member is a user of the agent its record names, and members who join
+      // later get it when their account is made. Every write of the record gives it again, so writing the record again
+      // heals a grant that failed, and giving it twice adds no one twice. Last, so a failed grant still leaves the write
+      // audited and its other effects done.
+      if (body.teamBrain) await addAgentUsers(body.teamBrain.agentSlug)
       return c.json(buildSettingsResponse(newSettings, hasRunningAgents, runnerAvailability))
     } catch (error) {
       console.error('Failed to update settings:', error)

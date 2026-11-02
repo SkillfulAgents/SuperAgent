@@ -24,6 +24,7 @@ describe('Codex subscription provider', () => {
     expect(() => provider.createClient()).toThrow('API-capable global summarizer')
     const models = provider.getBuiltinCatalog()
     expect(models.find(model => model.family === 'gpt-sol' && model.isLatest)?.id).toBe('gpt-6.1-sol')
+    expect(models.find(model => model.family === 'gpt-terra' && model.isLatest)?.id).toBe('gpt-6.1-terra')
     expect(models.some(model => model.id === 'gpt-5.5')).toBe(false)
     expect(models.every(model => model.contextWindow === 872000)).toBe(true)
     for (const model of models) expect(model.supportedSpeeds).toEqual(['normal', 'fast'])

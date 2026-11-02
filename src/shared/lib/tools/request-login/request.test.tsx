@@ -12,7 +12,7 @@ vi.mock('@renderer/lib/api', () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }))
 
-const mockToast = vi.hoisted(() => ({ warning: vi.fn() }))
+const mockToast = vi.hoisted(() => ({ warning: vi.fn(), success: vi.fn(), error: vi.fn() }))
 vi.mock('sonner', () => ({ toast: mockToast }))
 
 const electron = vi.hoisted(() => ({ value: false }))
@@ -25,10 +25,11 @@ vi.mock('@renderer/lib/env', async (importOriginal) => ({
 // what a fill through it does to the request.
 const pickerAnswer = vi.hoisted(() => ({ body: null as unknown }))
 vi.mock('../request-browser-input/browser-credential-picker', () => ({
-  BrowserCredentialPicker: (props: { kind?: string; onFilled?: (body: unknown) => void }) => (
+  BrowserCredentialPicker: (props: { kind?: string; loginOptions?: unknown; onFilled?: (body: unknown) => void }) => (
     <button
       data-testid="credential-picker"
       data-kind={props.kind}
+      data-login-options={JSON.stringify(props.loginOptions ?? null)}
       onClick={() => props.onFilled?.(pickerAnswer.body)}
     >
       saved login
@@ -47,6 +48,8 @@ const CONTEXT: LoginContext = {
     { kind: 'password', label: 'Password', inputType: 'password', inputMode: '', autocomplete: 'current-password', maxLength: -1 },
     { kind: 'otp', label: 'Authentication code', inputType: 'text', inputMode: 'numeric', autocomplete: 'one-time-code', maxLength: 1 },
   ],
+  held: [],
+  providers: [],
 }
 
 const json = (status: number, body: unknown) => ({ ok: status < 400, status, json: () => Promise.resolve(body) })
@@ -92,10 +95,13 @@ describe('LoginRequestItem', () => {
     resetLoginRequestStore()
     mockApiFetch.mockReset()
     mockToast.warning.mockReset()
+    mockToast.success.mockReset()
     electron.value = false
     pickerAnswer.body = { success: true, filled: 2, failed: 0, submitted: true, problems: [] }
     routes = {
       [`${BASE}/login-request?toolUseId=tu-1`]: () => json(200, CONTEXT),
+      // No saved accounts: the form opens on the fields.
+      [`${BASE}/login-request/vault?toolUseId=tu-1`]: () => json(200, { site: 'github.com', otherMembers: 0, identity: null, accounts: [], providerAccounts: [], providers: [] }),
       [`${BASE}/fill-login`]: () => json(200, { success: true, filled: 3, failed: 0, submitted: true, problems: [] }),
       [`${BASE}/complete-login`]: () => json(200, { success: true }),
       [`${BASE}/messages`]: () => json(200, {}),
@@ -139,17 +145,27 @@ describe('LoginRequestItem', () => {
     expect(screen.getByTestId('login-insecure')).toHaveTextContent('Not encrypted (http)')
   })
 
-  it('draws the agent\'s fields disabled until the browser has located them', async () => {
+  it('shows no fields until the browser has located them and the saved accounts are known', async () => {
     let release!: () => void
     contextIs(() => new Promise((resolve) => { release = () => resolve(json(200, CONTEXT)) }))
     render(<LoginRequestItem {...props()} />)
     expect(await screen.findByText('Locating the sign-in form on the page…')).toBeInTheDocument()
-    expect(screen.getByLabelText('Password')).toBeDisabled()
-    expect(screen.getByTestId('login-submit')).toBeDisabled()
+    expect(screen.getByTestId('login-loading')).toBeInTheDocument()
+    expect(screen.queryByTestId('login-form')).toBeNull()
+    expect(screen.queryByTestId('login-submit')).toBeNull()
+    expect(screen.getByTestId('login-decline')).not.toBeDisabled()
     release()
     await waitFor(() => expect(screen.getByLabelText('Password')).not.toBeDisabled())
-    // Focused once usable, not on mount.
+    expect(screen.queryByTestId('login-loading')).toBeNull()
+    // Focused once usable.
     expect(screen.getByTestId('login-field-0')).toHaveFocus()
+  })
+
+  it('opens on the fields when the saved accounts cannot be loaded', async () => {
+    routes[`${BASE}/login-request/vault?toolUseId=tu-1`] = () => json(500, { error: 'Saved accounts could not be loaded' })
+    render(<LoginRequestItem {...props()} />)
+    await waitFor(() => expect(screen.getByTestId('login-field-0')).not.toBeDisabled(), { timeout: 4000 })
+    expect(screen.queryByTestId('login-vault-accounts')).toBeNull()
   })
 
   it('tries again while the browser is still locating the fields', async () => {
@@ -246,9 +262,52 @@ describe('LoginRequestItem', () => {
       toolUseId: 'tu-1',
       origin: 'https://github.com',
       values: ['+1 555 0100', 'hunter2-hunter2', '482913'],
+      // "Save for later" is on by default.
+      save: true,
     }])
     expect(screen.getByTestId('login-request-completed')).toHaveAttribute('data-status', 'filled')
     expect(mockToast.warning).not.toHaveBeenCalled()
+  })
+
+  it('says what was kept when the browser had closed before the user answered', async () => {
+    const user = userEvent.setup()
+    const onComplete = vi.fn()
+    routes[`${BASE}/fill-login`] = () => json(200, { success: true, browserClosed: true, kept: { how: 'saved', username: '+1 555 0100' } })
+    render(<LoginRequestItem {...props({ onComplete })} />)
+    const username = await ready()
+    await user.type(username, '+1 555 0100')
+    await user.type(screen.getByLabelText('Password'), 'hunter2-hunter2')
+    await user.type(screen.getByLabelText('Authentication code'), '482913')
+    await user.click(screen.getByTestId('login-submit'))
+
+    await waitFor(() => expect(onComplete).toHaveBeenCalled())
+    expect(screen.getByTestId('login-request-completed')).toHaveAttribute('data-status', 'browser_closed')
+    expect(screen.getByTestId('login-request-completed')).toHaveTextContent('Saved for the agent')
+    expect(mockToast.success).toHaveBeenCalledWith('+1 555 0100 is saved', expect.objectContaining({ description: expect.stringContaining('signs in with this') }))
+  })
+
+  it('says what is kept for the agent when the user did not save it, and when nothing could be', async () => {
+    const user = userEvent.setup()
+    routes[`${BASE}/fill-login`] = () => json(200, { success: true, browserClosed: true, kept: { how: 'held', username: 'octocat' } })
+    const first = render(<LoginRequestItem {...props()} />)
+    const username = await ready()
+    await user.type(username, 'octocat')
+    await user.type(screen.getByLabelText('Password'), 'hunter2-hunter2')
+    await user.type(screen.getByLabelText('Authentication code'), '482913')
+    await user.click(screen.getByTestId('login-submit'))
+    await waitFor(() => expect(screen.getByTestId('login-request-completed')).toHaveTextContent('Kept for the agent'))
+    expect(mockToast.success).toHaveBeenCalledWith('octocat is kept for the agent', expect.objectContaining({ description: expect.stringContaining('within 30 minutes') }))
+    first.unmount()
+
+    resetLoginRequestStore()
+    routes[`${BASE}/fill-login`] = () => json(200, { success: true, browserClosed: true })
+    render(<LoginRequestItem {...props()} />)
+    await user.type(await ready(), 'octocat')
+    await user.type(screen.getByLabelText('Password'), 'hunter2-hunter2')
+    await user.type(screen.getByLabelText('Authentication code'), '482913')
+    await user.click(screen.getByTestId('login-submit'))
+    await waitFor(() => expect(screen.getByTestId('login-request-completed')).toHaveTextContent('The browser had closed'))
+    expect(mockToast.warning).toHaveBeenCalledWith('The browser had closed', expect.objectContaining({ description: expect.stringContaining('asks you') }))
   })
 
   it('keeps every digit of a code pasted with separators, applying the page\'s limit to the code', async () => {
@@ -298,6 +357,8 @@ describe('LoginRequestItem', () => {
     const user = userEvent.setup()
     routes[`${BASE}/fill-login`] = () => json(502, { error: 'The browser is unavailable' })
     contextIs({ fields: [CONTEXT.fields[1]] })
+    // Whose password it is was entered on the previous step: nothing more to ask to save it.
+    routes[`${BASE}/login-request/vault?toolUseId=tu-1`] = () => json(200, { site: 'github.com', otherMembers: 0, identity: 'octocat', accounts: [], providerAccounts: [], providers: [] })
     const onComplete = vi.fn()
     render(<LoginRequestItem {...props({ onComplete, fields: [{ kind: 'password', label: 'Password' }] })} />)
     const password = await ready()
@@ -385,6 +446,16 @@ describe('LoginRequestItem', () => {
     await user.click(picker)
     await waitFor(() => expect(onComplete).toHaveBeenCalled())
     expect(posted('/fill-login')).toEqual([])
+  })
+
+  it('saves a login picked from the password manager when "Save for later" is on, and not once it is off', async () => {
+    const user = userEvent.setup()
+    contextIs({ fields: CONTEXT.fields.slice(0, 2) })
+    render(<LoginRequestItem {...props({ fields: props().fields.slice(0, 2) })} />)
+    const picker = await screen.findByTestId('credential-picker')
+    await waitFor(() => expect(JSON.parse(picker.getAttribute('data-login-options')!)).toEqual({ save: true }))
+    await user.click(screen.getByTestId('login-save'))
+    expect(JSON.parse(picker.getAttribute('data-login-options')!)).toBeNull()
   })
 
   it('shows a saved login sent after the request was answered elsewhere as already answered, not as a failed fill', async () => {

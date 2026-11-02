@@ -12,6 +12,10 @@ vi.mock('../db', () => ({ get db() { return database } }))
 vi.mock('../error-reporting', () => ({ captureException: vi.fn() }))
 vi.mock('../agent-actor', () => ({ agentCatalog: { get: vi.fn(async () => ({ slug: 'agent', name: 'Ada' })) } }))
 vi.mock('../agent-integrations/app-link', () => ({ resolveInternetAppBaseUrl: vi.fn(() => 'https://app.example') }))
+let authMode = false
+let agentOwner: string | null = null
+vi.mock('../auth/mode', () => ({ isAuthMode: () => authMode }))
+vi.mock('../services/agent-owner', () => ({ getAgentOwnerUserId: vi.fn(async () => agentOwner) }))
 
 const { MeetingAgentIntegration, MeetingPolicyError, MAX_CONSECUTIVE_POLL_FAILURES, MAX_MEETING_AGE_MS, MEETING_LOST_CONTACT_DETAIL, MEETING_POLL_INTERVAL_MS, MEETING_RECORDING_RETENTION_HOURS } = await import('./meeting-agent-integration')
 const { getMeeting, listMeetings, toPublicMeeting, transitionMeeting, verifyParticipantToken } = await import('./store')
@@ -65,6 +69,7 @@ let integration: TestIntegration
 let events: IntegrationInputEvent[]
 beforeEach(async () => {
   vi.useFakeTimers()
+  authMode = false; agentOwner = null
   handle = await createTestDatabase(); database = handle.db
   await database.insert(chatIntegrations).values({ id: 'integration', provider: 'recall', agentSlug: 'agent', config: '{"apiKey":"k","region":"us-west-2"}', status: 'active', createdAt: new Date(), updatedAt: new Date() }).run()
   host = new FakeHost()
@@ -103,6 +108,24 @@ describe('MeetingAgentIntegration', () => {
     const briefed = await integration.prepareInput(events[0], { integration: record, externalId: meeting.id, actor: {} as never })
     expect(briefed.systemPrompt).toContain('Standing instructions for every meeting you join:\nNever quote prices.')
     expect(briefed.text).not.toContain('Never quote prices')
+  })
+
+  it("with accounts, attributes the agent's own join to the installation's creator, else the agent's owner", async () => {
+    authMode = true; agentOwner = 'bob'
+    // The installation the agent set up itself has no creator (the beforeEach row).
+    const first = await integration.requestJoin({ meetingUrl: 'https://meet.google.com/abc-defg-hij' }, { source: 'agent' })
+    expect((await getMeeting(first.id))?.createdByUserId).toBe('bob')
+    await database.update(chatIntegrations).set({ createdByUserId: 'carol' }).run()
+    const second = await integration.requestJoin({ meetingUrl: 'https://meet.google.com/xyz-wxyz-xyz' }, { source: 'agent' })
+    expect((await getMeeting(second.id))?.createdByUserId).toBe('carol')
+  })
+
+  it('with accounts, refuses a join nobody can be attributed to before briefing the agent or sending a bot', async () => {
+    authMode = true
+    await expect(integration.requestJoin({ meetingUrl: 'https://meet.google.com/abc-defg-hij' }, { source: 'agent' })).rejects.toThrow(/no owner/)
+    expect(host.created).toHaveLength(0)
+    expect(events).toHaveLength(0)
+    expect(await listMeetings('integration')).toHaveLength(0)
   })
 
   it('rejects links that are not meeting invites and inactive installations', async () => {

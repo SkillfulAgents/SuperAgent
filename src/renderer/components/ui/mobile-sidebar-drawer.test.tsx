@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, act } from "@testing-library/react"
 import { MobileSidebarDrawer, BACKDROP_SCRIM } from "./mobile-sidebar-drawer"
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "./context-menu"
 
 afterEach(cleanup)
 
@@ -159,8 +160,19 @@ describe("MobileSidebarDrawer — settled state", () => {
 describe("MobileSidebarDrawer — dismissal", () => {
   it("closes when the backdrop is clicked", () => {
     const { onOpenChange } = renderDrawer({ open: true })
-    fireEvent.click(screen.getByTestId("mobile-drawer-backdrop"))
+    const backdrop = screen.getByTestId("mobile-drawer-backdrop")
+    fireEvent.pointerDown(backdrop)
+    fireEvent.click(backdrop)
     expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
+
+  it("ignores a backdrop click whose press began elsewhere", () => {
+    // The click a browser sends on lifting a finger can land on the backdrop
+    // when the press began on a row (see the row-menu cases below).
+    const { onOpenChange } = renderDrawer({ open: true })
+    fireEvent.pointerDown(screen.getByTestId("inner-btn"))
+    fireEvent.click(screen.getByTestId("mobile-drawer-backdrop"))
+    expect(onOpenChange).not.toHaveBeenCalled()
   })
 
   it("closes on Escape while open", () => {
@@ -172,6 +184,59 @@ describe("MobileSidebarDrawer — dismissal", () => {
   it("does not listen for Escape while closed", () => {
     const { onOpenChange } = renderDrawer({ open: false })
     fireEvent.keyDown(document, { key: "Escape" })
+    expect(onOpenChange).not.toHaveBeenCalled()
+  })
+})
+
+// A sidebar row's long-press menu is a modal Radix ContextMenu opened from inside
+// the drawer. Closing it must close only the menu, however it is closed.
+describe("MobileSidebarDrawer — a row's menu over the drawer", () => {
+  function renderWithRowMenu() {
+    const onOpenChange = vi.fn()
+    render(
+      <MobileSidebarDrawer open onOpenChange={onOpenChange}>
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <a href="/session" data-testid="row">Weekly report</a>
+          </ContextMenuTrigger>
+          <ContextMenuContent>
+            <ContextMenuItem>Rename</ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
+      </MobileSidebarDrawer>
+    )
+    const row = screen.getByTestId("row")
+    // The long-press: the press lands on the row, then the menu opens.
+    fireEvent.pointerDown(row)
+    fireEvent.contextMenu(row)
+    expect(screen.getByRole("menuitem", { name: "Rename" })).toBeInTheDocument()
+    return { onOpenChange, backdrop: screen.getByTestId("mobile-drawer-backdrop") }
+  }
+
+  afterEach(() => {
+    document.body.style.pointerEvents = ""
+  })
+
+  it("stays open for the click that lifting the finger lands on the backdrop", () => {
+    const { onOpenChange, backdrop } = renderWithRowMenu()
+    // The open menu turns page pointer events off, so the panel is no longer a
+    // hit target and the lift's click lands on the backdrop beneath it.
+    expect(document.body.style.pointerEvents).toBe("none")
+    fireEvent.click(backdrop)
+    expect(onOpenChange).not.toHaveBeenCalled()
+  })
+
+  it("stays open when a tap on the backdrop dismisses the menu", () => {
+    const { onOpenChange, backdrop } = renderWithRowMenu()
+    fireEvent.pointerDown(backdrop)
+    fireEvent.click(backdrop)
+    expect(onOpenChange).not.toHaveBeenCalled()
+  })
+
+  it("leaves Escape to the menu", () => {
+    const { onOpenChange } = renderWithRowMenu()
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" })
+    expect(screen.queryByRole("menuitem", { name: "Rename" })).not.toBeInTheDocument()
     expect(onOpenChange).not.toHaveBeenCalled()
   })
 })

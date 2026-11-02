@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAgent } from './use-agents'
@@ -26,6 +26,7 @@ export function useAgentMounts(agentSlug: string) {
       return res.json()
     },
     enabled: !!agentSlug,
+    refetchInterval: query => query.state.status !== 'error' && query.state.data?.some(mount => mount.health === 'preparing') ? 2000 : false,
   })
 }
 
@@ -35,7 +36,7 @@ export function useAddMount() {
   return useMutation({
     mutationFn: async (data: { agentSlug: string; restart?: boolean; name?: string; visibility?: 'public' | 'private' } & (
       { hostPath: string; volumeId?: never; type?: never; config?: never }
-      | { volumeId: string; hostPath?: never; type?: never; config?: never }
+      | { volumeId: string; readOnly?: boolean; hostPath?: never; type?: never; config?: never }
       | (VolumeSource & { volumeId?: never; hostPath?: never })
     )) => {
       if (!data.volumeId && !data.type && !data.hostPath) {
@@ -45,11 +46,12 @@ export function useAddMount() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data.volumeId
-          ? { volumeId: data.volumeId, restart: data.restart }
+          ? { volumeId: data.volumeId, readOnly: data.readOnly, restart: data.restart }
           : { ...volumeConfigSchema.parse(data.type ? { type: data.type, config: data.config } : { type: 'local', config: { path: data.hostPath } }), name: data.name, visibility: data.visibility, restart: data.restart }),
       })
       if (!res.ok) throw new Error(await parseErrorMessage(res, 'Failed to add drive'))
-      return res.json() as Promise<VolumeSummary>
+      // The route adds the attached definition's id and name to the mount's summary.
+      return res.json() as Promise<VolumeSummary & { volumeId: string; volumeName: string }>
     },
     onSuccess: () => {
       // Bare prefix (not keyed on agentSlug): the agent-home Volumes card keys on the

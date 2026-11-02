@@ -80,6 +80,17 @@ process.env.SUPERAGENT_IS_PACKAGED = app.isPackaged ? '1' : '0'
 // Dev is unaffected: app.name is set to 'Superagent-Dev' above (pre-resolution), so the
 // fallback below resolves dev data to `…/Superagent-Dev`. A pre-existing SUPERAGENT_DATA_DIR
 // (custom dev/CI dir) is always honored verbatim via `??=`.
+//
+// The App Sandbox build has no legacy data to keep, and its Lima VM mounts the data dir,
+// which there can't contain a space (Lima drops such a mount silently, and the VM then
+// writes into its own disk) and can't be the container root (Virtualization.framework
+// won't share it). So it uses `<container>/.superagent`, getDataDir()'s own default.
+if (runsInAppSandbox(getServerFacts())) {
+  process.env.SUPERAGENT_DATA_DIR ??= path.join(app.getPath('home'), '.superagent')
+  // A local drive's folder opens through the bookmark made when it was picked.
+  // Electron has this function only in Mac App Store builds.
+  setFolderAccessStarter((bookmark) => app.startAccessingSecurityScopedResource(bookmark) as () => void)
+}
 if (app.isPackaged) {
   process.env.SUPERAGENT_DATA_DIR ??= path.join(app.getPath('appData'), 'Superagent')
 }
@@ -117,8 +128,13 @@ import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-pro
 import { getCloudProxyKey } from '@shared/lib/services/cloud-proxy-key'
 import { resolveCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target'
 import { readPreferredApiTarget } from '@shared/lib/services/api-target-preference'
-import { resolveApiTarget } from '@shared/lib/api-target'
+import { coerceApiTarget, resolveApiTarget } from '@shared/lib/api-target'
 import { applyPreferredApiTarget, resolveApiTargetForRenderer, type CloudEndpoint } from './api-target'
+import { desktopClientFacts, factsForRenderer } from './facts'
+import { clearStaleProcessSingleton } from './process-singleton'
+import { runsInAppSandbox, updatesItself } from '@shared/lib/facts/capabilities'
+import { closeLocalFolders, setFolderAccessStarter } from '@shared/lib/volumes/local-folder-access'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
 import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
 import { isAllowedRendererPermission } from './renderer-permissions'
@@ -406,8 +422,12 @@ function createWindow() {
   updateAutoUpdaterWindow(mainWindow)
 
   // Initialize the actual updater in production builds, or in dev when the
-  // SUPERAGENT_TEST_UPDATES=1 escape hatch is set (see auto-updater.ts).
-  if (!process.env.ELECTRON_RENDERER_URL || process.env.SUPERAGENT_TEST_UPDATES === '1') {
+  // SUPERAGENT_TEST_UPDATES=1 escape hatch is set (see auto-updater.ts). Never in
+  // a Store build, whose updates the Store delivers.
+  if (
+    updatesItself(desktopClientFacts()) &&
+    (!process.env.ELECTRON_RENDERER_URL || process.env.SUPERAGENT_TEST_UPDATES === '1')
+  ) {
     initAutoUpdater(mainWindow)
   }
 
@@ -506,6 +526,11 @@ function openDashboard(agentSlug: string, dashboardSlug: string) {
 // rather than assembling one, because half of the cloud prefix is the per-boot
 // proxy key, a secret owned by main (see cloud-proxy-key.ts).
 ipcMain.handle('get-api-target', () => activeApiTarget())
+
+// The facts a renderer gates on, for the target it settled. It passes that
+// target back rather than main re-resolving it, so a preference written in
+// between can't hand it the other Superagent's facts. See facts.ts.
+ipcMain.handle('get-facts', (_event, target: unknown) => factsForRenderer(coerceApiTarget(target), cloudEndpoint()))
 
 ipcMain.handle('set-preferred-api-target', (_event, target: unknown) => {
   applyPreferredApiTarget(target)
@@ -766,15 +791,23 @@ ipcMain.handle('detect-host-browser', () => {
 // Without a defaultPath Electron opens the dialog in Downloads, and the OS no
 // longer remembers where the user last was. Start beside the last folder picked
 // this run, else in home: what gets mounted here is a project, not a download.
+// In the App Sandbox the pick is what grants access, and only until quit, so
+// the dialog also returns a security-scoped bookmark that reopens the folder on
+// later launches (`local-folder-access.ts`). A drive choosing its folder again
+// passes that folder, so the dialog opens in it.
 let lastPickedDirectoryParent: string | null = null
-ipcMain.handle('open-directory', async () => {
+ipcMain.handle('open-directory', async (_event, startIn?: unknown): Promise<{ path: string; bookmark?: string } | null> => {
+  const sandboxed = runsInAppSandbox(desktopClientFacts())
+  // createDirectory: macOS shows New Folder only when asked (Windows always does).
   const result = await dialog.showOpenDialog({
-    properties: ['openDirectory'],
-    defaultPath: lastPickedDirectoryParent ?? app.getPath('home'),
+    properties: ['openDirectory', 'createDirectory'],
+    defaultPath: typeof startIn === 'string' && path.isAbsolute(startIn) ? startIn : lastPickedDirectoryParent ?? app.getPath('home'),
+    ...(sandboxed ? { securityScopedBookmarks: true } : {}),
   })
   if (result.canceled) return null
   lastPickedDirectoryParent = path.dirname(result.filePaths[0])
-  return result.filePaths[0]
+  const bookmark = sandboxed ? result.bookmarks?.[0] : undefined
+  return { path: result.filePaths[0], ...(bookmark ? { bookmark } : {}) }
 })
 
 // IPC handler for revealing a path in the OS file manager.
@@ -840,6 +873,8 @@ function sanitizeLimit(raw: unknown): number {
 // IPC handler for getting recent files from the OS
 ipcMain.handle('get-recent-files', async (_event, rawLimit: unknown): Promise<{ name: string; path: string; thumbnail?: string }[]> => {
   const limit = sanitizeLimit(rawLimit)
+  // Spotlight in the App Sandbox sees only the app's own container.
+  if (runsInAppSandbox(desktopClientFacts())) return []
   try {
     let files: { name: string; path: string }[]
     if (process.platform === 'win32') {
@@ -971,6 +1006,10 @@ ipcMain.handle('open-dashboard-window', (_event, { agentSlug, dashboardSlug }: {
 
 // IPC handler for creating a macOS dock shortcut for a dashboard
 ipcMain.handle('create-dock-shortcut', (_event, { agentSlug, dashboardSlug, dashboardName, iconPng }: { agentSlug: string; dashboardSlug: string; dashboardName: string; iconPng: number[] }) => {
+  // The App Sandbox lets the app write neither ~/Applications nor the Dock's preferences.
+  if (runsInAppSandbox(desktopClientFacts())) {
+    throw new Error('Adding to the Dock is not available in the Mac App Store edition')
+  }
   const iconBuffer = Buffer.from(iconPng)
 
   // Create temp directory for iconset generation
@@ -1813,6 +1852,12 @@ app.on('open-file', (event, filePath) => {
 // ('SuperAgent', shared with installed builds), so a dev instance silently
 // dies whenever the installed app is running. Harnesses that use their own
 // SUPERAGENT_DATA_DIR can opt out; packaged builds never can.
+//
+// In the App Sandbox a killed launch's singleton files would otherwise refuse
+// the next launch the lock (see process-singleton.ts).
+if (runsInAppSandbox(desktopClientFacts()) && clearStaleProcessSingleton(app.getPath('userData'))) {
+  console.log('Cleared the process-singleton files of a launch that is no longer running')
+}
 const gotTheLock =
   !app.isPackaged && process.env.SUPERAGENT_DISABLE_SINGLE_INSTANCE === '1'
     ? true
@@ -1858,6 +1903,7 @@ async function gracefulShutdown() {
 
   // Restore system sleep settings (best-effort, no sudo prompt)
   cleanupKeepAwake()
+  closeLocalFolders()
 
   // Give back a music player voice mode holds paused
   await releaseAllNowPlaying()

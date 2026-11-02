@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
+import { renderHook, act, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { ReactNode } from 'react'
 import type { SttAdapter, SttSessionStats, TranscriptCallback, ErrorCallback } from '@renderer/lib/voice/contracts/stt'
 
 const reporting = vi.hoisted(() => ({
@@ -25,7 +27,7 @@ vi.mock('@renderer/context/analytics-context', () => ({
   useAnalyticsTracking: () => ({ track: vi.fn() }),
 }))
 
-import { useVoiceInput } from './use-voice-input'
+import { useVoiceConversationProblem, useVoiceInput } from './use-voice-input'
 
 /** A speech adapter whose socket never opens unless the test says so. */
 class FakeAdapter implements SttAdapter {
@@ -273,5 +275,32 @@ describe('useVoiceInput onDictated', () => {
     await stop(hook)
 
     expect(onDictated).not.toHaveBeenCalled()
+  })
+})
+
+describe('useVoiceConversationProblem', () => {
+  function renderProblem(response: { ok: boolean; status: number; body?: unknown }) {
+    api.apiFetch.mockResolvedValue({ ok: response.ok, status: response.status, json: async () => response.body })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return renderHook(() => useVoiceConversationProblem(), {
+      wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+    })
+  }
+
+  it('says nothing once an engine is available', async () => {
+    const hook = renderProblem({ ok: true, status: 200, body: { configured: true, supportsTts: true, voices: [], conversationEngine: 'openai-live' } })
+    expect(hook.result.current).toBeNull()
+    await waitFor(() => expect(api.apiFetch).toHaveBeenCalledWith('/api/voice/configured'))
+    expect(hook.result.current).toBeNull()
+  })
+
+  it('names a host without voice', async () => {
+    const hook = renderProblem({ ok: true, status: 200, body: { configured: false, supportsTts: false, voices: [] } })
+    await waitFor(() => expect(hook.result.current).toBe('Voice is not set up on this host (Settings → Voice).'))
+  })
+
+  it('names a status request the host refused, rather than calling voice unconfigured', async () => {
+    const hook = renderProblem({ ok: false, status: 401, body: { error: 'Unauthorized' } })
+    await waitFor(() => expect(hook.result.current).toBe('Voice settings could not be loaded (401).'))
   })
 })

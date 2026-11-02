@@ -72,7 +72,7 @@ class AccountMcpConnection implements McpConnection {
     const rules = gate ? reportedRules(gate) : []
     try {
       const reviews = agentRegistry.get(this.agentSlug).inputs.reviews
-      const decision = await awaitReview(reviews, (raise) => reviews.request({
+      const review = await awaitReview(reviews, (raise) => reviews.request({
         accountId: this.row.id, reviewType: 'mcp', toolkit: this.row.name, method: call.method,
         targetPath: call.requestPath, matchedScopes: policy.matchedScopes,
         scopeDescriptions: policy.scopeDescriptions,
@@ -90,8 +90,8 @@ class AccountMcpConnection implements McpConnection {
           return again.unavailable ? 'review' : again.decision
         },
       })
-      return decision === 'deny'
-        ? { ok: false, reason: 'denied', rules, ruleVersionId, ruleOutcomes }
+      return review.decision === 'deny'
+        ? { ok: false, reason: 'denied', denyReason: review.reason, rules, ruleVersionId, ruleOutcomes }
         : { ok: true, policyDecision: 'approved_by_user', ruleVersionId, ruleOutcomes }
     } catch { return { ok: false, reason: 'review_timeout', rules, ruleVersionId, ruleOutcomes } }
   }

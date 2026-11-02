@@ -84,13 +84,13 @@ describe('markdownUrlTransform (SUP-238)', () => {
   // .avif it did not preview was allowed. Both now ask the same table.
   it('inlines exactly the images a renderer here can draw', () => {
     const transform = createMarkdownUrlTransform({ agentSlug: 'a' })
-    for (const ext of ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']) {
+    for (const ext of ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif', 'heic', 'heif']) {
       expect(transform(`file:///workspace/chart.${ext}`, 'src', node)).toBe(
         `/api/agents/a/files/chart.${ext}?inline=true`,
       )
     }
     // image/* to a browser, undisplayable to every renderer here
-    for (const ext of ['tiff', 'heic', 'psd']) {
+    for (const ext of ['tiff', 'psd']) {
       expect(transform(`file:///workspace/chart.${ext}`, 'src', node)).toBe('')
     }
   })

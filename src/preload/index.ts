@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 // Type-only (erased at build — the preload bundle has no @shared alias).
 import type { ClassifiedImportPackage } from '../shared/lib/utils/package-extensions'
 import type { ApiTarget, ResolvedApiTarget } from '../shared/lib/api-target'
+import type { Facts } from '../shared/lib/facts/facts-schema'
 import type { NowPlayingPauseResult, NowPlayingProbe, NowPlayingResumeResult } from '../shared/lib/voice/now-playing-types'
 
 // Expose protected methods that allow the renderer process to use
@@ -20,6 +21,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Records the choice for subsequent boots; the caller reloads.
   setPreferredApiTarget: (target: ApiTarget): Promise<void> => {
     return ipcRenderer.invoke('set-preferred-api-target', target)
+  },
+  // The facts this renderer gates on, for the target it settled (main/facts.ts).
+  getFacts: (target: ApiTarget): Promise<Facts> => {
+    return ipcRenderer.invoke('get-facts', target)
   },
   platform: process.platform,
   osVersion: process.getSystemVersion(),
@@ -329,9 +334,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return webUtils.getPathForFile(file)
   },
 
-  // Open a native directory picker dialog
-  openDirectory: (): Promise<string | null> => {
-    return ipcRenderer.invoke('open-directory')
+  // Open a native directory picker dialog. In the Mac App Store build the pick
+  // also carries the security-scoped bookmark that reopens it after a relaunch.
+  // `startIn` opens the dialog in that folder.
+  openDirectory: (startIn?: string): Promise<{ path: string; bookmark?: string } | null> => {
+    return ipcRenderer.invoke('open-directory', startIn)
   },
 
   // Reveal a path in the OS file manager (Finder / Explorer / Files)
@@ -504,6 +511,8 @@ declare global {
       // Optional: an older main process has no such handler (see env.ts).
       getApiTarget?: () => Promise<ResolvedApiTarget>
       setPreferredApiTarget?: (target: ApiTarget) => Promise<void>
+      // Optional for the same reason as getApiTarget.
+      getFacts?: (target: ApiTarget) => Promise<Facts>
       platform: string
       osVersion: string
       desktopProtocol?: string
@@ -568,7 +577,7 @@ declare global {
       showEmojiPanel: () => Promise<void>
       createDockShortcut: (agentSlug: string, dashboardSlug: string, dashboardName: string, iconPng: Uint8Array) => Promise<void>
       getPathForFile: (file: File) => string
-      openDirectory: () => Promise<string | null>
+      openDirectory: (startIn?: string) => Promise<{ path: string; bookmark?: string } | null>
       showInFolder: (hostPath: string) => Promise<string | null>
       revealInFolder: (hostPath: string) => Promise<string | null>
       getRecentFiles: (limit?: number) => Promise<{ name: string; path: string; thumbnail?: string }[]>

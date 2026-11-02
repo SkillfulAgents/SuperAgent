@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  closePreparedLogins,
   failPreparedLogin,
   forgetAllPreparedLogins,
   forgetPreparedLogin,
   getPreparedLogin,
+  isPreparedLoginClosed,
   putPreparedLogin,
   waitForPreparedLogin,
 } from './login-requests'
@@ -42,7 +44,7 @@ describe('prepared sign-in requests', () => {
     await expect(waitForPreparedLogin('unknown', 10)).resolves.toBeNull()
   })
 
-  it('forgets one request, or all of them when the browser closes', () => {
+  it('forgets one request, or all of them', () => {
     putPreparedLogin(prepared('a'))
     putPreparedLogin(prepared('b'))
     forgetPreparedLogin('a')
@@ -50,5 +52,17 @@ describe('prepared sign-in requests', () => {
     expect(getPreparedLogin('b')).not.toBeNull()
     forgetAllPreparedLogins()
     expect(getPreparedLogin('b')).toBeNull()
+  })
+
+  it('keeps each request when the browser closes, marked as closed; a later one is not', () => {
+    putPreparedLogin(prepared('a'))
+    closePreparedLogins()
+    expect(getPreparedLogin('a')).not.toBeNull()
+    expect(isPreparedLoginClosed('a')).toBe(true)
+    // Located in the next browser.
+    putPreparedLogin(prepared('b'))
+    expect(isPreparedLoginClosed('b')).toBe(false)
+    forgetPreparedLogin('a')
+    expect(isPreparedLoginClosed('a')).toBe(false)
   })
 })

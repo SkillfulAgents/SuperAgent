@@ -51,6 +51,7 @@ export const localHostPort = createLocalHostPort({
     computerUseWindowApp: async ({ ref }) => (await computerUse()).resolveAppFromWindowRef(ref),
     computerUseAppIcon: async ({ app }) => (await import('@shared/lib/computer-use/app-icon')).getAppIconBase64(app),
     hostScript: async ({ script, scriptType }) => (await import('./script')).runHostScript(script, scriptType),
+    loginRequest: async (request) => (await import('@shared/lib/browser-vault/login-host')).decideLoginRequest(request),
   },
   events: {
     global: (event) => globalFeed.publish(event),

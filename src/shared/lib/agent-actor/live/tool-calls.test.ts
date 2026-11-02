@@ -6,6 +6,7 @@ import type { HostRunActor } from '../host-runs'
 import { createRecordingHostPort, type HostCallAnswers } from '../testing/recording-host-port'
 import type { SessionEvent } from './session-channel'
 import { ToolCalls, type Capability, type ToolCallContext, type ToolUse } from './tool-calls'
+import { MAIN_THREAD_ONLY_TOOL_MESSAGE } from '../../../../../agent-container/src/main-thread-tools'
 
 const mocks = vi.hoisted(() => ({
   capabilities: { subagents: 'allow', workflows: 'review' } as { subagents: string; workflows: string },
@@ -30,6 +31,23 @@ const ORIGINAL_PLATFORM = process.platform
 
 function onPlatform(platform: NodeJS.Platform): void {
   Object.defineProperty(process, 'platform', { value: platform, configurable: true })
+}
+
+/** Be the Mac App Store build's main process, the way Electron marks it. */
+function inAppSandbox(): void {
+  onPlatform('darwin')
+  Object.defineProperty(process, 'type', { value: 'browser', configurable: true, writable: true })
+  Object.defineProperty(process, 'mas', { value: true, configurable: true, writable: true })
+}
+const ORIGINAL_PROCESS_MARKS = {
+  type: Object.getOwnPropertyDescriptor(process, 'type'),
+  mas: Object.getOwnPropertyDescriptor(process, 'mas'),
+}
+function restoreProcessMarks(): void {
+  for (const [key, descriptor] of Object.entries(ORIGINAL_PROCESS_MARKS)) {
+    if (descriptor) Object.defineProperty(process, key, descriptor)
+    else delete (process as unknown as Record<string, unknown>)[key]
+  }
 }
 
 type Route = (path: string, init?: RequestInit) => Response | Promise<Response>
@@ -67,6 +85,7 @@ function harness(options: { route?: Route; client?: false; answers?: HostCallAns
     },
   } as unknown as ContainerClient
   let resolveFails = false
+  const settled = new Map<string, string>()
 
   const ctx: ToolCallContext = {
     agentSlug: SLUG,
@@ -87,6 +106,9 @@ function harness(options: { route?: Route; client?: false; answers?: HostCallAns
     syncAwaiting: () => {
       awaitingSyncs += 1
     },
+    settled: (toolUseId, outcome) => {
+      settled.set(toolUseId, outcome)
+    },
     capabilityGranted: (capability) => capabilityGrants.has(capability),
     grantCapability: (capability) => {
       capabilityGrants.add(capability)
@@ -95,8 +117,11 @@ function harness(options: { route?: Route; client?: false; answers?: HostCallAns
       launches.push([toolUseId, input])
     },
   }
+  const calls = new ToolCalls(ctx)
   return {
-    calls: new ToolCalls(ctx),
+    calls,
+    /** The ToolCalls of the attachment that replaces this one. */
+    reattach: () => new ToolCalls(ctx, calls),
     requests,
     host,
     runs,
@@ -113,6 +138,7 @@ function harness(options: { route?: Route; client?: false; answers?: HostCallAns
       resolveFails = true
     },
     awaitingSyncs: () => awaitingSyncs,
+    settled,
     open: (id: string) => requests.getOpenRequest(id),
   }
 }
@@ -139,6 +165,7 @@ beforeEach(() => {
 
 afterEach(() => {
   onPlatform(ORIGINAL_PLATFORM)
+  restoreProcessMarks()
   vi.unstubAllEnvs()
   vi.restoreAllMocks()
 })
@@ -186,8 +213,8 @@ describe('ToolCalls', () => {
       ])
     })
 
-    it('parks a sign-in request with the fields its form draws, and no refs', () => {
-      const h = harness({ client: false })
+    it('parks a sign-in request once the host leaves it to the user, with the fields its form draws and no refs', async () => {
+      const h = harness({ client: false, answers: { loginRequest: { action: 'ask', vault: { mode: 'new' } } } })
 
       h.calls.mainToolUse(use('t_login', 'mcp__user-input__request_login', {
         message: 'Sign in to GitHub.',
@@ -198,23 +225,133 @@ describe('ToolCalls', () => {
         ],
         submit: '@e6',
       }))
+      // No card while the host decides: the vault may sign in without the user.
+      expect(h.open('t_login')).toBeNull()
+      await settle()
 
+      expect(h.host.calls).toEqual([['loginRequest', {
+        agentSlug: SLUG,
+        sessionId: SESSION,
+        toolUseId: 't_login',
+        input: expect.stringContaining('Sign in to GitHub.'),
+      }]])
       expect(h.open('t_login')).toMatchObject({
         kind: 'login',
-        payload: { message: 'Sign in to GitHub.', fields: [{ kind: 'username', label: 'Email' }, { kind: 'password', label: 'Password' }] },
+        payload: { message: 'Sign in to GitHub.', fields: [{ kind: 'username', label: 'Email' }, { kind: 'password', label: 'Password' }], vault: { mode: 'new' } },
       })
       expect(JSON.stringify(h.open('t_login')?.payload)).not.toContain('@e')
-      // Its context comes from the container when the form asks, not at parking.
+      // Its context comes from the container through the host, not at parking.
       expect(h.fetches).toEqual([])
       expect(h.host.sent('analytics').map((e) => e.event)).toEqual(['agent_request_login'])
     })
 
-    it('parks no sign-in request without fields to draw, or without a reason', () => {
-      const h = harness({ client: false })
-      h.calls.mainToolUse(use('t_login', 'mcp__user-input__request_login', { message: 'Sign in.' }))
+    it('raises no card for a sign-in request the host answered from the vault', async () => {
+      const h = harness({ client: false, answers: { loginRequest: { action: 'settled' } } })
+
+      h.calls.mainToolUse(use('t_login', 'mcp__user-input__request_login', { message: 'Sign in to GitHub.', fields: [], username: 'octocat' }))
+      await settle()
+
       expect(h.open('t_login')).toBeNull()
+      expect(h.requests.getOpenRequests()).toEqual([])
+      // Settled for the transcript too: a sibling can hold its result back,
+      // and an unanswered-looking call must not be parked again meanwhile.
+      expect(h.settled.get('t_login')).toBe('answered')
+    })
+
+    it('settles a sign-in request whose call the host found already ended, without a card', async () => {
+      const h = harness({ client: false, answers: { loginRequest: { action: 'none' } } })
+
+      h.calls.mainToolUse(use('t_login', 'mcp__user-input__request_login', { message: 'Sign in to GitHub.', fields: [] }))
+      await settle()
+
+      expect(h.open('t_login')).toBeNull()
+      expect(h.settled.get('t_login')).toBe('cancelled')
+    })
+
+    it('raises no card for a sign-in request whose call ended while the host decided', async () => {
+      let decide: (decision: { action: 'ask'; vault: Record<string, unknown> }) => void = () => {}
+      const h = harness({ client: false, answers: { loginRequest: () => new Promise((resolve) => { decide = resolve }) } })
+
+      h.calls.mainToolUse(use('t_login', 'mcp__user-input__request_login', { message: 'Sign in to GitHub.', fields: [] }))
+      await settle()
+      h.calls.mainToolResults({ message: { content: [{ type: 'tool_result', tool_use_id: 't_login', content: 'cancelled', is_error: true }] } })
+      decide({ action: 'ask', vault: { mode: 'new' } })
+      await settle()
+
+      expect(h.open('t_login')).toBeNull()
+    })
+
+    it('raises no card for a sign-in request the host decided after its session went away, or its subagent ended', async () => {
+      const decisions: Array<(decision: { action: 'ask'; vault: Record<string, unknown> }) => void> = []
+      const h = harness({ client: false, answers: { loginRequest: () => new Promise((resolve) => { decisions.push(resolve) }) } })
+
+      h.calls.mainToolUse(use('t_main', 'mcp__user-input__request_login', { message: 'Sign in to GitHub.', fields: [] }))
+      h.calls.subagentStreamedToolUse(use('t_sub', 'mcp__user-input__request_login', { message: 'Sign in to GitHub.', fields: [] }), 't_task')
+      h.calls.subagentStreamedToolUse(use('t_other', 'mcp__user-input__request_login', { message: 'Sign in to GitLab.', fields: [] }), 't_task_2')
+      await settle()
+      expect(decisions).toHaveLength(3)
+
+      // The subagent t_task ended: only its own call is dropped.
+      h.calls.dropLoginDecisions('t_task')
+      for (const decide of decisions) decide({ action: 'ask', vault: { mode: 'new' } })
+      await settle()
+      expect(h.open('t_sub')).toBeNull()
+      expect(h.open('t_main')).not.toBeNull()
+      expect(h.open('t_other')).not.toBeNull()
+
+      // The session went away: every decision still pending is dropped.
+      const later = harness({ client: false, answers: { loginRequest: () => new Promise((resolve) => { decisions.push(resolve) }) } })
+      later.calls.mainToolUse(use('t_late', 'mcp__user-input__request_login', { message: 'Sign in to GitHub.', fields: [] }))
+      await settle()
+      later.calls.dropLoginDecisions()
+      decisions.at(-1)!({ action: 'ask', vault: { mode: 'new' } })
+      await settle()
+      expect(later.open('t_late')).toBeNull()
+    })
+
+    it('raises no recovered card for a sign-in request the host is still deciding', async () => {
+      let decide: (decision: { action: 'settled' }) => void = () => {}
+      const h = harness({ client: false, answers: { loginRequest: () => new Promise((resolve) => { decide = resolve }) } })
+
+      h.calls.mainToolUse(use('t_login', 'mcp__user-input__request_login', { message: 'Sign in to GitHub.', fields: [] }))
+      // A reattach reads the transcript: the call has no result yet.
+      h.calls.recoverParked([{ toolUseId: 't_login', toolName: 'mcp__user-input__request_login' }])
+      expect(h.open('t_login')).toBeNull()
+
+      decide({ action: 'settled' })
+      await settle()
+      expect(h.open('t_login')).toBeNull()
+    })
+
+    it('asks the host once for a sign-in request the stream and the message both carry', async () => {
+      const h = harness({ client: false, answers: { loginRequest: { action: 'ask', vault: { mode: 'new' } } } })
+      const call = use('t_login', 'mcp__user-input__request_login', { message: 'Sign in to GitHub.', fields: [] })
+
+      h.calls.mainToolUse(call)
+      h.calls.mainToolUse(call)
+      await settle()
+
+      expect(h.host.calls).toHaveLength(1)
+      expect(h.open('t_login')).not.toBeNull()
+    })
+
+    it('leaves a sign-in request to the user when the host cannot decide it', async () => {
+      const h = harness({ client: false, answers: { loginRequest: async () => { throw new Error('host gone') } } })
+
+      h.calls.mainToolUse(use('t_login', 'mcp__user-input__request_login', { message: 'Sign in to GitHub.', fields: [] }))
+      await settle()
+
+      expect(h.open('t_login')).toMatchObject({ kind: 'login', payload: { vault: { mode: 'new' } } })
+    })
+
+    it('parks no sign-in request without a reason, and none with fields that are not a list', async () => {
+      const h = harness({ client: false, answers: { loginRequest: { action: 'ask', vault: { mode: 'new' } } } })
       h.calls.mainToolUse(use('t_blank', 'mcp__user-input__request_login', { message: '   ', fields: [] }))
+      h.calls.mainToolUse(use('t_bad', 'mcp__user-input__request_login', { message: 'Sign in.', fields: 'username' }))
+      await settle()
       expect(h.open('t_blank')).toBeNull()
+      expect(h.open('t_bad')).toBeNull()
+      expect(h.host.calls).toEqual([])
     })
 
     it('parks nothing for an ask missing its required field, but still recomputes the wait', () => {
@@ -372,14 +509,51 @@ describe('ToolCalls', () => {
       expect(h.answered).toEqual([])
     })
 
-    it('runs host tools from the main stream only', async () => {
-      const h = harness({ answers: { hostTool: { status: 'resolved', value: 'ok' } } })
+    it('runs a subagent\'s host tool from whichever delivery comes first, once', async () => {
+      const h = harness({ answers: { hostTool: { status: 'resolved', value: 'Scheduled' } } })
 
+      // Its stream and its complete message both carry the call; either can be the only one.
       h.calls.subagentStreamedToolUse(use('t_sched', 'mcp__user-input__schedule_task', {}), 'toolu_parent')
-      h.calls.subagentMessageToolUse(use('t_sched2', 'mcp__user-input__schedule_task', {}), 'toolu_parent')
+      h.calls.subagentMessageToolUse(use('t_sched', 'mcp__user-input__schedule_task', {}), 'toolu_parent')
+      h.calls.subagentMessageToolUse(use('t_list', 'mcp__user-input__list_triggers', {}), 'toolu_parent')
       await settle()
 
-      expect(h.host.calls).toEqual([])
+      expect(h.host.calls.map(([, request]) => request)).toEqual([
+        expect.objectContaining({ toolUseId: 't_sched', toolName: 'schedule_task' }),
+        expect.objectContaining({ toolUseId: 't_list', toolName: 'list_triggers' }),
+      ])
+      expect(h.answered).toEqual([
+        { toolUseId: 't_sched', how: 'resolve', value: 'Scheduled' },
+        { toolUseId: 't_list', how: 'resolve', value: 'Scheduled' },
+      ])
+    })
+
+    it('runs a host tool once when its second delivery lands on the next attachment', async () => {
+      const h = harness({ answers: { hostTool: { status: 'resolved', value: 'Scheduled' } } })
+
+      h.calls.subagentStreamedToolUse(use('t_sched', 'mcp__user-input__schedule_task', {}), 'toolu_parent')
+      h.reattach().subagentMessageToolUse(use('t_sched', 'mcp__user-input__schedule_task', {}), 'toolu_parent')
+      await settle()
+
+      expect(h.host.calls).toHaveLength(1)
+      expect(h.answered).toEqual([{ toolUseId: 't_sched', how: 'resolve', value: 'Scheduled' }])
+    })
+
+    it('fails a subagent\'s schedule_resume without running it: a wake resumes the main conversation', async () => {
+      const h = harness({ answers: { hostTool: { status: 'resolved', value: 'Wake scheduled' } } })
+
+      h.calls.subagentStreamedToolUse(use('t_wake', 'mcp__user-input__schedule_resume', {}), 'toolu_parent')
+      h.calls.subagentMessageToolUse(use('t_wake', 'mcp__user-input__schedule_resume', {}), 'toolu_parent')
+      h.calls.mainToolUse(use('t_main_wake', 'mcp__user-input__schedule_resume', {}))
+      await settle()
+
+      expect(h.host.calls.map(([, request]) => request)).toEqual([
+        expect.objectContaining({ toolUseId: 't_main_wake', toolName: 'schedule_resume' }),
+      ])
+      expect(h.answered).toEqual([
+        { toolUseId: 't_wake', how: 'reject', value: MAIN_THREAD_ONLY_TOOL_MESSAGE },
+        { toolUseId: 't_main_wake', how: 'resolve', value: 'Wake scheduled' },
+      ])
     })
   })
 
@@ -442,6 +616,20 @@ describe('ToolCalls', () => {
         how: 'reject',
         value: 'Host script execution is not supported on this platform (freebsd). Only macOS and Windows are supported.',
       }])
+    })
+
+    it('rejects every script in the Mac App Store edition, whose sandbox confines them', () => {
+      inAppSandbox()
+      const h = harness()
+
+      h.calls.mainToolUse(use('t_script', 'mcp__user-input__request_script_run', { ...script, scriptType: 'applescript' }))
+
+      expect(h.answered).toEqual([{
+        toolUseId: 't_script',
+        how: 'reject',
+        value: 'Host scripts are not available in the Mac App Store edition, whose sandbox confines what the app runs.',
+      }])
+      expect(h.open('t_script')).toBeNull()
     })
 
     it('ignores a script request missing its script or type, or not JSON', () => {
@@ -569,7 +757,22 @@ describe('ToolCalls', () => {
       expect(h.answered).toEqual([{
         toolUseId: 't_cu',
         how: 'reject',
-        value: 'Computer use is not supported on this platform (linux). macOS and Windows are supported.',
+        value: 'Computer use is not available on this machine (linux). It needs macOS or Windows, and is not in the Mac App Store edition.',
+      }])
+      expect(h.open('t_cu')).toBeNull()
+    })
+
+    it('rejects a command in the Mac App Store edition, on macOS', async () => {
+      inAppSandbox()
+      const h = harness()
+
+      h.calls.mainToolUse(use('t_cu', 'mcp__computer-use__computer_apps', {}))
+      await settle()
+
+      expect(h.answered).toEqual([{
+        toolUseId: 't_cu',
+        how: 'reject',
+        value: 'Computer use is not available on this machine (darwin). It needs macOS or Windows, and is not in the Mac App Store edition.',
       }])
       expect(h.open('t_cu')).toBeNull()
     })

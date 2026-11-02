@@ -1,6 +1,7 @@
 import type { ToolRenderer } from './renderer-types'
 import { getToolDefinition, getRegisteredDefinitionNames } from './registry'
 import { bashRenderer } from './bash/renderer'
+import { monitorRenderer } from './monitor/renderer'
 import { readRenderer } from './read/renderer'
 import { writeRenderer } from './write/renderer'
 import { globRenderer } from './glob/renderer'
@@ -75,6 +76,7 @@ export type { ToolRenderer, ToolRendererProps, StreamingToolRendererProps, Colla
 const toolRenderers = new Map([
   taskRenderer,
   bashRenderer,
+  monitorRenderer,
   readRenderer,
   writeRenderer,
   globRenderer,

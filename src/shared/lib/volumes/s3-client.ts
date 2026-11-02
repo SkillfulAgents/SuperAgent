@@ -6,7 +6,7 @@ import { S3Client, type ServiceInputTypes, type ServiceOutputTypes } from '@aws-
 import type { Command, HttpHandlerOptions } from '@smithy/types'
 import { WorkspaceFileError } from '@shared/lib/agent-actor/workspace-path'
 import { openS3Credentials } from './s3-credentials'
-import type { S3VolumeConfig } from './s3-schema'
+import type { S3Credentials, S3Location, S3VolumeConfig } from './s3-schema'
 import { VolumeError } from './volume-error'
 import { RemoteRequestPacer } from './remote-request-pacer'
 import { throwIfUploadAborted } from './remote-transfer'
@@ -40,9 +40,39 @@ export function s3Error(error: unknown): Error {
   return new VolumeError('Could not reach the S3 bucket. Check the endpoint and network, then try again.', 503)
 }
 
-export function s3Namespace(config: S3VolumeConfig): string {
+export function s3Namespace(config: S3Location): string {
   try { return JSON.stringify([new URL(config.endpoint || `https://s3.${config.region}.amazonaws.com`).origin, config.bucket]) }
   catch { throw new VolumeError('Invalid S3 endpoint.', 400) }
+}
+
+/** What an opened volume's S3 traffic uses: where it lives and its keys. Volumes with the same
+ * `cacheKey` may share cached views. */
+export interface S3Access {
+  location: S3Location
+  cacheKey: string
+  /** The SDK refreshes keys that carry an expiration a few minutes before it. */
+  credentials: () => Promise<S3Credentials & { expiration?: Date }>
+  /** How far this machine's clock runs ahead of the keys' issuer; requests are signed in its time. */
+  clockOffsetMs?: number
+  /** Throws when access was withdrawn since the volume opened. Checked again before a change is published. */
+  recheck: () => void | Promise<void>
+}
+
+/** A user's own keys, sealed with the volume. Opening it proves they still unlock. */
+export function sealedS3Access(config: S3VolumeConfig): S3Access {
+  openS3Credentials(config)
+  return {
+    location: config,
+    cacheKey: createHash('sha256').update(JSON.stringify(config)).digest('hex'),
+    credentials: async () => openS3Credentials(config),
+    recheck: () => { openS3Credentials(config) },
+  }
+}
+
+/** Keys the source could not give inside an SDK call. They are not an S3 answer, so the pacer
+ * neither retries them nor cools the bucket down for them. */
+class KeysUnavailable extends Error {
+  constructor(readonly reason: unknown) { super('S3 keys unavailable') }
 }
 
 /** SDK signs requests; explicit credentials prevent falling back to host AWS credentials.
@@ -52,30 +82,34 @@ export class S3VolumeClient {
   readonly namespace: string
   readonly cacheKey: string
   private readonly client: S3Client
-  constructor(readonly config: S3VolumeConfig) {
-    try { this.host = new URL(config.endpoint || `https://s3.${config.region}.amazonaws.com`).host } catch { throw new VolumeError('Invalid S3 endpoint.', 400) }
-    this.namespace = s3Namespace(config)
-    this.cacheKey = createHash('sha256').update(JSON.stringify(config)).digest('hex')
+  constructor(access: S3Access) {
+    const { location } = access
+    try { this.host = new URL(location.endpoint || `https://s3.${location.region}.amazonaws.com`).host } catch { throw new VolumeError('Invalid S3 endpoint.', 400) }
+    this.namespace = s3Namespace(location)
+    this.cacheKey = access.cacheKey
     this.client = new S3Client({
-      region: config.region, endpoint: config.endpoint || undefined, forcePathStyle: config.forcePathStyle,
-      credentials: async () => openS3Credentials(config), maxAttempts: 1,
+      region: location.region, endpoint: location.endpoint || undefined, forcePathStyle: location.forcePathStyle,
+      credentials: async () => { try { return await access.credentials() } catch (error) { throw new KeysUnavailable(error) } },
+      systemClockOffset: -(access.clockOffsetMs ?? 0), maxAttempts: 1,
       requestChecksumCalculation: 'WHEN_REQUIRED', responseChecksumValidation: 'WHEN_REQUIRED',
       requestHandler: transport,
     })
   }
 
-  authorize(): void { openS3Credentials(this.config) }
-
   async send<I extends ServiceInputTypes, O extends ServiceOutputTypes>(command: Command<ServiceInputTypes, I, ServiceOutputTypes, O, S3Client['config']>, options: { read?: boolean; signal?: AbortSignal } = {}): Promise<O> {
-    this.authorize()
-    return pacer.run(this.namespace, options.read ?? false, async () => {
-      throwIfUploadAborted(options.signal)
-      try {
-        return await this.client.send(command, { abortSignal: options.signal } satisfies HttpHandlerOptions)
-      } catch (error) {
+    try {
+      return await pacer.run(this.namespace, options.read ?? false, async () => {
         throwIfUploadAborted(options.signal)
-        throw s3Error(error)
-      }
-    }, options.signal)
+        try {
+          return await this.client.send(command, { abortSignal: options.signal } satisfies HttpHandlerOptions)
+        } catch (error) {
+          if (error instanceof KeysUnavailable) throw error
+          throwIfUploadAborted(options.signal)
+          throw s3Error(error)
+        }
+      }, options.signal)
+    } catch (error) {
+      throw error instanceof KeysUnavailable ? error.reason : error
+    }
   }
 }

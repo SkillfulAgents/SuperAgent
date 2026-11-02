@@ -18,7 +18,16 @@ export default defineConfig({
     build: {
       outDir: 'dist/main',
       externalizeDeps: { exclude: ['better-auth'] },
-      rollupOptions: { external: ['better-sqlite3', 'ws', 'electron-updater'] },
+      rollupOptions: {
+        external: ['better-sqlite3', 'ws', 'electron-updater'],
+        input: {
+          index: path.resolve(__dirname, 'src/main/index.ts'),
+          'heic-preview-worker': path.resolve(__dirname, 'src/api/routes/heic-preview-worker.mjs'),
+        },
+        output: {
+          entryFileNames: chunk => chunk.name === 'heic-preview-worker' ? '[name].cjs' : '[name].js',
+        },
+      },
     },
     resolve: {
       alias: {

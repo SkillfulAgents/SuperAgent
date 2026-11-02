@@ -8,6 +8,11 @@ on:
         description: 'Pull request number to build (from this repository)'
         required: true
         type: number
+      mas:
+        description: 'Also build the Mac App Store package, for App Store Connect to validate (never uploaded)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -46,8 +51,16 @@ jobs:
             core.setOutput('head-sha', pr.head.sha);
             core.info(`Building PR #${pr.number} at ${pr.head.sha}`);
 
-  build-mac:
+  lima-image:
     needs: resolve-pr
+    uses: ./.github/workflows/lima-image.yml
+    with:
+      ref: ${{ needs.resolve-pr.outputs.head-sha }}
+      # A PR's image must never reach main's or a release's build.
+      save-cache: false
+
+  build-mac:
+    needs: [resolve-pr, lima-image]
     runs-on: macos-26
     steps:
       - name: Checkout
@@ -70,6 +83,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Download the Lima VM image
+        uses: actions/download-artifact@v4
+        with:
+          name: lima-image-arm64
+          path: build/lima-image
+
       - name: Decode Apple API Key
         env:
           APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY }}
@@ -89,6 +108,7 @@ jobs:
           PLATFORM_BASE_URL: ${{ secrets.PLATFORM_BASE_URL }}
           PLATFORM_PROXY_URL: ${{ secrets.PLATFORM_PROXY_URL }}
           PLATFORM_AUTH_ISSUER_URL: ${{ secrets.PLATFORM_AUTH_ISSUER_URL }}
+          LIMA_IMAGE_DIR: build/lima-image
         run: npm run dist:mac
 
       - name: Enforce release artifact size limit
@@ -96,15 +116,18 @@ jobs:
         run: |
           # A size budget, not a platform limit: the R2 feed upload is multipart
           # and GitHub release assets go to 2 GiB. It catches an installer that
-          # balloons unnoticed (the Windows one carries both x64 and arm64).
-          limit=$((400 * 1024 * 1024))
+          # balloons unnoticed. The macOS app carries the agent image
+          # (scripts/fetch-agent-image.ts, ~545 MiB with zstd layers) and the built-in runtime's
+          # VM image with its packages installed, which it also ships to repair
+          # it: a DMG of ~1165 MiB.
+          limit=$((1300 * 1024 * 1024))
           bad=0
           for f in release/*.exe release/*.dmg release/*.zip; do
             [ -e "$f" ] || continue
             size=$(wc -c < "$f")
             printf '%6d MiB  %s\n' "$((size / 1048576))" "$(basename "$f")"
             if [ "$size" -gt "$limit" ]; then
-              echo "::error file=$f::$(basename "$f") is $((size / 1048576)) MiB, over the 400 MiB release-artifact size budget"
+              echo "::error file=$f::$(basename "$f") is $((size / 1048576)) MiB, over the $((limit / 1048576)) MiB release-artifact size budget"
               bad=1
             fi
           done
@@ -123,6 +146,22 @@ jobs:
           name: Superagent-macOS-ZIP
           path: release/*.zip
           retention-days: 14
+
+  build-mas:
+    needs: [resolve-pr, lima-image]
+    if: inputs.mas
+    uses: ./.github/workflows/build-mas.yml
+    secrets: inherit
+    with:
+      ref: ${{ needs.resolve-pr.outputs.head-sha }}
+      # Never uploaded, so any number will do.
+      build-number: ${{ github.run_number }}
+      # A PR may run a version whose image isn't published yet; its package then
+      # pulls the image, as the direct build does.
+      require-agent-image: false
+      app-store-connect: validate
+      artifact-name: Gamut-MAS
+      retention-days: 14
 
   build-win:
     needs: resolve-pr
@@ -198,7 +237,7 @@ jobs:
 
   comment:
     runs-on: ubuntu-latest
-    needs: [resolve-pr, build-mac, build-win]
+    needs: [resolve-pr, build-mac, build-win, build-mas]
     if: ${{ always() && needs.resolve-pr.result == 'success' }}
     permissions:
       pull-requests: write
@@ -208,6 +247,9 @@ jobs:
         env:
           PR_NUMBER: ${{ needs.resolve-pr.outputs.pr-number }}
           PR_HEAD_SHA: ${{ needs.resolve-pr.outputs.head-sha }}
+          MAS_REQUESTED: ${{ inputs.mas }}
+          MAS_RESULT: ${{ needs.build-mas.result }}
+          MAS_SECRETS_SET: ${{ needs.build-mas.outputs.secrets-set }}
         with:
           script: |
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
@@ -221,6 +263,14 @@ jobs:
             const macStatus = macResult === 'success' ? '✅' : '❌';
             const winStatus = winResult === 'success' ? '✅' : '❌';
 
+            // Only when asked for. Without its signing secrets the job succeeds
+            // having built nothing, so that reads as skipped.
+            const masResult = process.env.MAS_RESULT;
+            const masRow = process.env.MAS_REQUESTED !== 'true' ? []
+              : masResult === 'success' && process.env.MAS_SECRETS_SET !== 'true'
+                ? ['| Mac App Store (PKG, validated) | ⏭️ skipped: signing secrets not set |']
+                : [`| Mac App Store (PKG, validated) | ${masResult === 'success' ? '✅' : '❌'} ${masResult} |`];
+
             const body = [
               `## 🏗️ PR Build`,
               ``,
@@ -230,6 +280,7 @@ jobs:
               `|----------|--------|`,
               `| macOS (DMG + ZIP) | ${macStatus} ${macResult} |`,
               `| Windows (Installer + ZIP) | ${winStatus} ${winResult} |`,
+              ...masRow,
               ``,
               `**[⬇️ Download artifacts from this workflow run](${runUrl}#artifacts)**`,
               ``,

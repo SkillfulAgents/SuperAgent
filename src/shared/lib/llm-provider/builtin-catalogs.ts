@@ -99,7 +99,7 @@ export const CLAUDE_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption[]
   },
 ]
 
-/** Platform-specific default-model shortlist. The provider default is Grok. */
+/** Platform-specific default-model shortlist. The provider default is Sonnet. */
 export const PLATFORM_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption[] = [
   {
     model: 'opus',
@@ -107,6 +107,14 @@ export const PLATFORM_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption
     tag: 'Deep reasoning',
     description: 'Best for complex, multi-step tasks.',
     subdescription: 'A premium choice for the hardest agent work.',
+  },
+  {
+    model: 'sonnet',
+    label: 'Sonnet',
+    resolveLabelFromCatalog: true,
+    tag: 'Recommended',
+    description: 'Fast, capable, and efficient for everyday agent work.',
+    subdescription: 'The default model for Gamut Platform.',
   },
   {
     model: 'gpt-sol',
@@ -120,9 +128,9 @@ export const PLATFORM_DEFAULT_MODEL_OPTIONS: readonly ProviderDefaultModelOption
     model: 'grok',
     label: 'Grok',
     resolveLabelFromCatalog: true,
-    tag: 'Recommended',
-    description: 'Fast, capable, and efficient for everyday agent work.',
-    subdescription: 'The default model for Gamut Platform.',
+    tag: 'xAI flagship',
+    description: 'Fast and capable for everyday agent work.',
+    subdescription: 'An efficient alternative to Sonnet.',
   },
 ]
 
@@ -631,12 +639,26 @@ const PLATFORM_EXTRA_MODELS: ModelDefinition[] = [
     label: 'GPT-5.6 Terra',
     blurb: 'OpenAI balanced tier, served via Platform',
     ...GPT_TERRA,
-    isLatest: true,
     supportedEfforts: ALL_EFFORTS,
     supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
     ...PLATFORM_RESPONSES_WEB,
     pricing: pricingFor('gpt-5.6-terra'),
     // OpenAI API context window (developers.openai.com/api/docs/models/gpt-5.6-terra).
+    contextWindow: 1_050_000,
+    longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
+    promptHints: GPT_TOOL_USE_PROMPT_HINTS,
+  },
+  {
+    id: 'gpt-6.1-terra',
+    label: 'GPT-6.1 Terra',
+    blurb: 'OpenAI balanced tier, served via Platform',
+    ...GPT_TERRA,
+    isLatest: true,
+    supportedEfforts: ALL_EFFORTS,
+    supportedSpeeds: FLEX_AND_PRIORITY_SPEEDS,
+    ...PLATFORM_RESPONSES_WEB,
+    pricing: pricingFor('gpt-6.1-terra'),
+    // OpenAI API context window (developers.openai.com/api/docs/models/gpt-6.1-terra).
     contextWindow: 1_050_000,
     longContextPriceCliff: GPT_LONG_CONTEXT_CLIFF,
     promptHints: GPT_TOOL_USE_PROMPT_HINTS,

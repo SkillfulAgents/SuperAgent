@@ -56,15 +56,16 @@ describe('SidebarMemberIndicator', () => {
   it.each([
     { count: 3, faces: 3, overflow: null },
     { count: 4, faces: 4, overflow: null },
-    { count: 5, faces: 3, overflow: '+2' },
-    { count: 6, faces: 3, overflow: '+3' },
+    { count: 5, faces: 3, overflow: '5' },
+    { count: 6, faces: 3, overflow: '6' },
   ])('represents a $count-member team within four circles', ({ count, faces, overflow }) => {
     roster(members.slice(0, count))
     render(<SidebarMemberIndicator {...props} memberCount={count} />)
     const trigger = screen.getByRole('button', { name: `${count} members of Shared Agent` })
     expect(within(trigger).getAllByRole('img', { hidden: true })).toHaveLength(faces)
-    if (overflow) expect(trigger).toHaveTextContent(overflow)
-    else expect(trigger).not.toHaveTextContent('+')
+    const total = within(trigger).queryByTestId('sidebar-members-count-shared-agent')
+    if (overflow) expect(total).toHaveTextContent(overflow)
+    else expect(total).toBeNull()
     fireEvent.click(trigger)
     expect(screen.getAllByRole('listitem')).toHaveLength(count)
     expect(screen.getByText(`person-${count - 1}@example.test`)).toBeInTheDocument()
@@ -89,11 +90,11 @@ describe('SidebarMemberIndicator', () => {
     const { rerender } = render(<SidebarMemberIndicator {...props} maxFaces={1} />)
     const trigger = screen.getByRole('button', { name: '6 members of Shared Agent' })
     expect(within(trigger).queryAllByRole('img', { hidden: true })).toHaveLength(0)
-    expect(trigger).toHaveTextContent('+6')
+    expect(within(trigger).getByTestId('sidebar-members-count-shared-agent')).toHaveTextContent('6')
     fireEvent.click(trigger)
     rerender(<SidebarMemberIndicator {...props} maxFaces={4} />)
     expect(within(trigger).getAllByRole('img', { hidden: true })).toHaveLength(3)
-    expect(trigger).toHaveTextContent('+3')
+    expect(within(trigger).getByTestId('sidebar-members-count-shared-agent')).toHaveTextContent('6')
     expect(screen.getAllByRole('listitem')).toHaveLength(6)
   })
 
@@ -135,7 +136,7 @@ describe('SidebarMemberIndicator', () => {
     rerender(<SidebarMemberIndicator {...props} />)
     expect(screen.getByText('Updated Person')).toBeInTheDocument()
     expect(screen.getAllByRole('listitem')).toHaveLength(3)
-    expect(screen.getByRole('button', { name: '3 members of Shared Agent' })).not.toHaveTextContent('+')
+    expect(screen.queryByTestId('sidebar-members-count-shared-agent')).toBeNull()
     roster(members.slice(0, 1))
     rerender(<SidebarMemberIndicator {...props} />)
     expect(screen.queryByRole('button')).toBeNull()

@@ -5,7 +5,11 @@
 # Stage layout: `base` holds the agent's tool environment (apt packages,
 # runtimes, browser) and is shared by `builder` (dev deps + tsc, discarded)
 # and `runtime` (prod deps + dist, published).
-FROM ubuntu:22.04 AS base
+#
+# Pinned by digest: when Docker Hub moves the tag, every layer's cache key
+# changes, so the image rebuilds from scratch and every user re-pulls all of
+# it. Dependabot (.github/dependabot.yml) proposes the new digest as a PR.
+FROM ubuntu:22.04@sha256:e0f80c829509ef4df9e76bd8944eb7b8ec25cbb379b112a7f9448b2c77a77c9b AS base
 
 # Prevent interactive prompts during installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -326,11 +330,10 @@ ENV DISABLE_AUTOUPDATER=1
 # discarded on every restart (each start is `rm -f` + a fresh `run`), so any
 # dashboard dependency install after a wake re-downloaded every package.
 ENV BUN_INSTALL_CACHE_DIR=/workspace/.bun-cache
-# ENABLE_TOOL_SEARCH is deliberately NOT set here. The host passes it at
-# `docker run` only for providers whose endpoint expands deferred tools; for
-# the rest it must stay unset so the CLI applies its own guard (it disables
-# tool search for base URLs that aren't first-party Anthropic hosts). An image
-# default would make "unset" impossible to express.
+# ENABLE_TOOL_SEARCH is deliberately NOT set here. The host passes 'true' or
+# 'false' for every session, depending on whether the provider's endpoint
+# expands deferred tools (BaseLlmProvider.toolSearchEnv); unset would read as
+# on behind any custom base URL (CLI 2.1.304+).
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

@@ -10,12 +10,16 @@ describe('login schemas', () => {
     }
   })
 
-  it('takes one to six fields of a known kind', () => {
+  it('takes up to six fields of a known kind, a ref optional', () => {
     const base = { sessionId: 's', toolUseId: 't', submitRef: null }
-    expect(loginPrepareRequestSchema.safeParse({ ...base, fields: [] }).success).toBe(false)
+    // None is a page that offers only "Continue with Google": the main frame is the site.
+    expect(loginPrepareRequestSchema.safeParse({ ...base, fields: [] }).success).toBe(true)
     expect(loginPrepareRequestSchema.safeParse({ ...base, fields: [{ ref: '@e1', kind: 'pin', label: 'PIN' }] }).success).toBe(false)
     const ok = loginPrepareRequestSchema.parse({ ...base, fields: [{ ref: 'e1', kind: 'otp', label: ' Code ' }] })
     expect(ok.fields[0]).toEqual({ ref: '@e1', kind: 'otp', label: 'Code' })
+    // A later step's field, asked now: no ref.
+    expect(loginPrepareRequestSchema.parse({ ...base, fields: [{ kind: 'password', label: 'Password' }] }).fields[0]).toEqual({ kind: 'password', label: 'Password' })
+    expect(loginPrepareRequestSchema.safeParse({ ...base, fields: Array.from({ length: 7 }, (_, i) => ({ ref: `@e${i}`, kind: 'text', label: 'x' })) }).success).toBe(false)
   })
 
   it('rejects unknown keys in a fill, so nothing else can ride along with the values', () => {

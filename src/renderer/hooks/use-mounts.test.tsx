@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, it, expect, vi } from 'vitest'
-import { renderHook, act } from '@testing-library/react'
+import { renderHook, act, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 
@@ -13,7 +13,7 @@ vi.mock('./use-agents', () => ({ useAgent: () => ({ data: mockAgent }) }))
 vi.mock('./use-volume-definitions', () => ({ useVolumeDefinitions: () => ({ data: [], isLoading: false, error: null }) }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ canUseAgent: () => true }) }))
 
-import { useAddMount, useVolumesManager } from './use-mounts'
+import { useAddMount, useAgentMounts, useVolumesManager } from './use-mounts'
 
 function Wrapper({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider>
@@ -43,6 +43,18 @@ describe('useAddMount', () => {
     expect(JSON.parse(String(mockApiFetch.mock.calls[0][1]?.body))).toEqual({ type: 'local', config: { path: '/srv/reports' }, name: 'Reports', visibility: 'private' })
   })
 
+})
+
+describe('useAgentMounts', () => {
+  it('checks again while a drive is preparing, and stops once it is ready', async () => {
+    const mount = (health: string) => new Response(JSON.stringify([{ id: 'm1', name: 'repo', health }]))
+    mockApiFetch.mockResolvedValueOnce(mount('preparing')).mockResolvedValueOnce(mount('ok')).mockResolvedValueOnce(mount('missing'))
+    const { result } = renderHook(() => useAgentMounts('a1'), { wrapper: Wrapper })
+    await waitFor(() => expect(result.current.data?.[0].health).toBe('ok'), { timeout: 4000 })
+    await new Promise(resolve => setTimeout(resolve, 2500))
+    expect(result.current.data?.[0].health).toBe('ok')
+    expect(mockApiFetch).toHaveBeenCalledTimes(2)
+  }, 10_000)
 })
 
 describe('useVolumesManager', () => {

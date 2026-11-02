@@ -53,12 +53,12 @@ it('provisions a hosted install without any legacy data migration', async () => 
   expect(JSON.stringify(rows)).not.toContain('platform-bootstrap-test-token')
   expect(providerForConnection(rows[0]).getEffectiveApiKey()).toBe('platform-bootstrap-test-token')
   expect(getSettings()).toMatchObject({
-    llmDefault: { llmProviderId: rows[0].id, model: 'grok' },
+    llmDefault: { llmProviderId: rows[0].id, model: 'sonnet' },
     llmSummarizer: { llmProviderId: rows[0].id, model: 'haiku' },
     app: { setupCompleted: true },
     container: { containerRunner: 'lambda-microvm' },
   })
-  expect(await resolveExecutionSelection()).toMatchObject({ llmProviderId: rows[0].id, model: 'grok' })
+  expect(await resolveExecutionSelection()).toMatchObject({ llmProviderId: rows[0].id, model: 'sonnet' })
   expect(await resolveHelperSelection()).toMatchObject({ llmProviderId: rows[0].id, model: 'haiku' })
   expect((await listConnections({ userId: null, admin: true }))[0].canDelete).toBe(false)
   expect(getSettings().llmLegacyProviderId).toBeUndefined()
@@ -92,7 +92,7 @@ it('does not provision without credentials and supports credentials supplied aft
   expect(getSettings().llmDefault).toBeUndefined()
   vi.stubEnv('PLATFORM_TOKEN', 'late-bootstrap-test-token')
   await ensureManagedPlatformConnection()
-  expect(await resolveExecutionSelection()).toMatchObject({ llmProviderId: 'legacy-platform', model: 'grok' })
+  expect(await resolveExecutionSelection()).toMatchObject({ llmProviderId: 'legacy-platform', model: 'sonnet' })
   expect(await resolveHelperSelection()).toMatchObject({ llmProviderId: 'legacy-platform', model: 'haiku' })
 })
 

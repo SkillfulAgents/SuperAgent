@@ -28,6 +28,7 @@ import { inferOomSigkillFatal } from '@shared/lib/container/runtime-death'
 import { parseBackgroundTasksChanged } from '@shared/lib/container/background-tasks-changed'
 import { parseCommandLifecycle } from '@shared/lib/container/command-lifecycle'
 import { mergeCanonicalSlashCommands } from '@shared/lib/container/slash-commands'
+import { slashCommandListSchema } from '@shared/lib/services/session-metadata-schema'
 import { credentialSource } from '@shared/lib/llm-provider/connection-runtime'
 import { getActiveLlmProvider, getLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
 import { captureException } from '@shared/lib/error-reporting'
@@ -315,6 +316,8 @@ export class LiveSession {
       rejectInput: (toolUseId, reason) => this.answerInput(toolUseId, 'reject', { reason }),
       // A tool call's lookups can outlive this attachment.
       syncAwaiting: () => this.ctx.resyncAwaiting(),
+      // The map is carried across a reattach, like the lookups.
+      settled: (toolUseId, outcome) => this.settledInputRequests.set(toolUseId, outcome),
       capabilityGranted: (capability) => this.ctx.capabilityGranted(capability),
       grantCapability: (capability) => this.ctx.grantCapability(capability),
       trackSubagentLaunch: (toolUseId, input) => this.subagents.trackLaunch(toolUseId, input),
@@ -768,6 +771,8 @@ export class LiveSession {
   /** The attachment is being dropped: nothing it scheduled may fire. */
   dispose(): void {
     this.cancelSettleAfterStop()
+    // The session is gone: a sign-in the host is still deciding raises no card.
+    this.toolCalls.dropLoginDecisions()
   }
 
   // ===========================================================================
@@ -865,6 +870,8 @@ export class LiveSession {
    * it, and fail the container's pending input so a late click lands nowhere.
    */
   private invalidateSubagentRequests(parentToolId: string): void {
+    // Nor does a sign-in it asked for that the host is still deciding.
+    this.toolCalls.dropLoginDecisions(parentToolId)
     const orphaned = this.ctx.requests.resolveRequestsByParent(parentToolId, 'invalidated')
     if (orphaned.length === 0) return
     for (const request of orphaned) {
@@ -1111,6 +1118,14 @@ export class LiveSession {
         this.response.beginStreamedText()
         this.ctx.emit({ type: 'stream_start', slashCommands: this.slashCommands.length > 0 ? this.slashCommands : undefined })
         return
+      case 'commands_changed': {
+        // The container's menu after a mid-turn change, such as a skill the agent just wrote.
+        const parsed = slashCommandListSchema.safeParse(content.commands)
+        if (!parsed.success) return
+        this.slashCommands = parsed.data
+        this.ctx.emit({ type: 'slash_commands_changed', slashCommands: this.slashCommands })
+        return
+      }
       case 'status':
         if (content.status === 'compacting') this.stream.compactionStarted()
         // The CLI is composing its next request, the moment it drains its

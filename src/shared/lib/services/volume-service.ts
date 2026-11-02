@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto'
-import { and, asc, eq, isNull, notExists, or, sql } from 'drizzle-orm'
+import { and, asc, eq, isNull, ne, notExists, or, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { db } from '@shared/lib/db'
-import { changesOf } from '@shared/lib/db/batch'
+import { batch, changesOf } from '@shared/lib/db/batch'
 import { agentVolumes, volumeDefinitions } from '@shared/lib/db/schema'
 import { VOLUME_TYPES, type StoredVolume, type VolumeDefinitionSummary } from '@shared/lib/types/mount'
-import { instantiateVolume, prepareVolume } from '@shared/lib/volumes/volume-factory'
-import { volumeConfigSchema } from '@shared/lib/volumes/volume-config-schema'
-import { volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
+import { instantiateVolume, prepareVolume, removeVolume } from '@shared/lib/volumes/volume-factory'
+import { localVolumeConfigSchema, volumeConfigSchema } from '@shared/lib/volumes/volume-config-schema'
+import { prepareLocalVolume } from '@shared/lib/volumes/local-mountable-volume'
+import { volumeHealth, volumeProblem, volumeSummary } from '@shared/lib/volumes/volume-health'
 import { VolumeError } from '@shared/lib/volumes/volume-error'
 import { createVolumeSchema, updateVolumeSchema, volumeNameSchema } from './mount-schema'
 
@@ -81,9 +82,12 @@ export async function listVolumeDefinitions(viewer: VolumeViewer): Promise<Volum
   const summaries = await Promise.all(rows.map(async ({ volume, attachmentCount }) => {
     const stored = storedDefinition(volume)
     if (!stored) return null
+    // The health check loads the drive's state first, so the summary's attention line reads it.
+    const problem = await volumeProblem(stored)
     return {
+      health: volumeHealth(problem),
       ...volumeSummary(stored),
-      health: await volumeProblem(stored) === null ? 'ok' as const : 'missing' as const,
+      ...(problem === 'pick the folder again' ? { pickFolderAgain: true as const } : {}),
       userId: volume.userId,
       canManage: volume.userId === null ? viewer.admin : volume.userId === viewer.userId,
       attachmentCount,
@@ -115,16 +119,62 @@ export async function updateVolumeDefinition(id: string, raw: unknown, viewer: V
   throw new VolumeError('Drive not found', 404)
 }
 
+/**
+ * Gives a local drive its folder again from a new pick in the open panel,
+ * keeping the drive's id and so every agent that has it. The Mac App Store
+ * build reads the folder only through the pick's bookmark, and a bookmark can
+ * stop opening it (the folder deleted and made again, the disk erased). The
+ * same folder only: another one is a new drive, since agents' mounts lead here.
+ */
+export async function reconnectLocalVolume(id: string, raw: unknown, viewer: VolumeViewer): Promise<void> {
+  const ownership = and(eq(volumeDefinitions.id, id), manageableVolumes(viewer))
+  const row = await db.select().from(volumeDefinitions).where(ownership).get()
+  if (!row) throw new VolumeError('Drive not found', 404)
+  const stored = storedDefinition(row)
+  if (stored?.type !== 'local') throw new VolumeError('Only a local folder’s drive can have its folder chosen again', 400)
+  const current = localVolumeConfigSchema.safeParse(stored.config)
+  if (!current.success) throw new VolumeError('Drive configuration is unavailable', 400)
+  const input = localVolumeConfigSchema.strict().parse(raw)
+  let prepared: Awaited<ReturnType<typeof prepareLocalVolume>>
+  try {
+    prepared = await prepareLocalVolume(input)
+  } catch (error) {
+    if (error instanceof VolumeError) throw error
+    throw new VolumeError(error instanceof Error ? error.message : 'Invalid drive configuration', 400)
+  }
+  if (prepared.config.path !== current.data.path) {
+    throw new VolumeError(`Choose this drive’s own folder, ${current.data.path}. Add another folder as a new drive.`, 400)
+  }
+  const config = volumeConfigSchema.parse({ type: 'local', config: prepared.config }).config
+  // Unchanged since it was read, so a second pick racing this one can't be overwritten unseen.
+  const result = await db.update(volumeDefinitions).set({ config: JSON.stringify(config), updatedAt: new Date() })
+    .where(and(ownership, eq(volumeDefinitions.config, row.config))).run()
+  if (changesOf(result) > 0) return
+  if (await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(ownership).get()) {
+    throw new VolumeError('The drive changed while its folder was chosen. Try again.', 409)
+  }
+  throw new VolumeError('Drive not found', 404)
+}
+
 export async function deleteVolumeDefinition(id: string, viewer: VolumeViewer): Promise<void> {
   const ownership = and(eq(volumeDefinitions.id, id), manageableVolumes(viewer))
-  const result = await db.delete(volumeDefinitions).where(and(ownership,
+  const rows = await db.delete(volumeDefinitions).where(and(ownership,
     notExists(db.select({ id: agentVolumes.id }).from(agentVolumes).where(eq(agentVolumes.volumeId, id))),
-  )).run()
-  if (changesOf(result) > 0) return
+  )).returning({ type: volumeDefinitions.type }).all()
+  if (rows.length > 0) {
+    await removeVolume(rows[0].type, id)
+    return
+  }
   if (await db.select({ id: volumeDefinitions.id }).from(volumeDefinitions).where(ownership).get()) {
     throw new VolumeError('Remove this drive from all agents before deleting it', 409)
   }
   throw new VolumeError('Drive not found', 404)
+}
+
+/** Whether every member can add the drive: no one user owns it. */
+export async function isPublicVolume(id: string): Promise<boolean> {
+  const row = await db.select({ userId: volumeDefinitions.userId }).from(volumeDefinitions).where(eq(volumeDefinitions.id, id)).get()
+  return row !== undefined && row.userId === null
 }
 
 /** User-facing access to a source, independent of any agent or running container. */
@@ -141,6 +191,20 @@ export async function openVolumeDefinition(id: string, viewer: VolumeViewer) {
   const volume = instantiateVolume(await getVisibleVolumeDefinition(id, viewer))
   if (!volume) throw new VolumeError('Drive configuration is unavailable', 400)
   return volume
+}
+
+/**
+ * Takes a drive off every agent but `keep` and clears its global access. Checks no viewer: the caller authorizes first.
+ * Returns the agents it came off, read just before the delete, so a drive added in between is removed but not listed.
+ */
+export async function releaseVolume(id: string, keep: string): Promise<string[]> {
+  const where = and(eq(agentVolumes.volumeId, id), ne(agentVolumes.agentSlug, keep))
+  const attached = await db.select({ agentSlug: agentVolumes.agentSlug }).from(agentVolumes).where(where).all()
+  await batch([
+    db.delete(agentVolumes).where(where),
+    db.update(volumeDefinitions).set({ globalAccess: null, updatedAt: new Date() }).where(eq(volumeDefinitions.id, id)),
+  ])
+  return attached.map((row) => row.agentSlug)
 }
 
 export async function listVolumeAttachments(id: string, viewer: VolumeViewer) {

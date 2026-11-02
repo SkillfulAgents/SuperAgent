@@ -137,17 +137,49 @@ possible.
 When a page asks for credentials — a username or email, a password, a one-time
 code — call `mcp__user-input__request_login` with the sign-in fields mapped by
 ref from your latest snapshot: each field's ref, kind (`username`, `password`,
-`otp`, `text`) and label, plus the submit button's ref. The user types the
-values into a secure form in the app; they are written into the page and the
-form is submitted, and they never pass through you. The result reports what the
-page did next, like a click result. When it reports that nothing was clicked or
-pressed (the page submitted the form, navigated or sent the code by itself),
-snapshot before submitting anything yourself. A sign-in split over steps
-(email first, then password) takes one call per step.
+`otp`, `text`) and label, plus the submit button's ref. The values come from
+the user's saved accounts or from a secure form in the app; they are written
+into the page and the form is submitted, and they never pass through you.
 
-When a step needs the user's own hands — a CAPTCHA, a passkey or security key,
-approving the sign-in on their phone, picking an account in a "Sign in with
-Google" window — immediately call `mcp__user-input__request_browser_input`.
+- Call it without `username` first. When the user saved accounts on the site
+  that you may use, the result lists them and fills nothing; call again with
+  `username` set to one. Otherwise the user gets the form.
+- A sign-in split over steps (email first, then password) takes one call per
+  step, with the same `username`. When a page asks for the email or username
+  alone, also map the password without a ref: the user enters both at once and
+  the host fills it on the next step.
+- When the site rejects the sign-in (a wrong or changed password), call it
+  again with that `username`, `ask_user: true` and a `reason` quoting what the
+  page said. The user enters it again; until they do, the vault fills that
+  account's password only with them. For another account, call it with
+  `ask_user: true` and no `username`.
+- Sign-in through another account ("Continue with Google"): list the page's
+  buttons for these in `providers` on every call, since the user's form offers
+  exactly those. Before you click one, call it on the site (without fields
+  when the page shows none). The result names the account, or the user picks
+  it in the form. Click the button yourself and pick exactly that account in
+  the provider's chooser, never another.
+
+The result reports what the page did next, like a click result. When it
+reports that nothing was clicked or pressed (the page submitted the form,
+navigated or sent the code by itself), snapshot before submitting anything
+yourself.
+
+When a sign-in asks to verify it's you, the way is the user's to choose
+whenever the page offers more than one: a list of ways (a code by text or
+email, a prompt on the phone, a passkey or security key), or one way (a
+passkey or phone prompt) with "Try another way". Never hand the browser over
+on such a page before the user picked: open that list, ask with
+`AskUserQuestion` (one option per way, in the page's words) and click the one
+picked. A code then goes in with `request_login` (kind `otp`). After a prompt
+to the user's phone, wait for the page to move on by itself: `browser_wait`
+with 15000 reports where the page is after each wait; repeat it for up to
+about two minutes.
+
+When a step needs the user's own hands — a CAPTCHA, a consent screen, a
+passkey or security key the user picked or the page's only way (a page that
+shows "Try another way" is not that), a phone prompt still pending after that
+wait — immediately call `mcp__user-input__request_browser_input`.
 Describe exactly what is visible and what the user must do. After completion,
 snapshot the updated state.
 

@@ -139,22 +139,23 @@ export class OpenRouterLlmProvider extends BaseLlmProvider {
   readonly defaultModelOptions = CLAUDE_DEFAULT_MODEL_OPTIONS
   readonly catalogDefaultModels = OPENROUTER_CATALOG_DEFAULT_MODELS
   override readonly supportsModelSearch = true
-  // Left unset (see BaseLlmProvider.toolSearchEnv): OpenRouter rejects
-  // deferred custom tools for every non-Anthropic model, so the CLI's own
-  // non-first-party guard is exactly the behaviour we want. This also gives
-  // up tool search for `anthropic/*` models routed here, where it does work —
-  // the endpoint, not the model, is what this provider can vouch for.
   protected readonly settingsKeyField = 'openrouterApiKey' as const
   protected readonly envVarName = 'OPENROUTER_API_KEY'
+
+  // OpenRouter rejects deferred custom tools for every non-Anthropic model but
+  // passes them through for Claude: the built-in catalog's bare `claude-*` ids
+  // and searched `anthropic/*` slugs. A session that switches model mid-run
+  // keeps its env; the CLI retries a refused request without deferred tools
+  // (2.1.304+), so a wrong guess costs one request, not the turn.
+  override toolSearchEnv(model?: string): 'true' | 'false' {
+    return model && /^(anthropic\/|claude-)/.test(model) ? 'true' : 'false'
+  }
 
   createClient(): Anthropic {
     const apiKey = this.getEffectiveApiKey()
     if (!apiKey) throw new Error('OpenRouter API key not configured')
     // OpenRouter uses the Anthropic-compatible API with Bearer auth.
-    // apiKey must be empty string so the SDK doesn't send x-api-key header;
-    // authToken sends the OpenRouter key via the Authorization: Bearer header.
     return new Anthropic({
-      apiKey: '',
       baseURL: OPENROUTER_BASE_URL,
       authToken: apiKey,
     })
@@ -175,7 +176,6 @@ export class OpenRouterLlmProvider extends BaseLlmProvider {
   async validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
     try {
       const client = new Anthropic({
-        apiKey: '',
         baseURL: OPENROUTER_BASE_URL,
         authToken: apiKey,
       })

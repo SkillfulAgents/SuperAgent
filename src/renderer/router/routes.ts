@@ -6,7 +6,8 @@ import { HttpError } from '@renderer/lib/api'
 import { agentQuery } from '@renderer/hooks/query-options'
 import { AgentNotFound, AgentLoadError } from './route-fallbacks'
 import { lenient } from './zod-search'
-import { chatSearchSchema, connectionsSearchSchema, homeSearchSchema, rootSearchSchema, settingsSearchSchema, settingsTabSchema } from './search-schemas'
+import { isTeamBrainAgentHome } from '@renderer/lib/team-brain/team-brain-agent-home'
+import { agentHomeSearchSchema, chatSearchSchema, connectionsSearchSchema, homeSearchSchema, rootSearchSchema, settingsSearchSchema, settingsTabSchema } from './search-schemas'
 import { HomePage } from '@renderer/components/home/home-page'
 import { RootLayout, AppShellLayout } from '@renderer/components/layout/route-layouts'
 
@@ -25,6 +26,10 @@ const NotificationDetailRoute = lazyRouteComponent(
 const TodoRoute = lazyRouteComponent(
   () => import('@renderer/components/layout/todo-route'),
   'TodoRoute',
+)
+const TeamBrainRoute = lazyRouteComponent(
+  () => import('@renderer/components/layout/team-brain-route'),
+  'TeamBrainRoute',
 )
 const ExploreRoute = lazyRouteComponent(
   () => import('@renderer/components/layout/explore-route'),
@@ -114,6 +119,15 @@ export const todoRoute = createRoute({
   component: TodoRoute,
 })
 
+// Team Brain (the `team-brain` experiment): the workspace's shared wiki. For
+// now the page before set-up and its set-up modal. Like Todo, the route points
+// at Settings → Experiments when the experiment is off.
+export const teamBrainRoute = createRoute({
+  getParentRoute: () => appShellRoute,
+  path: 'team-brain',
+  component: TeamBrainRoute,
+})
+
 export const exploreRoute = createRoute({
   getParentRoute: () => appShellRoute,
   path: 'explore',
@@ -165,11 +179,22 @@ export const agentLayoutRoute = createRoute({
   errorComponent: AgentLoadError,
 })
 
+// Hoisted: called inline beside loaderDeps, the generic lenient() leaves the route's search typed as the root's.
+const agentHomeSearch = lenient(agentHomeSearchSchema)
+
 export const agentHomeRoute = createRoute({
   // INDEX of /agents/$slug — the agent home. Every other sub-view is its own
   // sibling route, so this leaf is just AgentHome.
   getParentRoute: () => agentLayoutRoute,
   path: '/',
+  validateSearch: agentHomeSearch,
+  loaderDeps: ({ search }) => ({ from: search.from }),
+  // The Team Brain agent's own page stands in for its Agent Home: every way in lands there, except its settings' Agent
+  // settings row. A failed read is left to the layout's loader, which owns turning it into not-found or an error.
+  loader: async ({ context, params, deps }) => {
+    const agent = await context.queryClient.ensureQueryData(agentQuery(params.slug)).catch(() => null)
+    if (agent?.teamBrain && !isTeamBrainAgentHome(deps)) throw redirect({ to: '/team-brain', replace: true })
+  },
   component: AgentHomeRoute,
 })
 
@@ -316,6 +341,7 @@ export const routeTree = rootRoute.addChildren([
     notificationsRoute,
     notificationDetailRoute,
     todoRoute,
+    teamBrainRoute,
     exploreRoute,
     exploreCategoryRoute,
     exploreTemplateRoute,

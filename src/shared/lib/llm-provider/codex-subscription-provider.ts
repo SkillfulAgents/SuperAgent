@@ -20,7 +20,7 @@ const CODEX_IMAGE_PROMPT = `Codex image generation is available in this session 
 // Subscription speed choices exclude the API-only Flex tier.
 const CODEX_SPEEDS: SpeedLevel[] = ['normal', 'fast']
 // Subscription model availability/context differs from the public API catalog.
-const CODEX_MODELS = new Set(['gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-astra'])
+const CODEX_MODELS = new Set(['gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-astra'])
 
 export class CodexSubscriptionLlmProvider extends BaseLlmProvider {
   readonly id = 'codex-subscription' as const
@@ -29,7 +29,7 @@ export class CodexSubscriptionLlmProvider extends BaseLlmProvider {
   readonly catalogDefaultModels = CODEX_DEFAULT_MODELS
   protected readonly settingsKeyField = undefined
   protected readonly envVarName = ''
-  override readonly toolSearchEnv = 'true' as const
+  override toolSearchEnv() { return 'true' as const }
   override readonly mediaPrompt = CODEX_IMAGE_PROMPT
   override readonly supportsModelSearch = true
   // This integration exposes the subscription through the agent proxy, not a

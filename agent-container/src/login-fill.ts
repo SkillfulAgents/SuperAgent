@@ -9,7 +9,7 @@
  * or be moved by the page, so the focused element must also sit exactly
  * where the CLI says the ref's element is.
  */
-import { callOnElement, callOnElementWith, locateFocusedElement, type CdpConnection, type CdpEvent, type LocatedElement } from './login-cdp'
+import { callOnElement, callOnElementWith, locateFocusedElement, mainFrameOf, type CdpConnection, type CdpEvent, type LocatedElement } from './login-cdp'
 import {
   CLICK_IN_PAGE_FUNCTION,
   FILL_PAGE_STATE_FUNCTION,
@@ -40,16 +40,26 @@ export interface PreparedLoginField extends LoginFieldRequest {
   maxLength: number
 }
 
+/** A field mapped without a ref: the user enters it now, a later call fills it. */
+export interface HeldLoginField {
+  kind: LoginFieldKind
+  label: string
+}
+
 export interface PreparedLogin {
   toolUseId: string
   sessionId: string
-  /** The origin of the frame that holds the fields. */
+  /** The origin of the frame that holds the fields (the main frame's, when none was mapped). */
   origin: string
   /** That frame's URL when the fields were located. */
   url: string
   /** The origin of the page's main frame; differs when the form is in a frame of another site. */
   topOrigin: string
   fields: PreparedLoginField[]
+  /** Never written by this request: the host holds what the user enters for them. */
+  held: HeldLoginField[]
+  /** The page's buttons for signing in with another service, as the agent listed them (provider ids). */
+  providers: string[]
   submitRef: string | null
   preparedAt: number
 }
@@ -67,7 +77,12 @@ export interface LoginFillDeps {
   remeasureMs?: number
 }
 
-export type FieldStatus = 'filled' | 'changed' | 'skipped' | 'failed'
+/**
+ * failed: nothing was sent to the page (the field could not be found or
+ * written, checked before the write). unconfirmed: the write was sent and no
+ * answer came back, so the page may hold the value — and may have acted on it.
+ */
+export type FieldStatus = 'filled' | 'changed' | 'skipped' | 'failed' | 'unconfirmed'
 
 export interface FieldOutcome {
   ref: string
@@ -224,6 +239,23 @@ export async function prepareLogin(deps: LoginFillDeps, fields: LoginFieldReques
       return { ok: false, problems: [`the fields' frame has the origin "${origin}", which is not a web site`] }
     }
     return { ok: true, origin, url, topOrigin: topOrigin || origin, fields: prepared }
+  } finally {
+    cdp.close()
+  }
+}
+
+/**
+ * No field mapped (a page that offers only "Continue with Google"): the site
+ * is the page's main frame, as the browser reports it.
+ */
+export async function preparePage(deps: Pick<LoginFillDeps, 'connect'>): Promise<PrepareResult> {
+  const cdp = await deps.connect()
+  try {
+    const { origin, url } = await mainFrameOf(cdp)
+    if (!/^https?:\/\//.test(origin)) {
+      return { ok: false, problems: [`the page has the origin "${origin || url}", which is not a web site`] }
+    }
+    return { ok: true, origin, url, topOrigin: origin, fields: [] }
   } finally {
     cdp.close()
   }
@@ -420,8 +452,9 @@ export async function fillLogin(
         fillId,
       ])
     } catch (error) {
-      // The call can fail after the page ran it (a timeout): say what failed, not what the page did.
-      outcomes.push({ ...base, status: 'failed', problem: `the write into ${field.ref} returned no answer (${cdpErrorText(error)})` })
+      // The call can fail after the page ran it (a timeout): say what was
+      // seen, not what the page did. The value may be in the page.
+      outcomes.push({ ...base, status: 'unconfirmed', problem: `the write into ${field.ref} was sent and returned no answer (${cdpErrorText(error)})` })
       continue
     }
     if (!result?.ok) {

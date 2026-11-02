@@ -1083,6 +1083,68 @@ describe('transformMessages', () => {
     })
   })
 
+  describe('Monitor watches', () => {
+    // Shapes from a live CLI 2.1.303 session: the call, its result naming the
+    // watch, an event batch, then the batch that ends it.
+    const monitorEntries = (): JsonlMessageEntry[] => [
+      createAssistantMessage('uuid-1', 'msg-1', [
+        { type: 'tool_use', id: 'tool-1', name: 'Monitor', input: { description: 'probe ticks', timeout_ms: 120000, command: 'for i in 1 2 3; do sleep 6; echo tick-$i; done' } },
+      ]),
+      createUserMessage(
+        'uuid-2',
+        [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'Monitor started (task b8ezoj4kh, expires in 2m unless the source ends first).' }],
+        '2026-01-24T10:00:02.000Z',
+        { toolUseResult: { taskId: 'b8ezoj4kh', timeoutMs: 120000, persistent: false } as unknown as JsonlMessageEntry['toolUseResult'] }
+      ),
+      createAssistantMessage('uuid-3', 'msg-2', [{ type: 'text', text: 'armed' }], '2026-01-24T10:00:03.000Z'),
+      createUserMessage(
+        'uuid-4',
+        '<task-notification>\n<task-id>b8ezoj4kh</task-id>\n<summary>Monitor event: "probe ticks"</summary>\n<event>tick-1</event>\n</task-notification>',
+        '2026-01-24T10:00:09.000Z',
+        { origin: { kind: 'task-notification', producer: 'session-task' } }
+      ),
+      createAssistantMessage('uuid-5', 'msg-3', [{ type: 'text', text: 'tick-1' }], '2026-01-24T10:00:10.000Z'),
+      createUserMessage(
+        'uuid-6',
+        '<task-notification>\n<task-id>b8ezoj4kh</task-id>\n<tool-use-id>tool-1</tool-use-id>\n<output-file>/tmp/b8ezoj4kh.output</output-file>\n<status>completed</status>\n<summary>Monitor "probe ticks" stream ended</summary>\n<event>tick-3</event>\n</task-notification>',
+        '2026-01-24T10:00:21.000Z',
+        { origin: { kind: 'task-notification', producer: 'session-task' } }
+      ),
+    ]
+
+    it('names the watch on the Monitor call', () => {
+      const toolCall = asMessage(transformMessages(monitorEntries())[0]).toolCalls[0]
+      expect(toolCall.backgroundTaskId).toBe('b8ezoj4kh')
+      expect(toolCall.result).toMatch(/^Monitor started/)
+    })
+
+    it('shows each delivered batch in place, as a monitor_event item', () => {
+      const items = transformMessages(monitorEntries())
+      expect(items.map((item) => item.type)).toEqual(['assistant', 'assistant', 'monitor_event', 'assistant', 'monitor_event'])
+      expect(items[2]).toMatchObject({
+        id: 'uuid-4',
+        type: 'monitor_event',
+        taskId: 'b8ezoj4kh',
+        description: 'probe ticks',
+        events: ['tick-1'],
+        status: null,
+      })
+      expect(items[4]).toMatchObject({ events: ['tick-3'], status: 'completed', endReason: 'stream ended' })
+    })
+
+    it('still hides every other task notification', () => {
+      const entries = [
+        createUserMessage(
+          'uuid-1',
+          '<task-notification>\n<task-id>bg1</task-id>\n<status>completed</status>\n<summary>Background command "x" completed (exit code 0)</summary>\n</task-notification>',
+          '2026-01-24T10:00:00.000Z',
+          { origin: { kind: 'task-notification' } }
+        ),
+      ]
+      expect(transformMessages(entries)).toEqual([])
+    })
+  })
+
   describe('subagent metadata extraction', () => {
     it('extracts subagent metadata from Task tool result with agentId', () => {
       const entries: JsonlMessageEntry[] = [

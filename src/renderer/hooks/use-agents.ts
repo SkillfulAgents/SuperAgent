@@ -7,6 +7,7 @@ import type { ApiAgent } from '@shared/lib/types/api'
 import { updateAgentAvatarCache, updateAgentRuntimeCache } from '@renderer/lib/agent-cache'
 import { agentAvatarSchema, type AgentAvatar } from '@shared/lib/types/agent-avatar'
 import { TODOS_QUERY_KEY } from './todos-query-key'
+import { usePreparedTeamBrainSlug } from '@renderer/lib/team-brain/team-brain-store'
 
 // Re-export for convenience
 export type { ApiAgent }
@@ -109,6 +110,16 @@ export function useAgents<TData = ApiAgent[]>(options?: {
   })
 }
 
+/** The agents the sidebar and Home list: all but the Team Brain agent, which is reached only through its own sidebar item. */
+export function useListedAgents() {
+  const preparedSlug = usePreparedTeamBrainSlug()
+  const withoutTeamBrain = useCallback(
+    (agents: ApiAgent[]) => agents.filter((agent) => !agent.teamBrain && agent.slug !== preparedSlug),
+    [preparedSlug],
+  )
+  return useAgents({ select: withoutTeamBrain })
+}
+
 export function useAgent(slug: string | null) {
   return useQuery<ApiAgent>({
     queryFn: async () => {
@@ -183,6 +194,10 @@ export function useDeleteAgent() {
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
       // Todo items given to it let go of it on the server.
       queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
+      // Deleting the Team Brain agent takes its drive off every other agent and off global.
+      queryClient.invalidateQueries({ queryKey: ['mounts'] })
+      queryClient.invalidateQueries({ queryKey: ['volume-definitions'] })
+      queryClient.invalidateQueries({ queryKey: ['volume-agents'] })
     },
   })
 }

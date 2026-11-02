@@ -11,6 +11,8 @@ type Entry = { prepared: PreparedLogin } | { problems: string[] }
 
 const entries = new Map<string, Entry>()
 const waiters = new Map<string, Array<() => void>>()
+/** Requests whose browser closed: still the user's to answer, but nothing can go into their page. */
+const closed = new Set<string>()
 /** Requests being prepared now. */
 const preparing = new Set<string>()
 
@@ -69,10 +71,26 @@ export function waitForPreparedLogin(toolUseId: string, timeoutMs: number): Prom
 export function forgetPreparedLogin(toolUseId: string): void {
   entries.delete(toolUseId)
   preparing.delete(toolUseId)
+  closed.delete(toolUseId)
 }
 
-/** The browser closed: no prepared request can be filled any more. */
+/**
+ * The browser closed: no prepared request can be filled any more, but each
+ * stays open to the user (a Browserbase session can end long before they
+ * come back). What they save then goes to the vault, for the agent's next try.
+ */
+export function closePreparedLogins(): void {
+  for (const toolUseId of entries.keys()) closed.add(toolUseId)
+}
+
+/** Whether the browser that showed this request closed since. */
+export function isPreparedLoginClosed(toolUseId: string): boolean {
+  return closed.has(toolUseId)
+}
+
+/** Test seam: forget every request. */
 export function forgetAllPreparedLogins(): void {
   entries.clear()
   preparing.clear()
+  closed.clear()
 }
