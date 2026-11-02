@@ -251,7 +251,7 @@ export class AgentIntegrationManager {
       }
     }
 
-if (options.timers !== false) {
+    if (options.timers !== false) {
       this.healthCheckInterval = setInterval(() => {
         background(this.runHealthChecks().catch((err) => {
           console.error('[AgentIntegrationManager] Health check error:', err)
