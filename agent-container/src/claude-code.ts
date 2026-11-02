@@ -76,6 +76,7 @@ import {
   type Capability,
 } from './capability-policies';
 import { createCapabilityGateHook, CAPABILITY_REVIEW_HOOK_TIMEOUT_S } from './capability-gate-hook';
+import { MAIN_THREAD_ONLY_TOOLS, MAIN_THREAD_ONLY_TOOL_MESSAGE } from './main-thread-tools';
 import {
   buildModelSubagentDefinitions,
   type ModelContextWindows,
@@ -1426,6 +1427,24 @@ export class ClaudeCodeProcess extends EventEmitter {
                   inputManager.setCurrentToolUseId(toolUseId, this.sessionId);
                 }
                 return {};
+              },
+            ],
+          },
+          {
+            // A subagent inherits the main agent's tools, these included; see
+            // main-thread-tools for why they are the main conversation's
+            // alone. agent_id is set only inside a subagent.
+            matcher: `^(${[...MAIN_THREAD_ONLY_TOOLS].join('|')})$`,
+            hooks: [
+              async (input) => {
+                if (!input.agent_id) return {};
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: 'PreToolUse' as const,
+                    permissionDecision: 'deny' as const,
+                    permissionDecisionReason: MAIN_THREAD_ONLY_TOOL_MESSAGE,
+                  },
+                };
               },
             ],
           },

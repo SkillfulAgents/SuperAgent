@@ -98,15 +98,19 @@ const MAX_SET_POLICY_ATTEMPTS = 5
  * read, or insert only while no row holds the key (the NULL-safe unique
  * index from migration 0044 makes a global, null-target key conflict too);
  * zero changes means read again and swap against what the other writer left.
+ *
+ * With keepBlock, a stored Block is left in place and reported as
+ * previousDecision 'block': nothing was written.
  */
 export function setPolicy(
   callerSlug: string,
   operation: XAgentOperation,
   targetSlug: string | null,
   decision: XAgentDecision,
+  { keepBlock = false }: { keepBlock?: boolean } = {},
 ): Promise<{ created: boolean; previousDecision: XAgentDecision | null }> {
   return serializeByKey(`x-agent-policy:${callerSlug}\u0000${operation}\u0000${targetSlug ?? ''}`, () =>
-    compareAndSetPolicy(callerSlug, operation, targetSlug, decision),
+    compareAndSetPolicy(callerSlug, operation, targetSlug, decision, keepBlock),
   )
 }
 
@@ -115,6 +119,7 @@ async function compareAndSetPolicy(
   operation: XAgentOperation,
   targetSlug: string | null,
   decision: XAgentDecision,
+  keepBlock: boolean,
 ): Promise<{ created: boolean; previousDecision: XAgentDecision | null }> {
   const now = new Date()
   const key = and(
@@ -129,6 +134,8 @@ async function compareAndSetPolicy(
       .where(key)
       .get()
     if (existing) {
+      // Leaves a Block in place and reports it, so the caller can refuse.
+      if (keepBlock && existing.decision === 'block') return { created: false, previousDecision: 'block' }
       const updated = await db
         .update(xAgentPolicies)
         .set({ decision, updatedAt: now })

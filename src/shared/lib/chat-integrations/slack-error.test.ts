@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isUnrecoverableSlackError } from './slack-error'
+import { isSlackBlocksRejection, isUnrecoverableSlackError } from './slack-error'
 
 // The five codes @slack/socket-mode classifies as UnrecoverableSocketModeStartError:
 // a workspace/app in this state will never reconnect no matter how often we retry,
@@ -51,5 +51,14 @@ describe('isUnrecoverableSlackError', () => {
     expect(isUnrecoverableSlackError('invalid_auth')).toBe(false)
     expect(isUnrecoverableSlackError({ code: 'slack_webapi_platform_error' })).toBe(false)
     expect(isUnrecoverableSlackError({ code: 'slack_webapi_platform_error', data: { error: 42 } })).toBe(false)
+  })
+})
+
+describe('isSlackBlocksRejection', () => {
+  it('flags both block refusals and nothing else', () => {
+    expect(isSlackBlocksRejection(platformError('invalid_blocks'))).toBe(true)
+    expect(isSlackBlocksRejection(platformError('msg_blocks_too_long'))).toBe(true)
+    expect(isSlackBlocksRejection(platformError('msg_too_long'))).toBe(false)
+    expect(isSlackBlocksRejection(new Error('invalid_blocks'))).toBe(false)
   })
 })

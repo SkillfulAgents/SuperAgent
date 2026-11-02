@@ -353,7 +353,7 @@ describe('chat-integration callback access gate', () => {
     expect(reviewManager.submitDecision).toHaveBeenCalledTimes(1)
     // Bound to the integration's agent: a caller-supplied review id must not be
     // decidable through another agent's chat.
-    expect(reviewManager.submitDecision).toHaveBeenCalledWith('test-agent', 'test-review', 'allow')
+    expect(reviewManager.submitDecision).toHaveBeenCalledWith('test-agent', 'test-review', 'allow', undefined)
   })
 
   it('revoked chat → silently dropped before review/resolve', async () => {

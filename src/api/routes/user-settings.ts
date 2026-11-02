@@ -4,6 +4,7 @@ import { getCurrentUserId } from '@shared/lib/auth/config'
 import {
   agentFolderSettingsWriteSchema,
   experimentSettingsWriteSchema,
+  teamBrainViewsWriteSchema,
   getUserSettings,
   updateUserSettings,
   userVoiceSettingsWriteSchema,
@@ -36,6 +37,9 @@ userSettingsRouter.put('/', async (c) => {
   const voiceFields = userVoiceSettingsWriteSchema.safeParse(body)
   if (!voiceFields.success) {
     return c.json({ error: 'Invalid voice settings' }, 400)
+  }
+  if (!teamBrainViewsWriteSchema.safeParse(body).success) {
+    return c.json({ error: 'Invalid Team Brain views' }, 400)
   }
   // The stored switch map keeps unknown ids; a write may not add them.
   if (!experimentSettingsWriteSchema.safeParse(body).success) {

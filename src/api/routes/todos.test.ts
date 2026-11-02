@@ -8,6 +8,10 @@ const state = vi.hoisted(() => ({
   agents: new Set<string>(),
   // user → agents they can read
   readable: new Map<string, Set<string>>(),
+  // user → agents they can use (role user and up)
+  usable: new Map<string, Set<string>>(),
+  // `agentSlug/sessionId` → session name
+  names: new Map<string, string>(),
   sessions: new Map<string, { isActive: boolean; isAwaitingInput: boolean }>(),
   requests: new Map<string, { kind: string; blocking: boolean; autoApproved: boolean }[]>(),
   wakes: [] as { agentSlug: string; resumeSessionId: string; nextExecutionAt: Date }[],
@@ -29,6 +33,8 @@ vi.mock('../middleware/auth', () => ({
     const mine = state.readable.get((c.get('user' as never) as { id: string }).id) ?? new Set()
     return new Set(ids.filter((id) => mine.has(id)))
   },
+  canUseAgent: async (c: Context, slug: string) =>
+    state.usable.get((c.get('user' as never) as { id: string }).id)?.has(slug) ?? false,
 }))
 vi.mock('@shared/lib/services/user-settings-service', () => ({
   isExperimentEnabled: async (userId: string, id: string) => id === 'todo-board' && state.experimentOn.has(userId),
@@ -55,8 +61,12 @@ function workspacePath(raw: string) {
 vi.mock('@shared/lib/agent-actor', () => ({
   agentRegistry: {
     get: (slug: string) => ({
+      slug,
       sessions: {
         isKnown: async (id: string) => state.sessions.has(`${slug}/${id}`),
+        readMetadata: async () => Object.fromEntries([...state.names].flatMap(([key, name]) =>
+          key.startsWith(`${slug}/`) ? [[key.slice(slug.length + 1), { name }]] : [])),
+        rename: async (id: string, name: string) => { state.names.set(`${slug}/${id}`, name) },
         live: async (id: string) => ({
           isActive: state.sessions.get(`${slug}/${id}`)?.isActive ?? false,
           isAwaitingInput: state.sessions.get(`${slug}/${id}`)?.isAwaitingInput ?? false,
@@ -108,6 +118,9 @@ beforeEach(async () => {
   state.experimentOn = new Set(['alice', 'bob'])
   state.agents = new Set(['agent-a', 'agent-b'])
   state.readable = new Map([['alice', new Set(['agent-a', 'agent-b'])], ['bob', new Set(['agent-a'])]])
+  // Bob can see agent-a's sessions but not use the agent.
+  state.usable = new Map([['alice', new Set(['agent-a', 'agent-b'])]])
+  state.names = new Map()
   state.sessions = new Map()
   state.requests = new Map()
   state.wakes = []
@@ -257,14 +270,41 @@ describe('starting', () => {
 })
 
 describe('renaming started work', () => {
-  it('renames an item in any column after it started, and nothing else changes', async () => {
+  it('renames the session in any column after it started, and nothing else changes', async () => {
     const todo = await startDraft()
     const res = await call(`/${todo.id}/title`, 'POST', { title: 'Weekly sales summary' })
     expect(res.status).toBe(200)
     const renamed = await res.json()
     expect(renamed).toMatchObject({ title: 'Weekly sales summary', description: todo.description, status: 'active', position: todo.position })
+    expect(state.names.get('agent-a/session-1')).toBe('Weekly sales summary')
     await call(`/${todo.id}/status`, 'POST', { status: 'done' })
     expect((await call(`/${todo.id}/title`, 'POST', { title: 'Sales summary, done' })).status).toBe(200)
+  })
+
+  it('shows the session\'s current name once started', async () => {
+    await startDraft()
+    state.names.set('agent-a/session-1', 'Renamed from the sidebar')
+    const { todos } = await (await call('')).json()
+    expect(todos[0].title).toBe('Renamed from the sidebar')
+  })
+
+  it('refuses a rename from someone who can see the agent but not use it', async () => {
+    state.sessions.set('agent-a/session-1', { isActive: false, isAwaitingInput: false })
+    const todo = await (await call('/sessions', 'POST', { title: 'Report', agentSlug: 'agent-a', sessionId: 'session-1' }, 'bob')).json()
+    expect((await call(`/${todo.id}/title`, 'POST', { title: 'Mine now' }, 'bob')).status).toBe(403)
+    expect(state.names.has('agent-a/session-1')).toBe(false)
+  })
+
+  it('renames its own title once the session is gone, even with its name left in metadata', async () => {
+    const todo = await startDraft()
+    await call(`/${todo.id}/status`, 'POST', { status: 'done' })
+    state.names.set('agent-a/session-1', 'Old session name')
+    state.sessions.delete('agent-a/session-1')
+    const res = await call(`/${todo.id}/title`, 'POST', { title: 'Archived report' })
+    expect(res.status).toBe(200)
+    expect((await res.json()).title).toBe('Archived report')
+    expect((await (await call('')).json()).todos[0].title).toBe('Archived report')
+    expect(state.names.get('agent-a/session-1')).toBe('Old session name')
   })
 
   it('leaves drafts to their dialog', async () => {
@@ -372,9 +412,10 @@ describe('board columns', () => {
 
   it('stop reading the session of an agent the person lost access to', async () => {
     const todo = await startDraft()
+    state.names.set('agent-a/session-1', 'Renamed from the sidebar')
     state.readable.get('alice')!.delete('agent-a')
     const listed = (await (await call('')).json()).todos[0]
-    expect(listed).toMatchObject({ id: todo.id, status: 'active', column: 'has_updates' })
+    expect(listed).toMatchObject({ id: todo.id, status: 'active', column: 'has_updates', title: 'Write the report' })
   })
 })
 

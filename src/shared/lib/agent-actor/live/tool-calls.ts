@@ -9,14 +9,17 @@
  *   parks on an approval card;
  * - computer use and host scripts either run at once, when a grant covers
  *   them, or park on an approval card;
- * - host tools (schedules, triggers, webhook endpoints) are the host's to run;
+ * - host tools (schedules, triggers, webhook endpoints) are the host's to run,
+ *   whoever calls them, except the main conversation's own (schedule_resume),
+ *   which fail from a subagent;
  * - deliver_file is remembered until its result says the file exists;
  * - a Task/Agent call starts a subagent entry.
  *
  * Calls arrive by three paths, which act on different subsets, in the order
  * they always have: the main agent's stream, a subagent's stream, and a
  * subagent's complete message (which can repeat a call its stream already
- * delivered; registration is first-delivery-wins, and runs claim their request).
+ * delivered; registration is first-delivery-wins, runs claim their request,
+ * and a host tool runs once per call).
  */
 import type { ContainerClient } from '@shared/lib/container/types'
 import { getToolDefinition } from '@shared/lib/tools/registry'
@@ -44,6 +47,7 @@ import type { AgentComputerUse } from '@shared/lib/computer-use/agent-permission
 import { computerUseMethodFromToolName, getRequiredPermissionLevel, resolveTargetApp } from '@shared/lib/computer-use/types'
 import { unwrapComputerRun } from '@shared/lib/computer-use/computer-run'
 import { background } from '@shared/lib/background'
+import { MAIN_THREAD_ONLY_TOOLS, MAIN_THREAD_ONLY_TOOL_MESSAGE } from '../../../../../agent-container/src/main-thread-tools'
 import { hostToolNameOf, type HostPort, type HostToolName, type HostToolResult, type LoginDecision } from '../host-port'
 import { runAutoApproved, type HostRunActor } from '../host-runs'
 import type { SessionEvent } from './session-channel'
@@ -179,11 +183,19 @@ export class ToolCalls {
    * call nobody can answer.
    */
   private readonly loginDecisions: Map<string, string | undefined>
+  /**
+   * Host tool calls already run: a subagent's stream and its complete message
+   * both carry each call, and a schedule_task run twice is saved twice.
+   * Carried across a reattach (the second delivery can land on the next
+   * attachment), and never cleared: an id never recurs.
+   */
+  private readonly hostToolsRun: Set<string>
 
   /** `prior`: the tool calls of the attachment this one replaces. */
   constructor(private readonly ctx: ToolCallContext, prior?: ToolCalls) {
     this.cancelledReviews = prior?.cancelledReviews ?? new Set()
     this.loginDecisions = prior?.loginDecisions ?? new Map()
+    this.hostToolsRun = prior?.hostToolsRun ?? new Set()
   }
 
   /** Stop waiting on the host's sign-in decisions: all of them, or those of the subagent call `parentToolId`. */
@@ -203,8 +215,7 @@ export class ToolCalls {
       this.ctx.host.send('analytics', { event: `agent_${action}`, properties: { agentSlug: this.ctx.agentSlug } })
     }
     this.parkUserInput(toolUse)
-    const hostTool = hostToolNameOf(name)
-    if (hostTool) this.runHostTool(toolUse, hostTool)
+    this.hostTool(toolUse)
     if (this.isScriptRun(name)) this.scriptRun(toolUse)
     if (name.startsWith(COMPUTER_USE_PREFIX)) background(this.computerUse(toolUse), { name: 'tool-calls.computer-use' })
     // Under a 'review' policy the container parks the launch on an approval;
@@ -217,6 +228,7 @@ export class ToolCalls {
   /** A tool call on a subagent's stream. */
   subagentStreamedToolUse(toolUse: ToolUse, parentToolId: string): void {
     this.parkUserInput(toolUse, parentToolId)
+    this.hostTool(toolUse, parentToolId)
     if (this.isScriptRun(toolUse.name)) this.scriptRun(toolUse, parentToolId)
     if (toolUse.name.startsWith(COMPUTER_USE_PREFIX)) background(this.computerUse(toolUse, parentToolId), { name: 'tool-calls.computer-use' })
     if (LAUNCH_TOOLS.has(toolUse.name)) this.ctx.trackSubagentLaunch(toolUse.id, toolUse.input)
@@ -228,6 +240,7 @@ export class ToolCalls {
   subagentMessageToolUse(toolUse: ToolUse, parentToolId: string): void {
     if (LAUNCH_TOOLS.has(toolUse.name)) this.ctx.trackSubagentLaunch(toolUse.id, toolUse.input)
     this.parkUserInput(toolUse, parentToolId)
+    this.hostTool(toolUse, parentToolId)
     if (this.isScriptRun(toolUse.name)) this.scriptRun(toolUse, parentToolId)
     if (toolUse.name.startsWith(COMPUTER_USE_PREFIX)) background(this.computerUse(toolUse, parentToolId), { name: 'tool-calls.computer-use' })
   }
@@ -418,6 +431,22 @@ export class ToolCalls {
         }),
       { name: 'tool-calls.capture-browser-context' },
     )
+  }
+
+  /** A host tool's call, from the main agent or the subagent `parentToolUseId`: run once. */
+  private hostTool(toolUse: ToolUse, parentToolUseId?: string): void {
+    const toolName = hostToolNameOf(toolUse.name)
+    if (!toolName || this.hostToolsRun.has(toolUse.id)) return
+    this.hostToolsRun.add(toolUse.id)
+    if (parentToolUseId && MAIN_THREAD_ONLY_TOOLS.has(toolUse.name)) {
+      // The container's hook denies it first; failing it here unblocks a call
+      // that got past the hook anyway.
+      background(this.ctx.rejectInput(toolUse.id, MAIN_THREAD_ONLY_TOOL_MESSAGE).catch(console.error), {
+        name: 'tool-calls.reject-main-thread-tool',
+      })
+      return
+    }
+    this.runHostTool(toolUse, toolName)
   }
 
   /**

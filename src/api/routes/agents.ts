@@ -1,3 +1,4 @@
+import { agentNotificationPreview } from '@shared/lib/notifications/agent-notification-preview'
 import { assertConnectionSelectionAccess, connectionNeedsAttachment, credentialSource } from '@shared/lib/llm-provider/connection-runtime'
 import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
@@ -19,7 +20,6 @@ import { streamSSE } from 'hono/streaming'
 import { getConnInfo } from '@hono/node-server/conninfo'
 import type Anthropic from '@anthropic-ai/sdk'
 import { createHash, randomUUID } from 'crypto'
-import { Worker } from 'node:worker_threads'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
@@ -80,6 +80,7 @@ import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTri
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { HEIC_PREVIEW_MAX_SOURCE_BYTES } from '@shared/lib/utils/heic-preview'
+import { HEIC_EXTENSIONS, heicUploadAsJpeg, queueHeicPreview, runHeicPreviewWorker } from './heic-jpeg'
 import { servedRange } from '@shared/lib/utils/http-range'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { isSystemMessageText } from '@shared/lib/utils/system-message'
@@ -220,7 +221,7 @@ import {
 } from '@shared/lib/services/widget-service'
 import { widgetRefreshService } from '@shared/lib/services/widget-refresh-service'
 import { widgetSchemeSchema, widgetSizeSchema } from '@shared/lib/widgets/widget-schema'
-import { getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
+import { getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, getUnreadNotificationPreviewsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
@@ -230,11 +231,13 @@ import { withSessionStatus } from '@shared/lib/session-status'
 import { getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
 import { isValidApiScope } from '@shared/lib/proxy/scope-matcher'
 import { isLabelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
+import { cleanUserReason } from '@shared/lib/proxy/user-reason'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 import {
   deletePolicy,
   deletePoliciesForAgent,
   deleteTargetPolicy,
+  evaluate as evaluateXAgentPolicy,
   listPoliciesForCaller,
   replacePoliciesForCaller,
   replacePoliciesForCallerInputSchema,
@@ -770,11 +773,12 @@ async function enrichAgentsWithSummary(
 
   // Both halves of the unread projection, one query each rather than one per
   // agent — this route hydrates every agent on every poll.
-  const [unreadByAgent, markedUnreadByAgent, mentionsByAgent] = await Promise.all([
+  const [unreadByAgent, markedUnreadByAgent, mentionsByAgent, previewsByAgent] = await Promise.all([
     getUnreadNotificationsByAgents(slugs, options.userId),
     getSessionIdsMarkedUnreadByAgents(slugs, options.userId),
     // Only auth mode has people to mention.
     isAuthMode() ? getUnreadMentionsByAgents(slugs, options.userId) : new Map<string, Set<string>>(),
+    getUnreadNotificationPreviewsByAgents(slugs, options.userId),
   ])
 
   const limit = pLimit(5)
@@ -835,12 +839,23 @@ async function enrichAgentsWithSummary(
       const hasActiveSessions = live.activeSessionIds.length > 0
       const hasSessionsAwaitingInput = live.awaitingSessionIds.length > 0 || live.pendingReviews.length > 0
 
+      // What the newest notification behind the winning flag says, in the same
+      // order the sidebar badge picks: a question still waiting on the user,
+      // then a mention, then anything unread. Rows come newest first and pass
+      // the same visibility as the flags above.
+      const preview = agentNotificationPreview(
+        previewsByAgent.get(agent.slug) ?? [], unreadSessionIds, sessionMetadata,
+        live.awaitingSessionIds, hasSessionsAwaitingInput, hasUnreadMention, hasUnreadNotifications,
+      )
+
       return {
         ...agent,
         hasActiveSessions,
         hasSessionsAwaitingInput,
         hasUnreadNotifications,
         hasUnreadMention,
+        ...preview,
+        markedUnreadSessionIds: sessionSummary.sessionIds.filter(id => markedIds.has(id) && !isHiddenAutomatedSession(sessionMetadata[id])),
         sessionCount: sessionSummary.sessionCount,
         lastActivityAt: sessionSummary.lastActivityAt,
         dashboards: artifacts.map((a) => ({
@@ -1375,7 +1390,6 @@ Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
       : message.trim().split(/\s+/).slice(0, 6).join(' ').substring(0, 60)
     if (finalName) {
       await agentRegistry.get(agentSlug).sessions.rename(sessionId, finalName)
-      await agentRegistry.get(agentSlug).sessions.broadcastUpdate(sessionId)
     }
   } catch (error) {
     console.error('Failed to update session name:', error)
@@ -1588,6 +1602,7 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
       )
     }
     console.error('Failed to delete agent:', error)
+    captureException(error, { tags: { component: 'agents', operation: 'delete-agent' }, extra: { agentSlug: getAgentId(c) } })
     return c.json({ error: 'Failed to delete agent' }, 500)
   }
 })
@@ -2071,6 +2086,8 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     const slug = getAgentId(c)
     const body = await c.req.json()
     const { message } = body
+    // A session the caller names gets no generated name.
+    const name = typeof body.name === 'string' ? body.name.trim() : ''
 
     if (!message?.trim()) {
       return c.json({ error: 'Message is required' }, 400)
@@ -2188,7 +2205,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
           speed: prewarm.speed,
         },
       },
-      name: 'New Session',
+      name: name || 'New Session',
       metadata: initialMetadata,
     })
     const sessionId = containerSession.id
@@ -2201,9 +2218,9 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
 
     await notifySessionMentions(c, mentions, { agentSlug: slug, agentName: agent.name, sessionId, messageUuid: initialMessageUuid })
 
-    if (isSystemMessageText(message.trim())) {
+    if (!name && isSystemMessageText(message.trim())) {
       await actor.sessions.deferNaming(sessionId)
-    } else {
+    } else if (!name) {
       background(generateAndUpdateSessionNameAsync(
         slug,
         sessionId,
@@ -2216,7 +2233,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       {
         id: sessionId,
         agentSlug: slug,
-        name: 'New Session',
+        name: name || 'New Session',
         createdAt: new Date(),
         lastActivityAt: new Date(),
         isActive: true,
@@ -4349,7 +4366,7 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
       submitted: filled.result.submitted,
       filled: filled.result.filled,
       failed: filled.result.failed,
-      source: account ? 'form_with_vault' : 'form',
+      fill_method: account ? 'form_with_vault' : 'form',
       saved: savedAccount !== null,
       held: heldLabels.length,
     })
@@ -4443,6 +4460,7 @@ agents.post('/:id/sessions/:sessionId/login-via', AgentUser(), zValidator('json'
     trackServerEvent('login_request_via', { provider: providerOf(provider.site)?.id ?? 'other' })
     return c.json({ success: true, account: { username: account.username, site }, provider: { site: provider.site, username: provider.username } })
   } catch (error) {
+    trackServerEvent('login_request_via_failed', { reason: error instanceof VaultConflictError ? 'conflict' : 'error' })
     if (error instanceof VaultConflictError) return c.json({ error: error.message }, 409)
     console.error('[login-via] Failed:', error instanceof Error ? error.message : 'Unknown error')
     return c.json({ error: 'The account could not be saved' }, 500)
@@ -4555,7 +4573,7 @@ agents.post(
       submitted: filled.result.submitted,
       filled: filled.result.filled,
       failed: filled.result.failed,
-      source: 'password_manager',
+      fill_method: 'password_manager',
       saved: savedAccount !== null,
     })
     return c.json({
@@ -6367,6 +6385,9 @@ async function handleFileUpload(agentSlug: string, file: File, relativePath?: st
   if (file.size > MAX_UPLOAD_TOTAL_SIZE) {
     throw new UploadTooLargeError(file.size, MAX_UPLOAD_TOTAL_SIZE)
   }
+  // A folder upload keeps its file names, so only a single file is swapped for its JPEG.
+  const jpeg = relativePath ? undefined : await heicUploadAsJpeg(file.name, file)
+  if (jpeg) file = new File([jpeg.data], jpeg.name)
   const uploadPath = resolveUploadDestPath(file.name, relativePath)
 
   // Stream into the workspace instead of Buffer.from(await file.arrayBuffer()) —
@@ -6895,13 +6916,9 @@ agents.post('/:id/folders/reveal-path', AgentAdmin(), async (c) => {
   }
 })
 
-const HEIC_EXTENSIONS = new Set(['.heic', '.heif'])
 const HEIC_PREVIEW_CACHE_BYTES = 64 * 1024 * 1024
-const HEIC_PREVIEW_MAX_PIXELS = 50_000_000
-const HEIC_PREVIEW_TIMEOUT_MS = 30_000
 const heicPreviewCache = new Map<string, Uint8Array>()
 let heicPreviewCacheBytes = 0
-let heicPreviewQueue: Promise<void> = Promise.resolve()
 
 function cachedHeicPreview(key: string): Uint8Array | undefined {
   const preview = heicPreviewCache.get(key)
@@ -6926,72 +6943,6 @@ function cacheHeicPreview(key: string, preview: Uint8Array) {
   }
   heicPreviewCache.set(key, preview)
   heicPreviewCacheBytes += preview.byteLength
-}
-
-function heicPreviewWorkerUrl(): URL {
-  try {
-    // Electron emits CommonJS; the web build and unbundled source use ESM.
-    const filename = process.versions.electron ? './heic-preview-worker.cjs' : './heic-preview-worker.mjs'
-    return new URL(filename, import.meta.url)
-  } catch (error) {
-    throw new Error('Failed to resolve HEIC preview worker', { cause: error })
-  }
-}
-
-function runHeicPreviewWorker(input: Uint8Array): Promise<Uint8Array> {
-  return new Promise((resolve, reject) => {
-    const inputBuffer = input.buffer as ArrayBuffer
-    const worker = new Worker(heicPreviewWorkerUrl(), {
-      workerData: {
-        input: inputBuffer,
-        maxPixels: HEIC_PREVIEW_MAX_PIXELS,
-        quality: 85,
-      },
-      transferList: [inputBuffer],
-      resourceLimits: {
-        maxOldGenerationSizeMb: 384,
-        maxYoungGenerationSizeMb: 64,
-        stackSizeMb: 4,
-      },
-    })
-    let settled = false
-    let timedOut = false
-    let workerError: Error | undefined
-    let result: { output?: ArrayBuffer; error?: string } | undefined
-    const timeout = setTimeout(() => {
-      if (settled) return
-      timedOut = true
-      background(worker.terminate().catch((error) => {
-        if (settled) return
-        settled = true
-        reject(error)
-      }), { name: 'heic-preview.terminate-worker' })
-    }, HEIC_PREVIEW_TIMEOUT_MS)
-
-    worker.once('message', (message: { output?: ArrayBuffer; error?: string }) => {
-      result = message
-    })
-    worker.once('error', (error) => {
-      workerError = error
-    })
-    worker.once('exit', (code) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timeout)
-      if (timedOut) reject(new Error('HEIC preview conversion timed out'))
-      else if (workerError) reject(workerError)
-      else if (code !== 0) reject(new Error(`HEIC preview worker exited with code ${code}`))
-      else if (result?.error) reject(new Error(result.error))
-      else if (result?.output) resolve(new Uint8Array(result.output))
-      else reject(new Error('HEIC preview worker returned no image'))
-    })
-  })
-}
-
-function queueHeicPreview<T>(task: () => Promise<T>): Promise<T> {
-  const queued = heicPreviewQueue.then(task)
-  heicPreviewQueue = queued.then(() => undefined, () => undefined)
-  return queued
 }
 
 async function renderHeicPreview(actor: AgentActor, resolvedPath: string, stat: FileStat): Promise<Uint8Array> {
@@ -7876,8 +7827,6 @@ agents.get('/:id/pending-requests', AgentRead(), async (c) => {
 // Re-authentication endpoints
 // =============================================================================
 
-const MAX_DISMISS_REASON_LENGTH = 500
-
 agents.route('/', accountReauth)
 agents.route('/', mcpReauth)
 agents.route('/', agentMemoryRoutes)
@@ -7899,11 +7848,7 @@ agents.post('/:id/reauth-request/:requestId/dismiss', AgentUser(), async (c) => 
   const slug = getAgentId(c)
   const requestId = c.req.param('requestId')
   const body = await c.req.json<{ reason?: string }>().catch(() => ({} as { reason?: string }))
-  // Bounded: this text is forwarded into the proxy's error body and written to
-  // the audit log, so it must not be an unbounded write from the composer.
-  const reason = typeof body.reason === 'string' && body.reason.trim()
-    ? body.reason.trim().slice(0, MAX_DISMISS_REASON_LENGTH)
-    : undefined
+  const reason = cleanUserReason(body.reason)
 
   const open = await agentRegistry.get(slug).inputs.get(requestId)
   if (open) {
@@ -7961,7 +7906,7 @@ agents.post('/:id/reauth-request/:requestId/dismiss', AgentUser(), async (c) => 
 agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
   const slug = getAgentId(c)
   const reviewId = c.req.param('reviewId')
-  const body = await c.req.json<{ decision: 'allow' | 'deny' }>()
+  const body = await c.req.json<{ decision: 'allow' | 'deny'; reason?: string }>()
 
   if (!body.decision || !['allow', 'deny'].includes(body.decision)) {
     return c.json({ error: 'Invalid decision. Must be "allow" or "deny".' }, 400)
@@ -7980,7 +7925,7 @@ agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
   // Pass slug so submitDecision rejects cross-agent attempts. AgentUser()
   // verifies the URL agent only — without this, a user with role on agent A
   // could resolve agent B's review by sending B's reviewId to A's URL.
-  const success = await agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision)
+  const success = await agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision, cleanUserReason(body.reason))
   if (!success) {
     return c.json({ error: 'Review not found or already resolved' }, 404)
   }
@@ -8019,6 +7964,12 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   if (pendingReview?.ruleProposal) {
     return c.json({ error: 'A rule proposal can only be approved or rejected, not saved as a policy' }, 400)
   }
+  // "Always allow" never overwrites a Block, checked on the card's own link when there is a card.
+  const blockedResponse = () => c.json({ error: 'Forbidden: this agent link is blocked', blocked: true }, 403)
+  const checkTarget = pendingReview?.xAgent ? pendingReview.xAgent.targetAgentSlug || null : body.xAgent?.targetSlug ?? null
+  if (body.decision === 'allow' && body.reviewType === 'xagent' && body.xAgent && await evaluateXAgentPolicy(slug, body.xAgent.operation, checkTarget) === 'block') {
+    return blockedResponse()
+  }
 
   const policyDecision = body.decision === 'allow' ? 'allow' : 'block'
   const now = new Date()
@@ -8046,7 +7997,11 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
       // X-Agent review — save to xAgentPolicies. The "caller" is the agent the
       // review is attached to (slug), not the target.
       const { setPolicy: setAgentPolicy } = await import('@shared/lib/services/x-agent-policy-service')
-      await setAgentPolicy(slug, body.xAgent.operation, body.xAgent.targetSlug, policyDecision)
+      const saved = await setAgentPolicy(slug, body.xAgent.operation, body.xAgent.targetSlug, policyDecision, { keepBlock: policyDecision === 'allow' })
+      // A Block written after the check above still wins.
+      if (policyDecision === 'allow' && saved.previousDecision === 'block') {
+        return blockedResponse()
+      }
     } else if (reviewType === 'mcp') {
       // MCP tool review — save to mcpToolPolicies
       // accountId is actually the mcpId for MCP reviews.

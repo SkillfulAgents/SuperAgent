@@ -130,7 +130,9 @@ const SUBMITTABLE = 'READY_FOR_BETA_SUBMISSION'
 /**
  * Adds the build to each group, and submits it for Beta App Review when one is
  * external. Only the first build of a version gets a full review; Apple may
- * approve later builds of that version without one.
+ * approve later builds of that version without one. Apple reviews one build of
+ * a version at a time, so while another is in review this one is left to
+ * submit by hand, with a warning.
  */
 export async function distributeBuild(client: Client, options: DistributeOptions): Promise<void> {
   const { log = console.log } = options
@@ -162,10 +164,29 @@ export async function distributeBuild(client: Client, options: DistributeOptions
     log(`Beta App Review: not submitted again, the build is ${externalState}`)
     return
   }
+  const inReview = await otherBuildInReview(client, options.buildId)
+  if (inReview) {
+    log(`::warning title=Not submitted for Beta App Review::Build ${inReview} of this version is in review, and Apple reviews one at a time. Submit this build in TestFlight once that one is approved or rejected.`)
+    return
+  }
   await client.send('POST', '/v1/betaAppReviewSubmissions', {
     data: { type: 'betaAppReviewSubmissions', relationships: { build: { data: { type: 'builds', id: options.buildId } } } },
   })
   log('Submitted for Beta App Review')
+}
+
+/** The number of another build of the same version waiting for or in Beta App Review, if there is one. */
+async function otherBuildInReview(client: Client, buildId: string): Promise<string | undefined> {
+  const train = (await client.get(`/v1/builds/${buildId}/preReleaseVersion?fields[preReleaseVersions]=version`)).data as Resource
+  const query = new URLSearchParams({
+    'filter[preReleaseVersion]': train.id,
+    'filter[betaAppReviewSubmission.betaReviewState]': 'WAITING_FOR_REVIEW,IN_REVIEW',
+    'fields[builds]': 'version',
+    limit: '200',
+  })
+  const { data } = await client.get(`/v1/builds?${query}`)
+  const other = (Array.isArray(data) ? data : []).find((build) => build.id !== buildId)
+  return other ? String(other.attributes?.version) : undefined
 }
 
 async function setWhatToTest(client: Client, buildId: string, whatsNew: string): Promise<void> {

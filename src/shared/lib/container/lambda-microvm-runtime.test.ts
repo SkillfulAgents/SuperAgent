@@ -758,6 +758,49 @@ describe('LambdaMicroVmRuntimeClient lifecycle', () => {
     expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(false)
   })
 
+  it('start replaces a RUNNING VM that fails /health instead of adopting it', async () => {
+    const client = newClient()
+    await client.start()
+    let terminated = false
+    sendMock.mockImplementation(async (cmd: { type: string }) => {
+      if (cmd.type === 'Terminate') terminated = true
+      if (cmd.type === 'Run') return { microvmId: 'mvm-2', endpoint: 'ep.lambda-microvm.aws' }
+      if (cmd.type === 'Get') return { state: 'RUNNING' }
+      if (cmd.type === 'Token') return { authToken: { 'X-aws-proxy-auth': 'tok' } }
+      return {}
+    })
+    // The frozen VM never answers /health; the new one does.
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      if (!terminated) throw new Error('The operation was aborted due to timeout')
+      return { ok: true } as Response
+    }))
+    sendMock.mockClear()
+
+    const info = await client.start()
+
+    expect(info.status).toBe('running')
+    const types = sendMock.mock.calls.map((c) => c[0].type)
+    expect(types.indexOf('Terminate')).toBeGreaterThanOrEqual(0)
+    expect(types.indexOf('Run')).toBeGreaterThan(types.indexOf('Terminate'))
+  })
+
+  it('start keeps a RUNNING VM when /health answers on the second try', async () => {
+    const client = newClient()
+    await client.start()
+    let probes = 0
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      probes += 1
+      if (probes === 1) throw new Error('The operation was aborted due to timeout')
+      return { ok: true } as Response
+    }))
+    sendMock.mockClear()
+
+    expect((await client.start()).status).toBe('running')
+    expect(probes).toBe(2)
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Terminate')).toBe(false)
+    expect(sendMock.mock.calls.some((c) => c[0].type === 'Run')).toBe(false)
+  })
+
   it('createSession replaces after connect-refused when the generation is TERMINATING', async () => {
     const { BaseContainerClient } = await import('./base-container-client')
     const client = newClient()

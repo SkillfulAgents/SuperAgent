@@ -7,7 +7,7 @@ import userEvent from '@testing-library/user-event'
 const { app, openExternalUrl, screenSize } = vi.hoisted(() => ({
   openExternalUrl: vi.fn(),
   // Whether the window is wide enough (xl) for settings to sit beside the page rather than float over it.
-  screenSize: { wide: true, listeners: new Set<() => void>() },
+  screenSize: { wide: true, reduced: false, listeners: new Set<() => void>() },
   app: {
     agents: [
       { slug: 'writer', displaySlug: 'writer', name: 'Writer', status: 'running', avatar: null },
@@ -97,13 +97,9 @@ const { driveRead } = vi.hoisted(() => ({
   driveRead: {
     ready: true,
     error: null as string | null,
-    // The record's parts there are to show, and the parts the page last asked the tree to show.
-    recordParts: [
-      { name: 'syncs', path: '_brain/syncs', type: 'directory' as const },
-      { name: 'rules.md', path: '_brain/rules.md', type: 'file' as const },
-      { name: 'INDEX.md', path: 'INDEX.md', type: 'file' as const },
-    ],
-    record: new Set<string>() as ReadonlySet<string>,
+    // Which of the record's groups have something in them, and the groups the page last asked the tree to show.
+    recordGroups: { status: 'listed', present: new Set(['about', 'archive']) } as RecordGroupsRead,
+    record: new Set() as ReadonlySet<string>,
   },
 }))
 vi.mock('@renderer/hooks/use-team-brain-drive', () => ({
@@ -111,27 +107,49 @@ vi.mock('@renderer/hooks/use-team-brain-drive', () => ({
     app.read.drive = volumeId
     driveRead.record = record
     // A drive it is not handed is not read, so it cannot fail.
-    return { drive, ready: driveRead.ready, error: volumeId ? driveRead.error : null, recordParts: driveRead.recordParts }
+    return { drive, ready: driveRead.ready, error: volumeId ? driveRead.error : null, recordGroups: driveRead.recordGroups }
   },
+}))
+// The person's settings: which groups Views last had on, and the writes that save them.
+const { userSettings } = vi.hoisted(() => ({ userSettings: { data: {} as { teamBrainViews?: string[] }, save: vi.fn() } }))
+vi.mock('@renderer/hooks/use-user-settings', () => ({
+  useUserSettings: () => ({ data: userSettings.data }),
+  useUpdateUserSettings: () => ({ mutate: userSettings.save }),
 }))
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn() }) }))
 const { user } = vi.hoisted(() => ({ user: { isAuthMode: false, isAdmin: false } }))
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => user }))
 vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl }))
 // Agent Home's composer needs the app's providers; here it only needs to be there, for the Team Brain agent.
-vi.mock('./team-brain-home-composer', () => ({ TeamBrainHomeComposer: ({ agent }: { agent: { slug: string } }) => <div data-testid="team-brain-composer">{agent.slug}</div> }))
+vi.mock('./team-brain-home-composer', async () => {
+  const { createPortal } = await import('react-dom')
+  return {
+    // With a menu of its own in a portal, as the composer's mention and model pickers are.
+    TeamBrainHomeComposer: ({ agent, reference, onDismissReference }: { agent: { slug: string }; reference?: { name: string } | null; onDismissReference?: () => void }) => (
+      <div data-testid="team-brain-composer">
+        {agent.slug}
+        <textarea aria-label="Message" />
+        <button type="button">Model</button>
+        {createPortal(<button type="button">Mention</button>, document.body)}
+        {reference && <button type="button" onClick={onDismissReference}>{reference.name}</button>}
+      </div>
+    ),
+  }
+})
 // The page mounts the app's file drawer, which reads the route; this page has no session.
 vi.mock('@renderer/router/use-route-location', () => ({ useRouteLocation: () => ({ view: { kind: 'none' } }) }))
 // The drawer itself needs the app shell; a probe lists the pages opened in it instead.
 vi.mock('@renderer/components/tray/tray-manager', async () => {
   const { useFilePreview } = await import('@renderer/context/file-preview-context')
   return {
-    TrayManager: () => {
-      const { openTabs, isOpen } = useFilePreview()
+    TrayManager: ({ narrowDrawer }: { narrowDrawer?: boolean }) => {
+      const { openTabs, isOpen, setActiveTab } = useFilePreview()
       return (
-        <ul data-testid="drawer-tabs" data-open={isOpen}>
-          {openTabs.map((tab) => (
-            <li key={tab.displayName}>{tab.kind === 'file' && tab.source ? `${tab.displayName} (own source)` : tab.displayName}</li>
+        <ul data-testid="drawer-tabs" data-open={isOpen} data-narrow={narrowDrawer || undefined}>
+          {openTabs.map((tab, i) => (
+            <li key={tab.displayName}>
+              <button type="button" onClick={() => setActiveTab(i)}>{tab.kind === 'file' && tab.source ? `${tab.displayName} (own source)` : tab.displayName}</button>
+            </li>
           ))}
         </ul>
       )
@@ -142,6 +160,7 @@ vi.mock('@renderer/components/tray/tray-manager', async () => {
 import { TeamBrainOverview } from './team-brain-overview'
 import { resetTeamBrainState } from '@renderer/lib/team-brain/team-brain-store'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
+import type { RecordGroupsRead } from '@renderer/hooks/use-team-brain-drive'
 
 /** The Team Brain agent set-up made. */
 const BRAIN: ApiAgent = {
@@ -154,10 +173,12 @@ beforeEach(() => {
   app.pollFailed = false
   resetTeamBrainState()
   upkeep.tasks = [task('t1', 'Nightly digest', 'pending'), task('t2', 'Weekly people check', 'paused')]
+  userSettings.data = {}
+  driveRead.recordGroups = { status: 'listed', present: new Set(['about', 'archive']) }
   screenSize.wide = true
   screenSize.listeners.clear()
   window.matchMedia = ((query: string) => ({
-    get matches() { return query === '(min-width: 1280px)' ? screenSize.wide : false },
+    get matches() { return query === '(min-width: 1280px)' ? screenSize.wide : query === '(prefers-reduced-motion: reduce)' ? screenSize.reduced : false },
     media: query, onchange: null, addListener: () => {}, removeListener: () => {},
     addEventListener: (_: string, listener: () => void) => screenSize.listeners.add(listener),
     removeEventListener: (_: string, listener: () => void) => screenSize.listeners.delete(listener),
@@ -230,6 +251,125 @@ describe('TeamBrainOverview', () => {
     width.mockRestore()
   })
 
+  it('steps the drawer aside while the composer has focus, and back once the drawer is used', async () => {
+    const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(900)
+    render(<TeamBrainOverview agent={BRAIN} />)
+    const radial = screen.getByTestId('team-brain-radial')
+    await waitFor(() => expect(radial).not.toHaveAttribute('data-entering'), { timeout: 4000 })
+    const drawer = screen.getByTestId('drawer-tabs')
+    const composer = screen.getByRole('textbox', { name: 'Message' })
+
+    // Clicking into the composer keeps the page open and narrows its drawer, with room for it in the column.
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers/acme'))
+    // A press, or focus alone, leaves it: narrowing during a press would move the composer out from under the pointer.
+    fireEvent.pointerDown(composer)
+    act(() => composer.focus())
+    expect(drawer).not.toHaveAttribute('data-narrow')
+    // A click on one of the composer's buttons leaves it too, so a picker opens where it was pressed.
+    await userEvent.click(screen.getByRole('button', { name: 'Model' }))
+    expect(drawer).not.toHaveAttribute('data-narrow')
+    await userEvent.click(composer)
+    expect(drawer).toHaveAttribute('data-open', 'true')
+    expect(drawer).toHaveAttribute('data-narrow', 'true')
+    expect(screen.getByTestId('team-brain-column').className).toContain('[@container(min-width:768px)]:pr-[336px]')
+    // Picking from the composer's own menu is still typing, and leaving the composer does not widen it either.
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Mention' }))
+    expect(drawer).toHaveAttribute('data-narrow', 'true')
+    act(() => composer.blur())
+    expect(drawer).toHaveAttribute('data-narrow', 'true')
+    // Using the drawer brings its own width back, and so does opening another page.
+    await userEvent.click(drawer)
+    expect(drawer).not.toHaveAttribute('data-narrow')
+    // Typing narrows it too, for a person who tabbed into the composer.
+    fireEvent.input(composer, { target: { value: 'a' } })
+    expect(drawer).toHaveAttribute('data-narrow', 'true')
+    await userEvent.click(composer)
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers/hooli'))
+    expect(drawer).not.toHaveAttribute('data-narrow')
+    // A click off the page still puts it away, and the drawer is not left narrow for the next page.
+    await userEvent.click(composer)
+    expect(drawer).toHaveAttribute('data-narrow', 'true')
+    await userEvent.click(screen.getByRole('heading', { name: 'Sync summaries' }))
+    expect(drawer).toHaveAttribute('data-open', 'false')
+    expect(drawer).not.toHaveAttribute('data-narrow')
+    // With no page open, focusing the composer leaves the drawer as it is.
+    await userEvent.click(composer)
+    expect(drawer).not.toHaveAttribute('data-narrow')
+    // Settings floating over the page still close on a click in the composer.
+    setWide(false)
+    await userEvent.click(screen.getByTestId('team-brain-menu'))
+    await userEvent.click(composer)
+    expect(screen.getByTestId('team-brain-menu')).toHaveAttribute('aria-expanded', 'false')
+    width.mockRestore()
+  })
+
+  it('puts what is in focus in the composer, and a click off steps the drawer aside before it puts it away', async () => {
+    const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(900)
+    render(<TeamBrainOverview agent={BRAIN} />)
+    const radial = screen.getByTestId('team-brain-radial')
+    await waitFor(() => expect(radial).not.toHaveAttribute('data-entering'), { timeout: 4000 })
+    const drawer = screen.getByTestId('drawer-tabs')
+    const offPage = () => userEvent.click(screen.getByRole('heading', { name: 'Sync summaries' }))
+
+    // A page opened from the tree is the card. One click off steps the drawer aside and keeps it; a second puts both away.
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers/acme'))
+    expect(screen.getByRole('button', { name: 'Acme Corp.md' })).toBeInTheDocument()
+    await offPage()
+    expect(drawer).toHaveAttribute('data-open', 'true')
+    expect(drawer).toHaveAttribute('data-narrow', 'true')
+    expect(screen.getByRole('button', { name: 'Acme Corp.md' })).toBeInTheDocument()
+    await offPage()
+    expect(drawer).toHaveAttribute('data-open', 'false')
+    expect(screen.queryByRole('button', { name: 'Acme Corp.md' })).toBeNull()
+
+    // A folder chosen is the card. ✕ sets it aside until the folder is chosen again.
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers'))
+    await userEvent.click(screen.getByRole('button', { name: 'Customers' }))
+    expect(screen.queryByRole('button', { name: 'Customers' })).toBeNull()
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers'))
+    expect(screen.getByRole('button', { name: 'Customers' })).toBeInTheDocument()
+
+    // ✕ on a page sets it aside only while its tab is the one shown.
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers/acme'))
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers/hooli'))
+    await userEvent.click(screen.getByRole('button', { name: 'Hooli.md' }))
+    expect(screen.queryByRole('button', { name: 'Hooli.md' })).toBeNull()
+    await userEvent.click(within(drawer).getByText('Acme Corp.md (own source)'))
+    expect(screen.getByRole('button', { name: 'Acme Corp.md' })).toBeInTheDocument()
+    await userEvent.click(within(drawer).getByText('Hooli.md (own source)'))
+    expect(screen.getByRole('button', { name: 'Hooli.md' })).toBeInTheDocument()
+
+    // With a page open, choosing a folder puts the page away and the folder is the card.
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers/hooli'))
+    expect(screen.getByRole('button', { name: 'Hooli.md' })).toBeInTheDocument()
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-engineering'))
+    expect(drawer).toHaveAttribute('data-open', 'false')
+    expect(screen.getByRole('button', { name: 'Engineering' })).toBeInTheDocument()
+    width.mockRestore()
+  })
+
+  it('under reduced motion, a folder clicked is drawn at its new turn, not left rotated with names on the old side', async () => {
+    screenSize.reduced = true
+    const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(900)
+    render(<TeamBrainOverview agent={BRAIN} />)
+    const radial = screen.getByTestId('team-brain-radial')
+    expect(radial).not.toHaveAttribute('data-entering')
+    const spin = () => Number(radial.querySelector('svg > g')!.getAttribute('transform')?.match(/rotate\((-?[\d.e-]+)\)/)?.[1] ?? 0)
+    const customers = within(radial).getByTestId('team-brain-radial-node-customers')
+    await userEvent.click(customers)
+    expect(customers).toHaveAttribute('data-selected', 'true')
+    // Drawn at three o'clock itself, with no rotation of the whole tree standing in for the turn.
+    const [x, y] = customers.getAttribute('transform')!.match(/-?[\d.]+/g)!.map(Number)
+    expect(x).toBeGreaterThan(0)
+    expect(Math.abs(y)).toBeLessThan(0.5)
+    expect(Math.abs(spin())).toBeLessThan(0.01)
+    // And back to the whole tree the same way.
+    await userEvent.click(within(radial).getByRole('img'))
+    expect(Math.abs(spin())).toBeLessThan(0.01)
+    width.mockRestore()
+    screenSize.reduced = false
+  })
+
   it('keeps its settings in a column beside the page: sync, schedule, where it lives, sources and agents', async () => {
     render(<TeamBrainOverview agent={BRAIN} />)
     // Details live in the settings drawer, opened from the settings button.
@@ -297,11 +437,13 @@ describe('TeamBrainOverview', () => {
     await userEvent.click(screen.getByTestId('team-brain-status'))
     expect(screen.getByTestId('team-brain-menu')).toHaveAttribute('aria-expanded', 'false')
     setWide(true)
-    // A click on the page behind the file drawer puts it away; one on a page swaps the file and keeps it open.
+    // A click on the page behind the file drawer steps it aside and a second puts it away; one on a page swaps the file and keeps it open.
     await userEvent.click(screen.getByTestId('team-brain-radial-node-readme'))
     await userEvent.click(screen.getByTestId('team-brain-sync-page-Customers/Acme Corp.md'))
     expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'true')
     expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('Acme Corp.md (own source)')
+    await userEvent.click(screen.getByRole('heading', { name: 'Sync summaries' }))
+    expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'true')
     await userEvent.click(screen.getByRole('heading', { name: 'Sync summaries' }))
     expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'false')
 
@@ -312,11 +454,38 @@ describe('TeamBrainOverview', () => {
     fireEvent.click(tree)
     expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'true')
     expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('Hooli.md (own source)')
-    // A press on the background, though, is a click off the drawer.
-    fireEvent.pointerDown(tree, { button: 0, pointerId: 1 })
-    fireEvent.pointerUp(tree, { button: 0, pointerId: 1 })
-    fireEvent.click(tree)
+    // A press on the background, though, is a click off the drawer: the first steps it aside, the second puts it away.
+    const pressBackground = () => {
+      fireEvent.pointerDown(tree, { button: 0, pointerId: 1 })
+      fireEvent.pointerUp(tree, { button: 0, pointerId: 1 })
+      fireEvent.click(tree)
+    }
+    pressBackground()
+    expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'true')
+    pressBackground()
     expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'false')
+  })
+
+  it('keeps the card and the tree on the same chosen folder when the tree comes back', async () => {
+    const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(900)
+    const page = render(<TeamBrainOverview agent={BRAIN} />)
+    let radial = screen.getByTestId('team-brain-radial')
+    await waitFor(() => expect(radial).not.toHaveAttribute('data-entering'), { timeout: 4000 })
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers'))
+    expect(within(radial).getByTestId('team-brain-radial-node-customers')).toHaveAttribute('data-selected', 'true')
+    // The drive lists empty for a moment and the tree goes; the folder chosen on it is the page's, so it comes back with it.
+    const listed = drive.splice(0)
+    try {
+      page.rerender(<TeamBrainOverview agent={BRAIN} />)
+      expect(screen.queryByTestId('team-brain-radial')).toBeNull()
+    } finally {
+      drive.push(...listed)
+    }
+    page.rerender(<TeamBrainOverview agent={BRAIN} />)
+    radial = await screen.findByTestId('team-brain-radial', undefined, { timeout: 4000 })
+    expect(within(radial).getByTestId('team-brain-radial-node-customers')).toHaveAttribute('data-selected', 'true')
+    expect(screen.getByRole('button', { name: 'Customers' })).toBeInTheDocument()
+    width.mockRestore()
   })
 
   it('waits on the tree\'s middle while the drive lists, says what it is reading from, and lets that go before the tree', () => {
@@ -357,28 +526,68 @@ describe('TeamBrainOverview', () => {
     Object.assign(driveRead, { ready: true, error: null })
   })
 
-  it('shows the parts of the team record switched on in Views, each on its own', async () => {
+  it('shows a switch for each group of the record with something in it, and saves the ones on', async () => {
     render(<TeamBrainOverview agent={BRAIN} />)
     await userEvent.click(screen.getByTestId('team-brain-menu'))
-    // Folded, it says how many views are on; open, a switch for each.
+    // Folded, it says how many groups are on; open, a switch for each.
     expect(screen.getByTestId('team-brain-views-count')).toHaveTextContent('Off')
-    expect(screen.queryByTestId('team-brain-view-rules')).toBeNull()
     await userEvent.click(screen.getByTestId('team-brain-views-toggle'))
     const views = within(screen.getByTestId('team-brain-views'))
-    // Every usual part has its switch, written yet or not.
-    expect(views.getAllByRole('switch').map((toggle) => toggle.id)).toEqual(
-      ['rules', 'sources', 'changelog', 'archive', 'syncs', 'index'].map((view) => `team-brain-view-${view}`),
-    )
-    expect(views.getByLabelText(/^Show changelog/)).toBeInTheDocument()
-    expect(within(views.getByText('Show changelog').closest('li')!).getByText('Not written yet')).toBeInTheDocument()
-    expect(within(views.getByText('Show rules').closest('li')!).queryByText('Not written yet')).toBeNull()
+    expect(views.getAllByRole('switch').map((toggle) => toggle.id)).toEqual(['team-brain-view-about', 'team-brain-view-archive'])
     expect(driveRead.record.size).toBe(0)
-    await userEvent.click(views.getByLabelText(/^Show sync summaries/))
-    await userEvent.click(views.getByLabelText(/^Show agents' index/))
-    expect([...driveRead.record]).toEqual(['syncs', 'index'])
+    await userEvent.click(views.getByLabelText('Archive'))
+    await userEvent.click(views.getByLabelText('About this brain'))
+    expect([...driveRead.record]).toEqual(['about', 'archive'])
     expect(screen.getByTestId('team-brain-views-count')).toHaveTextContent('2 on')
-    await userEvent.click(views.getByLabelText(/^Show sync summaries/))
-    expect([...driveRead.record]).toEqual(['index'])
+    expect(userSettings.save).toHaveBeenLastCalledWith({ teamBrainViews: ['about', 'archive'] })
+    await userEvent.click(views.getByLabelText('Archive'))
+    expect([...driveRead.record]).toEqual(['about'])
+    expect(userSettings.save).toHaveBeenLastCalledWith({ teamBrainViews: ['about'] })
+  })
+
+  it('opens with the groups the person left on, leaving out any it doesn’t know', async () => {
+    userSettings.data = { teamBrainViews: ['archive', 'syncs'] }
+    render(<TeamBrainOverview agent={BRAIN} />)
+    expect([...driveRead.record]).toEqual(['archive'])
+    await userEvent.click(screen.getByTestId('team-brain-menu'))
+    expect(screen.getByTestId('team-brain-views-count')).toHaveTextContent('1 on')
+  })
+
+  it('shows only the groups with something in them, and no card until it knows or when there are none', async () => {
+    driveRead.recordGroups = { status: 'listed', present: new Set(['about']) }
+    const { unmount } = render(<TeamBrainOverview agent={BRAIN} />)
+    await userEvent.click(screen.getByTestId('team-brain-menu'))
+    await userEvent.click(screen.getByTestId('team-brain-views-toggle'))
+    expect(within(screen.getByTestId('team-brain-views')).getAllByRole('switch').map((toggle) => toggle.id)).toEqual(['team-brain-view-about'])
+    unmount()
+    for (const groups of [{ status: 'pending' }, { status: 'listed', present: new Set() }] as RecordGroupsRead[]) {
+      driveRead.recordGroups = groups
+      const view = render(<TeamBrainOverview agent={BRAIN} />)
+      await userEvent.click(screen.getByTestId('team-brain-menu'))
+      expect(screen.getByTestId('team-brain-settings')).toBeInTheDocument()
+      expect(screen.queryByTestId('team-brain-views')).toBeNull()
+      view.unmount()
+    }
+  })
+
+  it('says the record can’t be read rather than showing it as empty', async () => {
+    driveRead.recordGroups = { status: 'failed' }
+    render(<TeamBrainOverview agent={BRAIN} />)
+    await userEvent.click(screen.getByTestId('team-brain-menu'))
+    await userEvent.click(screen.getByTestId('team-brain-views-toggle'))
+    expect(screen.getByTestId('team-brain-views-unreadable')).toHaveTextContent('can’t be read')
+    expect(screen.queryAllByRole('switch', { name: /About this brain|Archive/ })).toHaveLength(0)
+  })
+
+  it('keeps a saved group switchable off while the record can’t be read', async () => {
+    userSettings.data = { teamBrainViews: ['about'] }
+    driveRead.recordGroups = { status: 'failed' }
+    render(<TeamBrainOverview agent={BRAIN} />)
+    await userEvent.click(screen.getByTestId('team-brain-menu'))
+    await userEvent.click(screen.getByTestId('team-brain-views-toggle'))
+    expect(screen.getByTestId('team-brain-views-unreadable')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('switch', { name: 'About this brain' }))
+    expect(userSettings.save).toHaveBeenLastCalledWith({ teamBrainViews: [] })
   })
 
   it('is paused only when every scheduled task is, and says so when it has none', async () => {
@@ -418,6 +627,9 @@ describe('TeamBrainOverview', () => {
     // The settings button opens the settings drawer, where turning off sits at the foot.
     await userEvent.click(screen.getByTestId('team-brain-menu'))
     expect(screen.getByTestId('team-brain-menu')).toHaveAttribute('aria-expanded', 'true')
+    // Above it, the rest of the agent's settings: its Agent Home, which only this row reaches.
+    await userEvent.click(await screen.findByTestId('team-brain-agent-settings'))
+    expect(navigate).toHaveBeenCalledWith({ to: '/agents/$slug', params: { slug: 'team-brain' }, search: { from: '/team-brain' } })
     await userEvent.click(await screen.findByTestId('team-brain-turn-off'))
     await userEvent.click(await screen.findByTestId('team-brain-turn-off-confirm'))
     expect(app.deleteAgent).toHaveBeenCalledWith('team-brain', expect.anything())
