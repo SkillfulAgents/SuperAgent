@@ -223,7 +223,7 @@ describe('reading rows', () => {
   })
 
   it('serves repeated lookups of one agent within two seconds from one query, then queries again', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
     await insertRow('a1b2c3d4e5', 'Sales')
     const select = vi.spyOn(testDb, 'select')
 
@@ -233,6 +233,19 @@ describe('reading rows', () => {
 
     vi.advanceTimersByTime(2_000)
     expect((await catalog.get('a1b2c3d4e5'))?.name).toBe('Sales')
+    expect(select).toHaveBeenCalledTimes(2)
+  })
+
+  it('forgets a lookup of an agent that does not exist after two seconds', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    const select = vi.spyOn(testDb, 'select')
+
+    expect(await catalog.exists('zz9yy8xx7w')).toBe(false)
+    expect(vi.getTimerCount()).toBe(1)
+
+    vi.advanceTimersByTime(2_000)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(await catalog.exists('zz9yy8xx7w')).toBe(false)
     expect(select).toHaveBeenCalledTimes(2)
   })
 

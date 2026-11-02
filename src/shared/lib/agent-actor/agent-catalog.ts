@@ -71,19 +71,21 @@ function toRecord(row: AgentRow): AgentRecord {
 const ROW_REUSE_MS = 2_000
 
 export function createAgentCatalog(): AgentCatalog {
-  // Rows read in the last ROW_REUSE_MS, and reads in flight: callers of one slug share a query.
-  const recent = new Map<AgentSlug, { readAt: number; row: Promise<AgentRow | undefined> }>()
+  // Reads started in the last ROW_REUSE_MS, finished or in flight: callers of one slug share a query.
+  // Each entry removes itself, so lookups of slugs that do not exist do not pile up.
+  const recent = new Map<AgentSlug, Promise<AgentRow | undefined>>()
   const forget = (slug: AgentSlug) => recent.delete(slug)
 
   const rowFor = (slug: AgentSlug): Promise<AgentRow | undefined> => {
     const cached = recent.get(slug)
-    if (cached && Date.now() - cached.readAt < ROW_REUSE_MS) return cached.row
+    if (cached) return cached
     const row = (async () => db.select().from(agents).where(eq(agents.slug, slug)).get())()
-    const entry = { readAt: Date.now(), row }
-    recent.set(slug, entry)
-    row.catch(() => {
-      if (recent.get(slug) === entry) forget(slug)
-    })
+    recent.set(slug, row)
+    const drop = () => {
+      if (recent.get(slug) === row) forget(slug)
+    }
+    setTimeout(drop, ROW_REUSE_MS).unref?.()
+    row.catch(drop)
     return row
   }
 
