@@ -15,12 +15,33 @@ import { z } from 'zod'
  * `@shared/lib/types/agent` (the canonical shape).
  */
 
-const sessionUsageSchema = z
-  .object({
-    totalTokens: z.number().optional(),
-    contextWindow: z.number().optional(),
-  })
-  .loose()
+/**
+ * A size saved before the CLI's count (SUP-1453) is one API call's usage
+ * against a window the host guessed. Its tokens become the CLI's own count of
+ * that call; its window does not survive (on 1M models it was usually Haiku's
+ * 200K), so the ring waits for the next turn while the token count still
+ * reaches the stale-session prompt.
+ */
+function upgradeLegacyUsage(value: unknown): unknown {
+  if (!value || typeof value !== 'object') return value
+  const usage = value as Record<string, unknown>
+  if (typeof usage.totalTokens === 'number' || typeof usage.inputTokens !== 'number') return value
+  const count = (key: string) => (typeof usage[key] === 'number' ? (usage[key] as number) : 0)
+  return {
+    totalTokens: count('inputTokens') + count('cacheCreationInputTokens') + count('cacheReadInputTokens') + count('outputTokens'),
+    contextWindow: 0,
+  }
+}
+
+const sessionUsageSchema = z.preprocess(
+  upgradeLegacyUsage,
+  z
+    .object({
+      totalTokens: z.number().optional(),
+      contextWindow: z.number().optional(),
+    })
+    .loose(),
+)
 
 const slashCommandInfoSchema = z
   .object({
