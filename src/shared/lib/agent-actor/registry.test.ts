@@ -683,12 +683,12 @@ describe('createAgentRegistry', () => {
 
       actor.state.sessions.markActive('s1')
       await actor.inputs.register({ id: 'q1', kind: 'question', scope: { sessionId: 's1' }, blocking: true, payload: { q: 1 } } as never)
-      await actor.sessions.recordRuntime('s1', { provider: 'anthropic', modelContextWindows: { m: 1 } })
+      await actor.sessions.recordRuntime('s1', { provider: 'anthropic' })
 
       expect(await actor.sessions.live('s1')).toMatchObject({
         isActive: true,
         openRequests: [expect.objectContaining({ id: 'q1', payload: { q: 1 } })],
-        runtime: { provider: 'anthropic', modelContextWindows: { m: 1 } },
+        runtime: { provider: 'anthropic' },
       })
       // Another agent's session of the same id is not this one.
       expect((await registry.get('b').sessions.live('s1')).runtime).toBeNull()
