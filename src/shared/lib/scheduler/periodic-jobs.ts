@@ -4,6 +4,7 @@ import { accountSyncService } from './account-sync-service'
 import { apiLogAutoDeleteMonitor } from './api-log-auto-delete-monitor'
 import { sessionAutoDeleteMonitor } from './session-auto-delete-monitor'
 import { taskScheduler } from './task-scheduler'
+import { triggerManager } from './trigger-manager'
 
 /**
  * Background work that repeats on a fixed interval. Each service's `start()` runs its job
@@ -25,6 +26,8 @@ export function periodicJobs(): PeriodicJob[] {
     { name: 'account-sync', intervalMs: accountSyncService.pollIntervalMs, run: () => accountSyncService.syncAll() },
     { name: 'session-auto-delete', intervalMs: sessionAutoDeleteMonitor.pollIntervalMs, run: () => sessionAutoDeleteMonitor.cleanupAllAgents() },
     { name: 'api-log-auto-delete', intervalMs: apiLogAutoDeleteMonitor.pollIntervalMs, run: () => apiLogAutoDeleteMonitor.cleanupAllAgents() },
+    // Before the relay's pass, so it claims for triggers created or cancelled since the last one.
+    { name: 'webhook-triggers', intervalMs: relay.passIntervalMs, run: () => triggerManager.syncRegistrations() },
     // Delivers anything only when the relay was started with `timers: false`.
     { name: 'webhook-relay', intervalMs: relay.passIntervalMs, run: () => relay.runPass() },
   ]

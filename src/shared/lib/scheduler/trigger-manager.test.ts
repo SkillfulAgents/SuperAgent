@@ -279,6 +279,19 @@ describe('TriggerManager', () => {
       expect(relay.consumers.get('webhook-triggers:sub_test_member')?.endpointIds).toEqual(['ti_abc', 'whep_new'])
     })
 
+    it('without timers, sets no re-sync timer and picks up changes on the next sync the host runs', async () => {
+      vi.useFakeTimers()
+      await triggerManager.start({ timers: false })
+      expect(vi.getTimerCount()).toBe(0)
+      expect(relay.consumers.get('webhook-triggers:sub_test_member')?.endpointIds).toEqual(['ti_abc'])
+
+      mockGetSubscribedIds.mockReturnValue(['ti_abc', 'whep_new'])
+      await triggerManager.syncRegistrations()
+
+      expect(relay.consumers.get('webhook-triggers:sub_test_member')?.endpointIds).toEqual(['ti_abc', 'whep_new'])
+      expect(vi.getTimerCount()).toBe(0)
+    })
+
     it('leaves no re-sync timer behind once stopped', async () => {
       vi.useFakeTimers()
       await triggerManager.start()
