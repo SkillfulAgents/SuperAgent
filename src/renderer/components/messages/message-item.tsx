@@ -369,6 +369,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
               dir="auto"
               // Assistant bubbles opt into table breakout and must not clip it.
               data-allow-table-breakout={isAssistant ? '' : undefined}
+              data-agent-reply={isAssistant ? '' : undefined}
               className={cn(
                 'rounded-lg max-w-full text-foreground',
                 !isAssistant && 'overflow-hidden',
