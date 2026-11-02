@@ -1,24 +1,17 @@
 {
   "storyId": "agent-chat",
-  "passed": true,
-  "reason": "Successfully sent a message to the QA-20261028-003937-e616 agent, received a response mentioning \"4\", and verified agent status is idle.",
-  "steps": [
-    "Step 1 - Navigate to http://localhost:47891 — Successfully loaded the Gamut application home page showing the agent list with sidebar displaying two agents including QA-20261028-003937-e616 with idle status.",
-    "Step 2 - Find and click the \"QA-20261028-003937-e616\" agent in sidebar — Successfully clicked on the agent link in the sidebar, which navigated to the agent's configuration/home page showing the message input interface.",
-    "Step 3 - Verify agent status is \"running\" or \"idle\" — Agent status is IDLE, as shown in the UI status indicator.",
-    "Step 4 - Send message \"Hello! What is 2+2?\" — Successfully typed the message in the input field and clicked the send button. The message was submitted and a new session titled \"Basic Arithmetic Question Check\" was created.",
-    "Step 5 - Wait up to 3 minutes for response — Agent processed the message (status changed from idle to working back to idle) and generated a response within 2 minutes. The waiting poll completed successfully with response received.",
-    "Step 6 - Verify response mentions \"4\" and take screenshot — The agent's response \"2 + 2 = 4.\" is clearly visible in the chat message list. The response correctly mentions the number \"4\" as expected. Screenshot saved showing the complete conversation with agent status idle."
-  ],
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: ions \"4\" and take screenshot - Verified the agent's response \"2 + 2 = 4.\" (ref=e489) correctly contains the number \"4\". Screenshot captured showing the full conversation with user message \"Hello! What is 2+2?\" and agent response \"2 + 2 = 4.\"\n\n---\n\n**Test completed successfully with no bugs found.**\n",
+  "steps": [],
   "bugs": [],
-  "durationMs": 246315,
-  "sessionId": "d19860c2-6c26-4186-95c6-bb300237fd0f",
+  "durationMs": 63154,
+  "sessionId": "82a3eeb5-53e7-4bbf-8d3c-8bc8b7d246bd",
   "cost": {
-    "inputTokens": 350,
-    "outputTokens": 11978,
-    "cacheCreationTokens": 124586,
-    "cacheReadTokens": 983518,
+    "inputTokens": 320,
+    "outputTokens": 9697,
+    "cacheCreationTokens": 120304,
+    "cacheReadTokens": 872589,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.314324
+    "totalCostUsd": 0.286444
   }
 }
