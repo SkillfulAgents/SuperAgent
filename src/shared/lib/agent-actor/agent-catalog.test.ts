@@ -9,7 +9,10 @@ import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/cr
 
 let testDb: AppDatabase
 let handle: TestDatabase
-vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
+// One fixed proxy, as in `@shared/lib/db`: a reopened database changes what it forwards to, not `db`.
+vi.mock('@shared/lib/db', () => ({
+  db: new Proxy({}, { get: (_target, prop, receiver) => Reflect.get(testDb, prop, receiver) }),
+}))
 
 import { createAgentCatalog } from './agent-catalog'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
@@ -258,5 +261,21 @@ describe('reading rows', () => {
 
     await catalog.remove('f6g7h8i9j0')
     expect(await catalog.exists('f6g7h8i9j0')).toBe(false)
+  })
+
+  it('reads a database opened anew from that database', async () => {
+    await insertRow('k1l2m3n4o5', 'Sales')
+    expect((await catalog.get('k1l2m3n4o5'))?.name).toBe('Sales')
+
+    const reopened = await createTestDatabase()
+    const previous = testDb
+    testDb = reopened.db
+    try {
+      await insertRow('k1l2m3n4o5', 'Support')
+      expect((await catalog.get('k1l2m3n4o5'))?.name).toBe('Support')
+    } finally {
+      testDb = previous
+      await reopened.close()
+    }
   })
 })
