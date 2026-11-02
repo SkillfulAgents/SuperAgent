@@ -566,7 +566,7 @@ if (options.timers !== false) {
    * agents' processes (setConnectionsElsewhere) reports one it does not hold itself as connected
    * while the row is active and its webhooks are set up: those processes write a failure to the row.
    */
-  isIntegrationConnected(integrationId: string, row?: Pick<AgentIntegrationRecord, 'status' | 'config'>): boolean {
+  isIntegrationConnected(integrationId: string, row?: { status: string; config: string }): boolean {
     const conn = this.connections.get(integrationId)
     if (conn) return conn.connector.isConnected()
     if (!this.connectionsElsewhere || row?.status !== 'active') return false
