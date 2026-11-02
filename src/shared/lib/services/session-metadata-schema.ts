@@ -17,12 +17,8 @@ import { z } from 'zod'
 
 const sessionUsageSchema = z
   .object({
-    inputTokens: z.number().optional(),
-    outputTokens: z.number().optional(),
-    cacheCreationInputTokens: z.number().optional(),
-    cacheReadInputTokens: z.number().optional(),
+    totalTokens: z.number().optional(),
     contextWindow: z.number().optional(),
-    model: z.string().optional(),
   })
   .loose()
 
