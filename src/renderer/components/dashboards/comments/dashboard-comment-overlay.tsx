@@ -21,8 +21,6 @@ const CENTER: CommentPin = { x: 50, y: 50 }
 /** Between the pin and the box, and between the box and the overlay's edges. */
 const GAP = 22
 const MARGIN = 12
-/** The caption across the top that the box keeps clear of. */
-const CAPTION = 36
 
 /**
  * Comment mode over a dashboard: a glowing grid that takes every click, a pin
@@ -58,7 +56,7 @@ export function DashboardCommentOverlay({ pin, onPin, onSend, onClose, sending, 
     let left = px + GAP
     if (left + bw > size.width - MARGIN) left = px - GAP - bw
     left = Math.min(Math.max(MARGIN, left), Math.max(MARGIN, size.width - MARGIN - bw))
-    const top = Math.min(Math.max(CAPTION, py - 18), Math.max(CAPTION, size.height - MARGIN - bh))
+    const top = Math.min(Math.max(MARGIN, py - 18), Math.max(MARGIN, size.height - MARGIN - bh))
     box.style.left = `${left}px`
     box.style.top = `${top}px`
   }, [at.x, at.y, size, error])
@@ -103,24 +101,23 @@ export function DashboardCommentOverlay({ pin, onPin, onSend, onClose, sending, 
       // The field keeps focus through clicks on the grid, so typing carries on.
       onMouseDown={(e) => { if (onGrid(e)) e.preventDefault() }}
       onClick={(e) => { if (onGrid(e)) pinAt(e.clientX, e.clientY) }}
+      // On the grid a right-click places the pin; in the box it stays the field's (spellcheck, paste).
       onContextMenu={(e) => {
+        if (!onGrid(e)) return
         e.preventDefault()
-        if (onGrid(e)) pinAt(e.clientX, e.clientY)
+        pinAt(e.clientX, e.clientY)
       }}
     >
       <div className="dashboard-comment-grid" aria-hidden />
+      <div className="dashboard-comment-energy" aria-hidden>
+        <div className="dashboard-comment-flow" />
+        <div className="dashboard-comment-glimmer" />
+      </div>
       <div className="dashboard-comment-scan" aria-hidden />
       <span className="dashboard-comment-corner left-3 top-3 border-l-2 border-t-2" aria-hidden />
       <span className="dashboard-comment-corner right-3 top-3 border-r-2 border-t-2" aria-hidden />
       <span className="dashboard-comment-corner bottom-3 left-3 border-b-2 border-l-2" aria-hidden />
       <span className="dashboard-comment-corner bottom-3 right-3 border-b-2 border-r-2" aria-hidden />
-      <div className="dashboard-comment-caption pointer-events-none absolute left-5 right-5 top-3 flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.2em]">
-        <span className="flex items-center gap-2">
-          <span className="dashboard-comment-blip h-1.5 w-1.5 rounded-full" />
-          Comment mode
-        </span>
-        <span className="hidden sm:inline">Click to pin · Esc to exit</span>
-      </div>
 
       <DragHandle
         x={at.x}
@@ -131,7 +128,7 @@ export function DashboardCommentOverlay({ pin, onPin, onSend, onClose, sending, 
         <span className="dashboard-comment-reticle" data-placed={pin ? 'true' : 'false'} />
       </DragHandle>
 
-      <div ref={boxRef} data-comment-overlay className="dashboard-comment-box absolute z-20 w-72 cursor-auto" style={{ left: MARGIN, top: CAPTION }}>
+      <div ref={boxRef} data-comment-overlay className="dashboard-comment-box absolute z-20 w-72 cursor-auto" style={{ left: MARGIN, top: MARGIN }}>
         <CommentBox
           variant="glow"
           label={pin ? 'Pinned to this spot · drag or click to move' : 'Whole dashboard · click to pin a spot'}

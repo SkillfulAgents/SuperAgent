@@ -12,8 +12,26 @@ import { getDashboardInspectorJs } from './dashboard-inspector'
 
 type Listener = (event: Record<string, unknown>) => void
 
+const ELECTRON_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Gamut/0.6.3 Chrome/140.0.0.0 Electron/45.0.0 Safari/537.36'
+const CHROME_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
+
+/** A request whose outcome the test plays out: `finish(status)` or `abort()`, then loadend. */
+class FakeXhr {
+  static last: FakeXhr | null = null
+  status = 0
+  statusText = ''
+  readyState = 1
+  private handlers: Record<string, Array<() => void>> = {}
+  open(_method: string, _url: string) { FakeXhr.last = this }
+  send() {}
+  addEventListener(type: string, handler: () => void) { (this.handlers[type] ??= []).push(handler) }
+  emit(type: string) { this.handlers[type]?.forEach((handler) => handler()) }
+  finish(status: number, statusText = '') { this.status = status; this.statusText = statusText; this.readyState = 4; this.emit('loadend') }
+  abort() { this.readyState = 4; this.emit('abort'); this.emit('loadend') }
+}
+
 /** The inspector run against a stand-in window inside a parent frame, over jsdom's document. */
-function harness(options: { fetch?: (...args: unknown[]) => Promise<unknown> } = {}) {
+function harness(options: { fetch?: (...args: unknown[]) => Promise<unknown>; userAgent?: string } = {}) {
   const listeners: Record<string, Listener[]> = {}
   const posted: Array<{ message: Record<string, unknown>; target: string }> = []
   const parent = { postMessage: (message: Record<string, unknown>, target: string) => posted.push({ message, target }) }
@@ -22,7 +40,9 @@ function harness(options: { fetch?: (...args: unknown[]) => Promise<unknown> } =
   const win: Record<string, unknown> = {
     parent,
     addEventListener: (type: string, listener: Listener) => { (listeners[type] ??= []).push(listener) },
+    removeEventListener: (type: string, listener: Listener) => { listeners[type] = (listeners[type] ?? []).filter((l) => l !== listener) },
     fetch: options.fetch,
+    XMLHttpRequest: FakeXhr,
     innerWidth: 800,
     innerHeight: 600,
     scrollX: 0,
@@ -32,12 +52,17 @@ function harness(options: { fetch?: (...args: unknown[]) => Promise<unknown> } =
     __GAMUT_DASHBOARD__: { basePath: '/api/agents/a/artifacts/d/' },
   }
   const location = { href: 'http://localhost:47891/api/agents/a/artifacts/d/#/q3', origin: 'http://localhost:47891' }
-  new Function('window', 'document', 'console', 'location', getDashboardInspectorJs())(win, document, fakeConsole, location)
-  const fire = (type: string, event: Record<string, unknown>) => listeners[type]?.forEach((listener) => listener(event))
+  const navigator = { userAgent: options.userAgent ?? ELECTRON_UA }
+  new Function('window', 'document', 'console', 'location', 'navigator', 'XMLHttpRequest', getDashboardInspectorJs())(
+    win, document, fakeConsole, location, navigator, FakeXhr,
+  )
+  const fire = (type: string, event: Record<string, unknown>) => [...(listeners[type] ?? [])].forEach((listener) => listener(event))
   const ask = (point?: { x: number; y: number }, origin = 'file://', source: unknown = parent) =>
     fire('message', { source, origin, data: { type: DASHBOARD_INSPECT_REQUEST_TYPE, id: 'r1', ...(point ? { point } : {}) } })
+  const announce = (comments: boolean, origin = 'file://') =>
+    fire('message', { source: parent, origin, data: { type: DASHBOARD_HOST_FEATURES_TYPE, comments } })
   const lastSnapshot = () => dashboardInspectResultSchema.parse(posted.at(-1)?.message).snapshot
-  return { win, console: fakeConsole, original, posted, fire, ask, lastSnapshot, parent }
+  return { win, console: fakeConsole, original, posted, fire, ask, announce, lastSnapshot, parent }
 }
 
 afterEach(() => {
@@ -137,18 +162,57 @@ describe('dashboard inspector', () => {
     })
   })
 
-  it('answers a same-origin or localhost parent at its origin, and nobody else', () => {
-    const h = harness()
-    h.ask(undefined, 'http://localhost:47891')
-    expect(h.posted.at(-1)?.target).toBe('http://localhost:47891')
-    h.ask(undefined, 'http://localhost:5173')
-    expect(h.posted.at(-1)?.target).toBe('http://localhost:5173')
-    expect(h.posted).toHaveLength(2)
+  it('answers the app at its origin: the same origin anywhere, file:// or localhost only inside the desktop app', () => {
+    const desktop = harness()
+    desktop.ask(undefined, 'http://localhost:47891')
+    expect(desktop.posted.at(-1)?.target).toBe('http://localhost:47891')
+    desktop.ask(undefined, 'http://localhost:5173')
+    expect(desktop.posted.at(-1)?.target).toBe('http://localhost:5173')
+    desktop.ask(undefined, 'file://')
+    expect(desktop.posted.at(-1)?.target).toBe('*')
+    expect(desktop.posted).toHaveLength(3)
 
-    h.ask(undefined, 'https://evil.example')
-    h.ask(undefined, 'null')
-    h.ask(undefined, 'file://', { postMessage: vi.fn() })
-    expect(h.posted).toHaveLength(2)
+    desktop.ask(undefined, 'https://evil.example')
+    desktop.ask(undefined, 'null')
+    desktop.ask(undefined, 'file://', { postMessage: vi.fn() })
+    expect(desktop.posted).toHaveLength(3)
+
+    // In a browser, a downloaded HTML file or another local dev server framing the dashboard gets nothing.
+    const browser = harness({ userAgent: CHROME_UA })
+    browser.ask(undefined, 'file://')
+    browser.ask(undefined, 'http://localhost:5173')
+    expect(browser.posted).toHaveLength(0)
+    browser.ask(undefined, 'http://localhost:47891')
+    expect(browser.posted).toHaveLength(1)
+  })
+
+  it('keeps failed and erroring XHRs, but not ones the page aborted', () => {
+    const h = harness()
+    const request = (url: string) => {
+      const xhr = new (h.win.XMLHttpRequest as typeof FakeXhr)()
+      xhr.open('GET', url)
+      xhr.send()
+      return xhr
+    }
+    request('/api/missing').finish(404, 'Not Found')
+    request('/api/ok').finish(200, 'OK')
+    request('/api/search?q=a').abort()
+    request('/api/down').finish(0)
+    h.ask()
+    expect(h.lastSnapshot().logs.map((entry) => entry.text)).toEqual([
+      'GET /api/missing -> 404 Not Found',
+      'GET /api/down failed',
+    ])
+  })
+
+  it('counts every entry by level, including ones that fell off the kept log', () => {
+    const h = harness()
+    for (let i = 0; i < 5; i++) h.console.error(`early ${i}`)
+    for (let i = 0; i < DASHBOARD_LOG_CAPACITY; i++) h.console.log(`line ${i}`)
+    h.ask()
+    const snapshot = h.lastSnapshot()
+    expect(snapshot.logs.some((entry) => entry.level === 'error')).toBe(false)
+    expect(snapshot.counts).toEqual({ error: 5, log: DASHBOARD_LOG_CAPACITY })
   })
 
   it('hands a right-click to the app only once the app says it takes comments', () => {
@@ -164,7 +228,7 @@ describe('dashboard inspector', () => {
     expect(rightClick(plain).preventDefault).not.toHaveBeenCalled()
     expect(h.posted).toHaveLength(0)
 
-    h.fire('message', { source: h.parent, origin: 'file://', data: { type: DASHBOARD_HOST_FEATURES_TYPE, comments: true } })
+    h.announce(true)
     expect(rightClick(plain).preventDefault).toHaveBeenCalled()
     expect(h.posted.at(-1)).toEqual({ message: { type: DASHBOARD_CONTEXT_MENU_TYPE, x: 30, y: 40 }, target: '*' })
 
@@ -176,7 +240,26 @@ describe('dashboard inspector', () => {
     expect(rightClick(plain, { defaultPrevented: true }).preventDefault).not.toHaveBeenCalled()
     expect(h.posted).toHaveLength(1)
 
-    h.fire('message', { source: h.parent, origin: 'file://', data: { type: DASHBOARD_HOST_FEATURES_TYPE, comments: false } })
+    h.announce(false)
     expect(rightClick(plain).preventDefault).not.toHaveBeenCalled()
+    expect(h.posted).toHaveLength(1)
+  })
+
+  it('lets the page\'s own window-level contextmenu handler run first and keep its menu', () => {
+    const h = harness()
+    const plain = document.createElement('div')
+    document.body.appendChild(plain)
+    // Added by the page's script, after the inspector loaded and before the app announced itself.
+    const addListener = h.win.addEventListener as (type: string, listener: Listener) => void
+    addListener('contextmenu', (event) => {
+      event.defaultPrevented = true
+      ;(event.preventDefault as () => void)()
+    })
+    h.announce(true)
+
+    const event = { target: plain, clientX: 1, clientY: 2, shiftKey: false, defaultPrevented: false, preventDefault: vi.fn() }
+    h.fire('contextmenu', event)
+    expect(event.preventDefault).toHaveBeenCalledOnce()
+    expect(h.posted).toHaveLength(0)
   })
 })

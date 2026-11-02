@@ -4,12 +4,28 @@ import type { CommentPin } from './dashboard-comment-message'
 /** The longest edge sent to the agent: a vision model scales anything larger down to about this anyway. */
 const MAX_EDGE = 1600
 
-/** A PNG of the frame as it is on screen, or null where the window can't capture itself or the capture fails. */
+/** Set on the root while capturing: the app's floating layers hide (globals.css). */
+const CAPTURING = 'data-capturing-dashboard'
+
+/** Two frames: the next one applies a change, the one after is drawn with it. */
+function nextPaint(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+}
+
+/**
+ * A PNG of the frame as it is on screen, or null where the window can't
+ * capture itself or the capture fails. The app's tooltips, menus and toasts
+ * can sit over the frame (the header button's tooltip, the right-click menu);
+ * they are hidden for the capture, so it shows the dashboard alone.
+ */
 export async function captureDashboardFrame(frame: HTMLIFrameElement | null): Promise<Blob | null> {
   if (!frame || !capturesOwnWindow()) return null
-  const rect = frame.getBoundingClientRect()
-  if (rect.width < 1 || rect.height < 1) return null
+  const root = document.documentElement
+  root.setAttribute(CAPTURING, '')
   try {
+    await nextPaint()
+    const rect = frame.getBoundingClientRect()
+    if (rect.width < 1 || rect.height < 1) return null
     const png = await window.electronAPI?.captureRegion?.({
       x: Math.max(0, rect.left),
       y: Math.max(0, rect.top),
@@ -19,6 +35,8 @@ export async function captureDashboardFrame(frame: HTMLIFrameElement | null): Pr
     return png?.byteLength ? new Blob([new Uint8Array(png)], { type: 'image/png' }) : null
   } catch {
     return null
+  } finally {
+    root.removeAttribute(CAPTURING)
   }
 }
 

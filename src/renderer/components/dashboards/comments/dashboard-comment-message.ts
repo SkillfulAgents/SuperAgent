@@ -9,8 +9,8 @@ export interface CommentPin {
   y: number
 }
 
-/** Why a comment goes without a screenshot. */
-export type ScreenshotGap = 'unsupported' | 'failed'
+/** Why a comment goes without a screenshot: no capture here, the capture failed, or its upload did. */
+export type ScreenshotGap = 'unsupported' | 'failed' | 'upload-failed'
 
 export interface DashboardCommentInput {
   comment: string
@@ -89,7 +89,10 @@ function consoleSection(snapshot: DashboardSnapshot | null, now: number): string
     lines.unshift(line)
     chars += line.length + 1
   }
-  const count = (levels: DashboardLogEntry['level'][]) => all.filter((e) => levels.includes(e.level)).length
+  // The page's own running counts cover entries that fell off the kept log; older inspectors send none.
+  const count = (levels: DashboardLogEntry['level'][]) => snapshot.counts
+    ? levels.reduce((sum, level) => sum + (snapshot.counts?.[level] ?? 0), 0)
+    : all.filter((e) => levels.includes(e.level)).length
   const errors = count(['error'])
   const warnings = count(['warn'])
   const failures = count(['network', 'resource'])
@@ -160,7 +163,9 @@ export function buildDashboardCommentMessage(input: DashboardCommentInput): stri
   } else {
     const why = input.screenshotGap === 'unsupported'
       ? 'this window cannot capture the page'
-      : 'capturing the page failed'
+      : input.screenshotGap === 'upload-failed'
+        ? 'it was captured but could not be uploaded'
+        : 'capturing the page failed'
     lines.push(`- No screenshot (${why}): open the dashboard yourself to see it`)
   }
   lines.push('', ...consoleSection(sent ?? opened, input.now))

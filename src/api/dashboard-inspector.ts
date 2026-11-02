@@ -17,9 +17,9 @@ let cached: string | null = null
  * It keeps the page's last console lines, uncaught errors, failed requests and
  * failed assets, and answers the app's snapshot request when the person leaves
  * a comment. It answers only its own parent, and only when the parent is the
- * app: the same origin (web), the desktop app's `file://` page, or a localhost
- * dev server. Anyone can frame a dashboard URL, and the snapshot carries page
- * text.
+ * app: the same origin (web), or, inside the desktop app only, its `file://`
+ * page or a localhost dev server. Anyone can frame a dashboard URL, and the
+ * snapshot carries page text.
  *
  * Its cost to a page that logs a lot is one capped string per call: an object
  * argument is serialized only up to a few hundred keys.
@@ -32,7 +32,7 @@ export function getDashboardInspectorJs(): string {
   if (window.__GAMUT_INSPECTOR__) return;
   window.__GAMUT_INSPECTOR__ = true;
   var CAP = ${DASHBOARD_LOG_CAPACITY}, MAX = ${DASHBOARD_LOG_ENTRY_MAX};
-  var logs = [], dropped = 0, hostOrigin = null;
+  var logs = [], dropped = 0, counts = {}, hostOrigin = null;
   var TOO_BIG = {};
 
   function cap(s, n) { s = String(s); return s.length > n ? s.slice(0, n) + "\\u2026" : s; }
@@ -71,6 +71,7 @@ export function getDashboardInspectorJs(): string {
       var parts = [];
       for (var i = 0; i < args.length; i++) parts.push(fmt(args[i]));
       logs.push({ level: level, at: Date.now(), text: cap(parts.join(" "), MAX) });
+      counts[level] = (counts[level] || 0) + 1;
       if (logs.length > CAP) { logs.shift(); dropped++; }
     } catch (_e) {}
   }
@@ -116,10 +117,12 @@ export function getDashboardInspectorJs(): string {
       return open.apply(this, arguments);
     };
     XMLHttpRequest.prototype.send = function () {
-      var xhr = this;
+      var xhr = this, aborted = false;
+      // A request the page cancelled itself (a superseded search) did not fail, as with fetch's AbortError.
+      xhr.addEventListener("abort", function () { aborted = true; });
       xhr.addEventListener("loadend", function () {
         if (xhr.status >= 400) push("network", [xhr.__gamutRequest + " -> " + xhr.status + " " + xhr.statusText]);
-        else if (xhr.status === 0 && xhr.readyState === 4) push("network", [xhr.__gamutRequest + " failed"]);
+        else if (xhr.status === 0 && !aborted) push("network", [xhr.__gamutRequest + " failed"]);
       });
       return send.apply(this, arguments);
     };
@@ -174,29 +177,22 @@ export function getDashboardInspectorJs(): string {
       selection: cap(String(window.getSelection ? window.getSelection() : "").trim(), 1900),
       element: element,
       logs: logs.slice(),
-      droppedLogs: dropped
+      droppedLogs: dropped,
+      counts: counts
     };
   }
 
+  // The web app shares the dashboard's origin. The desktop app's page is file:// (or a
+  // localhost dev server), which any downloaded file or local server could also claim,
+  // so those count only inside the desktop app itself.
+  var inDesktopApp = typeof navigator !== "undefined" && /\\bElectron\\//.test(navigator.userAgent || "");
   function trusted(origin) {
-    return origin === location.origin || origin === "file://" || /^https?:\\/\\/(localhost|127\\.0\\.0\\.1)(:\\d+)?$/.test(origin);
+    if (origin === location.origin) return true;
+    return inDesktopApp && (origin === "file://" || /^https?:\\/\\/(localhost|127\\.0\\.0\\.1)(:\\d+)?$/.test(origin));
   }
   function target(origin) { return origin === "file://" ? "*" : origin; }
 
-  window.addEventListener("message", function (event) {
-    if (!event || event.source !== window.parent || window.parent === window || !trusted(event.origin)) return;
-    var data = event.data;
-    if (!data || typeof data !== "object") return;
-    if (data.type === ${JSON.stringify(DASHBOARD_HOST_FEATURES_TYPE)}) {
-      hostOrigin = data.comments === true ? event.origin : null;
-      return;
-    }
-    if (data.type !== ${JSON.stringify(DASHBOARD_INSPECT_REQUEST_TYPE)} || typeof data.id !== "string") return;
-    var reply = { type: ${JSON.stringify(DASHBOARD_INSPECT_RESULT_TYPE)}, id: data.id, snapshot: snapshot(data.point) };
-    window.parent.postMessage(reply, target(event.origin));
-  });
-
-  window.addEventListener("contextmenu", function (e) {
+  function onContextMenu(e) {
     if (hostOrigin === null || e.defaultPrevented || e.shiftKey || window.parent === window) return;
     var t = e.target;
     if (t && t.closest && t.closest("input, textarea, select, [contenteditable]:not([contenteditable=false])")) return;
@@ -204,6 +200,24 @@ export function getDashboardInspectorJs(): string {
     if (selected && !selected.isCollapsed && String(selected).trim()) return;
     e.preventDefault();
     window.parent.postMessage({ type: ${JSON.stringify(DASHBOARD_CONTEXT_MENU_TYPE)}, x: e.clientX, y: e.clientY }, target(hostOrigin));
+  }
+
+  window.addEventListener("message", function (event) {
+    if (!event || event.source !== window.parent || window.parent === window || !trusted(event.origin)) return;
+    var data = event.data;
+    if (!data || typeof data !== "object") return;
+    if (data.type === ${JSON.stringify(DASHBOARD_HOST_FEATURES_TYPE)}) {
+      hostOrigin = data.comments === true ? event.origin : null;
+      // Listeners on one target run in the order they were added. Joining the end of the
+      // window's list when the app announces itself (after the page loaded) lets the page's
+      // own window-level contextmenu handlers run first and keep their menu.
+      window.removeEventListener("contextmenu", onContextMenu);
+      if (hostOrigin !== null) window.addEventListener("contextmenu", onContextMenu);
+      return;
+    }
+    if (data.type !== ${JSON.stringify(DASHBOARD_INSPECT_REQUEST_TYPE)} || typeof data.id !== "string") return;
+    var reply = { type: ${JSON.stringify(DASHBOARD_INSPECT_RESULT_TYPE)}, id: data.id, snapshot: snapshot(data.point) };
+    window.parent.postMessage(reply, target(event.origin));
   });
 })();
 `

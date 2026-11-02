@@ -8,6 +8,7 @@ import {
   dashboardInspectResultSchema,
   type DashboardSnapshot,
 } from '@shared/lib/dashboard-inspect-schema'
+import { postToDashboardFrame } from '../post-to-dashboard-frame'
 
 /**
  * The app's half of the dashboard inspection protocol
@@ -17,19 +18,6 @@ import {
 
 /** A dashboard that answers at all answers at once; one that doesn't never will. */
 const INSPECT_TIMEOUT_MS = 1_000
-
-/** Posts to the frame's document, which is the API origin, not the app's in Electron. */
-function postToFrame(frame: HTMLIFrameElement | null, message: Record<string, unknown>): boolean {
-  if (!frame?.contentWindow) return false
-  let origin: string
-  try {
-    origin = new URL(frame.src, window.location.href).origin
-  } catch {
-    return false
-  }
-  frame.contentWindow.postMessage(message, origin)
-  return true
-}
 
 /**
  * What the dashboard page says about itself now: its URL, viewport, selection,
@@ -64,7 +52,7 @@ export function inspectDashboard(
     const request = point
       ? { type: DASHBOARD_INSPECT_REQUEST_TYPE, id, point: { x: point.x, y: point.y } }
       : { type: DASHBOARD_INSPECT_REQUEST_TYPE, id }
-    if (!postToFrame(frame, request)) finish(null)
+    if (!postToDashboardFrame(frame, request)) finish(null)
   })
 }
 
@@ -81,12 +69,12 @@ export function useDashboardFrameComments(
   useEffect(() => { latest.current = { enabled, onContextMenu } })
 
   const announce = () => {
-    postToFrame(frameRef.current, { type: DASHBOARD_HOST_FEATURES_TYPE, comments: latest.current.enabled })
+    postToDashboardFrame(frameRef.current, { type: DASHBOARD_HOST_FEATURES_TYPE, comments: latest.current.enabled })
   }
 
   // A change after load (permissions arriving) reaches the frame too.
   useEffect(() => {
-    postToFrame(frameRef.current, { type: DASHBOARD_HOST_FEATURES_TYPE, comments: enabled })
+    postToDashboardFrame(frameRef.current, { type: DASHBOARD_HOST_FEATURES_TYPE, comments: enabled })
   }, [enabled, frameRef])
 
   useEffect(() => {

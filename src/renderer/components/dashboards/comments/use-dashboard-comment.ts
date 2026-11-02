@@ -57,7 +57,8 @@ export function useDashboardComment({ frameRef, agentSlug, routeAgentSlug, agent
   // A newer open or close turns a capture still in flight into a no-op.
   const run = useRef(0)
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const createSession = useCreateSession()
+  // A failed send is shown in the comment box, which keeps the text; no toast on top of it.
+  const createSession = useCreateSession({ skipGlobalErrorToast: true })
   const navigate = useNavigate()
 
   useEffect(() => () => {
@@ -128,7 +129,7 @@ export function useDashboardComment({ frameRef, agentSlug, routeAgentSlug, agent
         screenshotPath = (await uploadFileChunked<{ path: string }>({ url: `/api/agents/${agentSlug}/upload-file`, file })).path
       } catch (error) {
         console.error('Failed to upload the dashboard comment screenshot:', error)
-        screenshotGap = 'failed'
+        screenshotGap = 'upload-failed'
       }
     }
 

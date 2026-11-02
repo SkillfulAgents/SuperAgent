@@ -1300,16 +1300,24 @@ html[data-keyboard-open] [data-composer-footer] {
    down once, brackets lock onto the corners, and the box rises in. Everything
    but the box and the pin ignores the pointer; the overlay itself takes the
    clicks that place the pin. */
+/* While a dashboard is captured for a comment, the app's floating layers that
+   can sit over it (tooltips, menus, toasts) hide, so the capture is the
+   dashboard alone. See captureDashboardFrame. */
+[data-capturing-dashboard] [data-radix-popper-content-wrapper],
+[data-capturing-dashboard] [data-sonner-toaster] {
+  visibility: hidden !important;
+}
+
 .dashboard-comment-overlay {
   --hud: 14 165 233; /* sky-500 */
   --hud-bright: 56 189 248; /* sky-400 */
-  background: radial-gradient(ellipse at center, rgb(var(--hud) / 0.03) 35%, rgb(var(--hud) / 0.12) 100%);
+  background: radial-gradient(ellipse at center, rgb(var(--hud) / 0.01) 40%, rgb(var(--hud) / 0.06) 100%);
   animation: hud-fade-in 200ms ease-out both;
 }
 .dark .dashboard-comment-overlay {
   --hud: 56 189 248;
   --hud-bright: 125 211 252; /* sky-300 */
-  background: radial-gradient(ellipse at center, rgb(var(--hud) / 0.04) 35%, rgb(var(--hud) / 0.14) 100%);
+  background: radial-gradient(ellipse at center, rgb(var(--hud) / 0.015) 40%, rgb(var(--hud) / 0.07) 100%);
 }
 .dashboard-comment-overlay[data-state='closed'] {
   animation: hud-fade-out 160ms ease-in both;
@@ -1321,20 +1329,64 @@ html[data-keyboard-open] [data-composer-footer] {
   inset: 0;
   pointer-events: none;
   background-image:
-    linear-gradient(rgb(var(--hud) / 0.38) 1px, transparent 1px),
-    linear-gradient(90deg, rgb(var(--hud) / 0.38) 1px, transparent 1px),
-    linear-gradient(rgb(var(--hud) / 0.16) 1px, transparent 1px),
-    linear-gradient(90deg, rgb(var(--hud) / 0.16) 1px, transparent 1px);
+    linear-gradient(rgb(var(--hud) / 0.22) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--hud) / 0.22) 1px, transparent 1px),
+    linear-gradient(rgb(var(--hud) / 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--hud) / 0.08) 1px, transparent 1px);
   background-size: 128px 128px, 128px 128px, 32px 32px, 32px 32px;
   background-position: -1px -1px;
   box-shadow:
-    inset 0 0 0 1px rgb(var(--hud) / 0.85),
-    inset 0 0 22px rgb(var(--hud) / 0.45),
-    inset 0 0 90px rgb(var(--hud) / 0.22);
-  filter: drop-shadow(0 0 2px rgb(var(--hud-bright) / 0.7));
-  -webkit-mask-image: radial-gradient(ellipse 80% 80% at center, rgb(0 0 0 / 0.45), #000);
-  mask-image: radial-gradient(ellipse 80% 80% at center, rgb(0 0 0 / 0.45), #000);
+    inset 0 0 0 1px rgb(var(--hud) / 0.5),
+    inset 0 0 18px rgb(var(--hud) / 0.2),
+    inset 0 0 70px rgb(var(--hud) / 0.08);
+  filter: drop-shadow(0 0 2px rgb(var(--hud-bright) / 0.35));
+  -webkit-mask-image: radial-gradient(ellipse 80% 80% at center, rgb(0 0 0 / 0.35), #000);
+  mask-image: radial-gradient(ellipse 80% 80% at center, rgb(0 0 0 / 0.35), #000);
   animation: hud-grid-on 520ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* Energy on the grid: light that shows only where the major lines are (the
+   mask). Short pulses flow along them, right and down, and now and then a
+   glimmer sweeps across. Both layers move by transform alone, so the
+   compositor runs them; the static mask keeps them on the lines. */
+.dashboard-comment-energy {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(#000 1px, transparent 1px), linear-gradient(90deg, #000 1px, transparent 1px);
+  mask-image: linear-gradient(#000 1px, transparent 1px), linear-gradient(90deg, #000 1px, transparent 1px);
+  -webkit-mask-size: 128px 128px;
+  mask-size: 128px 128px;
+  -webkit-mask-position: -1px -1px;
+  mask-position: -1px -1px;
+  animation: hud-fade-in 800ms ease-out 600ms both;
+}
+/* 135deg stripes, one every 424.26px along the gradient: 600px across, so a 600px slide loops seamlessly. */
+.dashboard-comment-flow {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -600px;
+  right: 0;
+  opacity: 0.55;
+  background-image: repeating-linear-gradient(135deg,
+    transparent 0,
+    transparent 180px,
+    rgb(var(--hud-bright) / 0.9) 200px,
+    transparent 220px,
+    transparent 424.26px);
+  animation: hud-flow 10s linear infinite;
+}
+.dashboard-comment-glimmer {
+  position: absolute;
+  top: -20%;
+  bottom: -20%;
+  left: 0;
+  width: 35%;
+  background: linear-gradient(90deg, transparent, rgb(var(--hud-bright) / 0.95) 50%, transparent);
+  transform: translateX(-200%) skewX(-24deg);
+  animation: hud-glimmer 5s cubic-bezier(0.4, 0, 0.6, 1) 0.8s infinite;
 }
 
 .dashboard-comment-scan {
@@ -1346,9 +1398,9 @@ html[data-keyboard-open] [data-composer-footer] {
   pointer-events: none;
   background: linear-gradient(to bottom,
     transparent,
-    rgb(var(--hud) / 0.12) 60%,
-    rgb(var(--hud-bright) / 0.55) 96%,
-    rgb(var(--hud-bright) / 0.95) 99%,
+    rgb(var(--hud) / 0.06) 60%,
+    rgb(var(--hud-bright) / 0.3) 96%,
+    rgb(var(--hud-bright) / 0.6) 99%,
     transparent);
   opacity: 0;
   animation: hud-scan 1000ms cubic-bezier(0.45, 0, 0.25, 1) 120ms both;
@@ -1356,25 +1408,12 @@ html[data-keyboard-open] [data-composer-footer] {
 
 .dashboard-comment-corner {
   position: absolute;
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   pointer-events: none;
-  border-color: rgb(var(--hud-bright));
-  filter: drop-shadow(0 0 4px rgb(var(--hud-bright) / 0.9));
+  border-color: rgb(var(--hud-bright) / 0.85);
+  filter: drop-shadow(0 0 3px rgb(var(--hud-bright) / 0.55));
   animation: hud-corner-lock 380ms cubic-bezier(0.2, 0.8, 0.2, 1) 160ms both;
-}
-
-.dashboard-comment-caption {
-  color: rgb(var(--hud));
-  text-shadow: 0 0 8px rgb(var(--hud-bright) / 0.8);
-  animation: hud-fade-in 300ms ease-out 280ms both;
-}
-.dark .dashboard-comment-caption { color: rgb(var(--hud-bright)); }
-
-.dashboard-comment-blip {
-  background: rgb(var(--hud-bright));
-  box-shadow: 0 0 6px 1px rgb(var(--hud-bright));
-  animation: hud-blip 1.4s ease-in-out infinite;
 }
 
 /* The pin: a reticle. Unplaced it breathes, dashed, waiting to be dragged. */
@@ -1429,11 +1468,20 @@ html[data-keyboard-open] [data-composer-footer] {
 @keyframes hud-fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes hud-fade-out { from { opacity: 1; } to { opacity: 0; } }
 @keyframes hud-grid-on {
-  0% { opacity: 0; transform: scale(1.035); }
-  25% { opacity: 0.85; }
-  35% { opacity: 0.3; }
-  50% { opacity: 1; }
+  0% { opacity: 0; transform: scale(1.02); }
+  25% { opacity: 0.7; }
+  35% { opacity: 0.4; }
+  55% { opacity: 1; }
   100% { opacity: 1; transform: none; }
+}
+@keyframes hud-flow {
+  from { transform: translateX(0); }
+  to { transform: translateX(600px); }
+}
+/* A slow crossing (4.25s), then a short rest off screen: a pass every 5s. */
+@keyframes hud-glimmer {
+  0% { transform: translateX(-200%) skewX(-24deg); }
+  85%, 100% { transform: translateX(380%) skewX(-24deg); }
 }
 @keyframes hud-scan {
   0% { opacity: 0; transform: translateY(-110px); }
@@ -1444,10 +1492,6 @@ html[data-keyboard-open] [data-composer-footer] {
 @keyframes hud-corner-lock {
   from { opacity: 0; transform: scale(1.8); }
   to { opacity: 1; transform: none; }
-}
-@keyframes hud-blip {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.25; }
 }
 @keyframes hud-pin-drop {
   from { opacity: 0; transform: scale(2.2); }
@@ -1467,7 +1511,7 @@ html[data-keyboard-open] [data-composer-footer] {
   .dashboard-comment-corner,
   .dashboard-comment-reticle,
   .dashboard-comment-reticle[data-placed='false'],
-  .dashboard-comment-box,
-  .dashboard-comment-blip { animation: hud-fade-in 1ms both; }
-  .dashboard-comment-scan { display: none; }
+  .dashboard-comment-box { animation: hud-fade-in 1ms both; }
+  .dashboard-comment-scan,
+  .dashboard-comment-energy { display: none; }
 }

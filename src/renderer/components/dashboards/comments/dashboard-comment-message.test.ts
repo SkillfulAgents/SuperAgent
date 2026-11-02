@@ -109,6 +109,22 @@ describe('buildDashboardCommentMessage', () => {
     expect(message).toContain('````text\n-2m05s [log] loaded ```data```\n-4.2s [error] Uncaught TypeError: x is undefined\n-1.0s [network] GET /api/data -> 500 Internal Server Error\n````')
   })
 
+  it('tallies errors the kept log no longer holds, from the page\'s running counts', () => {
+    const message = buildDashboardCommentMessage(input({
+      sent: snapshot({
+        logs: [{ level: 'log', at: NOW - 1_000, text: 'tick' }],
+        droppedLogs: 300,
+        counts: { error: 50, log: 251 },
+      }),
+    }))
+    expect(message).toContain('(the last 1 of 301 entries since it loaded; 50 errors, 0 warnings, 0 failed requests)')
+  })
+
+  it('tells a failed upload from a failed capture', () => {
+    expect(buildDashboardCommentMessage(input({ screenshotPath: null, screenshotGap: 'upload-failed' })))
+      .toContain('- No screenshot (it was captured but could not be uploaded): open the dashboard yourself to see it')
+  })
+
   it('says when the page did not answer, and when it logged nothing', () => {
     expect(buildDashboardCommentMessage(input({ opened: null, sent: null }))).toContain('Console output is not available')
     expect(buildDashboardCommentMessage(input())).toContain('The dashboard logged nothing to the console')

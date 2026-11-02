@@ -68,6 +68,8 @@ export const dashboardSnapshotSchema = z.object({
   logs: z.array(dashboardLogEntrySchema).max(DASHBOARD_LOG_CAPACITY),
   /** Entries that fell off the front since the page loaded. */
   droppedLogs: z.number(),
+  /** Entries per level since the page loaded, dropped ones included. */
+  counts: z.record(z.string(), z.number()).optional(),
 })
 export type DashboardSnapshot = z.infer<typeof dashboardSnapshotSchema>
 

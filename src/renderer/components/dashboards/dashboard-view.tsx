@@ -137,9 +137,9 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     else if (commentState.phase === 'open' && !commentState.sending) closeComment()
   }, [commentState, openComment, closeComment])
   const handleCommentHere = useCallback((at: { x: number; y: number }) => {
+    // The capture hides the menu if it is still on screen.
     setFrameMenuAt(null)
-    // Two frames: the menu leaves the DOM, then a frame is drawn without it for the screenshot.
-    requestAnimationFrame(() => requestAnimationFrame(() => void openComment(at)))
+    void openComment(at)
   }, [openComment])
 
   const handleRefresh = useCallback(() => {
@@ -304,11 +304,15 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     dashboardRunning,
   ])
 
-  // A reloaded or different dashboard is not the one the comment is on.
+  // A different dashboard is not the one the comment is on. A reload of this one
+  // (a resolved review, a retry) keeps the comment and its typed text; only an
+  // open right-click menu, placed on the old document, goes.
   useEffect(() => {
     closeComment()
+  }, [iframeSrc, closeComment])
+  useEffect(() => {
     setFrameMenuAt(null)
-  }, [iframeSrc, frameAttempt, closeComment])
+  }, [iframeSrc, frameAttempt])
   useRegisterDashboardHeader(dashboardHeader)
 
   useEffect(() => {

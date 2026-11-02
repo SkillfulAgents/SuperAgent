@@ -538,6 +538,36 @@ describe('DashboardView comments', () => {
     expect(mocks.toastSuccess).not.toHaveBeenCalled()
   })
 
+  it('keeps an open comment and its text through a reload of the dashboard', async () => {
+    const user = userEvent.setup()
+    renderDashboard()
+    fireEvent.load(document.querySelector('iframe')!)
+    await act(async () => {})
+
+    await user.click(screen.getByRole('button', { name: 'Add comment' }))
+    const overlay = await screen.findByTestId('dashboard-comment-overlay')
+    await user.type(within(overlay).getByPlaceholderText('What should change?'), 'Half typed')
+    const frame = document.querySelector('iframe')
+
+    await user.click(screen.getByRole('button', { name: 'Refresh dashboard' }))
+    expect(document.querySelector('iframe')).not.toBe(frame)
+    expect(screen.getByTestId('dashboard-comment-overlay')).toBeInTheDocument()
+    expect(within(screen.getByTestId('dashboard-comment-overlay')).getByPlaceholderText('What should change?')).toHaveValue('Half typed')
+  })
+
+  it('leaves a right-click in the comment field to the field (spellcheck, paste), and pins on the grid', async () => {
+    const user = userEvent.setup()
+    renderDashboard()
+    await user.click(screen.getByRole('button', { name: 'Add comment' }))
+    const overlay = await screen.findByTestId('dashboard-comment-overlay')
+
+    // fireEvent returns false when the event was default-prevented.
+    expect(fireEvent.contextMenu(within(overlay).getByPlaceholderText('What should change?'))).toBe(true)
+    expect(within(overlay).getByText('Whole dashboard · click to pin a spot')).toBeVisible()
+    expect(fireEvent.contextMenu(overlay, { clientX: 5, clientY: 5 })).toBe(false)
+    expect(within(overlay).getByText('Pinned to this spot · drag or click to move')).toBeVisible()
+  })
+
   it('leaves comment mode on Escape', async () => {
     const user = userEvent.setup()
     renderDashboard()
