@@ -18,6 +18,7 @@
  */
 import type { GlobalFeedEvent } from '@shared/lib/notifications/global-feed'
 import type { PendingUserInputRequest } from '@shared/lib/tools/requests/request-schema'
+import type { SessionEvent } from './live/session-channel'
 
 export interface HostCalls {
   /** Run a host tool for a session. The actor delivers the outcome to the container. */
@@ -64,6 +65,8 @@ export interface HostEvents {
   notification: SessionNotification
   /** A product analytics event. */
   analytics: { event: string; properties?: Record<string, unknown> }
+  /** An event on a session's stream, for the host's own consumers (chat replies). */
+  session: { agentSlug: string; sessionId: string; event: SessionEvent }
 }
 
 /** A session-scoped host tool the agent called, with its raw streamed input. */
