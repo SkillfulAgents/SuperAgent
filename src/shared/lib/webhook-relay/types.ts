@@ -122,8 +122,13 @@ export interface WebhookRelaySnapshot {
   lastError: string | null
 }
 
+/** How often a relay claims while realtime is down, and how often a host on its own clock runs a pass. */
+export const RELAY_PASS_INTERVAL_MS = 30_000
+
 export interface WebhookRelayService {
   readonly kind: 'platform' | 'unavailable'
+  /** How often a host that started the relay with `timers: false` should call `runPass()`. */
+  readonly passIntervalMs: number
   snapshot(): WebhookRelaySnapshot
   /** Called on availability/transport/error changes, not on every claim. */
   onChange(listener: (snapshot: WebhookRelaySnapshot) => void): () => void
@@ -148,7 +153,17 @@ export interface WebhookRelayService {
 
   /** Claim soon, e.g. right after minting a new endpoint. Coalesced. */
   wake(): void
-  start(): void
+  /**
+   * With `timers: false` the relay keeps no timer and opens no realtime
+   * socket: nothing is claimed until the host calls `runPass()`.
+   */
+  start(options?: { timers?: boolean }): void
+  /**
+   * One claim, delivery and ack round. Resolves once the events it claimed
+   * were offered to their consumers and the settled ones acknowledged. An
+   * event a consumer asked to retry waits for a later pass.
+   */
+  runPass(): Promise<void>
   stop(): void
   /** Re-read platform auth: go (un)available, and reset the connection when the token changed. */
   onAuthChanged(): void

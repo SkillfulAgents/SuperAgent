@@ -14,6 +14,11 @@
  * before the process exits comes back. A re-leased event that is still queued
  * or already settled here is skipped. `retry` events stay in memory and are
  * offered again with backoff until they settle.
+ *
+ * A host that keeps no timers between requests starts the relay with
+ * `timers: false` and calls `runPass()` on its own clock instead: no tick, no
+ * realtime socket, no retry timers; each pass claims, delivers and acks, and
+ * resolves once that work is done.
  */
 
 import pLimit from 'p-limit'
@@ -31,6 +36,7 @@ import { isPermanentRelayError, type PlatformClaim } from './platform-relay-clie
 import { platformRealtimeRecordSchema } from './platform-relay-schema'
 import {
   LOCAL_RELAY_SCOPE,
+  RELAY_PASS_INTERVAL_MS,
   type RelayAcceptResult,
   type RelayConsumer,
   type RelayConsumerHandle,
@@ -170,8 +176,7 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
 
 export class PlatformWebhookRelayService implements WebhookRelayService {
   readonly kind = 'platform' as const
-
-  private readonly tickMs: number
+  readonly passIntervalMs: number
   private readonly reconcileMs: number
   private readonly realtimeTokenRefreshMs: number
   private readonly maxConsumerBacklog: number
@@ -197,6 +202,10 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   private ackTimer: NodeJS.Timeout | null = null
 
   private started = false
+  /** False when the host drives the relay through runPass() (start({ timers: false })). */
+  private timers = true
+  /** Offers and ack runs in flight, which a pass waits for. */
+  private readonly inFlight = new Set<Promise<unknown>>()
   // Aborted by stop(), cancelling every request still in flight.
   private lifecycle = new AbortController()
   private online = false
@@ -221,7 +230,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     private readonly deps: PlatformWebhookRelayDeps,
     options: PlatformWebhookRelayOptions = {},
   ) {
-    this.tickMs = options.tickMs ?? 30_000
+    this.passIntervalMs = options.tickMs ?? RELAY_PASS_INTERVAL_MS
     this.reconcileMs = options.reconcileMs ?? 5 * 60_000
     this.realtimeTokenRefreshMs = options.realtimeTokenRefreshMs ?? 40 * 60_000
     this.maxConsumerBacklog = options.maxConsumerBacklog ?? 200
@@ -491,9 +500,10 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   // Lifecycle
   // ==========================================================================
 
-  start(): void {
+  start(options: { timers?: boolean } = {}): void {
     if (this.started) return
     this.started = true
+    this.timers = options.timers ?? true
     this.lifecycle = new AbortController()
     this.applyAuth()
     // Resume delivery that stop() suspended.
@@ -533,10 +543,12 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     this.goOffline()
     this.token = token
     this.online = true
-    this.deps.detach(() => {
-      this.tick = setInterval(() => this.onTick(), this.tickMs)
-      this.tick.unref?.()
-    })
+    if (this.timers) {
+      this.deps.detach(() => {
+        this.tick = setInterval(() => this.onTick(), this.passIntervalMs)
+        this.tick.unref?.()
+      })
+    }
     console.log('[WebhookRelay] Online')
     this.wake()
     this.flushAcks()
@@ -609,11 +621,32 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   wake(): void {
     if (!this.online) return
     this.dirty = true
-    if (this.draining) return
+    // Without timers the next pass claims.
+    if (!this.timers || this.draining) return
     this.draining = true
     this.deps.detach(() => {
       background(this.drain(), { name: 'webhook-relay.drain' })
     })
+  }
+
+  async runPass(): Promise<void> {
+    if (!this.online) return
+    // Retries that came due since the last pass, and acks it left behind.
+    for (const state of this.deliveringConsumers()) this.pump(state)
+    this.flushAcks()
+    do {
+      this.dirty = false
+      await this.runRound(this.generation)
+      while (this.inFlight.size > 0) await Promise.all([...this.inFlight])
+    } while (this.dirty && this.online)
+    this.emit()
+  }
+
+  private track<T>(work: Promise<T>): Promise<T> {
+    this.inFlight.add(work)
+    const done = () => this.inFlight.delete(work)
+    work.then(done, done)
+    return work
   }
 
   private async drain(): Promise<void> {
@@ -798,7 +831,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     state.retryTimer = null
     state.offering = true
     this.deps.detach(() => {
-      background(this.limit(() => this.offer(state))
+      background(this.track(this.limit(() => this.offer(state))
         .catch((error: unknown) => {
           captureException(error, { tags: { area: 'webhook-relay', op: 'offer' }, extra: { consumerId: state.id } })
         })
@@ -806,7 +839,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
           state.offering = false
           this.finishIfDrained(state)
           this.pump(state)
-        }), { name: 'webhook-relay.offer' })
+        })), { name: 'webhook-relay.offer' })
     })
   }
 
@@ -856,8 +889,8 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   }
 
   private scheduleRetry(state: ConsumerState, delay: number): void {
-    // After stop(), start() resumes delivery instead.
-    if (!this.started || state.disposed) return
+    // After stop(), start() resumes delivery instead; without timers, the next pass does.
+    if (!this.started || !this.timers || state.disposed) return
     if (state.retryTimer) clearTimeout(state.retryTimer)
     this.deps.detach(() => {
       state.retryTimer = setTimeout(() => {
@@ -885,7 +918,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     if (this.acking || !this.online || this.pendingAcks.size === 0) return
     this.acking = true
     this.deps.detach(() => {
-      background(this.runAcks(), { name: 'webhook-relay.ack' })
+      background(this.track(this.runAcks()), { name: 'webhook-relay.ack' })
     })
   }
 
@@ -940,7 +973,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   private scheduleAckRetry(): void {
     if (this.ackTimer) clearTimeout(this.ackTimer)
     this.ackTimer = null
-    if (!this.online || this.pendingAcks.size === 0) return
+    if (!this.online || !this.timers || this.pendingAcks.size === 0) return
     const now = Date.now()
     let next = Infinity
     for (const scope of this.pendingAcks.keys()) next = Math.min(next, this.ackBackoff.get(scope)?.retryAt ?? now)
@@ -958,7 +991,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   // ==========================================================================
 
   private useRealtimeConfig(generation: number, config: RealtimeConfig | null): void {
-    if (!config) return
+    if (!config || !this.timers) return
     const now = Date.now()
     const current = this.realtime
     if (current?.isActive()) {
