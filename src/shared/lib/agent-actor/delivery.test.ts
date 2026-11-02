@@ -89,7 +89,7 @@ describe('deliver', () => {
   it('reports the provider the session\'s turns run on, as the send resolved it', async () => {
     send().mockImplementation(async () => {
       // The container resolves the turn's runtime while it takes the message.
-      sessions().recordRuntime(SESSION, { provider: 'platform', modelContextWindows: {} })
+      sessions().recordRuntime(SESSION, { provider: 'platform' })
       return {}
     })
 
