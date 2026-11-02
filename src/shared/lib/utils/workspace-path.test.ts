@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { getPathName, isFolderPath, toWorkspaceRelativePath } from './workspace-path'
+import { getPathName, isFolderPath, parseMountPath, toWorkspaceRelativePath } from './workspace-path'
 
 describe('isFolderPath', () => {
   it.each([
@@ -36,5 +36,27 @@ describe('toWorkspaceRelativePath', () => {
     ['/workspace', ''],
   ])('%s → %s', (input, expected) => {
     expect(toWorkspaceRelativePath(input)).toBe(expected)
+  })
+})
+
+describe('parseMountPath', () => {
+  it.each([
+    ['/mounts/Team Brain/notes/overview.md', { name: 'Team Brain', path: 'notes/overview.md' }],
+    ['/mounts/Team Brain/notes/', { name: 'Team Brain', path: 'notes' }],
+    ['/mounts/Team Brain', { name: 'Team Brain', path: '' }],
+    ['/mounts/Team Brain/a/../secret', null],
+    ['/mounts/Team Brain/./a', null],
+    ['/mounts/Team Brain/a\\b', null],
+    ['/mounts/Team Brain/a\0b', null],
+    ['/mounts/Team Brain/line\nbreak.md', { name: 'Team Brain', path: 'line\nbreak.md' }],
+    ['/mounts/', null],
+    ['', null],
+    ['/mounts/../files/x.md', null],
+    ['/mounts/./a.md', null],
+    ['/mounts', null],
+    ['/mounts/Team Brain//a.md', null],
+    ['/workspace/mounts/Team Brain/a.md', null],
+  ])('%s', (containerPath, expected) => {
+    expect(parseMountPath(containerPath)).toEqual(expected)
   })
 })
