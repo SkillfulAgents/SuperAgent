@@ -18,7 +18,7 @@ import type { AgentIntegrationRecord, IntegrationStatus, IntegrationInputEvent, 
 import { agentIntegrationRegistry, type AgentIntegrationRegistry } from './registry'
 import { integrationRelayConsumerId, integrationRelays } from './relay-transport'
 import { getWebhookRelay, type RelayAcceptResult, type RelayEvent, type WebhookRelayService } from '../webhook-relay'
-import type { IntegrationRelayHost, IntegrationTransport } from './transport'
+import { readIntegrationRelay, type IntegrationRelayHost, type IntegrationTransport } from './transport'
 import { agentRegistry, type AgentActor, type SessionEvent } from '@shared/lib/agent-actor'
 import { deliveryFailure } from '@shared/lib/agent-actor/delivery-errors'
 import {
@@ -154,6 +154,7 @@ export class AgentIntegrationManager {
   // Per-chat session: one streaming context per (integrationId, externalId)
   private chatSessions: Map<string, ManagedSession> = new Map() // key: `${integrationId}:${chatId}`
   private isRunning = false
+  private connectionsElsewhere = false
   private authorizationUnsubscribe?: () => void
   private healthCheckInterval: ReturnType<typeof setInterval> | null = null
   private globalNotificationUnsubscribe: (() => void) | null = null
@@ -560,9 +561,25 @@ if (options.timers !== false) {
     }
   }
 
-  isIntegrationConnected(integrationId: string): boolean {
+  /**
+   * Whether the integration's connection is up. With `row`, a host whose connections run in the
+   * agents' processes (setConnectionsElsewhere) reports one it does not hold itself as connected
+   * while the row is active and its webhooks are set up: those processes write a failure to the row.
+   */
+  isIntegrationConnected(integrationId: string, row?: Pick<AgentIntegrationRecord, 'status' | 'config'>): boolean {
     const conn = this.connections.get(integrationId)
-    return conn?.connector.isConnected() ?? false
+    if (conn) return conn.connector.isConnected()
+    if (!this.connectionsElsewhere || row?.status !== 'active') return false
+    try {
+      return !!readIntegrationRelay(row.config)
+    } catch {
+      return false
+    }
+  }
+
+  /** This host claims webhooks and forwards them (syncIntegrationForwarding); the agents' processes hold the connections. */
+  setConnectionsElsewhere(on: boolean): void {
+    this.connectionsElsewhere = on
   }
 
   /** The path the live connection runs on, if it has one and reports it. */
