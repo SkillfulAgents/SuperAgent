@@ -40,3 +40,14 @@ const connectedText = (accounts: { toolkitSlug: string; status: string }[]) =>
 
 // The agent's opening research starts from this name and email.
 const setUpByText = ({ name, email }: { name: string; email: string }) => (name.trim() ? `${name.trim()} (${email})` : email)
+
+type Person = { name: string; email: string }
+
+/**
+ * Who set Team Brain up, for its opening research: the signed-in person, else without a login (the desktop app) the
+ * Gamut account the app is connected with, else no one and the slot stays for the agent to ask.
+ */
+export function setUpByOf(user: Person | null | undefined, platform: { connected: boolean; email: string | null } | undefined): Person | null {
+  if (user) return user
+  return platform?.connected && platform.email ? { name: '', email: platform.email } : null
+}

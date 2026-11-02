@@ -229,7 +229,24 @@ export async function fileExists(filePath: string): Promise<boolean> {
  * Safely remove directory recursively
  */
 export async function removeDirectory(dirPath: string): Promise<void> {
-  await fs.promises.rm(dirPath, { recursive: true, force: true })
+  try {
+    await fs.promises.rm(dirPath, { recursive: true, force: true })
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code !== 'EACCES' && code !== 'EPERM') throw error
+    // An agent can chmod its own folders read-only; unlinking needs a writable parent.
+    await makeFoldersWritable(dirPath)
+    await fs.promises.rm(dirPath, { recursive: true, force: true })
+  }
+}
+
+async function makeFoldersWritable(dirPath: string): Promise<void> {
+  const stat = await fs.promises.lstat(dirPath)
+  if (!stat.isDirectory()) return
+  await fs.promises.chmod(dirPath, stat.mode | 0o700)
+  for (const entry of await fs.promises.readdir(dirPath, { withFileTypes: true })) {
+    if (entry.isDirectory()) await makeFoldersWritable(path.join(dirPath, entry.name))
+  }
 }
 
 /**

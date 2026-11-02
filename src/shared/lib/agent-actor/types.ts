@@ -345,7 +345,7 @@ export interface SessionOps {
   isRegistered(sessionId: string): Promise<boolean>
   /** `registerSession` */
   register(sessionId: string, name?: string, initialMetadata?: Partial<SessionMetadata>): Promise<void>
-  /** `updateSessionName` */
+  /** `updateSessionName`, then `session_updated` on the session's stream and the global feed. */
   rename(sessionId: string, name: string): Promise<void>
   /** `deleteSession` — the files are the authority. */
   delete(sessionId: string): Promise<boolean>

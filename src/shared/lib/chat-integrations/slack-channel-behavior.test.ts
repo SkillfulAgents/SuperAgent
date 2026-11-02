@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { routeSlackMessage, resolveSlackChannel, touchAndCapSet, touchAndCapMap, reactionsForChat, type SlackMessageRoutingParams } from './slack-connector'
+import { describe, it, expect, vi } from 'vitest'
+import { routeSlackMessage, resolveSlackChannel, touchAndCapSet, touchAndCapMap, statusNeedsSend, SLACK_STATUS_REFRESH_MS, SlackConnector, type SlackMessageRoutingParams } from './slack-connector'
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -503,27 +503,152 @@ describe('touchAndCapMap', () => {
   })
 })
 
-// ── reactionsForChat (thinking-reaction sweep on clear) ──────────────────
-// The working indicator is a :thinking_face: reaction keyed on the user's last
-// message ts. If a second message lands mid-turn the ts changes and a second
-// reaction is added; clearing must sweep EVERY reaction for the chat, not just
-// the latest ts, or the first one is orphaned until disconnect.
+// ── Status line ──────────────────────────────────────────────────────────
 
-describe('reactionsForChat', () => {
-  it('returns all tracked reactions for the chat, extracting the ts', () => {
-    const set = new Set(['C123:1000.1', 'C123:1000.2', 'C999:1000.3'])
-    expect(reactionsForChat(set, 'C123')).toEqual([
-      { key: 'C123:1000.1', ts: '1000.1' },
-      { key: 'C123:1000.2', ts: '1000.2' },
+describe('statusNeedsSend', () => {
+  const shown = { anchor: '100.1', label: 'is working…', sentAt: 0, shown: true }
+  it.each([
+    ['nothing recorded', undefined, 'is working…', 0, true],
+    ['label changed', shown, 'is thinking…', 1, true],
+    ['refresh due', shown, 'is working…', SLACK_STATUS_REFRESH_MS, true],
+    ['just under the refresh', shown, 'is working…', SLACK_STATUS_REFRESH_MS - 1, false],
+  ])('%s', (_name, status, label, now, expected) => {
+    expect(statusNeedsSend(status, label, now)).toBe(expected)
+  })
+})
+
+describe('SlackConnector status line', () => {
+  function makeConnector() {
+    const connector = new SlackConnector({ botToken: 'xoxb-fake', appToken: 'xapp-fake' })
+    const setStatus = vi.fn().mockResolvedValue({ ok: true })
+    ;(connector as any).app = {
+      client: {
+        assistant: { threads: { setStatus } },
+        chat: { postMessage: vi.fn().mockResolvedValue({ ok: true, ts: '200.1' }) },
+      },
+    }
+    ;(connector as any).lastUserMessageTs.set('D1', '100.1')
+    return { connector, setStatus }
+  }
+
+  it('a clear issued while a set is in flight leaves no line', async () => {
+    const { connector, setStatus } = makeConnector()
+    let finishSet!: () => void
+    setStatus.mockImplementationOnce(() => new Promise<void>((resolve) => { finishSet = resolve }))
+
+    const start = connector.startWorking('D1', 'thinking')
+    const stop = connector.stopWorking('D1')
+    await vi.waitFor(() => expect(finishSet).toBeDefined())
+    finishSet()
+    await Promise.all([start, stop])
+
+    expect(setStatus.mock.calls.map(([args]) => args.status)).toEqual(['is thinking…', ''])
+    expect(setStatus).toHaveBeenLastCalledWith({ channel_id: 'D1', thread_ts: '100.1', status: '' })
+  })
+
+  it('re-sends the line after a post, and still clears it at the end', async () => {
+    const { connector, setStatus } = makeConnector()
+    await connector.startWorking('D1', 'working')
+    await connector.sendMessage('D1', { text: 'tool pill' })
+    await vi.waitFor(() => expect((connector as any).statusWrites.size).toBe(0))
+    await connector.startWorking('D1', 'working')
+    await connector.sendMessage('D1', { text: 'another pill' })
+    await connector.stopWorking('D1')
+
+    expect(setStatus.mock.calls.map(([args]) => args.status)).toEqual(['is working…', 'is working…', ''])
+  })
+
+  it('does not pile up starts behind a failing write', async () => {
+    const { connector, setStatus } = makeConnector()
+    let failSet!: (err: Error) => void
+    setStatus.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { failSet = reject }))
+
+    const first = connector.startWorking('D1', 'working')
+    const second = connector.startWorking('D1', 'working')
+    const stop = connector.stopWorking('D1')
+    await vi.waitFor(() => expect(failSet).toBeDefined())
+    failSet(new Error('timeout'))
+    await Promise.all([first, second, stop])
+
+    expect(setStatus).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ── Standard markdown text ───────────────────────────────────────────────
+
+describe('SlackConnector text', () => {
+  const rejected = Object.assign(new Error('An API error occurred: invalid_blocks'), {
+    code: 'slack_webapi_platform_error', data: { ok: false, error: 'invalid_blocks' },
+  })
+
+  function makeConnector() {
+    const connector = new SlackConnector({ botToken: 'xoxb-fake', appToken: 'xapp-fake' })
+    const postMessage = vi.fn().mockResolvedValue({ ok: true, ts: '200.1' })
+    const update = vi.fn().mockResolvedValue({ ok: true })
+    ;(connector as any).app = { client: { chat: { postMessage, update }, assistant: { threads: { setStatus: vi.fn() } } } }
+    return { connector, postMessage, update }
+  }
+
+  it('posts an answer up to 12,000 chars as one standard-markdown message, tables kept monospace', async () => {
+    const { connector, postMessage } = makeConnector()
+    const answer = '## Result\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n' + 'x'.repeat(5000)
+    await connector.sendMessage('D1', { text: answer })
+
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    const body = postMessage.mock.calls[0][0]
+    expect(body.text).toBeUndefined()
+    expect(body.markdown_text).toContain('## Result')
+    expect(body.markdown_text).toContain('```\nA  B')
+  })
+
+  it('posts as converted text when Slack refuses the markdown blocks', async () => {
+    const { connector, postMessage } = makeConnector()
+    postMessage.mockRejectedValueOnce(rejected)
+    await connector.sendMessage('D1', { text: '## Title\n\n**bold**' })
+
+    expect(postMessage).toHaveBeenLastCalledWith(expect.objectContaining({ text: '*Title*\n\n*bold*', mrkdwn: true }))
+  })
+
+  it('a first streamed post Slack refuses becomes one converted message that stays converted', async () => {
+    const { connector, postMessage, update } = makeConnector()
+    postMessage.mockRejectedValueOnce(rejected)
+    const long = '## Start\n\n' + 'a'.repeat(2000) + '\n\n' + 'b'.repeat(2000)
+    const ts = await connector.sendStreamingUpdate('D1', long)
+    await connector.sendStreamingUpdate('D1', long + ' more', ts)
+
+    expect(postMessage).toHaveBeenCalledTimes(2)
+    expect(postMessage.mock.calls[1][0].text).toMatch(/full response will appear when done\)$/)
+    expect(update).toHaveBeenCalledTimes(1)
+    expect(update.mock.calls[0][0]).toEqual(expect.objectContaining({ ts, text: expect.stringContaining('*Start*') }))
+  })
+
+  it('a final edit Slack refuses finishes as converted text, overflow included', async () => {
+    const { connector, postMessage, update } = makeConnector()
+    update.mockRejectedValueOnce(rejected)
+    await connector.finalizeStreamingMessage('D1', '200.1', '## Done\n\n' + 'a'.repeat(2500) + '\n\n' + 'b'.repeat(2500))
+
+    expect(update).toHaveBeenLastCalledWith(expect.objectContaining({ ts: '200.1', text: expect.stringContaining('*Done*') }))
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    expect(postMessage.mock.calls[0][0]).toEqual(expect.objectContaining({ text: 'b'.repeat(2500), mrkdwn: true }))
+    expect(postMessage.mock.calls[0][0].markdown_text).toBeUndefined()
+  })
+
+  it('a table followed by prose keeps the closing fence on its own line', async () => {
+    const { connector, postMessage } = makeConnector()
+    await connector.sendMessage('D1', { text: '| A | B |\n|---|---|\n| 1 | 2 |\nNext paragraph' })
+
+    expect(postMessage.mock.calls[0][0].markdown_text).toMatch(/```\nNext paragraph$/)
+  })
+
+  it('a streamed message Slack refuses finishes as converted text', async () => {
+    const { connector, update } = makeConnector()
+    update.mockRejectedValueOnce(rejected)
+    await connector.sendStreamingUpdate('D1', '## Many headings', '200.1')
+    await connector.sendStreamingUpdate('D1', '## Many headings, more', '200.1')
+    await connector.finalizeStreamingMessage('D1', '200.1', '## Many headings, done')
+
+    expect(update.mock.calls.map(([args]) => Object.keys(args).includes('markdown_text') ? 'markdown' : args.text)).toEqual([
+      'markdown', '*Many headings*', '*Many headings, more*', '*Many headings, done*',
     ])
-  })
-
-  it('does not match a chat whose id is a prefix of another (colon-delimited)', () => {
-    const set = new Set(['C12:1000.1', 'C123:1000.2'])
-    expect(reactionsForChat(set, 'C12').map((r) => r.ts)).toEqual(['1000.1'])
-  })
-
-  it('returns empty when nothing is tracked for the chat', () => {
-    expect(reactionsForChat(new Set(['C999:1000.1']), 'C123')).toEqual([])
   })
 })

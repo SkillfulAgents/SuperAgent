@@ -380,7 +380,7 @@ SidebarRail.displayName = "SidebarRail"
 const SidebarInset = React.forwardRef<
   HTMLDivElement,
   React.ComponentProps<"main">
->(({ className, ...props }, ref) => {
+>(({ className, children, ...props }, ref) => {
   return (
     <main
       ref={ref}
@@ -389,11 +389,18 @@ const SidebarInset = React.forwardRef<
         // status bar, this keeps content clear of the Dynamic Island while bg-background
         // fills behind it. No-op on desktop/Electron (env resolves to 0).
         "relative flex w-full flex-1 flex-col bg-background pt-[env(safe-area-inset-top)]",
-        "md:peer-data-[variant=inset]:m-2 md:peer-data-[state=collapsed]:peer-data-[variant=inset]:ml-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-[var(--inset-radius,16px)] md:peer-data-[variant=inset]:shadow md:peer-data-[variant=inset]:overflow-hidden",
+        "md:peer-data-[variant=inset]:m-2 md:peer-data-[state=collapsed]:peer-data-[variant=inset]:ml-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-[var(--inset-radius,16px)] md:peer-data-[variant=inset]:[corner-shape:var(--inset-corner-shape,round)] md:peer-data-[variant=inset]:shadow",
         className
       )}
       {...props}
-    />
+    >
+      {/* The content is clipped here rather than on <main>: Chromium clips to a round
+          corner cheaply, but clipping it to <main>'s corner-shape blanked regions of
+          the window for single frames (see useInsetRadius). */}
+      <div data-inset-content className="flex flex-1 flex-col md:group-has-[[data-variant=inset]]/sidebar-wrapper:relative md:group-has-[[data-variant=inset]]/sidebar-wrapper:overflow-hidden md:group-has-[[data-variant=inset]]/sidebar-wrapper:rounded-[var(--inset-clip-radius,16px)]">
+        {children}
+      </div>
+    </main>
   )
 })
 SidebarInset.displayName = "SidebarInset"

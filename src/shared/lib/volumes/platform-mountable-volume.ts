@@ -10,8 +10,9 @@ import type { S3Access } from './s3-client'
 import { S3StorageVolume } from './s3-mountable-volume'
 import { s3LocationSchema, type S3Location } from './s3-schema'
 import { VolumeError } from './volume-error'
-import { volumeFolderBrowser } from './volume-folder-browser'
-import { platformVolumeIdSchema, type PlatformVolumeConfig, type StoredPlatformVolumeConfig } from './volume-config-schema'
+import { volumeFolderBrowser, volumeFolderCreator } from './volume-folder-browser'
+import { volumeFolderNameSchema } from './volume-folders-schema'
+import { platformVolumeIdSchema, type StoredPlatformVolumeConfig } from './volume-config-schema'
 
 const driveSchema = z.object({ id: platformVolumeIdSchema, name: z.string(), createdAt: z.string() })
 const grantSchema = z.object({
@@ -109,13 +110,10 @@ async function listDrives(auth: Attribution): Promise<z.infer<typeof driveSchema
   return (await platformRequest(auth, { op: 'list', method: 'GET', route: '' }, z.object({ volumes: z.array(driveSchema) }))).data.volumes
 }
 
-/** A saved definition names a drive of the member's org, created here when setup sent a name. Every
- * local check runs before the platform creates it, and nothing can fail here after it does. */
-export async function preparePlatformVolume(config: PlatformVolumeConfig): Promise<{ name: string; config: StoredPlatformVolumeConfig }> {
+/** A saved definition names a drive of the member's org, which the picker found or made. */
+export async function preparePlatformVolume(config: StoredPlatformVolumeConfig): Promise<{ name: string; config: StoredPlatformVolumeConfig }> {
   const auth = await actingMember()
-  const drive = 'name' in config
-    ? (await platformRequest(auth, { op: 'create', method: 'POST', route: '', body: { name: config.name } }, driveSchema)).data
-    : (await listDrives(auth)).find(item => item.id === config.volumeId)
+  const drive = (await listDrives(auth)).find(item => item.id === config.volumeId)
   if (!drive) throw new VolumeError('Gamut drive not found', 404)
   return { name: drive.name, config: { volumeId: drive.id } }
 }
@@ -224,6 +222,12 @@ export class PlatformMountableVolume extends S3StorageVolume<StoredPlatformVolum
   static readonly browseFolders = volumeFolderBrowser(z.object({}), async () => ({
     folders: (await listDrives(await actingMember())).map(drive => ({ id: drive.id, name: drive.name })),
   }))
+
+  // The name becomes the drive's folder in every agent: checked here, before the platform creates it.
+  static readonly createFolder = volumeFolderCreator(z.object({ name: volumeFolderNameSchema }), async ({ name }) => {
+    const drive = (await platformRequest(await actingMember(), { op: 'create', method: 'POST', route: '', body: { name } }, driveSchema)).data
+    return { folder: { id: drive.id, name: drive.name } }
+  })
 
   constructor(id: string, name: string, config: StoredPlatformVolumeConfig, agentSlug?: string) {
     super(id, name, config, () => platformAccess(config.volumeId, agentSlug), agentSlug)

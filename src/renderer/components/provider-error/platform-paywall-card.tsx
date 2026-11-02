@@ -121,6 +121,7 @@ function PaywallActions({
   // The embedded frame is showing a panel: give it the full row, Dismiss drops below it.
   expanded: boolean
   // Fill the column (the subscribe price block) instead of hugging the right edge.
+  // The column is narrow, so Dismiss drops below the CTA instead of squeezing it.
   stretch?: boolean
   dismissible: boolean
   embeddedAction: ReactNode
@@ -140,12 +141,12 @@ function PaywallActions({
   const brand = cta ? BRAND_CTAS.has(cta.kind) : false
   return (
     <div
-      className={cn('flex gap-2', expanded ? 'basis-full flex-col items-stretch' : stretch ? 'w-full items-stretch' : 'items-end')}
+      className={cn('flex gap-2', expanded ? 'basis-full flex-col items-stretch' : stretch ? 'w-full flex-col items-stretch' : 'items-end')}
       data-testid="paywall-actions"
       data-expanded={expanded}
     >
       {dismissible && (
-        <Button size="sm" variant="ghost" className={expanded ? 'order-last self-end' : undefined} onClick={() => onDismiss(ctaKind)}>
+        <Button size="sm" variant="ghost" className={expanded ? 'order-last self-end' : stretch ? 'order-last' : undefined} onClick={() => onDismiss(ctaKind)}>
           Dismiss
         </Button>
       )}

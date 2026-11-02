@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { ArrowUp, Loader2 } from 'lucide-react'
 import { cn } from '@shared/lib/utils/cn'
@@ -13,6 +14,10 @@ import { AgentRuntimeErrorView } from '@shared/lib/agent-runtime-errors/agent-ru
 import { useNewSessionComposer } from '@renderer/hooks/use-new-session-composer'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
 import type { ApiAgent } from '@renderer/hooks/use-agents'
+import type { ReferenceAttachment } from '@renderer/components/messages/attachment-preview'
+
+/** The card's exit (its `duration-200` in attachment-preview.tsx), and a frame to land. A timer, as reduced motion plays none. */
+const CARD_EXIT_MS = 200 + 50
 
 /**
  * Agent Home's composer on Team Brain's home page, for its agent: ask it
@@ -21,7 +26,12 @@ import type { ApiAgent } from '@renderer/hooks/use-agents'
  * dictation as Agent Home, in the session composer's glass (it floats over
  * the tree); Agent Home's voice-mode and expand buttons are left out.
  */
-export function TeamBrainHomeComposer({ agent }: { agent: ApiAgent }) {
+export function TeamBrainHomeComposer({ agent, reference, onDismissReference }: {
+  agent: ApiAgent
+  /** What is in focus on the page: sent with the message unless ✕ sets it aside. */
+  reference?: ReferenceAttachment | null
+  onDismissReference?: () => void
+}) {
   const navigate = useNavigate()
   const { data: runtimeStatus, isPending: isRuntimePending } = useRuntimeStatus()
   const isRuntimeReady = isRuntimePending || runtimeStatus?.runtimeReadiness?.status === 'READY'
@@ -29,12 +39,24 @@ export function TeamBrainHomeComposer({ agent }: { agent: ApiAgent }) {
   const { composer, composerOptions, createSession, isDisabled } = useNewSessionComposer({
     agentSlug: agent.slug,
     draftKey: `team-brain:${agent.slug}`,
+    references: reference ? [reference] : undefined,
     submitDisabled: !isRuntimeReady,
     agentRuntimeErrorsShownInline: true,
     onSessionCreated: ({ session }) => {
       void navigate({ to: '/agents/$slug/sessions/$sessionId', params: { slug: agent.displaySlug ?? agent.slug, sessionId: session.id } })
     },
   })
+
+  // One card at a time: what is in focus, or for its exit's length once nothing is, the one that was.
+  const [last, setLast] = useState(reference ?? null)
+  if (reference && reference.id !== last?.id) setLast(reference)
+  const referenceId = reference?.id
+  useEffect(() => {
+    if (referenceId || !last) return
+    const done = setTimeout(() => setLast(null), CARD_EXIT_MS)
+    return () => clearTimeout(done)
+  }, [referenceId, last])
+  const card = reference ?? (last && { ...last, leaving: true })
 
   const handleKeyDown = (event: KeyboardEvent) => {
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
@@ -58,8 +80,8 @@ export function TeamBrainHomeComposer({ agent }: { agent: ApiAgent }) {
         {...composer.dragHandlers}
       >
         <ChatComposerBox
-          attachments={composer.attachments}
-          onRemoveAttachment={composer.removeAttachment}
+          attachments={card ? [card, ...composer.attachments] : composer.attachments}
+          onRemoveAttachment={(id) => (id === reference?.id ? onDismissReference?.() : composer.removeAttachment(id))}
           onRetryAttachment={composer.retryAttachment}
           value={composer.message}
           onChange={composer.setMessage}

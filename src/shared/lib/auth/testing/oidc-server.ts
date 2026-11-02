@@ -43,6 +43,7 @@ export async function createOidcTestServer() {
       sub: 'sub_member_one', name: 'Ada Lovelace', email: 'ada@example.com',
       email_verified: true, picture: 'https://example.com/first.png',
       'https://platform.skillfulagents.dev/claims/org_id': 'org_oidc_test',
+      'https://platform.skillfulagents.dev/claims/role': 'member',
     } as JWTPayload,
     authorizations: [] as Authorization[],
     tokenExchanges: [] as z.infer<typeof tokenRequestSchema>[],
