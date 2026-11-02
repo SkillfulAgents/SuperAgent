@@ -24,6 +24,14 @@ interface InsetCorner {
   radius: number
   /** A CSS `corner-shape`; round when absent. */
   shape?: string
+  /**
+   * The round radius the canvas clips its content to; `radius` when absent.
+   * Clipping the window's content to a superellipse made Chromium blank whole
+   * regions of it for single frames, so a shaped canvas draws its background
+   * and shadow with the shape and clips its content to the circle that shares
+   * the shape's apex, which stays within half a pixel of it.
+   */
+  clipRadius?: number
 }
 
 function pickCornerForOS(): InsetCorner {
@@ -36,9 +44,11 @@ function pickCornerForOS(): InsetCorner {
   if (platform === 'darwin') {
     // macOS 26 (Tahoe) ships noticeably larger window corners than 15 (Sequoia) and earlier.
     if (Number.isFinite(major) && major >= 26) {
+      const circularRadius = TAHOE_WINDOW_RADIUS_PX - INSET_GAP_PX
       return {
-        radius: Math.round((TAHOE_WINDOW_RADIUS_PX - INSET_GAP_PX) * TAHOE_CONTINUOUS_SPREAD),
+        radius: Math.round(circularRadius * TAHOE_CONTINUOUS_SPREAD),
         shape: TAHOE_CORNER_SHAPE,
+        clipRadius: circularRadius,
       }
     }
     return { radius: 7 }
@@ -57,8 +67,9 @@ function pickCornerForOS(): InsetCorner {
 }
 
 /**
- * Sets the `--inset-radius` and `--inset-corner-shape` CSS variables on
- * `<html>` to a corner that nests cleanly inside the OS window's outer corner.
+ * Sets the `--inset-radius`, `--inset-corner-shape` and `--inset-clip-radius`
+ * CSS variables on `<html>` to a corner that nests cleanly inside the OS
+ * window's outer corner.
  * Falls back to a sensible round default in browsers, fullscreen, and
  * maximized states (where there's no outer rounded corner to match).
  */
@@ -78,8 +89,10 @@ export function useInsetRadius(): void {
   }, [])
 
   useEffect(() => {
-    const { radius, shape = 'round' } = isFullScreen || isMaximized ? { radius: FALLBACK_RADIUS_PX } : pickCornerForOS()
+    const corner: InsetCorner = isFullScreen || isMaximized ? { radius: FALLBACK_RADIUS_PX } : pickCornerForOS()
+    const { radius, shape = 'round', clipRadius = radius } = corner
     document.documentElement.style.setProperty('--inset-radius', `${radius}px`)
     document.documentElement.style.setProperty('--inset-corner-shape', shape)
+    document.documentElement.style.setProperty('--inset-clip-radius', `${clipRadius}px`)
   }, [isFullScreen, isMaximized])
 }

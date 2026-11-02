@@ -528,7 +528,7 @@ function AgentHealthCarousel({
 
 /**
  * Small-card title meta as a ticker: a single line that continuously scrolls
- * "Last run X · {N} new notifications" (orange needs-input dot wins over blue
+ * "Last active X · {N} new notifications" (orange needs-input dot wins over blue
  * unread), looping seamlessly via a duplicated run.
  */
 function TickerTitleMeta({
@@ -585,7 +585,7 @@ function AgentCard({
   health?: HomeCardHealthData
 }) {
   useRenderTracker('AgentCard')
-  const lastRun = formatLastRun(agent.lastActivityAt) ?? 'Last run never'
+  const lastRun = formatLastRun(agent.lastActivityAt) ?? 'Never active'
 
   const isSmall = size === 'S'
 
