@@ -59,6 +59,11 @@ async function issuerKeys(issuer: string): Promise<IssuerKeys> {
   }
 }
 
+/** jose's cache once it holds a key set (it starts as `{}`). */
+function holdsKeys(cache: JWKSCacheInput): cache is ExportedJWKSCache {
+  return 'uat' in cache
+}
+
 function keysForIssuer(issuer: string): Promise<IssuerKeys> {
   let keys = jwksByIssuer.get(issuer)
   if (!keys) {
@@ -96,12 +101,12 @@ export async function verifyOidcJwt(
     })
   if (injectedJwksResolver) return verify(injectedJwksResolver)
   const { resolver, stored } = await keysForIssuer(options.issuer)
-  const fetchedAt = stored && 'uat' in stored ? stored.uat : undefined
+  const fetchedAt = stored && holdsKeys(stored) ? stored.uat : undefined
   try {
     return await verify(resolver)
   } finally {
     // jose updated its cache in place when it fetched the key set: keep the new one.
-    if (jwksStore && stored && 'uat' in stored && stored.uat !== fetchedAt) {
+    if (jwksStore && stored && holdsKeys(stored) && stored.uat !== fetchedAt) {
       await jwksStore.store.put(options.issuer, stored).catch((error) => {
         console.warn('[oidc-jwt] Failed to store the issuer key set:', error)
       })
