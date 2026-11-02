@@ -53,7 +53,6 @@ const HEALTH_CHECK_INTERVAL_MS = parseInt(
 
 export class ContainerHost {
   readonly statusSyncIntervalMs = STATUS_SYNC_INTERVAL_MS
-  readonly healthCheckIntervalMs = HEALTH_CHECK_INTERVAL_MS
   private runtimes: Map<string, ContainerRuntime> = new Map()
   private syncIntervalId: NodeJS.Timeout | null = null
   private isSyncing = false
@@ -329,7 +328,7 @@ export class ContainerHost {
   /**
    * Run health checks on all running containers.
    */
-  async runHealthChecks(): Promise<void> {
+  private async runHealthChecks(): Promise<void> {
     const runningIds = this.getRunningAgentIds()
     if (runningIds.length === 0) return
 
