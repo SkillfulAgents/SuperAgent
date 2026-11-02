@@ -377,6 +377,41 @@ describe('start', () => {
     expect(await sessionService.readAgentSlashCommands(store())).toEqual([{ name: 'deploy', description: 'Ship it', argumentHint: '' }])
   })
 
+  it('adds only a small entry per scheduled run, however large the agent\'s commands and prompt', async () => {
+    // A real agent with many commands, as every run's create reports them.
+    const commands = Array.from({ length: 100 }, (_, i) => ({
+      name: `command-${i}`, description: `Runs step ${i} of the store report. `.repeat(5), argumentHint: '[order id]',
+    }))
+    let created = 0
+    vi.mocked(client.createSession).mockImplementation(async () => ({
+      id: `run-${++created}`, createdAt: '', lastActivity: '', workingDirectory: '/workspace', slashCommands: commands,
+    }) as never)
+    const prompt = 'Check every open Shopify order and post the slow ones to Slack. '.repeat(80)
+    const runs = 50
+    const size = async () => JSON.stringify(await sessionService.readSessionMetadata(store())).length
+    expect(JSON.stringify(commands).length + prompt.length).toBeGreaterThan(20_000)
+
+    const before = await size()
+    for (let i = 0; i < runs; i++) {
+      const { id } = await delivery().start({
+        create: { initialMessage: prompt, metadata: { isAutomated: true } },
+        name: 'Slow orders check',
+        metadata: {
+          isScheduledExecution: true,
+          scheduledTaskId: 'c8079246-0ed8-4743-80f6-0b9794e9ccb1',
+          scheduledTaskName: 'Slow orders check',
+          scheduledExecutionAt: new Date(Date.UTC(2026, 9, 27, 19, 2 * i)).toISOString(),
+          automationStatus: 'running',
+        },
+      })
+      await sessionService.finalizeAutomationStatus(store(), id, 'succeeded')
+    }
+
+    // One file holds every session, and each write rewrites all of it: an
+    // agent-wide copy per run grows it by tens of MB within days.
+    expect((await size() - before) / runs).toBeLessThan(1024)
+  })
+
   it('still starts the session when the agent copy cannot be stored', async () => {
     vi.spyOn(service, 'storeAgentSlashCommands').mockRejectedValueOnce(new Error('disk full'))
 

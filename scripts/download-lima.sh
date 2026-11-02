@@ -9,7 +9,13 @@
 # in a Linux job and points LIMA_IMAGE_DIR at its output, since its macOS
 # runners have no Docker.
 #
-# Usage: [LIMA_IMAGE_DIR=dir] ./scripts/download-lima.sh [arm64|x86_64]
+# The Mac App Store build sets LIMACTL_FROM_SOURCE=1 (`npm run download:lima:mas`):
+# its limactl is built from the release's source by build-limactl.sh, without
+# the private Virtualization.framework class App Review rejects the release
+# binary for (https://github.com/lima-vm/lima/issues/5705). The guest agent is
+# the release's either way.
+#
+# Usage: [LIMA_IMAGE_DIR=dir] [LIMACTL_FROM_SOURCE=1] ./scripts/download-lima.sh [arm64|x86_64]
 #
 # Output:
 #   build/lima/bin/limactl                              - Lima CLI binary
@@ -75,6 +81,10 @@ fi
 tar -xzf "$TMPFILE" -C "$OUTPUT_DIR" --strip-components=0 \
   bin/limactl \
   "share/lima/lima-guestagent.Linux-${GUEST_ARCH}.gz"
+
+if [ "${LIMACTL_FROM_SOURCE:-}" = 1 ]; then
+  bash "$(dirname "$0")/build-limactl.sh" "$LIMACTL"
+fi
 
 if [ -x "$LIMACTL" ]; then
   echo "  limactl: $(du -h "$LIMACTL" | cut -f1)"

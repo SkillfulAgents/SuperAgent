@@ -26,7 +26,11 @@ function loadConfig(env: Record<string, string | undefined> = {}): MasConfig {
   return require(CONFIG) as MasConfig
 }
 
-const regular = require('../../package.json') as { version: string; build: { appId: string; mac: { extraResources: Resource[]; extendInfo: Record<string, unknown> } } }
+const regular = require('../../package.json') as {
+  version: string
+  scripts: Record<string, string>
+  build: { appId: string; mac: { extraResources: Resource[]; extendInfo: Record<string, unknown> } }
+}
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -40,6 +44,17 @@ describe('the Mac App Store build config', () => {
     expect(shipped).toEqual(
       regular.build.mac.extraResources.map((resource) => resource.to).filter((to) => to !== 'mediaremote-adapter' && to !== 'spotlight-bridge'),
     )
+  })
+
+  it('builds limactl from source for the Store build only', () => {
+    // Lima's release limactl references a private Virtualization.framework
+    // class App Review rejects (scripts/build-limactl.sh); the direct build
+    // keeps shipping it.
+    expect(regular.scripts['download:lima:mas']).toBe('LIMACTL_FROM_SOURCE=1 bash scripts/download-lima.sh')
+    expect(regular.scripts['dist:mas']).toContain(' npm:download:lima:mas ')
+    expect(regular.scripts['dist:mas-dev']).toContain(' npm:download:lima:mas ')
+    expect(regular.scripts['dist:mac']).toContain(' npm:download:lima ')
+    expect(regular.scripts['dist:mac']).not.toContain('download:lima:mas')
   })
 
   it('leaves out computer use’s native binary', () => {

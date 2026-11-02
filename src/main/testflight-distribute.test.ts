@@ -40,6 +40,11 @@ const groups = ok({
 })
 const betaDetail = (externalBuildState: string, internalBuildState = 'READY_FOR_BETA_TESTING') =>
   ok({ data: { id: 'build-1', attributes: { internalBuildState, externalBuildState } } })
+/** The build's version, and the builds of it in Beta App Review. */
+const reviewRoutes = (...inReview: { id: string; attributes: { version: string } }[]) => ({
+  'GET /v1/builds/build-1/preReleaseVersion': ok({ data: { id: 'train-1', attributes: { version: '0.6.0' } } }),
+  'GET /v1/builds': ok({ data: inReview }),
+})
 
 const wait = (client: Client, timeoutMs = 60_000) => {
   let clock = 0
@@ -98,6 +103,7 @@ describe('distributeBuild', () => {
     const { client, calls } = fakeApi({
       'GET /v1/apps/6801340586/betaGroups': groups,
       'GET /v1/builds/build-1/buildBetaDetail': betaDetail('READY_FOR_BETA_SUBMISSION'),
+      ...reviewRoutes(),
       'POST /v1/betaGroups/team/relationships/builds': ok(),
       'POST /v1/betaGroups/beta/relationships/builds': ok(),
       'POST /v1/betaAppReviewSubmissions': () => ({ status: 201, json: { data: { id: 'submission' } } }),
@@ -122,6 +128,21 @@ describe('distributeBuild', () => {
     })
     await distribute(client)
     expect(calls.map((c) => c.route)).not.toContain('POST /v1/betaAppReviewSubmissions')
+  })
+
+  it('warns instead of submitting while another build of the version is in review', async () => {
+    const lines: string[] = []
+    const { client, calls } = fakeApi({
+      'GET /v1/apps/6801340586/betaGroups': groups,
+      'GET /v1/builds/build-1/buildBetaDetail': betaDetail('READY_FOR_BETA_SUBMISSION'),
+      ...reviewRoutes({ id: 'build-0', attributes: { version: '411.1' } }),
+      'POST /v1/betaGroups/team/relationships/builds': ok(),
+      'POST /v1/betaGroups/beta/relationships/builds': ok(),
+    })
+    await distributeBuild(client, { appId: '6801340586', buildId: 'build-1', groups: ['Team', 'Beta'], log: (line) => lines.push(line) })
+    expect(calls.map((c) => c.route)).toContain('POST /v1/betaGroups/beta/relationships/builds')
+    expect(calls.map((c) => c.route)).not.toContain('POST /v1/betaAppReviewSubmissions')
+    expect(lines.at(-1)).toMatch(/^::warning title=Not submitted for Beta App Review::Build 411\.1 of this version is in review/)
   })
 
   it('submits nothing for internal groups only', async () => {

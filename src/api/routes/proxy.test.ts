@@ -100,6 +100,7 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
     withdraw: vi.fn(),
     resume: (...args: unknown[]) => mockResumeReview(...args),
     settle: (slug: string, id: string, decision: string) => mockSettleReview(slug, id, decision),
+    takeDenyReason: vi.fn(),
   },
 }))
 

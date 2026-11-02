@@ -4,6 +4,26 @@ import { render } from '@testing-library/react'
 import { DrawerShell, slideOverWidth } from './drawer-shell'
 
 describe('DrawerShell', () => {
+  it('draws narrow at its minimum width and keeps the saved width for after', () => {
+    localStorage.setItem('test-tray-width-narrow', '600')
+    const { container, rerender } = render(
+      <DrawerShell isOpen storageKey="test-tray-width-narrow" narrow>
+        <div>Preview</div>
+      </DrawerShell>,
+    )
+
+    const shell = container.firstElementChild as HTMLElement
+    expect(shell.style.width).toBe('320px')
+    expect(localStorage.getItem('test-tray-width-narrow')).toBe('600')
+
+    rerender(
+      <DrawerShell isOpen storageKey="test-tray-width-narrow">
+        <div>Preview</div>
+      </DrawerShell>,
+    )
+    expect(shell.style.width).toBe('600px')
+  })
+
   it('marks the drawer for a full-width overlay only at the responsive breakpoint', () => {
     const { container } = render(
       <DrawerShell isOpen storageKey="test-tray-width" responsiveFullWidth>

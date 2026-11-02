@@ -5,6 +5,8 @@
 //
 // Plain HTTPS and no Docker: CI's macOS runners have neither a Docker daemon
 // nor a VM to run one in. Every blob is checked against its digest and size.
+// The gzip layers are recompressed as zstd (scripts/lib/zstd-layers.ts), which
+// needs Node 22.15 or later; the image config, and so the image ID, is unchanged.
 //
 // Usage: tsx scripts/fetch-agent-image.ts <out-dir> [arch: arm64|amd64] [image]
 //   arch defaults to this machine's (like download-lima.sh), image to the one
@@ -40,6 +42,7 @@ import {
   bundledAgentImageSchema,
   type BundledAgentImage,
 } from '../src/shared/lib/container/bundled-agent-image-schema'
+import { GZIP_LAYER, recompressLayer, withRecompressedLayers, zstdAvailable } from './lib/zstd-layers'
 import { agentImageForVersion } from '../src/shared/lib/config/version'
 import pkg from '../package.json'
 
@@ -128,6 +131,30 @@ async function downloadBlob(registry: Registry, descriptor: Descriptor, file: st
   }
 }
 
+/**
+ * Recompress the manifest's gzip layers as zstd, biggest first and four at a
+ * time, each into `blobDir` under its new digest. Keyed by the old digest.
+ */
+async function recompressGzipLayers(manifest: ImageManifest, diffIds: string[], blobDir: string): Promise<Map<string, Descriptor>> {
+  if (diffIds.length !== manifest.layers.length) {
+    throw new Error(`The image config lists ${diffIds.length} layers, the manifest ${manifest.layers.length}`)
+  }
+  const queue = [...new Map(manifest.layers.map((layer, i) => [layer.digest, { layer, diffId: diffIds[i] }])).values()]
+    .filter(({ layer }) => layer.mediaType === GZIP_LAYER)
+    .sort((a, b) => b.layer.size - a.layer.size)
+  const recompressed = new Map<string, Descriptor>()
+  await Promise.all(Array.from({ length: 4 }, async () => {
+    for (let next = queue.shift(); next; next = queue.shift()) {
+      const source = path.join(blobDir, next.layer.digest.slice(7))
+      const partial = `${source}.zst`
+      const layer = await recompressLayer(source, partial, next.layer, next.diffId)
+      fs.renameSync(partial, path.join(blobDir, layer.digest.slice(7)))
+      recompressed.set(next.layer.digest, layer)
+    }
+  }))
+  return recompressed
+}
+
 async function writeEntry(out: fs.WriteStream, name: string, size: number, body: Buffer | string | null): Promise<void> {
   const write = async (chunk: Buffer) => {
     if (!out.write(chunk)) await once(out, 'drain')
@@ -184,13 +211,27 @@ async function main(): Promise<void> {
     }
   }))
 
+  let recompressed = new Map<string, Descriptor>()
+  if (zstdAvailable()) {
+    const config = JSON.parse(fs.readFileSync(path.join(blobDir, manifest.config.digest.slice(7)), 'utf8')) as { rootfs?: { diff_ids?: string[] } }
+    recompressed = await recompressGzipLayers(manifest, config.rootfs?.diff_ids ?? [], blobDir)
+  } else if (required) {
+    throw new Error(`Node ${process.version} has no zstd (22.15 and later do), and the bundled image must be zstd to keep the macOS update under 1 GiB`)
+  } else {
+    console.warn(`WARNING: Node ${process.version} has no zstd (22.15 and later do), so the bundled image keeps its gzip layers.`)
+  }
+  const archived = withRecompressedLayers(manifest, recompressed)
+  const archivedBody = recompressed.size > 0 ? Buffer.from(JSON.stringify(archived)) : manifestBody
+  const archivedManifest: Descriptor = { ...platformManifest, digest: sha256(archivedBody), size: archivedBody.length }
+  const archivedBlobs = [...new Map([...archived.layers, archived.config].map((d) => [d.digest, d])).values()]
+
   const archive = path.join(outDir, BUNDLED_AGENT_IMAGE_ARCHIVE)
   const partial = `${archive}.partial`
   const out = fs.createWriteStream(partial)
   for (const dir of ['blobs/', 'blobs/sha256/']) await writeEntry(out, dir, 0, null)
-  for (const blob of blobs) await writeEntry(out, blobPath(blob.digest), blob.size, path.join(blobDir, blob.digest.slice(7)))
-  await writeEntry(out, blobPath(platformManifest.digest), manifestBody.length, manifestBody)
-  for (const file of layoutMetadata(image, platformManifest, manifest)) await writeEntry(out, file.name, file.body.length, file.body)
+  for (const blob of archivedBlobs) await writeEntry(out, blobPath(blob.digest), blob.size, path.join(blobDir, blob.digest.slice(7)))
+  await writeEntry(out, blobPath(archivedManifest.digest), archivedBody.length, archivedBody)
+  for (const file of layoutMetadata(image, archivedManifest, archived)) await writeEntry(out, file.name, file.body.length, file.body)
   out.end(TAR_END)
   await once(out, 'finish')
   fs.renameSync(partial, archive)
@@ -204,7 +245,7 @@ async function main(): Promise<void> {
   })
   // Written last: a description means a whole archive.
   fs.writeFileSync(path.join(outDir, BUNDLED_AGENT_IMAGE_MANIFEST), JSON.stringify(description, null, 2) + '\n')
-  console.log(`  agent-image: ${image} (${arch}), ${manifest.layers.length} layers, ${(description.archiveBytes / 1048576).toFixed(1)} MiB`)
+  console.log(`  agent-image: ${image} (${arch}), ${manifest.layers.length} layers (${recompressed.size} recompressed as zstd), ${(description.archiveBytes / 1048576).toFixed(1)} MiB`)
 }
 
 main().catch((error) => {

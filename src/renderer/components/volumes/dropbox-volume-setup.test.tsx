@@ -128,3 +128,12 @@ describe('Dropbox volume creation', () => {
     expect(screen.getByLabelText('Name', { exact: true })).toHaveValue('My shared files')
   })
 })
+
+it('offers no New folder, since Dropbox does not create folders here', async () => {
+  await setup()
+  await userEvent.click(screen.getByRole('radio', { name: 'Work Dropbox' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Next' }))
+  await userEvent.click(screen.getByRole('button', { name: /^Select folder location/ }))
+  await screen.findByText('No folders in Dropbox')
+  expect(screen.queryByRole('button', { name: 'New folder' })).not.toBeInTheDocument()
+})

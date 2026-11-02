@@ -228,4 +228,33 @@ describe('AuthPage', () => {
     expect(screen.queryByTestId('auth-tab-signup')).not.toBeInTheDocument()
     expect(screen.queryByTestId('signup-submit')).not.toBeInTheDocument()
   })
+
+  it.each([
+    ['offers sign-up to the first user while signups are closed', true, true],
+    ['offers no sign-up when the server keeps it closed even without users (platform-controlled)', false, false],
+    ['falls back to the user count when the server predates the flag', undefined, true],
+  ])('%s', async (_label, firstUserSignupOpen, offered) => {
+    apiFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        signupMode: 'closed',
+        allowLocalAuth: true,
+        allowSocialAuth: false,
+        providers: [],
+        passwordMinLength: 8,
+        passwordRequireComplexity: false,
+        requireAdminApproval: false,
+        hasUsers: false,
+        ...(firstUserSignupOpen === undefined ? {} : { firstUserSignupOpen }),
+      }),
+    })
+
+    render(<AuthPage />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('signin-submit')).toBeInTheDocument()
+    })
+    if (offered) expect(screen.getByTestId('auth-tab-signup')).toBeInTheDocument()
+    else expect(screen.queryByTestId('auth-tab-signup')).not.toBeInTheDocument()
+  })
 })

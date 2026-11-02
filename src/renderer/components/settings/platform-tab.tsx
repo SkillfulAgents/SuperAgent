@@ -105,13 +105,13 @@ function PlatformBillingCard({
 }: {
   platformBaseUrl?: string | null
   orgId?: string | null
-  /** The member's org role; only owners and admins can change the plan. Unknown = offer it. */
+  /** The member's org role; the platform's billing tab is owner/admin only. Unknown = offer it. */
   role?: string | null
 }) {
   const { data, isLoading, isFetching, error, refetch } = useBillingInfo(true)
   const billing = data?.billing
   const openPlanUpgrade = usePlatformPlanUpgrade()
-  const canChangePlan = role == null || isPlatformOrgAdmin(role)
+  const canManageBilling = role == null || isPlatformOrgAdmin(role)
 
   async function handleManageBilling() {
     if (!platformBaseUrl || !orgId) return
@@ -146,14 +146,18 @@ function PlatformBillingCard({
             name="Subscription"
             subtitle="No billing set up for this organization"
             right={
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => void handleManageBilling()}
-                disabled={!platformBaseUrl || !orgId}
-              >
-                Set up
-              </Button>
+              canManageBilling ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void handleManageBilling()}
+                  disabled={!platformBaseUrl || !orgId}
+                >
+                  Set up
+                </Button>
+              ) : (
+                <span className={VALUE_CLASS} data-testid="billing-ask-admin">Ask a workspace owner or admin</span>
+              )
             }
           />
         ) : billing ? (
@@ -165,7 +169,7 @@ function PlatformBillingCard({
                 right={
                   <>
                     <span className={VALUE_CLASS} data-testid="billing-plan-name">{planLabel(billing, billing.plan)}</span>
-                    {canChangePlan && (
+                    {canManageBilling && (
                       <Button size="sm" variant="outline" onClick={() => openPlanUpgrade()} data-testid="billing-change-plan">
                         Change plan
                       </Button>
@@ -200,21 +204,23 @@ function PlatformBillingCard({
               }
               right={<span className={VALUE_CLASS}>{formatCents(billing.orgPool.poolBalanceCents)}</span>}
             />
-            <SettingRow
-              name="Manage billing on the web"
-              right={
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="group gap-0"
-                  onClick={() => void handleManageBilling()}
-                  disabled={!platformBaseUrl || !orgId}
-                >
-                  Manage
-                  <HoverArrow />
-                </Button>
-              }
-            />
+            {canManageBilling && (
+              <SettingRow
+                name="Manage billing on the web"
+                right={
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="group gap-0"
+                    onClick={() => void handleManageBilling()}
+                    disabled={!platformBaseUrl || !orgId}
+                  >
+                    Manage
+                    <HoverArrow />
+                  </Button>
+                }
+              />
+            )}
           </>
         ) : (
           <div className="py-6 px-4 text-xs text-muted-foreground">Billing information is unavailable.</div>

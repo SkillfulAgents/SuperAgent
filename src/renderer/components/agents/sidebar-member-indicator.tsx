@@ -9,17 +9,24 @@ import { Button } from '@renderer/components/ui/button'
 import { UserAvatar } from '@renderer/components/ui/user-avatar'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
 
-const AVATAR_SIZE = 16
-const OVERFLOW_SIZE = 17
+const AVATAR_SIZE = 18
+const OVERFLOW_SIZE = 19
+
+// Each circle overlaps the one before it by 8px (-ml-2). Rather than a ring in
+// the sidebar colour, which had to track the row's hover and selected fills,
+// the circle underneath has a 1px gap cut out around the next one, so the row
+// shows through. Centred on the next circle: it starts 10px in.
+const CUTOUT_BEFORE_FACE = '[mask-image:radial-gradient(circle_at_19px_50%,transparent_9.5px,#000_10px)]'
+const CUTOUT_BEFORE_OVERFLOW = '[mask-image:radial-gradient(circle_at_19.5px_50%,transparent_10px,#000_10.5px)]'
 
 /** A compact member stack with roster and invite access, independent of navigation. */
-export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxFaces = 4, selected = false }: {
+export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxFaces = 4, className }: {
   agentSlug: string
   agentName: string
   memberCount: number
   /** Total circle limit, including the overflow circle when needed. */
   maxFaces?: number
-  selected?: boolean
+  className?: string
 }) {
   const { data: members, isLoading, isError, refetch } = useAgentMembers(agentSlug, memberCount > 1)
   const isMobile = useIsMobile()
@@ -34,7 +41,6 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
   const circleLimit = Math.max(1, maxFaces)
   const faces = members?.slice(0, count > circleLimit ? circleLimit - 1 : circleLimit) ?? []
   const remaining = count - faces.length
-  const ringColor = selected ? 'ring-sidebar-accent' : 'ring-sidebar'
 
   function clearTimer() {
     if (timer.current !== null) clearTimeout(timer.current)
@@ -63,7 +69,7 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
         <button
           ref={triggerRef}
           type="button"
-          className="relative z-10 inline-flex h-7 shrink-0 items-center justify-center rounded-md outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+          className={cn('relative z-10 inline-flex h-6 shrink-0 items-center justify-center rounded outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring', className)}
           aria-label={`${count} members of ${agentName}`}
           data-testid={`sidebar-members-${agentSlug}`}
           onPointerDown={event => event.stopPropagation()}
@@ -93,14 +99,27 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
           }}
         >
           <span aria-hidden="true" className="pointer-events-none flex items-center pl-0.5 pr-1">
-            {faces.map(member => (
-              <UserAvatar key={member.id} user={member} size={AVATAR_SIZE} className={cn('-ml-1 first:ml-0 ring-1', ringColor)} />
+            {faces.map((member, i) => (
+              <UserAvatar
+                key={member.id}
+                user={member}
+                size={AVATAR_SIZE}
+                className={cn(
+                  '-ml-2 first:ml-0',
+                  i < faces.length - 1 ? CUTOUT_BEFORE_FACE : remaining > 0 && CUTOUT_BEFORE_OVERFLOW,
+                )}
+              />
             ))}
+            {/* When the faces don't fit, the last circle gives the whole
+                team's size rather than how many are hidden. It stretches into
+                a pill past two digits, keeping its round left end under the
+                cut-out. */}
             {remaining > 0 && (
               <span
-                className={cn('relative -ml-1 first:ml-0 inline-flex shrink-0 items-center justify-center rounded-full bg-[color-mix(in_srgb,hsl(var(--sidebar-foreground))_15%,hsl(var(--sidebar-background)))] text-[8px] font-medium leading-none tabular-nums text-sidebar-foreground ring-1', ringColor)}
-                style={{ width: OVERFLOW_SIZE, height: OVERFLOW_SIZE }}
-              >+{remaining}</span>
+                className="relative -ml-2 first:ml-0 inline-flex shrink-0 items-center justify-center rounded-full bg-[color-mix(in_srgb,hsl(var(--sidebar-foreground))_15%,hsl(var(--sidebar-background)))] px-[3px] text-[8px] font-medium leading-none tabular-nums text-sidebar-foreground"
+                style={{ minWidth: OVERFLOW_SIZE, height: OVERFLOW_SIZE }}
+                data-testid={`sidebar-members-count-${agentSlug}`}
+              >{count}</span>
             )}
           </span>
         </button>
@@ -119,9 +138,10 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
         onPointerEnter={clearTimer}
         onPointerLeave={leave}
       >
-        <div className="flex items-center justify-between gap-2 px-2 py-1.5">
-          <p className="text-xs font-medium">{count} members</p>
-          {canInvite && (
+        {/* No "N members" title: the list says it. Invite, for those who can,
+            sits at the top right. */}
+        {canInvite && (
+          <div className="flex justify-end px-2 py-1.5">
             <AgentSharePopover
               agentSlug={agentSlug}
               agentName={agentName}
@@ -147,8 +167,8 @@ export function SidebarMemberIndicator({ agentSlug, agentName, memberCount, maxF
                 </Button>
               )}
             />
-          )}
-        </div>
+          </div>
+        )}
         {isLoading && <p role="status" className="px-2 py-3 text-xs text-muted-foreground">Loading members…</p>}
         {isError && <button type="button" onClick={() => void refetch()} className="m-2 rounded text-xs text-muted-foreground underline outline-none focus-visible:ring-2 focus-visible:ring-ring">Retry members</button>}
         {members && (

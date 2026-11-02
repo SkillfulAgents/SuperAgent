@@ -23,7 +23,7 @@ export const AUDIT_EVENT_MAP = {
   settings:         ['updated', 'factory_reset'],
   policy:           ['updated'],
   proxy_rule:       ['created', 'updated', 'deleted', 'approved', 'rejected'],
-  user:             ['invited', 'reset_password'],
+  user:             ['invited', 'reset_password', 'removed'],
   // Authentication events. Every path that mints a session records `created`
   // with a `method` detail — see auth/session-audit.ts. `revoked` currently
   // covers only explicit mobile-device revocation (auth/mobile-pairing.ts);
