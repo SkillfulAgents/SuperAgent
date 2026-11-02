@@ -98,6 +98,8 @@ export function useCreateSession(options: {
     mutationFn: async (data: {
       agentSlug: string
       message: string
+      // Names the session instead of generating a name from the message.
+      name?: string
       effort?: EffortLevel
       speed?: SpeedLevel
       llmProviderId?: string | null
@@ -115,6 +117,7 @@ export function useCreateSession(options: {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: data.message,
+          ...(data.name ? { name: data.name } : {}),
           ...(data.effort ? { effort: data.effort } : {}),
           ...(data.speed ? { speed: data.speed } : {}),
           ...(data.model ? { model: data.model } : {}),
@@ -210,6 +213,8 @@ export function useUpdateSessionName() {
       queryClient.invalidateQueries({
         queryKey: ['sessions', resolveAgentSlugFromCache(queryClient, variables.agentSlug)],
       })
+      // A started Todo card shows its session's name.
+      queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
     },
   })
 }

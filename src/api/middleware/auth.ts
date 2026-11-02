@@ -201,6 +201,15 @@ export async function getReadableAgentIds(c: Context, agentIds: readonly string[
   return new Set(rows.filter(row => hasMinRole(row.role, 'viewer')).map(row => row.agentSlug))
 }
 
+/** AgentUser's policy for an already-resolved ID. */
+export async function canUseAgent(c: Context, agentSlug: string): Promise<boolean> {
+  if (!isAuthMode()) return true
+  const user = getUser(c)
+  if (isAdmin(user)) return true
+  const role = await getUserAgentRole(user.id, agentSlug)
+  return !!role && hasMinRole(role, 'user')
+}
+
 /**
  * AgentRead — user has any role on the agent (viewer+).
  * Expects `:id` route param for the agent slug.

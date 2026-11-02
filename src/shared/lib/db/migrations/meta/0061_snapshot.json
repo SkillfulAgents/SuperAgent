@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "d3939467-b487-494b-88a4-d606df5463c5",
+  "id": "bc85a968-77ea-4695-99e9-144d15f49d8f",
   "prevId": "538f8653-cc88-4fe8-87fb-26de3f34d598",
   "tables": {
     "agent_acl": {
@@ -1954,19 +1954,20 @@
         }
       },
       "indexes": {
-        "connected_accounts_provider_connection_id_unique": {
-          "name": "connected_accounts_provider_connection_id_unique",
-          "columns": [
-            "provider_connection_id"
-          ],
-          "isUnique": true
-        },
         "connected_accounts_userId_idx": {
           "name": "connected_accounts_userId_idx",
           "columns": [
             "user_id"
           ],
           "isUnique": false
+        },
+        "connected_accounts_provider_connection_unique": {
+          "name": "connected_accounts_provider_connection_unique",
+          "columns": [
+            "provider_name",
+            "provider_connection_id"
+          ],
+          "isUnique": true
         }
       },
       "foreignKeys": {
@@ -2010,44 +2011,6 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "host_state": {
-      "name": "host_state",
-      "columns": {
-        "key": {
-          "name": "key",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "value": {
-          "name": "value",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "version": {
-          "name": "version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
           "autoincrement": false
         }
       },
@@ -4315,21 +4278,7 @@
         }
       },
       "indexes": {},
-      "foreignKeys": {
-        "user_settings_user_id_user_id_fk": {
-          "name": "user_settings_user_id_user_id_fk",
-          "tableFrom": "user_settings",
-          "tableTo": "user",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}

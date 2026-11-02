@@ -27,7 +27,7 @@ export interface McpRuleAudit {
 
 export type McpAccessResult =
   | ({ ok: true; policyDecision: string } & McpRuleAudit)
-  | ({ ok: false; reason: 'blocked' | 'denied' | 'review_timeout' | 'rules_unavailable'; rules?: ReportedRule[] } & McpRuleAudit)
+  | ({ ok: false; reason: 'blocked' | 'denied' | 'review_timeout' | 'rules_unavailable'; rules?: ReportedRule[]; denyReason?: string } & McpRuleAudit)
 
 export type McpAuthorization =
   | { ok: true; accessToken: string | null }

@@ -235,7 +235,11 @@ function createSessionOps(
     isKnown: (sessionId) => deps.sessionService.sessionIsKnown(store, sessionId),
     isRegistered: (sessionId) => deps.sessionService.isSessionRegistered(store, sessionId),
     register: (...args) => deps.sessionService.registerSession(store, ...args),
-    rename: (sessionId, name) => deps.sessionService.updateSessionName(store, sessionId, name),
+    rename: async (sessionId, name) => {
+      await deps.sessionService.updateSessionName(store, sessionId, name)
+      live.emit(sessionId, { type: 'session_updated' })
+      deps.host.send('global', { type: 'session_updated', sessionId, agentSlug: slug })
+    },
     // The stream lets go first, so an append in flight cannot write the transcript again after it is gone.
     delete: (sessionId) => {
       live.unsubscribe(sessionId)
@@ -421,7 +425,7 @@ async function answerRequest(
 function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
   return {
     get: async (id) => deps.reviewManager.getPendingReviewsForAgent(slug).find((review) => review.id === id) ?? null,
-    submit: async (id, decision) => deps.reviewManager.submitDecision(slug, id, decision),
+    submit: async (id, decision, reason) => deps.reviewManager.submitDecision(slug, id, decision, reason),
     resolveMatching: async (scope, decision) => deps.reviewManager.resolveMatchingPending(slug, scope, decision),
     resolveMatchingByLabel: async (label, decision) =>
       deps.reviewManager.resolveMatchingPendingByLabel(slug, label, decision),
@@ -432,6 +436,7 @@ function createReviewOps(slug: AgentSlug, deps: LocalActorDeps): ReviewOps {
     withdraw: async (id) => deps.reviewManager.withdraw(slug, id),
     resume: (id) => deps.reviewManager.resume(slug, id),
     settle: (id, decision) => deps.reviewManager.settle(slug, id, decision),
+    takeDenyReason: (id) => deps.reviewManager.takeDenyReason(slug, id),
   }
 }
 

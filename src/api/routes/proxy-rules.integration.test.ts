@@ -48,6 +48,7 @@ vi.mock('@shared/lib/proxy/rules/author', () => ({
 }))
 
 import proxy from './proxy'
+import mcpProxy from './mcp-proxy'
 import xAgentRules, { _setProposalTimingForTest } from './x-agent-rules'
 import proxyRules from './proxy-rules'
 import { restateRule } from '@shared/lib/proxy/rules/author'
@@ -568,5 +569,36 @@ describe('rules in the app', () => {
     const rule = await userRule()
     expect((await app.request(`/api/proxy-rules/mcp/acct-gmail/${rule.rule.id}`, { method: 'DELETE' })).status).toBe(404)
     expect(await listRules({ kind: 'api', targetId: 'acct-gmail' })).toHaveLength(1)
+  })
+})
+
+describe('a deny with a reason', () => {
+  beforeEach(() => {
+    const now = new Date()
+    testDb.insert(schema.remoteMcpServers).values({
+      id: 'mcp-1', name: 'Docs MCP', url: 'https://mcp.example.com', createdAt: now, updatedAt: now,
+      toolsJson: JSON.stringify([{ name: 'search', inputSchema: { type: 'object' } }]),
+    }).run()
+    testDb.insert(schema.agentRemoteMcps).values({ id: 'agent-a-mcp', agentSlug: 'agent-a', remoteMcpId: 'mcp-1', createdAt: now }).run()
+    app.route('/api/mcp-proxy', mcpProxy)
+  })
+
+  const mcpCall = () => app.request('/api/mcp-proxy/agent-a/mcp-1', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer token-agent-a', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'search', arguments: {} } }),
+  })
+
+  it.each([
+    { proxy: 'API', call: () => proxySend('agent-a', 'To: a@acme.com\r\n\r\nhi') },
+    { proxy: 'MCP', call: mcpCall },
+  ])('the $proxy proxy tells the agent what the user typed, and a plain deny keeps its message', async ({ call }) => {
+    const denied = call()
+    await agentRegistry.get('agent-a').inputs.reviews.submit((await waitForReview('agent-a')).id, 'deny', 'Use the shared folder')
+    expect((await (await denied).json() as { message: string }).message).toBe('Request denied by user. They said: "Use the shared folder"')
+
+    const plain = call()
+    await agentRegistry.get('agent-a').inputs.reviews.submit((await waitForReview('agent-a')).id, 'deny')
+    expect((await (await plain).json() as { message: string }).message).toBe('Request denied by user.')
   })
 })

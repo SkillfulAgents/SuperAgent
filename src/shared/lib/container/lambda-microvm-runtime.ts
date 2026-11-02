@@ -55,6 +55,10 @@ const RESUME_RETRY_DELAY_MS = 400
 // handshake completes (a live stream is idle by design).
 const UPSTREAM_IDLE_TIMEOUT_MS = 30_000
 const ECS_METADATA_TIMEOUT_MS = 2_000
+// start() re-checks a RUNNING VM's /health before adopting it; a second try
+// keeps one slow reply from replacing a busy but live VM.
+const ADOPT_HEALTH_ATTEMPTS = 2
+const ADOPT_HEALTH_RETRY_DELAY_MS = 1_000
 // Quiet session streams through MicroVM ingress die at ~60s without traffic.
 export const MICROVM_STREAM_KEEPALIVE_MS = 25_000
 
@@ -989,8 +993,15 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     // PENDING-as-alive is for waitForHealthy. start() must not adopt a stuck
     // PENDING generation — replace it so the next Run can self-heal.
     if (info.status === 'running' && local?.lastObservedState !== 'PENDING') {
-      this.rememberRunningPort(info.port)
-      return info
+      // A frozen guest still reports RUNNING to the control plane; only /health
+      // tells it apart. Adopting it would make every restart reuse the dead VM.
+      if (await this.answersHealth(info.port)) {
+        this.rememberRunningPort(info.port)
+        return info
+      }
+      console.warn(
+        `[LambdaMicroVmRuntimeClient] MicroVM ${local?.microvmId} is RUNNING but fails /health, replacing it agent=${this.config.agentId}`,
+      )
     }
     if (agentStates.has(this.config.agentId)) {
       await this.teardown()
@@ -1072,6 +1083,15 @@ export class LambdaMicroVmRuntimeClient extends BaseContainerClient {
     }
 
     return { status: 'running', port: proxyPort }
+  }
+
+  private async answersHealth(port: number | null): Promise<boolean> {
+    if (port === null) return false
+    for (let attempt = 0; attempt < ADOPT_HEALTH_ATTEMPTS; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, ADOPT_HEALTH_RETRY_DELAY_MS))
+      if (await this.isHealthy(port)) return true
+    }
+    return false
   }
 
   // On connect-refused against a dead generation (lifetime-cap / stop race),
