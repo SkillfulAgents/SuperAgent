@@ -2,17 +2,8 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { hostFiles, setBlobStore, type BlobStore } from './blob-store'
-
-function memoryStore(): BlobStore & { keys(): string[] } {
-  const blobs = new Map<string, Uint8Array>()
-  return {
-    get: async (key) => blobs.get(key) ?? null,
-    put: async (key, bytes) => { blobs.set(key, bytes) },
-    delete: async (key) => { blobs.delete(key) },
-    keys: () => [...blobs.keys()],
-  }
-}
+import { hostFiles, setBlobStore } from './blob-store'
+import { memoryBlobStore as memoryStore } from './testing/memory-blob-store'
 
 describe('hostFiles', () => {
   let dir: string

@@ -2,22 +2,9 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { setBlobStore, type BlobStore } from '@shared/lib/blob-store/blob-store'
+import { setBlobStore } from '@shared/lib/blob-store/blob-store'
+import { memoryBlobStore as memoryStore } from '@shared/lib/blob-store/testing/memory-blob-store'
 import { deleteSkillsetCache, restoreSkillsetCache, saveSkillsetCache } from './skillset-cache-blob'
-
-function memoryStore(): BlobStore & { keys(): string[] } {
-  const blobs = new Map<string, Uint8Array>()
-  return {
-    get: async (key) => blobs.get(key) ?? null,
-    put: async (key, bytes) => {
-      blobs.set(key, bytes)
-    },
-    delete: async (key) => {
-      blobs.delete(key)
-    },
-    keys: () => [...blobs.keys()],
-  }
-}
 
 function skillsetDir(): string {
   const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'skillset-cache-')), 'platform--sales-playbooks')
