@@ -13,6 +13,10 @@ export interface BlobStore {
   put(key: string, bytes: Uint8Array): Promise<void>
   /** A missing key is a no-op. */
   delete(key: string): Promise<void>
+  /** Every key that starts with `prefix`, with its size in bytes. */
+  list(prefix: string): Promise<{ key: string; size: number }[]>
+  /** The bytes under `key` as a stream, or null when nothing is stored there. */
+  stream(key: string): Promise<ReadableStream<Uint8Array> | null>
 }
 
 let current: BlobStore | null = null

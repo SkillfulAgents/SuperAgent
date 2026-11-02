@@ -142,7 +142,7 @@ import type {
   UserInputRequestScope,
 } from '@shared/lib/tools/requests/request-schema'
 import { forkSession, type ForkSessionOpts } from '@shared/lib/services/session-fork-service'
-import { displaySlug, createJsonArrayStringifyTransform } from '@shared/lib/utils/file-storage'
+import { displaySlug, createJsonArrayStringifyTransform, getTempUploadsDir } from '@shared/lib/utils/file-storage'
 import {
   MAX_UPLOAD_TOTAL_SIZE,
   UploadTooLargeError,
@@ -291,6 +291,7 @@ import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
 import * as fs from 'fs'
 import { Readable, pipeline } from 'stream'
+import { pipeline as pipelinePromise } from 'stream/promises'
 import pLimit from 'p-limit'
 import * as path from 'path'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -1038,6 +1039,14 @@ function parseChunkFields(formData: FormData): ParsedChunkFields {
   return { ok: true, uploadId, chunkIndex, totalChunks }
 }
 
+/** Deletes an upload's chunks from the blob store; a failure leaves them for the store's own expiry. */
+async function discardStoredUpload(result: { discard(): Promise<void> }, agentSlug?: string): Promise<void> {
+  await result.discard().catch((err) => {
+    console.warn('[agents] failed to delete stored upload chunks:', err)
+    captureException(err, { tags: { component: 'agents', operation: 'discard-stored-upload' }, extra: { agentSlug } })
+  })
+}
+
 async function handleChunkedImport(c: Context, formData: FormData, chunk: File) {
   const parsed = parseChunkFields(formData)
   if (!parsed.ok) return c.json({ error: parsed.error }, 400)
@@ -1053,24 +1062,37 @@ async function handleChunkedImport(c: Context, formData: FormData, chunk: File) 
   if (result.status === 'received') {
     return c.json({ status: 'chunk_received', chunkIndex: parsed.chunkIndex })
   }
+  // The import reads a file: one in the blob store is written to this request's temp dir first.
+  let filePath: string
+  if (result.status === 'stored') {
+    filePath = path.join(getTempUploadsDir(), `${parsed.uploadId}.assembled`)
+    try {
+      await fs.promises.mkdir(getTempUploadsDir(), { recursive: true })
+      await pipelinePromise(Readable.fromWeb(result.stream as import('stream/web').ReadableStream), fs.createWriteStream(filePath))
+    } finally {
+      await discardStoredUpload(result)
+    }
+  } else {
+    filePath = result.filePath
+  }
 
   try {
-    const size = (await fs.promises.stat(result.filePath)).size
+    const size = (await fs.promises.stat(filePath)).size
     if (size > MAX_COMPRESSED_SIZE) {
       return c.json({ error: formatUploadTooLargeMessage(size, MAX_COMPRESSED_SIZE) }, 413)
     }
     // The assembled upload is already on disk — import straight from the file
     // instead of pinning the whole (up to 500MB) ZIP in memory.
-    return await processImport(c, { filePath: result.filePath }, formData)
+    return await processImport(c, { filePath: filePath }, formData)
   } finally {
     try {
-      await fs.promises.unlink(result.filePath)
+      await fs.promises.unlink(filePath)
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
         console.warn('[agents] failed to unlink assembled import upload:', err)
         captureException(err, {
           tags: { component: 'agents', operation: 'unlink-assembled-import' },
-          extra: { filePath: result.filePath },
+          extra: { filePath: filePath },
         })
       }
     }
@@ -6429,6 +6451,15 @@ async function handleChunkedFileUpload(c: Context, agentSlug: string, formData: 
 
   if (result.status === 'received') {
     return { pending: c.json({ status: 'chunk_received', chunkIndex: parsed.chunkIndex }) }
+  }
+  if (result.status === 'stored') {
+    try {
+      const uploadPath = resolveUploadDestPath(filename, relativePath || undefined)
+      await agentRegistry.get(agentSlug).files.write(uploadPath, result.stream)
+      return { pending: null, uploadResult: { success: true, path: `/workspace/${uploadPath}`, filename, size: result.size } }
+    } finally {
+      await discardStoredUpload(result, agentSlug)
+    }
   }
 
   try {
