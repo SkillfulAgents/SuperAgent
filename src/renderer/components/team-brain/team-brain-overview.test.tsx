@@ -121,19 +121,35 @@ const { user } = vi.hoisted(() => ({ user: { isAuthMode: false, isAdmin: false }
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => user }))
 vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl }))
 // Agent Home's composer needs the app's providers; here it only needs to be there, for the Team Brain agent.
-vi.mock('./team-brain-home-composer', () => ({ TeamBrainHomeComposer: ({ agent }: { agent: { slug: string } }) => <div data-testid="team-brain-composer">{agent.slug}</div> }))
+vi.mock('./team-brain-home-composer', async () => {
+  const { createPortal } = await import('react-dom')
+  return {
+    // With a menu of its own in a portal, as the composer's mention and model pickers are.
+    TeamBrainHomeComposer: ({ agent, reference, onDismissReference }: { agent: { slug: string }; reference?: { name: string } | null; onDismissReference?: () => void }) => (
+      <div data-testid="team-brain-composer">
+        {agent.slug}
+        <textarea aria-label="Message" />
+        <button type="button">Model</button>
+        {createPortal(<button type="button">Mention</button>, document.body)}
+        {reference && <button type="button" onClick={onDismissReference}>{reference.name}</button>}
+      </div>
+    ),
+  }
+})
 // The page mounts the app's file drawer, which reads the route; this page has no session.
 vi.mock('@renderer/router/use-route-location', () => ({ useRouteLocation: () => ({ view: { kind: 'none' } }) }))
 // The drawer itself needs the app shell; a probe lists the pages opened in it instead.
 vi.mock('@renderer/components/tray/tray-manager', async () => {
   const { useFilePreview } = await import('@renderer/context/file-preview-context')
   return {
-    TrayManager: () => {
-      const { openTabs, isOpen } = useFilePreview()
+    TrayManager: ({ narrowDrawer }: { narrowDrawer?: boolean }) => {
+      const { openTabs, isOpen, setActiveTab } = useFilePreview()
       return (
-        <ul data-testid="drawer-tabs" data-open={isOpen}>
-          {openTabs.map((tab) => (
-            <li key={tab.displayName}>{tab.kind === 'file' && tab.source ? `${tab.displayName} (own source)` : tab.displayName}</li>
+        <ul data-testid="drawer-tabs" data-open={isOpen} data-narrow={narrowDrawer || undefined}>
+          {openTabs.map((tab, i) => (
+            <li key={tab.displayName}>
+              <button type="button" onClick={() => setActiveTab(i)}>{tab.kind === 'file' && tab.source ? `${tab.displayName} (own source)` : tab.displayName}</button>
+            </li>
           ))}
         </ul>
       )
@@ -235,6 +251,103 @@ describe('TeamBrainOverview', () => {
     width.mockRestore()
   })
 
+  it('steps the drawer aside while the composer has focus, and back once the drawer is used', async () => {
+    const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(900)
+    render(<TeamBrainOverview agent={BRAIN} />)
+    const radial = screen.getByTestId('team-brain-radial')
+    await waitFor(() => expect(radial).not.toHaveAttribute('data-entering'), { timeout: 4000 })
+    const drawer = screen.getByTestId('drawer-tabs')
+    const composer = screen.getByRole('textbox', { name: 'Message' })
+
+    // Clicking into the composer keeps the page open and narrows its drawer, with room for it in the column.
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers/acme'))
+    // A press, or focus alone, leaves it: narrowing during a press would move the composer out from under the pointer.
+    fireEvent.pointerDown(composer)
+    act(() => composer.focus())
+    expect(drawer).not.toHaveAttribute('data-narrow')
+    // A click on one of the composer's buttons leaves it too, so a picker opens where it was pressed.
+    await userEvent.click(screen.getByRole('button', { name: 'Model' }))
+    expect(drawer).not.toHaveAttribute('data-narrow')
+    await userEvent.click(composer)
+    expect(drawer).toHaveAttribute('data-open', 'true')
+    expect(drawer).toHaveAttribute('data-narrow', 'true')
+    expect(screen.getByTestId('team-brain-column').className).toContain('[@container(min-width:768px)]:pr-[336px]')
+    // Picking from the composer's own menu is still typing, and leaving the composer does not widen it either.
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Mention' }))
+    expect(drawer).toHaveAttribute('data-narrow', 'true')
+    act(() => composer.blur())
+    expect(drawer).toHaveAttribute('data-narrow', 'true')
+    // Using the drawer brings its own width back, and so does opening another page.
+    await userEvent.click(drawer)
+    expect(drawer).not.toHaveAttribute('data-narrow')
+    // Typing narrows it too, for a person who tabbed into the composer.
+    fireEvent.input(composer, { target: { value: 'a' } })
+    expect(drawer).toHaveAttribute('data-narrow', 'true')
+    await userEvent.click(composer)
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers/hooli'))
+    expect(drawer).not.toHaveAttribute('data-narrow')
+    // A click off the page still puts it away, and the drawer is not left narrow for the next page.
+    await userEvent.click(composer)
+    expect(drawer).toHaveAttribute('data-narrow', 'true')
+    await userEvent.click(screen.getByRole('heading', { name: 'Sync summaries' }))
+    expect(drawer).toHaveAttribute('data-open', 'false')
+    expect(drawer).not.toHaveAttribute('data-narrow')
+    // With no page open, focusing the composer leaves the drawer as it is.
+    await userEvent.click(composer)
+    expect(drawer).not.toHaveAttribute('data-narrow')
+    // Settings floating over the page still close on a click in the composer.
+    setWide(false)
+    await userEvent.click(screen.getByTestId('team-brain-menu'))
+    await userEvent.click(composer)
+    expect(screen.getByTestId('team-brain-menu')).toHaveAttribute('aria-expanded', 'false')
+    width.mockRestore()
+  })
+
+  it('puts what is in focus in the composer, and a click off steps the drawer aside before it puts it away', async () => {
+    const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(900)
+    render(<TeamBrainOverview agent={BRAIN} />)
+    const radial = screen.getByTestId('team-brain-radial')
+    await waitFor(() => expect(radial).not.toHaveAttribute('data-entering'), { timeout: 4000 })
+    const drawer = screen.getByTestId('drawer-tabs')
+    const offPage = () => userEvent.click(screen.getByRole('heading', { name: 'Sync summaries' }))
+
+    // A page opened from the tree is the card. One click off steps the drawer aside and keeps it; a second puts both away.
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers/acme'))
+    expect(screen.getByRole('button', { name: 'Acme Corp.md' })).toBeInTheDocument()
+    await offPage()
+    expect(drawer).toHaveAttribute('data-open', 'true')
+    expect(drawer).toHaveAttribute('data-narrow', 'true')
+    expect(screen.getByRole('button', { name: 'Acme Corp.md' })).toBeInTheDocument()
+    await offPage()
+    expect(drawer).toHaveAttribute('data-open', 'false')
+    expect(screen.queryByRole('button', { name: 'Acme Corp.md' })).toBeNull()
+
+    // A folder chosen is the card. ✕ sets it aside until the folder is chosen again.
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers'))
+    await userEvent.click(screen.getByRole('button', { name: 'Customers' }))
+    expect(screen.queryByRole('button', { name: 'Customers' })).toBeNull()
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers'))
+    expect(screen.getByRole('button', { name: 'Customers' })).toBeInTheDocument()
+
+    // ✕ on a page sets it aside only while its tab is the one shown.
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers/acme'))
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers/hooli'))
+    await userEvent.click(screen.getByRole('button', { name: 'Hooli.md' }))
+    expect(screen.queryByRole('button', { name: 'Hooli.md' })).toBeNull()
+    await userEvent.click(within(drawer).getByText('Acme Corp.md (own source)'))
+    expect(screen.getByRole('button', { name: 'Acme Corp.md' })).toBeInTheDocument()
+    await userEvent.click(within(drawer).getByText('Hooli.md (own source)'))
+    expect(screen.getByRole('button', { name: 'Hooli.md' })).toBeInTheDocument()
+
+    // With a page open, choosing a folder puts the page away and the folder is the card.
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers/hooli'))
+    expect(screen.getByRole('button', { name: 'Hooli.md' })).toBeInTheDocument()
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-engineering'))
+    expect(drawer).toHaveAttribute('data-open', 'false')
+    expect(screen.getByRole('button', { name: 'Engineering' })).toBeInTheDocument()
+    width.mockRestore()
+  })
+
   it('under reduced motion, a folder clicked is drawn at its new turn, not left rotated with names on the old side', async () => {
     screenSize.reduced = true
     const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(900)
@@ -324,11 +437,13 @@ describe('TeamBrainOverview', () => {
     await userEvent.click(screen.getByTestId('team-brain-status'))
     expect(screen.getByTestId('team-brain-menu')).toHaveAttribute('aria-expanded', 'false')
     setWide(true)
-    // A click on the page behind the file drawer puts it away; one on a page swaps the file and keeps it open.
+    // A click on the page behind the file drawer steps it aside and a second puts it away; one on a page swaps the file and keeps it open.
     await userEvent.click(screen.getByTestId('team-brain-radial-node-readme'))
     await userEvent.click(screen.getByTestId('team-brain-sync-page-Customers/Acme Corp.md'))
     expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'true')
     expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('Acme Corp.md (own source)')
+    await userEvent.click(screen.getByRole('heading', { name: 'Sync summaries' }))
+    expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'true')
     await userEvent.click(screen.getByRole('heading', { name: 'Sync summaries' }))
     expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'false')
 
@@ -339,11 +454,38 @@ describe('TeamBrainOverview', () => {
     fireEvent.click(tree)
     expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'true')
     expect(screen.getByTestId('drawer-tabs')).toHaveTextContent('Hooli.md (own source)')
-    // A press on the background, though, is a click off the drawer.
-    fireEvent.pointerDown(tree, { button: 0, pointerId: 1 })
-    fireEvent.pointerUp(tree, { button: 0, pointerId: 1 })
-    fireEvent.click(tree)
+    // A press on the background, though, is a click off the drawer: the first steps it aside, the second puts it away.
+    const pressBackground = () => {
+      fireEvent.pointerDown(tree, { button: 0, pointerId: 1 })
+      fireEvent.pointerUp(tree, { button: 0, pointerId: 1 })
+      fireEvent.click(tree)
+    }
+    pressBackground()
+    expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'true')
+    pressBackground()
     expect(screen.getByTestId('drawer-tabs')).toHaveAttribute('data-open', 'false')
+  })
+
+  it('keeps the card and the tree on the same chosen folder when the tree comes back', async () => {
+    const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(900)
+    const page = render(<TeamBrainOverview agent={BRAIN} />)
+    let radial = screen.getByTestId('team-brain-radial')
+    await waitFor(() => expect(radial).not.toHaveAttribute('data-entering'), { timeout: 4000 })
+    await userEvent.click(within(radial).getByTestId('team-brain-radial-node-customers'))
+    expect(within(radial).getByTestId('team-brain-radial-node-customers')).toHaveAttribute('data-selected', 'true')
+    // The drive lists empty for a moment and the tree goes; the folder chosen on it is the page's, so it comes back with it.
+    const listed = drive.splice(0)
+    try {
+      page.rerender(<TeamBrainOverview agent={BRAIN} />)
+      expect(screen.queryByTestId('team-brain-radial')).toBeNull()
+    } finally {
+      drive.push(...listed)
+    }
+    page.rerender(<TeamBrainOverview agent={BRAIN} />)
+    radial = await screen.findByTestId('team-brain-radial', undefined, { timeout: 4000 })
+    expect(within(radial).getByTestId('team-brain-radial-node-customers')).toHaveAttribute('data-selected', 'true')
+    expect(screen.getByRole('button', { name: 'Customers' })).toBeInTheDocument()
+    width.mockRestore()
   })
 
   it('waits on the tree\'s middle while the drive lists, says what it is reading from, and lets that go before the tree', () => {

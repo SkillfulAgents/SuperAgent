@@ -756,6 +756,13 @@ describe('PlatformPaywallCard', () => {
       expect(screen.getByTestId('billing-cta-size-reference')).toHaveClass('invisible')
     })
 
+    it('stacks Dismiss under the subscribe CTA so the CTA keeps the full column width', async () => {
+      renderCard('API Error: 402 {"error":"insufficient_balance","subscription_required":true}', true, PRESENTATION, true)
+      await screen.findByTestId('billing-cta-frame')
+      expect(screen.getByTestId('paywall-actions')).toHaveClass('w-full', 'flex-col', 'items-stretch')
+      expect(screen.getByRole('button', { name: 'Dismiss' })).toHaveClass('order-last')
+    })
+
     it('does not draw a promo line for the top-up or payment CTA', async () => {
       renderCard()
       await screen.findByTestId('billing-cta-frame')

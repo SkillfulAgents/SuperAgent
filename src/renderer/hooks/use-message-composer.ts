@@ -10,7 +10,7 @@ import { appendDictationNote } from '@shared/lib/utils/dictation-note'
 import { mountPathOf } from '@shared/lib/volumes/base-mountable-volume'
 import { filesFromClipboard, folderChoice, type FolderGroup } from '@renderer/lib/file-utils'
 import { usesHostFolderPaths } from '@renderer/lib/capabilities'
-import { attachmentStatus, type Attachment, type MountAttachment } from '@renderer/components/messages/attachment-preview'
+import { attachmentStatus, type Attachment, type MountAttachment, type ReferenceAttachment } from '@renderer/components/messages/attachment-preview'
 import type { UploadProgress } from '@renderer/lib/upload'
 import { usePendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
 import { chipsToAgentText, silentOpener, type ChipContext } from '@renderer/components/messages/composer-chips'
@@ -45,10 +45,12 @@ interface UseMessageComposerOptions {
    * message always runs the agent.
    */
   silentSends?: boolean
+  /** Pages or folders already in a drive, sent as their paths ahead of the attached files. The caller owns them. */
+  references?: readonly ReferenceAttachment[]
 }
 
 export function useMessageComposer(options: UseMessageComposerOptions) {
-  const { agentSlug, onSubmit, submitDisabled, keepMessageUntilComplete, draftKey, silentSends } = options
+  const { agentSlug, onSubmit, submitDisabled, keepMessageUntilComplete, draftKey, silentSends, references = [] } = options
 
   const [draft, setDraft] = useDraft<string>(draftKey)
   const [message, setMessage] = useState(draft ?? '')
@@ -248,7 +250,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
    */
   const submitMessage = async (effectiveMessage: string): Promise<boolean> => {
     if (uploadsInFlight || isUploading || submitDisabled) return false
-    const hasContent = effectiveMessage.trim() || attachments.length > 0
+    const hasContent = effectiveMessage.trim() || attachments.length > 0 || references.length > 0
     if (!hasContent) return false
 
     let content = effectiveMessage.trim()
@@ -309,7 +311,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       if (!done?.path || done.agentSlug !== agentSlug) return []
       return [done.path]
     })
-    content = appendAttachedFiles(content, paths)
+    content = appendAttachedFiles(content, [...references.map((r) => r.path), ...paths])
 
     if (!keepMessageUntilComplete) {
       // Clear input immediately so the message doesn't linger while the network request is in flight
@@ -344,7 +346,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     return true
   }
 
-  const canSubmit = (!!message.trim() || attachments.length > 0 || voiceInput.isRecording) && !uploadsInFlight && !isUploading && !submitDisabled
+  const canSubmit = (!!message.trim() || attachments.length > 0 || references.length > 0 || voiceInput.isRecording) && !uploadsInFlight && !isUploading && !submitDisabled
 
   return {
     // Message state

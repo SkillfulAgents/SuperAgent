@@ -27,7 +27,7 @@ export interface AvatarOrb extends OrbAppearance {
   name: AgentAvatarColor
 }
 
-function hexMix(from: string, to: string, t: number): string {
+export function hexMix(from: string, to: string, t: number): string {
   const channels = (hex: string) => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16))
   const a = channels(from)
   const b = channels(to)

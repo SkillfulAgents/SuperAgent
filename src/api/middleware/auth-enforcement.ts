@@ -2,7 +2,7 @@ import type { Context, Next } from 'hono'
 import { sql } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { user } from '@shared/lib/db/schema'
-import { getAuthSettings } from '@shared/lib/auth/auth-settings'
+import { getAuthSettings, isPlatformControlledAuth } from '@shared/lib/auth/auth-settings'
 
 // Per-email failed login attempt tracking
 const accountLockouts = new Map<string, { count: number; lockedUntil: number }>()
@@ -44,14 +44,17 @@ export async function authEnforcementMiddleware(c: Context, next: Next) {
   // --- Signup enforcement ---
   if (path === '/api/auth/sign-up/email') {
     // First-user bypass: allow the very first user to register regardless of settings
-    // (needed to bootstrap the system — first user becomes admin)
+    // (needed to bootstrap the system — first user becomes admin). A platform-controlled
+    // deployment has nothing to bootstrap: its members, owner included, come from Platform.
     let isFirstUser = false
-    try {
-      const result = await db.select({ count: sql<number>`count(*)` }).from(user).get()
-      isFirstUser = !result || result.count === 0
-    } catch {
-      // DB not ready — allow signup (Better Auth will handle it)
-      isFirstUser = true
+    if (!isPlatformControlledAuth()) {
+      try {
+        const result = await db.select({ count: sql<number>`count(*)` }).from(user).get()
+        isFirstUser = !result || result.count === 0
+      } catch {
+        // DB not ready — allow signup (Better Auth will handle it)
+        isFirstUser = true
+      }
     }
 
     if (!isFirstUser) {

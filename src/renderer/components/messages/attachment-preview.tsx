@@ -60,7 +60,23 @@ export interface SavedAttachment {
   error?: string
 }
 
-export type Attachment = FileAttachment | FolderAttachment | MountAttachment | SavedAttachment
+/** A page or folder already in a drive the agent has: sent as its path, so there is nothing to upload and nothing to fail. */
+export interface ReferenceAttachment {
+  type: 'reference'
+  id: string
+  name: string
+  /** Where the agent reads it. */
+  path: string
+  kind: 'file' | 'folder'
+  /** Where it is from, under its name. */
+  from: string
+  /** Shown while its exit plays, then removed; never sent. */
+  leaving?: boolean
+  /** Shared with the other kinds. A reference has nothing to upload, so it stays unset. */
+  error?: string
+}
+
+export type Attachment = FileAttachment | FolderAttachment | MountAttachment | SavedAttachment | ReferenceAttachment
 
 export type AttachmentStatus = 'queued' | 'uploading' | 'done' | 'error'
 
@@ -68,7 +84,7 @@ export type AttachmentStatus = 'queued' | 'uploading' | 'done' | 'error'
 // failed retry never shows a stale bar.
 export function attachmentStatus(a: Attachment): AttachmentStatus | undefined {
   if (a.error) return 'error'
-  if (a.type === 'mount' || a.type === 'saved') return undefined
+  if (a.type === 'mount' || a.type === 'saved' || a.type === 'reference') return undefined
   return a.upload?.status
 }
 
@@ -80,7 +96,7 @@ interface AttachmentPreviewProps {
 
 function attachmentName(attachment: Attachment): string {
   if (attachment.type === 'file') return attachment.file.name
-  if (attachment.type === 'saved') return attachment.name
+  if (attachment.type === 'saved' || attachment.type === 'reference') return attachment.name
   return attachment.folderName
 }
 
@@ -208,7 +224,11 @@ export function AttachmentPreview({ attachments, onRemove, onRetry }: Attachment
             imageChip
               ? 'h-11 w-11 shrink-0 overflow-hidden'
               : 'flex items-center gap-2 py-1.5 pl-2 pr-7',
-            attachment.error && 'border-destructive/50 bg-destructive/10'
+            attachment.error && 'border-destructive/50 bg-destructive/10',
+            // A reference arrives and leaves on its own, so it animates both ways.
+            attachment.type === 'reference' && (attachment.leaving
+              ? 'pointer-events-none animate-out fade-out-0 slide-out-to-bottom-1 duration-200 fill-mode-forwards motion-reduce:animate-none'
+              : 'animate-in fade-in-0 slide-in-from-bottom-1 duration-200 motion-reduce:animate-none'),
           )}
           data-testid="attachment-preview"
           data-attachment-name={attachmentName(attachment)}
@@ -233,6 +253,16 @@ export function AttachmentPreview({ attachments, onRemove, onRetry }: Attachment
                 ) : (
                   <span className="text-muted-foreground">mounted, read-write</span>
                 )}
+              </div>
+            </>
+          ) : attachment.type === 'reference' ? (
+            <>
+              <FileIconTile filename={attachment.name} folder={attachment.kind === 'folder'} />
+              <div className="flex flex-col min-w-0">
+                <span className="truncate max-w-[160px] font-medium" title={attachment.path}>
+                  {attachment.name}
+                </span>
+                <span className="text-muted-foreground">{attachment.from}</span>
               </div>
             </>
           ) : attachment.type === 'saved' ? (

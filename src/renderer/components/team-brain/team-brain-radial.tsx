@@ -161,6 +161,8 @@ export function TeamBrainRadial({
   height,
   onOpenCentre,
   onOpenIndex,
+  selected,
+  onSelectedChange,
   retracting,
   onRetracted,
   centreShown = false,
@@ -175,6 +177,10 @@ export function TeamBrainRadial({
   onOpenCentre?: () => void
   /** The agents' index, a page's dot and name just under the middle. */
   onOpenIndex?: () => void
+  /** The folder chosen on the tree, kept by the page as `expanded` is. */
+  selected: string | null
+  /** Each folder the person chooses, including one they choose again, and null when they click out of it. */
+  onSelectedChange: (folder: RadialNode | null) => void
   /** Sections the page is taking away: they draw back into the middle, the index with them, then `onRetracted` lets the page drop them. */
   retracting?: readonly string[]
   onRetracted?: () => void
@@ -230,7 +236,6 @@ export function TeamBrainRadial({
   useEffect(() => {
     if (svgRef.current) setFont(getComputedStyle(svgRef.current).fontFamily || 'sans-serif')
   }, [])
-  const [selected, setSelected] = useState<string | null>(null)
   /** How far the whole tree is turned, so a chosen folder sits at three o'clock. */
   const [turn, setTurn] = useState(0)
   const turnRef = useRef(0)
@@ -682,21 +687,28 @@ export function TeamBrainRadial({
     if (d.opens) return d.opens()
     const target = d.target
     if (target?.file?.node.expands) {
+      const folder = byId.get(target.file.node.expands)
+      if (folder) onSelectedChange(folder)
       onExpandedChange(new Set(expanded).add(target.file.node.expands))
       return setOpening(target.file.node.expands)
     }
     if (target?.file) return onOpenFile(target.file.node, { path: target.file.path, folder: target.file.folder })
     if (target?.kind === 'folder' && target.folded) {
+      // Chosen now; it turns to the branch once its contents are listed.
+      onSelectedChange(target)
       onExpandedChange(new Set(expanded).add(target.id))
       return setOpening(target.id)
     }
     if (target?.kind === 'folder') {
-      setSelected(target.id)
+      // A folder still opening is not turned to once another is chosen.
+      setOpening(null)
+      onSelectedChange(target)
       const turned = THREE_OCLOCK - target.angle
       return moveTo(turned, branchView(target, turned))
     }
     // Clicking out: back to the whole tree, centred and turned back, with opened folders folded again.
-    setSelected(null)
+    setOpening(null)
+    onSelectedChange(null)
     onExpandedChange(new Set())
     moveTo(0, fittedView())
   }
@@ -706,7 +718,6 @@ export function TeamBrainRadial({
     // Turned to once its contents are listed and laid out.
     if (!target || !nodes.some((n) => n.parent === target.id)) return
     setOpening(null)
-    setSelected(target.id)
     const turned = THREE_OCLOCK - target.angle
     moveTo(turned, branchView(target, turned))
   }, [opening, byId, nodes, moveTo, branchView])

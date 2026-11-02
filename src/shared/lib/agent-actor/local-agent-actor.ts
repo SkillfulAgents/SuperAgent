@@ -235,7 +235,11 @@ function createSessionOps(
     isKnown: (sessionId) => deps.sessionService.sessionIsKnown(store, sessionId),
     isRegistered: (sessionId) => deps.sessionService.isSessionRegistered(store, sessionId),
     register: (...args) => deps.sessionService.registerSession(store, ...args),
-    rename: (sessionId, name) => deps.sessionService.updateSessionName(store, sessionId, name),
+    rename: async (sessionId, name) => {
+      await deps.sessionService.updateSessionName(store, sessionId, name)
+      live.emit(sessionId, { type: 'session_updated' })
+      deps.host.send('global', { type: 'session_updated', sessionId, agentSlug: slug })
+    },
     // The stream lets go first, so an append in flight cannot write the transcript again after it is gone.
     delete: (sessionId) => {
       live.unsubscribe(sessionId)
