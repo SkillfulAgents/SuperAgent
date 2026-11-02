@@ -1,25 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the QA-20261030-004901-2v3e agent successfully opens a browser, navigates to https://example.com, retrieves the page title \"Example Domain\", and returns the correct response through the chat interface.",
+  "reason": "Browser-use functionality test: Agent successfully opened a browser, navigated to https://example.com, retrieved the page title \"Example Domain\", and reported back.",
   "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully, displaying the Gamut application with sidebar containing available agents.",
-    "Found and clicked on the \"QA-20261030-004901-2v3e\" agent in the sidebar — Successfully opened the agent's page and created a new session.",
-    "Typed message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field — Message was successfully entered into the textbox.",
-    "Clicked the \"Send message\" button — Message was sent successfully, and the agent began processing (page transitioned to session view with \"Working...\" status).",
-    "Waited up to 3 minutes for the agent to complete the task — Agent completed processing in approximately 5 seconds.",
-    "Verified the response for \"Example Domain\" mention — Response confirmed: \"The page title of https://example.com is \"Example Domain\". The page loaded normally, and I've closed the browser.\"",
-    "Took a screenshot of the response — Screenshot captured successfully showing the agent's complete response with the \"Example Domain\" page title."
+    "Step 1 - Navigated to http://localhost:47891 — Successfully loaded the Gamut application showing the agent list.",
+    "Step 2 - Found and clicked the \"QA-20261102-181028-rnhi\" agent in the sidebar — Successfully opened the agent's page and accessed the chat interface.",
+    "Step 3 - Typed and sent the message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully submitted and the page navigated to the chat session view.",
+    "Step 4 - Waited for agent response — Agent completed processing within 5 seconds (well under the 3-minute limit). The agent performed 3 tool calls and used 159,939 tokens to complete the task.",
+    "Step 5 - Verified response mentions \"Example Domain\" — VERIFIED: The agent's response clearly states: \"The page title is 'Example Domain'. The page loaded normally, and I've closed the browser.\""
   ],
   "bugs": [],
-  "durationMs": 64673,
-  "sessionId": "bd3120fd-2cc1-4732-afdb-45e3f55d7b2e",
+  "durationMs": 70085,
+  "sessionId": "99c535db-50ad-4c14-ad0f-60fcac5f21ee",
   "cost": {
-    "inputTokens": 320,
-    "outputTokens": 9310,
-    "cacheCreationTokens": 75407,
-    "cacheReadTokens": 893516,
+    "inputTokens": 350,
+    "outputTokens": 11172,
+    "cacheCreationTokens": 78290,
+    "cacheReadTokens": 1000034,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.23048
+    "totalCostUsd": 0.254076
   }
 }
