@@ -318,6 +318,10 @@
           "to": "notification-bridge"
         },
         {
+          "from": "build/glass-bridge",
+          "to": "glass-bridge"
+        },
+        {
           "from": "build/agent-image",
           "to": "agent-image",
           "filter": [
