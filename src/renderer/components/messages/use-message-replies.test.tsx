@@ -63,8 +63,9 @@ describe('useMessageReplies', () => {
     expect(menuItems()).toEqual(['Copy', 'Read aloud', 'Reply'])
     fireEvent.click(screen.getByRole('menuitem', { name: 'Reply' }))
 
-    expect(screen.getByText('> "Use Durable Object SQLite, not D1."')).toBeVisible()
-    await userEvent.type(screen.getByPlaceholderText('Add your reply...'), 'Why not D1?{Enter}')
+    expect(await screen.findByText('> "Use Durable Object SQLite, not D1."')).toBeVisible()
+    await waitFor(() => expect(screen.getByPlaceholderText('Add your reply...')).toHaveFocus())
+    await userEvent.keyboard('Why not D1?{Enter}')
 
     expect(screen.getByText('1 reply')).toBeVisible()
     expect(screen.getByTestId('draft')).toBeEmptyDOMElement()

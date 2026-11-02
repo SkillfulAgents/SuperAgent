@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Copy, ExternalLink, Reply, Square, Trash2, Volume2 } from 'lucide-react'
 import {
   ContextMenu,
@@ -31,6 +31,7 @@ export function MessageContextMenu({ text, children, onRemove, readAloud, canRep
   const [linkHref, setLinkHref] = useState<string | null>(null)
   const replyAction = useMessageReplyAction()
   const [replySelection, setReplySelection] = useState<ReplySelection | null>(null)
+  const replyOnClose = useRef(false)
 
   const handleCopy = async () => {
     try {
@@ -52,7 +53,15 @@ export function MessageContextMenu({ text, children, onRemove, readAloud, canRep
       >
         {children}
       </ContextMenuTrigger>
-      <ContextMenuContent>
+      <ContextMenuContent
+        onCloseAutoFocus={(event) => {
+          if (!replyOnClose.current || !replySelection || !replyAction) return
+          // The menu hands focus back to the message as it closes; the reply box opens after, so its field keeps focus.
+          replyOnClose.current = false
+          event.preventDefault()
+          replyAction.open(replySelection)
+        }}
+      >
         {linkHref && (
           <ContextMenuItem onClick={() => void openExternalUrl(linkHref)} data-testid="context-open-link">
             <ExternalLink className="h-4 w-4 mr-2" />
@@ -70,7 +79,7 @@ export function MessageContextMenu({ text, children, onRemove, readAloud, canRep
           </ContextMenuItem>
         )}
         {replySelection && replyAction && (
-          <ContextMenuItem onClick={() => replyAction.open(replySelection)} data-testid="context-reply">
+          <ContextMenuItem onClick={() => { replyOnClose.current = true }} data-testid="context-reply">
             <Reply className="h-4 w-4 mr-2" />
             Reply
           </ContextMenuItem>
