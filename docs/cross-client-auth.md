@@ -119,8 +119,11 @@ Stable-identity contract:
    policy) or a new user is provisioned.
 
 All writes go through Better Auth's internal adapter, so database hooks run
-exactly as for browser OIDC login: first-user-becomes-admin bootstrap,
-pending-admin-approval banning, and max-concurrent-session enforcement.
+exactly as for browser OIDC login: pending-admin-approval banning and
+max-concurrent-session enforcement. A user the exchange creates gets the
+grant's `role` (owner or admin → admin, member → user) instead of the
+first-user-becomes-admin bootstrap, which applies only when the grant carries
+no role it recognizes; linking an existing user leaves their role alone.
 Banned/pending users are rejected (`invalid_grant`) before any session is
 created — checked explicitly because the admin plugin's ban hook only runs
 inside HTTP endpoint contexts. Concurrent first exchanges are safe: unique

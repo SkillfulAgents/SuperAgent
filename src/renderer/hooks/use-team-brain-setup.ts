@@ -5,7 +5,7 @@ import { useOnboarding } from '@renderer/context/onboarding-context'
 import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
 import { captureRendererException } from '@renderer/lib/error-reporting'
-import { fillTeamBrainSetupBlock, TEAM_BRAIN_CRON } from '@renderer/lib/team-brain/team-brain-setup-block'
+import { fillTeamBrainSetupBlock, setUpByOf, TEAM_BRAIN_CRON } from '@renderer/lib/team-brain/team-brain-setup-block'
 import type { TeamBrainPrepared } from '@renderer/lib/team-brain/team-brain-schema'
 import { getTeamBrainState, usesTeamBrain, useTeamBrain } from '@renderer/lib/team-brain/team-brain-store'
 import type { VolumeDetails } from '@renderer/components/volumes/volume-details-schema'
@@ -17,6 +17,7 @@ import type { VolumeSource } from '@shared/lib/volumes/volume-config-schema'
 import { useDiscoverableAgents, useInstallAgentFromSkillset } from './use-agent-templates'
 import { useAgents, useDeleteAgent, useStartAgent, useUpdateAgent } from './use-agents'
 import { useConnectedAccounts } from './use-connected-accounts'
+import { usePlatformAuthStatus } from './use-platform-auth'
 import { useAddMount, useAgentMounts } from './use-mounts'
 import { setTeamBrainReach, useGiveTeamBrain } from './use-team-brain-access'
 import { useStartOnboardingSession } from './use-start-onboarding-session'
@@ -35,6 +36,7 @@ export function useTeamBrainSetup() {
   const tb = useTeamBrain()
   const { setOnboarding } = useOnboarding()
   const { user } = useUser()
+  const { data: platform } = usePlatformAuthStatus()
   const { data: connected } = useConnectedAccounts()
   const queryClient = useQueryClient()
   // Also warms the skillset cache the install reads from.
@@ -138,7 +140,7 @@ export function useTeamBrainSetup() {
     const { instructions = '' }: ApiAgent = await res.json()
     await updateAgent.mutateAsync({
       slug: prepared.agentSlug,
-      instructions: fillTeamBrainSetupBlock(instructions, { agentSlug: prepared.agentSlug, brainPath: prepared.brainPath, schedule, setUpBy: user, accounts: connected?.accounts }),
+      instructions: fillTeamBrainSetupBlock(instructions, { agentSlug: prepared.agentSlug, brainPath: prepared.brainPath, schedule, setUpBy: setUpByOf(user, platform), accounts: connected?.accounts }),
     })
     // Only a refusal says the record is not this set-up's: after any other failure it may have been saved.
     onRecordWrite()

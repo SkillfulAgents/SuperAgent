@@ -26,6 +26,8 @@ export interface AgentSummary {
   container: Pick<AgentLiveSummary['container'], 'status' | 'port' | 'healthWarnings' | 'stale'>
   hasActiveSessions: boolean
   hasSessionsAwaitingInput: boolean
+  /** Sessions waiting on the user, so a list can preview the question behind the flag. */
+  awaitingSessionIds: string[]
   sessionCount: number
   lastActivityAt: string | null
   /** The sessions an agent list shows (hidden automated ones left out): only their unread notifications count. */
@@ -44,6 +46,7 @@ export function agentSummaryOf(
     container: { status, port, healthWarnings, stale },
     hasActiveSessions: live.activeSessionIds.length > 0,
     hasSessionsAwaitingInput: live.awaitingSessionIds.length > 0 || live.pendingReviews.length > 0,
+    awaitingSessionIds: [...live.awaitingSessionIds],
     sessionCount: sessions.sessionCount,
     lastActivityAt: sessions.lastActivityAt?.toISOString() ?? null,
     ...listing,
@@ -97,7 +100,7 @@ export async function storeAgentSummary(slug: AgentSlug, summary: AgentSummary):
 export async function readAgentSummaries(slugs: readonly AgentSlug[]): Promise<Map<AgentSlug, AgentSummary>> {
   if (slugs.length === 0) return new Map()
   const rows = await db.select().from(agentSummaries).where(inArray(agentSummaries.agentSlug, [...slugs])).all()
-  return new Map(rows.map((row) => [row.agentSlug, JSON.parse(row.summary) as AgentSummary]))
+  return new Map(rows.map((row) => [row.agentSlug, { awaitingSessionIds: [], ...(JSON.parse(row.summary) as Partial<AgentSummary>) } as AgentSummary]))
 }
 
 let stored = false

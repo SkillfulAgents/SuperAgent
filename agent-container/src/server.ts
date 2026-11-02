@@ -807,6 +807,7 @@ import { resolveCommittedValue } from './field-value-readback';
 import { capBrowserOutput, redactCdpUrls, describeExecFailure, stripWebMcpNotices, cliJsonError, extractScreenshotPath, navigationNetError, BROWSER_EXEC_TIMEOUT_MS, MAX_BROWSER_OUTPUT_CHARS, MAX_SNAPSHOT_RAW_CHARS, MAX_BROWSER_ERROR_CHARS } from './browser-output';
 import { capSnapshot, capReadText, compactWithText, countRefs, formatIframePlaceholders, formatTextFooter, THIN_TREE_REFS } from './snapshot-format';
 import { observerScript, parseObservation, EMPTY_OBSERVATION, PREVIEW_CHARS, THIN_TREE_PREVIEW_CHARS, type PageObservation } from './page-observer';
+import { CLEAR_PRESENTATIONAL_ROLE_SCRIPT } from './presentational-frames';
 import { formatStatusLine, waitForLoaded } from './page-status';
 import { activeTabAddress, resolveErrorPageUrl } from './error-page-url';
 import { observeAction, pressPolicy, effectWantsTree, sameDocument, newDocument, ACTION_POLICIES, type ActionEffect, type ActionPolicy, type EffectTreeDiff } from './action-settle';
@@ -953,6 +954,17 @@ async function observeNow(opts: { previewChars?: number } = {}): Promise<PageObs
 }
 
 /**
+ * Before a tree read: when the observation counted frames marked
+ * role="none"/"presentation", drop that role so the CLI reads into them
+ * (presentational-frames.ts).
+ */
+async function readIntoPresentationalFrames(obs: PageObservation | null): Promise<void> {
+  if (!obs?.presentationalFrames) return;
+  const r = await execBrowser(['eval', CLEAR_PRESENTATIONAL_ROLE_SCRIPT], browserState.cdpUrl || undefined);
+  if (r.exitCode !== 0) console.warn(`[Browser] Could not clear the role of a presentational frame: ${r.stdout.slice(0, 200)}`);
+}
+
+/**
  * The requests an action issued (network-activity.ts), for how long its
  * settle waits. The log is cleared as each action starts, so an agent's own
  * `network requests` lists what was issued since its last action.
@@ -972,10 +984,12 @@ const TREE_READ_TIMEOUT_MS = 10_000;
  * Read the interactive tree after an action and diff it, by ref, against the
  * last tree the agent was shown on this page (tree-diff.ts). The read becomes
  * the new baseline either way. Null when it could not run or there was no
- * baseline for this page to compare with.
+ * baseline for this page to compare with. `observed`: the observation after
+ * the action.
  */
-async function readTreeDiff(url: string, exclude: { refs?: string[]; subtrees?: string[]; overlayOpened?: boolean }, docStart = 0): Promise<EffectTreeDiff | null> {
+async function readTreeDiff(url: string, exclude: { refs?: string[]; subtrees?: string[]; overlayOpened?: boolean }, docStart = 0, observed: PageObservation | null = null): Promise<EffectTreeDiff | null> {
   const prior = getTreeBaseline(url, docStart);
+  await readIntoPresentationalFrames(observed);
   const r = await execBrowser(['snapshot', '-i', '-c'], browserState.cdpUrl || undefined, { timeoutMs: TREE_READ_TIMEOUT_MS, outputCap: MAX_SNAPSHOT_RAW_CHARS });
   if (r.exitCode !== 0) return null;
   const now = Date.now();
@@ -1033,7 +1047,7 @@ async function runWithEffect(
   const effect = digest?.navigated && !sameDoc ? null : settled.effect;
   const docStart = settled.after?.docStart ?? 0;
   const treeDiff = effect && digest && effectWantsTree(effect, policy.verb)
-    ? await readTreeDiff(digest.url, { refs: opts.excludeRefs, subtrees: opts.excludeSubtrees, overlayOpened: effect.opened.length > 0 }, docStart)
+    ? await readTreeDiff(digest.url, { refs: opts.excludeRefs, subtrees: opts.excludeSubtrees, overlayOpened: effect.opened.length > 0 }, docStart, settled.after)
     : null;
   return { result: settled.result, digest, effect, settleMs: settled.waitedMs, treeDiff, docStart };
 }
@@ -1066,6 +1080,7 @@ async function explainUnknownRef(stdout: string, actionRef?: string): Promise<st
       ? `${stdout}\n${m[1]} was ${lineWithoutRef(old.text).slice(0, 160)} on the previous page load (${old.url}); the page has loaded a new document since, and refs from before the load do not carry over.`
       : stdout;
   }
+  await readIntoPresentationalFrames(page);
   const fresh = await execBrowser(['snapshot', '-i', '-c'], cdp, { timeoutMs: TREE_READ_TIMEOUT_MS, outputCap: MAX_SNAPSHOT_RAW_CHARS });
   if (fresh.exitCode !== 0) return stdout;
   setTreeBaseline(page.url, fresh.stdout, 'action', Date.now(), page.docStart);
@@ -1724,6 +1739,7 @@ app.post('/browser/snapshot', async (c) => {
     // site that rewrote its URL after load must not make that action read as
     // a navigation (bench, Meta Ad Library: "Page NAVIGATED" on a dialog click).
     if (probe.url) observeUrl(probe.url);
+    await readIntoPresentationalFrames(probe);
 
     // The snapshot has its own cap (capSnapshot) that reports the true size;
     // the exec-level cap must not truncate first.
@@ -2612,6 +2628,7 @@ app.post('/browser/run', async (c) => {
       // "Unknown ref" until a snapshot. Refs persist per document, so one read
       // brings them back unchanged.
       if (verb.startsWith('tab') && commandArgs[1]?.toLowerCase() !== 'list' && commandArgs.length > 1) {
+        await readIntoPresentationalFrames(front);
         const restore = await execBrowser(['snapshot', '-i', '-c'], browserState.cdpUrl || undefined, { timeoutMs: TREE_READ_TIMEOUT_MS, outputCap: MAX_SNAPSHOT_RAW_CHARS });
         if (restore.exitCode === 0 && front.url) setTreeBaseline(front.url, restore.stdout, 'action', Date.now(), front.docStart);
       }
