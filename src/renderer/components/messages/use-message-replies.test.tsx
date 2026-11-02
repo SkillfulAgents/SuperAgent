@@ -82,6 +82,6 @@ describe('formatReplies', () => {
     expect(formatReplies([
       { id: '1', quote: 'First line\nsecond line', text: 'Explain this' },
       { id: '2', quote: 'Ship it', text: 'Agreed' },
-    ])).toBe('Replying to what you wrote:\n\n> "First line second line"\nExplain this\n\n> "Ship it"\nAgreed')
+    ])).toBe('Replying to what you wrote:\n\n> "First line second line"\n\nExplain this\n\n> "Ship it"\n\nAgreed')
   })
 })

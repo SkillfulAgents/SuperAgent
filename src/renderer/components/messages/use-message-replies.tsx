@@ -31,6 +31,8 @@ export function formatReplies(replies: MessageReply[]): string {
   const lines: string[] = ['Replying to what you wrote:\n']
   replies.forEach((reply, i) => {
     lines.push(describeQuote(reply.quote))
+    // A line right under a quote continues it in Markdown; the blank line keeps the reply out.
+    lines.push('')
     lines.push(reply.text)
     if (i < replies.length - 1) lines.push('')
   })
