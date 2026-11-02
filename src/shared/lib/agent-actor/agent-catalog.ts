@@ -66,19 +66,19 @@ export function createAgentCatalog(): AgentCatalog {
   const rowFor = async (slug: AgentSlug): Promise<AgentRow | undefined> =>
     db.select().from(agents).where(eq(agents.slug, slug)).get()
 
+  // Unused by the table and by every directory, legacy folders included, so a
+  // slug never collides with a workspace the table does not know.
+  const available = async (slug: AgentSlug): Promise<boolean> =>
+    (await rowFor(slug)) === undefined && !(await directoryExists(getAgentDir(slug)))
+
   const records = async (): Promise<AgentRecord[]> =>
     (await db.select().from(agents).orderBy(desc(agents.createdAt), agents.slug).all()).map(toRecord)
 
   const mint = async (): Promise<AgentSlug> => {
-    // Checked against the table and against every directory, legacy folders
-    // included, so a slug never collides with a workspace the table does not
-    // know.
     const maxAttempts = 10
     for (let i = 0; i < maxAttempts; i++) {
       const slug = randomSlug(AGENT_ID_LENGTH)
-      if ((await rowFor(slug)) === undefined && !(await directoryExists(getAgentDir(slug)))) {
-        return slug
-      }
+      if (await available(slug)) return slug
     }
     // Fallback: timestamp + random, still a bare [a-z0-9] string.
     return `${Date.now().toString(36)}${randomSlug(4)}`
@@ -103,8 +103,8 @@ export function createAgentCatalog(): AgentCatalog {
     },
     exists: async (slug) => (await rowFor(slug)) !== undefined,
     mint,
-    insert: async ({ slug, name, description, createdAt }) => {
-      const avatar = randomAgentAvatar()
+    available,
+    insert: async ({ slug, name, description, createdAt, avatar = randomAgentAvatar() }) => {
       await db.insert(agents).values({
         slug,
         name,

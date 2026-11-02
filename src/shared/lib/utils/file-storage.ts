@@ -35,48 +35,7 @@ function generateRandomSuffix(length: number = 6): string {
   return result
 }
 
-/**
- * Convert a name to a URL-safe slug
- * "My Cool Agent" -> "my-cool-agent"
- */
-export function nameToSlugBase(name: string): string {
-  return name
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, '-') // Replace non-alphanumeric with hyphens
-    .replace(/^-+|-+$/g, '') // Remove leading/trailing hyphens
-    .substring(0, 50) // Limit length
-}
-
-/**
- * Length of a minted agent id. Deliberately distinct from the legacy 6-char
- * name-suffix: that length gap is what lets the agent catalog tell a minted
- * id apart from a legacy compound folder name when it resolves a display slug.
- */
-export const AGENT_ID_LENGTH = 10
-
-const MINTED_ID_RE = new RegExp(`^[a-z0-9]{${AGENT_ID_LENGTH}}$`)
-
-/**
- * Whether an id is a freshly-minted opaque id (vs a legacy name-derived folder).
- */
-export function isMintedAgentId(id: string): boolean {
-  return MINTED_ID_RE.test(id)
-}
-
-/**
- * Project the decorative display slug shown to models and placed in URLs:
- *   {nameToSlugBase(name)}-{id}   (or bare {id} when the name slugifies to empty)
- *
- * Legacy folders (non-minted ids, e.g. "untitled-h45k3n") are returned VERBATIM:
- * prettifying them would break resolution, since the folder still embeds the old
- * name and there is no reverse lookup from a name-prefix back to the folder.
- */
-export function displaySlug(name: string, id: string): string {
-  if (!isMintedAgentId(id)) return id
-  const base = nameToSlugBase(name)
-  return base ? `${base}-${id}` : id
-}
+export { AGENT_ID_LENGTH, displaySlug, isMintedAgentId, nameToSlugBase } from './agent-id'
 
 // ============================================================================
 // Frontmatter Parsing
