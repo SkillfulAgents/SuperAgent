@@ -164,12 +164,6 @@ export interface WebhookRelayService {
    * event a consumer asked to retry waits for a later pass.
    */
   runPass(): Promise<void>
-  /**
-   * Hands events another process claimed to the consumer `consumerId` registered here, for a host
-   * whose consumers run apart from where the relay claims. Resolves with each event's result; the
-   * claiming side acknowledges them. Events for a consumer not registered here are all `retry`.
-   */
-  acceptClaimed(consumerId: string, events: readonly RelayEvent[]): Promise<ReadonlyMap<string, RelayAcceptResult>>
   stop(): void
   /** Re-read platform auth: go (un)available, and reset the connection when the token changed. */
   onAuthChanged(): void

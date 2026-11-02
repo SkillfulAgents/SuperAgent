@@ -19,7 +19,7 @@ homeGraph.get('/', async (c) => {
     const graph = await buildHomeGraph({
       agentSlugs,
       userId,
-      isIntegrationConnected: (id, row) => agentIntegrationManager.isIntegrationConnected(id, row),
+      isIntegrationConnected: (id) => agentIntegrationManager.isIntegrationConnected(id),
     })
     return c.json(graph)
   } catch (error) {

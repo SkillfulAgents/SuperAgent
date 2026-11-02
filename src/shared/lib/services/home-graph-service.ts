@@ -37,7 +37,7 @@ export interface HomeGraphScope {
   /** Scopes usage counts to the caller's accounts/servers; null outside auth mode */
   userId: string | null
   /** Live chat transport state (injected — the manager imports this service's siblings) */
-  isIntegrationConnected: (integrationId: string, row: { status: string; config: string }) => boolean
+  isIntegrationConnected: (integrationId: string) => boolean
 }
 
 /**
@@ -183,7 +183,7 @@ export async function buildHomeGraph(scope: HomeGraphScope): Promise<HomeGraphDa
     provider: chat.provider,
     name: chat.name,
     status: chat.status,
-    connected: scope.isIntegrationConnected(chat.id, chat),
+    connected: scope.isIntegrationConnected(chat.id),
     sessionCount: sessionCounts[chat.id] ?? 0,
   }))
 

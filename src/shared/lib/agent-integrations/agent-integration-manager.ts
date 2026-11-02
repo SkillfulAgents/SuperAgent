@@ -16,9 +16,8 @@ import { containerPendingInputsSchema, integrationRequestEventSchema } from './r
 import type { AgentIntegration } from './agent-integration'
 import type { AgentIntegrationRecord, IntegrationStatus, IntegrationInputEvent, IntegrationInputResult, IntegrationRoute, IntegrationSessionContext, IntegrationOutput, IntegrationResponseEvent, PreparedIntegrationInput } from './types'
 import { agentIntegrationRegistry, type AgentIntegrationRegistry } from './registry'
-import { integrationRelayConsumerId, integrationRelays } from './relay-transport'
-import { getWebhookRelay, type RelayAcceptResult, type RelayEvent, type WebhookRelayService } from '../webhook-relay'
-import { readIntegrationRelay, type IntegrationRelayHost, type IntegrationTransport } from './transport'
+import { integrationRelays } from './relay-transport'
+import type { IntegrationRelayHost, IntegrationTransport } from './transport'
 import { agentRegistry, type AgentActor, type SessionEvent } from '@shared/lib/agent-actor'
 import { deliveryFailure } from '@shared/lib/agent-actor/delivery-errors'
 import {
@@ -106,8 +105,6 @@ export class AgentIntegrationManager {
     private readonly registry: AgentIntegrationRegistry = agentIntegrationRegistry,
     /** The webhook relay for one connection, or null while the host has none available. */
     private readonly relayHost: (integrationId: string) => IntegrationRelayHost | null = (integrationId) => integrationRelays.hostFor(integrationId),
-    /** The relay `relayHost` registers connections with: forwarded events are handed to them there. */
-    private readonly relay: () => WebhookRelayService = getWebhookRelay,
   ) {}
 
   private readonly deliveries = new IntegrationDeliveryQueue({
@@ -154,7 +151,6 @@ export class AgentIntegrationManager {
   // Per-chat session: one streaming context per (integrationId, externalId)
   private chatSessions: Map<string, ManagedSession> = new Map() // key: `${integrationId}:${chatId}`
   private isRunning = false
-  private connectionsElsewhere = false
   private authorizationUnsubscribe?: () => void
   private healthCheckInterval: ReturnType<typeof setInterval> | null = null
   private globalNotificationUnsubscribe: (() => void) | null = null
@@ -222,11 +218,7 @@ export class AgentIntegrationManager {
 
   // ── Lifecycle ───────────────────────────────────────────────────────
 
-  /**
-   * `agentSlug` connects only that agent's integrations, for a host that runs each agent apart.
-   * With `timers: false` nothing re-checks connections on a timer.
-   */
-  async start(options: { agentSlug?: string; timers?: boolean } = {}): Promise<void> {
+  async start(): Promise<void> {
     if (this.isRunning) return
     this.isRunning = true
     this.authorizationUnsubscribe = onIntegrationAuthorizationLost(change => {
@@ -234,7 +226,7 @@ export class AgentIntegrationManager {
     })
 
     await this.deliveries.start()
-    const integrations = (await listStartupIntegrations()).filter(integration => !options.agentSlug || integration.agentSlug === options.agentSlug)
+    const integrations = await listStartupIntegrations()
 
     for (const integration of integrations) {
       const generation = this.bumpGeneration(integration.id)
@@ -251,14 +243,12 @@ export class AgentIntegrationManager {
       }
     }
 
-if (options.timers !== false) {
-      this.healthCheckInterval = setInterval(() => {
-        background(this.runHealthChecks().catch((err) => {
-          console.error('[AgentIntegrationManager] Health check error:', err)
-          reportError(err, 'health-check')
-        }), { name: 'integration-manager.health-check' })
-      }, HEALTH_CHECK_INTERVAL_MS)
-    }
+    this.healthCheckInterval = setInterval(() => {
+      background(this.runHealthChecks().catch((err) => {
+        console.error('[AgentIntegrationManager] Health check error:', err)
+        reportError(err, 'health-check')
+      }), { name: 'integration-manager.health-check' })
+    }, HEALTH_CHECK_INTERVAL_MS)
 
     this.subscribeGlobalNotifications()
 
@@ -561,25 +551,9 @@ if (options.timers !== false) {
     }
   }
 
-  /**
-   * Whether the integration's connection is up. With `row`, a host whose connections run in the
-   * agents' processes (setConnectionsElsewhere) reports one it does not hold itself as connected
-   * while the row is active and its webhooks are set up: those processes write a failure to the row.
-   */
-  isIntegrationConnected(integrationId: string, row?: { status: string; config: string }): boolean {
+  isIntegrationConnected(integrationId: string): boolean {
     const conn = this.connections.get(integrationId)
-    if (conn) return conn.connector.isConnected()
-    if (!this.connectionsElsewhere || row?.status !== 'active') return false
-    try {
-      return !!readIntegrationRelay(row.config)
-    } catch {
-      return false
-    }
-  }
-
-  /** This host claims webhooks and forwards them (syncIntegrationForwarding); the agents' processes hold the connections. */
-  setConnectionsElsewhere(on: boolean): void {
-    this.connectionsElsewhere = on
+    return conn?.connector.isConnected() ?? false
   }
 
   /** The path the live connection runs on, if it has one and reports it. */
@@ -589,18 +563,6 @@ if (options.timers !== false) {
 
   getActiveIntegrationIds(): string[] {
     return [...this.connections.keys()]
-  }
-
-  /**
-   * Events claimed for this integration in another process (see syncIntegrationForwarding). The
-   * integration is connected here first if it is not yet, so its connection accepts them and
-   * answers the chat from this process.
-   */
-  async acceptForwarded(integrationId: string, events: readonly RelayEvent[]): Promise<ReadonlyMap<string, RelayAcceptResult>> {
-    if (this.isRunning && !this.isIntegrationConnected(integrationId)) {
-      await this.addIntegration(integrationId).catch(error => reportError(error, 'accept-forwarded', { integrationId }))
-    }
-    return this.relay().acceptClaimed(integrationRelayConsumerId(integrationId), events)
   }
 
   // ── Connection setup ────────────────────────────────────────────────

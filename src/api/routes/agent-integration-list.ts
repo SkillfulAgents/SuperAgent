@@ -10,7 +10,7 @@ export async function listAgentIntegrationsHandler(c: Context) {
   try {
     const rows = await listAgentIntegrations(agentSlug, c.req.query('status') || undefined)
     return c.json(rows.map(row => ({
-      ...toPublicAgentIntegration(row), connected: agentIntegrationManager.isIntegrationConnected(row.id, row),
+      ...toPublicAgentIntegration(row), connected: agentIntegrationManager.isIntegrationConnected(row.id),
     })))
   } catch (error) {
     captureException(error, { tags: { component: 'agent-integration', operation: 'list' }, extra: { agentSlug } })
