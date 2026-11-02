@@ -101,13 +101,11 @@ test.describe('Radix mobile interaction boundaries', () => {
       await expect(page.getByTestId('move-agent-to-new-folder-item')).toBeVisible()
       await page.keyboard.press('Escape')
       await expect(page.getByTestId('agent-context-menu')).not.toBeVisible()
-      // Baseline behavior: the custom drawer's document Escape handler also
-      // dismisses the drawer. Assert recovery rather than hiding it behind a
-      // conditional reopen; this behavior predates the dependency upgrade.
-      await expect(sidebar).toHaveAttribute('inert', '')
-      await expect(page.locator('body')).not.toHaveCSS('pointer-events', 'none')
-      await page.getByRole('button', { name: 'Toggle Sidebar' }).tap()
+      // The menu consumes Escape. The drawer must stay open and keep the
+      // background inert so the next long press needs no drawer reopen.
       await expect(sidebar).not.toHaveAttribute('inert')
+      await expect(page.locator('#root')).toHaveAttribute('inert', '')
+      await expect(page.locator('body')).not.toHaveCSS('pointer-events', 'none')
 
       const second = await finger(page, link, browserName)
       try {
@@ -117,10 +115,19 @@ test.describe('Radix mobile interaction boundaries', () => {
         await second.up()
         await expect(page.getByTestId('move-agent-to-folder-menu')).not.toBeVisible()
       } finally { await second.dispose() }
-      await page.keyboard.press('Escape')
+      // A real outside tap dismisses only the menu, even though its modal
+      // pointer lock retargets the touch to the drawer's backdrop.
+      await page.getByTestId('mobile-drawer-backdrop').tap({
+        position: { x: page.viewportSize()!.width - 8, y: 8 },
+      })
       await expect(page.getByTestId('agent-context-menu')).not.toBeVisible()
-      await expect(sidebar).toHaveAttribute('inert', '')
+      await expect(sidebar).not.toHaveAttribute('inert')
+      await expect(page.locator('#root')).toHaveAttribute('inert', '')
       await expect(page.locator('body')).not.toHaveCSS('pointer-events', 'none')
+      // Once the menu is gone, Escape belongs to the drawer again.
+      await page.keyboard.press('Escape')
+      await expect(sidebar).toHaveAttribute('inert', '')
+      await expect(page.locator('#root')).not.toHaveAttribute('inert')
       await page.getByRole('button', { name: 'Toggle Sidebar' }).tap()
       await expect(sidebar).not.toHaveAttribute('inert')
       await link.tap()
@@ -191,12 +198,9 @@ test.describe('Radix mobile interaction boundaries', () => {
         await gesture.up()
       } finally { await gesture.dispose() }
       await expect(page).toHaveURL(/\/$/)
-      // With native Chromium touch, the release click is retargeted to the
-      // drawer backdrop after Radix makes the body pointer-inert. Both old and
-      // new dependencies close the drawer underneath the still-usable menu.
-      // WebKit's synthetic hold cannot reproduce that native release behavior.
-      if (browserName === 'chromium') await expect(sidebar).toHaveAttribute('inert', '')
-      else await expect(sidebar).not.toHaveAttribute('inert')
+      // A long-press release must not close the drawer underneath its menu,
+      // including Chromium's native release click landing on the backdrop.
+      await expect(sidebar).not.toHaveAttribute('inert')
       await page.getByTestId('rename-agent-item').tap()
       const rename = page.getByRole('dialog', { name: 'Rename Agent', exact: true })
       const input = rename.getByLabel('Agent name')
@@ -211,11 +215,8 @@ test.describe('Radix mobile interaction boundaries', () => {
       await rename.getByRole('button', { name: 'Cancel', exact: true }).tap()
       await expect(rename).not.toBeVisible()
       await expect(page.locator('body')).not.toHaveCSS('pointer-events', 'none')
-      if (browserName === 'chromium') {
-        await expect(sidebar).toHaveAttribute('inert', '')
-        await page.getByRole('button', { name: 'Toggle Sidebar' }).tap()
-      }
       await expect(sidebar).not.toHaveAttribute('inert')
+      await expect(page.locator('#root')).toHaveAttribute('inert', '')
       await expect(link).toContainText(agent.name)
       const response = await request.get(`/api/agents/${agent.slug}`)
       expect(response.ok()).toBe(true)
