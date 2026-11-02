@@ -182,6 +182,12 @@ export interface AuthSettings {
   maxConcurrentSessions?: number
   /** Sliding lifetime (days) of the mobile device refresh credential. */
   mobileDeviceLifetimeDays?: number
+  /**
+   * How long (seconds) a browser session is read from its signed cookie instead of the database.
+   * Unset or 0: every request reads it from the database. A signed-out, revoked or banned session
+   * keeps working for up to this long, so only a deployment whose database round trip is costly sets it.
+   */
+  sessionCookieCacheSeconds?: number
 
   // Lockout
   accountLockoutThreshold?: number
