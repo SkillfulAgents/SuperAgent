@@ -176,6 +176,19 @@ describe('relay transport', () => {
     expect(await manager.acceptForwarded('integration', [relayEvent('whe_1')])).toEqual(new Map([['whe_1', 'duplicate']]))
   })
 
+  it('reports an integration connected in another process from its row, only where connections run elsewhere', async () => {
+    manager = new AgentIntegrationManager(new AgentIntegrationRegistry([]))
+    const row = (status: 'active' | 'paused' | 'error', config: object) => ({ status, config: JSON.stringify(config) })
+
+    expect(manager.isIntegrationConnected('integration', row('active', { relay: relayBinding }))).toBe(false)
+    manager.setConnectionsElsewhere(true)
+    expect(manager.isIntegrationConnected('integration', row('active', { relay: relayBinding }))).toBe(true)
+    expect(manager.isIntegrationConnected('integration', row('error', { relay: relayBinding }))).toBe(false)
+    expect(manager.isIntegrationConnected('integration', row('paused', { relay: relayBinding }))).toBe(false)
+    expect(manager.isIntegrationConnected('integration', row('active', {}))).toBe(false)
+    expect(manager.isIntegrationConnected('integration')).toBe(false)
+  })
+
   it('connects directly when the host has no relay as it connects', async () => {
     const relay = createFakeWebhookRelay()
     relay.setSnapshot({ available: false, unavailableReason: 'platform_disconnected', transport: 'idle', lastClaimAt: null, lastError: null })
