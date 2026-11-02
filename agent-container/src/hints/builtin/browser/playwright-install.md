@@ -10,6 +10,14 @@ triggers:
     tool: Bash
     input:
       command: "*playwright@* install *"
+  - event: PreToolUse
+    tool: Bash
+    input:
+      command: "*playwright/cli.js install *"
+  - event: PreToolUse
+    tool: Bash
+    input:
+      command: "*playwright-core/cli.js install *"
 repeat: turn
 deny: true
 ---

@@ -58,6 +58,10 @@ const CASES: Array<[string, HintEventInput, string[]]> = [
   ['python playwright install headless shell', bash('cd /tmp && uv run --with playwright python -m playwright install chromium-headless-shell > /tmp/pw.log 2>&1; echo done >> /tmp/pw.log'), ['playwright-install', 'uv-run-env-file']],
   ['npx playwright install', bash('npx playwright install chromium'), ['playwright-install']],
   ['pinned npx playwright install', bash('npx --yes playwright@1.64.1 install chromium --only-shell'), ['playwright-install']],
+  ['playwright CLI by file path', bash('PLAYWRIGHT_BROWSERS_PATH=/workspace/playwright-tools/browsers node /workspace/playwright-tools/node_modules/playwright/cli.js install chromium'), ['playwright-install']],
+  ['playwright-core CLI by file path', bash('node node_modules/playwright-core/cli.js install chromium-headless-shell'), ['playwright-install']],
+  ['playwright CLI help by file path', bash('node node_modules/playwright/cli.js --help'), []],
+  ['playwright CLI install-deps by file path', bash('node node_modules/playwright/cli.js install-deps'), []],
   ['playwright install-deps', bash('npx playwright install-deps'), []],
   ['pip install playwright', bash('pip install playwright'), []],
 ]
