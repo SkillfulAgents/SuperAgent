@@ -319,6 +319,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('open-dashboard-window', { agentSlug, dashboardSlug, dashboardName })
   },
 
+  // A PNG of a region of this window, in CSS pixels (a dashboard comment's screenshot)
+  captureRegion: (rect: { x: number; y: number; width: number; height: number }): Promise<Uint8Array | null> => {
+    return ipcRenderer.invoke('capture-region', rect)
+  },
+
   // Show the native emoji picker
   showEmojiPanel: (): Promise<void> => {
     return ipcRenderer.invoke('show-emoji-panel')
@@ -574,6 +579,7 @@ declare global {
       setNativeTheme: (theme: string) => Promise<void>
       popupAppMenu: (x: number, y: number) => Promise<void>
       openDashboardWindow: (agentSlug: string, dashboardSlug: string, dashboardName?: string) => Promise<void>
+      captureRegion: (rect: { x: number; y: number; width: number; height: number }) => Promise<Uint8Array | null>
       showEmojiPanel: () => Promise<void>
       createDockShortcut: (agentSlug: string, dashboardSlug: string, dashboardName: string, iconPng: Uint8Array) => Promise<void>
       getPathForFile: (file: File) => string

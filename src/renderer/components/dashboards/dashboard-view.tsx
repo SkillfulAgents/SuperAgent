@@ -14,6 +14,10 @@ import { AddToDockDialog } from './add-to-dock-dialog'
 import { DashboardDispatchDialog } from './dashboard-dispatch-dialog'
 import { useDashboardDispatch } from './use-dashboard-dispatch'
 import { PendingAgentReviews } from './pending-agent-reviews'
+import { DashboardCommentOverlay } from './comments/dashboard-comment-overlay'
+import { DashboardFrameMenu } from './comments/dashboard-frame-menu'
+import { useDashboardFrameComments } from './comments/dashboard-frame'
+import { useDashboardComment } from './comments/use-dashboard-comment'
 import { useRenderTracker } from '@renderer/lib/perf'
 import { useRegisterDashboardHeader } from '@renderer/context/dashboard-header-context'
 import {
@@ -114,6 +118,29 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
   const dashboardPath = buildDashboardArtifactPath(dashboardAgentSlug, dashboardSlug)
   const iframeSrc = `${getRemoteDeploymentUrl() ?? baseUrl}${dashboardPath}`
   const dashboardDispatch = useDashboardDispatch(iframeRef)
+
+  const dashboardName = dashboard?.name || dashboardSlug
+  const commentTarget = useMemo(() => ({ name: dashboardName, slug: dashboardSlug }), [dashboardName, dashboardSlug])
+  const comment = useDashboardComment({
+    frameRef: iframeRef,
+    agentSlug: dashboardAgentSlug,
+    routeAgentSlug: agentSlug,
+    agentName: agent?.name ?? dashboardAgentSlug,
+    dashboard: commentTarget,
+  })
+  const [frameMenuAt, setFrameMenuAt] = useState<{ x: number; y: number } | null>(null)
+  const frameComments = useDashboardFrameComments(iframeRef, canStart, (x, y) => setFrameMenuAt({ x, y }))
+  const commentState = comment.state
+  const { open: openComment, close: closeComment } = comment
+  const handleToggleComment = useCallback(() => {
+    if (commentState.phase === 'closed') void openComment()
+    else if (commentState.phase === 'open' && !commentState.sending) closeComment()
+  }, [commentState, openComment, closeComment])
+  const handleCommentHere = useCallback((at: { x: number; y: number }) => {
+    setFrameMenuAt(null)
+    // Two frames: the menu leaves the DOM, then a frame is drawn without it for the screenshot.
+    requestAnimationFrame(() => requestAnimationFrame(() => void openComment(at)))
+  }, [openComment])
 
   const handleRefresh = useCallback(() => {
     if (iframeRef.current) {
@@ -247,6 +274,17 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
           onRefresh: handleRefresh,
           ...(addsToDock() ? { onAddToDock: handleAddToDock } : {}),
           refreshState: refreshing ? 'refreshing' as const : frameLoading ? 'loading' as const : 'idle' as const,
+          ...(canStart
+            ? {
+                comment: {
+                  onToggle: handleToggleComment,
+                  state: commentState.phase === 'open'
+                    ? (commentState.sending ? 'sending' as const : 'open' as const)
+                    : commentState.phase === 'opening' ? 'opening' as const : 'idle' as const,
+                  disabled: !dashboardRunning,
+                },
+              }
+            : {}),
         }
       : null,
   }), [
@@ -260,7 +298,17 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
     handleAddToDock,
     refreshing,
     frameLoading,
+    canStart,
+    handleToggleComment,
+    commentState,
+    dashboardRunning,
   ])
+
+  // A reloaded or different dashboard is not the one the comment is on.
+  useEffect(() => {
+    closeComment()
+    setFrameMenuAt(null)
+  }, [iframeSrc, frameAttempt, closeComment])
   useRegisterDashboardHeader(dashboardHeader)
 
   useEffect(() => {
@@ -377,6 +425,7 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
           allow="microphone; camera"
           onLoad={() => {
             setRefreshing(false)
+            frameComments.announce()
             if (!dashboardRunning) {
               setFrameLoading(false)
               setFrameLoadedEarly(true)
@@ -385,6 +434,25 @@ export function DashboardView({ agentSlug, dashboardSlug }: DashboardViewProps) 
             void verifyFrameDocument()
           }}
         />
+        {canStart && dashboardRunning && (
+          <DashboardFrameMenu
+            at={frameMenuAt}
+            onComment={handleCommentHere}
+            onRefresh={handleRefresh}
+            onClose={() => setFrameMenuAt(null)}
+          />
+        )}
+        {commentState.phase === 'open' && (
+          <DashboardCommentOverlay
+            pin={commentState.pin}
+            onPin={comment.setPin}
+            onSend={(text, dictated) => void comment.send(text, dictated)}
+            onClose={closeComment}
+            sending={commentState.sending}
+            error={commentState.error}
+            closing={commentState.closing}
+          />
+        )}
         {!dashboardRunning && (
           <div className="absolute inset-0 z-10 bg-background flex flex-col items-center justify-center p-8 text-muted-foreground">
             <DashboardStatusBody

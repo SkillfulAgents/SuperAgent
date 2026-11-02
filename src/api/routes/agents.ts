@@ -11,6 +11,7 @@ import { notifySessionMentions, readSessionMentions } from './session-mentions'
 import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
 import { parseMentions } from '@shared/lib/utils/mentions'
 import { parseDictationNote } from '@shared/lib/utils/dictation-note'
+import { parseDashboardCommentContext } from '@shared/lib/utils/dashboard-comment'
 import { notifyAgentMembersChanged, changeMemberRole, removeMember, countMembersWithMinRole, countOtherMembers } from '@shared/lib/services/agent-members-service'
 import { formatSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
@@ -29,6 +30,7 @@ import mcpReauth from './mcp-reauth'
 import { agentMemoryRoutes } from './agent-memories'
 import { agentBrowserAccountRoutes, sharedAgentRefusal } from './browser-accounts'
 import { getLlmPolyfillJs } from '../llm-polyfill'
+import { getDashboardInspectorJs } from '../dashboard-inspector'
 import {
   dashboardMountPath,
   dashboardResponseHeaders,
@@ -1349,8 +1351,9 @@ async function generateAndUpdateSessionNameAsync(
   firstMessage: string,
   agentName: string
 ): Promise<void> {
-  // Named from what the person wrote, without the notes that tell the agent who it tags and that it was dictated.
-  const message = parseMentions(parseDictationNote(firstMessage).cleanText).cleanText
+  // Named from what the person wrote, without the notes that tell the agent who it tags, that it was
+  // dictated, or what a dashboard comment was looking at.
+  const message = parseDashboardCommentContext(parseMentions(parseDictationNote(firstMessage).cleanText).cleanText).cleanText
   let sessionName: string | null = null
   // The E2E mock avoids all real provider calls — but this host-direct SDK
   // call bypassed it, so every test session made a doomed HTTPS round trip
@@ -7697,7 +7700,8 @@ async function proxyArtifactRequest(c: any) {
     const html = injectDashboardRuntime(await response.text(), {
       basePath: publicBasePath,
       slug: artifactSlug,
-      polyfillJs: getPolyfillJs() + getLlmPolyfillJs(),
+      // The inspector first, so it hears the polyfills' own console lines too.
+      polyfillJs: getDashboardInspectorJs() + getPolyfillJs() + getLlmPolyfillJs(),
     })
     return new Response(html, {
       status: response.status,

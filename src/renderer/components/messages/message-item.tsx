@@ -8,6 +8,7 @@ import { ThinkingBlockItem } from './thinking-block-item'
 import { SubAgentBlock } from './subagent-block'
 import { WorkflowBlock } from './workflow-block'
 import { WorkflowResultCard } from './workflow-result-card'
+import { DashboardCommentContext } from './dashboard-comment-context'
 import { parseTaskNotifications } from '@shared/lib/utils/task-notifications'
 import { MessageContextMenu } from './message-context-menu'
 import { MessageErrorBoundary } from './message-error-boundary'
@@ -503,6 +504,11 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
               </div>
             ))}
           </div>
+        )}
+
+        {/* What a dashboard comment told the agent beside the comment, folded */}
+        {isUser && userParts?.dashboardContext && (
+          <DashboardCommentContext context={userParts.dashboardContext} />
         )}
 
         {/* Workflow result cards parsed from inline task-notification blocks */}
