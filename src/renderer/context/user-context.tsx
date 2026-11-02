@@ -1,10 +1,11 @@
-import { createContext, useContext, useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react'
+import { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSession, signOut as authSignOut } from '@renderer/lib/auth-client'
 import { forgetLoginValues } from '@shared/lib/tools/request-login/login-request-store'
 import { apiFetch, clearRedirectStash, markDeliberateSignOut, clearDeliberateSignOut } from '@renderer/lib/api'
 import { isAuthMode } from '@renderer/lib/auth-mode'
 import { onCloudSessionRejected } from '@renderer/lib/cloud-session'
+import { targetIsRemote } from '@renderer/lib/api-target'
 import { useAgents, resolveRouteAgentId, type ApiAgent } from '@renderer/hooks/use-agents'
 import type { AgentRole } from '@shared/lib/types/agent'
 
@@ -23,6 +24,21 @@ interface User {
   mustChangePassword?: boolean
 }
 
+/** A cloud workspace with no session because it can't be reached right now, not because it has none. */
+export type CloudWait = 'starting' | 'reconnecting'
+
+const CLOUD_WAIT_RETRY_MS = 2_500
+
+/**
+ * A failed `get-session` that is not a 401 means the workspace did not answer
+ * (restarting, waking, network), so the session is unknown rather than gone.
+ * The router's not-ready body carries the route state.
+ */
+function cloudWaitFor(error: { status?: number; state?: unknown } | null | undefined): CloudWait | null {
+  if (!error || error.status === 401) return null
+  return error.state === 'waking' || error.state === 'provisioning' ? 'starting' : 'reconnecting'
+}
+
 export interface UserContextValue {
   user: User | null
   isAuthenticated: boolean
@@ -30,6 +46,8 @@ export interface UserContextValue {
   isAuthMode: boolean
   isPending: boolean
   mustChangePassword: boolean
+  /** Set while a cloud workspace can't be reached; its session is retried until it answers. */
+  cloudWait: CloudWait | null
   agentRole: (agentSlug: string) => AgentRole | null
   agentMemberCount: (agentSlug: string) => number
   canAccessAgent: (agentSlug: string) => boolean
@@ -153,6 +171,21 @@ export function UserProvider({ children }: { children: ReactNode }) {
     })
   }, [authMode])
 
+  // Held across a retry: a refetch clears `error` while it is in flight, and
+  // dropping the wait screen for that moment would flash the loading screen.
+  const remote = authMode && targetIsRemote()
+  const sessionError = (session as { error?: { status?: number; state?: unknown } | null }).error
+  const settled = remote && !session.isPending
+  const settledWait = settled && sessionUser === null ? cloudWaitFor(sessionError) : null
+  const [lastWait, setLastWait] = useState<CloudWait | null>(null)
+  if (settled && lastWait !== settledWait) setLastWait(settledWait)
+  const cloudWait = !remote ? null : settled ? settledWait : lastWait
+  useEffect(() => {
+    if (!cloudWait || session.isPending) return
+    const timer = setTimeout(() => void refetchSessionRef.current?.(), CLOUD_WAIT_RETRY_MS)
+    return () => clearTimeout(timer)
+  }, [cloudWait, session.isPending])
+
   // Fetch agent roles when authenticated
   const { data: agentRoles, isFetched: rolesFetched } = useAgentRoles(isAuthenticated)
   const rolesReady = !authMode || !isAuthenticated || rolesFetched
@@ -237,6 +270,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
       isAuthMode: authMode,
       isPending,
       mustChangePassword,
+      cloudWait,
       agentRole,
       agentMemberCount,
       canAccessAgent,
@@ -252,6 +286,7 @@ export function UserProvider({ children }: { children: ReactNode }) {
       authMode,
       isPending,
       mustChangePassword,
+      cloudWait,
       agentRole,
       agentMemberCount,
       canAccessAgent,
