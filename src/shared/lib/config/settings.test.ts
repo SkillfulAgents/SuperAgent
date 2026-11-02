@@ -404,6 +404,32 @@ describe('loadSettings', () => {
       expect(result.app?.apiLogAutoDeleteDays).toBe(90)
     })
 
+    it('defaults app.globalDispatchShortcut to Control+Shift+Space when not set', () => {
+      mockSettingsFile(JSON.stringify({}))
+
+      expect(loadSettings().app?.globalDispatchShortcut).toBe('Control+Shift+Space')
+    })
+
+    it('moves the earlier persisted default launcher shortcut to the current default', () => {
+      // Every settings write persisted the merged defaults, so existing installs
+      // carry the old default without having chosen it.
+      mockSettingsFile(JSON.stringify({ app: { globalDispatchShortcut: 'CommandOrControl+Shift+Space' } }))
+
+      expect(loadSettings().app?.globalDispatchShortcut).toBe('Control+Shift+Space')
+    })
+
+    it('keeps a launcher shortcut the user recorded, including ⌘⇧Space', () => {
+      mockSettingsFile(JSON.stringify({ app: { globalDispatchShortcut: 'Command+Shift+Space' } }))
+
+      expect(loadSettings().app?.globalDispatchShortcut).toBe('Command+Shift+Space')
+    })
+
+    it('keeps the launcher disabled when the shortcut is empty', () => {
+      mockSettingsFile(JSON.stringify({ app: { globalDispatchShortcut: '' } }))
+
+      expect(loadSettings().app?.globalDispatchShortcut).toBe('')
+    })
+
     it('preserves customEnvVars as-is', () => {
       const envVars = { MY_VAR: 'hello', ANOTHER: 'world' }
       mockSettingsFile(JSON.stringify({ customEnvVars: envVars }))
