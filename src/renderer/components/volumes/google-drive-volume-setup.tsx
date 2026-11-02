@@ -12,7 +12,7 @@ function GoogleDriveLogo({ className }: { className?: string }) {
 }
 
 /** The picker walks folder IDs from the top, where My Drive and each shared drive sit, and opens in My Drive. Any folder or drive
- * can be chosen; the top itself can't. */
+ * can be chosen, or have a folder made in it; the top itself can't. */
 type DriveCursor = { id: string; name: string }[]
 const googleDriveFolders: VolumeFolderSource<DriveCursor> = {
   type: 'googledrive', label: 'Google Drive',
@@ -22,6 +22,7 @@ const googleDriveFolders: VolumeFolderSource<DriveCursor> = {
   crumbs: cursor => [{ name: 'Google Drive', cursor: [] }, ...cursor.map((folder, index) => ({ name: folder.name, cursor: cursor.slice(0, index + 1) }))],
   confirmLabel: cursor => { const current = cursor.at(-1); return current ? `Use “${current.name}”` : null },
   opensInFirst: true,
+  canCreate: cursor => cursor.length > 0,
 }
 
 /** Where a chosen folder is, from its drive down: "My Drive / Projects / Team". */

@@ -864,7 +864,17 @@ class DashboardManager {
       JSON.stringify(pkg, null, 2)
     )
 
+    // The design tokens live in the React template; plain dashboards get the
+    // same file and inline it into the page at startup.
+    await fs.promises.copyFile(
+      gamutSkillPath('dashboards', 'templates', 'react-vite', 'src', 'tokens.css'),
+      path.join(dir, 'tokens.css')
+    )
+
     const indexJs = `const port = process.env.DASHBOARD_PORT || 3000;
+
+// Design tokens and .sa-* classes: /opt/gamut/plugin/skills/dashboards/DESIGN.md
+const tokensCss = await Bun.file(new URL('./tokens.css', import.meta.url)).text();
 
 const server = Bun.serve({
   port,
@@ -888,13 +898,16 @@ const html = \`<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${name}</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 2rem; }
-    h1 { color: #333; }
+\${tokensCss}
   </style>
 </head>
 <body>
-  <h1>${name}</h1>
-  <p>${description || 'Dashboard is running.'}</p>
+  <main class="sa-page">
+    <header><h1>${name}</h1></header>
+    <section class="sa-card">
+      <p style="margin: 0">${description || 'Dashboard is running.'}</p>
+    </section>
+  </main>
 </body>
 </html>\`;
 

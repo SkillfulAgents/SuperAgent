@@ -15,7 +15,7 @@ vi.mock('@shared/lib/error-reporting', async (importOriginal) => ({
 }))
 
 import { PlatformMountableVolume, dropPlatformVolumeKeys, preparePlatformVolume } from './platform-mountable-volume'
-import { platformVolumeConfigSchema, storedPlatformVolumeConfigSchema } from './volume-config-schema'
+import { storedPlatformVolumeConfigSchema } from './volume-config-schema'
 
 const ID = 'vol_00000000-0000-0000-0000-000000000001'
 const member = (id: string) => ({ getKey: () => `member:${id}`, bearerToken: () => `org::${id}`, applyTo: (headers: Headers) => headers.set('Authorization', `Bearer org::${id}`) })
@@ -254,14 +254,20 @@ describe('Gamut drive platform answers', () => {
 describe('saving a Gamut drive', () => {
   const created = 'vol_00000000-0000-0000-0000-000000000002'
 
-  it('creates a drive from a name with one call and saves only its id', async () => {
+  it('makes a drive from the picker with one call and answers with the drive it made', async () => {
     mocks.current.mockResolvedValue(member('m1'))
     const platform = vi.fn(async (_url: string, _init?: RequestInit) => Response.json({ id: created, name: 'Q4 Plans', createdAt: '2026-10-15T00:00:00Z' }, { status: 201 }))
     vi.stubGlobal('fetch', platform)
-    expect(await preparePlatformVolume({ name: 'Q4 Plans' })).toEqual({ name: 'Q4 Plans', config: { volumeId: created } })
+    expect(await PlatformMountableVolume.createFolder({ name: ' Q4 Plans ' }, { userId: 'm1' })).toEqual({ folder: { id: created, name: 'Q4 Plans' } })
     expect(platform.mock.calls.map(([url, init]) => [url, init?.method, init?.body])).toEqual([
       ['https://proxy.test/v1/volumes', 'POST', JSON.stringify({ name: 'Q4 Plans' })],
     ])
+  })
+
+  it('passes on the platform refusing a taken name', async () => {
+    mocks.current.mockResolvedValue(member('m1'))
+    vi.stubGlobal('fetch', vi.fn(async () => failure(409, { type: 'conflict_error', message: 'A Gamut drive with this name exists' })))
+    await expect(PlatformMountableVolume.createFolder({ name: 'Docs' }, { userId: 'm1' })).rejects.toMatchObject({ status: 409, message: 'A Gamut drive with this name exists' })
   })
 
   it('saves an existing drive with one list call and one member lookup', async () => {
@@ -274,9 +280,11 @@ describe('saving a Gamut drive', () => {
     expect(mocks.current).toHaveBeenCalledTimes(1)
   })
 
-  it('checks a new drive’s name before the platform creates it', () => {
-    for (const name of ['', '..', 'a/b', 'a\\b']) expect(platformVolumeConfigSchema.safeParse({ name }).success).toBe(false)
-    expect(platformVolumeConfigSchema.parse({ name: ' Launch ' })).toEqual({ name: 'Launch' })
+  it('checks a new drive’s name before the platform creates it', async () => {
+    const platform = vi.fn()
+    vi.stubGlobal('fetch', platform)
+    for (const name of ['', '..', 'a/b', 'a\\b']) await expect(PlatformMountableVolume.createFolder({ name }, { userId: 'm1' })).rejects.toMatchObject({ name: 'ZodError' })
+    expect(platform).not.toHaveBeenCalled()
   })
 
   it('reads a definition saved with its location, and uses the location of its keys', () => {
