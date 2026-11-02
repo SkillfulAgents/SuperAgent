@@ -1,4 +1,3 @@
-import { containerHost } from '@shared/lib/agent-actor'
 import { getWebhookRelay } from '@shared/lib/webhook-relay'
 import { accountSyncService } from './account-sync-service'
 import { apiLogAutoDeleteMonitor } from './api-log-auto-delete-monitor'
@@ -10,6 +9,7 @@ import { triggerManager } from './trigger-manager'
  * Background work that repeats on a fixed interval. Each service's `start()` runs its job
  * from its own timer; a host that cannot keep timers alive between requests (one that only
  * gets a single wake-up call) runs `run()` itself once `intervalMs` has passed.
+ * Org-wide jobs only: container health and status sync run where each agent's runtime lives.
  */
 export interface PeriodicJob {
   name: string
@@ -21,8 +21,6 @@ export function periodicJobs(): PeriodicJob[] {
   const relay = getWebhookRelay()
   return [
     { name: 'task-scheduler', intervalMs: taskScheduler.pollIntervalMs, run: () => taskScheduler.executeOverdueTasks() },
-    { name: 'container-health', intervalMs: containerHost.healthCheckIntervalMs, run: () => containerHost.runHealthChecks() },
-    { name: 'container-status-sync', intervalMs: containerHost.statusSyncIntervalMs, run: () => containerHost.syncAllStatuses() },
     { name: 'account-sync', intervalMs: accountSyncService.pollIntervalMs, run: () => accountSyncService.syncAll() },
     { name: 'session-auto-delete', intervalMs: sessionAutoDeleteMonitor.pollIntervalMs, run: () => sessionAutoDeleteMonitor.cleanupAllAgents() },
     { name: 'api-log-auto-delete', intervalMs: apiLogAutoDeleteMonitor.pollIntervalMs, run: () => apiLogAutoDeleteMonitor.cleanupAllAgents() },
