@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import { addErrorBreadcrumb, captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
+import { actorDurableState, setActorDurableState } from '@shared/lib/agent-actor/durable-state'
 import type { ContainerClient } from './types'
 import type { CoalescedUserMessage, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 
@@ -44,12 +45,13 @@ const inFlight = new Map<string, Promise<void>>()
 // Death signal arrived while a recovery was in flight; re-run once after it
 // finishes so sessions the first snapshot missed are not stranded isRecovering.
 const pendingRerun = new Map<string, RuntimeRecoveryDeps>()
-const recoveryHistory = new Map<string, number[]>()
+// The crash-loop brake's history is stored, so a restarted actor cannot reset it.
+const historyKey = (agentId: string) => `recovery-history:${agentId}`
 
 export function resetRuntimeRecoveryForTests(): void {
   inFlight.clear()
   pendingRerun.clear()
-  recoveryHistory.clear()
+  setActorDurableState(null)
 }
 
 export async function recoverFromUnexpectedDeath(deps: RuntimeRecoveryDeps): Promise<void> {
@@ -224,9 +226,10 @@ async function settleAndSync(deps: RuntimeRecoveryDeps, sessionIds: string[]): P
 
 function underRecoveryBudget(agentId: string): boolean {
   const now = Date.now()
-  const recent = (recoveryHistory.get(agentId) ?? []).filter((t) => now - t < RECOVERY_WINDOW_MS)
+  const store = actorDurableState()
+  const recent = (store.get<number[]>(historyKey(agentId)) ?? []).filter((t) => now - t < RECOVERY_WINDOW_MS)
   recent.push(now)
-  recoveryHistory.set(agentId, recent)
+  store.put(historyKey(agentId), recent)
   return recent.length <= MAX_RECOVERIES_PER_WINDOW
 }
 

@@ -1,4 +1,5 @@
 import path from 'path'
+import { durableStringMap } from '@shared/lib/agent-actor/durable-state'
 import { getSettings } from '@shared/lib/config/settings'
 import { getDataDir } from '@shared/lib/config/data-dir'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
@@ -30,8 +31,12 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
   readonly id = 'platform' as const
   readonly name = 'Platform'
 
-  /** Maps instanceId → Browserbase session ID (proxied through platform) */
-  private sessions: Map<string, string> = new Map()
+  /**
+   * Maps instanceId → Browserbase session ID (proxied through platform). In
+   * the actors' durable state, so a restarted actor finds the session its
+   * agent's browser still runs in instead of opening a second one.
+   */
+  private sessions = durableStringMap('browser-session:')
   private passkeyRecovery = new GooglePasskeyRecovery()
 
   onExternalClose: ((instanceId: string) => void) | null = null

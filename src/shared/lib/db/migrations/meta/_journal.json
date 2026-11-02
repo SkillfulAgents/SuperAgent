@@ -442,6 +442,13 @@
       "when": 1793642947069,
       "tag": "0062_host_state",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "6",
+      "when": 1793643915450,
+      "tag": "0063_agent_summaries",
+      "breakpoints": true
     }
   ]
 }
