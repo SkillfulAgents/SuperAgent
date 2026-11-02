@@ -149,6 +149,33 @@ describe('relay transport', () => {
     expect(relay.log.filter(entry => entry.op === 'register')).toHaveLength(1)
   })
 
+  it('in a host that runs each agent apart, connects only its agent and accepts what another process claimed', async () => {
+    const relay = createFakeWebhookRelay()
+    await database.insert(chatIntegrations).values({
+      id: 'other', provider: 'linear', agentSlug: 'support-agent', config: JSON.stringify({ relay: { ...relayBinding, endpointId: 'whep_other' } }),
+      requireApproval: false, createdAt: new Date(), updatedAt: new Date(),
+    }).run()
+    const relays = new IntegrationRelays(() => relay)
+    const definition = { ...new RelayTasks({ id: 'integration' } as AgentIntegrationRecord).definition, transports: ['direct', 'relay'] as const }
+    manager = new AgentIntegrationManager(
+      new AgentIntegrationRegistry([{ definition, policy: new RelayTasks({ id: 'integration' } as AgentIntegrationRecord), create: async (row) => (adapter = new RelayTasks(row)) }]),
+      id => relays.hostFor(id),
+      () => relay,
+    )
+    await manager.start({ agentSlug: 'agent', timers: false })
+    expect(relay.consumers.size).toBe(0)
+
+    // Set up after this process started: the first forwarded batch connects it.
+    await database.insert(chatIntegrations).values({
+      id: 'integration', provider: 'linear', agentSlug: 'agent', config: JSON.stringify({ relay: relayBinding }),
+      requireApproval: false, createdAt: new Date(), updatedAt: new Date(),
+    }).run()
+    expect(await manager.acceptForwarded('integration', [relayEvent('whe_1')])).toEqual(new Map([['whe_1', 'accepted']]))
+    await vi.waitFor(async () => expect((await rows())[0].state).toBe('delivered'))
+    expect([...relay.consumers.keys()]).toEqual(['integration:integration'])
+    expect(await manager.acceptForwarded('integration', [relayEvent('whe_1')])).toEqual(new Map([['whe_1', 'duplicate']]))
+  })
+
   it('connects directly when the host has no relay as it connects', async () => {
     const relay = createFakeWebhookRelay()
     relay.setSnapshot({ available: false, unavailableReason: 'platform_disconnected', transport: 'idle', lastClaimAt: null, lastError: null })
