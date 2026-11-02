@@ -29,9 +29,16 @@ export function usePendingUserRequests(agentSlug: string, sessionId?: string | n
   const resolvedSlug = resolveRouteAgentId(agentSlug, agents) ?? agentSlug
   return useQuery<PendingUserInputRequest[]>({
     queryKey: ['pending-user-requests', resolvedSlug, sessionId ?? null],
-    queryFn: async () => {
+    // React Query only cancels an in-flight fetch on invalidation when the
+    // cache already has data. Start with the same empty list consumers use
+    // while loading, but mark it stale so the first snapshot fetches at once.
+    // Otherwise a create/resolve event during that first fetch is lost until
+    // the interval poll, leaving a review or sign-in card missing for 30s.
+    initialData: [],
+    initialDataUpdatedAt: 0,
+    queryFn: async ({ signal }) => {
       const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''
-      const res = await apiFetch(`/api/agents/${resolvedSlug}/pending-requests${query}`)
+      const res = await apiFetch(`/api/agents/${resolvedSlug}/pending-requests${query}`, { signal })
       if (!res.ok) {
         // A failed fetch must be an ERROR, not an empty success: returning []
         // would overwrite good cached data — every card vanishes and the

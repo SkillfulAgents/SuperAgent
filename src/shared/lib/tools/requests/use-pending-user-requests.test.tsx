@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, renderHook, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { usePendingUserRequests } from './use-pending-user-requests'
@@ -34,8 +34,13 @@ describe('usePendingUserRequests', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
+      defaultOptions: { queries: { retry: false, staleTime: 5000 } },
     })
+  })
+
+  afterEach(() => {
+    cleanup()
+    queryClient.clear()
   })
 
   const wrapper = ({ children }: { children: ReactNode }) => (
@@ -49,7 +54,7 @@ describe('usePendingUserRequests', () => {
 
     await waitFor(() => expect(result.current.data).toHaveLength(1))
     expect(result.current.data?.[0].id).toBe('req-1')
-    expect(mockApiFetch).toHaveBeenCalledWith('/api/agents/agent-1/pending-requests?sessionId=s-1')
+    expect(mockApiFetch).toHaveBeenCalledWith('/api/agents/agent-1/pending-requests?sessionId=s-1', { signal: expect.any(AbortSignal) })
   })
 
   it('does not fetch for an unsent draft and starts when its session id arrives', async () => {
@@ -62,7 +67,7 @@ describe('usePendingUserRequests', () => {
     rerender({ sessionId: 's-1' })
     await waitFor(() => expect(result.current.data).toHaveLength(1))
     expect(mockApiFetch).toHaveBeenCalledTimes(1)
-    expect(mockApiFetch).toHaveBeenCalledWith('/api/agents/agent-1/pending-requests?sessionId=s-1')
+    expect(mockApiFetch).toHaveBeenCalledWith('/api/agents/agent-1/pending-requests?sessionId=s-1', { signal: expect.any(AbortSignal) })
   })
 
   it('omits the sessionId query for the agent-wide view', async () => {
@@ -71,7 +76,30 @@ describe('usePendingUserRequests', () => {
     const { result } = renderHook(() => usePendingUserRequests('agent-1'), { wrapper })
 
     await waitFor(() => expect(result.current.data).toEqual([]))
-    expect(mockApiFetch).toHaveBeenCalledWith('/api/agents/agent-1/pending-requests')
+    expect(mockApiFetch).toHaveBeenCalledWith('/api/agents/agent-1/pending-requests', { signal: expect.any(AbortSignal) })
+  })
+
+  it.each([
+    { event: 'created', before: [], after: [validEnvelope] },
+    { event: 'resolved', before: [validEnvelope], after: [] },
+  ])('refetches when a request $event event overtakes the first snapshot', async ({ before, after }) => {
+    let finishFirst!: (value: ReturnType<typeof okResponse>) => void
+    mockApiFetch.mockImplementationOnce(() => new Promise(resolve => { finishFirst = resolve }))
+    mockApiFetch.mockResolvedValue(okResponse(after))
+    const { result } = renderHook(() => usePendingUserRequests('agent-1', 's-1'), { wrapper })
+    await waitFor(() => expect(mockApiFetch).toHaveBeenCalledTimes(1))
+
+    await act(async () => {
+      // The server has changed, but the first HTTP response still holds the
+      // earlier snapshot. SSE must cause a fresh read now.
+      const refresh = queryClient.invalidateQueries({ queryKey: ['pending-user-requests'] })
+      finishFirst(okResponse(before))
+      await refresh
+    })
+
+    await waitFor(() => expect(result.current.data).toEqual(after))
+    expect(mockApiFetch).toHaveBeenCalledTimes(2)
+    expect(mockApiFetch.mock.calls[0][1].signal.aborted).toBe(true)
   })
 
   it('a failed fetch is an ERROR that keeps the last snapshot — never an empty success', async () => {
