@@ -217,7 +217,6 @@ export class AgentIntegrationManager {
     await connector.deliver(routing(routed, { integration: context.integration, sessionId: sessionId ?? routed.sessionId }), output)
   }
 
-  describeTarget(provider: string, externalId: string) { return this.registry.describeTarget(provider, externalId) }
 
   getDefinition(provider: string) { return this.registry.getDefinition(provider) }
 
