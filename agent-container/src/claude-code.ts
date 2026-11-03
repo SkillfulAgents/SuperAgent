@@ -32,6 +32,7 @@ import { builtinHints, createHintHookMatchers } from './hints';
 import { promptDate } from './prompt-date';
 import { mountedDrives, mountedVolumeIndexes, type VolumeIndex } from './volume-mounts';
 import { prepareResumeDiagnostics } from './resume-diagnostics';
+import { ContextUsageReporter, contextUsageChange } from './context-usage-reporter';
 
 /**
  * `Query` plus the `cancel_async_message` control request, which drops a queued
@@ -703,6 +704,10 @@ export class ClaudeCodeProcess extends EventEmitter {
   // send can spot an unsupported built-in without waiting on the CLI.
   private cliCommands?: readonly SlashCommand[];
   private runnableCommandNames?: readonly string[];
+  private readonly contextUsage = new ContextUsageReporter(
+    async () => this.queryInstance?.getContextUsage({ detail: 'summary' }),
+    (frame) => this.emit('message', frame),
+  );
 
   constructor(options: ClaudeCodeProcessOptions) {
     super();
@@ -1776,6 +1781,8 @@ export class ClaudeCodeProcess extends EventEmitter {
 
         this.trackForLateJoinReplay(message);
         this.emit('message', message);
+        const contextChange = contextUsageChange(message);
+        if (contextChange) this.contextUsage.refresh(contextChange.settled);
       }
     } catch (error: any) {
       // Check for abort error in multiple ways (SDK may use different error types)
@@ -2011,6 +2018,8 @@ export class ClaudeCodeProcess extends EventEmitter {
       console.log(`[Session ${this.sessionId}] Switching model dynamically -> ${this.model}`);
       try {
         await this.queryInstance.setModel(this.model);
+        // The window is the new model's from here on.
+        this.contextUsage.refresh(false);
       } catch (err) {
         // setModel can fail (e.g. transport not in streaming mode). Fall back to
         // the conservative restart path so the new model still takes effect.

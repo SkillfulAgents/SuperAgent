@@ -47,7 +47,7 @@ describe('registerGlobalDispatchShortcut', () => {
     const result = registerGlobalDispatchShortcut(undefined, onTrigger)
 
     expect(result.success).toBe(true)
-    expect(register).toHaveBeenCalledWith('CommandOrControl+Shift+Space', onTrigger)
+    expect(register).toHaveBeenCalledWith('Control+Shift+Space', onTrigger)
   })
 
   it('rejects a garbage accelerator without registering', () => {

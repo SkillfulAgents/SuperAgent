@@ -11,6 +11,7 @@ import { notifySessionMentions, readSessionMentions } from './session-mentions'
 import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
 import { parseMentions } from '@shared/lib/utils/mentions'
 import { parseDictationNote } from '@shared/lib/utils/dictation-note'
+import { parseDashboardCommentContext } from '@shared/lib/utils/dashboard-comment'
 import { notifyAgentMembersChanged, changeMemberRole, removeMember, countMembersWithMinRole, countOtherMembers } from '@shared/lib/services/agent-members-service'
 import { formatSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
@@ -29,6 +30,7 @@ import mcpReauth from './mcp-reauth'
 import { agentMemoryRoutes } from './agent-memories'
 import { agentBrowserAccountRoutes, sharedAgentRefusal } from './browser-accounts'
 import { getLlmPolyfillJs } from '../llm-polyfill'
+import { getDashboardInspectorJs } from '../dashboard-inspector'
 import {
   dashboardMountPath,
   dashboardResponseHeaders,
@@ -150,7 +152,9 @@ import {
   formatUploadTooLargeMessage,
   storeUploadChunk,
 } from '@shared/lib/utils/chunked-upload'
-import { getMountsWithHealth, addMount, attachMount, removeMount, setMountReadOnly, volumeSummary } from '@shared/lib/services/mount-service'
+import { getMountsWithHealth, addMount, attachMount, removeMount, setMountReadOnly, volumeSummary, resolveMountPath } from '@shared/lib/services/mount-service'
+import { isMountPath } from '@shared/lib/utils/workspace-path'
+import { serveVolumeFile, volumeFailure } from '../lib/volume-file'
 import { addMountSchema, updateMountSchema } from '@shared/lib/services/mount-schema'
 import { releaseVolume, VolumeError } from '@shared/lib/services/volume-service'
 import { volumeViewer } from '../lib/volume-access'
@@ -1339,8 +1343,9 @@ async function generateAndUpdateSessionNameAsync(
   firstMessage: string,
   agentName: string
 ): Promise<void> {
-  // Named from what the person wrote, without the notes that tell the agent who it tags and that it was dictated.
-  const message = parseMentions(parseDictationNote(firstMessage).cleanText).cleanText
+  // Named from what the person wrote, without the notes that tell the agent who it tags, that it was
+  // dictated, or what a dashboard comment was looking at.
+  const message = parseDashboardCommentContext(parseMentions(parseDictationNote(firstMessage).cleanText).cleanText).cleanText
   let sessionName: string | null = null
   // The E2E mock avoids all real provider calls — but this host-direct SDK
   // call bypassed it, so every test session made a doomed HTTPS round trip
@@ -6665,7 +6670,33 @@ agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
   }
 })
 
-// GET /api/agents/:id/folders - Lazily list one level of a bookmarked workspace folder
+function foldersFirstByName(a: { name: string; type: string }, b: { name: string; type: string }): number {
+  if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
+  return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+}
+
+/** One level of a folder in one of the agent's drives. Whoever may view the agent may list any of them, as they may open its files. */
+async function listMountFolder(c: Context, agentSlug: string, rawRoot: string, rawCurrentPath: string) {
+  try {
+    const mount = await resolveMountPath(agentSlug, rawCurrentPath)
+    if (!mount) return c.json({ error: 'Drive not found' }, 404)
+    const currentPath = rawCurrentPath.replace(/\/+$/, '')
+    const entries = (await mount.ops.list(mount.path))
+      .filter(entry => entry.kind === 'file' || entry.kind === 'directory')
+      .map(entry => ({ name: entry.name, path: `${currentPath}/${entry.name}`, type: entry.kind }))
+      .sort(foldersFirstByName)
+    return c.json({
+      root: rawRoot.replace(/\/+$/, ''),
+      path: currentPath,
+      entries: entries.slice(0, MAX_FOLDER_ENTRIES),
+      truncated: entries.length > MAX_FOLDER_ENTRIES,
+    })
+  } catch (error) {
+    return volumeFailure(c, error)
+  }
+}
+
+// GET /api/agents/:id/folders - Lazily list one level of a bookmarked workspace folder, or of a folder in one of its drives
 agents.get('/:id/folders', AgentRead(), async (c) => {
   const agentSlug = getAgentId(c)
   const rawRoot = c.req.query('root')
@@ -6673,6 +6704,7 @@ agents.get('/:id/folders', AgentRead(), async (c) => {
   if (!rawRoot || !rawCurrentPath) {
     return c.json({ error: 'root and path are required' }, 400)
   }
+  if (isMountPath(rawRoot)) return listMountFolder(c, agentSlug, rawRoot, rawCurrentPath)
 
   // Explicit folder bookmarks are shareable with viewers. The built-in full
   // workspace browser is an owner-only surface and must not become an API-level
@@ -6700,10 +6732,7 @@ agents.get('/:id/folders', AgentRead(), async (c) => {
         path: path.posix.join(currentPath, entry.name),
         type: entry.kind,
       }))
-      .sort((a, b) => {
-        if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
-        return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
-      })
+      .sort(foldersFirstByName)
 
     return c.json({
       root: rootPath,
@@ -7070,6 +7099,27 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
     }
     console.error('Failed to download file:', error)
     return c.json({ error: 'Failed to download file' }, 500)
+  }
+})
+
+// GET /api/agents/:id/mount-files/* - A file in one of the agent's drives, by the path the agent sees it at under /mounts
+agents.get('/:id/mount-files/*', AgentRead(), async (c) => {
+  // The raw :id param, as the files route reads its prefix: a slug spelled with escapes misses it.
+  const urlPath = new URL(c.req.url).pathname
+  const prefix = `/api/agents/${c.req.param('id')}/mount-files/`
+  let drivePath: string
+  try {
+    drivePath = urlPath.startsWith(prefix) ? decodeURIComponent(urlPath.slice(prefix.length)) : ''
+  } catch {
+    drivePath = ''
+  }
+  if (!drivePath) return c.json({ error: 'Invalid path' }, 400)
+  try {
+    const mount = await resolveMountPath(getAgentId(c), `/mounts/${drivePath}`)
+    if (!mount) return c.json({ error: 'Drive not found' }, 404)
+    return await serveVolumeFile(c, mount.ops, mount.path)
+  } catch (error) {
+    return volumeFailure(c, error)
   }
 })
 
@@ -7687,7 +7737,8 @@ async function proxyArtifactRequest(c: any) {
     const html = injectDashboardRuntime(await response.text(), {
       basePath: publicBasePath,
       slug: artifactSlug,
-      polyfillJs: getPolyfillJs() + getLlmPolyfillJs(),
+      // The inspector first, so it hears the polyfills' own console lines too.
+      polyfillJs: getDashboardInspectorJs() + getPolyfillJs() + getLlmPolyfillJs(),
     })
     return new Response(html, {
       status: response.status,

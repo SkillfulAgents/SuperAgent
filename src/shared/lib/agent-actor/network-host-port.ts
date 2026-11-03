@@ -14,6 +14,7 @@
 import { decodeActorError, encodeActorError, type ActorErrorData } from './actor-error-codec'
 import type { HostCalls, HostEvents, HostPort } from './host-port'
 import { decodeWire, encodeWire, type ActorFetch } from './network-actor'
+import { background } from '@shared/lib/background'
 
 export interface HostEventEntry {
   id: string
@@ -95,7 +96,7 @@ export function remoteHostPort(send: ActorFetch, options: RemoteHostPortOptions 
         if (retry) clearTimeout(retry)
         retry = setTimeout(() => {
           retry = null
-          void flush()
+          background(flush, { name: 'agent-actor.retry-host-events' })
         }, delay)
         retry.unref?.()
       } finally {
@@ -121,7 +122,7 @@ export function remoteHostPort(send: ActorFetch, options: RemoteHostPortOptions 
       // Fails here, in the caller, as the local port's handler never would: an event that is not data can never be posted.
       encodeWire(event, `host event ${name}`)
       appended = appended.then(() => outbox.append(entry))
-      void flush()
+      background(flush, { name: 'agent-actor.flush-host-events' })
     },
     flush,
   }

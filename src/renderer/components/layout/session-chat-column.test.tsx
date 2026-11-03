@@ -186,13 +186,7 @@ describe('SessionChatColumn composer swap', () => {
       <SessionChatColumn
         {...baseProps}
         lastActivityAt={new Date(Date.now() - 7 * 60 * 60 * 1000)}
-        contextUsage={{
-          inputTokens: 110_000,
-          outputTokens: 1_000,
-          cacheReadInputTokens: 0,
-          cacheCreationInputTokens: 0,
-          contextWindow: 200_000,
-        }}
+        contextUsage={{ totalTokens: 110_000, contextWindow: 200_000 }}
       />,
     )
 

@@ -32,6 +32,8 @@ interface DrawerShellProps {
   fullScreen?: boolean
   /** Draw at the minimum width while true, leaving the saved width as it is. */
   narrow?: boolean
+  /** Called as the person drags the drawer's edge. */
+  onResize?: () => void
   defaultWidth?: number
   minWidth?: number
   maxWidth?: number
@@ -47,6 +49,7 @@ export const DrawerShell = forwardRef<DrawerShellHandle, DrawerShellProps>(funct
   wideOverlay = false,
   fullScreen = false,
   narrow = false,
+  onResize,
   defaultWidth = DEFAULT_WIDTH,
   minWidth = MIN_WIDTH,
   maxWidth = MAX_WIDTH,
@@ -93,7 +96,8 @@ export const DrawerShell = forwardRef<DrawerShellHandle, DrawerShellProps>(funct
     (e: React.MouseEvent) => {
       e.preventDefault()
       startXRef.current = e.clientX
-      startWidthRef.current = drawerWidth
+      startWidthRef.current = shownWidth
+      let moved = false
       setIsResizing(true)
       document.body.style.cursor = 'col-resize'
       document.body.style.userSelect = 'none'
@@ -102,6 +106,8 @@ export const DrawerShell = forwardRef<DrawerShellHandle, DrawerShellProps>(funct
         const dx = startXRef.current - moveEvent.clientX
         const newWidth = Math.min(maxWidth, Math.max(minWidth, startWidthRef.current + dx))
         setDrawerWidth(newWidth)
+        moved = true
+        onResize?.()
       }
 
       const handleMouseUp = (upEvent: MouseEvent) => {
@@ -112,13 +118,13 @@ export const DrawerShell = forwardRef<DrawerShellHandle, DrawerShellProps>(funct
         setIsResizing(false)
         const dx = startXRef.current - upEvent.clientX
         const finalWidth = Math.min(maxWidth, Math.max(minWidth, startWidthRef.current + dx))
-        localStorage.setItem(storageKey, String(Math.round(finalWidth)))
+        if (moved) localStorage.setItem(storageKey, String(Math.round(finalWidth)))
       }
 
       document.addEventListener('mousemove', handleMouseMove)
       document.addEventListener('mouseup', handleMouseUp)
     },
-    [drawerWidth, storageKey, minWidth, maxWidth]
+    [shownWidth, onResize, storageKey, minWidth, maxWidth]
   )
 
   return (

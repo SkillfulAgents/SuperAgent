@@ -1139,11 +1139,8 @@ function getOrCreateEventSource(
           streamStates.set(sessionId, {
             ...current,
             contextUsage: {
-              inputTokens: data.inputTokens ?? 0,
-              outputTokens: data.outputTokens ?? 0,
-              cacheCreationInputTokens: data.cacheCreationInputTokens ?? 0,
-              cacheReadInputTokens: data.cacheReadInputTokens ?? 0,
-              contextWindow: data.contextWindow ?? 200_000,
+              totalTokens: data.totalTokens ?? 0,
+              contextWindow: data.contextWindow ?? 0,
             },
           })
         }
