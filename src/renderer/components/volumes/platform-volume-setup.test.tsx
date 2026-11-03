@@ -36,9 +36,9 @@ import { VolumeSettingsDialog } from './volume-settings-dialog'
 
 afterEach(() => { cleanup(); state.drives = [Q4]; state.created = []; state.listFails = false; state.holdCreate = null; state.holdList = null; onlineManager.setOnline(true) })
 state.drives = [Q4]
-async function open(save = vi.fn()) {
+async function open(save = vi.fn(), onClose = vi.fn()) {
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-    <VolumeSettingsDialog onSave={save} onClose={vi.fn()} />
+    <VolumeSettingsDialog onSave={save} onClose={onClose} />
   </QueryClientProvider>)
   await userEvent.click(screen.getByRole('button', { name: 'Gamut drive' }))
   await userEvent.click(screen.getByRole('button', { name: /^Drive/ }))
@@ -156,8 +156,10 @@ describe('Gamut drive setup', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'New drive' }))
   }
 
-  it('gives the reason for a bad name, and Escape or an empty name closes only the row, focusing New drive', async () => {
-    await startNaming()
+  it('cancels naming before Escape closes the picker and restores its field without closing setup', async () => {
+    const onClose = vi.fn()
+    await open(undefined, onClose)
+    await userEvent.click(await screen.findByRole('button', { name: 'New drive' }))
     await userEvent.type(nameField(), 'a/b{Enter}')
     expect(screen.getByRole('alert')).toHaveTextContent('Use a single folder name')
     expect(state.created).toEqual([])
@@ -167,7 +169,13 @@ describe('Gamut drive setup', () => {
     expect(screen.getByRole('button', { name: 'New drive' })).toHaveFocus()
     await userEvent.click(screen.getByRole('button', { name: 'New drive' }))
     await userEvent.type(nameField(), '{Enter}')
-    expect(screen.getByRole('button', { name: 'New drive' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'New drive' })).toHaveFocus()
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByTestId('platform-folder-picker')).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: 'Drive Select a drive' })).toHaveFocus()
+    expect(screen.getByRole('dialog', { name: 'Set up Gamut drive' })).toBeVisible()
+    expect(onClose).not.toHaveBeenCalled()
+    expect(state.created).toEqual([])
   })
 
   it('holds the picker while a drive is being made, through Escape and a Cancel and reopen', async () => {

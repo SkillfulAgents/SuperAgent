@@ -95,7 +95,7 @@ export function TimezonePicker({ value, onValueChange, disabled, className }: Ti
             autoFocus
           />
         </div>
-        <div className="max-h-60 overflow-y-auto overscroll-contain p-1">
+        <div className="max-h-60 overflow-y-auto overscroll-contain p-1" data-testid="timezone-options">
           {filtered.length === 0 && (
             <div className="px-3 py-6 text-center text-sm text-muted-foreground">
               No timezone found.

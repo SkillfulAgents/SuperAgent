@@ -45,6 +45,15 @@ test.describe('Auth Flow', () => {
 
     // App should load after signup
     await appPage.waitForAppLoaded()
+    // The shell can render before user settings reveal first-user onboarding.
+    // Wait for that required wizard instead of treating a brief absence as done.
+    const settingsResponse = await user1Page.request.get('/api/user-settings')
+    expect(settingsResponse.ok()).toBe(true)
+    const { setupCompleted } = await settingsResponse.json()
+    expect(typeof setupCompleted).toBe('boolean')
+    if (!setupCompleted) {
+      await expect(user1Page.getByTestId('wizard-container')).toBeVisible()
+    }
     await appPage.dismissWizardIfVisible()
 
     // Verify user name in footer
