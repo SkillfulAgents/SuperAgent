@@ -17,6 +17,7 @@ import { IMessageDeliveryCard } from './imessage-delivery-card'
 import { TelegramDeliveryCard } from './telegram-delivery-card'
 import { SlackDeliveryCard } from './slack-delivery-card'
 import { SlackConnectionSettings, SlackSetup } from './slack-setup'
+import { SlackAppAppearanceCard } from './slack-app-appearance'
 import { LinearIntegrationMessage } from './messages/linear-message'
 import { RecallSetupForm } from './recall-setup-form'
 import { MeetingPanel } from './meeting-panel'
@@ -39,6 +40,7 @@ export const integrationSetupProviders: readonly IntegrationSetupProvider[] = [
   { ...chatProvider('slack', 'Slack', SlackIntegrationMessage, props => <>
     <ChatIntegrationSettingsCard {...props} />
     <SlackDeliveryCard integration={props.integration} />
+    <SlackAppAppearanceCard integration={props.integration} />
   </>), Setup: SlackSetup, ConnectionSettings: SlackConnectionSettings },
   chatProvider('imessage', 'iMessage', IMessageIntegrationMessage, props => <>
     <ChatIntegrationSettingsCard {...props} />
