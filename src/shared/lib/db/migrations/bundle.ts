@@ -711,13 +711,5 @@ export const migrationBundle: readonly MigrationMeta[] = [
     "bps": true,
     "folderMillis": 1793208365492,
     "hash": "2c09aa6052f6f77e0b64de33853598c4420a21aa2d310d299f44b11b1693111d"
-  },
-  {
-    "sql": [
-      "CREATE TABLE `agent_summaries` (\n\t`agent_slug` text PRIMARY KEY NOT NULL,\n\t`summary` text NOT NULL,\n\t`updated_at` integer NOT NULL\n);\n"
-    ],
-    "bps": true,
-    "folderMillis": 1793643840090,
-    "hash": "1ed2e6839c3452f440e927fd83969c185836f83220e4c7c2ba0491ef94d1bf69"
   }
 ]
