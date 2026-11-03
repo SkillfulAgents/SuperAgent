@@ -8,6 +8,7 @@ import * as schema from '../db/schema'
 let testDb: ReturnType<typeof drizzle>
 let testSqlite: InstanceType<typeof Database>
 const mockReadSessionMetadata = vi.fn()
+const mockActiveIds = vi.fn((_slug: string): string[] => [])
 
 vi.mock('../db', () => ({
   get db() {
@@ -17,6 +18,12 @@ vi.mock('../db', () => ({
 
 vi.mock('./session-service', () => ({
   readSessionMetadata: (...args: unknown[]) => mockReadSessionMetadata(...args),
+}))
+
+vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
+  LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
+    activeIds: (slug) => mockActiveIds(slug),
+  }),
 }))
 
 import { buildHomeCardHealth } from './home-card-health-service'
@@ -31,6 +38,8 @@ describe('home-card-health-service', () => {
       migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations'),
     })
     mockReadSessionMetadata.mockReset()
+    mockActiveIds.mockReset()
+    mockActiveIds.mockReturnValue([])
     mockReadSessionMetadata.mockImplementation(async (store: { slug: string }) => (
       store.slug === 'agent-a'
         ? {
@@ -157,6 +166,39 @@ describe('home-card-health-service', () => {
     expect(mockReadSessionMetadata).toHaveBeenCalledWith(expect.objectContaining({ slug: 'agent-a' }))
     expect(result).not.toHaveProperty('accountLinks')
     expect(result).not.toHaveProperty('connectionById')
+  })
+
+  it('asks only agents with a chart for their live sessions, and a live run stays out of the bars', async () => {
+    await testDb.insert(schema.webhookTriggers).values({
+      id: 'webhook-a',
+      agentSlug: 'agent-a',
+      kind: 'custom',
+      triggerType: 'CUSTOM_WEBHOOK',
+      prompt: 'handle',
+      name: 'Feedback',
+      status: 'active',
+      fireCount: 2,
+      createdAt: NOW,
+    })
+    mockReadSessionMetadata.mockImplementation(async (store: { slug: string }) => (
+      store.slug === 'agent-a'
+        ? {
+            'still-running': { isWebhookExecution: true, webhookTriggerId: 'webhook-a', automationStatus: 'running', createdAt: '2026-07-30T10:00:00.000Z' },
+            'died-running': { isWebhookExecution: true, webhookTriggerId: 'webhook-a', automationStatus: 'running', createdAt: '2026-07-30T11:00:00.000Z' },
+          }
+        : {}
+    ))
+    mockActiveIds.mockImplementation((slug) => (slug === 'agent-a' ? ['still-running'] : []))
+
+    const result = await buildHomeCardHealth({
+      agentSlugs: ['agent-a', 'agent-without-charts'],
+      days: 7,
+      now: NOW,
+      tzOffsetMinutes: 0,
+    })
+
+    expect(mockActiveIds.mock.calls.map(([slug]) => slug)).toEqual(['agent-a'])
+    expect(result.webhookByTriggerId['webhook-a'][6]).toEqual({ date: '2026-07-30', succeeded: 0, failed: 1 })
   })
 
   it('short-circuits an empty visible-agent scope', async () => {
