@@ -14,6 +14,7 @@ import {
   listsRecentFiles,
   offersComputerUseSettings,
   offersPrivateSkillsets,
+  readsNotificationsOverSocket,
   usesHostFolderPaths,
 } from './capabilities'
 import { _setFactsForTest } from './facts'
@@ -47,6 +48,24 @@ describe('canUseHostFeatures', () => {
     mockIsElectron.mockReturnValue(false)
     setActiveTarget('local', null)
     expect(canUseHostFeatures()).toBe(false)
+  })
+})
+
+describe('readsNotificationsOverSocket', () => {
+  const laptop = { shell: 'electron', os: 'darwin', distribution: 'direct' } as const
+
+  it('is true for the API this build serves itself', () => {
+    setActiveTarget('local', null)
+    expect(readsNotificationsOverSocket()).toBe(true)
+  })
+
+  it('asks a cloud workspace: false until it says it serves the socket', () => {
+    setActiveTarget('cloud', null)
+    _setFactsForTest({ client: laptop, server: { os: 'linux', distribution: 'deployment' } })
+    expect(readsNotificationsOverSocket()).toBe(false)
+
+    _setFactsForTest({ client: laptop, server: { os: 'linux', distribution: 'deployment', notificationsSocket: true } })
+    expect(readsNotificationsOverSocket()).toBe(true)
   })
 })
 

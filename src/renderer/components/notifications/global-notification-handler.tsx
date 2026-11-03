@@ -59,6 +59,7 @@ import type { RuntimeStatusResponse } from '@renderer/hooks/use-runtime-status'
 import type { GlobalSettingsResponse } from '@renderer/hooks/use-settings'
 import { TODOS_QUERY_KEY } from '@renderer/hooks/use-todos'
 import { reconnectDelayMs } from '@renderer/lib/stream-liveness'
+import { readsNotificationsOverSocket } from '@renderer/lib/capabilities'
 
 // Queries whose fetch runs an LLM completion server-side. Everything else is
 // refetched wholesale after the stream comes back from a fatal close.
@@ -132,7 +133,7 @@ export function GlobalNotificationHandler() {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectAttemptRef = useRef(0)
   const wasDeadRef = useRef(false)
-  const streamRef = useRef<WebSocket | null>(null)
+  const streamRef = useRef<WebSocket | EventSource | null>(null)
 
   // Sync dock badge count with unread notifications (macOS Electron only)
   useEffect(() => {
@@ -264,11 +265,14 @@ export function GlobalNotificationHandler() {
     const wsProtocol = baseUrl.startsWith('https') || window.location.protocol === 'https:' ? 'wss' : 'ws'
     const wsHost = baseUrl ? baseUrl.replace(/^https?:\/\//, '') : window.location.host
     const wsUrl = `${wsProtocol}://${wsHost}/api/notifications/socket`
-    const es = new WebSocket(wsUrl)
+    // A cloud workspace on an older version has no socket; every server still serves the SSE route.
+    const es: WebSocket | EventSource = readsNotificationsOverSocket()
+      ? new WebSocket(wsUrl)
+      : new EventSource(`${baseUrl}/api/notifications/stream`)
     streamRef.current = es
     const confirmations = createInvalidationCoalescer(queryClient, SESSION_CONFIRMATION_DELAY_MS)
 
-    es.onmessage = (event) => {
+    es.onmessage = (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data)
 
@@ -717,13 +721,15 @@ export function GlobalNotificationHandler() {
       queryClient.invalidateQueries({ queryKey: ['my-agent-roles'] })
     }
 
-    // Keeps proxies from closing an idle socket; the server answers `pong`.
-    const keepAlive = setInterval(() => {
-      if (es.readyState === WebSocket.OPEN) es.send('ping')
-    }, 30_000)
+    // Keeps proxies from closing an idle socket; the server answers `pong`. The SSE route pings by itself.
+    const keepAlive = es instanceof WebSocket
+      ? setInterval(() => {
+          if (es.readyState === WebSocket.OPEN) es.send('ping')
+        }, 30_000)
+      : undefined
 
-    // Events sent while the socket was down are lost, so every close is an outage.
-    es.onclose = () => {
+    // Events sent while the stream was down are lost, so every close is an outage.
+    const onDead = () => {
       if (streamRef.current !== es) return
       clearInterval(keepAlive)
       wasDeadRef.current = true
@@ -735,6 +741,16 @@ export function GlobalNotificationHandler() {
         setReconnectKey((k) => k + 1)
       }, delay)
     }
+    if (es instanceof WebSocket) {
+      es.onclose = onDead
+    } else {
+      const source = es
+      source.onerror = () => {
+        // The browser reopens an SSE stream after a network error by itself, but what it missed is gone.
+        if (source.readyState === EventSource.CLOSED) onDead()
+        else wasDeadRef.current = true
+      }
+    }
 
     return () => {
       clearInterval(keepAlive)
@@ -745,7 +761,7 @@ export function GlobalNotificationHandler() {
       es.onmessage = null
       // Closing before the handshake ends leaves the socket half-open in some
       // WebSocket wrappers (Playwright's routing mock among them); close it once open.
-      if (es.readyState === WebSocket.CONNECTING) es.onopen = () => es.close()
+      if (es instanceof WebSocket && es.readyState === WebSocket.CONNECTING) es.onopen = () => es.close()
       else es.close()
     }
   }, [queryClient, navigate, reconnectKey])

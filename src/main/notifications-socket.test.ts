@@ -1,8 +1,9 @@
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { WebSocket } from 'ws'
+import { WebSocket, type ClientOptions } from 'ws'
 
+vi.mock('@shared/lib/auth/trusted-origins', () => ({ getTrustedOrigins: () => ['https://app.acme.example'] }))
 vi.mock('@shared/lib/agent-actor', () => ({ agentCatalog: {}, agentRegistry: {} }))
 vi.mock('@shared/lib/auth/mode', () => ({ isAuthMode: () => false }))
 vi.mock('@shared/lib/services/notification-service', () => ({ getAccessibleAgentSlugs: vi.fn() }))
@@ -85,4 +86,29 @@ describe('notifications socket', () => {
 
     await vi.waitFor(() => expect(busListeners.size).toBe(0))
   })
+
+  it('refuses a page from another site, and opens for this server\'s own pages, its trusted origins and the desktop renderer', async () => {
+    expect(await handshake({ origin: 'https://attacker.example' })).toBe(403)
+    expect(await handshake({ origin: 'https://org-b.acme.example', headers: { host: 'org-a.acme.example' } })).toBe(403)
+
+    expect(await handshake({ origin: 'https://org-a.acme.example', headers: { host: 'org-a.acme.example' } })).toBe(101)
+    expect(await handshake({ origin: 'https://app.acme.example' })).toBe(101)
+    expect(await handshake({ origin: 'null' })).toBe(101)
+  })
 })
+
+/** Opens a tab's socket and closes it again: 101 when it opened, else the status it was refused with. */
+function handshake(options: ClientOptions): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url, options)
+    ws.once('open', () => {
+      ws.close()
+      resolve(101)
+    })
+    ws.once('unexpected-response', (_request, response) => {
+      response.resume()
+      resolve(response.statusCode ?? 0)
+    })
+    ws.once('error', reject)
+  })
+}

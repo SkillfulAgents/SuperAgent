@@ -31,6 +31,32 @@ class MockWebSocket {
 
 vi.stubGlobal('WebSocket', MockWebSocket)
 
+// The SSE route, for a cloud workspace too old to have the notifications socket.
+class MockEventSource {
+  static instances: MockEventSource[] = []
+  static CONNECTING = 0
+  static OPEN = 1
+  static CLOSED = 2
+  onmessage: ((event: { data: string }) => void) | null = null
+  onopen: (() => void) | null = null
+  onerror: (() => void) | null = null
+  readyState = MockEventSource.OPEN
+  constructor(readonly url: string) {
+    MockEventSource.instances.push(this)
+  }
+  close() {
+    this.readyState = MockEventSource.CLOSED
+  }
+}
+
+vi.stubGlobal('EventSource', MockEventSource)
+
+const transport = vi.hoisted(() => ({ overSocket: true }))
+vi.mock('@renderer/lib/capabilities', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@renderer/lib/capabilities')>()),
+  readsNotificationsOverSocket: () => transport.overSocket,
+}))
+
 vi.mock('@renderer/lib/env', () => ({
   getApiBaseUrl: () => 'http://localhost:3000',
   isElectron: () => false,
@@ -1151,5 +1177,41 @@ describe('stream healing', () => {
     })
 
     expect(MockWebSocket.instances).toHaveLength(1)
+  })
+
+  describe('on a cloud workspace without the notifications socket', () => {
+    beforeEach(() => {
+      transport.overSocket = false
+      MockEventSource.instances = []
+    })
+
+    afterEach(() => {
+      transport.overSocket = true
+    })
+
+    it('reads the SSE route, refetches after a dropped stream, and reopens one closed for good', async () => {
+      renderHandler()
+      expect(MockWebSocket.instances).toHaveLength(0)
+      const source = MockEventSource.instances[0]
+      expect(source.url).toBe('http://localhost:3000/api/notifications/stream')
+
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+      source.onmessage?.({ data: JSON.stringify({ type: 'agent_created', agentSlug: 'new-helper' }) })
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agents'] })
+
+      // A network error: the browser reconnects the stream, but what it missed is gone.
+      source.readyState = MockEventSource.CONNECTING
+      source.onerror?.()
+      source.readyState = MockEventSource.OPEN
+      source.onopen?.()
+      expect(invalidateSpy).toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
+
+      source.readyState = MockEventSource.CLOSED
+      await act(async () => {
+        source.onerror?.()
+      })
+      await advance(STREAM_RECONNECT_MS)
+      expect(MockEventSource.instances).toHaveLength(2)
+    })
   })
 })

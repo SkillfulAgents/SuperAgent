@@ -130,3 +130,12 @@ export function addsToDock(): boolean {
 export function listsRecentFiles(): boolean {
   return !!window.electronAPI?.getRecentFiles && !runsInAppSandbox(clientFacts())
 }
+
+/**
+ * Whether the global notifications come over the socket rather than the SSE
+ * route. The local API and a web page's own server are this build. A cloud
+ * workspace may run an older version with no socket, so it has to say so.
+ */
+export function readsNotificationsOverSocket(): boolean {
+  return !targetIsRemote() || serverFacts()?.notificationsSocket === true
+}

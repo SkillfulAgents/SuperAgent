@@ -8,11 +8,12 @@
 
 import { WebSocket } from 'ws'
 import { openNotificationsFeed } from '../api/lib/notifications-feed'
-import type { AgentSocket, AgentSocketRoute } from './agent-socket'
-import { authenticateUserWebSocket } from './agent-websocket-auth'
+import type { AgentSocket, AgentSocketDecision, AgentSocketRoute } from './agent-socket'
+import { authenticateUserWebSocket, socketOriginAllowed } from './agent-websocket-auth'
 
 export const notificationsSocket: AgentSocketRoute = (request) => {
   if (request.url.pathname !== '/api/notifications/socket') return null
+  if (!socketOriginAllowed(request)) return Promise.resolve<AgentSocketDecision>({ kind: 'refuse', status: 403 })
   return authenticateUserWebSocket(request).then((user) => user === null
     ? { kind: 'refuse', status: 403 }
     : { kind: 'accept', accept: (ws: AgentSocket) => streamNotifications(ws, user), abandon: () => {} })

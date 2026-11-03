@@ -36,17 +36,22 @@ export interface FeedTransport {
 }
 
 export class GlobalFeed implements FeedTransport {
-  private readonly listeners = new Set<GlobalFeedListener>()
+  /** Listeners that subscribed on this process's own set, each with its unsubscribe from the transport once one is set. */
+  private readonly listeners = new Map<GlobalFeedListener, (() => void) | null>()
   private transport: FeedTransport | null = null
 
-  /** Set before anything subscribes: a listener added earlier stays on this process's set. */
+  /** A listener that subscribed earlier (a service armed when its module loads) moves onto the transport. */
   setTransport(transport: FeedTransport): void {
     this.transport = transport
+    for (const [listener, leave] of this.listeners) {
+      leave?.()
+      this.listeners.set(listener, transport.subscribe(listener))
+    }
   }
 
   publish(event: GlobalFeedEvent): void {
     if (this.transport) return this.transport.publish(event)
-    for (const listener of this.listeners) {
+    for (const listener of this.listeners.keys()) {
       try {
         listener(event)
       } catch (error) {
@@ -58,8 +63,9 @@ export class GlobalFeed implements FeedTransport {
   /** Returns the unsubscribe function. */
   subscribe(listener: GlobalFeedListener): () => void {
     if (this.transport) return this.transport.subscribe(listener)
-    this.listeners.add(listener)
+    this.listeners.set(listener, null)
     return () => {
+      this.listeners.get(listener)?.()
       this.listeners.delete(listener)
     }
   }
