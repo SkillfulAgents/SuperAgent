@@ -1846,7 +1846,7 @@ describe('agent startup — POST /:id/start', () => {
       status: 'running',
       containerPort: 3456,
     })
-    expect(getAgentWithStatus).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), { includeSummary: false })
+    expect(getAgentWithStatus).toHaveBeenCalledWith('test-agent', { includeSummary: false })
   })
 
   it('returns the startup error when container health never succeeds', async () => {

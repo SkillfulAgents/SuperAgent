@@ -62,39 +62,9 @@ function toRecord(row: AgentRow): AgentRecord {
   }
 }
 
-/**
- * Callers that ask for one key while its read runs get that read instead of starting another.
- * Nothing is kept once it settles, so no caller gets a result older than a read in progress.
- */
-function sharedReads<T>() {
-  const running = new Map<string, Promise<T>>()
-  return {
-    run(key: string, read: () => Promise<T>): Promise<T> {
-      const current = running.get(key)
-      if (current) return current
-      const started: Promise<T> = read().finally(() => {
-        if (running.get(key) === started) running.delete(key)
-      })
-      running.set(key, started)
-      return started
-    },
-    /** After a write, later callers start a new read instead of joining one that began before it. */
-    clear: () => running.clear(),
-  }
-}
-
 export function createAgentCatalog(): AgentCatalog {
-  // Requests for one agent arrive together (a page load), and where the database is a network
-  // round trip each lookup costs one: concurrent lookups of one agent share a query.
-  const rowReads = sharedReads<AgentRow | undefined>()
-  const resolveReads = sharedReads<AgentRow | undefined>()
-  const forgetReads = () => {
-    rowReads.clear()
-    resolveReads.clear()
-  }
-
-  const rowFor = (slug: AgentSlug): Promise<AgentRow | undefined> =>
-    rowReads.run(slug, async () => db.select().from(agents).where(eq(agents.slug, slug)).get())
+  const rowFor = async (slug: AgentSlug): Promise<AgentRow | undefined> =>
+    db.select().from(agents).where(eq(agents.slug, slug)).get()
 
   // An exact match is a bare minted slug or a legacy compound folder name. Otherwise the slug is the
   // final hyphen-delimited segment (minted slugs have no hyphen); the prefix is decorative. A display
@@ -103,10 +73,8 @@ export function createAgentCatalog(): AgentCatalog {
     if (!input || !SAFE_AGENT_INPUT_RE.test(input)) return undefined
     const candidate = input.slice(input.lastIndexOf('-') + 1)
     if (candidate === input || !isMintedSlug(candidate)) return rowFor(input)
-    return resolveReads.run(input, async () => {
-      const rows = await db.select().from(agents).where(inArray(agents.slug, [input, candidate])).all()
-      return rows.find((row) => row.slug === input) ?? rows.find((row) => row.slug === candidate)
-    })
+    const rows = await db.select().from(agents).where(inArray(agents.slug, [input, candidate])).all()
+    return rows.find((row) => row.slug === input) ?? rows.find((row) => row.slug === candidate)
   }
 
   const records = async (): Promise<AgentRecord[]> =>
@@ -158,7 +126,6 @@ export function createAgentCatalog(): AgentCatalog {
         runtime: LOCAL_RUNTIME,
         workspaceHandle: null,
       }).run()
-      forgetReads()
       return toRecord((await rowFor(slug))!)
     },
     update: async (slug, changes: AgentIdentityChanges) => {
@@ -172,8 +139,7 @@ export function createAgentCatalog(): AgentCatalog {
       }
       if (Object.keys(values).length > 0) {
         await db.update(agents).set(values).where(eq(agents.slug, slug)).run()
-        forgetReads()
-      }
+        }
       const row = await rowFor(slug)
       return row === undefined ? null : toRecord(row)
     },
@@ -194,7 +160,6 @@ export function createAgentCatalog(): AgentCatalog {
         await removeDirectory(dir)
       }
       await db.delete(agents).where(eq(agents.slug, slug)).run()
-      forgetReads()
     },
   }
 }

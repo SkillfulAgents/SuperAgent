@@ -1854,9 +1854,10 @@ agents.post('/:id/start', AgentUser(), async (c) => {
     await actor.container.start()
     if (sessionId) background(preResumeSession(actor, sessionId), { name: 'agents-route.pre-resume-session' })
 
-    // Skip the session-summary enrichment: it stats every transcript, and every
-    // caller of this command discards the body and refetches agent data anyway.
-    const agent = await getAgentWithStatus(getResolvedAgent(c), { includeSummary: false })
+    // Read the agent again: a rename or delete can land while the container starts, and a
+    // null answer makes the client refetch. Skip the session-summary enrichment: it stats
+    // every transcript, and the client keeps the summary it already has.
+    const agent = await getAgentWithStatus(slug, { includeSummary: false })
 
     // Note: agent_status_changed is broadcast by containerManager.ensureRunning()
 

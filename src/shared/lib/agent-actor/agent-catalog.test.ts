@@ -240,30 +240,11 @@ describe('reading rows', () => {
     vi.restoreAllMocks()
   })
 
-  it('shares one query between concurrent lookups of one agent, and keeps nothing once it answers', async () => {
+  it('resolves a display slug with one query', async () => {
     await insertRow('a1b2c3d4e5', 'Sales')
     const select = vi.spyOn(testDb, 'select')
 
-    const [record, exists] = await Promise.all([catalog.get('a1b2c3d4e5'), catalog.exists('a1b2c3d4e5')])
-    expect(record?.name).toBe('Sales')
-    expect(exists).toBe(true)
-    expect(select).toHaveBeenCalledTimes(1)
-
-    expect(await catalog.exists('a1b2c3d4e5')).toBe(true)
-    expect(select).toHaveBeenCalledTimes(2)
-  })
-
-  it('resolves a display slug with one query, shared by concurrent requests for it', async () => {
-    await insertRow('a1b2c3d4e5', 'Sales')
-    const select = vi.spyOn(testDb, 'select')
-
-    const [first, second] = await Promise.all([
-      catalog.resolveRecord('sales-a1b2c3d4e5'),
-      catalog.resolveRecord('sales-a1b2c3d4e5'),
-    ])
-
-    expect(first).toMatchObject({ slug: 'a1b2c3d4e5', name: 'Sales' })
-    expect(second).toEqual(first)
+    expect(await catalog.resolveRecord('sales-a1b2c3d4e5')).toMatchObject({ slug: 'a1b2c3d4e5', name: 'Sales' })
     expect(select).toHaveBeenCalledTimes(1)
   })
 
@@ -275,27 +256,17 @@ describe('reading rows', () => {
     expect(await catalog.resolve('sales-a1b2c3d4e5')).toBe('a1b2c3d4e5')
   })
 
-  it('does not keep a failed lookup', async () => {
-    await insertRow('a1b2c3d4e5', 'Sales')
-    vi.spyOn(testDb, 'select').mockImplementationOnce(() => {
-      throw new Error('D1_ERROR: Network connection lost.')
-    })
-
-    await expect(catalog.get('a1b2c3d4e5')).rejects.toThrow('Network connection lost')
-    expect((await catalog.get('a1b2c3d4e5'))?.name).toBe('Sales')
-  })
-
-  it('reads its own rename back while a lookup that began before it is still answering', async () => {
+  it('reads a rename made through another catalog while an older read is still answering', async () => {
     await insertRow('f6g7h8i9j0', 'Research')
+    const otherIsolate = createAgentCatalog()
     const respond = slowNextRead()
 
     const before = catalog.get('f6g7h8i9j0')
-    await catalog.update('f6g7h8i9j0', { name: 'Market research' })
-    expect((await catalog.get('f6g7h8i9j0'))?.name).toBe('Market research')
+    await otherIsolate.update('f6g7h8i9j0', { name: 'Market research' })
+    const after = catalog.get('f6g7h8i9j0')
 
     respond()
     expect((await before)?.name).toBe('Research')
-    await catalog.remove('f6g7h8i9j0')
-    expect(await catalog.exists('f6g7h8i9j0')).toBe(false)
+    expect((await after)?.name).toBe('Market research')
   })
 })
