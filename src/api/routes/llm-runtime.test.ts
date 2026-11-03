@@ -100,7 +100,7 @@ it('scopes resolution to the authenticated agent session and rejects arbitrary a
     env: { ANTHROPIC_AUTH_TOKEN: 'static-key' },
   })
   // The session's agent keeps only the runtime's non-secret facts.
-  expect(state.recordRuntime).toHaveBeenLastCalledWith('own-session', { provider: expect.any(String), modelContextWindows: expect.any(Object) })
+  expect(state.recordRuntime).toHaveBeenLastCalledWith('own-session', { provider: expect.any(String) })
 })
 
 

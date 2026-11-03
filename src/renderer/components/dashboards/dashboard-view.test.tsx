@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DashboardHeaderProvider } from '@renderer/context/dashboard-header-context'
+import { DASHBOARD_CONTEXT_MENU_TYPE } from '@shared/lib/dashboard-inspect-schema'
 import { DashboardHeaderActions } from './dashboard-header-actions'
 import { DashboardView } from './dashboard-view'
 
@@ -29,6 +30,48 @@ const mocks = vi.hoisted(() => ({
   openDashboardExternal: vi.fn(),
   apiFetch: vi.fn(),
   canUse: true,
+  createSession: {
+    mutateAsync: vi.fn(),
+  },
+  navigate: vi.fn(),
+  inspect: vi.fn(),
+  toastSuccess: vi.fn(),
+}))
+
+vi.mock('@renderer/hooks/use-sessions', () => ({
+  useCreateSession: () => mocks.createSession,
+}))
+
+vi.mock('@tanstack/react-router', () => ({
+  useNavigate: () => mocks.navigate,
+}))
+
+vi.mock('@renderer/hooks/use-voice-input', () => ({
+  useVoiceInput: () => ({
+    isRecording: false,
+    isConnecting: false,
+    isFinalizing: false,
+    isSupported: false,
+    error: null,
+    clearError: () => {},
+    startRecording: async () => {},
+    stopRecording: async () => undefined,
+  }),
+  useIsVoiceConfigured: () => false,
+}))
+
+vi.mock('@renderer/components/ui/voice-input-button', () => ({
+  VoiceInputButton: () => null,
+  VoiceInputError: () => null,
+}))
+
+vi.mock('sonner', () => ({
+  toast: { success: (...args: unknown[]) => mocks.toastSuccess(...args) },
+}))
+
+vi.mock('./comments/dashboard-frame', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./comments/dashboard-frame')>()),
+  inspectDashboard: (...args: unknown[]) => mocks.inspect(...args),
 }))
 
 vi.mock('@renderer/hooks/use-agents', () => ({
@@ -417,5 +460,158 @@ describe('DashboardView optimistic mount and retry', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('DashboardView comments', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.agentSlug = 'agent'
+    mocks.agentStatus = 'running'
+    mocks.refetchedAgentStatus = 'running'
+    mocks.dashboardStatus = 'running'
+    mocks.dashboardStartupPhase = undefined
+    mocks.canUse = true
+    mocks.apiFetch.mockResolvedValue({ ok: true })
+    mocks.inspect.mockResolvedValue(null)
+    mocks.createSession.mutateAsync.mockResolvedValue({ id: 'session-1' })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('offers comment mode only to people who can start sessions on the agent', () => {
+    mocks.canUse = false
+    renderDashboard()
+    expect(screen.getByRole('button', { name: 'Open dashboard in new window' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add comment' })).toBeNull()
+  })
+
+  it('lays the grid over the dashboard and sends the comment to a background session', async () => {
+    const user = userEvent.setup()
+    renderDashboard()
+
+    await user.click(screen.getByRole('button', { name: 'Add comment' }))
+    const overlay = await screen.findByTestId('dashboard-comment-overlay')
+    expect(screen.getByRole('button', { name: 'Exit comment mode' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(overlay).getByText('Whole dashboard · click to pin a spot')).toBeVisible()
+
+    fireEvent.click(overlay, { clientX: 10, clientY: 10 })
+    expect(within(overlay).getByText('Pinned to this spot · drag or click to move')).toBeVisible()
+
+    await user.type(within(overlay).getByPlaceholderText('What should change?'), 'Make the bars blue')
+    await user.click(within(overlay).getByRole('button', { name: 'Send' }))
+
+    expect(mocks.createSession.mutateAsync).toHaveBeenCalledOnce()
+    const { agentSlug, message } = mocks.createSession.mutateAsync.mock.calls[0][0] as { agentSlug: string; message: string }
+    expect(agentSlug).toBe('agent')
+    expect(message).toMatch(/^Make the bars blue\n\n\[Dashboard comment context:\]\n/)
+    expect(message).toContain('files in /workspace/artifacts/dashboard/')
+    expect(message).toContain('- Pinned at')
+    // A browser cannot capture the frame, so the agent is told to look itself.
+    expect(message).toContain('No screenshot (this window cannot capture the page)')
+    // Once as the overlay opened, once with the pin as it was sent.
+    expect(mocks.inspect).toHaveBeenCalledTimes(2)
+    expect(mocks.inspect.mock.calls[1][1]).toEqual({ x: expect.any(Number), y: expect.any(Number) })
+
+    expect(mocks.toastSuccess).toHaveBeenCalledWith('Sent to agent', expect.objectContaining({ action: expect.objectContaining({ label: 'View' }) }))
+    const { action } = mocks.toastSuccess.mock.calls[0][1] as { action: { onClick: () => void } }
+    action.onClick()
+    expect(mocks.navigate).toHaveBeenCalledWith({ to: '/agents/$slug/sessions/$sessionId', params: { slug: 'agent', sessionId: 'session-1' } })
+    await waitFor(() => expect(screen.queryByTestId('dashboard-comment-overlay')).toBeNull())
+  })
+
+  it('keeps the comment and says why when the session does not start', async () => {
+    const user = userEvent.setup()
+    mocks.createSession.mutateAsync.mockRejectedValue(new Error('Agent is offline'))
+    renderDashboard()
+
+    await user.click(screen.getByRole('button', { name: 'Add comment' }))
+    const overlay = await screen.findByTestId('dashboard-comment-overlay')
+    const field = within(overlay).getByPlaceholderText('What should change?')
+    await user.type(field, 'Bigger title{Enter}')
+
+    expect(await within(overlay).findByRole('alert')).toHaveTextContent('Agent is offline')
+    expect(field).toHaveValue('Bigger title')
+    expect(within(overlay).getByRole('button', { name: 'Send' })).toBeEnabled()
+    expect(mocks.toastSuccess).not.toHaveBeenCalled()
+  })
+
+  it('keeps an open comment and its text through a reload of the dashboard', async () => {
+    const user = userEvent.setup()
+    renderDashboard()
+    fireEvent.load(document.querySelector('iframe')!)
+    await act(async () => {})
+
+    await user.click(screen.getByRole('button', { name: 'Add comment' }))
+    const overlay = await screen.findByTestId('dashboard-comment-overlay')
+    await user.type(within(overlay).getByPlaceholderText('What should change?'), 'Half typed')
+    const frame = document.querySelector('iframe')
+
+    await user.click(screen.getByRole('button', { name: 'Refresh dashboard' }))
+    expect(document.querySelector('iframe')).not.toBe(frame)
+    expect(screen.getByTestId('dashboard-comment-overlay')).toBeInTheDocument()
+    expect(within(screen.getByTestId('dashboard-comment-overlay')).getByPlaceholderText('What should change?')).toHaveValue('Half typed')
+  })
+
+  it('leaves a right-click in the comment field to the field (spellcheck, paste), and pins on the grid', async () => {
+    const user = userEvent.setup()
+    renderDashboard()
+    await user.click(screen.getByRole('button', { name: 'Add comment' }))
+    const overlay = await screen.findByTestId('dashboard-comment-overlay')
+
+    // fireEvent returns false when the event was default-prevented.
+    expect(fireEvent.contextMenu(within(overlay).getByPlaceholderText('What should change?'))).toBe(true)
+    expect(within(overlay).getByText('Whole dashboard · click to pin a spot')).toBeVisible()
+    expect(fireEvent.contextMenu(overlay, { clientX: 5, clientY: 5 })).toBe(false)
+    expect(within(overlay).getByText('Pinned to this spot · drag or click to move')).toBeVisible()
+  })
+
+  it('leaves comment mode on Escape', async () => {
+    const user = userEvent.setup()
+    renderDashboard()
+    await user.click(screen.getByRole('button', { name: 'Add comment' }))
+    await screen.findByTestId('dashboard-comment-overlay')
+
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByTestId('dashboard-comment-overlay')).toBeNull())
+    expect(screen.getByRole('button', { name: 'Add comment' })).toHaveAttribute('aria-pressed', 'false')
+    expect(mocks.createSession.mutateAsync).not.toHaveBeenCalled()
+  })
+
+  it('opens its menu on a right-click in the dashboard and pins the comment there', async () => {
+    const user = userEvent.setup()
+    renderDashboard()
+    const frame = document.querySelector('iframe')!
+    vi.spyOn(frame, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 300, 200))
+
+    act(() => {
+      window.dispatchEvent(new MessageEvent('message', {
+        source: frame.contentWindow,
+        data: { type: DASHBOARD_CONTEXT_MENU_TYPE, x: 30, y: 40 },
+      }))
+    })
+    await user.click(await screen.findByRole('menuitem', { name: 'Comment here…' }))
+
+    const overlay = await screen.findByTestId('dashboard-comment-overlay')
+    expect(within(overlay).getByText('Pinned to this spot · drag or click to move')).toBeVisible()
+    await user.type(within(overlay).getByPlaceholderText('What should change?'), 'This one{Enter}')
+    await waitFor(() => expect(mocks.createSession.mutateAsync).toHaveBeenCalledOnce())
+    expect(mocks.inspect.mock.calls[1][1]).toEqual({ x: 30, y: 40 })
+    const { message } = mocks.createSession.mutateAsync.mock.calls[0][0] as { message: string }
+    expect(message).toContain('- Pinned at (30, 40) px in the viewport, 10% across and 20% down')
+  })
+
+  it('ignores a right-click posted by any window but its own frame', async () => {
+    renderDashboard()
+    act(() => {
+      window.dispatchEvent(new MessageEvent('message', {
+        source: window,
+        data: { type: DASHBOARD_CONTEXT_MENU_TYPE, x: 30, y: 40 },
+      }))
+    })
+    await act(async () => {})
+    expect(screen.queryByRole('menuitem', { name: 'Comment here…' })).toBeNull()
   })
 })

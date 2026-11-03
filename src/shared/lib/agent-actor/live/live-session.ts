@@ -30,7 +30,7 @@ import { parseCommandLifecycle } from '@shared/lib/container/command-lifecycle'
 import { mergeCanonicalSlashCommands } from '@shared/lib/container/slash-commands'
 import { slashCommandListSchema } from '@shared/lib/services/session-metadata-schema'
 import { credentialSource } from '@shared/lib/llm-provider/connection-runtime'
-import { getActiveLlmProvider, getLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
+import { getActiveLlmProvider, getLlmProvider } from '@shared/lib/llm-provider'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
@@ -157,6 +157,7 @@ const RUNTIME_FRAME_TYPES: ReadonlySet<string> = new Set([
   'command_lifecycle',
   'capability_review_cancelled',
   'connection_closed',
+  'context_usage',
 ])
 
 // How long a stopped task's wake turn gets to announce itself (`running`)
@@ -994,6 +995,9 @@ export class LiveSession {
       case 'browser_active':
         this.ctx.emit({ type: 'browser_active', active: content.active })
         return
+      case 'context_usage':
+        this.contextUsageFrame(content)
+        return
       case 'capability_review_cancelled':
         // The container's gate stopped waiting (its timeout, or the turn was
         // aborted): close the card everywhere rather than leave it dangling.
@@ -1053,7 +1057,6 @@ export class LiveSession {
     // The transcript has the message now.
     this.stream.messagePersisted()
     this.ctx.emit({ type: 'messages_updated' })
-    if (content.message?.usage) this.stream.reportUsage(content.message.usage)
   }
 
   private userFrame(content: FrameContent): void {
@@ -1293,7 +1296,6 @@ export class LiveSession {
       console.warn(`[LiveSession] Session ${this.ctx.sessionId}: turn ended with no model turns (num_turns=0) — possible hook-blocked prompt`)
     }
 
-    this.resultUsage(content)
     // A failure is terminal now; a clean success only once the session
     // settles (queued messages or background work can still fail it).
     this.lastResultCleanSuccess = !isError && !classification.isInterrupt && content.subtype !== 'resume'
@@ -1373,33 +1375,19 @@ export class LiveSession {
   }
 
   /**
-   * The context window comes with the result: the model catalog's when it
-   * has one (non-Claude models: the SDK reports a generic 200K for them),
-   * the SDK's otherwise. The latest call's usage (not the result's sum over
-   * the turn) goes out with it and onto the session's metadata.
+   * The container measured the context: the CLI's own count, against the
+   * window it auto-compacts at. A size that a turn end or a compaction
+   * settled goes onto the session's metadata; mid-turn sizes only go out.
    */
-  private resultUsage(content: { modelUsage?: unknown }): void {
-    try {
-      let contextWindow: number | undefined
-      const modelUsage = content.modelUsage
-      if (modelUsage && typeof modelUsage === 'object') {
-        const [modelId] = Object.keys(modelUsage)
-        const reported = (modelUsage as Record<string, { contextWindow?: number } | undefined>)[modelId]
-        const catalogWindow = modelId
-          ? this.ctx.modelRuntime()?.modelContextWindows[modelId] ??
-            getModelContextWindow(modelId, getActiveLlmProvider().id)
-          : undefined
-        contextWindow = catalogWindow || reported?.contextWindow || undefined
-      }
-      const lastUsage: SessionUsage | null = this.stream.settleUsage(contextWindow)
-      if (lastUsage) {
-        background(updateSessionMetadata(this.ctx.store, this.ctx.sessionId, { lastUsage }).catch((error) => {
-          console.error('[LiveSession] Failed to persist lastUsage:', error)
-        }), { name: 'live-session.persist-last-usage' })
-      }
-    } catch (error) {
-      console.error('[LiveSession] Error handling result usage:', error)
-    }
+  private contextUsageFrame(content: FrameContent): void {
+    const { totalTokens, contextWindow } = content
+    if (typeof totalTokens !== 'number' || typeof contextWindow !== 'number') return
+    const usage: SessionUsage = { totalTokens, contextWindow }
+    this.ctx.emit({ type: 'context_usage', ...usage })
+    if (content.settled !== true) return
+    background(updateSessionMetadata(this.ctx.store, this.ctx.sessionId, { lastUsage: usage }).catch((error) => {
+      console.error('[LiveSession] Failed to persist lastUsage:', error)
+    }), { name: 'live-session.persist-last-usage' })
   }
 
   /**

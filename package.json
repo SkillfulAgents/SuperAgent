@@ -1,6 +1,6 @@
 {
   "name": "superagent",
-  "version": "0.6.3-rc.1",
+  "version": "0.6.3",
   "description": "AI agent management platform",
   "author": "Datawizz Inc.",
   "license": "MIT",
@@ -316,6 +316,10 @@
         {
           "from": "build/notification-bridge",
           "to": "notification-bridge"
+        },
+        {
+          "from": "build/glass-bridge",
+          "to": "glass-bridge"
         },
         {
           "from": "build/agent-image",
