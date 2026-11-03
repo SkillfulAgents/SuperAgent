@@ -21,6 +21,7 @@ import { runInNewContext } from 'node:vm'
 import { Readable, Writable } from 'node:stream'
 import { createHash } from 'node:crypto'
 import { agentRegistry, WorkspaceFileError } from '@shared/lib/agent-actor'
+import type { AgentSummary } from '@shared/lib/services/agent-summaries'
 import { parseMountPath } from '@shared/lib/utils/workspace-path'
 import { underActorTransport } from '@shared/lib/agent-actor/testing/via-test-transport'
 import type { LiveSessionsAnswers } from '@shared/lib/agent-actor/testing/live-sessions-double'
@@ -618,6 +619,16 @@ vi.mock('@shared/lib/services/skillset-service', () => ({
   importSkillFromZip: vi.fn(),
   SKILL_MAX_COMPRESSED_SIZE: 100 * 1024 * 1024,
 }))
+
+const summarySource = vi.hoisted(() => ({
+  known: vi.fn(async (): Promise<Map<string, unknown>> => new Map()),
+  keep: vi.fn(async () => {}),
+}))
+
+vi.mock('@shared/lib/services/agent-summaries', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@shared/lib/services/agent-summaries')>()
+  return { ...actual, agentSummarySource: () => summarySource }
+})
 
 vi.mock('@shared/lib/services/artifact-service', () => ({
   listArtifactsFromFilesystem: vi.fn(),
@@ -7600,6 +7611,97 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body[0]).not.toHaveProperty('attentionOutsideLatest')
     expect(listSessionsFromSummary).not.toHaveBeenCalled()
     expect(getSessionMessagesPage).not.toHaveBeenCalled()
+  })
+
+  describe('where the deployment stores agent summaries', () => {
+    const storedSummary: AgentSummary = {
+      container: { status: 'running', port: 8080, healthWarnings: [], stale: false },
+      hasActiveSessions: true,
+      hasSessionsAwaitingInput: false,
+      awaitingSessionIds: [],
+      sessionCount: 2,
+      lastActivityAt: '2026-01-01T12:00:00.000Z',
+      visibleSessionIds: ['weekly-report'],
+      dashboards: [{ slug: 'sales-pipeline', name: 'Sales pipeline' }],
+      widgets: [],
+    }
+
+    afterEach(() => {
+      summarySource.known.mockResolvedValue(new Map())
+    })
+
+    it('builds each row from the stored summary and asks the agent nothing', async () => {
+      vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+      summarySource.known.mockResolvedValue(new Map([['agent-1', storedSummary]]))
+      vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([
+        ['agent-1', new Set(['weekly-report', 'hidden-cron-run'])],
+      ]))
+
+      const res = await getReq(app, '/api/agents')
+      expect(res.status).toBe(200)
+      const body = await res.json()
+
+      expect(body[0]).toMatchObject({
+        slug: 'agent-1',
+        hasActiveSessions: true,
+        hasSessionsAwaitingInput: false,
+        hasUnreadNotifications: true,
+        hasUnreadMention: false,
+        sessionCount: 2,
+        lastActivityAt: '2026-01-01T12:00:00.000Z',
+        dashboards: [{ slug: 'sales-pipeline', name: 'Sales pipeline' }],
+        widgets: [],
+      })
+      expect(getSessionSummary).not.toHaveBeenCalled()
+      expect(readSessionMetadata).not.toHaveBeenCalled()
+      expect(listArtifactsAndWidgets).not.toHaveBeenCalled()
+      expect(summarySource.keep).not.toHaveBeenCalled()
+    })
+
+    it('previews the question a stored summary says is waiting, without reading session metadata', async () => {
+      vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+      summarySource.known.mockResolvedValue(new Map([['agent-1', {
+        ...storedSummary,
+        hasSessionsAwaitingInput: true,
+        awaitingSessionIds: ['weekly-report'],
+      }]]))
+      vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['weekly-report'])]]))
+      vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(new Map([['agent-1', [
+        { id: 'notif-waiting', sessionId: 'weekly-report', type: 'session_waiting' as const, text: 'Which quarter should the report cover?' },
+      ]]]))
+
+      const body = await (await getReq(app, '/api/agents')).json()
+
+      expect(body[0].notificationPreview).toBe('Which quarter should the report cover?')
+      expect(body[0].notificationPreviewSource).toEqual({ id: 'notif-waiting', sessionId: 'weekly-report' })
+      expect(readSessionMetadata).not.toHaveBeenCalled()
+      vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(new Map())
+    })
+
+    it('summarizes an agent with no stored row from its actor and stores it', async () => {
+      vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+      vi.mocked(getSessionSummary).mockResolvedValue({
+        sessionIds: ['weekly-report'],
+        sessionCount: 1,
+        lastActivityAt: new Date('2026-01-01T12:00:00.000Z'),
+      })
+      vi.mocked(listArtifactsAndWidgets).mockResolvedValue({
+        dashboards: [{ slug: 'sales-pipeline', name: 'Sales pipeline' }] as never,
+        widgets: [],
+      })
+
+      const res = await getReq(app, '/api/agents')
+      expect(res.status).toBe(200)
+      const body = await res.json()
+
+      expect(body[0]).toMatchObject({ sessionCount: 1, dashboards: [{ slug: 'sales-pipeline', name: 'Sales pipeline' }] })
+      expect(summarySource.keep).toHaveBeenCalledTimes(1)
+      expect(summarySource.keep).toHaveBeenCalledWith('agent-1', expect.objectContaining({
+        sessionCount: 1,
+        visibleSessionIds: ['weekly-report'],
+        dashboards: [{ slug: 'sales-pipeline', name: 'Sales pipeline' }],
+      }))
+    })
   })
 
   it('returns the latest tail and excludes attention on that session', async () => {
