@@ -97,7 +97,14 @@ async function openZipReader(open: (callback: ZipOpenCallback) => void): Promise
           chunks.push(chunk)
         })
         readStream.on('end', () => { if (!settled) resolve(Buffer.concat(chunks)) })
-        readStream.on('error', (err) => { if (!settled) { settled = true; reject(err) } })
+        readStream.on('error', (err) => {
+          if (settled) return
+          settled = true
+          // yauzl forwards decoder errors without necessarily destroying the
+          // entry stream. Release its underlying file reference on this path.
+          readStream.destroy()
+          reject(err)
+        })
       })
     },
 
