@@ -20,7 +20,7 @@ vi.mock('../db', () => ({
   },
 }))
 
-import { avatarDirectory, InvalidAvatarError, prepareAvatar, setAvatar } from './profile-avatar-service'
+import { avatarDirectory, inflatedSizeUpTo, InvalidAvatarError, prepareAvatar, setAvatar } from './profile-avatar-service'
 
 const { user } = schema
 const USER = 'user-1'
@@ -114,5 +114,13 @@ describe('prepareAvatar', () => {
     const input = Buffer.concat([png(30).subarray(0, 8), header, chunk('IDAT', oversized), chunk('IEND', Buffer.alloc(0))])
 
     expect(() => prepareAvatar(input)).toThrow(InvalidAvatarError)
+  })
+
+  it('stops inflating soon after the data passes the size the header gives', () => {
+    // 16 KB of deflate data that inflates to 16 MB.
+    const bomb = zlib.deflateSync(Buffer.alloc(16 * 1024 * 1024), { level: 9 })
+
+    expect(inflatedSizeUpTo(bomb, 18)).toBeLessThan(2 * 1024 * 1024)
+    expect(inflatedSizeUpTo(zlib.deflateSync(Buffer.alloc(18)), 18)).toBe(18)
   })
 })

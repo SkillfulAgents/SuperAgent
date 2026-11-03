@@ -6,6 +6,10 @@ import path from 'path'
  * org's API on many short-lived isolates starts every request with an empty data dir. The
  * deployment sets the store once at boot. Desktop and the Node host never set one, and the
  * callers keep their files on disk as before.
+ *
+ * Keys under `uploads/` are temporary. An upload the browser abandons leaves its chunks there,
+ * and the app does not sweep them, so the deployment must expire that prefix (for example, a
+ * lifecycle rule that deletes objects older than one day).
  */
 export interface BlobStore {
   /** The bytes under `key`, or null when nothing is stored there. */

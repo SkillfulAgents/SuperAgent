@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { decode, encode } from 'fast-png'
-import { unzlibSync } from 'fflate'
+import { Unzlib } from 'fflate'
 import { and, eq, isNull } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
@@ -14,6 +14,24 @@ export class InvalidAvatarError extends Error {}
 const MAX_DIMENSION = 512
 /** Samples per pixel of each PNG color type. */
 const CHANNELS: Record<number, number> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }
+/** Deflate data this small inflates to at most about a megabyte. */
+const INFLATE_PIECE_BYTES = 1024
+
+/**
+ * The size zlib `data` inflates to, counted until it passes `limit`: inflating
+ * stops there, so a few bytes that inflate to a gigabyte cost no more than a
+ * real image. (An `out` buffer does not stop fflate: it inflates all of it.)
+ */
+export function inflatedSizeUpTo(data: Uint8Array, limit: number): number {
+  let size = 0
+  const inflater = new Unzlib((chunk) => {
+    size += chunk.length
+  })
+  for (let offset = 0; offset < data.length && size <= limit; offset += INFLATE_PIECE_BYTES) {
+    inflater.push(data.subarray(offset, offset + INFLATE_PIECE_BYTES), offset + INFLATE_PIECE_BYTES >= data.length)
+  }
+  return size
+}
 
 /** Decode and re-encode a bounded raster: don't persist untrusted ancillary data. */
 export function prepareAvatar(input: Buffer): Buffer {
@@ -46,11 +64,11 @@ export function prepareAvatar(input: Buffer): Buffer {
   const channels = CHANNELS[input[25]]
   const depth = input[24]
   if (!channels || ![1, 2, 4, 8, 16].includes(depth)) throw new InvalidAvatarError('Invalid PNG image.')
-  // The image data inflates to exactly this size: one filter byte per row. Inflating it into one
-  // byte more bounds the work before the decoder inflates it again, and any other size is not this image.
+  // The image data inflates to exactly this size: one filter byte per row. Counting stops just past
+  // it, which bounds the work before the decoder inflates it again; any other size is not this image.
   const inflatedSize = height * (1 + Math.ceil((width * channels * depth) / 8))
   try {
-    if (unzlibSync(Buffer.concat(imageData), { out: new Uint8Array(inflatedSize + 1) }).length !== inflatedSize) {
+    if (inflatedSizeUpTo(Buffer.concat(imageData), inflatedSize) !== inflatedSize) {
       throw new Error('Image data does not match the image size')
     }
     const { data, depth: bitDepth, channels: samples, palette, transparency } = decode(input, { checkCrc: true })
