@@ -22,6 +22,7 @@
  */
 import { decodeActorError, encodeActorError, type ActorErrorData } from './actor-error-codec'
 import { ACTOR_GROUPS, type AgentActor, type AgentSlug } from './types'
+import { background } from '@shared/lib/background'
 
 /** Anything that turns a request into a response: `fetch`, a service binding, a handler in this process. */
 export type ActorFetch = (request: Request) => Promise<Response>
@@ -56,6 +57,8 @@ interface StreamSource {
   get(id: number): ReadableStream<unknown>
 }
 
+const tagOf = (value: unknown): string => Object.prototype.toString.call(value)
+
 function encodeValue(value: unknown, where: string, sink: StreamSink, signalOk: boolean): unknown {
   if (value === undefined) return { $t: 'u' }
   if (value === null || typeof value === 'boolean' || typeof value === 'string') return value
@@ -73,8 +76,12 @@ function encodeValue(value: unknown, where: string, sink: StreamSink, signalOk: 
     throw new TypeError(`${where} cannot cross the actor's boundary: an AbortSignal is passed only to a pure read`)
   }
   if (value instanceof Date) return { $t: 'date', v: value.getTime() }
-  if (value instanceof Uint8Array) return { $t: 'u8', v: Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('base64') }
-  if (value instanceof ArrayBuffer) return { $t: 'ab', v: Buffer.from(value).toString('base64') }
+  // By tag, not instanceof: bytes made in another realm (a Node Buffer under a jsdom test) are still bytes.
+  if (tagOf(value) === '[object Uint8Array]') {
+    const bytes = value as Uint8Array
+    return { $t: 'u8', v: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64') }
+  }
+  if (tagOf(value) === '[object ArrayBuffer]') return { $t: 'ab', v: Buffer.from(value as ArrayBuffer).toString('base64') }
   if (value instanceof Error) return { $t: 'err', v: encodeActorError(value) }
   if (value instanceof Map) {
     return { $t: 'map', v: [...value].map(([k, v], i) => [encodeValue(k, `${where}[${i}]`, sink, signalOk), encodeValue(v, `${where}[${i}]`, sink, signalOk)]) }
@@ -177,7 +184,7 @@ function writeBody(head: (sink: StreamSink) => Frame, where: string): ReadableSt
       if (open.size === 0) controller.close()
     },
     cancel(reason) {
-      for (const id of open) void readers[id].cancel(reason).catch(() => {})
+      for (const id of open) background(readers[id].cancel(reason).catch(() => {}), { name: 'agent-actor.cancel-stream' })
       open.clear()
     },
   })
@@ -226,7 +233,7 @@ async function readBody(body: ReadableStream<Uint8Array>): Promise<{ head: Frame
   const live = new Set<number>()
   let pumping = false
   const release = () => {
-    if (live.size === 0) void reader.cancel().catch(() => {})
+    if (live.size === 0) background(reader.cancel().catch(() => {}), { name: 'agent-actor.release-body' })
   }
   const pump = async () => {
     if (pumping) return
@@ -262,7 +269,7 @@ async function readBody(body: ReadableStream<Uint8Array>): Promise<{ head: Frame
       return new ReadableStream<unknown>({
         start: (controller) => {
           controllers.set(id, controller)
-          void pump()
+          background(pump, { name: 'agent-actor.pump-streams' })
         },
         cancel: () => {
           live.delete(id)
