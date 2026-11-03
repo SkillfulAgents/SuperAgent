@@ -707,17 +707,24 @@ function readSettingsFileStrict(): AppSettings {
   try {
     content = fs.readFileSync(settingsPath, 'utf-8')
   } catch (err) {
-    // Absent file = legitimate first run → bare defaults (preserves the original
-    // behavior, which did NOT default-merge auth/analytics for a missing file).
-    // Deep-clone: callers (mutateSettings) mutate nested objects in place, and a
-    // shallow `{ ...DEFAULT_SETTINGS }` shares `.container`/`.app`/… with the
-    // module constant — so a first-run mutation would corrupt DEFAULT_SETTINGS.
-    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return structuredClone(DEFAULT_SETTINGS)
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return parseStoredSettings(null, settingsPath)
     throw err // other IO error (EACCES/EIO/…) — propagate, never default-then-save
   }
-  // Validate the boundary (object shape); torn JSON / non-object → throw.
-  const raw = parseJsonStrict(settingsPath, content)
-  return mergeLoadedSettings(raw)
+  return parseStoredSettings(content, settingsPath)
+}
+
+/**
+ * Stored settings JSON → settings. `null` (nothing stored) = legitimate first
+ * run → bare defaults (preserves the original behavior, which did NOT
+ * default-merge auth/analytics for a missing file). Torn JSON or a non-object →
+ * THROWS CorruptFileError naming `source`. For any {@link SettingsStore}.
+ */
+export function parseStoredSettings(content: string | null, source: string): AppSettings {
+  // Deep-clone: callers (mutateSettings) mutate nested objects in place, and a
+  // shallow `{ ...DEFAULT_SETTINGS }` shares `.container`/`.app`/… with the
+  // module constant — so a first-run mutation would corrupt DEFAULT_SETTINGS.
+  if (content === null) return structuredClone(DEFAULT_SETTINGS)
+  return mergeLoadedSettings(parseJsonStrict(source, content))
 }
 
 /** Parse + shape-validate raw settings content; throws CorruptFileError on a
