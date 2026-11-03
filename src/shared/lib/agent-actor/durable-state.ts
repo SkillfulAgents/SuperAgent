@@ -3,10 +3,10 @@
  * synchronous key-value store: the runtime-recovery budget and user messages
  * held while a recovery runs. In memory by default (a desktop restart ends
  * the turns those values are about anyway); a deployment whose actor outlives
- * its process supplies a durable one, such as Durable Object `storage.kv`.
+ * its process supplies a durable one, such as its host's synchronous storage.
  *
  * Synchronous on purpose: the values are read and written in the middle of
- * synchronous state changes, and Durable Object storage offers a sync API.
+ * synchronous state changes, so the store it is backed by must offer a sync API.
  */
 export interface ActorDurableState {
   get<T>(key: string): T | undefined

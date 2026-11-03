@@ -9,11 +9,12 @@
  *   Delivery is at least once: the host drops an event id it has already seen.
  *
  * The outbox is where unacknowledged events survive the actor: in memory by
- * default, or a store the deployment supplies (Durable Object storage).
+ * default, or a durable store the deployment supplies.
  */
 import { decodeActorError, encodeActorError, type ActorErrorData } from './actor-error-codec'
 import type { HostCalls, HostEvents, HostPort } from './host-port'
-import { decodeWire, encodeWire, type ActorFetch } from './network-actor'
+import { decodeWire, encodeWire } from './actor-wire'
+import type { ActorFetch } from './network-actor'
 import { background } from '@shared/lib/background'
 
 export interface HostEventEntry {
