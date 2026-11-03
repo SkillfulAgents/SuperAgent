@@ -39,12 +39,19 @@ export function createFakeWebhookRelay(): FakeWebhookRelay {
 
   return {
     kind: 'platform',
+    passIntervalMs: 30_000,
     consumers,
     log,
     snapshot: () => snapshot,
     onChange(listener) {
       listeners.add(listener)
       return () => listeners.delete(listener)
+    },
+    async acceptClaimed(consumerId, events) {
+      const consumer = consumers.get(consumerId)
+      if (!consumer) return new Map(events.map((event) => [event.id, 'retry' as const]))
+      const outcome = await consumer.accept(events)
+      return new Map(events.map((event) => [event.id, typeof outcome === 'string' ? outcome : (outcome.get(event.id) ?? 'retry')]))
     },
     setSnapshot(next) {
       snapshot = next
@@ -100,6 +107,7 @@ export function createFakeWebhookRelay(): FakeWebhookRelay {
     testEndpointFilter: () => Promise.reject(new Error('testEndpointFilter is not faked')),
     wake: () => {},
     start: () => {},
+    runPass: async () => {},
     stop: () => {},
     onAuthChanged: () => {},
   }

@@ -1040,6 +1040,88 @@ describe('PlatformWebhookRelayService', () => {
     })
   })
 
+  describe('passes on the host clock', () => {
+    function startPassive() {
+      createRelay().start({ timers: false })
+      return relay
+    }
+
+    it('claims, delivers and acks inside one pass, with no timer and no socket', async () => {
+      startPassive()
+      const [event] = platform.add('sub_a', 'whep_one')
+      const c = consumer(['whep_one'])
+      relay.register(c)
+      await settle()
+      await vi.advanceTimersByTimeAsync(10 * 60_000)
+      expect(platform.claim).not.toHaveBeenCalled()
+
+      await relay.runPass()
+
+      expect(c.accept).toHaveBeenCalledWith([event])
+      expect(platform.ackedIds()).toEqual([event.id])
+      expect(sockets).toHaveLength(0)
+      expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it('resolves only after the consumer settles and the ack is sent', async () => {
+      startPassive()
+      const [event] = platform.add('sub_a', 'whep_one')
+      const gate = deferred()
+      relay.register(consumer(['whep_one'], async () => {
+        await gate.promise
+        return 'accepted'
+      }))
+
+      let done = false
+      const pass = relay.runPass().then(() => (done = true))
+      await settle()
+      expect(done).toBe(false)
+
+      gate.resolve()
+      await pass
+      expect(platform.ackedIds()).toEqual([event.id])
+    })
+
+    it('offers a retried event again on a later pass, not on a timer', async () => {
+      startPassive()
+      const [event] = platform.add('sub_a', 'whep_one')
+      const c = consumer(['whep_one'])
+      c.accept.mockResolvedValueOnce('retry')
+      relay.register(c)
+
+      await relay.runPass()
+      expect(platform.ackedIds()).toEqual([])
+      await vi.advanceTimersByTimeAsync(10 * 60_000)
+      expect(c.accept).toHaveBeenCalledTimes(1)
+
+      await relay.runPass()
+      expect(c.accept).toHaveBeenCalledTimes(2)
+      expect(platform.ackedIds()).toEqual([event.id])
+    })
+  })
+
+  describe('events claimed in another process', () => {
+    const claimed = (id: string) => ({ id, endpointId: 'whep_1', type: 'CUSTOM_WEBHOOK', payload: { text: id }, createdAt: '2026-11-02T12:00:00.000Z' })
+
+    it('hands them to the consumer registered here and reports each result, unknown ones as retry', async () => {
+      startRelay()
+      const registered = consumer(['whep_1'], async () => new Map([['whe_1', 'accepted' as const], ['whe_2', 'discard' as const]]), 'sub_a', 'integration:slack-1')
+      relay.register(registered)
+
+      expect(await relay.acceptClaimed('integration:slack-1', [claimed('whe_1'), claimed('whe_2'), claimed('whe_3')]))
+        .toEqual(new Map([['whe_1', 'accepted'], ['whe_2', 'discard'], ['whe_3', 'retry']]))
+      expect(registered.accept).toHaveBeenCalledWith([claimed('whe_1'), claimed('whe_2'), claimed('whe_3')])
+      expect(await relay.acceptClaimed('integration:telegram-1', [claimed('whe_4')])).toEqual(new Map([['whe_4', 'retry']]))
+    })
+
+    it('retries every event when the consumer throws', async () => {
+      startRelay()
+      relay.register(consumer(['whep_1'], async () => { throw new Error('session store unavailable') }, 'sub_a', 'integration:slack-1'))
+
+      expect(await relay.acceptClaimed('integration:slack-1', [claimed('whe_1')])).toEqual(new Map([['whe_1', 'retry']]))
+    })
+  })
+
   describe('platform auth', () => {
     it('goes unavailable on disconnect, keeps registrations, and resumes on reconnect', async () => {
       startRelay({ tickMs: 30_000 })
