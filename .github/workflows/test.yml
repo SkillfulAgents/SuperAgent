@@ -574,6 +574,23 @@ jobs:
           set -o pipefail
           xvfb-run --auto-servernum npx tsx e2e/live/pdf-preview/run.ts 2>&1 | tee /tmp/electron-pdf-results.txt
 
+      - name: Validate built Electron navigation and unsaved drafts
+        run: |
+          set -o pipefail
+          mkdir -p test-results
+          E2E_MOCK=true xvfb-run --auto-servernum npx tsx e2e/live/router/run.ts 2>&1 | tee test-results/electron-router.log
+
+      - name: Upload Electron navigation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-electron-router-artifacts
+          path: |
+            test-results/electron-router/
+            test-results/electron-router.log
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Validate built Electron Radix interactions
         run: |
           set -o pipefail

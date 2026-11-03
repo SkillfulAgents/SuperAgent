@@ -630,4 +630,53 @@ test.describe('Auth Flow', () => {
     await appPage.dismissWizardIfVisible()
     await expect(user2Page).not.toHaveURL(/leaked-path/)
   })
+
+  test('switching users in one document rechecks a warm protected route and recovers for its owner', async ({ user2Page }) => {
+    const authPage = new AuthPage(user2Page)
+    const appPage = new AppPage(user2Page)
+    const userBar = new UserBarPage(user2Page)
+    const agentPage = new AgentPage(user2Page)
+
+    // Keep this document alive throughout: a reload would recreate the router
+    // singleton and hide stale match/context state across AuthGate remounts.
+    await agentPage.selectAgent(agentName)
+    await expect(user2Page.getByTestId('agent-breadcrumb')).toHaveText(agentName)
+    const protectedUrl = user2Page.url()
+    const document = await user2Page.evaluateHandle(() => window.document)
+
+    await userBar.signOut()
+    await authPage.expectVisible()
+    await expect(user2Page.getByTestId('app-sidebar')).not.toBeVisible()
+
+    // Carol left this agent earlier in the narrative. The previously loaded
+    // owner route must ask the real API again using Carol's new session.
+    const denied = user2Page.waitForResponse(response =>
+      response.request().method() === 'GET' &&
+      /\/api\/agents\/[^/?]+$/.test(response.url().split('?')[0]) &&
+      response.status() === 403,
+    )
+    await authPage.signIn(user3.email, user3.password)
+    await denied
+    await appPage.waitForAppLoaded()
+    await userBar.expectUserName(user3.name)
+    await expect(user2Page).toHaveURL(protectedUrl)
+    await expect(user2Page.getByTestId('agent-not-found')).toBeVisible()
+    await expect(user2Page.getByTestId('agent-breadcrumb')).not.toBeVisible()
+    await expect(agentPage.getAgentItem(agentName)).not.toBeVisible()
+    await expect(user2Page.getByTestId('home-message-input')).not.toBeVisible()
+    expect(await document.evaluate(value => value === window.document)).toBe(true)
+
+    // The denied match must not survive another context change either.
+    await userBar.signOut()
+    await authPage.expectVisible()
+    await authPage.signIn(user2.email, user2.password)
+    await appPage.waitForAppLoaded()
+    await userBar.expectUserName(user2.name)
+    await expect(user2Page).toHaveURL(protectedUrl)
+    await expect(user2Page.getByTestId('agent-breadcrumb')).toHaveText(agentName)
+    await expect(user2Page.getByTestId('agent-not-found')).not.toBeVisible()
+    await expect(user2Page.getByTestId('home-message-input')).toBeVisible()
+    expect(await document.evaluate(value => value === window.document)).toBe(true)
+    await document.dispose()
+  })
 })

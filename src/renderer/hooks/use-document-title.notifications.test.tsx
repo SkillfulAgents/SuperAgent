@@ -106,6 +106,10 @@ describe('session notification tab title', () => {
       if (url === '/api/agents/agent-one/sessions') {
         return { ok: true, json: async () => [{ ...serverSession }] }
       }
+      // Legacy notification-read responses also invalidate the active agent query.
+      if (url === '/api/agents/agent-one') {
+        return { ok: true, json: async () => ({ ...agent }) }
+      }
       throw new Error(`Unexpected request: ${url}`)
     })
   })

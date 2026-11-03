@@ -1,5 +1,5 @@
 import { useCallback } from 'react'
-import { apiFetch } from '@renderer/lib/api'
+import { apiFetch, HttpError } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams } from '@tanstack/react-router'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
@@ -124,11 +124,18 @@ export function useAgent(slug: string | null) {
   return useQuery<ApiAgent>({
     queryFn: async () => {
       const res = await apiFetch(`/api/agents/${slug}`)
-      if (!res.ok) throw new Error('Failed to fetch agent')
+      // Route loaders share this query key and may join this observer's fetch
+      // after an auth remount. Preserve the status so 403/404 still resolve to
+      // the route's not-found boundary, whichever caller started the request.
+      if (!res.ok) throw new HttpError(res.status)
       return res.json()
     },
     queryKey: ['agents', slug],
     enabled: !!slug,
+    // A loader can join this request. Access denial and deletion are final;
+    // don't hold its not-found boundary behind the normal transient retries.
+    retry: (failureCount, error) =>
+      !(error instanceof HttpError && (error.status === 403 || error.status === 404)) && failureCount < 3,
     // Real-time updates via GlobalNotificationHandler, poll as fallback only
     refetchInterval: 60000,
   })

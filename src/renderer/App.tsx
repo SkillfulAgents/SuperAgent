@@ -1,5 +1,6 @@
 import { RouterProvider } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
+import { useLayoutEffect } from 'react'
 import { QueryProvider } from './providers/query-provider'
 import { UserProvider, useUser } from './context/user-context'
 import { AnalyticsProvider } from './context/analytics-context'
@@ -22,6 +23,17 @@ import { router } from './router'
 function RouterMount() {
   const queryClient = useQueryClient()
   const user = useUser()
+  const userId = user.user?.id
+  useLayoutEffect(() => {
+    // AuthGate unmounts this subtree at sign-out, but the router retains its
+    // matches. Newer Router versions reuse those matches on a same-URL remount
+    // without loading again. Recheck access for the current session instead of
+    // retaining the previous user's success/not-found state. A cold router has
+    // no resolved location and performs its own initial load.
+    if (user.isAuthMode && router.state.resolvedLocation) {
+      void router.invalidate({ sync: true, forcePending: true })
+    }
+  }, [user.isAuthMode, userId])
   return <RouterProvider router={router} context={{ queryClient, user }} />
 }
 
