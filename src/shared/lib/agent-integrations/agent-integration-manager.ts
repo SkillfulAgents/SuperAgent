@@ -223,8 +223,9 @@ export class AgentIntegrationManager {
   // ── Lifecycle ───────────────────────────────────────────────────────
 
   /**
-   * `agentSlug` connects only that agent's integrations, for a host that runs each agent apart.
-   * With `timers: false` nothing re-checks connections on a timer.
+   * `agentSlug` connects only that agent's integrations, and recovers only their deliveries, for a
+   * host that runs each agent apart. With `timers: false` nothing re-checks connections on a timer;
+   * a delivery that has to be retried still waits on a process timer.
    */
   async start(options: { agentSlug?: string; timers?: boolean } = {}): Promise<void> {
     if (this.isRunning) return
@@ -233,7 +234,7 @@ export class AgentIntegrationManager {
       background(this.authorizationLost(change).catch(error => reportError(error, 'authorization-lost', { integrationId: change.integrationId })), { name: 'integration-manager.authorization-lost' })
     })
 
-    await this.deliveries.start()
+    await this.deliveries.start(options.agentSlug)
     const integrations = (await listStartupIntegrations()).filter(integration => !options.agentSlug || integration.agentSlug === options.agentSlug)
 
     for (const integration of integrations) {

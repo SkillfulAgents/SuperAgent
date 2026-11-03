@@ -14,6 +14,12 @@ import { triggerManager } from './trigger-manager'
 export interface PeriodicJob {
   name: string
   intervalMs: number
+  /**
+   * One pass. Never run two at once for the same job, in this process or another: a job guards
+   * only against overlap in its own process (the task scheduler checks for a session it started,
+   * then starts one, so two overlapping passes start the same task twice). A host on many processes
+   * holds its claim on the job for the whole run, not only for the tick that started it.
+   */
   run(): Promise<void>
 }
 
