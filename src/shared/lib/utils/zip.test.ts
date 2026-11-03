@@ -115,6 +115,45 @@ describe('openZipFromBuffer — errors', () => {
   })
 })
 
+describe('Info-ZIP Unicode path metadata', () => {
+  // Some ZIP producers put the real UTF-8 name in field 0x7075, guarded by
+  // the CRC of the legacy name. Yauzl 3.3.2 changed that CRC implementation.
+  async function withUnicodePath(name: string, validCrc = true) {
+    const original = await createZipBuffer({ 'fallback.txt': 'unicode entry contents' })
+    const end = original.length - 22
+    const central = original.readUInt32LE(end + 16)
+    const extraLength = original.readUInt16LE(central + 30)
+    const extraEnd = central + 46 + original.readUInt16LE(central + 28) + extraLength
+    const nameBytes = Buffer.from(name, 'utf8')
+    const field = Buffer.alloc(9 + nameBytes.length)
+    field.writeUInt16LE(0x7075, 0)
+    field.writeUInt16LE(5 + nameBytes.length, 2)
+    field[4] = 1
+    // Fixed fixture: CRC32 of the ASCII bytes "fallback.txt".
+    field.writeUInt32LE(validCrc ? 0x207a5554 : 0, 5)
+    nameBytes.copy(field, 9)
+    const result = Buffer.concat([original.subarray(0, extraEnd), field, original.subarray(extraEnd)])
+    result.writeUInt16LE(extraLength + field.length, central + 30)
+    result.writeUInt32LE(original.readUInt32LE(end + 12) + field.length, end + field.length + 12)
+    return result
+  }
+
+  it.each([true, false])('honors a Unicode filename only when its legacy-name CRC matches (%s)', async (validCrc) => {
+    const reader = await openZipFromBuffer(await withUnicodePath('資料/café.txt', validCrc))
+    try {
+      const expectedName = validCrc ? '資料/café.txt' : 'fallback.txt'
+      expect(reader.entries.map(entry => entry.fileName)).toEqual([expectedName])
+      expect((await reader.readEntry(expectedName)).toString()).toBe('unicode entry contents')
+    } finally {
+      reader.close()
+    }
+  })
+
+  it('validates traversal after decoding Unicode path metadata', async () => {
+    await expect(openZipFromBuffer(await withUnicodePath('../escape.txt'))).rejects.toThrow('invalid relative path')
+  })
+})
+
 // ============================================================================
 // openZipFromFile
 // ============================================================================

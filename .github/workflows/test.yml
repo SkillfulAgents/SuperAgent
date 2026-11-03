@@ -569,6 +569,12 @@ jobs:
       - name: Build the desktop app
         run: npx electron-vite build
 
+      - name: Validate built Electron ZIP import and export
+        run: |
+          set -o pipefail
+          mkdir -p test-results
+          E2E_MOCK=true xvfb-run --auto-servernum npx tsx e2e/live/zip/run.ts 2>&1 | tee test-results/electron-zip.log
+
       - name: Validate packaged PDF rendering and local worker
         run: |
           set -o pipefail
@@ -582,6 +588,17 @@ jobs:
 
       - name: Run the cloud-workspace app suite
         run: xvfb-run --auto-servernum node e2e/live/cloud-electron/ci.mjs
+
+      - name: Upload Electron ZIP artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-electron-zip-artifacts
+          path: |
+            test-results/electron-zip/
+            test-results/electron-zip.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload Electron interaction artifacts
         if: always()
