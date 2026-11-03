@@ -120,7 +120,13 @@ async function main() {
       page,
       request: app.context().request,
       apiBaseUrl,
-      navigate: async (path: string) => { await page!.goto(`${rendererUrl}#${path}`) },
+      navigate: async (path: string) => {
+        await page!.goto(`${rendererUrl}#${path}`)
+        // Each scenario starts with a cold deep link, like the web harness.
+        // Changing only a file URL's hash retains the old document and agent
+        // roster, so it would miss fixtures just created through the real API.
+        await page!.reload()
+      },
       runtime: 'electron' as const,
     }
     for (const [name, scenario] of routerNavigationScenarios) {

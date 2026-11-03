@@ -445,7 +445,10 @@ jobs:
           # Serial: timing-sensitive scroll tests must not share the box with
           # each other.
           PLAYWRIGHT_WORKERS: '1'
-        run: E2E_MOCK=true npx playwright test --project=web-webkit --retries=0
+        run: |
+          set -o pipefail
+          mkdir -p test-results
+          E2E_MOCK=true npx playwright test --project=web-webkit --retries=0 --trace=retain-on-failure 2>&1 | tee test-results/webkit.log
 
       # Exercise the same real app controls on Apple's WebKit, including the
       # touch project. These deterministic interaction tests need one pass;

@@ -255,6 +255,35 @@ export async function checkAppLinkModifiers(context: RouterNavigationContext) {
     }
   } else {
     for (const gesture of [{ modifiers: ['ControlOrMeta' as const] }, { button: 'middle' as const }]) {
+      await page.bringToFront()
+      if ('button' in gesture && process.platform === 'darwin'
+        && page.context().browser()?.browserType().name() === 'webkit') {
+        // Diagnose the native macOS embedder separately from React's link.
+        // This probe does not relax the AppLink assertion below: it records
+        // whether a plain anchor opens a page under the same real gesture.
+        await page.evaluate(() => {
+          const anchor = document.createElement('a')
+          anchor.dataset.testid = 'router-native-middle-probe'
+          anchor.href = '/notifications'
+          anchor.textContent = 'Native middle-click control'
+          anchor.style.cssText = 'position:fixed;top:0;right:0;z-index:2147483647;background:white;color:black;padding:12px'
+          document.body.append(anchor)
+        })
+        try {
+          const nativePopupPromise = page.context().waitForEvent('page', { timeout: 3000 }).catch((error: Error) => {
+            if (error.name !== 'TimeoutError') throw error
+            return null
+          })
+          const focusedBefore = await page.evaluate(() => document.hasFocus())
+          await page.getByTestId('router-native-middle-probe').click({ button: 'middle' })
+          const nativePopup = await nativePopupPromise
+          console.log(`[router-native-middle] ${JSON.stringify({ openedPage: !!nativePopup, focusedBefore, openerUrl: page.url() })}`)
+          if (nativePopup) await nativePopup.close()
+        } finally {
+          await page.getByTestId('router-native-middle-probe').evaluate(element => element.remove())
+          await page.bringToFront()
+        }
+      }
       // Browser-native modifier/middle tabs can have no opener, so observe the
       // context's new page rather than only window.open-style popup events.
       const popupPromise = page.context().waitForEvent('page')

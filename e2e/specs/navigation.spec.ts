@@ -438,6 +438,9 @@ test.describe('Navigation - discriminated AgentView', () => {
 
     try {
       await page.goto(`/agents/${agent.slug}`)
+      // A document load can finish before React and the route loader mount.
+      // Reload the loaded agent view, rather than racing initial hydration.
+      await expectAgentHome(page, agent)
       await appPage.reload()
       await expectAgentHome(page, agent)
       await expect(page.locator('[data-testid^="agent-item-"]', { hasText: agent.name })).toHaveAttribute('data-active', 'true')
