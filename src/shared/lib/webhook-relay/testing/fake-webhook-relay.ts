@@ -39,7 +39,6 @@ export function createFakeWebhookRelay(): FakeWebhookRelay {
 
   return {
     kind: 'platform',
-    passIntervalMs: 30_000,
     consumers,
     log,
     snapshot: () => snapshot,

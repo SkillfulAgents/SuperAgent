@@ -1,7 +1,6 @@
 import type { WebhookFilterTestResult } from '@shared/lib/services/webhook-endpoint-schema'
 import { WebhookRelayUnavailableError } from './errors'
 import {
-  RELAY_PASS_INTERVAL_MS,
   type RelayAcceptResult,
   type RelayConsumerHandle,
   type RelayEndpoint,
@@ -18,7 +17,6 @@ import {
  */
 export class UnavailableWebhookRelayService implements WebhookRelayService {
   readonly kind = 'unavailable' as const
-  readonly passIntervalMs = RELAY_PASS_INTERVAL_MS
 
   constructor(private readonly reason: WebhookRelayUnavailableReason) {}
 

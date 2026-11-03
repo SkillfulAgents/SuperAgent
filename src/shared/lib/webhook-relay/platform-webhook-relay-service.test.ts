@@ -14,6 +14,8 @@ import {
 } from './platform-webhook-relay-service'
 import { UnavailableWebhookRelayService } from './unavailable-webhook-relay-service'
 import { LOCAL_RELAY_SCOPE, type RelayAcceptResult, type RelayConsumer, type RelayEvent } from './types'
+import { setJobManager } from '@shared/lib/scheduler/job-manager'
+import { createFakeJobManager, type FakeJobManager } from '@shared/lib/scheduler/testing/fake-job-manager'
 
 // ============================================================================
 // Fakes
@@ -1041,10 +1043,30 @@ describe('PlatformWebhookRelayService', () => {
   })
 
   describe('passes on the host clock', () => {
+    let jobs: FakeJobManager
+
+    beforeEach(() => {
+      jobs = createFakeJobManager()
+      setJobManager(jobs)
+    })
+
+    afterEach(() => {
+      setJobManager(null)
+    })
+
     function startPassive() {
       createRelay().start({ timers: false })
       return relay
     }
+
+    it('registers its pass as a job while started', async () => {
+      startPassive()
+      expect(jobs.list()).toEqual([{ id: 'webhook-relay', intervalMs: 30_000, running: false, lastRunAt: null }])
+
+      relay.stop()
+
+      expect(jobs.list()).toEqual([])
+    })
 
     it('claims, delivers and acks inside one pass, with no timer and no socket', async () => {
       startPassive()

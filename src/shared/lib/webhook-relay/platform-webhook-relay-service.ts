@@ -16,14 +16,15 @@
  * offered again with backoff until they settle.
  *
  * A host that keeps no timers between requests starts the relay with
- * `timers: false` and calls `runPass()` on its own clock instead: no tick, no
- * realtime socket, no retry timers; each pass claims, delivers and acks, and
- * resolves once that work is done.
+ * `timers: false`: no tick, no realtime socket, no retry timers. The relay
+ * then registers `runPass()` as a job on the JobManager; each pass claims,
+ * delivers and acks, and resolves once that work is done.
  */
 
 import pLimit from 'p-limit'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
+import { getJobManager, type Job } from '@shared/lib/scheduler/job-manager'
 import type { RealtimeConfig } from '@shared/lib/services/supabase-realtime-client'
 import type {
   VerificationProfile,
@@ -176,7 +177,7 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
 
 export class PlatformWebhookRelayService implements WebhookRelayService {
   readonly kind = 'platform' as const
-  readonly passIntervalMs: number
+  private readonly passIntervalMs: number
   private readonly reconcileMs: number
   private readonly realtimeTokenRefreshMs: number
   private readonly maxConsumerBacklog: number
@@ -202,8 +203,9 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   private ackTimer: NodeJS.Timeout | null = null
 
   private started = false
-  /** False when the host drives the relay through runPass() (start({ timers: false })). */
+  /** False when a job on the JobManager runs runPass() instead of this relay's own timers. */
   private timers = true
+  private readonly passJob: Job
   /** Offers and ack runs in flight, which a pass waits for. */
   private readonly inFlight = new Set<Promise<unknown>>()
   // Aborted by stop(), cancelling every request still in flight.
@@ -231,6 +233,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     options: PlatformWebhookRelayOptions = {},
   ) {
     this.passIntervalMs = options.tickMs ?? RELAY_PASS_INTERVAL_MS
+    this.passJob = { id: 'webhook-relay', intervalMs: this.passIntervalMs, run: () => this.runPass() }
     this.reconcileMs = options.reconcileMs ?? 5 * 60_000
     this.realtimeTokenRefreshMs = options.realtimeTokenRefreshMs ?? 40 * 60_000
     this.maxConsumerBacklog = options.maxConsumerBacklog ?? 200
@@ -505,6 +508,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
     this.started = true
     this.timers = options.timers ?? true
     this.lifecycle = new AbortController()
+    if (!this.timers) getJobManager().register(this.passJob)
     this.applyAuth()
     // Resume delivery that stop() suspended.
     for (const state of this.deliveringConsumers()) this.pump(state)
@@ -513,6 +517,7 @@ export class PlatformWebhookRelayService implements WebhookRelayService {
   stop(): void {
     if (!this.started) return
     this.started = false
+    getJobManager().unregister(this.passJob.id)
     this.lifecycle.abort(new Error('Webhook relay stopped'))
     for (const state of this.deliveringConsumers()) {
       if (state.retryTimer) clearTimeout(state.retryTimer)
