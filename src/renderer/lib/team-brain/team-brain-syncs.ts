@@ -3,7 +3,8 @@ import { splitFrontmatter } from '@renderer/lib/markdown-frontmatter'
 /**
  * What one sync did, as the upkeep run writes it to `_brain/syncs/<time>.md` in the drive: a header marked
  * `type: team-brain-sync` with when it ran, its session, the apps it read and how many pages it added and updated, then `## Highlights` (a `###` title and a few
- * sentences each), `## Changes` (a line each) and `## Needs you`, a line each under `### Blocked` and `### To decide`. Pages are linked relative to the summary, `[Acme](../../customers/acme.md)`.
+ * sentences each), `## Changes` (a line each) and `## Needs you`, a line each under `### Blocked` and `### To decide`. Each part is kept as the Markdown
+ * it was written in. Pages are linked relative to the summary, `[Acme](../../customers/acme.md)`.
  */
 export interface TeamBrainSync {
   id: string
@@ -14,18 +15,17 @@ export interface TeamBrainSync {
   added: number
   updated: number
   highlights: { title: string; body: string }[]
-  changes: string[]
+  changes: string
   /**
    * What needs a person, each line with what to do. Blocked: what kept the run from covering part of the brain, and
    * what it skipped. To decide: calls left to a person, each with what it filed meanwhile. Lines under no heading are to decide.
    */
-  needsYou: { blocked: string[]; toDecide: string[] }
+  needsYou: { blocked: string; toDecide: string }
 }
 
 /** The header line that marks a drive file as a sync summary. */
 export const SYNC_TYPE = 'team-brain-sync'
 const MOST_HIGHLIGHTS = 5
-const MOST_LINES = 100
 const MOST_SOURCES = 20
 
 /** A sync summary, or null for any other file: the folder is the agent's and people's to write in, so a file counts only with the mark and a time. */
@@ -38,23 +38,24 @@ export function parseSyncSummary(id: string, raw: string): TeamBrainSync | null 
   const at = fields.get('at') ?? ''
   // A time with no offset would read differently for each person, so it has to carry one.
   if (fields.get('type') !== SYNC_TYPE || !/(?:Z|[+-]\d{2}:?\d{2})$/i.test(at) || Number.isNaN(Date.parse(at))) return null
+  // A part's heading line, and what follows it as written: nothing when the heading ends the file.
+  const head = (part: string) => part.split('\n', 1)[0].trim()
+  const rest = (part: string) => (part.includes('\n') ? part.slice(part.indexOf('\n') + 1).trimEnd() : '')
+  const joined = (parts: string[]) => parts.filter(Boolean).join('\n\n')
   const sections = new Map<string, string>()
-  for (const part of body.split(/^## /m).slice(1)) sections.set(part.slice(0, part.indexOf('\n')).trim().toLowerCase(), part.slice(part.indexOf('\n') + 1))
-  // Each list keeps its first `MOST_LINES`: a run writes far fewer, so a runaway file can't flood the page.
-  const bullets = (part: string) => part.split('\n').flatMap((line) => (/^[-*+]\s/.test(line) ? [line.replace(/^[-*+]\s+/, '').trim()] : [])).filter(Boolean)
+  for (const part of body.split(/^## /m).slice(1)) sections.set(head(part).toLowerCase(), rest(part))
   // A count the agent got wrong ("two", -1, Infinity) reads as none.
   const count = (name: string) => {
     const n = Math.trunc(Number(fields.get(name)))
     return Number.isFinite(n) && n > 0 ? n : 0
   }
-  const lines = (name: string) => bullets(sections.get(name) ?? '').slice(0, MOST_LINES)
   const [loose, ...groups] = (sections.get('needs you') ?? '').split(/^### /m)
-  const group = (name: string) => groups.filter((part) => part.slice(0, part.indexOf('\n')).trim().toLowerCase() === name).flatMap(bullets)
+  const group = (name: string) => groups.filter((part) => head(part).toLowerCase() === name).map(rest)
   const highlights = (sections.get('highlights') ?? '')
     .split(/^### /m)
     .slice(1)
     .slice(0, MOST_HIGHLIGHTS)
-    .map((part) => ({ title: part.slice(0, part.indexOf('\n')).trim(), body: part.slice(part.indexOf('\n') + 1).trim().replace(/\s*\n\s*/g, ' ') }))
+    .map((part) => ({ title: head(part), body: rest(part) }))
   return {
     id,
     at,
@@ -65,8 +66,8 @@ export function parseSyncSummary(id: string, raw: string): TeamBrainSync | null 
     added: count('added'),
     updated: count('updated'),
     highlights,
-    changes: lines('changes'),
-    needsYou: { blocked: group('blocked').slice(0, MOST_LINES), toDecide: [...bullets(loose), ...group('to decide')].slice(0, MOST_LINES) },
+    changes: sections.get('changes') ?? '',
+    needsYou: { blocked: joined(group('blocked')), toDecide: joined([loose.trimEnd(), ...group('to decide')]) },
   }
 }
 
@@ -78,29 +79,18 @@ export function latestSummaryFiles<T extends { name: string; type: string; mtime
     .slice(0, shown)
 }
 
-export type SyncSummaryPart = { text: string } | { page: string; label: string } | { url: string; label: string }
+export type SummaryLink = { page: string } | 'web' | 'text'
 
 /**
- * A summary's text split into its words and its links. Links are the brain's own, Markdown and relative to the summary:
- * `[Acme](../../customers/acme.md)` is a page in the drive, `[the thread](https://…)` is on the web. A link that leads out
- * of the drive, or to anything else, reads as its words.
+ * Where a link in a summary leads. Links are the brain's own, Markdown and relative to the summary:
+ * `../../customers/acme.md` is a page in the drive. A link with a scheme is left to the shared link and its policy.
+ * A link that leads out of the drive, or to nothing, reads as its words.
  */
-export function syncSummaryParts(text: string, from: string): SyncSummaryPart[] {
-  const parts: SyncSummaryPart[] = []
-  let at = 0
-  for (const match of text.matchAll(/\[([^\]]+)\]\(([^)\s]+)\)/g)) {
-    if (match.index > at) parts.push({ text: text.slice(at, match.index) })
-    const [, label, href] = match
-    const target = href.split('#')[0]
-    if (/^https?:\/\//i.test(target)) parts.push({ url: target, label })
-    else {
-      const page = /^[a-z][a-z\d+.-]*:/i.test(target) ? null : drivePath(from, target)
-      parts.push(page ? { page, label } : { text: label })
-    }
-    at = match.index + match[0].length
-  }
-  if (at < text.length) parts.push({ text: text.slice(at) })
-  return parts
+export function summaryLink(href: string | undefined, from: string): SummaryLink {
+  const target = (href ?? '').split('#')[0]
+  if (/^[a-z][a-z\d+.-]*:/i.test(target)) return 'web'
+  const page = target ? drivePath(from, target) : null
+  return page ? { page } : 'text'
 }
 
 /** Where a relative link from `from` lands in the drive, or null when it leads out of it. A leading `/` is the drive's top. */

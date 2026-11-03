@@ -56,9 +56,9 @@ export function formatSyncTime(at: Date): string {
 
 const pageCount = (n: number) => `${n} page${n === 1 ? '' : 's'}`
 
-/** "3 pages added, 9 updated", the way a release has its number. Counts the agent got wrong read as none, so its lines say what it filed. */
-export function syncCountLabel({ added, updated, changes }: { added: number; updated: number; changes: readonly string[] }): string {
+/** "3 pages added, 9 updated", the way a release has its number. Counts the agent got wrong read as none, so its Changes say whether it filed any. */
+export function syncCountLabel({ added, updated, changes }: { added: number; updated: number; changes: string }): string {
   if (added && updated) return `${pageCount(added)} added, ${updated} updated`
   if (added || updated) return added ? `${pageCount(added)} added` : `${pageCount(updated)} updated`
-  return changes.length ? `${changes.length} change${changes.length === 1 ? '' : 's'}` : 'No changes'
+  return changes ? 'Changes filed' : 'No changes'
 }

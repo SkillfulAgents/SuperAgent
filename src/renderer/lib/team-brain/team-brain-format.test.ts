@@ -34,10 +34,10 @@ describe('formatting', () => {
     expect(formatSyncDay(new Date(2025, 9, 23, 9), now)).toMatch(/2025/)
   })
 
-  it('heads a sync with its counts, or its lines when the counts say nothing', () => {
-    expect(syncCountLabel({ added: 3, updated: 9, changes: [] })).toBe('3 pages added, 9 updated')
-    expect(syncCountLabel({ added: 0, updated: 1, changes: [] })).toBe('1 page updated')
-    expect(syncCountLabel({ added: 0, updated: 0, changes: ['a', 'b'] })).toBe('2 changes')
-    expect(syncCountLabel({ added: 0, updated: 0, changes: [] })).toBe('No changes')
+  it('heads a sync with its counts, or whether it filed changes when the counts say nothing', () => {
+    expect(syncCountLabel({ added: 3, updated: 9, changes: '' })).toBe('3 pages added, 9 updated')
+    expect(syncCountLabel({ added: 0, updated: 1, changes: '' })).toBe('1 page updated')
+    expect(syncCountLabel({ added: 0, updated: 0, changes: '- a\n- b' })).toBe('Changes filed')
+    expect(syncCountLabel({ added: 0, updated: 0, changes: '' })).toBe('No changes')
   })
 })
