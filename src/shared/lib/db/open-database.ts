@@ -78,6 +78,11 @@ export interface OpenDatabaseOptions {
   /** Defaults to better-sqlite3 at `getDatabasePath()`. */
   driver?: DatabaseDriver
   /**
+   * Runs the data migrations inside a context the deployment supplies, e.g.
+   * the shared host state they read and write settings through.
+   */
+  dataMigrationScope?: (db: AppDatabase, run: () => Promise<void>) => Promise<void>
+  /**
    * False opens the database as it is, for a host whose processes start often and that brings the
    * schema and data up to date once beforehand (one `openDatabase()` with migrations, when it
    * deploys). Default true.
@@ -118,14 +123,20 @@ async function open(options: OpenDatabaseOptions): Promise<AppDatabase> {
     throw err
   }
 
-  if (options.migrate !== false) await migrate(handle, driver.name, dbPath)
+  if (options.migrate !== false) await migrate(handle, driver.name, dbPath, options.dataMigrationScope)
   opened = handle
   return handle.db
 }
 
-async function migrate(handle: OpenedDatabase, driverName: string, dbPath: string | undefined): Promise<void> {
+async function migrate(
+  handle: OpenedDatabase,
+  driverName: string,
+  dbPath: string | undefined,
+  dataMigrationScope: OpenDatabaseOptions['dataMigrationScope'],
+): Promise<void> {
   try {
-    await migrateFromBundle(handle.db)
+    if (handle.migrate) await handle.migrate(migrationBundle, MIGRATIONS_TABLE)
+    else await migrateFromBundle(handle.db)
   } catch (err) {
     captureException(err, {
       tags: { component: 'database', operation: 'migrate', driver: driverName },
@@ -139,10 +150,14 @@ async function migrate(handle: OpenedDatabase, driverName: string, dbPath: strin
   // One-time data moves, after the schema is current and before anything
   // reads: nothing observes a database that is missing one.
   try {
-    const applied = await runDataMigrations(handle.db)
-    if (applied.length > 0) {
-      console.log(`[database] Applied data migrations: ${applied.join(', ')}`)
+    const runAll = async () => {
+      const applied = await runDataMigrations(handle.db)
+      if (applied.length > 0) {
+        console.log(`[database] Applied data migrations: ${applied.join(', ')}`)
+      }
     }
+    if (dataMigrationScope) await dataMigrationScope(handle.db, runAll)
+    else await runAll()
   } catch (err) {
     captureException(err, {
       tags: { component: 'database', operation: 'data-migrate', driver: driverName },

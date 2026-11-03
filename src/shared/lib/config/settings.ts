@@ -1,17 +1,14 @@
 import { modelSelectionSchema } from '../llm-provider/connection-schema'
 import { parseStoredGlobalPricing, type GlobalModelPricing } from '../llm-provider/global-pricing-schema'
 import type { VoiceProvider } from '../voice/provider-types'
-import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { getDataDir } from './data-dir'
 import { isRunningInKubernetes } from '@shared/lib/container/runtime-env'
 import { getDefaultAgentImage, AGENT_IMAGE_REGISTRY } from './version'
-import {
-  writeFileAtomicSync,
-  CorruptFileError,
-} from '@shared/lib/utils/file-storage'
+import { CorruptFileError } from '@shared/lib/utils/file-storage'
 import { captureException } from '@shared/lib/error-reporting'
+import { SETTINGS_FILE, hostState } from '@shared/lib/host-state/backend'
 import { persistedSettingsSchema } from './settings-schema'
 import { globalInstructionsSchema } from './global-instructions-schema'
 import { teamBrainRecordSchema, type TeamBrainRecord } from './team-brain-schema'
@@ -702,22 +699,19 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
  * Never default-then-save here.
  */
 export function loadSettingsStrict(): AppSettings {
-  const settingsPath = getSettingsPath()
-  let content: string
-  try {
-    content = fs.readFileSync(settingsPath, 'utf-8')
-  } catch (err) {
-    // Absent file = legitimate first run → bare defaults (preserves the original
-    // behavior, which did NOT default-merge auth/analytics for a missing file).
-    // Deep-clone: callers (mutateSettings) mutate nested objects in place, and a
-    // shallow `{ ...DEFAULT_SETTINGS }` shares `.container`/`.app`/… with the
-    // module constant — so a first-run mutation would corrupt DEFAULT_SETTINGS.
-    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return structuredClone(DEFAULT_SETTINGS)
-    throw err // other IO error (EACCES/EIO/…) — propagate, never default-then-save
-  }
+  // Other IO errors (EACCES/EIO/…) propagate: never default-then-save.
+  return parseSettings(hostState().read(SETTINGS_FILE))
+}
+
+function parseSettings(content: string | null): AppSettings {
+  // Absent file = legitimate first run → bare defaults (preserves the original
+  // behavior, which did NOT default-merge auth/analytics for a missing file).
+  // Deep-clone: callers (mutateSettings) mutate nested objects in place, and a
+  // shallow `{ ...DEFAULT_SETTINGS }` shares `.container`/`.app`/… with the
+  // module constant — so a first-run mutation would corrupt DEFAULT_SETTINGS.
+  if (content === null) return structuredClone(DEFAULT_SETTINGS)
   // Validate the boundary (object shape); torn JSON / non-object → throw.
-  const raw = parseJsonStrict(settingsPath, content)
-  return mergeLoadedSettings(raw)
+  return mergeLoadedSettings(parseJsonStrict(getSettingsPath(), content))
 }
 
 /** Parse + shape-validate raw settings content; throws CorruptFileError on a
@@ -766,31 +760,17 @@ export function loadSettings(): AppSettings {
  * Save settings to the JSON file.
  */
 export function saveSettings(settings: AppSettings): void {
-  const settingsPath = getSettingsPath()
-  const dataDir = getDataDir()
-
-  // Ensure data directory exists
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true })
-  }
-
-  // Atomic temp-file + rename: an interrupted write can never leave a
-  // torn settings.json that a later read would mistake for corruption (or that
-  // the tolerant loader would mask with defaults). Mode 0o600 (owner-only) since
-  // the file holds API keys.
-  writeFileAtomicSync(settingsPath, JSON.stringify(settings, null, 2), { mode: 0o600 })
+  // Atomic and owner-only (the file holds API keys): an interrupted write can
+  // never leave a torn settings.json that a later read would mistake for
+  // corruption (or that the tolerant loader would mask with defaults).
+  hostState().replace(SETTINGS_FILE, JSON.stringify(settings, null, 2))
 }
 
 /**
- * Get current settings (cached for the request).
+ * Get current settings (cached until the next write).
  */
-let cachedSettings: AppSettings | null = null
-
 export function getSettings(): AppSettings {
-  if (!cachedSettings) {
-    cachedSettings = loadSettings()
-  }
-  return cachedSettings
+  return hostState().memo(SETTINGS_FILE, loadSettings)
 }
 
 /**
@@ -804,7 +784,7 @@ export function getSettings(): AppSettings {
  */
 export function updateSettings(settings: AppSettings): void {
   saveSettings(settings)
-  cachedSettings = settings
+  hostState().remember(SETTINGS_FILE, settings)
 }
 
 /**
@@ -820,10 +800,14 @@ export function updateSettings(settings: AppSettings): void {
  * API keys/auth with defaults. Returns the persisted settings.
  */
 export function mutateSettings(mutator: (settings: AppSettings) => void): AppSettings {
-  const fresh = loadSettingsStrict()
-  mutator(fresh)
-  saveSettings(fresh)
-  cachedSettings = fresh
+  let fresh!: AppSettings
+  // A concurrent writer's change is merged by running the mutator again on it.
+  hostState().write(SETTINGS_FILE, (raw) => {
+    fresh = parseSettings(raw)
+    mutator(fresh)
+    return JSON.stringify(fresh, null, 2)
+  })
+  hostState().remember(SETTINGS_FILE, fresh)
   return fresh
 }
 
@@ -831,7 +815,7 @@ export function mutateSettings(mutator: (settings: AppSettings) => void): AppSet
  * Clear the settings cache (useful after external modifications).
  */
 export function clearSettingsCache(): void {
-  cachedSettings = null
+  hostState().forget(SETTINGS_FILE)
 }
 
 // TODO - following function are very repetitive - consider refactor to a single generic function that takes the API key name as parameter

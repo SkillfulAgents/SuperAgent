@@ -1,7 +1,5 @@
-import path from 'path'
 import { durableStringMap } from '@shared/lib/agent-actor/durable-state'
 import { getSettings } from '@shared/lib/config/settings'
-import { getDataDir } from '@shared/lib/config/data-dir'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { getOrCreateMapping } from './context-map-store'
@@ -217,15 +215,11 @@ export class PlatformBrowserProvider implements HostBrowserProvider {
     return headers
   }
 
-  private contextMapPath(): string {
-    return path.join(getDataDir(), CONTEXTS_FILE)
-  }
-
   private async getOrCreateContext(contextKey: string, token: string): Promise<string> {
     // getOrCreateMapping dedups concurrent first-opens for the same key so we
     // never create (and then orphan/leak) two paid contexts; it re-reads the map
     // and persists atomically.
-    return getOrCreateMapping(this.contextMapPath(), contextKey, async () => {
+    return getOrCreateMapping(CONTEXTS_FILE, contextKey, async () => {
       const response = await fetch(`${this.proxyBase()}/contexts`, {
         method: 'POST',
         headers: this.authHeaders(token, true),

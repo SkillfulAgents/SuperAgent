@@ -38,6 +38,7 @@ import {
   apnsDevices,
   pushSubscriptions,
   pushVapidKeys,
+  hostState,
 } from './schema'
 import { agentIntegrationRegistry } from '../agent-integrations/registry'
 
@@ -115,6 +116,8 @@ function factoryResetTables(): SQLiteTable[] { return [
   // web push device subscriptions + the VAPID keypair they were minted against
   pushSubscriptions,
   pushVapidKeys,
+  // settings, host files and short-lived flow state of a host that keeps them in the database
+  hostState,
 ] }
 
 export async function resetApplicationTables(): Promise<void> {

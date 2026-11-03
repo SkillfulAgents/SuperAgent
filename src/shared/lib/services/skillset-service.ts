@@ -47,6 +47,8 @@ import type {
 import { InstalledSkillMetadataSchema, parseSkillsetIndex } from '@shared/lib/types/skillset-schema'
 import { getSkillsetProvider } from '@shared/lib/skillset-provider'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
+import { currentStore } from '@shared/lib/host-state/scope'
 import { pruneInstalledSkillIfInvalid } from './skillset-reconcile'
 
 const execFileAsync = promisify(execFile)
@@ -956,7 +958,32 @@ export async function validateSkillsetUrl(
 // Each public-skillset refresh spends one of GitHub's 60 unauthenticated API
 // calls per hour, shared by everyone behind the same IP.
 export const BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS = 15 * 60_000
-const lastSkillsetRefreshAt = new Map<string, number>()
+const REFRESHED_AT_KEY_PREFIX = 'skillset-refreshed-at:'
+
+// When each skillset cache was last refreshed. Also kept in the host state store, so a process
+// that never refreshed a skillset still sees that another one just did.
+const lastSkillsetRefreshAt = {
+  local: new Map<string, number>(),
+  async get(repoDir: string): Promise<number | undefined> {
+    const local = this.local.get(repoDir)
+    if (local !== undefined) return local
+    const shared = await currentStore().get(REFRESHED_AT_KEY_PREFIX + repoDir)
+    return shared ? Number(shared.value) : undefined
+  },
+  set(repoDir: string, at: number): void {
+    this.local.set(repoDir, at)
+    const store = currentStore()
+    const key = REFRESHED_AT_KEY_PREFIX + repoDir
+    background(
+      store.delete(key).then(() => store.insertIfAbsent(key, String(at), at + BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS)),
+      { name: 'skillset-service.record-refresh' },
+    )
+  },
+  async delete(repoDir: string): Promise<void> {
+    this.local.delete(repoDir)
+    await currentStore().delete(REFRESHED_AT_KEY_PREFIX + repoDir)
+  },
+}
 
 /**
  * Refresh a cached skillset repo (git pull) and return the updated index.
@@ -969,7 +996,7 @@ export async function refreshSkillset(
   const hostingProvider = getSkillsetProvider(ref.provider)
   const repoDir = getSkillsetRepoDir(hostingProvider.getEffectiveRepoId(ref))
 
-  const refreshedAt = lastSkillsetRefreshAt.get(repoDir)
+  const refreshedAt = options.maxAgeMs === undefined ? undefined : await lastSkillsetRefreshAt.get(repoDir)
   if (options.maxAgeMs !== undefined && refreshedAt !== undefined && Date.now() - refreshedAt < options.maxAgeMs) {
     return readIndexJson(repoDir)
   }
@@ -1089,7 +1116,7 @@ export async function getSkillsetIndex(
  */
 export async function removeSkillsetCache(ref: Pick<SkillsetRef, 'skillsetId' | 'provider' | 'providerData'>): Promise<void> {
   const repoDir = getSkillsetRepoDirForRef(ref)
-  lastSkillsetRefreshAt.delete(repoDir)
+  await lastSkillsetRefreshAt.delete(repoDir)
   await deleteSkillsetCache(repoDir)
   if (await directoryExists(repoDir)) {
     await fs.promises.rm(repoDir, { recursive: true, force: true })

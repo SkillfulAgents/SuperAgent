@@ -9,6 +9,10 @@ vi.mock('./0001-import-agents-from-directories', () => ({
 }))
 
 import { runDataMigrations, type DataMigration } from './index'
+import { mutateSettings } from '../../config/settings'
+import { fileHostStateBackend, setHostStateBackend } from '../../host-state/backend'
+import { runWithHostState, scopedHostStateBackend } from '../../host-state/scope'
+import { databaseHostStateStore } from '../../host-state/store'
 
 let handle: TestDatabase
 
@@ -106,6 +110,28 @@ describe('runDataMigrations', () => {
   it('refuses a list that reuses an id', async () => {
     const log: string[] = []
     await expect(runDataMigrations(handle.db, [migration(1, 'a', log), migration(1, 'b', log)])).rejects.toThrow('used twice')
+    expect(await ledger()).toEqual([])
+  })
+
+  it('does not record a migration whose settings save fails inside a host state scope', async () => {
+    const store = {
+      ...databaseHostStateStore(handle.db),
+      compareAndSet: async () => { throw new Error('database unavailable') },
+    }
+    const pricing: DataMigration = {
+      id: 2,
+      name: 'global-model-pricing',
+      async run() {
+        mutateSettings((s) => { s.app = { ...s.app, theme: 'dark' } })
+      },
+    }
+
+    setHostStateBackend(scopedHostStateBackend)
+    try {
+      await expect(runWithHostState(store, () => runDataMigrations(handle.db, [pricing]))).rejects.toThrow('database unavailable')
+    } finally {
+      setHostStateBackend(fileHostStateBackend)
+    }
     expect(await ledger()).toEqual([])
   })
 })

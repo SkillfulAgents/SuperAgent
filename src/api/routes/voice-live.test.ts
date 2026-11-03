@@ -6,6 +6,7 @@ import { createServer, request as httpRequest } from 'node:http'
 import { once } from 'node:events'
 import { getRequestListener } from '@hono/node-server'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { z } from 'zod'
 const mocks = vi.hoisted(() => ({
   providerName: 'openai' as string | undefined, alternateEnabled: false, user: 'alice', authenticated: true,
   agentExists: true, agentRole: 'user', getAgent: vi.fn(),
@@ -26,6 +27,7 @@ vi.mock('@shared/lib/services/agent-service', () => ({ getAgent: mocks.getAgent 
 vi.mock('@shared/lib/config/settings', () => ({ getVoiceSettings: () => ({ sttProvider: mocks.providerName }), getAgentCapabilitySettings: () => ({ subagents: 'block', workflows: 'review' }) }))
 vi.mock('@shared/lib/voice', () => ({
   getVoiceProvider: (id: string) => ({
+    id,
     name: { openai: 'OpenAI', deepgram: 'Deepgram', platform: 'Platform' }[id],
     getLiveConversation: () => (id === 'openai' || id === 'platform')
       ? { createLiveSession: mocks.create, mapLiveConversation: mocks.map, closeLiveSession: mocks.close, getLiveVoices: () => LIVE_VOICES, resolveLiveVoice: () => 'marin' }
@@ -305,4 +307,69 @@ describe('Live voice routes', () => {
     expect(mocks.map).not.toHaveBeenCalled()
   })
 
+})
+
+describe('Live sessions opened by another process', () => {
+  // Another process's session is only in the shared record: this process's registry never saw it.
+  async function openedElsewhere(handle: string, owner = 'alice') {
+    const { expiringMap } = await import('@shared/lib/host-state/expiring-map')
+    await expiringMap('voice-live', 60_000, z.custom<object>(() => true)).set(`${owner}:${handle}`, { owner, provider: 'openai', providerSessionId: `rtc-${handle}`, closing: false })
+  }
+
+  beforeEach(async () => {
+    const { resetProcessHostState } = await import('@shared/lib/host-state/scope')
+    resetProcessHostState()
+    mocks.user = 'alice'
+    mocks.providerName = 'openai'
+    mocks.close.mockReset().mockResolvedValue(undefined)
+  })
+
+  it('closes the provider session when the hang-up reaches a process that did not open it', async () => {
+    await openedElsewhere('handle-elsewhere')
+
+    const res = await voice.request('/live/session/handle-elsewhere', { method: 'DELETE' })
+
+    expect(res.status).toBe(200)
+    expect(mocks.close).toHaveBeenCalledWith('rtc-handle-elsewhere')
+    expect((await voice.request('/live/session/handle-elsewhere', { method: 'DELETE' })).status).toBe(404)
+  })
+
+  it('does not close another user\'s session', async () => {
+    await openedElsewhere('handle-bob', 'bob')
+
+    expect((await voice.request('/live/session/handle-bob', { method: 'DELETE' })).status).toBe(404)
+    expect(mocks.close).not.toHaveBeenCalled()
+  })
+
+  it('counts sessions open in other processes against the limit of four', async () => {
+    for (const handle of ['h1', 'h2', 'h3', 'h4']) await openedElsewhere(handle)
+
+    const res = await request('/live/session', { sdp: 'v=0', history: [] })
+
+    expect(res.status).toBe(429)
+  })
+
+  it('admits one of two starts that race for the last slot', async () => {
+    for (const handle of ['h1', 'h2', 'h3']) await openedElsewhere(handle)
+    // Both starts wait on the shared count at once, as they do on a remote store.
+    const { currentStore } = await import('@shared/lib/host-state/scope')
+    const store = currentStore()
+    const getMany = store.getMany.bind(store)
+    let bothWaiting!: () => void
+    const gate = new Promise<void>((resolve) => { bothWaiting = resolve })
+    let calls = 0
+    const spy = vi.spyOn(store, 'getMany').mockImplementation(async (keys, prefixes) => {
+      if (++calls === 2) bothWaiting()
+      if (calls <= 2) await gate
+      return getMany(keys, prefixes)
+    })
+    try {
+      const statuses = (await Promise.all([1, 2].map(() => request('/live/session', { sdp: 'v=0', history: [] })))).map((res) => res.status)
+
+      expect(statuses.sort()).toEqual([201, 429])
+      expect(mocks.create).toHaveBeenCalledTimes(1)
+    } finally {
+      spy.mockRestore()
+    }
+  })
 })

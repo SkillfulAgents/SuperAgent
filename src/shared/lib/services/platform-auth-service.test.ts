@@ -124,7 +124,7 @@ beforeAll(async () => {
 describe('platform-auth-service', () => {
   let tempDir: string
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'superagent-platform-auth-'))
     process.env.SUPERAGENT_DATA_DIR = tempDir
     process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
@@ -137,12 +137,12 @@ describe('platform-auth-service', () => {
     ])
     clearSettingsCache()
     _setOidcJwksResolverForTest(testJwksResolver as unknown as Parameters<typeof _setOidcJwksResolverForTest>[0])
-    _resetEnvManagedPlatformStatusForTest()
+    await _resetEnvManagedPlatformStatusForTest()
     mockDbGet.mockReturnValue(null)
     mockEnsureManagedPlatformConnection.mockClear()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     clearSettingsCache()
     fs.rmSync(tempDir, { recursive: true, force: true })
     delete process.env.SUPERAGENT_DATA_DIR
@@ -151,7 +151,7 @@ describe('platform-auth-service', () => {
     delete process.env.PLATFORM_PROXY_URL
     delete process.env.AUTH_PROVIDERS_JSON
     _setOidcJwksResolverForTest(null)
-    _resetEnvManagedPlatformStatusForTest()
+    await _resetEnvManagedPlatformStatusForTest()
     vi.restoreAllMocks()
   })
 
@@ -593,6 +593,30 @@ describe('platform-auth-service', () => {
     })
     // env-managed connections have no "last changed" anchor; updatedAt stays null.
     expect(status.updatedAt).toBeNull()
+  })
+
+  it('introspects an account once per token, then serves it from the host state store', async () => {
+    process.env.AUTH_MODE = 'true'
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env')
+    process.env.PLATFORM_PROXY_URL = 'http://proxy.test'
+    await initEnvManagedPlatformStatus()
+    const account = () => new Response(
+      JSON.stringify({ memberId: 'sub_member_1', orgId: 'org_env', orgName: 'Acme Inc', role: 'owner', userId: 'user_1', email: 'owner@example.com' }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    )
+    const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(async () => account())
+
+    await getEnrichedPlatformAuthStatus('ba-user-cached')
+    const again = await getEnrichedPlatformAuthStatus('ba-user-cached')
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(again).toMatchObject({ email: 'owner@example.com', orgName: 'Acme Inc' })
+
+    process.env.PLATFORM_TOKEN = await signTestOrgToken('org_env_rotated')
+    await initEnvManagedPlatformStatus()
+    await getEnrichedPlatformAuthStatus('ba-user-cached')
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
 
   it('keeps the plan policy a member\'s account read carries, keyed by that member (SUP-1124)', async () => {

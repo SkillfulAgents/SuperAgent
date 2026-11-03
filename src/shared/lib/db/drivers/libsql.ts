@@ -1,13 +1,14 @@
 /**
  * libsql: an in-process, asynchronous SQLite driver with `batch()` and no
- * interactive transactions, the same shape as Cloudflare D1. CI runs the
- * test suite against it so code that only works on better-sqlite3 fails
+ * interactive transactions, the same shape as a database that only runs
+ * batches. CI runs the test suite against it so code that only works on better-sqlite3 fails
  * there. `@libsql/client` is a devDependency: this module must stay out of
  * the production import graph (the test helper is its only importer).
  */
 import { createClient } from '@libsql/client'
 import { drizzle } from 'drizzle-orm/libsql'
 import * as schema from '../schema'
+import { migrateInBatch } from '../batch-migrate'
 import type { DatabaseDriver } from './types'
 
 /**
@@ -23,6 +24,18 @@ export function libsql(url: string): DatabaseDriver {
       if (url.startsWith('file:')) await client.execute('PRAGMA journal_mode = WAL')
       return {
         db: drizzle(client, { schema }),
+        // A batch, not BEGIN/COMMIT: the path for a database that only runs batches.
+        migrate: (migrations, table) =>
+          migrateInBatch(
+            {
+              query: async (sql) => (await client.execute(sql)).rows.map((row) => Array.from(row)),
+              batch: async (statements) => {
+                await client.batch(statements, 'write')
+              },
+            },
+            migrations,
+            table,
+          ),
         close: () => {
           client.close()
         },
