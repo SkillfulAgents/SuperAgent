@@ -5,11 +5,42 @@ import { createMarkdownUrlTransform, markdownUrlTransform } from '@renderer/lib/
 import { Link, type LinkProps } from '@tanstack/react-router'
 import { isAgentPageHref, settingsTabFromHref } from '@renderer/lib/in-app-link'
 import { DialogContext } from '@renderer/context/dialog-context'
+import { FilePreviewContext } from '@renderer/context/file-preview-context'
+import { isSafeWorkspaceFilePath } from '@renderer/lib/workspace-file-url'
 
 // The one place react-markdown is wired: plugins, link-href policy, default anchor.
 
+function workspaceFilePath(href: string): string | null {
+  try {
+    // Parsed like a workspace image (markdown-url-transform.ts): query and hash are not part of the name.
+    const filePath = decodeURIComponent(new URL(href, 'file://').pathname)
+    return isSafeWorkspaceFilePath(filePath) ? filePath : null
+  } catch {
+    return null
+  }
+}
+
+// Its own component so only workspace links re-render with the preview tray.
+function WorkspaceFileLink({ children, href, agentSlug }: { children?: ReactNode; href: string; agentSlug?: string }) {
+  const openFile = useContext(FilePreviewContext)?.openFile
+  const filePath = workspaceFilePath(href)
+  if (!agentSlug || !openFile || !filePath) return <>{children}</>
+  return (
+    <a
+      href={href}
+      className="text-blue-500 hover:underline"
+      onClick={(event) => {
+        event.preventDefault()
+        openFile(filePath, agentSlug)
+      }}
+    >
+      {children}
+    </a>
+  )
+}
+
 // target="_blank" is the only path that reaches the Electron shell opener.
-export function MarkdownLink({ children, href }: { children?: ReactNode; href?: string }) {
+export function MarkdownLink({ children, href, agentSlug }: { children?: ReactNode; href?: string; agentSlug?: string }) {
   const openSettings = useContext(DialogContext)?.openSettings
   if (href?.startsWith('/agents/')) {
     if (!isAgentPageHref(href)) return <>{children}</>
@@ -19,6 +50,9 @@ export function MarkdownLink({ children, href }: { children?: ReactNode; href?: 
         {children}
       </Link>
     )
+  }
+  if (href?.startsWith('/workspace/')) {
+    return <WorkspaceFileLink href={href} agentSlug={agentSlug}>{children}</WorkspaceFileLink>
   }
   const settingsTab = settingsTabFromHref(href)
   if (settingsTab && openSettings) {
@@ -58,10 +92,12 @@ export interface MarkdownProps {
 }
 
 export function Markdown({ children, components, rehypePlugins, imageAliases, agentSlug }: MarkdownProps) {
-  const merged = useMemo(
-    () => (components ? { ...DEFAULT_COMPONENTS, ...components } : DEFAULT_COMPONENTS),
-    [components]
-  )
+  const merged = useMemo(() => {
+    const defaults: Components = agentSlug
+      ? { ...DEFAULT_COMPONENTS, a: (props) => <MarkdownLink {...props} agentSlug={agentSlug} /> }
+      : DEFAULT_COMPONENTS
+    return components ? { ...defaults, ...components } : defaults
+  }, [components, agentSlug])
   const urlTransform = useMemo(
     () => (imageAliases || agentSlug ? createMarkdownUrlTransform({ aliases: imageAliases, agentSlug }) : markdownUrlTransform),
     [imageAliases, agentSlug]

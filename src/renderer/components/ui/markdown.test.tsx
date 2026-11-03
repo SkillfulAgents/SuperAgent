@@ -10,7 +10,16 @@ import {
   createRouter,
 } from '@tanstack/react-router'
 import { DialogContext } from '@renderer/context/dialog-context'
+import { FilePreviewProvider, getPreviewTabKey, useFilePreview } from '@renderer/context/file-preview-context'
 import { Markdown } from './markdown'
+
+vi.mock('@renderer/router/use-route-location', () => ({
+  useRouteLocation: () => ({ selectedAgentSlug: 'sales-helper', view: { kind: 'session', id: 'session-1' } }),
+}))
+
+function OpenTabs() {
+  return <output>{useFilePreview().openTabs.map(getPreviewTabKey).join(',')}</output>
+}
 
 describe('Markdown', () => {
   afterEach(cleanup)
@@ -79,6 +88,39 @@ describe('Markdown', () => {
     ['a placeholder slug', '[Open](/agents/<slug>/secrets)'],
   ])('renders %s as plain text', (_, markdown) => {
     render(<Markdown>{markdown}</Markdown>)
+    expect(screen.getByText('Open')).toBeInTheDocument()
+    expect(screen.queryByRole('link')).toBeNull()
+  })
+
+  it('renders a workspace file link as plain text where no preview tray is open', () => {
+    render(<Markdown agentSlug="sales-helper">{'[Open](/workspace/output/report.md)'}</Markdown>)
+    expect(screen.getByText('Open')).toBeInTheDocument()
+    expect(screen.queryByRole('link')).toBeNull()
+  })
+
+  it.each([
+    ['an encoded name', '/workspace/output/Q3%20report.md', '/workspace/output/Q3 report.md'],
+    ['a heading anchor', '/workspace/output/report.md#results', '/workspace/output/report.md'],
+  ])('opens a workspace file link with %s in the preview tray', (_, href, filePath) => {
+    render(
+      <FilePreviewProvider>
+        <Markdown agentSlug="sales-helper">{`[Open](${href})`}</Markdown>
+        <OpenTabs />
+      </FilePreviewProvider>,
+    )
+    fireEvent.click(screen.getByRole('link', { name: 'Open' }))
+    expect(screen.getByRole('status').textContent).toBe(`file:sales-helper:${filePath}`)
+  })
+
+  it.each([
+    ['an encoded traversal', '/workspace/output/..%2F..%2Fetc/passwd'],
+    ['a malformed escape', '/workspace/output/%FF.md'],
+  ])('renders a workspace link with %s as plain text', (_, href) => {
+    render(
+      <FilePreviewProvider>
+        <Markdown agentSlug="sales-helper">{`[Open](${href})`}</Markdown>
+      </FilePreviewProvider>,
+    )
     expect(screen.getByText('Open')).toBeInTheDocument()
     expect(screen.queryByRole('link')).toBeNull()
   })
