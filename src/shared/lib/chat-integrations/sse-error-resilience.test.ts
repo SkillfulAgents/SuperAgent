@@ -63,6 +63,7 @@ function getMock(managed: ManagedConnector): MockChatAgentIntegration {
 describe('stream_delta error resilience', () => {
   it('does not throw when sendStreamingUpdate fails', async () => {
     const managed = createManagedConnector()
+    managed.streamingState.lastUpdateTime = 0 // force throttle to pass
     const mock = getMock(managed)
     mock.sendStreamingUpdate = async () => { throw new Error('network failure') }
 
@@ -75,6 +76,7 @@ describe('stream_delta error resilience', () => {
 
   it('preserves state for retry after streaming failure', async () => {
     const managed = createManagedConnector()
+    managed.streamingState.lastUpdateTime = 0
     const mock = getMock(managed)
 
     let callCount = 0
@@ -90,7 +92,8 @@ describe('stream_delta error resilience', () => {
     // currentMessageId should be unchanged (null) since the first call failed
     expect(managed.streamingState.currentMessageId).toBeNull()
 
-    // Second delta arrives — retry succeeds
+    // Second delta arrives after throttle — retry succeeds
+    managed.streamingState.lastUpdateTime = 0
     await processSSEEvent(managed, { type: 'stream_delta', text: 'world' })
     expect(managed.streamingState.accumulatedText).toBe(postable('Hello ') + 'world')
     expect(managed.streamingState.currentMessageId).toBe('msg-1')
@@ -220,6 +223,7 @@ describe('user request card error resilience', () => {
 
   it('subsequent events still process after sendUserRequestCard failure', async () => {
     const managed = createManagedConnector()
+    managed.streamingState.lastUpdateTime = 0
     const mock = getMock(managed)
     mock.sendUserRequestCard = async () => { throw new Error('card send failed') }
 
@@ -332,6 +336,7 @@ describe('resolvePendingToolMessages error resilience', () => {
 describe('pipeline isolation', () => {
   it('error in one event does not affect subsequent events', async () => {
     const managed = createManagedConnector()
+    managed.streamingState.lastUpdateTime = 0
     const mock = getMock(managed)
 
     // Make sendUserRequestCard throw

@@ -926,6 +926,8 @@ describe('multi-session isolation', () => {
     })
 
     // Stream to both sessions
+    session1.streamingState.lastUpdateTime = 0
+    session2.streamingState.lastUpdateTime = 0
     const forAlice = 'For Alice'.padEnd(STREAM_FIRST_POST_CHARS, '.')
     const forBob = 'For Bob'.padEnd(STREAM_FIRST_POST_CHARS, '.')
     await processSSEEvent(session1, { type: 'stream_delta', text: forAlice })
