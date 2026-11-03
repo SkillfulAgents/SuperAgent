@@ -57,9 +57,9 @@ function harness(options: { fetch?: (...args: unknown[]) => Promise<unknown>; us
     win, document, fakeConsole, location, navigator, FakeXhr,
   )
   const fire = (type: string, event: Record<string, unknown>) => [...(listeners[type] ?? [])].forEach((listener) => listener(event))
-  const ask = (point?: { x: number; y: number }, origin = 'file://', source: unknown = parent) =>
+  const ask = (point?: { x: number; y: number }, origin = 'null', source: unknown = parent) =>
     fire('message', { source, origin, data: { type: DASHBOARD_INSPECT_REQUEST_TYPE, id: 'r1', ...(point ? { point } : {}) } })
-  const announce = (comments: boolean, origin = 'file://') =>
+  const announce = (comments: boolean, origin = 'null') =>
     fire('message', { source: parent, origin, data: { type: DASHBOARD_HOST_FEATURES_TYPE, comments } })
   const lastSnapshot = () => dashboardInspectResultSchema.parse(posted.at(-1)?.message).snapshot
   return { win, console: fakeConsole, original, posted, fire, ask, announce, lastSnapshot, parent }
@@ -162,7 +162,7 @@ describe('dashboard inspector', () => {
     })
   })
 
-  it('answers the app at its origin: the same origin anywhere, file:// or localhost only inside the desktop app', () => {
+  it('answers the app at its origin: the same origin anywhere, file:// (including its opaque origin) or localhost only inside the desktop app', () => {
     const desktop = harness()
     desktop.ask(undefined, 'http://localhost:47891')
     expect(desktop.posted.at(-1)?.target).toBe('http://localhost:47891')
@@ -170,16 +170,19 @@ describe('dashboard inspector', () => {
     expect(desktop.posted.at(-1)?.target).toBe('http://localhost:5173')
     desktop.ask(undefined, 'file://')
     expect(desktop.posted.at(-1)?.target).toBe('*')
-    expect(desktop.posted).toHaveLength(3)
+    desktop.ask(undefined, 'null')
+    expect(desktop.posted.at(-1)?.target).toBe('*')
+    expect(desktop.posted).toHaveLength(4)
 
     desktop.ask(undefined, 'https://evil.example')
-    desktop.ask(undefined, 'null')
     desktop.ask(undefined, 'file://', { postMessage: vi.fn() })
-    expect(desktop.posted).toHaveLength(3)
+    desktop.ask(undefined, 'null', { postMessage: vi.fn() })
+    expect(desktop.posted).toHaveLength(4)
 
     // In a browser, a downloaded HTML file or another local dev server framing the dashboard gets nothing.
     const browser = harness({ userAgent: CHROME_UA })
     browser.ask(undefined, 'file://')
+    browser.ask(undefined, 'null')
     browser.ask(undefined, 'http://localhost:5173')
     expect(browser.posted).toHaveLength(0)
     browser.ask(undefined, 'http://localhost:47891')
