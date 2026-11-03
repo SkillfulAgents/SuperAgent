@@ -6,7 +6,7 @@ describe('continuationPrompt', () => {
     const prompt = continuationPrompt('old-session')
 
     expect(prompt).toContain('continues an earlier session with the same person: old-session.')
-    expect(prompt).toContain('`python3 /opt/gamut/bin/read-session.py old-session`')
+    expect(prompt).toContain('`uv run /opt/gamut/bin/read-session.py old-session`')
     expect(prompt).toContain('list-sessions.py')
   })
 })
