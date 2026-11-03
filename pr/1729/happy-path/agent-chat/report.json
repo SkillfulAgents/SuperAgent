@@ -1,24 +1,17 @@
 {
   "storyId": "agent-chat",
-  "passed": true,
-  "reason": "QA test for agent message sending and response verification completed successfully. Agent correctly answered arithmetic question with response containing \"4\".",
-  "steps": [
-    "Navigated to http://localhost:47891 — Page loaded successfully with sidebar showing two agents including \"QA-20261102-223043-e44r\" in idle status.",
-    "Clicked on \"QA-20261102-223043-e44r\" agent in the sidebar — Successfully navigated to agent page with URL /agents/qa-20261102-223043-e44r-ccpj3hirb8.",
-    "Verified agent status is \"running\" or \"idle\" — Status confirmed as \"idle\" (shown in status indicator).",
-    "Sent message \"Hello! What is 2+2?\" — Message typed into input box and send button clicked successfully. Session \"Simple Arithmetic Question\" created and agent status changed to \"working\".",
-    "Waited up to 3 minutes for a response — Agent processed the message and returned response within the 3-minute window. Agent status returned to \"idle\".",
-    "Verified the response mentions \"4\" and took a screenshot — Response received: \"2 + 2 = 4.\" which explicitly mentions \"4\". Screenshot captured successfully showing the conversation with agent response clearly visible in the chat interface."
-  ],
+  "passed": false,
+  "reason": "No [TEST_PASS] or [TEST_FAIL] marker found. Tail: ays \"2 + 2 = 4.\" The response clearly contains \"4\". Screenshot saved as agent-response-screenshot.png showing the conversation with correct response.\n\n**Test Results:** All steps completed successfully. No bugs found. The agent responded correctly to the mathematical query with the expected answer.\n",
+  "steps": [],
   "bugs": [],
-  "durationMs": 247730,
-  "sessionId": "0b5cfc9d-ec69-4d81-969e-44fc22e48bca",
+  "durationMs": 51284,
+  "sessionId": "a86a0f9f-2898-46f1-bd03-fab8894aae9c",
   "cost": {
-    "inputTokens": 320,
-    "outputTokens": 10574,
-    "cacheCreationTokens": 120875,
-    "cacheReadTokens": 876969,
+    "inputTokens": 260,
+    "outputTokens": 6756,
+    "cacheCreationTokens": 109152,
+    "cacheReadTokens": 645468,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.291981
+    "totalCostUsd": 0.235027
   }
 }
