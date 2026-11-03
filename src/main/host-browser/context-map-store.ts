@@ -1,94 +1,78 @@
 /**
  * Persistent instanceId → Browserbase contextId map shared by the Browserbase
- * and platform host-browser providers.
+ * and platform host-browser providers, kept as a host file.
  *
- * Hardened: the map is a single JSON file read-modify-written from
- * concurrent `getOrCreateContext` calls (which `await` a network create between
- * read and write). The old code read with a swallow-to-`{}` catch and wrote
+ * Hardened: the map is read-modify-written from concurrent
+ * `getOrCreateContext` calls (which `await` a network create between read and
+ * write). The old code read with a swallow-to-`{}` catch and wrote
  * non-atomically, so a transient bad read or two instances racing wiped every
  * other agent's persistent context — and leaked the now-orphaned (billable)
- * Browserbase contexts. This store reads fail-closed, writes atomically, and
- * serializes the upsert under a per-file lock.
+ * Browserbase contexts. This store reads fail-closed and adds an entry in one
+ * read-modify-write that keeps a mapping stored first.
  */
-import * as fs from 'fs'
-import * as path from 'path'
 import { z } from 'zod'
-import {
-  readJsonFileStrictSync,
-  writeJsonFileAtomicSync,
-  withFileLock,
-} from '@shared/lib/utils/file-storage'
+import { parseJsonStrict } from '@shared/lib/utils/file-storage'
 import { captureException } from '@shared/lib/error-reporting'
-import { currentStore, hostStateActive } from '@shared/lib/host-state/scope'
+import { hostState } from '@shared/lib/host-state/backend'
 
 const contextMapSchema = z.record(z.string(), z.string())
 
 export type ContextMap = Record<string, string>
+
+function parseContextMap(file: string, raw: string | null): ContextMap {
+  return raw === null ? {} : parseJsonStrict(file, raw, contextMapSchema)
+}
 
 /**
  * Read the map. Fail-closed: absent file → `{}`, but a corrupt/torn file or IO
  * error THROWS (so a transiently-unreadable file can't be silently treated as
  * empty and then overwritten, wiping/leaking every other agent's context).
  */
-export function loadContextMap(filePath: string): ContextMap {
-  return readJsonFileStrictSync(filePath, contextMapSchema, {})
+export function loadContextMap(file: string): ContextMap {
+  return parseContextMap(file, hostState().read(file))
 }
 
-/** Atomic (temp-file + rename) overwrite of the whole map. */
-export function saveContextMap(filePath: string, map: ContextMap): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true })
-  writeJsonFileAtomicSync(filePath, map)
-}
-
-/**
- * Serialized + atomic upsert of a single `key → contextId` mapping. Re-reads
- * the map fresh under the lock (so a mapping created concurrently for a
- * different key survives) and writes atomically.
- */
-export async function setContextMapping(filePath: string, key: string, contextId: string): Promise<void> {
-  await withFileLock(filePath, async () => {
-    const map = loadContextMap(filePath)
-    map[key] = contextId
-    saveContextMap(filePath, map)
-  })
-}
-
-// In-flight context creations, keyed by `${resolved file}::${key}`. Dedups
-// concurrent first-opens for the SAME key within this process (P2): the
-// file lock only protects the WRITE, so without this, two concurrent calls that
-// both miss the map would each create a paid remote context and the second
-// would orphan/leak the first. Different keys are NOT serialized — they create
-// in parallel. (Residual: a multi-process/replica race could still double-create
-// across processes; acceptable for the host-browser providers.)
+// In-flight context creations, keyed by `${file}::${key}`. Dedups concurrent
+// first-opens for the SAME key within this process (P2): without this, two
+// concurrent calls that both miss the map would each create a paid remote
+// context and the second would orphan/leak the first. Different keys are NOT
+// serialized — they create in parallel. Two processes may still both create
+// one; the first stored wins and the other is reported as orphaned.
 const inflightContextCreations = new Map<string, Promise<string>>()
 
 /**
- * Return the existing `key → contextId` mapping, or create one exactly once.
- * `create` performs the (paid, network) remote-context creation and returns its
- * id; it is invoked at most once per key even under concurrent callers, and the
- * result is persisted via {@link setContextMapping} before returning.
+ * Return the existing `key → contextId` mapping in the host file `file`, or
+ * create one exactly once. `create` performs the (paid, network)
+ * remote-context creation and returns its id; it is invoked at most once per
+ * key even under concurrent callers, and the result is saved before returning.
  */
 export async function getOrCreateMapping(
-  filePath: string,
+  file: string,
   key: string,
   create: () => Promise<string>,
 ): Promise<string> {
-  if (hostStateActive()) return getOrCreateSharedMapping(path.basename(filePath), key, create)
-  const existing = loadContextMap(filePath)[key]
+  const existing = loadContextMap(file)[key]
   if (existing) return existing
 
-  const inflightKey = `${path.resolve(filePath)}::${key}`
+  const inflightKey = `${file}::${key}`
   const pending = inflightContextCreations.get(inflightKey)
   if (pending) return pending
 
   const p = (async () => {
     // Re-check inside the in-flight guard: a create for this key may have landed
     // (and been persisted) between the read above and us claiming the slot.
-    const fresh = loadContextMap(filePath)[key]
+    const fresh = loadContextMap(file)[key]
     if (fresh) return fresh
     const contextId = await create()
+    let stored: string
     try {
-      await setContextMapping(filePath, key, contextId)
+      hostState().write(file, (raw) => {
+        const map = parseContextMap(file, raw)
+        map[key] ??= contextId
+        return JSON.stringify(map, null, 2)
+      })
+      await hostState().flush()
+      stored = loadContextMap(file)[key] ?? contextId
     } catch (err) {
       // The remote context was created and BILLED, but persisting it failed
       // (corrupt map file, disk full, …). Surface the orphaned id so it can be
@@ -97,47 +81,17 @@ export async function getOrCreateMapping(
       // launch) is visible — then rethrow.
       captureException(err, {
         tags: { area: 'host-browser-context-map', op: 'persist' },
-        extra: { filePath, key, orphanedContextId: contextId },
+        extra: { file, key, orphanedContextId: contextId },
       })
       throw err
     }
-    return contextId
-  })()
-  inflightContextCreations.set(inflightKey, p)
-  try {
-    return await p
-  } finally {
-    inflightContextCreations.delete(inflightKey)
-  }
-}
-
-/**
- * The same mapping in the shared host state, for a host that serves requests
- * on many isolates: the file would be empty on the next request, so every
- * launch would create (and bill) a new context and lose the agent's sign-ins.
- * Two isolates may still both create one; the first stored wins and the other
- * is reported as orphaned, as a failed persist is.
- */
-async function getOrCreateSharedMapping(file: string, key: string, create: () => Promise<string>): Promise<string> {
-  const store = currentStore()
-  const storeKey = `browser-context:${file}:${key}`
-  const existing = await store.get(storeKey)
-  if (existing) return existing.value
-
-  const inflightKey = `${storeKey}::shared`
-  const pending = inflightContextCreations.get(inflightKey)
-  if (pending) return pending
-
-  const p = (async () => {
-    const contextId = await create()
-    const stored = await store.insertIfAbsent(storeKey, contextId)
-    if (stored.value !== contextId) {
+    if (stored !== contextId) {
       captureException(new Error('Another process stored a context for this key first'), {
         tags: { area: 'host-browser-context-map', op: 'persist' },
-        extra: { key, orphanedContextId: contextId },
+        extra: { file, key, orphanedContextId: contextId },
       })
     }
-    return stored.value
+    return stored
   })()
   inflightContextCreations.set(inflightKey, p)
   try {
