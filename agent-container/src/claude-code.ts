@@ -552,6 +552,8 @@ export interface ClaudeCodeProcessOptions {
   customEnvVars?: Record<string, string>;
   effort?: EffortLevel;
   speed?: SpeedLevel;
+  /** Put the computer-use tools in the prompt from the first turn (the user started the session to use the computer). */
+  preloadComputerUseTools?: boolean;
   capabilityPolicies?: AgentCapabilityPolicies;
   sessionCapabilityGrants?: Capability[];
   globalInstructions?: string;
@@ -585,6 +587,8 @@ export class ClaudeCodeProcess extends EventEmitter {
   private webSearchProvider: string | undefined;
   private webFetchProvider: string | undefined;
   private availableIntegrationFamilies: string[] | undefined;
+  /** The computer-use tools are in the prompt from the first turn, not behind ToolSearch. */
+  private readonly preloadComputerUseTools: boolean;
   private maxOutputTokens: number | undefined;
   private maxThinkingTokens: number | undefined;
   private maxTurns: number | undefined;
@@ -726,6 +730,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.webSearchProvider = options.webSearchProvider;
     this.webFetchProvider = options.webFetchProvider;
     this.availableIntegrationFamilies = options.availableIntegrationFamilies;
+    this.preloadComputerUseTools = !!options.preloadComputerUseTools;
     this.maxOutputTokens = options.maxOutputTokens;
     this.maxThinkingTokens = options.maxThinkingTokens;
     this.maxTurns = options.maxTurns;
@@ -1020,7 +1025,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       ...((this.webSearchProvider || this.webFetchProvider)
         ? { 'web': createWebMcpServer({ search: !!this.webSearchProvider, fetch: !!this.webFetchProvider }) }
         : {}),
-      ...(isComputerUseHost() ? { 'computer-use': createComputerUseMcpServer() } : {}),
+      ...(isComputerUseHost() ? { 'computer-use': createComputerUseMcpServer({ alwaysLoad: this.preloadComputerUseTools }) } : {}),
     };
     this.sdkMcpServerConfigs = servers;
     return servers;

@@ -88,6 +88,15 @@ export function offersComputerUseSettings(): boolean {
 }
 
 /**
+ * Whether the dispatch launcher offers its computer-use toggle: it screenshots
+ * this computer and lets the agent use its apps, so the agents must run on
+ * this computer, and that computer must run computer use.
+ */
+export function offersLauncherComputerUse(): boolean {
+  return canUseHostFeatures() && computerUseSupported()
+}
+
+/**
  * Whether this window hands the server a dropped folder by its path alone, to
  * mount it or copy it in. That needs the desktop app driving its own machine,
  * outside the sandbox, which reads a folder only through the bookmark of a

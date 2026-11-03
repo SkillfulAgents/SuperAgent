@@ -568,7 +568,7 @@ export class ToolCalls {
       }
 
       const payload = { method, params, permissionLevel, appName }
-      if (this.ctx.computerUse.check(permissionLevel, appName) === 'granted') {
+      if (this.ctx.computerUse.check(permissionLevel, appName, this.ctx.sessionId) === 'granted') {
         // Registered anyway, flagged so no projection reads it as a wait: the
         // run claims the request it settles, as a decision in the app does.
         this.register('computer_use', toolUse.id, payload, { parentToolUseId, autoApproved: true })

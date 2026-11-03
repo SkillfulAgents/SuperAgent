@@ -7,7 +7,7 @@
  * for a session to run under a configuration it did not ask for.
  */
 import { describe, it, expect } from 'vitest'
-import { warmProfileKey, warmProfileSchema } from './warm-profile'
+import { nextWarmProfileFromRequest, sessionProfileFromRequest, warmProfileKey, warmProfileSchema } from './warm-profile'
 
 const base = warmProfileSchema.parse({ model: 'claude-opus-4-8', effort: 'high' })
 
@@ -94,5 +94,25 @@ describe('warmProfileKey', () => {
     const undef = warmProfileKey(warmProfileSchema.parse({ model: 'm', effort: undefined, speed: undefined }))
 
     expect(absent).toBe(undef)
+  })
+})
+
+describe('the computer-use tools preload', () => {
+  const request = { initialMessage: 'go', model: 'claude-opus-4-8', preloadComputerUseTools: true }
+
+  // The tools' definitions are in the warm process's query: a session that
+  // asked for them must not get a process warmed without them, or the reverse.
+  it('is part of the session profile and its key', () => {
+    const preloading = sessionProfileFromRequest(request)
+    const plain = sessionProfileFromRequest({ ...request, preloadComputerUseTools: undefined })
+
+    expect(preloading.preloadComputerUseTools).toBe(true)
+    expect(warmProfileKey(preloading)).not.toBe(warmProfileKey(plain))
+  })
+
+  // One session's choice: the next, ordinary session must find a process warmed for it.
+  it('is never what the next session is warmed for', () => {
+    expect(nextWarmProfileFromRequest(request).preloadComputerUseTools).toBeUndefined()
+    expect(nextWarmProfileFromRequest({ ...request, prewarmDefaults: { model: 'claude-opus-4-8' } }).preloadComputerUseTools).toBeUndefined()
   })
 })

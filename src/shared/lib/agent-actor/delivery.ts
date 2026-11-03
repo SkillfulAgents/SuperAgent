@@ -240,6 +240,8 @@ export function createSessionDelivery(
     }
     const session = created
     const sessionId = session.id
+    // Before the stream listens: the turn's tool calls arrive through it.
+    if (request.grantComputerUse) live.grantComputerUse(sessionId)
 
     const commands = session.slashCommands?.length ? session.slashCommands : undefined
     const metadata: Partial<SessionMetadata> = { ...request.metadata }

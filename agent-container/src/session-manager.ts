@@ -341,6 +341,7 @@ export class SessionManager extends EventEmitter {
         customEnvVars: request.customEnvVars,
         effort: request.effort,
         speed,
+        preloadComputerUseTools: request.preloadComputerUseTools,
         capabilityPolicies,
         globalInstructions,
       });
@@ -495,6 +496,7 @@ export class SessionManager extends EventEmitter {
       customEnvVars: request.customEnvVars,
       effort: request.effort,
       speed,
+      preloadComputerUseTools: request.preloadComputerUseTools,
       capabilityPolicies,
       globalInstructions,
       metadata: request.metadata,
@@ -596,6 +598,7 @@ export class SessionManager extends EventEmitter {
         customEnvVars: profile.customEnvVars,
         effort: profile.effort,
         speed: profile.speed,
+        preloadComputerUseTools: profile.preloadComputerUseTools,
         capabilityPolicies: profile.capabilityPolicies,
         globalInstructions: profile.globalInstructions,
       });
@@ -732,6 +735,7 @@ export class SessionManager extends EventEmitter {
         customEnvVars: persisted.customEnvVars,
         effort: persisted.effort,
         speed: persisted.speed,
+        preloadComputerUseTools: persisted.preloadComputerUseTools,
         capabilityPolicies: persisted.capabilityPolicies,
         sessionCapabilityGrants: persisted.sessionCapabilityGrants,
         globalInstructions: persisted.globalInstructions,

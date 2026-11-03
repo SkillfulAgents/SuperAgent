@@ -870,6 +870,7 @@ import { loginFillAccountSchema } from '../../../agent-container/src/login-schem
 import { attachMount, removeMount, resolveMountPath } from '@shared/lib/services/mount-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { appendMentions } from '@shared/lib/utils/mentions'
+import { appendComputerUseNote } from '@shared/lib/utils/computer-use-note'
 import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { createScheduledTask, listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem, listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
@@ -10183,6 +10184,50 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
       'New Session',
       expect.objectContaining({ model: 'global-agent-model', effort: 'medium' }),
     )
+  })
+
+  describe('started with computer use (the dispatch launcher’s toggle)', () => {
+    const platform = process.platform
+    const onPlatform = (value: NodeJS.Platform) => Object.defineProperty(process, 'platform', { value, configurable: true })
+    afterEach(() => onPlatform(platform))
+
+    it('preloads the computer-use tools and lets the session use any app', async () => {
+      onPlatform('darwin')
+      const start = vi.spyOn(agentRegistry.get('test-agent').sessions, 'start')
+
+      expect((await postJson(app, SESSIONS_URL, { message: 'book this flight', computerUse: true })).status).toBe(201)
+      expect(mockCreateSession.mock.calls[0][0].preloadComputerUseTools).toBe(true)
+      expect(start.mock.calls[0][0].grantComputerUse).toBe(true)
+    })
+
+    it('asks for neither on an ordinary session', async () => {
+      onPlatform('darwin')
+      const start = vi.spyOn(agentRegistry.get('test-agent').sessions, 'start')
+
+      expect((await postJson(app, SESSIONS_URL, { message: 'hello', computerUse: 'yes' })).status).toBe(201)
+      expect(mockCreateSession.mock.calls[0][0]).not.toHaveProperty('preloadComputerUseTools')
+      expect(start.mock.calls[0][0]).not.toHaveProperty('grantComputerUse')
+    })
+
+    it('is refused where computer use cannot run', async () => {
+      onPlatform('linux')
+
+      const res = await postJson(app, SESSIONS_URL, { message: 'book this flight', computerUse: true })
+      expect(res.status).toBe(400)
+      expect(mockCreateSession).not.toHaveBeenCalled()
+    })
+
+    it('is named from what was written, not the note telling the agent', async () => {
+      onPlatform('darwin')
+      mockLlmMessagesCreate.mockResolvedValue({ content: [{ type: 'text', text: 'Flight Booking' }] })
+      const message = appendComputerUseNote('book this flight', 'Screenshot 2026-11-02 at 14.03.22.png')
+
+      expect((await postJson(app, SESSIONS_URL, { message, computerUse: true })).status).toBe(201)
+      await vi.waitFor(() => expect(updateSessionName).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'session-123', 'Flight Booking'))
+      const prompt = String((mockLlmMessagesCreate.mock.calls[0][0] as { messages: Array<{ content: string }> }).messages[0].content)
+      expect(prompt).toContain('book this flight')
+      expect(prompt).not.toContain('[Computer use:')
+    })
   })
 })
 

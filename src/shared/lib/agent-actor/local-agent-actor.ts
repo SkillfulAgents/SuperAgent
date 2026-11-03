@@ -447,6 +447,9 @@ function createComputerUseOps(state: AgentState, deps: LocalActorDeps): Computer
       const appName = computerUse.grabbed()
       computerUse.clearGrabbed()
       if (appName) computerUse.revoke('use_application', appName)
+      // Taking the app back ends the session's any-app grant too: its next
+      // app asks again.
+      computerUse.revokeSession(sessionId)
       state.sessions.emit(sessionId, { type: 'computer_use_grab_changed', app: null })
       return { appName }
     },

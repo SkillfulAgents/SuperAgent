@@ -6,6 +6,11 @@
  * - "timed": in-memory with 15-min expiry
  * - "always": persisted to settings.json + in-memory
  *
+ * Besides those, a session the user started with computer use on (the
+ * dispatch launcher's toggle) may list and use any app without asking. That
+ * grant is the session's alone and lives in memory only; host shell scripts
+ * still ask.
+ *
  * Owned by the agent's actor. The persisted "always" grants are read from
  * settings.json on first use and written back per agent, so one agent's
  * revoke never rewrites another's entry; the in-memory grants and the grab
@@ -18,6 +23,9 @@ import { TIMED_GRANT_DURATION_MS } from './types'
 
 export class AgentComputerUse {
   private grants: PermissionGrant[] = []
+
+  /** Sessions that may list and use any app without asking. */
+  private appAccessSessions = new Set<string>()
 
   /** The app this agent has grabbed, if any. */
   private grabbedApp: string | undefined
@@ -37,9 +45,11 @@ export class AgentComputerUse {
   /**
    * Check if a permission is currently granted.
    * Returns 'granted' if an active (non-expired, non-consumed) grant exists.
-   * Returns 'prompt_needed' if the user must be prompted.
+   * Returns 'prompt_needed' if the user must be prompted. `sessionId` is the
+   * session making the call, for its own grant (`grantSession`).
    */
-  check(level: ComputerUsePermissionLevel, appName?: string): 'granted' | 'prompt_needed' {
+  check(level: ComputerUsePermissionLevel, appName?: string, sessionId?: string): 'granted' | 'prompt_needed' {
+    if (sessionId && level !== 'use_host_shell' && this.appAccessSessions.has(sessionId)) return 'granted'
     this.ensureLoaded()
     const now = Date.now()
     for (const grant of this.grants) {
@@ -85,11 +95,28 @@ export class AgentComputerUse {
     }
   }
 
-  /** Revoke every permission, persisted ones included, and drop the grab. */
+  /**
+   * Let one session list and use any app without asking, for as long as this
+   * actor lives. Host shell scripts still ask.
+   */
+  grantSession(sessionId: string): void {
+    this.appAccessSessions.add(sessionId)
+    console.log(`[ComputerUsePermissions] Granted any app to session ${sessionId} of ${this.slug}`)
+  }
+
+  /** End a session's own grant (`grantSession`). */
+  revokeSession(sessionId: string): void {
+    if (this.appAccessSessions.delete(sessionId)) {
+      console.log(`[ComputerUsePermissions] Revoked the any-app grant of session ${sessionId} of ${this.slug}`)
+    }
+  }
+
+  /** Revoke every permission, persisted and session ones included, and drop the grab. */
   revokeAll(): void {
     console.log(`[ComputerUsePermissions] Revoking all grants for ${this.slug}`)
     this.loaded = true
     this.grants = []
+    this.appAccessSessions.clear()
     this.grabbedApp = undefined
     this.persistToSettings()
   }

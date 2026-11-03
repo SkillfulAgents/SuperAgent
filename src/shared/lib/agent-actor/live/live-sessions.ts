@@ -294,6 +294,14 @@ export class LiveSessions {
     return release
   }
 
+  /**
+   * The user started the session with computer use on: it may list and use
+   * any app without asking (`AgentComputerUse.grantSession`).
+   */
+  grantComputerUse(sessionId: string): void {
+    this.deps.computerUse.grantSession(sessionId)
+  }
+
   /** An event for a session's listeners. */
   emit(sessionId: string, event: SessionEvent): void {
     const tagged = this.provisionalSessions.has(sessionId) ? { ...event, provisional: true } : event

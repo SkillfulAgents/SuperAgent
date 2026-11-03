@@ -39,6 +39,7 @@ export const warmProfileSchema = z.object({
   customEnvVars: z.record(z.string(), z.string()).transform(withoutProviderCredentials).optional(),
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
   speed: speedLevelSchema,
+  preloadComputerUseTools: z.boolean().optional(),
   capabilityPolicies: agentCapabilityPoliciesSchema,
   globalInstructions: globalInstructionsSchema,
 });
@@ -59,10 +60,12 @@ export function sessionProfileFromRequest(request: CreateSessionRequest): WarmPr
  * default is what the next session will almost always ask for; warming for a
  * one-off pick instead would cost both a wasted spawn and a cold start.
  * Callers that send no hint (cron, chat, cross-agent) fall back to this
- * session's own shape.
+ * session's own shape. Never with the computer-use tools preloaded: that is
+ * one session's choice (the launcher's toggle), and the next session's
+ * process must not carry them.
  */
 export function nextWarmProfileFromRequest(request: CreateSessionRequest): WarmProfile {
-  return buildProfile(request, request.prewarmDefaults);
+  return buildProfile({ ...request, preloadComputerUseTools: undefined }, request.prewarmDefaults);
 }
 
 function buildProfile(
@@ -93,6 +96,7 @@ function buildProfile(
     customEnvVars: request.customEnvVars,
     effort: defaults ? defaults.effort : request.effort,
     speed: defaults ? defaults.speed : request.speed,
+    preloadComputerUseTools: request.preloadComputerUseTools || undefined,
     capabilityPolicies: request.capabilityPolicies,
     globalInstructions: request.globalInstructions,
   });

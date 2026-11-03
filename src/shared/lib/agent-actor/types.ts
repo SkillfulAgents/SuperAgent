@@ -673,6 +673,12 @@ export interface StartSessionRequest {
   notAfter?: number
   /** Bound on the stream attach; a stall past it fails the start (`attach-failed`). */
   attachTimeoutMs?: number
+  /**
+   * The user started it with computer use on: the session may list and use
+   * any app without asking. Granted before the stream attaches, so the first
+   * turn's calls already find it.
+   */
+  grantComputerUse?: boolean
 }
 
 export interface StopSessionOptions {
@@ -807,7 +813,8 @@ export interface ReviewOps {
 export interface ComputerUseOps {
   /**
    * The user let go of the app the agent had grabbed: forget the grab, revoke
-   * the agent's grant for that app and tell the session's viewers, in one turn.
+   * the agent's grant for that app and the session's any-app grant, and tell
+   * the session's viewers, in one turn.
    */
   releaseGrab(sessionId: string): Promise<{ appName: string | undefined }>
   /** `AgentComputerUse.setGrabbed` */

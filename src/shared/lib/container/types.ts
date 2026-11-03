@@ -142,6 +142,12 @@ export interface CreateSessionOptions {
   effort?: EffortLevel // Initial thinking effort level
   speed?: SpeedLevel // Initial processing speed tier
   /**
+   * Load the computer-use tools into the prompt from the first turn, rather
+   * than behind ToolSearch: the user started the session to use the computer.
+   * A session asking for it starts cold (the pre-warmed process doesn't have them).
+   */
+  preloadComputerUseTools?: boolean
+  /**
    * What the NEXT session on this agent will most likely ask for: the agent's
    * default model/effort/speed with the global fallback applied, ignoring any
    * per-session pick in `model`/`effort`/`speed` above.

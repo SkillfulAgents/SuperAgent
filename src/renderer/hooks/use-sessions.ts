@@ -108,6 +108,8 @@ export function useCreateSession(options: {
       model?: string
       // Provenance for sessions confirmed via a dashboard's dispatch dialog.
       dashboardDispatch?: SessionDashboardDispatch
+      // The launcher's computer-use toggle: the session may use any app without asking.
+      computerUse?: boolean
       // Analytics-only: distinguishes auto-started sessions (template onboarding,
       // todo dispatch) from user-typed ones. Not sent to the server.
       origin?: 'user' | 'onboarding' | 'todo'
@@ -125,6 +127,7 @@ export function useCreateSession(options: {
           ...(data.model ? { model: data.model } : {}),
           ...(data.llmProviderId !== undefined ? { llmProviderId: data.llmProviderId } : {}),
           ...(data.dashboardDispatch ? { dashboardDispatch: data.dashboardDispatch } : {}),
+          ...(data.computerUse ? { computerUse: true } : {}),
         }),
       })
       if (!res.ok) throw await readAgentRuntimeError(res, 'Failed to create session')
