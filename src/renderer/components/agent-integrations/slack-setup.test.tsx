@@ -35,6 +35,15 @@ beforeEach(() => {
 })
 
 describe('SlackSetup', () => {
+  it('sends an explicit off for threading turned off at setup, so the server default does not turn it back on', async () => {
+    setup()
+    fireEvent.change(await screen.findByLabelText('Integration name'), { target: { value: 'Helper' } })
+    fireEvent.click(screen.getByRole('switch', { name: /Reply in thread/ }))
+    fireEvent.click(screen.getByTestId('slack-create-app'))
+    await waitFor(() => expect(state.requests[0]).toBeDefined())
+    expect(state.requests[0].body.config).toMatchObject({ answerInThread: false, newSessionPerThread: false })
+  })
+
   it('with a relay, creates the installation first and opens Slack with the webhook URL in the manifest', async () => {
     setup()
     fireEvent.change(await screen.findByLabelText('Integration name'), { target: { value: 'Helper' } })
@@ -44,7 +53,7 @@ describe('SlackSetup', () => {
 
     fireEvent.click(screen.getByTestId('slack-create-app'))
     await waitFor(() => expect(fakeLoginWindow.navigate).toHaveBeenCalledOnce())
-    expect(state.requests[0]).toEqual({ url: '/api/agent-integrations/agents/a', method: 'POST', body: expect.objectContaining({ provider: 'slack', name: 'Helper', config: { webhooks: true, onlyMentioned: true } }) })
+    expect(state.requests[0]).toEqual({ url: '/api/agent-integrations/agents/a', method: 'POST', body: expect.objectContaining({ provider: 'slack', name: 'Helper', config: { webhooks: true, onlyMentioned: true, answerInThread: true, newSessionPerThread: true } }) })
     const opened = new URL(fakeLoginWindow.navigate.mock.calls[0][0])
     expect(opened.origin + opened.pathname).toBe('https://api.slack.com/apps')
     expect(JSON.parse(opened.searchParams.get('manifest_json')!)).toMatchObject({
@@ -59,7 +68,7 @@ describe('SlackSetup', () => {
     fireEvent.change(screen.getByLabelText('Bot Token'), { target: { value: 'xoxb-1' } })
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
     await waitFor(() => expect(onClose).toHaveBeenCalled())
-    expect(state.requests[1]).toEqual({ url: '/api/agent-integrations/int-9', method: 'PATCH', body: { status: 'active', showToolCalls: false, sessionTimeout: 6, config: { botToken: 'xoxb-1', signingSecret: 'secret', onlyMentioned: true, answerInThread: false, newSessionPerThread: false } } })
+    expect(state.requests[1]).toEqual({ url: '/api/agent-integrations/int-9', method: 'PATCH', body: { status: 'active', showToolCalls: false, sessionTimeout: 6, config: { botToken: 'xoxb-1', signingSecret: 'secret', onlyMentioned: true, answerInThread: true, newSessionPerThread: true } } })
   })
 
   it('keeps a created installation’s form while the relay goes away and comes back', async () => {

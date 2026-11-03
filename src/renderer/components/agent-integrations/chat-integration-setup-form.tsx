@@ -117,15 +117,15 @@ export interface ChatSetupBehaviorValue {
 }
 
 export const DEFAULT_CHAT_SETUP_BEHAVIOR: ChatSetupBehaviorValue = {
-  showToolCalls: false, sessionTimeout: DEFAULT_SESSION_TIMEOUT_HOURS, onlyMentioned: true, answerInThread: false, newSessionPerThread: false,
+  showToolCalls: false, sessionTimeout: DEFAULT_SESSION_TIMEOUT_HOURS, onlyMentioned: true, answerInThread: true, newSessionPerThread: true,
 }
 
 /** Slack's channel behavior, as its stored config spells it. */
 export function slackBehaviorConfig(value: ChatSetupBehaviorValue): Record<string, boolean> {
   return {
     ...(value.onlyMentioned ? { onlyMentioned: true } : {}),
-    ...(value.answerInThread ? { answerInThread: true } : {}),
-    ...(value.answerInThread && value.newSessionPerThread ? { newSessionPerThread: true } : {}),
+    answerInThread: value.answerInThread,
+    newSessionPerThread: value.answerInThread && value.newSessionPerThread,
   }
 }
 
@@ -169,7 +169,8 @@ export function ChatSetupBehavior({ provider, value, onChange }: {
           </div>
           <div className="flex items-center justify-between gap-2">
             <Label htmlFor="setup-answer-thread" className="text-xs font-normal cursor-pointer">
-              Reply in thread
+              Reply in thread (recommended)
+              <span className="block text-muted-foreground">Without it, the agent answers a top-level message at the top of the channel, in one conversation shared by the whole channel.</span>
             </Label>
             <Switch
               id="setup-answer-thread"
@@ -180,7 +181,8 @@ export function ChatSetupBehavior({ provider, value, onChange }: {
           {value.answerInThread && (
             <div className="flex items-center justify-between gap-2">
               <Label htmlFor="setup-session-per-thread" className="text-xs font-normal cursor-pointer">
-                New session per thread
+                Separate conversation per thread (recommended)
+                <span className="block text-muted-foreground">Without it, every thread shares one conversation, and a reply can land in another request&apos;s thread.</span>
               </Label>
               <Switch
                 id="setup-session-per-thread"
