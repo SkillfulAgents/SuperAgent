@@ -7,6 +7,7 @@ import { serveVolumeFile, volumeErrorResponse } from '../lib/volume-file'
 import { afterVolumeChange } from '../lib/mount-change'
 import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
+import { agentsWithVolume } from '@shared/lib/services/mount-service'
 import { createVolumeDefinition, deleteVolumeDefinition, listVolumeDefinitions, reconnectLocalVolume, updateVolumeDefinition, openVolumeDefinition, listVolumeAttachments } from '@shared/lib/services/volume-service'
 
 const routes = new Hono()
@@ -53,7 +54,10 @@ routes.post('/', async c => {
 })
 routes.patch('/:id', async c => {
   const id = c.req.param('id')
+  // Turning global off takes the drive from agents a read after the write would miss.
+  const hadDrive = await agentsWithVolume(id)
   await updateVolumeDefinition(id, await c.req.json(), volumeViewer(c))
+  await afterVolumeChange(id, hadDrive)
   await logAuditEvent({ userId: getCurrentUserId(c), object: 'volume', objectId: id, action: 'updated' })
   return c.json({ success: true })
 })
@@ -67,7 +71,9 @@ routes.post('/:id/reconnect', async c => {
 })
 routes.delete('/:id', async c => {
   const id = c.req.param('id')
+  const hadDrive = await agentsWithVolume(id)
   await deleteVolumeDefinition(id, volumeViewer(c))
+  await afterVolumeChange(id, hadDrive)
   await logAuditEvent({ userId: getCurrentUserId(c), object: 'volume', objectId: id, action: 'deleted' })
   return c.json({ success: true })
 })

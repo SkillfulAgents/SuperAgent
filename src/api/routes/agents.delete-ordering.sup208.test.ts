@@ -161,10 +161,15 @@ vi.mock('@shared/lib/config/settings', () => ({
 vi.mock('@shared/lib/analytics/server-analytics', () => ({ trackServerEvent: vi.fn() }))
 
 // Team Brain's drive and the agents it comes off.
-const drive = vi.hoisted(() => ({ release: vi.fn(async () => [] as string[]) }))
+const drive = vi.hoisted(() => ({ release: vi.fn(async () => [] as string[]), readers: vi.fn(async () => [] as string[]), markStale: vi.fn() }))
 vi.mock('@shared/lib/services/volume-service', async (original) => ({
   ...(await original<typeof import('@shared/lib/services/volume-service')>()),
   releaseVolume: drive.release,
+}))
+vi.mock('../lib/mount-change', () => ({ afterMountChange: vi.fn(), afterVolumeChange: drive.markStale }))
+vi.mock('@shared/lib/services/mount-service', async (original) => ({
+  ...(await original<typeof import('@shared/lib/services/mount-service')>()),
+  agentsWithVolume: drive.readers,
 }))
 
 vi.mock('@shared/lib/services/webhook-trigger-service', () => ({
@@ -368,7 +373,9 @@ describe('SUP-208: DELETE /api/agents/:id — peripheral cleanup precedes worksp
 
   it('takes Team Brain\'s drive off every other agent and off global when it is turned off', async () => {
     workspaceSettings.current = { teamBrain: { agentSlug: 'test-agent', volumeId: 'v1' } }
+    drive.readers.mockResolvedValueOnce(['test-agent', 'reader'])
     expect((await deleteAgentReq()).status).toBe(204)
     expect(drive.release).toHaveBeenCalledExactlyOnceWith('v1', 'test-agent')
+    expect(drive.markStale).toHaveBeenCalledExactlyOnceWith('v1', ['test-agent', 'reader'])
   })
 })

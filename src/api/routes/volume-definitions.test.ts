@@ -140,10 +140,35 @@ describe('volume definition API', () => {
     await handle.db.insert(agents).values(['other', 'stopped'].map(slug => ({ slug, name: slug, createdAt: new Date() }))).run()
     const { id } = await (await request('', 'POST', { ...input(), visibility: 'public' }, 'admin')).json()
     expect((await request(`/${id}`, 'PATCH', { global: 'read' }, 'admin')).status).toBe(200)
+    containers.calls.length = 0
     containers.running = new Set(['agent', 'other'])
     expect((await request(`/${id}/reconnect`, 'POST', { path: folder }, 'admin')).status).toBe(200)
     expect(containers.calls.sort()).toEqual(['agent', 'other', 'stopped'])
     expect([...containers.stale].sort()).toEqual(['agent', 'other'])
+  })
+  it('marks the running agents a rename or global change reaches stale, those turning global off leaves included', async () => {
+    await handle.db.insert(agents).values({ slug: 'other', name: 'other', createdAt: new Date() }).run()
+    const { id } = await (await request('', 'POST', { ...input(), visibility: 'public' }, 'admin')).json()
+    await attachMount('agent', id, { userId: 'admin', admin: true })
+    containers.running = new Set(['agent', 'other'])
+
+    expect((await request(`/${id}`, 'PATCH', { name: 'Stolen' }, 'bob')).status).toBe(404)
+    expect(containers.calls).toEqual([])
+    expect((await request(`/${id}`, 'PATCH', { name: 'Team notes' }, 'admin')).status).toBe(200)
+    expect([...containers.stale]).toEqual(['agent'])
+
+    expect((await request(`/${id}`, 'PATCH', { global: 'read' }, 'admin')).status).toBe(200)
+    expect([...containers.stale].sort()).toEqual(['agent', 'other'])
+    containers.stale.clear()
+    expect((await request(`/${id}`, 'PATCH', { global: null }, 'admin')).status).toBe(200)
+    expect([...containers.stale].sort()).toEqual(['agent', 'other'])
+  })
+  it('marks every running agent stale when a global drive is deleted', async () => {
+    const { id } = await (await request('', 'POST', { ...input(), visibility: 'public' }, 'admin')).json()
+    expect((await request(`/${id}`, 'PATCH', { global: 'read' }, 'admin')).status).toBe(200)
+    containers.running = new Set(['agent'])
+    expect((await request(`/${id}`, 'DELETE', undefined, 'admin')).status).toBe(200)
+    expect([...containers.stale]).toEqual(['agent'])
   })
 })
 
