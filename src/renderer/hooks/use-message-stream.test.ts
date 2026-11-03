@@ -878,21 +878,12 @@ describe('useMessageStream', () => {
     act(() => {
       MockEventSource.instances[0].simulateMessage({
         type: 'context_usage',
-        inputTokens: 1000,
-        outputTokens: 500,
-        cacheCreationInputTokens: 100,
-        cacheReadInputTokens: 200,
+        totalTokens: 1800,
         contextWindow: 200000,
       })
     })
 
-    expect(result.current.contextUsage).toEqual({
-      inputTokens: 1000,
-      outputTokens: 500,
-      cacheCreationInputTokens: 100,
-      cacheReadInputTokens: 200,
-      contextWindow: 200000,
-    })
+    expect(result.current.contextUsage).toEqual({ totalTokens: 1800, contextWindow: 200000 })
   })
 
   // ---- Additional request event types ----

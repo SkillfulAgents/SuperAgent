@@ -82,11 +82,18 @@ export interface OpenDatabaseOptions {
    * the shared host state they read and write settings through.
    */
   dataMigrationScope?: (db: AppDatabase, run: () => Promise<void>) => Promise<void>
+  /**
+   * False opens the database as it is, for a host whose processes start often and that brings the
+   * schema and data up to date once beforehand (one `openDatabase()` with migrations, when it
+   * deploys). Default true.
+   */
+  migrate?: boolean
 }
 
 /**
  * Open the database, bring its schema up to date from the bundled
- * migrations, run the data migrations, and publish the handle for `getDb()`.
+ * migrations, run the data migrations (unless `migrate: false`), and publish
+ * the handle for `getDb()`.
  * A second call while open returns the same handle. A failure is reported as
  * fatal and rethrown: nothing can run without the database.
  */
@@ -116,12 +123,23 @@ async function open(options: OpenDatabaseOptions): Promise<AppDatabase> {
     throw err
   }
 
+  if (options.migrate !== false) await migrate(handle, driver.name, dbPath, options.dataMigrationScope)
+  opened = handle
+  return handle.db
+}
+
+async function migrate(
+  handle: OpenedDatabase,
+  driverName: string,
+  dbPath: string | undefined,
+  dataMigrationScope: OpenDatabaseOptions['dataMigrationScope'],
+): Promise<void> {
   try {
     if (handle.migrate) await handle.migrate(migrationBundle, MIGRATIONS_TABLE)
     else await migrateFromBundle(handle.db)
   } catch (err) {
     captureException(err, {
-      tags: { component: 'database', operation: 'migrate', driver: driver.name },
+      tags: { component: 'database', operation: 'migrate', driver: driverName },
       extra: { dbPath, migrations: migrationBundle.length },
       level: 'fatal',
     })
@@ -138,20 +156,17 @@ async function open(options: OpenDatabaseOptions): Promise<AppDatabase> {
         console.log(`[database] Applied data migrations: ${applied.join(', ')}`)
       }
     }
-    if (options.dataMigrationScope) await options.dataMigrationScope(handle.db, runAll)
+    if (dataMigrationScope) await dataMigrationScope(handle.db, runAll)
     else await runAll()
   } catch (err) {
     captureException(err, {
-      tags: { component: 'database', operation: 'data-migrate', driver: driver.name },
+      tags: { component: 'database', operation: 'data-migrate', driver: driverName },
       extra: { dbPath },
       level: 'fatal',
     })
     await handle.close()
     throw err
   }
-
-  opened = handle
-  return handle.db
 }
 
 /** Close the database and forget it; `getDb()` throws again until the next `openDatabase()`. */

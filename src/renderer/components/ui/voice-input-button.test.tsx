@@ -46,6 +46,56 @@ describe('VoiceInputButton', () => {
     expect(screen.getByTestId('mini-waveform')).toHaveAttribute('data-color', 'currentColor')
   })
 
+  it('keeps the recording tint on Liquid Glass and only rounds it into a capsule', () => {
+    render(
+      <VoiceInputButton
+        message=""
+        glass
+        voiceInput={{
+          state: 'recording',
+          isRecording: true,
+          isConnecting: false,
+          isFinalizing: false,
+          error: null,
+          clearError: vi.fn(),
+          isSupported: true,
+          analyserRef: { current: null },
+          startRecording: vi.fn(),
+          stopRecording: vi.fn(),
+        }}
+      />,
+    )
+
+    const button = screen.getByTestId('voice-input-button')
+    expect(button).toHaveClass('rounded-full', 'bg-primary/10', 'border-primary/30')
+    expect(button).not.toHaveClass('bg-white/40', 'border-transparent')
+  })
+
+  it('gives the idle mic a translucent fill with a hover on Liquid Glass', () => {
+    render(
+      <VoiceInputButton
+        message=""
+        glass
+        voiceInput={{
+          state: 'idle',
+          isRecording: false,
+          isConnecting: false,
+          isFinalizing: false,
+          error: null,
+          clearError: vi.fn(),
+          isSupported: true,
+          analyserRef: { current: null },
+          startRecording: vi.fn(),
+          stopRecording: vi.fn(),
+        }}
+      />,
+    )
+
+    const button = screen.getByTestId('voice-input-button')
+    expect(button).toHaveClass('rounded-full', 'bg-white/40', 'hover:bg-white/60')
+    expect(button).not.toHaveClass('bg-background', 'rounded-md')
+  })
+
   it('does not mount the waveform while idle', () => {
     render(
       <VoiceInputButton

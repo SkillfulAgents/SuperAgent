@@ -56,7 +56,7 @@ export const teamBrainStateSchema = z.object({
   prepared: teamBrainPreparedSchema.nullable().default(null),
   /** The agent just installed, before its drive makes it `prepared`. */
   installing: z.string().nullable().default(null),
-  /** Which agents use Team Brain (read the drive, message its agent), by slug. An agent not listed does. */
+  /** Which agents use Team Brain (read the drive, message its agent), by slug. An agent not listed follows `everyAgent`. */
   agents: z.record(z.string(), z.boolean()).default({}),
   /** Every agent, including ones made later: the drive goes global, read-only. */
   everyAgent: z.boolean().default(true),

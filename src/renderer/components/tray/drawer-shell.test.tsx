@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
+import { useState } from 'react'
 import { describe, expect, it } from 'vitest'
-import { render } from '@testing-library/react'
+import { fireEvent, render } from '@testing-library/react'
 import { DrawerShell, slideOverWidth } from './drawer-shell'
 
 describe('DrawerShell', () => {
@@ -22,6 +23,40 @@ describe('DrawerShell', () => {
       </DrawerShell>,
     )
     expect(shell.style.width).toBe('600px')
+  })
+
+  it('drags narrow from the width it shows, and a press on its edge without a drag keeps the saved width', () => {
+    localStorage.setItem('test-tray-width-drag', '600')
+    function Host() {
+      const [narrow, setNarrow] = useState(true)
+      return (
+        <DrawerShell isOpen storageKey="test-tray-width-drag" narrow={narrow} onResize={() => setNarrow(false)}>
+          <div>Preview</div>
+        </DrawerShell>
+      )
+    }
+    const { container } = render(<Host />)
+    const shell = container.firstElementChild as HTMLElement
+    const handle = shell.querySelector('.tray-drawer-resize-handle') as HTMLElement
+
+    fireEvent.mouseDown(handle, { clientX: 1000 })
+    fireEvent.mouseUp(document, { clientX: 1000 })
+    expect(shell.style.width).toBe('320px')
+    expect(localStorage.getItem('test-tray-width-drag')).toBe('600')
+
+    // The drag starts from the 320px it shows, and its width holds wherever it is released.
+    fireEvent.mouseDown(handle, { clientX: 1000 })
+    fireEvent.mouseMove(document, { clientX: 900 })
+    expect(shell.style.width).toBe('420px')
+    fireEvent.mouseUp(document, { clientX: 900 })
+    expect(shell.style.width).toBe('420px')
+    expect(localStorage.getItem('test-tray-width-drag')).toBe('420')
+
+    // No longer narrow, the next drag starts from the width it has.
+    fireEvent.mouseDown(handle, { clientX: 900 })
+    fireEvent.mouseMove(document, { clientX: 850 })
+    fireEvent.mouseUp(document, { clientX: 850 })
+    expect(shell.style.width).toBe('470px')
   })
 
   it('marks the drawer for a full-width overlay only at the responsive breakpoint', () => {

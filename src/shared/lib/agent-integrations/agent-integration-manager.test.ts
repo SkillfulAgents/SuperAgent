@@ -23,6 +23,8 @@ const state = vi.hoisted(() => ({
   create: vi.fn(), start: vi.fn(), send: vi.fn(), subscribeStream: vi.fn(), isStreamSubscribed: vi.fn((_sessionId?: string) => false), register: vi.fn(), metadata: vi.fn(),
   broadcast: vi.fn(), isActive: vi.fn((_sessionId?: string) => false),
   recordMessage: vi.fn(async (record: { display: unknown }) => record.display),
+  // A chat whose active mapping timed out: the next lookup archives it and reports the replaced session.
+  rotated: new Map<string, { rowId: string; sessionId: string }>(),
   // Runs before each read of a session's live state: a test can hold the read there.
   beforeLive: undefined as (() => Promise<void>) | undefined,
   // Every delivery the manager asked the actor for, as asked.
@@ -37,7 +39,13 @@ vi.mock('@shared/lib/services/agent-integration-service', () => ({
   updateAgentIntegrationStatus: vi.fn(),
 }))
 vi.mock('@shared/lib/services/agent-integration-session-service', () => ({
-  resolveActiveSession: (id: string, externalId: string) => state.mappings.get(`${id}:${externalId}`),
+  resolveActiveSession: (id: string, externalId: string, _timeoutHours: unknown, onArchive?: (rowId: string, sessionId: string) => void) => {
+    const rotated = state.rotated.get(`${id}:${externalId}`)
+    if (!rotated) return state.mappings.get(`${id}:${externalId}`)
+    state.rotated.delete(`${id}:${externalId}`)
+    onArchive?.(rotated.rowId, rotated.sessionId)
+    return undefined
+  },
   createAgentIntegrationSession: (mapping: { integrationId: string; externalChatId: string; sessionId: string }) => {
     state.mappings.set(`${mapping.integrationId}:${mapping.externalChatId}`, { id: `mapping-${mapping.sessionId}`, ...mapping })
   },
@@ -173,6 +181,7 @@ beforeEach(async () => {
   })
   state.mappings.clear()
   state.streams.clear()
+  state.rotated.clear()
   state.create.mockImplementation(async () => ({ id: `session-${state.create.mock.calls.length}` }))
   state.subscribeStream.mockResolvedValue(undefined)
   state.isStreamSubscribed.mockReturnValue(false)
@@ -196,6 +205,38 @@ describe('AgentIntegration host contract', () => {
     expect(state.metadata).toHaveBeenCalledWith('session-1', { isAgentIntegrationSession: true, agentIntegrationId: 'installation-a' })
     expect('sendMessage' in adapter).toBe(false)
     expect(adapter.prepareInput).toHaveBeenCalledTimes(2)
+  })
+
+  describe('rotation after inactivity', () => {
+    it('points the new session to the replaced one', async () => {
+      state.rotated.set('installation-a:object-7', { rowId: 'row-old', sessionId: 'old-session' })
+      await manager.start()
+      await adapter.input('comment-one')
+      await vi.waitFor(() => expect(state.create).toHaveBeenCalledOnce())
+
+      const systemPrompt = state.create.mock.calls[0][0].systemPrompt as string
+      expect(systemPrompt).toContain('<previous_session>')
+      expect(systemPrompt).toContain('read-session.py old-session')
+    })
+
+    it('still points to the replaced session when the first attempt fails after the rotation', async () => {
+      state.rotated.set('installation-a:object-7', { rowId: 'row-old', sessionId: 'old-session' })
+      adapter.prepareInput.mockRejectedValueOnce(new Error('Attachment download failed'))
+      await manager.start()
+      await adapter.input('comment-one')
+      await vi.waitFor(() => expect(state.create).toHaveBeenCalledOnce(), { timeout: 5_000 })
+
+      expect(adapter.prepareInput).toHaveBeenCalledTimes(2)
+      expect(state.create.mock.calls[0][0].systemPrompt).toContain('read-session.py old-session')
+    })
+
+    it('starts a first session without a pointer', async () => {
+      await manager.start()
+      await adapter.input('comment-one')
+      await vi.waitFor(() => expect(state.create).toHaveBeenCalledOnce())
+
+      expect(state.create.mock.calls[0][0].systemPrompt).toBeUndefined()
+    })
   })
 
   describe('message display', () => {

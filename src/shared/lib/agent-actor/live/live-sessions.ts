@@ -73,10 +73,9 @@ export interface LiveSessionsDeps {
 // Body of the container's POST /sessions/:id/interrupt.
 const interruptResponseSchema = z.object({ processKept: z.boolean().optional() })
 
-/** The model runtime a session's turns run on: the non-secret facts its errors and usage are read with. */
+/** The model runtime a session's turns run on: the non-secret facts its errors and analytics are read with. */
 export interface SessionModelRuntime {
   provider: LlmProviderId
-  modelContextWindows: Record<string, number>
 }
 
 /** How many sessions' runtimes an agent keeps (see `LiveSessions.recordRuntime`). */

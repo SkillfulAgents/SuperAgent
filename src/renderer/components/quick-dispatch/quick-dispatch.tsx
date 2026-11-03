@@ -14,6 +14,8 @@ import { UploadError } from '@renderer/components/ui/upload-error'
 import { MountChoiceDialog } from '@renderer/components/ui/mount-choice-dialog'
 import { toast } from 'sonner'
 import { AgentMenu, AttachMenu, ModelEffortMenu } from './quick-dispatch-menus'
+import { launcherHasGlass } from './launcher-glass'
+import { QUICK_DISPATCH_GLASS_RADIUS } from '@shared/lib/quick-dispatch-glass'
 import { EFFORT_LABELS } from '@renderer/components/messages/effort-slider'
 import { SPEED_LABELS } from '@renderer/components/messages/speed-section'
 import { ModelTooltip } from '@renderer/components/messages/model-tooltip'
@@ -45,14 +47,19 @@ function TriggerButton({
   children: ReactNode
   testId?: string
 }) {
+  // On Liquid Glass: a capsule with a translucent fill instead of an opaque tile.
+  const glass = launcherHasGlass()
   return (
     <button
       type="button"
       onClick={onClick}
       data-testid={testId}
       className={cn(
-        'inline-flex h-[34px] max-w-[200px] items-center gap-1.5 rounded-md px-2 text-xs font-medium hover:bg-accent',
-        active && 'bg-accent',
+        'inline-flex h-[34px] max-w-[200px] items-center gap-1.5 px-2 text-xs font-medium',
+        glass
+          ? 'rounded-full hover:bg-[rgb(120_120_128/0.16)] dark:hover:bg-white/[0.12]'
+          : 'rounded-md hover:bg-accent',
+        active && (glass ? 'bg-[rgb(120_120_128/0.16)] dark:bg-white/[0.12]' : 'bg-accent'),
       )}
     >
       {children}
@@ -291,6 +298,11 @@ export function QuickDispatch() {
   // marker: the main window says which Superagent it is driving through the
   // switcher in its title bar, and this panel has no title bar to put one in.
   const cloudMode = targetIsRemote()
+  // macOS 26+: the main process draws Liquid Glass behind the window. The card
+  // takes the glass's corner radius and drops its hairline ring (the glass lights
+  // its own edge); the cloud marker ring stays.
+  const glass = launcherHasGlass()
+  const glassRadius = glass ? { borderRadius: QUICK_DISPATCH_GLASS_RADIUS } : undefined
 
   return (
     // The window IS the panel (Raycast-style): one frosted, edge-to-edge rounded
@@ -301,9 +313,11 @@ export function QuickDispatch() {
     <div
       data-testid="quick-dispatch"
       className={cn(
-        'relative flex flex-col overflow-hidden rounded-[12px] bg-transparent ring-1 ring-foreground/10',
+        'relative flex flex-col overflow-hidden bg-transparent',
+        !glass && 'rounded-[12px] ring-1 ring-foreground/10',
         cloudMode && 'ring-2 ring-sky-500/70',
       )}
+      style={glassRadius}
       onMouseDown={handleWindowDragStart}
       onDragOver={handlePanelDragOver}
       onDragLeave={handlePanelDragLeave}
@@ -386,12 +400,12 @@ export function QuickDispatch() {
           </ModelTooltip>
           <div className="ml-auto flex items-center gap-2">
             <span className="inline-flex">
-              <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} />
+              <VoiceInputButton voiceInput={composer.voiceInput} message={composer.message} disabled={isDisabled} glass={glass} />
             </span>
             <Button
               type="submit"
               size="icon"
-              className="h-[34px] w-[34px]"
+              className={cn('h-[34px] w-[34px]', glass && 'rounded-full')}
               disabled={!composer.canSubmit}
               data-testid="quick-dispatch-send"
               aria-label="Dispatch agent"
@@ -450,7 +464,11 @@ export function QuickDispatch() {
           intercepts events. Mounted only while a file is being dragged over. */}
       {dropActive && (
         <div
-          className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center rounded-[12px] border-2 border-dashed border-primary/60 bg-background/80"
+          className={cn(
+            'pointer-events-none absolute inset-0 z-50 flex items-center justify-center border-2 border-dashed border-primary/60 bg-background/80',
+            !glass && 'rounded-[12px]',
+          )}
+          style={glassRadius}
           data-testid="quick-dispatch-dropzone"
         >
           <div className="flex items-center gap-2 text-sm font-medium text-primary">

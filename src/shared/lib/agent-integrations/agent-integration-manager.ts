@@ -41,6 +41,7 @@ import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reportin
 import { background } from '@shared/lib/background'
 import { recordIntegrationMessage } from '@shared/lib/services/agent-integration-message-service'
 import { INTEGRATION_MESSAGE_DISPLAY_VERSION, INTEGRATION_MESSAGE_LIMITS, clampIntegrationText, type IntegrationMessageDisplay } from './message-display-schema'
+import { continuationPrompt } from './continuation-prompt'
 // ── Sentry helpers ─────────────────────────────────────────────────────
 
 const COMPONENT = 'agent-integration'
@@ -192,6 +193,10 @@ export class AgentIntegrationManager {
   // chain settles (see scheduleQueueEviction), so the map stays bounded.
   private messageQueues: Map<string, Promise<void>> = new Map()
   private lastSessionTouch: Map<string, number> = new Map()
+  // Per chat: the runtime session the next new one continues from. Rotation
+  // archives the old row first, so this outlives a failed attempt for its
+  // retry. Dropped once the new session is mapped, or on an explicit reset.
+  private replacedSessions: Map<string, string> = new Map()
 
   private async context(integrationId: string, externalId: string): Promise<IntegrationSessionContext | undefined> {
     const integration = await getIntegration(integrationId)
@@ -486,6 +491,8 @@ export class AgentIntegrationManager {
 
     const sessionId = crypto.randomUUID()
     await actor.sessions.register(sessionId, policy.name)
+    // No runtime session yet: the first inbound message replaces this one
+    // (it is gone from the container) and carries the lineage forward.
     await actor.sessions.updateMetadata(sessionId, {
       ...policy.metadata,
       isAgentIntegrationSession: true,
@@ -1161,10 +1168,14 @@ export class AgentIntegrationManager {
     const actor = agentRegistry.get(integration.agentSlug)
     await actor.container.start()
     check()
+    // The session a new one replaces, so the new one can point to it. An
+    // explicit reset leaves no active row and drops the lineage, so it starts clean.
+    const chatKey = this.getChatSessionKey(integrationId, chatId)
     const chatSession = await resolveActiveSession(integrationId, chatId, conn.connector.sessionPolicy(integration, route).timeoutHours,
-      archivedId => {
+      (archivedId, archivedSessionId) => {
         background(this.teardownManagedSession(integrationId, chatId), { name: 'integration-manager.teardown-session' })
         this.lastSessionTouch.delete(archivedId)
+        this.replacedSessions.set(chatKey, archivedSessionId)
       })
     // An unaccepted input may follow a replacement mapping after timeout or
     // self-heal. Explicit user resets cancel its row, not other chats' attempts.
@@ -1180,6 +1191,7 @@ export class AgentIntegrationManager {
       } catch (error) {
         if (!this.isSessionGoneError(error)) throw error
         await this.teardownManagedSession(integrationId, chatId, { archive: chatSession!.id })
+        this.replacedSessions.set(chatKey, sessionId)
         sessionId = undefined
         sessionRowId = undefined
         await attempt.bind(null)
@@ -1228,6 +1240,7 @@ export class AgentIntegrationManager {
       const missing = await getIntegrationSession(integrationId, chatId)
       if (missing?.sessionId !== sessionId) throw new DeliveryCancelled()
       await this.teardownManagedSession(integrationId, chatId, { archive: missing.id })
+      this.replacedSessions.set(chatKey, sessionId)
       sessionRowId = undefined
       await attempt.bind(null)
       if (!(await this.isAllowed(integrationId, chatId))) return
@@ -1284,10 +1297,13 @@ export class AgentIntegrationManager {
     const connector = this.connections.get(integration.id)?.connector
     if (!connector) throw new DeliveryCancelled()
     const chatId = route.externalId
+    const chatKey = this.getChatSessionKey(integration.id, chatId)
+    const continuesFrom = this.replacedSessions.get(chatKey)
     const availableEnvVars = await getSecretEnvVars(integration.agentSlug)
     // Provider-specific session context (DM vs channel vs thread, delivery
     // semantics) — owned by each connector class, not the manager.
-    const systemPrompt = input.systemPrompt
+    const previous = continuesFrom ? continuationPrompt(continuesFrom) : null
+    const systemPrompt = [input.systemPrompt, previous].filter(Boolean).join('\n\n') || undefined
     // Model/effort/speed preference order: integration override > agent default > global default.
     const models = getEffectiveModels()
     const agentPrefs = await readAgentPreferences(integration.agentSlug)
@@ -1344,6 +1360,7 @@ export class AgentIntegrationManager {
       sessionId,
       displayName,
     })
+    if (this.replacedSessions.get(chatKey) === continuesFrom) this.replacedSessions.delete(chatKey)
 
     try { await checkSetup() }
     catch (error) {
@@ -1402,6 +1419,7 @@ export class AgentIntegrationManager {
     integrationId: string,
     chatId: string,
   ): Promise<void> {
+    this.replacedSessions.delete(this.getChatSessionKey(integrationId, chatId))
     try {
       const chatSession = await getIntegrationSession(integrationId, chatId)
       if (chatSession) {
@@ -1426,6 +1444,7 @@ export class AgentIntegrationManager {
       if (chatSession?.id === sessionId) {
         this.stopSession(managed)
         this.chatSessions.delete(key)
+        this.replacedSessions.delete(key)
         break
       }
     }
