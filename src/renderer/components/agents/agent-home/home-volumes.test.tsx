@@ -87,7 +87,7 @@ describe('a volume with no local folder', () => {
     expect(screen.getByText('drive')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Drive actions' }))
     expect(screen.queryByRole('button', { name: /open in finder/i })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /copy path/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /copy folder path/i })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /remove from agent/i })).toBeInTheDocument()
   })
 })
@@ -119,8 +119,7 @@ describe('driving a cloud workspace', () => {
   it('still lists the mounts, which are real on whichever Superagent is driven', () => {
     render(<HomeVolumes agentSlug="a1" />)
     expect(screen.getByText('code')).toBeInTheDocument()
-    expect(screen.getByText('/Users/joe/code')).toBeInTheDocument()
-    expect(screen.queryByText('/mounts/code')).not.toBeInTheDocument()
+    expect(screen.getByText('/mounts/code')).toBeInTheDocument()
   })
 
   it('drops the open-in-file-manager action', async () => {
@@ -129,7 +128,7 @@ describe('driving a cloud workspace', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Drive actions' }))
 
     expect(screen.queryByRole('button', { name: /open in finder/i })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /copy path/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /copy folder path/i })).toBeInTheDocument()
   })
 
   it('opens the drive settings from the row, back to this agent', async () => {
@@ -268,10 +267,11 @@ describe('renaming', () => {
     expect(screen.queryByRole('button', { name: 'Rename' })).not.toBeInTheDocument()
   })
 
-  it('shows the drive name, and the agent\'s folder path once they differ', () => {
+  it('shows the drive name and the agent\'s folder path, which keeps its name across a rename', () => {
     volumes.mounts = [{ ...MOUNT, volumeName: 'Code base' }]
     render(<HomeVolumes agentSlug="a1" />)
     expect(screen.getByText('Code base')).toBeInTheDocument()
     expect(screen.getByText('/mounts/code')).toBeInTheDocument()
+    expect(screen.queryByText('/Users/joe/code')).not.toBeInTheDocument()
   })
 })

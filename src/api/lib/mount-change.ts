@@ -11,8 +11,9 @@ export async function afterMountChange(agentSlug: string, restart?: boolean): Pr
  * stale for the person to restart, and a stopped one picks the change up at
  * its next start. One agent that can't be marked doesn't undo the change.
  */
-export async function afterVolumeChange(volumeId: string): Promise<void> {
-  const results = await Promise.allSettled((await agentsWithVolume(volumeId)).map(slug => afterMountChange(slug)))
+export async function afterVolumeChange(volumeId: string, hadDrive: string[] = []): Promise<void> {
+  const slugs = new Set([...hadDrive, ...await agentsWithVolume(volumeId)])
+  const results = await Promise.allSettled([...slugs].map(slug => afterMountChange(slug)))
   for (const result of results) {
     if (result.status === 'rejected') console.error('[volumes] Could not mark an agent with a changed drive for a restart:', result.reason)
   }

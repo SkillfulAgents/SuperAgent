@@ -8,6 +8,7 @@ const state = vi.hoisted(() => ({
   definitions: [] as VolumeDefinitionSummary[],
   selectedId: undefined as string | undefined, source: undefined as 'home' | undefined, from: undefined as string | undefined, navigate: vi.fn(), push: vi.fn(),
   host: true, isAdmin: true, save: vi.fn(), remove: vi.fn(), reconnect: vi.fn(),
+  agents: [{ slug: 'a1', displaySlug: 'a1', name: 'Ada' }] as Array<{ slug: string; displaySlug: string; name: string; status?: string; stale?: boolean }>,
 }))
 vi.mock('@renderer/hooks/use-volume-definitions', () => ({
   useVolumeAgents: () => ({ data: { attachments: [] }, isLoading: false }),
@@ -20,7 +21,7 @@ vi.mock('@renderer/lib/capabilities', () => ({ canUseHostFeatures: () => state.h
 vi.mock('@renderer/context/user-context', () => ({ useUser: () => ({ isAuthMode: true, isAdmin: state.isAdmin }) }))
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => state.navigate, useRouter: () => ({ history: { push: state.push } }), useSearch: () => ({ volume: state.selectedId, source: state.source, from: state.from }) }))
 vi.mock('@renderer/components/volumes/volume-file-browser', () => ({ VolumeFileBrowser: () => <div>Volume files</div> }))
-vi.mock('@renderer/hooks/use-agents', () => ({ useAgents: () => ({ data: [{ slug: 'a1', displaySlug: 'a1', name: 'Ada' }], isLoading: false }) }))
+vi.mock('@renderer/hooks/use-agents', () => ({ useAgents: () => ({ data: state.agents, isLoading: false }), useStopAgent: () => ({}) }))
 vi.mock('@renderer/hooks/use-mounts', () => ({ useAddMount: () => ({}), useRemoveMount: () => ({}) }))
 import { agentBackPath, VolumesTab } from './volumes-tab'
 import { TEAM_BRAIN_AGENT_HOME_QUERY } from '@renderer/lib/team-brain/team-brain-agent-home'
@@ -32,6 +33,7 @@ beforeEach(() => {
   state.from = undefined
   state.host = true
   state.isAdmin = true
+  state.agents = [{ slug: 'a1', displaySlug: 'a1', name: 'Ada' }]
   state.definitions = [{ id: 'v1', name: 'Notes', type: 'local', hostPath: '/notes', userId: 'alice', canManage: true, attachmentCount: 0, health: 'ok', globalAccess: null }]
   window.electronAPI = { openDirectory: vi.fn().mockResolvedValue({ path: '/new/folder' }) } as never
 })
@@ -41,6 +43,14 @@ afterEach(() => {
 })
 
 describe('volume settings', () => {
+  it('lists running agents a drive change left on old settings, on the drives list and each drive', () => {
+    state.agents = [{ slug: 'a1', displaySlug: 'a1', name: 'Ada', status: 'running', stale: true }]
+    const { rerender } = render(<VolumesTab />)
+    expect(screen.getByRole('button', { name: /1 running agent/ })).toBeInTheDocument()
+    state.selectedId = 'v1'
+    rerender(<VolumesTab />)
+    expect(screen.getByRole('button', { name: /1 running agent/ })).toBeInTheDocument()
+  })
   it('renames from the title without offering to change its folder or attached mount paths', async () => {
     state.definitions[0].attachmentCount = 2
     state.selectedId = 'v1'
