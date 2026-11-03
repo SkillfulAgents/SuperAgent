@@ -89,6 +89,17 @@ describe('FilePreviewContext', () => {
       expect(result.current.activeTabIndex).toBe(0)
     })
 
+    it('opens one tab for a workspace-relative and an absolute spelling of a file', () => {
+      const { result } = renderHook(() => useFilePreview(), { wrapper })
+      act(() => result.current.openFile('out/a.md', 'agent-1'))
+      act(() => result.current.openFile('/workspace/out/a.md', 'agent-1'))
+
+      expect(result.current.openTabs).toHaveLength(1)
+      expect(result.current.openTabs[0]).toMatchObject({ filePath: '/workspace/out/a.md' })
+      act(() => result.current.openFile('out/a%20b.md', 'agent-1'))
+      expect(result.current.openTabs[1]).toMatchObject({ filePath: '/workspace/out/a%20b.md' })
+    })
+
     it('bumps version on re-delivery of same file', () => {
       const { result } = renderHook(() => useFilePreview(), { wrapper })
       act(() => result.current.openFile('/workspace/report.md', 'agent-1'))

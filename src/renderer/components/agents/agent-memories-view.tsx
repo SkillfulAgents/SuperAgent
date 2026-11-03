@@ -160,6 +160,8 @@ function MemoryDetail({ agentSlug, path, entries, onBack, onSelect }: {
                   text={memory.data.body || '*This memory is empty.*'}
                   mode="settled"
                   agentSlug={agentSlug}
+                  // Memory links are relative to the memory store, not a workspace folder.
+                  folder={null}
                   link={(href, children) => {
                     const target = entries.find(entry => entry.path === href || entry.path === `${path.split('/').slice(0, -1).join('/')}/${href}`)
                     if (target) return <button type="button" className="text-primary underline" onClick={() => onSelect(target.path)}>{children}</button>

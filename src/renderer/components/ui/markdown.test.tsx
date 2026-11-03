@@ -11,6 +11,7 @@ import {
 } from '@tanstack/react-router'
 import { DialogContext } from '@renderer/context/dialog-context'
 import { FilePreviewProvider, getPreviewTabKey, useFilePreview } from '@renderer/context/file-preview-context'
+import { AgentMarkdown } from '@renderer/components/messages/agent-markdown'
 import { Markdown } from './markdown'
 
 vi.mock('@renderer/router/use-route-location', () => ({
@@ -45,14 +46,21 @@ describe('Markdown', () => {
     expect(openSettings).toHaveBeenCalledWith('browser')
   })
 
-  it('keeps an unknown settings tab as an external link', () => {
+  it('renders an unknown settings tab as plain text', () => {
     const openSettings = vi.fn()
     render(
       <DialogContext.Provider value={{ openSettings, closeSettings: vi.fn(), openWizard: vi.fn() }}>
         <Markdown>{'[Open](/settings/not-a-tab)'}</Markdown>
       </DialogContext.Provider>,
     )
-    expect(screen.getByRole('link', { name: 'Open' })).toHaveAttribute('target', '_blank')
+    expect(screen.getByText('Open')).toBeInTheDocument()
+    expect(screen.queryByRole('link')).toBeNull()
+  })
+
+  it('renders a relative link in non-agent text as plain text', () => {
+    render(<Markdown>{'[Docs](docs/setup.md)'}</Markdown>)
+    expect(screen.getByText('Docs')).toBeInTheDocument()
+    expect(screen.queryByRole('link')).toBeNull()
   })
 
   it('navigates an agent page link in the app', async () => {
@@ -101,10 +109,15 @@ describe('Markdown', () => {
   it.each([
     ['an encoded name', '/workspace/output/Q3%20report.md', '/workspace/output/Q3 report.md'],
     ['a heading anchor', '/workspace/output/report.md#results', '/workspace/output/report.md'],
-  ])('opens a workspace file link with %s in the preview tray', (_, href, filePath) => {
+    ['a malformed escape', '/workspace/output/%FF.md', '/workspace/output/%FF.md'],
+    ['its file: form', 'file:///workspace/output/report.md', '/workspace/output/report.md'],
+    ['a path relative to the workspace', 'output/report.md', '/workspace/output/report.md'],
+    ['a path relative to the open file', 'notes.md', '/workspace/blog/notes.md', '/workspace/blog'],
+    ['a drive path', '/mounts/Drive/report.md', '/mounts/Drive/report.md'],
+  ])('opens a workspace file link with %s in the preview tray', (_, href, filePath, folder?: string) => {
     render(
       <FilePreviewProvider>
-        <Markdown agentSlug="sales-helper">{`[Open](${href})`}</Markdown>
+        <Markdown agentSlug="sales-helper" folder={folder}>{`[Open](${href})`}</Markdown>
         <OpenTabs />
       </FilePreviewProvider>,
     )
@@ -114,7 +127,9 @@ describe('Markdown', () => {
 
   it.each([
     ['an encoded traversal', '/workspace/output/..%2F..%2Fetc/passwd'],
-    ['a malformed escape', '/workspace/output/%FF.md'],
+    ['a heading only', '#results'],
+    ['a path outside the agent files', '/etc/passwd'],
+    ['a file: path outside the agent files', 'file:///etc/passwd'],
   ])('renders a workspace link with %s as plain text', (_, href) => {
     render(
       <FilePreviewProvider>
@@ -123,6 +138,25 @@ describe('Markdown', () => {
     )
     expect(screen.getByText('Open')).toBeInTheDocument()
     expect(screen.queryByRole('link')).toBeNull()
+  })
+
+  it.each([
+    ['with no link handler of its own', undefined],
+    ['whose own link handler passes on it', () => null],
+  ])('opens an agent file link from agent text %s', (_, link) => {
+    render(
+      <FilePreviewProvider>
+        <AgentMarkdown text="[Open](/workspace/output/report.md)" mode="settled" agentSlug="sales-helper" link={link} />
+        <OpenTabs />
+      </FilePreviewProvider>,
+    )
+    fireEvent.click(screen.getByRole('link', { name: 'Open' }))
+    expect(screen.getByRole('status').textContent).toBe('file:sales-helper:/workspace/output/report.md')
+  })
+
+  it('keeps a protocol-relative web link as a link', () => {
+    render(<Markdown agentSlug="sales-helper">{'[Site](//example.com/a)'}</Markdown>)
+    expect(screen.getByRole('link', { name: 'Site' })).toHaveAttribute('target', '_blank')
   })
 
   it('applies the shared plugins: GFM autolinks with fullwidth trail handling', () => {

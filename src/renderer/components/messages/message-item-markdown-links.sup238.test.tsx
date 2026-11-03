@@ -46,8 +46,8 @@ describe('SUP-238: agent markdown link scheme handling', () => {
 
   it('still blanks dangerous schemes (javascript:, file:)', () => {
     render(<MarkdownBlock text={MARKDOWN} />)
-    // defaultUrlTransform rewrites these to '' — the fix must not loosen that.
-    expect(hrefOf('Script')).toBe('')
-    expect(hrefOf('Local')).toBe('')
+    // defaultUrlTransform rewrites these to '', and an empty href renders as plain text, not a link.
+    expect(screen.queryByRole('link', { name: 'Script' })).toBeNull()
+    expect(screen.queryByRole('link', { name: 'Local' })).toBeNull()
   })
 })
