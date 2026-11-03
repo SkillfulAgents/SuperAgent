@@ -7,10 +7,12 @@
  */
 
 import { describe, it, expect, vi } from 'vitest'
-import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, type ManagedConnector } from './chat-delivery'
+import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, STREAM_FIRST_POST_CHARS, type ManagedConnector } from './chat-delivery'
 import { MockChatAgentIntegration } from './mock-connector'
 import { createdEvent } from './user-request-fixtures'
 import type { ChatIntegration } from '@shared/lib/db/schema'
+
+const postable = (text: string) => text.padEnd(STREAM_FIRST_POST_CHARS, '.')
 
 // Suppress console.error noise from intentional throws
 vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -61,20 +63,18 @@ function getMock(managed: ManagedConnector): MockChatAgentIntegration {
 describe('stream_delta error resilience', () => {
   it('does not throw when sendStreamingUpdate fails', async () => {
     const managed = createManagedConnector()
-    managed.streamingState.lastUpdateTime = 0 // force throttle to pass
     const mock = getMock(managed)
     mock.sendStreamingUpdate = async () => { throw new Error('network failure') }
 
     // Should not throw
-    await processSSEEvent(managed, { type: 'stream_delta', text: 'Hello' })
+    await processSSEEvent(managed, { type: 'stream_delta', text: postable('Hello') })
 
     // Text should still be accumulated even though sending failed
-    expect(managed.streamingState.accumulatedText).toBe('Hello')
+    expect(managed.streamingState.accumulatedText).toBe(postable('Hello'))
   })
 
   it('preserves state for retry after streaming failure', async () => {
     const managed = createManagedConnector()
-    managed.streamingState.lastUpdateTime = 0
     const mock = getMock(managed)
 
     let callCount = 0
@@ -85,15 +85,14 @@ describe('stream_delta error resilience', () => {
     }
 
     // First call fails
-    await processSSEEvent(managed, { type: 'stream_delta', text: 'Hello ' })
-    expect(managed.streamingState.accumulatedText).toBe('Hello ')
+    await processSSEEvent(managed, { type: 'stream_delta', text: postable('Hello ') })
+    expect(managed.streamingState.accumulatedText).toBe(postable('Hello '))
     // currentMessageId should be unchanged (null) since the first call failed
     expect(managed.streamingState.currentMessageId).toBeNull()
 
-    // Second delta arrives after throttle — retry succeeds
-    managed.streamingState.lastUpdateTime = 0
+    // Second delta arrives — retry succeeds
     await processSSEEvent(managed, { type: 'stream_delta', text: 'world' })
-    expect(managed.streamingState.accumulatedText).toBe('Hello world')
+    expect(managed.streamingState.accumulatedText).toBe(postable('Hello ') + 'world')
     expect(managed.streamingState.currentMessageId).toBe('msg-1')
   })
 })
@@ -221,16 +220,15 @@ describe('user request card error resilience', () => {
 
   it('subsequent events still process after sendUserRequestCard failure', async () => {
     const managed = createManagedConnector()
-    managed.streamingState.lastUpdateTime = 0
     const mock = getMock(managed)
     mock.sendUserRequestCard = async () => { throw new Error('card send failed') }
 
     // Card fails
     await processSSEEvent(managed, createdEvent('question'))
     // Streaming still works
-    await processSSEEvent(managed, { type: 'stream_delta', text: 'After card failure' })
+    await processSSEEvent(managed, { type: 'stream_delta', text: postable('After card failure') })
 
-    expect(managed.streamingState.accumulatedText).toBe('After card failure')
+    expect(managed.streamingState.accumulatedText).toBe(postable('After card failure'))
     expect(mock.streamUpdates.length).toBe(1)
   })
 })
@@ -334,7 +332,6 @@ describe('resolvePendingToolMessages error resilience', () => {
 describe('pipeline isolation', () => {
   it('error in one event does not affect subsequent events', async () => {
     const managed = createManagedConnector()
-    managed.streamingState.lastUpdateTime = 0
     const mock = getMock(managed)
 
     // Make sendUserRequestCard throw
@@ -346,9 +343,9 @@ describe('pipeline isolation', () => {
 
     // Process a card event (fails), then a streaming event (should succeed)
     await processSSEEvent(managed, createdEvent('question'))
-    await processSSEEvent(managed, { type: 'stream_delta', text: 'Still works' })
+    await processSSEEvent(managed, { type: 'stream_delta', text: postable('Still works') })
 
-    expect(managed.streamingState.accumulatedText).toBe('Still works')
+    expect(managed.streamingState.accumulatedText).toBe(postable('Still works'))
     expect(mock.streamUpdates.length).toBe(1)
   })
 

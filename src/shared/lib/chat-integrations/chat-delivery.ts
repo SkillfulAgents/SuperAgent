@@ -124,6 +124,11 @@ export function clearIndicator(managed: ManagedConnector): void {
   background(managed.connector.stopWorking(managed.chatId).catch(() => {}), { name: 'chat-delivery.stop-working' })
 }
 
+/** A streamed reply is edited at most once per this interval. */
+export const STREAM_UPDATE_MS = 1000
+/** Chats notify with a message's first post only, so it waits until it reads as text. */
+export const STREAM_FIRST_POST_CHARS = 80
+
 /** Pull cadence for the indicator tick. At/under Telegram's draft expiry so drafts stay alive. */
 export const INDICATOR_TICK_MS = 1000
 
@@ -272,7 +277,8 @@ export async function processSSEEvent(
       managed.streamingState.accumulatedText += text
 
       const now = Date.now()
-      if (now - managed.streamingState.lastUpdateTime >= 1000) {
+      const { currentMessageId, accumulatedText, lastUpdateTime } = managed.streamingState
+      if (now - lastUpdateTime >= STREAM_UPDATE_MS && (currentMessageId || accumulatedText.length >= STREAM_FIRST_POST_CHARS)) {
         try {
           const msgId = await managed.connector.sendStreamingUpdate(
             managed.chatId,
