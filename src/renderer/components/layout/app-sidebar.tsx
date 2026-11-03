@@ -344,26 +344,30 @@ function DashboardSubItem({
           isActive={isSelected}
           title={`${artifact.description || artifact.name} (double-click to open in new window)`}
         >
-          <AppLink
-            ref={hintRef}
-            to="/agents/$slug/dashboards/$dashSlug"
-            params={{ slug: agentSlug, dashSlug: artifact.slug }}
-            onDoubleClick={handleDoubleClick}
-            className="flex items-center gap-2 w-full"
-          >
-            <SquareMousePointer className="!h-3.5 !w-3.5 shrink-0" />
-            {isRenaming ? (
+          {/* Not inside the link while renaming: a click in the input would follow its href (a full reload on web). */}
+          {isRenaming ? (
+            <div className="flex items-center gap-2 w-full">
+              <SquareMousePointer className="!h-3.5 !w-3.5 shrink-0" />
               <InlineRenameInput
                 agentSlug={agentSlug}
                 artifactSlug={artifact.slug}
                 currentName={artifact.name}
                 onDone={() => setIsRenaming(false)}
               />
-            ) : (
+            </div>
+          ) : (
+            <AppLink
+              ref={hintRef}
+              to="/agents/$slug/dashboards/$dashSlug"
+              params={{ slug: agentSlug, dashSlug: artifact.slug }}
+              onDoubleClick={handleDoubleClick}
+              className="flex items-center gap-2 w-full"
+            >
+              <SquareMousePointer className="!h-3.5 !w-3.5 shrink-0" />
               <span className="truncate">{artifact.name}</span>
-            )}
-            {hint !== null && <CmdHintBadge hint={hint} className="ml-auto" />}
-          </AppLink>
+              {hint !== null && <CmdHintBadge hint={hint} className="ml-auto" />}
+            </AppLink>
+          )}
         </SidebarMenuSubButton>
       </DashboardContextMenu>
     </SidebarMenuSubItem>
