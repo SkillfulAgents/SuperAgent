@@ -224,9 +224,9 @@ export async function initEnvManagedPlatformStatus(): Promise<void> {
   }
 }
 
-export function _resetEnvManagedPlatformStatusForTest(): void {
+export async function _resetEnvManagedPlatformStatusForTest(): Promise<void> {
   cachedEnvManagedStatus = undefined
-  void currentStore().deletePrefix(ENRICHED_ACCOUNT_KEY_PREFIX)
+  await currentStore().deletePrefix(ENRICHED_ACCOUNT_KEY_PREFIX)
 }
 
 function readRecord(): PlatformAuthRecord | null {

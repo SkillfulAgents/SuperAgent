@@ -124,7 +124,7 @@ beforeAll(async () => {
 describe('platform-auth-service', () => {
   let tempDir: string
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'superagent-platform-auth-'))
     process.env.SUPERAGENT_DATA_DIR = tempDir
     process.env.AUTH_PROVIDERS_JSON = JSON.stringify([
@@ -137,12 +137,12 @@ describe('platform-auth-service', () => {
     ])
     clearSettingsCache()
     _setOidcJwksResolverForTest(testJwksResolver as unknown as Parameters<typeof _setOidcJwksResolverForTest>[0])
-    _resetEnvManagedPlatformStatusForTest()
+    await _resetEnvManagedPlatformStatusForTest()
     mockDbGet.mockReturnValue(null)
     mockEnsureManagedPlatformConnection.mockClear()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     clearSettingsCache()
     fs.rmSync(tempDir, { recursive: true, force: true })
     delete process.env.SUPERAGENT_DATA_DIR
@@ -151,7 +151,7 @@ describe('platform-auth-service', () => {
     delete process.env.PLATFORM_PROXY_URL
     delete process.env.AUTH_PROVIDERS_JSON
     _setOidcJwksResolverForTest(null)
-    _resetEnvManagedPlatformStatusForTest()
+    await _resetEnvManagedPlatformStatusForTest()
     vi.restoreAllMocks()
   })
 
