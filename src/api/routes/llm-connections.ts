@@ -11,13 +11,12 @@ import { getCurrentUserId } from '@shared/lib/auth/config'
 import { getSettings } from '@shared/lib/config/settings'
 import {
   canSelectConnection,
-  listConnections,
+  listConnectionsWithSelection,
   saveConnection,
   deleteConnection,
   shareConnection,
   setGlobalSelection,
   compareAndSetGlobalDefault,
-  globalSelectionState,
   getConnection,
   assertManageConnection,
   providerForConnection,
@@ -60,11 +59,11 @@ routes.post('/oauth/:id/poll', async c => {
   return c.json(await pollOAuthLogin(c.req.param('id'), viewer(c)))
 })
 routes.get('/', async (c) => {
-  const connections = await listConnections(viewer(c))
+  const { connections, ...selection } = await listConnectionsWithSelection(viewer(c))
   return c.json({
     connections,
     legacyLlmProviderId: getSettings().llmLegacyProviderId,
-    ...await globalSelectionState(),
+    ...selection,
   })
 })
 routes.post('/', async (c) =>
