@@ -16,7 +16,7 @@ export function memoryBlobStore(): BlobStore & { keys(): string[] } {
       .map(([key, bytes]) => ({ key, size: bytes.byteLength })),
     stream: async (key) => {
       const bytes = blobs.get(key)
-      return bytes ? new Blob([bytes]).stream() : null
+      return bytes ? new Blob([new Uint8Array(bytes)]).stream() : null
     },
     keys: () => [...blobs.keys()],
   }
