@@ -55,37 +55,37 @@ beforeAll(() => {
 })
 
 describe('useMessageReplies', () => {
-  it('replies to selected agent text from the context menu, into the composer draft', async () => {
+  it('comments on selected agent text from the context menu, into the composer draft', async () => {
     renderWithProviders(<Thread />)
 
     select(AGENT_TEXT)
     fireEvent.contextMenu(screen.getByText(AGENT_TEXT))
-    expect(menuItems()).toEqual(['Copy', 'Read aloud', 'Reply'])
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Reply' }))
+    expect(menuItems()).toEqual(['Copy', 'Read aloud', 'Comment'])
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Comment' }))
 
     expect(await screen.findByText('> "Use Durable Object SQLite, not D1."')).toBeVisible()
-    await waitFor(() => expect(screen.getByPlaceholderText('Add your reply...')).toHaveFocus())
+    await waitFor(() => expect(screen.getByPlaceholderText('Add your comment...')).toHaveFocus())
     await userEvent.keyboard('Why not D1?{Enter}')
 
-    expect(screen.getByText('1 reply')).toBeVisible()
+    expect(screen.getByText('1 comment')).toBeVisible()
     expect(screen.getByTestId('draft')).toBeEmptyDOMElement()
     await userEvent.click(screen.getByRole('button', { name: 'Submit' }))
 
     expect(screen.getByTestId('draft')).toHaveTextContent('Replying to what you wrote: > "Use Durable Object SQLite, not D1." Why not D1?')
-    expect(screen.queryByText('1 reply')).not.toBeInTheDocument()
+    expect(screen.queryByText('1 comment')).not.toBeInTheDocument()
     await waitFor(() => expect(screen.getByLabelText('Message composer')).toHaveFocus())
   })
 
-  it('offers no Reply without a selection in that message', () => {
+  it('offers no Comment without a selection in that message', () => {
     renderWithProviders(<Thread />)
 
     fireEvent.contextMenu(screen.getByText(AGENT_TEXT))
-    expect(screen.queryByRole('menuitem', { name: 'Reply' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Comment' })).not.toBeInTheDocument()
     fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
 
     select(USER_TEXT)
     fireEvent.contextMenu(screen.getByText(USER_TEXT))
-    expect(screen.queryByRole('menuitem', { name: 'Reply' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Comment' })).not.toBeInTheDocument()
   })
   it('leaves selecting text and the C key to the file drawer', async () => {
     renderWithProviders(<Thread />)
@@ -97,7 +97,7 @@ describe('useMessageReplies', () => {
     await new Promise((resolve) => requestAnimationFrame(resolve))
 
     expect(screen.queryByRole('button', { name: 'Comment' })).not.toBeInTheDocument()
-    expect(screen.queryByPlaceholderText('Add your reply...')).not.toBeInTheDocument()
+    expect(screen.queryByPlaceholderText('Add your comment...')).not.toBeInTheDocument()
   })
 })
 

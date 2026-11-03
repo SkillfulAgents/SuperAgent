@@ -11,8 +11,6 @@ interface CommentOverlayProps {
   /** Gets the trimmed text of an added comment. */
   onAdd: (text: string) => void
   onClose: () => void
-  /** What the box calls the note. */
-  noun?: 'comment' | 'reply'
   /** The editor. Otherwise a "Comment" chip, which calls `onEdit`. */
   autoEdit?: boolean
   /** Start the mic as the editor opens, when voice input is set up. */
@@ -21,7 +19,7 @@ interface CommentOverlayProps {
   onEdit?: () => void
 }
 
-export function CommentOverlay({ anchor, rect, onAdd, onClose, onEdit, noun = 'comment', autoEdit = false, autoListen = false }: CommentOverlayProps) {
+export function CommentOverlay({ anchor, rect, onAdd, onClose, onEdit, autoEdit = false, autoListen = false }: CommentOverlayProps) {
 
   // Slide the overlay left, before it paints, so it ends 8px inside the pane that clips it.
   // Re-runs when the editor opens or its anchor moves.
@@ -66,7 +64,6 @@ export function CommentOverlay({ anchor, rect, onAdd, onClose, onEdit, noun = 'c
         label={describeAnchor(anchor)}
         autoFocus
         autoListen={autoListen}
-        placeholder={`Add your ${noun}...`}
         onCancel={onClose}
         onSubmit={(text) => {
           onAdd(text)

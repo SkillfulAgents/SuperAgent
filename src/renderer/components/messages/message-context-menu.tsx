@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { Copy, ExternalLink, Reply, Square, Trash2, Volume2 } from 'lucide-react'
+import { Copy, ExternalLink, MessageSquarePlus, Square, Trash2, Volume2 } from 'lucide-react'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -18,7 +18,7 @@ interface MessageContextMenuProps {
   onRemove?: () => void
   /** Offered on a reply that can be read aloud: start it, or stop the reading in progress. */
   readAloud?: { active: boolean; onToggle: () => void }
-  /** Offered when text in this message is selected: reply to it. */
+  /** Offered when text in this message is selected: comment on it. */
   canReply?: boolean
 }
 
@@ -81,9 +81,9 @@ export function MessageContextMenu({ text, children, onRemove, readAloud, canRep
           </ContextMenuItem>
         )}
         {replySelection && openReply && (
-          <ContextMenuItem onClick={() => { replyOnClose.current = true }} data-testid="context-reply">
-            <Reply className="h-4 w-4 mr-2" />
-            Reply
+          <ContextMenuItem onClick={() => { replyOnClose.current = true }} data-testid="context-comment">
+            <MessageSquarePlus className="h-4 w-4 mr-2" />
+            Comment
           </ContextMenuItem>
         )}
         {onRemove && (

@@ -48,7 +48,6 @@ export function useMessageReplies(
     enabled: allowed && sessionId != null,
     comments: replies,
     add: (anchor, text) => setReplies((prev) => [...prev, { id: `reply-${++nextId.current}`, anchor, text }]),
-    noun: 'reply',
   }), [allowed, sessionId, replies])
   const surface = useMemo<CommentSurface>(() => ({ text: { blocks: containerRef } }), [containerRef])
   const { box, open: openAt, enabled } = useCommentLayer(containerRef, surface, store, { gestures: false })
@@ -64,7 +63,6 @@ export function useMessageReplies(
       format={formatReplies}
       onRemove={remove}
       onClear={clear}
-      noun="reply"
       className="mx-4 mb-2 overflow-hidden rounded-lg border border-border bg-background"
     />
   )

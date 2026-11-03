@@ -58,12 +58,11 @@ interface PendingCommentsBarProps<C extends PendingComment> {
   format: (comments: C[]) => string
   onRemove: (id: string) => void
   onClear: () => void
-  noun?: 'comment' | 'reply'
   className?: string
 }
 
 /** Added comments waiting for Submit, which puts them into the session's composer draft without sending. */
-export function PendingCommentsBar<C extends PendingComment>({ comments, sessionId, format, onRemove, onClear, noun = 'comment', className }: PendingCommentsBarProps<C>) {
+export function PendingCommentsBar<C extends PendingComment>({ comments, sessionId, format, onRemove, onClear, className }: PendingCommentsBarProps<C>) {
   const draftsStore = useDraftsStore()
 
   const handleSubmit = useCallback(() => {
@@ -89,7 +88,7 @@ export function PendingCommentsBar<C extends PendingComment>({ comments, session
             <button
               onClick={() => onRemove(comment.id)}
               className="p-0.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-              title={`Remove ${noun}`}
+              title="Remove comment"
             >
               <Trash2 className="h-3 w-3" />
             </button>
@@ -101,7 +100,7 @@ export function PendingCommentsBar<C extends PendingComment>({ comments, session
       <div className="flex items-center justify-between px-3 py-2 border-t border-border/30">
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <MessageSquare className="h-3.5 w-3.5" />
-          <span>{comments.length === 1 ? `1 ${noun}` : `${comments.length} ${noun === 'reply' ? 'replies' : 'comments'}`}</span>
+          <span>{comments.length} comment{comments.length === 1 ? '' : 's'}</span>
         </div>
         <div className="flex items-center gap-1">
           <Button

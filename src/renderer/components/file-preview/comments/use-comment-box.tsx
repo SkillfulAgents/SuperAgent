@@ -49,8 +49,6 @@ export interface CommentStore {
   enabled: boolean
   comments: { id: string; anchor: CommentAnchor }[]
   add: (anchor: CommentAnchor, text: string) => void
-  /** What the box calls a note. */
-  noun?: 'comment' | 'reply'
 }
 
 /** The file drawer's comments on one agent's copy of a file. */
@@ -246,7 +244,6 @@ export function useCommentLayer(
           anchor={pending.anchor}
           rect={pending.rect}
           onAdd={(text) => store.add(pending.anchor, text)}
-          noun={store.noun}
           autoEdit={!pending.chip}
           autoListen={pending.listen}
           onEdit={() => setPending({ ...pending, chip: false })}
