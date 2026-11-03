@@ -1,7 +1,7 @@
 /**
  * The bundled schema migrations for a driver with a batch and no interactive
- * transaction (D1, libsql): the pending migrations and their journal rows
- * commit together or not at all. Same table and rule as drizzle's migrator,
+ * transaction (libsql, or a database that only runs batches): the pending
+ * migrations and their journal rows commit together or not at all. Same table and rule as drizzle's migrator,
  * so a database it migrated continues here: a migration is pending when it is
  * newer than the newest journal row.
  */
@@ -34,7 +34,7 @@ export async function migrateInBatch(
     for (const statement of migration.sql) {
       if (statement.trim()) statements.push(statement)
     }
-    // Inlined, not bound: D1's batch runs plain statements.
+    // Inlined, not bound: a database that only runs batches runs plain statements.
     statements.push(`INSERT INTO ${table} ("hash", "created_at") VALUES ('${migration.hash}', ${migration.folderMillis})`)
   }
   if (statements.length > 0) await client.batch(statements)

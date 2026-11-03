@@ -10,7 +10,8 @@ vi.mock('./0001-import-agents-from-directories', () => ({
 
 import { runDataMigrations, type DataMigration } from './index'
 import { mutateSettings } from '../../config/settings'
-import { runWithHostState } from '../../host-state/scope'
+import { fileHostStateBackend, setHostStateBackend } from '../../host-state/backend'
+import { runWithHostState, scopedHostStateBackend } from '../../host-state/scope'
 import { databaseHostStateStore } from '../../host-state/store'
 
 let handle: TestDatabase
@@ -125,7 +126,12 @@ describe('runDataMigrations', () => {
       },
     }
 
-    await expect(runWithHostState(store, () => runDataMigrations(handle.db, [pricing]))).rejects.toThrow('database unavailable')
+    setHostStateBackend(scopedHostStateBackend)
+    try {
+      await expect(runWithHostState(store, () => runDataMigrations(handle.db, [pricing]))).rejects.toThrow('database unavailable')
+    } finally {
+      setHostStateBackend(fileHostStateBackend)
+    }
     expect(await ledger()).toEqual([])
   })
 })

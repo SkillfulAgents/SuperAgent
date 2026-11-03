@@ -1,15 +1,19 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { getSettings, loadSettingsStrict, mutateSettings, updateSettings } from '@shared/lib/config/settings'
 import { getOrCreateHostToken, hostTokenForStart } from '@shared/lib/container/host-token-store'
 import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { expiringMap } from './expiring-map'
-import { HostStateConflictError, flushHostState, runWithHostState } from './scope'
+import { fileHostStateBackend, setHostStateBackend } from './backend'
+import { HostStateConflictError, flushHostState, runWithHostState, scopedHostStateBackend } from './scope'
 import { databaseHostStateStore, type HostStateStore } from './store'
 
 let handle: TestDatabase
 let store: HostStateStore
+
+beforeAll(() => setHostStateBackend(scopedHostStateBackend))
+afterAll(() => setHostStateBackend(fileHostStateBackend))
 
 beforeEach(async () => {
   handle = await createTestDatabase()
