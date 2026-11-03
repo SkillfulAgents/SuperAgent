@@ -3,6 +3,7 @@ import type { AgentSlug } from '@shared/lib/agent-actor/types'
 import type { SessionMetadataMap } from '@shared/lib/types/agent'
 import type { ApiAgentDashboard } from '@shared/lib/types/api'
 import { agentSummaryOf, type AgentSummary } from './agent-summaries'
+import { automationRunsOf } from './automation-runs'
 import { listArtifactsAndWidgets } from './artifact-service'
 import { isHiddenAutomatedSession } from './session-visibility'
 import { widgetRefreshService } from './widget-refresh-service'
@@ -38,5 +39,6 @@ export async function summarizeAgent(
     visibleSessionIds: sessions.sessionIds.filter((id) => !isHiddenAutomatedSession(metadata[id])),
     dashboards: apiDashboardsOf(artifacts.dashboards),
     widgets: await widgetRefreshService.decorate(slug, artifacts.widgets),
+    automationRuns: automationRunsOf(metadata, live.activeSessionIds, new Date()),
   })
 }
