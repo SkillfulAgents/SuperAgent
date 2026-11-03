@@ -11,5 +11,13 @@ defineSingletonHostFile(TENANT_ID_FILE, () => uuidv4())
  * Generated once on first access and stored with the host files.
  */
 export function getTenantId(): string {
-  return hostState().singleton(TENANT_ID_FILE).trim()
+  let id = ''
+  try {
+    id = hostState().singleton(TENANT_ID_FILE).trim()
+  } catch {
+    // An unreadable file gets a new id below.
+  }
+  if (id) return id
+  // An empty file (a write cut short) or an unreadable one: replace it with a new id.
+  return hostState().write(TENANT_ID_FILE, () => uuidv4()).trim()
 }
