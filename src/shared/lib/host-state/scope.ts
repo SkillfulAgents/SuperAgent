@@ -1,4 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { SETTINGS_FILE, fileHostStateBackend, type HostStateBackend } from './backend'
+import { singletonHostFiles } from './singletons'
 import { memoryHostStateStore, type HostStateEntry, type HostStateStore } from './store'
 
 /**
@@ -7,7 +9,8 @@ import { memoryHostStateStore, type HostStateEntry, type HostStateStore } from '
  * compare-and-set save that re-applies the change to the stored value on a
  * conflict. The request is not finished until its saves are.
  *
- * With no scope (desktop, ECS) callers keep their file-backed paths.
+ * A deployment installs `scopedHostStateBackend` at boot. With no scope (a
+ * single long-running process) the host keeps its files.
  */
 
 export const SETTINGS_KEY = 'settings'
@@ -34,20 +37,11 @@ interface Scope {
 }
 
 const als = new AsyncLocalStorage<Scope>()
-const singletons = new Map<string, () => string>()
-
-/** A host file made once and never rewritten (a key, an id). Each scope ensures it exists before the request runs. */
-export function defineSingletonHostFile(name: string, create: () => string): void {
-  singletons.set(name, create)
-}
-
-export function hostStateActive(): boolean {
-  return als.getStore() !== undefined
-}
 
 export async function runWithHostState<T>(store: HostStateStore, fn: () => Promise<T>): Promise<T> {
   const stored = await store.getMany([SETTINGS_KEY], [FILE_PREFIX])
-  for (const [name, create] of singletons) {
+  // Each scope ensures the singleton host files exist before the request runs.
+  for (const [name, create] of singletonHostFiles()) {
     const key = FILE_PREFIX + name
     if (!stored.has(key)) stored.set(key, await store.insertIfAbsent(key, create()))
   }
@@ -164,4 +158,50 @@ export function currentStore(): HostStateStore {
 /** Test seam: forget this process's state. */
 export function resetProcessHostState(): void {
   processStore.clear()
+}
+
+function keyFor(name: string): string {
+  return name === SETTINGS_FILE ? SETTINGS_KEY : hostFileKey(name)
+}
+
+/** The host state of the request this runs in. */
+const requestBackend: HostStateBackend = {
+  read: (name) => readScoped(keyFor(name)),
+  write: (name, update) => writeScoped(keyFor(name), update),
+  // A whole-document replace merged against this request's read: a newer
+  // write from another request fails it rather than being overwritten.
+  replace: (name, text) => void writeScoped(keyFor(name), () => text, { rebase: false }),
+  singleton(name) {
+    const value = readScoped(keyFor(name))
+    if (value === null) throw new Error(`Host file "${name}" is not a singleton host file`)
+    return value
+  },
+  memo: (name, load) => memoScoped(keyFor(name), load),
+  remember(name, value) {
+    scopeOrThrow().memo.set(keyFor(name), value)
+  },
+  forget(name) {
+    scopeOrThrow().memo.delete(keyFor(name))
+  },
+  flush: flushHostState,
+}
+
+function active(): HostStateBackend {
+  return als.getStore() ? requestBackend : fileHostStateBackend
+}
+
+/**
+ * For a deployment that serves each request inside `runWithHostState`:
+ * install it once at boot with `setHostStateBackend`. Code that runs outside
+ * a request (boot) keeps the files, as before.
+ */
+export const scopedHostStateBackend: HostStateBackend = {
+  read: (name) => active().read(name),
+  write: (name, update) => active().write(name, update),
+  replace: (name, text) => active().replace(name, text),
+  singleton: (name) => active().singleton(name),
+  memo: (name, load) => active().memo(name, load),
+  remember: (name, value) => active().remember(name, value),
+  forget: (name) => active().forget(name),
+  flush: () => active().flush(),
 }

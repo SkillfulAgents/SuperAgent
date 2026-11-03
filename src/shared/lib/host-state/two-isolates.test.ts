@@ -34,8 +34,9 @@ async function bootIsolate() {
   const { openDatabase } = await import('@shared/lib/db/open-database')
   const { libsql } = await import('@shared/lib/db/drivers/libsql')
   const { databaseHostStateStore } = await import('./store')
-  const { runWithHostState } = await import('./scope')
-  const { hostStateMiddleware } = await import('./middleware')
+  const { runWithHostState, scopedHostStateBackend } = await import('./scope')
+  const { setHostStateBackend } = await import('./backend')
+  setHostStateBackend(scopedHostStateBackend)
 
   const db = await openDatabase({
     driver: libsql(dbUrl),
@@ -43,7 +44,8 @@ async function bootIsolate() {
   })
   const api = (await import('../../../api')).default
   const app = new Hono()
-  app.use('*', hostStateMiddleware(databaseHostStateStore(db)))
+  const store = databaseHostStateStore(db)
+  app.use('*', (_c, next) => runWithHostState(store, () => next()))
   app.route('/', api)
   return {
     request: (url: string, init?: RequestInit) => withEmptyDataDir(() => Promise.resolve(app.request(url, init))),
