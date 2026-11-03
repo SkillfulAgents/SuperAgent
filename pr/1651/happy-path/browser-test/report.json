@@ -1,0 +1,25 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Tested browser-use feature by having an agent open a browser, navigate to https://example.com, retrieve the page title, and verify the response mentions \"Example Domain\"",
+  "steps": [
+    "Step 1 - Navigated to http://localhost:47891 - Successfully loaded the Gamut application home page with agent list visible in sidebar",
+    "Step 2 - Found and clicked on \"QA-20261103-224245-h2b5\" agent in the sidebar - Successfully navigated to agent's configuration page showing settings, connections, triggers, and message input box",
+    "Step 3 - Entered message \"Open a browser and go to https://example.com. Tell me the page title.\" in the input field - Message text was successfully entered in the textbox",
+    "Step 4 - Clicked \"Send message\" button - Message was sent successfully and the system created a new session titled \"Browser Page Title Check\" with agent status showing \"working\"",
+    "Step 5 - Waited up to 3 minutes for agent response - Agent completed work in approximately 4 seconds (used 3 tool calls, 159,953 tokens), showing \"Worked for 4s\"",
+    "Step 6 - Verified response mentions \"Example Domain\" - Response text reads: \"The page title is \"Example Domain\". The page at https://example.com loaded normally, and I've closed the browser.\" ✓ Requirement met",
+    "Step 7 - Took screenshot of successful response - Screenshot captured showing the complete response message with \"Example Domain\" clearly visible"
+  ],
+  "bugs": [],
+  "durationMs": 62356,
+  "sessionId": "46196d76-ffc3-43c8-b95c-e8d9b9b21ee3",
+  "cost": {
+    "inputTokens": 320,
+    "outputTokens": 9653,
+    "cacheCreationTokens": 74946,
+    "cacheReadTokens": 895630,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.231831
+  }
+}
