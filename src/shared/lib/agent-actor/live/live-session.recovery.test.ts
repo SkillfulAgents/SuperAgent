@@ -416,16 +416,20 @@ describe('mid-turn recovery snapshot', () => {
     expect(actorDurableState().get(`coalesced:${AGENT_SLUG}:${SESSION_ID}`)).toEqual([{ uuid: 'u2', text: 'second' }])
 
     sessions(AGENT_SLUG).settleRecovering([SESSION_ID])
-    expect(sessions(AGENT_SLUG).takeStoredCoalesced()).toEqual([])
+    expect(sessions(AGENT_SLUG).storedCoalescedSessions()).toEqual([])
   })
 
-  it('hands stored coalesced messages out once', () => {
+  it('keeps stored coalesced messages until they are stored as sent', () => {
     sessions(AGENT_SLUG).markActive(SESSION_ID)
     sessions(AGENT_SLUG).claimMidTurnForRecovery()
     sessions(AGENT_SLUG).coalesceIfRecovering(SESSION_ID, { uuid: 'u1', text: 'first' })
+    sessions(AGENT_SLUG).coalesceIfRecovering(SESSION_ID, { uuid: 'u2', text: 'second' })
 
-    expect(sessions(AGENT_SLUG).takeStoredCoalesced()).toEqual([{ sessionId: SESSION_ID, messages: [{ uuid: 'u1', text: 'first' }] }])
-    expect(sessions(AGENT_SLUG).takeStoredCoalesced()).toEqual([])
+    expect(sessions(AGENT_SLUG).storedCoalescedSessions()).toEqual([{ sessionId: SESSION_ID, messages: [{ uuid: 'u1', text: 'first' }, { uuid: 'u2', text: 'second' }] }])
+    sessions(AGENT_SLUG).storeCoalesced(SESSION_ID, [{ uuid: 'u2', text: 'second' }])
+    expect(sessions(AGENT_SLUG).storedCoalescedSessions()).toEqual([{ sessionId: SESSION_ID, messages: [{ uuid: 'u2', text: 'second' }] }])
+    sessions(AGENT_SLUG).storeCoalesced(SESSION_ID, [])
+    expect(sessions(AGENT_SLUG).storedCoalescedSessions()).toEqual([])
   })
 
   it('does not log coalesced message content when settling', () => {

@@ -6,7 +6,9 @@
  * - `send` returns at once, as the port promises. The event goes into an
  *   outbox first, and the outbox is posted in order (`POST <base>/host/events`)
  *   until the host acknowledges it; a failed post is retried with backoff.
- *   Delivery is at least once: the host drops an event id it has already seen.
+ *   Delivery is at least once: the host drops an event id its ledger has
+ *   already seen. The ledger is this process's memory unless the deployment
+ *   supplies one every host process shares.
  *
  * The outbox is where unacknowledged events survive the actor: in memory by
  * default, or a durable store the deployment supplies.
@@ -16,6 +18,7 @@ import type { HostCalls, HostEvents, HostPort } from './host-port'
 import { decodeWire, encodeWire } from './actor-wire'
 import type { ActorFetch } from './network-actor'
 import { background } from '@shared/lib/background'
+import { captureException } from '@shared/lib/error-reporting'
 
 export interface HostEventEntry {
   id: string
@@ -66,6 +69,8 @@ export function remoteHostPort(send: ActorFetch, options: RemoteHostPortOptions 
   const batchSize = options.batchSize ?? 100
   const newId = options.newId ?? (() => crypto.randomUUID())
   let flushing: Promise<void> | null = null
+  /** A flush was asked for while one ran: that one may have read the outbox before the new event landed. */
+  let flushAgain = false
   let attempt = 0
   let retry: ReturnType<typeof setTimeout> | null = null
   // Appends land in send order even when the outbox is async.
@@ -86,20 +91,27 @@ export function remoteHostPort(send: ActorFetch, options: RemoteHostPortOptions 
   }
 
   const flush = (): Promise<void> => {
-    flushing ??= (async () => {
+    if (flushing) {
+      flushAgain = true
+      return flushing
+    }
+    flushing = (async () => {
       try {
-        await appended
-        if (await postOnce()) {
+        do {
+          flushAgain = false
+          await appended
+          if (!(await postOnce())) {
+            const delay = delays[Math.min(attempt++, delays.length - 1)]
+            if (retry) clearTimeout(retry)
+            retry = setTimeout(() => {
+              retry = null
+              background(flush, { name: 'agent-actor.retry-host-events' })
+            }, delay)
+            retry.unref?.()
+            return
+          }
           attempt = 0
-          return
-        }
-        const delay = delays[Math.min(attempt++, delays.length - 1)]
-        if (retry) clearTimeout(retry)
-        retry = setTimeout(() => {
-          retry = null
-          background(flush, { name: 'agent-actor.retry-host-events' })
-        }, delay)
-        retry.unref?.()
+        } while (flushAgain)
       } finally {
         flushing = null
       }
@@ -122,29 +134,50 @@ export function remoteHostPort(send: ActorFetch, options: RemoteHostPortOptions 
       const entry: HostEventEntry = { id: newId(), name, event }
       // Fails here, in the caller, as the local port's handler never would: an event that is not data can never be posted.
       encodeWire(event, `host event ${name}`)
-      appended = appended.then(() => outbox.append(entry))
+      appended = appended.then(() => outbox.append(entry)).catch((error: unknown) => {
+        // This event is lost; the ones sent after it still go.
+        console.error(`[HostPort] Could not store host event ${name}:`, error)
+        captureException(error, { tags: { area: 'agent-actor', op: 'host-event-append' }, extra: { name } })
+      })
       background(flush, { name: 'agent-actor.flush-host-events' })
     },
     flush,
   }
 }
 
-/**
- * Answers `remoteHostPort` from the host's own port. An event id already seen
- * (a retried post whose first try landed) is acknowledged and not sent again.
- */
-export function serveHostPort(port: HostPort, options: { rememberIds?: number } = {}): ActorFetch {
-  const remember = options.rememberIds ?? 10_000
+/** The host event ids already handled. A host served by many processes supplies one they all share. */
+export interface HostEventLedger {
+  /** True the first time `id` is seen. */
+  claim(id: string): Promise<boolean> | boolean
+}
+
+/** The ids this process has seen, the newest `remember` of them. */
+export function memoryLedger(remember = 10_000): HostEventLedger {
   const seen = new Set<string>()
+  return {
+    claim(id) {
+      if (seen.has(id)) return false
+      seen.add(id)
+      if (seen.size > remember) seen.delete(seen.values().next().value as string)
+      return true
+    },
+  }
+}
+
+/**
+ * Answers `remoteHostPort` from the host's own port. An event id the ledger
+ * has already seen (a retried post whose first try landed) is acknowledged and
+ * not sent again.
+ */
+export function serveHostPort(port: HostPort, options: { ledger?: HostEventLedger } = {}): ActorFetch {
+  const ledger = options.ledger ?? memoryLedger()
   return async (request) => {
     const url = new URL(request.url)
     if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 })
     if (url.pathname === '/host/events') {
       const entries = (await request.json()) as HostEventEntry[]
       for (const entry of entries) {
-        if (seen.has(entry.id)) continue
-        seen.add(entry.id)
-        if (seen.size > remember) seen.delete(seen.values().next().value as string)
+        if (!(await ledger.claim(entry.id))) continue
         port.send(entry.name, decodeWire(entry.event) as never)
       }
       return Response.json({ acknowledged: entries.length })

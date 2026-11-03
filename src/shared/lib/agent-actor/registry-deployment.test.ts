@@ -7,8 +7,22 @@ import { createInMemorySessionStore } from './testing/in-memory-session-store'
 import { loopbackActor } from './network-actor'
 import type { AgentActor } from './types'
 
+// A runtime the actor's process has not synced yet: its cache says stopped, the runner says running.
+const runtime = vi.hoisted(() => {
+  const client = {
+    fetch: vi.fn(async (path: string) => Response.json(path === '/sessions' || path === '/inputs/pending' ? [] : {})),
+    sendMessage: vi.fn(async () => ({})),
+  }
+  return {
+    client,
+    getCachedInfo: vi.fn(() => ({ status: 'stopped', port: null })),
+    syncAgentStatus: vi.fn(async () => ({ status: 'running', port: 4100 })),
+    getClient: () => client,
+    noteSessionActivity: vi.fn(),
+  }
+})
 vi.mock('@shared/lib/container/container-host', () => ({
-  containerHost: { attachAgentWorkspaces: vi.fn(), attachAgentSessions: vi.fn(), dropRuntime: vi.fn(), clearRuntimes: vi.fn() },
+  containerHost: { attachAgentWorkspaces: vi.fn(), attachAgentSessions: vi.fn(), dropRuntime: vi.fn(), clearRuntimes: vi.fn(), runtime: () => runtime },
 }))
 vi.mock('@shared/lib/host/local-host-port', async () => ({
   localHostPort: (await import('./testing/recording-host-port')).createRecordingHostPort().port,
@@ -66,5 +80,19 @@ describe('configureAgentRegistry', () => {
     expect(actor).toBe(transport.mock.results[0].value)
     expect(agentRegistry.get('sales-agent')).toBe(actor)
     expect(new TextDecoder().decode((await store.files.getDoc('notes/q3.md'))!)).toBe('Pipeline review on Friday')
+  })
+
+  it('rebuilds a restarted actor from what its runtime reports now, not from the cache it starts with', async () => {
+    const { agentRegistry, configureAgentRegistry } = await freshRegistry()
+    configureAgentRegistry({ createSessionStore: () => createInMemorySessionStore('sales-agent') })
+    const { actorDurableState } = await import('./durable-state')
+    // A user message held for a recovery that the restart cut short.
+    actorDurableState().put('coalesced:sales-agent:session-7', [{ uuid: 'held-1', text: 'Also check the March invoice' }])
+
+    const result = await agentRegistry.get('sales-agent').sessions.recover()
+
+    expect(result.resent).toEqual(['held-1'])
+    expect(runtime.client.sendMessage).toHaveBeenCalledWith('session-7', 'Also check the March invoice', 'held-1', { shouldQuery: true })
+    expect(actorDurableState().list('coalesced:')).toEqual([])
   })
 })

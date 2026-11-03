@@ -7,7 +7,9 @@
  * - every request the container waits on (`GET /inputs/pending`) is
  *   registered again on its session, marked recovered, as transcript recovery
  *   does: clients render the card from the transcript;
- * - user messages held for a recovery the restart cut short are sent.
+ * - user messages held for a recovery the restart cut short are sent, each
+ *   forgotten once it went: a failed send keeps it, and the rest of its
+ *   session's, for the next recover(), and rejects this one.
  */
 import { z } from 'zod'
 import type { CoalescedUserMessage } from '@shared/lib/container/runtime-death'
@@ -21,11 +23,15 @@ const containerPendingSchema = z.array(z.object({
 }).passthrough())
 
 export interface RecoverFromContainerDeps {
+  /** What the runtime reports now: a restarted actor's own cache knows nothing yet. */
   containerStatus(): Promise<string>
   fetch(path: string): Promise<Response>
   attach(sessionId: string): Promise<void>
   recoverAwaitingInput(sessionId: string, unresolved: Array<{ toolUseId: string; toolName: string }>): void
-  takeStoredCoalesced(): Array<{ sessionId: string; messages: CoalescedUserMessage[] }>
+  /** Held messages a restart cut short, by session. */
+  storedCoalesced(): Array<{ sessionId: string; messages: CoalescedUserMessage[] }>
+  /** Stores what is still to send of a session's held messages; none forgets them. */
+  storeCoalesced(sessionId: string, messages: CoalescedUserMessage[]): void
   sendHeld(sessionId: string, message: CoalescedUserMessage): Promise<void>
 }
 
@@ -71,11 +77,19 @@ export async function recoverFromContainer(deps: RecoverFromContainerDeps): Prom
     }
   }
 
-  for (const { sessionId, messages } of deps.takeStoredCoalesced()) {
-    for (const message of messages) {
-      await deps.sendHeld(sessionId, message)
-      result.resent.push(message.uuid)
+  let failure: unknown
+  for (const { sessionId, messages } of deps.storedCoalesced()) {
+    try {
+      for (let i = 0; i < messages.length; i++) {
+        await deps.sendHeld(sessionId, messages[i])
+        deps.storeCoalesced(sessionId, messages.slice(i + 1))
+        result.resent.push(messages[i].uuid)
+      }
+    } catch (error) {
+      // Another session's held messages still go.
+      failure ??= error
     }
   }
+  if (failure) throw failure
   return result
 }

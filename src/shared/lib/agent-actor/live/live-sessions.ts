@@ -634,17 +634,13 @@ export class LiveSessions {
   }
 
   /**
-   * Messages held for a recovery that a restart of this actor cut short:
-   * stored as they were coalesced, and handed out once. A recovery that
-   * finished took them already.
+   * Messages held for a recovery that a restart of this actor cut short, by
+   * session: stored as they were coalesced. A recovery that finished took them
+   * already. They stay stored until `storeCoalesced` records them sent.
    */
-  takeStoredCoalesced(): Array<{ sessionId: string; messages: CoalescedUserMessage[] }> {
-    const store = actorDurableState()
+  storedCoalescedSessions(): Array<{ sessionId: string; messages: CoalescedUserMessage[] }> {
     const prefix = this.coalescedKey('')
-    return store.list<CoalescedUserMessage[]>(prefix).map(([key, messages]) => {
-      store.delete(key)
-      return { sessionId: key.slice(prefix.length), messages }
-    })
+    return actorDurableState().list<CoalescedUserMessage[]>(prefix).map(([key, messages]) => ({ sessionId: key.slice(prefix.length), messages }))
   }
 
   private coalescedKey(sessionId: string): string {
@@ -655,7 +651,8 @@ export class LiveSessions {
     return actorDurableState().get<CoalescedUserMessage[]>(this.coalescedKey(sessionId)) ?? []
   }
 
-  private storeCoalesced(sessionId: string, messages: CoalescedUserMessage[]): void {
+  /** Stores the session's held messages that are still to send; none forgets them. */
+  storeCoalesced(sessionId: string, messages: CoalescedUserMessage[]): void {
     if (messages.length === 0) actorDurableState().delete(this.coalescedKey(sessionId))
     else actorDurableState().put(this.coalescedKey(sessionId), messages)
   }

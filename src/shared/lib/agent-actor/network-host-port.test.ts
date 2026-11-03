@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { memoryOutbox, remoteHostPort, serveHostPort } from './network-host-port'
+import { backgroundSettled } from '@shared/lib/background'
+import { memoryLedger, memoryOutbox, remoteHostPort, serveHostPort, type HostEventOutbox, type RemoteHostPort } from './network-host-port'
 import { WorkspaceFileError } from './workspace-path'
 import type { HostPort } from './host-port'
 import type { ActorFetch } from './network-actor'
@@ -77,6 +78,79 @@ describe('network host port', () => {
 
     expect(events).toHaveLength(1)
     expect(await outbox.pending()).toEqual([])
+  })
+
+  it('posts an event sent while a flush was reading the outbox for the last time', async () => {
+    const { port, events } = fakeHost()
+    const outbox = memoryOutbox()
+    let remote!: RemoteHostPort
+    let sendLate = true
+    const racing: HostEventOutbox = {
+      ...outbox,
+      pending: async () => {
+        const pending = await outbox.pending()
+        // Sent after this read found the outbox empty, before the flush that made it ends.
+        if (pending.length === 0 && sendLate) {
+          sendLate = false
+          remote.send('global', feedEvent(2))
+        }
+        return pending
+      },
+    }
+    remote = remoteHostPort(serveHostPort(port), { outbox: racing })
+
+    remote.send('global', feedEvent(1))
+    await backgroundSettled()
+
+    expect(events.map(({ event }) => (event as { agentSlug: string }).agentSlug)).toEqual(['agent-1', 'agent-2'])
+  })
+
+  it('still posts the events sent after one the outbox could not store', async () => {
+    const { port, events } = fakeHost()
+    const outbox = memoryOutbox()
+    let failNext = true
+    const flaky: HostEventOutbox = {
+      ...outbox,
+      append: (entry) => {
+        if (failNext) {
+          failNext = false
+          throw new Error('storage full')
+        }
+        return outbox.append(entry)
+      },
+    }
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const remote = remoteHostPort(serveHostPort(port), { outbox: flaky })
+
+    remote.send('global', feedEvent(1))
+    remote.send('global', feedEvent(2))
+    await backgroundSettled()
+
+    expect(events.map(({ event }) => (event as { agentSlug: string }).agentSlug)).toEqual(['agent-2'])
+    errors.mockRestore()
+  })
+
+  it('drops a retried post that reaches another host process sharing the ledger', async () => {
+    const { port, events } = fakeHost()
+    const ledger = memoryLedger()
+    const hostA = serveHostPort(port, { ledger })
+    const hostB = serveHostPort(port, { ledger })
+    let posts = 0
+    // The first post lands on process A but its answer is lost; the retry reaches process B.
+    const balancer: ActorFetch = async (request) => {
+      if (posts++ > 0) return hostB(request)
+      await hostA(request)
+      return new Response('gateway timeout', { status: 504 })
+    }
+    const remote = remoteHostPort(balancer, { retryDelaysMs: [1_000] })
+
+    remote.send('analytics', { event: 'session_started' })
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(1_000)
+    await remote.flush()
+
+    expect(posts).toBe(2)
+    expect(events).toHaveLength(1)
   })
 
   it('refuses an event that is not data, in the sender', () => {
