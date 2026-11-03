@@ -1,4 +1,5 @@
-import { useRef, type RefObject } from 'react'
+import type { RefObject } from 'react'
+import { DragHandle } from '@renderer/components/comments/drag-handle'
 import { CommentPin } from '../comment-pin'
 import { formatCommentTime } from '../format-media-time'
 import { describePoint, type Point } from './point'
@@ -34,23 +35,17 @@ function framePoint({ frame }: TimeSurface, at: PointerAt): Point | null {
 }
 
 function TimeMarker({ slice, anchor, site, numbers, isOpen, refine }: MarkerProps<TimeAnchor, TimeSurface>) {
-  const dragging = useRef(false)
   if (site.host === slice.frame?.current) {
     if (!isOpen) return <CommentPin x={site.x} y={site.y} number={numbers[0]} />
-    const at = (e: React.PointerEvent): PointerAt => ({ on: 'click', target: site.host, clientX: e.clientX, clientY: e.clientY })
     return (
-      <div
-        data-comment-marker
-        role="presentation"
-        onPointerDown={e => { e.preventDefault(); dragging.current = true; e.currentTarget.setPointerCapture(e.pointerId) }}
-        onPointerMove={e => { if (dragging.current) refine(at(e)) }}
-        onPointerUp={e => { dragging.current = false; e.currentTarget.releasePointerCapture?.(e.pointerId) }}
-        className="absolute w-9 h-9 -translate-x-1/2 -translate-y-1/2 rounded-md border-2 border-primary bg-primary/20 shadow-md cursor-move touch-none flex items-center justify-center"
-        style={{ left: `${site.x}%`, top: `${site.y}%` }}
-        title="Drag to position the comment"
+      <DragHandle
+        x={site.x}
+        y={site.y}
+        onMove={(clientX, clientY) => refine({ on: 'click', target: site.host, clientX, clientY })}
+        className="w-9 h-9 rounded-md border-2 border-primary bg-primary/20 shadow-md flex items-center justify-center"
       >
         <span className="w-1.5 h-1.5 rounded-full bg-primary" />
-      </div>
+      </DragHandle>
     )
   }
   if (!slice.media.current || !durationOf(slice.media.current)) return null

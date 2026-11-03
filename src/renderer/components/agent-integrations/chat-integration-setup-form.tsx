@@ -12,6 +12,7 @@ import { Button } from '@renderer/components/ui/button'
 import { Label } from '@renderer/components/ui/label'
 import { Switch } from '@renderer/components/ui/switch'
 import { SessionTimeoutSelect } from './integration-settings-controls'
+import { DEFAULT_SESSION_TIMEOUT_HOURS } from '@shared/lib/agent-integrations/public'
 import { IntegrationSetupLayout, IntegrationSetupField, IntegrationSetupFeedback } from './integration-setup-layout'
 import {
   useCreateAgentIntegration,
@@ -116,7 +117,7 @@ export interface ChatSetupBehaviorValue {
 }
 
 export const DEFAULT_CHAT_SETUP_BEHAVIOR: ChatSetupBehaviorValue = {
-  showToolCalls: false, sessionTimeout: null, onlyMentioned: true, answerInThread: false, newSessionPerThread: false,
+  showToolCalls: false, sessionTimeout: DEFAULT_SESSION_TIMEOUT_HOURS, onlyMentioned: true, answerInThread: false, newSessionPerThread: false,
 }
 
 /** Slack's channel behavior, as its stored config spells it. */

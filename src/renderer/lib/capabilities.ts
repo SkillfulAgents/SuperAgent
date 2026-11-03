@@ -126,6 +126,15 @@ export function addsToDock(): boolean {
   return client.shell === 'electron' && client.os === 'darwin' && !runsInAppSandbox(client)
 }
 
+/**
+ * Whether this window can screenshot part of itself: the desktop app's own
+ * page capture. A dashboard comment carries what the person saw only here; a
+ * browser cannot read a frame's pixels without a screen-share prompt.
+ */
+export function capturesOwnWindow(): boolean {
+  return !!window.electronAPI?.captureRegion
+}
+
 /** Whether the attachment menus list recently used files, which Spotlight finds. */
 export function listsRecentFiles(): boolean {
   return !!window.electronAPI?.getRecentFiles && !runsInAppSandbox(clientFacts())

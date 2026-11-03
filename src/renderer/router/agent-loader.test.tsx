@@ -63,6 +63,7 @@ const userStub = {
   isAuthMode: false,
   isPending: false,
   mustChangePassword: false,
+  cloudWait: null,
   agentRole: () => null,
   agentMemberCount: () => 0,
   canAccessAgent: () => true,

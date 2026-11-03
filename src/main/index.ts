@@ -27,6 +27,7 @@ import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from
 import { enableKeepAwake, disableKeepAwake, cleanupKeepAwake, restoreKeepAwakeOnStartup } from './keep-awake'
 import { openDashboardWindow, installPopupHandler, installCloudDashboardAuth, closeAllDashboardWindows } from './dashboard-window'
 import { blockSrcdocFrameNavigation } from './srcdoc-frame-guard'
+import { captureRegion } from './capture-region'
 import {
   prewarmQuickDispatchWindow,
   toggleQuickDispatchWindow,
@@ -40,6 +41,7 @@ import {
   openQuickDispatchWithFile,
   drainQuickDispatchAttachPaths,
 } from './quick-dispatch-window'
+import { loadQuickDispatchGlass } from './quick-dispatch-glass'
 import { registerGlobalDispatchShortcut, unregisterGlobalDispatchShortcut } from './global-dispatch-shortcut'
 import { filesFromCommandLine } from './opened-files'
 import { parseAgentDeepLink } from './agent-deep-link'
@@ -999,6 +1001,10 @@ ipcMain.handle('show-emoji-panel', () => {
   app.showEmojiPanel()
 })
 
+// A PNG of a region of the asking window, in its CSS pixels: what the person
+// saw of a dashboard when they left a comment on it.
+ipcMain.handle('capture-region', (event, rect: unknown) => captureRegion(event.sender, rect))
+
 // IPC handler for opening a dashboard in a separate window
 ipcMain.handle('open-dashboard-window', (_event, { agentSlug, dashboardSlug }: { agentSlug: string; dashboardSlug: string }) => {
   openDashboard(agentSlug, dashboardSlug)
@@ -1534,6 +1540,10 @@ function stopNotificationListener(): void {
 
 // Start the API server and app
 async function startApp() {
+  // Load the launcher's Liquid Glass bridge alongside the boot below, so the
+  // launcher prewarm near the end of startup doesn't wait on it. Never rejects.
+  void loadQuickDispatchGlass()
+
   // The database first: SUPERAGENT_DATA_DIR is set above, and nothing below
   // (the API, the launcher, notifications) runs without a current schema.
   // A failure here is fatal and already reported; the app cannot run on an
@@ -1659,7 +1669,7 @@ async function startApp() {
 
   // Quick-dispatch launcher: pre-create the hidden panel and bind its global
   // shortcut so the first invocation appears instantly.
-  prewarmQuickDispatchWindow()
+  await prewarmQuickDispatchWindow()
   const dispatchResult = registerGlobalDispatchShortcut(settings.app?.globalDispatchShortcut, toggleQuickDispatchWindow)
   if (!dispatchResult.success) {
     console.warn(`Quick-dispatch shortcut not registered: ${dispatchResult.error}`)

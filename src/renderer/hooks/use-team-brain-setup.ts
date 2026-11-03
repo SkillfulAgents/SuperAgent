@@ -22,6 +22,7 @@ import { useAddMount, useAgentMounts } from './use-mounts'
 import { setTeamBrainReach, useGiveTeamBrain } from './use-team-brain-access'
 import { useStartOnboardingSession } from './use-start-onboarding-session'
 import { useSettings, useUpdateSettings } from './use-settings'
+import { useAddSkillset } from './use-skillsets'
 import { useDeleteVolumeDefinition, useSaveVolumeDefinition } from './use-volume-definitions'
 
 const TEAM_BRAIN_TEMPLATE_PATH = 'agents/team-brain/'
@@ -51,6 +52,7 @@ export function useTeamBrainSetup() {
   const saveVolume = useSaveVolumeDefinition()
   const updateAgent = useUpdateAgent()
   const updateSettings = useUpdateSettings()
+  const addSkillset = useAddSkillset()
   const startOnboardingSession = useStartOnboardingSession()
   const template = templates?.find((t) => t.skillsetId === DEFAULT_PUBLIC_SKILLSET.id && t.path === TEAM_BRAIN_TEMPLATE_PATH)
   const setUpSlug = agents?.find((agent) => agent.teamBrain)?.slug
@@ -116,6 +118,15 @@ export function useTeamBrainSetup() {
     tb.setPrepared(prepared)
     return true
   }
+
+  // The built-in default's provider: a URL alone saves a GitHub skillset wherever git is installed.
+  // A failed add reads both lists again too: another admin's add meanwhile fails this one but makes the skillset present.
+  const addPublicSkillset = () =>
+    addSkillset.mutateAsync({ url: DEFAULT_PUBLIC_SKILLSET.url, provider: DEFAULT_PUBLIC_SKILLSET.provider })
+      .catch((error: unknown) => Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['skillsets'] }),
+        queryClient.invalidateQueries({ queryKey: ['discoverable-agents'] }),
+      ]).then(() => { throw error }))
 
   const cancel = () => {
     attempt.current++
@@ -224,7 +235,7 @@ export function useTeamBrainSetup() {
     }
   }, [])
 
-  return { agentSlug: setUpSlug, prepare, cancel, startChat }
+  return { agentSlug: setUpSlug, prepare, addPublicSkillset, cancel, startChat }
 }
 
 /**

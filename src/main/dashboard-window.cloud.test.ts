@@ -74,8 +74,10 @@ import {
   openDashboardWindow,
   closeAllDashboardWindows,
   installCloudDashboardAuth,
+  installPopupHandler,
   shouldSignWorkspaceRequest,
 } from './dashboard-window'
+import { safeOpenExternal } from './safe-open-external'
 
 const LOCAL = 'http://localhost:3838'
 const CLOUD = 'https://acme.ongamut.so'
@@ -484,5 +486,21 @@ describe('dashboard popout chrome', () => {
     } finally {
       Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true })
     }
+  })
+})
+
+describe('a link that opens a new window', () => {
+  it.each([
+    ['downloads a workspace file in place', `${LOCAL}/api/agents/a/files/out/report.pdf`, true],
+    ['downloads a drive file in place', `${LOCAL}/api/agents/a/mount-files/Team%20Drive/notes.md`, true],
+    ['sends any other link to the system browser', 'https://example.com/files/a.pdf', false],
+  ])('%s', (_case, url, downloads) => {
+    vi.mocked(safeOpenExternal).mockClear()
+    const webContents = { setWindowOpenHandler: vi.fn(), downloadURL: vi.fn() }
+    installPopupHandler(webContents as never)
+    const open = webContents.setWindowOpenHandler.mock.calls[0][0] as (details: { url: string }) => unknown
+    expect(open({ url })).toEqual({ action: 'deny' })
+    expect(webContents.downloadURL).toHaveBeenCalledTimes(downloads ? 1 : 0)
+    expect(vi.mocked(safeOpenExternal)).toHaveBeenCalledTimes(downloads ? 0 : 1)
   })
 })

@@ -8,8 +8,23 @@
  * unlike settings.ts, which is type-only-safe for the renderer.
  */
 
-/** Out-of-box default for the quick-dispatch launcher. ⌘⇧Space / Ctrl+Shift+Space. */
-export const DEFAULT_GLOBAL_DISPATCH_SHORTCUT = 'CommandOrControl+Shift+Space'
+/**
+ * Out-of-box default for the quick-dispatch launcher: the Control key on every
+ * platform (⌃⇧Space on mac, Ctrl+Shift+Space elsewhere). Not ⌘⇧Space: macOS 27
+ * uses it for Visual Intelligence's window selection when Siri AI is on, which
+ * steals focus from the launcher. globalShortcut.register() still succeeds for
+ * it, so the conflict cannot be detected at registration.
+ */
+export const DEFAULT_GLOBAL_DISPATCH_SHORTCUT = 'Control+Shift+Space'
+
+/**
+ * Earlier out-of-box defaults. Every settings write persists the merged
+ * defaults, so these sit in existing settings.json files without the user ever
+ * choosing them; loading rewrites them to the current default. The recorder
+ * never produces `CommandOrControl` (it writes `Command` or `Control`), so a
+ * stored value in this list was not picked by hand.
+ */
+export const LEGACY_GLOBAL_DISPATCH_SHORTCUTS: readonly string[] = ['CommandOrControl+Shift+Space']
 
 // A loose Electron-accelerator validator: 2+ tokens (modifier(s) + key) joined
 // by '+', each token alphanumeric (covers letters, digits, Space, F1-F24, Up,
@@ -18,7 +33,7 @@ export const DEFAULT_GLOBAL_DISPATCH_SHORTCUT = 'CommandOrControl+Shift+Space'
 // which is wrapped in try/catch and reports failure back to the renderer.
 const ACCELERATOR_RE = /^[A-Za-z0-9]+(\+[A-Za-z0-9]+)+$/
 
-/** True if `value` is plausibly a registerable accelerator (e.g. "CommandOrControl+Shift+Space"). */
+/** True if `value` is plausibly a registerable accelerator (e.g. "Control+Shift+Space"). */
 export function isValidAccelerator(value: string): boolean {
   return value.length > 0 && value.length <= 64 && ACCELERATOR_RE.test(value)
 }
@@ -79,7 +94,7 @@ const MAC_SYMBOLS: Record<string, string> = {
   Super: '⌘',
 }
 
-/** Render an accelerator as friendly chips (⌘⇧Space on mac, Ctrl+Shift+Space elsewhere; "" → "Disabled"). */
+/** Render an accelerator as friendly chips (⌃⇧Space on mac, Ctrl+Shift+Space elsewhere; "" → "Disabled"). */
 export function formatAccelerator(accel: string, platform: string): string {
   if (!accel) return 'Disabled'
   const isMac = platform === 'darwin'

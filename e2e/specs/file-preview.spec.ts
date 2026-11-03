@@ -637,7 +637,7 @@ test.describe('File Preview', () => {
         const response = await route.fetch()
         const session = await response.json()
         session.lastActivityAt = new Date(Date.now() - 7 * 3600_000).toISOString()
-        session.lastUsage = { inputTokens: 150_000, outputTokens: 1_000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, contextWindow: 200_000 }
+        session.lastUsage = { totalTokens: 150_000, contextWindow: 200_000 }
         session.pendingWakeAt = new Date(Date.now() + 3 * 3600_000).toISOString()
         session.pendingWakeTaskId = 'task-wake'
         // A long note, so the banner's two-line limit is what holds when it resumes in view.

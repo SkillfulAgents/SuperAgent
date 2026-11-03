@@ -47,6 +47,7 @@ import { getAgentFileApiPath } from '@renderer/lib/workspace-file-url'
 import type { FolderEntry } from '@renderer/hooks/use-folder-entries'
 import type { Bookmark } from '@renderer/hooks/use-bookmarks'
 import { isCopyableTextFile, looksBinary } from '@renderer/lib/file-types'
+import { isMountPath } from '@shared/lib/utils/workspace-path'
 
 interface FolderEntryContextMenuProps {
   folder: FolderTab
@@ -111,7 +112,8 @@ export function FolderEntryContextMenu({
   const [newName, setNewName] = useState(entry.name)
   const [isRenaming, setIsRenaming] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
-  const canManage = canAdminAgent(folder.agentSlug)
+  // Bookmark, rename, delete and reveal act on the workspace, which a drive folder is not part of.
+  const canManage = canAdminAgent(folder.agentSlug) && !isMountPath(folder.rootPath)
   const isDirectory = entry.type === 'directory'
   const entryKind = isDirectory ? 'directory' : 'file'
   const entryLabel = isDirectory ? 'Folder' : 'File'
