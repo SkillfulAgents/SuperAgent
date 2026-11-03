@@ -96,7 +96,7 @@ interface FilePreviewContextType {
   clearComments: (filePath: string, agentSlug: string) => void
 }
 
-const FilePreviewContext = createContext<FilePreviewContextType | null>(null)
+export const FilePreviewContext = createContext<FilePreviewContextType | null>(null)
 
 /** Tab and title label for a path. */
 function getDisplayName(filePath: string): string {
