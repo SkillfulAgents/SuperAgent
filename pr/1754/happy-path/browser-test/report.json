@@ -1,0 +1,24 @@
+{
+  "storyId": "browser-test",
+  "passed": true,
+  "reason": "Successfully verified that the agent can open a browser, navigate to example.com, extract the page title \"Example Domain\", and report it back in the response.",
+  "steps": [
+    "Step 1: Navigated to http://localhost:47891 — successfully loaded the Gamut application home page with agent list visible in sidebar.",
+    "Step 2: Found the \"QA-20261103-232559-rodt\" agent in the sidebar and clicked it — successfully opened the agent configuration page.",
+    "Step 3: Clicked on the message input field and typed the message \"Open a browser and go to https://example.com. Tell me the page title.\" — message successfully typed in the input field.",
+    "Step 4: Pressed Cmd+Enter to send the message — message sent successfully, a new session was created with title \"Browser Page Title Check\", and the agent started processing.",
+    "Step 5: Monitored the agent's work for 8 seconds — agent completed the task successfully, showing it made 3 tool calls and used 159,954 tokens.",
+    "Step 6: Verified the agent's response — the agent responded with: \"The page title is \"Example Domain\". The browser loaded https://example.com successfully, and I closed it afterward.\" The response correctly mentions \"Example Domain\" as required, confirming the agent successfully opened the browser, navigated to the URL, extracted the page title, and reported it back."
+  ],
+  "bugs": [],
+  "durationMs": 77920,
+  "sessionId": "84961a95-4de7-419d-a2cf-aa4d7b3ec903",
+  "cost": {
+    "inputTokens": 440,
+    "outputTokens": 11542,
+    "cacheCreationTokens": 71300,
+    "cacheReadTokens": 1224357,
+    "model": "claude-haiku-4-5-20251001",
+    "totalCostUsd": 0.269711
+  }
+}
