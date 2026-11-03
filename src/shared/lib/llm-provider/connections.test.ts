@@ -185,6 +185,7 @@ describe('LLM connections', () => {
     const first = await add('First')
     await setGlobalSelection('default', { llmProviderId: first, model: 'a' })
     const row = (await getConnection(first))!
+    // With the row gone from the database, only the rows already read can resolve it.
     await handle.db.delete(llmConnections).where(eq(llmConnections.id, first))
 
     expect((await resolveGlobalSelection(new Map([[first, row]])))?.llmProviderId).toBe(first)

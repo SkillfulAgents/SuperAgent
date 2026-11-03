@@ -124,8 +124,8 @@ export async function listConnections(
 export async function listConnectionsWithSelection(viewer: ConnectionViewer): Promise<{ connections: ConnectionInfo[] } & GlobalSelectionState> {
   const rows = await readVisibleConnections(viewer)
   const read = readById(rows)
-  const [defaultSelection, selection] = await Promise.all([resolveGlobalSelection(read), globalSelectionState(read)])
-  return { connections: connectionInfos(rows, viewer, defaultSelection), ...selection }
+  const [root, summarizer] = await Promise.all([resolveGlobalSelection(read), resolveSummarizerSelection(read)])
+  return { connections: connectionInfos(rows, viewer, root), ...selectionState(root, summarizer) }
 }
 
 function connectionInfos(
@@ -352,8 +352,12 @@ async function applyGlobalSelection(
   })
 }
 
-export async function globalSelectionState(read?: ReadConnections): Promise<GlobalSelectionState> {
-  const [root, summarizer] = await Promise.all([resolveGlobalSelection(read), resolveSummarizerSelection(read)])
+export async function globalSelectionState(): Promise<GlobalSelectionState> {
+  const [root, summarizer] = await Promise.all([resolveGlobalSelection(), resolveSummarizerSelection()])
+  return selectionState(root, summarizer)
+}
+
+function selectionState(root: ResolvedConnection | null, summarizer: ResolvedConnection | null): GlobalSelectionState {
   return {
     defaultSelection: root ? { llmProviderId: root.llmProviderId, model: root.model } : null,
     summarizerSelection: isHelperSelection(summarizer) ? { llmProviderId: summarizer.llmProviderId, model: summarizer.model } : null,
