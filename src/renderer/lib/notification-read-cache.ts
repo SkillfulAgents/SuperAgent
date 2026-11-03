@@ -174,13 +174,24 @@ const readQueues = new WeakMap<QueryClient, Promise<unknown>>()
 
 export function readNotifications(client: QueryClient, target: NotificationReadTarget) {
   const workspaceQuery = client.getQueryCache().find({ queryKey: ['agents'], exact: true })
+  const isCurrentWorkspace = () => !workspaceQuery || client.getQueryCache().get(workspaceQuery.queryHash) === workspaceQuery
   const run = async () => {
-    if (workspaceQuery && client.getQueryCache().get(workspaceQuery.queryHash) !== workspaceQuery) {
+    if (!isCurrentWorkspace()) {
       throw new Error('Workspace changed before notification read')
     }
+    // Agent/session refetches also carry metadata, such as an async agent rename.
+    // Remember interrupted query objects so the read's notification-only patch
+    // cannot leave their older metadata marked fresh after cancelling the GET.
+    const interrupted = new Set(client.getQueryCache().findAll({ predicate: query =>
+      query.state.data != null && families.has(String(query.queryKey[0])) && query.state.fetchStatus !== 'idle',
+    }))
     // Cancel stale refetches, but let an initial load without cached data finish.
     await client.cancelQueries({ predicate: query => query.state.data != null && families.has(String(query.queryKey[0])) })
+    if (!isCurrentWorkspace()) {
+      throw new Error('Workspace changed before notification read')
+    }
     const optimistic = optimisticRead(client, target)
+    let refreshed = false
     const path = target.kind === 'all' ? 'read-all' : target.kind === 'session'
       ? `read-by-session/${encodeURIComponent(target.sessionId)}` : `${encodeURIComponent(target.id)}/read`
     try {
@@ -188,11 +199,22 @@ export function readNotifications(client: QueryClient, target: NotificationReadT
       if (!response.ok) throw new Error('Failed to mark notifications as read')
       const result = notificationReadResponseSchema.parse(await response.json())
       if (result.readState) optimistic.confirm(result.readState)
-      else await optimistic.refresh()
+      else {
+        await optimistic.refresh()
+        refreshed = true
+      }
       return result
     } catch (error) {
       optimistic.rollback()
       throw error
+    } finally {
+      if (!refreshed && interrupted.size && isCurrentWorkspace()) {
+        // Refetch only interrupted queries still in this cache, after the POST
+        // has settled so an old unread projection cannot undo the write. Active
+        // queries reload now; inactive ones remain stale until next observed.
+        // Await inside the read queue so the next read cannot cancel recovery.
+        await client.invalidateQueries({ predicate: query => interrupted.has(query) })
+      }
     }
   }
   const result = (readQueues.get(client) ?? Promise.resolve()).then(run, run)

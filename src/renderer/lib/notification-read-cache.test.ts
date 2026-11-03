@@ -201,6 +201,169 @@ describe('optimistic notification reads', () => {
     await Promise.all([refetch, firstLoad])
     expect(agent(client).notificationPreview).toBeUndefined()
     expect(client.getQueryData(['sessions', 'other'])).toEqual([{ id: 'other-session' }])
+    // No observer needs this metadata now, but cancellation must not mark the
+    // old value fresh: the next observer should fetch it again.
+    expect(client.getQueryState(['agents'])?.isInvalidated).toBe(true)
+  })
+
+  it.each(['confirmed', 'legacy', 'failed'] as const)('recovers interrupted list and both slug aliases after a %s read', async (mode) => {
+    const { client } = seed()
+    const old = { ...agent(client), name: 'Untitled' }
+    const renamed = { ...old, name: 'Renamed', displaySlug: 'renamed-a' }
+    const keys = [['agents'], ['agents', 'a'], ['agents', 'agent-a']]
+    const stale = deferred()
+    const recovery = deferred()
+    const post = deferred()
+    let fetches = 0
+    const unsubscribes = keys.map(key => {
+      client.setQueryData(key, key.length === 1 ? [old] : old)
+      const observer = new QueryObserver(client, {
+        queryKey: key, staleTime: Infinity,
+        queryFn: async () => {
+          const interrupted = ++fetches <= keys.length
+          await (interrupted ? stale.promise : recovery.promise)
+          const value = { ...renamed, notificationPreview: interrupted || mode === 'failed' ? 'n1' : undefined }
+          return key.length === 1 ? [value] : value
+        },
+      })
+      return observer.subscribe(() => {})
+    })
+    const names = () => keys.map(key => {
+      const value = client.getQueryData<ApiAgent | ApiAgent[]>(key)!
+      return (Array.isArray(value) ? value[0] : value).name
+    })
+    try {
+      const refetch = client.invalidateQueries({ queryKey: ['agents'] })
+      expect(fetches).toBe(3)
+      vi.mocked(apiFetch).mockReturnValueOnce(post.promise).mockResolvedValueOnce(response(state()))
+      let settled = false
+      const operation = readNotifications(client, { kind: 'session', sessionId: 's1' })
+        .then(value => ({ value }), error => ({ error }))
+        .finally(() => { settled = true })
+      await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1))
+      const queued = readNotifications(client, { kind: 'notification', id: 'n1' })
+      if (mode === 'failed') post.reject(new Error('offline'))
+      else post.resolve(response(mode === 'confirmed' ? state() : undefined))
+      await waitFor(() => expect(fetches).toBe(6))
+      expect(settled).toBe(false)
+      expect(apiFetch).toHaveBeenCalledTimes(1)
+
+      // The canceled GET can finish late with a renamed agent and an old
+      // unread projection. Only the new post-write refetch may publish it.
+      stale.resolve(response())
+      await refetch
+      expect(names()).toEqual(['Untitled', 'Untitled', 'Untitled'])
+      recovery.resolve(response())
+      const result = await operation
+      if (mode === 'failed') expect(result).toMatchObject({ error: new Error('offline') })
+      else expect(result).toHaveProperty('value.success', true)
+      await queued
+      expect(names()).toEqual(['Renamed', 'Renamed', 'Renamed'])
+      expect(agent(client).notificationPreview).toBeUndefined()
+      expect(fetches).toBe(6) // The legacy broad refresh does not recover twice.
+      expect(apiFetch).toHaveBeenCalledTimes(2)
+    } finally {
+      unsubscribes.forEach(unsubscribe => unsubscribe())
+      client.clear()
+    }
+  })
+
+  it('does not restart interrupted metadata queries in a replacement workspace', async () => {
+    const { client } = seed()
+    const old = agent(client)
+    const stale = deferred()
+    const post = deferred()
+    const fetchAgents = vi.fn(async () => { await stale.promise; return [old] })
+    const observer = new QueryObserver(client, { queryKey: ['agents'], queryFn: fetchAgents, staleTime: Infinity })
+    const unsubscribe = observer.subscribe(() => {})
+    try {
+      const refetch = client.invalidateQueries({ queryKey: ['agents'], exact: true })
+      vi.mocked(apiFetch).mockReturnValueOnce(post.promise)
+      const operation = readNotifications(client, { kind: 'all' })
+      await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1))
+      client.clear()
+      client.setQueryData(['agents'], [{ slug: 'other-workspace', name: 'Other' }])
+      post.resolve(response(state()))
+      await operation
+      stale.resolve(response())
+      await refetch
+      expect(fetchAgents).toHaveBeenCalledTimes(1)
+      expect(client.getQueryData(['agents'])).toEqual([{ slug: 'other-workspace', name: 'Other' }])
+      expect(client.getQueryState(['agents'])?.isInvalidated).toBe(false)
+    } finally {
+      unsubscribe()
+      client.clear()
+    }
+  })
+
+  it('preserves the original POST error if interrupted metadata recovery also fails', async () => {
+    const { client } = seed()
+    const old = agent(client)
+    const stale = deferred()
+    const fetchAgents = vi.fn()
+      .mockImplementationOnce(async () => { await stale.promise; return [old] })
+      .mockRejectedValueOnce(new Error('metadata offline'))
+    const observer = new QueryObserver(client, { queryKey: ['agents'], queryFn: fetchAgents, staleTime: Infinity })
+    const unsubscribe = observer.subscribe(() => {})
+    try {
+      const refetch = client.invalidateQueries({ queryKey: ['agents'], exact: true })
+      vi.mocked(apiFetch).mockRejectedValueOnce(new Error('read offline'))
+      await expect(readNotifications(client, { kind: 'all' })).rejects.toThrow('read offline')
+      expect(fetchAgents).toHaveBeenCalledTimes(2)
+      expect(client.getQueryState(['agents'])?.error).toMatchObject({ message: 'metadata offline' })
+      stale.resolve(response())
+      await refetch
+    } finally {
+      unsubscribe()
+      client.clear()
+    }
+  })
+
+  it('does not dispatch the POST if the workspace changes while cancellation settles', async () => {
+    const { client } = seed()
+    const cancelled = deferred()
+    const cancelQueries = client.cancelQueries.bind(client)
+    const cancel = vi.spyOn(client, 'cancelQueries').mockImplementationOnce(async filters => {
+      await cancelQueries(filters)
+      await cancelled.promise
+    })
+    const operation = readNotifications(client, { kind: 'all' })
+    const rejected = expect(operation).rejects.toThrow('Workspace changed')
+    await waitFor(() => expect(cancel).toHaveBeenCalledTimes(1))
+    client.clear()
+    client.setQueryData(['agents'], [{ slug: 'other-workspace' }])
+    cancelled.resolve(response())
+    await rejected
+    expect(apiFetch).not.toHaveBeenCalled()
+    expect(client.getQueryData(['agents'])).toEqual([{ slug: 'other-workspace' }])
+  })
+
+  it('does not invalidate a recreated query with the same key during recovery', async () => {
+    const { client } = seed()
+    const stale = deferred()
+    const post = deferred()
+    const key = ['agents', 'agent-a']
+    const fetchAgent = vi.fn(async () => { await stale.promise; return agent(client) })
+    const observer = new QueryObserver(client, { queryKey: key, queryFn: fetchAgent, staleTime: Infinity })
+    const unsubscribe = observer.subscribe(() => {})
+    try {
+      const refetch = client.invalidateQueries({ queryKey: key, exact: true })
+      vi.mocked(apiFetch).mockReturnValueOnce(post.promise)
+      const operation = readNotifications(client, { kind: 'all' })
+      await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1))
+      client.removeQueries({ queryKey: key, exact: true })
+      client.setQueryData(key, { ...agent(client), name: 'Replacement' })
+      post.resolve(response(state()))
+      await operation
+      stale.resolve(response())
+      await refetch
+      expect(fetchAgent).toHaveBeenCalledTimes(1)
+      expect(client.getQueryData(key)).toMatchObject({ name: 'Replacement' })
+      expect(client.getQueryState(key)?.isInvalidated).toBe(false)
+    } finally {
+      unsubscribe()
+      client.clear()
+    }
   })
 
   it('clears the matching session preview and confirms remaining unread sessions', async () => {

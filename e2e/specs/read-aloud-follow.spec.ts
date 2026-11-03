@@ -77,6 +77,7 @@ test.describe('read-aloud at the live edge', () => {
   let appPage: AppPage
   let agentPage: AgentPage
   let sessionPage: SessionPage
+  let releaseTtsError: () => void
 
   test.beforeEach(async ({ page }, testInfo) => {
     appPage = new AppPage(page)
@@ -98,11 +99,11 @@ test.describe('read-aloud at the live edge', () => {
         }),
       }),
     )
+    const ttsErrorGate = new Promise<void>((resolve) => { releaseTtsError = resolve })
     await page.route('**/api/voice/tts-session', async (route) => {
-      // Long enough for the connecting render to paint and settle on its own,
-      // and for the menu-item click to return (WebKit takes most of a second
-      // to close the menu) before the connecting state is asserted.
-      await new Promise((resolve) => setTimeout(resolve, 1500))
+      // Hold connecting until its controls and word spans have been asserted.
+      // WebKit's menu close and trace snapshots can outlast a fixed delay.
+      await ttsErrorGate
       return route.fulfill({
         status: 500,
         contentType: 'application/json',
@@ -157,13 +158,17 @@ test.describe('read-aloud at the live edge', () => {
     await expect(page.getByRole('button', { name: 'Scroll to bottom' })).toBeHidden()
     await installPillRecorder(page)
 
-    await readAloudItem.click()
+    try {
+      await readAloudItem.click()
 
-    // Controls in, spans in — the first re-render.
-    const controls = reply.getByTestId('read-aloud-controls')
-    await expect(controls).toHaveAttribute('data-status', 'connecting')
-    await expect.poll(() => reply.locator('[data-spoken-word]').count()).toBeGreaterThan(0)
-    await expect(reply.getByTestId('read-aloud-stop')).toBeVisible()
+      // Controls in, spans in — the first re-render.
+      const controls = reply.getByTestId('read-aloud-controls')
+      await expect(controls).toHaveAttribute('data-status', 'connecting')
+      await expect.poll(() => reply.locator('[data-spoken-word]').count()).toBeGreaterThan(0)
+      await expect(reply.getByTestId('read-aloud-stop')).toBeVisible()
+    } finally {
+      releaseTtsError()
+    }
 
     // Controls out, spans out — the second re-render, on the refused token.
     await expect(reply.getByTestId('read-aloud-error')).toHaveText('No speech in tests', { timeout: 10000 })
