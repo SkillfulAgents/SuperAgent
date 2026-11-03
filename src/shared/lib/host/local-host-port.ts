@@ -57,5 +57,7 @@ export const localHostPort = createLocalHostPort({
     global: (event) => globalFeed.publish(event),
     notification: notify,
     analytics: ({ event, properties }) => trackServerEvent(event, properties),
+    session: async (event) =>
+      (await import('@shared/lib/agent-integrations/agent-integration-manager')).agentIntegrationManager.handleSessionEvent(event),
   },
 })

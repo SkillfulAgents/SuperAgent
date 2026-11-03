@@ -5,70 +5,38 @@
  * and proxies them bidirectionally to the agent container's /browser/stream endpoint.
  */
 
-import type { IncomingMessage } from 'http'
-import type { Duplex } from 'stream'
-import type { ServerType } from '@hono/node-server'
-import { WebSocketServer, WebSocket } from 'ws'
+import { WebSocket } from 'ws'
 import { agentCatalog, agentRegistry } from '@shared/lib/agent-actor'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { getSettings } from '@shared/lib/config/settings'
 import { captureException } from '@shared/lib/error-reporting'
 import { authenticateAgentWebSocket } from './agent-websocket-auth'
+import type { AgentSocket, AgentSocketDecision, AgentSocketRoute } from './agent-socket'
 import { BrowserFrameRelay } from './browser-frame-relay'
+import { openWebSocketTarget } from './websocket-opener'
 
-const browserWss = new WebSocketServer({ noServer: true })
+export const browserStreamSocket: AgentSocketRoute = (request) => {
+  const match = request.url.pathname.match(/^\/api\/agents\/([^/]+)\/browser\/stream$/)
+  if (!match) return null
 
-export function setupBrowserStreamProxy(server: ServerType): void {
-  server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {
-    // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- request.url from HTTP server is always valid
-    const url = new URL(request.url || '', `http://${request.headers.host}`)
-    const match = url.pathname.match(/^\/api\/agents\/([^/]+)\/browser\/stream$/)
-
-    if (!match) {
-      // Not a browser stream request — don't touch it, let other handlers handle it
-      return
-    }
-
+  return (async (): Promise<AgentSocketDecision> => {
     // The URL carries the display slug ({name}-{id}); resolve to the canonical id
     // before any ACL check or container lookup. This WS upgrade bypasses the Hono
-    // /:id/* ResolveAgent middleware, so it must resolve itself. Stash the resolved
-    // id for the connection handler below.
-    agentCatalog.resolve(match[1]).then((agentSlug) => {
-      if (!agentSlug) {
-        socket.write('HTTP/1.1 404 Not Found\r\n\r\n')
-        socket.destroy()
-        return
-      }
-      ;(request as any)._agentId = agentSlug
+    // /:id/* ResolveAgent middleware, so it must resolve itself.
+    const agentSlug = await agentCatalog.resolve(match[1])
+    if (!agentSlug) return { kind: 'refuse', status: 404 }
+    // Viewer+ can watch; only 'user' and above may send input.
+    if (!(await authenticateAgentWebSocket(request, agentSlug, 'viewer'))) return { kind: 'refuse', status: 403 }
+    const canInput = await authenticateAgentWebSocket(request, agentSlug, 'user')
+    return {
+      kind: 'accept',
+      accept: (ws: AgentSocket) => void relayBrowserStream(ws, agentSlug, canInput),
+      abandon: () => {},
+    }
+  })()
+}
 
-      // Authenticate before upgrading — viewer+ can watch, but input is filtered per-role below
-      authenticateAgentWebSocket(request, agentSlug, 'viewer').then((allowed) => {
-        if (!allowed) {
-          socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
-          socket.destroy()
-          return
-        }
-
-        // Check if user has 'user' role (can send input) — stash on the request object
-        authenticateAgentWebSocket(request, agentSlug, 'user').then((canInput) => {
-          ;(request as any)._canInput = canInput
-          browserWss.handleUpgrade(request, socket, head, (ws) => {
-            browserWss.emit('connection', ws, request)
-          })
-        })
-      })
-    }).catch(() => {
-      socket.destroy()
-    })
-  })
-
-  browserWss.on('connection', async (ws: WebSocket, request: IncomingMessage) => {
-    // Canonical id resolved during the upgrade handshake above (the URL slug is the
-    // display slug; container lookups are keyed by the canonical id).
-    const agentSlug = (request as any)._agentId as string | undefined
-    if (!agentSlug) { ws.close(1011, 'Invalid path'); return }
-    const canInput = (request as any)._canInput === true
-
+async function relayBrowserStream(ws: AgentSocket, agentSlug: string, canInput: boolean): Promise<void> {
     try {
         // Cached status only — no runtime query
         const actor = agentRegistry.get(agentSlug)
@@ -79,7 +47,7 @@ export function setupBrowserStreamProxy(server: ServerType): void {
         }
 
         console.log(`[BrowserProxy] Connecting upstream to /browser/stream for agent ${agentSlug}`)
-        const upstream = new WebSocket(target.url, target.protocols, { headers: target.headers })
+        const upstream = openWebSocketTarget(target)
 
         upstream.on('open', () => {
           console.log(`[BrowserProxy] Connected to container stream for agent ${agentSlug}`)
@@ -153,5 +121,4 @@ export function setupBrowserStreamProxy(server: ServerType): void {
         })
         ws.close(1011, 'Failed to connect to browser stream')
       }
-  })
 }

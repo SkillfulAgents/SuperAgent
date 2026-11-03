@@ -24,10 +24,28 @@ export interface GlobalFeedEvent {
 
 export type GlobalFeedListener = (event: GlobalFeedEvent) => void
 
-export class GlobalFeed {
+/**
+ * Carries feed events from publishers to listeners. The feed's own listener
+ * set is the default; a deployment whose publishers and open streams run in
+ * different processes sets one that reaches all of them.
+ */
+export interface FeedTransport {
+  publish(event: GlobalFeedEvent): void
+  /** Returns the unsubscribe function. */
+  subscribe(listener: GlobalFeedListener): () => void
+}
+
+export class GlobalFeed implements FeedTransport {
   private readonly listeners = new Set<GlobalFeedListener>()
+  private transport: FeedTransport | null = null
+
+  /** Set before anything subscribes: a listener added earlier stays on this process's set. */
+  setTransport(transport: FeedTransport): void {
+    this.transport = transport
+  }
 
   publish(event: GlobalFeedEvent): void {
+    if (this.transport) return this.transport.publish(event)
     for (const listener of this.listeners) {
       try {
         listener(event)
@@ -39,6 +57,7 @@ export class GlobalFeed {
 
   /** Returns the unsubscribe function. */
   subscribe(listener: GlobalFeedListener): () => void {
+    if (this.transport) return this.transport.subscribe(listener)
     this.listeners.add(listener)
     return () => {
       this.listeners.delete(listener)

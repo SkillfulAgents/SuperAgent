@@ -17,6 +17,7 @@ function handlers(events: Partial<HostEventHandlers> = {}, calls: Partial<HostCa
       global: vi.fn(),
       notification: vi.fn(),
       analytics: vi.fn(),
+      session: vi.fn(),
       ...events,
     },
   }
