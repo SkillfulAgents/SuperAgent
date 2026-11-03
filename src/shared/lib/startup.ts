@@ -198,12 +198,12 @@ async function initializeServicesInner() {
     }
   }
 
-  // Lane order is priority: the limiter grants slots FIFO, and the last three
-  // starts below are open-ended (image pull on fresh installs; the task
-  // scheduler's catch-up scan boots a container per overdue task; the trigger
-  // manager's registration reads every subscribed trigger). The two
-  // user-facing connects are cheap handshakes — schedule them first so chat
-  // messages and notifications cannot go dark behind minutes of catch-up work.
+  // Lane order is priority: the limiter grants slots FIFO, and two starts
+  // below are open-ended (image pull on fresh installs; the trigger manager's
+  // registration reads every subscribed trigger). The two user-facing
+  // connects are cheap handshakes — schedule them first so chat messages and
+  // notifications cannot go dark behind minutes of catch-up work. The task
+  // scheduler's catch-up scan runs as its job's first run, outside the lanes.
 
   // Desktop-only platform-notifications subscription (OS notifications from
   // Supabase Realtime INSERTs). The manager self-gates on auth mode and
