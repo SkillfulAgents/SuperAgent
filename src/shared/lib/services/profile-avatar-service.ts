@@ -1,16 +1,19 @@
 import { randomUUID } from 'node:crypto'
-import fs from 'node:fs/promises'
 import path from 'node:path'
-import { PNG } from 'pngjs'
+import { decode, encode } from 'fast-png'
+import { unzlibSync } from 'fflate'
 import { and, eq, isNull } from 'drizzle-orm'
 import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
 import { user } from '@shared/lib/db/schema'
 import { getDataDir } from '@shared/lib/config/data-dir'
+import { hostFiles } from '@shared/lib/blob-store/blob-store'
 import { avatarOverrideSchema, MAX_AVATAR_BYTES } from '@shared/lib/user-profile-schema'
 
 export class InvalidAvatarError extends Error {}
 const MAX_DIMENSION = 512
+/** Samples per pixel of each PNG color type. */
+const CHANNELS: Record<number, number> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }
 
 /** Decode and re-encode a bounded raster: don't persist untrusted ancillary data. */
 export function prepareAvatar(input: Buffer): Buffer {
@@ -19,18 +22,20 @@ export function prepareAvatar(input: Buffer): Buffer {
     || input.toString('ascii', 12, 16) !== 'IHDR') {
     throw new InvalidAvatarError('Choose a PNG image under 1 MB.')
   }
-  // pngjs bounds inflation for non-interlaced images. Canvas uploads use this
-  // form; reject interlacing and a second IHDR before the decoder can allocate.
+  // Canvas uploads are non-interlaced; reject interlacing and a second IHDR
+  // before the decoder can allocate.
   if (input.readUInt32BE(8) !== 13 || input[28] !== 0) {
     throw new InvalidAvatarError('Choose a standard, non-interlaced PNG image.')
   }
+  const imageData: Buffer[] = []
   for (let offset = 8; offset < input.length;) {
     if (offset + 12 > input.length) throw new InvalidAvatarError('Incomplete PNG image.')
     const length = input.readUInt32BE(offset)
-    if (length > input.length - offset - 12
-      || (offset !== 8 && input.toString('ascii', offset + 4, offset + 8) === 'IHDR')) {
+    const type = input.toString('ascii', offset + 4, offset + 8)
+    if (length > input.length - offset - 12 || (offset !== 8 && type === 'IHDR')) {
       throw new InvalidAvatarError('Invalid PNG image.')
     }
+    if (type === 'IDAT') imageData.push(input.subarray(offset + 8, offset + 8 + length))
     offset += length + 12
   }
   const width = input.readUInt32BE(16)
@@ -38,11 +43,18 @@ export function prepareAvatar(input: Buffer): Buffer {
   if (!width || !height || width > MAX_DIMENSION || height > MAX_DIMENSION) {
     throw new InvalidAvatarError('Photo dimensions must be at most 512 × 512 pixels.')
   }
+  const channels = CHANNELS[input[25]]
+  const depth = input[24]
+  if (!channels || ![1, 2, 4, 8, 16].includes(depth)) throw new InvalidAvatarError('Invalid PNG image.')
+  // The image data inflates to exactly this size: one filter byte per row. Inflating it into one
+  // byte more bounds the work before the decoder inflates it again, and any other size is not this image.
+  const inflatedSize = height * (1 + Math.ceil((width * channels * depth) / 8))
   try {
-    const decoded = PNG.sync.read(input, { checkCRC: true })
-    const clean = new PNG({ width: decoded.width, height: decoded.height })
-    clean.data = decoded.data
-    return PNG.sync.write(clean)
+    if (unzlibSync(Buffer.concat(imageData), { out: new Uint8Array(inflatedSize + 1) }).length !== inflatedSize) {
+      throw new Error('Image data does not match the image size')
+    }
+    const { data, depth: bitDepth, channels: samples, palette, transparency } = decode(input, { checkCrc: true })
+    return Buffer.from(encode({ width, height, data, depth: bitDepth, channels: samples, palette, transparency }))
   } catch {
     throw new InvalidAvatarError('This photo could not be read. Choose another image.')
   }
@@ -52,12 +64,19 @@ export function avatarDirectory(): string {
   return path.join(getDataDir(), 'profile-photos')
 }
 
+const avatarFiles = hostFiles('profile-photos', avatarDirectory)
+
+/** A stored photo's PNG bytes, or null when there is none under that name. */
+export function readStoredAvatar(filename: string): Promise<Uint8Array | null> {
+  return avatarFiles.read(filename)
+}
+
 export async function removeStoredAvatar(reference: string | null): Promise<void> {
   const parsed = avatarOverrideSchema.safeParse(reference)
   if (!parsed.success) return
-  // Only server-issued, validated basenames ever reach the filesystem.
-  await fs.unlink(path.join(avatarDirectory(), path.basename(parsed.data))).catch((error: NodeJS.ErrnoException) => {
-    if (error.code !== 'ENOENT') console.error('Failed to remove old profile photo', error)
+  // Only server-issued, validated basenames ever reach storage.
+  await avatarFiles.remove(path.basename(parsed.data)).catch((error) => {
+    console.error('Failed to remove old profile photo', error)
   })
 }
 
@@ -66,8 +85,7 @@ export async function setAvatar(userId: string, input: Buffer | null): Promise<s
   if (input) {
     const png = prepareAvatar(input)
     const filename = `${randomUUID()}.png`
-    await fs.mkdir(avatarDirectory(), { recursive: true })
-    await fs.writeFile(path.join(avatarDirectory(), filename), png, { flag: 'wx', mode: 0o600 })
+    await avatarFiles.write(filename, png)
     reference = avatarOverrideSchema.parse(`/api/profile/images/${filename}`)
   }
   let previous: string | null
