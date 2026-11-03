@@ -12,7 +12,7 @@
 import { z } from 'zod'
 import type { CoalescedUserMessage } from '@shared/lib/container/runtime-death'
 
-const containerSessionsSchema = z.array(z.object({ sessionId: z.string().min(1) }).passthrough())
+const containerSessionsSchema = z.array(z.object({ id: z.string().min(1) }).passthrough())
 const containerSessionSchema = z.object({ isRunning: z.boolean().optional() }).passthrough()
 const containerPendingSchema = z.array(z.object({
   toolUseId: z.string().min(1),
@@ -51,7 +51,7 @@ export async function recoverFromContainer(deps: RecoverFromContainerDeps): Prom
 
   const sessions = containerSessionsSchema.parse(await json(deps, '/sessions'))
   const running = new Set<string>()
-  for (const { sessionId } of sessions) {
+  for (const { id: sessionId } of sessions) {
     const session = containerSessionSchema.parse(await json(deps, `/sessions/${encodeURIComponent(sessionId)}`))
     if (session.isRunning) running.add(sessionId)
   }

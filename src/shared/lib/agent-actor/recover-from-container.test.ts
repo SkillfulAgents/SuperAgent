@@ -12,7 +12,7 @@ function deps(overrides: Partial<RecoverFromContainerDeps> = {}): RecoverFromCon
     order,
     containerStatus: async () => 'running',
     fetch: container({
-      '/sessions': [{ sessionId: 'turning' }, { sessionId: 'asking' }, { sessionId: 'idle' }],
+      '/sessions': [{ id: 'turning' }, { id: 'asking' }, { id: 'idle' }],
       '/sessions/turning': { isRunning: true },
       '/sessions/asking': { isRunning: false },
       '/sessions/idle': { isRunning: false },
