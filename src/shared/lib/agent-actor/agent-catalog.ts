@@ -63,37 +63,52 @@ function toRecord(row: AgentRow): AgentRecord {
 }
 
 /**
- * How long a row read from the table is reused. One request looks an agent up several times, and
- * where the database is a network round trip each lookup costs one. The catalog's own writes drop
- * the row at once, and nothing else writes the table once it is open, so one process never reads a
- * stale row; another process's rename or delete shows within this long.
+ * Callers that ask for one key while its read runs get that read instead of starting another.
+ * Nothing is kept once it settles, so no caller gets a result older than a read in progress.
  */
-const ROW_REUSE_MS = 2_000
+function sharedReads<T>() {
+  const running = new Map<string, Promise<T>>()
+  return {
+    run(key: string, read: () => Promise<T>): Promise<T> {
+      const current = running.get(key)
+      if (current) return current
+      const started = read()
+      running.set(key, started)
+      const done = () => {
+        if (running.get(key) === started) running.delete(key)
+      }
+      started.then(done, done)
+      return started
+    },
+    /** After a write, later callers start a new read instead of joining one that began before it. */
+    clear: () => running.clear(),
+  }
+}
 
 export function createAgentCatalog(): AgentCatalog {
-  // Reads started in the last ROW_REUSE_MS, finished or in flight: callers of one slug share a query.
-  // Each entry removes itself, so lookups of slugs that do not exist do not pile up.
-  const recent = new Map<AgentSlug, Promise<AgentRow | undefined>>()
-  // The handle the rows were read from: one opened anew (a test, a reopened file) starts empty.
-  // `db` is one fixed proxy, so this compares `db._`, which each open makes anew.
-  let readFrom: unknown = null
-  const forget = (slug: AgentSlug) => recent.delete(slug)
+  // Requests for one agent arrive together (a page load), and where the database is a network
+  // round trip each lookup costs one: concurrent lookups of one agent share a query.
+  const rowReads = sharedReads<AgentRow | undefined>()
+  const resolveReads = sharedReads<AgentRow | undefined>()
+  const forgetReads = () => {
+    rowReads.clear()
+    resolveReads.clear()
+  }
 
-  const rowFor = (slug: AgentSlug): Promise<AgentRow | undefined> => {
-    if (readFrom !== db._) {
-      recent.clear()
-      readFrom = db._
-    }
-    const cached = recent.get(slug)
-    if (cached) return cached
-    const row = (async () => db.select().from(agents).where(eq(agents.slug, slug)).get())()
-    recent.set(slug, row)
-    const drop = () => {
-      if (recent.get(slug) === row) forget(slug)
-    }
-    setTimeout(drop, ROW_REUSE_MS).unref?.()
-    row.catch(drop)
-    return row
+  const rowFor = (slug: AgentSlug): Promise<AgentRow | undefined> =>
+    rowReads.run(slug, async () => db.select().from(agents).where(eq(agents.slug, slug)).get())
+
+  // An exact match is a bare minted slug or a legacy compound folder name. Otherwise the slug is the
+  // final hyphen-delimited segment (minted slugs have no hyphen); the prefix is decorative. A display
+  // slug looks up both forms in one query, and the exact match wins.
+  const resolveRow = async (input: string): Promise<AgentRow | undefined> => {
+    if (!input || !SAFE_AGENT_INPUT_RE.test(input)) return undefined
+    const candidate = input.slice(input.lastIndexOf('-') + 1)
+    if (candidate === input || !isMintedSlug(candidate)) return rowFor(input)
+    return resolveReads.run(input, async () => {
+      const rows = await db.select().from(agents).where(inArray(agents.slug, [input, candidate])).all()
+      return rows.find((row) => row.slug === input) ?? rows.find((row) => row.slug === candidate)
+    })
   }
 
   const records = async (): Promise<AgentRecord[]> =>
@@ -145,7 +160,7 @@ export function createAgentCatalog(): AgentCatalog {
         runtime: LOCAL_RUNTIME,
         workspaceHandle: null,
       }).run()
-      forget(slug)
+      forgetReads()
       return toRecord((await rowFor(slug))!)
     },
     update: async (slug, changes: AgentIdentityChanges) => {
@@ -159,22 +174,15 @@ export function createAgentCatalog(): AgentCatalog {
       }
       if (Object.keys(values).length > 0) {
         await db.update(agents).set(values).where(eq(agents.slug, slug)).run()
-        forget(slug)
+        forgetReads()
       }
       const row = await rowFor(slug)
       return row === undefined ? null : toRecord(row)
     },
-    resolve: async (input) => {
-      if (!input || !SAFE_AGENT_INPUT_RE.test(input)) return null
-      // Exact match handles a bare minted slug and a legacy compound folder name.
-      if ((await rowFor(input)) !== undefined) return input
-      // Otherwise the slug is the final hyphen-delimited segment (minted slugs
-      // have no hyphen); the prefix is decorative and ignored.
-      const dash = input.lastIndexOf('-')
-      if (dash === -1) return null
-      const candidate = input.slice(dash + 1)
-      if (isMintedSlug(candidate) && (await rowFor(candidate)) !== undefined) return candidate
-      return null
+    resolve: async (input) => (await resolveRow(input))?.slug ?? null,
+    resolveRecord: async (input) => {
+      const row = await resolveRow(input)
+      return row === undefined ? null : toRecord(row)
     },
     remove: async (slug) => {
       const row = await rowFor(slug)
@@ -188,7 +196,7 @@ export function createAgentCatalog(): AgentCatalog {
         await removeDirectory(dir)
       }
       await db.delete(agents).where(eq(agents.slug, slug)).run()
-      forget(slug)
+      forgetReads()
     },
   }
 }

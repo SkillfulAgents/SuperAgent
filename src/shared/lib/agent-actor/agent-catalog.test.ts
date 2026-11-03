@@ -2,17 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { eq } from 'drizzle-orm'
+import { eq, type SQL } from 'drizzle-orm'
 import * as schema from '@shared/lib/db/schema'
 import type { AppDatabase } from '@shared/lib/db/drivers/types'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 
 let testDb: AppDatabase
 let handle: TestDatabase
-// One fixed proxy, as in `@shared/lib/db`: a reopened database changes what it forwards to, not `db`.
-vi.mock('@shared/lib/db', () => ({
-  db: new Proxy({}, { get: (_target, prop, receiver) => Reflect.get(testDb, prop, receiver) }),
-}))
+vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 
 import { createAgentCatalog } from './agent-catalog'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
@@ -220,62 +217,85 @@ describe('reading rows', () => {
     }).run()
   }
 
+  /** The next row read gets the row at once but answers only when `respond()` runs, like a slow network. */
+  function slowNextRead() {
+    let respond!: () => void
+    const answered = new Promise<void>((resolve) => { respond = resolve })
+    const select = testDb.select.bind(testDb)
+    vi.spyOn(testDb, 'select').mockImplementationOnce((() => ({
+      from: (table: typeof schema.agents) => ({
+        where: (filter: SQL) => ({
+          get: async () => {
+            const row = await select().from(table).where(filter).get()
+            await answered
+            return row
+          },
+        }),
+      }),
+    })) as never)
+    return respond
+  }
+
   afterEach(() => {
-    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
-  it('serves repeated lookups of one agent within two seconds from one query, then queries again', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout'] })
+  it('shares one query between concurrent lookups of one agent, and keeps nothing once it answers', async () => {
     await insertRow('a1b2c3d4e5', 'Sales')
     const select = vi.spyOn(testDb, 'select')
 
-    await Promise.all([catalog.get('a1b2c3d4e5'), catalog.exists('a1b2c3d4e5')])
-    expect(await catalog.resolve('a1b2c3d4e5')).toBe('a1b2c3d4e5')
+    const [record, exists] = await Promise.all([catalog.get('a1b2c3d4e5'), catalog.exists('a1b2c3d4e5')])
+    expect(record?.name).toBe('Sales')
+    expect(exists).toBe(true)
     expect(select).toHaveBeenCalledTimes(1)
 
-    vi.advanceTimersByTime(2_000)
-    expect((await catalog.get('a1b2c3d4e5'))?.name).toBe('Sales')
+    expect(await catalog.exists('a1b2c3d4e5')).toBe(true)
     expect(select).toHaveBeenCalledTimes(2)
   })
 
-  it('forgets a lookup of an agent that does not exist after two seconds', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout'] })
+  it('resolves a display slug with one query, shared by concurrent requests for it', async () => {
+    await insertRow('a1b2c3d4e5', 'Sales')
     const select = vi.spyOn(testDb, 'select')
 
-    expect(await catalog.exists('zz9yy8xx7w')).toBe(false)
-    expect(vi.getTimerCount()).toBe(1)
+    const [first, second] = await Promise.all([
+      catalog.resolveRecord('sales-a1b2c3d4e5'),
+      catalog.resolveRecord('sales-a1b2c3d4e5'),
+    ])
 
-    vi.advanceTimersByTime(2_000)
-    expect(vi.getTimerCount()).toBe(0)
-    expect(await catalog.exists('zz9yy8xx7w')).toBe(false)
-    expect(select).toHaveBeenCalledTimes(2)
+    expect(first).toMatchObject({ slug: 'a1b2c3d4e5', name: 'Sales' })
+    expect(second).toEqual(first)
+    expect(select).toHaveBeenCalledTimes(1)
   })
 
-  it("reads its own rename and removal back at once", async () => {
-    await insertRow('f6g7h8i9j0', 'Research')
-    expect((await catalog.get('f6g7h8i9j0'))?.name).toBe('Research')
+  it('resolves a legacy compound slug to itself when the agent its last segment names also exists', async () => {
+    await insertRow('a1b2c3d4e5', 'Sales')
+    await insertRow('legacy-a1b2c3d4e5', 'Legacy sales')
 
+    expect(await catalog.resolve('legacy-a1b2c3d4e5')).toBe('legacy-a1b2c3d4e5')
+    expect(await catalog.resolve('sales-a1b2c3d4e5')).toBe('a1b2c3d4e5')
+  })
+
+  it('does not keep a failed lookup', async () => {
+    await insertRow('a1b2c3d4e5', 'Sales')
+    vi.spyOn(testDb, 'select').mockImplementationOnce(() => {
+      throw new Error('D1_ERROR: Network connection lost.')
+    })
+
+    await expect(catalog.get('a1b2c3d4e5')).rejects.toThrow('Network connection lost')
+    expect((await catalog.get('a1b2c3d4e5'))?.name).toBe('Sales')
+  })
+
+  it('reads its own rename back while a lookup that began before it is still answering', async () => {
+    await insertRow('f6g7h8i9j0', 'Research')
+    const respond = slowNextRead()
+
+    const before = catalog.get('f6g7h8i9j0')
     await catalog.update('f6g7h8i9j0', { name: 'Market research' })
     expect((await catalog.get('f6g7h8i9j0'))?.name).toBe('Market research')
 
+    respond()
+    expect((await before)?.name).toBe('Research')
     await catalog.remove('f6g7h8i9j0')
     expect(await catalog.exists('f6g7h8i9j0')).toBe(false)
-  })
-
-  it('reads a database opened anew from that database', async () => {
-    await insertRow('k1l2m3n4o5', 'Sales')
-    expect((await catalog.get('k1l2m3n4o5'))?.name).toBe('Sales')
-
-    const reopened = await createTestDatabase()
-    const previous = testDb
-    testDb = reopened.db
-    try {
-      await insertRow('k1l2m3n4o5', 'Support')
-      expect((await catalog.get('k1l2m3n4o5'))?.name).toBe('Support')
-    } finally {
-      testDb = previous
-      await reopened.close()
-    }
   })
 })
