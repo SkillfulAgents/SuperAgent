@@ -197,16 +197,16 @@ export async function getAgentWithStatus(
   slug: string,
   options: { includeSummary?: boolean } = {},
 ): Promise<ApiAgent | null> {
-  const agent = await getAgent(slug)
-  if (!agent) {
+  const record = await agentCatalog.get(slug)
+  if (!record) {
     return null
   }
 
   const actor = agentRegistry.get(slug)
-  // The cached container status: no docker process is spawned.
-  const live = await actor.live()
-  const record = (await agentCatalog.get(slug))!
-  const base = toApiAgent(record, live.container, agent.instructions)
+  // The agent exists: its instructions and its cached container status (no docker process is
+  // spawned) do not depend on each other, so they are read together.
+  const [document, live] = await Promise.all([readInstructionsDocument(slug), actor.live()])
+  const base = toApiAgent(record, live.container, document?.body ?? '')
 
   // Routes that either discard the body (/start) or immediately run the richer
   // enrichAgentsWithSummary pass (list/detail) skip this otherwise-duplicate
