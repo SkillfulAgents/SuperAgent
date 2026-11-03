@@ -428,8 +428,8 @@ describe('provide-remote-mcp handler', () => {
     })
 
     mockContainerFetch
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ success: true }), text: async () => '' })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ success: true }), text: async () => '' })
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true })))
 
     const res = await postJson({
       toolUseId: 'tu-1',
@@ -508,10 +508,7 @@ describe('Agent Settings remote MCP live sync', () => {
         ]),
       }),
     })
-    mockContainerFetch.mockResolvedValueOnce({
-      ok: true,
-      text: async () => '',
-    })
+    mockContainerFetch.mockResolvedValueOnce(new Response(''))
 
     const res = await app.request('http://localhost/api/agents/test-agent/remote-mcps', {
       method: 'POST',
@@ -551,10 +548,7 @@ describe('Agent Settings remote MCP live sync', () => {
         where: vi.fn().mockResolvedValue([]),
       }),
     })
-    mockContainerFetch.mockResolvedValueOnce({
-      ok: true,
-      text: async () => '',
-    })
+    mockContainerFetch.mockResolvedValueOnce(new Response(''))
 
     const res = await app.request(
       'http://localhost/api/agents/test-agent/remote-mcps/mcp-1',

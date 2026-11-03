@@ -25,6 +25,7 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 import { attachLiveSessionsHarness, createStreamClient, type StreamClient } from '../testing/live-sessions-harness'
 import { finalizeAutomationStatus } from '@shared/lib/services/session-service'
+import { actorDurableState, setActorDurableState } from '../durable-state'
 
 const live = attachLiveSessionsHarness()
 const sessions = (slug: string = 'test-agent') => live.sessions(slug)
@@ -41,6 +42,7 @@ function recoveryFails(slug: string): void {
 }
 
 afterEach(() => {
+  setActorDurableState(null)
   live.reset()
   live.runtime.unexpectedDeath.mockReset()
   live.runtime.fatalResult.mockReset()
@@ -403,6 +405,27 @@ describe('mid-turn recovery snapshot', () => {
     sessions(AGENT_SLUG).coalesceIfRecovering(SESSION_ID, { uuid: 'u2', text: 'second' })
     expect(sessions(AGENT_SLUG).dropCoalesced(SESSION_ID, 'u1')).toBe(true)
     expect(sessions(AGENT_SLUG).takeCoalesced(SESSION_ID)).toEqual([{ uuid: 'u2', text: 'second' }])
+  })
+
+  it('stores coalesced messages for a restarted actor, and drops them with a failed recovery', () => {
+    sessions(AGENT_SLUG).markActive(SESSION_ID)
+    sessions(AGENT_SLUG).claimMidTurnForRecovery()
+    sessions(AGENT_SLUG).coalesceIfRecovering(SESSION_ID, { uuid: 'u1', text: 'first' })
+    sessions(AGENT_SLUG).coalesceIfRecovering(SESSION_ID, { uuid: 'u2', text: 'second' })
+    sessions(AGENT_SLUG).dropCoalesced(SESSION_ID, 'u1')
+    expect(actorDurableState().get(`coalesced:${AGENT_SLUG}:${SESSION_ID}`)).toEqual([{ uuid: 'u2', text: 'second' }])
+
+    sessions(AGENT_SLUG).settleRecovering([SESSION_ID])
+    expect(sessions(AGENT_SLUG).takeStoredCoalesced()).toEqual([])
+  })
+
+  it('hands stored coalesced messages out once', () => {
+    sessions(AGENT_SLUG).markActive(SESSION_ID)
+    sessions(AGENT_SLUG).claimMidTurnForRecovery()
+    sessions(AGENT_SLUG).coalesceIfRecovering(SESSION_ID, { uuid: 'u1', text: 'first' })
+
+    expect(sessions(AGENT_SLUG).takeStoredCoalesced()).toEqual([{ sessionId: SESSION_ID, messages: [{ uuid: 'u1', text: 'first' }] }])
+    expect(sessions(AGENT_SLUG).takeStoredCoalesced()).toEqual([])
   })
 
   it('does not log coalesced message content when settling', () => {
