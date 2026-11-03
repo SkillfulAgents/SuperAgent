@@ -785,21 +785,29 @@ async function summarizeOnce(slug: string, options: Parameters<typeof summarizeA
   return summary
 }
 
+/**
+ * Both halves of the unread projection, one query each rather than one per
+ * agent — the list route hydrates every agent on every poll. Needs only the
+ * slugs, so a caller can start it before it has the agents.
+ */
+function readUnreadProjection(slugs: string[], userId: string) {
+  return Promise.all([
+    getUnreadNotificationsByAgents(slugs, userId),
+    getSessionIdsMarkedUnreadByAgents(slugs, userId),
+    // Only auth mode has people to mention.
+    isAuthMode() ? getUnreadMentionsByAgents(slugs, userId) : new Map<string, Set<string>>(),
+    getUnreadNotificationPreviewsByAgents(slugs, userId),
+  ])
+}
+
 async function enrichAgentsWithSummary(
   agents: ApiAgent[],
   options: AgentSummaryOptions,
+  unreadProjection?: Awaited<ReturnType<typeof readUnreadProjection>>,
 ): Promise<ApiAgent[]> {
   const slugs = agents.map(a => a.slug)
-
-  // Both halves of the unread projection, one query each rather than one per
-  // agent — this route hydrates every agent on every poll.
-  const [unreadByAgent, markedUnreadByAgent, mentionsByAgent, previewsByAgent] = await Promise.all([
-    getUnreadNotificationsByAgents(slugs, options.userId),
-    getSessionIdsMarkedUnreadByAgents(slugs, options.userId),
-    // Only auth mode has people to mention.
-    isAuthMode() ? getUnreadMentionsByAgents(slugs, options.userId) : new Map<string, Set<string>>(),
-    getUnreadNotificationPreviewsByAgents(slugs, options.userId),
-  ])
+  const [unreadByAgent, markedUnreadByAgent, mentionsByAgent, previewsByAgent] =
+    unreadProjection ?? await readUnreadProjection(slugs, options.userId)
 
   // Where a deployment stores each agent's summary, the list reads those rows and asks no actor.
   const stored = storedAgentSummariesInUse() ? await readAgentSummaries(slugs) : new Map<string, AgentSummary>()
@@ -1502,13 +1510,19 @@ agents.post('/', async (c) => {
 // GET /api/agents/:id - Get a single agent
 agents.get('/:id', ResolveAgent(), AgentRead(), async (c) => {
   try {
-    const agent = await getAgentWithStatus(getResolvedAgent(c), { includeSummary: false })
+    const record = getResolvedAgent(c)
+    const userId = getCurrentUserId(c)
+    // The unread projection needs only the slug: it is read while the agent's status is.
+    const [agent, unreadProjection] = await Promise.all([
+      getAgentWithStatus(record, { includeSummary: false }),
+      readUnreadProjection([record.slug], userId),
+    ])
 
     if (!agent) {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
-    const [enriched] = await enrichAgentsWithSummary([agent], { userId: getCurrentUserId(c) })
+    const [enriched] = await enrichAgentsWithSummary([agent], { userId }, unreadProjection)
     return c.json(enriched)
   } catch (error) {
     console.error('Failed to fetch agent:', error)
