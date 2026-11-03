@@ -5,6 +5,7 @@ import {
   _resetCloudWorkspaceFailureReportingForTest,
   getCloudWorkspace,
   isDeploymentUrlAllowed,
+  refreshCloudWorkspace,
 } from './cloud-workspace-service'
 import {
   exchangeGrantAtDeployment,
@@ -21,6 +22,7 @@ import {
   getPlatformAuthStatus,
 } from '@shared/lib/services/platform-auth-service'
 import { validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
+import { refreshCloudServerFacts } from '@shared/lib/services/cloud-server-facts'
 import { captureException } from '@shared/lib/error-reporting'
 
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
@@ -62,6 +64,9 @@ vi.mock('@shared/lib/services/platform-auth-service', () => ({
   getPlatformAccessToken: vi.fn(),
   getPlatformAuthStatus: vi.fn(),
 }))
+vi.mock('@shared/lib/services/cloud-server-facts', () => ({
+  refreshCloudServerFacts: vi.fn(async () => undefined),
+}))
 
 const mockFetchDeployments = vi.mocked(fetchDeployments)
 const mockRequestGrant = vi.mocked(requestDeploymentGrant)
@@ -73,6 +78,7 @@ const mockGetToken = vi.mocked(getPlatformAccessToken)
 const mockAuthStatus = vi.mocked(getPlatformAuthStatus)
 const mockValidateUrl = vi.mocked(validateMcpDiscoveryUrl)
 const mockCapture = vi.mocked(captureException)
+const mockRefreshFacts = vi.mocked(refreshCloudServerFacts)
 
 const DEPLOYED = {
   org_id: 'org_1',
@@ -615,6 +621,45 @@ describe('getCloudWorkspace', () => {
       expect(mockRequestGrant).not.toHaveBeenCalled()
       expect(status).toMatchObject({ discoveryFailed: true })
     })
+  })
+})
+
+describe('refreshCloudWorkspace', () => {
+  const originalProcessType = (process as { type?: string }).type
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(process as { type?: string }).type = 'browser'
+    mockGetToken.mockReturnValue(TOKEN)
+    mockAuthStatus.mockReturnValue(connectedAs(PRINCIPAL))
+    mockFetchDeployments.mockResolvedValue([DEPLOYED])
+  })
+
+  afterEach(() => {
+    if (originalProcessType === undefined) delete (process as { type?: string }).type
+    else (process as { type?: string }).type = originalProcessType
+  })
+
+  // A renderer driving the workspace reads them at boot, which must not wait on
+  // the deployment for them.
+  it('refreshes the deployment’s server facts once a token is held for it', async () => {
+    mockReadRecord.mockReturnValue(storedRecord())
+    await refreshCloudWorkspace()
+    expect(mockRefreshFacts).toHaveBeenCalledWith(DEPLOYED.deployment_url)
+  })
+
+  // The cycle holds PlatformService's refresh, which skips others while it runs.
+  it('doesn’t wait for them', async () => {
+    mockReadRecord.mockReturnValue(storedRecord())
+    mockRefreshFacts.mockReturnValueOnce(new Promise(() => {}))
+    await expect(refreshCloudWorkspace()).resolves.toBeUndefined()
+  })
+
+  it('leaves them alone for a workspace this app can’t drive', async () => {
+    mockReadRecord.mockReturnValue(null)
+    mockRequestGrant.mockRejectedValue(new Error('grant refused'))
+    await refreshCloudWorkspace()
+    expect(mockRefreshFacts).not.toHaveBeenCalled()
   })
 })
 

@@ -6,10 +6,11 @@ import { useVoiceInput } from './use-voice-input'
 import { useAddMount } from './use-mounts'
 import { useDraft } from '@renderer/context/drafts-context'
 import { appendAttachedFiles, appendMountedFolders } from '@shared/lib/utils/attached-files'
+import { appendDictationNote } from '@shared/lib/utils/dictation-note'
 import { mountPathOf } from '@shared/lib/volumes/base-mountable-volume'
 import { filesFromClipboard, folderChoice, type FolderGroup } from '@renderer/lib/file-utils'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
-import { attachmentStatus, type Attachment, type MountAttachment } from '@renderer/components/messages/attachment-preview'
+import { usesHostFolderPaths } from '@renderer/lib/capabilities'
+import { attachmentStatus, type Attachment, type MountAttachment, type ReferenceAttachment } from '@renderer/components/messages/attachment-preview'
 import type { UploadProgress } from '@renderer/lib/upload'
 import { usePendingAttachmentDrop } from '@renderer/lib/pending-attachment-drop'
 import { chipsToAgentText, silentOpener, type ChipContext } from '@renderer/components/messages/composer-chips'
@@ -44,10 +45,12 @@ interface UseMessageComposerOptions {
    * message always runs the agent.
    */
   silentSends?: boolean
+  /** Pages or folders already in a drive, sent as their paths ahead of the attached files. The caller owns them. */
+  references?: readonly ReferenceAttachment[]
 }
 
 export function useMessageComposer(options: UseMessageComposerOptions) {
-  const { agentSlug, onSubmit, submitDisabled, keepMessageUntilComplete, draftKey, silentSends } = options
+  const { agentSlug, onSubmit, submitDisabled, keepMessageUntilComplete, draftKey, silentSends, references = [] } = options
 
   const [draft, setDraft] = useDraft<string>(draftKey)
   const [message, setMessage] = useState(draft ?? '')
@@ -119,7 +122,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   // Whether a dropped folder can be offered as a *mount* rather than an upload.
   // Mounting hands the agent's machine a path on this one, so it needs both the
   // bridge and for the two to be the same machine.
-  const canOfferMount = canUseHostFeatures()
+  const canOfferMount = usesHostFolderPaths()
 
   const handleFoldersReceived = useCallback((folders: FolderGroup[]) => {
     setPendingFolders((current) => [...current, ...folders])
@@ -191,12 +194,19 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
   // `options` instead would rebuild this every render — callers pass an inline
   // object literal, so its identity is never stable.
   const { onVoiceTranscript } = options
+  // Some of the draft came from the mic, so the agent is told to allow for
+  // transcription slips. Cleared once the draft is sent or emptied.
+  const dictatedRef = useRef(false)
   const voiceInput = useVoiceInput({
     onTranscriptUpdate: useCallback((text: string) => {
       onVoiceTranscript?.()
       setMessage(text)
     }, [onVoiceTranscript]),
+    onDictated: useCallback(() => { dictatedRef.current = true }, []),
   })
+  useEffect(() => {
+    if (!message.trim()) dictatedRef.current = false
+  }, [message])
 
   const handleMountChoice = useCallback((choice: 'upload' | 'mount' | 'cancel') => {
     setShowMountDialog(false)
@@ -240,7 +250,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
    */
   const submitMessage = async (effectiveMessage: string): Promise<boolean> => {
     if (uploadsInFlight || isUploading || submitDisabled) return false
-    const hasContent = effectiveMessage.trim() || attachments.length > 0
+    const hasContent = effectiveMessage.trim() || attachments.length > 0 || references.length > 0
     if (!hasContent) return false
 
     let content = effectiveMessage.trim()
@@ -301,7 +311,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       if (!done?.path || done.agentSlug !== agentSlug) return []
       return [done.path]
     })
-    content = appendAttachedFiles(content, paths)
+    content = appendAttachedFiles(content, [...references.map((r) => r.path), ...paths])
 
     if (!keepMessageUntilComplete) {
       // Clear input immediately so the message doesn't linger while the network request is in flight
@@ -311,7 +321,9 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     }
 
     const editableContent = content
-    const submittedContent = chipsToAgentText(content, sendContext, { silent })
+    const dictated = dictatedRef.current
+    const agentText = chipsToAgentText(content, sendContext, { silent })
+    const submittedContent = dictated ? appendDictationNote(agentText) : agentText
 
     try {
       await onSubmit(submittedContent, { silent })
@@ -320,10 +332,12 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
       if (!keepMessageUntilComplete) {
         // Restore message so the user doesn't lose their text
         setMessage(editableContent)
+        dictatedRef.current = dictated
       }
       return false
     }
 
+    dictatedRef.current = false
     if (keepMessageUntilComplete) {
       setMessage('')
       setDraft(undefined)
@@ -332,7 +346,7 @@ export function useMessageComposer(options: UseMessageComposerOptions) {
     return true
   }
 
-  const canSubmit = (!!message.trim() || attachments.length > 0 || voiceInput.isRecording) && !uploadsInFlight && !isUploading && !submitDisabled
+  const canSubmit = (!!message.trim() || attachments.length > 0 || references.length > 0 || voiceInput.isRecording) && !uploadsInFlight && !isUploading && !submitDisabled
 
   return {
     // Message state

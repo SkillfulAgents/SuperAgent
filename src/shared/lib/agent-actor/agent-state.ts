@@ -1,7 +1,9 @@
 /**
  * The in-memory state one agent owns: its live sessions, its pending
- * user-input requests, the reviews and re-auth waits parked on them, and its
- * computer-use grants.
+ * user-input requests, the reviews and re-auth waits parked on them, its
+ * computer-use grants, and what the host's per-agent work keeps between
+ * requests (locks, widget refreshes, the MCP proxy's sessions, volume
+ * uploads, sessions waiting for a human to name them).
  *
  * Created with the agent's actor and released with it, so `agentRegistry.evict`
  * is the one operation that ends everything an agent held in this process.
@@ -9,7 +11,7 @@
  * (`userInputRequestManager` and friends) reach them through the directory
  * the registry attaches.
  */
-import { AgentInputRequests, type UserInputTransitionSink } from '@shared/lib/tools/requests/agent-input-requests'
+import { AgentInputRequests } from '@shared/lib/tools/requests/agent-input-requests'
 import { AgentReviews } from '@shared/lib/proxy/agent-reviews'
 import {
   createAccountReauthWaits,
@@ -18,6 +20,10 @@ import {
   type McpReauthWaits,
 } from '@shared/lib/proxy/reauth-waits'
 import { AgentComputerUse } from '@shared/lib/computer-use/agent-permissions'
+import { AgentWidgetRefreshes } from '@shared/lib/widgets/agent-widget-refreshes'
+import { AgentMcpSessions } from '@shared/lib/mcp/agent-mcp-sessions'
+import { VolumeUploadGuard } from '@shared/lib/volumes/volume-upload-guard'
+import { AgentLocks } from './agent-locks'
 import { LiveSessions, type LiveSessionsDeps } from './live/live-sessions'
 import type { SessionEvent } from './live/session-channel'
 import type { HostRunActor } from './host-runs'
@@ -39,25 +45,26 @@ export interface AgentState {
   readonly computerUse: AgentComputerUse
   /** The agent's own parts, as an approved computer-use or script run needs them. */
   readonly hostRuns: HostRunActor
+  readonly locks: AgentLocks
+  readonly widgetRefreshes: AgentWidgetRefreshes
+  readonly mcpSessions: AgentMcpSessions
+  readonly volumeUploads: VolumeUploadGuard
+  /** Sessions opened by a notice, to be named from the first message a person sends. */
+  readonly deferredNaming: Set<string>
 }
 
 export interface AgentStateHooks {
-  /** Where the agent's request transitions go first: the router that indexes them. */
-  transitions: UserInputTransitionSink
   /** What the agent's live sessions reach outside the agent. */
   sessions: Pick<LiveSessionsDeps, 'store' | 'host' | 'runtime' | 'capture'>
 }
 
 export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): AgentState {
-  // A request transition is indexed by the router, then put on the wire by
-  // the agent's sessions. The sessions are built from the stores, so the
-  // sink reaches them through this binding, set before any request can exist.
+  // A request transition is put on the wire by the agent's sessions. The
+  // sessions are built from the stores, so the sink reaches them through
+  // this binding, set before any request can exist.
   let sessions: LiveSessions | undefined
   const inputRequests = new AgentInputRequests(slug, {
-    report: (transition) => {
-      hooks.transitions.report(transition)
-      sessions?.requestTransition(transition)
-    },
+    report: (transition) => sessions?.requestTransition(transition),
   })
   const computerUse = new AgentComputerUse(slug)
   // One view of the agent for every host run: the decision routes' (through
@@ -93,6 +100,11 @@ export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): Agent
     mcpReauth: createMcpReauthWaits(slug, inputRequests, syncAwaiting),
     computerUse,
     hostRuns,
+    locks: new AgentLocks(),
+    widgetRefreshes: new AgentWidgetRefreshes(),
+    mcpSessions: new AgentMcpSessions(),
+    volumeUploads: new VolumeUploadGuard(),
+    deferredNaming: new Set(),
   }
 }
 
@@ -100,9 +112,11 @@ export function createAgentState(slug: AgentSlug, hooks: AgentStateHooks): Agent
  * The agent is gone from this process: reject every parked call, settle
  * every open request so its listeners hear the end of it, then drop the
  * sessions' streams and timers. The requests go first, so their resolved
- * events still reach the sessions' listeners. The persisted computer-use
- * grants are left where they are; they belong to the agent's settings entry,
- * not to the process.
+ * events still reach the sessions' listeners. Waiters on a lock are turned
+ * away and joiners of a widget refresh hear it will not end here; the rest
+ * of the host's per-agent memory is dropped with the state. The persisted
+ * computer-use grants are left where they are; they belong to the agent's
+ * settings entry, not to the process.
  */
 export function releaseAgentState(state: AgentState): void {
   const gone = (what: string) => `${what} dropped: the agent is no longer held by this process`
@@ -112,4 +126,8 @@ export function releaseAgentState(state: AgentState): void {
   state.inputRequests.dispose()
   state.computerUse.clearGrabbed()
   state.sessions.dispose()
+  state.locks.dispose()
+  state.widgetRefreshes.dispose()
+  state.mcpSessions.clear()
+  state.deferredNaming.clear()
 }

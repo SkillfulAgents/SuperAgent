@@ -1,6 +1,7 @@
 /**
  * Translate an incoming HTTP request body into the shape Composio's proxy
- * execute endpoint expects (`body` for JSON, `binary_body` for binary uploads).
+ * execute endpoint expects (`body` for JSON, `binary_body` for binary uploads
+ * and form-encoded bodies).
  *
  * This path only runs for connections whose tokens are redacted (Composio-managed).
  * User-managed connections pass through the original body unchanged on the
@@ -28,6 +29,10 @@ function mediaTypeOf(contentType: string | null | undefined): string {
 export function isJsonContentType(contentType: string | null): boolean {
   const mediaType = mediaTypeOf(contentType)
   return mediaType === 'application/json' || mediaType.endsWith('+json')
+}
+
+function isFormContentType(contentType: string | null): boolean {
+  return mediaTypeOf(contentType) === 'application/x-www-form-urlencoded'
 }
 
 export function isBinaryContentType(contentType: string | null): boolean {
@@ -72,7 +77,8 @@ export function translateProxyBody(
     }
   }
 
-  if (isBinaryContentType(contentType)) {
+  // Composio sends binary_body bytes upstream unchanged with its content_type, so form bodies take this path too.
+  if (isBinaryContentType(contentType) || isFormContentType(contentType)) {
     if (body.byteLength > MAX_PROXY_BINARY_BYTES) {
       return {
         ok: false,

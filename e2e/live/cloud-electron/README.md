@@ -33,32 +33,28 @@ the real thing before merging anything that touches them.
 ### In CI
 
 ```bash
-npx electron-rebuild -f     # Electron ABI — the deployment shares it, see below
 npm run build:api           # the deployment's server bundle
 npx electron-vite build     # the desktop app under test
 node e2e/live/cloud-electron/ci.mjs
 ```
 
-Two build choices worth not undoing. **`npm run build:web` is deliberately
-absent**: it is `vite build`, whose outDir is `dist/renderer` — the same
+One build choice worth not undoing: **`npm run build:web` is deliberately
+absent**. It is `vite build`, whose outDir is `dist/renderer` — the same
 directory `electron-vite build` writes the desktop renderer into. Run both and
 the app under test silently becomes a web build. Only `build:api` (tsup →
 `dist/web`) is needed, because the deployment is used purely as an API here and
-its own SPA is never loaded. And the deployment is started with
-**`ELECTRON_RUN_AS_NODE=1`** so it loads the *Electron-ABI* `better-sqlite3` the
-app already needs — one `node_modules` can hold only one build of a native
-module, and the alternative is a second `npm ci`. Getting this wrong surfaces as
-a token exchange answering 400, which is a long way from `ERR_DLOPEN_FAILED`.
+its own SPA is never loaded. The deployment runs on plain Node and the app on
+Electron, both loading the same `better-sqlite3` (a Node-API addon, so one
+build serves both).
 
 ## Running it against the real stack
 
 1. Stand up the stack — the runbook is
    [`.claude/skills/electron-cloud-interface-validation/SKILL.md`](../../../.claude/skills/electron-cloud-interface-validation/SKILL.md).
    All three nodes must answer: auth on 3002, proxy on 8787, deployment on 8899.
-2. Build the app and its native modules **for Electron**:
+2. Build the app:
 
    ```bash
-   npx electron-rebuild -f      # better-sqlite3 for the Electron ABI
    npx electron-vite build      # the harness runs dist/, not the dev server
    ```
 
@@ -67,10 +63,6 @@ a token exchange answering 400, which is a long way from `ERR_DLOPEN_FAILED`.
    ```bash
    node e2e/live/cloud-electron/run.mjs
    ```
-
-Afterwards, `npm rebuild better-sqlite3` puts the native module back on the Node
-ABI — vitest and the Playwright suites need that, and the failure if you forget
-is an `ERR_DLOPEN_FAILED` at startup rather than anything that names the cause.
 
 Expect **28 checks passed**. When one fails it prints what was on screen at the
 time; for anything deeper, `node e2e/live/cloud-electron/inspect.mjs` replays a

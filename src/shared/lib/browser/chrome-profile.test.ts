@@ -4,7 +4,7 @@ import path from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LocalFileOps } from '@shared/lib/agent-actor/local-file-ops'
 import { InMemoryFileOps } from '@shared/lib/agent-actor/testing/in-memory-file-ops'
-import { copyChromeProfileData } from './chrome-profile'
+import { ChromeProfileAccessError, copyChromeProfileData } from './chrome-profile'
 import { workspaceProfileDestination } from './seed-browser-profile'
 
 const ORIGINAL_PLATFORM = process.platform
@@ -172,6 +172,50 @@ describe('copyChromeProfileData', () => {
     expect(await copyChromeProfileData('Default', destination)).toBe(true)
     expect(fs.readFileSync(path.join(destination, 'Cookies'), 'utf8')).toBe('source-cookie')
     expect(fs.existsSync(path.join(destination, 'Cookies-journal'))).toBe(false)
+  })
+
+  function denied(syscall: string, target: string): NodeJS.ErrnoException {
+    return Object.assign(new Error(`EPERM: operation not permitted, ${syscall} '${target}'`), { code: 'EPERM' })
+  }
+
+  it('reports a source profile it may not list as a ChromeProfileAccessError, copying nothing', async () => {
+    const profileDir = createProfile()
+    const realReaddir = fs.promises.readdir.bind(fs.promises) as (dir: fs.PathLike, options: object) => Promise<fs.Dirent[]>
+    vi.spyOn(fs.promises, 'readdir').mockImplementation((async (dir: fs.PathLike, options: object) => {
+      if (String(dir) === path.join(profileDir, 'Local Storage')) throw denied('scandir', String(dir))
+      return realReaddir(dir, options)
+    }) as typeof fs.promises.readdir)
+
+    const result = copyChromeProfileData('Default', destination)
+
+    await expect(result).rejects.toBeInstanceOf(ChromeProfileAccessError)
+    await expect(result).rejects.toMatchObject({ profileId: 'Default', cause: { code: 'EPERM' } })
+    expect(fs.existsSync(destination)).toBe(false)
+  })
+
+  it('reports a source file it may not read during the copy as a ChromeProfileAccessError', async () => {
+    const profileDir = createProfile()
+    const cookies = path.join(profileDir, 'Cookies')
+    const realCopyFile = fs.promises.copyFile.bind(fs.promises)
+    vi.spyOn(fs.promises, 'copyFile').mockImplementation(async (src, dest, mode?) => {
+      if (String(src) === cookies) throw denied('copyfile', cookies)
+      return realCopyFile(src, dest, mode)
+    })
+    const realOpen = fs.promises.open.bind(fs.promises)
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (file, flags?, mode?) => {
+      if (String(file) === cookies) throw denied('open', cookies)
+      return realOpen(file, flags, mode)
+    })
+
+    await expect(copyChromeProfileData('Default', destination)).rejects.toBeInstanceOf(ChromeProfileAccessError)
+  })
+
+  it('keeps a destination failure as itself when the source is readable', async () => {
+    createProfile()
+    const destinationFailure = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' })
+    vi.spyOn(fs.promises, 'copyFile').mockRejectedValue(destinationFailure)
+
+    await expect(copyChromeProfileData('Default', destination)).rejects.toBe(destinationFailure)
   })
 
   it('refuses a profile id that escapes Chrome user-data storage', async () => {

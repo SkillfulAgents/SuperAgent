@@ -73,6 +73,7 @@ import type {
 import type { ApiAgent } from '@shared/lib/types/api'
 import type { AgentFrontmatter } from '@shared/lib/types/agent'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { pruneInstalledTemplateIfInvalid } from './skillset-reconcile'
 
 // ============================================================================
@@ -97,6 +98,7 @@ const TEMPLATE_EXCLUDE = new Set([
   'node_modules',
   '__pycache__',
   'session-metadata.json',
+  '.slash-commands.json',
   '.superagent-sessions.json',
   '.skillset-agent-metadata.json',
   'bookmarks.json',
@@ -545,7 +547,7 @@ function createWorkspaceZipStream(
   }
   signal?.addEventListener('abort', onAbort, { once: true })
 
-  void (async () => {
+  background(async () => {
     try {
       if (signal?.aborted) {
         onAbort()
@@ -560,7 +562,7 @@ function createWorkspaceZipStream(
     } finally {
       signal?.removeEventListener('abort', onAbort)
     }
-  })()
+  }, { name: 'agent-template.fill-export-archive' })
 
   return archive
 }

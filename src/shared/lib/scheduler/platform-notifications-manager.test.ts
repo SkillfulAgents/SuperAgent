@@ -88,6 +88,7 @@ vi.mock('@shared/lib/services/supabase-realtime-client', () => ({
 }))
 
 import { platformNotificationsManager } from './platform-notifications-manager'
+import { backgroundSettled } from '@shared/lib/background'
 
 // ============================================================================
 // Fixtures
@@ -123,7 +124,8 @@ function changedBroadcasts() {
   )
 }
 
-async function startWithDefaults(): Promise<EventCallback> {
+/** Starts the manager; the returned delivery resolves once the insert is handled. */
+async function startWithDefaults(): Promise<(record: unknown) => Promise<void>> {
   mockGetRealtimeConfig.mockResolvedValue(REALTIME_CONFIG)
   // Newest existing row — seeds the watermark on first start.
   mockListNotifications.mockResolvedValue({
@@ -134,7 +136,11 @@ async function startWithDefaults(): Promise<EventCallback> {
   await platformNotificationsManager.start()
   const instance = realtimeInstances[realtimeInstances.length - 1]
   expect(instance).toBeDefined()
-  return instance.onEvent!
+  const onEvent = instance.onEvent!
+  return async (row) => {
+    onEvent(row)
+    await backgroundSettled()
+  }
 }
 
 const JWT_REFRESH_INTERVAL_MS = 50 * 60 * 1000

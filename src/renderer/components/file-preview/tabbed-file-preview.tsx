@@ -5,6 +5,7 @@ import { CopyFileButton } from './copy-file-button'
 import { FileTabBar } from './file-tab-bar'
 import { isCopyableTextFile } from '@renderer/lib/file-types'
 import { FileRenderer } from './renderers/file-renderer'
+import { UnsupportedRenderer } from './renderers/unsupported-renderer'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { cn } from '@shared/lib/utils/cn'
 import { formatFileSize } from '@shared/lib/utils/format-file-size'
@@ -15,7 +16,8 @@ interface TabbedFilePreviewProps<T extends FileBrowserTab> {
   activeTabIndex: number
   onSelectTab: (index: number) => void
   onCloseTab: (key: string) => void
-  file?: { path: string; inlineUrl?: string | null; downloadUrl?: string | null; agentSlug?: string; size?: number | null } | null
+  /** `reason` says why a file cannot be shown, for sources that know before rendering. */
+  file?: { path: string; inlineUrl?: string | null; downloadUrl?: string | null; agentSlug?: string; size?: number | null; reason?: string } | null
   folderContent?: ReactNode
   folderActions?: ReactNode
   onPdfPageChange: (page: number) => void
@@ -107,6 +109,8 @@ export function TabbedFilePreview<T extends FileBrowserTab>({
                 pdfPage={activeTab.pdfPage}
                 onPdfPageChange={onPdfPageChange}
               />
+            ) : file?.reason ? (
+              <UnsupportedRenderer filePath={file.path} downloadUrl={file.downloadUrl ?? undefined} reason={file.reason} />
             ) : null}
           </div>
         </div>

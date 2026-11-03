@@ -7,7 +7,6 @@ import {
   splitComposerSnapshot,
   type ComposerSnapshot,
 } from '@renderer/lib/new-session-carryover'
-import { computeContextTokens } from '@shared/lib/utils/context-usage'
 import { shouldPromptForNewSession } from '@shared/lib/stale-session/stale-session-trigger'
 import { STALE_TIME_GAP_MS } from '@shared/lib/stale-session/stale-session-config'
 import type { SessionUsage } from '@shared/lib/types/agent'
@@ -83,7 +82,7 @@ export function useStaleSession({
 
   const shouldPrompt = shouldPromptForNewSession({
     idleMs: activityAt ? Date.now() - activityAt : 0,
-    contextTokens: contextUsage ? computeContextTokens(contextUsage) : 0,
+    contextTokens: contextUsage?.totalTokens ?? 0,
     isAwaitingInput,
     isRunning: isActive && !isWaitingBackground,
   })

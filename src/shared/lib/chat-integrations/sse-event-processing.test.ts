@@ -452,28 +452,28 @@ describe('resolvePendingToolMessages', () => {
     expect(mock.streamUpdates.length).toBe(0)
   })
 
-  it('updates all pending messages from ⏳ to ✅', async () => {
+  it('marks every pending message stopped (⛔)', async () => {
     const managed = createManagedConnector()
     managed.pendingToolMessages = [
-      { messageId: 'msg-1', text: '🔧 *Bash* — `ls -la` ⏳' },
-      { messageId: 'msg-2', text: '🔧 *Read* ⏳' },
+      { toolId: 't1', messageId: 'msg-1', text: '🔧 *Bash* — `ls -la` ⏳' },
+      { toolId: 't2', messageId: 'msg-2', text: '🔧 *Read* ⏳' },
     ]
 
     await resolvePendingToolMessages(managed)
 
     const mock = getMock(managed)
     expect(mock.streamUpdates.length).toBe(2)
-    expect(mock.streamUpdates[0].text).toContain('✅')
+    expect(mock.streamUpdates[0].text).toContain('⛔')
     expect(mock.streamUpdates[0].text).not.toContain('⏳')
     expect(mock.streamUpdates[0].existingMessageId).toBe('msg-1')
-    expect(mock.streamUpdates[1].text).toContain('✅')
+    expect(mock.streamUpdates[1].text).toContain('⛔')
     expect(mock.streamUpdates[1].existingMessageId).toBe('msg-2')
   })
 
   it('clears the pending array after resolution', async () => {
     const managed = createManagedConnector()
     managed.pendingToolMessages = [
-      { messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
+      { toolId: 't1', messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
     ]
 
     await resolvePendingToolMessages(managed)
@@ -484,8 +484,8 @@ describe('resolvePendingToolMessages', () => {
   it('continues resolving remaining messages if one fails', async () => {
     const managed = createManagedConnector()
     managed.pendingToolMessages = [
-      { messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
-      { messageId: 'msg-2', text: '🔧 *Read* ⏳' },
+      { toolId: 't1', messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
+      { toolId: 't2', messageId: 'msg-2', text: '🔧 *Read* ⏳' },
     ]
 
     const mock = getMock(managed)
@@ -535,37 +535,76 @@ describe('pendingToolMessages lifecycle', () => {
     expect(managed.pendingToolMessages.length).toBe(0)
   })
 
-  it('stream_start resolves pending tool messages', async () => {
-    // Simulate: tool completes, then new text stream starts
+  it('stream_start leaves pending tool messages for their results', async () => {
     managed.pendingToolMessages = [
-      { messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
+      { toolId: 't1', messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
     ]
 
     await processSSEEvent(managed, { type: 'stream_start' })
 
+    expect(getMock(managed).streamUpdates.length).toBe(0)
+    expect(managed.pendingToolMessages.length).toBe(1)
+  })
+
+  it('tool_result shows the real outcome on its own message only', async () => {
+    managed.pendingToolMessages = [
+      { toolId: 't1', messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
+      { toolId: 't2', messageId: 'msg-2', text: '🔧 *Bash* — `echo ⏳` ⏳' },
+    ]
+
+    await processSSEEvent(managed, { type: 'tool_result', toolUseId: 't2', isError: true })
+    await processSSEEvent(managed, { type: 'tool_result', toolUseId: 'unknown', isError: false })
+    await processSSEEvent(managed, { type: 'tool_result', toolUseId: 't1', isError: false })
+
     const mock = getMock(managed)
-    // Pending tool messages should have been resolved (⏳ → ✅)
-    expect(mock.streamUpdates.length).toBe(1)
-    expect(mock.streamUpdates[0].text).toContain('✅')
+    expect(mock.streamUpdates.map(u => [u.existingMessageId, u.text])).toEqual([
+      ['msg-2', '🔧 *Bash* — `echo ⏳` ❌'],
+      ['msg-1', '🔧 *Bash* ✅'],
+    ])
     expect(managed.pendingToolMessages.length).toBe(0)
   })
 
-  it('session_idle resolves pending tool messages', async () => {
+  it('session_waiting_background finalizes the text and stops pending tools once', async () => {
+    managed.streamingState = { currentMessageId: 'stream-1', accumulatedText: 'Started the job', lastUpdateTime: 0 }
+    managed.indicatorShown = true
     managed.pendingToolMessages = [
-      { messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
-      { messageId: 'msg-2', text: '🔧 *Read* ⏳' },
+      { toolId: 't1', messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
+    ]
+
+    await processSSEEvent(managed, { type: 'session_waiting_background' })
+    await processSSEEvent(managed, { type: 'session_waiting_background' })
+
+    const mock = getMock(managed)
+    expect(mock.finalizedMessages.map(m => m.finalText)).toEqual(['Started the job'])
+    expect(mock.streamUpdates.map(u => u.text)).toEqual(['🔧 *Bash* ⛔'])
+    // Unlike session_idle, the indicator stays with the tick: background work is still running.
+    expect(managed.indicatorShown).toBe(true)
+    expect(mock.stoppedWorking).toEqual([])
+  })
+
+  it('session_waiting_background with nothing pending makes no connector calls', async () => {
+    await processSSEEvent(managed, { type: 'session_waiting_background' })
+
+    const mock = getMock(managed)
+    expect([mock.sentMessages, mock.streamUpdates, mock.finalizedMessages]).toEqual([[], [], []])
+  })
+
+  it('session_idle stops pending tool messages', async () => {
+    managed.pendingToolMessages = [
+      { toolId: 't1', messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
+      { toolId: 't2', messageId: 'msg-2', text: '🔧 *Read* ⏳' },
     ]
 
     await processSSEEvent(managed, { type: 'session_idle' })
 
     const mock = getMock(managed)
     expect(mock.streamUpdates.length).toBe(2)
-    expect(mock.streamUpdates[0].text).toContain('✅')
-    expect(mock.streamUpdates[1].text).toContain('✅')
+    expect(mock.streamUpdates[0].text).toContain('⛔')
+    expect(mock.streamUpdates[1].text).toContain('⛔')
     expect(managed.pendingToolMessages.length).toBe(0)
   })
 
-  it('full lifecycle: text → tool(⏳) → text(✅ resolved) → idle', async () => {
+  it('full lifecycle: text → tool(⏳) → result(✅) → text → idle', async () => {
     const outputLog: string[] = []
     const mock = getMock(managed)
     const origSend = mock.sendMessage.bind(mock)
@@ -594,12 +633,13 @@ describe('pendingToolMessages lifecycle', () => {
       { type: 'tool_use_start', toolId: 't1', toolName: 'Bash' },
       { type: 'tool_use_streaming', partialInput: '{"command":"ls"}' },
       { type: 'tool_use_ready', toolId: 't1', toolName: 'Bash' },
-      { type: 'stream_start' },  // should resolve ⏳ → ✅
+      { type: 'tool_result', toolUseId: 't1', isError: false },
+      { type: 'stream_start' },
       { type: 'stream_delta', text: 'Here are the files' },
       { type: 'session_idle' },
     ], true)
 
-    // Text finalized before tool, tool message sent with ⏳, resolved to ✅ on stream_start
+    // Text finalized before tool, tool message sent with ⏳, resolved to ✅ by its result
     expect(outputLog.some(l => l.includes('Checking files'))).toBe(true)
     expect(outputLog.some(l => l.includes('Bash'))).toBe(true)
     expect(outputLog.some(l => l.includes('resolve:') && l.includes('✅'))).toBe(true)
@@ -838,11 +878,11 @@ describe('multi-session isolation', () => {
     })
 
     session1.pendingToolMessages = [
-      { messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
+      { toolId: 't1', messageId: 'msg-1', text: '🔧 *Bash* ⏳' },
     ]
     session2.pendingToolMessages = [
-      { messageId: 'msg-2', text: '🔧 *Read* ⏳' },
-      { messageId: 'msg-3', text: '🔧 *Write* ⏳' },
+      { toolId: 't2', messageId: 'msg-2', text: '🔧 *Read* ⏳' },
+      { toolId: 't3', messageId: 'msg-3', text: '🔧 *Write* ⏳' },
     ]
 
     // Resolve session 1

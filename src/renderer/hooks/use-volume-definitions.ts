@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@renderer/lib/api'
 import type { GlobalAccess, VolumeDefinitionSummary } from '@shared/lib/types/mount'
-import { volumeConfigSchema, type VolumeSource } from '@shared/lib/volumes/volume-config-schema'
+import { localVolumeConfigSchema, volumeConfigSchema, type LocalVolumeConfig, type VolumeSource } from '@shared/lib/volumes/volume-config-schema'
 
 export interface VolumeSettingsInput {
   name: string
@@ -21,6 +21,7 @@ export function useVolumeDefinitions() {
   return useQuery<VolumeDefinitionSummary[]>({
     queryKey: ['volume-definitions'],
     queryFn: async () => (await checkedResponse(await apiFetch('/api/volume-definitions'))).json(),
+    refetchInterval: query => query.state.status !== 'error' && query.state.data?.some(volume => volume.health === 'preparing') ? 2000 : false,
   })
 }
 
@@ -41,6 +42,23 @@ export function useSaveVolumeDefinition() {
   })
 }
 
+/** A local drive's folder chosen again in the open panel: the same drive, with a new bookmark. */
+export function useReconnectLocalVolume() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ id, config }: { id: string; config: LocalVolumeConfig }) => (await checkedResponse(await apiFetch(`/api/volume-definitions/${encodeURIComponent(id)}/reconnect`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(localVolumeConfigSchema.parse(config)),
+    }))).json(),
+    onSuccess: (_result, { id }) => {
+      client.invalidateQueries({ queryKey: ['volume-definitions'] })
+      client.invalidateQueries({ queryKey: ['mounts'] })
+      client.invalidateQueries({ queryKey: ['volume-files', id] })
+      // The host marks running agents with the drive stale, which their restart prompt reads.
+      client.invalidateQueries({ queryKey: ['agents'] })
+    },
+  })
+}
+
 export function useDeleteVolumeDefinition() {
   const client = useQueryClient()
   return useMutation({
@@ -52,9 +70,10 @@ export function useDeleteVolumeDefinition() {
 }
 
 
-export function useVolumeAgents(id: string) {
+export function useVolumeAgents(id: string | undefined) {
   return useQuery<{ attachments: { agentSlug: string; mountId: string }[] }>({
     queryKey: ['volume-agents', id],
-    queryFn: async () => (await checkedResponse(await apiFetch(`/api/volume-definitions/${encodeURIComponent(id)}/agents`))).json(),
+    enabled: !!id,
+    queryFn: async () => (await checkedResponse(await apiFetch(`/api/volume-definitions/${encodeURIComponent(id!)}/agents`))).json(),
   })
 }

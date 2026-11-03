@@ -51,7 +51,7 @@ describe('getSubagentModelCatalog', () => {
         .map((model) => model.id)
         .filter((id) => id.startsWith('gpt-'))
 
-    const latestPerTier = ['gpt-6-luna', 'gpt-5.6-terra', 'gpt-6.1-sol', 'gpt-6-astra']
+    const latestPerTier = ['gpt-6-luna', 'gpt-6.1-terra', 'gpt-6.1-sol', 'gpt-6-astra']
     expect(gptIds('platform').sort()).toEqual([...latestPerTier].sort())
     expect(gptIds('codex-subscription').sort()).toEqual([...latestPerTier].sort())
     expect(resolveModelForProvider('gpt-sol', 'platform', 'agent')).toBe('gpt-6.1-sol')

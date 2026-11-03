@@ -26,6 +26,7 @@ import { assertIntegrationAvailable, getIntegrationSetup, integrationSetupContex
 import { ownerSetupRequestInputSchema, requestOwnerSetup } from '@shared/lib/agent-integrations/owner-setup-request'
 import { SYSTEM_MESSAGE_PREFIX } from '@shared/lib/utils/system-message'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { isChatAllowed } from '@shared/lib/services/chat-integration-access-service'
 
 type XAgentChatVariables = { callerSlug: string }
@@ -139,7 +140,7 @@ xAgentChat.post('/add', async (c) => {
 
     // Outside the connect try/catch: a contact-card failure is cosmetic and must
     // never surface as a connect error.
-    void agentIntegrationManager.integrationCreated(id)
+    background(agentIntegrationManager.integrationCreated(id), { name: 'x-agent-chat-route.integration-created' })
 
     const created = await getAgentIntegration(id)
     if (!created) {

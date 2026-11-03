@@ -100,7 +100,7 @@ function fixture(): VolumeContractFixture & { downloadWith(run: (bytes: Uint8Arr
     throw new Error(`Unexpected Drive endpoint: ${method} ${url.pathname}`)
   })
   return {
-    volume: () => new GoogleDriveMountableVolume(id, 'Team', { accountId: id, folderId: rootId, folderName: 'Team', driveName: 'My Drive' }),
+    volume: () => new GoogleDriveMountableVolume(id, 'Team', { accountId: id, folderId: rootId, folderName: 'Team', driveName: 'My Drive' }, 'agent'),
     put: (path, bytes) => { tree.put(path, bytes) }, mkdir: path => { tree.mkdir(path) },
     bytes: path => tree.get(path)?.bytes, exists: path => !!tree.get(path),
     failWrite: () => { fail = true }, beforeCommit: run => { onCommit = run }, revoke: () => { active = false },

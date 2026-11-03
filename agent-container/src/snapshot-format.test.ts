@@ -138,6 +138,11 @@ describe('capSnapshot', () => {
     expect(out).toContain('scope=')
   })
 
+  it('names an open dialog and how to scope to it', () => {
+    const out = capSnapshot('e'.repeat(SNAPSHOT_SOFT_CAP_CHARS + 5000), false, { kind: 'dialog', name: 'Your cart' })
+    expect(out).toContain('A dialog "Your cart" is open: scope="[role=dialog]" or "dialog[open]" targets it')
+  })
+
   it('gives a tighter-scope hint when already scoped', () => {
     const out = capSnapshot('e'.repeat(SNAPSHOT_SOFT_CAP_CHARS + 5000), true)
     expect(out).toContain('tighter scope')

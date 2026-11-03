@@ -35,13 +35,18 @@ import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { ungrabAC } from '@shared/lib/computer-use/executor'
 import { computerUsePermissionManager } from '@shared/lib/computer-use/permission-manager'
 import { captureException, captureMessage } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { resolveTimezoneForAgent } from '@shared/lib/services/timezone-resolver'
-import { listVolumes } from '@shared/lib/services/mount-service'
+import { firstCopies, listVolumes, remounted } from '@shared/lib/services/mount-service'
 import type { ContainerVolume, NotMountedReason, NotMountedVolume } from '@shared/lib/types/mount'
 import { isPlatformComposioActive } from '@shared/lib/composio/client'
+import { getDefaultAccountProvider } from '@shared/lib/account-providers/provider-factory'
+import { getAllProviders } from '@shared/lib/account-providers/service-catalog'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getWebhookRelay } from '@shared/lib/webhook-relay'
 import { mergeCustomEnvVars } from './reserved-env-vars'
+import { runsInAppSandbox, supportsComputerUse } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { buildConnectedAccountsProjection, listAgentMcpConnections } from './connection-runtime-projections'
 import { recoverFromUnexpectedDeath } from './runtime-recovery'
 import { prepareVolumeStop } from './volume-stop'
@@ -234,7 +239,7 @@ export class ContainerRuntime {
   handleUnexpectedDeath(restrictToSessionIds?: string[]): void {
     if (this.disposed) return
     const slug = this.slug
-    void recoverFromUnexpectedDeath({
+    background(recoverFromUnexpectedDeath({
       agentId: slug,
       isStopping: () => this.stopping,
       getClient: () => this.getClient(),
@@ -271,7 +276,7 @@ export class ContainerRuntime {
         tags: { area: 'container', op: 'runtime.recover.unhandled' },
         extra: { agentId: slug },
       })
-    })
+    }), { name: 'container-runtime.recover-unexpected-death' })
   }
 
   private assertNotStopping(op: 'start' | 'restart'): void {
@@ -434,7 +439,7 @@ export class ContainerRuntime {
         // If this agent had grabbed a window, ungrab it so the halo disappears
         if (computerUsePermissionManager.getGrabbedApp(slug)) {
           computerUsePermissionManager.clearGrabbedApp(slug)
-          ungrabAC().catch(() => {})  // Best-effort, non-blocking
+          background(ungrabAC().catch(() => {}), { name: 'container-runtime.ungrab-computer-use' })  // Best-effort, non-blocking
         }
 
         // Broadcast status change so UI updates
@@ -656,7 +661,8 @@ export class ContainerRuntime {
     const workspaces = this.host.agentWorkspaces
     if (workspaces) {
       // Seed the built-in container browser from the selected Chrome profile.
-      // A failure fails the start, as a failed copy always did.
+      // A profile this app may not read is skipped; any other failure fails
+      // the start, as a failed copy always did.
       await seedBrowserProfileFromChrome(slug, workspaces.files(slug))
       // The display name is attribution only; a start without it is still a start.
       try {
@@ -672,11 +678,25 @@ export class ContainerRuntime {
 
     // Tell the agent container which host OS is running (for script type selection)
     envVars['HOST_PLATFORM'] = process.platform
+    // Whether agents get the computer-use and script tools, as the host answers
+    // it, so the container never advertises what the host would refuse. Always
+    // set, so a container can tell "no" from a host too old to say.
+    const serverFacts = getServerFacts()
+    envVars['HOST_COMPUTER_USE'] = String(supportsComputerUse(serverFacts))
+    // The Mac App Store edition: the prompt tells agents what it leaves out.
+    envVars['HOST_APP_SANDBOX'] = String(runsInAppSandbox(serverFacts))
 
     // Enable Composio webhook trigger tools when platform Composio is active
-    if (isPlatformComposioActive()) {
+    const platformComposio = isPlatformComposioActive()
+    if (platformComposio) {
       envVars['COMPOSIO_PLATFORM_MODE'] = 'true'
     }
+    // Discovery and account requests must offer the same services as /api/providers.
+    // Toolkit slugs contain no commas; an empty string explicitly offers none.
+    envVars['CONNECTED_ACCOUNT_TOOLKITS'] = getAllProviders(getDefaultAccountProvider().name)
+      .filter((provider) => !provider.unlisted && (!provider.platformOnly || platformComposio))
+      .map((provider) => provider.slug)
+      .join(',')
 
     // Webhook tools (custom endpoints, and Composio triggers with the flag
     // above) follow the relay, not Composio mode: a personal Composio key
@@ -744,6 +764,7 @@ export class ContainerRuntime {
     // A container already running got its volumes, and its banner, from an earlier start.
     // A runtime replaced meanwhile (a runner change) no longer owns the banner.
     if (alreadyRunning || this.disposed) return client
+    await remounted(slug)
     this.volumesPresent = !volumesDropped && volumes.length > 0
     let failed: NotMountedVolume[] = []
     if (volumesDropped) {
@@ -760,8 +781,20 @@ export class ContainerRuntime {
       })
     }
     showNotMounted(slug, [...notMounted, ...failed])
+    // A retry of a failed first copy still reports the old failure, so any preparing reason counts.
+    const preparing = notMounted.filter((volume) => volume.reason.startsWith('preparing')).map((volume) => volume.name)
+    if (preparing.length > 0) background(this.staleOnceCopied(lifecycle, preparing), { name: 'container-runtime.stale-after-first-copy' })
 
     return client
+  }
+
+  /** A drive still making its first copy missed this start: once it can mount, the agent is stale until it restarts. */
+  private async staleOnceCopied(lifecycle: number, preparing: string[]): Promise<void> {
+    await firstCopies(this.slug)
+    const { volumes } = await listVolumes(this.slug)
+    if (lifecycle !== this.lifecycle || this.cached?.status !== 'running' || !volumes.some((volume) => preparing.includes(volume.name))) return
+    this.markStale()
+    globalFeed.publish({ type: 'agent_updated', agentSlug: this.slug })
   }
 
   // Record a keep-alive ping (e.g. from an open dashboard) to prevent auto-sleep

@@ -62,6 +62,9 @@ test('older deployments without avatar metadata remain navigable', async ({ page
     expect(errors).toEqual([])
     expect(avatarWrites).toEqual([])
   } finally {
+    // The app keeps polling the agent; a refetch still in flight when the page
+    // closes would fail the test from inside the route handler.
+    await page.unrouteAll({ behavior: 'ignoreErrors' })
     await request.delete(`/api/agents/${agent.slug}`)
   }
 })

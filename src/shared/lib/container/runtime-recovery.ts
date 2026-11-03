@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto'
 import { addErrorBreadcrumb, captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import type { ContainerClient } from './types'
 import type { CoalescedUserMessage, RuntimeFatalKind, UnexpectedDeathPlan } from './runtime-death'
 
@@ -62,12 +63,12 @@ export async function recoverFromUnexpectedDeath(deps: RuntimeRecoveryDeps): Pro
     const rerunDeps = pendingRerun.get(deps.agentId)
     if (rerunDeps) {
       pendingRerun.delete(deps.agentId)
-      recoverFromUnexpectedDeath(rerunDeps).catch((error) => {
+      background(recoverFromUnexpectedDeath(rerunDeps).catch((error) => {
         captureException(error, {
           tags: { area: 'container', op: 'runtime.recover.rerun' },
           extra: { agentId: rerunDeps.agentId },
         })
-      })
+      }), { name: 'runtime-recovery.rerun-recovery' })
     }
   })
   inFlight.set(deps.agentId, run)

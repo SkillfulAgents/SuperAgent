@@ -89,7 +89,7 @@ describe('deliver', () => {
   it('reports the provider the session\'s turns run on, as the send resolved it', async () => {
     send().mockImplementation(async () => {
       // The container resolves the turn's runtime while it takes the message.
-      sessions().recordRuntime(SESSION, { provider: 'platform', modelContextWindows: {} })
+      sessions().recordRuntime(SESSION, { provider: 'platform' })
       return {}
     })
 
@@ -187,27 +187,6 @@ describe('deliver', () => {
     await Promise.all([first, second])
 
     expect(sessions().takeCoalesced(SESSION).map((message) => message.uuid)).toEqual(['a', 'b'])
-  })
-
-  it('refuses to join a running turn when asked to deliver only into an idle session', async () => {
-    await delivery().attach(SESSION)
-    sessions().markActive(SESSION)
-
-    expect(await delivery().deliver({ sessionId: SESSION, content: 'follow-up', ifIdle: true })).toEqual({ status: 'busy' })
-    expect(send()).not.toHaveBeenCalled()
-  })
-
-  it('refuses to join a running turn that only the attach reveals', async () => {
-    // Not attached (an automation's stream is released once idle), while the
-    // container runs a turn the host has not heard of: a background task's wake.
-    vi.mocked(client.subscribeToStream).mockImplementationOnce((_id: string, onMessage: (message: StreamMessage) => void) => {
-      onMessage({ type: 'message', content: { type: 'system', subtype: 'session_state_changed', state: 'running' }, timestamp: new Date(), sessionId: SESSION })
-      return { unsubscribe: vi.fn(), ready: Promise.resolve() }
-    })
-    expect(sessions().isActive(SESSION)).toBe(false)
-
-    expect(await delivery().deliver({ sessionId: SESSION, content: 'follow-up', ifIdle: true })).toEqual({ status: 'busy' })
-    expect(send()).not.toHaveBeenCalled()
   })
 
   it('sends only once an attach in flight is done: the turn\'s first frames have a listener', async () => {
@@ -371,7 +350,7 @@ describe('start', () => {
     } as never)
   })
 
-  it('creates, marks, registers with the listed commands, then attaches', async () => {
+  it('creates, marks, registers, then attaches; the commands go to the agent, not the session entry', async () => {
     const order: string[] = []
     const register = vi.spyOn(service, 'registerSession').mockImplementation(async (...args) => {
       order.push(`register (active ${sessions().isActive('new-session')})`)
@@ -385,10 +364,60 @@ describe('start', () => {
     const session = await delivery().start(request)
     expect(session.id).toBe('new-session')
     expect(order).toEqual(['register (active true)', 'attach new-session'])
-    expect(register).toHaveBeenCalledWith(store(), 'new-session', 'Scheduled run', {
-      ...request.metadata,
-      slashCommands: [{ name: 'deploy', description: 'Ship it', argumentHint: '' }],
-    })
+    expect(register).toHaveBeenCalledWith(store(), 'new-session', 'Scheduled run', request.metadata)
+    expect((await sessionService.getSessionMetadata(store(), 'new-session'))?.slashCommands).toBeUndefined()
+    expect(await sessionService.readAgentSlashCommands(store())).toEqual([{ name: 'deploy', description: 'Ship it', argumentHint: '' }])
+    expect(sessions().slashCommands('new-session')).toEqual([{ name: 'deploy', description: 'Ship it', argumentHint: '' }])
+  })
+
+  it('stores a session a user starts without its own copy of the commands', async () => {
+    await delivery().start({ create: { initialMessage: 'go' }, name: 'Chat', metadata: { createdByUserId: 'user-a' } })
+
+    expect((await sessionService.getSessionMetadata(store(), 'new-session'))?.slashCommands).toBeUndefined()
+    expect(await sessionService.readAgentSlashCommands(store())).toEqual([{ name: 'deploy', description: 'Ship it', argumentHint: '' }])
+  })
+
+  it('adds only a small entry per scheduled run, however large the agent\'s commands and prompt', async () => {
+    // A real agent with many commands, as every run's create reports them.
+    const commands = Array.from({ length: 100 }, (_, i) => ({
+      name: `command-${i}`, description: `Runs step ${i} of the store report. `.repeat(5), argumentHint: '[order id]',
+    }))
+    let created = 0
+    vi.mocked(client.createSession).mockImplementation(async () => ({
+      id: `run-${++created}`, createdAt: '', lastActivity: '', workingDirectory: '/workspace', slashCommands: commands,
+    }) as never)
+    const prompt = 'Check every open Shopify order and post the slow ones to Slack. '.repeat(80)
+    const runs = 50
+    const size = async () => JSON.stringify(await sessionService.readSessionMetadata(store())).length
+    expect(JSON.stringify(commands).length + prompt.length).toBeGreaterThan(20_000)
+
+    const before = await size()
+    for (let i = 0; i < runs; i++) {
+      const { id } = await delivery().start({
+        create: { initialMessage: prompt, metadata: { isAutomated: true } },
+        name: 'Slow orders check',
+        metadata: {
+          isScheduledExecution: true,
+          scheduledTaskId: 'c8079246-0ed8-4743-80f6-0b9794e9ccb1',
+          scheduledTaskName: 'Slow orders check',
+          scheduledExecutionAt: new Date(Date.UTC(2026, 9, 27, 19, 2 * i)).toISOString(),
+          automationStatus: 'running',
+        },
+      })
+      await sessionService.finalizeAutomationStatus(store(), id, 'succeeded')
+    }
+
+    // One file holds every session, and each write rewrites all of it: an
+    // agent-wide copy per run grows it by tens of MB within days.
+    expect((await size() - before) / runs).toBeLessThan(1024)
+  })
+
+  it('still starts the session when the agent copy cannot be stored', async () => {
+    vi.spyOn(service, 'storeAgentSlashCommands').mockRejectedValueOnce(new Error('disk full'))
+
+    const session = await delivery().start(request)
+
+    expect(session.id).toBe('new-session')
     expect(sessions().slashCommands('new-session')).toEqual([{ name: 'deploy', description: 'Ship it', argumentHint: '' }])
   })
 

@@ -10,7 +10,10 @@ import { agentCatalog } from '../agent-actor'
 import { workspaceBasename } from '../agent-actor/workspace-path'
 import { publicWorkspaceFileUrl } from '../utils/workspace-file-url'
 import { captureException } from '../error-reporting'
+import { background } from '../background'
 import { getAgentIntegration } from '../services/agent-integration-service'
+import { getAgentOwnerUserId } from '../services/agent-owner'
+import { isAuthMode } from '../auth/mode'
 import type { MeetingBotHost, MeetingRecordingLink } from './bot-host'
 import { meetingPolicy } from './definitions'
 import { parseMeetingUrl, type ParsedMeetingUrl } from './meeting-url'
@@ -165,9 +168,9 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
 
   observeSession(context: IntegrationSessionContext): void {
     if (!context.sessionId) return
-    void setMeetingSession(context.externalId, context.sessionId).catch(error => {
+    background(setMeetingSession(context.externalId, context.sessionId).catch(error => {
       captureException(error, { tags: { component: 'meeting-integration', operation: 'record-session' }, extra: { meetingId: context.externalId } })
-    })
+    }), { name: 'meeting-integration.record-session' })
   }
 
   getTools(_context: IntegrationSessionContext): readonly IntegrationTool[] {
@@ -233,6 +236,11 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
     // each bring their own bot into the same call.
     const existing = (await listOpenMeetings(current.id)).find(meeting => meeting.meetingUrl === parsed.url)
     if (existing) return toPublicMeeting(existing)
+    // With accounts, the participant page acts for this person (participant-credential.ts)
+    // and cannot authenticate without one: whoever asked, else the installation's
+    // creator, else the agent's owner (an agent that set itself up has no creator).
+    const createdByUserId = invocation?.userId ?? current.createdByUserId ?? await getAgentOwnerUserId(current.agentSlug)
+    if (isAuthMode() && !createdByUserId) throw new MeetingPolicyError('This agent has no owner for the meeting bot to act for.')
     const agent = await agentCatalog.get(current.agentSlug)
     const settings = this.configuredSettings()
     const botName = settings.botName ?? agent?.name ?? current.name ?? 'Gamut'
@@ -241,7 +249,7 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
       integrationId: current.id, agentSlug: current.agentSlug, meetingUrl: parsed.url, platform: parsed.platform, botName,
       // The join may pick how the agent takes part; the installation's setting applies otherwise.
       mode: request.mode ?? settings.mode ?? DEFAULT_MEETING_MODE,
-      context: request.context, createdByUserId: invocation?.userId ?? current.createdByUserId, participantToken: token,
+      context: request.context, createdByUserId, participantToken: token,
     })
     // The agent's session starts now so it is briefed before the bot is let in.
     await this.emitEvent({ type: 'input', id: crypto.randomUUID(), externalId: meeting.id, timestamp: new Date(), payload: { kind: 'join', meetingId: meeting.id } })
@@ -330,9 +338,9 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
     const schedule = () => {
       const entry = this.pollers.get(meetingId)
       if (!entry) return
-      entry.timer = setTimeout(() => void this.poll(meetingId).then(schedule), MEETING_POLL_INTERVAL_MS)
+      entry.timer = setTimeout(() => background(this.poll(meetingId).then(schedule), { name: 'meeting-integration.poll' }), MEETING_POLL_INTERVAL_MS)
     }
-    this.pollers.set(meetingId, { timer: setTimeout(() => void this.poll(meetingId).then(schedule), 0), failures: 0 })
+    this.pollers.set(meetingId, { timer: setTimeout(() => background(this.poll(meetingId).then(schedule), { name: 'meeting-integration.poll' }), 0), failures: 0 })
   }
   private untrack(meetingId: string): void {
     const entry = this.pollers.get(meetingId)

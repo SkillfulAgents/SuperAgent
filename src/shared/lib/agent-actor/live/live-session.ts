@@ -28,13 +28,15 @@ import { inferOomSigkillFatal } from '@shared/lib/container/runtime-death'
 import { parseBackgroundTasksChanged } from '@shared/lib/container/background-tasks-changed'
 import { parseCommandLifecycle } from '@shared/lib/container/command-lifecycle'
 import { mergeCanonicalSlashCommands } from '@shared/lib/container/slash-commands'
+import { slashCommandListSchema } from '@shared/lib/services/session-metadata-schema'
 import { credentialSource } from '@shared/lib/llm-provider/connection-runtime'
-import { getActiveLlmProvider, getLlmProvider, getModelContextWindow } from '@shared/lib/llm-provider'
+import { getActiveLlmProvider, getLlmProvider } from '@shared/lib/llm-provider'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
 import type { SubagentCapture } from '@shared/lib/container/subagent-capture'
 import { appendInformationalEntry } from '@shared/lib/services/session-transcript-append'
-import { finalizeAutomationStatus, updateSessionMetadata } from '@shared/lib/services/session-service'
+import { finalizeAutomationStatus, recordErrorProvider, updateSessionMetadata } from '@shared/lib/services/session-service'
 import {
   recordProvisionalSessionActivity,
   recordSessionActivity,
@@ -155,6 +157,7 @@ const RUNTIME_FRAME_TYPES: ReadonlySet<string> = new Set([
   'command_lifecycle',
   'capability_review_cancelled',
   'connection_closed',
+  'context_usage',
 ])
 
 // How long a stopped task's wake turn gets to announce itself (`running`)
@@ -314,6 +317,8 @@ export class LiveSession {
       rejectInput: (toolUseId, reason) => this.answerInput(toolUseId, 'reject', { reason }),
       // A tool call's lookups can outlive this attachment.
       syncAwaiting: () => this.ctx.resyncAwaiting(),
+      // The map is carried across a reattach, like the lookups.
+      settled: (toolUseId, outcome) => this.settledInputRequests.set(toolUseId, outcome),
       capabilityGranted: (capability) => this.ctx.capabilityGranted(capability),
       grantCapability: (capability) => this.ctx.grantCapability(capability),
       trackSubagentLaunch: (toolUseId, input) => this.subagents.trackLaunch(toolUseId, input),
@@ -767,6 +772,8 @@ export class LiveSession {
   /** The attachment is being dropped: nothing it scheduled may fire. */
   dispose(): void {
     this.cancelSettleAfterStop()
+    // The session is gone: a sign-in the host is still deciding raises no card.
+    this.toolCalls.dropLoginDecisions()
   }
 
   // ===========================================================================
@@ -864,11 +871,16 @@ export class LiveSession {
    * it, and fail the container's pending input so a late click lands nowhere.
    */
   private invalidateSubagentRequests(parentToolId: string): void {
+    // Nor does a sign-in it asked for that the host is still deciding.
+    this.toolCalls.dropLoginDecisions(parentToolId)
     const orphaned = this.ctx.requests.resolveRequestsByParent(parentToolId, 'invalidated')
     if (orphaned.length === 0) return
     for (const request of orphaned) {
-      this.answerInput(request.id, 'reject', { reason: 'The subagent that asked for this input was terminated.' }).catch((error) =>
-        console.error(`[LiveSession] dead-subagent reject failed for ${request.id}:`, error),
+      background(
+        this.answerInput(request.id, 'reject', { reason: 'The subagent that asked for this input was terminated.' }).catch((error) =>
+          console.error(`[LiveSession] dead-subagent reject failed for ${request.id}:`, error),
+        ),
+        { name: 'live-session.reject-orphaned-input' },
       )
     }
     this.syncAwaiting()
@@ -889,7 +901,7 @@ export class LiveSession {
 
   /** One frame from the container's stream. */
   frame(message: StreamMessage): void {
-    void this.ctx.capture?.recordInput(this.ctx.sessionId, message)
+    if (this.ctx.capture) background(this.ctx.capture.recordInput(this.ctx.sessionId, message), { name: 'live-session.capture-input' })
     const content = message.content
 
     // After a stop, the stopped turn's own content still in the pipe is
@@ -983,6 +995,9 @@ export class LiveSession {
       case 'browser_active':
         this.ctx.emit({ type: 'browser_active', active: content.active })
         return
+      case 'context_usage':
+        this.contextUsageFrame(content)
+        return
       case 'capability_review_cancelled':
         // The container's gate stopped waiting (its timeout, or the turn was
         // aborted): close the card everywhere rather than leave it dangling.
@@ -1020,6 +1035,12 @@ export class LiveSession {
     }
     if (content.error) {
       this.lastApiErrorCode = content.error
+      const provider = this.ctx.modelRuntime()?.provider
+      if (provider && typeof content.uuid === 'string' && content.uuid) {
+        background(recordErrorProvider(this.ctx.store, this.ctx.sessionId, content.uuid, provider).catch((error) => {
+          console.error('[LiveSession] Failed to record error provider:', error)
+        }), { name: 'live-session.record-error-provider' })
+      }
       // Style what already streamed as a provider error at once, without
       // waiting for the transcript refetch: the code alone if text streamed,
       // the text with it otherwise.
@@ -1036,7 +1057,6 @@ export class LiveSession {
     // The transcript has the message now.
     this.stream.messagePersisted()
     this.ctx.emit({ type: 'messages_updated' })
-    if (content.message?.usage) this.stream.reportUsage(content.message.usage)
   }
 
   private userFrame(content: FrameContent): void {
@@ -1101,6 +1121,14 @@ export class LiveSession {
         this.response.beginStreamedText()
         this.ctx.emit({ type: 'stream_start', slashCommands: this.slashCommands.length > 0 ? this.slashCommands : undefined })
         return
+      case 'commands_changed': {
+        // The container's menu after a mid-turn change, such as a skill the agent just wrote.
+        const parsed = slashCommandListSchema.safeParse(content.commands)
+        if (!parsed.success) return
+        this.slashCommands = parsed.data
+        this.ctx.emit({ type: 'slash_commands_changed', slashCommands: this.slashCommands })
+        return
+      }
       case 'status':
         if (content.status === 'compacting') this.stream.compactionStarted()
         // The CLI is composing its next request, the moment it drains its
@@ -1268,7 +1296,6 @@ export class LiveSession {
       console.warn(`[LiveSession] Session ${this.ctx.sessionId}: turn ended with no model turns (num_turns=0) — possible hook-blocked prompt`)
     }
 
-    this.resultUsage(content)
     // A failure is terminal now; a clean success only once the session
     // settles (queued messages or background work can still fail it).
     this.lastResultCleanSuccess = !isError && !classification.isInterrupt && content.subtype !== 'resume'
@@ -1348,33 +1375,19 @@ export class LiveSession {
   }
 
   /**
-   * The context window comes with the result: the model catalog's when it
-   * has one (non-Claude models: the SDK reports a generic 200K for them),
-   * the SDK's otherwise. The latest call's usage (not the result's sum over
-   * the turn) goes out with it and onto the session's metadata.
+   * The container measured the context: the CLI's own count, against the
+   * window it auto-compacts at. A size that a turn end or a compaction
+   * settled goes onto the session's metadata; mid-turn sizes only go out.
    */
-  private resultUsage(content: { modelUsage?: unknown }): void {
-    try {
-      let contextWindow: number | undefined
-      const modelUsage = content.modelUsage
-      if (modelUsage && typeof modelUsage === 'object') {
-        const [modelId] = Object.keys(modelUsage)
-        const reported = (modelUsage as Record<string, { contextWindow?: number } | undefined>)[modelId]
-        const catalogWindow = modelId
-          ? this.ctx.modelRuntime()?.modelContextWindows[modelId] ??
-            getModelContextWindow(modelId, getActiveLlmProvider().id)
-          : undefined
-        contextWindow = catalogWindow || reported?.contextWindow || undefined
-      }
-      const lastUsage: SessionUsage | null = this.stream.settleUsage(contextWindow)
-      if (lastUsage) {
-        updateSessionMetadata(this.ctx.store, this.ctx.sessionId, { lastUsage }).catch((error) => {
-          console.error('[LiveSession] Failed to persist lastUsage:', error)
-        })
-      }
-    } catch (error) {
-      console.error('[LiveSession] Error handling result usage:', error)
-    }
+  private contextUsageFrame(content: FrameContent): void {
+    const { totalTokens, contextWindow } = content
+    if (typeof totalTokens !== 'number' || typeof contextWindow !== 'number') return
+    const usage: SessionUsage = { totalTokens, contextWindow }
+    this.ctx.emit({ type: 'context_usage', ...usage })
+    if (content.settled !== true) return
+    background(updateSessionMetadata(this.ctx.store, this.ctx.sessionId, { lastUsage: usage }).catch((error) => {
+      console.error('[LiveSession] Failed to persist lastUsage:', error)
+    }), { name: 'live-session.persist-last-usage' })
   }
 
   /**
@@ -1427,19 +1440,24 @@ export class LiveSession {
     if (!isBlocking && !isWarning) return
     const text = typeof content.content === 'string' ? content.content : ''
     if (!text) return
-    void appendInformationalEntry(this.ctx.store, this.ctx.sessionId, {
-      uuid: (typeof content.uuid === 'string' && content.uuid) || randomUUID(),
-      content: text,
-      level: typeof content.level === 'string' ? content.level : undefined,
-    })
-      .then(() => this.ctx.emit({ type: 'messages_updated' }))
-      .catch((error) => console.error('[LiveSession] Failed to persist informational banner:', error))
+    background(
+      appendInformationalEntry(this.ctx.store, this.ctx.sessionId, {
+        uuid: (typeof content.uuid === 'string' && content.uuid) || randomUUID(),
+        content: text,
+        level: typeof content.level === 'string' ? content.level : undefined,
+      })
+        .then(() => this.ctx.emit({ type: 'messages_updated' }))
+        .catch((error) => console.error('[LiveSession] Failed to persist informational banner:', error)),
+      { name: 'live-session.persist-informational-banner' },
+    )
   }
 
   /**
    * The socket to the container closed. Mid-turn and not stopped, the
    * runtime may have died: recovery decides. Otherwise ask the container
-   * whether the session still runs, and reattach or settle.
+   * whether the session still runs, and reattach or settle. Settling
+   * detaches the dead socket after the idle release, so the next send
+   * subscribes again.
    */
   private connectionClosed(): void {
     if (this.isActive && !this.isInterrupted) {
@@ -1453,26 +1471,32 @@ export class LiveSession {
       this.markInactive()
       return
     }
-    client
-      .getSession(this.ctx.sessionId)
-      .then((session) => {
-        if (!this.ctx.isCurrent()) return
-        if (!session) {
-          console.log(`[LiveSession] Session ${this.ctx.sessionId} not found in container, marking inactive`)
+    background(
+      client
+        .getSession(this.ctx.sessionId)
+        .then((session) => {
+          if (!this.ctx.isCurrent()) return
+          if (!session) {
+            console.log(`[LiveSession] Session ${this.ctx.sessionId} not found in container, marking inactive`)
+            this.markInactive()
+            this.ctx.detachTransport()
+          } else if ((session as { isRunning?: boolean }).isRunning) {
+            console.log(`[LiveSession] Session ${this.ctx.sessionId} still running, re-subscribing`)
+            this.ctx.reattachTransport(client)
+          } else {
+            console.log(`[LiveSession] Session ${this.ctx.sessionId} not running in container, marking inactive`)
+            this.markInactive()
+            this.ctx.detachTransport()
+          }
+        })
+        .catch((error) => {
+          if (!this.ctx.isCurrent()) return
+          console.error(`[LiveSession] Failed to check container for session ${this.ctx.sessionId}:`, error)
           this.markInactive()
-        } else if ((session as { isRunning?: boolean }).isRunning) {
-          console.log(`[LiveSession] Session ${this.ctx.sessionId} still running, re-subscribing`)
-          this.ctx.reattachTransport(client)
-        } else {
-          console.log(`[LiveSession] Session ${this.ctx.sessionId} not running in container, marking inactive`)
-          this.markInactive()
-        }
-      })
-      .catch((error) => {
-        if (!this.ctx.isCurrent()) return
-        console.error(`[LiveSession] Failed to check container for session ${this.ctx.sessionId}:`, error)
-        this.markInactive()
-      })
+          this.ctx.detachTransport()
+        }),
+      { name: 'live-session.check-closed-session' },
+    )
   }
 
   // ===========================================================================
@@ -1513,24 +1537,30 @@ export class LiveSession {
    */
   private persistAutomationStatus(status: 'succeeded' | 'failed'): void {
     if (this.notAutomation) return
-    void finalizeAutomationStatus(this.ctx.store, this.ctx.sessionId, status)
-      .then((result) => {
-        if (result === 'not-automation') this.notAutomation = true
-      })
-      .catch((error) => console.error('[LiveSession] Failed to persist automation status:', error))
+    background(
+      finalizeAutomationStatus(this.ctx.store, this.ctx.sessionId, status)
+        .then((result) => {
+          if (result === 'not-automation') this.notAutomation = true
+        })
+        .catch((error) => console.error('[LiveSession] Failed to persist automation status:', error)),
+      { name: 'live-session.persist-automation-status' },
+    )
   }
 
   /** Refresh the session's summary entry from its transcript's real mtime (a missed turn end). */
   private refreshActivityFromTranscript(): void {
     const { store, sessionId } = this.ctx
-    void store.files
-      .stat(transcriptPath(store, sessionId))
-      .then((stat) => {
-        if (stat) recordSessionActivity(store, sessionId, stat.mtimeMs)
-      })
-      .catch(() => {
-        // Missing or unreadable: the TTL reconciliation repairs it.
-      })
+    background(
+      store.files
+        .stat(transcriptPath(store, sessionId))
+        .then((stat) => {
+          if (stat) recordSessionActivity(store, sessionId, stat.mtimeMs)
+        })
+        .catch(() => {
+          // Missing or unreadable: the TTL reconciliation repairs it.
+        }),
+      { name: 'live-session.refresh-activity-from-transcript' },
+    )
   }
 
   /** The automation stream policy, from the session's metadata. */

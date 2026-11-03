@@ -26,6 +26,9 @@ name. A workflow is addressed by its qualified name:
   the dashboard-builder prompt points at (`/opt/gamut/plugin/skills/dashboards/*.md`).
 - `widgets/` — building home-screen widgets; holds the template
   `widget-manager.ts` scaffolds from.
+- `site-api/` — finding a site's own JSON endpoints with `browser_capture_traffic`
+  (redacted HAR) and turning a recurring browser task into a script; adapted
+  from agent-browser's `derive-client` skill.
 - `workflow-authoring/` — vendored from the CLI (see below): the script-API
   reference the Workflow tool's own prompt tells the model to load before
   writing a workflow. Without it the model authors scripts blind.

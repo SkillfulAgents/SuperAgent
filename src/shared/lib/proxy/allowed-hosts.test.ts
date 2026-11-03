@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { isHostAllowed, matchesHostPatterns, TOOLKIT_ALLOWED_HOSTS } from './allowed-hosts'
+import { SUPPORTED_PROVIDERS } from '../account-providers/service-catalog'
 
 describe('matchesHostPatterns', () => {
   it('matches an exact host', () => {
@@ -95,6 +96,87 @@ describe('isHostAllowed', () => {
 
   it('rejects all hosts for unknown toolkit', () => {
     expect(isHostAllowed('unknown_toolkit', 'anything.com')).toBe(false)
+  })
+
+  it('allows the discovery and API hosts needed by the expanded catalog', () => {
+    const requests = [
+      ['attio', 'api.attio.com'],
+      ['basecamp', '3.basecampapi.com'],
+      ['basecamp', 'launchpad.37signals.com'],
+      ['dart', 'app.dartai.com'],
+      ['google_analytics', 'analyticsdata.googleapis.com'],
+      ['google_analytics', 'analyticsadmin.googleapis.com'],
+      ['google_search_console', 'searchconsole.googleapis.com'],
+      ['google_maps', 'places.googleapis.com'],
+      ['google_maps', 'routes.googleapis.com'],
+      ['googlesuper', 'gmail.googleapis.com'],
+      ['one_drive', 'graph.microsoft.com'],
+      ['excel', 'graph.microsoft.com'],
+      ['jira', 'api.atlassian.com'],
+      ['gong', 'company-17.api.gong.io'],
+      ['share_point', 'contoso.sharepoint.com'],
+      ['gorgias', 'acme.gorgias.com'],
+      ['slackbot', 'files.slack.com'],
+      ['notebook_lm', 'discoveryengine.googleapis.com'],
+      ['fathom', 'fathom.video'],
+      ['whatsapp', 'graph.facebook.com'],
+      ['supabase', 'api.supabase.com'],
+    ]
+    for (const [toolkit, host] of requests) {
+      expect(isHostAllowed(toolkit, host), `${toolkit}: ${host}`).toBe(true)
+    }
+  })
+
+  it('supports explicit regional API hosts without granting arbitrary vendor subdomains', () => {
+    const requests = [
+      ['dynamics365', 'acme.api.crm8.dynamics.com'],
+      ['dynamics365', 'acme.api.crm22.dynamics.com'],
+      ['boldsign', 'api-eu.boldsign.com'],
+      ['boldsign', 'api-ca.boldsign.com'],
+      ['wrike', 'app-eu.wrike.com'],
+      ['wrike', 'app-us2.wrike.com'],
+      ['zoho', 'www.zohoapis.eu'],
+      ['zoho_bigin', 'www.zohoapis.com.au'],
+      ['zoho_books', 'www.zohoapis.com.cn'],
+      ['zoho_inventory', 'www.zohoapis.sa'],
+      ['zoho_invoice', 'www.zohoapis.ca'],
+      ['zoho_mail', 'mail.zohocloud.ca'],
+      ['zoho_desk', 'desk.zohocloud.ca'],
+    ]
+    for (const [toolkit, host] of requests) {
+      expect(isHostAllowed(toolkit, host), `${toolkit}: ${host}`).toBe(true)
+    }
+    expect(isHostAllowed('zoho', 'attacker.zohoapis.com')).toBe(false)
+    expect(isHostAllowed('zoho_mail', 'accounts.zoho.com')).toBe(false)
+    expect(isHostAllowed('google_analytics', 'storage.googleapis.com')).toBe(false)
+    expect(isHostAllowed('googlesuper', 'storage.googleapis.com')).toBe(false)
+    expect(isHostAllowed('supabase', 'attacker.supabase.co')).toBe(false)
+    expect(isHostAllowed('dynamics365', 'acme.api.crm999.dynamics.com')).toBe(false)
+    expect(isHostAllowed('gong', 'app.gong.io')).toBe(false)
+    expect(isHostAllowed('share_point', 'graph.microsoft.com')).toBe(false)
+  })
+
+  it('rejects spoofed tenant hosts for newly supported services', () => {
+    const tenantHosts = [
+      ['gong', 'company-17.api.gong.io', 'api.gong.io'],
+      ['share_point', 'contoso.sharepoint.com', 'sharepoint.com'],
+      ['gorgias', 'acme.gorgias.com', 'gorgias.com'],
+      ['dynamics365', 'acme.api.crm4.dynamics.com', 'api.crm4.dynamics.com'],
+    ]
+    for (const [toolkit, host, suffix] of tenantHosts) {
+      for (const spoof of [
+        `${host}.evil.com`, `evil-${suffix}`, `evil.com#.${suffix}`,
+        `evil.com?.${suffix}`, `user@${host}`, `${host}:443`,
+      ]) {
+        expect(isHostAllowed(toolkit, spoof), `${toolkit}: ${spoof}`).toBe(false)
+      }
+    }
+  })
+
+  it('has an API host allowlist for every offered Composio account type', () => {
+    for (const provider of SUPPORTED_PROVIDERS.filter((p) => p.composioSlug)) {
+      expect(TOOLKIT_ALLOWED_HOSTS[provider.slug]?.length, provider.slug).toBeGreaterThan(0)
+    }
   })
 
   it('handles slack toolkit', () => {

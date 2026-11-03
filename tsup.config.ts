@@ -50,6 +50,8 @@ const externalExact = new Set([
   'better-sqlite3',
   '@skillful-agents/agent-computer',
   'electron',
+  'heic-decode',
+  'jpeg-js',
   'require-in-the-middle',
   'import-in-the-middle',
   // grammy hardwires node-fetch@2, whose isAbortSignal checks constructor.name;
@@ -68,6 +70,7 @@ export default defineConfig({
   entry: {
     server: 'src/web/server.ts',
     'llm-sdk-bundle': 'src/api/llm-sdk-bundle.ts',
+    'heic-preview-worker': 'src/api/routes/heic-preview-worker.mjs',
   },
   format: ['esm'],
   outDir: 'dist/web',

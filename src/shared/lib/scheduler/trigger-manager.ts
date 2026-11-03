@@ -10,6 +10,7 @@ import { resolveConnectionRuntimeInherit } from '@shared/lib/llm-provider/connec
  */
 
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { agentRegistry } from '@shared/lib/agent-actor'
 import { getEffectiveModels } from '@shared/lib/config/settings'
 import { readAgentPreferences } from '@shared/lib/services/agent-preferences-service'
@@ -174,7 +175,7 @@ class TriggerManager {
     this.resyncTimer = setTimeout(() => {
       this.resyncTimer = null
       // A failure schedules its own retry.
-      this.syncRegistrations().catch(() => {})
+      background(this.syncRegistrations().catch(() => {}), { name: 'trigger-manager.sync-registrations' })
     }, delayMs)
     this.resyncTimer.unref?.()
   }
@@ -356,11 +357,11 @@ class TriggerManager {
     )
 
     // Notification
-    notificationManager
+    background(notificationManager
       .triggerWebhookSessionStarted(sessionId, trigger.agentSlug, trigger.id, trigger.name || undefined)
       .catch((err) => {
         console.error('[TriggerManager] Failed to trigger notification:', err)
-      })
+      }), { name: 'trigger-manager.notify-session-started' })
   }
 }
 

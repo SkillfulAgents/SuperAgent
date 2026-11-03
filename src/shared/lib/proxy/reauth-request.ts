@@ -4,6 +4,7 @@
  */
 import { randomUUID } from 'crypto'
 import type { ReauthOutcome } from './reauth-waits'
+import { background } from '../background'
 
 /** The agent's side of a parked re-auth wait: what the re-auth ops and `AgentReauthWaits` both offer. */
 export interface ReauthParking<Details> {
@@ -21,9 +22,9 @@ export async function awaitReauth<Details>(
   if (signal?.aborted) return { outcome: 'withdrawn' }
   const waitId = randomUUID()
   const withdraw = () => {
-    void Promise.resolve(waits.withdraw(waitId)).catch((error: unknown) => {
+    background(Promise.resolve(waits.withdraw(waitId)).catch((error: unknown) => {
       console.warn('[reauth] Failed to withdraw an aborted wait:', error)
-    })
+    }), { name: 'reauth-request.withdraw-wait' })
   }
   signal?.addEventListener('abort', withdraw, { once: true })
   try {

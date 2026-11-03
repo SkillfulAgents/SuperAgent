@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { background } from '../background'
 
 export const LIVE_SESSION_MAX_MS = 60 * 60 * 1000
 const RETRY_DELAYS_MS = [1000, 5000, 30_000]
@@ -28,7 +29,7 @@ export class LiveSessionRegistry {
       const session = this.sessions.get(handle)
       if (!session) return
       session.closing = true
-      void this.attempt(handle, session, true)
+      background(this.attempt(handle, session, true), { name: 'live-session-registry.close-session' })
     }, LIVE_SESSION_MAX_MS)
     timer.unref()
     this.sessions.set(handle, { owner, close, expiresAt, timer, closing: false, attempts: 0 })
@@ -55,7 +56,7 @@ export class LiveSessionRegistry {
       } else {
         const delay = RETRY_DELAYS_MS[session.attempts++]
         if (delay !== undefined) {
-          session.retry = setTimeout(() => { void this.attempt(handle, session) }, delay)
+          session.retry = setTimeout(() => { background(this.attempt(handle, session), { name: 'live-session-registry.close-session' }) }, delay)
           session.retry.unref()
         }
         // After bounded retries, the original expiry timer makes a final attempt.

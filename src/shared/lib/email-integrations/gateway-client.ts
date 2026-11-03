@@ -16,7 +16,7 @@ export async function emailBearer(ownerUserId: string | null): Promise<string> {
   throw new EmailGatewayError(403, 'A Platform member identity is required for email')
 }
 export const mailboxSchema = z.object({ id: z.string().uuid(), address: z.string().email(), name: z.string(), status: z.string(), domain: z.object({ status: z.string(), error: z.string().nullable() }).optional() })
-export const emailEventSchema = z.object({ cursor: z.number(), mailboxId: z.string(), type: z.string(), messageId: z.string().nullable(), data: z.unknown(), createdAt: z.number() })
+export const emailEventSchema = z.object({ cursor: z.number(), mailboxId: z.string(), type: z.string(), messageId: z.string().nullable(), data: z.unknown().optional(), createdAt: z.number() })
 export const emailEventsSchema = z.object({ data: z.array(emailEventSchema), cursor: z.number(), hasMore: z.boolean() })
 export class EmailGatewayClient {
   constructor(readonly ownerUserId: string | null) {}

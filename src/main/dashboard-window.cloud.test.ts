@@ -74,8 +74,10 @@ import {
   openDashboardWindow,
   closeAllDashboardWindows,
   installCloudDashboardAuth,
+  installPopupHandler,
   shouldSignWorkspaceRequest,
 } from './dashboard-window'
+import { safeOpenExternal } from './safe-open-external'
 
 const LOCAL = 'http://localhost:3838'
 const CLOUD = 'https://acme.ongamut.so'
@@ -359,6 +361,26 @@ describe('popout identity', () => {
     expect(createdWindows).toHaveLength(1)
     expect(createdWindows[0].focus).toHaveBeenCalled()
   })
+
+  it('names each popout so its size and position survive a restart', () => {
+    openDashboardWindow('sales', 'weekly', LOCAL)
+    openDashboardWindow('sales', 'weekly', CLOUD, true)
+
+    const [local, cloud] = createdWindows.map((win) => win.options)
+    expect(local.windowStatePersistence).toBe(true)
+    expect(cloud.windowStatePersistence).toBe(true)
+    // Electron throws on a name already in use, and both are open at once.
+    expect(local.name).not.toBe(cloud.name)
+  })
+
+  it('keeps a local popout\'s name when the local API moves to another port', () => {
+    openDashboardWindow('sales', 'weekly', LOCAL)
+    const first = createdWindows[0].options.name
+    closeAllDashboardWindows()
+    openDashboardWindow('sales', 'weekly', 'http://localhost:3839')
+
+    expect(createdWindows[1].options.name).toBe(first)
+  })
 })
 
 describe('marking a cloud popout', () => {
@@ -464,5 +486,21 @@ describe('dashboard popout chrome', () => {
     } finally {
       Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true })
     }
+  })
+})
+
+describe('a link that opens a new window', () => {
+  it.each([
+    ['downloads a workspace file in place', `${LOCAL}/api/agents/a/files/out/report.pdf`, true],
+    ['downloads a drive file in place', `${LOCAL}/api/agents/a/mount-files/Team%20Drive/notes.md`, true],
+    ['sends any other link to the system browser', 'https://example.com/files/a.pdf', false],
+  ])('%s', (_case, url, downloads) => {
+    vi.mocked(safeOpenExternal).mockClear()
+    const webContents = { setWindowOpenHandler: vi.fn(), downloadURL: vi.fn() }
+    installPopupHandler(webContents as never)
+    const open = webContents.setWindowOpenHandler.mock.calls[0][0] as (details: { url: string }) => unknown
+    expect(open({ url })).toEqual({ action: 'deny' })
+    expect(webContents.downloadURL).toHaveBeenCalledTimes(downloads ? 1 : 0)
+    expect(vi.mocked(safeOpenExternal)).toHaveBeenCalledTimes(downloads ? 0 : 1)
   })
 })

@@ -33,7 +33,10 @@ export class SessionPage {
         const candidate = locator.nth(index)
         const isVisible = await candidate.isVisible().catch(() => false)
         if (!isVisible) continue
-        const isEnabled = await candidate.isEnabled().catch(() => false)
+        // isEnabled (unlike isVisible) waits for the element, with no timeout by
+        // default: a candidate unmounted since the count (the home composer as a
+        // send navigates to the session) would hang the caller's whole poll.
+        const isEnabled = await candidate.isEnabled({ timeout: 1000 }).catch(() => false)
         if (options.enabled && !isEnabled) continue
         return candidate
       }

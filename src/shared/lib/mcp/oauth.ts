@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm'
 import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
 import { validateMcpDiscoveryUrl } from '@shared/lib/utils/url-safety'
 import type { OAuthMetadata, OAuthTokenResponse } from './types'
+import { protectedResourceMetadataSchema } from './oauth-metadata-schema'
 
 /**
  * OAuth setup failure whose message is safe to show in the UI verbatim. Carries
@@ -87,8 +88,8 @@ function generatePKCE(): { codeVerifier: string; codeChallenge: string } {
  * Discover OAuth metadata from an MCP server.
  *
  * Flow:
- * 1. Make unauthenticated request to MCP URL -> get 401 with WWW-Authenticate header
- * 2. Extract resource_metadata URL from WWW-Authenticate
+ * 1. Make an unauthenticated initialize request to the MCP URL
+ * 2. Use WWW-Authenticate resource_metadata or the resource's well-known URLs
  * 3. Fetch Protected Resource Metadata (RFC 9728)
  * 4. Fetch Authorization Server Metadata (RFC 8414 / OpenID Connect Discovery)
  */
@@ -99,15 +100,24 @@ export async function discoverOAuthMetadata(mcpUrl: string): Promise<{
   challengeScope?: string
 } | null> {
   try {
-    // Step 1: Make unauthenticated request to get 401
+    // Step 1: Probe with the same valid initialize shape used by tool discovery.
     const probeResponse = await mcpSafeFetch(mcpUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1 }),
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', method: 'initialize', id: 1,
+        params: {
+          protocolVersion: '2025-03-26', capabilities: {},
+          clientInfo: { name: 'Gamut', version: '1.0.0' },
+        },
+      }),
     })
 
-    if (probeResponse.status !== 401) {
-      // Server doesn't require auth
+    // Discovery only needs status and headers. A valid initialize can return an
+    // SSE stream that stays open; release it before fetching OAuth metadata.
+    await probeResponse.body?.cancel().catch(() => undefined)
+
+    if (probeResponse.status !== 401 && !probeResponse.ok) {
       return null
     }
 
@@ -128,7 +138,38 @@ export async function discoverOAuthMetadata(mcpUrl: string): Promise<{
     // scopes_supported. Captured here so the caller can put it on the auth URL.
     let resourceScopes: string[] | undefined
 
-    if (resourceMetadataMatch) {
+    // Some servers allow initialize before login; others omit WWW-Authenticate
+    // on their 401. RFC 9728 also permits discovering metadata directly at the
+    // resource's well-known location (Gorgias, Deel, Teamwork, Harness, Aiven).
+    let discoveredResourceMetadata: ReturnType<typeof protectedResourceMetadataSchema.parse> | undefined
+    if (!resourceMetadataMatch) {
+      const endpoint = new URL(mcpUrl)
+      const path = endpoint.pathname.replace(/\/+$/, '')
+      const metadataUrls = [...new Set([
+        `${endpoint.origin}/.well-known/oauth-protected-resource${path}`,
+        `${endpoint.origin}/.well-known/oauth-protected-resource`,
+      ])]
+      for (const metadataUrl of metadataUrls) {
+        try {
+          const res = await mcpSafeFetch(metadataUrl)
+          if (!res.ok) continue
+          const parsed = protectedResourceMetadataSchema.safeParse(await res.json())
+          if (parsed.success) {
+            discoveredResourceMetadata = parsed.data
+            break
+          }
+        } catch {
+          continue
+        }
+      }
+      if (probeResponse.ok && !discoveredResourceMetadata) return null
+    }
+
+    if (discoveredResourceMetadata) {
+      resource = discoveredResourceMetadata.resource || mcpUrl
+      resourceScopes = discoveredResourceMetadata.scopes_supported
+      authServerUrl = discoveredResourceMetadata.authorization_servers[0]
+    } else if (resourceMetadataMatch) {
       // RFC 9728: Fetch Protected Resource Metadata.
       // SSRF: server-controlled WWW-Authenticate URL — mcpSafeFetch rejects
       // private/loopback (incl. DNS-rebind) before connecting.
@@ -267,7 +308,7 @@ function authorizeResponseRejectsRedirect(
     if (parsed.error === 'invalid_redirect_uri') return true
     if (
       typeof parsed.error_description === 'string' &&
-      /invalid redirect uri/i.test(parsed.error_description)
+      /invalid redirect uri|redirect uri must use https|redirect uri.*does not match allowed patterns/i.test(parsed.error_description)
     ) {
       return true
     }

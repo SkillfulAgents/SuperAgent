@@ -331,3 +331,39 @@ describe('finalizeAutomationStatus guards', () => {
     expect(fs.readFileSync(metadataPath('agent'), 'utf-8')).toBe(corrupt)
   })
 })
+
+describe('agent slash commands', () => {
+  const older = [{ name: 'deploy', description: 'Ship it', argumentHint: '' }]
+  const newer = [{ name: 'deploy', description: 'Ship it', argumentHint: '' }, { name: 'review', description: 'Review it', argumentHint: '' }]
+  const agentCopyPath = () => path.join(workspaceDir('agent'), '.slash-commands.json')
+
+  it('rewrites the agent copy only when the list changes', async () => {
+    const { storeAgentSlashCommands } = await importService()
+    makeAgent('agent')
+    await storeAgentSlashCommands(createLocalSessionStore('agent'), older)
+    const mtime = fs.statSync(agentCopyPath()).mtimeMs
+
+    await storeAgentSlashCommands(createLocalSessionStore('agent'), older)
+    expect(fs.statSync(agentCopyPath()).mtimeMs).toBe(mtime)
+
+    await storeAgentSlashCommands(createLocalSessionStore('agent'), newer)
+    expect(JSON.parse(fs.readFileSync(agentCopyPath(), 'utf-8'))).toEqual(newer)
+  })
+
+  it('reads no commands when the agent has none', async () => {
+    const { readAgentSlashCommands } = await importService()
+    makeAgent('agent')
+
+    expect(await readAgentSlashCommands(createLocalSessionStore('agent'))).toEqual([])
+  })
+
+  it('reads no commands when the agent copy is corrupt, and leaves the file alone', async () => {
+    const { readAgentSlashCommands } = await importService()
+    makeAgent('agent')
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    fs.writeFileSync(agentCopyPath(), '[{')
+
+    expect(await readAgentSlashCommands(createLocalSessionStore('agent'))).toEqual([])
+    expect(fs.readFileSync(agentCopyPath(), 'utf-8')).toBe('[{')
+  })
+})

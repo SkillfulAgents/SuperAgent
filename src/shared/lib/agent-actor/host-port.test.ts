@@ -10,6 +10,7 @@ function handlers(events: Partial<HostEventHandlers> = {}, calls: Partial<HostCa
       computerUseWindowApp: vi.fn(async () => undefined),
       computerUseAppIcon: vi.fn(async () => null),
       hostScript: vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '' })),
+      loginRequest: vi.fn(async () => ({ action: 'none' as const })),
       ...calls,
     },
     events: {

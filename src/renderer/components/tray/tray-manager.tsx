@@ -17,6 +17,10 @@ interface TrayManagerProps {
   browserActive: boolean
   /** Wide-screen file previews split the layout by default; Agent Home opts into an overlay. */
   filePreviewWideLayout?: 'split' | 'overlay'
+  /** Draw the drawer at its minimum width while true. */
+  narrowDrawer?: boolean
+  /** Called as the person drags the drawer's edge. */
+  onDrawerResize?: () => void
 }
 
 export function TrayManager({
@@ -24,6 +28,8 @@ export function TrayManager({
   sessionId,
   browserActive,
   filePreviewWideLayout = 'split',
+  narrowDrawer = false,
+  onDrawerResize,
 }: TrayManagerProps) {
   const filePreview = useFilePreview()
   const hasOpenFiles = filePreview.openTabs.length > 0 && filePreview.isOpen
@@ -226,6 +232,8 @@ export function TrayManager({
       responsiveFullWidth={activeTray?.id === 'files'}
       wideOverlay={activeTray?.id === 'files' && filePreviewWideLayout === 'overlay'}
       fullScreen={isExpanded && activeTray?.id === 'browser'}
+      narrow={narrowDrawer}
+      onResize={onDrawerResize}
     >
       <div className="flex flex-1 min-h-0">
         <div className="flex-1 flex flex-col min-w-0 min-h-0">

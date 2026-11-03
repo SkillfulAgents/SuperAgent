@@ -21,7 +21,7 @@ import {
 } from '@shared/lib/services/webhook-trigger-service'
 import { updateWebhookTriggerInputSchema, type WebhookTriggerUpdateInput } from '@shared/lib/services/automation-update-schema'
 import { extractEndpointUrl } from '@shared/lib/services/webhook-endpoint-schema'
-import { errorMessage, parseToolInput, rejected, resolved, sessionOwnerOf } from './host-tool-result'
+import { agentModelChoice, errorMessage, parseToolInput, rejected, resolved, sessionOwnerOf } from './host-tool-result'
 import { resolvePlatformMemberForSession } from './platform-member'
 
 /** Composio triggers need platform Composio, and their events arrive through the webhook relay. */
@@ -104,6 +104,13 @@ export async function setupTrigger({ agentSlug, sessionId, toolUseId, input: raw
       return rejected(`Invalid trigger type "${input.trigger_type}" for this account.${suggestion}`)
     }
 
+    let modelChoice: { model?: string; llmProviderId?: string }
+    try {
+      modelChoice = await agentModelChoice(agentSlug, input.model)
+    } catch (error) {
+      return rejected(errorMessage(error))
+    }
+
     // The proxy scopes the subscription to the acting member of THIS mint
     // request (ambient ALS), which is not always the session creator
     // (SUP-765). Host tools run off the stream loop with no guaranteed ALS
@@ -135,7 +142,7 @@ export async function setupTrigger({ agentSlug, sessionId, toolUseId, input: raw
         createdBySessionId: sessionId,
         createdByUserId: await sessionOwnerOf(agentSlug, sessionId),
         mintedByMemberId,
-        model: input.model,
+        ...modelChoice,
         effort: input.effort,
         speed: input.speed,
       })

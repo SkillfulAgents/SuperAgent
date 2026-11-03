@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from 'react'
 import { Button } from '@renderer/components/ui/button'
 import { useSettings, useStartRunner, useRefreshAvailability } from '@renderer/hooks/use-settings'
 import { useRuntimeStatus } from '@renderer/hooks/use-runtime-status'
-import { getPlatform } from '@renderer/lib/env'
+import { serverFacts } from '@renderer/lib/facts'
 import { Wsl2InstallGuide } from './wsl2-install-guide'
 import { RequestError } from '@shared/lib/tools/requests/request-error'
 import { RunnerSetupErrorPanel, getRunnerSetupPayload } from '@renderer/components/settings/runner-setup-error-panel'
@@ -89,7 +89,8 @@ export function DockerSetupStep({ onCanProceedChange }: DockerSetupStepProps) {
   const hasBuiltin = runtimeStatuses.some((r) => r.runner === 'lima' || r.runner === 'wsl2')
   const showAllOptions = showMoreOptions || !hasBuiltin
 
-  const isWindows = getPlatform() === 'win32'
+  // The runtime is installed on the machine running the API, not necessarily this one.
+  const isWindows = serverFacts()?.os === 'win32'
   const wsl2Runtime = runtimeStatuses.find((r) => r.runner === 'wsl2')
   const showWsl2Guide = isWindows && wsl2Runtime && !wsl2Runtime.installed
 

@@ -440,4 +440,106 @@ describe('browser_get_state screenshot delivery', () => {
     expect(String(result.content[0].text)).toContain('**Error (screenshot):** no screenshot path returned')
     expect(result.isError).toBeUndefined()
   })
+
+  it('always asks for a new image, never the unchanged answer', async () => {
+    const bodies: Array<Record<string, unknown>> = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/browser/screenshot')) bodies.push(JSON.parse(String(init?.body)))
+      return json({ error: 'x' }, 400)
+    }))
+    const tool = createBrowserTools(() => 's').find(t => t.name === 'browser_get_state') as any
+    await tool.handler({})
+    expect(bodies[0]).toMatchObject({ full: false, force: true })
+  })
+})
+
+describe('SUP-1265 tools', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+  const toolNamed = (name: string) => createBrowserTools(() => 's').find(t => t.name === name) as any
+
+  it('browser_screenshot names the earlier file instead of attaching an unchanged image', async () => {
+    const bodies: Array<Record<string, unknown>> = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)))
+      return json({ success: true, unchanged: true, previousPath: '/s/screenshot-1.png', previousAgeMs: 40_000, pixelChangeRatio: 0 })
+    }))
+    const result = await toolNamed('browser_screenshot').handler({ full: false, annotate: false, force: false })
+    expect(result.content).toHaveLength(1)
+    expect(result.content[0].text).toBe('Screenshot unchanged: no pixel differs from /s/screenshot-1.png (captured 40s ago), so no new image is attached. Read that file if it is not in your context; force=true captures a new one.')
+    expect(bodies[0]).toMatchObject({ force: false })
+  })
+
+  it('browser_screenshot takes the path the server returns for a changed capture', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json({ success: true, path: '/nonexistent/s-2.png' })))
+    const result = await toolNamed('browser_screenshot').handler({})
+    expect(result.content.at(-1).text).toBe('Screenshot saved to: /nonexistent/s-2.png')
+  })
+
+  it('browser_read forwards outline/section and returns the text', async () => {
+    const bodies: Array<Record<string, unknown>> = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      expect(String(url)).toMatch(/\/browser\/read$/)
+      bodies.push(JSON.parse(String(init?.body)))
+      return json({ success: true, text: '[page] https://a.com/ · "A" · HTTP 200 · complete\n\n# A\n\nBody', chars: 9 })
+    }))
+    const result = await toolNamed('browser_read').handler({ outline: false, section: 'Pricing' })
+    expect(bodies[0]).toMatchObject({ outline: false, section: 'Pricing' })
+    expect(result.content[0].text).toBe('[page] https://a.com/ · "A" · HTTP 200 · complete\n\n# A\n\nBody')
+  })
+
+  it('browser_capture_traffic starts, and on stop returns the server summary', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body))
+      return body.action === 'start'
+        ? json({ success: true, started: true, url: 'https://shop.com/' })
+        : json({ success: true, path: '/workspace/captures/x.har', requestCount: 3, summary: 'Saved 3 requests recorded over 5s to /workspace/captures/x.har.' })
+    }))
+    expect((await toolNamed('browser_capture_traffic').handler({ action: 'start' })).content[0].text)
+      .toBe('Recording network traffic in this tab (started on https://shop.com/). Do the steps to record, then call browser_capture_traffic with action="stop".')
+    expect((await toolNamed('browser_capture_traffic').handler({ action: 'stop', label: 'x' })).content[0].text)
+      .toBe('Saved 3 requests recorded over 5s to /workspace/captures/x.har.')
+  })
+
+  it('browser_click says when it used the human-like path, and shows the tree changes', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json({
+      success: true, settleMs: 300, humanInput: true,
+      digest: { url: 'https://a.com/', navigated: false, firstObservation: false },
+      effect: { opened: [], closed: [], interactiveDelta: 2, stateChanged: true, announced: [], textChanged: false, textDelta: 0, focus: 'button "Menu"', focusChanged: true, focusValueChanged: false, focusValue: '', focusValueChars: 0 },
+      treeDiff: {
+        diff: {
+          added: [{ ref: 'e18', text: 'link "Menu A" [ref=e18]', name: 'Menu A', attrs: [], value: '', parent: null }],
+          returned: [],
+          rerendered: [],
+          changed: [{ line: { ref: 'e7', text: 'button "Menu" [expanded=true, ref=e7]', name: 'Menu', attrs: ['expanded=true'], value: '', parent: null }, was: 'expanded: false → true' }],
+          removed: [],
+        },
+        baselineAgeMs: 3000,
+        baselineSource: 'snapshot',
+      },
+    })))
+    const text = (await toolNamed('browser_click').handler({ ref: '@e7' })).content[0].text
+    expect(text).toBe(
+      'Clicked @e7. (human-like mouse path: this site served a challenge page)\nURL unchanged (https://a.com/).\n' +
+      'Effect: focus: button "Menu"\nTree changes since your snapshot 3s ago (1 added, 1 changed):\n~ button "Menu" [expanded=true, ref=e7] (expanded: false → true)\n+ link "Menu A" [ref=e18]',
+    )
+  })
+
+  it('browser_fill reports what the fill set off, and stays quiet when nothing else changed', async () => {
+    const effect = { opened: [], closed: [], interactiveDelta: 0, stateChanged: false, announced: ['Enter a valid email'], textChanged: false, textDelta: 0, focus: 'textbox "Email"', focusChanged: true, focusValueChanged: true, focusValue: 'nope', focusValueChars: 4 }
+    vi.stubGlobal('fetch', vi.fn(async () => json({ success: true, settleMs: 200, committedValue: 'nope', effect })))
+    expect((await toolNamed('browser_fill').handler({ ref: '@e15', value: 'nope' })).content[0].text)
+      .toBe('Filled @e15.\nField value verified: "nope".\nEffect: announced: "Enter a valid email"')
+    vi.stubGlobal('fetch', vi.fn(async () => json({ success: true, settleMs: 200, committedValue: 'nope', effect: { ...effect, announced: [] } })))
+    expect((await toolNamed('browser_fill').handler({ ref: '@e15', value: 'nope' })).content[0].text)
+      .toBe('Filled @e15.\nField value verified: "nope".')
+  })
+
+  it('registers the two new tools', () => {
+    const names = createBrowserTools(() => 's').map(t => t.name)
+    expect(names).toContain('browser_read')
+    expect(names).toContain('browser_capture_traffic')
+  })
 })

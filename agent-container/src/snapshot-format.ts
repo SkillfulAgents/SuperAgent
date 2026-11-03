@@ -112,14 +112,38 @@ export function formatIframePlaceholders(iframes: IframeInfo[], tree = ''): stri
  * a truncated head plus guidance to scope — far better than the hard error
  * the cap produces (which leaves the agent with nothing).
  */
-export function capSnapshot(text: string, scopeUsed: boolean): string {
+export function capSnapshot(text: string, scopeUsed: boolean, openDialog?: { kind: string; name: string }): string {
   if (text.length <= SNAPSHOT_SOFT_CAP_CHARS) return text
+  // An open dialog is what the agent is most likely after, and the one region
+  // whose selector is known: name it first.
+  const dialogHint = openDialog
+    ? `A ${openDialog.kind}${openDialog.name ? ` ${JSON.stringify(openDialog.name.slice(0, 60))}` : ''} is open: scope="[role=${openDialog.kind === 'alertdialog' ? 'alertdialog' : 'dialog'}]" or "dialog[open]" targets it (the first match in the page). `
+    : ''
   const scopeHint = scopeUsed
     ? 'Even scoped, this region is large — pass a tighter scope selector.'
-    : 'Pass scope="<css selector>" (e.g. "form", "#main", ".modal", a dialog selector) to target just the region you need.'
+    : `${dialogHint}Pass scope="<css selector>" (e.g. "form", "#main", ".modal", a dialog selector) to target just the region you need.`
   return (
     `${text.slice(0, SNAPSHOT_SOFT_CAP_CHARS)}\n` +
     `…[snapshot truncated — ${text.length} chars total, showing ${SNAPSHOT_SOFT_CAP_CHARS}. ${scopeHint}]`
+  )
+}
+
+/**
+ * Cap browser_read text the same way, cutting at a line break, and name the
+ * two ways to get the rest: the outline and a section by heading.
+ * `collectTruncated`: the page reader itself stopped collecting, so the
+ * total is a lower bound.
+ */
+export function capReadText(text: string, opts: { collectTruncated?: boolean } = {}): string {
+  const more = opts.collectTruncated ? 'more than ' : ''
+  if (text.length <= SNAPSHOT_SOFT_CAP_CHARS) {
+    return opts.collectTruncated ? `${text}\n…[the page has ${more}${text.length} chars of text; the reader stopped there]` : text
+  }
+  const nl = text.lastIndexOf('\n', SNAPSHOT_SOFT_CAP_CHARS)
+  const at = nl > SNAPSHOT_SOFT_CAP_CHARS * 0.8 ? nl : SNAPSHOT_SOFT_CAP_CHARS
+  return (
+    `${text.slice(0, at)}\n` +
+    `…[text truncated — ${more}${text.length} chars total, showing ${at}. outline:true lists the headings; section:"<heading text>" returns one section]`
   )
 }
 
@@ -352,7 +376,7 @@ export function formatTextFooter(obs: PageObservation, opts: { fullText: boolean
     const preview = previewText ? ` Starts: ${JSON.stringify(previewText)}` : ''
     parts.push(
       `Page text (~${obs.textChars.toLocaleString('en-US')} chars ${where}) is NOT in this interactive view — prices, prose, errors, table values are all dropped.${preview}\n` +
-      `To read it: browser_snapshot with fullText:true (add scope:"<css selector>" to keep it small). Refs are the same in both views.`
+      `To read it: browser_read for the text alone (articles, docs, results), or browser_snapshot with fullText:true for text beside refs (forms, errors next to fields; add scope:"<css selector>" to keep it small). Refs are the same in both snapshot views.`
     )
   }
   return parts.length > 0 ? `\n\n${parts.join('\n')}` : ''

@@ -8,6 +8,7 @@
  * Composed from the agent's live sessions, its container client and its
  * session store, all inside the actor.
  */
+import { background } from '@shared/lib/background'
 import { MessageNotAcceptedError } from '@shared/lib/container/message-dispatch-error'
 import type { ContainerSession, SendMessageOptions, SendMessageResult } from '@shared/lib/container/types'
 import { getSettings } from '@shared/lib/config/settings'
@@ -152,7 +153,6 @@ export function createSessionDelivery(
       if (request.cancelAwaiting) await live.cancelAwaitingInput(sessionId)
       // Decided with the mark, nothing awaited between: a turn that started
       // while this send waited its turn, or that the attach revealed, counts.
-      if (request.ifIdle && live.isActive(sessionId)) return { status: 'busy' }
       const mark = live.markSending(sessionId)
       // A message joining a running turn must not carry the runtime: the
       // container treats a change as an interrupt and restart of the turn.
@@ -235,14 +235,14 @@ export function createSessionDelivery(
       // Answered at the deadline, when the caller may already be gone: the
       // session is revoked the moment it lands, not left running for the
       // caller's retry to duplicate.
-      creating.then((late) => revoke(late.id), () => {})
+      background(creating.then((late) => revoke(late.id), () => {}), { name: 'session-delivery.revoke-late-session' })
       throw new StartError('created-late', true, 'The session was not created before its deadline')
     }
     const session = created
     const sessionId = session.id
 
     const commands = session.slashCommands?.length ? session.slashCommands : undefined
-    const metadata: Partial<SessionMetadata> = { ...request.metadata, ...(commands ? { slashCommands: commands } : {}) }
+    const metadata: Partial<SessionMetadata> = { ...request.metadata }
     // Create started the turn. Marked first, so a result replayed during the
     // attach lands on an active session instead of reading as settled.
     live.markActive(sessionId)
@@ -273,7 +273,14 @@ export function createSessionDelivery(
       }
       throw new StartError('attach-failed', true, errorMessage(error), { cause: error })
     }
-    if (commands) live.setSlashCommands(sessionId, commands)
+    if (commands) {
+      live.setSlashCommands(sessionId, commands)
+      try {
+        await deps.sessionService.storeAgentSlashCommands(store, commands)
+      } catch (error) {
+        console.error(`[SessionDelivery] Failed to store the slash commands of session ${sessionId}:`, error)
+      }
+    }
     return session
   }
 

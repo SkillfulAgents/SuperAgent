@@ -36,6 +36,7 @@ const KIND_TO_CARD_TYPE: Record<UserInputRequestKind, UserRequestEvent['type'] |
   file: 'file_request',
   remote_mcp: 'remote_mcp_request',
   browser_input: 'browser_input_request',
+  login: 'login_request',
   script_run: 'script_run_request',
   capability_review: 'capability_review_request',
   computer_use: 'computer_use_request',

@@ -19,6 +19,9 @@ export type FileCategory =
   | 'model'
   | 'other'
 
+/** The zip download limit and the per-file unpack limit: 5 MB as the drawer header counts sizes. */
+export const MAX_ZIP_BYTES = 5 * 1024 * 1024
+
 /** The renderer that can show a file in the preview drawer. */
 export type PreviewKind =
   | 'markdown'
@@ -29,6 +32,7 @@ export type PreviewKind =
   | 'video'
   | 'audio'
   | 'pdf'
+  | 'archive'
 
 interface FileTypeGroup {
   category: FileCategory
@@ -91,13 +95,12 @@ const FILE_TYPES: readonly FileTypeGroup[] = [
 
   { category: 'presentation', exts: ['ppt', 'pptx', 'odp', 'fodp', 'key'] },
 
-  // `avif` sits with the rest: Chromium decodes it in an <img> like any other,
-  // and it was previously listed as unpreviewable only here — the Markdown image
-  // transform had always inlined it. One of the two had to be wrong.
-  { category: 'image', preview: 'image', exts: ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico', 'avif'] },
-  // No renderer here can draw these. `tiff` and `heic` in particular are the
-  // ones browsers report an `image/*` MIME for and then refuse to display.
-  { category: 'image', exts: ['tif', 'tiff', 'heic', 'psd', 'ai', 'eps', 'indd', 'sketch', 'fig'] },
+  // HEIC/HEIF are converted to JPEG by the authenticated inline-file route;
+  // every other format in this group is decoded directly by Chromium.
+  { category: 'image', preview: 'image', exts: ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico', 'avif', 'heic', 'heif'] },
+  // No renderer here can draw these. TIFF in particular is commonly reported
+  // as image/* by browsers even though Chromium refuses to display it.
+  { category: 'image', exts: ['tif', 'tiff', 'psd', 'ai', 'eps', 'indd', 'sketch', 'fig'] },
 
   { category: 'video', preview: 'video', exts: ['mp4', 'mov', 'webm', 'm4v', 'ogv'] },
   { category: 'video', exts: ['avi', 'mkv', 'mpg', 'mpeg', 'wmv', 'flv', '3gp', '3g2', 'asf', 'rm', 'swf'] },
@@ -105,10 +108,11 @@ const FILE_TYPES: readonly FileTypeGroup[] = [
   { category: 'audio', preview: 'audio', exts: ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'oga', 'opus', 'flac', 'weba'] },
   { category: 'audio', exts: ['aif', 'aiff', 'mid', 'midi', 'wma'] },
 
+  { category: 'archive', preview: 'archive', exts: ['zip', 'agent', 'skill'] },
   {
     category: 'archive',
     exts: [
-      'zip', 'zipx', '7z', '7zip', 'rar', 'gz', 'tgz', 'tar', 'bz2', 'xz', 'sitx', 'dmg', 'pkg', 'apk', 'apkm',
+      'zipx', '7z', '7zip', 'rar', 'gz', 'tgz', 'tar', 'bz2', 'xz', 'sitx', 'dmg', 'pkg', 'apk', 'apkm',
       'apks', 'xapk', 'aab', 'jar',
     ],
   },
@@ -138,6 +142,7 @@ function extensionsFor(preview: PreviewKind): string[] {
 
 /** Extensions the image renderer can display, so also the ones treated as pictures. */
 const IMAGE_EXTS = new Set(extensionsFor('image'))
+const CONVERTED_IMAGE_EXTS = new Set(['heic', 'heif'])
 
 /** Lowercased basename, with any trailing slash and directory prefix removed. */
 function baseName(filePath: string): string {
@@ -192,11 +197,16 @@ export function isPreviewableImage(filePath: string): boolean {
   return !filePath.endsWith('/') && previewKind(filePath) === 'image'
 }
 
+export function requiresImagePreviewConversion(filePath: string): boolean {
+  return CONVERTED_IMAGE_EXTS.has(extensionOf(baseName(filePath)))
+}
+
 const BINARY_EXTS = new Set([
   ...[...IMAGE_EXTS].filter(ext => ext !== 'svg'),
   ...extensionsFor('video'),
   ...extensionsFor('audio'),
-  'pdf', 'zip', 'tar', 'gz', 'tgz', 'bz2', 'xz', '7z', 'rar',
+  ...extensionsFor('archive'),
+  'pdf', 'tar', 'gz', 'tgz', 'bz2', 'xz', '7z', 'rar',
   'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
   'exe', 'dll', 'so', 'dylib', 'bin', 'wasm', 'class', 'jar',
   'db', 'sqlite', 'sqlite3',

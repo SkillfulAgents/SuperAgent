@@ -80,6 +80,11 @@ llm.post('/v1/messages', async (c) => {
   delete body.api_key
   delete body.auth_token
   delete body.base_url
+  // API version 2026-10-21 rejects these even at their defaults, and Claude
+  // 4.7+ only ever sampled with the defaults; dashboard code may still pass them.
+  delete body.temperature
+  delete body.top_p
+  delete body.top_k
 
   if (!body.messages || !Array.isArray(body.messages)) {
     return c.json({ error: 'Missing required field: messages' }, 400)

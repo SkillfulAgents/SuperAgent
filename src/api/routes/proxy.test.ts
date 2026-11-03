@@ -100,6 +100,7 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
     withdraw: vi.fn(),
     resume: (...args: unknown[]) => mockResumeReview(...args),
     settle: (slug: string, id: string, decision: string) => mockSettleReview(slug, id, decision),
+    takeDenyReason: vi.fn(),
   },
 }))
 
@@ -1563,6 +1564,42 @@ describe('proxy target path canonicalisation', () => {
     const { targetUrl } = mockMakeApiCall.mock.calls[0][0]
     expect(targetUrl).toBe('https://gitlab.com/api/v4/projects/group%2Fproject/issues')
   })
+
+  it.each([
+    ['GET', '', 'spreadsheets.readonly'],
+    ['PUT', '', 'spreadsheets'],
+    ['POST', ':append', 'spreadsheets'],
+    ['POST', ':clear', 'spreadsheets'],
+  ])('classifies and forwards Sheets %s range requests ending in %s', async (method, suffix, scope) => {
+    useAccount('googlesheets')
+    const path = `v4/spreadsheets/id/values/'October%2F2026'!A1%3AB2${suffix}`
+    const query = '?valueInputOption=RAW'
+    const res = await send(`sheets.googleapis.com/${path}${query}`, method)
+    expect(res.status).toBe(200)
+    const match = mockResolveApiPolicy.mock.calls[0][1]
+    expect(match.matched).toBe(true)
+    expect(match.scopes).toContain(scope)
+    expect(match.endpointDescription).toBeTruthy()
+    expect(mockMakeApiCall.mock.calls[0][0].targetUrl).toBe(`https://sheets.googleapis.com/${path}${query}`)
+    expect(mockInsertValues.mock.calls[0][0].targetPath).toBe(
+      `v4/spreadsheets/id/values/'October%2F2026'!A1:B2${suffix}`,
+    )
+  })
+
+  it('cannot bypass a Sheets scope policy with an encoded slash in the range', async () => {
+    useAccount('googlesheets')
+    // Unmatched calls are allowed here: losing the scope would incorrectly forward this write.
+    mockResolveApiPolicy.mockImplementation(async (_accountId: string, match: { matched: boolean; scopes: string[] }) => ({
+      decision: match.scopes.includes('spreadsheets') ? 'block' : 'allow',
+      matchedScopes: match.scopes,
+      scopeDescriptions: {},
+      resolvedFrom: match.matched ? 'scope_policy' : 'account_default',
+    }))
+    const res = await send("sheets.googleapis.com/v4/spreadsheets/id/values/'October%2F2026'!A1:B2:append")
+    expect(res.status).toBe(403)
+    expect((await res.json()).error).toBe('blocked_by_policy')
+    expect(mockMakeApiCall).not.toHaveBeenCalled()
+  })
 })
 
 // ===========================================================================
@@ -2025,9 +2062,10 @@ describe.skip('proxy fallback to Composio proxy execute (moved to composio-accou
     })
   })
 
-  it('form-encoded body returns 415 (unsupported on managed connections)', async () => {
+  it('form-encoded body is forwarded as binary_body', async () => {
     const app = await getFreshApp()
     setupRedacted()
+    mockProxyExecute.mockResolvedValue({ status: 200, data: { ok: true }, headers: {} })
 
     const res = await app.request(
       'http://localhost/api/proxy/my-agent/acc-r/slack.com/api/auth.test',
@@ -2041,10 +2079,14 @@ describe.skip('proxy fallback to Composio proxy execute (moved to composio-accou
       }
     )
 
-    expect(res.status).toBe(415)
-    expect(mockProxyExecute).not.toHaveBeenCalled()
-    const body = await res.json()
-    expect(body.error).toBe('unsupported_media_type')
+    expect(res.status).toBe(200)
+    expect(mockProxyExecute).toHaveBeenCalledTimes(1)
+    const arg = mockProxyExecute.mock.calls[0][0]
+    expect(arg.body).toBeUndefined()
+    expect(arg.binaryBody).toEqual({
+      base64: Buffer.from('foo=bar').toString('base64'),
+      content_type: 'application/x-www-form-urlencoded',
+    })
   })
 
   it('multipart body returns 415', async () => {

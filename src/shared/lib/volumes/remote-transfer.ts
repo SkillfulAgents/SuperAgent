@@ -1,6 +1,7 @@
 /** Chunk even very large incoming stream chunks into `chunkBytes` pieces, for upload
  * transports that cap each request body. */
 import { VolumeError } from './volume-error'
+import { background } from '../background'
 
 export function throwIfUploadAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new VolumeError('Upload cancelled by the client', 409)
@@ -8,7 +9,7 @@ export function throwIfUploadAborted(signal?: AbortSignal): void {
 
 export async function* uploadChunks(body: ReadableStream<Uint8Array>, chunkBytes: number, signal?: AbortSignal): AsyncGenerator<ArrayBuffer> {
   const reader = body.getReader()
-  const cancel = () => { void reader.cancel().catch(() => {}) }
+  const cancel = () => { background(reader.cancel().catch(() => {}), { name: 'remote-transfer.cancel-upload-reader' }) }
   signal?.addEventListener('abort', cancel, { once: true })
   let buffer = new Uint8Array(chunkBytes)
   let used = 0

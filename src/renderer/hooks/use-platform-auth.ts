@@ -33,7 +33,10 @@ function triggerPlatformSkillsetSync(queryClient: QueryClient): void {
     method: 'POST',
     body: JSON.stringify({ provider: 'platform' }),
   })
-    .then(() => queryClient.invalidateQueries({ queryKey: ['skillsets'] }))
+    .then(() => {
+      queryClient.invalidateQueries({ queryKey: ['skillsets'] })
+      queryClient.invalidateQueries({ queryKey: ['discoverable-agents'] })
+    })
     .catch(() => {})
 }
 

@@ -40,7 +40,7 @@ vi.mock('@renderer/lib/os-notifications', () => ({
 }))
 
 vi.mock('@renderer/lib/api', () => ({
-  apiFetch: vi.fn(() => Promise.resolve({ ok: true })),
+  apiFetch: vi.fn(() => Promise.resolve({ ok: true, json: async () => ({ success: true }) })),
 }))
 
 vi.mock('@renderer/router/use-route-location', () => ({
@@ -123,7 +123,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     // restoreAllMocks (afterEach) wipes the factory implementation, so
     // re-establish it: the handler does apiFetch(...).then(...) and a bare
     // undefined return would throw.
-    vi.mocked(apiFetch).mockResolvedValue({ ok: true } as unknown as Response)
+    vi.mocked(apiFetch).mockResolvedValue({ ok: true, json: async () => ({ success: true }) } as unknown as Response)
   })
 
   afterEach(() => {
@@ -430,7 +430,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     // No OS popup (the user is watching it live), but the backend-created
     // record is marked read so the unread badge doesn't inflate.
     expect(showOSNotification).not.toHaveBeenCalled()
-    expect(apiFetch).toHaveBeenCalledWith('/api/notifications/notif-9/read', { method: 'POST' })
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/api/notifications/notif-9/read', { method: 'POST' }))
   })
 
   it('also invalidates sessions query (for sidebar awaiting_input indicator)', () => {
@@ -654,6 +654,13 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
   })
 
   it('suppressed notification clears an already-cached unread dot once the record is marked read', async () => {
+    const { apiFetch } = await import('@renderer/lib/api')
+    vi.mocked(apiFetch).mockResolvedValue({ ok: true, json: async () => ({
+      success: true, readState: { count: 0, mentions: 0, agents: [{
+        slug: 'my-agent', hasUnreadNotifications: false, hasUnreadMention: false,
+        markedUnreadSessionIds: [], unreadSessionIds: [], mentionedSessionIds: [],
+      }] },
+    }) } as unknown as Response)
     Object.defineProperty(document, 'visibilityState', {
       configurable: true,
       get: () => 'visible',
@@ -993,6 +1000,17 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(queryClient.getQueryState(['agents', 'agent-a'])?.isInvalidated).toBe(true)
   })
 
+  it("volume_attention_changed refreshes every agent's drives and the drive list, so a status pill follows sync", () => {
+    queryClient.setQueryData(['mounts', 'agent-a'], [])
+    queryClient.setQueryData(['mounts', 'agent-b'], [])
+    queryClient.setQueryData(['volume-definitions'], [])
+    render(<QueryClientProvider client={queryClient}><GlobalNotificationHandler /></QueryClientProvider>)
+    simulateSSEMessage(getLatestEventSource(), { type: 'volume_attention_changed' })
+    for (const key of [['mounts', 'agent-a'], ['mounts', 'agent-b'], ['volume-definitions']]) {
+      expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true)
+    }
+  })
+
   it('agent_created invalidates visible agents and personal roles together', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
@@ -1012,7 +1030,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
   })
 
-  it('only refreshes collaboration queries on reconnect, not first open', () => {
+  it('only refreshes collaboration and drive queries on reconnect, not first open', () => {
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
 
     render(
@@ -1027,6 +1045,7 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
     expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['agent-members'] })
     expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['agent-invite-candidates'] })
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ['mounts'] })
 
     invalidateSpy.mockClear()
     es.onerror?.()
@@ -1035,6 +1054,9 @@ describe('GlobalNotificationHandler — pending-request SSE pathway', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['my-agent-roles'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agent-members'] })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['agent-invite-candidates'] })
+    // A drive's status change sent during the gap is not sent again.
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['mounts'] })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['volume-definitions'] })
     // Mount and a browser-handled reconnect are not outages.
     expect(invalidateSpy).not.toHaveBeenCalledWith({ predicate: isRefetchableAfterOutage })
   })

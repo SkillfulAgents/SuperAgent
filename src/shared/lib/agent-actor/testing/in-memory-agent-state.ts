@@ -61,7 +61,6 @@ export function createInMemoryAgentState(options: InMemoryAgentStateOptions = {}
     let state = states.get(slug)
     if (!state) {
       state = createAgentState(slug, {
-        transitions: userInputRequestManager,
         sessions: {
           store: createInMemorySessionStore(slug),
           host: createRecordingHostPort().port,

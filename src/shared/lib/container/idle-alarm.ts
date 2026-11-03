@@ -17,6 +17,7 @@
  * disabled, which is the only escalation this alarm never takes) leaves the
  * clock marked; the alarm then retries a minute later, as the old sweep did.
  */
+import { background } from '../background'
 
 export interface IdleAlarmDeps {
   /** How long the container may be idle before it sleeps, in ms; zero or less disables. Read at every arm. */
@@ -123,7 +124,7 @@ export class IdleAlarm {
   private armIn(ms: number): void {
     this.timer = setTimeout(() => {
       this.timer = null
-      void this.fire()
+      background(this.fire(), { name: 'idle-alarm.sleep-if-idle' })
     }, Math.min(ms, MAX_TIMER_MS))
     // An armed alarm is not a reason to keep the process alive.
     this.timer.unref?.()

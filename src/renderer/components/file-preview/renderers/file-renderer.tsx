@@ -1,4 +1,4 @@
-import { Suspense, lazy } from 'react'
+import { Suspense } from 'react'
 import { Loader2 } from 'lucide-react'
 import { MarkdownRenderer } from './markdown-renderer'
 import { TextRenderer } from './text-renderer'
@@ -9,8 +9,16 @@ import { AudioRenderer } from './audio-renderer'
 import { HtmlRenderer } from './html-renderer'
 import { UnsupportedRenderer } from './unsupported-renderer'
 import { previewKind } from '@renderer/lib/file-types'
+import { lazyWithReload } from '@renderer/lib/lazy-with-reload'
 
-const PdfRenderer = lazy(() => import('./pdf-renderer').then(m => ({ default: m.PdfRenderer })))
+const PdfRenderer = lazyWithReload(() => import('./pdf-renderer').then(m => ({ default: m.PdfRenderer })))
+const ArchiveRenderer = lazyWithReload(() => import('./archive-renderer').then(m => ({ default: m.ArchiveRenderer })))
+
+export const LAZY_FALLBACK = (
+  <div className="flex items-center justify-center py-12">
+    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+  </div>
+)
 
 interface FileRendererProps {
   filePath: string
@@ -53,11 +61,7 @@ export function FileRenderer({
 
     case 'pdf':
       return (
-        <Suspense fallback={
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          </div>
-        }>
+        <Suspense fallback={LAZY_FALLBACK}>
           <PdfRenderer
             key={`${filePath}:${fileUrl}`}
             url={fileUrl}
@@ -69,7 +73,14 @@ export function FileRenderer({
         </Suspense>
       )
 
+    case 'archive':
+      return (
+        <Suspense fallback={LAZY_FALLBACK}>
+          <ArchiveRenderer key={`${filePath}:${fileUrl}`} url={fileUrl} filePath={filePath} downloadUrl={downloadUrl} />
+        </Suspense>
+      )
+
     default:
-      return <UnsupportedRenderer filePath={filePath} agentSlug={agentSlug} downloadUrl={downloadUrl} />
+      return <UnsupportedRenderer filePath={filePath} downloadUrl={downloadUrl} />
   }
 }

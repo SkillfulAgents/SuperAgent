@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { appendAttachedFiles } from './attached-files'
+import { appendDashboardCommentContext } from './dashboard-comment'
+import { appendDictationNote } from './dictation-note'
 import { parseUserMessageParts } from './user-message-parts'
 
 describe('parseUserMessageParts', () => {
@@ -9,6 +12,7 @@ describe('parseUserMessageParts', () => {
       silent: false,
       attachedFiles: [],
       mountedFolders: [],
+      dashboardContext: null,
       text: 'hello',
     })
   })
@@ -22,6 +26,7 @@ describe('parseUserMessageParts', () => {
       silent: false,
       attachedFiles: ['/workspace/uploads/file.md'],
       mountedFolders: [],
+      dashboardContext: null,
       text: 'Hello',
     })
   })
@@ -35,6 +40,7 @@ describe('parseUserMessageParts', () => {
       silent: false,
       attachedFiles: [],
       mountedFolders: [{ containerPath: '/mounts/project', hostPath: '/Users/joe/project' }],
+      dashboardContext: null,
       text: 'Hello',
     })
   })
@@ -46,6 +52,7 @@ describe('parseUserMessageParts', () => {
       silent: false,
       attachedFiles: [],
       mountedFolders: [],
+      dashboardContext: null,
       text: 'just a message',
     })
   })
@@ -67,6 +74,7 @@ describe('parseUserMessageParts', () => {
       silent: false,
       attachedFiles: ['/workspace/uploads/file.md'],
       mountedFolders: [{ containerPath: '/mounts/src', hostPath: '/host/src' }],
+      dashboardContext: null,
       text: 'Check these',
     })
   })
@@ -89,7 +97,47 @@ describe('parseUserMessageParts', () => {
       silent: true,
       attachedFiles: ['/workspace/uploads/file.md'],
       mountedFolders: [],
+      dashboardContext: null,
       text: '@Mike Smith look at this',
+    })
+  })
+
+  it('drops the dictation note the agent reads after the mentions block', () => {
+    const raw = appendDictationNote([
+      '\\[Dana]: @Mike Smith meet at to',
+      '',
+      '[Attached files:]',
+      '- /workspace/uploads/file.md',
+      '',
+      '[Mentioned:]',
+      '- @Mike Smith: teammate (user id u_mike1)',
+    ].join('\n'))
+
+    expect(parseUserMessageParts(raw)).toEqual({
+      sender: 'Dana',
+      mentions: [{ kind: 'user', id: 'u_mike1', name: 'Mike Smith' }],
+      silent: false,
+      attachedFiles: ['/workspace/uploads/file.md'],
+      mountedFolders: [],
+      dashboardContext: null,
+      text: '@Mike Smith meet at to',
+    })
+  })
+
+  it('folds a dashboard comment\'s context, and keeps its screenshot as an attachment', () => {
+    const raw = appendDictationNote(appendAttachedFiles(
+      appendDashboardCommentContext('Make the bars blue', '- Dashboard: "Sales"\n```text\n-1.0s [error] boom\n```'),
+      ['/workspace/uploads/shot.png'],
+    ))
+
+    expect(parseUserMessageParts(raw)).toEqual({
+      sender: null,
+      mentions: [],
+      silent: false,
+      attachedFiles: ['/workspace/uploads/shot.png'],
+      mountedFolders: [],
+      dashboardContext: '- Dashboard: "Sales"\n```text\n-1.0s [error] boom\n```',
+      text: 'Make the bars blue',
     })
   })
 })

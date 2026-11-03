@@ -12,6 +12,12 @@ const DEFAULT_MAX_TABS = 10;
 export interface TabInfo {
   /** Stable tab id assigned by the agent-browser daemon (e.g. "t1") — does not shift when other tabs close */
   tabId: string;
+  /**
+   * The tab's CDP target id (agent-browser 0.34+). Matches Chrome's own
+   * target list exactly — the URL does not when two tabs share one, or when
+   * the daemon's copy of it is stale (host mode, Chrome's error page).
+   */
+  targetId?: string;
   /** Optional user-assigned label (tab new --label <name>) */
   label: string | null;
   url: string;
@@ -126,11 +132,11 @@ class TabManager {
     } catch { return false; }
   }
 
-  /** Find a tab whose URL matches the given URL */
+  /** Find a tab whose URL matches the given URL — one at exactly that URL (fragment included) first. */
   async findMatchingTab(url: string): Promise<TabInfo | null> {
     try {
       const tabs = await this.queryTabs();
-      return tabs.find(t => this.urlsMatch(t.url, url)) ?? null;
+      return tabs.find(t => t.url === url) ?? tabs.find(t => this.urlsMatch(t.url, url)) ?? null;
     } catch { return null; }
   }
 

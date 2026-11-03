@@ -14,8 +14,10 @@ import {
 import { captureException } from '@shared/lib/error-reporting'
 import { persistedSettingsSchema } from './settings-schema'
 import { globalInstructionsSchema } from './global-instructions-schema'
+import { teamBrainRecordSchema, type TeamBrainRecord } from './team-brain-schema'
 import { coerceApiTarget, type ApiTarget } from '@shared/lib/api-target'
-import { DEFAULT_GLOBAL_DISPATCH_SHORTCUT } from './shortcuts'
+import type { CloudServerFactsRecord } from '@shared/lib/facts/facts-schema'
+import { DEFAULT_GLOBAL_DISPATCH_SHORTCUT, LEGACY_GLOBAL_DISPATCH_SHORTCUTS } from './shortcuts'
 import { DEFAULT_API_LOG_AUTO_DELETE_DAYS } from './api-log-auto-delete'
 import type { SkillsetConfig, SkillsetCredential } from '@shared/lib/types/skillset'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
@@ -129,7 +131,7 @@ export interface AppPreferences {
   theme?: 'system' | 'light' | 'dark'
   /**
    * OS-global accelerator that opens the quick-dispatch launcher (e.g.
-   * "CommandOrControl+Shift+Space"). Read by the main process at startup and
+   * "Control+Shift+Space"). Read by the main process at startup and
    * re-registered live on change. Empty string disables the launcher.
    */
   globalDispatchShortcut?: string
@@ -310,6 +312,12 @@ export interface AppSettings {
    */
   cloudWorkspace?: CloudWorkspaceSettings
   /**
+   * Desktop-only: the cloud workspace's server facts as last heard, so a
+   * renderer driving it has them at boot without a request. Validated on read
+   * (`cloud-server-facts.ts`).
+   */
+  cloudServerFacts?: CloudServerFactsRecord
+  /**
    * Desktop platform-notifications state: the OS-notification dedup watermark
    * (newest created_at already OS-notified). Content is never mirrored locally
    * — the inbox reads live from the platform.
@@ -330,6 +338,8 @@ export interface AppSettings {
    * section). Admin-edited; readable by every signed-in user.
    */
   globalInstructions?: string
+  /** The workspace's one Team Brain (team-brain experiment). Admin-written; readable by every signed-in user. */
+  teamBrain?: TeamBrainRecord
   /**
    * Desktop-only: whether the UI drives this machine or the org's cloud
    * workspace. Main-owned rather than per-renderer so the main window and the
@@ -421,6 +431,7 @@ export interface GlobalSettingsResponse {
   shareErrorReports: boolean
   enableToolSearch: boolean
   agentCapabilities: AgentCapabilitySettings
+  teamBrain?: TeamBrainRecord
 }
 
 /**
@@ -526,6 +537,11 @@ function migrateLegacyModelDefault<T extends string | undefined>(value: T): T {
   return (value !== undefined ? (LEGACY_MODEL_DEFAULTS[value] ?? value) : value) as T
 }
 
+/** A persisted earlier default launcher shortcut follows the current default. */
+function migrateLegacyDispatchShortcut(value: string): string {
+  return LEGACY_GLOBAL_DISPATCH_SHORTCUTS.includes(value) ? DEFAULT_GLOBAL_DISPATCH_SHORTCUT : value
+}
+
 /**
  * Merge a raw, JSON-parsed settings object onto the defaults. Pure: no IO.
  * Tolerant of missing/partial fields (each is defaulted) — this is where the
@@ -561,6 +577,10 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     app: {
       ...DEFAULT_SETTINGS.app,
       ...loaded.app,
+      // One-time normalization of earlier persisted defaults → current default.
+      globalDispatchShortcut: migrateLegacyDispatchShortcut(
+        loaded.app?.globalDispatchShortcut ?? DEFAULT_GLOBAL_DISPATCH_SHORTCUT,
+      ),
       notifications: {
         ...DEFAULT_SETTINGS.app?.notifications,
         ...loaded.app?.notifications,
@@ -622,6 +642,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     shareErrorReports: loaded.shareErrorReports,
     platformAuth: loaded.platformAuth,
     cloudWorkspace: loaded.cloudWorkspace,
+    cloudServerFacts: loaded.cloudServerFacts,
     push: loaded.push,
     // Narrowed on read: an unrecognized value (hand-edited file, a future
     // version's target) must resolve to local rather than to something that
@@ -650,6 +671,13 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
       const parsed = globalInstructionsSchema.safeParse(loaded.globalInstructions)
       if (parsed.success) return parsed.data
       console.warn('Invalid globalInstructions in settings.json; ignoring it')
+      return undefined
+    })(),
+    teamBrain: (() => {
+      if (loaded.teamBrain === undefined) return undefined
+      const parsed = teamBrainRecordSchema.safeParse(loaded.teamBrain)
+      if (parsed.success) return parsed.data
+      console.warn('Invalid teamBrain in settings.json; ignoring it')
       return undefined
     })(),
   }
@@ -1004,6 +1032,11 @@ export function getAgentCapabilitySettings(): AgentCapabilitySettings {
 /** The global guidance every agent receives; '' when none is set. */
 export function getGlobalInstructions(): string {
   return getSettings().globalInstructions ?? ''
+}
+
+/** The workspace's Team Brain, or null before one is set up. */
+export function getTeamBrain(): TeamBrainRecord | null {
+  return getSettings().teamBrain ?? null
 }
 
 export { DEFAULT_SETTINGS }

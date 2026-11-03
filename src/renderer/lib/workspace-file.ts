@@ -44,11 +44,11 @@ export interface WorkspaceFile {
 
 export interface DescribeWorkspaceFileOptions {
   /**
-   * The preview tab's cache-busting token, folded into both URLs. Only the
-   * drawer has one — everywhere else a path is either immutable or re-read on
-   * its own schedule. See `getAgentFileUrl`.
+   * Cache-busting token folded into both URLs: the drawer tab's counter, or the
+   * id of the delivery a chat image belongs to. Uploads need none, since their
+   * paths are never rewritten. See `getAgentFileUrl`.
    */
-  version?: number
+  version?: number | string
 }
 
 /** Describe a workspace path for whichever surface is about to draw it. */

@@ -129,6 +129,18 @@ describe('oauth', () => {
   // discoverOAuthMetadata
   // =========================================================================
   describe('discoverOAuthMetadata', () => {
+    it('closes an unused initialize event stream before metadata discovery', async () => {
+      const cancel = vi.fn()
+      mockFetch.mockResolvedValueOnce(new Response(new ReadableStream({ cancel }), {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }))
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
+      expect(await discoverOAuthMetadata('https://mcp.example.com/mcp')).toBeNull()
+      expect(cancel).toHaveBeenCalledOnce()
+    })
+
     it('discovers metadata via 401 with WWW-Authenticate header', async () => {
       // Probe: 401 with resource_metadata
       mockFetch.mockResolvedValueOnce(
@@ -180,6 +192,9 @@ describe('oauth', () => {
           headers: { 'WWW-Authenticate': 'Bearer' },
         })
       )
+      // No RFC 9728 document; fall back to the origin's authorization metadata.
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
       // First well-known: RFC 8414
       mockFetch.mockResolvedValueOnce(
         new Response(
@@ -207,6 +222,9 @@ describe('oauth', () => {
           headers: { 'WWW-Authenticate': 'Bearer' },
         })
       )
+      // No RFC 9728 document; fall back to the origin's authorization metadata.
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
       // First well-known (RFC 8414): fails
       mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
       // Second well-known (OpenID Connect): succeeds
@@ -227,16 +245,56 @@ describe('oauth', () => {
       )
     })
 
-    it('returns null when server does not return 401 (no auth needed)', async () => {
-      // Probe: 200 OK — no auth required
+    it('returns null for a public server without protected-resource metadata', async () => {
       mockFetch.mockResolvedValueOnce(
         new Response(JSON.stringify({ jsonrpc: '2.0', result: {} }), {
           status: 200,
         })
       )
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
 
       const result = await discoverOAuthMetadata('https://mcp.example.com/mcp')
       expect(result).toBeNull()
+    })
+
+    it.each([
+      { location: 'path', status: 200 },
+      { location: 'origin', status: 200 },
+      { location: 'path', status: 401 },
+      { location: 'origin', status: 401 },
+    ])('discovers OAuth from $location metadata after initialize HTTP $status without a challenge header', async ({ location, status }) => {
+      mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({ result: {} }), { status }))
+      if (location === 'origin') mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
+      mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+        resource: 'https://mcp.example.com/mcp',
+        authorization_servers: ['https://auth.example.com'],
+        scopes_supported: ['tickets:read'],
+      }), { status: 200 }))
+      mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+        authorization_endpoint: 'https://auth.example.com/authorize',
+        token_endpoint: 'https://auth.example.com/token',
+        registration_endpoint: 'https://auth.example.com/register',
+      }), { status: 200 }))
+
+      const result = await discoverOAuthMetadata('https://mcp.example.com/mcp')
+      expect(result?.resource).toBe('https://mcp.example.com/mcp')
+      expect(result?.scopesSupported).toEqual(['tickets:read'])
+      expect(result?.metadata.registration_endpoint).toBe('https://auth.example.com/register')
+      expect(mockFetch.mock.calls[1][0]).toBe('https://mcp.example.com/.well-known/oauth-protected-resource/mcp')
+      if (location === 'origin') {
+        expect(mockFetch.mock.calls[2][0]).toBe('https://mcp.example.com/.well-known/oauth-protected-resource')
+      }
+      const initialize = JSON.parse(mockFetch.mock.calls[0][1].body as string)
+      expect(initialize.params.clientInfo.name).toBe('Gamut')
+      expect(mockFetch.mock.calls[0][1].headers.Accept).toBe('application/json, text/event-stream')
+    })
+
+    it('does not mistake a public server HTML page or invalid metadata for OAuth', async () => {
+      mockFetch.mockResolvedValueOnce(new Response('{}', { status: 200 }))
+      mockFetch.mockResolvedValueOnce(new Response('<html>Not found</html>', { status: 200 }))
+      mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({ authorization_servers: [] }), { status: 200 }))
+      expect(await discoverOAuthMetadata('https://mcp.example.com/mcp')).toBeNull()
     })
 
     it('returns null when no well-known endpoints have valid metadata', async () => {
@@ -247,6 +305,9 @@ describe('oauth', () => {
           headers: { 'WWW-Authenticate': 'Bearer' },
         })
       )
+      // No RFC 9728 document; fall back to the origin's authorization metadata.
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
       // Both well-known URLs fail
       mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
       mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
@@ -742,6 +803,9 @@ describe('oauth', () => {
           headers: { 'WWW-Authenticate': 'Bearer' },
         })
       )
+      // No RFC 9728 document; fall back to the origin's authorization metadata.
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
       // Well-known: metadata with only 'plain' supported
       mockFetch.mockResolvedValueOnce(
         new Response(
@@ -798,6 +862,9 @@ describe('oauth', () => {
           headers: { 'WWW-Authenticate': 'Bearer' },
         })
       )
+      // No RFC 9728 document; fall back to the origin's authorization metadata.
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
       // Well-known: metadata WITH a registration endpoint
       mockFetch.mockResolvedValueOnce(
         new Response(
@@ -1095,6 +1162,20 @@ describe('oauth', () => {
           }),
       },
       {
+        rejection: 'a requirement for HTTPS or loopback',
+        response: () => new Response(JSON.stringify({
+          error: 'invalid_request',
+          error_description: 'The redirect URI must use HTTPS for secure communication, except for localhost or 127.0.0.1.',
+        }), { status: 400 }),
+      },
+      {
+        rejection: 'a redirect outside the allowed patterns',
+        response: () => new Response(JSON.stringify({
+          error: 'invalid_request',
+          error_description: "Redirect URI 'superagent://mcp-oauth-callback' does not match allowed patterns.",
+        }), { status: 400 }),
+      },
+      {
         rejection: 'a redirect error parameter',
         response: () =>
           new Response(null, {
@@ -1179,6 +1260,9 @@ describe('oauth', () => {
           headers: { 'WWW-Authenticate': 'Bearer' },
         })
       )
+      // No RFC 9728 document; fall back to the origin's authorization metadata.
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
       mockFetch.mockResolvedValueOnce(
         new Response(
           JSON.stringify({
@@ -1205,7 +1289,7 @@ describe('oauth', () => {
       const url = new URL(result!.authorizationUrl)
       expect(url.searchParams.get('client_id')).toBe('byo-client-id')
       // No registration request should have been made
-      expect(mockFetch).toHaveBeenCalledTimes(2)
+      expect(mockFetch.mock.calls.some(([requestUrl]) => requestUrl === 'https://auth.example.com/register')).toBe(false)
     })
 
     it('succeeds with provided clientId even when registration_endpoint is absent', async () => {
@@ -1216,6 +1300,9 @@ describe('oauth', () => {
           headers: { 'WWW-Authenticate': 'Bearer' },
         })
       )
+      // No RFC 9728 document; fall back to the origin's authorization metadata.
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
       mockFetch.mockResolvedValueOnce(
         new Response(
           JSON.stringify({
@@ -1249,6 +1336,9 @@ describe('oauth', () => {
           headers: { 'WWW-Authenticate': 'Bearer' },
         })
       )
+      // No RFC 9728 document; fall back to the origin's authorization metadata.
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
       mockFetch.mockResolvedValueOnce(
         new Response(
           JSON.stringify({

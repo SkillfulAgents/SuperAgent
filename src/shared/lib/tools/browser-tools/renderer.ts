@@ -1,7 +1,9 @@
 import { defineToolRenderer } from '../renderer-types'
 import {
+  BookOpen,
   Braces,
   Download,
+  Network,
   Globe,
   MousePointerClick,
   TextCursorInput,
@@ -14,7 +16,7 @@ import {
   Terminal,
 } from 'lucide-react'
 import {
-  browserOpenDef, browserCloseDef, browserSnapshotDef,
+  browserOpenDef, browserCloseDef, browserSnapshotDef, browserReadDef, browserCaptureTrafficDef,
   browserClickDef, browserFillDef, browserScrollDef,
   browserWaitDef, browserPressDef, browserTypeDef, browserScreenshotDef,
   browserSelectDef, browserHoverDef, browserDownloadDef, browserEvalDef, browserRunDef,
@@ -28,6 +30,12 @@ export const browserCloseRenderer = defineToolRenderer(browserCloseDef, {
 })
 export const browserSnapshotRenderer = defineToolRenderer(browserSnapshotDef, {
   icon: Camera,
+})
+export const browserReadRenderer = defineToolRenderer(browserReadDef, {
+  icon: BookOpen,
+})
+export const browserCaptureTrafficRenderer = defineToolRenderer(browserCaptureTrafficDef, {
+  icon: Network,
 })
 export const browserClickRenderer = defineToolRenderer(browserClickDef, {
   icon: MousePointerClick,

@@ -9,27 +9,6 @@ const ShowInFolderPath = z.string().min(1)
 
 // todo huge file - need to break up into multiple modules (tray, menu, auto-updater, host-browser provider, etc.)
 
-// Fix PATH for packaged Electron apps on macOS.
-// Without this, the app only sees /usr/bin:/bin:/usr/sbin:/sbin and can't find
-// tools like `gh` or `git` installed via Homebrew.
-if (process.platform !== 'win32') {
-  try {
-    const shellPath = execFileSync(process.env.SHELL || '/bin/zsh', ['-ilc', 'echo -n "$PATH"'], {
-      encoding: 'utf8',
-      timeout: 5000,
-      env: { ...process.env, DISABLE_AUTO_UPDATE: 'true' },
-    }).trim()
-    if (shellPath) {
-      process.env.PATH = shellPath
-    }
-  } catch {
-    // Fall back to adding common paths
-    const common = ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin']
-    const current = process.env.PATH || ''
-    process.env.PATH = [...common.filter((p) => !current.includes(p)), current].join(':')
-  }
-}
-
 import { EventSource } from 'eventsource'
 import { createTray, destroyTray, updateTrayWindow, setTrayVisible } from './tray'
 import { createAppMenu, updateAppMenuWindow, destroyAppMenu, flushPendingMenuCommands, sendMenuCommand } from './app-menu'
@@ -48,6 +27,7 @@ import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from
 import { enableKeepAwake, disableKeepAwake, cleanupKeepAwake, restoreKeepAwakeOnStartup } from './keep-awake'
 import { openDashboardWindow, installPopupHandler, installCloudDashboardAuth, closeAllDashboardWindows } from './dashboard-window'
 import { blockSrcdocFrameNavigation } from './srcdoc-frame-guard'
+import { captureRegion } from './capture-region'
 import {
   prewarmQuickDispatchWindow,
   toggleQuickDispatchWindow,
@@ -61,6 +41,7 @@ import {
   openQuickDispatchWithFile,
   drainQuickDispatchAttachPaths,
 } from './quick-dispatch-window'
+import { loadQuickDispatchGlass } from './quick-dispatch-glass'
 import { registerGlobalDispatchShortcut, unregisterGlobalDispatchShortcut } from './global-dispatch-shortcut'
 import { filesFromCommandLine } from './opened-files'
 import { parseAgentDeepLink } from './agent-deep-link'
@@ -68,6 +49,8 @@ import { planMcpOAuthCallback, parseMcpOAuthCompletionResponse } from './mcp-oau
 import { classifyImportPackage } from './import-packages'
 import { isImportPackagePath } from '@shared/lib/utils/package-extensions'
 import { safeOpenExternalFromApp } from './safe-open-external'
+import { osNotificationOptions, reviewIdOf, reviewNotificationId } from './os-notification-options'
+import { areOsNotificationsBlocked } from './notification-authorization'
 import { probeNowPlaying, pauseNowPlaying, resumeNowPlaying, releaseAllNowPlaying, watchNowPlayingHolder } from './music-control'
 import { APPLE_PASSWORDS_CHROME_EXTENSION_URL } from '@shared/lib/credentials/apple-passwords-links'
 
@@ -99,6 +82,17 @@ process.env.SUPERAGENT_IS_PACKAGED = app.isPackaged ? '1' : '0'
 // Dev is unaffected: app.name is set to 'Superagent-Dev' above (pre-resolution), so the
 // fallback below resolves dev data to `…/Superagent-Dev`. A pre-existing SUPERAGENT_DATA_DIR
 // (custom dev/CI dir) is always honored verbatim via `??=`.
+//
+// The App Sandbox build has no legacy data to keep, and its Lima VM mounts the data dir,
+// which there can't contain a space (Lima drops such a mount silently, and the VM then
+// writes into its own disk) and can't be the container root (Virtualization.framework
+// won't share it). So it uses `<container>/.superagent`, getDataDir()'s own default.
+if (runsInAppSandbox(getServerFacts())) {
+  process.env.SUPERAGENT_DATA_DIR ??= path.join(app.getPath('home'), '.superagent')
+  // A local drive's folder opens through the bookmark made when it was picked.
+  // Electron has this function only in Mac App Store builds.
+  setFolderAccessStarter((bookmark) => app.startAccessingSecurityScopedResource(bookmark) as () => void)
+}
 if (app.isPackaged) {
   process.env.SUPERAGENT_DATA_DIR ??= path.join(app.getPath('appData'), 'Superagent')
 }
@@ -136,10 +130,16 @@ import { CLOUD_PROXY_PREFIX, isCloudProxyEnabled } from '../api/routes/cloud-pro
 import { getCloudProxyKey } from '@shared/lib/services/cloud-proxy-key'
 import { resolveCloudProxyTarget } from '@shared/lib/services/cloud-proxy-target'
 import { readPreferredApiTarget } from '@shared/lib/services/api-target-preference'
-import { resolveApiTarget } from '@shared/lib/api-target'
+import { coerceApiTarget, resolveApiTarget } from '@shared/lib/api-target'
 import { applyPreferredApiTarget, resolveApiTargetForRenderer, type CloudEndpoint } from './api-target'
+import { desktopClientFacts, factsForRenderer } from './facts'
+import { clearStaleProcessSingleton } from './process-singleton'
+import { runsInAppSandbox, updatesItself } from '@shared/lib/facts/capabilities'
+import { closeLocalFolders, setFolderAccessStarter } from '@shared/lib/volumes/local-folder-access'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
 import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
+import { isAllowedRendererPermission } from './renderer-permissions'
 import { agentIntegrationManager } from '@shared/lib/agent-integrations/agent-integration-manager'
 import { getUserSettings } from '@shared/lib/services/user-settings-service'
 
@@ -201,8 +201,8 @@ function pushPendingNavigation(nav: { agentSlug: string; sessionId: string | nul
 // Strong references to Notification objects so the JS GC doesn't reap them
 // while macOS is still showing them (e.g. user opens the action dropdown
 // after the banner has been on screen for a couple of seconds). When the
-// JS object is collected, the underlying NSUserNotification listeners
-// detach and macOS routes the action click into the void.
+// JS object is collected, its click/action listeners detach and the click
+// lands nowhere (the notification itself stays in Notification Center).
 //
 // macOS doesn't always fire `close` (notifications migrate silently into
 // Notification Center), so we ALSO TTL each entry. We pick a value slightly
@@ -232,6 +232,9 @@ function dismissReviewNotification(reviewId: string): void {
     reviewNotifications.delete(reviewId)
     liveNotifications.delete(n)
   }
+  // macOS posts a review under its own id (see osNotificationOptions), so it
+  // also comes down once its object has aged out of the maps above.
+  if (process.platform === 'darwin') Notification.remove(reviewNotificationId(reviewId))
 }
 
 /**
@@ -325,6 +328,12 @@ function createWindow() {
   }
 
   mainWindow = new BrowserWindow({
+    // Electron saves this window's bounds and maximized/fullscreen state under
+    // its name and restores them here, so the size below is only the first
+    // launch's. The name is free again once the window is destroyed, which is
+    // before `closed` clears `mainWindow` and lets this run again.
+    name: 'main',
+    windowStatePersistence: true,
     width: 1280,
     height: 800,
     minWidth: 800,
@@ -351,15 +360,11 @@ function createWindow() {
     }),
   })
 
-  // Grant microphone (and camera) permissions for the renderer.
-  // Production loads from file:// where Chromium blocks getUserMedia by default.
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    const allowed = ['media', 'audioCapture', 'mediaKeySystem', 'clipboard-read', 'clipboard-sanitized-write']
-    callback(allowed.includes(permission))
+    callback(isAllowedRendererPermission(permission))
   })
   session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
-    const allowed = ['media', 'audioCapture', 'mediaKeySystem', 'clipboard-read', 'clipboard-sanitized-write']
-    return allowed.includes(permission)
+    return isAllowedRendererPermission(permission)
   })
 
   // Spellcheck context menu — show correction suggestions on right-click
@@ -419,8 +424,12 @@ function createWindow() {
   updateAutoUpdaterWindow(mainWindow)
 
   // Initialize the actual updater in production builds, or in dev when the
-  // SUPERAGENT_TEST_UPDATES=1 escape hatch is set (see auto-updater.ts).
-  if (!process.env.ELECTRON_RENDERER_URL || process.env.SUPERAGENT_TEST_UPDATES === '1') {
+  // SUPERAGENT_TEST_UPDATES=1 escape hatch is set (see auto-updater.ts). Never in
+  // a Store build, whose updates the Store delivers.
+  if (
+    updatesItself(desktopClientFacts()) &&
+    (!process.env.ELECTRON_RENDERER_URL || process.env.SUPERAGENT_TEST_UPDATES === '1')
+  ) {
     initAutoUpdater(mainWindow)
   }
 
@@ -519,6 +528,11 @@ function openDashboard(agentSlug: string, dashboardSlug: string) {
 // rather than assembling one, because half of the cloud prefix is the per-boot
 // proxy key, a secret owned by main (see cloud-proxy-key.ts).
 ipcMain.handle('get-api-target', () => activeApiTarget())
+
+// The facts a renderer gates on, for the target it settled. It passes that
+// target back rather than main re-resolving it, so a preference written in
+// between can't hand it the other Superagent's facts. See facts.ts.
+ipcMain.handle('get-facts', (_event, target: unknown) => factsForRenderer(coerceApiTarget(target), cloudEndpoint()))
 
 ipcMain.handle('set-preferred-api-target', (_event, target: unknown) => {
   applyPreferredApiTarget(target)
@@ -652,13 +666,7 @@ ipcMain.handle('show-notification', (
   },
 ) => {
   if (!Notification.isSupported()) return
-  const notification = new Notification({
-    title,
-    body,
-    ...(actions && actions.length > 0
-      ? { actions: actions.map((a) => ({ type: 'button' as const, text: a.text })) }
-      : {}),
-  })
+  const notification = new Notification(osNotificationOptions({ title, body, actions, context }))
   notification.on('click', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show()
@@ -681,14 +689,11 @@ ipcMain.handle('show-notification', (
   })
   // Track by reviewId if this is a proxy-review notification, so the SSE
   // 'user_request_resolved' handler can dismiss it later.
-  const ctxForTrack = context as { kind?: string; reviewId?: string } | undefined
-  const reviewId =
-    ctxForTrack?.kind === 'proxy_review' && typeof ctxForTrack.reviewId === 'string'
-      ? ctxForTrack.reviewId
-      : undefined
-  trackLiveNotification(notification, reviewId)
+  trackLiveNotification(notification, reviewIdOf(context))
   notification.show()
 })
+
+ipcMain.handle('get-os-notifications-blocked', () => areOsNotificationsBlocked())
 
 // Renderer pulls queued click/action events that were captured while the
 // window was closed (notifications shown by the main-process SSE fallback).
@@ -784,10 +789,27 @@ ipcMain.handle('detect-host-browser', () => {
   return { providers: detectAllProviders() }
 })
 
-// IPC handler for opening a native directory picker
-ipcMain.handle('open-directory', async () => {
-  const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
-  return result.canceled ? null : result.filePaths[0]
+// IPC handler for opening a native directory picker.
+// Without a defaultPath Electron opens the dialog in Downloads, and the OS no
+// longer remembers where the user last was. Start beside the last folder picked
+// this run, else in home: what gets mounted here is a project, not a download.
+// In the App Sandbox the pick is what grants access, and only until quit, so
+// the dialog also returns a security-scoped bookmark that reopens the folder on
+// later launches (`local-folder-access.ts`). A drive choosing its folder again
+// passes that folder, so the dialog opens in it.
+let lastPickedDirectoryParent: string | null = null
+ipcMain.handle('open-directory', async (_event, startIn?: unknown): Promise<{ path: string; bookmark?: string } | null> => {
+  const sandboxed = runsInAppSandbox(desktopClientFacts())
+  // createDirectory: macOS shows New Folder only when asked (Windows always does).
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory', 'createDirectory'],
+    defaultPath: typeof startIn === 'string' && path.isAbsolute(startIn) ? startIn : lastPickedDirectoryParent ?? app.getPath('home'),
+    ...(sandboxed ? { securityScopedBookmarks: true } : {}),
+  })
+  if (result.canceled) return null
+  lastPickedDirectoryParent = path.dirname(result.filePaths[0])
+  const bookmark = sandboxed ? result.bookmarks?.[0] : undefined
+  return { path: result.filePaths[0], ...(bookmark ? { bookmark } : {}) }
 })
 
 // IPC handler for revealing a path in the OS file manager.
@@ -853,6 +875,8 @@ function sanitizeLimit(raw: unknown): number {
 // IPC handler for getting recent files from the OS
 ipcMain.handle('get-recent-files', async (_event, rawLimit: unknown): Promise<{ name: string; path: string; thumbnail?: string }[]> => {
   const limit = sanitizeLimit(rawLimit)
+  // Spotlight in the App Sandbox sees only the app's own container.
+  if (runsInAppSandbox(desktopClientFacts())) return []
   try {
     let files: { name: string; path: string }[]
     if (process.platform === 'win32') {
@@ -977,6 +1001,10 @@ ipcMain.handle('show-emoji-panel', () => {
   app.showEmojiPanel()
 })
 
+// A PNG of a region of the asking window, in its CSS pixels: what the person
+// saw of a dashboard when they left a comment on it.
+ipcMain.handle('capture-region', (event, rect: unknown) => captureRegion(event.sender, rect))
+
 // IPC handler for opening a dashboard in a separate window
 ipcMain.handle('open-dashboard-window', (_event, { agentSlug, dashboardSlug }: { agentSlug: string; dashboardSlug: string }) => {
   openDashboard(agentSlug, dashboardSlug)
@@ -984,6 +1012,10 @@ ipcMain.handle('open-dashboard-window', (_event, { agentSlug, dashboardSlug }: {
 
 // IPC handler for creating a macOS dock shortcut for a dashboard
 ipcMain.handle('create-dock-shortcut', (_event, { agentSlug, dashboardSlug, dashboardName, iconPng }: { agentSlug: string; dashboardSlug: string; dashboardName: string; iconPng: number[] }) => {
+  // The App Sandbox lets the app write neither ~/Applications nor the Dock's preferences.
+  if (runsInAppSandbox(desktopClientFacts())) {
+    throw new Error('Adding to the Dock is not available in the Mac App Store edition')
+  }
   const iconBuffer = Buffer.from(iconPng)
 
   // Create temp directory for iconset generation
@@ -1434,18 +1466,9 @@ function startNotificationListener(): void {
           const context = data.actionContext as
             | { agentSlug?: string; sessionId?: string | null; kind?: string; reviewId?: string }
             | undefined
-          const notification = new Notification({
-            title: data.title,
-            body: data.body,
-            ...(actions && actions.length > 0
-              ? {
-                  actions: actions.map((a) => ({
-                    type: 'button' as const,
-                    text: a.text,
-                  })),
-                }
-              : {}),
-          })
+          const notification = new Notification(
+            osNotificationOptions({ title: data.title, body: data.body, actions, context }),
+          )
           notification.on('click', () => {
             // Queue navigation so the renderer routes the user to the
             // right session on mount. Also queue the click event itself
@@ -1478,11 +1501,7 @@ function startNotificationListener(): void {
           notification.on('close', () => {
             liveNotifications.delete(notification)
           })
-          const reviewId =
-            context?.kind === 'proxy_review' && typeof context.reviewId === 'string'
-              ? context.reviewId
-              : undefined
-          trackLiveNotification(notification, reviewId)
+          trackLiveNotification(notification, reviewIdOf(context))
           notification.show()
         }
       }
@@ -1521,6 +1540,10 @@ function stopNotificationListener(): void {
 
 // Start the API server and app
 async function startApp() {
+  // Load the launcher's Liquid Glass bridge alongside the boot below, so the
+  // launcher prewarm near the end of startup doesn't wait on it. Never rejects.
+  void loadQuickDispatchGlass()
+
   // The database first: SUPERAGENT_DATA_DIR is set above, and nothing below
   // (the API, the launcher, notifications) runs without a current schema.
   // A failure here is fatal and already reported; the app cannot run on an
@@ -1646,7 +1669,7 @@ async function startApp() {
 
   // Quick-dispatch launcher: pre-create the hidden panel and bind its global
   // shortcut so the first invocation appears instantly.
-  prewarmQuickDispatchWindow()
+  await prewarmQuickDispatchWindow()
   const dispatchResult = registerGlobalDispatchShortcut(settings.app?.globalDispatchShortcut, toggleQuickDispatchWindow)
   if (!dispatchResult.success) {
     console.warn(`Quick-dispatch shortcut not registered: ${dispatchResult.error}`)
@@ -1839,6 +1862,12 @@ app.on('open-file', (event, filePath) => {
 // ('SuperAgent', shared with installed builds), so a dev instance silently
 // dies whenever the installed app is running. Harnesses that use their own
 // SUPERAGENT_DATA_DIR can opt out; packaged builds never can.
+//
+// In the App Sandbox a killed launch's singleton files would otherwise refuse
+// the next launch the lock (see process-singleton.ts).
+if (runsInAppSandbox(desktopClientFacts()) && clearStaleProcessSingleton(app.getPath('userData'))) {
+  console.log('Cleared the process-singleton files of a launch that is no longer running')
+}
 const gotTheLock =
   !app.isPackaged && process.env.SUPERAGENT_DISABLE_SINGLE_INSTANCE === '1'
     ? true
@@ -1884,6 +1913,7 @@ async function gracefulShutdown() {
 
   // Restore system sleep settings (best-effort, no sudo prompt)
   cleanupKeepAwake()
+  closeLocalFolders()
 
   // Give back a music player voice mode holds paused
   await releaseAllNowPlaying()

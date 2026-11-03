@@ -6,6 +6,7 @@ import { relayAcceptResult } from '../../agent-integrations/relay-transport'
 import { getWebhookRelay, type RelayAcceptResult, type RelayEvent } from '../../webhook-relay'
 import { getAgentIntegrationSession } from '../../services/agent-integration-session-service'
 import { getPlatformAccessToken } from '../../services/platform-auth-service'
+import { background } from '../../background'
 import type { TaskEvent } from '../types'
 import { githubDefinition } from './definition'
 import { GitHubClient, GitHubApiError } from './client'
@@ -41,7 +42,7 @@ export class GitHubAgentIntegration extends TaskManagerAgentIntegration {
       this.processing = run.then(() => {}, () => {})
       return run
     })
-    void checkGitHubMcp(this.installation.id).catch(error => this.report(error, 'mcp-discovery'))
+    background(checkGitHubMcp(this.installation.id).catch(error => this.report(error, 'mcp-discovery')), { name: 'github-integration.check-mcp' })
   }
   async disconnect(): Promise<void> { ++this.generation; this.connected = false; this.attachment?.detach(); this.attachment = undefined }
   isConnected(): boolean { return this.connected && !!this.attachment?.isAttached() }

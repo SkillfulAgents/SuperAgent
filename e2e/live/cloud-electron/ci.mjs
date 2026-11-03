@@ -8,7 +8,6 @@
  *
  *   npm run build:api          # the deployment's server bundle
  *   npx electron-vite build    # the desktop app under test
- *   npx electron-rebuild -f    # better-sqlite3 on the Electron ABI
  *   node e2e/live/cloud-electron/ci.mjs
  *
  * Note the build set. `npm run build:web` is deliberately absent: it is `vite
@@ -24,7 +23,6 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import electronPath from 'electron'
 import { startStubPlatform } from './stub-platform.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url))
@@ -64,19 +62,10 @@ try {
   started.push({ name: 'stub platform', close: () => platform.close() })
   console.log(`stub platform: ${platform.url}`)
 
-  // Run the deployment under Electron's Node rather than the system one.
-  //
-  // Not a preference — the alternative does not work. `better-sqlite3` is a
-  // native module, and one `node_modules` can hold exactly one build of it: the
-  // Electron ABI for the app under test, or the Node ABI for a server started
-  // with `process.execPath`. Whichever is missing dies with `ERR_DLOPEN_FAILED`
-  // at `initDb`, and the resulting failure is a token exchange that answers 400
-  // — indistinguishable from a bad grant, which is a long way from the cause.
-  //
-  // `ELECTRON_RUN_AS_NODE=1` makes the Electron binary behave as plain Node, so
-  // the deployment loads the very same Electron-ABI build the app does. One
-  // checkout, one install, no second `npm ci` and no container.
-  const deployment = spawn(electronPath, [join(REPO_ROOT, 'dist/web/server.mjs')], {
+  // The deployment runs on plain Node, as a real web deployment does. The app
+  // under test and this server load the same better-sqlite3 binary: it is a
+  // Node-API addon, so one build serves both runtimes.
+  const deployment = spawn(process.execPath, [join(REPO_ROOT, 'dist/web/server.mjs')], {
     cwd: REPO_ROOT,
     env: {
       ...process.env,
@@ -90,7 +79,6 @@ try {
       PLATFORM_TOKEN: platform.deploymentPlatformToken,
       AUTH_PROVIDERS_JSON: platform.deploymentAuthProviders,
       E2E_MOCK: 'true',
-      ELECTRON_RUN_AS_NODE: '1',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })

@@ -632,9 +632,7 @@ describe('Chat integration E2E', () => {
       // the user to the wrong place.
       expect(sent.sessionId).toBeTruthy()
       // …and it must be the id the registry holds, not a chat-side invention.
-      const open = userInputRequestManager.getOpenRequest(
-        (sent.event as { toolUseId: string }).toolUseId,
-      )
+      const open = userInputRequestManager.getOpenRequest('test-agent', (sent.event as { toolUseId: string }).toolUseId)
       expect(open?.kind).toBe(row.kind)
       expect(open?.scope.sessionId).toBe(sent.sessionId)
       if (row.expect) expect(sent.event).toMatchObject(row.expect)
@@ -655,7 +653,7 @@ describe('Chat integration E2E', () => {
       // The id in the card is the registry's review id, so the decision routes
       // back to the entry that is actually parked.
       const reviewId = toolUseId.split(':')[1]
-      expect(userInputRequestManager.getOpenRequest(reviewId)?.kind).toBe('proxy_review')
+      expect(userInputRequestManager.getOpenRequest('test-agent', reviewId)?.kind).toBe('proxy_review')
     })
 
     it('a press on a card settled elsewhere is refused instead of buffered in the container', async () => {
@@ -663,7 +661,7 @@ describe('Chat integration E2E', () => {
       const toolUseId = (sent.event as { toolUseId: string }).toolUseId
 
       // Settled in the app while the chat card still shows live buttons.
-      expect(userInputRequestManager.resolve(toolUseId, 'answered')).not.toBeNull()
+      expect(userInputRequestManager.resolve('test-agent', toolUseId, 'answered')).not.toBeNull()
 
       const fetchSpy = vi.spyOn(mockContainerClient, 'fetch')
       mockConnector.sentMessages = []
@@ -683,7 +681,7 @@ describe('Chat integration E2E', () => {
 
       // Same id, re-parked under a different agent — the shape a forged or
       // crossed-wires payload takes. Still open, still not this chat's to decide.
-      userInputRequestManager.resolve(toolUseId, 'cancelled')
+      userInputRequestManager.resolve('test-agent', toolUseId, 'cancelled')
       userInputRequestManager.register({
         id: toolUseId,
         kind: 'secret',
@@ -700,7 +698,7 @@ describe('Chat integration E2E', () => {
 
       expect(mockConnector.sentMessages[0].message.text).toContain('already handled')
       expect(fetchSpy.mock.calls.filter(([p]) => String(p).includes('/resolve'))).toHaveLength(0)
-      expect(userInputRequestManager.getOpenRequest(toolUseId)).not.toBeNull()
+      expect(userInputRequestManager.getOpenRequest('other-agent', toolUseId)).not.toBeNull()
       fetchSpy.mockRestore()
     })
 
@@ -727,7 +725,7 @@ describe('Chat integration E2E', () => {
 
       // Settle in the app while the press is parked on the container lookup.
       await waitForCondition(() => vi.mocked(containerManager.ensureRunning).mock.calls.length > 0, 3000)
-      expect(userInputRequestManager.resolve(toolUseId, 'answered')).not.toBeNull()
+      expect(userInputRequestManager.resolve('test-agent', toolUseId, 'answered')).not.toBeNull()
       releaseContainer()
 
       // Wait on something BOTH outcomes produce, so the assertion below is what
@@ -759,7 +757,7 @@ describe('Chat integration E2E', () => {
 
       await waitForCondition(() => userInputRequestManager.stats.claimed === 0, 3000)
       // Still open, and the next press gets through.
-      expect(userInputRequestManager.getOpenRequest(toolUseId)).not.toBeNull()
+      expect(userInputRequestManager.getOpenRequest('test-agent', toolUseId)).not.toBeNull()
       const fetchSpy = vi.spyOn(mockContainerClient, 'fetch')
       mockConnector.simulateInteractiveResponse(toolUseId, 'hunter2', 'chat-1')
       await waitForCondition(
@@ -781,7 +779,7 @@ describe('Chat integration E2E', () => {
       mockConnector.simulateInteractiveResponse(toolUseId, { question: 'Pick one', answer: 'Blue' }, 'chat-1')
       await waitForCondition(() => fetchSpy.mock.calls.some(([p]) => String(p).includes('/resolve')), 3000)
 
-      expect(userInputRequestManager.getRecentResolution(toolUseId)?.outcome).toBe('answered')
+      expect(userInputRequestManager.getRecentResolution('test-agent', toolUseId)?.outcome).toBe('answered')
       expect(mockConnector.sentMessages.map(m => m.message.text).join('\n')).not.toContain('already handled')
       fetchSpy.mockRestore()
     })

@@ -44,6 +44,7 @@ import { buildSessionContextPrompt } from './chat-session-context'
 import { describeUnsupportedRequest, isUnsupportedInChat } from './utils'
 import { withSessionUrl, type AppLinkContext } from '@shared/lib/agent-integrations/app-link'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 
 // ── Gateway events ──────────────────────────────────────────────────────
 
@@ -287,7 +288,7 @@ export class IMessageConnector extends ChatAgentIntegration {
           console.log(`[IMessageConnector] Connected (${frame.data?.queuedCount ?? 0} queued events)`)
           resolve()
         }
-        void this.receiveSocketFrame(frame)
+        background(this.receiveSocketFrame(frame), { name: 'imessage-connector.receive-socket-frame' })
       })
 
       this.ws.on('error', (err) => {
@@ -879,8 +880,8 @@ export class IMessageConnector extends ChatAgentIntegration {
       this.send({ type: 'send_reaction', data: { messageId, operation: 'add', reactionType, partIndex: 0 } })
       return
     }
-    void sendGatewayReaction(this.config, { messageId, reactionType, partIndex: 0 })
-      .catch(error => console.warn('[IMessageConnector] Reaction not sent:', error))
+    background(sendGatewayReaction(this.config, { messageId, reactionType, partIndex: 0 })
+      .catch(error => console.warn('[IMessageConnector] Reaction not sent:', error)), { name: 'imessage-connector.send-reaction' })
   }
 
   private startTyping(chatId: string): void {
@@ -888,7 +889,7 @@ export class IMessageConnector extends ChatAgentIntegration {
       this.send({ type: 'start_typing', data: { chatId } })
       return
     }
-    void startGatewayTyping(this.config, chatId).catch(error => console.warn('[IMessageConnector] Typing indicator not shown:', error))
+    background(startGatewayTyping(this.config, chatId).catch(error => console.warn('[IMessageConnector] Typing indicator not shown:', error)), { name: 'imessage-connector.start-typing' })
   }
 
   /** Over HTTP, one receipt per chat for a burst of messages (like a backlog), within the gateway's rate limit. */
@@ -900,7 +901,7 @@ export class IMessageConnector extends ChatAgentIntegration {
     if (this.readReceipts.has(chatId)) return
     this.readReceipts.set(chatId, setTimeout(() => {
       this.readReceipts.delete(chatId)
-      void markGatewayChatRead(this.config, chatId).catch(error => console.warn('[IMessageConnector] Read receipt not sent:', error))
+      background(markGatewayChatRead(this.config, chatId).catch(error => console.warn('[IMessageConnector] Read receipt not sent:', error)), { name: 'imessage-connector.mark-read' })
     }, IMessageConnector.READ_RECEIPT_DELAY_MS))
   }
 
@@ -955,12 +956,12 @@ export class IMessageConnector extends ChatAgentIntegration {
     console.log(`[IMessageConnector] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`)
     this.reconnectTimer = setTimeout(() => {
       if (this.disconnecting) return
-      this.doConnect().catch((err) => {
+      background(this.doConnect().catch((err) => {
         console.error('[IMessageConnector] Reconnect failed:', err)
         captureException(err, { tags: { component: 'chat-integration', operation: 'imessage-reconnect' } })
         this.emitError(err instanceof Error ? err : new Error(String(err)))
         this.scheduleReconnect()
-      })
+      }), { name: 'imessage-connector.reconnect' })
     }, delay)
   }
 }

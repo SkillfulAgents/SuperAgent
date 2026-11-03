@@ -42,14 +42,14 @@ import { readWidgetLogTail } from './widget-service'
 export const REPAIR_COOLDOWN_MS = 6 * 60 * 60 * 1000
 
 /**
- * Agents with a repair being opened right now. The durable guards are read
- * from disk and the session takes seconds to create, so two widgets of the
- * same agent failing in the same sweep would both pass "is the agent busy?"
- * before either had a session to be busy with. Held synchronously across the
- * whole call, so the second one loses the race rather than opening a second
+ * The agent's lock while a repair is being opened. The durable guards are
+ * read from disk and the session takes seconds to create, so two widgets of
+ * the same agent failing in the same sweep would both pass "is the agent
+ * busy?" before either had a session to be busy with. Held across the whole
+ * call, so the second one loses the race rather than opening a second
  * session for an agent that already has one.
  */
-const opening = new Set<string>()
+const OPENING_LOCK = 'widget-repair'
 
 export type RepairSkipReason =
   | 'agent-busy'
@@ -116,17 +116,20 @@ export async function openWidgetRepairSession(
   error: string,
   now: number = Date.now(),
 ): Promise<RepairOutcome> {
-  // The agent is mid-turn: it may be editing this widget right now, and its
-  // own refresh_widget call already told it what broke.
-  // Nothing awaits between the check and the add: one repair opens at a time.
-  if ((await agentRegistry.get(agentSlug).live()).activeSessionIds.length > 0 || opening.has(agentSlug)) {
-    return { started: false, reason: 'agent-busy' }
-  }
-  opening.add(agentSlug)
+  // One repair opens at a time, and every check below runs under the lock,
+  // so it sees the repair the previous holder just opened.
+  const actor = agentRegistry.get(agentSlug)
+  const opening = await actor.locks.tryAcquire(OPENING_LOCK)
+  if (!opening) return { started: false, reason: 'agent-busy' }
   try {
+    // The agent is mid-turn: it may be editing this widget right now, and its
+    // own refresh_widget call already told it what broke.
+    if ((await actor.live()).activeSessionIds.length > 0) {
+      return { started: false, reason: 'agent-busy' }
+    }
     return await openRepairSession(agentSlug, widgetSlug, error, now)
   } finally {
-    opening.delete(agentSlug)
+    await actor.locks.release(OPENING_LOCK, opening)
   }
 }
 

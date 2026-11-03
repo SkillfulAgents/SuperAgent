@@ -43,6 +43,7 @@ import { getCurrentUserId } from '@shared/lib/auth/config'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
 import { Authenticated, AgentRead, AgentUser, AgentAdmin, EntityAgentRole, ResolveAgent, getAgentId, getAuthorizedAgentRole, hasMinRole } from '../middleware/auth'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { SPEED_LEVELS } from '@shared/lib/container/types'
 
 const SENTRY_TAGS = { component: 'agent-integration' } as const
@@ -267,7 +268,7 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
     // Outside the connect try/catch: a contact-card failure is cosmetic and must
     // never surface as a connect error. Not awaited either — the upload has its
     // own 30s timeout and setup must not block on it.
-    void agentIntegrationManager.integrationCreated(id)
+    background(agentIntegrationManager.integrationCreated(id), { name: 'agent-integrations-route.integration-created' })
 
     const integration = await getAgentIntegration(id)
     if (!integration) throw new Error('Agent integration disappeared after creation')
@@ -599,7 +600,7 @@ for (const verb of ['approve', 'deny', 'revoke'] as const) {
       const ok = await accessActions[verb](accessId, getCurrentUserId(c))
       if (ok) {
         await logAuditEvent({ userId: getCurrentUserId(c), object: 'chat_integration', objectId: integrationId, action: 'updated', details: { access: verb, accessId } })
-        if (verb === 'approve') void agentIntegrationManager.notifyAccessApproved(integrationId, row.externalChatId)
+        if (verb === 'approve') background(agentIntegrationManager.notifyAccessApproved(integrationId, row.externalChatId), { name: 'agent-integrations-route.notify-access-approved' })
         if (verb === 'revoke' || verb === 'deny') await agentIntegrationManager.releaseExternalSession(integrationId, row.externalChatId)
       }
       return c.json({ ok })

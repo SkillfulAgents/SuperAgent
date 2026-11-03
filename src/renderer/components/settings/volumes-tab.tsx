@@ -3,7 +3,7 @@ import { useNavigate, useRouter, useSearch } from '@tanstack/react-router'
 import { VolumeDetailPage } from '@renderer/components/volumes/volume-detail-page'
 import { VolumeIcon } from '@renderer/components/volumes/volume-icon'
 import { IntegrationList, IntegrationRow, RowHoverChevron } from '@renderer/components/connections/integration-row'
-import { Folder, Globe, Lock, Plus, Trash2 } from 'lucide-react'
+import { Folder, Globe, Lock, Plus, X } from 'lucide-react'
 import { useDeleteVolumeDefinition, useSaveVolumeDefinition, useVolumeDefinitions } from '@renderer/hooks/use-volume-definitions'
 import { Button } from '@renderer/components/ui/button'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@renderer/components/ui/alert-dialog'
@@ -11,9 +11,13 @@ import { VolumeSettingsDialog } from '@renderer/components/volumes/volume-settin
 import { VolumeStatusBadge } from '@renderer/components/agents/volume-status-badge'
 import { useAgents } from '@renderer/hooks/use-agents'
 import type { VolumeDefinitionSummary } from '@shared/lib/types/mount'
+import { TEAM_BRAIN_AGENT_HOME_QUERY } from '@renderer/lib/team-brain/team-brain-agent-home'
 
 export function agentBackPath(source: 'home' | 'list' | undefined, from: string | undefined): string | null {
-  return source === 'home' && from && /^\/agents\/[^/?#]+$/.test(from) ? from : null
+  if (source !== 'home' || !from) return null
+  // The one query an agent's page may carry is the one that opens the Team Brain agent's Agent Home.
+  const [path, query, ...rest] = from.split('?')
+  return /^\/agents\/[^/?#]+$/.test(path) && rest.length === 0 && (query === undefined || query === TEAM_BRAIN_AGENT_HOME_QUERY) ? from : null
 }
 
 export function VolumesTab() {
@@ -28,7 +32,7 @@ export function VolumesTab() {
   const backToList = () => { void navigate({ to: '/settings/$tab', params: { tab: 'volumes' }, search: prev => ({ ...prev, volume: undefined, source: undefined }) }) }
   const openVolume = (id: string) => { void navigate({ to: '/settings/$tab', params: { tab: 'volumes' }, search: prev => ({ ...prev, volume: id, source: undefined }) }) }
   const agentPath = agentBackPath(source, from)
-  const homeAgent = agents.data?.find(agent => agentPath === `/agents/${encodeURIComponent(agent.slug)}`)
+  const homeAgent = agents.data?.find(agent => [agent.slug, agent.displaySlug].some(slug => agentPath?.split('?')[0] === `/agents/${encodeURIComponent(slug)}`))
   const back = agentPath
     ? { onBack: () => router.history.push(agentPath), label: homeAgent?.name ?? 'Agent' }
     : { onBack: backToList, label: undefined }
@@ -45,7 +49,7 @@ export function VolumesTab() {
       setDeleting(null)
       if (selectedId === deleting.id) backToList()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not delete drive')
+      setError(err instanceof Error ? err.message : 'Could not remove drive')
     }
   }
 
@@ -58,7 +62,7 @@ export function VolumesTab() {
         <p className="text-sm text-muted-foreground">Save folders once, then add them to any of your agents from their Drives card.</p>
         <Button size="sm" onClick={() => setCreating(true)}><Plus className="h-4 w-4" />Add drive</Button>
       </div>
-      {(error || registry.error) && <p role="alert" className="text-sm text-destructive">{error ?? 'Could not load drives. Please try again.'}</p>}
+      {((error && !deleting) || registry.error) && <p role="alert" className="text-sm text-destructive">{error ?? 'Could not load drives. Please try again.'}</p>}
       {registry.isLoading ? <p className="text-sm text-muted-foreground" role="status">Loading drives…</p> : definitions.length === 0 ? (
         <div className="rounded-lg border border-dashed p-8 text-center">
           <Folder className="mx-auto mb-3 h-7 w-7 text-muted-foreground" />
@@ -71,7 +75,7 @@ export function VolumesTab() {
             <IntegrationRow key={volume.id} data-testid="saved-volume-row"
               icon={<VolumeIcon type={volume.type} className="h-4 w-4 text-muted-foreground" />}
               name={volume.name}
-              nameBadge={<VolumeStatusBadge health={volume.health} />}
+              nameBadge={<VolumeStatusBadge health={volume.health} attention={volume.attention} />}
               subtitle={<>
                 {(volume.sourceLabel ?? volume.hostPath) && <span className="min-w-0 truncate font-mono" title={volume.sourceLabel ?? volume.hostPath ?? undefined}>{volume.sourceLabel ?? volume.hostPath}</span>}
                 {(volume.sourceLabel ?? volume.hostPath) && <span className="shrink-0">·</span>}
@@ -82,9 +86,9 @@ export function VolumesTab() {
               onActivate={() => openVolume(volume.id)}
               ariaLabel={`Open ${volume.name} drive settings`}
               right={<>
-                {volume.canManage && <Button variant="ghost" size="icon" aria-label={`Delete ${volume.name}`} disabled={volume.attachmentCount > 0}
-                  title={volume.attachmentCount > 0 ? 'Remove from all agents before deleting' : 'Delete saved drive'}
-                  onClick={event => { event.stopPropagation(); setError(null); setDeleting(volume) }}><Trash2 className="h-4 w-4" /></Button>}
+                {volume.canManage && <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground" aria-label={`Remove ${volume.name}`} disabled={volume.attachmentCount > 0}
+                  title={volume.attachmentCount > 0 ? 'Remove from all agents first' : 'Remove drive'}
+                  onClick={event => { event.stopPropagation(); setError(null); setDeleting(volume) }}><X className="h-4 w-4" /></Button>}
                 <RowHoverChevron />
               </>}
             />
@@ -99,14 +103,18 @@ export function VolumesTab() {
       <AlertDialog open={deleting !== null} onOpenChange={open => { if (!open) setDeleting(null) }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete saved drive?</AlertDialogTitle>
-            <AlertDialogDescription>Remove &quot;{deleting?.name}&quot; from saved drives. The source folder and its files will remain unchanged.</AlertDialogDescription>
+            <AlertDialogTitle>Remove drive?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Remove &quot;{deleting?.name}&quot; from saved drives. {deleting?.attention?.unsynced
+                ? `${deleting.attention.unsynced} ${deleting.attention.unsynced === 1 ? 'file that has' : 'files that have'} not synced will be lost.`
+                : 'The source folder and its files will remain unchanged.'}
+            </AlertDialogDescription>
           </AlertDialogHeader>
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel>
             <AlertDialogAction disabled={remove.isPending} onClick={event => { event.preventDefault(); void deleteVolume() }}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90">{remove.isPending ? 'Deleting…' : 'Delete drive'}</AlertDialogAction>
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90">{remove.isPending ? 'Removing…' : 'Remove drive'}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

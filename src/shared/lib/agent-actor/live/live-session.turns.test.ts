@@ -16,6 +16,7 @@ vi.mock('@shared/lib/services/session-service', () => ({
   updateSessionMetadata: vi.fn(() => Promise.resolve()),
   getSessionMetadata: vi.fn(() => Promise.resolve(null)),
   finalizeAutomationStatus: vi.fn(() => Promise.resolve('updated')),
+  recordErrorProvider: vi.fn(() => Promise.resolve()),
 }))
 const mockRecordSessionActivity = vi.fn()
 const mockRecordProvisionalSessionActivity = vi.fn((_store: unknown, _id: string, at: number) => ({
@@ -41,7 +42,7 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 import { attachLiveSessionsHarness, createStreamClient, type StreamClient } from '../testing/live-sessions-harness'
 import type { SessionNotification } from '../host-port'
-import { getSessionMetadata } from '@shared/lib/services/session-service'
+import { getSessionMetadata, recordErrorProvider } from '@shared/lib/services/session-service'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 
 const SESSION_ID = 'test-session-1'
@@ -147,7 +148,7 @@ describe('turn analytics', () => {
   const responses = () => live.host.sent('analytics').filter(e => e.event.startsWith('agent_response_'))
 
   it('records which credential served a completed turn', () => {
-    sessions().recordRuntime(SESSION_ID, { provider: 'claude-subscription', modelContextWindows: {} })
+    sessions().recordRuntime(SESSION_ID, { provider: 'claude-subscription' })
     sessions().markActive(SESSION_ID)
     emit({ type: 'result', subtype: 'success', num_turns: 1, usage: {} })
     expect(responses()).toEqual([{
@@ -157,7 +158,7 @@ describe('turn analytics', () => {
   })
 
   it('records a failed Platform turn with its terminal reason, and nothing for a stop', () => {
-    sessions().recordRuntime(SESSION_ID, { provider: 'platform', modelContextWindows: {} })
+    sessions().recordRuntime(SESSION_ID, { provider: 'platform' })
     sessions().markActive(SESSION_ID)
     emit({ type: 'result', subtype: 'success', is_error: true, terminal_reason: 'api_error', result: 'Payment required' })
     sessions().markActive(SESSION_ID)
@@ -1326,6 +1327,20 @@ describe('API error code tracking', () => {
     })
 
     expect(sseEvents.filter(e => e.type === 'stream_delta')).toHaveLength(0)
+  })
+
+  it('records which provider produced an API error message', () => {
+    sessions().recordRuntime(SESSION_ID, { provider: 'platform' })
+    sessions().markActive(SESSION_ID)
+
+    mockClient.emit({
+      type: 'assistant',
+      uuid: 'error-1',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'API Error: 402 {"error":"insufficient_balance"}' }] },
+      error: 'billing_error',
+    })
+
+    expect(recordErrorProvider).toHaveBeenCalledExactlyOnceWith(expect.anything(), SESSION_ID, 'error-1', 'platform')
   })
 
   it('broadcasts stream_delta with apiErrorCode when no text was streaming', () => {

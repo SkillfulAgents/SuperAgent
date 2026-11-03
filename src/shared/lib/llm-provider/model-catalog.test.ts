@@ -25,16 +25,17 @@ beforeEach(() => {
 })
 
 describe('getProviderCatalog', () => {
-  it('exposes provider-owned onboarding options and uses Grok as the Platform agent fallback', () => {
+  it('exposes provider-owned onboarding options and uses Sonnet as the Platform agent fallback', () => {
     const platform = getAllProviderInfo().find((provider) => provider.id === 'platform')!
 
     expect(platform.defaultModelOptions.map((option) => option.model)).toEqual([
       'opus',
+      'sonnet',
       'gpt-sol',
       'grok',
     ])
-    expect(platform.defaultModels.agent).toBe('grok')
-    expect(getLlmProvider('platform').getDefaultModel('agent')).toBe('grok')
+    expect(platform.defaultModels.agent).toBe('sonnet')
+    expect(getLlmProvider('platform').getDefaultModel('agent')).toBe('sonnet')
   })
 
   it('declares one concrete picker default for every built-in model vendor', () => {
@@ -138,6 +139,7 @@ describe('getProviderCatalog', () => {
     ['gpt-6-luna', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['gpt-6-sol', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['gpt-6.1-sol', ['low', 'medium', 'high', 'xhigh', 'max']],
+    ['gpt-6.1-terra', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['gpt-6-astra', ['low', 'medium', 'high', 'xhigh', 'max']],
     ['grok-4.7', ['low', 'medium', 'high', 'xhigh']],
     ['grok-4.6', ['low', 'medium', 'high', 'xhigh']],
@@ -301,6 +303,13 @@ describe('getProviderCatalog', () => {
       pricing: { inputPerMtok: 2, outputPerMtok: 10, cacheReadPerMtok: 0.1 },
       contextWindow: 1_050_000,
     })
+    expect(catalog.find((m) => m.id === 'gpt-6.1-terra')).toMatchObject({
+      family: 'gpt-terra',
+      supportsWebSearch: true,
+      supportsWebFetch: false,
+      pricing: { inputPerMtok: 1, outputPerMtok: 5, cacheReadPerMtok: 0.05 },
+      contextWindow: 1_050_000,
+    })
     expect(catalog.find((m) => m.id === 'gpt-6-astra')).toMatchObject({
       family: 'gpt-astra',
       supportsWebSearch: true,
@@ -312,7 +321,7 @@ describe('getProviderCatalog', () => {
     const gptLatest = catalog.filter((m) => m.family?.startsWith('gpt-') && m.isLatest)
     expect(gptLatest.map((m) => [m.family, m.id])).toEqual([
       ['gpt-luna', 'gpt-6-luna'],
-      ['gpt-terra', 'gpt-5.6-terra'],
+      ['gpt-terra', 'gpt-6.1-terra'],
       ['gpt-sol', 'gpt-6.1-sol'],
       ['gpt-astra', 'gpt-6-astra'],
     ])
@@ -612,6 +621,7 @@ describe('getModelContextWindow', () => {
     expect(getModelContextWindow('gpt-5.6-sol', 'platform')).toBe(1_050_000)
     expect(getModelContextWindow('gpt-6-sol', 'platform')).toBe(1_050_000)
     expect(getModelContextWindow('gpt-6.1-sol', 'platform')).toBe(1_050_000)
+    expect(getModelContextWindow('gpt-6.1-terra', 'platform')).toBe(1_050_000)
     expect(getModelContextWindow('gpt-6-luna', 'platform')).toBe(1_050_000)
   })
 

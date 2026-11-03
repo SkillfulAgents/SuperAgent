@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 
+import { background } from '@shared/lib/background'
 import { captureException } from '@shared/lib/error-reporting'
 import {
   getPlatformAccessToken,
@@ -21,6 +22,7 @@ import {
   DEPLOYED_STATUS,
   type DeploymentDiscoveryEntry,
 } from '@shared/lib/platform-auth/cloud-workspace-schema'
+import { refreshCloudServerFacts } from '@shared/lib/services/cloud-server-facts'
 import {
   isLocalhostHost,
   validateMcpDiscoveryUrl,
@@ -436,10 +438,17 @@ export async function getCloudWorkspace(
 /**
  * Boot/connect hook: run the discover → ensure-token cycle so the deployment
  * token is maintained even when the Account tab is never opened. Never throws.
+ *
+ * The deployment's server facts ride along, so a renderer driving it reads them
+ * at boot rather than waiting on a request of its own (`cloud-server-facts.ts`).
+ * In the background: the cycle takes as long as it did without them.
  */
 export async function refreshCloudWorkspace(): Promise<void> {
   try {
-    await getCloudWorkspace()
+    const status = await getCloudWorkspace()
+    if (status.hasValidToken && status.deploymentUrl) {
+      background(refreshCloudServerFacts(status.deploymentUrl), { name: 'cloud-workspace.refresh-server-facts' })
+    }
   } catch (error) {
     reportFailureOnce('refresh', error)
   }

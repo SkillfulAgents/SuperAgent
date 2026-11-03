@@ -40,7 +40,10 @@ test.describe('composer Markdown blocks', () => {
     await expect(input.locator('h2')).toHaveText('Hello')
     await expect(input.locator('ul').first().locator(':scope > li')).toHaveCount(2)
 
-    await input.fill('')
+    // Clear through the editor so the synthetic paste sees an empty document.
+    await input.press('ControlOrMeta+A')
+    await input.press('Backspace')
+    await expect(input).toHaveText('')
     await input.evaluate((element) => {
       const clipboardData = new DataTransfer()
       clipboardData.setData(

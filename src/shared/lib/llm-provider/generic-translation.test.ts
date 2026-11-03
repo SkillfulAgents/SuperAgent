@@ -56,7 +56,7 @@ describe('generic OpenAI connection', () => {
     expect(mergeConnectionConfig(previous, { apiKeys: {}, env: {} }).chatTokenLimitField).toBe('max_tokens')
     const native = new GenericLlmProvider({ apiKeys: { genericApiKey: 'key', genericBaseUrl: 'https://example.com' }, env: {} })
     expect(await native.getContainerProxyConfig()).toBeUndefined()
-    expect(native.toolSearchEnv).toBeUndefined()
+    expect(native.toolSearchEnv()).toBe('false')
   })
 
   it.each(['chat-completions', 'responses'] as const)('runs helper tools, streams, discovery and errors through %s', async apiFormat => {
@@ -78,7 +78,7 @@ describe('generic OpenAI connection', () => {
     const runtime = await provider.getContainerProxyConfig()
     expect(runtime?.format).toBe(apiFormat)
     expect(runtime?.baseUrl).toContain('host.docker.internal')
-    expect(provider.toolSearchEnv).toBe('true')
+    expect(provider.toolSearchEnv()).toBe('true')
   })
 
   it.each(['https://endpoint.example', 'https://endpoint.example/v1/', 'https://endpoint.example/custom'])('uses the configured API path for %s', async baseUrl => {

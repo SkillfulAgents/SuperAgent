@@ -18,6 +18,14 @@ export interface DashboardHeaderRegistration {
     onRefresh: () => void
     onAddToDock?: () => void
     refreshState: 'idle' | 'loading' | 'refreshing'
+    /** Comment mode, for people who can start sessions on the agent. */
+    comment?: {
+      onToggle: () => void
+      /** `opening`: capturing the frame; `sending`: the comment is on its way. */
+      state: 'idle' | 'opening' | 'open' | 'sending'
+      /** The dashboard isn't up yet, so there is nothing to comment on. */
+      disabled?: boolean
+    }
   } | null
 }
 

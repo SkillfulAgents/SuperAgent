@@ -28,7 +28,7 @@ export function formatComments(filePath: string, comments: FileComment[]): strin
 }
 
 export function CommentBar({ comments, filePath, agentSlug, sessionId }: CommentBarProps) {
-  const { clearComments, removeComment } = useFilePreview()
+  const { clearComments, removeComment, commentsEnabled } = useFilePreview()
   const draftsStore = useDraftsStore()
 
   const handleSubmit = useCallback(() => {
@@ -39,7 +39,7 @@ export function CommentBar({ comments, filePath, agentSlug, sessionId }: Comment
     queueMicrotask(() => focusSessionComposer(sessionId))
   }, [comments, filePath, agentSlug, sessionId, draftsStore, clearComments])
 
-  if (comments.length === 0) return null
+  if (comments.length === 0 || !commentsEnabled) return null
 
   return (
     <div className="shrink-0 border-t border-border/40 bg-muted/20">

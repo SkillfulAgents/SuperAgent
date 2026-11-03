@@ -92,20 +92,26 @@ export abstract class BaseLlmProvider {
   }
 
   /**
-   * Value of `ENABLE_TOOL_SEARCH` for containers on this provider, or
-   * undefined to leave the variable unset so the CLI decides for itself.
+   * Value of `ENABLE_TOOL_SEARCH` for a session on `model` (the provider-wide
+   * value when no model is given, as for the container-level env).
    *
    * Tool search omits tool definitions from the request and loads them back on
    * demand, which the endpoint has to expand: the CLI re-sends a loaded tool
    * with `defer_loading: true`, and since agent SDK 0.3.219 it also sends a
    * `DeferredToolPlaceholder` tool carrying that flag on EVERY request.
-   * Endpoints that don't understand the flag reject the whole request
-   * (OpenRouter 400s it for every non-Anthropic model), so only providers whose
-   * endpoint handles it turn this on. Left unset, the CLI disables tool search
-   * for any base URL that isn't a first-party Anthropic host — the right
-   * default for endpoints we can't vouch for.
+   * Endpoints that don't understand the flag reject the request (OpenRouter
+   * 400s it for every non-Anthropic model). Keeping tool definitions out of
+   * every request is a large share of a session's input tokens, so every
+   * endpoint that expands deferred tools must say 'true'.
+   *
+   * Every provider answers explicitly: since CLI 2.1.304 an unset variable
+   * means ON behind any custom base URL (a 400/422 is then retried without
+   * deferred tools), where it used to mean off for anything but
+   * api.anthropic.com.
    */
-  readonly toolSearchEnv: 'true' | undefined = undefined
+  toolSearchEnv(_model?: string): 'true' | 'false' {
+    return 'false'
+  }
 
   /** Media-generation instructions for the agent, added only to sessions using this provider. */
   readonly mediaPrompt: string | undefined = undefined

@@ -61,4 +61,23 @@ describe('selectActivePageTarget', () => {
   it('returns null when Chrome has no page targets', () => {
     expect(selectActivePageTarget([], [], urlsMatch)).toBeNull();
   });
+
+  it('matches the daemon tab by target id when it has one: exact for two tabs on one URL, and for a stale URL', () => {
+    const twins = [
+      { id: 'A', url: 'https://shop.com/cart' },
+      { id: 'B', url: 'https://shop.com/cart' },
+    ];
+    expect(selectActivePageTarget(twins, [
+      { url: 'https://shop.com/cart', active: false, targetId: 'A' },
+      { url: 'https://shop.com/cart', active: true, targetId: 'B' },
+    ], urlsMatch)).toBe(twins[1]);
+    // Host mode: the daemon's URL lags a navigation the page made itself.
+    expect(selectActivePageTarget(targets, [
+      { url: 'https://stale.example/', active: true, targetId: 'pge' },
+    ], urlsMatch)?.marker).toBe('right');
+    // An id Chrome no longer lists falls back to the URL.
+    expect(selectActivePageTarget(targets, [
+      { url: 'https://myaccount.pge.com/myaccount/s/login/', active: true, targetId: 'gone' },
+    ], urlsMatch)?.marker).toBe('right');
+  });
 });

@@ -26,9 +26,8 @@ export const SELECT_COMMIT_SETTLE_MS = 300
 
 export const CUSTOM_DROPDOWN_RECIPE =
   'If this is a custom dropdown (not a native <select>), select-by-value cannot work. ' +
-  'Recipe: browser_click the trigger, re-snapshot, type into the popup\'s filter input to narrow the list, ' +
-  'click the option\'s FRESH ref, then re-snapshot and verify the committed state. ' +
-  'Note: refs renumber after each committed selection — re-snapshot between selections.'
+  'Recipe: browser_click the trigger (its result lists the options that appeared, with refs), type into the popup\'s filter input if it has one, ' +
+  'click the option\'s ref, and check that click\'s result for the committed state.'
 
 export type SelectJudgement =
   | { ok: true; committed: string }

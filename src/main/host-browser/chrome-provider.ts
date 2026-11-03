@@ -4,7 +4,14 @@ import path from 'path'
 import net from 'net'
 import os from 'os'
 import { getDataDir } from '@shared/lib/config/data-dir'
-import { listChromeProfiles, copyChromeProfileData } from '@shared/lib/browser/chrome-profile'
+import { drivesUserChrome } from '@shared/lib/facts/capabilities'
+import { getServerFacts } from '@shared/lib/facts/server-facts'
+import {
+  ChromeProfileAccessError,
+  listChromeProfiles,
+  copyChromeProfileData,
+  reportChromeProfileAccessError,
+} from '@shared/lib/browser/chrome-profile'
 import { agentRegistry, containerHost } from '@shared/lib/agent-actor'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo } from './types'
 import { captureException, addErrorBreadcrumb } from '@shared/lib/error-reporting'
@@ -230,6 +237,10 @@ export class ChromeProvider implements HostBrowserProvider {
   onExternalClose: ((instanceId: string) => void) | null = null
 
   detect(): HostBrowserProviderStatus {
+    // Unavailable rather than absent, so Settings says why.
+    if (!drivesUserChrome(getServerFacts())) {
+      return { id: this.id, name: this.name, available: false, reason: 'Not available in the Mac App Store edition' }
+    }
     const candidate = BROWSER_CANDIDATES[process.platform]
     if (!candidate) {
       return { id: this.id, name: this.name, available: false, reason: 'Unsupported platform' }
@@ -329,8 +340,16 @@ export class ChromeProvider implements HostBrowserProvider {
       // should keep the session data (cookies, local storage, etc.) that the
       // agent accumulated during its browsing sessions.
       const alreadyHasProfile = fs.existsSync(path.join(destProfileDir, 'Cookies'))
-      if (!alreadyHasProfile && await copyChromeProfileData(profileId, destProfileDir)) {
-        console.log(`[ChromeProvider] Copied Chrome profile "${profileId}" for instance ${instanceId}`)
+      try {
+        if (!alreadyHasProfile && await copyChromeProfileData(profileId, destProfileDir)) {
+          console.log(`[ChromeProvider] Copied Chrome profile "${profileId}" for instance ${instanceId}`)
+        }
+      } catch (error) {
+        // A profile this app may not read: launch without its logins rather
+        // than not at all.
+        if (!(error instanceof ChromeProfileAccessError)) throw error
+        console.warn(`[ChromeProvider] Launching instance ${instanceId} without Chrome profile "${profileId}":`, error)
+        reportChromeProfileAccessError(error)
       }
     }
 

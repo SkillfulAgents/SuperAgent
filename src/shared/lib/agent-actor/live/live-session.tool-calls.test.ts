@@ -33,6 +33,7 @@ vi.mock('@shared/lib/config/settings', () => ({
 
 import { attachLiveSessionsHarness, createStreamClient, type StreamClient } from '../testing/live-sessions-harness'
 import type { HostToolResult } from '../host-port'
+import { MAIN_THREAD_ONLY_TOOL_MESSAGE } from '../../../../../agent-container/src/main-thread-tools'
 import { userInputRequestManager } from '@shared/lib/tools/requests/request-manager'
 import * as toolRegistry from '@shared/lib/tools/registry'
 
@@ -450,22 +451,67 @@ describe('host tool dispatch', () => {
     expect(openStreamRequestIds()).toContain('tool-not-host-1')
   })
 
-  it('dispatches host tools from the main stream only, never from a subagent frame', async () => {
-    attach({ status: 'resolved', value: 'should not be asked' })
+  describe('from a subagent', () => {
+    const PARENT = 'agent-tool-1'
+    const input = { scheduleType: 'cron', scheduleExpression: '0 9 * * 1-5', prompt: 'Send the daily report' }
 
-    simulateToolUse('mcp__user-input__schedule_task', 'tool-sub-host', {
-      scheduleType: 'cron',
-      scheduleExpression: '0 9 * * 1-5',
-      prompt: 'Send the daily report',
-    }, 'agent-tool-1')
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    /** The subagent's complete message, carrying a call its stream may already have delivered. */
+    function subagentMessage(toolName: string, toolId: string, toolInput: Record<string, unknown>) {
+      mockClient.emit({
+        type: 'assistant',
+        parent_tool_use_id: PARENT,
+        message: { content: [{ type: 'tool_use', id: toolId, name: toolName, input: toolInput }] },
+      })
+    }
 
-    // The subagent's stream saw the finished call; the host never did.
-    expect(sseEvents.filter((e) => e.type === 'subagent_tool_use_ready')).toEqual([
-      expect.objectContaining({ parentToolId: 'agent-tool-1', toolId: 'tool-sub-host', toolName: 'mcp__user-input__schedule_task' }),
-    ])
-    expect(hostToolCalls()).toEqual([])
-    expect(inputCalls('tool-sub-host')).toEqual([])
+    it('runs the tool once, though its stream and its complete message both carry the call', async () => {
+      attach({ status: 'resolved', value: 'Scheduled.' })
+
+      simulateToolUse('mcp__user-input__schedule_task', 'tool-sub-host', input, PARENT)
+      subagentMessage('mcp__user-input__schedule_task', 'tool-sub-host', input)
+
+      await vi.waitFor(() => expect(inputCalls('tool-sub-host')).toHaveLength(1))
+      expect(hostToolCalls()).toEqual([
+        ['hostTool', expect.objectContaining({ toolUseId: 'tool-sub-host', toolName: 'schedule_task', input: JSON.stringify(input) })],
+      ])
+      expect(inputCalls('tool-sub-host')).toEqual([['/inputs/tool-sub-host/resolve', post({ value: 'Scheduled.' })]])
+    })
+
+    it('runs a call only its complete message carries', async () => {
+      attach({ status: 'resolved', value: 'No triggers.' })
+
+      subagentMessage('mcp__user-input__list_triggers', 'tool-sub-list', {})
+
+      await vi.waitFor(() => expect(inputCalls('tool-sub-list')).toHaveLength(1))
+      expect(inputCalls('tool-sub-list')).toEqual([['/inputs/tool-sub-list/resolve', post({ value: 'No triggers.' })]])
+    })
+
+    it('runs the tool once when the stream reattaches between the two deliveries', async () => {
+      attach({ status: 'resolved', value: 'Scheduled.' })
+
+      simulateToolUse('mcp__user-input__schedule_task', 'tool-sub-reattach', input, PARENT)
+      await vi.waitFor(() => expect(inputCalls('tool-sub-reattach')).toHaveLength(1))
+      await sessions().subscribe(SESSION_ID, mockClient, SESSION_ID)
+      subagentMessage('mcp__user-input__schedule_task', 'tool-sub-reattach', input)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      expect(hostToolCalls()).toHaveLength(1)
+      expect(inputCalls('tool-sub-reattach')).toHaveLength(1)
+    })
+
+    it('fails schedule_resume without running it: a wake resumes the main conversation, not the subagent', async () => {
+      attach({ status: 'resolved', value: 'should not be asked' })
+      const wake = { wakeTime: 'tomorrow 9am', note: 'Check back' }
+
+      simulateToolUse('mcp__user-input__schedule_resume', 'tool-sub-wake', wake, PARENT)
+      subagentMessage('mcp__user-input__schedule_resume', 'tool-sub-wake', wake)
+
+      await vi.waitFor(() => expect(inputCalls('tool-sub-wake')).toHaveLength(1))
+      expect(hostToolCalls()).toEqual([])
+      expect(inputCalls('tool-sub-wake')).toEqual([
+        ['/inputs/tool-sub-wake/reject', post({ reason: MAIN_THREAD_ONLY_TOOL_MESSAGE })],
+      ])
+    })
   })
 })
 
@@ -576,7 +622,7 @@ describe('awaiting input status tracking', () => {
       sessions().recoverAwaitingInput(SESSION_ID, [
         { toolUseId: 'alias-recovered', toolName: 'SecretAlias' },
       ])
-      expect(userInputRequestManager.getOpenRequest('alias-recovered', AGENT_SLUG)).toMatchObject({
+      expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'alias-recovered')).toMatchObject({
         kind: 'secret', payload: { recovered: true },
       })
     } finally {
@@ -590,8 +636,8 @@ describe('awaiting input status tracking', () => {
       { toolUseId: 'script-recovery', toolName: 'mcp__user-input__request_script_run' },
       { toolUseId: 'file-recovery', toolName: 'mcp__user-input__deliver_file' },
     ])
-    expect(userInputRequestManager.getOpenRequest('script-recovery', AGENT_SLUG)).toBeNull()
-    expect(userInputRequestManager.getOpenRequest('file-recovery', AGENT_SLUG)).toBeNull()
+    expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'script-recovery')).toBeNull()
+    expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'file-recovery')).toBeNull()
     expect(sessions().isAwaitingInput(SESSION_ID)).toBe(false)
   })
 
@@ -916,11 +962,11 @@ describe('awaiting input status tracking', () => {
       expect(sessions().isAwaitingInput(SESSION_ID)).toBe(true)
 
       // Once the review resolves, the agent-wide sync settles the session.
-      userInputRequestManager.resolve('blocker-review-1', 'answered')
+      userInputRequestManager.resolve(AGENT_SLUG, 'blocker-review-1', 'answered')
       sessions().syncAwaiting()
       expect(sessions().isAwaitingInput(SESSION_ID)).toBe(false)
     } finally {
-      userInputRequestManager.resolve('blocker-review-1', 'cancelled')
+      userInputRequestManager.resolve(AGENT_SLUG, 'blocker-review-1', 'cancelled')
     }
   })
 
@@ -1649,7 +1695,7 @@ describe('Computer use request detection', () => {
       expect(sessions().pendingComputerUse(SESSION_ID)).toHaveLength(0)
       expect(waitingInputNotifications()).toEqual([])
       // Settled once the result was delivered.
-      expect(userInputRequestManager.getOpenRequest('tool-cu-granted', AGENT_SLUG)).toBeNull()
+      expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'tool-cu-granted')).toBeNull()
     } finally {
       if (originalE2eMock === undefined) delete process.env.E2E_MOCK
       else process.env.E2E_MOCK = originalE2eMock
@@ -1671,7 +1717,7 @@ describe('Computer use request detection', () => {
       simulateToolUse('mcp__computer-use__computer_click', 'tool-cu-twice', { ref: '@b1' })
       await vi.waitFor(() => expect(live.host.calls.filter(([name]) => name === 'computerUse')).toHaveLength(1))
       finishCommand('clicked')
-      await vi.waitFor(() => expect(userInputRequestManager.getOpenRequest('tool-cu-twice', AGENT_SLUG)).toBeNull())
+      await vi.waitFor(() => expect(userInputRequestManager.getOpenRequest(AGENT_SLUG, 'tool-cu-twice')).toBeNull())
       expect(live.host.calls.filter(([name]) => name === 'computerUse')).toHaveLength(1)
       expect(live.runtime.containerFetch.mock.calls.filter(([path]) => String(path).includes('tool-cu-twice'))).toEqual([
         ['/inputs/tool-cu-twice/resolve', expect.objectContaining({ body: JSON.stringify({ value: 'clicked' }) })],
@@ -1700,7 +1746,7 @@ describe('Computer use request detection', () => {
       })
 
       await vi.waitFor(() => {
-        const open = userInputRequestManager.getOpenRequest('tool-cu-granted-reg')
+        const open = userInputRequestManager.getOpenRequest(AGENT_SLUG, 'tool-cu-granted-reg')
         expect(open).toMatchObject({
           kind: 'computer_use',
           blocking: true,

@@ -173,7 +173,7 @@ describe('AccountReauthManager', () => {
     ])
     expect(userInputRequestManager.getAgentScopedRequests('agent-1')).toHaveLength(0)
     expect(userInputRequestManager.getAgentScopedRequests('agent-2')).toHaveLength(1)
-    expect(userInputRequestManager.getRecentResolution(request.id)?.outcome).toBe('answered')
+    expect(userInputRequestManager.getRecentResolution('agent-1', request.id)?.outcome).toBe('answered')
     expect(manager.replaceAccount(request.id, 'agent-1', 'another')).toBe(false)
 
     manager.completeAccount('agent-2', DETAILS.accountId)

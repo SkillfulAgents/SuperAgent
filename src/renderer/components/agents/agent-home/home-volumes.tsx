@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { useNavigate } from '@tanstack/react-router'
+import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { VolumeIcon } from '@renderer/components/volumes/volume-icon'
 import { Button } from '@renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
@@ -31,7 +31,7 @@ import {
 import { HomeCollapsible } from './home-collapsible'
 import { useVolumesManager } from '@renderer/hooks/use-mounts'
 import { openableProps } from '@renderer/lib/openable'
-import { canUseHostFeatures } from '@renderer/lib/host-features'
+import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { VolumeSettingsDialog } from '@renderer/components/volumes/volume-settings-dialog'
 import { InlineEditableTitle, type InlineEditableTitleHandle } from '@renderer/components/ui/inline-editable-title'
 import { useSaveVolumeDefinition } from '@renderer/hooks/use-volume-definitions'
@@ -171,6 +171,8 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
   const titleRef = useRef<InlineEditableTitleHandle>(null)
   useLayoutEffect(() => { if (isRenaming) titleRef.current?.startEditing() }, [isRenaming])
   const navigate = useNavigate()
+  // Back from the drive's page returns to this page, whatever it carries in its URL.
+  const here = useRouterState({ select: (s) => s.location.href })
   const save = useSaveVolumeDefinition()
   const fileManagerLabel = getFileManagerLabel()
   // `hostPath` is a path on whichever machine runs the agent. Opening it in the
@@ -191,7 +193,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
 
   const canOpen = definition !== undefined && !isRenaming
   const openSettings = () => {
-    void navigate({ to: '/settings/$tab', params: { tab: 'volumes' }, search: { volume: mount.volumeId, source: 'home', from: `/agents/${encodeURIComponent(agentSlug)}` } })
+    void navigate({ to: '/settings/$tab', params: { tab: 'volumes' }, search: { volume: mount.volumeId, source: 'home', from: here } })
   }
 
   const handleDelete = () => {
@@ -226,8 +228,8 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
             />
           ) : <>
             <span className="text-xs font-medium truncate">{mount.volumeName}</span>
-            <VolumeStatusBadge health={mount.health} />
-            {mount.readOnly && (
+            <VolumeStatusBadge health={mount.health} attention={mount.attention} />
+            {(mount.readOnly || mount.sourceReadOnly) && (
               <span className="inline-flex items-center gap-1 text-2xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground">
                 <Lock className="h-2.5 w-2.5" />
                 Read only
@@ -295,7 +297,7 @@ function VolumeRow({ mount, definition, agentSlug, onRemove, onSetReadOnly, isRe
                   Rename
                 </button>
               )}
-              {canRemove && (
+              {canRemove && !mount.sourceReadOnly && (
                 <button
                   role="switch"
                   aria-checked={mount.readOnly}

@@ -5,6 +5,7 @@
 import type { XAgentReview } from './x-agent-review'
 import type { ReviewRuleOutcome } from './rules/gate'
 import type { RuleProposalReview } from './rules/proposal-schema'
+import type { ScopeDescriptor } from './scope-catalog'
 
 /**
  * Which policy table an "always allow/deny" on this review writes to.
@@ -24,6 +25,8 @@ export interface ReviewDetails {
   targetPath: string
   matchedScopes: string[]
   scopeDescriptions: Record<string, string>
+  /** Deployment metadata for matched scopes; absent on older envelopes and MCP reviews. */
+  scopeMetadata?: ScopeDescriptor[]
   /**
    * Description of the matched API endpoint (what the current call does).
    * Preferred over scopeDescriptions when generating the prompt headline.
@@ -111,7 +114,8 @@ export function generateReviewDisplayText(
   return `Allow ${method} request to ${toolkitDisplay}?`
 }
 
-const PREVIEW_MAX_CHARS = 2000
+// Room for an email the card decodes from its body: headers, text, and HTML, before any attachment. Matches PARSE_MAX_BYTES.
+const PREVIEW_MAX_CHARS = 64_000
 // Bodies past this size are shown from their start, unparsed.
 export const PARSE_MAX_BYTES = 64_000
 const GRAPHQL_KEYS = new Set(['query', 'variables', 'operationName'])

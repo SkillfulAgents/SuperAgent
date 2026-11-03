@@ -21,6 +21,7 @@ describe('service icon assets', () => {
       const viewBox = root?.match(/\bviewBox="([^"]+)"/i)?.[1]
 
       expect(root, fileName).toBeDefined()
+      expect(root, fileName).toContain('xmlns="http://www.w3.org/2000/svg"')
       expect(viewBox?.trim(), fileName).toMatch(
         /^-?(?:\d+(?:\.\d+)?|\.\d+)(?:[ ,]+-?(?:\d+(?:\.\d+)?|\.\d+)){3}$/,
       )

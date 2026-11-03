@@ -1,6 +1,7 @@
 import { startLlmProxy, llmProxyBinding, type LlmProxyHandle } from './llm-proxy';
 import { withoutProviderCredentials, resolveSessionRuntime, type ConnectionRuntime } from './connection-runtime';
 import { webhookRelayAvailable } from './webhook-relay-env';
+import { isAppSandboxHost, isComputerUseHost } from './host-desktop-env';
 import {
   query,
   startup,
@@ -11,6 +12,7 @@ import {
   SDKUserMessage,
   McpServerConfig,
   McpSetServersResult,
+  SlashCommand,
 } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { UUID } from 'crypto';
@@ -26,9 +28,11 @@ import { renameBrowserSession } from './browser-state';
 import { computerUseTools } from './tools/computer-use';
 import { fileHooks, mountIndexCommandHint, resolveToolFilePath } from './file-hooks';
 import { elapsedTimeNote } from './elapsed-time-note';
+import { builtinHints, createHintHookMatchers } from './hints';
 import { promptDate } from './prompt-date';
 import { mountedDrives, mountedVolumeIndexes, type VolumeIndex } from './volume-mounts';
 import { prepareResumeDiagnostics } from './resume-diagnostics';
+import { ContextUsageReporter, contextUsageChange } from './context-usage-reporter';
 
 /**
  * `Query` plus the `cancel_async_message` control request, which drops a queued
@@ -73,12 +77,18 @@ import {
   type Capability,
 } from './capability-policies';
 import { createCapabilityGateHook, CAPABILITY_REVIEW_HOOK_TIMEOUT_S } from './capability-gate-hook';
+import { MAIN_THREAD_ONLY_TOOLS, MAIN_THREAD_ONLY_TOOL_MESSAGE } from './main-thread-tools';
 import {
   buildModelSubagentDefinitions,
   type ModelContextWindows,
   type SubagentModelDefinition,
 } from './subagent-model-catalog';
-import { mergeCanonicalSlashCommands } from './slash-commands';
+import {
+  isUnsupportedCommand,
+  mergeCanonicalSlashCommands,
+  unsupportedBuiltinCommands,
+  withPushedCommandNames,
+} from './slash-commands';
 
 // Prefix for system-injected user messages that should be hidden in the UI.
 // Keep in sync with SYSTEM_MESSAGE_PREFIX in src/shared/lib/utils/system-message.ts
@@ -92,14 +102,6 @@ const SYSTEM_MESSAGE_PREFIX = '[SYSTEM] ';
 const ADD_AGENT_INTEGRATION_TOOL = 'mcp__chat__add_agent_integration';
 const REMOTE_MCP_READY_TIMEOUT_MS = 8_000;
 const REMOTE_MCP_READY_POLL_MS = 250;
-
-export const AGENT_BROWSER_BASH_WARNING =
-  'STRONG WARNING: This Bash command is probably bypassing Gamut\'s browser integration. For website work, use the dedicated mcp__browser__browser_* tools; if they are deferred, load their exact full names with ToolSearch. The Bash command is still allowed, but continue with agent-browser only when the dedicated browser tools genuinely cannot perform the operation.';
-
-export function startsWithAgentBrowserCommand(command: unknown): boolean {
-  if (typeof command !== 'string') return false;
-  return /^(?:agent-browser|which\s+agent-browser)(?=$|[\s;&|])/.test(command.trimStart());
-}
 
 // Default values for system-prompt template vars when the host env is unset.
 // Mirror values the host (base-container-client.ts) sets, so out-of-host runs
@@ -313,10 +315,6 @@ export function resultNeedsResumeErrorFallback(msg: {
   return !msg.error && !msg.message && !msg.result;
 }
 
-export function isComputerUseHost(): boolean {
-  return ['darwin', 'win32'].includes(process.env.HOST_PLATFORM || '');
-}
-
 /**
  * The template renders every section itself; this bag carries only data. Each
  * list is paired with a `has*` boolean because a Mustache list section repeats
@@ -340,6 +338,8 @@ export interface SystemPromptVars {
   /** Platform token present — built-in service prompt sections (Replicate, Apollo). */
   platformServices: boolean;
   computerUse: boolean;
+  /** The Mac App Store edition: the prompt says what its sandbox leaves out. */
+  appSandbox: boolean;
   /** The host can run meeting bots — the mcp__meetings__* tools are registered and the Meetings section renders. */
   meetings: boolean;
   hasModelHints: boolean;
@@ -414,6 +414,7 @@ export function buildSystemPromptVars(
     anyTriggers: composioTriggers || webhookEndpoints,
     platformServices,
     computerUse: isComputerUseHost(),
+    appSandbox: isAppSandboxHost(),
     meetings: meetingsAvailable(availableIntegrationFamilies),
     hasModelHints: modelHints.length > 0,
     modelHints,
@@ -615,6 +616,8 @@ export class ClaudeCodeProcess extends EventEmitter {
   // session-manager persists them via the 'capability-grant' event), or the
   // host's grant record diverges and a gated launch hangs with no card.
   private sessionCapabilityGrants: Set<Capability>;
+  // Per process, so shown hints are tracked per session, not per container.
+  private readonly hintHooks = createHintHookMatchers(builtinHints, () => this.userMessageCount);
   // Kept so the system prompt can be regenerated when a capability block
   // boundary flips mid-session (the prompt gates delegation sections on it).
   private availableEnvVars: string[] | undefined;
@@ -699,6 +702,14 @@ export class ClaudeCodeProcess extends EventEmitter {
   // the process rather than in a detached pool.
   private warmHandle: WarmQuery | null = null;
   public slashCommands: { name: string; description: string; argumentHint: string }[] = [];
+  // The CLI's command list and the names system/init last listed, kept so a
+  // send can spot an unsupported built-in without waiting on the CLI.
+  private cliCommands?: readonly SlashCommand[];
+  private runnableCommandNames?: readonly string[];
+  private readonly contextUsage = new ContextUsageReporter(
+    async () => this.queryInstance?.getContextUsage({ detail: 'summary' }),
+    (frame) => this.emit('message', frame),
+  );
 
   constructor(options: ClaudeCodeProcessOptions) {
     super();
@@ -1000,7 +1011,7 @@ export class ClaudeCodeProcess extends EventEmitter {
    */
   private buildSdkMcpServers(browserMcpTools: ReturnType<typeof createBrowserTools>): Record<string, McpServerConfig> {
     const servers: Record<string, McpServerConfig> = {
-      'user-input': createUserInputMcpServer(() => this),
+      'user-input': createUserInputMcpServer(() => this, () => this.sessionId),
       'browser': createBrowserMcpServer(browserMcpTools),
       'dashboards': createDashboardsMcpServer(),
       'widgets': createWidgetsMcpServer(),
@@ -1084,7 +1095,7 @@ export class ClaudeCodeProcess extends EventEmitter {
         ...remoteMcpToolPatterns,
       ],
       disallowedTools: [
-        'Monitor', 'DesignSync',
+        'DesignSync',
         'CronCreate', 'CronDelete', 'CronList',
         'ScheduleWakeup', 'RemoteTrigger', 'PushNotification',
         'EnterWorktree', 'ExitWorktree',
@@ -1237,6 +1248,11 @@ export class ClaudeCodeProcess extends EventEmitter {
         // above). Pinned here for the same reason: an agent's custom env vars
         // cannot turn it back on.
         CLAUDE_CODE_DISABLE_ARTIFACT: '1',
+        // CLI 2.1.300 flipped its request-replay record on by default: every
+        // transcript gets ~105 KB api-request-shape lines (system prompt +
+        // tool list) plus api-request-blob lines, about 3x the file size.
+        // Only the CLI's /feedback export reads them; resume does not.
+        CLAUDE_CODE_ELEGANT_MEADOW: '0',
         // Explicit maxOutputTokens setting takes precedence over custom env var
         ...(this.maxOutputTokens && { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(this.maxOutputTokens) }),
         // Tell the SDK the real context window for non-Claude models (it
@@ -1273,8 +1289,10 @@ export class ClaudeCodeProcess extends EventEmitter {
             // when one is active (native is Anthropic-server-side, absent on non-Claude models).
             ...(this.webSearchProvider ? ['mcp__web__web_search'] : ['WebSearch']),
             'Read',
+            'Glob',
             'mcp__user-input__request_file',
             'mcp__user-input__request_browser_input',
+            'mcp__user-input__request_login',
           ],
           prompt: WEB_BROWSER_AGENT_PROMPT,
           maxTurns: 500,
@@ -1393,8 +1411,10 @@ export class ClaudeCodeProcess extends EventEmitter {
               },
             ],
           },
+          ...this.hintHooks.UserPromptSubmit,
         ],
         PreToolUse: [
+          ...this.hintHooks.PreToolUse,
           {
             matcher: 'mcp__user-input__.*',
             hooks: [
@@ -1430,15 +1450,18 @@ export class ClaudeCodeProcess extends EventEmitter {
             ],
           },
           {
-            matcher: 'Bash',
+            // A subagent inherits the main agent's tools, these included; see
+            // main-thread-tools for why they are the main conversation's
+            // alone. agent_id is set only inside a subagent.
+            matcher: `^(${[...MAIN_THREAD_ONLY_TOOLS].join('|')})$`,
             hooks: [
               async (input) => {
-                const toolInput = (input as any).tool_input as Record<string, unknown> | undefined;
-                if (!startsWithAgentBrowserCommand(toolInput?.command)) return {};
+                if (!input.agent_id) return {};
                 return {
                   hookSpecificOutput: {
                     hookEventName: 'PreToolUse' as const,
-                    additionalContext: AGENT_BROWSER_BASH_WARNING,
+                    permissionDecision: 'deny' as const,
+                    permissionDecisionReason: MAIN_THREAD_ONLY_TOOL_MESSAGE,
                   },
                 };
               },
@@ -1535,6 +1558,7 @@ export class ClaudeCodeProcess extends EventEmitter {
           },
         ],
         PostToolUse: [
+          ...this.hintHooks.PostToolUse,
           {
             matcher: 'Bash',
             hooks: [
@@ -1553,7 +1577,7 @@ export class ClaudeCodeProcess extends EventEmitter {
                 if (!filePath) return {};
                 for (const hook of fileHooks) {
                   if (!hook.matches(filePath)) continue;
-                  const result = hook.onRead(filePath);
+                  const result = hook.onRead(filePath, (input as any).tool_response);
                   if (result.additionalContext) {
                     return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: result.additionalContext } };
                   }
@@ -1572,8 +1596,8 @@ export class ClaudeCodeProcess extends EventEmitter {
                 for (const hook of fileHooks) {
                   if (!hook.matches(filePath)) continue;
                   try {
-                    const content = await fs.promises.readFile(filePath, 'utf-8');
-                    const result = hook.onEdit(filePath, content);
+                    const result = hook.onEditReply?.(filePath, (input as any).tool_response)
+                      ?? hook.onEdit(filePath, await fs.promises.readFile(filePath, 'utf-8'));
                     if (result.error) {
                       return { hookSpecificOutput: { hookEventName: 'PostToolUse' as const, additionalContext: `Warning: ${result.error}` } };
                     }
@@ -1730,17 +1754,22 @@ export class ClaudeCodeProcess extends EventEmitter {
           );
           // The init list owns the executable names. supportedCommands adds
           // descriptions/hints, but skill entries may use display titles there.
-          const canonicalCommandNames = Array.isArray(message.slash_commands)
+          this.runnableCommandNames = Array.isArray(message.slash_commands)
             ? message.slash_commands.filter((name): name is string => typeof name === 'string')
             : [];
-          this.slashCommands = mergeCanonicalSlashCommands(canonicalCommandNames, []);
-          try {
-            const cmds = await this.queryInstance!.supportedCommands();
-            this.slashCommands = mergeCanonicalSlashCommands(canonicalCommandNames, cmds);
-          } catch (err) {
-            console.error(`[Session ${this.sessionId}] Failed to fetch slash commands:`, err);
-          }
+          await this.loadCliCommands();
+          // The host rebuilds a live session's menu from this frame's list.
+          message.slash_commands = this.rebuildSlashCommands();
           this.emit('init-complete');
+        }
+
+        // A skill the agent writes mid-turn: the CLI pushes the new list now,
+        // while the next system/init comes only with the next turn.
+        if (message.type === 'system' && message.subtype === 'commands_changed') {
+          this.cliCommands = message.commands;
+          this.runnableCommandNames = withPushedCommandNames(this.runnableCommandNames ?? [], message.commands);
+          this.rebuildSlashCommands();
+          message.commands = this.slashCommands;
         }
 
         // Emit the SDK message
@@ -1766,6 +1795,8 @@ export class ClaudeCodeProcess extends EventEmitter {
 
         this.trackForLateJoinReplay(message);
         this.emit('message', message);
+        const contextChange = contextUsageChange(message);
+        if (contextChange) this.contextUsage.refresh(contextChange.settled);
       }
     } catch (error: any) {
       // Check for abort error in multiple ways (SDK may use different error types)
@@ -1820,6 +1851,28 @@ export class ClaudeCodeProcess extends EventEmitter {
         this.isReady = false;
       }
       this.emit('exit', 0);
+    }
+  }
+
+  /** Rebuilds the menu without the unsupported built-ins; returns its runnable names. */
+  private rebuildSlashCommands(): string[] {
+    const runnable = this.runnableCommandNames ?? [];
+    const unsupported = unsupportedBuiltinCommands(this.cliCommands, runnable);
+    const menuNames = runnable.filter((name) => !unsupported.has(name));
+    this.slashCommands = mergeCanonicalSlashCommands(
+      menuNames,
+      (this.cliCommands ?? []).filter((command) => !unsupported.has(command.name)),
+    );
+    return menuNames;
+  }
+
+  // supportedCommands() answers from the initialize response, which the CLI
+  // sends before its first prompt, and follows later commands_changed pushes.
+  private async loadCliCommands(): Promise<void> {
+    try {
+      this.cliCommands = await this.queryInstance?.supportedCommands() ?? this.cliCommands;
+    } catch (err) {
+      console.error(`[Session ${this.sessionId}] Failed to fetch slash commands:`, err);
     }
   }
 
@@ -1979,11 +2032,28 @@ export class ClaudeCodeProcess extends EventEmitter {
       console.log(`[Session ${this.sessionId}] Switching model dynamically -> ${this.model}`);
       try {
         await this.queryInstance.setModel(this.model);
+        // The window is the new model's from here on.
+        this.contextUsage.refresh(false);
       } catch (err) {
         // setModel can fail (e.g. transport not in streaming mode). Fall back to
         // the conservative restart path so the new model still takes effect.
         console.warn(`[Session ${this.sessionId}] setModel failed, falling back to restart:`, err);
         await this.interrupt();
+        queryRebuilt = true;
+      }
+    }
+
+    // The command list comes with system/init, which the CLI sends only after
+    // the first message, so the first slash command of a process waits for it.
+    if (content.startsWith('/') && !this.cliCommands) {
+      await this.loadCliCommands();
+      // A stop that landed while the CLI started: wait it out and restart, as
+      // for a cold session above.
+      if (this.isCold()) {
+        if (this.currentStop) {
+          await this.currentStop.catch(() => undefined);
+        }
+        await this.restart();
         queryRebuilt = true;
       }
     }
@@ -2012,6 +2082,13 @@ export class ClaudeCodeProcess extends EventEmitter {
       await this.waitForRemoteMcpsReady();
     }
 
+    // An unsupported built-in reaches the model as the user typed it: the CLI
+    // runs no slash command in a client-composed turn. Such a turn also skips
+    // the CLI's turn-start context (nested CLAUDE.md, skill listing), which
+    // arrives after the turn's first tool call instead.
+    const clientComposed = content.startsWith('/') &&
+      isUnsupportedCommand(content, unsupportedBuiltinCommands(this.cliCommands, this.runnableCommandNames));
+
     // Create SDK user message format
     const shouldQuery = options?.shouldQuery;
     const message: SDKUserMessage = {
@@ -2029,6 +2106,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       parent_tool_use_id: null,
       ...(uuid ? { uuid } : {}),
       ...(shouldQuery !== undefined ? { shouldQuery } : {}),
+      ...(clientComposed ? { client_composed: true as const } : {}),
     };
 
     if (!content.startsWith(SYSTEM_MESSAGE_PREFIX)) {

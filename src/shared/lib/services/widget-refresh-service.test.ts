@@ -25,6 +25,7 @@ vi.mock('@shared/lib/container/container-host', async () => {
       getCachedInfo: () => ({ status: mocks.cachedStatus }),
       ensureRunning: (...args: unknown[]) => mocks.ensureRunning(...args),
       getClient: () => ({ fetch: mocks.clientFetch }),
+      removeClient: () => {},
     }),
   }
 })
@@ -41,6 +42,7 @@ vi.mock('@shared/lib/notifications/global-feed', () => ({
 }))
 
 const { widgetRefreshService } = await import('./widget-refresh-service')
+const { agentRegistry } = await import('@shared/lib/agent-actor')
 
 const AGENT = 'agent-1'
 
@@ -87,8 +89,10 @@ async function flush() {
 }
 
 describe('widgetRefreshService', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     widgetRefreshService.resetForTests()
+    // What the service remembers about the agent's widgets is the agent's.
+    await agentRegistry.evict(AGENT)
     mocks.listWidgets.mockReset()
     mocks.ensureRunning.mockReset()
     mocks.clientFetch.mockReset()
@@ -163,15 +167,35 @@ describe('widgetRefreshService', () => {
 
     const a = widgetRefreshService.refreshWidget(AGENT, 'macros', { wake: true, reason: 'stale' })
     const b = widgetRefreshService.refreshWidget(AGENT, 'macros', { wake: true, reason: 'manual' })
-    expect(a).toBe(b)
-    expect(widgetRefreshService.isRefreshing(AGENT, 'macros')).toBe(true)
-    expect(widgetRefreshService.refreshingSlugs(AGENT)).toEqual(['macros'])
+    await vi.waitFor(() => expect(mocks.clientFetch).toHaveBeenCalledTimes(1))
+    expect(await widgetRefreshService.isRefreshing(AGENT, 'macros')).toBe(true)
+    expect(await widgetRefreshService.refreshingSlugs(AGENT)).toEqual(['macros'])
 
     resolveFetch(okResponse(snapshot()))
-    await a
-    await flush()
+    // The second call joined the first: one container run, one outcome for both.
+    const [outcomeA, outcomeB] = await Promise.all([a, b])
+    expect(outcomeB).toEqual(outcomeA)
+    expect(outcomeA).toMatchObject({ ok: true })
     expect(mocks.clientFetch).toHaveBeenCalledTimes(1)
-    expect(widgetRefreshService.isRefreshing(AGENT, 'macros')).toBe(false)
+    expect(await widgetRefreshService.isRefreshing(AGENT, 'macros')).toBe(false)
+  })
+
+  it('a call arriving while a refresh completes joins it instead of running the script again', async () => {
+    // The second caller asks in the window between the container answering
+    // and the refresh being recorded as over: start-or-join is one step.
+    let second: Promise<unknown> | undefined
+    mocks.publishGlobal.mockImplementation((event: { type: string }) => {
+      if (event.type === 'widget_snapshot_ready' && !second) {
+        queueMicrotask(() => {
+          second = widgetRefreshService.refreshWidget(AGENT, 'macros', { wake: true, reason: 'manual' })
+        })
+      }
+    })
+    mocks.clientFetch.mockImplementation(async () => okResponse(snapshot()))
+    const first = await widgetRefreshService.refreshWidget(AGENT, 'macros', { wake: true, reason: 'stale' })
+    await vi.waitFor(() => expect(second).toBeDefined())
+    expect(await second).toEqual(first)
+    expect(mocks.clientFetch).toHaveBeenCalledTimes(1)
   })
 
   it('refreshStale starts only stale widgets and throttles repeat sweeps', async () => {
@@ -224,6 +248,28 @@ describe('widgetRefreshService', () => {
       '/artifacts/static-rewritten/widget/refresh',
     ]))
     expect(mocks.ensureRunning).not.toHaveBeenCalled()
+    // Debounced: the two runs that ended together sweep once.
+    expect(mocks.listWidgets).toHaveBeenCalledTimes(1)
+  })
+
+  it('a run that ends during the debounce restarts it; a stopped service sweeps nothing', async () => {
+    vi.useFakeTimers()
+    widgetRefreshService.start()
+    mocks.listWidgets.mockResolvedValue([])
+
+    mocks.globalListener!({ type: 'session_idle', agentSlug: AGENT, sessionId: 's1', isActive: false })
+    await vi.advanceTimersByTimeAsync(2_000)
+    mocks.globalListener!({ type: 'session_idle', agentSlug: AGENT, sessionId: 's2', isActive: false })
+    await vi.advanceTimersByTimeAsync(2_000)
+    // Four seconds after the first run ended, but only two after the second.
+    expect(mocks.listWidgets).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1_500)
+    await vi.waitFor(() => expect(mocks.listWidgets).toHaveBeenCalledTimes(1))
+
+    mocks.globalListener!({ type: 'session_idle', agentSlug: AGENT, sessionId: 's3', isActive: false })
+    widgetRefreshService.stop()
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(mocks.listWidgets).toHaveBeenCalledTimes(1)
   })
 
   it('the after-run sweep does nothing when the container has gone to sleep', async () => {

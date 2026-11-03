@@ -54,6 +54,9 @@ describe('canonicalizeTargetPath', () => {
     // GitLab reads %2F as data inside one segment: kept encoded in both views.
     ['gitlab.com/api/v4/projects/group%2Fproject/issues', 'api/v4/projects/group%2Fproject/issues', 'api/v4/projects/group%2Fproject/issues'],
     ['gitlab.com/api/v4/projects/1/repository/files/src%2Findex%2Ets/raw', 'api/v4/projects/1/repository/files/src%2Findex.ts/raw', 'api/v4/projects/1/repository/files/src%2Findex%2Ets/raw'],
+    // Sheets ranges are a single URI parameter even when the tab title contains a slash.
+    ["sheets.googleapis.com/v4/spreadsheets/id/values/'October%2F2026'!A1%3AB2:append", "v4/spreadsheets/id/values/'October%2F2026'!A1:B2:append", "v4/spreadsheets/id/values/'October%2F2026'!A1%3AB2:append"],
+    ["Sheets.GoogleApis.Com/v4/spreadsheets/id/values/'October%2f2026'!A1%3AB2", "v4/spreadsheets/id/values/'October%2F2026'!A1:B2", "v4/spreadsheets/id/values/'October%2f2026'!A1%3AB2"],
     // Elsewhere %2F is a separator, as the proxy has always treated it.
     ['api.github.com/repos/o/r/git/ref/heads%2Ffeature', 'repos/o/r/git/ref/heads/feature', 'repos/o/r/git/ref/heads/feature'],
     ['api.example.com', '', ''],
@@ -82,6 +85,8 @@ describe('canonicalizeTargetPath', () => {
     ['gmail.googleapis.com/gmail/v1/users/me/drafts/%252e%252e%252Fmessages/send', '"." or ".." path segment'],
     ['gitlab.com/api/v4/projects/group%2F..%2Fother/issues', '"." or ".." path segment'],
     ['gitlab.com/api/v4/projects/group%2F%2E%2E/issues', '"." or ".." path segment'],
+    ['sheets.googleapis.com/v4/spreadsheets/id/values/Sheet1%2F..%2Fother:append', '"." or ".." path segment'],
+    ['sheets.googleapis.com/v4/spreadsheets/id/values/Sheet1%252F%252e%252e%252Fother:append', '"." or ".." path segment'],
     ['api.example.com/files/C%23/%252e%252e/private', '"." or ".." path segment'],
     // Backslashes, which URL parsers and some servers read as "/".
     ['gmail.googleapis.com/gmail/v1/users/me/drafts%5C..%5Cmessages%5Csend', 'backslash in a path segment'],

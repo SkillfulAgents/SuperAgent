@@ -1,0 +1,104 @@
+name: Lima VM Image
+
+# The built-in Lima runtime's VM image: Alpine's cloud image with the
+# first-boot packages installed, built without booting it (scripts/
+# build-lima-image.sh). That takes Docker, which CI's macOS runners lack, so
+# the macOS builds call this, download the artifact and point
+# download-lima.sh's LIMA_IMAGE_DIR at it.
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Commit to build from (default: the calling workflow commit)'
+        required: false
+        type: string
+        default: ''
+      save-cache:
+        description: 'Keep a newly built image for later builds (only for trusted commits: main and releases)'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # The guest's architecture, so the packages' install scripts run natively.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # 11.14.1 = newest npm with min-release-age support (needs >=11.10) where
+      # `npm ls --json --long` still works (broken in 11.15+, breaks electron-builder)
+      - name: Upgrade npm (pinned)
+        run: npm install -g npm@11.14.1
+
+      # Only tsx is needed (fetch-lima-packages.ts); skip Electron's postinstall download.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # The image's inputs: the selected package versions (which need the
+      # packages fetched), the stock image and the bake script.
+      - name: Fetch the packages
+        id: inputs
+        run: |
+          if [ ! -f scripts/build-lima-image.sh ]; then exit 0; fi
+          bash scripts/build-lima-image.sh arm64 build/lima-image packages
+          echo "inputs=$(cat build/lima-image/inputs.sha256)" >> "$GITHUB_OUTPUT"
+
+      # Two builds of the image differ byte for byte, and the app's
+      # auto-update downloads every file that changed: reuse the image built
+      # from exactly these inputs. Only the exact key: a prefix match hands
+      # back the newest image whatever its inputs, and a saved key can't be
+      # replaced, so inputs that change and change back (A → B → A) would
+      # rebuild on every build until the cache is evicted.
+      - name: Restore the VM image built from these inputs
+        id: restore
+        if: steps.inputs.outputs.inputs != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: .lima-image-cache
+          key: lima-image-arm64-${{ steps.inputs.outputs.inputs }}
+
+      # An older commit (an on-demand PR build of a branch from before this
+      # workflow) has no build script, and its download-lima.sh downloads the
+      # stock image itself: hand it an artifact with nothing in it to use.
+      - name: Build the VM image
+        id: build
+        env:
+          LIMA_IMAGE_CACHE_DIR: .lima-image-cache
+        run: |
+          if [ ! -f scripts/build-lima-image.sh ]; then
+            mkdir -p build/lima-image
+            echo "No VM image: this commit predates scripts/build-lima-image.sh" > build/lima-image/README.txt
+            exit 0
+          fi
+          bash scripts/build-lima-image.sh arm64 build/lima-image image
+          echo "inputs=$(cat build/lima-image/inputs.sha256)" >> "$GITHUB_OUTPUT"
+
+      - name: Save the VM image for later builds
+        if: inputs.save-cache && steps.build.outputs.inputs != '' && steps.restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .lima-image-cache
+          key: lima-image-arm64-${{ steps.build.outputs.inputs }}
+
+      - name: Upload the VM image
+        uses: actions/upload-artifact@v4
+        with:
+          name: lima-image-arm64
+          path: build/lima-image/
+          retention-days: 5
+          # The image is compressed qcow2 and the packages are .apk files.
+          compression-level: 0

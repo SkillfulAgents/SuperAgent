@@ -4,6 +4,7 @@ import { chatIntegrations } from '../db/schema'
 import { getAgentIntegration } from '../services/agent-integration-service'
 import { EMAIL_HISTORY_THREAD_LIMIT } from './directory'
 import { captureException } from '../error-reporting'
+import { background } from '../background'
 import { createHash } from 'node:crypto'
 import { platformConnected } from './policy'
 import { watchEmail } from './live'
@@ -60,7 +61,7 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
     this.connected = mailbox.domain?.status === 'ready'
     this.mode = webhook ? 'webhooks' : 'stream'
     if (webhook) this.relayAttachment = this.relays.attach(webhook, this.config.mailboxId, cursor => this.catchUp(cursor))
-    else this.unwatch = watchEmail(this.record.createdByUserId, this.config.platformMemberId, this.record.id, this.config.mailboxId, () => { void this.pollNow() })
+    else this.unwatch = watchEmail(this.record.createdByUserId, this.config.platformMemberId, this.record.id, this.config.mailboxId, () => { background(this.pollNow(), { name: 'platform-email.poll' }) })
     this.schedule(0)
   }
   /** Registers the relay endpoint as this mailbox's gateway webhook. Null leaves this connection to the stream. */
@@ -91,7 +92,7 @@ export class PlatformEmailAgentIntegration extends EmailAgentIntegration {
   private schedule(ms: number) {
     if (this.stopped) return
     clearTimeout(this.timer)
-    this.timer = setTimeout(() => { void this.pollNow() }, ms)
+    this.timer = setTimeout(() => { background(this.pollNow(), { name: 'platform-email.poll' }) }, ms)
     this.timer.unref?.()
   }
   /** A relayed pointer: polls until the stored cursor reaches it, at most twice (a running poll may predate it). */

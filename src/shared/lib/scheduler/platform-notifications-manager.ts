@@ -15,6 +15,7 @@ import { isAuthMode } from '@shared/lib/auth/mode'
 import { getSettings, mutateSettings } from '@shared/lib/config/settings'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { captureException } from '@shared/lib/error-reporting'
+import { background } from '@shared/lib/background'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import {
@@ -65,7 +66,7 @@ class PlatformNotificationsManager {
     // even when connect() threw — but never for a superseded generation.
     if (generation !== this.generation || !this.isRunning) return
     this.refreshInterval = setInterval(() => {
-      void this.refreshOrReconnect()
+      background(this.refreshOrReconnect(), { name: 'platform-notifications-manager.refresh-or-reconnect' })
     }, JWT_REFRESH_INTERVAL_MS)
   }
 
@@ -121,7 +122,7 @@ class PlatformNotificationsManager {
     }
     const client = new SupabaseRealtimeClient()
     this.realtimeClient = client
-    await client.connect(config, (record) => this.handleRealtimeInsert(record))
+    await client.connect(config, (record) => background(this.handleRealtimeInsert(record), { name: 'platform-notifications-manager.handle-realtime-insert' }))
     if (generation !== this.generation) {
       // Superseded while the socket opened: tear down our own client, but
       // leave this.realtimeClient alone if a newer connect already replaced it.

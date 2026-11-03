@@ -5,8 +5,8 @@
  * Supports both "at" syntax for one-time tasks and cron syntax for recurring tasks.
  */
 
-import { CronExpressionParser } from 'cron-parser'
 import * as chrono from 'chrono-node'
+import { parseScheduleCron } from './parse-schedule-cron'
 
 export interface ParseResult {
   valid: boolean
@@ -109,7 +109,7 @@ export function validateAtSyntax(expression: string, timezone?: string): ParseRe
  * and handles DST transitions automatically.
  */
 export function getNextCronTime(cronExpression: string, timezone?: string): Date {
-  const interval = CronExpressionParser.parse(cronExpression, {
+  const interval = parseScheduleCron(cronExpression, {
     tz: timezone || 'UTC',
   })
   return interval.next().toDate()
@@ -143,7 +143,7 @@ const CRON_OCCURRENCE_SCAN_COUNT = 32
  */
 export function getMinCronIntervalMs(cronExpression: string, timezone?: string): number | null {
   try {
-    const interval = CronExpressionParser.parse(cronExpression, {
+    const interval = parseScheduleCron(cronExpression, {
       tz: timezone || 'UTC',
     })
     let prev = interval.next().toDate().getTime()
@@ -247,7 +247,7 @@ export function getScheduleCountWarning(activeCount: number): string | null {
  */
 export function validateCronExpression(cronExpression: string, timezone?: string): ParseResult {
   try {
-    const interval = CronExpressionParser.parse(cronExpression, {
+    const interval = parseScheduleCron(cronExpression, {
       tz: timezone || 'UTC',
     })
     const nextTime = interval.next().toDate()

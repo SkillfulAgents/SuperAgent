@@ -24,6 +24,12 @@ interface SentAttachmentChipProps {
    * agent may rewrite, so a fetched size could not be cached forever.
    */
   sizeBytes?: number
+  /**
+   * A delivery's id. The agent can rewrite a path and deliver it again, and the
+   * browser reuses an image it already decoded for the same URL in this page,
+   * even under no-store. A token per delivery gives each one its own URL.
+   */
+  version?: string
 }
 
 export type ImageSize = 'single' | 'grid'
@@ -40,13 +46,13 @@ export function imageSizeForCount(count: number): ImageSize {
  * name and size. Clicking opens the file (or folder) in the
  * preview drawer. Unlike the composer chip there is no remove control.
  */
-export function SentAttachmentChip({ filePath, agentSlug, imageSize = 'single', description, sizeBytes }: SentAttachmentChipProps) {
+export function SentAttachmentChip({ filePath, agentSlug, imageSize = 'single', description, sizeBytes, version }: SentAttachmentChipProps) {
   const { openFile, openFolder } = useFilePreview()
   // A picture that will not load is worse than no picture: an alt-text box, or
   // a blank square in a grid. Falling back to the chip still names the file and
   // still opens it, which is everything the row is for.
   const [imageBroken, setImageBroken] = useState(false)
-  const file = describeWorkspaceFile(filePath, agentSlug)
+  const file = describeWorkspaceFile(filePath, agentSlug, { version })
   const image = file.isImage && !imageBroken
   // An upload lives at a path stamped with the millisecond it arrived and is
   // never rewritten, so its size cannot go stale.

@@ -2,6 +2,7 @@ import WebSocket from 'ws'
 import type { LinearClient } from './client'
 import { directFrameSchema, directSubscriptionEventSchema, directSubscriptionResponseSchema, type DirectSubscriptionEvent } from './direct-schema'
 import { DIRECT_SUBSCRIPTIONS } from './direct-queries'
+import { background } from '../../background'
 
 interface Options {
   client: LinearClient
@@ -25,7 +26,7 @@ export class LinearSubscriptions {
   private unavailableOperations = new Set<string>()
   constructor(private readonly options: Options) {}
   isReady(): boolean { return this.ready }
-  start(): void { if (!this.stopped) return; this.stopped = false; void this.connect() }
+  start(): void { if (!this.stopped) return; this.stopped = false; background(this.connect(), { name: 'linear-subscriptions.connect' }) }
   stop(): void {
     this.stopped = true; this.generation++; this.ready = false
     clearTimeout(this.timer); clearTimeout(this.refresh); clearTimeout(this.registration); clearInterval(this.heartbeat)
@@ -94,7 +95,7 @@ export class LinearSubscriptions {
             const result = directSubscriptionResponseSchema.parse(frame.payload)
             if (result.errors?.length) { this.operationUnavailable(frame.id); return }
             const data = result.data?.[frame.id]
-            if (data) void Promise.resolve(this.options.onEvent(directSubscriptionEventSchema.parse({ type: frame.id, data }))).catch(error => this.options.onError(error instanceof Error ? error : new Error('Could not handle Linear event')))
+            if (data) background(Promise.resolve(this.options.onEvent(directSubscriptionEventSchema.parse({ type: frame.id, data }))).catch(error => this.options.onError(error instanceof Error ? error : new Error('Could not handle Linear event'))), { name: 'linear-subscriptions.handle-event' })
           }
         } catch {
           this.options.onError(new Error('Linear subscription returned an invalid response'))
@@ -127,7 +128,7 @@ export class LinearSubscriptions {
   }
   private reconnect(): void {
     clearTimeout(this.timer)
-    this.timer = setTimeout(() => { void this.connect() }, Math.min(30000, 1000 * 2 ** Math.min(this.failures++, 5)))
+    this.timer = setTimeout(() => { background(this.connect(), { name: 'linear-subscriptions.connect' }) }, Math.min(30000, 1000 * 2 ** Math.min(this.failures++, 5)))
     this.timer.unref()
   }
 }

@@ -1,5 +1,52 @@
 import { describe, it, expect } from 'vitest'
-import { getToolkitSlugFromProviderSlug, getProviderSlug, getProvider, isProviderSupported } from './service-catalog'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import ts from 'typescript'
+import { getToolkitSlugFromProviderSlug, getProviderSlug, getProvider, isProviderSupported, SUPPORTED_PROVIDERS } from './service-catalog'
+
+// The container ships separately, so its catalog cannot import host code. Read
+// its literal catalog without loading the container SDK into the host suite.
+function agentCatalog(name: 'ALL_SERVICES' | 'GAMUT_PLATFORM_ACCOUNTS') {
+  const filename = path.resolve(__dirname, '../../../../agent-container/src/tools/search-connected-account-services.ts')
+  const source = ts.createSourceFile(filename, readFileSync(filename, 'utf8'), ts.ScriptTarget.Latest, true)
+  const declaration = source.statements
+    .filter(ts.isVariableStatement)
+    .flatMap((statement) => statement.declarationList.declarations)
+    .find((item) => ts.isIdentifier(item.name) && item.name.text === name)
+  if (!declaration?.initializer || !ts.isArrayLiteralExpression(declaration.initializer)) {
+    throw new Error(`Missing literal agent catalog: ${name}`)
+  }
+  return declaration.initializer.elements.map((element) => {
+    if (!ts.isObjectLiteralExpression(element)) throw new Error('Expected a service object')
+    const fields: Record<string, string> = {}
+    for (const property of element.properties) {
+      if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name) || !ts.isStringLiteral(property.initializer)) {
+        throw new Error('Expected literal service metadata')
+      }
+      fields[property.name.text] = property.initializer.text
+    }
+    return { slug: fields.slug, displayName: fields.displayName, description: fields.description }
+  })
+}
+
+describe('host and agent account catalogs', () => {
+  it.each([false, true])('exposes the same account types and descriptions with platform mode %s', (platformMode) => {
+    const host = SUPPORTED_PROVIDERS
+      .filter((provider) => !provider.unlisted && (!provider.platformOnly || platformMode))
+      .map(({ slug, displayName, description }) => ({ slug, displayName, description }))
+    const agent = [...agentCatalog('ALL_SERVICES'), ...(platformMode ? agentCatalog('GAMUT_PLATFORM_ACCOUNTS') : [])]
+    const bySlug = (a: { slug: string }, b: { slug: string }) => a.slug.localeCompare(b.slug)
+    expect(agent.sort(bySlug)).toEqual(host.sort(bySlug))
+    expect(new Set(agent.map((service) => service.slug)).size).toBe(agent.length)
+  })
+
+  it('keeps toolkit mappings unambiguous', () => {
+    const slugs = SUPPORTED_PROVIDERS.map((provider) => provider.slug)
+    const composioSlugs = SUPPORTED_PROVIDERS.map((provider) => provider.composioSlug)
+    expect(new Set(slugs).size).toBe(slugs.length)
+    expect(new Set(composioSlugs).size).toBe(composioSlugs.length)
+  })
+})
 
 describe('getToolkitSlugFromProviderSlug', () => {
   it('maps nango slug back to toolkit slug', () => {

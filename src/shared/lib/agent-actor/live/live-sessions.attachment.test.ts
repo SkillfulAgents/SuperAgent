@@ -393,6 +393,32 @@ describe('LiveSessions', () => {
       }
     })
 
+    it('subscribes again on the next send after the stream closed while idle', async () => {
+      await send(async () => {
+        mockClient.emit({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+        emitResult()
+        emitIdle()
+      })
+      expect(sessions().isActive(SESSION_ID)).toBe(false)
+
+      vi.mocked(mockClient.getSession).mockResolvedValueOnce({ isRunning: false } as never)
+      mockClient.emit({ type: 'connection_closed' })
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(sessions().isSubscribed(SESSION_ID)).toBe(false)
+
+      const subscribesBefore = vi.mocked(mockClient.subscribeToStream).mock.calls.length
+      await send(async () => {})
+      expect(mockClient.subscribeToStream).toHaveBeenCalledTimes(subscribesBefore + 1)
+      expect(sessions().isActive(SESSION_ID)).toBe(true)
+
+      const idleEventsBefore = sseEvents.filter(e => e.type === 'session_idle').length
+      mockClient.emit({ type: 'system', subtype: 'session_state_changed', state: 'running' })
+      emitResult()
+      emitIdle()
+      expect(sessions().isActive(SESSION_ID)).toBe(false)
+      expect(sseEvents.filter(e => e.type === 'session_idle')).toHaveLength(idleEventsBefore + 1)
+    })
+
     it.each(['explicit', 'automatic'])('waits for an %s attachment already in progress before sending', async (mode) => {
       const subscribe = vi.mocked(mockClient.subscribeToStream).getMockImplementation()!
       let finishReplay!: () => void

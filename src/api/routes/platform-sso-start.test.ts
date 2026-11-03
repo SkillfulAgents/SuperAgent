@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Hono } from 'hono'
 
 const mockGetSession = vi.fn()
-const mockSignInWithOAuth2 = vi.fn()
+const mockSignInSocial = vi.fn()
 const mockGetGenericOAuthProviderConfigs = vi.fn()
 const mockCaptureException = vi.fn()
 
@@ -10,7 +10,7 @@ vi.mock('@shared/lib/auth/index', () => ({
   getAuth: () => ({
     api: {
       getSession: mockGetSession,
-      signInWithOAuth2: mockSignInWithOAuth2,
+      signInSocial: mockSignInSocial,
     },
   }),
 }))
@@ -44,14 +44,14 @@ describe('GET /auth/platform/start', () => {
     const res = await createApp().request('/auth/platform/start?return_to=%2Fagents')
     expect(res.status).toBe(302)
     expect(res.headers.get('location')).toBe('/agents')
-    expect(mockSignInWithOAuth2).not.toHaveBeenCalled()
+    expect(mockSignInSocial).not.toHaveBeenCalled()
   })
 
   it('starts Platform OIDC with PKCE cookies and sanitized return_to', async () => {
     mockGetSession.mockResolvedValue(null)
     const headers = new Headers()
     headers.append('set-cookie', 'better-auth.state=abc; Path=/; HttpOnly')
-    mockSignInWithOAuth2.mockResolvedValue({
+    mockSignInSocial.mockResolvedValue({
       headers,
       response: { url: 'https://auth.example.com/authorize?state=1', redirect: true },
     })
@@ -60,10 +60,10 @@ describe('GET /auth/platform/start', () => {
     expect(res.status).toBe(302)
     expect(res.headers.get('location')).toBe('https://auth.example.com/authorize?state=1')
     expect(res.headers.get('set-cookie')).toContain('better-auth.state=abc')
-    expect(mockSignInWithOAuth2).toHaveBeenCalledWith(
+    expect(mockSignInSocial).toHaveBeenCalledWith(
       expect.objectContaining({
         body: expect.objectContaining({
-          providerId: 'platform',
+          provider: 'platform',
           callbackURL: '/',
           errorCallbackURL: '/',
         }),
@@ -77,7 +77,7 @@ describe('GET /auth/platform/start', () => {
     const res = await createApp().request('/auth/platform/start')
     expect(res.status).toBe(302)
     expect(res.headers.get('location')).toBe('/')
-    expect(mockSignInWithOAuth2).not.toHaveBeenCalled()
+    expect(mockSignInSocial).not.toHaveBeenCalled()
   })
 
   it('fails closed when platform is absent even if another OIDC provider exists', async () => {
@@ -87,12 +87,12 @@ describe('GET /auth/platform/start', () => {
     const res = await createApp().request('/auth/platform/start')
     expect(res.status).toBe(302)
     expect(res.headers.get('location')).toBe('/')
-    expect(mockSignInWithOAuth2).not.toHaveBeenCalled()
+    expect(mockSignInSocial).not.toHaveBeenCalled()
   })
 
   it('falls back to / and reports when OIDC start throws', async () => {
     mockGetSession.mockResolvedValue(null)
-    mockSignInWithOAuth2.mockRejectedValue(new Error('provider down'))
+    mockSignInSocial.mockRejectedValue(new Error('provider down'))
     const res = await createApp().request('/auth/platform/start')
     expect(res.status).toBe(302)
     expect(res.headers.get('location')).toBe('/')
@@ -115,14 +115,14 @@ describe('GET /auth/platform/start', () => {
 
   it('cold path passes decorated return_to as callbackURL', async () => {
     mockGetSession.mockResolvedValue(null)
-    mockSignInWithOAuth2.mockResolvedValue({
+    mockSignInSocial.mockResolvedValue({
       headers: new Headers(),
       response: { url: 'https://auth.example.com/authorize?state=1', redirect: true },
     })
     await createApp().request(
       '/auth/platform/start?return_to=%2F&prompt=hello&model=gpt-5.6-luna&template_slug=research-bot',
     )
-    expect(mockSignInWithOAuth2).toHaveBeenCalledWith(
+    expect(mockSignInSocial).toHaveBeenCalledWith(
       expect.objectContaining({
         body: expect.objectContaining({
           callbackURL: '/?prompt=hello&model=gpt-5.6-luna&template_slug=research-bot',

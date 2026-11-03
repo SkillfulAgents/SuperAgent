@@ -21,6 +21,7 @@ describe('reserved-env-vars', () => {
       'SUPERAGENT_HOST_API_URL',
       'SUPERAGENT_AGENT_SLUG',
       'CONNECTED_ACCOUNTS',
+      'CONNECTED_ACCOUNT_TOOLKITS',
       'REMOTE_MCPS',
       'SUPERAGENT_VOLUMES',
       'AGENT_BROWSER_USE_HOST',

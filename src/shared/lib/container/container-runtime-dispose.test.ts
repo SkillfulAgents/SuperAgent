@@ -1,3 +1,6 @@
+vi.mock('@shared/lib/account-providers/provider-factory', () => ({
+  getDefaultAccountProvider: () => ({ name: 'composio' }),
+}))
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ContainerConfig } from './types'
 
@@ -102,6 +105,7 @@ vi.mock('@shared/lib/services/timezone-resolver', () => ({
 
 vi.mock('@shared/lib/services/mount-service', () => ({
   listVolumes: async () => ({ volumes: [], notMounted: [] }),
+  remounted: async () => {},
 }))
 
 import { containerHost } from './container-host'
