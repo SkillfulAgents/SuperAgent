@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { exportJWK, generateKeyPair, SignJWT, type ExportedJWKSCache } from 'jose'
-import { setOidcJwksStore, verifyOidcJwt, type OidcJwksStore } from './oidc-jwt'
+import { InMemoryKVStore, setKVCacheStore } from '@shared/lib/kv-cache/kv-store'
+import { _setOidcJwksResolverForTest, verifyOidcJwt } from './oidc-jwt'
 
 const ISSUER = 'https://auth.example.com'
+const KEY = `oidc-jwks:${ISSUER}`
 
 async function signingKey(kid: string) {
   const { privateKey, publicKey } = await generateKeyPair('RS256')
@@ -12,17 +14,6 @@ async function signingKey(kid: string) {
   return { jwk, sign }
 }
 
-function memoryStore(): OidcJwksStore & { keys: Map<string, ExportedJWKSCache> } {
-  const keys = new Map<string, ExportedJWKSCache>()
-  return {
-    keys,
-    get: async (issuer) => structuredClone(keys.get(issuer) ?? null),
-    put: async (issuer, set) => {
-      keys.set(issuer, structuredClone(set))
-    },
-  }
-}
-
 /** The issuer's /jwks, serving whatever keys it holds now; counts its downloads. */
 function issuerServing(published: { keys: object[] }) {
   const download = vi.fn(async () => Response.json(published))
@@ -30,25 +21,33 @@ function issuerServing(published: { keys: object[] }) {
   return download
 }
 
+/** A new process: nothing in memory, the KV cache store kept. */
+const newProcess = () => _setOidcJwksResolverForTest(null)
+
+let store: InMemoryKVStore
+
+beforeEach(() => {
+  store = new InMemoryKVStore()
+  setKVCacheStore(store)
+  newProcess()
+})
+
 afterEach(() => {
-  setOidcJwksStore(null)
+  setKVCacheStore(new InMemoryKVStore())
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
 
-describe('verifyOidcJwt with a stored key set', () => {
+describe('verifyOidcJwt with the KV cache store', () => {
   it('verifies in a new process with the stored keys, without downloading them again', async () => {
     const current = await signingKey('platform-oidc-main')
     const download = issuerServing({ keys: [current.jwk] })
-    const store = memoryStore()
 
-    setOidcJwksStore(store, { maxAgeMs: 24 * 60 * 60_000 })
     await verifyOidcJwt(await current.sign(), { issuer: ISSUER })
     expect(download).toHaveBeenCalledOnce()
-    expect(store.keys.get(ISSUER)?.jwks.keys).toHaveLength(1)
+    expect((await store.get<ExportedJWKSCache>(KEY))?.jwks.keys).toHaveLength(1)
 
-    // A new process: nothing in memory, the store kept.
-    setOidcJwksStore(store, { maxAgeMs: 24 * 60 * 60_000 })
+    newProcess()
     const { payload } = await verifyOidcJwt(await current.sign(), { issuer: ISSUER })
 
     expect(payload.org).toBe('org_sales')
@@ -58,31 +57,28 @@ describe('verifyOidcJwt with a stored key set', () => {
   it('downloads the keys again for a token signed with a key the stored set lacks, and stores the new set', async () => {
     const old = await signingKey('platform-oidc-2026-10')
     const rotated = await signingKey('platform-oidc-2026-11')
-    const store = memoryStore()
-    store.keys.set(ISSUER, { jwks: { keys: [old.jwk] }, uat: Date.now() - 60_000 })
+    await store.put(KEY, { jwks: { keys: [old.jwk] }, uat: Date.now() - 60_000 })
     const download = issuerServing({ keys: [old.jwk, rotated.jwk] })
 
-    setOidcJwksStore(store, { maxAgeMs: 24 * 60 * 60_000 })
     await verifyOidcJwt(await rotated.sign(), { issuer: ISSUER })
 
     expect(download).toHaveBeenCalledOnce()
-    expect(store.keys.get(ISSUER)?.jwks.keys.map((key) => key.kid)).toEqual(['platform-oidc-2026-10', 'platform-oidc-2026-11'])
+    expect((await store.get<ExportedJWKSCache>(KEY))?.jwks.keys.map((key) => key.kid)).toEqual([
+      'platform-oidc-2026-10',
+      'platform-oidc-2026-11',
+    ])
   })
 
   it('downloads the keys when the store cannot be read, and stores them', async () => {
     const current = await signingKey('platform-oidc-main')
     const download = issuerServing({ keys: [current.jwk] })
-    const store = memoryStore()
-    store.get = async () => {
-      throw new Error('KV unavailable')
-    }
+    vi.spyOn(store, 'get').mockRejectedValueOnce(new Error('KV unavailable'))
     vi.spyOn(console, 'warn').mockImplementation(() => {})
 
-    setOidcJwksStore(store, { maxAgeMs: 24 * 60 * 60_000 })
     const { payload } = await verifyOidcJwt(await current.sign(), { issuer: ISSUER })
 
     expect(payload.org).toBe('org_sales')
     expect(download).toHaveBeenCalledOnce()
-    expect(store.keys.get(ISSUER)?.jwks.keys).toHaveLength(1)
+    expect((await store.get<ExportedJWKSCache>(KEY))?.jwks.keys).toHaveLength(1)
   })
 })
