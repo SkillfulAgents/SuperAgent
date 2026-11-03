@@ -41,15 +41,21 @@ export function TeamBrainSyncSummaries({
           if (to === 'text') return <>{children}</>
           const { page } = to
           return (
-            <button
-              type="button"
-              onClick={() => onOpenFile({ id: page, name: page.slice(page.lastIndexOf('/') + 1), kind: 'file', sources: [] }, { path: `/${page}` })}
-              className="rounded-[2px] text-foreground underline decoration-foreground/20 underline-offset-[3px] transition-colors hover:decoration-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            // A link, not a button: a button never wraps, so text after it at the end of a line drops to its own line.
+            <a
+              href={href}
+              onClick={(event) => {
+                event.preventDefault()
+                onOpenFile({ id: page, name: page.slice(page.lastIndexOf('/') + 1), kind: 'file', sources: [] }, { path: `/${page}` })
+              }}
+              // A middle click would open the relative href in the browser.
+              onAuxClick={(event) => event.preventDefault()}
+              className="rounded-[2px] font-normal text-foreground underline decoration-foreground/20 underline-offset-[3px] transition-colors hover:decoration-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               data-testid={`team-brain-sync-page-${page}`}
               data-drawer-opener
             >
               {children}
-            </button>
+            </a>
           )
         }}
       />
