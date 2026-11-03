@@ -6,24 +6,14 @@ import { Link, type LinkProps } from '@tanstack/react-router'
 import { isAgentPageHref, settingsTabFromHref } from '@renderer/lib/in-app-link'
 import { DialogContext } from '@renderer/context/dialog-context'
 import { FilePreviewContext } from '@renderer/context/file-preview-context'
-import { isSafeWorkspaceFilePath } from '@renderer/lib/workspace-file-url'
+import { resolveAgentFilePath } from '@renderer/lib/workspace-file-url'
 
 // The one place react-markdown is wired: plugins, link-href policy, default anchor.
-
-function workspaceFilePath(href: string): string | null {
-  try {
-    // Parsed like a workspace image (markdown-url-transform.ts): query and hash are not part of the name.
-    const filePath = decodeURIComponent(new URL(href, 'file://').pathname)
-    return isSafeWorkspaceFilePath(filePath) ? filePath : null
-  } catch {
-    return null
-  }
-}
 
 // Its own component so only workspace links re-render with the preview tray.
 function WorkspaceFileLink({ children, href, agentSlug }: { children?: ReactNode; href: string; agentSlug?: string }) {
   const openFile = useContext(FilePreviewContext)?.openFile
-  const filePath = workspaceFilePath(href)
+  const filePath = resolveAgentFilePath(href, null)
   if (!agentSlug || !openFile || !filePath) return <>{children}</>
   return (
     <a
@@ -51,7 +41,7 @@ export function MarkdownLink({ children, href, agentSlug }: { children?: ReactNo
       </Link>
     )
   }
-  if (href?.startsWith('/workspace/')) {
+  if (href?.startsWith('file:')) {
     return <WorkspaceFileLink href={href} agentSlug={agentSlug}>{children}</WorkspaceFileLink>
   }
   const settingsTab = settingsTabFromHref(href)
@@ -69,6 +59,8 @@ export function MarkdownLink({ children, href, agentSlug }: { children?: ReactNo
       </a>
     )
   }
+  // A path with no scheme that nothing above claimed would open a blank page of this app.
+  if (!/^[a-z][a-z0-9+.-]*:|^\/\//i.test(href ?? '')) return <>{children}</>
   return (
     <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">
       {children}
@@ -87,11 +79,13 @@ export interface MarkdownProps {
   rehypePlugins?: ReactMarkdownOptions['rehypePlugins']
   /** Exact container paths proven to belong to image blocks in tool results. */
   imageAliases?: ReadonlyMap<string, string>
-  /** Enables file:///workspace images through the authenticated workspace route. */
+  /** Resolves agent file links and images through the authenticated file route. */
   agentSlug?: string
+  /** Where a relative path resolves from. See MarkdownImageContext. */
+  folder?: string | null
 }
 
-export function Markdown({ children, components, rehypePlugins, imageAliases, agentSlug }: MarkdownProps) {
+export function Markdown({ children, components, rehypePlugins, imageAliases, agentSlug, folder }: MarkdownProps) {
   const merged = useMemo(() => {
     const defaults: Components = agentSlug
       ? { ...DEFAULT_COMPONENTS, a: (props) => <MarkdownLink {...props} agentSlug={agentSlug} /> }
@@ -99,8 +93,8 @@ export function Markdown({ children, components, rehypePlugins, imageAliases, ag
     return components ? { ...defaults, ...components } : defaults
   }, [components, agentSlug])
   const urlTransform = useMemo(
-    () => (imageAliases || agentSlug ? createMarkdownUrlTransform({ aliases: imageAliases, agentSlug }) : markdownUrlTransform),
-    [imageAliases, agentSlug]
+    () => (imageAliases || agentSlug ? createMarkdownUrlTransform({ aliases: imageAliases, agentSlug, folder }) : markdownUrlTransform),
+    [imageAliases, agentSlug, folder]
   )
   return (
     <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={rehypePlugins} components={merged} urlTransform={urlTransform}>

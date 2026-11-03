@@ -92,7 +92,7 @@ export function MarkdownRenderer({ url, filePath, agentSlug }: MarkdownRendererP
               </pre>
             </details>
           )}
-          <AgentMarkdown text={body} mode="settled" agentSlug={agentSlug} rehypePlugins={rehypePlugins} />
+          <AgentMarkdown text={body} mode="settled" agentSlug={agentSlug} folder={filePath.slice(0, filePath.lastIndexOf('/'))} rehypePlugins={rehypePlugins} />
           {data?.truncated && (
             <div className="mt-3 pt-3 border-t text-xs text-muted-foreground text-center not-prose">
               File is larger than 5&nbsp;MB and was truncated. Download the file for the full content.

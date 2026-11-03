@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { encodeWorkspaceFilePath, getAgentFileApiPath, getAgentFileUrl, isSafeWorkspaceFilePath } from './workspace-file-url'
+import { encodeWorkspaceFilePath, getAgentFileApiPath, getAgentFileUrl, isSafeWorkspaceFilePath, resolveAgentFilePath } from './workspace-file-url'
 
 vi.mock('@renderer/lib/env', () => ({ getApiBaseUrl: () => 'http://api.test' }))
 
@@ -74,6 +74,39 @@ describe('workspace file URLs', () => {
       ['a NUL byte', '/workspace/report\u0000.md'],
     ])('refuses %s', (_why, path) => {
       expect(isSafeWorkspaceFilePath(path)).toBe(false)
+    })
+  })
+
+  describe('resolveAgentFilePath', () => {
+    it.each([
+      ['an absolute path', '/workspace/out/a.md', null, '/workspace/out/a.md'],
+      ['its file: form', 'file:///workspace/out/a.md', null, '/workspace/out/a.md'],
+      ['an encoded name, decoded once', '/workspace/out/Q3%20report.md', null, '/workspace/out/Q3 report.md'],
+      ['a query and heading, dropped', '/workspace/out/a.md?x#results', null, '/workspace/out/a.md'],
+      ['a stray %, kept raw in its own segment', '/workspace/90%done/Q3%20report.md', null, '/workspace/90%done/Q3 report.md'],
+      ['a path relative to its folder', 'shots/a.png', '/workspace/blog', '/workspace/blog/shots/a.png'],
+      ['a dot segment that stays inside', '../a.png', '/workspace/blog', '/workspace/a.png'],
+      ['a folder with a literal %', 'a.png', '/workspace/90%done', '/workspace/90%done/a.png'],
+      ['a drive path', '/mounts/Drive/a.md', null, '/mounts/Drive/a.md'],
+      ['a path relative to a drive file', 'a.png', '/mounts/Drive/docs', '/mounts/Drive/docs/a.png'],
+    ])('resolves %s', (_, reference, folder, expected) => {
+      expect(resolveAgentFilePath(reference, folder)).toBe(expected)
+    })
+
+    it.each([
+      ['a relative path with no folder', 'out/a.md', null],
+      ['a path that leaves the workspace', '../../etc/passwd', '/workspace/blog'],
+      ['an encoded traversal', '/workspace/out/..%2F..%2Fetc/passwd', null],
+      ['a host', '//localhost/workspace/a.md', null],
+      ['a web URL', 'https://example.com/a.md', null],
+      ['an app page', '/agents/a/sessions/s', null],
+      ['a heading only', '#results', '/workspace/blog'],
+      ['a folder', 'shots/', '/workspace/blog'],
+      ['an empty reference', '', '/workspace/blog'],
+      ['a drive root', '/mounts/Drive', null],
+      ['a display path from another source', 'a.md', '/Team Brain/policies'],
+    ])('refuses %s', (_, reference, folder) => {
+      expect(resolveAgentFilePath(reference, folder)).toBeNull()
     })
   })
 })

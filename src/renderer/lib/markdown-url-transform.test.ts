@@ -83,12 +83,31 @@ describe('markdownUrlTransform (SUP-238)', () => {
     expect(transform('/workspace/../secrets.png', 'src', node)).toBe('')
     expect(transform('/workspace/report.txt', 'src', node)).toBe('')
     expect(transform('/workspaceX/chart.png', 'src', node)).toBe('')
-    // relative to the document, or naming a host, is not a workspace path
-    expect(transform('workspace/chart.png', 'src', node)).toBe('')
     expect(transform('//localhost/workspace/chart.png', 'src', node)).toBe('')
   })
 
   // A relative src loads from the app's own origin with the user's session.
+  it('resolves a relative path from the file it sits in, else from the workspace', () => {
+    expect(createMarkdownUrlTransform({ agentSlug: 'a', folder: '/workspace/blog' })('shots/c.png', 'src', node)).toBe(
+      '/api/agents/a/files/blog/shots/c.png?inline=true'
+    )
+    expect(createMarkdownUrlTransform({ agentSlug: 'a' })('out/c.png', 'src', node)).toBe(
+      '/api/agents/a/files/out/c.png?inline=true'
+    )
+    expect(createMarkdownUrlTransform({ agentSlug: 'a', folder: null })('out/c.png', 'src', node)).toBe('')
+    expect(createMarkdownUrlTransform({ agentSlug: 'a' })('/mounts/Drive/c.png', 'src', node)).toBe(
+      '/api/agents/a/mount-files/Drive/c.png?inline=true'
+    )
+  })
+
+  it('keeps an agent file link as its canonical file: reference', () => {
+    const transform = createMarkdownUrlTransform({ agentSlug: 'a', folder: '/workspace/blog' })
+    expect(transform('notes.md', 'href', node)).toBe('file:///workspace/blog/notes.md')
+    expect(transform('/workspace/Q3%20report.md#x', 'href', node)).toBe('file:///workspace/Q3%20report.md')
+    expect(transform('#results', 'href', node)).toBe('#results')
+    expect(transform('https://example.com/a.md', 'href', node)).toBe('https://example.com/a.md')
+  })
+
   it('loads an unresolved image only from an absolute web URL', () => {
     expect(onSrc('/api/agents/a/files/chart.png')).toBe('')
     expect(onSrc('media/chart.png')).toBe('')
