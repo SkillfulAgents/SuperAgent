@@ -28,15 +28,18 @@ it('checks only the bot token of an app on webhooks, which has no app-level toke
 })
 it('sets Slack up over Socket Mode with both tokens, or with webhooks before its app exists', async () => {
   const setup = chatProviderSetup('slack', slackConfigSchema)
-  expect(await setup.prepare({ botToken: 'bot', appToken: 'app', onlyMentioned: true }, context)).toEqual({ config: { botToken: 'bot', appToken: 'app', onlyMentioned: true } })
+  expect(await setup.prepare({ botToken: 'bot', appToken: 'app', onlyMentioned: true }, context)).toEqual({ config: { botToken: 'bot', appToken: 'app', onlyMentioned: true, answerInThread: true, newSessionPerThread: true } })
+  // A new installation threads unless setup turned it off.
+  expect(await setup.prepare({ botToken: 'bot', appToken: 'app', answerInThread: false, newSessionPerThread: false }, context))
+    .toEqual({ config: { botToken: 'bot', appToken: 'app', answerInThread: false, newSessionPerThread: false } })
   await expect(setup.prepare({ botToken: 'bot' }, context)).rejects.toThrow(/app-level token/)
 
   // The endpoint is minted with the installation, which waits for the app's credentials.
   expect(await setup.prepare({ webhooks: true, onlyMentioned: true, relay: { endpointId: 'forged' }, webhookStatus: 'verified' }, context))
-    .toEqual({ config: { onlyMentioned: true }, relay: true, status: 'disconnected' })
+    .toEqual({ config: { onlyMentioned: true, answerInThread: true, newSessionPerThread: true }, relay: true, status: 'disconnected' })
   // With the signing secret already, the endpoint checks Slack's signatures from the start.
   expect(await setup.prepare({ webhooks: true, botToken: 'bot', signingSecret: 'secret' }, context))
-    .toEqual({ config: { botToken: 'bot', signingSecret: 'secret' }, relay: true, verification: slackVerificationProfile('secret') })
+    .toEqual({ config: { botToken: 'bot', signingSecret: 'secret', answerInThread: true, newSessionPerThread: true }, relay: true, verification: slackVerificationProfile('secret') })
 })
 it('does not claim iMessage credentials are verified before exchanging the code on creation', async () => {
   const fetch = vi.fn(async () => Response.json({ token: 'issued-token' }))
