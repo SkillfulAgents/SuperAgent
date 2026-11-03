@@ -92,6 +92,14 @@ export interface SlashCommandInfo {
   argumentHint: string
 }
 
+/**
+ * A toolset a session can have in the prompt from its first turn
+ * (`CreateSessionOptions.preloadToolsets`): the name of the in-process MCP
+ * server that carries it in the agent container (PRELOAD_TOOLSETS in
+ * `agent-container/src/preload-toolsets.ts`).
+ */
+export type PreloadToolset = 'computer-use'
+
 export type InterruptScope = 'turn' | 'all'
 
 export interface InterruptSessionOptions {
@@ -142,11 +150,13 @@ export interface CreateSessionOptions {
   effort?: EffortLevel // Initial thinking effort level
   speed?: SpeedLevel // Initial processing speed tier
   /**
-   * Load the computer-use tools into the prompt from the first turn, rather
-   * than behind ToolSearch: the user started the session to use the computer.
-   * A session asking for it starts cold (the pre-warmed process doesn't have them).
+   * Toolsets loaded into the prompt from the first turn rather than behind
+   * ToolSearch, for a session started to do one thing (the launcher's
+   * computer-use toggle). A session asking for any starts cold: the
+   * pre-warmed process doesn't have them. An image that doesn't know a name
+   * ignores it.
    */
-  preloadComputerUseTools?: boolean
+  preloadToolsets?: PreloadToolset[]
   /**
    * What the NEXT session on this agent will most likely ask for: the agent's
    * default model/effort/speed with the global fallback applied, ignoring any

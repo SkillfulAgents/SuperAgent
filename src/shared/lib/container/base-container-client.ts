@@ -1381,7 +1381,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           maxBrowserTabs: options.maxBrowserTabs,
           effort: options.effort,
           speed: options.speed,
-          ...(options.preloadComputerUseTools ? { preloadComputerUseTools: true } : {}),
+          ...(options.preloadToolsets?.length ? { preloadToolsets: options.preloadToolsets } : {}),
           capabilityPolicies,
           globalInstructions,
           prewarmDefaults: options.prewarmDefaults && warmRuntime ? {

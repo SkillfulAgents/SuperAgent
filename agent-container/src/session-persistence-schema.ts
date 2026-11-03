@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { agentCapabilityPoliciesSchema, speedLevelSchema } from './capability-policies';
 import { globalInstructionsSchema } from './global-instructions';
 import { modelContextWindowsSchema, subagentModelCatalogSchema } from './subagent-model-catalog';
+import { preloadToolsetsSchema } from './preload-toolsets';
 
 export const sessionMetadataSchema = z
   .object({
@@ -30,7 +31,7 @@ export const sessionMetadataSchema = z
     customEnvVars: z.record(z.string(), z.string()).transform(withoutProviderCredentials).optional(),
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
     speed: speedLevelSchema,
-    preloadComputerUseTools: z.boolean().optional(),
+    preloadToolsets: preloadToolsetsSchema,
     capabilityPolicies: agentCapabilityPoliciesSchema,
     globalInstructions: globalInstructionsSchema,
     sessionCapabilityGrants: z.array(z.enum(['subagents', 'workflows'])).optional(),

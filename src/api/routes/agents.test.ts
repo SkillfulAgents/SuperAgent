@@ -10196,7 +10196,7 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
       const start = vi.spyOn(agentRegistry.get('test-agent').sessions, 'start')
 
       expect((await postJson(app, SESSIONS_URL, { message: 'book this flight', computerUse: true })).status).toBe(201)
-      expect(mockCreateSession.mock.calls[0][0].preloadComputerUseTools).toBe(true)
+      expect(mockCreateSession.mock.calls[0][0].preloadToolsets).toEqual(['computer-use'])
       expect(start.mock.calls[0][0].grantComputerUse).toBe(true)
     })
 
@@ -10205,7 +10205,7 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
       const start = vi.spyOn(agentRegistry.get('test-agent').sessions, 'start')
 
       expect((await postJson(app, SESSIONS_URL, { message: 'hello', computerUse: 'yes' })).status).toBe(201)
-      expect(mockCreateSession.mock.calls[0][0]).not.toHaveProperty('preloadComputerUseTools')
+      expect(mockCreateSession.mock.calls[0][0]).not.toHaveProperty('preloadToolsets')
       expect(start.mock.calls[0][0]).not.toHaveProperty('grantComputerUse')
     })
 

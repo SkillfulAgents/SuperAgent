@@ -2210,7 +2210,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         maxBrowserTabs: getSettings().app?.maxBrowserTabs,
         effort: resolved.effort,
         speed: resolved.speed,
-        ...(computerUse ? { preloadComputerUseTools: true } : {}),
+        ...(computerUse ? { preloadToolsets: ['computer-use'] } : {}),
         // Same preference chain MINUS the per-session pick: this is what the
         // composer will send next time (it only puts model/effort/speed on the
         // wire when the user explicitly chooses one), so it is what the

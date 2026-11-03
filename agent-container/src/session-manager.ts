@@ -21,6 +21,7 @@ import {
   type WarmProfile,
 } from './warm-profile';
 import { modelContextWindowsSchema, subagentModelCatalogSchema } from './subagent-model-catalog';
+import { knownPreloadToolsets } from './preload-toolsets';
 
 interface SessionData {
   session: Session;
@@ -341,7 +342,7 @@ export class SessionManager extends EventEmitter {
         customEnvVars: request.customEnvVars,
         effort: request.effort,
         speed,
-        preloadComputerUseTools: request.preloadComputerUseTools,
+        preloadToolsets: request.preloadToolsets,
         capabilityPolicies,
         globalInstructions,
       });
@@ -496,7 +497,7 @@ export class SessionManager extends EventEmitter {
       customEnvVars: request.customEnvVars,
       effort: request.effort,
       speed,
-      preloadComputerUseTools: request.preloadComputerUseTools,
+      preloadToolsets: knownPreloadToolsets(request.preloadToolsets),
       capabilityPolicies,
       globalInstructions,
       metadata: request.metadata,
@@ -598,7 +599,7 @@ export class SessionManager extends EventEmitter {
         customEnvVars: profile.customEnvVars,
         effort: profile.effort,
         speed: profile.speed,
-        preloadComputerUseTools: profile.preloadComputerUseTools,
+        preloadToolsets: profile.preloadToolsets,
         capabilityPolicies: profile.capabilityPolicies,
         globalInstructions: profile.globalInstructions,
       });
@@ -735,7 +736,7 @@ export class SessionManager extends EventEmitter {
         customEnvVars: persisted.customEnvVars,
         effort: persisted.effort,
         speed: persisted.speed,
-        preloadComputerUseTools: persisted.preloadComputerUseTools,
+        preloadToolsets: persisted.preloadToolsets,
         capabilityPolicies: persisted.capabilityPolicies,
         sessionCapabilityGrants: persisted.sessionCapabilityGrants,
         globalInstructions: persisted.globalInstructions,

@@ -97,7 +97,7 @@ export interface CreateSessionRequest {
   maxBrowserTabs?: number; // Max browser tabs allowed (default 10)
   effort?: EffortLevel; // Initial thinking effort level
   speed?: SpeedLevel; // Initial processing-speed tier (emitted as X-Superagent-Speed)
-  preloadComputerUseTools?: boolean; // Computer-use tools in the prompt from the first turn, not behind ToolSearch
+  preloadToolsets?: string[]; // Toolsets in the prompt from the first turn, not behind ToolSearch (see preload-toolsets.ts; unknown names are ignored)
   capabilityPolicies?: AgentCapabilityPolicies; // Launch policies for subagents/workflows (absent = allow)
   globalInstructions?: string; // Org-wide guidance set in host Settings, rendered into every agent's prompt
   // What the host expects the NEXT session to ask for (agent default model/
