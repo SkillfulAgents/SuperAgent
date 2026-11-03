@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, type ManagedConnector } from './chat-delivery'
+import { processSSEEvent, finalizeStreaming, resolvePendingToolMessages, STREAM_FIRST_POST_CHARS, STREAM_UPDATE_MS, type ManagedConnector } from './chat-delivery'
 import { MockChatAgentIntegration } from './mock-connector'
 import { createdEvent } from './user-request-fixtures'
 import type { ChatIntegration } from '@shared/lib/db/schema'
@@ -67,6 +67,8 @@ describe('processSSEEvent', () => {
   // ── Basic streaming ─────────────────────────────────────────────
 
   describe('streaming text', () => {
+    afterEach(() => { vi.restoreAllMocks() })
+
     it('accumulates stream_delta text', async () => {
       await processEvents(managed, [
         { type: 'stream_delta', text: 'Hello ' },
@@ -75,22 +77,40 @@ describe('processSSEEvent', () => {
       expect(managed.streamingState.accumulatedText).toBe('Hello world')
     })
 
-    it('sends streaming updates when throttle period elapsed', async () => {
-      managed.streamingState.lastUpdateTime = 0 // force throttle to pass
-      await processSSEEvent(managed, { type: 'stream_delta', text: 'Hello' })
+    it('holds the first post until it has STREAM_FIRST_POST_CHARS characters, however long that takes', async () => {
+      const now = vi.spyOn(Date, 'now').mockReturnValue(10_000)
+      await processSSEEvent(managed, { type: 'stream_delta', text: 'x'.repeat(STREAM_FIRST_POST_CHARS - 2) })
+      now.mockReturnValue(10_000 + 5 * STREAM_UPDATE_MS)
+      await processSSEEvent(managed, { type: 'stream_delta', text: 'x' })
+      expect(getMock(managed).streamUpdates).toHaveLength(0)
 
-      const mock = getMock(managed)
-      expect(mock.streamUpdates.length).toBe(1)
-      expect(mock.streamUpdates[0].text).toBe('Hello')
+      await processSSEEvent(managed, { type: 'stream_delta', text: 'x' })
+      expect(getMock(managed).streamUpdates.map(u => u.text.length)).toEqual([STREAM_FIRST_POST_CHARS])
     })
 
-    it('throttles streaming updates within 1 second', async () => {
-      managed.streamingState.lastUpdateTime = Date.now() // just updated
-      await processSSEEvent(managed, { type: 'stream_delta', text: 'Hello' })
+    it('posts a reply that ends before its first post once, whole', async () => {
+      await processEvents(managed, [
+        { type: 'stream_delta', text: 'Y' },
+        { type: 'stream_delta', text: 'es, here are your PRs' },
+        { type: 'session_idle' },
+      ])
 
       const mock = getMock(managed)
-      expect(mock.streamUpdates.length).toBe(0)
-      expect(managed.streamingState.accumulatedText).toBe('Hello')
+      expect(mock.streamUpdates).toHaveLength(0)
+      expect(mock.sentMessages.map(m => m.message.text)).toEqual(['Yes, here are your PRs'])
+    })
+
+    it('edits at most once per STREAM_UPDATE_MS after the first post', async () => {
+      const now = vi.spyOn(Date, 'now').mockReturnValue(10_000)
+      await processSSEEvent(managed, { type: 'stream_delta', text: 'x'.repeat(STREAM_FIRST_POST_CHARS) })
+      const posted = managed.streamingState.currentMessageId
+      now.mockReturnValue(10_000 + STREAM_UPDATE_MS - 1)
+      await processSSEEvent(managed, { type: 'stream_delta', text: '!' })
+      expect(getMock(managed).streamUpdates).toHaveLength(1)
+
+      now.mockReturnValue(10_000 + STREAM_UPDATE_MS)
+      await processSSEEvent(managed, { type: 'stream_delta', text: '!' })
+      expect(getMock(managed).streamUpdates.map(u => u.existingMessageId)).toEqual([undefined, posted])
     })
 
     it('finalizes streaming on session_idle', async () => {
@@ -908,15 +928,17 @@ describe('multi-session isolation', () => {
     // Stream to both sessions
     session1.streamingState.lastUpdateTime = 0
     session2.streamingState.lastUpdateTime = 0
-    await processSSEEvent(session1, { type: 'stream_delta', text: 'For Alice' })
-    await processSSEEvent(session2, { type: 'stream_delta', text: 'For Bob' })
+    const forAlice = 'For Alice'.padEnd(STREAM_FIRST_POST_CHARS, '.')
+    const forBob = 'For Bob'.padEnd(STREAM_FIRST_POST_CHARS, '.')
+    await processSSEEvent(session1, { type: 'stream_delta', text: forAlice })
+    await processSSEEvent(session2, { type: 'stream_delta', text: forBob })
 
     // Both go through the same connector, but with different chatIds
     expect(sharedConnector.streamUpdates.length).toBe(2)
     expect(sharedConnector.streamUpdates[0].chatId).toBe('chat-alice')
-    expect(sharedConnector.streamUpdates[0].text).toBe('For Alice')
+    expect(sharedConnector.streamUpdates[0].text).toBe(forAlice)
     expect(sharedConnector.streamUpdates[1].chatId).toBe('chat-bob')
-    expect(sharedConnector.streamUpdates[1].text).toBe('For Bob')
+    expect(sharedConnector.streamUpdates[1].text).toBe(forBob)
   })
 
   it('tool input accumulation is independent per session', async () => {
