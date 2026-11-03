@@ -177,9 +177,10 @@ describe('TeamBrainPage', () => {
     await waitFor(() => expect(screen.getByTestId('team-brain-onboarding-step')).toHaveAttribute('data-step', 'agents'))
     expect(app.calls).toEqual(['install', 'mount team-brain', 'warm-start'])
 
-    // Every agent off, then planner off, weekly.
+    // Every agent off, then writer on, weekly.
     await clicker.click(screen.getByTestId('team-brain-every-agent-switch'))
-    await clicker.click(screen.getByTestId('team-brain-agent-planner'))
+    expect(screen.getByTestId('team-brain-agent-planner')).not.toBeChecked()
+    await clicker.click(screen.getByTestId('team-brain-agent-writer'))
     await clicker.click(screen.getByTestId('team-brain-next'))
     await clicker.click(screen.getByTestId('team-brain-schedule-weekly'))
     await clicker.click(screen.getByTestId('team-brain-next'))

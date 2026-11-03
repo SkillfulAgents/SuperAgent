@@ -52,9 +52,9 @@ export function resetTeamBrainState() {
   write(TEAM_BRAIN_INITIAL_STATE)
 }
 
-/** Whether an agent uses Team Brain. Every agent does until turned off. */
+/** Whether an agent uses Team Brain. One not switched on its own follows Every agent. */
 export function usesTeamBrain(state: TeamBrainState, agentSlug: string): boolean {
-  return state.agents[agentSlug] ?? true
+  return state.agents[agentSlug] ?? state.everyAgent
 }
 
 /** The agent set-up created but the record does not mark yet, which the agent lists leave out. */
