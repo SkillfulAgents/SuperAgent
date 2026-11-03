@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { eq } from 'drizzle-orm'
+import { eq, type SQL } from 'drizzle-orm'
 import * as schema from '@shared/lib/db/schema'
 import type { AppDatabase } from '@shared/lib/db/drivers/types'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
@@ -206,5 +206,96 @@ describe('removing an agent', () => {
     await catalog.remove('stuck')
     expect(await rowFor('stuck')).toBeUndefined()
     expect(fs.existsSync(getAgentDir('stuck'))).toBe(false)
+  })
+})
+
+describe('reading rows', () => {
+  async function insertRow(slug: string, name: string) {
+    await testDb.insert(schema.agents).values({
+      slug, name, avatarColor: 'tonal-cobalt', avatarShape: 'circle', description: null,
+      createdAt: new Date('2026-11-02T12:00:00Z'), runtime: 'local', workspaceHandle: null,
+    }).run()
+  }
+
+  /** The next row read gets the row at once but answers only when `respond()` runs, like a slow network. */
+  function slowNextRead() {
+    let respond!: () => void
+    const answered = new Promise<void>((resolve) => { respond = resolve })
+    const select = testDb.select.bind(testDb)
+    vi.spyOn(testDb, 'select').mockImplementationOnce((() => ({
+      from: (table: typeof schema.agents) => ({
+        where: (filter: SQL) => ({
+          get: async () => {
+            const row = await select().from(table).where(filter).get()
+            await answered
+            return row
+          },
+        }),
+      }),
+    })) as never)
+    return respond
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('shares one query between concurrent lookups of one agent, and keeps nothing once it answers', async () => {
+    await insertRow('a1b2c3d4e5', 'Sales')
+    const select = vi.spyOn(testDb, 'select')
+
+    const [record, exists] = await Promise.all([catalog.get('a1b2c3d4e5'), catalog.exists('a1b2c3d4e5')])
+    expect(record?.name).toBe('Sales')
+    expect(exists).toBe(true)
+    expect(select).toHaveBeenCalledTimes(1)
+
+    expect(await catalog.exists('a1b2c3d4e5')).toBe(true)
+    expect(select).toHaveBeenCalledTimes(2)
+  })
+
+  it('resolves a display slug with one query, shared by concurrent requests for it', async () => {
+    await insertRow('a1b2c3d4e5', 'Sales')
+    const select = vi.spyOn(testDb, 'select')
+
+    const [first, second] = await Promise.all([
+      catalog.resolveRecord('sales-a1b2c3d4e5'),
+      catalog.resolveRecord('sales-a1b2c3d4e5'),
+    ])
+
+    expect(first).toMatchObject({ slug: 'a1b2c3d4e5', name: 'Sales' })
+    expect(second).toEqual(first)
+    expect(select).toHaveBeenCalledTimes(1)
+  })
+
+  it('resolves a legacy compound slug to itself when the agent its last segment names also exists', async () => {
+    await insertRow('a1b2c3d4e5', 'Sales')
+    await insertRow('legacy-a1b2c3d4e5', 'Legacy sales')
+
+    expect(await catalog.resolve('legacy-a1b2c3d4e5')).toBe('legacy-a1b2c3d4e5')
+    expect(await catalog.resolve('sales-a1b2c3d4e5')).toBe('a1b2c3d4e5')
+  })
+
+  it('does not keep a failed lookup', async () => {
+    await insertRow('a1b2c3d4e5', 'Sales')
+    vi.spyOn(testDb, 'select').mockImplementationOnce(() => {
+      throw new Error('D1_ERROR: Network connection lost.')
+    })
+
+    await expect(catalog.get('a1b2c3d4e5')).rejects.toThrow('Network connection lost')
+    expect((await catalog.get('a1b2c3d4e5'))?.name).toBe('Sales')
+  })
+
+  it('reads its own rename back while a lookup that began before it is still answering', async () => {
+    await insertRow('f6g7h8i9j0', 'Research')
+    const respond = slowNextRead()
+
+    const before = catalog.get('f6g7h8i9j0')
+    await catalog.update('f6g7h8i9j0', { name: 'Market research' })
+    expect((await catalog.get('f6g7h8i9j0'))?.name).toBe('Market research')
+
+    respond()
+    expect((await before)?.name).toBe('Research')
+    await catalog.remove('f6g7h8i9j0')
+    expect(await catalog.exists('f6g7h8i9j0')).toBe(false)
   })
 })
