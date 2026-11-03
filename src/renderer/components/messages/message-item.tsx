@@ -365,7 +365,7 @@ function MessageItemComponent({ message, isStreaming, agentSlug, sessionId, isSe
 
         {/* Message bubble - only show if there's text content */}
         {showMessageBubble && !bareUserRender && (
-          <MessageContextMenu text={text || ''} onRemove={onRemoveMessage ? () => onRemoveMessage(message.id) : undefined} readAloud={readAloudMenu}>
+          <MessageContextMenu text={text || ''} onRemove={onRemoveMessage ? () => onRemoveMessage(message.id) : undefined} readAloud={readAloudMenu} canReply={isAssistant}>
             <div
               dir="auto"
               // Assistant bubbles opt into table breakout and must not clip it.

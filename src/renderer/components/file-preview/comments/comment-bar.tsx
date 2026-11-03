@@ -6,6 +6,8 @@ import { appendToSessionDraft, useDraftsStore } from '@renderer/context/drafts-c
 import { focusSessionComposer } from '@renderer/components/messages/composer-focus'
 import { describeAnchor } from './anchor'
 import { getPathName } from '@shared/lib/utils/workspace-path'
+import { cn } from '@shared/lib/utils/cn'
+import type { CommentAnchor } from './kinds'
 
 interface CommentBarProps {
   comments: FileComment[]
@@ -29,20 +31,51 @@ export function formatComments(filePath: string, comments: FileComment[]): strin
 
 export function CommentBar({ comments, filePath, agentSlug, sessionId }: CommentBarProps) {
   const { clearComments, removeComment, commentsEnabled } = useFilePreview()
+  const format = useCallback((added: FileComment[]) => formatComments(filePath, added), [filePath])
+  if (!commentsEnabled) return null
+  return (
+    <PendingCommentsBar
+      comments={comments}
+      sessionId={sessionId}
+      format={format}
+      onRemove={(id) => removeComment(filePath, agentSlug, id)}
+      onClear={() => clearComments(filePath, agentSlug)}
+      className="border-t border-border/40"
+    />
+  )
+}
+
+export interface PendingComment {
+  id: string
+  anchor: CommentAnchor
+  text: string
+}
+
+interface PendingCommentsBarProps<C extends PendingComment> {
+  comments: C[]
+  sessionId: string
+  /** The draft text the comments become on Submit. */
+  format: (comments: C[]) => string
+  onRemove: (id: string) => void
+  onClear: () => void
+  className?: string
+}
+
+/** Added comments waiting for Submit, which puts them into the session's composer draft without sending. */
+export function PendingCommentsBar<C extends PendingComment>({ comments, sessionId, format, onRemove, onClear, className }: PendingCommentsBarProps<C>) {
   const draftsStore = useDraftsStore()
 
   const handleSubmit = useCallback(() => {
     if (comments.length === 0) return
-    const content = formatComments(filePath, comments)
-    appendToSessionDraft(draftsStore, sessionId, content, { prepend: false })
-    clearComments(filePath, agentSlug)
+    appendToSessionDraft(draftsStore, sessionId, format(comments), { prepend: false })
+    onClear()
     queueMicrotask(() => focusSessionComposer(sessionId))
-  }, [comments, filePath, agentSlug, sessionId, draftsStore, clearComments])
+  }, [comments, sessionId, draftsStore, format, onClear])
 
-  if (comments.length === 0 || !commentsEnabled) return null
+  if (comments.length === 0) return null
 
   return (
-    <div className="shrink-0 border-t border-border/40 bg-muted/20">
+    <div className={cn('shrink-0 bg-muted/20', className)}>
       {/* Comment list */}
       <div className="max-h-32 overflow-y-auto px-3 py-2 space-y-1.5">
         {comments.map((comment, i) => (
@@ -53,7 +86,7 @@ export function CommentBar({ comments, filePath, agentSlug, sessionId }: Comment
               <div className="text-foreground whitespace-pre-wrap">{comment.text}</div>
             </div>
             <button
-              onClick={() => removeComment(filePath, agentSlug, comment.id)}
+              onClick={() => onRemove(comment.id)}
               className="p-0.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
               title="Remove comment"
             >
@@ -74,7 +107,7 @@ export function CommentBar({ comments, filePath, agentSlug, sessionId }: Comment
             size="sm"
             variant="ghost"
             className="h-7 text-xs"
-            onClick={() => clearComments(filePath, agentSlug)}
+            onClick={onClear}
           >
             <X className="h-3 w-3 mr-1" />
             Cancel

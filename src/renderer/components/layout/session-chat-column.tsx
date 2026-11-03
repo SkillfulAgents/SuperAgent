@@ -103,6 +103,7 @@ export function SessionChatColumn({
       onPendingMessageAppeared={onPendingMessageAppeared}
       suppressScrollToBottom={staleSession.popoverOpen}
       overlayFooter
+      allowReplies={!isViewOnly}
       footerClassName="max-w-[740px] mx-auto w-full"
       footer={
         <>
