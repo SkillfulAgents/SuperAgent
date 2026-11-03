@@ -256,11 +256,12 @@ export async function checkAppLinkModifiers(context: RouterNavigationContext) {
   } else {
     for (const gesture of [{ modifiers: ['ControlOrMeta' as const] }, { button: 'middle' as const }]) {
       await page.bringToFront()
+      let nativeMiddleSameWindow = false
       if ('button' in gesture && process.platform === 'darwin'
         && page.context().browser()?.browserType().name() === 'webkit') {
-        // Diagnose the native macOS embedder separately from React's link.
-        // This probe does not relax the AppLink assertion below: it records
-        // whether a plain anchor opens a page under the same real gesture.
+        // macOS WebKit's embedder can navigate a middle-clicked native anchor
+        // in this window. Establish that native behavior on the same runtime,
+        // then require AppLink to preserve it, including the rendered target.
         await page.evaluate(() => {
           const anchor = document.createElement('a')
           anchor.dataset.testid = 'router-native-middle-probe'
@@ -278,11 +279,34 @@ export async function checkAppLinkModifiers(context: RouterNavigationContext) {
           await page.getByTestId('router-native-middle-probe').click({ button: 'middle' })
           const nativePopup = await nativePopupPromise
           console.log(`[router-native-middle] ${JSON.stringify({ openedPage: !!nativePopup, focusedBefore, openerUrl: page.url() })}`)
-          if (nativePopup) await nativePopup.close()
+          if (nativePopup) {
+            await expect(nativePopup.getByTestId('notifications-back-button')).toBeVisible()
+            await nativePopup.close()
+            expect(routeLocation(page)).toBe('/')
+          } else {
+            await expect(page.getByTestId('notifications-back-button')).toBeVisible()
+            expect(routeLocation(page)).toBe('/notifications')
+            nativeMiddleSameWindow = true
+          }
         } finally {
-          await page.getByTestId('router-native-middle-probe').evaluate(element => element.remove())
+          await page.evaluate(() => document.querySelector('[data-testid="router-native-middle-probe"]')?.remove())
+          if (routeLocation(page) !== '/') {
+            await navigate('/')
+            await new AppPage(page).waitForAgentsLoaded()
+          }
           await page.bringToFront()
         }
+      }
+      if (nativeMiddleSameWindow) {
+        const pageCount = page.context().pages().length
+        await link.click(gesture)
+        await expect(page.getByTestId('notifications-back-button')).toBeVisible()
+        await expect(page.getByTestId('notifications-button')).toHaveAttribute('data-active', 'true')
+        expect(routeLocation(page)).toBe('/notifications')
+        expect(page.context().pages()).toHaveLength(pageCount)
+        await page.getByTestId('home-button').click()
+        await expect.poll(() => routeLocation(page)).toBe('/')
+        continue
       }
       // Browser-native modifier/middle tabs can have no opener, so observe the
       // context's new page rather than only window.open-style popup events.

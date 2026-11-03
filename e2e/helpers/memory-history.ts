@@ -30,15 +30,18 @@ async function prepareHistory({ page, request, apiBaseUrl, navigate }: MemoryHis
   // Build actual browser history through UI actions. At the memory entry,
   // both directions have two entries and end at distinct leaf routes:
   // home → logs → home → MEMORIES → home → connections.
-  await page.getByTestId('home-api-logs-open-page').click()
+  // Home's asynchronously loaded cards can shift these buttons between
+  // WebKit's scroll-to-click and pointer delivery. Use native keyboard
+  // activation so this history setup targets the intended button.
+  await page.getByTestId('home-api-logs-open-page').press('Enter')
   await expect(page).toHaveURL(/\/api-logs$/)
   await page.getByTestId('api-logs-back-button').click()
   await expect(page.getByTestId('home-memories-open-page')).toBeVisible()
-  await page.getByTestId('home-memories-open-page').click()
+  await page.getByTestId('home-memories-open-page').press('Enter')
   await expect(page).toHaveURL(/\/memories$/)
   await page.getByTestId('agent-breadcrumb').click()
   await expect(page.getByTestId('home-connections-open-page')).toBeVisible()
-  await page.getByTestId('home-connections-open-page').click()
+  await page.getByTestId('home-connections-open-page').press('Enter')
   await expect(page).toHaveURL(/\/connections$/)
   await page.evaluate(() => window.history.go(-2))
   await expect(page).toHaveURL(/\/memories$/)
