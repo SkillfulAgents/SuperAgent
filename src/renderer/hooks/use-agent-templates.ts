@@ -62,14 +62,9 @@ export function useDiscoverableAgents() {
       if (!refreshPromise) {
         queryClient.setQueryData(DISCOVERABLE_REFRESH_KEY, 'pending')
         refreshPromise = apiFetch('/api/agents/discoverable-agents?refresh=true')
-          .then(async (refreshRes) => {
-            if (refreshRes.ok) {
-              const refreshData = await refreshRes.json()
-              const refreshed = refreshData.agents as ApiDiscoverableAgent[]
-              if (JSON.stringify(refreshed) !== JSON.stringify(agents)) {
-                queryClient.setQueryData(['discoverable-agents'], refreshed)
-              }
-            }
+          // Read the catalog again rather than writing this response: a skillset change made while the refresh ran is newer.
+          .then((refreshRes) => {
+            if (refreshRes.ok) return queryClient.invalidateQueries({ queryKey: ['discoverable-agents'] })
           })
           .catch(() => { /* ignore background refresh failures */ })
           .finally(() => {
