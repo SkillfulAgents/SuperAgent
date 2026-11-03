@@ -27,6 +27,7 @@ import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from
 import { enableKeepAwake, disableKeepAwake, cleanupKeepAwake, restoreKeepAwakeOnStartup } from './keep-awake'
 import { openDashboardWindow, installPopupHandler, installCloudDashboardAuth, closeAllDashboardWindows } from './dashboard-window'
 import { blockSrcdocFrameNavigation } from './srcdoc-frame-guard'
+import { captureRegion } from './capture-region'
 import {
   prewarmQuickDispatchWindow,
   toggleQuickDispatchWindow,
@@ -999,6 +1000,10 @@ ipcMain.handle('read-local-file', async (_event, filePath: string): Promise<{ bu
 ipcMain.handle('show-emoji-panel', () => {
   app.showEmojiPanel()
 })
+
+// A PNG of a region of the asking window, in its CSS pixels: what the person
+// saw of a dashboard when they left a comment on it.
+ipcMain.handle('capture-region', (event, rect: unknown) => captureRegion(event.sender, rect))
 
 // IPC handler for opening a dashboard in a separate window
 ipcMain.handle('open-dashboard-window', (_event, { agentSlug, dashboardSlug }: { agentSlug: string; dashboardSlug: string }) => {

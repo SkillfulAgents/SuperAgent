@@ -1,5 +1,6 @@
-import { Dock, ExternalLink, Loader2, RefreshCw } from 'lucide-react'
+import { Dock, ExternalLink, Loader2, MessageSquarePlus, RefreshCw } from 'lucide-react'
 import { useDashboardHeader } from '@renderer/context/dashboard-header-context'
+import { cn } from '@shared/lib/utils/cn'
 import { Button } from '@renderer/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 
@@ -20,9 +21,38 @@ export function DashboardHeaderActions({
       ? 'Loading dashboard'
       : 'Refresh dashboard'
 
+  const comment = actions.comment
+  const commenting = comment && comment.state !== 'idle'
+
   return (
     <TooltipProvider delayDuration={0}>
       <div className="flex items-center gap-0" data-testid="dashboard-header-actions">
+        {comment && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={comment.onToggle}
+                disabled={comment.disabled || comment.state === 'opening' || comment.state === 'sending'}
+                aria-pressed={!!commenting}
+                aria-label={commenting ? 'Exit comment mode' : 'Add comment'}
+                className={cn(
+                  'gap-1.5 px-2.5',
+                  commenting && 'bg-sky-500/15 text-sky-600 hover:bg-sky-500/20 hover:text-sky-600 dark:text-sky-300 dark:hover:text-sky-300',
+                )}
+              >
+                {comment.state === 'opening' || comment.state === 'sending'
+                  ? <Loader2 className="h-4 w-4 animate-spin" />
+                  : <MessageSquarePlus className="h-4 w-4" />}
+                <span className="hidden md:inline">{commenting ? 'Commenting' : 'Comment'}</span>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>{commenting ? 'Exit comment mode (Esc)' : 'Comment on this dashboard: an agent makes the change'}</p>
+            </TooltipContent>
+          </Tooltip>
+        )}
         {actions.onAddToDock && (
           <Tooltip>
             <TooltipTrigger asChild>

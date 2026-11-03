@@ -89,12 +89,14 @@ export function useSession(id: string | null, agentSlug: string | null = null) {
 export function useCreateSession(options: {
   /** The caller renders AgentRuntimeErrors that have a preview, so skip their toast. */
   agentRuntimeErrorsShownInline?: boolean
+  /** The caller shows every failure itself, so skip the global error toast. */
+  skipGlobalErrorToast?: boolean
 } = {}) {
   const queryClient = useQueryClient()
   const { track } = useAnalyticsTracking()
 
   return useMutation({
-    meta: { agentRuntimeErrorsShownInline: options.agentRuntimeErrorsShownInline },
+    meta: { agentRuntimeErrorsShownInline: options.agentRuntimeErrorsShownInline, skipGlobalErrorToast: options.skipGlobalErrorToast },
     mutationFn: async (data: {
       agentSlug: string
       message: string
