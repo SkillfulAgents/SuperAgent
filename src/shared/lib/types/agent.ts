@@ -1,3 +1,4 @@
+import type { AgentAvatar } from './agent-avatar'
 /**
  * Agent Types
  *
@@ -50,6 +51,13 @@ export interface CreateAgentInput {
   name: string
   description?: string
   instructions?: string
+  /**
+   * An id the caller minted, so a client can open the agent before the create answers.
+   * Must be a minted-format id nobody uses yet; omitted, the host mints one.
+   */
+  id?: string
+  /** The avatar the caller showed for it; omitted, a random one. */
+  avatar?: AgentAvatar
 }
 
 /**

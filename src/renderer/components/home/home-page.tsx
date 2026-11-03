@@ -1292,7 +1292,7 @@ export function HomePage() {
               <Waypoints className="h-8 w-8" />
               <p className="text-sm">No agents yet — the graph lights up once you create one.</p>
               <Button size="sm" onClick={() => { void createUntitledAgent({ surface: 'home' }) }} disabled={isCreatingAgent}>
-                <Plus className="h-4 w-4 mr-1" />
+                {isCreatingAgent ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}
                 New Agent
               </Button>
             </div>
@@ -1332,7 +1332,7 @@ export function HomePage() {
                     className="app-no-drag"
                     disabled={isCreatingAgent}
                   >
-                    <Plus className="h-4 w-4 mr-1" />
+                    {isCreatingAgent ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}
                     New Agent
                   </Button>
                   <HomeArrangeMenu
