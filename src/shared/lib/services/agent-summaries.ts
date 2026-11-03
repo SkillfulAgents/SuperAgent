@@ -1,6 +1,6 @@
 /**
- * What an agent list shows of each agent, kept as a row per agent so a
- * listing reads one table and touches no actor.
+ * What pages that show agents need of each one (agent lists, the Home charts),
+ * kept as a row per agent so a page reads one table and touches no actor.
  *
  * - Where the actors run, `startAgentSummaryPublisher` hears every feed event
  *   about an agent and publishes one `agent_summary` event with the agent's
@@ -19,6 +19,7 @@ import { background } from '@shared/lib/background'
 import type { GlobalFeed } from '@shared/lib/notifications/global-feed'
 import type { AgentLiveSummary, AgentSlug } from '@shared/lib/agent-actor/types'
 import type { ApiAgentDashboard, ApiAgentWidget } from '@shared/lib/types/api'
+import type { AutomationRun } from './automation-runs'
 
 export const AGENT_SUMMARY_EVENT = 'agent_summary'
 
@@ -34,12 +35,14 @@ export interface AgentSummary {
   visibleSessionIds: string[]
   dashboards: ApiAgentDashboard[]
   widgets: ApiAgentWidget[]
+  /** The cron and webhook runs its Home charts are drawn from. Absent in rows stored before charts read them. */
+  automationRuns?: AutomationRun[]
 }
 
 export function agentSummaryOf(
   live: AgentLiveSummary,
   sessions: { sessionCount: number; lastActivityAt: Date | null },
-  listing: Pick<AgentSummary, 'visibleSessionIds' | 'dashboards' | 'widgets'>,
+  listing: Pick<AgentSummary, 'visibleSessionIds' | 'dashboards' | 'widgets' | 'automationRuns'>,
 ): AgentSummary {
   const { status, port, healthWarnings, stale } = live.container
   return {
