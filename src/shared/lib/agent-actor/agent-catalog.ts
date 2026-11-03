@@ -72,12 +72,10 @@ function sharedReads<T>() {
     run(key: string, read: () => Promise<T>): Promise<T> {
       const current = running.get(key)
       if (current) return current
-      const started = read()
-      running.set(key, started)
-      const done = () => {
+      const started: Promise<T> = read().finally(() => {
         if (running.get(key) === started) running.delete(key)
-      }
-      started.then(done, done)
+      })
+      running.set(key, started)
       return started
     },
     /** After a write, later callers start a new read instead of joining one that began before it. */
