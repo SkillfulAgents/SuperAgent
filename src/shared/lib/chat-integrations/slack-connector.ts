@@ -36,7 +36,8 @@ import {
 import { buildSessionContextPrompt } from './chat-session-context'
 import { describeUnsupportedRequest, isUnsupportedInChat, splitChatMessage } from './utils'
 import { withSessionUrl, type AppLinkContext } from '@shared/lib/agent-integrations/app-link'
-import { isSlackBlocksRejection, isUnrecoverableSlackError } from './slack-error'
+import { isSlackBlocksRejection, isUnrecoverableSlackError, slackHistoryRefusal } from './slack-error'
+import { IntegrationPolicyError } from '../agent-integrations/errors'
 import { MAX_TRACKED_SLACK_THREADS, type SlackThreadStateStore } from './slack-thread-state'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
@@ -166,7 +167,25 @@ export function buildSlackSystemPrompt(message: SystemPromptContext): string {
     surface: 'chat',
     where: `a live Slack conversation: you are responding inside ${whereDetail} (chat id: ${message.chatId})`,
     multiParty: isMultiPartyChatType(kind),
+    readsHistory: true,
   })
+}
+
+/** Longest message text a history read returns, so one pasted document cannot fill the agent's context. */
+const HISTORY_MESSAGE_CHARS = 1500
+
+/**
+ * One message as a history line: "Name (2026-11-02 23:55 UTC): text [file: deck.pdf]",
+ * text cut at HISTORY_MESSAGE_CHARS. Null when there is nothing to show and no placeholder.
+ */
+export function slackHistoryLine(name: string, ts: string | undefined, text: string, files: string[], empty?: string): string | null {
+  const chars = Array.from(text)
+  const shown = chars.length > HISTORY_MESSAGE_CHARS ? `${chars.slice(0, HISTORY_MESSAGE_CHARS).join('')}…(cut)` : text
+  const attached = files.map(f => `[file: ${f}]`).join(' ')
+  const body = [shown, attached].filter(Boolean).join(' ') || empty
+  if (!body) return null
+  const at = ts ? new Date(Number(ts) * 1000).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : ''
+  return `${name}${at ? ` (${at})` : ''}: ${body}`
 }
 
 // ── Chat id classification ──────────────────────────────────────────────
@@ -457,7 +476,7 @@ export class SlackConnector extends ChatAgentIntegration {
   readonly provider = 'slack' as const
 
   static generateSystemPrompt = buildSlackSystemPrompt
-  static discoveryCapabilities = ['list_users', 'list_channels', 'dm_by_user_id'] as const
+  static discoveryCapabilities = ['list_users', 'list_channels', 'dm_by_user_id', 'read_history'] as const
   static classifyChatId = classifySlackChat
 
   private app: SlackApp | null = null
@@ -667,6 +686,7 @@ export class SlackConnector extends ChatAgentIntegration {
       const requestText = text
 
       // When joining a thread mid-conversation, fetch earlier messages as context.
+      // It reads only the thread the person wrote in, so everyone in it can see them.
       // isNewThreadEntry already implies threadTs is set; the check narrows the type.
       if (isNewThreadEntry && threadTs) {
         const history = await this.fetchThreadHistory(chatId, threadTs, ts)
@@ -1421,6 +1441,36 @@ export class SlackConnector extends ChatAgentIntegration {
       console.warn('[SlackConnector] Failed to fetch thread history (non-critical):', err instanceof Error ? err.message : err)
       return null
     }
+  }
+
+  async readChatHistory(externalId: string, { threadTs, cursor }: { threadTs?: string; cursor?: string }): Promise<string> {
+    if (!this.app) throw new Error('Slack is not connected')
+    // The channel comes from the conversation itself, so a read never leaves it.
+    const { channel } = this.resolveChannel(externalId)
+    const client = this.app.client
+    const page = await (threadTs
+      ? client.conversations.replies({ channel, ts: threadTs, limit: 50, cursor })
+      : client.conversations.history({ channel, limit: 50, cursor })
+    ).catch((err: unknown) => {
+      const refusal = slackHistoryRefusal(err)
+      throw refusal ? new IntegrationPolicyError(`Slack refused the read: ${refusal}`) : err
+    })
+    const messages = threadTs ? page.messages ?? [] : [...page.messages ?? []].reverse()
+    const lines: string[] = []
+    for (const m of messages) {
+      const replies = !threadTs && m.reply_count ? ` [thread ${m.ts}, ${m.reply_count} ${m.reply_count === 1 ? 'reply' : 'replies'}]` : ''
+      // A thread root keeps its line even without text, so its thread stays reachable.
+      const text = m.text ? await this.resolveMentionsInText(m.text) : ''
+      const files = (m.files ?? []).map(f => f.name || f.title || 'file')
+      const name = m.user ? (await this.resolveUserName(m.user) || m.user) : 'Unknown'
+      const line = slackHistoryLine(name, m.ts, text, files, replies ? '(no text)' : undefined)
+      if (line) lines.push(line + replies)
+    }
+    // Slack's own cursor continues the read: a channel pages back in time, a thread forward.
+    const next = page.response_metadata?.next_cursor
+    if (next) lines.push(threadTs ? `(later replies: call again with thread_ts=${threadTs} cursor=${next})` : `(earlier messages: call again with cursor=${next})`)
+    else if (page.has_more) lines.push(threadTs ? '(later replies not shown)' : '(earlier messages not shown)')
+    return lines.length ? lines.join('\n') : 'No messages.'
   }
 
   // Cache resolved names with TTL to prevent unbounded growth

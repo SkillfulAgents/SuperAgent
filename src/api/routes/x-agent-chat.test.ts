@@ -120,6 +120,7 @@ vi.mock('fs', () => ({
 }))
 
 import xAgentChat from './x-agent-chat'
+import { IntegrationPolicyError } from '@shared/lib/agent-integrations/errors'
 import { agentIntegrationRegistry } from '@shared/lib/agent-integrations/registry'
 
 function createApp() {
@@ -698,5 +699,83 @@ describe('x-agent chat route', () => {
     const res = await directoryRequest('users', {})
     expect(res.status).toBe(400)
     expect((await res.json()).error).toContain('integration_id')
+  })
+
+  // ── History: the calling session's own conversation ────────────────
+
+  function historyRequest(body: Record<string, unknown>) {
+    return app.request('http://localhost/api/x-agent/chat/history', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer good-token', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  }
+
+  it('reads the calling session\'s conversation, whatever else the request names', async () => {
+    mockGetConnectorClass.mockResolvedValue({ capabilities: ['read_history'] })
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue({ integrationId: 'integration-1', externalChatId: 'C0DEALS|1000.001', archivedAt: null })
+    const readChatHistory = vi.fn().mockResolvedValue('Alice: summarize Acme')
+    mockGetConnector.mockReturnValue({ ...connector, readChatHistory })
+
+    const res = await historyRequest({ session_id: 'session-1', thread_ts: '1000.002', cursor: 'bmV4dA==', integration_id: 'other', chat_id: 'C0PRIVATE' })
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ history: 'Alice: summarize Acme' })
+    expect(mockGetAgentIntegrationSessionBySessionId).toHaveBeenCalledWith('agent-one', 'session-1')
+    expect(readChatHistory).toHaveBeenCalledWith('C0DEALS|1000.001', { threadTs: '1000.002', cursor: 'bmV4dA==' })
+  })
+
+  it('refuses a provider without history support before touching its connector', async () => {
+    mockGetConnectorClass.mockResolvedValue({ capabilities: ['send_message'] })
+    mockGetChatIntegration.mockReturnValue(createIntegration({ provider: 'telegram' }))
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue({ integrationId: 'integration-1', externalChatId: '12345', archivedAt: null })
+    const readChatHistory = vi.fn()
+    mockGetConnector.mockReturnValue({ ...connector, readChatHistory })
+
+    const res = await historyRequest({ session_id: 'session-1' })
+
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toBe('The telegram provider does not support reading history.')
+    expect(readChatHistory).not.toHaveBeenCalled()
+    expect(mockAddIntegration).not.toHaveBeenCalled()
+  })
+
+  it('refuses a session that is not a live chat conversation of this agent', async () => {
+    mockGetConnectorClass.mockResolvedValue({ capabilities: ['read_history'] })
+    const readChatHistory = vi.fn()
+    mockGetConnector.mockReturnValue({ ...connector, readChatHistory })
+
+    for (const session of [null, { integrationId: 'integration-1', externalChatId: 'C0DEALS|1000.001', archivedAt: new Date() }]) {
+      mockGetAgentIntegrationSessionBySessionId.mockReturnValue(session)
+      const res = await historyRequest({ session_id: 'session-1' })
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toBe('read_chat_history works only inside a chat conversation.')
+    }
+    expect(readChatHistory).not.toHaveBeenCalled()
+  })
+
+  it('rejects a malformed history request without reporting it', async () => {
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue({ integrationId: 'integration-1', externalChatId: 'C0DEALS|1000.001', archivedAt: null })
+    const res = await historyRequest({ session_id: 'session-1', thread_ts: 42 })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toBe('Invalid request: session_id, thread_ts and cursor must be non-empty strings.')
+    expect(mockCaptureException).not.toHaveBeenCalled()
+  })
+
+  it('answers a refusal with its reason and reports any other failure', async () => {
+    mockGetConnectorClass.mockResolvedValue({ capabilities: ['read_history'] })
+    mockGetAgentIntegrationSessionBySessionId.mockReturnValue({ integrationId: 'integration-1', externalChatId: 'C0DEALS|1000.001', archivedAt: null })
+    const readChatHistory = vi.fn().mockRejectedValueOnce(new IntegrationPolicyError('Slack refused the read: not_in_channel'))
+      .mockRejectedValueOnce(new Error('boom'))
+    mockGetConnector.mockReturnValue({ ...connector, readChatHistory })
+
+    const refused = await historyRequest({ session_id: 'session-1' })
+    expect(refused.status).toBe(400)
+    expect((await refused.json()).error).toBe('Slack refused the read: not_in_channel')
+    expect(mockCaptureException).not.toHaveBeenCalled()
+
+    const failed = await historyRequest({ session_id: 'session-1' })
+    expect(failed.status).toBe(500)
+    expect(mockCaptureException).toHaveBeenCalledOnce()
   })
 })

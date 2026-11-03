@@ -22,21 +22,34 @@ const UNRECOVERABLE_SLACK_ERROR_CODES = new Set([
 /** @slack/web-api ErrorCode.PlatformError — an ok:false API response. */
 const SLACK_PLATFORM_ERROR_CODE = 'slack_webapi_platform_error'
 
+/** The code of an ok:false Slack API response (e.g. not_in_channel), or undefined for any other error. */
+function slackPlatformErrorCode(err: unknown): string | undefined {
+  if (!err || typeof err !== 'object' || !('code' in err) || err.code !== SLACK_PLATFORM_ERROR_CODE || !('data' in err)) return undefined
+  const { data } = err
+  return data && typeof data === 'object' && 'error' in data && typeof data.error === 'string' ? data.error : undefined
+}
+
 export function isUnrecoverableSlackError(err: unknown): boolean {
-  if (!err || typeof err !== 'object') return false
-  const e = err as { code?: unknown; data?: { error?: unknown } }
-  return (
-    e.code === SLACK_PLATFORM_ERROR_CODE &&
-    typeof e.data?.error === 'string' &&
-    UNRECOVERABLE_SLACK_ERROR_CODES.has(e.data.error)
-  )
+  const code = slackPlatformErrorCode(err)
+  return code !== undefined && UNRECOVERABLE_SLACK_ERROR_CODES.has(code)
 }
 
 // Slack refusing a message's blocks, e.g. markdown_text that converts to more than 50 blocks.
 const BLOCKS_REJECTION_CODES = new Set(['invalid_blocks', 'msg_blocks_too_long'])
 
 export function isSlackBlocksRejection(err: unknown): boolean {
-  if (!err || typeof err !== 'object') return false
-  const e = err as { code?: unknown; data?: { error?: unknown } }
-  return e.code === SLACK_PLATFORM_ERROR_CODE && typeof e.data?.error === 'string' && BLOCKS_REJECTION_CODES.has(e.data.error)
+  const code = slackPlatformErrorCode(err)
+  return code !== undefined && BLOCKS_REJECTION_CODES.has(code)
+}
+
+// Slack declining a history read for a reason the agent or the person it answers can act on
+// (missing_scope: the Slack app predates the history scopes). Other codes are faults.
+const HISTORY_REFUSAL_CODES = new Set(['not_in_channel', 'channel_not_found', 'thread_not_found', 'invalid_arguments', 'invalid_cursor', 'missing_scope'])
+
+export function slackHistoryRefusal(err: unknown): string | undefined {
+  const code = slackPlatformErrorCode(err)
+  if (code !== undefined) return HISTORY_REFUSAL_CODES.has(code) ? code : undefined
+  // The client waits out each 429 and retries; once its retries run out, @slack/web-api
+  // rethrows an uncoded Error whose message is the only marker of a rate limit.
+  return err instanceof Error && err.message.startsWith('A rate limit was exceeded') ? 'ratelimited' : undefined
 }

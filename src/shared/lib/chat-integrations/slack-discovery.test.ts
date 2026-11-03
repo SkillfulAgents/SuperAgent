@@ -35,8 +35,8 @@ describe('classifySlackChatId', () => {
 // ── Capability statics ─────────────────────────────────────────────────
 
 describe('discovery capability statics', () => {
-  it('slack advertises all three discovery capabilities', () => {
-    expect(SlackConnector.discoveryCapabilities).toEqual(['list_users', 'list_channels', 'dm_by_user_id'])
+  it('slack advertises all four discovery capabilities', () => {
+    expect(SlackConnector.discoveryCapabilities).toEqual(['list_users', 'list_channels', 'dm_by_user_id', 'read_history'])
     expect(SlackConnector.classifyChatId?.({ chatId: 'D0AAA111' })).toBe(classifySlackChatId('D0AAA111'))
     expect(SlackConnector.classifyChatId?.({ chatId: 'C0BBB222|1.2' })).toBe(classifySlackChatId('C0BBB222|1.2'))
   })

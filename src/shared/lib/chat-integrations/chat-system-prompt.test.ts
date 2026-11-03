@@ -183,6 +183,7 @@ describe('buildSlackSystemPrompt', () => {
     expect(prompt).toContain('chat id: D0AAA111')
     expect(prompt).not.toContain('Iddo Gino')
     expect(prompt).not.toContain('[Jane Doe]')
+    expect(prompt).toContain('read_chat_history')
   })
 
   it('describes the channel and the attribution prefix for channel sessions', async () => {
@@ -246,6 +247,7 @@ describe('buildTelegramSystemPrompt', () => {
     expect(group).toContain('a group conversation (chat id: -1001234567890)')
     expect(group).not.toContain('Team Chat')
     expect(group).toContain('[Jane Doe]')
+    expect(group).not.toContain('read_chat_history')
   })
 })
 

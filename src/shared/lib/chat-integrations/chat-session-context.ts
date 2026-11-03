@@ -11,6 +11,8 @@ export interface SessionSurface {
   /** Destination context, when known. */
   where?: string
   multiParty?: boolean
+  /** The provider can read earlier messages of this conversation (read_history). */
+  readsHistory?: boolean
 }
 
 const CHAT_DELIVERY =
@@ -22,6 +24,9 @@ const NO_DOUBLE_POST =
 const ATTRIBUTION =
   'Multiple people can take part. Incoming messages are prefixed with a sender identifier (for example "[Jane Doe]: ..."); the prefix is added for attribution, the sender did not type it.'
 
+const READ_HISTORY =
+  'Earlier messages in this conversation that you were not sent (older history, other threads in the channel) can be read with read_chat_history.'
+
 const CONVERSATIONAL_FRAMING = [
   'Keep responses concise and conversational; this is a chat, not a document.',
   'Use tools, skills, and capabilities as you normally would.',
@@ -30,6 +35,7 @@ const CONVERSATIONAL_FRAMING = [
 export function buildSessionContextPrompt(surface: SessionSurface): string {
   const rules = [CHAT_DELIVERY, NO_DOUBLE_POST]
   if (surface.multiParty) rules.push(ATTRIBUTION)
+  if (surface.readsHistory) rules.push(READ_HISTORY)
   rules.push(...CONVERSATIONAL_FRAMING)
 
   const header = surface.where

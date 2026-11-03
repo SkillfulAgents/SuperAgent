@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
-import { routeSlackMessage, resolveSlackChannel, touchAndCapSet, touchAndCapMap, statusNeedsSend, SLACK_STATUS_REFRESH_MS, SlackConnector, type SlackMessageRoutingParams } from './slack-connector'
+import { IntegrationPolicyError } from '../agent-integrations/errors'
+import { routeSlackMessage, resolveSlackChannel, slackHistoryLine, touchAndCapSet, touchAndCapMap, statusNeedsSend, SLACK_STATUS_REFRESH_MS, SlackConnector, type SlackMessageRoutingParams } from './slack-connector'
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -650,5 +651,88 @@ describe('SlackConnector text', () => {
     expect(update.mock.calls.map(([args]) => Object.keys(args).includes('markdown_text') ? 'markdown' : args.text)).toEqual([
       'markdown', '*Many headings*', '*Many headings, more*', '*Many headings, done*',
     ])
+  })
+})
+
+describe('SlackConnector readChatHistory', () => {
+  function makeConnector() {
+    const connector = new SlackConnector({ botToken: 'xoxb-fake', appToken: 'xapp-fake' })
+    const history = vi.fn().mockResolvedValue({ ok: true, messages: [
+      { ts: '1000.003', user: 'U_BOB', text: 'and Beta?' },
+      { ts: '1000.001', user: 'U_ALICE', text: 'summarize Acme', reply_count: 2 },
+    ] })
+    const replies = vi.fn().mockResolvedValue({ ok: true, messages: [
+      { ts: '1000.001', user: 'U_ALICE', text: 'summarize Acme' },
+      { ts: '1000.002', user: 'U_BOT', text: 'Acme raised a seed' },
+    ] })
+    const names: Record<string, string> = { U_ALICE: 'Alice', U_BOB: 'Bob', U_BOT: 'Agent' }
+    const info = vi.fn(async ({ user }: { user: string }) => ({ ok: true, user: { real_name: names[user] } }))
+    ;(connector as any).app = { client: { conversations: { history, replies }, users: { info } } }
+    return { connector, history, replies }
+  }
+
+  it('reads the channel of the conversation, oldest first, marking thread roots', async () => {
+    const { connector, history } = makeConnector()
+    const text = await connector.readChatHistory('C123|1000.003', {})
+    expect(history).toHaveBeenCalledWith({ channel: 'C123', limit: 50 })
+    expect(text).toBe('Alice (1970-01-01 00:16 UTC): summarize Acme [thread 1000.001, 2 replies]\nBob (1970-01-01 00:16 UTC): and Beta?')
+  })
+
+  it('turns a Slack refusal into a policy error naming the code', async () => {
+    const { connector, history } = makeConnector()
+    history.mockRejectedValue(Object.assign(new Error('An API error occurred: not_in_channel'), {
+      code: 'slack_webapi_platform_error', data: { ok: false, error: 'not_in_channel' },
+    }))
+    await expect(connector.readChatHistory('C123|1000.003', {})).rejects.toThrow(new IntegrationPolicyError('Slack refused the read: not_in_channel'))
+  })
+
+  it('rethrows a Slack fault as itself so it is reported', async () => {
+    const { connector, history } = makeConnector()
+    const fault = Object.assign(new Error('An API error occurred: internal_error'), {
+      code: 'slack_webapi_platform_error', data: { ok: false, error: 'internal_error' },
+    })
+    history.mockRejectedValue(fault)
+    await expect(connector.readChatHistory('C123|1000.003', {})).rejects.toBe(fault)
+  })
+
+  it('keeps a thread root without text and gives the call for earlier messages', async () => {
+    const { connector, history } = makeConnector()
+    history.mockResolvedValue({ ok: true, response_metadata: { next_cursor: 'bmV4dA==' }, messages: [{ ts: '1000.001', user: 'U_ALICE', text: '', reply_count: 1 }] })
+    expect(await connector.readChatHistory('C123', {})).toBe('Alice (1970-01-01 00:16 UTC): (no text) [thread 1000.001, 1 reply]\n(earlier messages: call again with cursor=bmV4dA==)')
+  })
+
+  it('still says messages were cut when Slack reports more without a cursor', async () => {
+    const { connector, history } = makeConnector()
+    history.mockResolvedValue({ ok: true, has_more: true, messages: [{ ts: '1000.001', user: 'U_ALICE', text: 'hi' }] })
+    expect(await connector.readChatHistory('C123', {})).toBe('Alice (1970-01-01 00:16 UTC): hi\n(earlier messages not shown)')
+  })
+
+  it('gives the call for later thread replies, and passes a cursor back to Slack', async () => {
+    const { connector, replies } = makeConnector()
+    replies.mockResolvedValue({ ok: true, has_more: true, response_metadata: { next_cursor: 'cGFnZTM=' }, messages: [{ ts: '1000.051', user: 'U_ALICE', text: 'reply 51' }] })
+    expect(await connector.readChatHistory('C123|1000.003', { threadTs: '1000.001', cursor: 'cGFnZTI=' }))
+      .toBe('Alice (1970-01-01 00:16 UTC): reply 51\n(later replies: call again with thread_ts=1000.001 cursor=cGFnZTM=)')
+    expect(replies).toHaveBeenCalledWith({ channel: 'C123', ts: '1000.001', limit: 50, cursor: 'cGFnZTI=' })
+  })
+
+  it('reads a thread in the conversation\'s channel', async () => {
+    const { connector, replies } = makeConnector()
+    const text = await connector.readChatHistory('C123|1000.003', { threadTs: '1000.001' })
+    expect(replies).toHaveBeenCalledWith({ channel: 'C123', ts: '1000.001', limit: 50 })
+    expect(text).toBe('Alice (1970-01-01 00:16 UTC): summarize Acme\nAgent (1970-01-01 00:16 UTC): Acme raised a seed')
+  })
+})
+
+describe('slackHistoryLine', () => {
+  it('dates the line, names attachments, and cuts very long text', () => {
+    expect(slackHistoryLine('Alice', '1793690215.000100', 'deck attached', ['Acme deck.pdf']))
+      .toBe('Alice (2026-11-03 07:16 UTC): deck attached [file: Acme deck.pdf]')
+    expect(slackHistoryLine('Bob', '1793690215.000100', 'x'.repeat(1600), [])).toBe(`Bob (2026-11-03 07:16 UTC): ${'x'.repeat(1500)}…(cut)`)
+  })
+
+  it('keeps a file-only message, uses the placeholder only when nothing else shows, and skips an empty one', () => {
+    expect(slackHistoryLine('Alice', undefined, '', ['a.png'])).toBe('Alice: [file: a.png]')
+    expect(slackHistoryLine('Alice', undefined, '', [], '(no text)')).toBe('Alice: (no text)')
+    expect(slackHistoryLine('Alice', undefined, '', [])).toBeNull()
   })
 })

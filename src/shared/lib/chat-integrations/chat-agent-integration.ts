@@ -78,7 +78,7 @@ export function isMultiPartyChatType(type: ChatConversationType | undefined): bo
 }
 
 /** Optional discovery features a provider can support (see discoveryCapabilities). */
-export type ChatDiscoveryCapability = 'list_users' | 'list_channels' | 'dm_by_user_id'
+export type ChatDiscoveryCapability = 'list_users' | 'list_channels' | 'dm_by_user_id' | 'read_history'
 
 /** A person reachable through a provider's directory. */
 export interface ChatDirectoryUser {
@@ -176,6 +176,13 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
    * left the workspace).
    */
   resolveDirectChat?(userId: string): Promise<string>
+
+  /**
+   * Recent messages of this conversation's channel, or of one thread in it
+   * (capability: read_history), as readable lines. `cursor` continues a read
+   * the previous result said has more.
+   */
+  readChatHistory?(externalId: string, page: { threadTs?: string; cursor?: string }): Promise<string>
 
   /** Establish connection (long-poll loop / WebSocket). Resolves once healthy. */
   abstract connect(): Promise<void>
@@ -426,8 +433,8 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
 
   getTools(context: IntegrationSessionContext): readonly IntegrationTool[] {
     const stringArgument = (input: unknown, key: string) => z.object({ [key]: z.string().min(1) }).parse(input)[key]
-    const tool = (name: string, description: string, properties: Record<string, unknown>, execute: IntegrationTool['execute']): IntegrationTool => ({
-      name, description, inputSchema: { type: 'object', properties, required: Object.keys(properties), additionalProperties: false }, execute,
+    const tool = (name: string, description: string, properties: Record<string, unknown>, execute: IntegrationTool['execute'], required = Object.keys(properties)): IntegrationTool => ({
+      name, description, inputSchema: { type: 'object', properties, required, additionalProperties: false }, execute,
     })
     const tools = [tool('send_message', 'Send a complete message to an external conversation.', { text: { type: 'string' } }, async input => {
       if (!(await this.isAllowed(context))) throw new Error('Conversation is not allowed')
@@ -441,6 +448,10 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     })]
     if (this.listChatUsers) tools.push(tool('list_users', 'List reachable people.', {}, () => this.listChatUsers!()))
     if (this.listChatChannels) tools.push(tool('list_channels', 'List reachable channels.', {}, () => this.listChatChannels!()))
+    if (this.readChatHistory) tools.push(tool('read_history', 'Read this conversation or one of its threads.', { threadTs: { type: 'string' }, cursor: { type: 'string' } }, async input => {
+      if (!(await this.isAllowed(context))) throw new Error('Conversation is not allowed')
+      return this.readChatHistory!(context.externalId, z.object({ threadTs: z.string().min(1).optional(), cursor: z.string().min(1).optional() }).parse(input))
+    }, []))
     if (this.resolveDirectChat) tools.push(tool('dm_by_user_id', 'Resolve a direct conversation.', { userId: { type: 'string' } }, input => this.resolveDirectChat!(stringArgument(input, 'userId'))))
     return tools
   }

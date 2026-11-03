@@ -62,6 +62,7 @@ import { listChatUsersTool } from './tools/chat/list-chat-users'
 import { listChatChannelsTool } from './tools/chat/list-chat-channels'
 import { addChatIntegrationTool } from './tools/chat/add-chat-integration'
 import { makeSendChatMessageTool } from './tools/chat/send-chat-message'
+import { makeReadChatHistoryTool } from './tools/chat/read-chat-history'
 import { meetingTools } from './tools/meetings/meeting-tools'
 
 // TODO: refactor - every MCP should be exported from its own file instead of having one giant factory with conditional logic for which tools to include. This will make it easier to maintain and add new MCPs in the future without modifying existing code.
@@ -187,6 +188,7 @@ export function createChatMcpServer(getCallerSessionId: () => string) {
       listChatChannelsTool,
       addChatIntegrationTool,
       makeSendChatMessageTool(getCallerSessionId),
+      makeReadChatHistoryTool(getCallerSessionId),
     ],
   })
 }

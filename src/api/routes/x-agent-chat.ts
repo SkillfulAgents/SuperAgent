@@ -1,4 +1,5 @@
 import { EmailPolicyError } from '@shared/lib/email-integrations/policy'
+import { IntegrationPolicyError } from '@shared/lib/agent-integrations/errors'
 import { emailConfigSchema } from '@shared/lib/email-integrations/config-schema'
 import { clientFor } from '@shared/lib/email-integrations/gateway-client'
 import { emailToolSchema, sendToolEmail } from '@shared/lib/email-integrations/outbound'
@@ -331,6 +332,28 @@ xAgentChat.post('/channels', async (c) => {
   }
 })
 
+const historyRequest = z.object({ session_id: z.string().optional(), thread_ts: z.string().min(1).optional(), cursor: z.string().min(1).optional() })
+
+// POST /history — read the calling session's own conversation, or a thread in it
+xAgentChat.post('/history', async (c) => {
+  try {
+    const body = historyRequest.safeParse(await c.req.json().catch(() => undefined))
+    if (!body.success) return c.json({ error: 'Invalid request: session_id, thread_ts and cursor must be non-empty strings.' }, 400)
+    const { session_id, thread_ts, cursor } = body.data
+    // The conversation comes from the calling session, never from the request.
+    // session_id is the container's claim, as on /send. The lookup checks only that this agent owns it.
+    const session = session_id ? await getAgentIntegrationSessionBySessionId(getCallerSlug(c), session_id) : null
+    if (!session || session.archivedAt) return c.json({ error: 'read_chat_history works only inside a chat conversation.' }, 400)
+    const resolved = await resolveIntegrationTool(c, session.integrationId, session.externalChatId, 'readChatHistory')
+    if ('response' in resolved) return resolved.response
+    return c.json({ history: z.string().parse(await resolved.tool.execute({ threadTs: thread_ts, cursor })) })
+  } catch (error) {
+    if (error instanceof IntegrationPolicyError) return c.json({ error: error.message }, 400)
+    captureException(error, { tags: { component: 'x-agent-chat', operation: 'history' } })
+    return c.json({ error: 'Failed to read chat history' }, 500)
+  }
+})
+
 // --- Helpers ---
 
 /**
@@ -360,24 +383,36 @@ const directoryPage = z.object({ items: z.array(z.unknown()), truncated: z.boole
 const DIRECTORY_CAPABILITIES = {
   listChatUsers: { label: 'listing users', capability: 'list_users' },
   listChatChannels: { label: 'listing channels', capability: 'list_channels' },
+  readChatHistory: { label: 'reading history', capability: 'read_history' },
 } as const
 
-/**
- * Shared preamble for the directory endpoints: auth/ownership checks, the
- * capability check, and live connector resolution. Returns { response } to
- * short-circuit, or the ready connector.
- */
+type DirectoryContext = { get: (k: 'callerSlug') => string; req: { json: () => Promise<unknown> }; json: (body: unknown, status?: 400 | 403 | 404) => Response }
+
+/** The directory endpoints take the integration from the request body. */
 async function resolveDirectoryConnector(
-  c: { get: (k: 'callerSlug') => string; req: { json: () => Promise<unknown> }; json: (body: unknown, status?: 400 | 403 | 404) => Response },
+  c: DirectoryContext,
   capability: keyof typeof DIRECTORY_CAPABILITIES,
 ): Promise<{ response: Response } | { tool: IntegrationTool; provider: string }> {
-  const callerSlug = getCallerSlug(c)
   const body = await c.req.json() as { integration_id?: string }
   const integrationId = body?.integration_id
   if (!integrationId) {
     return { response: c.json({ error: 'Missing required field: integration_id' }, 400) }
   }
+  return resolveIntegrationTool(c, integrationId, '', capability)
+}
 
+/**
+ * Shared preamble for the read endpoints: auth/ownership checks, the
+ * capability check, and live connector resolution. Returns { response } to
+ * short-circuit, or the connector's tool bound to `externalId`.
+ */
+async function resolveIntegrationTool(
+  c: DirectoryContext,
+  integrationId: string,
+  externalId: string,
+  capability: keyof typeof DIRECTORY_CAPABILITIES,
+): Promise<{ response: Response } | { tool: IntegrationTool; provider: string }> {
+  const callerSlug = getCallerSlug(c)
   const integration = await getAgentIntegration(integrationId)
   if (!integration) {
     return { response: c.json({ error: 'Chat integration not found' }, 404) }
@@ -401,7 +436,7 @@ async function resolveDirectoryConnector(
   }
   // A directory read must not resurrect an integration the owner paused.
   if (integration.status === 'paused') {
-    return { response: c.json({ error: 'Integration is paused. Resume it before using directory listings.' }, 400) }
+    return { response: c.json({ error: `Integration is paused. Resume it before ${label}.` }, 400) }
   }
 
   const connector = await resolveLiveConnector(integrationId, integration.status)
@@ -410,7 +445,7 @@ async function resolveDirectoryConnector(
   }
   // Defensive: the static declaration and the instance implementation come
   // from the same class, so this only fires on a connector/class mismatch.
-  const tool = connector.getTools({ integration, externalId: '' }).find(tool => tool.name === capabilityName)
+  const tool = connector.getTools({ integration, externalId }).find(tool => tool.name === capabilityName)
   if (!tool) {
     return {
       response: c.json({
