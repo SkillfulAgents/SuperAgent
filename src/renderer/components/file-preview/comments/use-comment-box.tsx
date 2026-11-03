@@ -54,7 +54,7 @@ export interface CommentStore {
 }
 
 /** The file drawer's comments on one agent's copy of a file. */
-export function useFileCommentStore(filePath: string, agentSlug: string): CommentStore {
+function useFileCommentStore(filePath: string, agentSlug: string): CommentStore {
   const { commentsEnabled, commentsFor, addComment } = useFilePreview()
   const comments = commentsFor(filePath, agentSlug)
   return useMemo<CommentStore>(() => ({
@@ -72,17 +72,30 @@ interface CommentBoxOptions {
   gestures?: boolean
 }
 
+type CommentBoxResult = { box: ReactNode; open: (at?: Situation) => void; enabled: boolean; isOpen: boolean }
+
+/** Comments on a file viewer, kept with the file drawer's comments on that file. */
+export function useCommentBox(
+  containerRef: RefObject<HTMLElement | null>,
+  surface: CommentSurface | null,
+  filePath: string,
+  agentSlug: string,
+): CommentBoxResult {
+  const store = useFileCommentStore(filePath, agentSlug)
+  return useCommentLayer(containerRef, surface, store)
+}
+
 /**
  * Comments on a viewer, from what the viewer offers (`surface`). Owns the C / M keys,
  * clicks on the file, the open comment, its box, and every marker. A `null` surface
  * turns comments off for this viewer.
  */
-export function useCommentBox(
+export function useCommentLayer(
   containerRef: RefObject<HTMLElement | null>,
   surface: CommentSurface | null,
   store: CommentStore,
   { gestures = true }: CommentBoxOptions = {},
-): { box: ReactNode; open: (at?: Situation) => void; enabled: boolean; isOpen: boolean } {
+): CommentBoxResult {
   const enabled = store.enabled && surface != null
   const [pending, setPending] = useState<Pending | null>(null)
   const pointer = useRef<PointerAt | null>(null)

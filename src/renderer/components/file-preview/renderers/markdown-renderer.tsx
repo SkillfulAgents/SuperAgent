@@ -2,7 +2,7 @@ import { Loader2, AlertCircle } from 'lucide-react'
 import { AgentMarkdown } from '@renderer/components/messages/agent-markdown'
 import { useMemo, useRef } from 'react'
 import { rehypeCommentLines } from '@renderer/lib/rehype-comment-lines'
-import { useCommentBox, useFileCommentStore } from '../comments/use-comment-box'
+import { useCommentBox } from '../comments/use-comment-box'
 import { useFileContent } from './use-file-content'
 import { splitFrontmatter } from '@renderer/lib/markdown-frontmatter'
 
@@ -25,8 +25,7 @@ export function MarkdownRenderer({ url, filePath, agentSlug }: MarkdownRendererP
   // New content replaces the blocks, so markers and highlights re-read them.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const surface = useMemo(() => ({ text: { blocks: containerRef } }), [content])
-  const commentStore = useFileCommentStore(filePath, agentSlug)
-  const { box } = useCommentBox(containerRef, surface, commentStore)
+  const { box } = useCommentBox(containerRef, surface, filePath, agentSlug)
 
   return (
     <div ref={containerRef} className="relative p-4">

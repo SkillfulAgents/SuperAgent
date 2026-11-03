@@ -4,7 +4,7 @@ import { cn } from '@shared/lib/utils/cn'
 import { parseCsv } from './csv-parse'
 import { TextRenderer } from './text-renderer'
 import { useFileContent } from './use-file-content'
-import { useCommentBox, useFileCommentStore } from '../comments/use-comment-box'
+import { useCommentBox } from '../comments/use-comment-box'
 import type { CellRef } from '../comments/kinds'
 
 interface CsvRendererProps {
@@ -109,8 +109,7 @@ export function CsvRenderer({ url, filePath, agentSlug }: CsvRendererProps) {
   }, [visibleRows, columnLabels])
   // Raw view hands comments to the nested text viewer.
   const surface = useMemo(() => (view === 'table' ? { cell: { grid: gridRef, cellAt } } : null), [view, cellAt])
-  const commentStore = useFileCommentStore(filePath, agentSlug)
-  const { box, enabled } = useCommentBox(containerRef, surface, commentStore)
+  const { box, enabled } = useCommentBox(containerRef, surface, filePath, agentSlug)
 
   if (isLoading) {
     return (

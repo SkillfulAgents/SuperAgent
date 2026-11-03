@@ -1,6 +1,6 @@
 import { useState, useRef, useMemo, useEffect } from 'react'
 import { Loader2 } from 'lucide-react'
-import { useCommentBox, useFileCommentStore } from '../comments/use-comment-box'
+import { useCommentBox } from '../comments/use-comment-box'
 
 interface ImageRendererProps {
   url: string
@@ -14,8 +14,7 @@ export function ImageRenderer({ url, filePath, agentSlug }: ImageRendererProps) 
   const containerRef = useRef<HTMLDivElement>(null)
   const imageRef = useRef<HTMLDivElement>(null)
   const surface = useMemo(() => ({ point: imageRef }), [])
-  const commentStore = useFileCommentStore(filePath, agentSlug)
-  const { box, enabled } = useCommentBox(containerRef, surface, commentStore)
+  const { box, enabled } = useCommentBox(containerRef, surface, filePath, agentSlug)
 
   useEffect(() => {
     setLoaded(false)

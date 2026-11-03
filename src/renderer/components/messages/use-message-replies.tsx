@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { describeAnchor } from '@renderer/components/file-preview/comments/anchor'
 import { PendingCommentsBar, type PendingComment } from '@renderer/components/file-preview/comments/comment-bar'
-import { useCommentBox, type CommentStore } from '@renderer/components/file-preview/comments/use-comment-box'
+import { useCommentLayer, type CommentStore } from '@renderer/components/file-preview/comments/use-comment-box'
 import type { CommentSurface } from '@renderer/components/file-preview/comments/kinds'
 import type { SelectionAt } from '@renderer/components/file-preview/comments/kinds/types'
 
@@ -31,7 +31,7 @@ export function formatReplies(replies: PendingComment[]): string {
 
 /**
  * The session thread as one more comment surface: replies to selected agent text use the
- * file drawer's comment box, opened from the message's context menu. `box` goes inside
+ * file drawer's comment layer, opened from the message's context menu. `box` goes inside
  * `containerRef`, `bar` above the composer, `open` to `MessageReplyProvider`.
  */
 export function useMessageReplies(
@@ -51,7 +51,7 @@ export function useMessageReplies(
     noun: 'reply',
   }), [allowed, sessionId, replies])
   const surface = useMemo<CommentSurface>(() => ({ text: { blocks: containerRef } }), [containerRef])
-  const { box, open: openAt, enabled } = useCommentBox(containerRef, surface, store, { gestures: false })
+  const { box, open: openAt, enabled } = useCommentLayer(containerRef, surface, store, { gestures: false })
   const open = useMemo(() => (enabled ? (at: SelectionAt) => openAt(at) : null), [enabled, openAt])
 
   const remove = useCallback((id: string) => setReplies((prev) => prev.filter((reply) => reply.id !== id)), [])

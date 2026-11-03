@@ -1,6 +1,6 @@
 import { Loader2, AlertCircle } from 'lucide-react'
 import { useMemo, useRef } from 'react'
-import { useCommentBox, useFileCommentStore } from '../comments/use-comment-box'
+import { useCommentBox } from '../comments/use-comment-box'
 import { useFileContent } from './use-file-content'
 
 interface TextRendererProps {
@@ -15,8 +15,7 @@ export function TextRenderer({ url, filePath, agentSlug }: TextRendererProps) {
   // New content replaces the rows, so markers and highlights re-read them.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const surface = useMemo(() => ({ text: { blocks: containerRef } }), [data])
-  const commentStore = useFileCommentStore(filePath, agentSlug)
-  const { box } = useCommentBox(containerRef, surface, commentStore)
+  const { box } = useCommentBox(containerRef, surface, filePath, agentSlug)
   const sizeTruncated = data?.truncated ?? false
 
   const MAX_LINES = 5000

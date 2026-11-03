@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { Document, Page, pdfjs } from 'react-pdf'
 import { ChevronLeft, ChevronRight, Loader2, AlertCircle } from 'lucide-react'
-import { useCommentBox, useFileCommentStore } from '../comments/use-comment-box'
+import { useCommentBox } from '../comments/use-comment-box'
 
 import 'react-pdf/dist/Page/AnnotationLayer.css'
 import 'react-pdf/dist/Page/TextLayer.css'
@@ -57,8 +57,7 @@ export function PdfRenderer({
     () => ({ text: { blocks: containerRef }, part: currentPage === null ? undefined : { label: 'Page', value: currentPage } }),
     [currentPage],
   )
-  const commentStore = useFileCommentStore(filePath, agentSlug)
-  const { box } = useCommentBox(containerRef, surface, commentStore)
+  const { box } = useCommentBox(containerRef, surface, filePath, agentSlug)
 
   const handleLoadSuccess = ({ numPages: loadedPages }: { numPages: number }) => {
     setNumPages(loadedPages)
