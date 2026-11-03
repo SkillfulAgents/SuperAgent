@@ -12,6 +12,7 @@ import userEvent from '@testing-library/user-event'
 const state = vi.hoisted(() => ({
   agents: [] as { slug: string; name: string; lastActivityAt?: string }[],
   speed: 'normal',
+  glass: false,
 }))
 
 const composerMock = vi.hoisted(() => ({
@@ -52,6 +53,7 @@ const createSessionMock = vi.hoisted(() => ({
 const composerOptionsSpy = vi.hoisted(() => ({ value: null as Record<string, unknown> | null }))
 
 vi.mock('@renderer/hooks/use-agents', () => ({ useAgents: () => ({ data: state.agents }) }))
+vi.mock('./launcher-glass', () => ({ launcherHasGlass: () => state.glass }))
 vi.mock('@renderer/hooks/use-sessions', () => ({ useCreateSession: () => createSessionMock }))
 vi.mock('@renderer/hooks/use-agent-preferences', () => ({
   useAgentPreferences: () => ({ data: undefined, isFetched: true }),
@@ -350,5 +352,19 @@ describe('cloud workspace marking', () => {
     renderOn('cloud')
 
     expect(screen.getByTestId('quick-dispatch').className).toContain('ring-sky-500/70')
+  })
+
+  it('keeps the cloud ring on Liquid Glass, which drops only the hairline ring', () => {
+    state.glass = true
+    try {
+      renderOn('cloud')
+      const panel = screen.getByTestId('quick-dispatch')
+
+      expect(panel.className).toContain('ring-sky-500/70')
+      expect(panel.className).not.toContain('ring-foreground/10')
+      expect(panel.style.borderRadius).toBe('26px')
+    } finally {
+      state.glass = false
+    }
   })
 })

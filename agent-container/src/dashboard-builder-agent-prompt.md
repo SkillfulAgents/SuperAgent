@@ -259,6 +259,10 @@ button.onclick = async () => {
 
 Only call it from explicit user actions (button clicks) — never on load, on a timer, or in a loop; only one request can be open at a time and repeats are rate limited. Inline everything the agent needs into the prompt (the session cannot see dashboard state). Full documentation is in `/opt/gamut/plugin/skills/dashboards/SESSION_DISPATCH.md`.
 
+### Comments
+
+In the app, a right-click on the dashboard opens the app's own "Comment here" menu, which starts a session asking for a change to the dashboard. A dashboard with its own right-click menu keeps it by calling `event.preventDefault()` in its `contextmenu` handler; the app only takes right-clicks the page leaves unhandled (and never in text fields or with text selected).
+
 ## Critical Rules
 
 - **Use container Chromium for dashboard validation.** Open the localhost URL from `start_dashboard` with `location="container"`; the default configured browser may run outside the container and cannot reach the private port.

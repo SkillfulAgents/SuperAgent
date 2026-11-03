@@ -18,7 +18,7 @@ import { globalInstructionsSchema } from './global-instructions-schema'
 import { teamBrainRecordSchema, type TeamBrainRecord } from './team-brain-schema'
 import { coerceApiTarget, type ApiTarget } from '@shared/lib/api-target'
 import type { CloudServerFactsRecord } from '@shared/lib/facts/facts-schema'
-import { DEFAULT_GLOBAL_DISPATCH_SHORTCUT } from './shortcuts'
+import { DEFAULT_GLOBAL_DISPATCH_SHORTCUT, LEGACY_GLOBAL_DISPATCH_SHORTCUTS } from './shortcuts'
 import { DEFAULT_API_LOG_AUTO_DELETE_DAYS } from './api-log-auto-delete'
 import type { SkillsetConfig, SkillsetCredential } from '@shared/lib/types/skillset'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
@@ -132,7 +132,7 @@ export interface AppPreferences {
   theme?: 'system' | 'light' | 'dark'
   /**
    * OS-global accelerator that opens the quick-dispatch launcher (e.g.
-   * "CommandOrControl+Shift+Space"). Read by the main process at startup and
+   * "Control+Shift+Space"). Read by the main process at startup and
    * re-registered live on change. Empty string disables the launcher.
    */
   globalDispatchShortcut?: string
@@ -538,6 +538,11 @@ function migrateLegacyModelDefault<T extends string | undefined>(value: T): T {
   return (value !== undefined ? (LEGACY_MODEL_DEFAULTS[value] ?? value) : value) as T
 }
 
+/** A persisted earlier default launcher shortcut follows the current default. */
+function migrateLegacyDispatchShortcut(value: string): string {
+  return LEGACY_GLOBAL_DISPATCH_SHORTCUTS.includes(value) ? DEFAULT_GLOBAL_DISPATCH_SHORTCUT : value
+}
+
 /**
  * Merge a raw, JSON-parsed settings object onto the defaults. Pure: no IO.
  * Tolerant of missing/partial fields (each is defaulted) — this is where the
@@ -573,6 +578,10 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
     app: {
       ...DEFAULT_SETTINGS.app,
       ...loaded.app,
+      // One-time normalization of earlier persisted defaults → current default.
+      globalDispatchShortcut: migrateLegacyDispatchShortcut(
+        loaded.app?.globalDispatchShortcut ?? DEFAULT_GLOBAL_DISPATCH_SHORTCUT,
+      ),
       notifications: {
         ...DEFAULT_SETTINGS.app?.notifications,
         ...loaded.app?.notifications,

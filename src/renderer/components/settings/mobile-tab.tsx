@@ -28,6 +28,8 @@ interface MobileDevice {
 /** Mint interval headroom: re-mint while the QR is visible ~60s before expiry. */
 const REMINT_BEFORE_EXPIRY_MS = 60 * 1000
 
+const APP_STORE_URL = 'https://apps.apple.com/app/id6801340586'
+
 function buildDeepLink(pairing: PairingToken): string {
   return `gamut://connect?v=1&url=${encodeURIComponent(pairing.deploymentUrl)}&token=${pairing.token}`
 }
@@ -39,6 +41,19 @@ async function mintPairingToken(): Promise<PairingToken> {
     throw new Error(body?.error || 'Failed to create pairing code')
   }
   return res.json()
+}
+
+function AppStoreButton() {
+  return (
+    <Button
+      variant="outline"
+      onClick={() => void openExternalUrl(APP_STORE_URL)}
+      data-testid="mobile-app-store-link"
+    >
+      <ExternalLink className="h-4 w-4 mr-2" />
+      Get the iOS app
+    </Button>
+  )
 }
 
 // --- QR pairing card ---
@@ -101,14 +116,17 @@ function PairingQrCard() {
       )}
 
       {!pairing ? (
-        <Button onClick={() => void mint()} disabled={minting} data-testid="mobile-pairing-mint">
-          {minting ? (
-            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-          ) : (
-            <QrCode className="h-4 w-4 mr-2" />
-          )}
-          Show pairing code
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={() => void mint()} disabled={minting} data-testid="mobile-pairing-mint">
+            {minting ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <QrCode className="h-4 w-4 mr-2" />
+            )}
+            Show pairing code
+          </Button>
+          <AppStoreButton />
+        </div>
       ) : (
         <div className="space-y-3">
           <div className="inline-flex flex-col items-center gap-2 rounded-lg border p-4 bg-white">
@@ -201,15 +219,18 @@ function PairInBrowserCard() {
         Pairing a phone needs you to sign in to the cloud workspace directly. Open it in your
         browser and pair from Settings → Mobile there.
       </p>
-      {deploymentUrl && (
-        <Button
-          onClick={() => void openExternalUrl(`${deploymentUrl}/settings/mobile`)}
-          data-testid="mobile-pairing-open-browser"
-        >
-          <ExternalLink className="h-4 w-4 mr-2" />
-          Open in browser
-        </Button>
-      )}
+      <div className="flex flex-wrap gap-2">
+        {deploymentUrl && (
+          <Button
+            onClick={() => void openExternalUrl(`${deploymentUrl}/settings/mobile`)}
+            data-testid="mobile-pairing-open-browser"
+          >
+            <ExternalLink className="h-4 w-4 mr-2" />
+            Open in browser
+          </Button>
+        )}
+        <AppStoreButton />
+      </div>
     </div>
   )
 }
