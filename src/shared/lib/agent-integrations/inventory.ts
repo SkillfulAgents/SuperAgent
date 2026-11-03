@@ -9,10 +9,7 @@ import { publicIntegrationStatus } from './serialization'
 export async function listAgentIntegrationInventory(agentSlug: string) {
   return Promise.all((await listAgentIntegrations(agentSlug)).map(async row => {
     const definition = agentIntegrationRegistry.getDefinition(row.provider)
-    const sessions = await Promise.all((await listAgentIntegrationSessions(row.id)).filter(session => !session.archivedAt).map(async session => ({
-      externalId: session.externalChatId, displayName: session.displayName,
-      ...await agentIntegrationRegistry.describeTarget(row.provider, session.externalChatId),
-    })))
+    const sessions = await agentIntegrationRegistry.conversations(row, (await listAgentIntegrationSessions(row.id)).filter(session => !session.archivedAt), { threads: true })
     let mcp = null
     try {
       const connection = row.status === 'paused' ? null : await agentIntegrationRegistry.getMcpConnection(row)

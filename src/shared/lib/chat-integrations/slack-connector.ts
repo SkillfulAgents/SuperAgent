@@ -459,6 +459,7 @@ export class SlackConnector extends ChatAgentIntegration {
   static generateSystemPrompt = buildSlackSystemPrompt
   static discoveryCapabilities = ['list_users', 'list_channels', 'dm_by_user_id'] as const
   static classifyChatId = classifySlackChat
+  static parentChatId = (chatId: string) => classifySlackChatId(chatId) === 'thread' ? chatId.slice(0, chatId.indexOf('|')) : undefined
 
   private app: SlackApp | null = null
   private receiver: SocketModeReceiver | null = null
