@@ -22,12 +22,12 @@ const USER_TEXT = 'Should we use D1?'
 function Thread() {
   const ref = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLInputElement>(null)
-  const { box, bar, action } = useMessageReplies(ref, sessionId, true)
+  const { box, bar, open } = useMessageReplies(ref, sessionId, true)
   const [draft] = useDraft<string>(`session:${sessionId}`)
   useEffect(() => registerSessionComposerFocus(sessionId, () => composerRef.current?.focus()), [])
   return (
     <div ref={ref} className="relative">
-      <MessageReplyProvider value={action}>
+      <MessageReplyProvider value={open}>
         <MessageContextMenu text={USER_TEXT}><div>{USER_TEXT}</div></MessageContextMenu>
         <MessageContextMenu text={AGENT_TEXT} canReply readAloud={{ active: false, onToggle: () => {} }}>
           <div>{AGENT_TEXT}</div>
@@ -87,13 +87,26 @@ describe('useMessageReplies', () => {
     fireEvent.contextMenu(screen.getByText(USER_TEXT))
     expect(screen.queryByRole('menuitem', { name: 'Reply' })).not.toBeInTheDocument()
   })
+  it('leaves selecting text and the C key to the file drawer', async () => {
+    renderWithProviders(<Thread />)
+
+    select(AGENT_TEXT)
+    fireEvent.mouseDown(screen.getByText(AGENT_TEXT))
+    fireEvent.mouseUp(screen.getByText(AGENT_TEXT))
+    fireEvent.keyDown(document.body, { key: 'c' })
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+
+    expect(screen.queryByRole('button', { name: 'Comment' })).not.toBeInTheDocument()
+    expect(screen.queryByPlaceholderText('Add your reply...')).not.toBeInTheDocument()
+  })
 })
 
 describe('formatReplies', () => {
   it('quotes each selection on one line, with the reply below it', () => {
     expect(formatReplies([
-      { id: '1', quote: 'First line\nsecond line', text: 'Explain this' },
-      { id: '2', quote: 'Ship it', text: 'Agreed' },
+      { id: '1', anchor: { kind: 'text', quote: 'First line\nsecond line' }, text: 'Explain this' },
+      { id: '2', anchor: { kind: 'text', quote: 'Ship it' }, text: 'Agreed' },
     ])).toBe('Replying to what you wrote:\n\n> "First line second line"\n\nExplain this\n\n> "Ship it"\n\nAgreed')
   })
 })
+

@@ -8,7 +8,9 @@ import {
   ContextMenuTrigger,
 } from '@renderer/components/ui/context-menu'
 import { openExternalUrl } from '@renderer/lib/open-external'
-import { useMessageReplyAction, type ReplySelection } from './use-message-replies'
+import { selectionIn } from '@renderer/components/file-preview/comments/use-comment-box'
+import type { SelectionAt } from '@renderer/components/file-preview/comments/kinds/types'
+import { useOpenReply } from './use-message-replies'
 
 interface MessageContextMenuProps {
   text: string
@@ -29,8 +31,8 @@ function webLinkAt(target: EventTarget | null): string | null {
 
 export function MessageContextMenu({ text, children, onRemove, readAloud, canReply = false }: MessageContextMenuProps) {
   const [linkHref, setLinkHref] = useState<string | null>(null)
-  const replyAction = useMessageReplyAction()
-  const [replySelection, setReplySelection] = useState<ReplySelection | null>(null)
+  const openReply = useOpenReply()
+  const [replySelection, setReplySelection] = useState<SelectionAt | null>(null)
   const replyOnClose = useRef(false)
 
   const handleCopy = async () => {
@@ -48,18 +50,18 @@ export function MessageContextMenu({ text, children, onRemove, readAloud, canRep
         asChild
         onContextMenu={(event) => {
           setLinkHref(webLinkAt(event.target))
-          setReplySelection(canReply && replyAction ? replyAction.selectionIn(event.currentTarget) : null)
+          setReplySelection(canReply && openReply ? selectionIn(event.currentTarget) : null)
         }}
       >
         {children}
       </ContextMenuTrigger>
       <ContextMenuContent
         onCloseAutoFocus={(event) => {
-          if (!replyOnClose.current || !replySelection || !replyAction) return
+          if (!replyOnClose.current || !replySelection || !openReply) return
           // The menu hands focus back to the message as it closes; the reply box opens after, so its field keeps focus.
           replyOnClose.current = false
           event.preventDefault()
-          replyAction.open(replySelection)
+          openReply(replySelection)
         }}
       >
         {linkHref && (
@@ -78,7 +80,7 @@ export function MessageContextMenu({ text, children, onRemove, readAloud, canRep
             {readAloud.active ? 'Stop reading' : 'Read aloud'}
           </ContextMenuItem>
         )}
-        {replySelection && replyAction && (
+        {replySelection && openReply && (
           <ContextMenuItem onClick={() => { replyOnClose.current = true }} data-testid="context-reply">
             <Reply className="h-4 w-4 mr-2" />
             Reply

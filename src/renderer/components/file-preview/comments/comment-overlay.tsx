@@ -1,7 +1,6 @@
 import { useRef, useLayoutEffect } from 'react'
 import { MessageSquarePlus } from 'lucide-react'
 import { CommentBox } from '@renderer/components/comments/comment-box'
-import { useFilePreview } from '@renderer/context/file-preview-context'
 import { describeAnchor } from './anchor'
 import type { CommentAnchor } from './kinds'
 
@@ -9,9 +8,11 @@ interface CommentOverlayProps {
   anchor: CommentAnchor
   /** Where the box opens, in its positioned parent's coordinates. */
   rect: DOMRect
-  filePath: string
-  agentSlug: string
+  /** Gets the trimmed text of an added comment. */
+  onAdd: (text: string) => void
   onClose: () => void
+  /** What the box calls the note. */
+  noun?: 'comment' | 'reply'
   /** The editor. Otherwise a "Comment" chip, which calls `onEdit`. */
   autoEdit?: boolean
   /** Start the mic as the editor opens, when voice input is set up. */
@@ -20,8 +21,7 @@ interface CommentOverlayProps {
   onEdit?: () => void
 }
 
-export function CommentOverlay({ anchor, rect, filePath, agentSlug, onClose, onEdit, autoEdit = false, autoListen = false }: CommentOverlayProps) {
-  const { addComment } = useFilePreview()
+export function CommentOverlay({ anchor, rect, onAdd, onClose, onEdit, noun = 'comment', autoEdit = false, autoListen = false }: CommentOverlayProps) {
 
   // Slide the overlay left, before it paints, so it ends 8px inside the pane that clips it.
   // Re-runs when the editor opens or its anchor moves.
@@ -66,9 +66,10 @@ export function CommentOverlay({ anchor, rect, filePath, agentSlug, onClose, onE
         label={describeAnchor(anchor)}
         autoFocus
         autoListen={autoListen}
+        placeholder={`Add your ${noun}...`}
         onCancel={onClose}
         onSubmit={(text) => {
-          addComment({ filePath, agentSlug, text, anchor })
+          onAdd(text)
           onClose()
         }}
       />

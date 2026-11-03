@@ -1,52 +1,26 @@
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
-import { useDraftsStore } from '@renderer/context/drafts-context'
-import { CommentOverlayView } from '@renderer/components/file-preview/comments/comment-overlay'
-import { CommentBarView, submitToComposer } from '@renderer/components/file-preview/comments/comment-bar'
-import { quoted } from '@renderer/components/file-preview/comments/kinds/types'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { describeAnchor } from '@renderer/components/file-preview/comments/anchor'
+import { PendingCommentsBar, type PendingComment } from '@renderer/components/file-preview/comments/comment-bar'
+import { useCommentBox, type CommentStore } from '@renderer/components/file-preview/comments/use-comment-box'
+import type { CommentSurface } from '@renderer/components/file-preview/comments/kinds'
+import type { SelectionAt } from '@renderer/components/file-preview/comments/kinds/types'
 
-export interface MessageReply {
-  id: string
-  quote: string
-  text: string
-}
+/** Opens the reply box on text selected in an agent message. */
+export type OpenReply = (at: SelectionAt) => void
 
-/** Text selected inside one message. */
-export interface ReplySelection {
-  quote: string
-  range: Range
-}
-
-/** What a message's context menu needs to offer Reply. */
-export interface MessageReplyAction {
-  /** The selection inside `bubble`, if any. */
-  selectionIn: (bubble: Element) => ReplySelection | null
-  /** Opens the reply box on `selection`. */
-  open: (selection: ReplySelection) => void
-}
-
-const MessageReplyContext = createContext<MessageReplyAction | null>(null)
+const MessageReplyContext = createContext<OpenReply | null>(null)
 export const MessageReplyProvider = MessageReplyContext.Provider
 
 /** Null where replies are off (read-only threads). */
-export function useMessageReplyAction(): MessageReplyAction | null {
+export function useOpenReply(): OpenReply | null {
   return useContext(MessageReplyContext)
 }
 
-interface Pending {
-  quote: string
-  /** Where the box opens, in the container's coordinates. */
-  rect: DOMRect
-}
-
-/** The quote as one line, so it stays inside its blockquote. */
-function describeQuote(quote: string): string {
-  return `> ${quoted(quote.replace(/\s+/g, ' ').trim())}`
-}
-
-export function formatReplies(replies: MessageReply[]): string {
+export function formatReplies(replies: PendingComment[]): string {
   const lines: string[] = ['Replying to what you wrote:\n']
   replies.forEach((reply, i) => {
-    lines.push(describeQuote(reply.quote))
+    // One line, so a multi-line quote stays inside its blockquote.
+    lines.push(describeAnchor(reply.anchor).replace(/\s+/g, ' '))
     // A line right under a quote continues it in Markdown; the blank line keeps the reply out.
     lines.push('')
     lines.push(reply.text)
@@ -55,102 +29,44 @@ export function formatReplies(replies: MessageReply[]): string {
   return lines.join('\n')
 }
 
-function isTyping(target: EventTarget | null): boolean {
-  return target instanceof Element && !!target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')
-}
-
-function selectionIn(root: Element | null): ReplySelection | null {
-  const selection = window.getSelection()
-  if (!root || !selection || selection.isCollapsed || !selection.rangeCount) return null
-  const range = selection.getRangeAt(0)
-  const node = range.commonAncestorContainer
-  const el = node instanceof Element ? node : node.parentElement
-  const quote = selection.toString().trim()
-  return el && root.contains(el) && quote ? { quote, range } : null
-}
-
 /**
- * Replies to text selected in agent messages, as file-preview comments work: Reply in the
- * message's context menu opens the box, and added replies wait in a bar until Submit puts
- * them into the composer draft. `box` goes inside `containerRef`; `action` goes to
- * `MessageReplyProvider` around the messages.
+ * The session thread as one more comment surface: replies to selected agent text use the
+ * file drawer's comment box, opened from the message's context menu. `box` goes inside
+ * `containerRef`, `bar` above the composer, `open` to `MessageReplyProvider`.
  */
 export function useMessageReplies(
   containerRef: RefObject<HTMLElement | null>,
   sessionId: string | null,
-  enabled: boolean,
-): { box: ReactNode; bar: ReactNode; action: MessageReplyAction | null } {
-  const draftsStore = useDraftsStore()
-  const [replies, setReplies] = useState<MessageReply[]>([])
-  const [pending, setPending] = useState<Pending | null>(null)
+  allowed: boolean,
+): { box: ReactNode; bar: ReactNode; open: OpenReply | null } {
+  const [replies, setReplies] = useState<PendingComment[]>([])
   const nextId = useRef(0)
-  const latest = useRef(pending)
-  useLayoutEffect(() => { latest.current = pending })
 
-  useEffect(() => {
-    setReplies([])
-    setPending(null)
-  }, [sessionId])
+  useEffect(() => setReplies([]), [sessionId])
 
-  useEffect(() => {
-    if (!enabled) setPending(null)
-  }, [enabled])
+  const store = useMemo<CommentStore>(() => ({
+    enabled: allowed && sessionId != null,
+    comments: replies,
+    add: (anchor, text) => setReplies((prev) => [...prev, { id: `reply-${++nextId.current}`, anchor, text }]),
+    noun: 'reply',
+  }), [allowed, sessionId, replies])
+  const surface = useMemo<CommentSurface>(() => ({ text: { blocks: containerRef } }), [containerRef])
+  const { box, open: openAt, enabled } = useCommentBox(containerRef, surface, store, { gestures: false })
+  const open = useMemo(() => (enabled ? (at: SelectionAt) => openAt(at) : null), [enabled, openAt])
 
-  /** Closing drops the selection it was opened on. */
-  const close = useCallback(() => {
-    setPending(null)
-    if (selectionIn(containerRef.current)) window.getSelection()?.removeAllRanges()
-  }, [containerRef])
+  const remove = useCallback((id: string) => setReplies((prev) => prev.filter((reply) => reply.id !== id)), [])
+  const clear = useCallback(() => setReplies([]), [])
 
-  // Escape closes the box from anywhere a field does not own the key. The box's own field handles it there.
-  useEffect(() => {
-    if (!pending) return
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && latest.current && !e.defaultPrevented && !isTyping(e.target)) close()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [pending, close])
-
-  const action = useMemo<MessageReplyAction | null>(() => (!enabled || !sessionId ? null : {
-    selectionIn,
-    open: ({ quote, range }) => {
-      const container = containerRef.current
-      if (!container) return
-      const rects = range.getClientRects()
-      const last = rects[rects.length - 1] ?? range.getBoundingClientRect()
-      const at = container.getBoundingClientRect()
-      setPending({ quote, rect: new DOMRect(last.right - at.left, last.bottom - at.top) })
-    },
-  }), [enabled, sessionId, containerRef])
-
-  const handleSubmit = useCallback(() => {
-    if (!sessionId || replies.length === 0) return
-    submitToComposer(draftsStore, sessionId, formatReplies(replies))
-    setReplies([])
-  }, [draftsStore, sessionId, replies])
-
-  if (!action) return { box: null, bar: null, action }
-
-  const box = pending && (
-    <CommentOverlayView
-      noun="reply"
-      label={describeQuote(pending.quote)}
-      rect={pending.rect}
-      autoEdit
-      onAdd={(text) => setReplies((prev) => [...prev, { id: `reply-${++nextId.current}`, quote: pending.quote, text }])}
-      onClose={close}
-    />
-  )
-  const bar = (
-    <CommentBarView
+  const bar = enabled && sessionId && (
+    <PendingCommentsBar
+      comments={replies}
+      sessionId={sessionId}
+      format={formatReplies}
+      onRemove={remove}
+      onClear={clear}
       noun="reply"
       className="mx-4 mb-2 overflow-hidden rounded-lg border border-border bg-background"
-      items={replies.map((reply) => ({ id: reply.id, label: describeQuote(reply.quote), text: reply.text }))}
-      onRemove={(id) => setReplies((prev) => prev.filter((reply) => reply.id !== id))}
-      onCancel={() => setReplies([])}
-      onSubmit={handleSubmit}
     />
   )
-  return { box, bar, action }
+  return { box, bar, open }
 }

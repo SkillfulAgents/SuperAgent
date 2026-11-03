@@ -96,7 +96,7 @@ export function SessionThread({
         data-testid="session-thread-main"
       >
         {sessionId && (
-          <MessageReplyProvider value={replies.action}>
+          <MessageReplyProvider value={replies.open}>
             <MessageList
               key={sessionId}
               sessionId={sessionId}

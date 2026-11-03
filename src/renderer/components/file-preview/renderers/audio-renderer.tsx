@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { AudioLines, MessageSquarePlus, Pause, Play } from 'lucide-react'
-import { useCommentBox } from '../comments/use-comment-box'
+import { useCommentBox, useFileCommentStore } from '../comments/use-comment-box'
 import { formatCommentTime, formatMediaTime } from '../comments/format-media-time'
 import { createFallbackWaveform, createWaveformPeaks } from './audio-waveform'
 import { useMediaKeys } from './use-media-keys'
@@ -39,7 +39,8 @@ export function AudioRenderer({ url, filePath, agentSlug }: AudioRendererProps) 
   const [waveform, setWaveform] = useState(() => createFallbackWaveform(WAVEFORM_BAR_COUNT))
 
   const surface = useMemo(() => ({ time: { media: audioRef, track: timelineRef } }), [])
-  const { box, open, enabled, isOpen } = useCommentBox(containerRef, surface, filePath, agentSlug)
+  const commentStore = useFileCommentStore(filePath, agentSlug)
+  const { box, open, enabled, isOpen } = useCommentBox(containerRef, surface, commentStore)
   const maxSeek = validDuration(duration)
   const playedRatio = maxSeek > 0 ? clamp(currentTime / maxSeek, 0, 1) : 0
   const filename = getPathName(filePath)

@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { Expand, Play, Pause, MessageSquarePlus } from 'lucide-react'
-import { useCommentBox } from '../comments/use-comment-box'
+import { useCommentBox, useFileCommentStore } from '../comments/use-comment-box'
 import { frameSeconds, useMediaKeys } from './use-media-keys'
 import { PlaybackSpeedSelect } from './playback-speed'
 import { VolumeControl } from './volume-control'
@@ -43,7 +43,8 @@ export function VideoRenderer({ url, filePath, agentSlug }: VideoRendererProps) 
   }, [])
 
   const surface = useMemo(() => ({ time: { media: videoRef, track: trackRef, frame: frameRef } }), [])
-  const { box, open, enabled, isOpen } = useCommentBox(containerRef, surface, filePath, agentSlug)
+  const commentStore = useFileCommentStore(filePath, agentSlug)
+  const { box, open, enabled, isOpen } = useCommentBox(containerRef, surface, commentStore)
 
   const seekTo = useCallback((time: number) => {
     const v = videoRef.current
