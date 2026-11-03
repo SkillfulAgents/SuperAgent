@@ -1,15 +1,19 @@
 import { modelSelectionSchema } from '../llm-provider/connection-schema'
 import { parseStoredGlobalPricing, type GlobalModelPricing } from '../llm-provider/global-pricing-schema'
 import type { VoiceProvider } from '../voice/provider-types'
+import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { getDataDir } from './data-dir'
 import { isRunningInKubernetes } from '@shared/lib/container/runtime-env'
 import { getDefaultAgentImage, AGENT_IMAGE_REGISTRY } from './version'
-import { CorruptFileError } from '@shared/lib/utils/file-storage'
+import {
+  writeFileAtomicSync,
+  CorruptFileError,
+} from '@shared/lib/utils/file-storage'
 import { captureException } from '@shared/lib/error-reporting'
-import { SETTINGS_FILE, hostState } from '@shared/lib/host-state/backend'
 import { persistedSettingsSchema } from './settings-schema'
+import type { SettingsStore } from './settings-store'
 import { globalInstructionsSchema } from './global-instructions-schema'
 import { teamBrainRecordSchema, type TeamBrainRecord } from './team-brain-schema'
 import { coerceApiTarget, type ApiTarget } from '@shared/lib/api-target'
@@ -687,8 +691,7 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
 }
 
 /**
- * Strict, fail-closed load. Reads fresh from disk (bypassing
- * the cache) and:
+ * Strict, fail-closed read of `settings.json`:
  *   - absent file (ENOENT) → defaults (legitimate first run),
  *   - torn/corrupt JSON or a non-object → THROWS CorruptFileError,
  *   - other IO errors → propagate.
@@ -698,20 +701,23 @@ function mergeLoadedSettings(loaded: Record<string, any>): AppSettings {
  * defaults (which would permanently wipe API keys, auth policy, skillsets, …).
  * Never default-then-save here.
  */
-export function loadSettingsStrict(): AppSettings {
-  // Other IO errors (EACCES/EIO/…) propagate: never default-then-save.
-  return parseSettings(hostState().read(SETTINGS_FILE))
-}
-
-function parseSettings(content: string | null): AppSettings {
-  // Absent file = legitimate first run → bare defaults (preserves the original
-  // behavior, which did NOT default-merge auth/analytics for a missing file).
-  // Deep-clone: callers (mutateSettings) mutate nested objects in place, and a
-  // shallow `{ ...DEFAULT_SETTINGS }` shares `.container`/`.app`/… with the
-  // module constant — so a first-run mutation would corrupt DEFAULT_SETTINGS.
-  if (content === null) return structuredClone(DEFAULT_SETTINGS)
+function readSettingsFileStrict(): AppSettings {
+  const settingsPath = getSettingsPath()
+  let content: string
+  try {
+    content = fs.readFileSync(settingsPath, 'utf-8')
+  } catch (err) {
+    // Absent file = legitimate first run → bare defaults (preserves the original
+    // behavior, which did NOT default-merge auth/analytics for a missing file).
+    // Deep-clone: callers (mutateSettings) mutate nested objects in place, and a
+    // shallow `{ ...DEFAULT_SETTINGS }` shares `.container`/`.app`/… with the
+    // module constant — so a first-run mutation would corrupt DEFAULT_SETTINGS.
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return structuredClone(DEFAULT_SETTINGS)
+    throw err // other IO error (EACCES/EIO/…) — propagate, never default-then-save
+  }
   // Validate the boundary (object shape); torn JSON / non-object → throw.
-  return mergeLoadedSettings(parseJsonStrict(getSettingsPath(), content))
+  const raw = parseJsonStrict(settingsPath, content)
+  return mergeLoadedSettings(raw)
 }
 
 /** Parse + shape-validate raw settings content; throws CorruptFileError on a
@@ -735,87 +741,132 @@ function parseJsonStrict(settingsPath: string, content: string): Record<string, 
 }
 
 /**
- * Load settings for READ-ONLY consumers (display, getters). Tolerant: never
- * throws, so a corrupt file degrades to in-memory defaults rather than crashing
- * the app — but it NEVER writes those defaults back (the data-loss
- * amplification). Writes go through {@link mutateSettings}/{@link loadSettingsStrict},
- * which re-throw on corruption, so defaults surfaced here can't overwrite a real
- * but temporarily-unreadable file.
+ * Tolerant wrapper for READ-ONLY consumers: a corrupt store degrades to
+ * in-memory defaults rather than crashing the app, but those defaults are NEVER
+ * written back. Writes re-read strictly, so they can't overwrite real settings
+ * that are temporarily unreadable.
  */
-export function loadSettings(): AppSettings {
+function loadTolerant(loadStrict: () => AppSettings): AppSettings {
   try {
-    return loadSettingsStrict()
+    return loadStrict()
   } catch (error) {
     console.error('Failed to load settings; using in-memory defaults (NOT overwriting the file):', error)
     if (error instanceof CorruptFileError) {
       captureException(error, { tags: { area: 'settings', op: 'load' } })
     }
     // Deep-clone so a caller mutating a nested field can't pollute the module
-    // constant (see loadSettingsStrict).
+    // constant (see readSettingsFileStrict).
     return structuredClone(DEFAULT_SETTINGS)
   }
 }
 
+function writeSettingsFile(settings: AppSettings): void {
+  const settingsPath = getSettingsPath()
+  const dataDir = getDataDir()
+
+  // Ensure data directory exists
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true })
+  }
+
+  // Atomic temp-file + rename: an interrupted write can never leave a
+  // torn settings.json that a later read would mistake for corruption (or that
+  // the tolerant loader would mask with defaults). Mode 0o600 (owner-only) since
+  // the file holds API keys.
+  writeFileAtomicSync(settingsPath, JSON.stringify(settings, null, 2), { mode: 0o600 })
+}
+
 /**
- * Save settings to the JSON file.
+ * `settings.json` in the data dir, read once and then served from memory.
+ *
+ * `mutate` is synchronous on purpose: with no `await` between the fresh strict
+ * read and the atomic write, concurrent callers cannot interleave, so this
+ * serializes for free and closes the lost-update race across the many
+ * background settings writers (runtime auto-switch, token refresh, permission
+ * grants, skillset reconcile, …).
  */
+export class LocalFileSettingsStore implements SettingsStore {
+  private cached: AppSettings | null = null
+
+  get(): AppSettings {
+    this.cached ??= loadTolerant(() => this.loadStrict())
+    return this.cached
+  }
+
+  loadStrict(): AppSettings {
+    return readSettingsFileStrict()
+  }
+
+  save(settings: AppSettings): void {
+    writeSettingsFile(settings)
+    this.cached = settings
+  }
+
+  mutate(mutator: (settings: AppSettings) => void): AppSettings {
+    const fresh = this.loadStrict()
+    mutator(fresh)
+    this.save(fresh)
+    return fresh
+  }
+
+  clearCache(): void {
+    this.cached = null
+  }
+}
+
+let settingsStore: SettingsStore = new LocalFileSettingsStore()
+
+/** Called once at boot by a deployment that keeps settings somewhere other than `settings.json`. */
+export function setSettingsStore(store: SettingsStore): void {
+  settingsStore = store
+}
+
+/** Fresh, fail-closed read from the store. Throws if the stored settings are corrupt. */
+export function loadSettingsStrict(): AppSettings {
+  return settingsStore.loadStrict()
+}
+
+/** Fresh read from the store for read-only consumers. Never throws. */
+export function loadSettings(): AppSettings {
+  return loadTolerant(() => settingsStore.loadStrict())
+}
+
 export function saveSettings(settings: AppSettings): void {
-  // Atomic and owner-only (the file holds API keys): an interrupted write can
-  // never leave a torn settings.json that a later read would mistake for
-  // corruption (or that the tolerant loader would mask with defaults).
-  hostState().replace(SETTINGS_FILE, JSON.stringify(settings, null, 2))
+  settingsStore.save(settings)
 }
 
-/**
- * Get current settings (cached until the next write).
- */
 export function getSettings(): AppSettings {
-  return hostState().memo(SETTINGS_FILE, loadSettings)
+  return settingsStore.get()
 }
 
 /**
- * Replace the whole settings object and refresh the cache.
+ * Replace the whole settings object.
  *
  * Prefer {@link mutateSettings} for partial updates — it re-reads fresh from
- * disk so it can't lose a concurrent writer's change. Use this only when the
+ * the store so it can't lose a concurrent writer's change. Use this only when the
  * caller has already merged against a FRESH (strict) read with no `await`
  * between the read and here (so nothing could interleave), e.g. the settings
- * PUT route. The write itself is atomic.
+ * PUT route.
  */
 export function updateSettings(settings: AppSettings): void {
-  saveSettings(settings)
-  hostState().remember(SETTINGS_FILE, settings)
+  settingsStore.save(settings)
 }
 
 /**
- * Serialized, fail-closed read-modify-write of settings.
- *
- * Synchronous on purpose: with no `await` between the fresh strict read and the
- * atomic write, concurrent callers cannot interleave, so this serializes for
- * free and closes the lost-update race across the many background settings
- * writers (runtime auto-switch, token refresh, permission grants, skillset
- * reconcile, …). It re-reads FRESH from disk every call — never the possibly
- * stale/defaulted cache — and {@link loadSettingsStrict} THROWS on a corrupt
- * file, so a torn settings.json aborts the mutation instead of clobbering real
- * API keys/auth with defaults. Returns the persisted settings.
+ * Fail-closed read-modify-write of settings. It re-reads FRESH from the store
+ * — never the possibly stale/defaulted cache — and throws on corrupt stored
+ * settings, so it aborts instead of clobbering real API keys/auth with
+ * defaults. Returns the persisted settings.
  */
 export function mutateSettings(mutator: (settings: AppSettings) => void): AppSettings {
-  let fresh!: AppSettings
-  // A concurrent writer's change is merged by running the mutator again on it.
-  hostState().write(SETTINGS_FILE, (raw) => {
-    fresh = parseSettings(raw)
-    mutator(fresh)
-    return JSON.stringify(fresh, null, 2)
-  })
-  hostState().remember(SETTINGS_FILE, fresh)
-  return fresh
+  return settingsStore.mutate(mutator)
 }
 
 /**
  * Clear the settings cache (useful after external modifications).
  */
 export function clearSettingsCache(): void {
-  hostState().forget(SETTINGS_FILE)
+  settingsStore.clearCache()
 }
 
 // TODO - following function are very repetitive - consider refactor to a single generic function that takes the API key name as parameter
