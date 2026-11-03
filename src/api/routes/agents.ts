@@ -39,7 +39,7 @@ import { MESSAGES_PAGE_MAX_LIMIT, capMessagesPageLimit, clampMessagesPageBytes }
 import { streamJsonArrayResponse } from '../stream-json-array'
 import { readLimitedJsonBody } from '../lib/read-limited-json-body'
 import { waitForClientGone } from '../lib/wait-for-client-gone'
-import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getAuthorizedAgentRole, getMeetingParticipant, getRequestDeviceId } from '../middleware/auth'
+import { Authenticated, AgentRead, AgentUser, AgentAdmin, IsAdmin, ResolveAgent, getAgentId, getResolvedAgent, getAuthorizedAgentRole, getMeetingParticipant, getRequestDeviceId } from '../middleware/auth'
 import {
   listAgentsWithStatus,
   createAgent,
@@ -151,7 +151,9 @@ import {
   formatUploadTooLargeMessage,
   storeUploadChunk,
 } from '@shared/lib/utils/chunked-upload'
-import { getMountsWithHealth, addMount, attachMount, removeMount, setMountReadOnly, volumeSummary } from '@shared/lib/services/mount-service'
+import { getMountsWithHealth, addMount, attachMount, removeMount, setMountReadOnly, volumeSummary, resolveMountPath } from '@shared/lib/services/mount-service'
+import { isMountPath } from '@shared/lib/utils/workspace-path'
+import { serveVolumeFile, volumeFailure } from '../lib/volume-file'
 import { addMountSchema, updateMountSchema } from '@shared/lib/services/mount-schema'
 import { releaseVolume, VolumeError } from '@shared/lib/services/volume-service'
 import { volumeViewer } from '../lib/volume-access'
@@ -1497,8 +1499,7 @@ agents.post('/', async (c) => {
 // GET /api/agents/:id - Get a single agent
 agents.get('/:id', ResolveAgent(), AgentRead(), async (c) => {
   try {
-    const slug = getAgentId(c)
-    const agent = await getAgentWithStatus(slug, { includeSummary: false })
+    const agent = await getAgentWithStatus(getResolvedAgent(c), { includeSummary: false })
 
     if (!agent) {
       return c.json({ error: 'Agent not found' }, 404)
@@ -1879,7 +1880,7 @@ agents.post('/:id/start', AgentUser(), async (c) => {
 
     // Skip the session-summary enrichment: it stats every transcript, and every
     // caller of this command discards the body and refetches agent data anyway.
-    const agent = await getAgentWithStatus(slug, { includeSummary: false })
+    const agent = await getAgentWithStatus(getResolvedAgent(c), { includeSummary: false })
 
     // Note: agent_status_changed is broadcast by containerManager.ensureRunning()
 
@@ -6708,7 +6709,33 @@ agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
   }
 })
 
-// GET /api/agents/:id/folders - Lazily list one level of a bookmarked workspace folder
+function foldersFirstByName(a: { name: string; type: string }, b: { name: string; type: string }): number {
+  if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
+  return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+}
+
+/** One level of a folder in one of the agent's drives. Whoever may view the agent may list any of them, as they may open its files. */
+async function listMountFolder(c: Context, agentSlug: string, rawRoot: string, rawCurrentPath: string) {
+  try {
+    const mount = await resolveMountPath(agentSlug, rawCurrentPath)
+    if (!mount) return c.json({ error: 'Drive not found' }, 404)
+    const currentPath = rawCurrentPath.replace(/\/+$/, '')
+    const entries = (await mount.ops.list(mount.path))
+      .filter(entry => entry.kind === 'file' || entry.kind === 'directory')
+      .map(entry => ({ name: entry.name, path: `${currentPath}/${entry.name}`, type: entry.kind }))
+      .sort(foldersFirstByName)
+    return c.json({
+      root: rawRoot.replace(/\/+$/, ''),
+      path: currentPath,
+      entries: entries.slice(0, MAX_FOLDER_ENTRIES),
+      truncated: entries.length > MAX_FOLDER_ENTRIES,
+    })
+  } catch (error) {
+    return volumeFailure(c, error)
+  }
+}
+
+// GET /api/agents/:id/folders - Lazily list one level of a bookmarked workspace folder, or of a folder in one of its drives
 agents.get('/:id/folders', AgentRead(), async (c) => {
   const agentSlug = getAgentId(c)
   const rawRoot = c.req.query('root')
@@ -6716,6 +6743,7 @@ agents.get('/:id/folders', AgentRead(), async (c) => {
   if (!rawRoot || !rawCurrentPath) {
     return c.json({ error: 'root and path are required' }, 400)
   }
+  if (isMountPath(rawRoot)) return listMountFolder(c, agentSlug, rawRoot, rawCurrentPath)
 
   // Explicit folder bookmarks are shareable with viewers. The built-in full
   // workspace browser is an owner-only surface and must not become an API-level
@@ -6743,10 +6771,7 @@ agents.get('/:id/folders', AgentRead(), async (c) => {
         path: path.posix.join(currentPath, entry.name),
         type: entry.kind,
       }))
-      .sort((a, b) => {
-        if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
-        return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
-      })
+      .sort(foldersFirstByName)
 
     return c.json({
       root: rootPath,
@@ -7113,6 +7138,27 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
     }
     console.error('Failed to download file:', error)
     return c.json({ error: 'Failed to download file' }, 500)
+  }
+})
+
+// GET /api/agents/:id/mount-files/* - A file in one of the agent's drives, by the path the agent sees it at under /mounts
+agents.get('/:id/mount-files/*', AgentRead(), async (c) => {
+  // The raw :id param, as the files route reads its prefix: a slug spelled with escapes misses it.
+  const urlPath = new URL(c.req.url).pathname
+  const prefix = `/api/agents/${c.req.param('id')}/mount-files/`
+  let drivePath: string
+  try {
+    drivePath = urlPath.startsWith(prefix) ? decodeURIComponent(urlPath.slice(prefix.length)) : ''
+  } catch {
+    drivePath = ''
+  }
+  if (!drivePath) return c.json({ error: 'Invalid path' }, 400)
+  try {
+    const mount = await resolveMountPath(getAgentId(c), `/mounts/${drivePath}`)
+    if (!mount) return c.json({ error: 'Drive not found' }, 404)
+    return await serveVolumeFile(c, mount.ops, mount.path)
+  } catch (error) {
+    return volumeFailure(c, error)
   }
 })
 

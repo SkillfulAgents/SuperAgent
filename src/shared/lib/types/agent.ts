@@ -76,11 +76,9 @@ export interface UpdateAgentInput {
 /**
  * Session metadata stored in session-metadata.json
  */
+/** The context's size as the CLI counts it, against the window it auto-compacts at. */
 export interface SessionUsage {
-  inputTokens: number
-  outputTokens: number
-  cacheCreationInputTokens: number
-  cacheReadInputTokens: number
+  totalTokens: number
   contextWindow: number
 }
 
