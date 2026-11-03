@@ -576,7 +576,11 @@ interface AgentSummaryOptions {
    * outside auth mode), so there is no caller that legitimately lacks it.
    */
   userId: string
+  /** The unread projection for exactly these agents, when the caller already started it. */
+  unreadProjection?: UnreadProjection
 }
+
+type UnreadProjection = Awaited<ReturnType<typeof readUnreadProjection>>
 
 function attentionSessionCountsOutsideLatest(
   sessionId: string,
@@ -765,11 +769,6 @@ async function getVisibleSessionExpansion(
 }
 
 /**
- * Enrich an array of ApiAgent objects with summary fields:
- * active/awaiting sessions, last activity, and dashboards.
- * Batch notification lookup upfront, then parallelize per-agent FS operations.
- */
-/**
  * Both halves of the unread projection, one query each rather than one per
  * agent — the list route hydrates every agent on every poll. Needs only the
  * slugs, so a caller can start it before it has the agents.
@@ -784,13 +783,17 @@ function readUnreadProjection(slugs: string[], userId: string) {
   ])
 }
 
+/**
+ * Enrich an array of ApiAgent objects with summary fields:
+ * active/awaiting sessions, last activity, and dashboards.
+ * Batch notification lookup upfront, then parallelize per-agent FS operations.
+ */
 async function enrichAgentsWithSummary(
   agents: ApiAgent[],
   options: AgentSummaryOptions,
-  unreadProjection?: Awaited<ReturnType<typeof readUnreadProjection>>,
 ): Promise<ApiAgent[]> {
   const [unreadByAgent, markedUnreadByAgent, mentionsByAgent, previewsByAgent] =
-    unreadProjection ?? await readUnreadProjection(agents.map(a => a.slug), options.userId)
+    options.unreadProjection ?? await readUnreadProjection(agents.map(a => a.slug), options.userId)
 
   const limit = pLimit(5)
   return Promise.all(
@@ -1487,7 +1490,7 @@ agents.get('/:id', ResolveAgent(), AgentRead(), async (c) => {
   try {
     const slug = getAgentId(c)
     const userId = getCurrentUserId(c)
-    // The unread projection needs only the slug: it is read while the agent's status is.
+    // Needs only the slug, so it runs in parallel with the status read.
     const [agent, unreadProjection] = await Promise.all([
       getAgentWithStatus(slug, { includeSummary: false }),
       readUnreadProjection([slug], userId),
@@ -1497,7 +1500,7 @@ agents.get('/:id', ResolveAgent(), AgentRead(), async (c) => {
       return c.json({ error: 'Agent not found' }, 404)
     }
 
-    const [enriched] = await enrichAgentsWithSummary([agent], { userId }, unreadProjection)
+    const [enriched] = await enrichAgentsWithSummary([agent], { userId, unreadProjection })
     return c.json(enriched)
   } catch (error) {
     console.error('Failed to fetch agent:', error)
