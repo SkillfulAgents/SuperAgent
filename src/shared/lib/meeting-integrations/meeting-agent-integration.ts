@@ -27,6 +27,7 @@ import {
   setMeetingSession, toPublicMeeting, transitionMeeting, type MeetingRecord,
 } from './store'
 import { meetingRoster } from './roster'
+import { meetingTranscriptPath, meetingTranscripts } from './transcript'
 
 export { MEETING_RECORDING_RETENTION_HOURS }
 
@@ -111,7 +112,10 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
     if (!meeting) return { text: '', skip: true }
     if (payload.kind === 'ended') return { text: meetingEndedNotice(payload.reason) }
     const agent = await agentCatalog.get(context.integration.agentSlug)
-    return { text: meetingJoinBrief(meeting, agent?.name ?? meeting.botName), systemPrompt: meetingSessionSystemPrompt(this.configuredSettings().instructions, meeting.mode) }
+    return {
+      text: meetingJoinBrief(meeting, agent?.name ?? meeting.botName),
+      systemPrompt: meetingSessionSystemPrompt(this.configuredSettings().instructions, meeting.mode, meetingTranscriptPath(meeting.id)),
+    }
   }
 
   /**
@@ -289,15 +293,17 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
 
   /**
    * A callback from the bot host about the room (someone joined, left, started
-   * talking). The route has already checked the meeting's token. Returns
-   * whether the body was a participant event at all.
+   * talking, finished saying something). The route has already checked the
+   * meeting's token. Returns whether the body was an event the family tracks.
    */
   async receiveBotEvent(meetingId: string, body: unknown): Promise<boolean> {
     const event = this.bots.parseEvent(body)
-    if (!event) return false
+    const line = event ? null : this.bots.parseTranscript?.(body) ?? null
+    if (!event && !line) return false
     const meeting = await getMeeting(meetingId)
     if (!meeting || isTerminalMeetingStatus(meeting.status)) return true
-    meetingRoster.apply(meeting.id, event, meeting.botName)
+    if (event) meetingRoster.apply(meeting.id, event, meeting.botName)
+    if (line) meetingTranscripts.append(meeting, line)
     return true
   }
 
@@ -379,6 +385,8 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
     this.untrack(meetingId)
     meetingRoster.clear(meetingId)
     this.writtenReplies.delete(meetingId)
+    // The last lines are on disk before the agent is told to write its summary.
+    await meetingTranscripts.close(meetingId)
     await this.notifyEnded(meetingId, changed.status === 'failed' ? `could not join: ${detail ?? 'unknown error'}` : detail)
   }
 

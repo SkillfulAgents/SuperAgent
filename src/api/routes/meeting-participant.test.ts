@@ -101,10 +101,14 @@ describe('bot host events', () => {
     expect(await (await post('{}')).json()).toEqual({ accepted: false, reason: 'integration not connected' })
     expect((await app.request(url('/events/', 'wrong'), { method: 'POST', body: '{}' })).status).toBe(404)
   })
-  it('rejects oversized bodies before reading them into the connector', async () => {
-    const res = await post(JSON.stringify({ pad: 'x'.repeat(20 * 1024) }))
+  it('takes a long transcript event but rejects oversized bodies before reading them into the connector', async () => {
+    // About ten minutes of one person talking, one object per word as Recall sends it.
+    const words = Array.from({ length: 1500 }, (_, i) => ({ text: 'word', start_timestamp: { relative: i }, end_timestamp: { relative: i + 0.4 } }))
+    expect((await post(JSON.stringify({ event: 'transcript.data', data: { data: { words, participant: { id: 1, name: 'Mike' } } } }))).status).toBe(200)
+    expect(connector.value!.receiveBotEvent).toHaveBeenCalledTimes(1)
+    const res = await post(JSON.stringify({ pad: 'x'.repeat(260 * 1024) }))
     expect(res.status).toBe(413)
-    expect(connector.value!.receiveBotEvent).not.toHaveBeenCalled()
+    expect(connector.value!.receiveBotEvent).toHaveBeenCalledTimes(1)
   })
   it('passes unparseable JSON through as null rather than failing the host', async () => {
     expect(await (await post('not json')).json()).toEqual({ accepted: true })

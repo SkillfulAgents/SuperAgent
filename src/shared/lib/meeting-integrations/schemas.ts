@@ -95,6 +95,12 @@ export const meetingParticipantEventSchema = z.object({
 })
 export type MeetingParticipantEvent = z.infer<typeof meetingParticipantEventSchema>
 
+/** One finished utterance from the host's live transcription: who spoke and what they said. */
+export interface MeetingTranscriptLine {
+  speaker: string
+  text: string
+}
+
 /** Who is in the call right now and who is talking; the bot itself is never listed. */
 export const meetingRosterSchema = z.object({
   participants: z.array(meetingParticipantSchema),

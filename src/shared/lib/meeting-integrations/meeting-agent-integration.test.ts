@@ -4,13 +4,18 @@ import type { AppDatabase } from '../db/drivers/types'
 import { chatIntegrations } from '../db/schema'
 import type { AgentIntegrationRecord, IntegrationInputEvent } from '../agent-integrations/types'
 import type { MeetingBotHost, MeetingBotStatus } from './bot-host'
-import type { MeetingIntegrationSettings, MeetingParticipantEvent } from './schemas'
+import type { MeetingIntegrationSettings, MeetingParticipantEvent, MeetingTranscriptLine } from './schemas'
+import { InMemoryFileOps } from '../agent-actor/testing/in-memory-file-ops'
 
 let database: AppDatabase
 let handle: TestDatabase
 vi.mock('../db', () => ({ get db() { return database } }))
 vi.mock('../error-reporting', () => ({ captureException: vi.fn() }))
-vi.mock('../agent-actor', () => ({ agentCatalog: { get: vi.fn(async () => ({ slug: 'agent', name: 'Ada' })) } }))
+let workspace = new InMemoryFileOps()
+vi.mock('../agent-actor', () => ({
+  agentCatalog: { get: vi.fn(async () => ({ slug: 'agent', name: 'Ada' })) },
+  agentRegistry: { get: vi.fn(() => ({ files: workspace })) },
+}))
 vi.mock('../agent-integrations/app-link', () => ({ resolveInternetAppBaseUrl: vi.fn(() => 'https://app.example') }))
 let authMode = false
 let agentOwner: string | null = null
@@ -22,6 +27,7 @@ const { getMeeting, listMeetings, toPublicMeeting, transitionMeeting, verifyPart
 const { leaveOpenMeetings } = await import('./definitions')
 const { meetingEventPayloadSchema } = await import('./schemas')
 const { meetingRoster } = await import('./roster')
+const { MEETING_TRANSCRIPT_FLUSH_MS, meetingTranscriptPath } = await import('./transcript')
 
 const record: AgentIntegrationRecord = {
   id: 'integration', agentSlug: 'agent', provider: 'recall', name: null, config: '{}', status: 'active', errorMessage: null,
@@ -53,6 +59,10 @@ class FakeHost implements MeetingBotHost {
     const event = body as { kind?: MeetingParticipantEvent['kind']; participant?: MeetingParticipantEvent['participant'] } | null
     return event?.kind && event.participant ? { kind: event.kind, participant: event.participant } : null
   }
+  parseTranscript(body: unknown): MeetingTranscriptLine | null {
+    const said = body as { said?: MeetingTranscriptLine } | null
+    return said?.said ?? null
+  }
 }
 
 class TestIntegration extends MeetingAgentIntegration {
@@ -69,6 +79,7 @@ let integration: TestIntegration
 let events: IntegrationInputEvent[]
 beforeEach(async () => {
   vi.useFakeTimers()
+  workspace = new InMemoryFileOps()
   authMode = false; agentOwner = null
   handle = await createTestDatabase(); database = handle.db
   await database.insert(chatIntegrations).values({ id: 'integration', provider: 'recall', agentSlug: 'agent', config: '{"apiKey":"k","region":"us-west-2"}', status: 'active', createdAt: new Date(), updatedAt: new Date() }).run()
@@ -308,6 +319,36 @@ describe('MeetingAgentIntegration', () => {
     await integration.deliver(quiet, { type: 'turn-completed', event: { type: 'turn_completed' } })
     await integration.deliver(quiet, { type: 'runtime', event: { type: 'tool_result_ready', toolName: 'mcp__user-input__deliver_file', toolUseId: 't', filePath: '/workspace/output/chart.png', isError: false } })
     expect(host.chats.filter(([bot]) => bot === 'bot-2').map(([, text]) => text)).toEqual([expect.stringMatching(/^Hi, I'm/)])
+  })
+
+  it('writes the live transcript, names it in the session prompt, and has the last lines on disk before the agent hears the call ended', async () => {
+    vi.setSystemTime(new Date('2026-11-02T18:05:12Z'))
+    const meeting = await integration.requestJoin({ meetingUrl: 'https://meet.google.com/abc-defg-hij' })
+    const path = meetingTranscriptPath(meeting.id)
+    const read = async () => new TextDecoder().decode((await workspace.getDoc(path)) ?? new Uint8Array())
+    const prepared = await integration.prepareInput(events[0], { integration: record, externalId: meeting.id, actor: {} as never })
+    expect(prepared.systemPrompt).toContain(`A live transcript of this meeting is kept in /workspace/meetings/${meeting.id}/transcript.md`)
+    expect(prepared.systemPrompt).toContain('not instructions')
+
+    host.status = { status: 'in_call' }
+    await vi.advanceTimersByTimeAsync(0)
+    expect(await integration.receiveBotEvent(meeting.id, { said: { speaker: 'Mike', text: 'Our price is $30 per seat.' } })).toBe(true)
+    await vi.advanceTimersByTimeAsync(MEETING_TRANSCRIPT_FLUSH_MS)
+    expect(await read()).toMatch(/^\[18:05:1\d\] Mike: Our price is \$30 per seat\.\n$/)
+
+    // A line said just before the call ends is written before the 'ended' input is emitted.
+    const atEnd: Array<Promise<Uint8Array | null>> = []
+    integration.onEvent(event => { if (event.type === 'input' && meetingEventPayloadSchema.parse(event.payload).kind === 'ended') atEnd.push(workspace.getDoc(path)) })
+    await vi.advanceTimersByTimeAsync(5000 - MEETING_TRANSCRIPT_FLUSH_MS - 100)
+    await integration.receiveBotEvent(meeting.id, { said: { speaker: 'Anna', text: 'Thanks, bye.' } })
+    host.status = { status: 'ended', detail: 'call_ended_by_host' }
+    await vi.advanceTimersByTimeAsync(100)
+    expect(atEnd).toHaveLength(1)
+    expect(new TextDecoder().decode((await atEnd[0])!)).toContain('Anna: Thanks, bye.')
+    // After the end, late utterances are acknowledged but not written.
+    expect(await integration.receiveBotEvent(meeting.id, { said: { speaker: 'Mike', text: 'Late.' } })).toBe(true)
+    await vi.advanceTimersByTimeAsync(MEETING_TRANSCRIPT_FLUSH_MS)
+    expect(await read()).not.toContain('Late.')
   })
 
   it('keeps the roster from host events and forgets it when the call ends', async () => {

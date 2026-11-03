@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { AgentIntegrationRecord } from '../../agent-integrations/types'
 import type { MeetingBotHost, MeetingBotJoinRequest, MeetingBotStatus, MeetingRecordingLink } from '../bot-host'
-import type { MeetingIntegrationSettings, MeetingParticipantEvent } from '../schemas'
+import type { MeetingIntegrationSettings, MeetingParticipantEvent, MeetingTranscriptLine } from '../schemas'
 import { MeetingAgentIntegration, MEETING_RECORDING_RETENTION_HOURS } from '../meeting-agent-integration'
 import { RecallApiError, RecallClient, type RecallBot } from './client'
 import { parseRecallConfig, type RecallConfig } from './config'
@@ -68,10 +68,14 @@ export class RecallBotHost implements MeetingBotHost {
       // the call (participant events) while it records, and the recording is
       // what the integration page later links to. Video is not captured, and
       // the audio is deleted after the retention window. The family discloses
-      // this in the call.
+      // this in the call. With a callback URL the bot also transcribes the call
+      // live, one finished utterance per event, for the meeting's transcript file.
       recording_config: {
         video_mixed_layout: 'audio_only', retention: { type: 'timed', hours: MEETING_RECORDING_RETENTION_HOURS },
-        ...(request.eventsUrl ? { realtime_endpoints: [{ type: 'webhook', url: request.eventsUrl, events: RECALL_PARTICIPANT_EVENTS }] } : {}),
+        ...(request.eventsUrl ? {
+          transcript: RECALL_TRANSCRIPT,
+          realtime_endpoints: [{ type: 'webhook', url: request.eventsUrl, events: [...RECALL_PARTICIPANT_EVENTS, RECALL_TRANSCRIPT_EVENT] }],
+        } : {}),
       },
       automatic_leave: RECALL_AUTOMATIC_LEAVE,
     })
@@ -81,6 +85,7 @@ export class RecallBotHost implements MeetingBotHost {
   leaveCall(botId: string): Promise<void> { return this.client.leaveCall(botId) }
   sendChatMessage(botId: string, message: string): Promise<void> { return this.client.sendChatMessage(botId, message) }
   parseEvent(body: unknown): MeetingParticipantEvent | null { return recallParticipantEvent(body) }
+  parseTranscript(body: unknown): MeetingTranscriptLine | null { return recallTranscriptLine(body) }
   async recordingLink(botId: string): Promise<MeetingRecordingLink | null> {
     try {
       return recallRecordingLink(await this.client.getBot(botId))
@@ -95,6 +100,14 @@ export class RecallBotHost implements MeetingBotHost {
 
 /** Real-time webhook events the host asks Recall for. Speech events can be added here when the room needs them. */
 export const RECALL_PARTICIPANT_EVENTS = ['participant_events.join', 'participant_events.leave', 'participant_events.update'] as const
+
+/**
+ * Recall's own live transcription in low-latency mode: utterances arrive a
+ * second or two after they end. That mode is English only; the platform proxy
+ * accepts exactly this setting and bills it per bot-minute.
+ */
+export const RECALL_TRANSCRIPT = { provider: { recallai_streaming: { mode: 'prioritize_low_latency', language_code: 'en' } } } as const
+export const RECALL_TRANSCRIPT_EVENT = 'transcript.data'
 
 const recallParticipantEventSchema = z.object({
   event: z.string(),
@@ -122,6 +135,26 @@ export function recallParticipantEvent(body: unknown): MeetingParticipantEvent |
   if (!kind) return null
   const { participant } = parsed.data.data.data
   return { kind, participant: { id: String(participant.id), name: participant.name?.trim() || 'Unknown participant', isHost: participant.is_host === true } }
+}
+
+const recallTranscriptEventSchema = z.object({
+  event: z.literal(RECALL_TRANSCRIPT_EVENT),
+  data: z.object({
+    data: z.object({
+      words: z.array(z.object({ text: z.string() })),
+      participant: z.object({ name: z.string().nullable().optional() }),
+    }),
+  }),
+})
+
+/** Recall's finished-utterance webhook, reduced to who spoke and what they said. */
+export function recallTranscriptLine(body: unknown): MeetingTranscriptLine | null {
+  const parsed = recallTranscriptEventSchema.safeParse(body)
+  if (!parsed.success) return null
+  const { words, participant } = parsed.data.data.data
+  const text = words.map(word => word.text).join(' ').replace(/\s+/g, ' ').trim()
+  if (!text) return null
+  return { speaker: participant.name?.trim() || 'Unknown participant', text }
 }
 
 /** The host for one installation, over whatever transport this deployment has; null when it has none. */

@@ -29,8 +29,8 @@ import { waitForClientGone } from '../lib/wait-for-client-gone'
 const router = new Hono<LimitedJsonBodyEnv>()
 const query = z.object({ token: z.string().min(1).max(200) })
 const ROSTER_PING_MS = 15_000
-/** A participant event is a few hundred bytes; anything larger is not one. */
-const EVENT_BODY_MAX_BYTES = 16 * 1024
+/** A participant event is a few hundred bytes; a transcript event carries ~80 bytes per word of one utterance. */
+const EVENT_BODY_MAX_BYTES = 256 * 1024
 
 type Authorized = { meeting: MeetingRecord } | { error: string; status: 401 | 404 }
 async function authorize(meetingId: string, rawQuery: Record<string, string>): Promise<Authorized> {
