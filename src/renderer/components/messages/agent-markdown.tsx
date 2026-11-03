@@ -188,8 +188,9 @@ export const COMPACT_AGENT_TEXT = '[&_pre]:text-xs/relaxed [&_code]:text-xs [&_t
 
 export type AgentMarkdownProps = {
   text: string
-  /** Enables file:///workspace images through the authenticated workspace route. */
+  /** Resolves agent file links and images through the authenticated file route. */
   agentSlug?: string
+  folder?: MarkdownProps['folder']
   imageAliases?: EmbeddedImageAliases
   rehypePlugins?: MarkdownProps['rehypePlugins']
 } & (
@@ -205,13 +206,13 @@ export type AgentMarkdownProps = {
 )
 
 // Memoized so a settled block parses once while later text streams in.
-export const AgentMarkdown = memo(function AgentMarkdown({ text, mode, agentSlug, imageAliases, link, rehypePlugins, htmlPreview }: AgentMarkdownProps) {
+export const AgentMarkdown = memo(function AgentMarkdown({ text, mode, agentSlug, folder, imageAliases, link, rehypePlugins, htmlPreview }: AgentMarkdownProps) {
   const base = htmlPreview ? HTML_PREVIEW_COMPONENTS : MODE_COMPONENTS[mode]
   const components = link
-    ? { ...base, a: (props: Parameters<typeof MarkdownLink>[0]) => link(props.href, props.children) ?? <MarkdownLink {...props} /> }
+    ? { ...base, a: (props: Parameters<typeof MarkdownLink>[0]) => link(props.href, props.children) ?? <MarkdownLink {...props} agentSlug={agentSlug} /> }
     : base
   return (
-    <Markdown components={components} rehypePlugins={rehypePlugins} imageAliases={imageAliases} agentSlug={agentSlug}>
+    <Markdown components={components} rehypePlugins={rehypePlugins} imageAliases={imageAliases} agentSlug={agentSlug} folder={folder}>
       {text}
     </Markdown>
   )
