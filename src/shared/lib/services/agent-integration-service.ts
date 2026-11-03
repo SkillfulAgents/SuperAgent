@@ -11,6 +11,7 @@ import type { ChatIntegration, NewChatIntegration } from '@shared/lib/db/schema'
 import type { IntegrationStatus } from '../agent-integrations/types'
 import { agentIntegrationRegistry } from '../agent-integrations/registry'
 import { integrationConfigSchema } from '../agent-integrations/config-schema'
+import { DEFAULT_SESSION_TIMEOUT_HOURS } from '../agent-integrations/public'
 import { captureException } from '@shared/lib/error-reporting'
 
 export class IntegrationConfigurationUnsupportedError extends Error {
@@ -84,7 +85,8 @@ export async function createAgentIntegration(params: CreateAgentIntegrationParam
     // Always private at create; making a bot public is owner-only via the
     // dedicated PATCH /:integrationId/require-approval endpoint.
     requireApproval: true,
-    sessionTimeout: params.sessionTimeout ?? null,
+    sessionTimeout: params.sessionTimeout !== undefined ? params.sessionTimeout
+      : agentIntegrationRegistry.getDefinition(params.provider)?.managementCapabilities?.includes('session_timeout') ? DEFAULT_SESSION_TIMEOUT_HOURS : null,
     llmProviderId: params.model ? (params.llmProviderId === undefined ? getSettings().llmDefault?.llmProviderId : params.llmProviderId) : null,
     model: params.model ?? null,
     effort: params.effort ?? null,

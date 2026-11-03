@@ -6,7 +6,7 @@ import { agentRegistry } from '../agent-actor'
 import { agentNotificationPreview } from '../notifications/agent-notification-preview'
 import type { NotificationReadState, NotificationReadTarget } from '../notifications/read-state-schema'
 import {
-  getAccessibleAgentSlugs, getUnreadCount, getUnreadMentionCount,
+  accessibleAgents, getUnreadCount, getUnreadMentionCount,
   getUnreadNotificationsByAgents, getUnreadMentionsByAgents, getUnreadNotificationPreviewsByAgents,
 } from './notification-service'
 import { getSessionIdsMarkedUnreadByAgents } from './session-unread-service'
@@ -14,13 +14,11 @@ import { isHiddenAutomatedSession } from './session-visibility'
 
 /** Resolve affected agents on the server; never trust a client's list of slugs. */
 export async function notificationReadAgentSlugs(target: NotificationReadTarget, viewerId?: string): Promise<string[]> {
-  const allowed = viewerId ? await getAccessibleAgentSlugs(viewerId) : undefined
-  if (allowed?.length === 0) return []
   const rows = await db.selectDistinct({ slug: notifications.agentSlug }).from(notifications).where(and(
     target.kind === 'all' ? eq(notifications.isRead, false)
       : target.kind === 'session' ? eq(notifications.sessionId, target.sessionId)
         : eq(notifications.id, target.id),
-    allowed ? inArray(notifications.agentSlug, allowed) : undefined,
+    viewerId ? inArray(notifications.agentSlug, accessibleAgents(viewerId)) : undefined,
     viewerId ? or(isNull(notifications.recipientUserId), eq(notifications.recipientUserId, viewerId)) : undefined,
   ))
   return rows.map(row => row.slug)

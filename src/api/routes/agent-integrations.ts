@@ -226,7 +226,7 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
         config: prepared.config,
         status: prepared.status,
         showToolCalls: showToolCalls ?? false,
-        sessionTimeout: sessionTimeout ?? null,
+        sessionTimeout,
         ...parsedRuntime.data,
         model: parsedRuntime.data.model ?? null,
         effort: parsedRuntime.data.effort ?? null,
