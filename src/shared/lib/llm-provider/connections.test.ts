@@ -54,6 +54,8 @@ import {
   resolveSelectionHierarchy,
   storedSelection,
   listConnections,
+  listConnectionsWithSelection,
+  resolveGlobalSelection,
   connectionCatalog,
 } from './connections'
 import { importLlmConnections } from '../db/data-migrations/0003-import-llm-connections'
@@ -165,6 +167,31 @@ describe('LLM connections', () => {
     expect(storedSelection('a', null)).toBeNull()
     expect(storedSelection('a')).toEqual({ llmProviderId: 'imported', model: 'a' })
   })
+  it('lists the connections with the app default and summarizer', async () => {
+    const first = await add('First')
+    const helper = await add('Helper')
+    await setGlobalSelection('default', { llmProviderId: first, model: 'a' })
+    await setGlobalSelection('summarizer', { llmProviderId: helper, model: 'a' })
+
+    const listed = await listConnectionsWithSelection(admin)
+
+    expect(listed.defaultSelection).toEqual({ llmProviderId: first, model: 'a' })
+    expect(listed.summarizerSelection).toEqual({ llmProviderId: helper, model: 'a' })
+    expect(listed.connections.map((connection) => connection.id).sort()).toEqual([first, helper].sort())
+    expect(listed.connections.find((connection) => connection.id === first)?.canDelete).toBe(false)
+  })
+
+  it('resolves the app default from the rows a request already read', async () => {
+    const first = await add('First')
+    await setGlobalSelection('default', { llmProviderId: first, model: 'a' })
+    const row = (await getConnection(first))!
+    // With the row gone from the database, only the rows already read can resolve it.
+    await handle.db.delete(llmConnections).where(eq(llmConnections.id, first))
+
+    expect((await resolveGlobalSelection(new Map([[first, row]])))?.llmProviderId).toBe(first)
+    expect(await resolveGlobalSelection()).toBeNull()
+  })
+
   it('restores a global default only when neither the default nor the summarizer changed since the write', async () => {
     const first = await add('First')
     const second = await add('Second')
