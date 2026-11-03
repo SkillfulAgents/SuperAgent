@@ -25,12 +25,14 @@ interface Entry {
 export class InMemoryKVStore implements KVStore {
   private readonly entries = new Map<string, Entry>()
 
+  /* eslint-disable no-dupe-class-members -- TypeScript overloads; tsc checks them */
   get<T = unknown>(key: string): Promise<T | null>
   get<T = unknown>(keys: string[]): Promise<Map<string, T | null>>
   async get<T>(keyOrKeys: string | string[]): Promise<T | null | Map<string, T | null>> {
     if (typeof keyOrKeys === 'string') return this.read<T>(keyOrKeys)
     return new Map(keyOrKeys.map((key) => [key, this.read<T>(key)]))
   }
+  /* eslint-enable no-dupe-class-members */
 
   async put(key: string, value: unknown, ttlMs?: number): Promise<void> {
     const json = JSON.stringify(value)
