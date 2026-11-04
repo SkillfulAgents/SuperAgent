@@ -1,5 +1,5 @@
 import type { MeetingPlatform } from './meeting-url'
-import type { MeetingParticipantEvent, MeetingStatus, MeetingTranscriptLine } from './schemas'
+import type { MeetingParticipantEvent, MeetingStatus } from './schemas'
 
 /** What the family asks a provider for; the family never sees provider payloads. */
 export interface MeetingBotJoinRequest {
@@ -8,7 +8,7 @@ export interface MeetingBotJoinRequest {
   botName: string
   /** The page the bot presents as its camera and runs the voice loop in. */
   participantPageUrl: string
-  /** Where the host may POST in-call events (who joined, left, is speaking, what was said), if it can. */
+  /** Where the host may POST in-call events (who joined, left, is speaking), if it can. */
   eventsUrl?: string
 }
 
@@ -37,8 +37,6 @@ export interface MeetingBotHost {
   sendChatMessage(botId: string, message: string): Promise<void>
   /** Reduce an in-call callback body to a participant event, or null when it is something else. */
   parseEvent(body: unknown): MeetingParticipantEvent | null
-  /** Reduce an in-call callback body to one finished utterance, or null when it is something else. */
-  parseTranscript?(body: unknown): MeetingTranscriptLine | null
   /** A link to the call's recording while the host still keeps it; null once gone or not yet ready. */
   recordingLink?(botId: string): Promise<MeetingRecordingLink | null>
 }

@@ -45,6 +45,7 @@ class FakeEventSource {
 vi.stubGlobal('EventSource', FakeEventSource)
 
 import { MeetingParticipantPage } from './meeting-participant-page'
+import { apiFetch } from '@renderer/lib/api'
 
 const deliveredImage = (filePath: string) => ({
   type: 'assistant', content: { text: '' },
@@ -63,6 +64,13 @@ beforeEach(() => {
 })
 
 describe('MeetingParticipantPage', () => {
+  it("relays the call's speech from the voice engine to the host for the transcript", async () => {
+    renderWithProviders(<MeetingParticipantPage meetingId="m1" token="t" />)
+    await waitFor(() => expect(state.voiceArgs.length).toBeGreaterThan(0))
+    ;(state.voiceArgs.at(-1) as { onSpeech(piece: { role: 'user' | 'assistant'; text: string }): void }).onSpeech({ role: 'user', text: 'We ship on Friday.' })
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('/api/meeting-participant/m1/speech?token=t', expect.objectContaining({ method: 'POST' })), { timeout: 2500 })
+  })
+
   it('asks for the token and names a refused meeting', async () => {
     renderWithProviders(<MeetingParticipantPage meetingId="m1" token="" />)
     expect(screen.getByText('Missing participant token')).toBeInTheDocument()

@@ -26,7 +26,7 @@ import {
   createMeeting, getMeeting, listMeetings, listOpenMeetings, mintParticipantToken, setMeetingBot,
   setMeetingSession, toPublicMeeting, transitionMeeting, type MeetingRecord,
 } from './store'
-import { meetingRoster } from './roster'
+import { isMeetingBot, meetingRoster } from './roster'
 import { meetingTranscriptPath, meetingTranscripts } from './transcript'
 
 export { MEETING_RECORDING_RETENTION_HOURS }
@@ -293,18 +293,31 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
 
   /**
    * A callback from the bot host about the room (someone joined, left, started
-   * talking, finished saying something). The route has already checked the
-   * meeting's token. Returns whether the body was an event the family tracks.
+   * talking). The route has already checked the meeting's token. Returns
+   * whether the body was a participant event at all.
    */
   async receiveBotEvent(meetingId: string, body: unknown): Promise<boolean> {
     const event = this.bots.parseEvent(body)
-    const line = event ? null : this.bots.parseTranscript?.(body) ?? null
-    if (!event && !line) return false
+    if (!event) return false
     const meeting = await getMeeting(meetingId)
     if (!meeting || isTerminalMeetingStatus(meeting.status)) return true
-    if (event) meetingRoster.apply(meeting.id, event, meeting.botName)
-    if (line) meetingTranscripts.append(meeting, line)
+    meetingRoster.apply(meeting.id, event, meeting.botName)
+    // Room speech is named after whoever last started talking. The bot's own lines arrive already named, so the bot starting to talk changes nothing.
+    if (event.kind === 'speech_on' && !isMeetingBot(event.participant, meeting.botName)) meetingTranscripts.speakerStarted(meeting, event.participant.name)
     return true
+  }
+
+  /**
+   * The call's speech as the bot's voice engine transcribed it, for the
+   * meeting's transcript file: what the room said ('user') and what the bot
+   * said aloud ('assistant'), which goes under the bot's meeting name. The
+   * route has already checked the meeting's token and put the times on this
+   * host's clock. Speech after the call ended is dropped.
+   */
+  async receiveSpeech(meetingId: string, pieces: ReadonlyArray<{ role: 'user' | 'assistant'; text: string; at: number }>): Promise<void> {
+    const meeting = await getMeeting(meetingId)
+    if (!meeting || isTerminalMeetingStatus(meeting.status)) return
+    for (const { role, text, at } of pieces) meetingTranscripts.append(meeting, { text, at, speaker: role === 'assistant' ? meeting.botName : undefined })
   }
 
   async leave(meetingId: string, reason: string): Promise<PublicMeeting> {

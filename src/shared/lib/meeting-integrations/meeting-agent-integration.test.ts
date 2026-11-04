@@ -4,7 +4,7 @@ import type { AppDatabase } from '../db/drivers/types'
 import { chatIntegrations } from '../db/schema'
 import type { AgentIntegrationRecord, IntegrationInputEvent } from '../agent-integrations/types'
 import type { MeetingBotHost, MeetingBotStatus } from './bot-host'
-import type { MeetingIntegrationSettings, MeetingParticipantEvent, MeetingTranscriptLine } from './schemas'
+import type { MeetingIntegrationSettings, MeetingParticipantEvent } from './schemas'
 import { InMemoryFileOps } from '../agent-actor/testing/in-memory-file-ops'
 
 let database: AppDatabase
@@ -58,10 +58,6 @@ class FakeHost implements MeetingBotHost {
   parseEvent(body: unknown) {
     const event = body as { kind?: MeetingParticipantEvent['kind']; participant?: MeetingParticipantEvent['participant'] } | null
     return event?.kind && event.participant ? { kind: event.kind, participant: event.participant } : null
-  }
-  parseTranscript(body: unknown): MeetingTranscriptLine | null {
-    const said = body as { said?: MeetingTranscriptLine } | null
-    return said?.said ?? null
   }
 }
 
@@ -321,7 +317,7 @@ describe('MeetingAgentIntegration', () => {
     expect(host.chats.filter(([bot]) => bot === 'bot-2').map(([, text]) => text)).toEqual([expect.stringMatching(/^Hi, I'm/)])
   })
 
-  it('writes the live transcript, names it in the session prompt, and has the last lines on disk before the agent hears the call ended', async () => {
+  it("writes the live transcript from the call's speech, names it in the session prompt, and has the last lines on disk before the agent hears the call ended", async () => {
     vi.setSystemTime(new Date('2026-11-02T18:05:12Z'))
     const meeting = await integration.requestJoin({ meetingUrl: 'https://meet.google.com/abc-defg-hij' })
     const path = meetingTranscriptPath(meeting.id)
@@ -332,21 +328,29 @@ describe('MeetingAgentIntegration', () => {
 
     host.status = { status: 'in_call' }
     await vi.advanceTimersByTimeAsync(0)
-    expect(await integration.receiveBotEvent(meeting.id, { said: { speaker: 'Mike', text: 'Our price is $30 per seat.' } })).toBe(true)
+    expect(await integration.receiveBotEvent(meeting.id, { kind: 'speech_on', participant: { id: '1', name: 'Mike', isHost: true } })).toBe(true)
+    // The bot (named after the agent) starting to talk does not take over what the room says.
+    expect(await integration.receiveBotEvent(meeting.id, { kind: 'speech_on', participant: { id: '9', name: 'Ada', isHost: false } })).toBe(true)
+    await integration.receiveSpeech(meeting.id, [
+      { role: 'user', text: 'Our price is', at: Date.now() }, { role: 'user', text: ' $30 per seat.', at: Date.now() + 500 },
+      // What the bot said aloud goes under its own meeting name.
+      { role: 'assistant', text: 'Noted, $30 per seat.', at: Date.now() + 1000 },
+    ])
     await vi.advanceTimersByTimeAsync(MEETING_TRANSCRIPT_FLUSH_MS)
-    expect(await read()).toMatch(/^\[18:05:1\d\] Mike: Our price is \$30 per seat\.\n$/)
+    expect(await read()).toBe('[18:05:12] Mike: Our price is $30 per seat.\n[18:05:13] Ada: Noted, $30 per seat.\n')
 
-    // A line said just before the call ends is written before the 'ended' input is emitted.
+    // Speech heard just before the call ends is written before the 'ended' input is emitted.
     const atEnd: Array<Promise<Uint8Array | null>> = []
     integration.onEvent(event => { if (event.type === 'input' && meetingEventPayloadSchema.parse(event.payload).kind === 'ended') atEnd.push(workspace.getDoc(path)) })
     await vi.advanceTimersByTimeAsync(5000 - MEETING_TRANSCRIPT_FLUSH_MS - 100)
-    await integration.receiveBotEvent(meeting.id, { said: { speaker: 'Anna', text: 'Thanks, bye.' } })
+    await integration.receiveBotEvent(meeting.id, { kind: 'speech_on', participant: { id: '2', name: 'Anna', isHost: false } })
+    await integration.receiveSpeech(meeting.id, [{ role: 'user', text: 'Thanks, bye.', at: Date.now() }])
     host.status = { status: 'ended', detail: 'call_ended_by_host' }
     await vi.advanceTimersByTimeAsync(100)
     expect(atEnd).toHaveLength(1)
     expect(new TextDecoder().decode((await atEnd[0])!)).toContain('Anna: Thanks, bye.')
-    // After the end, late utterances are acknowledged but not written.
-    expect(await integration.receiveBotEvent(meeting.id, { said: { speaker: 'Mike', text: 'Late.' } })).toBe(true)
+    // Speech that arrives after the end is not written.
+    await integration.receiveSpeech(meeting.id, [{ role: 'user', text: 'Late.', at: Date.now() }])
     await vi.advanceTimersByTimeAsync(MEETING_TRANSCRIPT_FLUSH_MS)
     expect(await read()).not.toContain('Late.')
   })

@@ -67,8 +67,6 @@ describe('RecallBotHost', () => {
     })
     expect(RECALL_AUTOMATIC_LEAVE.everyone_left_timeout.timeout).toBeLessThanOrEqual(60)
     expect(body.recording_config.realtime_endpoints).toBeUndefined()
-    // Nobody would receive the utterances, so nothing is transcribed.
-    expect(body.recording_config.transcript).toBeUndefined()
     // Recordings are absent from a create response; the client tolerates that.
     expect(body.recordings).toBeUndefined()
   })
@@ -79,9 +77,9 @@ describe('RecallBotHost', () => {
     expect((fetchImpl.mock.calls[0] as unknown[])[0]).toBe("https://us-west-2.recall.ai/api/v1/bot/")
     expect((fetchImpl.mock.calls[0] as unknown[])[1]).toMatchObject({ headers: { Authorization: 'Token key' } })
     const body = JSON.parse(((fetchImpl.mock.calls[0] as unknown[])[1] as RequestInit).body as string)
-    expect(body.recording_config.realtime_endpoints).toEqual([{ type: 'webhook', url: 'https://app.example/api/meeting-participant/m1/events/?token=t', events: ['participant_events.join', 'participant_events.leave', 'participant_events.update', 'transcript.data'] }])
-    // The exact transcription setting the platform proxy accepts and prices.
-    expect(body.recording_config.transcript).toEqual({ provider: { recallai_streaming: { mode: 'prioritize_low_latency', language_code: 'en' } } })
+    expect(body.recording_config.realtime_endpoints).toEqual([{ type: 'webhook', url: 'https://app.example/api/meeting-participant/m1/events/?token=t', events: ['participant_events.join', 'participant_events.leave', 'participant_events.update', 'participant_events.speech_on', 'participant_events.speech_off'] }])
+    // Recall's transcription is not used: the bot's own voice engine already transcribes the call.
+    expect(body.recording_config.transcript).toBeUndefined()
   })
   it('reduces Recall participant webhooks to family events and ignores the rest', () => {
     const host = new RecallBotHost(new RecallClient(transport(), unowned))
@@ -91,18 +89,6 @@ describe('RecallBotHost', () => {
       .toEqual({ kind: 'speech_on', participant: { id: '7', name: 'Unknown participant', isHost: false } })
     expect(host.parseEvent({ event: 'transcript.data', data: { data: {} } })).toBeNull()
     expect(host.parseEvent('nonsense')).toBeNull()
-  })
-  it('reduces a finished Recall utterance to who spoke and what they said', () => {
-    const host = new RecallBotHost(new RecallClient(transport(), unowned))
-    const utterance = (words: string[], name: string | null) => ({
-      event: 'transcript.data',
-      data: { data: { words: words.map((text, i) => ({ text, start_timestamp: { relative: i }, end_timestamp: { relative: i + 0.5 } })), language_code: 'en', participant: { id: 100, name, is_host: true } } },
-    })
-    expect(host.parseTranscript(utterance(['Our', 'price', 'is', '$30', 'per', 'seat.'], 'Mike '))).toEqual({ speaker: 'Mike', text: 'Our price is $30 per seat.' })
-    expect(host.parseTranscript(utterance(['Hello.'], null))).toEqual({ speaker: 'Unknown participant', text: 'Hello.' })
-    expect(host.parseTranscript(utterance([' '], 'Mike'))).toBeNull()
-    expect(host.parseTranscript({ event: 'participant_events.join', data: { data: { participant: { id: 1, name: 'Iddo' } } } })).toBeNull()
-    expect(host.parseTranscript('nonsense')).toBeNull()
   })
   it('turns proxy refusals into messages a person can act on', async () => {
     const fetchImpl = vi.fn(async () => new Response('billing hold', { status: 402 }))

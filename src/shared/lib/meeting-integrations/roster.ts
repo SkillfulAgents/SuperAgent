@@ -16,6 +16,11 @@ interface Room {
  */
 export const MEETING_ROSTER_IDLE_TTL_MS = 4 * 60 * 60 * 1000
 
+/** The bot is in the call as a participant too; it is told apart by its name. */
+export function isMeetingBot(participant: Pick<MeetingParticipant, 'name'>, botName: string): boolean {
+  return participant.name.trim().toLowerCase() === botName.trim().toLowerCase()
+}
+
 /**
  * Who is in each live meeting, as reported by the bot host. Held in memory:
  * the host replays nothing after a restart, and a roster only matters while
@@ -37,7 +42,7 @@ export class MeetingRosterStore {
     const room = this.room(meetingId)
     room.touchedAt = this.now()
     const { participant } = event
-    if (participant.name.trim().toLowerCase() !== botName.trim().toLowerCase()) {
+    if (!isMeetingBot(participant, botName)) {
       switch (event.kind) {
         case 'join': case 'update': room.participants.set(participant.id, participant); break
         case 'leave': room.participants.delete(participant.id); room.speaking.delete(participant.id); break

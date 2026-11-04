@@ -2,8 +2,9 @@
  * Meeting participant endpoints.
  *
  * The meeting bot's browser loads `/meeting/:meetingId?token=…` and asks here
- * which agent session to join, then follows the room's roster. The bot host
- * posts in-call events to the same token-gated path. The one-time token minted
+ * which agent session to join, then follows the room's roster and posts the
+ * call's speech for the meeting's transcript. The bot host posts in-call
+ * events to the same token-gated path. The one-time token minted
  * at join time is the credential for all of it: the page runs in a browser
  * nobody is signed into, and the host has no app identity. The bootstrap also
  * hands the page a cookie (see participant-credential.ts) that lets it use the
@@ -29,8 +30,8 @@ import { waitForClientGone } from '../lib/wait-for-client-gone'
 const router = new Hono<LimitedJsonBodyEnv>()
 const query = z.object({ token: z.string().min(1).max(200) })
 const ROSTER_PING_MS = 15_000
-/** A participant event is a few hundred bytes; a transcript event carries ~80 bytes per word of one utterance. */
-const EVENT_BODY_MAX_BYTES = 256 * 1024
+/** A participant event is a few hundred bytes; anything larger is not one. */
+const EVENT_BODY_MAX_BYTES = 16 * 1024
 
 type Authorized = { meeting: MeetingRecord } | { error: string; status: 401 | 404 }
 async function authorize(meetingId: string, rawQuery: Record<string, string>): Promise<Authorized> {
@@ -103,5 +104,31 @@ const receiveEvent = async (c: Context<LimitedJsonBodyEnv>) => {
 }
 router.post('/:meetingId/events/', limitJsonBody(EVENT_BODY_MAX_BYTES), receiveEvent)
 router.post('/:meetingId/events', limitJsonBody(EVENT_BODY_MAX_BYTES), receiveEvent)
+
+/** A second of speech is a few dozen small pieces; a backlog after the host was unreachable comes 500 at a time. */
+const SPEECH_BODY_MAX_BYTES = 128 * 1024
+const speechBatch = z.object({
+  sentAt: z.number(),
+  pieces: z.array(z.object({ at: z.number(), role: z.enum(['user', 'assistant']), text: z.string().min(1).max(2000) })).max(500),
+})
+
+/**
+ * The call's speech as the participant page's voice engine transcribed it
+ * (what the room said and what the bot said aloud), for the meeting's
+ * transcript file. The page's clock is not this host's, so every piece is
+ * moved by the gap between when the page sent the batch and when it arrived.
+ */
+router.post('/:meetingId/speech', limitJsonBody(SPEECH_BODY_MAX_BYTES), async (c) => {
+  const receivedAt = Date.now()
+  const auth = await authorize(c.req.param('meetingId'), c.req.query())
+  if ('error' in auth) return c.json({ error: auth.error }, auth.status)
+  const batch = speechBatch.safeParse(c.get('limitedJsonBody'))
+  if (!batch.success) return c.json({ error: 'Invalid speech batch' }, 400)
+  const connector = agentIntegrationManager.getConnector(auth.meeting.integrationId)
+  if (!(connector instanceof MeetingAgentIntegration)) return c.json({ accepted: false, reason: 'integration not connected' })
+  const shift = receivedAt - batch.data.sentAt
+  await connector.receiveSpeech(auth.meeting.id, batch.data.pieces.map(piece => ({ ...piece, at: piece.at + shift })))
+  return c.json({ accepted: true })
+})
 
 export default router

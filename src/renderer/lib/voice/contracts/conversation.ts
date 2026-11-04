@@ -51,6 +51,13 @@ export interface VoiceConversationEvents {
   onCommand(command: VoiceAgentCommand): Promise<VoiceCommandResult>
   onSnapshot(snapshot: VoiceConversationSnapshot): void
   onError(message: string | null): void
+  /**
+   * Each piece of the conversation's speech as the engine transcribes it, in
+   * order: what it heard ('user') and what it said aloud ('assistant'), but
+   * nothing it says while its voice is muted. Engines that keep no running
+   * transcript never call it.
+   */
+  onSpeech?(piece: VoiceTranscriptEntry): void
 }
 export interface VoiceConversationContext {
   agentSlug: string

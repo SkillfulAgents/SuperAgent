@@ -28,6 +28,7 @@ export class OpenAILiveConversationAdapter implements VoiceConversationAdapter {
       onSpeaking: (value) => { this.assistantSpeaking = value; this.publish() },
       onInputSpeaking: (value) => { this.userSpeaking = value; this.publish() },
       onError: (message) => { if (!this.closed) this.events.onError(message) },
+      onSpeech: (piece) => { if (!this.closed) this.events.onSpeech?.(piece) },
       onRequest: async (request) => {
         if (this.closed || this.paused) return false
         if (request.action !== 'message' && request.action !== 'cancel') return false

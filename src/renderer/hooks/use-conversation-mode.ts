@@ -6,7 +6,7 @@ import { toAgentSnapshot } from '@renderer/lib/voice/conversation/agent-snapshot
 import { VoiceAgentCoordinator } from '@renderer/lib/voice/conversation/coordinator'
 import { holdSound } from '@renderer/lib/voice/shared/speech/hold-sound'
 import { userMusic } from '@renderer/lib/voice/shared/speech/user-music'
-import type { VoiceHistory } from '@shared/lib/voice/conversation-types'
+import type { VoiceHistory, VoiceTranscriptEntry } from '@shared/lib/voice/conversation-types'
 import type { VoiceAgentSnapshot, VoiceAgentState, VoiceConversationAdapter, VoiceConversationEngine, VoiceConversationSnapshot, VoiceInputRequest } from '@renderer/lib/voice/contracts/conversation'
 
 export interface UseVoiceModeArgs {
@@ -18,6 +18,8 @@ export interface UseVoiceModeArgs {
   paused?: boolean
   inputRequests?: readonly VoiceInputRequest[]
   history?: VoiceHistory
+  /** Each piece of the conversation's speech the engine transcribes, heard and said aloud, in order (Live only). */
+  onSpeech?(piece: VoiceTranscriptEntry): void
 }
 export interface VoiceModeResult extends VoiceConversationSnapshot {
   engine: VoiceConversationEngine | null
@@ -105,6 +107,7 @@ export function useConversationMode(args: UseVoiceModeArgs, engine: VoiceConvers
           ? previous : next)
       },
       onError: (message) => { if (!disposed) setProviderError(message) },
+      onSpeech: (piece) => { if (!disposed) latest.current.args.onSpeech?.(piece) },
     })
     const turns = new VoiceAgentCoordinator({
       snapshot: getAgentSnapshot,
