@@ -9,7 +9,7 @@ export function PlatformReconnectRequiredPreview({ error }: AgentRuntimeErrorPre
       presentation={{
         severity: 'error',
         icon: 'info',
-        message: 'Your platform sign-in expired or was revoked. [Reconnect in Settings → Platform](/settings/platform).',
+        message: 'Your account sign-in expired or was revoked. [Reconnect in Settings → Account](/settings/platform).',
       }}
     />
   )
