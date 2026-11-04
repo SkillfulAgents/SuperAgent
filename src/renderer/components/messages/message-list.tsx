@@ -29,8 +29,7 @@ import { ArrowDown, ChevronRight, FileX2, Loader2, WifiOff } from 'lucide-react'
 import { FileDeliveryRow } from '@renderer/components/ui/file-delivery-row'
 import { AttachedImages } from './attached-images'
 import { isPreviewableImage } from '@renderer/lib/file-types'
-import { deliverFileDef, getDeliveredFileSize } from '@shared/lib/tools/deliver-file/definition'
-import { parseToolResult } from '@renderer/lib/parse-tool-result'
+import { collectTurnDeliveredFiles, type DeliveredFile } from './delivered-files'
 import { useIsOnline } from '@renderer/context/connectivity-context'
 import { useUser } from '@renderer/context/user-context'
 import { appendToSessionDraft, useDraftsStore } from '@renderer/context/drafts-context'
@@ -115,14 +114,6 @@ function TurnSummaryRow({
       </button>
     </div>
   )
-}
-
-interface DeliveredFile {
-  /** The deliver_file tool call's id: unique even when a turn delivers one path twice. */
-  id: string
-  filePath: string
-  description?: string
-  sizeBytes?: number
 }
 
 function DeliveredFiles({ files, agentSlug }: { files: DeliveredFile[]; agentSlug: string }) {
@@ -633,44 +624,10 @@ export function MessageList({ sessionId, agentSlug, pendingUserMessages, pending
   }, [messages, streamingToolUses])
 
   // Collect delivered files for each completed turn.
-  const turnDeliveredFiles = useMemo(() => {
-    const filesMap = new Map<string, DeliveredFile[]>()
-    if (!messages) return filesMap
-
-    let turnFiles: DeliveredFile[] = []
-    let lastAssistantMessageId: string | null = null
-
-    for (const msg of messages) {
-      if (isTurnStartingUserMessage(msg)) {
-        if (lastAssistantMessageId && turnFiles.length > 0) {
-          filesMap.set(lastAssistantMessageId, turnFiles)
-        }
-        turnFiles = []
-        lastAssistantMessageId = null
-      } else if (msg.type === 'assistant') {
-        lastAssistantMessageId = msg.id
-        for (const tc of msg.toolCalls) {
-          if (tc.name === 'mcp__user-input__deliver_file' && !tc.isError) {
-            const { filePath, description } = deliverFileDef.parseInput(tc.input)
-            if (filePath) {
-              turnFiles.push({
-                id: tc.id,
-                filePath,
-                description,
-                sizeBytes: getDeliveredFileSize(parseToolResult(tc.result).text),
-              })
-            }
-          }
-        }
-      }
-    }
-
-    if ((!isActive || hasTurnStartingPendingMessage) && lastAssistantMessageId && turnFiles.length > 0) {
-      filesMap.set(lastAssistantMessageId, turnFiles)
-    }
-
-    return filesMap
-  }, [messages, isActive, hasTurnStartingPendingMessage])
+  const turnDeliveredFiles = useMemo(
+    () => collectTurnDeliveredFiles(messages ?? [], !isActive || hasTurnStartingPendingMessage),
+    [messages, isActive, hasTurnStartingPendingMessage]
+  )
 
   // If there's unpersisted streaming content, defer the last turn's elapsed time
   // to render after the streaming section (otherwise it appears above the streaming message).
