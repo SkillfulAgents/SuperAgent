@@ -188,6 +188,14 @@ app.get('/sessions', (c) => {
   return c.json(sessions);
 });
 
+app.post('/sessions/:id/release', async (c) => {
+  const sessionId = c.req.param('id');
+  await sessionManager.releaseSession(sessionId);
+  inputManager.rejectForSession(sessionId);
+  // Also acknowledges an unknown session: it has no process to release.
+  return c.json({ success: true });
+});
+
 app.delete('/sessions/:id', async (c) => {
   const sessionId = c.req.param('id');
   const deleted = await sessionManager.deleteSession(sessionId);

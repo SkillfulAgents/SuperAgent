@@ -347,11 +347,11 @@ export interface SessionOps {
   register(sessionId: string, name?: string, initialMetadata?: Partial<SessionMetadata>): Promise<void>
   /** `updateSessionName`, then `session_updated` on the session's stream and the global feed. */
   rename(sessionId: string, name: string): Promise<void>
-  /** `deleteSession` — the files are the authority. */
+  /** Stop the writer, delete its files, then forget its resume record. Unknown runtime state keeps the files. */
   delete(sessionId: string): Promise<boolean>
   /**
-   * `deleteSessionsBatch` over the sessions not running now: one that is
-   * (the caller's view of what is idle may be stale) is kept. Returns the ids deleted.
+   * Delete each idle session after its writer has stopped, holding its delivery queue through file removal.
+   * Active sessions and sessions whose release cannot be confirmed are kept. Returns the ids deleted.
    */
   deleteMany(sessionIds: string[]): Promise<string[]>
   /** `getSessionMetadata` */
