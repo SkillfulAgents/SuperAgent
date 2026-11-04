@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { IDLE_ALARM_RETRY_MS, IdleAlarm, MAX_TIMER_MS, idleLongerThan } from './idle-alarm'
+import { IDLE_ALARM_RETRY_MS, IdleAlarm, MAX_TIMER_MS, idleLongerThan, setIdleAlarmTimers } from './idle-alarm'
 
 const MINUTE = 60_000
 const TIMEOUT = 30 * MINUTE
@@ -208,6 +208,63 @@ describe('IdleAlarm', () => {
     state.lastActivityAt = undefined
     release()
     await first
+    expect(alarm.isArmed()).toBe(false)
+  })
+})
+
+describe('IdleAlarm on a host timer', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(T0)
+  })
+
+  afterEach(() => {
+    setIdleAlarmTimers(null)
+    vi.useRealTimers()
+  })
+
+  it('arms the host alarm for the deadline and sleeps when the host rings it', async () => {
+    const hostTimers: Array<{ agentSlug: string; ring: () => Promise<void>; set: ReturnType<typeof vi.fn>; clear: ReturnType<typeof vi.fn> }> = []
+    setIdleAlarmTimers((agentSlug, ring) => {
+      const timer = { agentSlug, ring, set: vi.fn(), clear: vi.fn() }
+      hostTimers.push(timer)
+      return timer
+    })
+    let lastActivityAt: number | undefined = Date.now()
+    const sleep = vi.fn(async () => {
+      lastActivityAt = undefined
+    })
+    const alarm = new IdleAlarm({
+      agentSlug: () => 'sales-agent',
+      timeoutMs: () => TIMEOUT,
+      lastActivityAt: () => lastActivityAt,
+      isBusy: () => false,
+      sleep,
+    })
+
+    alarm.schedule()
+    expect(hostTimers).toHaveLength(1)
+    expect(hostTimers[0].agentSlug).toBe('sales-agent')
+    expect(hostTimers[0].set).toHaveBeenLastCalledWith(T0 + TIMEOUT)
+    expect(vi.getTimerCount()).toBe(0)
+
+    await vi.advanceTimersByTimeAsync(TIMEOUT + 1)
+    expect(sleep).not.toHaveBeenCalled()
+
+    await hostTimers[0].ring()
+    expect(sleep).toHaveBeenCalledTimes(1)
+    expect(alarm.isArmed()).toBe(false)
+  })
+
+  it('clears the host alarm on cancel', () => {
+    const clear = vi.fn()
+    setIdleAlarmTimers(() => ({ set: vi.fn(), clear }))
+    const alarm = new IdleAlarm({ timeoutMs: () => TIMEOUT, lastActivityAt: () => Date.now(), isBusy: () => false, sleep: vi.fn() })
+
+    alarm.schedule()
+    alarm.cancel()
+
+    expect(clear).toHaveBeenCalledTimes(1)
     expect(alarm.isArmed()).toBe(false)
   })
 })
