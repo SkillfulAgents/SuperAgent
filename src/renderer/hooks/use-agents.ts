@@ -6,15 +6,13 @@ import { useAnalyticsTracking } from '@renderer/context/analytics-context'
 import type { ApiAgent } from '@shared/lib/types/api'
 import { updateAgentAvatarCache, updateAgentRuntimeCache } from '@renderer/lib/agent-cache'
 import { agentAvatarSchema, type AgentAvatar } from '@shared/lib/types/agent-avatar'
+import { isMintedAgentId } from '@shared/lib/utils/agent-id'
 import { TODOS_QUERY_KEY } from './todos-query-key'
 import { usePreparedTeamBrainSlug } from '@renderer/lib/team-brain/team-brain-store'
 
 // Re-export for convenience
 export type { ApiAgent }
 
-// Mirrors the host's minted-id shape ([a-z0-9]{10}). Kept local because the
-// shared file-storage module pulls in `fs` and can't be imported in the renderer.
-const MINTED_AGENT_ID_RE = /^[a-z0-9]{10}$/
 
 /**
  * Resolve an agent route param — which may be a display slug (`{name}-{id}`), a
@@ -36,7 +34,7 @@ export function resolveRouteAgentId(
   if (!slug) return undefined
   const dash = slug.lastIndexOf('-')
   const tail = dash === -1 ? slug : slug.slice(dash + 1)
-  const trailingId = MINTED_AGENT_ID_RE.test(tail) ? tail : undefined
+  const trailingId = isMintedAgentId(tail) ? tail : undefined
   const match = agents?.find(
     (a) => a.slug === slug || a.displaySlug === slug || a.slug === trailingId,
   )
@@ -139,7 +137,7 @@ export function useCreateAgent() {
 
   return useMutation({
     meta: { skipGlobalErrorToast: true },
-    mutationFn: async (data: { name: string; description?: string }) => {
+    mutationFn: async (data: { name: string; description?: string; id?: string; avatar?: AgentAvatar }) => {
       const res = await apiFetch('/api/agents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

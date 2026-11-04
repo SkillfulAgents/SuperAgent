@@ -1,12 +1,18 @@
 import { useCallback } from 'react'
 import { flushSync } from 'react-dom'
 import { toast } from 'sonner'
+import { useQueryClient } from '@tanstack/react-query'
 import { useCreateAgent } from '@renderer/hooks/use-agents'
 import { useUpdateUserSettings } from '@renderer/hooks/use-user-settings'
 import { assignAgentToFolder } from '@renderer/lib/agent-folders'
+import { holdAgentRequestsUntilCreated } from '@renderer/lib/api'
 import { useNavigate } from '@tanstack/react-router'
 import { useNavTransient } from '@renderer/context/nav-transient-context'
 import { useAnalyticsTracking } from '@renderer/context/analytics-context'
+import { randomAgentAvatar } from '@shared/lib/types/agent-avatar'
+import type { ApiAgent } from '@shared/lib/types/api'
+import type { AgentRoleInfo } from '@renderer/context/user-context'
+import { displaySlug, randomAgentId } from '@shared/lib/utils/agent-id'
 
 export const UNTITLED_AGENT_NAME = 'Untitled'
 
@@ -22,9 +28,16 @@ export interface CreateUntitledAgentOptions {
   folderId?: string
 }
 
+/**
+ * Creates an "Untitled" agent and opens it at once. The id and avatar are chosen here, so the
+ * agent's page shows before the host has answered (on some hosts a create takes seconds while the
+ * agent's runtime first starts). Until the create answers, every request about the agent waits for
+ * it (see `holdAgentRequestsUntilCreated`). A create that fails takes the agent away again.
+ */
 export function useCreateUntitledAgent() {
   const createAgent = useCreateAgent()
   const updateSettings = useUpdateUserSettings()
+  const queryClient = useQueryClient()
   // Morph tag lives in NavTransientContext; set it BEFORE navigate so
   // AgentHome's first-mount initializer reads it and plays the intro once.
   const { setJustCreatedSlug } = useNavTransient()
@@ -32,56 +45,98 @@ export function useCreateUntitledAgent() {
   const { track } = useAnalyticsTracking()
 
   const createUntitledAgent = useCallback(async (options: CreateUntitledAgentOptions) => {
-    try {
-      const agent = await createAgent.mutateAsync({ name: UNTITLED_AGENT_NAME })
-      track('agent_created', {
-        source: 'new',
-        surface: options.surface,
-        num_skills_added_at_creation: 0,
+    const id = randomAgentId()
+    const avatar = randomAgentAvatar()
+    const pending: ApiAgent = {
+      slug: id,
+      displaySlug: displaySlug(UNTITLED_AGENT_NAME, id),
+      name: UNTITLED_AGENT_NAME,
+      avatar,
+      createdAt: new Date(),
+      status: 'stopped',
+      containerPort: null,
+    }
+    // Both keys the agent's page reads it by (see useCreateAgent), and the list the nav shows.
+    queryClient.setQueryData(['agents', pending.slug], pending)
+    queryClient.setQueryData(['agents', pending.displaySlug], pending)
+    queryClient.setQueryData<ApiAgent[]>(['agents'], (agents) => agents && [pending, ...agents])
+    // In auth mode the page is view-only for an agent with no role, and the creator owns it.
+    queryClient.setQueryData<Record<string, AgentRoleInfo>>(['my-agent-roles'], (roles) =>
+      roles && { ...roles, [id]: { role: 'owner', memberCount: 1 } })
+    const forgetPending = () => {
+      queryClient.removeQueries({ queryKey: ['agents', pending.slug], exact: true })
+      queryClient.removeQueries({ queryKey: ['agents', pending.displaySlug], exact: true })
+      queryClient.setQueryData<ApiAgent[]>(['agents'], (agents) => agents?.filter((a) => a.slug !== id))
+      queryClient.setQueryData<Record<string, AgentRoleInfo>>(['my-agent-roles'], (roles) => {
+        if (!roles) return roles
+        const remaining = { ...roles }
+        delete remaining[id]
+        return remaining
       })
+    }
 
-      // Wait for the filing before navigating. Resolve the assignment against
-      // the latest settings when the serialized write runs.
-      if (options.folderId) {
-        const folderId = options.folderId
-        try {
-          await updateSettings.mutateAsync((current) => ({
-            agentFolderAssignments: assignAgentToFolder(
-              current.agentFolderAssignments,
-              agent.slug,
-              folderId
-            ),
-          }))
-        } catch {
-          // Creation succeeded. Open the agent even if its per-user filing
-          // failed, and explain where to find it instead of inviting a retry
-          // that would create a duplicate.
-          toast.error('Agent created, but could not add it to the section', {
-            description: 'You can find it in Your Agents and move it from there.',
-          })
-        }
-      }
+    const creation = createAgent.mutateAsync({ name: UNTITLED_AGENT_NAME, id, avatar })
+    holdAgentRequestsUntilCreated(id, creation)
 
-      // Morph tag keys on the canonical id (AgentHome compares against agent.slug);
-      // navigate with the pretty display slug so the URL reflects the name.
-      //
-      // Commit the tag SYNCHRONOUSLY before navigating: `navigate` renders the
-      // destination route (mounting AgentHome) within the same tick, and AgentHome
-      // reads `justCreatedSlug` once in a mount-time initializer. Without flushSync
-      // the router's synchronous render runs before React commits this context
-      // update, so AgentHome captures the pre-set `null` and the intro never plays.
-      flushSync(() => setJustCreatedSlug(agent.slug))
-      void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug } })
+    // Morph tag keys on the canonical id (AgentHome compares against agent.slug);
+    // navigate with the pretty display slug so the URL reflects the name.
+    //
+    // Commit the tag SYNCHRONOUSLY before navigating: `navigate` renders the
+    // destination route (mounting AgentHome) within the same tick, and AgentHome
+    // reads `justCreatedSlug` once in a mount-time initializer. Without flushSync
+    // the router's synchronous render runs before React commits this context
+    // update, so AgentHome captures the pre-set `null` and the intro never plays.
+    flushSync(() => setJustCreatedSlug(id))
+    void navigate({ to: '/agents/$slug', params: { slug: pending.displaySlug } })
 
-      return agent
+    let agent: ApiAgent
+    try {
+      agent = await creation
     } catch (error) {
       console.error('Failed to create untitled agent:', error)
+      forgetPending()
+      void queryClient.invalidateQueries({ queryKey: ['agents'], exact: true })
       toast.error('Failed to create agent', {
         description: error instanceof Error ? error.message : 'Please try again.',
       })
+      void navigate({ to: '/' })
       return null
     }
-  }, [createAgent, updateSettings, setJustCreatedSlug, navigate, track])
+
+    // A host from before caller-chosen ids mints its own: open the agent it made.
+    if (agent.slug !== id) {
+      forgetPending()
+      void navigate({ to: '/agents/$slug', params: { slug: agent.displaySlug }, replace: true })
+    }
+
+    track('agent_created', {
+      source: 'new',
+      surface: options.surface,
+      num_skills_added_at_creation: 0,
+    })
+
+    if (options.folderId) {
+      const folderId = options.folderId
+      try {
+        // Resolve the assignment against the latest settings when the serialized write runs.
+        await updateSettings.mutateAsync((current) => ({
+          agentFolderAssignments: assignAgentToFolder(
+            current.agentFolderAssignments,
+            agent.slug,
+            folderId
+          ),
+        }))
+      } catch {
+        // Creation succeeded. Explain where to find the agent instead of inviting
+        // a retry that would create a duplicate.
+        toast.error('Agent created, but could not add it to the section', {
+          description: 'You can find it in Your Agents and move it from there.',
+        })
+      }
+    }
+
+    return agent
+  }, [createAgent, updateSettings, queryClient, setJustCreatedSlug, navigate, track])
 
   return {
     createUntitledAgent,
