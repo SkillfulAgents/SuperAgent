@@ -1276,13 +1276,15 @@ export async function getDiscoverableAgents(
  */
 export async function refreshSkillsetCaches(
   skillsets: SkillsetConfig[],
+  options: { background?: boolean } = {},
 ): Promise<void> {
+  const maxAgeMs = options.background ? BACKGROUND_SKILLSET_REFRESH_MAX_AGE_MS : undefined
   await Promise.all(
     skillsets.map(async (ss) => {
       const ssRef = toSkillsetRefFromConfig(ss)
       try {
         await ensureSkillsetCached(ssRef)
-        await refreshSkillset(ssRef)
+        await refreshSkillset(ssRef, { maxAgeMs })
       } catch {
         // Skip failed skillsets
       }
