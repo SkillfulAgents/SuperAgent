@@ -231,7 +231,11 @@ describe('DesktopKeyManager: a key it cannot hand out', () => {
     await bytesOf(manager())
     data.sealedUnder = crypto.randomBytes(32)
     const before = fs.readFileSync(wrappedFile(), 'utf-8')
-    await expect(manager(new FakeSafeStorage()).key('browser-vault')).rejects.toMatchObject({ reason: 'secure-storage-unavailable' })
+    // The user is told both ways out: unlock, or bring the other computer's exported key.
+    await expect(manager(new FakeSafeStorage()).key('browser-vault')).rejects.toMatchObject({
+      reason: 'secure-storage-unavailable',
+      userMessage: expect.stringContaining('exported vault key in Gamut\'s data folder as .vault-key'),
+    })
     expect(fs.readFileSync(wrappedFile(), 'utf-8')).toBe(before)
   })
 

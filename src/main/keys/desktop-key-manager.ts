@@ -97,6 +97,11 @@ function locked(backend: string): string {
   return `Gamut could not open the Browser Vault key from ${storeName(backend)}. Unlock it (or sign in to your desktop session's keyring), then try again.`
 }
 
+/** The store answers but does not open the wrap: locked, or the wrap came from another computer with the data. */
+function unopenable(backend: string): string {
+  return `Gamut could not open the Browser Vault key with ${storeName(backend)}. If it is locked, unlock it and try again. If Gamut's data was copied from another computer, put that computer's exported vault key in Gamut's data folder as .vault-key and restart Gamut.`
+}
+
 export class DesktopKeyManager extends BaseKeyManager {
   readonly name = 'desktop'
   private readonly dataDir: string
@@ -183,7 +188,7 @@ export class DesktopKeyManager extends BaseKeyManager {
               purpose,
               'secure-storage-unavailable',
               `${storeName(store.backend)} could not unwrap the ${purpose} key (wrapped by ${wrapped.record.backend})`,
-              locked(wrapped.record.backend),
+              unopenable(store.backend),
             )
         // The wrap does not open here — copied with the data from another
         // computer, or cut short while it was written — and a plaintext key
@@ -281,7 +286,8 @@ export class DesktopKeyManager extends BaseKeyManager {
     const wrappedPath = this.wrappedPath(purpose)
     const legacyPath = this.legacyPath(purpose)
     const wrap = await this.checkedWrap(purpose, legacyBytes, store.backend)
-    await this.verifyAgainstData(purpose, wrap?.bytes ?? legacyBytes, wrap ? storeName(store.backend) : legacyPath, MISMATCH)
+    // The key under test is the plaintext file's (as the store gave it back): named as such when it does not open.
+    await this.verifyAgainstData(purpose, wrap?.bytes ?? legacyBytes, legacyPath, MISMATCH)
     if (!wrap) {
       this.log.warn(`[keys] ${storeName(store.backend)} did not give back the ${purpose} key it wrapped; the plaintext key stays in use`)
       return { bytes: legacyBytes, custody: 'plaintext-file' }
