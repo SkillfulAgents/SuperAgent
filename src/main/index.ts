@@ -40,7 +40,10 @@ import {
   endQuickDispatchDrag,
   openQuickDispatchWithFile,
   drainQuickDispatchAttachPaths,
+  getQuickDispatchWindow,
 } from './quick-dispatch-window'
+import { captureQuickDispatchScreen, prepareQuickDispatchCapture, setQuickDispatchCaptureTarget } from './quick-dispatch-capture'
+import { isCaptureRect } from '@shared/lib/quick-dispatch-capture'
 import { loadQuickDispatchGlass } from './quick-dispatch-glass'
 import { registerGlobalDispatchShortcut, unregisterGlobalDispatchShortcut } from './global-dispatch-shortcut'
 import { filesFromCommandLine } from './opened-files'
@@ -761,6 +764,23 @@ ipcMain.on('quick-dispatch:drag-move', (_event, delta: { dx: number; dy: number 
 })
 ipcMain.on('quick-dispatch:drag-end', () => {
   endQuickDispatchDrag()
+})
+
+// The launcher's computer-use toggle: screenshot the display it is on (without
+// it) and play the shutter. Only the launcher itself may ask.
+ipcMain.handle('quick-dispatch:capture-screen', (event) => {
+  const launcher = getQuickDispatchWindow()
+  if (event.sender !== launcher.webContents) return { ok: false, reason: 'failed' }
+  return captureQuickDispatchScreen(launcher)
+})
+// The pointer is on the toggle: build the shutter's overlay ahead of the click.
+ipcMain.on('quick-dispatch:capture-prepare', (event) => {
+  const launcher = getQuickDispatchWindow()
+  if (event.sender === launcher.webContents) prepareQuickDispatchCapture(launcher)
+})
+// Where the screenshot's chip rendered (null: it didn't), for the shutter to land on.
+ipcMain.on('quick-dispatch:capture-target', (_event, rect: unknown) => {
+  setQuickDispatchCaptureTarget(isCaptureRect(rect) ? rect : null)
 })
 
 // "Set up voice input" from the launcher's mic button → open the main window's

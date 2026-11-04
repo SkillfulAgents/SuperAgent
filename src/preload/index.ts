@@ -4,6 +4,7 @@ import type { ClassifiedImportPackage } from '../shared/lib/utils/package-extens
 import type { ApiTarget, ResolvedApiTarget } from '../shared/lib/api-target'
 import type { Facts } from '../shared/lib/facts/facts-schema'
 import type { NowPlayingPauseResult, NowPlayingProbe, NowPlayingResumeResult } from '../shared/lib/voice/now-playing-types'
+import type { CaptureRect, QuickDispatchCaptureResult } from '../shared/lib/quick-dispatch-capture'
 
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
@@ -470,6 +471,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.removeListener('quick-dispatch:attach-pending', handler)
     }
   },
+  // Computer-use toggle: screenshot the screen under the launcher (and play the
+  // shutter that carries it into the composer).
+  quickDispatchCaptureScreen: (): Promise<QuickDispatchCaptureResult> => ipcRenderer.invoke('quick-dispatch:capture-screen'),
+  // The pointer is on the toggle: get the shutter ready so the click answers at once.
+  quickDispatchCapturePrepare: () => {
+    ipcRenderer.send('quick-dispatch:capture-prepare')
+  },
+  // Where the screenshot's chip rendered, in the launcher's viewport (null: nowhere).
+  quickDispatchCaptureTarget: (rect: CaptureRect | null) => {
+    ipcRenderer.send('quick-dispatch:capture-target', rect)
+  },
+  // Main → launcher: the shutter landed (or ended) — show the chip it covered.
+  onQuickDispatchCaptureLanded: (callback: () => void): (() => void) => {
+    const handler = () => callback()
+    ipcRenderer.on('quick-dispatch:capture-landed', handler)
+    return () => {
+      ipcRenderer.removeListener('quick-dispatch:capture-landed', handler)
+    }
+  },
   // Main → launcher: the panel was hidden — reset transient state (attachments).
   onQuickDispatchReset: (callback: () => void): (() => void) => {
     const handler = () => callback()
@@ -610,6 +630,10 @@ declare global {
       onQuickDispatchToggleDictation: (callback: () => void) => () => void
       quickDispatchDrainAttach: () => Promise<string[]>
       onQuickDispatchAttachPending: (callback: () => void) => () => void
+      quickDispatchCaptureScreen: () => Promise<QuickDispatchCaptureResult>
+      quickDispatchCapturePrepare: () => void
+      quickDispatchCaptureTarget: (rect: CaptureRect | null) => void
+      onQuickDispatchCaptureLanded: (callback: () => void) => () => void
       onQuickDispatchReset: (callback: () => void) => () => void
       setGlobalDispatchShortcut: (accelerator: string) => Promise<{ success: boolean; error?: string }>
       importPackagesDrain: () => Promise<ClassifiedImportPackage[]>
