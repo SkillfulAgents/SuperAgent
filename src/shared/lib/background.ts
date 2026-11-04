@@ -13,6 +13,10 @@
  * for it with `backgroundSettled()`.
  */
 import { captureException } from './error-reporting'
+import { AsyncLocalStorage } from 'node:async_hooks'
+
+/** Where the current request hands work that must outlive its response, if it can. */
+const requestLifetime = new AsyncLocalStorage<(work: Promise<unknown>) => void>()
 
 interface Entry {
   name: string
@@ -52,6 +56,17 @@ export function background(work: PromiseLike<unknown> | (() => PromiseLike<unkno
   const entry: Entry = { name, work: new WeakRef(tracked) }
   inFlight.add(entry)
   collected.register(tracked, entry, entry)
+  requestLifetime.getStore()?.(tracked)
+}
+
+
+/**
+ * Runs `fn` with a way to keep its request alive for the background work it
+ * starts: a Worker passes its `ctx.waitUntil`. Work started outside one runs
+ * as before.
+ */
+export function runWithRequestLifetime<T>(waitUntil: (work: Promise<unknown>) => void, fn: () => T): T {
+  return requestLifetime.run(waitUntil, fn)
 }
 
 function reportFailure(name: string, error: unknown): void {

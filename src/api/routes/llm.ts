@@ -5,33 +5,14 @@ import { getConfiguredLlmClient, configuredHelperModel } from '@shared/lib/llm-p
 import { getActiveLlmProvider, resolveActiveProviderModel } from '@shared/lib/llm-provider'
 import { resolveHelperSelection } from '@shared/lib/llm-provider/connections'
 import { getEffectiveModels, getSettings } from '@shared/lib/config/settings'
+import { windowLimiter } from '@shared/lib/host-state/counters'
 
 const llm = new Hono()
 
 llm.use('*', Authenticated())
 
-// Simple rate limiter: 100 requests per minute
-const requestCounts = new Map<string, { count: number; resetAt: number }>()
-const RATE_LIMIT = 100
-const RATE_WINDOW = 60_000
-
-function checkRateLimit(key: string): boolean {
-  const now = Date.now()
-  const entry = requestCounts.get(key)
-  if (entry && now < entry.resetAt) {
-    if (entry.count >= RATE_LIMIT) return false
-    entry.count++
-  } else {
-    requestCounts.set(key, { count: 1, resetAt: now + RATE_WINDOW })
-  }
-  // Periodic cleanup
-  if (requestCounts.size > 100) {
-    for (const [k, v] of requestCounts) {
-      if (now >= v.resetAt) requestCounts.delete(k)
-    }
-  }
-  return true
-}
+// Simple rate limiter: 100 requests per minute per address
+const requestLimiter = windowLimiter('llm-requests', 100, 60_000)
 
 /**
  * Resolve the dashboard-runtime default to the active provider's concrete wire
@@ -62,7 +43,7 @@ llm.get('/config', async (c) => {
 // POST /api/llm/v1/messages — matches the path the Anthropic SDK sends
 llm.post('/v1/messages', async (c) => {
   const ip = c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown'
-  if (!checkRateLimit(ip)) {
+  if (!(await requestLimiter.hit(ip))) {
     return c.json({ error: 'Too many LLM requests. Please slow down.' }, 429)
   }
 

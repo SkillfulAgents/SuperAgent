@@ -148,6 +148,33 @@ describe('openDatabase', () => {
     expect(getDb()).toBe(db)
   })
 
+  it('lets a driver apply the bundled migrations itself, then runs the data migrations', async () => {
+    const inner = betterSqlite3(':memory:')
+    const calls: string[] = []
+    const driver = {
+      name: 'batch-only',
+      async open() {
+        const handle = await inner.open()
+        return {
+          ...handle,
+          migrate: async (migrations: readonly unknown[], table: string) => {
+            calls.push(`migrate ${migrations.length} into ${table}`)
+          },
+        }
+      },
+    }
+    vi.mocked(runDataMigrations).mockImplementationOnce(async () => {
+      calls.push('data migrations')
+      return []
+    })
+
+    const db = await openDatabase({ driver })
+
+    expect(calls).toEqual([`migrate ${readMigrationFiles({ migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') }).length} into ${MIGRATIONS_TABLE}`, 'data migrations'])
+    const tables = await db.all<{ name: string }>(sql`SELECT name FROM sqlite_master WHERE type = 'table'`)
+    expect(tables.map((t) => t.name)).not.toContain(MIGRATIONS_TABLE)
+  })
+
   it('opens once when two callers race', async () => {
     const [a, b] = await Promise.all([openDatabase(), openDatabase()])
     expect(a).toBe(b)

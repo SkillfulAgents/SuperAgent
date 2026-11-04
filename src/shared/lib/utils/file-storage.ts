@@ -1023,7 +1023,7 @@ export function withFileLock<T>(filePath: string, fn: () => Promise<T>): Promise
 // Strict JSON reads (fail-closed on corruption)
 // ---------------------------------------------------------------------------
 
-function parseJsonStrict<T>(filePath: string, content: string, schema: ZodType<T>): T {
+export function parseJsonStrict<T>(filePath: string, content: string, schema: ZodType<T>): T {
   let parsed: unknown
   try {
     parsed = JSON.parse(content)
