@@ -47,7 +47,7 @@ export class IntegrationDeliveryQueue {
   private active = new Map<string, Promise<void>>()
   constructor(private readonly host: DeliveryHost, private readonly store = deliveryStore) {}
 
-  async start() { await this.store.recover(); this.running = true; this.epoch++; this.wake() }
+  async start(agentSlug?: string) { await this.store.recover(agentSlug); this.running = true; this.epoch++; this.wake() }
   stop() { this.running = false; this.epoch++; clearTimeout(this.timer); this.timer = undefined; this.timerAt = Infinity; this.active.clear() }
   async accept(integrationId: string, event: IntegrationInputEvent, route: IntegrationRoute) {
     const accepted = await this.store.accept(integrationId, event, route)

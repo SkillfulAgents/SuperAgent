@@ -46,6 +46,12 @@ export function createFakeWebhookRelay(): FakeWebhookRelay {
       listeners.add(listener)
       return () => listeners.delete(listener)
     },
+    async acceptClaimed(consumerId, events) {
+      const consumer = consumers.get(consumerId)
+      if (!consumer) return new Map(events.map((event) => [event.id, 'retry' as const]))
+      const outcome = await consumer.accept(events)
+      return new Map(events.map((event) => [event.id, typeof outcome === 'string' ? outcome : (outcome.get(event.id) ?? 'retry')]))
+    },
     setSnapshot(next) {
       snapshot = next
       for (const listener of listeners) listener(next)
