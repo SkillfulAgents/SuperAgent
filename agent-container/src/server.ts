@@ -19,7 +19,7 @@ import { execFile, execSync } from 'child_process';
 import { promisify } from 'util';
 import { z } from 'zod';
 
-import { inputManager } from './input-manager';
+import { inputManager, UNANSWERED_REASONS } from './input-manager';
 import { resolveCdpIp } from './cdp-host';
 import { startScreenshotJanitor } from './screenshot-janitor';
 import { dashboardManager, getDashboardBasePath } from './dashboard-manager';
@@ -456,15 +456,23 @@ app.post('/inputs/:toolUseId/resolve', async (c) => {
   }
 });
 
+// `unanswered`: the person chose not to answer (the card's Decline); a
+// question then ends as an annotated answer rather than a failed tool call.
+const rejectInputBodySchema = z.object({
+  reason: z.string().optional(),
+  unanswered: z.enum(UNANSWERED_REASONS).optional(),
+});
+
 // POST /inputs/:toolUseId/reject - Reject a pending input request
 app.post('/inputs/:toolUseId/reject', async (c) => {
   const toolUseId = c.req.param('toolUseId');
 
   try {
-    const body = await c.req.json<{ reason?: string }>();
-    const reason = body.reason || 'User declined';
+    const parsed = rejectInputBodySchema.safeParse(await c.req.json());
+    if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+    const reason = parsed.data.reason || 'User declined';
 
-    if (inputManager.reject(toolUseId, reason)) {
+    if (inputManager.reject(toolUseId, reason, parsed.data.unanswered)) {
       return c.json({ success: true });
     }
 

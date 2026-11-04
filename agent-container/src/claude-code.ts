@@ -64,7 +64,7 @@ function mcpToolNames(
     .filter(t => !excludeSet || !excludeSet.has(t.name))
     .map(t => `mcp__${serverName}__${t.name}`)
 }
-import { inputManager } from './input-manager';
+import { inputManager, InputRejectedError } from './input-manager';
 import { sanitizeMcpName } from './sanitize-mcp-name';
 import { withAgentAttributionHeaders, withSpeedHeader } from './attribution-headers';
 import { renderPrompt } from './render-prompt';
@@ -1388,10 +1388,28 @@ export class ClaudeCodeProcess extends EventEmitter {
             };
           } catch (error) {
             console.log('[canUseTool] User declined:', error);
-            return {
-              behavior: 'deny' as const,
-              message: error instanceof Error ? error.message : 'User declined to answer',
-            };
+            const message = error instanceof Error ? error.message : 'User declined to answer';
+            // The person chose not to answer (the card's Decline): end the
+            // question as answered-with-annotation, not as a failed tool call.
+            // The model reads only `answers`; `unanswered` rides into the tool
+            // result for the transcript. A CLI that doesn't advertise the
+            // capability may refuse the whole answer, so it keeps the deny.
+            if (
+              error instanceof InputRejectedError &&
+              error.unanswered &&
+              this.cliCapabilities.has('ask_user_question_unanswered_v1')
+            ) {
+              const unanswered = error.unanswered;
+              return {
+                behavior: 'allow' as const,
+                updatedInput: {
+                  questions,
+                  answers: Object.fromEntries(questions.map((q) => [q.question, message])),
+                  annotations: Object.fromEntries(questions.map((q) => [q.question, { unanswered }])),
+                },
+              };
+            }
+            return { behavior: 'deny' as const, message };
           }
         }
 
