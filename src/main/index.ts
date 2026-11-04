@@ -126,6 +126,7 @@ registerUpdateHandlers()
 import { serve } from '@hono/node-server'
 import api from '../api'
 import { openDatabase } from '@shared/lib/db'
+import { initializeLocalAppState } from '@shared/lib/app-state'
 import { afterBindInitialize, setupServerHandlers, shutdownServices } from '@shared/lib/startup'
 import { bindServerWithRetry } from '@shared/lib/server-bind'
 import { configureDownloadNonceRecovery } from '@shared/lib/services/download-nonce-service'
@@ -1577,6 +1578,8 @@ async function startApp() {
     app.quit()
     return
   }
+  // Then the state the API shares across requests, in this process's memory.
+  await initializeLocalAppState()
 
   // Download-carried enrollment nonce recovery. The channels are all
   // best-effort reads of the install's surroundings; the handoff file is the
