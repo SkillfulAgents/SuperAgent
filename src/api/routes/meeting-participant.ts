@@ -60,6 +60,7 @@ router.get('/:meetingId', async (c) => {
     meeting: toPublicMeeting(meeting),
     agentSlug: meeting.agentSlug,
     agentName: agent?.name ?? meeting.botName,
+    agentAvatar: agent?.avatar ?? null,
     sessionId,
   })
 })
