@@ -1180,6 +1180,14 @@ export class ClaudeCodeProcess extends EventEmitter {
         // them on under us.
         autoDreamEnabled: false,
         enableArtifact: false,
+        // Idle compaction (default on) is off for the same reason: once a long
+        // conversation sits idle, the CLI summarizes it with a model call of
+        // its own and uses the summary on the next message. CLI 2.1.314
+        // extended it to custom base URLs (LLM gateways) once the 1-hour
+        // prompt cache is on. It would bill a request nobody asked for inside
+        // a session the host already counts as settled. Auto-compaction still
+        // runs when the context actually fills.
+        idleCompaction: false,
       },
       settingSources: ['user', 'project'],
       // The image-baked Gamut plugin: the dashboards + widgets skills and the
