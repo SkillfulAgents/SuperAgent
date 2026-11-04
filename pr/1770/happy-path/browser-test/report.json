@@ -1,23 +1,23 @@
 {
   "storyId": "browser-test",
   "passed": true,
-  "reason": "Verified that the agent can successfully open a browser, navigate to https://example.com, retrieve the page title \"Example Domain\", and report back the result",
+  "reason": "Browser-use feature test: Agent successfully opened browser, navigated to https://example.com, and returned the page title \"Example Domain\"",
   "steps": [
-    "Navigated to http://localhost:47891 — Successfully loaded the Gamut application home page",
-    "Found and clicked the \"QA-20261104-215203-m3f4\" agent in the sidebar — Successfully opened the agent's page",
-    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message was successfully delivered to the agent and visible in the chat",
-    "Waited up to 3 minutes for agent response — Agent completed the task in 8 seconds, successfully executing 3 tool calls",
-    "Verified response mentions \"Example Domain\" and took screenshot — Response clearly states: \"The page title is \"Example Domain\". The page at https://example.com loaded normally, and I've closed the browser.\" Screenshot captured showing the complete conversation thread with the expected response"
+    "Navigated to http://localhost:47891 — Successfully loaded Gamut home page with agents displayed in sidebar",
+    "Clicked on \"QA-20261104-222557-ab4j\" agent in sidebar — Successfully opened agent configuration page with message input field",
+    "Sent message \"Open a browser and go to https://example.com. Tell me the page title.\" — Message successfully submitted; agent status changed to \"working\"; session created with title \"Browser Page Title Check\"",
+    "Waited up to 3 minutes for response — Agent completed response in 7 seconds; agent status returned to \"idle\"; browser preview showed Example Domain page on right panel",
+    "Verified response mentions \"Example Domain\" and took screenshot — Response text displays: \"The page title is \\\"Example Domain\\\". The page loaded normally, and I've closed the browser.\" confirming successful browser navigation and title extraction"
   ],
   "bugs": [],
-  "durationMs": 94045,
-  "sessionId": "9a862b57-e872-4a8a-9ffd-1c15b585bfc0",
+  "durationMs": 104907,
+  "sessionId": "421755c0-3ff5-4cf9-95cb-94455ece8d7d",
   "cost": {
-    "inputTokens": 350,
-    "outputTokens": 9585,
-    "cacheCreationTokens": 69816,
-    "cacheReadTokens": 946214,
+    "inputTokens": 420,
+    "outputTokens": 10642,
+    "cacheCreationTokens": 126265,
+    "cacheReadTokens": 1198134,
     "model": "claude-haiku-4-5-20251001",
-    "totalCostUsd": 0.230166
+    "totalCostUsd": 0.331275
   }
 }
