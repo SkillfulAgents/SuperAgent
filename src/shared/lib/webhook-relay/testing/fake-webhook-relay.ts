@@ -100,6 +100,7 @@ export function createFakeWebhookRelay(): FakeWebhookRelay {
     testEndpointFilter: () => Promise.reject(new Error('testEndpointFilter is not faked')),
     wake: () => {},
     start: () => {},
+    runPass: async () => {},
     stop: () => {},
     onAuthChanged: () => {},
   }

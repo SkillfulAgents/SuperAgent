@@ -14,6 +14,8 @@ import {
 } from './platform-webhook-relay-service'
 import { UnavailableWebhookRelayService } from './unavailable-webhook-relay-service'
 import { LOCAL_RELAY_SCOPE, type RelayAcceptResult, type RelayConsumer, type RelayEvent } from './types'
+import { setJobManager } from '@shared/lib/scheduler/job-manager'
+import { createFakeJobManager, type FakeJobManager } from '@shared/lib/scheduler/testing/fake-job-manager'
 
 // ============================================================================
 // Fakes
@@ -1037,6 +1039,86 @@ describe('PlatformWebhookRelayService', () => {
       const none = new UnavailableWebhookRelayService('not_configured')
 
       await expect(none.createEndpoint()).rejects.toMatchObject({ reason: 'not_configured' })
+    })
+  })
+
+  describe('passes on the host clock', () => {
+    let jobs: FakeJobManager
+
+    beforeEach(() => {
+      jobs = createFakeJobManager()
+      setJobManager(jobs)
+    })
+
+    afterEach(() => {
+      setJobManager(null)
+    })
+
+    function startPassive() {
+      createRelay().start({ timers: false })
+      return relay
+    }
+
+    it('registers its pass as a job while started', async () => {
+      startPassive()
+      expect(jobs.list()).toEqual([{ id: 'webhook-relay', intervalMs: 30_000, running: false, lastRunAt: null }])
+
+      relay.stop()
+
+      expect(jobs.list()).toEqual([])
+    })
+
+    it('claims, delivers and acks inside one pass, with no timer and no socket', async () => {
+      startPassive()
+      const [event] = platform.add('sub_a', 'whep_one')
+      const c = consumer(['whep_one'])
+      relay.register(c)
+      await settle()
+      await vi.advanceTimersByTimeAsync(10 * 60_000)
+      expect(platform.claim).not.toHaveBeenCalled()
+
+      await relay.runPass()
+
+      expect(c.accept).toHaveBeenCalledWith([event])
+      expect(platform.ackedIds()).toEqual([event.id])
+      expect(sockets).toHaveLength(0)
+      expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it('resolves only after the consumer settles and the ack is sent', async () => {
+      startPassive()
+      const [event] = platform.add('sub_a', 'whep_one')
+      const gate = deferred()
+      relay.register(consumer(['whep_one'], async () => {
+        await gate.promise
+        return 'accepted'
+      }))
+
+      let done = false
+      const pass = relay.runPass().then(() => (done = true))
+      await settle()
+      expect(done).toBe(false)
+
+      gate.resolve()
+      await pass
+      expect(platform.ackedIds()).toEqual([event.id])
+    })
+
+    it('offers a retried event again on a later pass, not on a timer', async () => {
+      startPassive()
+      const [event] = platform.add('sub_a', 'whep_one')
+      const c = consumer(['whep_one'])
+      c.accept.mockResolvedValueOnce('retry')
+      relay.register(c)
+
+      await relay.runPass()
+      expect(platform.ackedIds()).toEqual([])
+      await vi.advanceTimersByTimeAsync(10 * 60_000)
+      expect(c.accept).toHaveBeenCalledTimes(1)
+
+      await relay.runPass()
+      expect(c.accept).toHaveBeenCalledTimes(2)
+      expect(platform.ackedIds()).toEqual([event.id])
     })
   })
 

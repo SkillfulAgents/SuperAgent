@@ -1,12 +1,12 @@
 import type { WebhookFilterTestResult } from '@shared/lib/services/webhook-endpoint-schema'
 import { WebhookRelayUnavailableError } from './errors'
-import type {
-  RelayConsumerHandle,
-  RelayEndpoint,
-  RelayEndpointEvents,
-  WebhookRelayService,
-  WebhookRelaySnapshot,
-  WebhookRelayUnavailableReason,
+import {
+  type RelayConsumerHandle,
+  type RelayEndpoint,
+  type RelayEndpointEvents,
+  type WebhookRelayService,
+  type WebhookRelaySnapshot,
+  type WebhookRelayUnavailableReason,
 } from './types'
 
 /**
@@ -52,6 +52,7 @@ export class UnavailableWebhookRelayService implements WebhookRelayService {
 
   wake(): void {}
   start(): void {}
+  async runPass(): Promise<void> {}
   stop(): void {}
   onAuthChanged(): void {}
 }
