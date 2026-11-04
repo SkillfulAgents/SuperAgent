@@ -13,7 +13,7 @@ vi.mock('@shared/lib/llm-provider/grok-oauth', () => ({ startGrokLogin: grok.sta
 vi.mock('@shared/lib/platform-auth/config', () => ({ getPlatformBaseUrl: () => 'https://platform.example.com' }))
 
 import { z } from 'zod'
-import { backgroundSettled } from '@shared/lib/background'
+import { background, backgroundSettled, runWithRequestLifetime } from '@shared/lib/background'
 import { heldLoginFor, holdLoginValues } from '@shared/lib/browser-vault/held-values'
 import { consumeOAuthLogin, credentialsFromLogin, pollOAuthLogin, startOAuthLogin } from '@shared/lib/llm-provider/oauth-login'
 import { platformPlanCache } from '@shared/lib/llm-provider/platform-plan-cache'
@@ -152,5 +152,20 @@ describe('plan policy cache', () => {
     const load = vi.fn(async () => null)
     expect(await request(() => platformPlanCache.get(key, load))).toEqual({ planName: 'Pro 200', deniedModels: [] })
     expect(load).not.toHaveBeenCalled()
+  })
+})
+
+describe('background work in a request', () => {
+  it('hands work that outlives the response to the request lifetime', async () => {
+    const kept: Array<Promise<unknown>> = []
+    let finish!: () => void
+    runWithRequestLifetime((work) => kept.push(work), () => {
+      background(new Promise<void>((resolve) => { finish = resolve }), { name: 'test.generate-session-name' })
+    })
+    background(Promise.resolve(), { name: 'test.outside-a-request' })
+
+    expect(kept).toHaveLength(1)
+    finish()
+    await kept[0]
   })
 })
