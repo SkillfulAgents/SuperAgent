@@ -34,11 +34,13 @@ const exitWrite = (id: string) =>
 const resident = new Set<string>()
 let status: 'running' | 'stopped'
 const client = {
-  deleteSession: vi.fn(async (id: string) => {
+  releaseSession: vi.fn(async (id: string) => {
     if (status !== 'running') throw new Error('Container is not running')
     if (resident.delete(id)) exitWrite(id)
     return true
   }),
+  deleteSession: vi.fn(async (_id: string) => true),
+  isDefinitelyStopped: vi.fn(async () => status === 'stopped'),
   getInfoFromRuntime: vi.fn(async () => ({ status, port: status === 'running' ? 4321 : null })),
 }
 // The container's idle sweep stops every resident process.
@@ -82,10 +84,76 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.restoreAllMocks()
   fs.rmSync(workspace, { recursive: true, force: true })
 })
 
 describe('deleting a session', () => {
+  it.each(['single', 'batch'])('keeps the resume record when %s file deletion fails', async (mode) => {
+    const actor = new LocalAgentActor('agent', deps())
+    await seed(actor, SESSION)
+    vi.spyOn(actor.store.files, 'delete').mockRejectedValueOnce(new Error('EACCES'))
+
+    if (mode === 'single') await expect(actor.sessions.delete(SESSION)).rejects.toThrow('EACCES')
+    else expect(await actor.sessions.deleteMany([SESSION])).toEqual([])
+
+    expect(await listed(actor)).toEqual([SESSION])
+    expect(client.releaseSession).toHaveBeenCalledWith(SESSION)
+    expect(client.deleteSession).not.toHaveBeenCalled()
+  })
+
+  it('keeps the resume record when the release response is lost', async () => {
+    const actor = new LocalAgentActor('agent', deps())
+    await seed(actor, SESSION)
+    client.releaseSession.mockImplementationOnce(async (id) => {
+      resident.delete(id)
+      exitWrite(id)
+      throw new Error('response lost')
+    })
+    await expect(actor.sessions.delete(SESSION)).rejects.toThrow('Container did not drop')
+    expect(await listed(actor)).toEqual([SESSION])
+    expect(client.deleteSession).not.toHaveBeenCalled()
+  })
+
+  it.each(['unready', 'terminating', 'unknown'])('keeps files when routing says stopped but the process is %s', async () => {
+    const actor = new LocalAgentActor('agent', deps())
+    await seed(actor, SESSION)
+    status = 'stopped'
+    client.isDefinitelyStopped.mockResolvedValueOnce(false)
+    await expect(actor.sessions.delete(SESSION)).rejects.toThrow('Container did not drop')
+    expect(await listed(actor)).toEqual([SESSION])
+    expect(client.getInfoFromRuntime).not.toHaveBeenCalled()
+  })
+
+  it('reports success when only the final resume-record cleanup fails', async () => {
+    const actor = new LocalAgentActor('agent', deps())
+    await seed(actor, SESSION)
+    client.deleteSession.mockRejectedValueOnce(new Error('response lost'))
+    expect(await actor.sessions.delete(SESSION)).toBe(true)
+    expect(await listed(actor)).toEqual([])
+  })
+
+  it.each(['single', 'batch'])('holds new sends until the %s file deletion finishes', async (mode) => {
+    const actor = new LocalAgentActor('agent', deps())
+    await seed(actor, SESSION)
+    let finish!: () => void
+    const held = new Promise<void>((resolve) => { finish = resolve })
+    const remove = actor.store.files.delete.bind(actor.store.files)
+    vi.spyOn(actor.store.files, 'delete').mockImplementationOnce(async (file) => {
+      await held
+      return remove(file)
+    })
+    const deleting = mode === 'single' ? actor.sessions.delete(SESSION) : actor.sessions.deleteMany([SESSION])
+    await vi.waitFor(() => expect(actor.store.files.delete).toHaveBeenCalled())
+    const sent = vi.fn(async () => expect(await actor.sessions.exists(SESSION)).toBe(false))
+    const sending = actor.state.sessions.inDeliveryTurn(SESSION, sent)
+    await Promise.resolve()
+    expect(sent).not.toHaveBeenCalled()
+    finish()
+    await Promise.all([deleting, sending])
+    expect(sent).toHaveBeenCalledOnce()
+  })
+
   it('stays deleted after the container would have stopped its process', async () => {
     const actor = new LocalAgentActor('agent', deps())
     await seed(actor, SESSION)
@@ -110,7 +178,7 @@ describe('deleting a session', () => {
   it('keeps the session when a running container does not drop it', async () => {
     const actor = new LocalAgentActor('agent', deps())
     await seed(actor, SESSION)
-    client.deleteSession.mockRejectedValueOnce(new Error('timeout'))
+    client.releaseSession.mockRejectedValueOnce(new Error('timeout'))
 
     await expect(actor.sessions.delete(SESSION)).rejects.toThrow()
     expect(await listed(actor)).toEqual([SESSION])
@@ -121,7 +189,7 @@ describe('deleting a session', () => {
   it('auto-delete removes only the sessions the container dropped', async () => {
     const actor = new LocalAgentActor('agent', deps())
     for (const id of [SESSION, OTHER, THIRD]) await seed(actor, id)
-    client.deleteSession.mockImplementationOnce(async () => true).mockImplementationOnce(async () => false)
+    client.releaseSession.mockImplementationOnce(async () => true).mockImplementationOnce(async () => false)
 
     expect(await actor.sessions.deleteMany([OTHER, SESSION, THIRD])).toEqual([OTHER, THIRD])
     expect(await listed(actor)).toEqual([SESSION])
@@ -131,13 +199,13 @@ describe('deleting a session', () => {
     const actor = new LocalAgentActor('agent', deps())
     await seed(actor, SESSION)
     await seed(actor, OTHER)
-    client.deleteSession.mockImplementationOnce(async () => {
+    client.releaseSession.mockImplementationOnce(async () => {
       actor.state.sessions.markActive(OTHER)
       return true
     })
 
     expect(await actor.sessions.deleteMany([SESSION, OTHER])).toEqual([SESSION])
-    expect(client.deleteSession).toHaveBeenCalledTimes(1)
+    expect(client.releaseSession).toHaveBeenCalledTimes(1)
     expect(await listed(actor)).toEqual([OTHER])
   })
 })

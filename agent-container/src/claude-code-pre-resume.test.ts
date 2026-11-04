@@ -241,6 +241,25 @@ describe('ClaudeCodeProcess.warm (pre-resume)', () => {
     expect(proc.isRunning()).toBe(false)
   })
 
+  it('waits for an in-flight warm restart before confirming disposal', async () => {
+    proc = await evictedProcess('dispose-warming')
+    process.env.REMOTE_MCPS = CALENDAR
+    const handshake = deferred()
+    let connected = false
+    void handshake.promise.then(() => { connected = true })
+    mcpServerStatusImpl = async () => [{ name: 'team_calendar', status: connected ? 'connected' : 'pending' }]
+    const warming = proc.warm()
+    await vi.waitFor(() => expect(calls).toHaveLength(2))
+    let disposed = false
+    const disposing = proc.dispose().then(() => { disposed = true })
+    await Promise.resolve()
+    expect(disposed).toBe(false)
+    handshake.resolve()
+    await disposing
+    expect(await warming).toBe(false)
+    expect(proc.isRunning()).toBe(false)
+  })
+
   describe('deferred start (host-held credentials)', () => {
     beforeEach(() => {
       vi.stubEnv('SUPERAGENT_HOST_API_URL', 'http://host.test/api')

@@ -2283,6 +2283,9 @@ export class ClaudeCodeProcess extends EventEmitter {
    */
   async dispose(options?: { graceful?: boolean; graceMs?: number }): Promise<void> {
     this.disposed = true;
+    // A pre-resume may still be starting its query (e.g. waiting for the
+    // provider proxy). It must finish before we promise there is no writer.
+    await this.warmRestart?.catch(() => undefined);
     await this.stop(options);
   }
 

@@ -92,6 +92,7 @@ function fakeDeps() {
     fetch: vi.fn(async (_path: string, _init?: RequestInit) => new Response(null, { status: 200 })),
     getHostAuthHeaders: vi.fn().mockReturnValue({ 'x-host': '1' }),
     getWebSocketBaseUrl: vi.fn().mockReturnValue('ws://127.0.0.1:4321'),
+    releaseSession: vi.fn(async (_sessionId: string) => true),
     deleteSession: vi.fn(async (_sessionId: string) => true),
   }
   // One fake runtime per slug, created the way the real host creates them: on first use.
@@ -810,7 +811,8 @@ describe('createAgentRegistry', () => {
       const order: string[] = []
       sessionService.deleteSession = vi.fn(async () => { order.push('delete'); return true })
       sessionService.deleteSessionsBatch = vi.fn(async (_store: unknown, ids: string[]) => { order.push(`delete-batch ${ids.join(',')}`); return ids })
-      fake.client.deleteSession.mockImplementation(async (sessionId) => { order.push(`release ${sessionId}`); return true })
+      fake.client.releaseSession.mockImplementation(async (sessionId) => { order.push(`release ${sessionId}`); return true })
+      fake.client.deleteSession.mockImplementation(async (sessionId) => { order.push(`forget ${sessionId}`); return true })
       const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
       vi.spyOn(actor.state.sessions, 'unsubscribe').mockImplementation((sessionId) => { order.push(`unsubscribe ${sessionId}`) })
       // Went active after the caller listed it as idle.
@@ -820,8 +822,9 @@ describe('createAgentRegistry', () => {
       expect(await actor.sessions.deleteMany(['s2', 's3', 's4'])).toEqual(['s2', 's3'])
 
       expect(order).toEqual([
-        'unsubscribe s1', 'release s1', 'delete',
-        'unsubscribe s2', 'release s2', 'unsubscribe s3', 'release s3', 'delete-batch s2,s3',
+        'unsubscribe s1', 'release s1', 'delete', 'forget s1',
+        'unsubscribe s2', 'release s2', 'delete-batch s2', 'forget s2',
+        'unsubscribe s3', 'release s3', 'delete-batch s3', 'forget s3',
       ])
     })
   })

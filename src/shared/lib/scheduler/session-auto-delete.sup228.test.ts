@@ -74,7 +74,7 @@ vi.mock('@shared/lib/auth/mode', () => ({
 
 vi.mock('@shared/lib/container/container-host', async () => {
   const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
-  return { containerHost: hostFromManagerMock({ getClient: () => ({ deleteSession: async () => true }) }) }
+  return { containerHost: hostFromManagerMock({ getClient: () => ({ releaseSession: async () => true, deleteSession: async () => true }) }) }
 })
 
 vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
@@ -190,7 +190,7 @@ describe('SUP-228: session auto-delete removes stale notifications', () => {
     mockListSessions.mockResolvedValue([s1, s2, s3])
     mockReadSessionMetadata.mockResolvedValue({})
     // s3 simulates a filesystem-delete failure: deletedIds excludes it.
-    mockDeleteSessionsBatch.mockResolvedValue(['s1', 's2'])
+    mockDeleteSessionsBatch.mockImplementation(async (_store: unknown, ids: string[]) => ids.filter((id) => id !== 's3'))
     // Cleanup must run unconditionally, NOT gated on auth mode.
     mockIsAuthMode.mockReturnValue(false)
 

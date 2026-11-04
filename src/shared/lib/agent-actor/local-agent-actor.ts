@@ -232,12 +232,20 @@ function createSessionOps(
     state.deferredNaming.delete(sessionId)
     let cause: unknown
     const dropped =
-      (await client().deleteSession(sessionId).catch((error: unknown) => {
+      (await client().releaseSession(sessionId).catch((error: unknown) => {
         cause = error
         return false
-      })) || (await client().getInfoFromRuntime().catch(() => null))?.status === 'stopped'
+      })) || (await client().isDefinitelyStopped().catch(() => false))
     if (!dropped) console.warn(`[sessions.delete] container kept ${sessionId}:`, cause)
     return dropped
+  }
+  const forget = async (sessionId: string) => {
+    // The files are gone. A lost cleanup response must not turn a successful
+    // delete into a failure; the container refuses to resume a released
+    // record whose transcript is absent, including after a container restart.
+    await client().deleteSession(sessionId).catch((error: unknown) => {
+      console.warn(`[sessions.delete] could not forget ${sessionId}:`, error)
+    })
   }
   return {
     list: (...args) => deps.sessionService.listSessions(store, ...args),
@@ -254,17 +262,28 @@ function createSessionOps(
       live.emit(sessionId, { type: 'session_updated' })
       deps.host.send('global', { type: 'session_updated', sessionId, agentSlug: slug })
     },
-    delete: async (sessionId) => {
+    delete: (sessionId) => live.inDeliveryTurn(sessionId, async () => {
       if (!(await release(sessionId))) throw new Error(`Container did not drop session ${sessionId}`)
-      return deps.sessionService.deleteSession(store, sessionId)
-    },
+      const deleted = await deps.sessionService.deleteSession(store, sessionId)
+      await forget(sessionId)
+      return deleted
+    }),
     // Activity is checked right before each release, since the ones before it wait on the container.
     deleteMany: async (sessionIds) => {
-      const released: string[] = []
+      const deleted: string[] = []
       for (const sessionId of sessionIds) {
-        if (!live.isActive(sessionId) && (await release(sessionId))) released.push(sessionId)
+        // Keep the send queue held through the file delete. Releasing every
+        // process first would let a send resume an earlier session while a
+        // later container request is still pending.
+        await live.inDeliveryTurn(sessionId, async () => {
+          if (live.isActive(sessionId) || !(await release(sessionId))) return
+          const removed = await deps.sessionService.deleteSessionsBatch(store, [sessionId])
+          if (removed.length === 0) return
+          deleted.push(...removed)
+          await forget(sessionId)
+        })
       }
-      return deps.sessionService.deleteSessionsBatch(store, released)
+      return deleted
     },
     metadata: (sessionId) => deps.sessionService.getSessionMetadata(store, sessionId),
     readMetadata: () => deps.sessionService.readSessionMetadata(store),
