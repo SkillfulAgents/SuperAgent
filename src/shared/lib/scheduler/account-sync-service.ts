@@ -9,7 +9,7 @@ import { getServerAdapter } from '@shared/lib/account-providers/server-adapters'
 import { getAccountProviderUserId } from '@shared/lib/config/settings'
 import { attribution, runWithRequestUser } from '@shared/lib/platform-attribution'
 import { syncAgentsAssignedConnectedAccount } from '@shared/lib/services/connection-sync-service'
-import { background } from '@shared/lib/background'
+import { getJobManager, type Job } from './job-manager'
 
 type LocalStatus = 'active' | 'revoked' | 'expired'
 
@@ -25,12 +25,18 @@ function mapRemoteStatusToLocal(remoteStatus: ProviderConnectionListItem['status
 }
 
 class AccountSyncService {
-  private intervalId: NodeJS.Timeout | null = null
-  private startupTimeoutId: NodeJS.Timeout | null = null
   private isRunning = false
   private isProcessing = false
-  readonly pollIntervalMs = 5 * 60 * 1000
+  private pollIntervalMs = 5 * 60 * 1000
   private startupDelayMs = 10_000
+  private readonly job: Job = {
+    id: 'account-sync',
+    intervalMs: this.pollIntervalMs,
+    startDelayMs: this.startupDelayMs,
+    run: () => this.syncAll().catch((error) => {
+      console.error('[AccountSync] Error in sync cycle:', error)
+    }),
+  }
 
   async start(): Promise<void> {
     if (this.isRunning) {
@@ -41,18 +47,7 @@ class AccountSyncService {
     this.isRunning = true
     console.log('[AccountSync] Starting service...')
 
-    this.startupTimeoutId = setTimeout(() => {
-      this.startupTimeoutId = null
-      background(this.syncAll().catch((error) => {
-        console.error('[AccountSync] Error in initial sync:', error)
-      }), { name: 'account-sync.sync-all' })
-
-      this.intervalId = setInterval(() => {
-        background(this.syncAll().catch((error) => {
-          console.error('[AccountSync] Error in sync cycle:', error)
-        }), { name: 'account-sync.sync-all' })
-      }, this.pollIntervalMs)
-    }, this.startupDelayMs)
+    getJobManager().register(this.job)
 
     console.log(
       `[AccountSync] Service started, first run in ${this.startupDelayMs / 1000}s, then every ${this.pollIntervalMs / 60000}m`
@@ -60,14 +55,7 @@ class AccountSyncService {
   }
 
   stop(): void {
-    if (this.startupTimeoutId) {
-      clearTimeout(this.startupTimeoutId)
-      this.startupTimeoutId = null
-    }
-    if (this.intervalId) {
-      clearInterval(this.intervalId)
-      this.intervalId = null
-    }
+    getJobManager().unregister(this.job.id)
     this.isRunning = false
     console.log('[AccountSync] Service stopped')
   }

@@ -94,7 +94,10 @@ function processTimer(_agentSlug: string, ring: () => Promise<void>): IdleAlarmT
 
 let timerFactory: IdleAlarmTimerFactory = processTimer
 
-/** Replace the process timer for every idle alarm armed from now on; `null` puts it back. */
+/**
+ * Replace the process timer for every idle alarm first armed from now on: an alarm keeps the timer it
+ * was first armed with, so a host sets this at boot. `null` puts the process timer back.
+ */
 export function setIdleAlarmTimers(factory: IdleAlarmTimerFactory | null): void {
   timerFactory = factory ?? processTimer
 }

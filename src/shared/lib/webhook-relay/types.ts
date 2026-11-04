@@ -122,13 +122,11 @@ export interface WebhookRelaySnapshot {
   lastError: string | null
 }
 
-/** How often a relay claims while realtime is down, and how often a host on its own clock runs a pass. */
+/** How often a relay claims while realtime is down, or runs a pass without timers of its own. */
 export const RELAY_PASS_INTERVAL_MS = 30_000
 
 export interface WebhookRelayService {
   readonly kind: 'platform' | 'unavailable'
-  /** How often a host that started the relay with `timers: false` should call `runPass()`. */
-  readonly passIntervalMs: number
   snapshot(): WebhookRelaySnapshot
   /** Called on availability/transport/error changes, not on every claim. */
   onChange(listener: (snapshot: WebhookRelaySnapshot) => void): () => void
@@ -155,7 +153,7 @@ export interface WebhookRelayService {
   wake(): void
   /**
    * With `timers: false` the relay keeps no timer and opens no realtime
-   * socket: nothing is claimed until the host calls `runPass()`.
+   * socket: it registers `runPass()` as a job on the JobManager instead.
    */
   start(options?: { timers?: boolean }): void
   /**

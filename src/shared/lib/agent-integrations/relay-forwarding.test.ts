@@ -48,4 +48,19 @@ describe('syncIntegrationForwarding', () => {
     expect(relay.consumers.size).toBe(0)
     expect(relay.log.map(({ op }) => op)).toEqual(['register', 'update', 'dispose'])
   })
+
+  it('hands events to the function the latest sync was given', async () => {
+    listStartupIntegrations.mockResolvedValue([integration('slack-1', 'sales-agent', slackRelay)])
+    const forwardFor = () => vi.fn(async (_agentSlug: string, _integrationId: string, events: readonly { id: string }[]) =>
+      new Map(events.map((e) => [e.id, 'accepted' as const])))
+    const firstPass = forwardFor()
+    const secondPass = forwardFor()
+    await syncIntegrationForwarding(firstPass)
+    await syncIntegrationForwarding(secondPass)
+
+    await relay.deliver('forward:integration:slack-1', [event])
+
+    expect(firstPass).not.toHaveBeenCalled()
+    expect(secondPass).toHaveBeenCalledWith('sales-agent', 'slack-1', [event])
+  })
 })

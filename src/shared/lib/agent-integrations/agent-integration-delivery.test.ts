@@ -176,6 +176,26 @@ describe('relay transport', () => {
     expect(await manager.acceptForwarded('integration', [relayEvent('whe_1')])).toEqual(new Map([['whe_1', 'duplicate']]))
   })
 
+  it('in a host that runs each agent apart, leaves the deliveries another agent\'s process is working on alone', async () => {
+    const now = new Date()
+    await database.insert(chatIntegrations).values({
+      id: 'other', provider: 'linear', agentSlug: 'support-agent', config: '{}', requireApproval: false, createdAt: now, updatedAt: now,
+    }).run()
+    const elsewhere = { integrationId: 'other', envelope: '{}', owner: 'support-agent-process', nextAttemptAt: now, createdAt: now, updatedAt: now }
+    await database.insert(integrationDeliveries).values([
+      { ...elsewhere, id: 'preparing-elsewhere', externalId: 'chat-1', eventId: 'event-1', state: 'preparing' },
+      { ...elsewhere, id: 'notice-elsewhere', externalId: 'chat-2', eventId: 'event-2', state: 'delivered', noticeState: 'sending' },
+    ]).run()
+    manager = new AgentIntegrationManager(new AgentIntegrationRegistry([]))
+
+    await manager.start({ agentSlug: 'agent', timers: false })
+
+    expect((await rows()).map(({ id, state, noticeState, owner }) => ({ id, state, noticeState, owner })).sort((a, b) => a.id.localeCompare(b.id))).toEqual([
+      { id: 'notice-elsewhere', state: 'delivered', noticeState: 'sending', owner: 'support-agent-process' },
+      { id: 'preparing-elsewhere', state: 'preparing', noticeState: 'none', owner: 'support-agent-process' },
+    ])
+  })
+
   it('reports an integration connected in another process from its row, only where connections run elsewhere', async () => {
     manager = new AgentIntegrationManager(new AgentIntegrationRegistry([]))
     const row = (status: 'active' | 'paused' | 'error', config: object) => ({ status, config: JSON.stringify(config) })

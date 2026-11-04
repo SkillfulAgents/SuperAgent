@@ -27,6 +27,7 @@ import { agentExists } from '@shared/lib/services/agent-service'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
 import { deliverSessionWake } from './wake-delivery'
+import { getJobManager, type Job } from './job-manager'
 
 /**
  * How long an overdue session wake keeps retrying (via the normal poll loop)
@@ -48,14 +49,21 @@ async function isRunBusy(actor: AgentActor, sessionId: string): Promise<boolean>
 }
 
 class TaskScheduler {
-  private intervalId: NodeJS.Timeout | null = null
   private isRunning = false
-  readonly pollIntervalMs = 60000 // Check every minute
+  private pollIntervalMs = 60000 // Check every minute
   private isProcessing = false // Prevent concurrent execution
+  private readonly job: Job = {
+    id: 'task-scheduler',
+    intervalMs: this.pollIntervalMs,
+    run: () => this.executeOverdueTasks().catch((error) => {
+      console.error('[TaskScheduler] Error in polling cycle:', error)
+      captureException(error, { tags: { component: 'task-scheduler', phase: 'poll' } })
+    }),
+  }
 
   /**
-   * Start the scheduler.
-   * Will immediately check for overdue tasks and then poll periodically.
+   * Start the scheduler. The job's first run is the catch-up scan for tasks
+   * that came due while the app was closed; later runs poll.
    */
   async start(): Promise<void> {
     if (this.isRunning) {
@@ -66,43 +74,21 @@ class TaskScheduler {
     this.isRunning = true
     console.log('[TaskScheduler] Starting scheduler...')
 
-    // Install the periodic poll loop FIRST, unconditionally. The poll loop is
-    // the scheduler's natural retry: it re-scans every interval and is the same
-    // code path that runs in steady state. Installing it before the immediate
-    // catch-up scan means a transient failure in that scan (e.g. a SQLite hiccup
-    // in getDueTasks — SUP-224) can no longer prevent polling from running, so
-    // the scheduler self-heals on the next tick instead of wedging.
-    this.intervalId = setInterval(() => {
-      background(this.executeOverdueTasks().catch((error) => {
-        console.error('[TaskScheduler] Error in polling cycle:', error)
-        captureException(error, { tags: { component: 'task-scheduler', phase: 'poll' } })
-      }), { name: 'task-scheduler.run-overdue' })
-    }, this.pollIntervalMs)
+    // The scan runs in the job, not here: a failed scan is retried on the
+    // next poll instead of wedging startup (SUP-224), and a host that spans
+    // processes claims the scan like any other run.
+    getJobManager().register(this.job)
 
     console.log(
       `[TaskScheduler] Scheduler started, polling every ${this.pollIntervalMs / 1000}s`
     )
-
-    // Best-effort immediate catch-up scan so overdue tasks run now rather than
-    // waiting up to one poll interval. A failure here is non-fatal: report it and
-    // let the poll loop above retry — startup is NOT wedged and isActive() stays
-    // true.
-    try {
-      await this.executeOverdueTasks()
-    } catch (error) {
-      console.error('[TaskScheduler] Initial overdue scan failed; poll loop will retry:', error)
-      captureException(error, { tags: { component: 'task-scheduler', phase: 'initial-scan' } })
-    }
   }
 
   /**
    * Stop the scheduler.
    */
   stop(): void {
-    if (this.intervalId) {
-      clearInterval(this.intervalId)
-      this.intervalId = null
-    }
+    getJobManager().unregister(this.job.id)
     this.isRunning = false
     console.log('[TaskScheduler] Scheduler stopped')
   }
@@ -117,7 +103,7 @@ class TaskScheduler {
   /**
    * Execute all tasks that are due.
    */
-  async executeOverdueTasks(): Promise<void> {
+  private async executeOverdueTasks(): Promise<void> {
     // Prevent concurrent execution
     if (this.isProcessing) {
       console.log('[TaskScheduler] Already processing, skipping this cycle')

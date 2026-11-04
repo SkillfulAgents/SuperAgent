@@ -13,7 +13,7 @@ export type ForwardIntegrationEvents = (
   events: readonly RelayEvent[],
 ) => Promise<ReadonlyMap<string, RelayAcceptResult>>
 
-const registrations = new Map<string, { handle: RelayConsumerHandle; agentSlug: string }>()
+const registrations = new Map<string, { handle: RelayConsumerHandle; agentSlug: string; forward: ForwardIntegrationEvents }>()
 
 /** Claims for every active integration with webhooks, and stops claiming for the rest. Run before each relay pass. */
 export async function syncIntegrationForwarding(forward: ForwardIntegrationEvents): Promise<void> {
@@ -35,17 +35,19 @@ export async function syncIntegrationForwarding(forward: ForwardIntegrationEvent
   for (const [id, { agentSlug, scope, endpointId }] of wanted) {
     const existing = registrations.get(id)
     if (existing) {
+      // The host may pass a new function each pass (one bound to that pass's request).
       existing.agentSlug = agentSlug
+      existing.forward = forward
       existing.handle.update({ scope, endpointIds: [endpointId] })
       continue
     }
-    const registration = { agentSlug, handle: null as unknown as RelayConsumerHandle }
+    const registration = { agentSlug, forward, handle: null as unknown as RelayConsumerHandle }
     registration.handle = getWebhookRelay().register({
       // Not the connection's own consumer id: a connection set up in this process registers that one.
       id: `forward:integration:${id}`,
       scope,
       endpointIds: [endpointId],
-      accept: (events) => forward(registration.agentSlug, id, events),
+      accept: (events) => registration.forward(registration.agentSlug, id, events),
     })
     registrations.set(id, registration)
   }
