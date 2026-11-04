@@ -50,6 +50,7 @@ import type { Capability } from './tool-calls'
 import { WorkflowTailers } from './workflow-tailers'
 import { waitForIdle, type WaitForIdleOptions } from './wait-for-idle'
 import { OrderedSends } from '../ordered-sends'
+import { actorDurableState } from '../durable-state'
 
 /** The agent's container runtime, as its sessions need it. */
 export interface SessionsRuntime extends SessionRuntime {
@@ -610,21 +611,51 @@ export class LiveSessions {
     for (const sessionId of sessionIds) {
       const state = this.states.get(sessionId)
       if (!state) continue
+      // The held messages are dropped with the turn: none may be sent later.
+      actorDurableState().delete(this.coalescedKey(sessionId))
       state.recoveryFailed()
       this.detach(sessionId)
     }
   }
 
   coalesceIfRecovering(sessionId: string, message: CoalescedUserMessage): boolean {
-    return this.states.get(sessionId)?.coalesce(message) ?? false
+    const held = this.states.get(sessionId)?.coalesce(message) ?? false
+    if (held) this.storeCoalesced(sessionId, [...(this.storedCoalesced(sessionId)), message])
+    return held
   }
 
   takeCoalesced(sessionId: string): CoalescedUserMessage[] {
+    actorDurableState().delete(this.coalescedKey(sessionId))
     return this.states.get(sessionId)?.takeCoalesced() ?? []
   }
 
   dropCoalesced(sessionId: string, uuid: string): boolean {
+    this.storeCoalesced(sessionId, this.storedCoalesced(sessionId).filter((message) => message.uuid !== uuid))
     return this.states.get(sessionId)?.dropCoalesced(uuid) ?? false
+  }
+
+  /**
+   * Messages held for a recovery that a restart of this actor cut short, by
+   * session: stored as they were coalesced. A recovery that finished took them
+   * already. They stay stored until `storeCoalesced` records them sent.
+   */
+  storedCoalescedSessions(): Array<{ sessionId: string; messages: CoalescedUserMessage[] }> {
+    const prefix = this.coalescedKey('')
+    return actorDurableState().list<CoalescedUserMessage[]>(prefix).map(([key, messages]) => ({ sessionId: key.slice(prefix.length), messages }))
+  }
+
+  private coalescedKey(sessionId: string): string {
+    return `coalesced:${this.deps.slug}:${sessionId}`
+  }
+
+  private storedCoalesced(sessionId: string): CoalescedUserMessage[] {
+    return actorDurableState().get<CoalescedUserMessage[]>(this.coalescedKey(sessionId)) ?? []
+  }
+
+  /** Stores the session's held messages that are still to send; none forgets them. */
+  storeCoalesced(sessionId: string, messages: CoalescedUserMessage[]): void {
+    if (messages.length === 0) actorDurableState().delete(this.coalescedKey(sessionId))
+    else actorDurableState().put(this.coalescedKey(sessionId), messages)
   }
 
   /**
