@@ -143,7 +143,7 @@
     "@smithy/types": "^4.19.0",
     "@tailwindcss/typography": "^0.5.19",
     "@tanstack/react-query": "^5.104.5",
-    "@tanstack/react-router": "1.170.15",
+    "@tanstack/react-router": "1.170.46",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",

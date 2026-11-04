@@ -10,7 +10,10 @@ const mocks = vi.hoisted(() => ({
   track: vi.fn(),
 }))
 
-vi.mock('@renderer/lib/api', () => ({ apiFetch: mocks.apiFetch }))
+vi.mock('@renderer/lib/api', () => ({
+  apiFetch: mocks.apiFetch,
+  apiJson: async (path: string) => (await mocks.apiFetch(path)).json(),
+}))
 vi.mock('@renderer/context/analytics-context', () => ({
   useAnalyticsTracking: () => ({ track: mocks.track }),
 }))
