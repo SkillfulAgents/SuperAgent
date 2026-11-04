@@ -11,6 +11,7 @@
  * edit and the host reads them back.
  */
 
+import { agentSummarySource } from './agent-summaries'
 import {
   parseMarkdownWithFrontmatter,
   serializeMarkdownWithFrontmatter,
@@ -238,8 +239,10 @@ export async function listAgents(): Promise<AgentRecord[]> {
 export async function listAgentsWithStatus(options: { slugs?: string[] } = {}): Promise<ApiAgent[]> {
   const records = options.slugs ? await agentCatalog.getMany(options.slugs) : await agentCatalog.records()
 
-  // The cached container statuses: no docker process is spawned.
-  return Promise.all(records.map(async (record) => toApiAgent(record, (await agentRegistry.get(record.slug).live()).container)))
+  const known = await agentSummarySource().known(records.map((record) => record.slug))
+  // An agent with no kept summary is asked for its cached container status: no docker process is spawned.
+  return Promise.all(records.map(async (record) =>
+    toApiAgent(record, known.get(record.slug)?.container ?? (await agentRegistry.get(record.slug).live()).container)))
 }
 
 // ============================================================================

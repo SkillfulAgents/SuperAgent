@@ -4,8 +4,9 @@
  *
  * Unlike the graph snapshot, this path performs no topology, permissions,
  * chat/session-count, connection-usage, or invocation aggregation. It uses
- * two batched SQL queries and reads session metadata only for agents that
- * actually have a cron or webhook chart to render.
+ * two batched SQL queries, and only agents that actually have a cron or webhook
+ * chart to render are read: from their stored summaries where those are kept,
+ * else from the agents themselves.
  */
 
 import pLimit from 'p-limit'
@@ -14,10 +15,13 @@ import { agentRegistry } from '@shared/lib/agent-actor'
 import { db } from '@shared/lib/db'
 import { scheduledTasks, webhookTriggers } from '@shared/lib/db/schema'
 import type { HomeCardHealthData } from '@shared/lib/types/home-card-health-schema'
+import type { SessionMetadataMap } from '@shared/lib/types/agent'
+import { agentSummarySource, type AgentSummary } from './agent-summaries'
+import { automationRunsAsMetadata } from './automation-runs'
 import type { ActivityStatsOptions } from './activity-stats-service'
 import { buildAutomationActivityStats } from './activity-stats-service'
 
-export interface HomeCardHealthScope extends ActivityStatsOptions {
+export interface HomeCardHealthScope extends Omit<ActivityStatsOptions, 'isSessionLive'> {
   /** Agents the caller may see (ACL-resolved in auth mode, all otherwise). */
   agentSlugs: string[]
 }
@@ -64,6 +68,18 @@ async function listCardWebhooks(agentSlugs: string[]) {
     ))
 }
 
+/**
+ * An agent's runs for its charts. A stored summary already says which runs are live; without
+ * one, the agent is asked for its session metadata and its live sessions.
+ */
+async function runsOf(agentSlug: string, summary: AgentSummary | undefined): Promise<Pick<ActivityStatsOptions, 'isSessionLive'> & { metadata: SessionMetadataMap }> {
+  if (summary?.automationRuns) return { metadata: automationRunsAsMetadata(summary.automationRuns) }
+  const agent = agentRegistry.get(agentSlug)
+  const [metadata, live] = await Promise.all([agent.sessions.readMetadata(), agent.live()])
+  const active = new Set(live.activeSessionIds)
+  return { metadata, isSessionLive: (_agentSlug, sessionId) => active.has(sessionId) }
+}
+
 function groupByAgent<T extends { agentSlug: string }>(rows: T[]): Map<string, T[]> {
   const grouped = new Map<string, T[]>()
   for (const row of rows) {
@@ -102,16 +118,18 @@ export async function buildHomeCardHealth(
 
   const cronByTaskId: HomeCardHealthData['cronByTaskId'] = {}
   const webhookByTriggerId: HomeCardHealthData['webhookByTriggerId'] = {}
+  const summaries = await agentSummarySource().known([...agentsWithCharts])
   const limit = pLimit(10)
   await Promise.all(
     [...agentsWithCharts].map((agentSlug) =>
       limit(async () => {
+        const { metadata, isSessionLive } = await runsOf(agentSlug, summaries.get(agentSlug))
         const activity = buildAutomationActivityStats(
           agentSlug,
           cronsByAgent.get(agentSlug) ?? [],
           webhooksByAgent.get(agentSlug) ?? [],
-          await agentRegistry.get(agentSlug).sessions.readMetadata(),
-          { ...scope, now },
+          metadata,
+          { ...scope, now, isSessionLive },
         )
         Object.assign(cronByTaskId, activity.cronByTaskId)
         Object.assign(webhookByTriggerId, activity.webhookByTriggerId)

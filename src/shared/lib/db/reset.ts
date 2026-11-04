@@ -28,6 +28,7 @@ import {
   agentVolumes,
   volumeDefinitions,
   agents,
+  agentSummaries,
   messageAuthor,
   xAgentPolicies,
   apiScopePolicies,
@@ -73,6 +74,8 @@ function factoryResetTables(): SQLiteTable[] { return [
   // attachments precede both their saved source and their agent
   agentVolumes,
   volumeDefinitions,
+  // each agent's stored list summary
+  agentSummaries,
   // the agent catalog itself, once the per-agent rows above are gone
   agents,
   notifications,
