@@ -466,11 +466,13 @@ type SelectionCandidate = StoredModelSelection | null | undefined
 /** Undefined ID is legacy data. Explicit NULL is a cleared/deleted binding. */
 export async function storedSelection(
   model?: string | null,
-  llmProviderId?: string | null
+  llmProviderId?: string | null,
+  settings?: Pick<AppSettings, 'llmLegacyProviderId'>,
 ): Promise<StoredModelSelection | null> {
   if (llmProviderId === null || (!model && !llmProviderId)) return null
-  // Settings are read only for legacy data, which names no connection.
-  const id = llmProviderId ?? (await getSettings()).llmLegacyProviderId
+  // Settings are needed only for legacy data, which names no connection; read
+  // them then, unless the caller already has them.
+  const id = llmProviderId ?? (settings ?? await getSettings()).llmLegacyProviderId
   if (!id) return null
   const selection = { llmProviderId: id, ...(model ? { model } : {}) }
   if (llmProviderId === undefined) legacySelections.add(selection)
@@ -533,7 +535,14 @@ async function runnableDefaultForConnection(row: ConnectionRow, purpose: 'agent'
 export async function resolveSelectionHierarchy(
   ...candidates: (SelectionCandidate | (() => Promise<SelectionCandidate>))[]
 ): Promise<ResolvedConnection> {
-  const settings = await getSettings()
+  return resolveSelectionHierarchyFrom(await getSettings(), ...candidates)
+}
+
+/** {@link resolveSelectionHierarchy} against settings the caller already read for this operation. */
+export async function resolveSelectionHierarchyFrom(
+  settings: AppSettings,
+  ...candidates: (SelectionCandidate | (() => Promise<SelectionCandidate>))[]
+): Promise<ResolvedConnection> {
   for (const candidate of candidates) {
     const resolved = await resolveConnectionSelection(typeof candidate === 'function' ? await candidate() : candidate, true, undefined, settings)
     if (resolved && await isRunnable(resolved, settings)) return resolved

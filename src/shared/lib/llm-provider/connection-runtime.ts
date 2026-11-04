@@ -2,7 +2,7 @@ import { getModelContextWindowMap } from './model-catalog'
 import { LlmProviderNotFoundError } from '../agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
 import { getContainerModelPromptHints } from '../container/resolve-model'
 import { parseConnectionJson } from './connection-schema'
-import { getSettings } from '../config/settings'
+import { getSettings, type AppSettings, type ModelSettings } from '../config/settings'
 import { getRequestUserId } from '../platform-attribution/request-context'
 import { resolveRuntimeInherit } from '../container/runtime-options'
 import type { AgentPreferences } from '../types/agent-preferences'
@@ -11,6 +11,7 @@ import { connectionConfigSchema, resolveSelection } from './connection-schema'
 import {
   storedSelection,
   resolveSelectionHierarchy,
+  resolveSelectionHierarchyFrom,
   connectionCatalog,
   connectionCatalogFrom,
   getConnection,
@@ -26,13 +27,17 @@ export async function resolveConnectionRuntimeInherit(
     speed?: unknown
   },
   agent: Partial<AgentPreferences> | null | undefined,
-  models: unknown
+  models: ModelSettings,
+  /** The operation's settings, when the caller already read them. */
+  settings?: AppSettings,
 ) {
   const knobs = resolveRuntimeInherit(surface, agent, models)
-  if (!(await getSettings()).llmDefault) return knobs
-  const resolved = await resolveSelectionHierarchy(
-    await storedSelection(surface.model, surface.llmProviderId),
-    await storedSelection(agent?.defaultModel, agent?.defaultLlmProviderId)
+  const current = settings ?? await getSettings()
+  if (!current.llmDefault) return knobs
+  const resolved = await resolveSelectionHierarchyFrom(
+    current,
+    await storedSelection(surface.model, surface.llmProviderId, current),
+    await storedSelection(agent?.defaultModel, agent?.defaultLlmProviderId, current)
   )
   return { ...knobs, model: resolved.model, llmProviderId: resolved.llmProviderId }
 }
