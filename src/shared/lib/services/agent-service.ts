@@ -193,22 +193,24 @@ export async function getAgent(slug: string): Promise<AgentConfig | null> {
 
 /**
  * Get a single agent with container status (returns API format)
- * Uses cached container status to avoid spawning docker processes.
+ * Uses cached container status to avoid spawning docker processes. A caller
+ * that read the agent already (a route's ResolveAgent) passes its record, so
+ * the row is not read again.
  */
 export async function getAgentWithStatus(
-  slug: string,
+  agent: string | AgentRecord,
   options: { includeSummary?: boolean } = {},
 ): Promise<ApiAgent | null> {
-  const agent = await getAgent(slug)
-  if (!agent) {
+  const record = typeof agent === 'string' ? await agentCatalog.get(agent) : agent
+  if (!record) {
     return null
   }
+  const document = await readInstructionsDocument(record.slug)
 
-  const actor = agentRegistry.get(slug)
+  const actor = agentRegistry.get(record.slug)
   // The cached container status: no docker process is spawned.
   const live = await actor.live()
-  const record = (await agentCatalog.get(slug))!
-  const base = toApiAgent(record, live.container, agent.instructions)
+  const base = toApiAgent(record, live.container, document?.body ?? '')
 
   // Routes that either discard the body (/start) or immediately run the richer
   // enrichAgentsWithSummary pass (list/detail) skip this otherwise-duplicate
