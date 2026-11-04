@@ -102,6 +102,21 @@ export const meetingRosterSchema = z.object({
 })
 export type MeetingRoster = z.infer<typeof meetingRosterSchema>
 
+/**
+ * A meeting's roster as AppState keeps it (roster.ts). `revision` counts the
+ * changes applied, so a watcher can tell the roster it shows from a newer
+ * one; `ended` marks a call that is over, which takes no more changes.
+ */
+export const storedMeetingRosterSchema = z.object({
+  participantsById: z.record(z.string(), meetingParticipantSchema),
+  speakingIds: z.array(z.string()),
+  /** The last change or watcher heartbeat, epoch ms. */
+  touchedAt: z.number(),
+  revision: z.number().int().nonnegative(),
+  ended: z.boolean(),
+})
+export type StoredMeetingRoster = z.infer<typeof storedMeetingRosterSchema>
+
 export const publicMeetingSchema = z.object({
   id: z.string(),
   integrationId: z.string(),
