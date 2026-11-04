@@ -2,7 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { getDataDir } from '@shared/lib/config/data-dir'
 import { writeFileAtomicSync } from '@shared/lib/utils/file-storage'
-import { singletonHostFiles } from './singletons'
+import { hostFileCreators } from './host-file-creators'
 
 /**
  * Where the host keeps its small host files (a key, an id, a token map), by
@@ -18,8 +18,8 @@ export interface HostFileStore {
   write(name: string, update: (current: string | null) => string): string
   /** Writes the whole file. A concurrent change fails the save instead of being overwritten. */
   replace(name: string, text: string): void
-  /** A file made once and never rewritten, made on first use by its `defineSingletonHostFile` creator. */
-  singleton(name: string): string
+  /** The file's text. On first use it is made by its `defineHostFileCreator` creator; it is never rewritten. */
+  getOrCreate(name: string): string
   /** `load()`, kept until the file is written or forgotten. */
   memo<T>(name: string, load: () => T): T
   /** Keeps `value` as the file's memo. */
@@ -71,13 +71,13 @@ export const dataDirHostFiles: HostFileStore = {
     fileCache.delete(file)
   },
 
-  singleton(name) {
+  getOrCreate(name) {
     const file = filePath(name)
     const cached = fileCache.get(file)
     if (typeof cached === 'string') return cached
     let text = readFile(file)
     if (text === null) {
-      const create = singletonHostFiles().get(name)
+      const create = hostFileCreators().get(name)
       if (!create) throw new Error(`Host file "${name}" has no creator`)
       fs.mkdirSync(path.dirname(file), { recursive: true })
       try {

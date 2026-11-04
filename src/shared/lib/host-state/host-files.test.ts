@@ -7,7 +7,7 @@ import { getTenantId } from '@shared/lib/analytics/tenant-id'
 import { openJson, resetVaultKeyCache, sealJson } from '@shared/lib/browser-vault/vault-crypto'
 import { getOrCreateHostToken } from '@shared/lib/container/host-token-store'
 import { dataDirHostFiles, setHostFileStore, type HostFileStore } from './host-files'
-import { singletonHostFiles } from './singletons'
+import { hostFileCreators } from './host-file-creators'
 
 /** Host files kept somewhere other than the data dir, as a deployment's store would. */
 class InMemoryHostFiles implements HostFileStore {
@@ -27,8 +27,8 @@ class InMemoryHostFiles implements HostFileStore {
     this.files.set(name, text)
     this.memos.delete(name)
   }
-  singleton(name: string) {
-    if (!this.files.has(name)) this.files.set(name, singletonHostFiles().get(name)!())
+  getOrCreate(name: string) {
+    if (!this.files.has(name)) this.files.set(name, hostFileCreators().get(name)!())
     return this.files.get(name)!
   }
   memo<T>(name: string, load: () => T): T {
