@@ -613,7 +613,7 @@ describe('generateSystemPrompt rendering', () => {
     process.env.HOST_APP_SANDBOX = 'true'
     const out = generateSystemPrompt()
     const note = out.slice(out.indexOf('## Mac App Store Edition'), out.indexOf('## Language Guidelines'))
-    for (const left of ['computer use', 'own Chrome', "folders on the user's Mac", 'GitHub skillsets', 'container runtimes']) {
+    for (const left of ['computer use', 'own Chrome', 'GitHub skillsets', 'container runtimes']) {
       expect(note).toContain(left)
     }
     expect(out.indexOf('## Mac App Store Edition')).toBeLessThan(out.indexOf('## Other Guidelines'))

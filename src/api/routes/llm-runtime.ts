@@ -42,8 +42,8 @@ routes.post('/resolve', async (c) => {
     return c.json({ error: 'Session connection changed' }, 409)
   if (input.rejectedGeneration !== undefined) await resolveConnectionCredential(selected.llmProviderId, input.rejectedGeneration)
   const runtime = await connectionRuntime(selected, slug)
-  // The session's errors and usage are read with it: only its non-secret facts.
-  await actor.sessions.recordRuntime(input.sessionId, { provider: runtime.provider, modelContextWindows: runtime.modelContextWindows })
+  // The session's errors and analytics are read with it: only its non-secret facts.
+  await actor.sessions.recordRuntime(input.sessionId, { provider: runtime.provider })
   return c.json(runtime)
 })
 // Boot prewarming is bound to the authenticated agent's default. The container

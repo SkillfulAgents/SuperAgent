@@ -273,7 +273,7 @@ describe('HomePage AgentCard', () => {
       isLoading: false,
     })
     renderWithProviders(<HomePage />)
-    expect(screen.getByText('Last run about 3 hours ago')).toBeInTheDocument()
+    expect(screen.getByText('Last active about 3 hours ago')).toBeInTheDocument()
   })
 
   it('does not render last worked when lastActivityAt is null', () => {
@@ -381,7 +381,7 @@ describe('HomePage AgentCard', () => {
       isLoading: false,
     })
     renderWithProviders(<HomePage />)
-    expect(screen.getByText('Last run about 1 hour ago')).toBeInTheDocument()
+    expect(screen.getByText('Last active about 1 hour ago')).toBeInTheDocument()
   })
 
   it('surfaces the aggregated activity status on the card indicator', () => {

@@ -7,7 +7,7 @@ import { fetchVolumeFolder, type FolderEntriesResponse } from '@renderer/hooks/u
 import { getApiBaseUrl } from '@renderer/lib/env'
 
 /** A separate browser scope prevents tab state leaking between volume definitions. */
-export function VolumeFileBrowser({ volumeId }: { volumeId: string }) {
+export function VolumeFileBrowser({ volumeId, copying = false }: { volumeId: string; copying?: boolean }) {
   const client = useQueryClient()
   // Bumped by Refresh: every open file's URL changes, so each renderer reloads.
   const [refreshed, setRefreshed] = useState(0)
@@ -36,7 +36,9 @@ export function VolumeFileBrowser({ volumeId }: { volumeId: string }) {
       }}><RefreshCw className="h-3.5 w-3.5" /></Button>
     </div>
     <div className="flex h-[min(44rem,75dvh)] min-h-80 flex-col rounded-xl border bg-background overflow-hidden" data-testid="volume-file-preview">
-      <FileBrowser key={volumeId} source={source} />
+      {copying
+        ? <p className="m-auto px-6 text-center text-sm text-muted-foreground">Copying the drive’s files. They show here once the copy is done.</p>
+        : <FileBrowser key={volumeId} source={source} />}
     </div>
   </section>
 }

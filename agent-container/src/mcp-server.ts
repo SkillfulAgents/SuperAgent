@@ -125,11 +125,17 @@ export function createBrowserMcpServer(tools: ReturnType<typeof createBrowserToo
   })
 }
 
-export function createComputerUseMcpServer() {
+/**
+ * @param options.alwaysLoad - put the tools in the prompt from the first turn
+ *   instead of deferring them behind ToolSearch: for a session the user
+ *   started to use the computer, the first thing it reaches for.
+ */
+export function createComputerUseMcpServer(options: { alwaysLoad?: boolean } = {}) {
   return createSdkMcpServer({
     name: 'computer-use',
     version: '1.0.0',
     tools: computerUseTools,
+    ...(options.alwaysLoad ? { alwaysLoad: true } : {}),
   })
 }
 

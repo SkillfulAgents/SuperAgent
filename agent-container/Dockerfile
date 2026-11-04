@@ -5,7 +5,11 @@
 # Stage layout: `base` holds the agent's tool environment (apt packages,
 # runtimes, browser) and is shared by `builder` (dev deps + tsc, discarded)
 # and `runtime` (prod deps + dist, published).
-FROM ubuntu:22.04 AS base
+#
+# Pinned by digest: when Docker Hub moves the tag, every layer's cache key
+# changes, so the image rebuilds from scratch and every user re-pulls all of
+# it. Dependabot (.github/dependabot.yml) proposes the new digest as a PR.
+FROM ubuntu:22.04@sha256:076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11 AS base
 
 # Prevent interactive prompts during installation
 ENV DEBIAN_FRONTEND=noninteractive

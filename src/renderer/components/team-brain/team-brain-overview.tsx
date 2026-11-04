@@ -22,9 +22,11 @@ import { AgentAvatar } from '@renderer/components/agents/agent-avatar/agent-avat
 import { useMinuteClock } from '@renderer/hooks/use-minute-clock'
 import type { TeamBrainNode } from '@renderer/lib/team-brain/team-brain-structure'
 import { useTeamBrainDrive } from '@renderer/hooks/use-team-brain-drive'
-import { splitFrontPages, TEAM_RECORD_FOLDER, teamRecordView } from '@renderer/lib/team-brain/team-brain-drive'
-import type { FolderEntry } from '@renderer/hooks/use-folder-entries'
+import { RECORD_GROUPS, RECORD_SECTIONS, splitFrontPages, type RecordGroup } from '@renderer/lib/team-brain/team-brain-drive'
+import type { RecordGroupsRead } from '@renderer/hooks/use-team-brain-drive'
+import { useUpdateUserSettings, useUserSettings } from '@renderer/hooks/use-user-settings'
 import { useTeamBrainSyncs } from '@renderer/hooks/use-team-brain-syncs'
+import { TEAM_BRAIN_AGENT_HOME_SEARCH } from '@renderer/lib/team-brain/team-brain-agent-home'
 import { getApiBaseUrl } from '@renderer/lib/env'
 import { FilePreviewProvider, useFilePreview } from '@renderer/context/file-preview-context'
 import { WorkflowProvider } from '@renderer/context/workflow-context'
@@ -34,6 +36,7 @@ import { IntegrationRow, RowHoverChevron } from '@renderer/components/connection
 import { useNavigate } from '@tanstack/react-router'
 import { formatDistanceToNow } from 'date-fns'
 import { useSessions } from '@renderer/hooks/use-sessions'
+import { teamBrainSessions } from '@renderer/lib/team-brain/team-brain-sessions'
 import { RelatedSessions, toSessionItem } from '@renderer/components/sessions/related-sessions'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
 import { AccountStatusBadge } from '@renderer/components/connections/account-status-badge'
@@ -44,8 +47,10 @@ import { toast } from 'sonner'
 import { formatSince, formatUntil, SCHEDULE_LABELS } from '@renderer/lib/team-brain/team-brain-format'
 import { scheduleOfCron } from '@renderer/lib/team-brain/team-brain-setup-block'
 import { useHumanizedCron } from '@renderer/hooks/use-humanized-cron'
-import { useScheduledTasks, useScheduledTasksSessions, type ApiScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
+import { useScheduledTasks, type ApiScheduledTask } from '@renderer/hooks/use-scheduled-tasks'
 import { TeamBrainRadial, TeamBrainRadialLoading } from './team-brain-radial'
+import type { RadialNode } from '@renderer/lib/team-brain/team-brain-radial'
+import { useTeamBrainFocus } from '@renderer/hooks/use-team-brain-focus'
 import { TeamBrainSyncSummaries } from './team-brain-sync-summaries'
 import { TeamBrainHomeComposer } from './team-brain-home-composer'
 import { AgentAccessList, EveryAgentRow } from './team-brain-agent-access'
@@ -65,21 +70,38 @@ const PREVIEW_SLUG = 'team-brain'
  */
 export function TeamBrainOverview({ agent }: { agent: ApiAgent }) {
   const [settingsOpen, setSettingsOpen] = useState(false)
-  // The views of the team record the tree shows (`teamRecordView`), switched on in the settings' Views; none by default.
-  // When the last one is switched off, the parts that were showing stay in the tree while they draw back in, then go.
-  const [views, setViews] = useState<ReadonlySet<string>>(() => new Set())
-  const [leaving, setLeaving] = useState<ReadonlySet<string> | null>(null)
-  const switchView = (view: string, on: boolean) => {
-    const next = new Set(views)
-    if (on) next.add(view)
-    else next.delete(view)
-    setViews(next)
-    setLeaving(next.size === 0 && views.size > 0 ? views : null)
+  // Once the person clicks or types in the composer, or after one click off the page, an open page's drawer draws at its
+  // narrowest so both fit. Using the drawer, opening another page or putting the drawer away brings back its width.
+  const [drawerNarrow, setDrawerNarrow] = useState(false)
+  // The record's groups the tree shows, switched on in the settings' Views and kept in the person's settings; none by
+  // default. The override answers at once while the write round-trips, as the home graph's Details switch does. When
+  // the last one is switched off, the groups that were showing stay in the tree while they draw back in, then go.
+  const { data: userSettings } = useUserSettings()
+  const { mutate: saveSettings } = useUpdateUserSettings()
+  const [viewsOverride, setViewsOverride] = useState<readonly RecordGroup[] | null>(null)
+  const saved: readonly string[] | undefined = viewsOverride ?? userSettings?.teamBrainViews
+  const views = useMemo<ReadonlySet<RecordGroup>>(() => new Set(RECORD_GROUPS.filter((group) => saved?.includes(group))), [saved])
+  const [leaving, setLeaving] = useState<ReadonlySet<RecordGroup> | null>(null)
+  const switchView = (group: RecordGroup, on: boolean) => {
+    const next = RECORD_GROUPS.filter((g) => (g === group ? on : views.has(g)))
+    setViewsOverride(next)
+    saveSettings({ teamBrainViews: next })
+    setLeaving(next.length === 0 && views.size > 0 ? views : null)
   }
   return (
     <FilePreviewProvider sessionId="team-brain" commentsEnabled={false}>
       <WorkflowProvider sessionId="team-brain">
-        <div className="file-preview-container relative flex min-h-0 min-w-0 flex-1" data-testid="file-preview-container">
+        <div
+          className="file-preview-container relative flex min-h-0 min-w-0 flex-1"
+          data-testid="file-preview-container"
+          // A click here outside the page is in the drawer: using it. Its width comes back once the press is over, so
+          // nothing moves under the pointer. A click on one of its buttons or links only does what that control does.
+          // Clicks in a portal (the composer's menus) bubble here through React from outside this element and are not.
+          onClickCapture={(event) => {
+            const target = event.target
+            if (target instanceof Element && event.currentTarget.contains(target) && !target.closest('[data-team-brain-page], button, a[href]')) setDrawerNarrow(false)
+          }}
+        >
           <OverviewBody
             agent={agent}
             settingsOpen={settingsOpen}
@@ -89,8 +111,10 @@ export function TeamBrainOverview({ agent }: { agent: ApiAgent }) {
             recordLeaving={views.size === 0 && leaving !== null}
             onViewChange={switchView}
             onRecordLeft={() => setLeaving(null)}
+            drawerNarrow={drawerNarrow}
+            onDrawerNarrowChange={setDrawerNarrow}
           />
-          <TrayManager agentSlug={PREVIEW_SLUG} sessionId="team-brain" browserActive={false} filePreviewWideLayout="overlay" />
+          <TrayManager agentSlug={PREVIEW_SLUG} sessionId="team-brain" browserActive={false} filePreviewWideLayout="overlay" narrowDrawer={drawerNarrow} onDrawerResize={() => setDrawerNarrow(false)} />
         </div>
       </WorkflowProvider>
     </FilePreviewProvider>
@@ -136,26 +160,35 @@ function OverviewBody({
   recordLeaving,
   onViewChange,
   onRecordLeft,
+  drawerNarrow,
+  onDrawerNarrowChange,
 }: {
   agent: ApiAgent
   settingsOpen: boolean
   onSettingsOpenChange: (open: boolean) => void
-  /** The record's views switched on in Views. */
-  views: ReadonlySet<string>
-  /** The views the tree shows: those, or while the last is drawing back in, the ones that were. */
-  record: ReadonlySet<string>
+  /** The record's groups switched on in Views. */
+  views: ReadonlySet<RecordGroup>
+  /** The groups the tree shows: those, or while the last is drawing back in, the ones that were. */
+  record: ReadonlySet<RecordGroup>
   recordLeaving: boolean
-  onViewChange: (view: string, on: boolean) => void
+  onViewChange: (group: RecordGroup, on: boolean) => void
   onRecordLeft: () => void
+  drawerNarrow: boolean
+  onDrawerNarrowChange: (narrow: boolean) => void
 }) {
   const agentSlug = agent.slug
   useMinuteClock()
 
   // The Team Brain agent's drive, read as far as the tree shows and further as folders open.
   const volumeId = agent.teamBrain?.volumeId
-  const { data: mounts } = useAgentMounts(agentSlug)
+  const { data: mounts, isError: mountsUnreadable } = useAgentMounts(agentSlug)
+  // A drive still making its first copy has nothing to list yet: it is read once the copy is in, and the tree waits.
+  // Until the drive list says which, nothing is read; a list that can't be read now leaves the drive to answer for itself.
+  const mount = mounts?.find((each) => each.volumeId === volumeId)
+  const copying = mount?.health === 'preparing'
+  const readable = mountsUnreadable || (mounts && !copying) ? volumeId : undefined
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
-  const { drive, ready, error, recordParts } = useTeamBrainDrive(agentSlug, volumeId, expanded, record, recordLeaving)
+  const { drive, ready, error, recordGroups } = useTeamBrainDrive(agentSlug, readable, expanded, record, recordLeaving)
   // Opened on the loading middle: the tree then grows from it rather than popping its middle in again.
   const [openedLoading] = useState(() => !ready)
   // The loading middle stays until its line has gone back out, so the tree starts after it rather than over it.
@@ -166,20 +199,36 @@ function OverviewBody({
   const { front, index, rest } = useMemo(() => splitFrontPages(drive), [drive])
   const tasks = useBrainTasks(agentSlug)
   const active = tasks.some((task) => task.status === 'pending')
-  const { data: syncs = [], isError: syncsUnreadable } = useTeamBrainSyncs(agentSlug, volumeId)
+  const { data: syncs = [], isError: syncsUnreadable } = useTeamBrainSyncs(agentSlug, readable)
+  // Recent sessions: what a person started here, and any scheduled run waiting on someone.
+  const { data: sessions } = useSessions(agentSlug)
+  const [allSessions, setAllSessions] = useState(false)
+  const everySession = useMemo(() => teamBrainSessions(sessions ?? []).map(toSessionItem), [sessions])
   const navigate = useNavigate()
   // A page opens in the file drawer from the drive, as the drive's own file browser opens it. A "+N more" past what
   // even an opened folder shows opens as a list of the pages it stands for.
   const { openFile, close: closeFiles, isOpen: filesOpen } = useFilePreview()
+  useEffect(() => {
+    if (!filesOpen) onDrawerNarrowChange(false)
+  }, [filesOpen, onDrawerNarrowChange])
+  // What the person is looking at goes with their next message.
+  const inFocus = useTeamBrainFocus(mount?.name)
+  const selectFolder = (folder: RadialNode | null) => {
+    // A folder chosen is a new focus, not a click off: the page it replaces goes at once.
+    if (folder) closeFiles()
+    inFocus.folderChosen(folder && { id: folder.id, name: folder.name })
+  }
   const openPage = (file: TeamBrainNode, { path, folder }: { path: string; folder?: TeamBrainNode }) => {
     if (!volumeId) return
     onSettingsOpenChange(false)
+    onDrawerNarrowChange(false)
     if (file.more) {
       const list = `data:text/markdown;charset=utf-8,${encodeURIComponent(`# ${folder?.name ?? 'More pages'}\n\n${file.more.map((name) => `- ${name.replace(/\.md$/, '')}`).join('\n')}`)}`
       return openFile(`/Team Brain${path}.md`, PREVIEW_SLUG, undefined, { inlineUrl: list, downloadUrl: list })
     }
     const url = `${getApiBaseUrl()}/api/volume-definitions/${encodeURIComponent(volumeId)}/file?${new URLSearchParams({ path: file.id })}`
     openFile(`/Team Brain${path}`, PREVIEW_SLUG, undefined, { inlineUrl: `${url}&inline=true`, downloadUrl: url })
+    inFocus.pageOpened(`/Team Brain${path}`, file)
   }
   const toggleSettings = () => {
     if (!settingsOpen) closeFiles()
@@ -195,13 +244,19 @@ function OverviewBody({
     // through React from outside this element.
     if (!(target instanceof Element) || !event.currentTarget.contains(target)) return
     if (target.closest('[data-drawer-opener]')) return
-    closeFiles()
+    // A click in the composer steps an open page's drawer aside once the press is over, so nothing moves under it. A click
+    // on one of its buttons leaves it, so a picker then opens where it was pressed. A click on nothing steps it aside
+    // first, then puts it away.
+    if (target.closest('[data-keeps-drawer]')) {
+      if (filesOpen && !target.closest('button')) onDrawerNarrowChange(true)
+    } else if (filesOpen && !drawerNarrow) onDrawerNarrowChange(true)
+    else closeFiles()
     // Narrower than xl the panel floats over the page and covers its settings button, so a click off it closes it.
     if (settingsOpen && !wide && !target.closest('#team-brain-settings')) onSettingsOpenChange(false)
   }
 
-  const { scrollRef, treeRef, treeTop, treeHeight, viewHeight } = useStickyTree()
-  const { ref: dockRef, stuck: docked } = useStuck(scrollRef, treeTop)
+  const { scrollRef, treeRef, dockRef, treeTop, treeHeight, viewHeight } = useStickyTree()
+  const docked = useStuck(scrollRef, dockRef, treeTop)
   const wide = useMediaQuery(SETTINGS_BESIDE_PAGE)
   // The panel stays out while it fades away after closing.
   const [settingsClosing, setSettingsClosing] = useState(false)
@@ -216,7 +271,7 @@ function OverviewBody({
 
   return (
     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- a pointer convenience; each drawer has its own close button
-    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background" onClick={closeDrawersOnClickOff}>
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background" onClick={closeDrawersOnClickOff} data-team-brain-page>
       {error && !noDrive && <DriveErrorBanner error={error} partial={ready} />}
       <SettingsPageContainer className={cn(PAGE_WIDTH, 'space-y-8')} scrollContainerRef={scrollRef}>
         {/* The centrepiece: what Team Brain knows, as a tree floating on the page with no frame around it. It fills the
@@ -239,6 +294,8 @@ function OverviewBody({
               onOpenFile={openPage}
               onOpenCentre={front && (() => openPage(front, { path: `/${front.name}` }))}
               onOpenIndex={index && (() => openPage(index, { path: `/${index.name}` }))}
+              selected={inFocus.folder}
+              onSelectedChange={selectFolder}
               retracting={recordLeaving ? RECORD_SECTIONS : undefined}
               onRetracted={onRecordLeft}
               height={treeHeight}
@@ -253,7 +310,8 @@ function OverviewBody({
             columns do, while the tree behind stays exactly where it is. */}
         <div
           // Makes room on the panel's own curves (team-brain.css), so the two move as one.
-          className={cn('team-brain-column relative space-y-8', settingsOpen && 'xl:pr-[392px]')}
+          // While the drawer is narrow (320px) it gets room too, where it sits beside the page rather than over it.
+          className={cn('team-brain-column relative space-y-4', settingsOpen && 'xl:pr-[392px]', drawerNarrow && '[@container(min-width:768px)]:pr-[336px]')}
           style={showSettings && wide && panelHeight ? { minHeight: panelHeight - 2 * PANEL_INSET } : undefined}
           data-settings={settingsOpen ? 'open' : 'closed'}
           data-testid="team-brain-column"
@@ -296,8 +354,50 @@ function OverviewBody({
             </header>
             {/* Talk to it, as on Agent Home: a message starts a session with the Team Brain agent. Glass, as the session's
                 composer is, so the tree shows through it as it passes over. */}
-            <TeamBrainHomeComposer agent={agent} />
+            <div data-keeps-drawer onInput={() => filesOpen && onDrawerNarrowChange(true)}>
+              <TeamBrainHomeComposer agent={agent} reference={inFocus.reference} onDismissReference={inFocus.dismiss} />
+            </div>
           </div>
+
+          {/* The latest few sessions, on the composer's glass and at its width, as Agent Home has them; See all sessions
+              opens the rest in place, a page at a time. */}
+          {everySession.length > 0 && (
+            <section
+              aria-labelledby="team-brain-recent-title"
+              className={cn('relative z-10 mx-auto w-full max-w-[720px] rounded-3xl px-5 pb-3 pt-4', GLASS_SURFACE)}
+              data-testid="team-brain-recent-sessions"
+            >
+              <h2 id="team-brain-recent-title" className="flex min-h-8 items-center text-sm font-normal text-muted-foreground">
+                Recent sessions
+              </h2>
+              <RelatedSessions
+                sessions={everySession}
+                agentSlug={agentSlug}
+                formatDate={formatSessionDate}
+                showIcon={false}
+                showHeader={false}
+                pageSize={allSessions ? ALL_SESSIONS_PAGE : RECENT_SESSIONS}
+                limit={allSessions ? undefined : RECENT_SESSIONS}
+                awaitingFirst
+                className="mt-1"
+                // Right under the last row, its text lined up with the rows'.
+                afterRows={everySession.length > RECENT_SESSIONS && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="-ml-2 mt-1"
+                    onClick={() => setAllSessions(!allSessions)}
+                    aria-expanded={allSessions}
+                    data-testid="team-brain-see-all-sessions"
+                  >
+                    {allSessions ? 'Show fewer' : 'See all sessions'}
+                    <ChevronDown className={cn('transition-transform', allSessions && 'rotate-180')} aria-hidden="true" />
+                  </Button>
+                )}
+              />
+            </section>
+          )}
 
           {/* What each sync filed, read like a changelog, on a glass sheet like the composer's and as wide as it: the tree
               shows through it, blurred, as it passes over. */}
@@ -321,7 +421,7 @@ function OverviewBody({
                 onClose={() => onSettingsOpenChange(false)}
                 onClosed={settingsClosed}
                 views={views}
-                recordParts={recordParts}
+                recordGroups={recordGroups}
                 onViewChange={onViewChange}
                 onHeightChange={setPanelHeight}
                 // Its box reaches PANEL_INSET past its cards, so it sticks that much higher, and is twice that taller,
@@ -344,7 +444,7 @@ function OverviewBody({
               onClose={() => onSettingsOpenChange(false)}
               onClosed={settingsClosed}
               views={views}
-              recordParts={recordParts}
+              recordGroups={recordGroups}
               onViewChange={onViewChange}
             />
           </div>
@@ -401,20 +501,26 @@ function TreeNote({ height, alert = false, testId, children }: { height: number;
   )
 }
 
-/** What draws back in when the team record is switched off. */
-const RECORD_SECTIONS = [TEAM_RECORD_FOLDER]
-
-/** How much shows at the foot of the view before scrolling (the status row and the composer's top), and the shortest the tree gets. */
-const COMPOSER_PEEK = 124
-const MIN_TREE_HEIGHT = 520
+/** The page's gap between the tree and the column, and the column's between its sections (space-y-8, space-y-4). */
+const PAGE_GAP = 32
+const COLUMN_GAP = 16
+/** The shortest the tree gets, however short the view. */
+const MIN_TREE_HEIGHT = 420
+/**
+ * How much of the column shows at the foot of the view when the page opens: the status row, the composer and the top
+ * of Recent sessions. Scrolled back from there, the column goes down until only the status row and composer show.
+ */
+const OPENING_PEEK = 300
 
 /**
- * The tree fills the view from the top down to where the status row and composer peek in, and sticks there, so
- * everything after it passes over the tree.
+ * The tree fills the view from the top down to where the status row and the whole composer (`dockRef`) sit at its
+ * foot, with the top of what follows them (Recent sessions) just below the view, and sticks there, so everything after
+ * it passes over the tree. That is as far back as the page scrolls; it opens a little further on (`OPENING_PEEK`).
  */
 function useStickyTree() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const treeRef = useRef<HTMLDivElement>(null)
+  const dockRef = useRef<HTMLDivElement>(null)
   const [treeTop, setTreeTop] = useState(0)
   const [treeHeight, setTreeHeight] = useState(680)
   const [viewHeight, setViewHeight] = useState(0)
@@ -430,22 +536,45 @@ function useStickyTree() {
       const top = page ? Math.round(parseFloat(getComputedStyle(page).paddingTop) || 0) : 0
       setTreeTop(top)
       setViewHeight(scroller.clientHeight)
-      // The page's 32px gap sits between the tree and the composer.
-      setTreeHeight(Math.max(MIN_TREE_HEIGHT, Math.round(scroller.clientHeight - top - 32 - COMPOSER_PEEK)))
+      // Measured when the view changes, not as the composer grows with a long message, so the tree holds still then.
+      const dock = dockRef.current?.offsetHeight ?? 0
+      setTreeHeight(Math.max(MIN_TREE_HEIGHT, Math.round(scroller.clientHeight - top - PAGE_GAP - dock - COLUMN_GAP)))
+      return dock + COLUMN_GAP
     }
-    measure()
-    if (typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(measure)
+    // The page opens scrolled on to OPENING_PEEK, placed again as the composer lays out its controls, until the person
+    // scrolls or presses a key; after that the tree only follows the view, not the composer growing with a message.
+    let settled = false
+    const settle = () => { settled = true }
+    const place = () => {
+      const shown = measure()
+      if (!settled) scroller.scrollTop = Math.max(0, OPENING_PEEK - shown)
+    }
+    place()
+    const frame = requestAnimationFrame(place)
+    const settleOn = ['wheel', 'touchstart', 'keydown', 'pointerdown'] as const
+    settleOn.forEach((type) => scroller.addEventListener(type, settle, { passive: true }))
+    const unlisten = () => settleOn.forEach((type) => scroller.removeEventListener(type, settle))
+    if (typeof ResizeObserver === 'undefined') return () => { cancelAnimationFrame(frame); unlisten() }
+    const observer = new ResizeObserver((entries) => {
+      if (entries.some((entry) => entry.target === scroller)) measure()
+      if (!settled) place()
+    })
     observer.observe(scroller)
-    return () => observer.disconnect()
+    // The composer laying out, and the page growing as sessions and summaries arrive, so there is room to scroll on to.
+    if (dockRef.current) observer.observe(dockRef.current)
+    if (scroller.firstElementChild) observer.observe(scroller.firstElementChild)
+    return () => {
+      cancelAnimationFrame(frame)
+      unlisten()
+      observer.disconnect()
+    }
   }, [])
 
-  return { scrollRef, treeRef, treeTop, treeHeight, viewHeight }
+  return { scrollRef, treeRef, dockRef, treeTop, treeHeight, viewHeight }
 }
 
 /** Whether an element sticky at `top` in the scroller is stuck there, rather than in its place on the page. */
-function useStuck(scrollRef: RefObject<HTMLDivElement | null>, top: number) {
-  const ref = useRef<HTMLDivElement>(null)
+function useStuck(scrollRef: RefObject<HTMLDivElement | null>, ref: RefObject<HTMLDivElement | null>, top: number) {
   const [stuck, setStuck] = useState(false)
   useEffect(() => {
     const root = scrollRef.current
@@ -459,8 +588,8 @@ function useStuck(scrollRef: RefObject<HTMLDivElement | null>, top: number) {
     }, { root, rootMargin: `-${top + 1}px 0px 0px 0px`, threshold: 1 })
     observer.observe(element)
     return () => observer.disconnect()
-  }, [scrollRef, top])
-  return { ref, stuck }
+  }, [scrollRef, ref, top])
+  return stuck
 }
 
 /** How long the panel takes to slide out (see its classes), after which it is taken away. */
@@ -476,7 +605,7 @@ const PANEL_FADE_MS = 300
  * the status line toggles it, Escape closes it, and where it floats over the
  * page (narrower than xl) so does a click off it.
  */
-function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recordParts, onViewChange, onHeightChange, style }: {
+function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recordGroups, onViewChange, onHeightChange, style }: {
   agent: ApiAgent
   /** Beside the page, in its column (sticky; `style` gives where it sticks and its tallest), or floating over it. */
   placement: 'beside' | 'over'
@@ -484,10 +613,10 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
   onClose: () => void
   /** The panel has slid out and can go. */
   onClosed: () => void
-  views: ReadonlySet<string>
-  /** The team record's parts there are. */
-  recordParts: readonly FolderEntry[]
-  onViewChange: (view: string, on: boolean) => void
+  views: ReadonlySet<RecordGroup>
+  /** Which of the record's groups have something in them. */
+  recordGroups: RecordGroupsRead
+  onViewChange: (group: RecordGroup, on: boolean) => void
   /** How tall it is, as it changes (sections opening and closing). */
   onHeightChange?: (height: number) => void
   style?: CSSProperties
@@ -506,6 +635,7 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
   const { data: agents = [] } = useListedAgents()
   const deleteAgent = useDeleteAgent()
   const [confirmOff, setConfirmOff] = useState(false)
+  const navigate = useNavigate()
   // Turning it off deletes the Team Brain agent; the server drops the workspace record with it, and the page
   // goes back to the pitch once the agent list no longer has it. Its drive and files stay.
   const turnOff = () =>
@@ -554,9 +684,18 @@ function SettingsPanel({ agent, placement, open, onClose, onClosed, views, recor
           <StorageSection agent={agent} />
           <SourcesSection agentSlug={agent.slug} />
           <AgentsSection brainSlug={agent.slug} volumeId={agent.teamBrain?.volumeId} agents={agents} canManage={canManage} />
-          <SessionsSection agentSlug={agent.slug} />
         </div>
-        <ViewsCard parts={recordParts} views={views} onViewChange={onViewChange} />
+        <ViewsCard groups={recordGroups} views={views} onViewChange={onViewChange} />
+        {/* The rest of the agent's settings live on its Agent Home, which only this row reaches: every other way in lands here. */}
+        <button
+          type="button"
+          onClick={() => void navigate({ to: '/agents/$slug', params: { slug: agent.slug }, search: TEAM_BRAIN_AGENT_HOME_SEARCH })}
+          className={cn(SECTION_HEADER_CLASS, 'rounded-2xl', GLASS_SURFACE)}
+          data-testid="team-brain-agent-settings"
+        >
+          <span className={PANEL_LABEL_CLASS}>Agent settings</span>
+          <ChevronRight className="h-4 w-4 text-muted-foreground/50" aria-hidden="true" />
+        </button>
         {/* Last, on a glass row of its own: red only in its words until hovered. */}
         {canManage && <Button
           variant="ghost"
@@ -833,76 +972,47 @@ function AgentsSection({ brainSlug, volumeId, agents, canManage }: { brainSlug: 
   )
 }
 
-/**
- * Team Brain's own sessions, its chats and each scheduled task's runs, in Agent Home's list. Its Agent Home stays out of
- * reach. The agent's list leaves scheduled runs out, as Agent Home shows them under their task, so they join it here.
- */
-function SessionsSection({ agentSlug }: { agentSlug: string }) {
-  const { data: chats } = useSessions(agentSlug)
-  const runs = useScheduledTasksSessions(useBrainTasks(agentSlug).map((task) => task.id))
-  const sessions = useMemo(() => [...(chats ?? []).map(toSessionItem), ...runs], [chats, runs])
-  return (
-    <PanelSection title="Sessions" summary={<span className={SECTION_COUNT_CLASS}>{sessions.length}</span>} testId="team-brain-sessions">
-      {sessions.length > 0 ? (
-        <RelatedSessions
-          sessions={sessions}
-          agentSlug={agentSlug}
-          formatDate={formatSessionDate}
-          showIcon={false}
-          showHeader={false}
-          pageSize={10}
-          className="px-3 pt-2"
-        />
-      ) : (
-        <p className="px-4 pt-2 text-xs text-muted-foreground">No sessions yet.</p>
-      )}
-    </PanelSection>
-  )
-}
-
-/** The team record's usual parts, each a view of its own, in the order they're listed. */
-const RECORD_VIEWS: readonly { id: string; name: string }[] = [
-  { id: 'rules', name: 'Show rules' },
-  { id: 'sources', name: 'Show sources' },
-  { id: 'changelog', name: 'Show changelog' },
-  { id: 'archive', name: 'Show archive' },
-  { id: 'syncs', name: 'Show sync summaries' },
-  { id: 'index', name: "Show agents' index" },
-]
-/** Any other part the agent keeps in `_brain`, named after its file. */
-const partName = (part: FolderEntry) => `Show ${part.name.replace(/\.md$/i, '').replace(/[-_]+/g, ' ').toLowerCase()}`
+/** The record's groups as Views names them. */
+const GROUP_LABELS: Record<RecordGroup, string> = { about: 'About this brain', archive: 'Archive' }
 
 /**
- * Which parts of Team Brain's own record the tree shows, in a folded card of their own below the sections, as Sync has
- * one above: a switch for each of the record's usual parts, whether or not the agent has written it yet, and for anything
- * else it keeps in `_brain`. All off by default, so the tree is the team's knowledge until one is asked for.
+ * Which of Team Brain's own files the tree shows, in a folded card of its own below the sections: a switch for each
+ * group with something in it, all off by default, so the tree is the team's knowledge until one is asked for. Hidden
+ * until `_brain` is listed and when no group has anything; a `_brain` that can't be listed says so rather than reading as empty.
  */
-function ViewsCard({ parts, views, onViewChange }: { parts: readonly FolderEntry[]; views: ReadonlySet<string>; onViewChange: (view: string, on: boolean) => void }) {
-  const written = new Set(parts.map(teamRecordView))
-  const extras = parts.filter((part) => !RECORD_VIEWS.some((view) => view.id === teamRecordView(part))).map((part) => ({ id: teamRecordView(part), name: partName(part) }))
-  const all = [...RECORD_VIEWS, ...extras]
-  const on = all.filter((view) => views.has(view.id)).length
+function ViewsCard({ groups, views, onViewChange }: { groups: RecordGroupsRead; views: ReadonlySet<RecordGroup>; onViewChange: (group: RecordGroup, on: boolean) => void }) {
+  if (groups.status === 'pending') return null
+  // Unreadable, a group that is on still shows, so it can be switched off.
+  const present = RECORD_GROUPS.filter((group) => (groups.status === 'listed' ? groups.present.has(group) : views.has(group)))
+  if (groups.status === 'listed' && present.length === 0) return null
+  const on = present.filter((group) => views.has(group)).length
   return (
-    // A card of its own, folded by default like the sections: the header says how many views are on.
+    // A card of its own, folded by default like the sections: the header says how many groups are on.
     <div className={cn('overflow-hidden rounded-2xl', GLASS_SURFACE)}>
       <PanelSection title="Views" summary={<span className={SECTION_COUNT_CLASS} data-testid="team-brain-views-count">{on > 0 ? `${on} on` : 'Off'}</span>} testId="team-brain-views">
-        <ul className="-mt-1 pb-1">
-          {all.map((view) => {
-            const id = `team-brain-view-${view.id}`
-            return (
-              <li key={view.id} className="flex items-center justify-between gap-2 px-4 py-1.5">
-                <label htmlFor={id} className="min-w-0">
-                  <span className="block truncate text-xs">{view.name}</span>
-                  {!written.has(view.id) && <span className="block text-[11px] text-muted-foreground">Not written yet</span>}
-                </label>
-                <Switch id={id} checked={views.has(view.id)} onCheckedChange={(checked) => onViewChange(view.id, checked)} data-testid={id} />
-              </li>
-            )
-          })}
-        </ul>
+        {groups.status === 'failed' && (
+          <p className="px-4 py-1.5 text-xs text-muted-foreground" data-testid="team-brain-views-unreadable">Team Brain&rsquo;s own files can&rsquo;t be read right now.</p>
+        )}
+        {present.length > 0 && (
+          <ul className="-mt-1 pb-1">
+            {present.map((group) => {
+              const id = `team-brain-view-${group}`
+              return (
+                <li key={group} className="flex items-center justify-between gap-2 px-4 py-1.5">
+                  <label htmlFor={id} className="min-w-0 truncate text-xs">{GROUP_LABELS[group]}</label>
+                  <Switch id={id} checked={views.has(group)} onCheckedChange={(checked) => onViewChange(group, checked)} data-testid={id} />
+                </li>
+              )
+            })}
+          </ul>
+        )}
       </PanelSection>
     </div>
   )
 }
+
+const RECENT_SESSIONS = 3
+/** How many of all its sessions show at once, opened in place. */
+const ALL_SESSIONS_PAGE = 5
 
 const formatSessionDate = (date: string) => formatDistanceToNow(new Date(date), { addSuffix: true })

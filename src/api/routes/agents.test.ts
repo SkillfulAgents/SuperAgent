@@ -21,6 +21,7 @@ import { runInNewContext } from 'node:vm'
 import { Readable, Writable } from 'node:stream'
 import { createHash } from 'node:crypto'
 import { agentRegistry, WorkspaceFileError } from '@shared/lib/agent-actor'
+import { parseMountPath } from '@shared/lib/utils/workspace-path'
 import { underActorTransport } from '@shared/lib/agent-actor/testing/via-test-transport'
 import type { LiveSessionsAnswers } from '@shared/lib/agent-actor/testing/live-sessions-double'
 import type { WireFrame } from '@shared/lib/agent-actor'
@@ -537,6 +538,7 @@ vi.mock('@shared/lib/services/mount-service', () => ({
   removeMount: vi.fn(async () => true),
   setMountReadOnly: vi.fn(async () => true),
   volumeSummary: () => ({ type: 'local', name: 'code' }),
+  resolveMountPath: vi.fn(async () => null),
 }))
 
 vi.mock('@shared/lib/services/usage-service', () => ({
@@ -639,6 +641,7 @@ vi.mock('@shared/lib/services/notification-service', () => ({
   getSessionIdsWithUnreadMentions: vi.fn(() => Promise.resolve(new Set())),
   getUnreadMentionsByAgents: vi.fn(() => Promise.resolve(new Map())),
   getUnreadNotificationsByAgents: vi.fn(() => Promise.resolve(new Map())),
+  getUnreadNotificationPreviewsByAgents: vi.fn(() => Promise.resolve(new Map())),
   deleteNotificationsBySessionIds: vi.fn(() => Promise.resolve(0)),
   deleteMessageNotifications: vi.fn(() => Promise.resolve([])),
 }))
@@ -864,13 +867,14 @@ import {
 import { getAgent, getAgentRecord, getAgentWithStatus, listAgentsWithStatus, updateAgentAvatar } from '@shared/lib/services/agent-service'
 import { countMembersWithMinRole, countOtherMembers, listAgentMembers } from '@shared/lib/services/agent-members-service'
 import { loginFillAccountSchema } from '../../../agent-container/src/login-schema'
-import { attachMount, removeMount } from '@shared/lib/services/mount-service'
+import { attachMount, removeMount, resolveMountPath } from '@shared/lib/services/mount-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { appendMentions } from '@shared/lib/utils/mentions'
+import { appendComputerUseNote } from '@shared/lib/utils/computer-use-note'
 import { listSessionsFromSummary, listSessionsByIds, getSessionMessagesWithCompact, getSessionMessagesPage, getSessionMessagesDelta, getSessionSummary, sessionExists, sessionIsKnown, isSessionRegistered, deleteSession, getSession, getSessionMetadata, updateSessionName, registerSession, readSessionMetadata, updateSessionMetadata } from '@shared/lib/services/session-service'
 import { createScheduledTask, listCompletedOneTimeTasks, listPendingScheduledTasks, listPendingWakesByAgent } from '@shared/lib/services/scheduled-task-service'
 import { listArtifactsFromFilesystem, listArtifactsAndWidgets } from '@shared/lib/services/artifact-service'
-import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents } from '@shared/lib/services/notification-service'
+import { deleteNotificationsBySessionIds, getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, getUnreadNotificationPreviewsByAgents } from '@shared/lib/services/notification-service'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
@@ -4311,6 +4315,23 @@ describe('file upload with relativePath — POST /:id/upload-file', () => {
     expect(body.success).toBe(true)
   })
 
+  it('saves a single HEIC upload as a JPEG and keeps a HEIC inside a folder upload', async () => {
+    const single = new FormData()
+    single.append('file', new File([TINY_HEIC], 'IMG_0001.HEIC'))
+    const singleRes = await postFormData(app, '/api/agents/test-agent/upload-file', single)
+    expect(singleRes.status).toBe(200)
+    expect((await singleRes.json()).path).toMatch(/\/workspace\/uploads\/IMG_0001-\d{13}\.jpg$/)
+    const saved = mockCreateWriteStream.mock.results.at(-1)!.value as InstanceType<typeof MemoryWriteStream>
+    expect([...Buffer.concat(saved.chunks).subarray(0, 3)]).toEqual([0xff, 0xd8, 0xff])
+
+    const folder = new FormData()
+    folder.append('file', new File([TINY_HEIC], 'IMG_0001.HEIC'))
+    folder.append('relativePath', 'photos/IMG_0001.HEIC')
+    const folderRes = await postFormData(app, '/api/agents/test-agent/upload-file', folder)
+    expect(folderRes.status).toBe(200)
+    expect((await folderRes.json()).path).toBe('/workspace/uploads/photos/IMG_0001.HEIC')
+  })
+
   it('sanitizes path traversal via relativePath (strips leading ..)', async () => {
     const formData = new FormData()
     formData.append('file', new File(['malicious'], 'passwd', { type: 'text/plain' }))
@@ -6347,6 +6368,19 @@ describe('decision routes settle their request immediately', () => {
     expect(mockLiveSessions.completeRequest).toHaveBeenCalledWith('test-agent', 'sess-1', body.toolUseId, outcome, )
   })
 
+  it('declines a question as the person skipping it, with their reason', async () => {
+    parkOpen('tool-dec-12', 'question')
+    const res = await postJson(app, '/api/agents/test-agent/sessions/sess-1/answer-question', {
+      toolUseId: 'tool-dec-12',
+      decline: true,
+      declineReason: 'Not now',
+    })
+    expect(res.status).toBe(200)
+    const [path, init] = mockContainerFetch.mock.calls.at(-1)!
+    expect(path).toBe('/inputs/tool-dec-12/reject')
+    expect(JSON.parse(String(init?.body))).toEqual({ reason: 'Not now', unanswered: 'skipped' })
+  })
+
   it('answers 409 to a decision whose request another decision settled between its gate and its claim', async () => {
     parkOpen('tool-dec-11', 'browser_input')
     // The gate saw it open; the other decision lands before this one claims.
@@ -8278,6 +8312,52 @@ describe('GET /api/agents (enriched summary)', () => {
     expect(body[0].hasUnreadMention).toBe(true)
   })
 
+  describe('notificationPreview', () => {
+    const previews = [
+      { id: 'notif-done', sessionId: 'sess-done', type: 'session_complete' as const, text: 'Filed the\n  weekly update.' },
+      { id: 'notif-waiting', sessionId: 'sess-waiting', type: 'session_waiting' as const, text: 'Which flight should I book?' },
+    ]
+
+    beforeEach(() => {
+      vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
+      vi.mocked(getSessionSummary).mockResolvedValue({
+        sessionIds: ['sess-done', 'sess-waiting'],
+        sessionCount: 2,
+        lastActivityAt: new Date(),
+      })
+      vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-done', 'sess-waiting'])]]))
+      vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(new Map([['agent-1', previews]]))
+    })
+
+    it('says what a question still waiting on the user asks, over newer unread', async () => {
+      mockLiveSessions.awaitingIds.mockReturnValueOnce(['sess-waiting'])
+      const body = await (await getReq(app, '/api/agents')).json()
+      expect(body[0].notificationPreview).toBe('Which flight should I book?')
+      expect(body[0].notificationPreviewSource).toEqual({ id: 'notif-waiting', sessionId: 'sess-waiting' })
+    })
+
+    it('otherwise shows the newest unread on one line', async () => {
+      const body = await (await getReq(app, '/api/agents')).json()
+      expect(body[0].notificationPreview).toBe('Filed the weekly update.')
+      expect(body[0].notificationPreviewSource).toEqual({ id: 'notif-done', sessionId: 'sess-done' })
+    })
+
+    it('is absent with nothing unread', async () => {
+      vi.mocked(getUnreadNotificationsByAgents).mockResolvedValue(new Map())
+      vi.mocked(getUnreadNotificationPreviewsByAgents).mockResolvedValue(new Map())
+      const body = await (await getReq(app, '/api/agents')).json()
+      expect(body[0]).not.toHaveProperty('notificationPreview')
+      expect(body[0]).not.toHaveProperty('notificationPreviewSource')
+    })
+
+    it('exposes only personal unread reminders on visible, existing sessions', async () => {
+      vi.mocked(getSessionIdsMarkedUnreadByAgents).mockResolvedValue(new Map([['agent-1', new Set(['sess-done', 'sess-waiting', 'deleted'])]]))
+      vi.mocked(readSessionMetadata).mockResolvedValue({ 'sess-waiting': { isScheduledExecution: true } })
+      const body = await (await getReq(app, '/api/agents')).json()
+      expect(body[0].markedUnreadSessionIds).toEqual(['sess-done'])
+    })
+  })
+
   it('ignores unread notifications on hidden automated sessions — no session list shows them', async () => {
     vi.mocked(listAgentsWithStatus).mockResolvedValue([baseAgent])
     vi.mocked(getSessionSummary).mockResolvedValue({
@@ -8675,6 +8755,12 @@ describe('POST /api/agents/:id/proxy-review/:reviewId (agent rule requests)', ()
     mockGetPendingReviewsForAgent.mockReturnValue([{ id: 'review-1', agentSlug: 'my-agent', accountId: 'acct-1', toolkit: 'gmail', method: 'POST', targetPath: 'x', matchedScopes: [], scopeDescriptions: {} }])
     expect((await postJson(app, '/api/agents/my-agent/proxy-review/review-1', { decision: 'allow' })).status).toBe(200)
     expect(vi.mocked(logAuditEvent).mock.calls.some(([event]) => event.object === 'proxy_rule')).toBe(false)
+  })
+
+  it('passes the reason typed with a deny to the review', async () => {
+    mockGetPendingReviewsForAgent.mockReturnValue([{ id: 'review-1', agentSlug: 'my-agent', accountId: 'acct-1', toolkit: 'gmail', method: 'POST', targetPath: 'x', matchedScopes: [], scopeDescriptions: {} }])
+    expect((await postJson(app, '/api/agents/my-agent/proxy-review/review-1', { decision: 'deny', reason: '  Use the shared folder  ' })).status).toBe(200)
+    expect(mockSubmitDecision).toHaveBeenCalledWith('my-agent', 'review-1', 'deny', 'Use the shared folder')
   })
 })
 
@@ -10023,6 +10109,14 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
     await vi.waitFor(() => expect(updateSessionName).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'session-123', 'Greeting'))
   })
 
+  it('a session the caller names keeps that name and is not named again', async () => {
+    expect((await postJson(app, SESSIONS_URL, { message: 'Weekly report\n\nPull the Q3 numbers', name: 'Weekly report' })).status).toBe(201)
+    expect(registerSession).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'session-123', 'Weekly report', expect.anything())
+    await new Promise((r) => setTimeout(r, 0))
+    expect(mockLlmMessagesCreate).not.toHaveBeenCalled()
+    expect(updateSessionName).not.toHaveBeenCalled()
+  })
+
   it('a shared agent is told who opened the session', async () => {
     mockIsAuthMode.mockReturnValue(true)
     vi.mocked(countMembersWithMinRole).mockResolvedValue(2)
@@ -10103,6 +10197,50 @@ describe('session model/effort resolution — POST /:id/sessions', () => {
       'New Session',
       expect.objectContaining({ model: 'global-agent-model', effort: 'medium' }),
     )
+  })
+
+  describe('started with computer use (the dispatch launcher’s toggle)', () => {
+    const platform = process.platform
+    const onPlatform = (value: NodeJS.Platform) => Object.defineProperty(process, 'platform', { value, configurable: true })
+    afterEach(() => onPlatform(platform))
+
+    it('preloads the computer-use tools and lets the session use any app', async () => {
+      onPlatform('darwin')
+      const start = vi.spyOn(agentRegistry.get('test-agent').sessions, 'start')
+
+      expect((await postJson(app, SESSIONS_URL, { message: 'book this flight', computerUse: true })).status).toBe(201)
+      expect(mockCreateSession.mock.calls[0][0].preloadToolsets).toEqual(['computer-use'])
+      expect(start.mock.calls[0][0].grantComputerUse).toBe(true)
+    })
+
+    it('asks for neither on an ordinary session', async () => {
+      onPlatform('darwin')
+      const start = vi.spyOn(agentRegistry.get('test-agent').sessions, 'start')
+
+      expect((await postJson(app, SESSIONS_URL, { message: 'hello', computerUse: 'yes' })).status).toBe(201)
+      expect(mockCreateSession.mock.calls[0][0]).not.toHaveProperty('preloadToolsets')
+      expect(start.mock.calls[0][0]).not.toHaveProperty('grantComputerUse')
+    })
+
+    it('is refused where computer use cannot run', async () => {
+      onPlatform('linux')
+
+      const res = await postJson(app, SESSIONS_URL, { message: 'book this flight', computerUse: true })
+      expect(res.status).toBe(400)
+      expect(mockCreateSession).not.toHaveBeenCalled()
+    })
+
+    it('is named from what was written, not the note telling the agent', async () => {
+      onPlatform('darwin')
+      mockLlmMessagesCreate.mockResolvedValue({ content: [{ type: 'text', text: 'Flight Booking' }] })
+      const message = appendComputerUseNote('book this flight', 'Screenshot 2026-11-02 at 14.03.22.png')
+
+      expect((await postJson(app, SESSIONS_URL, { message, computerUse: true })).status).toBe(201)
+      await vi.waitFor(() => expect(updateSessionName).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'session-123', 'Flight Booking'))
+      const prompt = String((mockLlmMessagesCreate.mock.calls[0][0] as { messages: Array<{ content: string }> }).messages[0].content)
+      expect(prompt).toContain('book this flight')
+      expect(prompt).not.toContain('[Computer use:')
+    })
   })
 })
 
@@ -10791,6 +10929,7 @@ describe('session existence guards read metadata, not the transcript', () => {
     expect(body).toMatchObject({ id: 'sess-1', name: 'Renamed' })
     expect(body).not.toHaveProperty('messageCount')
     expect(updateSessionName).toHaveBeenCalledWith(expect.objectContaining({ slug: 'test-agent' }), 'sess-1', 'Renamed')
+    expect(globalFeed.publish).toHaveBeenCalledWith({ type: 'session_updated', sessionId: 'sess-1', agentSlug: 'test-agent' })
     // Was one read on each side of the rename.
     expect(getSession).toHaveBeenCalledTimes(1)
   })
@@ -11451,6 +11590,85 @@ describe('PUT /api/agents/:id/avatar', () => {
     expect(updateAgentAvatar).not.toHaveBeenCalled()
     expect(globalFeed.publish).not.toHaveBeenCalled()
   })
+})
+
+describe('files in the agent\'s drives, by mount path', () => {
+  // A drive holding team/notes/a.md, answering as a drive does.
+  const file = { size: 5, stream: vi.fn(() => new Response('notes').body!), close: vi.fn(async () => {}) }
+  const drive = {
+    read: vi.fn(async () => file),
+    list: vi.fn(async () => [
+      { name: 'b.md', kind: 'file', size: 1, mtimeMs: 0 },
+      { name: 'sub', kind: 'directory', size: 0, mtimeMs: 0 },
+    ]),
+  }
+  beforeEach(() => {
+    file.stream.mockClear()
+    file.close.mockClear()
+    vi.mocked(resolveMountPath).mockImplementation(async (_slug, containerPath) => {
+      const parsed = parseMountPath(containerPath)
+      if (!parsed) throw new WorkspaceFileError('invalid-path')
+      return parsed.name === 'team' ? { ops: drive as never, path: parsed.path } : null
+    })
+  })
+
+  it('serves a drive file as the drive route does, so it never runs as the app', async () => {
+    const res = await getReq(createApp(), '/api/agents/test-agent/mount-files/team/notes/a.md?inline=true')
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('notes')
+    expect(res.headers.get('content-security-policy')).toBe('sandbox allow-scripts')
+    expect(resolveMountPath).toHaveBeenCalledWith('test-agent', '/mounts/team/notes/a.md')
+    expect(drive.read).toHaveBeenCalledWith('notes/a.md')
+  })
+
+  it('answers HEAD with the size and no body, as the size request on a card asks', async () => {
+    const res = await headReq(createApp(), '/api/agents/test-agent/mount-files/team/notes/a.md')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-length')).toBe('5')
+    expect(await res.text()).toBe('')
+    expect(file.close).toHaveBeenCalled()
+    expect(file.stream).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['a drive the agent does not have', '/other/a.md', undefined, 404],
+    ['an agent slug spelled with escapes', '/team/a.md', undefined, 400, '/api/agents/test%2Dagent/mount-files'],
+    ['a missing file in its drive', '/team/gone.md', new WorkspaceFileError('not-found'), 404],
+    ['a path that leaves the drive', '/team/a%5Cb.md', undefined, 400],
+    ['a malformed escape', '/team/a%E0.md', undefined, 400],
+    ['a drive with no file named', '/team', undefined, 400],
+    ['a drive that cannot be read', '/team/a.md', new Error('socket hang up'), 503],
+  ])('answers %s with its own status', async (_case, path, failure, status, route = '/api/agents/test-agent/mount-files') => {
+    if (failure) drive.read.mockRejectedValueOnce(failure)
+    expect((await getReq(createApp(), `${route}${path}`)).status).toBe(status)
+  })
+
+  it('tells a drive the agent does not have apart from a file missing from its drive', async () => {
+    drive.read.mockRejectedValueOnce(new WorkspaceFileError('not-found'))
+    expect(await (await getReq(createApp(), '/api/agents/test-agent/mount-files/other/a.md')).json()).toEqual({ error: 'Drive not found' })
+    expect(await (await getReq(createApp(), '/api/agents/test-agent/mount-files/team/gone.md')).json()).toEqual({ error: 'File not found' })
+  })
+
+  it.each([
+    ['a drive the agent does not have', '/mounts/other', 404],
+    ['a folder path that leaves the drive', '/mounts/team/../x', 400],
+  ])('answers a folder listing of %s with its own status', async (_case, root, status) => {
+    expect((await getReq(createApp(), `/api/agents/test-agent/folders?${new URLSearchParams({ root })}`)).status).toBe(status)
+  })
+
+  it('lists a drive folder for a viewer, its children at their mount paths, folders first', async () => {
+    mockAuthorizedAgentRole = 'viewer'
+    const res = await getReq(createApp(), `/api/agents/test-agent/folders?${new URLSearchParams({ root: '/mounts/team/notes' })}`)
+    expect(await res.json()).toEqual({
+      root: '/mounts/team/notes', path: '/mounts/team/notes', truncated: false,
+      entries: [
+        { name: 'sub', path: '/mounts/team/notes/sub', type: 'directory' },
+        { name: 'b.md', path: '/mounts/team/notes/b.md', type: 'file' },
+      ],
+    })
+    expect(drive.list).toHaveBeenCalledWith('notes')
+  })
+
 })
 
 describe('drive changes on a running agent', () => {

@@ -89,21 +89,27 @@ export function useSession(id: string | null, agentSlug: string | null = null) {
 export function useCreateSession(options: {
   /** The caller renders AgentRuntimeErrors that have a preview, so skip their toast. */
   agentRuntimeErrorsShownInline?: boolean
+  /** The caller shows every failure itself, so skip the global error toast. */
+  skipGlobalErrorToast?: boolean
 } = {}) {
   const queryClient = useQueryClient()
   const { track } = useAnalyticsTracking()
 
   return useMutation({
-    meta: { agentRuntimeErrorsShownInline: options.agentRuntimeErrorsShownInline },
+    meta: { agentRuntimeErrorsShownInline: options.agentRuntimeErrorsShownInline, skipGlobalErrorToast: options.skipGlobalErrorToast },
     mutationFn: async (data: {
       agentSlug: string
       message: string
+      // Names the session instead of generating a name from the message.
+      name?: string
       effort?: EffortLevel
       speed?: SpeedLevel
       llmProviderId?: string | null
       model?: string
       // Provenance for sessions confirmed via a dashboard's dispatch dialog.
       dashboardDispatch?: SessionDashboardDispatch
+      // The launcher's computer-use toggle: the session may use any app without asking.
+      computerUse?: boolean
       // Analytics-only: distinguishes auto-started sessions (template onboarding,
       // todo dispatch) from user-typed ones. Not sent to the server.
       origin?: 'user' | 'onboarding' | 'todo'
@@ -115,11 +121,13 @@ export function useCreateSession(options: {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: data.message,
+          ...(data.name ? { name: data.name } : {}),
           ...(data.effort ? { effort: data.effort } : {}),
           ...(data.speed ? { speed: data.speed } : {}),
           ...(data.model ? { model: data.model } : {}),
           ...(data.llmProviderId !== undefined ? { llmProviderId: data.llmProviderId } : {}),
           ...(data.dashboardDispatch ? { dashboardDispatch: data.dashboardDispatch } : {}),
+          ...(data.computerUse ? { computerUse: true } : {}),
         }),
       })
       if (!res.ok) throw await readAgentRuntimeError(res, 'Failed to create session')
@@ -210,6 +218,8 @@ export function useUpdateSessionName() {
       queryClient.invalidateQueries({
         queryKey: ['sessions', resolveAgentSlugFromCache(queryClient, variables.agentSlug)],
       })
+      // A started Todo card shows its session's name.
+      queryClient.invalidateQueries({ queryKey: TODOS_QUERY_KEY })
     },
   })
 }

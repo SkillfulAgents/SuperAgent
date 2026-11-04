@@ -33,7 +33,10 @@ export const TEAM_BRAIN_LOCATIONS: readonly TeamBrainLocation[] = Object.values(
     description: DESCRIPTIONS[drive.type] ?? drive.description,
     Icon: drive.Logo,
     isAvailable: drive.isAvailable,
-    unavailableReason: drive.unavailableReason,
+    // Asked when shown, not when this module loads: a drive's reason can read facts that aren't settled yet.
+    get unavailableReason() {
+      return drive.unavailableReason
+    },
   }))
 
 export function teamBrainLocation(id: TeamBrainLocationId): TeamBrainLocation {

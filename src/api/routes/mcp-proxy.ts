@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import crypto from 'crypto'
 import { validateProxyToken } from '@shared/lib/proxy/token-store'
-import { withDismissalReason } from '@shared/lib/proxy/reauth-dismissal'
+import { withUserReason } from '@shared/lib/proxy/user-reason'
 import { db } from '@shared/lib/db'
 import { mcpAuditLog } from '@shared/lib/db/schema'
 import { mcpSafeFetch } from '@shared/lib/mcp/mcp-safe-fetch'
@@ -301,7 +301,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
     }
     const failure = MCP_REAUTH_FAILURES[result.reason]
     const { statusCode, error } = failure
-    const message = withDismissalReason(failure.message, result.dismissReason)
+    const message = withUserReason(failure.message, result.dismissReason)
 
     await logMcpAuditEntry({
       agentSlug,
@@ -408,7 +408,7 @@ mcpProxy.all('/:agentSlug/:mcpId/:rest{.*}?', async (c) => {
         error: 'blocked_by_policy', message: 'This request was blocked by your MCP access policy.',
         tool: toolName, settingsHint: `You can change this on the agent's Connections page: open ${mcp.descriptor.name} and edit its Permissions.`,
       } },
-      denied: { status: 403, policyDecision: 'denied_by_user', body: { error: 'denied_by_user', message: 'Request denied by user.', rules: access.rules ?? [] } },
+      denied: { status: 403, policyDecision: 'denied_by_user', body: { error: 'denied_by_user', message: withUserReason('Request denied by user.', access.denyReason), rules: access.rules ?? [] } },
       review_timeout: { status: 408, policyDecision: 'review_timeout', body: { error: 'review_timeout', message: 'Request required user approval but timed out.', rules: access.rules ?? [] } },
       rules_unavailable: { status: 503, policyDecision: 'rules_unavailable', body: { error: 'rules_unavailable', message: 'Proxy rules could not be checked. Try again shortly.' } },
     } as const

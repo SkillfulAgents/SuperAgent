@@ -27,6 +27,7 @@ import { registerUpdateHandlers, initAutoUpdater, updateAutoUpdaterWindow } from
 import { enableKeepAwake, disableKeepAwake, cleanupKeepAwake, restoreKeepAwakeOnStartup } from './keep-awake'
 import { openDashboardWindow, installPopupHandler, installCloudDashboardAuth, closeAllDashboardWindows } from './dashboard-window'
 import { blockSrcdocFrameNavigation } from './srcdoc-frame-guard'
+import { captureRegion } from './capture-region'
 import {
   prewarmQuickDispatchWindow,
   toggleQuickDispatchWindow,
@@ -39,7 +40,11 @@ import {
   endQuickDispatchDrag,
   openQuickDispatchWithFile,
   drainQuickDispatchAttachPaths,
+  getQuickDispatchWindow,
 } from './quick-dispatch-window'
+import { captureQuickDispatchScreen, prepareQuickDispatchCapture, setQuickDispatchCaptureTarget } from './quick-dispatch-capture'
+import { isCaptureRect } from '@shared/lib/quick-dispatch-capture'
+import { loadQuickDispatchGlass } from './quick-dispatch-glass'
 import { registerGlobalDispatchShortcut, unregisterGlobalDispatchShortcut } from './global-dispatch-shortcut'
 import { filesFromCommandLine } from './opened-files'
 import { parseAgentDeepLink } from './agent-deep-link'
@@ -87,6 +92,9 @@ process.env.SUPERAGENT_IS_PACKAGED = app.isPackaged ? '1' : '0'
 // won't share it). So it uses `<container>/.superagent`, getDataDir()'s own default.
 if (runsInAppSandbox(getServerFacts())) {
   process.env.SUPERAGENT_DATA_DIR ??= path.join(app.getPath('home'), '.superagent')
+  // A local drive's folder opens through the bookmark made when it was picked.
+  // Electron has this function only in Mac App Store builds.
+  setFolderAccessStarter((bookmark) => app.startAccessingSecurityScopedResource(bookmark) as () => void)
 }
 if (app.isPackaged) {
   process.env.SUPERAGENT_DATA_DIR ??= path.join(app.getPath('appData'), 'Superagent')
@@ -130,6 +138,7 @@ import { applyPreferredApiTarget, resolveApiTargetForRenderer, type CloudEndpoin
 import { desktopClientFacts, factsForRenderer } from './facts'
 import { clearStaleProcessSingleton } from './process-singleton'
 import { runsInAppSandbox, updatesItself } from '@shared/lib/facts/capabilities'
+import { closeLocalFolders, setFolderAccessStarter } from '@shared/lib/volumes/local-folder-access'
 import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { startCloudBootPrefetch } from '@shared/lib/services/cloud-boot-prefetch'
 import { showTargetSwitchOverlay, finishTargetSwitchOverlay } from './target-switch-overlay'
@@ -757,6 +766,23 @@ ipcMain.on('quick-dispatch:drag-end', () => {
   endQuickDispatchDrag()
 })
 
+// The launcher's computer-use toggle: screenshot the display it is on (without
+// it) and play the shutter. Only the launcher itself may ask.
+ipcMain.handle('quick-dispatch:capture-screen', (event) => {
+  const launcher = getQuickDispatchWindow()
+  if (event.sender !== launcher.webContents) return { ok: false, reason: 'failed' }
+  return captureQuickDispatchScreen(launcher)
+})
+// The pointer is on the toggle: build the shutter's overlay ahead of the click.
+ipcMain.on('quick-dispatch:capture-prepare', (event) => {
+  const launcher = getQuickDispatchWindow()
+  if (event.sender === launcher.webContents) prepareQuickDispatchCapture(launcher)
+})
+// Where the screenshot's chip rendered (null: it didn't), for the shutter to land on.
+ipcMain.on('quick-dispatch:capture-target', (_event, rect: unknown) => {
+  setQuickDispatchCaptureTarget(isCaptureRect(rect) ? rect : null)
+})
+
 // "Set up voice input" from the launcher's mic button → open the main window's
 // settings (the launcher itself has no settings surface).
 ipcMain.on('quick-dispatch:open-settings', () => {
@@ -787,16 +813,23 @@ ipcMain.handle('detect-host-browser', () => {
 // Without a defaultPath Electron opens the dialog in Downloads, and the OS no
 // longer remembers where the user last was. Start beside the last folder picked
 // this run, else in home: what gets mounted here is a project, not a download.
+// In the App Sandbox the pick is what grants access, and only until quit, so
+// the dialog also returns a security-scoped bookmark that reopens the folder on
+// later launches (`local-folder-access.ts`). A drive choosing its folder again
+// passes that folder, so the dialog opens in it.
 let lastPickedDirectoryParent: string | null = null
-ipcMain.handle('open-directory', async () => {
+ipcMain.handle('open-directory', async (_event, startIn?: unknown): Promise<{ path: string; bookmark?: string } | null> => {
+  const sandboxed = runsInAppSandbox(desktopClientFacts())
   // createDirectory: macOS shows New Folder only when asked (Windows always does).
   const result = await dialog.showOpenDialog({
     properties: ['openDirectory', 'createDirectory'],
-    defaultPath: lastPickedDirectoryParent ?? app.getPath('home'),
+    defaultPath: typeof startIn === 'string' && path.isAbsolute(startIn) ? startIn : lastPickedDirectoryParent ?? app.getPath('home'),
+    ...(sandboxed ? { securityScopedBookmarks: true } : {}),
   })
   if (result.canceled) return null
   lastPickedDirectoryParent = path.dirname(result.filePaths[0])
-  return result.filePaths[0]
+  const bookmark = sandboxed ? result.bookmarks?.[0] : undefined
+  return { path: result.filePaths[0], ...(bookmark ? { bookmark } : {}) }
 })
 
 // IPC handler for revealing a path in the OS file manager.
@@ -987,6 +1020,10 @@ ipcMain.handle('read-local-file', async (_event, filePath: string): Promise<{ bu
 ipcMain.handle('show-emoji-panel', () => {
   app.showEmojiPanel()
 })
+
+// A PNG of a region of the asking window, in its CSS pixels: what the person
+// saw of a dashboard when they left a comment on it.
+ipcMain.handle('capture-region', (event, rect: unknown) => captureRegion(event.sender, rect))
 
 // IPC handler for opening a dashboard in a separate window
 ipcMain.handle('open-dashboard-window', (_event, { agentSlug, dashboardSlug }: { agentSlug: string; dashboardSlug: string }) => {
@@ -1523,6 +1560,10 @@ function stopNotificationListener(): void {
 
 // Start the API server and app
 async function startApp() {
+  // Load the launcher's Liquid Glass bridge alongside the boot below, so the
+  // launcher prewarm near the end of startup doesn't wait on it. Never rejects.
+  void loadQuickDispatchGlass()
+
   // The database first: SUPERAGENT_DATA_DIR is set above, and nothing below
   // (the API, the launcher, notifications) runs without a current schema.
   // A failure here is fatal and already reported; the app cannot run on an
@@ -1648,7 +1689,7 @@ async function startApp() {
 
   // Quick-dispatch launcher: pre-create the hidden panel and bind its global
   // shortcut so the first invocation appears instantly.
-  prewarmQuickDispatchWindow()
+  await prewarmQuickDispatchWindow()
   const dispatchResult = registerGlobalDispatchShortcut(settings.app?.globalDispatchShortcut, toggleQuickDispatchWindow)
   if (!dispatchResult.success) {
     console.warn(`Quick-dispatch shortcut not registered: ${dispatchResult.error}`)
@@ -1892,6 +1933,7 @@ async function gracefulShutdown() {
 
   // Restore system sleep settings (best-effort, no sudo prompt)
   cleanupKeepAwake()
+  closeLocalFolders()
 
   // Give back a music player voice mode holds paused
   await releaseAllNowPlaying()

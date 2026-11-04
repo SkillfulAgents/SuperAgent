@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { usesHostFolderPaths } from '@renderer/lib/capabilities'
+import { canUseHostFeatures } from '@renderer/lib/capabilities'
 import { apiFetch } from '@renderer/lib/api'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAgent } from './use-agents'
@@ -126,7 +126,7 @@ export function useVolumesManager(agentSlug: string) {
   const handleCreateMount = async ({ name, source, visibility }: VolumeSettingsInput) => {
     if (!canModifyMounts) throw new Error('You do not have permission to add drives to this agent')
     const validatedSource = volumeConfigSchema.parse(source)
-    if (validatedSource.type === 'local' && !usesHostFolderPaths()) throw new Error('Select a folder in the desktop app')
+    if (validatedSource.type === 'local' && !canUseHostFeatures()) throw new Error('Select a folder in the desktop app')
     setOperationError(null)
     // Create + attach through one atomic API operation. Let the dialog surface
     // errors and retain the form so retrying cannot leave an unused definition.

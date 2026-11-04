@@ -22,6 +22,11 @@ const { app, user } = vi.hoisted(() => {
       instructions: '',
       record: undefined as { agentSlug: string; volumeId: string } | undefined,
       upkeepFails: false as boolean | 'rejects',
+      /** The prepared drive's health: 'preparing' while its first copy runs; or the drive list not in yet. */
+      health: 'ok' as 'ok' | 'preparing' | 'missing' | 'loading',
+      /** The drive list's last poll failed, over what it said before. */
+      pollFailed: false,
+      recheck: vi.fn(async () => {}),
       install: record('install', { slug: 'team-brain', onboardingFirstPrompt: 'Set up our team brain' }),
       addMount: vi.fn(async ({ agentSlug, readOnly }: { agentSlug: string; readOnly?: boolean }) => {
         calls.push(`mount ${agentSlug}${readOnly ? ' read-only' : ''}`)
@@ -35,6 +40,10 @@ const { app, user } = vi.hoisted(() => {
       updateSettings: record('record'),
       invalidate: record('refresh agents'),
       session: vi.fn(async () => { calls.push('session') }),
+      skillsets: [] as Array<{ id: string }>,
+      skillsetsFailed: false,
+      rereadSkillsets: vi.fn(),
+      addSkillset: vi.fn(async () => {}),
     },
     user: { isAuthMode: false, isAdmin: false },
   }
@@ -52,7 +61,16 @@ vi.mock('@renderer/hooks/use-agents', () => ({
   useStartAgent: () => ({ mutate: app.startAgent }),
   useUpdateAgent: () => ({ mutateAsync: app.updateAgent }),
 }))
+vi.mock('@renderer/hooks/use-skillsets', () => ({
+  useSkillsets: () => ({ data: app.skillsets, isError: app.skillsetsFailed, refetch: app.rereadSkillsets }),
+  useAddSkillset: () => ({ mutateAsync: app.addSkillset }),
+}))
 vi.mock('@renderer/hooks/use-mounts', () => ({
+  useAgentMounts: (slug: string) => ({
+    data: slug && app.health !== 'loading' ? [{ id: `m-${slug}`, volumeId: 'vol1', health: app.health }] : undefined,
+    isError: app.pollFailed,
+    refetch: app.recheck,
+  }),
   useAddMount: () => ({ mutateAsync: app.addMount }),
 }))
 vi.mock('@renderer/hooks/use-volume-definitions', () => ({
@@ -65,10 +83,14 @@ vi.mock('@renderer/hooks/use-settings', () => ({
 }))
 vi.mock('@renderer/hooks/use-start-onboarding-session', () => ({ useStartOnboardingSession: () => app.session }))
 vi.mock('@renderer/hooks/use-connected-accounts', () => ({ useConnectedAccounts: () => ({ data: undefined }) }))
+vi.mock('@renderer/hooks/use-platform-auth', () => ({ usePlatformAuthStatus: () => ({ data: undefined }) }))
 vi.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({ invalidateQueries: app.invalidate }) }))
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
-    if (init?.method === 'PUT') app.calls.push(`grant ${url.split('/')[3]}`)
+    // Grants are logged once they land, so the order against the session shows set-up waited for them.
+    if (init?.method === 'PUT' || init?.method === 'PATCH') await new Promise((resolve) => setTimeout(resolve, 0))
+    if (init?.method === 'PUT') app.calls.push(url.includes('/read/') ? `read ${url.split('/').pop()}` : `grant ${url.split('/')[3]}`)
+    if (init?.method === 'PATCH') app.calls.push(`${JSON.parse(init.body ?? '{}').operation} all`)
     if (url.endsWith('/team-brain/upkeep')) {
       app.calls.push(`upkeep ${JSON.parse(init?.body ?? '{}').scheduleExpression}`)
       if (app.upkeepFails === 'rejects') throw new Error('Network down')
@@ -100,6 +122,7 @@ import { TeamBrainPage } from './team-brain-page'
 import { volumeSetupRegistry } from '@renderer/components/volumes/volume-setup-registry'
 import { getTeamBrainState, resetTeamBrainState } from '@renderer/lib/team-brain/team-brain-store'
 import { TEAM_BRAIN_INITIAL_STATE } from '@renderer/lib/team-brain/team-brain-schema'
+import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 
 const agent = (slug: string) => ({ slug, displaySlug: slug, name: slug[0].toUpperCase() + slug.slice(1), status: 'stopped', avatar: null })
 
@@ -109,6 +132,10 @@ beforeEach(() => {
   app.agents = [agent('writer'), agent('planner')]
   app.record = undefined
   app.upkeepFails = false
+  app.health = 'ok'
+  app.pollFailed = false
+  app.skillsets = [{ id: DEFAULT_PUBLIC_SKILLSET.id }]
+  app.skillsetsFailed = false
   Object.assign(user, { isAuthMode: false, isAdmin: false })
 })
 afterEach(() => {
@@ -149,7 +176,55 @@ describe('TeamBrainPage', () => {
     expect(screen.getByTestId('team-brain-next')).toBeDisabled()
   })
 
-  it('prepares on the saved drive, and launches in order: instructions, record, upkeep, agent list, session, then the chosen agents', async () => {
+  it('names a missing Gamut Public Skillset before any drive set-up, and adds it as new workspaces have it', async () => {
+    const clicker = userEvent.setup()
+    app.skillsets = [{ id: 'github-com-acme-skills' }]
+    app.addSkillset.mockImplementationOnce(async () => {
+      app.calls.push('add skillset')
+      app.skillsets = [...app.skillsets, { id: DEFAULT_PUBLIC_SKILLSET.id }]
+    })
+    render(<TeamBrainPage />)
+    await clicker.click(screen.getByTestId('team-brain-start'))
+    await clicker.click(screen.getByTestId('team-brain-location-googledrive'))
+    expect(screen.getByTestId('team-brain-next')).toBeDisabled()
+
+    await clicker.click(within(screen.getByTestId('team-brain-public-skillset-missing')).getByRole('button'))
+    expect(app.addSkillset).toHaveBeenCalledWith({ url: DEFAULT_PUBLIC_SKILLSET.url, provider: DEFAULT_PUBLIC_SKILLSET.provider })
+    await waitFor(() => expect(screen.queryByTestId('team-brain-public-skillset-missing')).toBeNull())
+    expect(screen.getByTestId('team-brain-next')).toBeEnabled()
+  })
+
+  it('keeps the notice and reads both lists again when the add fails, since another admin may have added it', async () => {
+    const clicker = userEvent.setup()
+    app.skillsets = [{ id: 'github-com-acme-skills' }]
+    app.addSkillset.mockRejectedValueOnce(new Error('Failed to download skillset: 403 Forbidden'))
+    render(<TeamBrainPage />)
+    await clicker.click(screen.getByTestId('team-brain-start'))
+    await clicker.click(screen.getByTestId('team-brain-location-googledrive'))
+    const notice = screen.getByTestId('team-brain-public-skillset-missing')
+    await clicker.click(within(notice).getByRole('button'))
+
+    expect(await within(notice).findByText('Failed to download skillset: 403 Forbidden')).toBeInTheDocument()
+    expect(app.invalidate).toHaveBeenCalledWith({ queryKey: ['skillsets'] })
+    expect(app.invalidate).toHaveBeenCalledWith({ queryKey: ['discoverable-agents'] })
+    expect(screen.getByTestId('team-brain-next')).toBeDisabled()
+  })
+
+  it('holds the first step while the skillset list cannot be read, even with an older copy in hand', async () => {
+    const clicker = userEvent.setup()
+    app.skillsetsFailed = true
+    app.skillsets = [{ id: 'github-com-acme-skills' }]
+    render(<TeamBrainPage />)
+    await clicker.click(screen.getByTestId('team-brain-start'))
+    await clicker.click(screen.getByTestId('team-brain-location-googledrive'))
+    expect(screen.getByText('Couldn’t read this workspace’s skillsets.')).toBeInTheDocument()
+    expect(screen.queryByTestId('team-brain-public-skillset-missing')).toBeNull()
+    expect(screen.getByTestId('team-brain-next')).toBeDisabled()
+    await clicker.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(app.rereadSkillsets).toHaveBeenCalled()
+  })
+
+  it('prepares on the saved drive, and launches in order: instructions, record, upkeep, agent list, the chosen agents, then the session', async () => {
     const clicker = userEvent.setup()
     // The record marks the agent once the agent list refreshes.
     app.invalidate.mockImplementationOnce(async () => {
@@ -161,8 +236,10 @@ describe('TeamBrainPage', () => {
     await waitFor(() => expect(screen.getByTestId('team-brain-onboarding-step')).toHaveAttribute('data-step', 'agents'))
     expect(app.calls).toEqual(['install', 'mount team-brain', 'warm-start'])
 
-    // Planner off, weekly.
-    await clicker.click(screen.getByTestId('team-brain-agent-planner'))
+    // Every agent off, then writer on, weekly.
+    await clicker.click(screen.getByTestId('team-brain-every-agent-switch'))
+    expect(screen.getByTestId('team-brain-agent-planner')).not.toBeChecked()
+    await clicker.click(screen.getByTestId('team-brain-agent-writer'))
     await clicker.click(screen.getByTestId('team-brain-next'))
     await clicker.click(screen.getByTestId('team-brain-schedule-weekly'))
     await clicker.click(screen.getByTestId('team-brain-next'))
@@ -177,8 +254,10 @@ describe('TeamBrainPage', () => {
 
     const launch = app.calls.slice(3)
     expect(launch.slice(0, 4)).toEqual(['instructions', 'record', 'upkeep 0 0 * * 1', 'refresh agents'])
-    expect(launch).toEqual(expect.arrayContaining(['mount writer read-only', 'grant writer', 'session']))
-    expect(launch.some((call) => call.endsWith('planner'))).toBe(false)
+    expect(launch).toEqual(expect.arrayContaining(['mount writer read-only', 'grant writer', 'read writer', 'list all', 'session']))
+    expect(launch.some((call) => call.endsWith('planner') || call === 'read all')).toBe(false)
+    // Team Brain can list and read the chosen agents before its first chat starts.
+    expect(Math.max(launch.indexOf('list all'), launch.indexOf('read writer'))).toBeLessThan(launch.indexOf('session'))
     expect(app.instructions).toBe('Brain: `/mounts/Team Brain`. Schedule: weekly, Mondays at midnight (cron `0 0 * * 1`).')
 
     // Set-up is over once launched: with no session to replace it, the page shows Team Brain's home page.
@@ -187,19 +266,61 @@ describe('TeamBrainPage', () => {
     expect(screen.getByTestId('team-brain-home')).toBeInTheDocument()
   })
 
-  it('makes the drive global for every agent once the record is accepted, and still lets each one message Team Brain', async () => {
+  it('starts the agent once its drive has copied, and offers Start chat only then', async () => {
+    const clicker = userEvent.setup()
+    app.health = 'preparing'
+    const page = render(<TeamBrainPage />)
+    await saveDrive(clicker)
+    await waitFor(() => expect(screen.getByTestId('team-brain-onboarding-step')).toHaveAttribute('data-step', 'agents'))
+    await clicker.click(screen.getByTestId('team-brain-next'))
+    await clicker.click(screen.getByTestId('team-brain-next'))
+    // Started now, the agent would run without the drive it is about to build.
+    expect(app.calls).toEqual(['install', 'mount team-brain'])
+    expect(screen.getByTestId('team-brain-start-chat')).toBeDisabled()
+    expect(screen.getByTestId('team-brain-start-chat')).toHaveTextContent('Copying the drive…')
+
+    // Not known yet is not ready, and says nothing it doesn't know.
+    app.health = 'loading'
+    page.rerender(<TeamBrainPage />)
+    expect(screen.getByTestId('team-brain-start-chat')).toBeDisabled()
+    expect(screen.getByTestId('team-brain-start-chat')).toHaveTextContent('Start chat')
+
+    // A poll that fails after one that said copying may be out of date: still not ready.
+    app.health = 'preparing'
+    app.pollFailed = true
+    page.rerender(<TeamBrainPage />)
+    expect(screen.getByTestId('team-brain-start-chat')).toBeDisabled()
+    expect(screen.getByRole('alert')).toHaveTextContent('Couldn’t check the drive.')
+    // Try again reads the drive list again.
+    await clicker.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(app.recheck).toHaveBeenCalled()
+    app.pollFailed = false
+
+    app.health = 'missing'
+    page.rerender(<TeamBrainPage />)
+    expect(screen.getByTestId('team-brain-start-chat')).toBeDisabled()
+    expect(screen.getByRole('alert')).toHaveTextContent('Couldn’t read the drive.')
+
+    app.health = 'ok'
+    page.rerender(<TeamBrainPage />)
+    expect(app.calls).toEqual(['install', 'mount team-brain', 'warm-start'])
+    expect(screen.getByTestId('team-brain-start-chat')).toBeEnabled()
+    expect(screen.getByTestId('team-brain-start-chat')).toHaveTextContent('Start chat')
+  })
+
+  it('starts on every agent: the drive goes global once the record is accepted, each agent can message Team Brain, and Team Brain reads every agent', async () => {
     const clicker = userEvent.setup()
     render(<TeamBrainPage />)
     await saveDrive(clicker)
-    await waitFor(() => expect(screen.getByTestId('team-brain-every-agent-switch')).toBeEnabled())
-    await clicker.click(screen.getByTestId('team-brain-every-agent-switch'))
+    await waitFor(() => expect(screen.getByTestId('team-brain-every-agent-switch')).toBeChecked())
     await clicker.click(screen.getByTestId('team-brain-next'))
     await clicker.click(screen.getByTestId('team-brain-next'))
     await clicker.click(screen.getByTestId('team-brain-start-chat'))
     await waitFor(() => expect(app.calls).toContain('session'))
 
     expect(app.calls.indexOf('global read')).toBeGreaterThan(app.calls.indexOf('record'))
-    expect(app.calls).toEqual(expect.arrayContaining(['grant writer', 'grant planner']))
+    expect(app.calls).toEqual(expect.arrayContaining(['grant writer', 'grant planner', 'list all', 'read all']))
+    expect(Math.max(app.calls.indexOf('list all'), app.calls.indexOf('read all'))).toBeLessThan(app.calls.indexOf('session'))
     expect(app.calls).not.toContain('mount writer')
   })
 
@@ -211,8 +332,7 @@ describe('TeamBrainPage', () => {
     const clicker = userEvent.setup()
     render(<TeamBrainPage />)
     await saveDrive(clicker)
-    await waitFor(() => expect(screen.getByTestId('team-brain-every-agent-switch')).toBeEnabled())
-    await clicker.click(screen.getByTestId('team-brain-every-agent-switch'))
+    await waitFor(() => expect(screen.getByTestId('team-brain-every-agent-switch')).toBeChecked())
     await clicker.click(screen.getByTestId('team-brain-next'))
     await clicker.click(screen.getByTestId('team-brain-next'))
     await clicker.click(screen.getByTestId('team-brain-start-chat'))

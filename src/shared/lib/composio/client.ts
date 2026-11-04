@@ -9,6 +9,7 @@ import {
 import { getPlatformAccessToken } from '@shared/lib/services/platform-auth-service'
 import { getPlatformProxyBaseUrl } from '@shared/lib/platform-auth/config'
 import { addErrorBreadcrumb } from '@shared/lib/error-reporting'
+import { PlatformReconnectRequiredError } from '@shared/lib/agent-runtime-errors/platform-reconnect-required/platform-reconnect-required-error'
 import { ProxyExecuteResponseSchema } from './proxy-execute-schema'
 import { LinkResponseSchema } from './link-response-schema'
 
@@ -17,7 +18,7 @@ const COMPOSIO_HOST = 'https://backend.composio.dev'
 type ComposioApiVersion = 'v3' | 'v3.1'
 
 interface ComposioError {
-  error: string | { message?: string; slug?: string; suggested_fix?: string }
+  error: string | { message?: string; slug?: string; suggested_fix?: string; type?: string }
   message?: string
 }
 
@@ -25,9 +26,10 @@ class ComposioApiError extends Error {
   constructor(
     message: string,
     public statusCode: number,
-    public details?: ComposioError
+    public details?: ComposioError,
+    options?: ErrorOptions
   ) {
-    super(message)
+    super(message, options)
     this.name = 'ComposioApiError'
   }
 }
@@ -104,10 +106,18 @@ export async function composioFetch<T>(
       (typeof errorDetails?.error === 'object' ? errorDetails.error.message : undefined) ||
       `Composio API error: ${response.status}`
 
+    // The platform's own auth check failed, not Composio's: the platform key is dead.
+    const platformKeyRejected =
+      platformToken !== null &&
+      response.status === 401 &&
+      typeof errorDetails?.error === 'object' &&
+      errorDetails.error.type === 'authentication_error'
+
     throw new ComposioApiError(
       errorMessage,
       response.status,
-      errorDetails
+      errorDetails,
+      platformKeyRejected ? { cause: new PlatformReconnectRequiredError(errorMessage) } : undefined
     )
   }
 

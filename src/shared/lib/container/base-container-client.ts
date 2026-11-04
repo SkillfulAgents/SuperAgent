@@ -99,13 +99,13 @@ const COMMON_BINARY_PATHS: Record<string, string[]> = {
  */
 /**
  * The session's turns run on this runtime now: its agent keeps the non-secret
- * facts its errors and usage are read with. Best-effort, after the container
+ * facts its errors and analytics are read with. Best-effort, after the container
  * took the session or the message: a failure here must not unsay that.
  */
 async function recordSessionRuntime(agentId: string, sessionId: string, runtime: ConnectionRuntime): Promise<void> {
   try {
     const { agentRegistry } = await import('@shared/lib/agent-actor')
-    await agentRegistry.get(agentId).sessions.recordRuntime(sessionId, { provider: runtime.provider, modelContextWindows: runtime.modelContextWindows })
+    await agentRegistry.get(agentId).sessions.recordRuntime(sessionId, { provider: runtime.provider })
   } catch (error) {
     console.error(`[ContainerClient] Could not record the runtime of session ${sessionId}:`, error)
   }
@@ -1381,6 +1381,7 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
           maxBrowserTabs: options.maxBrowserTabs,
           effort: options.effort,
           speed: options.speed,
+          ...(options.preloadToolsets?.length ? { preloadToolsets: options.preloadToolsets } : {}),
           capabilityPolicies,
           globalInstructions,
           prewarmDefaults: options.prewarmDefaults && warmRuntime ? {

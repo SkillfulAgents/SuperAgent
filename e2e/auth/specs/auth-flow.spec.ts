@@ -6,6 +6,7 @@ import { UserBarPage } from '../pages/user-bar.page'
 import { AppPage } from '../../pages/app.page'
 import { AgentPage } from '../../pages/agent.page'
 import { SessionPage } from '../../pages/session.page'
+import { createResponseGuard } from '../../helpers/response-guard'
 
 // All tests run serially as a single narrative — each test builds on state from previous tests
 test.describe.configure({ mode: 'serial' })
@@ -45,6 +46,15 @@ test.describe('Auth Flow', () => {
 
     // App should load after signup
     await appPage.waitForAppLoaded()
+    // The shell can render before user settings reveal first-user onboarding.
+    // Wait for that required wizard instead of treating a brief absence as done.
+    const settingsResponse = await user1Page.request.get('/api/user-settings')
+    expect(settingsResponse.ok()).toBe(true)
+    const { setupCompleted } = await settingsResponse.json()
+    expect(typeof setupCompleted).toBe('boolean')
+    if (!setupCompleted) {
+      await expect(user1Page.getByTestId('wizard-container')).toBeVisible()
+    }
     await appPage.dismissWizardIfVisible()
 
     // Verify user name in footer
@@ -620,5 +630,175 @@ test.describe('Auth Flow', () => {
     await appPage.waitForAppLoaded()
     await appPage.dismissWizardIfVisible()
     await expect(user2Page).not.toHaveURL(/leaked-path/)
+  })
+
+  test('switching users in one document rechecks a warm protected route and recovers for its owner', async ({ user2Page }) => {
+    const authPage = new AuthPage(user2Page)
+    const appPage = new AppPage(user2Page)
+    const userBar = new UserBarPage(user2Page)
+    const agentPage = new AgentPage(user2Page)
+
+    // Keep this document alive throughout: a reload would recreate the router
+    // singleton and hide stale match/context state across AuthGate remounts.
+    await agentPage.selectAgent(agentName)
+    await expect(user2Page.getByTestId('agent-breadcrumb')).toHaveText(agentName)
+    const protectedUrl = user2Page.url()
+    const document = await user2Page.evaluateHandle(() => window.document)
+
+    await userBar.signOut()
+    await authPage.expectVisible()
+    await expect(user2Page.getByTestId('app-sidebar')).not.toBeVisible()
+
+    // Carol left this agent earlier in the narrative. The previously loaded
+    // owner route must ask the real API again using Carol's new session.
+    const denied = user2Page.waitForResponse(response =>
+      response.request().method() === 'GET' &&
+      /\/api\/agents\/[^/?]+$/.test(response.url().split('?')[0]) &&
+      response.status() === 403,
+    )
+    await authPage.signIn(user3.email, user3.password)
+    await denied
+    await appPage.waitForAppLoaded()
+    await userBar.expectUserName(user3.name)
+    await expect(user2Page).toHaveURL(protectedUrl)
+    await expect(user2Page.getByTestId('agent-not-found')).toBeVisible()
+    await expect(user2Page.getByTestId('agent-breadcrumb')).not.toBeVisible()
+    await expect(agentPage.getAgentItem(agentName)).not.toBeVisible()
+    await expect(user2Page.getByTestId('home-message-input')).not.toBeVisible()
+    expect(await document.evaluate(value => value === window.document)).toBe(true)
+
+    // The denied match must not survive another context change either.
+    await userBar.signOut()
+    await authPage.expectVisible()
+    await authPage.signIn(user2.email, user2.password)
+    await appPage.waitForAppLoaded()
+    await userBar.expectUserName(user2.name)
+    await expect(user2Page).toHaveURL(protectedUrl)
+    await expect(user2Page.getByTestId('agent-breadcrumb')).toHaveText(agentName)
+    await expect(user2Page.getByTestId('agent-not-found')).not.toBeVisible()
+    await expect(user2Page.getByTestId('home-message-input')).toBeVisible()
+    expect(await document.evaluate(value => value === window.document)).toBe(true)
+    await document.dispose()
+  })
+
+  test('a direct cookie-session replacement clears private data before revalidating a retained session', async ({ user2Page }) => {
+    const appPage = new AppPage(user2Page)
+    const userBar = new UserBarPage(user2Page)
+    const sessionPage = new SessionPage(user2Page)
+    const agentPage = new AgentPage(user2Page)
+    await agentPage.selectAgent(agentName)
+    const [initialRead] = await Promise.all([
+      user2Page.waitForResponse(response => response.request().method() === 'POST' &&
+        response.url().includes('/api/notifications/read-by-session/')),
+      sessionPage.sendMessage('Private owner-only conversation before switching accounts'),
+    ])
+    await sessionPage.waitForResponse(15000)
+    expect(initialRead.ok()).toBe(true)
+    const protectedUrl = user2Page.url()
+    const sessionId = protectedUrl.match(/\/sessions\/([^/?#]+)/)?.[1] ?? ''
+    expect(sessionId).toBeTruthy()
+    const document = await user2Page.evaluateHandle(() => window.document)
+    const origin = user2Page.url().split('/').slice(0, 3).join('/')
+    const sessionWrites: string[] = []
+    const sessionUsers: Array<{ status: number; id: string | null; email: string | null }> = []
+    const sessionResponses: Promise<void>[] = []
+    const sessionErrors: string[] = []
+    let signOutRequests = 0
+    const requestListener = (request: import('@playwright/test').Request) => {
+      if ((request.method() === 'POST' && request.url().includes(`/api/notifications/read-by-session/${sessionId}`)) ||
+        (request.method() === 'DELETE' && request.url().endsWith(`/sessions/${sessionId}/unread`))) sessionWrites.push(request.url())
+      if (request.url().endsWith('/api/auth/sign-out')) signOutRequests++
+    }
+    const responseListener = (response: import('@playwright/test').Response) => {
+      if (response.url().split('?')[0].endsWith('/api/auth/get-session')) {
+        sessionResponses.push(response.json().then(body => { sessionUsers.push({ status: response.status(), id: body?.user?.id ?? null, email: body?.user?.email ?? null }) }).catch(error => { sessionErrors.push(String(error)) }))
+      }
+    }
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    let denied!: (status: number) => void
+    const deniedRequest = new Promise<number>(resolve => { denied = resolve })
+    const routeAgent = protectedUrl.match(/\/agents\/([^/?#]+)/)?.[1]
+    expect(routeAgent).toBeTruthy()
+    const agentDetail = (url: URL) => url.pathname === `/api/agents/${routeAgent}`
+    const responses = createResponseGuard({ allowedStatuses: [403] })
+    const handler = responses.intercept(async (route, response) => {
+      if (response.status() === 403) {
+        denied(response.status())
+        await gate
+      }
+      await route.fulfill({ response })
+    })
+    user2Page.on('request', requestListener)
+    user2Page.on('response', responseListener)
+    await user2Page.route(agentDetail, handler)
+    try {
+      await responses.run(async () => {
+        // Real sign-in replaces the cookie without calling sign-out or reloading
+        // the document. A normal online-session refresh then observes Bob → Carol.
+        const replacement = await user2Page.request.post('/api/auth/sign-in/email', { headers: { Origin: origin }, data: { email: user3.email, password: user3.password } })
+        expect(replacement.ok()).toBe(true)
+        const replacementUser = (await replacement.json()).user
+        expect(replacementUser.email).toBe(user3.email)
+        await expect.poll(async () => {
+          await user2Page.evaluate(() => window.dispatchEvent(new Event('online')))
+          await Promise.all(sessionResponses)
+          expect(sessionErrors).toEqual([])
+          return sessionUsers.some(user => user.status === 200 && user.id === replacementUser.id && user.email === user3.email)
+        }, { timeout: 10000 }).toBe(true)
+        expect(await deniedRequest).toBe(403)
+        await expect(user2Page.getByTestId('message-list')).not.toBeVisible()
+        await expect(user2Page.getByTestId('agent-breadcrumb')).not.toBeVisible()
+        expect(sessionWrites).toEqual([])
+        expect(signOutRequests).toBe(0)
+        expect(sessionUsers.every(user => user.status === 200 && user.id !== null)).toBe(true)
+        expect(await document.evaluate(value => value === window.document)).toBe(true)
+
+        release()
+        await appPage.waitForAppLoaded()
+        await userBar.expectUserName(user3.name)
+        await expect(user2Page).toHaveURL(protectedUrl)
+        await expect(user2Page.getByTestId('agent-not-found')).toBeVisible()
+        await expect(agentPage.getAgentItem(agentName)).not.toBeVisible()
+        await expect(user2Page.getByTestId('message-list')).not.toBeVisible()
+        expect(sessionWrites).toEqual([])
+        expect(await user2Page.evaluate(() => sessionStorage.getItem('superagent.redirect'))).toBeNull()
+        for (const colorScheme of ['light', 'dark'] as const) {
+          await user2Page.emulateMedia({ colorScheme })
+          await user2Page.screenshot({ path: test.info().outputPath(`auth-${colorScheme}.png`) })
+        }
+        await user2Page.emulateMedia({ colorScheme: 'light' })
+
+        // The same live document can recover for its owner after another direct
+        // cookie replacement; no stale denied match or observer may survive.
+        const ownerResponseIndex = sessionUsers.length
+        const owner = await user2Page.request.post('/api/auth/sign-in/email', { headers: { Origin: origin }, data: { email: user2.email, password: user2.password } })
+        expect(owner.ok()).toBe(true)
+        const ownerUser = (await owner.json()).user
+        expect(ownerUser.email).toBe(user2.email)
+        await expect.poll(async () => {
+          await user2Page.evaluate(() => window.dispatchEvent(new Event('online')))
+          await Promise.all(sessionResponses)
+          expect(sessionErrors).toEqual([])
+          return sessionUsers.slice(ownerResponseIndex).some(user => user.status === 200 && user.id === ownerUser.id && user.email === user2.email)
+        }, { timeout: 10000 }).toBe(true)
+        await userBar.expectUserName(user2.name)
+        await expect(user2Page.getByTestId('agent-breadcrumb')).toHaveText(agentName)
+        await expect(user2Page.getByTestId('message-list')).toBeVisible()
+        await expect(user2Page).toHaveURL(protectedUrl)
+        await Promise.all(sessionResponses)
+        expect(sessionErrors).toEqual([])
+        expect(sessionUsers.some(user => user.status === 200 && user.id === ownerUser.id && user.email === user2.email)).toBe(true)
+        expect(sessionUsers.every(user => user.status === 200 && user.id !== null)).toBe(true)
+        expect(signOutRequests).toBe(0)
+        expect(await document.evaluate(value => value === window.document)).toBe(true)
+      })
+    } finally {
+      release()
+      await user2Page.unroute(agentDetail, handler)
+      user2Page.off('request', requestListener)
+      user2Page.off('response', responseListener)
+      await document.dispose()
+    }
   })
 })

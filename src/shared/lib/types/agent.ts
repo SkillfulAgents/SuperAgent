@@ -68,11 +68,9 @@ export interface UpdateAgentInput {
 /**
  * Session metadata stored in session-metadata.json
  */
+/** The context's size as the CLI counts it, against the window it auto-compacts at. */
 export interface SessionUsage {
-  inputTokens: number
-  outputTokens: number
-  cacheCreationInputTokens: number
-  cacheReadInputTokens: number
+  totalTokens: number
   contextWindow: number
 }
 
@@ -156,6 +154,8 @@ export interface SessionMetadataMap {
   [sessionId: string]: SessionMetadata
 }
 
+export type SessionOrigin = 'user' | 'scheduled' | 'webhook' | 'integration' | 'agent' | 'widget-repair'
+
 /**
  * Session info derived from JSONL file + metadata
  */
@@ -166,6 +166,8 @@ export interface SessionInfo {
   createdAt: Date
   lastActivityAt: Date
   isActive?: boolean
+  /** Original source, preserved when an automated session becomes interactive. */
+  origin?: SessionOrigin
 }
 
 /**
@@ -202,6 +204,13 @@ export interface JsonlMessageEntry {
     backgroundTaskId?: string
     // Monitor's result: the id of the watch it started
     taskId?: string
+    // TaskCreate's result: the task as saved. `description` is there from
+    // CLI 2.1.317 and can differ from the tool_use input when the CLI
+    // corrected the call or a PreToolUse hook changed it.
+    task?: { id?: string; subject?: string; description?: string }
+    // AskUserQuestion's result: per-question annotations (notes, preview, and
+    // from CLI 2.1.312 `unanswered` when the person didn't answer).
+    annotations?: Record<string, { unanswered?: string; notes?: string; preview?: string } | null>
     // Subagent-specific (present only on Task tool results)
     agentId?: string
     status?: string

@@ -37,6 +37,8 @@ export interface VolumeDefinitionSummary extends VolumeSummaryWithHealth {
   canManage: boolean
   attachmentCount: number
   globalAccess: GlobalAccess | null
+  /** A local drive whose folder the App Sandbox can no longer open: choosing it again in the open panel fixes it in place. */
+  pickFolderAgain?: true
 }
 
 /** An agent's attachment, whose id and name are independent of the definition. */
@@ -81,6 +83,8 @@ export type NotMountedReason =
   | `preparing: ${string}`
   | 'not found'
   | 'not accessible'
+  /** A local drive whose folder the App Sandbox can no longer open. */
+  | 'pick the folder again'
   | 'unreadable'
   | 'invalid name'
   | 'not supported here'

@@ -74,7 +74,7 @@ describe('ReviewManager', () => {
 
     manager.submitDecision('agent-1', reviewId, 'allow')
     const result = await promise
-    expect(result).toBe('allow')
+    expect(result).toEqual({ decision: 'allow' })
   })
 
   it('requestReview → submitDecision("deny") resolves to "deny"', async () => {
@@ -93,7 +93,7 @@ describe('ReviewManager', () => {
 
     manager.submitDecision('agent-1', reviewId, 'deny')
     const result = await promise
-    expect(result).toBe('deny')
+    expect(result).toEqual({ decision: 'deny' })
   })
 
   it('raises a tied review with the generic headline', async () => {
@@ -199,8 +199,8 @@ describe('ReviewManager', () => {
 
     // "Allow all write" → both write reviews resolve; the read review is untouched.
     manager.resolveMatchingPendingByLabel('agent-1', 'write', 'allow')
-    await expect(send).resolves.toBe('allow')
-    await expect(compose).resolves.toBe('allow')
+    await expect(send).resolves.toEqual({ decision: 'allow' })
+    await expect(compose).resolves.toEqual({ decision: 'allow' })
     expect(manager.getPendingReviewsForAgent('agent-1').length).toBe(1)
 
     // does not cross agents
@@ -209,7 +209,7 @@ describe('ReviewManager', () => {
 
     // resolve the lingering read review so afterEach's rejectAll doesn't reject it
     manager.submitDecision('agent-1', manager.getPendingReviewsForAgent('agent-1')[0].id, 'allow')
-    await expect(read).resolves.toBe('allow')
+    await expect(read).resolves.toEqual({ decision: 'allow' })
   })
 
   it('submitDecision returns true for valid reviewId', async () => {
@@ -262,7 +262,7 @@ describe('ReviewManager', () => {
     reviews.resolveMatching('gmail.readonly', 'allow')
     readPolicy('review')
 
-    await expect(decision).resolves.toBe('allow')
+    await expect(decision).resolves.toEqual({ decision: 'allow' })
     expect(reevaluate).toHaveBeenCalledTimes(2)
   })
 
@@ -318,7 +318,7 @@ describe('ReviewManager', () => {
 
     manager.submitDecision('agent-1', reviewId, 'allow')
     const result = await promise
-    expect(result).toBe('allow')
+    expect(result).toEqual({ decision: 'allow' })
 
     // Advancing time should NOT cause any rejection
     vi.advanceTimersByTime(10 * 60 * 1000)
@@ -350,8 +350,8 @@ describe('ReviewManager', () => {
 
     const result1 = await promise1
     const result2 = await promise2
-    expect(result1).toBe('allow')
-    expect(result2).toBe('allow')
+    expect(result1).toEqual({ decision: 'allow' })
+    expect(result2).toEqual({ decision: 'allow' })
   })
 
   it('resolveMatchingPending does NOT resolve reviews with non-matching scopes', async () => {
@@ -511,7 +511,7 @@ describe('ReviewManager', () => {
 
     // Legit owner still resolves cleanly
     expect(manager.submitDecision('agent-victim', reviewId, 'deny')).toBe(true)
-    expect(await promise).toBe('deny')
+    expect(await promise).toEqual({ decision: 'deny' })
   })
 
   it('double submitDecision for same id: second returns false', async () => {
@@ -535,7 +535,7 @@ describe('ReviewManager', () => {
     expect(second).toBe(false)
 
     const result = await promise
-    expect(result).toBe('allow')
+    expect(result).toEqual({ decision: 'allow' })
   })
 
   it('abort signal cleans up orphaned review and rejects promise', async () => {
@@ -741,7 +741,7 @@ describe('ReviewManager', () => {
     const pending = manager.getPendingReviewsForAgent('agent-1')
     manager.submitDecision('agent-1', pending[0].id, 'allow')
     const result = await promise
-    expect(result).toBe('allow')
+    expect(result).toEqual({ decision: 'allow' })
 
     // Aborting after resolution must not settle anything a second time
     const settledBefore = resolved().length
@@ -787,7 +787,7 @@ describe('ReviewManager', () => {
 
       manager.submitDecision('caller', pending[0].id, 'allow')
       const result = await promise
-      expect(result).toBe('allow')
+      expect(result).toEqual({ decision: 'allow' })
     })
 
     it('uses scope=list for list operations (no per-target row)', () => {
@@ -813,7 +813,7 @@ describe('ReviewManager', () => {
       const promise = manager.requestXAgentReview('caller', 'target', 'Target', 'read')
       const pending = manager.getPendingReviewsForAgent('caller')
       manager.submitDecision('caller', pending[0].id, 'deny')
-      expect(await promise).toBe('deny')
+      expect(await promise).toEqual({ decision: 'deny' })
     })
 
     it('message-policy allow sweeps leave attachment reviews pending', async () => {
@@ -829,12 +829,12 @@ describe('ReviewManager', () => {
 
       manager.resolveMatchingPending('caller', 'invoke:target', 'allow')
 
-      await expect(plain).resolves.toBe('allow')
+      await expect(plain).resolves.toEqual({ decision: 'allow' })
       const pending = manager.getPendingReviewsForAgent('caller')
       expect(pending).toHaveLength(1)
       expect(pending[0].xAgent?.fileTransfer).toEqual({ kind: 'send', paths: ['/workspace/report.pdf'] })
       manager.submitDecision('caller', pending[0].id, 'allow')
-      await expect(attachment).resolves.toBe('allow')
+      await expect(attachment).resolves.toEqual({ decision: 'allow' })
     })
 
     it.each(['scope', 'operation'] as const)('deny sweeps settle file reviews through %s', async (sweep) => {
@@ -844,8 +844,8 @@ describe('ReviewManager', () => {
         if (sweep === 'scope') manager.resolveMatchingPending('caller', `${operation}:target`, 'deny')
         else manager.resolveMatchingXAgentByOperation('caller', operation, 'deny')
       }
-      await expect(sent).resolves.toBe('deny')
-      await expect(downloaded).resolves.toBe('deny')
+      await expect(sent).resolves.toEqual({ decision: 'deny' })
+      await expect(downloaded).resolves.toEqual({ decision: 'deny' })
       expect(manager.getPendingReviewsForAgent('caller')).toHaveLength(0)
     })
 
@@ -1048,6 +1048,12 @@ describe('ReviewManager as registry adapter (Phase 5)', () => {
       kind: 'proxy_review',
       outcome: 'answered',
     })
+  })
+
+  it('keeps no reason for a deny on a review nobody waits on', async () => {
+    registerRegistryOnlyReview('registry-review-5')
+    expect(manager.submitDecision('adapter-agent', 'registry-review-5', 'deny', 'Not that inbox')).toBe(true)
+    await expect(manager.takeDenyReason('adapter-agent', 'registry-review-5')).resolves.toBeUndefined()
   })
 
   it('denyAllForAgent sweeps registry-only review entries', () => {

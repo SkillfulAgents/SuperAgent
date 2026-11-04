@@ -27,7 +27,7 @@ export function TeamBrainPage() {
   return (
     <>
       <TeamBrainIntro onStart={isAuthMode && !isAdmin ? undefined : tb.start} />
-      <TeamBrainOnboarding open={tb.isOnboarding} onPrepare={setup.prepare} onStartChat={setup.startChat} onCancel={setup.cancel} />
+      <TeamBrainOnboarding open={tb.isOnboarding} onPrepare={setup.prepare} onAddPublicSkillset={setup.addPublicSkillset} onStartChat={setup.startChat} onCancel={setup.cancel} />
     </>
   )
 }

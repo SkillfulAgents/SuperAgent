@@ -345,7 +345,7 @@ export interface SessionOps {
   isRegistered(sessionId: string): Promise<boolean>
   /** `registerSession` */
   register(sessionId: string, name?: string, initialMetadata?: Partial<SessionMetadata>): Promise<void>
-  /** `updateSessionName` */
+  /** `updateSessionName`, then `session_updated` on the session's stream and the global feed. */
   rename(sessionId: string, name: string): Promise<void>
   /** `deleteSession` — the files are the authority. */
   delete(sessionId: string): Promise<boolean>
@@ -673,6 +673,12 @@ export interface StartSessionRequest {
   notAfter?: number
   /** Bound on the stream attach; a stall past it fails the start (`attach-failed`). */
   attachTimeoutMs?: number
+  /**
+   * The user started it with computer use on: the session may list and use
+   * any app without asking. Granted before the stream attaches, so the first
+   * turn's calls already find it.
+   */
+  grantComputerUse?: boolean
 }
 
 export interface StopSessionOptions {
@@ -768,7 +774,7 @@ export interface ReviewOps {
   /** One review waiting on the user, or null when this agent holds none by that id. */
   get(id: string): Promise<({ id: string; displayText: string } & ReviewDetails) | null>
   /** `AgentReviews.submit` — only a review this agent holds can be found. */
-  submit(id: string, decision: 'allow' | 'deny'): Promise<boolean>
+  submit(id: string, decision: 'allow' | 'deny', reason?: string): Promise<boolean>
   /** `AgentReviews.resolveMatching` */
   resolveMatching(scope: string, decision: 'allow' | 'deny'): Promise<void>
   /** `AgentReviews.resolveMatchingByLabel` */
@@ -799,13 +805,16 @@ export interface ReviewOps {
   resume(id: string): Promise<ReviewOutcome>
   /** `AgentReviews.settle`: after a recheck that decided the review, settle it. */
   settle(id: string, decision: 'allow' | 'deny'): Promise<ReviewOutcome>
+  /** `AgentReviews.takeDenyReason`: what the person typed with a deny, once. */
+  takeDenyReason(id: string): Promise<string | undefined>
 }
 
 /** Computer-use permission grants and the grabbed app — the agent's own `AgentComputerUse`, owned by the actor. */
 export interface ComputerUseOps {
   /**
    * The user let go of the app the agent had grabbed: forget the grab, revoke
-   * the agent's grant for that app and tell the session's viewers, in one turn.
+   * the agent's grant for that app and the session's any-app grant, and tell
+   * the session's viewers, in one turn.
    */
   releaseGrab(sessionId: string): Promise<{ appName: string | undefined }>
   /** `AgentComputerUse.setGrabbed` */

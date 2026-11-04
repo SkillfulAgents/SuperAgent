@@ -1117,14 +1117,14 @@ describe('settings route', () => {
       })
     })
 
-    it('resets the global agent model to Grok when switching to Platform', async () => {
+    it('resets the global agent model to Sonnet when switching to Platform', async () => {
       const res = await putSettings({ llmProvider: 'platform' })
 
       expect(res.status).toBe(200)
       const saved = mockUpdateSettings.mock.calls[0][0]
       expect(saved.models).toEqual({
         summarizerModel: 'haiku',
-        agentModel: 'grok',
+        agentModel: 'sonnet',
         browserModel: 'haiku',
         dashboardBuilderModel: 'opus',
       })

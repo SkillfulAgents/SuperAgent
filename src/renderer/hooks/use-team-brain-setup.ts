@@ -5,34 +5,39 @@ import { useOnboarding } from '@renderer/context/onboarding-context'
 import { useUser } from '@renderer/context/user-context'
 import { apiFetch } from '@renderer/lib/api'
 import { captureRendererException } from '@renderer/lib/error-reporting'
-import { fillTeamBrainSetupBlock, TEAM_BRAIN_CRON } from '@renderer/lib/team-brain/team-brain-setup-block'
+import { fillTeamBrainSetupBlock, setUpByOf, TEAM_BRAIN_CRON } from '@renderer/lib/team-brain/team-brain-setup-block'
 import type { TeamBrainPrepared } from '@renderer/lib/team-brain/team-brain-schema'
 import { getTeamBrainState, usesTeamBrain, useTeamBrain } from '@renderer/lib/team-brain/team-brain-store'
 import type { VolumeDetails } from '@renderer/components/volumes/volume-details-schema'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ApiAgent } from '@shared/lib/types/api'
+import type { MountSummaryWithHealth } from '@shared/lib/types/mount'
 import { mountPathOf } from '@shared/lib/volumes/base-mountable-volume'
 import type { VolumeSource } from '@shared/lib/volumes/volume-config-schema'
 import { useDiscoverableAgents, useInstallAgentFromSkillset } from './use-agent-templates'
 import { useAgents, useDeleteAgent, useStartAgent, useUpdateAgent } from './use-agents'
 import { useConnectedAccounts } from './use-connected-accounts'
-import { useAddMount } from './use-mounts'
-import { useGiveTeamBrain } from './use-team-brain-access'
+import { usePlatformAuthStatus } from './use-platform-auth'
+import { useAddMount, useAgentMounts } from './use-mounts'
+import { setTeamBrainReach, useGiveTeamBrain } from './use-team-brain-access'
 import { useStartOnboardingSession } from './use-start-onboarding-session'
 import { useSettings, useUpdateSettings } from './use-settings'
+import { useAddSkillset } from './use-skillsets'
 import { useDeleteVolumeDefinition, useSaveVolumeDefinition } from './use-volume-definitions'
 
 const TEAM_BRAIN_TEMPLATE_PATH = 'agents/team-brain/'
 
 /**
  * Team Brain set-up for the page that hosts the modal. Saving the drive
- * prepares the agent and its drive and warm-starts the agent, as the new-agent
- * form does; Start chat launches them. Leaving the page mid-set-up cancels it.
+ * prepares the agent and its drive, and the agent warm-starts once the drive can
+ * mount, as the new-agent form does; Start chat launches them. Leaving the page
+ * mid-set-up cancels it.
  */
 export function useTeamBrainSetup() {
   const tb = useTeamBrain()
   const { setOnboarding } = useOnboarding()
   const { user } = useUser()
+  const { data: platform } = usePlatformAuthStatus()
   const { data: connected } = useConnectedAccounts()
   const queryClient = useQueryClient()
   // Also warms the skillset cache the install reads from.
@@ -47,6 +52,7 @@ export function useTeamBrainSetup() {
   const saveVolume = useSaveVolumeDefinition()
   const updateAgent = useUpdateAgent()
   const updateSettings = useUpdateSettings()
+  const addSkillset = useAddSkillset()
   const startOnboardingSession = useStartOnboardingSession()
   const template = templates?.find((t) => t.skillsetId === DEFAULT_PUBLIC_SKILLSET.id && t.path === TEAM_BRAIN_TEMPLATE_PATH)
   const setUpSlug = agents?.find((agent) => agent.teamBrain)?.slug
@@ -55,6 +61,18 @@ export function useTeamBrainSetup() {
   const mounted = useRef(true)
   // Bumped by each prepare and each cancel: work that finds it moved on belongs to an attempt that ended.
   const attempt = useRef(0)
+  // A start mounts only drives that are ready, so a drive still making its first copy waits for the agent's start.
+  const draft = tb.state.prepared
+  const driveHealth = usePreparedDriveHealth(draft).health
+  const warmed = useRef<TeamBrainPrepared | null>(null)
+  const warm = startAgent.mutate
+  useEffect(() => {
+    if (!draft || driveHealth !== 'ok' || warmed.current === draft) return
+    warmed.current = draft
+    warm({ slug: draft.agentSlug, source: 'warm-start' }, {
+      onError: (error) => captureRendererException(error, { tags: { area: 'team-brain', op: 'warm-start' } }),
+    })
+  }, [draft, driveHealth, warm])
 
   const discard = async ({ agentSlug, volumeId }: TeamBrainPrepared) => {
     // The drive delete refuses while the agent still has it attached.
@@ -97,12 +115,18 @@ export function useTeamBrainSetup() {
       void discard(prepared).catch(() => {})
       return false
     }
-    startAgent.mutate({ slug: agent.slug, source: 'warm-start' }, {
-      onError: (error) => captureRendererException(error, { tags: { area: 'team-brain', op: 'warm-start' } }),
-    })
     tb.setPrepared(prepared)
     return true
   }
+
+  // The built-in default's provider: a URL alone saves a GitHub skillset wherever git is installed.
+  // A failed add reads both lists again too: another admin's add meanwhile fails this one but makes the skillset present.
+  const addPublicSkillset = () =>
+    addSkillset.mutateAsync({ url: DEFAULT_PUBLIC_SKILLSET.url, provider: DEFAULT_PUBLIC_SKILLSET.provider })
+      .catch((error: unknown) => Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['skillsets'] }),
+        queryClient.invalidateQueries({ queryKey: ['discoverable-agents'] }),
+      ]).then(() => { throw error }))
 
   const cancel = () => {
     attempt.current++
@@ -127,7 +151,7 @@ export function useTeamBrainSetup() {
     const { instructions = '' }: ApiAgent = await res.json()
     await updateAgent.mutateAsync({
       slug: prepared.agentSlug,
-      instructions: fillTeamBrainSetupBlock(instructions, { agentSlug: prepared.agentSlug, brainPath: prepared.brainPath, schedule, setUpBy: user, accounts: connected?.accounts }),
+      instructions: fillTeamBrainSetupBlock(instructions, { agentSlug: prepared.agentSlug, brainPath: prepared.brainPath, schedule, setUpBy: setUpByOf(user, platform), accounts: connected?.accounts }),
     })
     // Only a refusal says the record is not this set-up's: after any other failure it may have been saved.
     onRecordWrite()
@@ -151,14 +175,23 @@ export function useTeamBrainSetup() {
     // The record marks the agent; the list must carry the mark before set-up stops hiding it.
     await queryClient.invalidateQueries({ queryKey: ['agents'] })
 
-    // Running agents pick the drive up on their next start.
-    const attached = Promise.allSettled(chosen.map((slug) => giveTeamBrain(slug, { volumeId: prepared.volumeId, brainSlug: prepared.agentSlug, mount: !everyAgent })))
+    // Running agents pick the drive up on their next start. Team Brain can list and read them before its first chat.
+    const [attached, reached] = await Promise.all([
+      Promise.allSettled(chosen.map((slug) => giveTeamBrain(slug, { volumeId: prepared.volumeId, brainSlug: prepared.agentSlug, mount: !everyAgent }))),
+      Promise.allSettled([
+        setTeamBrainReach(queryClient, prepared.agentSlug, 'list', true),
+        everyAgent && setTeamBrainReach(queryClient, prepared.agentSlug, 'read', true),
+      ]).then((results) => results.every((result) => result.status === 'fulfilled')),
+    ])
     await startOnboardingSession(prepared.agentSlug, prepared.firstPrompt)
-    const failed = (await attached).filter((result) => result.status === 'rejected').length
+    const failed = attached.filter((result) => result.status === 'rejected').length
     if (failed > 0) {
       toast.error(`Team Brain could not be added to ${failed} ${failed === 1 ? 'agent' : 'agents'}`, {
         description: 'Add the Team Brain drive to them from each agent’s Drives. Their first message to Team Brain will ask for approval.',
       })
+    }
+    if (!reached) {
+      toast.error('Team Brain cannot see your other agents yet', { description: 'Allow it from Team Brain’s “Connect this agent to others” settings.' })
     }
     return true
   }
@@ -202,5 +235,14 @@ export function useTeamBrainSetup() {
     }
   }, [])
 
-  return { agentSlug: setUpSlug, prepare, cancel, startChat }
+  return { agentSlug: setUpSlug, prepare, addPublicSkillset, cancel, startChat }
+}
+
+/**
+ * The prepared drive's health: 'preparing' while its first copy runs, undefined until known. A drive list that can't be
+ * read gives 'unread': what it said before may be out of date. `recheck` reads it again.
+ */
+export function usePreparedDriveHealth(prepared: TeamBrainPrepared | null): { health: MountSummaryWithHealth['health'] | 'unread' | undefined; recheck: () => void } {
+  const { data: mounts, isError, refetch } = useAgentMounts(prepared?.agentSlug ?? '')
+  return { health: isError ? 'unread' : mounts?.find((mount) => mount.volumeId === prepared?.volumeId)?.health, recheck: () => void refetch() }
 }

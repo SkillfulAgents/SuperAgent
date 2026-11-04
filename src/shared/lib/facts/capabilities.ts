@@ -39,9 +39,11 @@ export function drivesUserChrome(server: ServerFacts): boolean {
 }
 
 /**
- * Whether the server reads a folder of its machine by path: to mount it into
- * agents as a local drive, or to copy it in. A sandboxed app reaches only its
- * container, plus what the person picks in its open panel until it quits.
+ * Whether the server reads a folder of its machine by its path alone: one it
+ * is told to copy in, or to make a drive of. A sandboxed app reaches only its
+ * container, plus a folder the person picked in its open panel, through the
+ * security-scoped bookmark the pick makes (`local-folder-access.ts`). So there
+ * a local drive needs that bookmark, and a dropped folder uploads its files.
  */
 export function readsHostFolders(server: ServerFacts): boolean {
   return !runsInAppSandbox(server)

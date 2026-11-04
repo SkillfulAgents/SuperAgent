@@ -22,13 +22,7 @@ vi.mock('@renderer/context/analytics-context', () => ({
   useAnalyticsTracking: () => ({ track: vi.fn() }),
 }))
 
-const staleUsage: SessionUsage = {
-  inputTokens: 10_000,
-  outputTokens: 1_000,
-  cacheReadInputTokens: 100_000,
-  cacheCreationInputTokens: 0,
-  contextWindow: 200_000,
-}
+const staleUsage: SessionUsage = { totalTokens: 110_000, contextWindow: 200_000 }
 const forkResponse = {
   ok: true,
   json: async () => ({ id: 'fork-1', agentSlug: 'abc123def4', name: 'Conversation (fork)' }),

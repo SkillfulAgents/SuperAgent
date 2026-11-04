@@ -4,6 +4,8 @@ import { format } from 'date-fns'
 import { cn } from '@shared/lib/utils/cn'
 import type { useConnectedAccountsByToolkit } from '@renderer/hooks/use-connected-accounts'
 import { useConnectAccount, type NewApiConnection } from '@renderer/hooks/use-connect-account'
+import { AgentRuntimeErrorView } from '@shared/lib/agent-runtime-errors/agent-runtime-error-view'
+import { resolveAgentRuntimeErrorPreview } from '@shared/lib/agent-runtime-errors/previews'
 import { Button } from '@renderer/components/ui/button'
 import { LoginButton, useFocusAfterCancel } from '@renderer/components/connections/login-button'
 import { LoginWindowCancel } from '@renderer/components/connections/login-window-cancel'
@@ -77,7 +79,9 @@ export function VolumeAccountStep({ toolkit, label, accounts, accountId, active,
         onClick={() => { firstAccount.current = !hasAccounts; void connect(toolkit) }} data-testid={`volume-${toolkit}-connect`} />
       {/* The button is full width, so its Cancel sits under it. */}
       <div className="flex justify-center"><LoginWindowCancel visible={pending && canCancel} onCancel={() => { focusConnectAreaAfterCancel(); cancel() }} testId={`volume-${toolkit}-connect-cancel`} /></div>
-      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+      {error && (resolveAgentRuntimeErrorPreview(error)
+        ? <AgentRuntimeErrorView error={error} />
+        : <p role="alert" className="text-sm text-destructive">{error.message}</p>)}
     </div>
     <VolumeSetupFooter onBack={onBack} onCancel={onCancel} isSaving={false} disabled={!active} submitLabel="Next" />
   </form>

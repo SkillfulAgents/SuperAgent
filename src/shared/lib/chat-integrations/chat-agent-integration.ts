@@ -6,6 +6,7 @@
  */
 
 import { AgentIntegration } from '../agent-integrations/agent-integration'
+import { THREAD_NAME_SEPARATOR } from '../agent-integrations/presentation'
 import type { AgentIntegrationRecord, AgentIntegrationDefinition, IntegrationInputEvent, IntegrationInputContext, IntegrationInputResult, IntegrationRoute, IntegrationSessionContext, IntegrationSessionPolicy, IntegrationOutput, IntegrationTool, PreparedIntegrationInput } from '../agent-integrations/types'
 import { ChatInputBuilder } from './chat-input'
 import { BUSY_ACTIVITIES, armIndicatorIfBusy, clearIndicator, stopIndicatorTick, processSSEEvent, deriveDisplayName, isDisplayNameFallback, type ManagedConnector } from './chat-delivery'
@@ -17,6 +18,8 @@ import { chatIntegrationPolicy, chatSettings } from './chat-policy'
 import { z } from 'zod'
 import type { UserRequestEvent } from '@shared/lib/tools/types'
 import type { SessionActivity } from '@shared/lib/types/agent'
+
+export type ToolOutcome = 'success' | 'error' | 'cancelled'
 import type { ChatProvider } from './config-schema'
 import { incomingMessageSchema } from './message-schema'
 import { captureException } from '@shared/lib/error-reporting'
@@ -112,7 +115,7 @@ export interface ChatDirectoryPage<T> {
  */
 export type ChatConnectorClass = Pick<
   typeof ChatAgentIntegration,
-  'generateSystemPrompt' | 'discoveryCapabilities' | 'classifyChatId'
+  'generateSystemPrompt' | 'discoveryCapabilities' | 'classifyChatId' | 'parentChatId'
 >
 
 const CHAT_EVENT_LABELS: Record<IntegrationMessageSource['kind'], string> = {
@@ -157,6 +160,9 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
    */
   static classifyChatId?: (chat: ChatClassifyContext) => ChatConversationType | undefined
 
+  /** The chat a thread id belongs to (a Slack thread's channel), or undefined when the id is not a thread. */
+  static parentChatId?: (chatId: string) => string | undefined
+
   /**
    * List people reachable through the provider's directory (capability:
    * list_users). Implementations must cap the result and set `truncated`
@@ -198,7 +204,8 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
   /**
    * Signal that the agent is busy, labeled by what it is doing (`activity`). The
    * connector owns how that maps to its surface (Telegram labels a draft, Slack
-   * reacts) AND any keep-alive needed to survive provider-side expiry. Called
+   * sets its status line) AND any keep-alive needed to survive provider-side
+   * expiry. Called
    * again with a new activity when the label changes mid-turn. Idempotent — safe
    * to call repeatedly for the same chat.
    */
@@ -227,6 +234,19 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
    * Returns the external message ID.
    */
   abstract sendUserRequestCard(chatId: string, event: UserRequestEvent, sessionId?: string): Promise<string>
+
+  /**
+   * A tool call starts. Default: post its pill text and return that message, which
+   * {@link showToolOutcome} later edits. A connector with its own tool display overrides both.
+   */
+  async showToolStart(chatId: string, _tool: { toolUseId: string; toolName: string; summary: string }, pillText: string): Promise<string> {
+    return this.sendMessage(chatId, { text: pillText })
+  }
+
+  /** A tool call ends. Default: edit its pill to show the outcome. */
+  async showToolOutcome(chatId: string, _toolUseId: string, _outcome: ToolOutcome, pillText: string, messageId: string): Promise<void> {
+    await this.sendStreamingUpdate(chatId, pillText, messageId)
+  }
 
   /**
    * Resolve an open single-question AskUserQuestion card with a free-typed message as the
@@ -262,7 +282,7 @@ export abstract class ChatAgentIntegration extends AgentIntegration {
     if (message.chatId.includes('|')) {
       const date = message.timestamp.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
       const time = message.timestamp.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
-      displayName = displayName ? `${displayName} — ${date}, ${time}` : `${date}, ${time}`
+      displayName = displayName ? `${displayName}${THREAD_NAME_SEPARATOR}${date}, ${time}` : `${date}, ${time}`
     }
     const command = message.text.trim().toLowerCase()
     return {

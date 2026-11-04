@@ -5,8 +5,9 @@ import * as path from 'node:path'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import { agents, user, volumeDefinitions } from '@shared/lib/db/schema'
 import { removeGithubSync } from '@shared/lib/volumes/github-sync'
+import { closeLocalFolders, setFolderAccessStarter } from '@shared/lib/volumes/local-folder-access'
 import { attachMount, removeMount } from './mount-service'
-import { createVolumeDefinition, deleteVolumeDefinition, listVolumeDefinitions, releaseVolume, updateVolumeDefinition } from './volume-service'
+import { createVolumeDefinition, deleteVolumeDefinition, listVolumeDefinitions, reconnectLocalVolume, releaseVolume, updateVolumeDefinition } from './volume-service'
 
 let handle: TestDatabase
 let folder: string
@@ -142,5 +143,93 @@ describe('volume ownership', () => {
     } else {
       expect(await listVolumeDefinitions(bob)).toEqual([])
     }
+  })
+})
+
+describe('choosing a local drive’s folder again', () => {
+  const storedConfig = async (id: string) => JSON.parse((await handle.db.select().from(volumeDefinitions).all()).find(row => row.id === id)!.config)
+
+  describe('in the Mac App Store edition', () => {
+    // The bookmarks that open their folder; any other refuses, as the sandbox does a dead one.
+    let opening: Set<string>
+    beforeEach(() => {
+      vi.stubEnv('E2E_MOCK', 'true')
+      vi.stubEnv('SUPERAGENT_FAKE_DISTRIBUTION', 'mac-app-store')
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      opening = new Set(['bm1'])
+      setFolderAccessStarter(bookmark => {
+        if (!opening.has(bookmark)) throw new Error('bookmarkDataIsStale - try recreating the bookmark')
+        return () => {}
+      })
+    })
+    afterEach(() => {
+      closeLocalFolders()
+      setFolderAccessStarter(null)
+      vi.unstubAllEnvs()
+      vi.restoreAllMocks()
+    })
+
+    it('replaces a dead bookmark in place, keeping the drive’s id and every agent that has it', async () => {
+      const id = await createVolumeDefinition({ ...input(), config: { path: folder, bookmark: 'bm1' } }, alice)
+      await attachMount('agent', id, alice)
+      // The next launch: the bookmark no longer opens the folder.
+      closeLocalFolders()
+      opening = new Set(['bm2'])
+      expect(await listVolumeDefinitions(alice)).toMatchObject([{ id, health: 'missing', pickFolderAgain: true, attachmentCount: 1 }])
+
+      await reconnectLocalVolume(id, { path: folder, bookmark: 'bm2' }, alice)
+      const [listed] = await listVolumeDefinitions(alice)
+      expect(listed).toMatchObject({ id, health: 'ok', attachmentCount: 1 })
+      expect(listed.pickFolderAgain).toBeUndefined()
+      expect(await storedConfig(id)).toEqual({ path: folder, bookmark: 'bm2' })
+    })
+    it('refuses another folder, and a pick without its bookmark', async () => {
+      const id = await createVolumeDefinition({ ...input(), config: { path: folder, bookmark: 'bm1' } }, alice)
+      const other = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'volume-other-')))
+      opening.add('bm2')
+      try {
+        await expect(reconnectLocalVolume(id, { path: other, bookmark: 'bm2' }, alice)).rejects.toMatchObject({
+          status: 400, message: `Choose this drive’s own folder, ${folder}. Add another folder as a new drive.`,
+        })
+      } finally {
+        fs.rmSync(other, { recursive: true, force: true })
+      }
+      await expect(reconnectLocalVolume(id, { path: folder }, alice)).rejects.toMatchObject({
+        status: 400, message: 'Choose the folder in the app’s folder picker to make it a drive',
+      })
+      expect(await storedConfig(id)).toEqual({ path: folder, bookmark: 'bm1' })
+    })
+  })
+
+  it('takes the same folder by another path to it, and stores its real path', async () => {
+    const id = await createVolumeDefinition(input(), alice)
+    const link = `${folder}-link`
+    fs.symlinkSync(folder, link)
+    try {
+      await reconnectLocalVolume(id, { path: link }, alice)
+    } finally {
+      fs.rmSync(link, { force: true })
+    }
+    expect(await storedConfig(id)).toEqual({ path: folder })
+  })
+  it('lets only someone who manages the drive choose its folder again', async () => {
+    const id = await createVolumeDefinition(input(), alice)
+    for (const viewer of [bob, admin]) {
+      await expect(reconnectLocalVolume(id, { path: folder }, viewer)).rejects.toMatchObject({ status: 404 })
+    }
+    const publicId = await createVolumeDefinition({ ...input(), visibility: 'public' }, admin)
+    await expect(reconnectLocalVolume(publicId, { path: folder }, bob)).rejects.toMatchObject({ status: 404 })
+    await reconnectLocalVolume(publicId, { path: folder }, admin)
+    await expect(reconnectLocalVolume('missing', { path: folder }, alice)).rejects.toMatchObject({ status: 404 })
+  })
+  it('refuses a drive that is not a local folder, and a malformed pick', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const now = new Date()
+    await handle.db.insert(volumeDefinitions).values({ id: 'bucket', userId: 'alice', name: 'Bucket', type: 's3', config: '{}', globalAccess: null, createdAt: now, updatedAt: now }).run()
+    await expect(reconnectLocalVolume('bucket', { path: folder }, alice)).rejects.toMatchObject({ status: 400 })
+    const id = await createVolumeDefinition(input(), alice)
+    await expect(reconnectLocalVolume(id, { path: folder, extra: true }, alice)).rejects.toThrow()
+    await expect(reconnectLocalVolume(id, { path: 'relative' }, alice)).rejects.toMatchObject({ status: 400 })
+    vi.restoreAllMocks()
   })
 })

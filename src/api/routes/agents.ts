@@ -1,3 +1,4 @@
+import { agentNotificationPreview } from '@shared/lib/notifications/agent-notification-preview'
 import { assertConnectionSelectionAccess, connectionNeedsAttachment, credentialSource } from '@shared/lib/llm-provider/connection-runtime'
 import { findAgentRuntimeError } from '@shared/lib/agent-runtime-errors/agent-runtime-error'
 import { LlmProviderNotFoundError } from '@shared/lib/agent-runtime-errors/llm-provider-not-found/llm-provider-not-found-error'
@@ -10,6 +11,8 @@ import { notifySessionMentions, readSessionMentions } from './session-mentions'
 import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
 import { parseMentions } from '@shared/lib/utils/mentions'
 import { parseDictationNote } from '@shared/lib/utils/dictation-note'
+import { parseDashboardCommentContext } from '@shared/lib/utils/dashboard-comment'
+import { parseComputerUseNote } from '@shared/lib/utils/computer-use-note'
 import { notifyAgentMembersChanged, changeMemberRole, removeMember, countMembersWithMinRole, countOtherMembers } from '@shared/lib/services/agent-members-service'
 import { formatSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
@@ -19,7 +22,6 @@ import { streamSSE } from 'hono/streaming'
 import { getConnInfo } from '@hono/node-server/conninfo'
 import type Anthropic from '@anthropic-ai/sdk'
 import { createHash, randomUUID } from 'crypto'
-import { Worker } from 'node:worker_threads'
 import { z } from 'zod'
 import { zValidator } from '@hono/zod-validator'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
@@ -29,6 +31,7 @@ import mcpReauth from './mcp-reauth'
 import { agentMemoryRoutes } from './agent-memories'
 import { agentBrowserAccountRoutes, sharedAgentRefusal } from './browser-accounts'
 import { getLlmPolyfillJs } from '../llm-polyfill'
+import { getDashboardInspectorJs } from '../dashboard-inspector'
 import {
   dashboardMountPath,
   dashboardResponseHeaders,
@@ -80,6 +83,7 @@ import { listWebhookTriggers, listActiveWebhookTriggers, listCancelledWebhookTri
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { guessMimeType } from '@shared/lib/utils/mime'
 import { HEIC_PREVIEW_MAX_SOURCE_BYTES } from '@shared/lib/utils/heic-preview'
+import { HEIC_EXTENSIONS, heicUploadAsJpeg, queueHeicPreview, runHeicPreviewWorker } from './heic-jpeg'
 import { servedRange } from '@shared/lib/utils/http-range'
 import { globalFeed } from '@shared/lib/notifications/global-feed'
 import { isSystemMessageText } from '@shared/lib/utils/system-message'
@@ -149,10 +153,13 @@ import {
   formatUploadTooLargeMessage,
   storeUploadChunk,
 } from '@shared/lib/utils/chunked-upload'
-import { getMountsWithHealth, addMount, attachMount, removeMount, setMountReadOnly, volumeSummary } from '@shared/lib/services/mount-service'
+import { getMountsWithHealth, addMount, attachMount, removeMount, setMountReadOnly, volumeSummary, resolveMountPath } from '@shared/lib/services/mount-service'
+import { isMountPath } from '@shared/lib/utils/workspace-path'
+import { serveVolumeFile, volumeFailure } from '../lib/volume-file'
 import { addMountSchema, updateMountSchema } from '@shared/lib/services/mount-schema'
 import { releaseVolume, VolumeError } from '@shared/lib/services/volume-service'
 import { volumeViewer } from '../lib/volume-access'
+import { afterMountChange } from '../lib/mount-change'
 import { readAgentHooks, removeAgentHook } from '@shared/lib/services/agent-hooks-service'
 import { removeAgentHookSchema } from '@shared/lib/services/agent-hooks-schema'
 import {
@@ -219,20 +226,23 @@ import {
 } from '@shared/lib/services/widget-service'
 import { widgetRefreshService } from '@shared/lib/services/widget-refresh-service'
 import { widgetSchemeSchema, widgetSizeSchema } from '@shared/lib/widgets/widget-schema'
-import { getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
+import { getSessionIdsWithUnreadMentions, getSessionIdsWithUnreadNotifications, getUnreadMentionsByAgents, getUnreadNotificationsByAgents, getUnreadNotificationPreviewsByAgents, deleteNotificationsBySessionIds } from '@shared/lib/services/notification-service'
 import { notificationManager } from '@shared/lib/notifications/notification-manager'
 import { markSessionUnread, clearSessionUnread, getSessionIdsMarkedUnread, getSessionIdsMarkedUnreadByAgents, deleteSessionUnreadMarks } from '@shared/lib/services/session-unread-service'
 import { unlinkTodosFromSessions } from '@shared/lib/services/todo-service'
 import { annotateIntegrationMessages } from '@shared/lib/services/agent-integration-message-service'
 import { isHiddenAutomatedSession } from '@shared/lib/services/session-visibility'
+import { withSessionStatus } from '@shared/lib/session-status'
 import { getInboundXAgentDetails } from '@shared/lib/services/inbound-x-agent-service'
 import { isValidApiScope } from '@shared/lib/proxy/scope-matcher'
 import { isLabelDefaultKey } from '@shared/lib/proxy/policy-sentinels'
+import { cleanUserReason } from '@shared/lib/proxy/user-reason'
 import type { ScopeLabel } from '@shared/lib/proxy/scope-metadata'
 import {
   deletePolicy,
   deletePoliciesForAgent,
   deleteTargetPolicy,
+  evaluate as evaluateXAgentPolicy,
   listPoliciesForCaller,
   replacePoliciesForCaller,
   replacePoliciesForCallerInputSchema,
@@ -266,7 +276,7 @@ import { transformMessages, type TransformedMessage, type TransformedItem } from
 import { subagentOwnEntries } from '@shared/lib/utils/fork-subagent-transcript'
 import { workflowRoutes } from './workflows'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, getTeamBrain, mutateSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
-import { readsHostFolders } from '@shared/lib/facts/capabilities'
+import { readsHostFolders, supportsComputerUse } from '@shared/lib/facts/capabilities'
 import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { ungrabAC } from '@shared/lib/computer-use/executor'
 import type { PermissionGrantType } from '@shared/lib/computer-use/types'
@@ -768,11 +778,12 @@ async function enrichAgentsWithSummary(
 
   // Both halves of the unread projection, one query each rather than one per
   // agent — this route hydrates every agent on every poll.
-  const [unreadByAgent, markedUnreadByAgent, mentionsByAgent] = await Promise.all([
+  const [unreadByAgent, markedUnreadByAgent, mentionsByAgent, previewsByAgent] = await Promise.all([
     getUnreadNotificationsByAgents(slugs, options.userId),
     getSessionIdsMarkedUnreadByAgents(slugs, options.userId),
     // Only auth mode has people to mention.
     isAuthMode() ? getUnreadMentionsByAgents(slugs, options.userId) : new Map<string, Set<string>>(),
+    getUnreadNotificationPreviewsByAgents(slugs, options.userId),
   ])
 
   const limit = pLimit(5)
@@ -833,12 +844,23 @@ async function enrichAgentsWithSummary(
       const hasActiveSessions = live.activeSessionIds.length > 0
       const hasSessionsAwaitingInput = live.awaitingSessionIds.length > 0 || live.pendingReviews.length > 0
 
+      // What the newest notification behind the winning flag says, in the same
+      // order the sidebar badge picks: a question still waiting on the user,
+      // then a mention, then anything unread. Rows come newest first and pass
+      // the same visibility as the flags above.
+      const preview = agentNotificationPreview(
+        previewsByAgent.get(agent.slug) ?? [], unreadSessionIds, sessionMetadata,
+        live.awaitingSessionIds, hasSessionsAwaitingInput, hasUnreadMention, hasUnreadNotifications,
+      )
+
       return {
         ...agent,
         hasActiveSessions,
         hasSessionsAwaitingInput,
         hasUnreadNotifications,
         hasUnreadMention,
+        ...preview,
+        markedUnreadSessionIds: sessionSummary.sessionIds.filter(id => markedIds.has(id) && !isHiddenAutomatedSession(sessionMetadata[id])),
         sessionCount: sessionSummary.sessionCount,
         lastActivityAt: sessionSummary.lastActivityAt,
         dashboards: artifacts.map((a) => ({
@@ -1332,8 +1354,9 @@ async function generateAndUpdateSessionNameAsync(
   firstMessage: string,
   agentName: string
 ): Promise<void> {
-  // Named from what the person wrote, without the notes that tell the agent who it tags and that it was dictated.
-  const message = parseMentions(parseDictationNote(firstMessage).cleanText).cleanText
+  // Named from what the person wrote, without the notes that tell the agent who it tags, that it was
+  // dictated, that it may use the computer, or what a dashboard comment was looking at.
+  const message = parseDashboardCommentContext(parseMentions(parseDictationNote(parseComputerUseNote(firstMessage).cleanText).cleanText).cleanText).cleanText
   let sessionName: string | null = null
   // The E2E mock avoids all real provider calls — but this host-direct SDK
   // call bypassed it, so every test session made a doomed HTTPS round trip
@@ -1373,7 +1396,6 @@ Respond with ONLY the session name, nothing else. No quotes, no explanation.`,
       : message.trim().split(/\s+/).slice(0, 6).join(' ').substring(0, 60)
     if (finalName) {
       await agentRegistry.get(agentSlug).sessions.rename(sessionId, finalName)
-      await agentRegistry.get(agentSlug).sessions.broadcastUpdate(sessionId)
     }
   } catch (error) {
     console.error('Failed to update session name:', error)
@@ -1586,6 +1608,7 @@ agents.delete('/:id', ResolveAgent(), AgentAdmin(), async (c) => {
       )
     }
     console.error('Failed to delete agent:', error)
+    captureException(error, { tags: { component: 'agents', operation: 'delete-agent' }, extra: { agentSlug: getAgentId(c) } })
     return c.json({ error: 'Failed to delete agent' }, 500)
   }
 })
@@ -1973,24 +1996,15 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
         isAuthMode() ? getSessionIdsWithUnreadMentions(slug, getCurrentUserId(c)) : new Set<string>(),
       ])
       const live = await actor.live()
-      const active = new Set(live.activeSessionIds)
-      const awaiting = new Set(live.awaitingSessionIds)
       const infos = await actor.sessions.listByIds(
         [...new Set([...live.activeSessionIds, ...unreadIds, ...markedUnreadIds])],
         { excludeAutomated: true },
       )
-      const enriched = infos.map((session) => {
-        const isActive = active.has(session.id)
-        return {
-          ...session,
-          isActive,
-          // The awaiting projection already counts agent-scoped reviews
-          // against every active session of the agent — no review special-case.
-          isAwaitingInput: awaiting.has(session.id),
-          hasUnreadNotifications: unreadIds.has(session.id) || markedUnreadIds.has(session.id),
-          hasUnreadMention: mentionedIds.has(session.id),
-        }
-      })
+      const enriched = withSessionStatus(infos, live).map((session) => ({
+        ...session,
+        hasUnreadNotifications: unreadIds.has(session.id) || markedUnreadIds.has(session.id),
+        hasUnreadMention: mentionedIds.has(session.id),
+      }))
       const ordered = sortSessionsNewestFirst(enriched, sortBy)
       if (sortByRaw === undefined) {
         // Preserve the existing notable-only contract when no explicit order
@@ -2021,17 +2035,10 @@ agents.get('/:id/sessions', AgentRead(), async (c) => {
     ])
     const wakesBySession = new Map(pendingWakes.map((w) => [w.resumeSessionId!, w]))
     const live = await actor.live()
-    const active = new Set(live.activeSessionIds)
-    const awaiting = new Set(live.awaitingSessionIds)
-    const sessionsWithStatus = sessionList.map((session) => {
-      const isActive = active.has(session.id)
+    const sessionsWithStatus = withSessionStatus(sessionList, live).map((session) => {
       const wake = wakesBySession.get(session.id)
       return {
         ...session,
-        isActive,
-        // The awaiting projection already counts agent-scoped reviews against
-        // every active session of the agent — no review special-case.
-        isAwaitingInput: awaiting.has(session.id),
         hasUnreadNotifications:
           unreadSessionIds.has(session.id) || markedUnreadSessionIds.has(session.id),
         hasUnreadMention: mentionedSessionIds.has(session.id),
@@ -2085,12 +2092,24 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
     const slug = getAgentId(c)
     const body = await c.req.json()
     const { message } = body
+    // A session the caller names gets no generated name.
+    const name = typeof body.name === 'string' ? body.name.trim() : ''
 
     if (!message?.trim()) {
       return c.json({ error: 'Message is required' }, 400)
     }
 
     const runtimeOptions = parseRuntimeOptions(body)
+
+    // The dispatch launcher's computer-use toggle: the session may list and
+    // use any app without asking, and has its computer-use tools from the
+    // first turn. The same grant the approval card gives, so no more than the
+    // caller could already do; refused where computer use can't run at all
+    // (the mock E2E runtime drives no machine).
+    const computerUse = body.computerUse === true
+    if (computerUse && process.env.E2E_MOCK !== 'true' && !supportsComputerUse(getServerFacts())) {
+      return c.json({ error: 'Computer use is not available on this machine' }, 400)
+    }
 
     // Optional provenance: the renderer's dashboard-dispatch dialog marks the
     // sessions it creates so they can show where they came from. This is a
@@ -2191,6 +2210,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         maxBrowserTabs: getSettings().app?.maxBrowserTabs,
         effort: resolved.effort,
         speed: resolved.speed,
+        ...(computerUse ? { preloadToolsets: ['computer-use'] } : {}),
         // Same preference chain MINUS the per-session pick: this is what the
         // composer will send next time (it only puts model/effort/speed on the
         // wire when the user explicitly chooses one), so it is what the
@@ -2202,8 +2222,9 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
           speed: prewarm.speed,
         },
       },
-      name: 'New Session',
+      name: name || 'New Session',
       metadata: initialMetadata,
+      ...(computerUse ? { grantComputerUse: true } : {}),
     })
     const sessionId = containerSession.id
 
@@ -2215,9 +2236,9 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
 
     await notifySessionMentions(c, mentions, { agentSlug: slug, agentName: agent.name, sessionId, messageUuid: initialMessageUuid })
 
-    if (isSystemMessageText(message.trim())) {
+    if (!name && isSystemMessageText(message.trim())) {
       await actor.sessions.deferNaming(sessionId)
-    } else {
+    } else if (!name) {
       background(generateAndUpdateSessionNameAsync(
         slug,
         sessionId,
@@ -2230,7 +2251,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       {
         id: sessionId,
         agentSlug: slug,
-        name: 'New Session',
+        name: name || 'New Session',
         createdAt: new Date(),
         lastActivityAt: new Date(),
         isActive: true,
@@ -3637,12 +3658,15 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
     if (decline) {
       const reason = declineReason || 'User declined to answer'
 
+      // `skipped`: the person chose not to answer. The container ends the
+      // question as an annotated answer (the reason is what the agent reads)
+      // where the CLI supports it, and as a declined tool call otherwise.
       const rejectResponse = await actor.container.fetch(
         `/inputs/${encodeURIComponent(toolUseId)}/reject`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reason }),
+          body: JSON.stringify({ reason, unanswered: 'skipped' }),
         }
       )
 
@@ -4363,7 +4387,7 @@ agents.post('/:id/sessions/:sessionId/fill-login', AgentUser(), async (c) => {
       submitted: filled.result.submitted,
       filled: filled.result.filled,
       failed: filled.result.failed,
-      source: account ? 'form_with_vault' : 'form',
+      fill_method: account ? 'form_with_vault' : 'form',
       saved: savedAccount !== null,
       held: heldLabels.length,
     })
@@ -4457,6 +4481,7 @@ agents.post('/:id/sessions/:sessionId/login-via', AgentUser(), zValidator('json'
     trackServerEvent('login_request_via', { provider: providerOf(provider.site)?.id ?? 'other' })
     return c.json({ success: true, account: { username: account.username, site }, provider: { site: provider.site, username: provider.username } })
   } catch (error) {
+    trackServerEvent('login_request_via_failed', { reason: error instanceof VaultConflictError ? 'conflict' : 'error' })
     if (error instanceof VaultConflictError) return c.json({ error: error.message }, 409)
     console.error('[login-via] Failed:', error instanceof Error ? error.message : 'Unknown error')
     return c.json({ error: 'The account could not be saved' }, 500)
@@ -4569,7 +4594,7 @@ agents.post(
       submitted: filled.result.submitted,
       filled: filled.result.filled,
       failed: filled.result.failed,
-      source: 'password_manager',
+      fill_method: 'password_manager',
       saved: savedAccount !== null,
     })
     return c.json({
@@ -4966,7 +4991,6 @@ agents.get('/:id/scheduled-tasks/completed-sessions', AgentRead(), async (c) => 
     const metadata = await actor.sessions.readMetadata()
     const live = await actor.live()
     const active = new Set(live.activeSessionIds)
-    const awaiting = new Set(live.awaitingSessionIds)
 
     const completedSessionIds = tasks
       .map((task) => task.lastSessionId)
@@ -4980,16 +5004,7 @@ agents.get('/:id/scheduled-tasks/completed-sessions', AgentRead(), async (c) => 
       })
 
     const sessions = await actor.sessions.listByIds(completedSessionIds)
-    const sessionsWithStatus = sessions.map((session) => ({
-      ...session,
-      isActive: active.has(session.id),
-      isAwaitingInput: awaiting.has(session.id),
-    }))
-    sessionsWithStatus.sort(
-      (a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime()
-    )
-
-    return c.json(sessionsWithStatus)
+    return c.json(sortSessionsNewestFirst(withSessionStatus(sessions, live)))
   } catch (error) {
     console.error('Failed to fetch completed one-time sessions:', error)
     return c.json({ error: 'Failed to fetch completed one-time sessions' }, 500)
@@ -6391,6 +6406,9 @@ async function handleFileUpload(agentSlug: string, file: File, relativePath?: st
   if (file.size > MAX_UPLOAD_TOTAL_SIZE) {
     throw new UploadTooLargeError(file.size, MAX_UPLOAD_TOTAL_SIZE)
   }
+  // A folder upload keeps its file names, so only a single file is swapped for its JPEG.
+  const jpeg = relativePath ? undefined : await heicUploadAsJpeg(file.name, file)
+  if (jpeg) file = new File([jpeg.data], jpeg.name)
   const uploadPath = resolveUploadDestPath(file.name, relativePath)
 
   // Stream into the workspace instead of Buffer.from(await file.arrayBuffer()) —
@@ -6608,11 +6626,6 @@ agents.get('/:id/mounts', AgentRead(), async (c) => {
   }
 })
 
-// A running container keeps the drives it started with until it restarts.
-async function afterMountChange(agentSlug: string, restart?: boolean) {
-  await agentRegistry.get(agentSlug).container.invalidate({ restart })
-}
-
 // POST /api/agents/:id/mounts - Add a mount
 agents.post('/:id/mounts', AgentUser(), async (c) => {
   try {
@@ -6683,7 +6696,33 @@ agents.delete('/:id/mounts/:mountId', AgentUser(), async (c) => {
   }
 })
 
-// GET /api/agents/:id/folders - Lazily list one level of a bookmarked workspace folder
+function foldersFirstByName(a: { name: string; type: string }, b: { name: string; type: string }): number {
+  if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
+  return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+}
+
+/** One level of a folder in one of the agent's drives. Whoever may view the agent may list any of them, as they may open its files. */
+async function listMountFolder(c: Context, agentSlug: string, rawRoot: string, rawCurrentPath: string) {
+  try {
+    const mount = await resolveMountPath(agentSlug, rawCurrentPath)
+    if (!mount) return c.json({ error: 'Drive not found' }, 404)
+    const currentPath = rawCurrentPath.replace(/\/+$/, '')
+    const entries = (await mount.ops.list(mount.path))
+      .filter(entry => entry.kind === 'file' || entry.kind === 'directory')
+      .map(entry => ({ name: entry.name, path: `${currentPath}/${entry.name}`, type: entry.kind }))
+      .sort(foldersFirstByName)
+    return c.json({
+      root: rawRoot.replace(/\/+$/, ''),
+      path: currentPath,
+      entries: entries.slice(0, MAX_FOLDER_ENTRIES),
+      truncated: entries.length > MAX_FOLDER_ENTRIES,
+    })
+  } catch (error) {
+    return volumeFailure(c, error)
+  }
+}
+
+// GET /api/agents/:id/folders - Lazily list one level of a bookmarked workspace folder, or of a folder in one of its drives
 agents.get('/:id/folders', AgentRead(), async (c) => {
   const agentSlug = getAgentId(c)
   const rawRoot = c.req.query('root')
@@ -6691,6 +6730,7 @@ agents.get('/:id/folders', AgentRead(), async (c) => {
   if (!rawRoot || !rawCurrentPath) {
     return c.json({ error: 'root and path are required' }, 400)
   }
+  if (isMountPath(rawRoot)) return listMountFolder(c, agentSlug, rawRoot, rawCurrentPath)
 
   // Explicit folder bookmarks are shareable with viewers. The built-in full
   // workspace browser is an owner-only surface and must not become an API-level
@@ -6718,10 +6758,7 @@ agents.get('/:id/folders', AgentRead(), async (c) => {
         path: path.posix.join(currentPath, entry.name),
         type: entry.kind,
       }))
-      .sort((a, b) => {
-        if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
-        return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
-      })
+      .sort(foldersFirstByName)
 
     return c.json({
       root: rootPath,
@@ -6924,13 +6961,9 @@ agents.post('/:id/folders/reveal-path', AgentAdmin(), async (c) => {
   }
 })
 
-const HEIC_EXTENSIONS = new Set(['.heic', '.heif'])
 const HEIC_PREVIEW_CACHE_BYTES = 64 * 1024 * 1024
-const HEIC_PREVIEW_MAX_PIXELS = 50_000_000
-const HEIC_PREVIEW_TIMEOUT_MS = 30_000
 const heicPreviewCache = new Map<string, Uint8Array>()
 let heicPreviewCacheBytes = 0
-let heicPreviewQueue: Promise<void> = Promise.resolve()
 
 function cachedHeicPreview(key: string): Uint8Array | undefined {
   const preview = heicPreviewCache.get(key)
@@ -6955,72 +6988,6 @@ function cacheHeicPreview(key: string, preview: Uint8Array) {
   }
   heicPreviewCache.set(key, preview)
   heicPreviewCacheBytes += preview.byteLength
-}
-
-function heicPreviewWorkerUrl(): URL {
-  try {
-    // Electron emits CommonJS; the web build and unbundled source use ESM.
-    const filename = process.versions.electron ? './heic-preview-worker.cjs' : './heic-preview-worker.mjs'
-    return new URL(filename, import.meta.url)
-  } catch (error) {
-    throw new Error('Failed to resolve HEIC preview worker', { cause: error })
-  }
-}
-
-function runHeicPreviewWorker(input: Uint8Array): Promise<Uint8Array> {
-  return new Promise((resolve, reject) => {
-    const inputBuffer = input.buffer as ArrayBuffer
-    const worker = new Worker(heicPreviewWorkerUrl(), {
-      workerData: {
-        input: inputBuffer,
-        maxPixels: HEIC_PREVIEW_MAX_PIXELS,
-        quality: 85,
-      },
-      transferList: [inputBuffer],
-      resourceLimits: {
-        maxOldGenerationSizeMb: 384,
-        maxYoungGenerationSizeMb: 64,
-        stackSizeMb: 4,
-      },
-    })
-    let settled = false
-    let timedOut = false
-    let workerError: Error | undefined
-    let result: { output?: ArrayBuffer; error?: string } | undefined
-    const timeout = setTimeout(() => {
-      if (settled) return
-      timedOut = true
-      background(worker.terminate().catch((error) => {
-        if (settled) return
-        settled = true
-        reject(error)
-      }), { name: 'heic-preview.terminate-worker' })
-    }, HEIC_PREVIEW_TIMEOUT_MS)
-
-    worker.once('message', (message: { output?: ArrayBuffer; error?: string }) => {
-      result = message
-    })
-    worker.once('error', (error) => {
-      workerError = error
-    })
-    worker.once('exit', (code) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timeout)
-      if (timedOut) reject(new Error('HEIC preview conversion timed out'))
-      else if (workerError) reject(workerError)
-      else if (code !== 0) reject(new Error(`HEIC preview worker exited with code ${code}`))
-      else if (result?.error) reject(new Error(result.error))
-      else if (result?.output) resolve(new Uint8Array(result.output))
-      else reject(new Error('HEIC preview worker returned no image'))
-    })
-  })
-}
-
-function queueHeicPreview<T>(task: () => Promise<T>): Promise<T> {
-  const queued = heicPreviewQueue.then(task)
-  heicPreviewQueue = queued.then(() => undefined, () => undefined)
-  return queued
 }
 
 async function renderHeicPreview(actor: AgentActor, resolvedPath: string, stat: FileStat): Promise<Uint8Array> {
@@ -7158,6 +7125,27 @@ agents.get('/:id/files/*', AgentRead(), async (c) => {
     }
     console.error('Failed to download file:', error)
     return c.json({ error: 'Failed to download file' }, 500)
+  }
+})
+
+// GET /api/agents/:id/mount-files/* - A file in one of the agent's drives, by the path the agent sees it at under /mounts
+agents.get('/:id/mount-files/*', AgentRead(), async (c) => {
+  // The raw :id param, as the files route reads its prefix: a slug spelled with escapes misses it.
+  const urlPath = new URL(c.req.url).pathname
+  const prefix = `/api/agents/${c.req.param('id')}/mount-files/`
+  let drivePath: string
+  try {
+    drivePath = urlPath.startsWith(prefix) ? decodeURIComponent(urlPath.slice(prefix.length)) : ''
+  } catch {
+    drivePath = ''
+  }
+  if (!drivePath) return c.json({ error: 'Invalid path' }, 400)
+  try {
+    const mount = await resolveMountPath(getAgentId(c), `/mounts/${drivePath}`)
+    if (!mount) return c.json({ error: 'Drive not found' }, 404)
+    return await serveVolumeFile(c, mount.ops, mount.path)
+  } catch (error) {
+    return volumeFailure(c, error)
   }
 })
 
@@ -7775,7 +7763,8 @@ async function proxyArtifactRequest(c: any) {
     const html = injectDashboardRuntime(await response.text(), {
       basePath: publicBasePath,
       slug: artifactSlug,
-      polyfillJs: getPolyfillJs() + getLlmPolyfillJs(),
+      // The inspector first, so it hears the polyfills' own console lines too.
+      polyfillJs: getDashboardInspectorJs() + getPolyfillJs() + getLlmPolyfillJs(),
     })
     return new Response(html, {
       status: response.status,
@@ -7905,8 +7894,6 @@ agents.get('/:id/pending-requests', AgentRead(), async (c) => {
 // Re-authentication endpoints
 // =============================================================================
 
-const MAX_DISMISS_REASON_LENGTH = 500
-
 agents.route('/', accountReauth)
 agents.route('/', mcpReauth)
 agents.route('/', agentMemoryRoutes)
@@ -7928,11 +7915,7 @@ agents.post('/:id/reauth-request/:requestId/dismiss', AgentUser(), async (c) => 
   const slug = getAgentId(c)
   const requestId = c.req.param('requestId')
   const body = await c.req.json<{ reason?: string }>().catch(() => ({} as { reason?: string }))
-  // Bounded: this text is forwarded into the proxy's error body and written to
-  // the audit log, so it must not be an unbounded write from the composer.
-  const reason = typeof body.reason === 'string' && body.reason.trim()
-    ? body.reason.trim().slice(0, MAX_DISMISS_REASON_LENGTH)
-    : undefined
+  const reason = cleanUserReason(body.reason)
 
   const open = await agentRegistry.get(slug).inputs.get(requestId)
   if (open) {
@@ -7990,7 +7973,7 @@ agents.post('/:id/reauth-request/:requestId/dismiss', AgentUser(), async (c) => 
 agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
   const slug = getAgentId(c)
   const reviewId = c.req.param('reviewId')
-  const body = await c.req.json<{ decision: 'allow' | 'deny' }>()
+  const body = await c.req.json<{ decision: 'allow' | 'deny'; reason?: string }>()
 
   if (!body.decision || !['allow', 'deny'].includes(body.decision)) {
     return c.json({ error: 'Invalid decision. Must be "allow" or "deny".' }, 400)
@@ -8009,7 +7992,7 @@ agents.post('/:id/proxy-review/:reviewId', AgentUser(), async (c) => {
   // Pass slug so submitDecision rejects cross-agent attempts. AgentUser()
   // verifies the URL agent only — without this, a user with role on agent A
   // could resolve agent B's review by sending B's reviewId to A's URL.
-  const success = await agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision)
+  const success = await agentRegistry.get(slug).inputs.reviews.submit(reviewId, body.decision, cleanUserReason(body.reason))
   if (!success) {
     return c.json({ error: 'Review not found or already resolved' }, 404)
   }
@@ -8048,6 +8031,12 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
   if (pendingReview?.ruleProposal) {
     return c.json({ error: 'A rule proposal can only be approved or rejected, not saved as a policy' }, 400)
   }
+  // "Always allow" never overwrites a Block, checked on the card's own link when there is a card.
+  const blockedResponse = () => c.json({ error: 'Forbidden: this agent link is blocked', blocked: true }, 403)
+  const checkTarget = pendingReview?.xAgent ? pendingReview.xAgent.targetAgentSlug || null : body.xAgent?.targetSlug ?? null
+  if (body.decision === 'allow' && body.reviewType === 'xagent' && body.xAgent && await evaluateXAgentPolicy(slug, body.xAgent.operation, checkTarget) === 'block') {
+    return blockedResponse()
+  }
 
   const policyDecision = body.decision === 'allow' ? 'allow' : 'block'
   const now = new Date()
@@ -8075,7 +8064,11 @@ agents.post('/:id/proxy-review/:reviewId/always', AgentUser(), async (c) => {
       // X-Agent review — save to xAgentPolicies. The "caller" is the agent the
       // review is attached to (slug), not the target.
       const { setPolicy: setAgentPolicy } = await import('@shared/lib/services/x-agent-policy-service')
-      await setAgentPolicy(slug, body.xAgent.operation, body.xAgent.targetSlug, policyDecision)
+      const saved = await setAgentPolicy(slug, body.xAgent.operation, body.xAgent.targetSlug, policyDecision, { keepBlock: policyDecision === 'allow' })
+      // A Block written after the check above still wins.
+      if (policyDecision === 'allow' && saved.previousDecision === 'block') {
+        return blockedResponse()
+      }
     } else if (reviewType === 'mcp') {
       // MCP tool review — save to mcpToolPolicies
       // accountId is actually the mcpId for MCP reviews.
@@ -8344,12 +8337,18 @@ agents.put('/:id/x-agent-policies', AgentAdmin(), async (c) => {
   return c.json({ ok: true })
 })
 
-// PUT /api/agents/:id/x-agent-policies/invoke/:target - Upsert ONE invoke
-// policy atomically. The batch PUT above is a whole-form replace: concurrent
+const targetedOperationSchema = z.enum(['invoke', 'read'])
+
+// PUT /api/agents/:id/x-agent-policies/{invoke|read}/:target - Upsert ONE
+// targeted policy atomically. The batch PUT above is a whole-form replace: concurrent
 // single-edge edits through it read-modify-write the full list and the last
 // writer silently drops the other's change. Graph edge edits go through here.
-agents.put('/:id/x-agent-policies/invoke/:target', AgentAdmin(), async (c) => {
+agents.put('/:id/x-agent-policies/:operation/:target', AgentAdmin(), async (c) => {
   const slug = getAgentId(c)
+  const operation = targetedOperationSchema.safeParse(c.req.param('operation'))
+  if (!operation.success) {
+    return c.json({ error: 'Unknown operation' }, 400)
+  }
   const targetSlug = c.req.param('target')
   if (targetSlug === slug) {
     return c.json({ error: 'Cannot set a policy targeting the same agent' }, 400)
@@ -8368,18 +8367,22 @@ agents.put('/:id/x-agent-policies/invoke/:target', AgentAdmin(), async (c) => {
   if (!parsed.success) {
     return c.json({ error: 'Invalid policy payload', details: parsed.error.format() }, 400)
   }
-  const result = await setPolicy(slug, 'invoke', targetSlug, parsed.data.decision)
+  const result = await setPolicy(slug, operation.data, targetSlug, parsed.data.decision)
   return c.json({ ok: true, ...result })
 })
 
-// DELETE /api/agents/:id/x-agent-policies/invoke/:target - Remove the invoke
+// DELETE /api/agents/:id/x-agent-policies/{invoke|read}/:target - Remove the
 // grant for one target atomically. Preserves 'block' rows: deleting a drawn
 // graph edge revokes a grant, and lifting an explicit block here would
 // silently escalate (effective decision falls back to a global allow).
-agents.delete('/:id/x-agent-policies/invoke/:target', AgentAdmin(), async (c) => {
+agents.delete('/:id/x-agent-policies/:operation/:target', AgentAdmin(), async (c) => {
   const slug = getAgentId(c)
+  const operation = targetedOperationSchema.safeParse(c.req.param('operation'))
+  if (!operation.success) {
+    return c.json({ error: 'Unknown operation' }, 400)
+  }
   const targetSlug = c.req.param('target')
-  const removed = await deleteTargetPolicy(slug, 'invoke', targetSlug, { preserveBlock: true })
+  const removed = await deleteTargetPolicy(slug, operation.data, targetSlug, { preserveBlock: true })
   return c.json({ ok: true, removed })
 })
 

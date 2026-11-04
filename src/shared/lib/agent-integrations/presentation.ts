@@ -80,3 +80,6 @@ export function formatSessionTimestamp(date: Date): string {
 export function formatProviderName(provider: string): string {
   return (provider === 'platform-email' ? 'Email' : undefined) ?? PROVIDER_DISPLAY_NAMES[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1)
 }
+
+/** Separates a thread session's name from the time its thread started: "#deals — Nov 2, 3:04 PM". */
+export const THREAD_NAME_SEPARATOR = ' — '

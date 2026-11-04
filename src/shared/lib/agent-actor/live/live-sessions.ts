@@ -73,10 +73,9 @@ export interface LiveSessionsDeps {
 // Body of the container's POST /sessions/:id/interrupt.
 const interruptResponseSchema = z.object({ processKept: z.boolean().optional() })
 
-/** The model runtime a session's turns run on: the non-secret facts its errors and usage are read with. */
+/** The model runtime a session's turns run on: the non-secret facts its errors and analytics are read with. */
 export interface SessionModelRuntime {
   provider: LlmProviderId
-  modelContextWindows: Record<string, number>
 }
 
 /** How many sessions' runtimes an agent keeps (see `LiveSessions.recordRuntime`). */
@@ -293,6 +292,14 @@ export class LiveSessions {
       throw error
     }
     return release
+  }
+
+  /**
+   * The user started the session with computer use on: it may list and use
+   * any app without asking (`AgentComputerUse.grantSession`).
+   */
+  grantComputerUse(sessionId: string): void {
+    this.deps.computerUse.grantSession(sessionId)
   }
 
   /** An event for a session's listeners. */

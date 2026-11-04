@@ -15,6 +15,7 @@ import {
 import type { McpToolInfo } from '@shared/lib/mcp/types'
 import { getAppBaseUrlFromRequest, getCurrentUserId } from '@shared/lib/auth/config'
 import { isAuthMode } from '@shared/lib/auth/mode'
+import { getViewerUserId } from '@shared/lib/auth/ownership'
 import { Authenticated, UsersMcpServer, IsAdmin, Or } from '../middleware/auth'
 import { trackServerEvent } from '@shared/lib/analytics/server-analytics'
 import { logAuditEvent } from '@shared/lib/services/audit-log-service'
@@ -279,7 +280,7 @@ remoteMcps.post('/', async (c) => {
     id,
     name: body.name.trim(),
     url: body.url.trim(),
-    userId: getCurrentUserId(c),
+    userId: getViewerUserId(c),
     authType,
     accessToken: body.accessToken || null,
     toolsJson: JSON.stringify(tools),
@@ -394,7 +395,7 @@ remoteMcps.post('/initiate-oauth', async (c) => {
     // New server: OAuth-first flow (no DB insert yet)
     let result
     try {
-      result = await initiateNewServerOAuth(body.url.trim(), body.name.trim(), redirectCandidates, !!body.electron, getCurrentUserId(c), clientNameOverride, clientIdOverride, clientSecretOverride)
+      result = await initiateNewServerOAuth(body.url.trim(), body.name.trim(), redirectCandidates, !!body.electron, getViewerUserId(c) ?? undefined, clientNameOverride, clientIdOverride, clientSecretOverride)
     } catch (e) {
       if (e instanceof McpOAuthSetupError) return c.json({ error: e.message }, 500)
       throw e

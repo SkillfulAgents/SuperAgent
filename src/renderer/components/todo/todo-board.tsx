@@ -20,7 +20,7 @@ import { useMoveTodo, useStartingTodoIds, useTodos, type TodoView } from '@rende
 import { TodoBoardCard } from './todo-board-card'
 import { TodoCardMenu, TodoRenameDialog } from './todo-card-menu'
 import { TodoDraftDialog, type TodoDraftTarget } from './todo-draft-dialog'
-import { archiveDraftAction, cardActionFor, useTodoActionRunners } from './todo-card-action'
+import { archiveDraftAction, cardActionFor, reopenAction, useTodoActionRunners } from './todo-card-action'
 import { ShortcutTooltip, ShortcutsDialog, usePlainKeys } from './todo-shortcuts'
 import { useTodoAgents } from './todo-shared'
 
@@ -400,7 +400,7 @@ export function TodoBoard() {
       if (!starting.has(todo.id)) open(todo)
       return true
     }
-    const action = [cardActionFor(todo, runners, open), archiveDraftAction(todo, runners)]
+    const action = [cardActionFor(todo, runners, open), archiveDraftAction(todo, runners), reopenAction(todo, runners)]
       .find((a) => a?.shortcut === key.toUpperCase())
     if (action && !starting.has(todo.id)) {
       // The card leaves its column; keep the selection moving down it.
@@ -417,7 +417,7 @@ export function TodoBoard() {
     <SortableContext items={list.map((todo) => todo.id)} strategy={verticalListSortingStrategy}>
       {list.map((todo) => (
         <SortableCard key={todo.id} todo={todo}>
-          <TodoCardMenu todo={todo} onRename={setRenaming}>
+          <TodoCardMenu todo={todo} runners={runners} onRename={setRenaming}>
             <TodoBoardCard
               todo={todo}
               agent={todo.agentSlug ? bySlug.get(todo.agentSlug) : undefined}

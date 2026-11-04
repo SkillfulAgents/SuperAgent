@@ -12,6 +12,8 @@ import userEvent from '@testing-library/user-event'
 const state = vi.hoisted(() => ({
   agents: [] as { slug: string; name: string; lastActivityAt?: string }[],
   speed: 'normal',
+  glass: false,
+  computerUse: true,
 }))
 
 const composerMock = vi.hoisted(() => ({
@@ -52,6 +54,8 @@ const createSessionMock = vi.hoisted(() => ({
 const composerOptionsSpy = vi.hoisted(() => ({ value: null as Record<string, unknown> | null }))
 
 vi.mock('@renderer/hooks/use-agents', () => ({ useAgents: () => ({ data: state.agents }) }))
+vi.mock('./launcher-glass', () => ({ launcherHasGlass: () => state.glass }))
+vi.mock('@renderer/lib/capabilities', () => ({ offersLauncherComputerUse: () => state.computerUse }))
 vi.mock('@renderer/hooks/use-sessions', () => ({ useCreateSession: () => createSessionMock }))
 vi.mock('@renderer/hooks/use-agent-preferences', () => ({
   useAgentPreferences: () => ({ data: undefined, isFetched: true }),
@@ -87,9 +91,15 @@ vi.mock('./quick-dispatch-menus', () => ({
   ModelEffortMenu: () => null,
   EFFORT_LABELS: { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra High', max: 'Max' },
 }))
-vi.mock('@renderer/components/messages/attachment-preview', () => ({ AttachmentPreview: () => null }))
+// Chips carry the name the launcher finds the screenshot's chip by.
+vi.mock('@renderer/components/messages/attachment-preview', () => ({
+  AttachmentPreview: ({ attachments }: { attachments: { id: string; file: File }[] }) =>
+    attachments.map((a) => <div key={a.id} data-testid="attachment-preview" data-attachment-name={a.file.name} />),
+}))
 vi.mock('@renderer/components/ui/voice-input-button', () => ({ VoiceInputButton: () => null, VoiceInputError: () => null }))
-vi.mock('@renderer/components/ui/upload-error', () => ({ UploadError: () => null }))
+vi.mock('@renderer/components/ui/upload-error', () => ({
+  UploadError: ({ error }: { error: string | null }) => (error ? <div data-testid="upload-error">{error}</div> : null),
+}))
 vi.mock('@renderer/components/ui/mount-choice-dialog', () => ({ MountChoiceDialog: () => null }))
 vi.mock('@renderer/components/ui/model-icon', () => ({ ModelIcon: () => null }))
 vi.mock('@renderer/lib/api', () => ({ apiFetch: vi.fn() }))
@@ -99,6 +109,8 @@ vi.mock('sonner', () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
 import { _resetApiTargetForTest, setActiveTarget } from '@renderer/lib/api-target'
 import { uploadFileChunked } from '@renderer/lib/upload'
 import { QuickDispatch } from './quick-dispatch'
+
+const SCREENSHOT = 'Screenshot 2026-11-02 at 14.03.22.png'
 
 /** Install a window.electronAPI stub; returns captured main→renderer callbacks. */
 function installElectronAPI(overrides: Record<string, unknown> = {}) {
@@ -113,6 +125,9 @@ function installElectronAPI(overrides: Record<string, unknown> = {}) {
     onQuickDispatchToggleDictation: capture('toggleDictation'),
     onQuickDispatchAttachPending: capture('attachPending'),
     onQuickDispatchReset: capture('reset'),
+    onQuickDispatchCaptureLanded: capture('captureLanded'),
+    quickDispatchCaptureScreen: vi.fn().mockResolvedValue({ ok: true, png: new Uint8Array([1, 2, 3]), name: SCREENSHOT }),
+    quickDispatchCaptureTarget: vi.fn(),
     quickDispatchDrainAttach: vi.fn().mockResolvedValue([]),
     readLocalFile: vi.fn(),
     quickDispatchDispatched: vi.fn(),
@@ -134,8 +149,16 @@ beforeEach(() => {
   // Reset controllable state to defaults.
   state.agents = [{ slug: 'a1', name: 'Agent One', lastActivityAt: '2024-01-01T00:00:00Z' }]
   state.speed = 'normal'
+  state.computerUse = true
   composerMock.message = ''
   composerMock.attachments = []
+  // Attaching shows the chip on the next render, as the real composer does.
+  composerMock.addFiles.mockImplementation((files: { file: File }[]) => {
+    composerMock.attachments = [
+      ...composerMock.attachments,
+      ...files.map(({ file }) => ({ type: 'file', id: `att-${file.name}`, file })),
+    ]
+  })
   composerMock.isUploading = false
   composerMock.canSubmit = true
   composerMock.uploadError = null
@@ -317,6 +340,110 @@ describe('QuickDispatch', () => {
   })
 })
 
+describe('computer-use toggle', () => {
+  const toggle = () => screen.getByTestId('quick-dispatch-computer-use')
+  const submit = (content: string) => (composerOptionsSpy.value?.onSubmit as (c: string) => Promise<void>)(content)
+
+  async function renderAndTurnOn(overrides: Record<string, unknown> = {}) {
+    const listeners = installElectronAPI(overrides)
+    render(<QuickDispatch />)
+    await waitFor(() => expect(screen.getByTestId('quick-dispatch-agent-trigger')).toHaveTextContent('Agent One'))
+    await act(async () => {
+      fireEvent.click(toggle())
+    })
+    return listeners
+  }
+
+  it('is not offered where the launcher cannot use this computer', () => {
+    state.computerUse = false
+    installElectronAPI()
+    render(<QuickDispatch />)
+    expect(screen.queryByTestId('quick-dispatch-computer-use')).not.toBeInTheDocument()
+  })
+
+  it('attaches a screenshot and hides its chip until the shutter lands on it', async () => {
+    const listeners = await renderAndTurnOn()
+
+    expect(toggle()).toHaveAttribute('aria-pressed', 'true')
+    expect(window.electronAPI?.quickDispatchCaptureScreen).toHaveBeenCalledTimes(1)
+    const [[attached]] = composerMock.addFiles.mock.calls as [[{ file: File }[]]]
+    expect(attached[0].file).toMatchObject({ name: SCREENSHOT, type: 'image/png' })
+    expect(screen.getByTestId('quick-dispatch-input')).toHaveAttribute('placeholder', 'What should Agent One do on your screen?')
+
+    // The chip's place goes to main, and the chip waits under the flying picture.
+    const chip = screen.getByTestId('attachment-preview')
+    expect(window.electronAPI?.quickDispatchCaptureTarget).toHaveBeenCalledWith(expect.objectContaining({ width: expect.any(Number) }))
+    expect(chip.style.opacity).toBe('0')
+    act(() => listeners.captureLanded())
+    expect(chip.style.opacity).toBe('')
+  })
+
+  it('starts the session with computer use, telling the agent which attachment is the screen', async () => {
+    await renderAndTurnOn()
+
+    await act(async () => {
+      await submit('Book this flight')
+    })
+    const [[args]] = createSessionMock.mutateAsync.mock.calls as [[{ message: string; computerUse?: boolean }]]
+    expect(args.computerUse).toBe(true)
+    expect(args.message).toMatch(/^Book this flight\n\n\[Computer use: /)
+    expect(args.message).toContain(`"${SCREENSHOT}" is their screen`)
+  })
+
+  it('turned off again, removes its screenshot and starts an ordinary session', async () => {
+    await renderAndTurnOn()
+
+    await act(async () => {
+      fireEvent.click(toggle())
+    })
+    expect(toggle()).toHaveAttribute('aria-pressed', 'false')
+    expect(composerMock.removeAttachment).toHaveBeenCalledWith(`att-${SCREENSHOT}`)
+
+    await act(async () => {
+      await submit('Book this flight')
+    })
+    const [[args]] = createSessionMock.mutateAsync.mock.calls as [[{ message: string; computerUse?: boolean }]]
+    expect(args).not.toHaveProperty('computerUse')
+    expect(args.message).toBe('Book this flight')
+  })
+
+  it('stays on without a screenshot when Screen Recording is off, and says so', async () => {
+    await renderAndTurnOn({
+      quickDispatchCaptureScreen: vi.fn().mockResolvedValue({ ok: false, reason: 'permission' }),
+    })
+
+    expect(toggle()).toHaveAttribute('aria-pressed', 'true')
+    expect(composerMock.addFiles).not.toHaveBeenCalled()
+    expect(screen.getByTestId('upload-error')).toHaveTextContent('Screen & System Audio Recording')
+
+    await act(async () => {
+      await submit('Book this flight')
+    })
+    const [[args]] = createSessionMock.mutateAsync.mock.calls as [[{ message: string; computerUse?: boolean }]]
+    expect(args.computerUse).toBe(true)
+    expect(args.message).not.toContain('is their screen')
+  })
+
+  it('drops a screenshot that arrives after the launcher was dismissed', async () => {
+    let finishCapture!: (result: unknown) => void
+    const listeners = installElectronAPI({
+      quickDispatchCaptureScreen: vi.fn(() => new Promise((resolve) => { finishCapture = resolve })),
+    })
+    render(<QuickDispatch />)
+    await waitFor(() => expect(listeners.reset).toBeTypeOf('function'))
+    fireEvent.click(toggle())
+
+    act(() => listeners.reset())
+    await act(async () => {
+      finishCapture({ ok: true, png: new Uint8Array([1]), name: SCREENSHOT })
+    })
+
+    expect(toggle()).toHaveAttribute('aria-pressed', 'false')
+    expect(composerMock.addFiles).not.toHaveBeenCalled()
+    expect(window.electronAPI?.quickDispatchCaptureTarget).toHaveBeenCalledWith(null)
+  })
+})
+
 describe('cloud workspace marking', () => {
   // The launcher resolves the same target as the main window and can create a
   // session on the organization's Superagent from a global shortcut. The main
@@ -350,5 +477,19 @@ describe('cloud workspace marking', () => {
     renderOn('cloud')
 
     expect(screen.getByTestId('quick-dispatch').className).toContain('ring-sky-500/70')
+  })
+
+  it('keeps the cloud ring on Liquid Glass, which drops only the hairline ring', () => {
+    state.glass = true
+    try {
+      renderOn('cloud')
+      const panel = screen.getByTestId('quick-dispatch')
+
+      expect(panel.className).toContain('ring-sky-500/70')
+      expect(panel.className).not.toContain('ring-foreground/10')
+      expect(panel.style.borderRadius).toBe('26px')
+    } finally {
+      state.glass = false
+    }
   })
 })

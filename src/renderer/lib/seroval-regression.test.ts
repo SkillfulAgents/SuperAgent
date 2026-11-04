@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { defaultSerovalPlugins } from '@tanstack/router-core'
+import { defaultSerovalPlugins } from '@tanstack/router-core/ssr/client'
 import { fromCrossJSON, fromJSON, toCrossJSONStream, toJSON, toJSONAsync } from 'seroval'
 
 const options = { plugins: defaultSerovalPlugins }

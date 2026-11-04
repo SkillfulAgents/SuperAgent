@@ -25,6 +25,7 @@ import { resolveContainerModel } from './resolve-model'
 import { getAgentWorkspaceDir, getSessionJsonlPath, readJsonlFile } from '../utils/file-storage'
 import { reviewManager } from '../proxy/review-manager'
 import { matchScopes } from '../proxy/scope-matcher'
+import { withUserReason } from '../proxy/user-reason'
 import { db } from '../db'
 import { connectedAccounts } from '../db/schema'
 import { background } from '../background'
@@ -773,6 +774,94 @@ export class HookBlockScenario implements MockScenario {
         content: { type: 'result', subtype: 'success', num_turns: 0, duration_api_ms: 0 },
       })
     }, 160)
+  }
+}
+
+/**
+ * A question the person declined, as the real container ends it on a CLI with
+ * `ask_user_question_unanswered_v1`: an answer carrying the reason, annotated
+ * `unanswered`. Null for any other input or rejection.
+ */
+function mockSkippedQuestionResult(
+  pending: { inputType: string; input?: Record<string, unknown> } | undefined,
+  init: RequestInit | undefined,
+): { content: string; toolUseResult: Record<string, unknown> } | null {
+  if (pending?.inputType !== 'question' || typeof init?.body !== 'string') return null
+  let body: { reason?: unknown; unanswered?: unknown }
+  try {
+    body = JSON.parse(init.body) as typeof body
+  } catch {
+    return null
+  }
+  const questions = pending.input?.questions
+  if (typeof body.unanswered !== 'string' || !Array.isArray(questions)) return null
+  const reason = typeof body.reason === 'string' && body.reason ? body.reason : 'User declined to answer'
+  const texts = questions.map((q) => String((q as { question?: unknown }).question ?? ''))
+  return {
+    content: `The user answered: ${texts.map((t) => `"${t}"="${reason}"`).join(', ')}. Read the answers carefully — they may request clarification, changes, or that you not proceed — and follow what they actually say.`,
+    toolUseResult: {
+      questions,
+      answers: Object.fromEntries(texts.map((t) => [t, reason])),
+      annotations: Object.fromEntries(texts.map((t) => [t, { unanswered: body.unanswered }])),
+    },
+  }
+}
+
+/**
+ * A planned task list: TaskCreate calls whose results carry the saved
+ * description (CLI 2.1.317+), the first task in progress, and the turn held
+ * open so the activity card shows the plan.
+ */
+export class TaskPlanScenario implements MockScenario {
+  constructor(
+    private tasks: Array<{ subject: string; description: string; activeForm: string }>,
+    private holdMs: number,
+  ) {}
+
+  execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
+    const at = stepsInOrder()
+    const stamp = Date.now()
+    const ids = this.tasks.map((_, i) => `tool_task_${stamp}_${i}`)
+    const updateId = `tool_task_${stamp}_update`
+    at(10, () => {
+      client.writeJsonlEntry(sessionId, { type: 'user', message: { content: userMessage }, timestamp: new Date().toISOString() })
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: {
+          content: [
+            ...this.tasks.map((task, i) => ({ type: 'tool_use', id: ids[i], name: 'TaskCreate', input: task })),
+            { type: 'tool_use', id: updateId, name: 'TaskUpdate', input: { taskId: '1', status: 'in_progress' } },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      })
+      this.tasks.forEach((task, i) => {
+        client.writeJsonlEntry(sessionId, {
+          type: 'user',
+          message: { content: [{ type: 'tool_result', tool_use_id: ids[i], content: `Task #${i + 1} created successfully: ${task.subject}` }] },
+          timestamp: new Date().toISOString(),
+          toolUseResult: { task: { id: String(i + 1), subject: task.subject, description: task.description } },
+        })
+      })
+      client.writeJsonlEntry(sessionId, {
+        type: 'user',
+        message: { content: [{ type: 'tool_result', tool_use_id: updateId, content: 'Updated task #1 status' }] },
+        timestamp: new Date().toISOString(),
+      })
+      // The live session refetches the transcript on a user frame.
+      client.emitStreamMessage(sessionId, {
+        type: 'user',
+        content: { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: updateId, content: 'Updated task #1 status' }] } },
+      })
+    })
+    at(this.holdMs, () => {
+      client.writeJsonlEntry(sessionId, {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'The plan is ready.' }] },
+        timestamp: new Date().toISOString(),
+      })
+      client.emitStreamMessage(sessionId, { type: 'result', content: { type: 'result', subtype: 'success' } })
+    })
   }
 }
 
@@ -1566,7 +1655,7 @@ export class ProxyReviewScenario implements MockScenario {
         matchedScopes: this.matchedScopes,
         scopeDescriptions: this.scopeDescriptions,
         endpointDescription: matchScopes(this.toolkit, this.method, '/' + this.targetPath).endpointDescription,
-      }).then((decision) => {
+      }).then((review) => {
         // Write JSONL and complete the session after the user decides
         client.writeJsonlEntry(sessionId, {
           type: 'user',
@@ -1575,7 +1664,7 @@ export class ProxyReviewScenario implements MockScenario {
         })
         client.writeJsonlEntry(sessionId, {
           type: 'assistant',
-          message: { content: [{ type: 'text', text: `API request ${decision === 'allow' ? 'approved' : 'denied'} by user.` }] },
+          message: { content: [{ type: 'text', text: review.decision === 'allow' ? 'API request approved by user.' : withUserReason('API request denied by user.', review.reason) }] },
           timestamp: new Date().toISOString(),
         })
         client.emitStreamMessage(sessionId, {
@@ -1711,7 +1800,7 @@ export class XAgentReviewScenario implements MockScenario {
         this.targetAgentSlug,
         this.targetAgentName,
         this.operation,
-      ).then((decision) => {
+      ).then(({ decision }) => {
         client.writeJsonlEntry(sessionId, {
           type: 'user',
           message: { content: userMessage },
@@ -2170,6 +2259,12 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     ['run background', new BackgroundBashScenario(2000, 'done sleeping')],
     // A task only the runtime's task list names (a subagent started it)
     ['leave a preview server', new SnapshotOnlyBackgroundScenario()],
+    // A planned task list whose tasks carry descriptions, held mid-turn
+    ['plan the work', new TaskPlanScenario([
+      { subject: 'Collect last quarter\'s numbers', description: 'Pull revenue, churn and new accounts per month from the billing export.\nFlag any month with missing rows.', activeForm: 'Collecting last quarter\'s numbers' },
+      { subject: 'Draft the summary', description: 'One page: three headline numbers, what moved them, and what to watch next quarter.', activeForm: 'Drafting the summary' },
+      { subject: 'Send it for review', description: 'Share the draft with the finance channel and ask for corrections by Friday.', activeForm: 'Sending it for review' },
+    ], 120_000)],
     // A workspace hook blocking the prompt before the model sees it
     ['trip the breaker', new HookBlockScenario('Circuit breaker: too many messages without operator input')],
     // Register a slow response scenario for cross-session tests
@@ -3277,7 +3372,9 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
         // Malformed escape — keep the raw path segment (mock tool ids are alphanumeric anyway)
       }
       console.log(`[MockContainerClient] Input ${resolveMatch[2]}: ${fetchPath}`)
+      const pendingInput = this.pendingInputs.get(toolUseId)
       this.pendingInputs.delete(toolUseId)
+      const skippedQuestion = resolveMatch[2] === 'reject' ? mockSkippedQuestionResult(pendingInput, init) : null
       // Find the session with pending inputs (we only have one active at a time in tests)
       for (const [sessionId, count] of this.pendingInputCounts) {
         if (count > 0) {
@@ -3291,7 +3388,8 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
           const toolResultBlocks = [{
             type: 'tool_result',
             tool_use_id: toolUseId,
-            content: resolveMatch[2] === 'resolve' ? 'User provided input' : 'User declined the request',
+            content: skippedQuestion?.content
+              ?? (resolveMatch[2] === 'resolve' ? 'User provided input' : 'User declined the request'),
           }]
           const sidechainParent = this.sidechainToolParents.get(toolUseId)
           if (sidechainParent) {
@@ -3334,10 +3432,15 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
               type: 'user',
               message: { content: toolResultBlocks },
               timestamp: new Date().toISOString(),
+              ...(skippedQuestion ? { toolUseResult: skippedQuestion.toolUseResult } : {}),
             })
             this.emitStreamMessage(sessionId, {
               type: 'user',
-              content: { type: 'user', message: { content: toolResultBlocks } },
+              content: {
+                type: 'user',
+                message: { content: toolResultBlocks },
+                ...(skippedQuestion ? { tool_use_result: skippedQuestion.toolUseResult } : {}),
+              },
             })
           }
           if (remaining === 0) {

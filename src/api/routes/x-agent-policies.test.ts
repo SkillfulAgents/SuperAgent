@@ -104,6 +104,12 @@ vi.mock('@shared/lib/proxy/review-manager', () => ({
   reviewManager: { getPendingReviewsForAgent: vi.fn(() => []) },
 }))
 
+// Pass-through, so a test can stage a Block that lands after the route's own check.
+vi.mock('@shared/lib/services/x-agent-policy-service', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@shared/lib/services/x-agent-policy-service')>()
+  return { ...actual, evaluate: vi.fn(actual.evaluate) }
+})
+
 vi.mock('@shared/lib/proxy/token-store', () => ({
   revokeProxyToken: vi.fn(),
   validateProxyToken: vi.fn(),
@@ -115,6 +121,7 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
 
 import agentsRouter from './agents'
 import {
+  evaluate,
   setPolicy,
   getPolicy,
   listPoliciesForCaller,
@@ -476,6 +483,25 @@ describe('atomic single invoke policy endpoints', () => {
     expect((await getPolicy(CALLER, 'invoke', TARGET_A))).toBeNull()
   })
 
+  it('sets and removes a read grant the same way, apart from the invoke one', async () => {
+    const readUrl = `/api/agents/${CALLER}/x-agent-policies/read/${TARGET_A}`
+    await setPolicy(CALLER, 'invoke', TARGET_A, 'allow')
+    await app.request(readUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'allow' }) })
+    expect((await getPolicy(CALLER, 'read', TARGET_A))?.decision).toBe('allow')
+    await app.request(readUrl, { method: 'DELETE' })
+    expect(await getPolicy(CALLER, 'read', TARGET_A)).toBeNull()
+    expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
+  })
+
+  it('rejects any operation but invoke and read, so a near-miss never writes an invoke row', async () => {
+    for (const operation of ['list', 'XXread', 'invokeZZ']) {
+      const url = `/api/agents/${CALLER}/x-agent-policies/${operation}/${TARGET_A}`
+      expect((await app.request(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'allow' }) })).status).toBe(400)
+      expect((await app.request(url, { method: 'DELETE' })).status).toBe(400)
+    }
+    expect(await listPoliciesForCaller(CALLER)).toEqual([])
+  })
+
   it('DELETE PRESERVES an explicit block (no silent escalation)', async () => {
     await setPolicy(CALLER, 'invoke', TARGET_A, 'block')
     const res = await app.request(invokeUrl(CALLER, TARGET_A), { method: 'DELETE' })
@@ -520,6 +546,51 @@ describe('atomic single invoke policy endpoints', () => {
       body: JSON.stringify({ decision: 'allow' }),
     })
     expect(res.status).toBe(200)
+    expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
+  })
+})
+
+describe('"Always allow" never overwrites a Block', () => {
+  const always = (operation: 'read' | 'invoke', targetSlug: string | null) =>
+    app.request(`/api/agents/${CALLER}/proxy-review/review-1/always`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: 'allow', scope: `${operation}:${targetSlug ?? '*'}`, accountId: targetSlug, reviewType: 'xagent', xAgent: { operation, targetSlug } }),
+    })
+
+  beforeEach(async () => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    Object.assign(reviewManager, { submitDecision: vi.fn(() => true), resolveMatchingPending: vi.fn(), resolveMatchingXAgentByOperation: vi.fn() })
+  })
+
+  it.each([
+    ['a Block on the target', TARGET_A],
+    ['"Block all agents"', null],
+  ])('refuses it over %s and keeps the Block', async (_name, blockTarget) => {
+    await setPolicy(CALLER, 'read', blockTarget, 'block')
+    const res = await always('read', TARGET_A)
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'Forbidden: this agent link is blocked', blocked: true })
+    expect((await listPoliciesForCaller(CALLER)).map((p) => [p.targetAgentSlug, p.decision])).toEqual([[blockTarget, 'block']])
+  })
+
+  it('keeps a Block written between the route\'s check and the save', async () => {
+    await setPolicy(CALLER, 'read', TARGET_A, 'block')
+    vi.mocked(evaluate).mockResolvedValueOnce('review')
+    expect((await always('read', TARGET_A)).status).toBe(403)
+    expect((await getPolicy(CALLER, 'read', TARGET_A))?.decision).toBe('block')
+  })
+
+  it('checks the card\'s own link, so "all agents" cannot pass a Block on the card\'s target', async () => {
+    const { reviewManager } = await import('@shared/lib/proxy/review-manager')
+    vi.mocked(reviewManager.getPendingReviewsForAgent).mockReturnValueOnce([{ id: 'review-1', agentSlug: CALLER, xAgent: { targetAgentSlug: TARGET_A, targetAgentName: TARGET_A, operation: 'read' } }] as never)
+    await setPolicy(CALLER, 'read', TARGET_A, 'block')
+    expect((await always('read', null)).status).toBe(403)
+    expect(await getPolicy(CALLER, 'read', null)).toBeNull()
+  })
+
+  it('still saves when no Block is set', async () => {
+    expect((await always('invoke', TARGET_A)).status).toBe(200)
     expect((await getPolicy(CALLER, 'invoke', TARGET_A))?.decision).toBe('allow')
   })
 })

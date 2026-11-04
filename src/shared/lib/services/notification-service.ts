@@ -13,7 +13,7 @@
 import { db } from '@shared/lib/db'
 import { changesOf } from '@shared/lib/db/batch'
 import { notifications, agentAcl, type Notification, type NewNotification } from '@shared/lib/db/schema'
-import { eq, desc, and, lt, inArray, isNull, or } from 'drizzle-orm'
+import { eq, desc, and, lt, inArray, isNull, or, sql } from 'drizzle-orm'
 import { count } from 'drizzle-orm'
 import { USER_ACTIONABLE_NOTIFICATION_TYPES } from '@shared/lib/notifications/notification-preferences'
 
@@ -51,6 +51,14 @@ export async function getAccessibleAgentSlugs(userId: string): Promise<string[]>
     .from(agentAcl)
     .where(eq(agentAcl.userId, userId))
   return rows.map((r) => r.agentSlug)
+}
+
+/**
+ * The agents a user may see, as a subquery: a query filtered by it reads `agent_acl` in the same
+ * round trip instead of loading the list first.
+ */
+export function accessibleAgents(userId: string) {
+  return db.select({ agentSlug: agentAcl.agentSlug }).from(agentAcl).where(eq(agentAcl.userId, userId))
 }
 
 /**
@@ -111,12 +119,10 @@ export async function createNotification(
  */
 export async function listNotifications(limit: number = 50, userId?: string, offset: number = 0): Promise<Notification[]> {
   if (userId) {
-    const slugs = await getAccessibleAgentSlugs(userId)
-    if (slugs.length === 0) return []
     return db
       .select()
       .from(notifications)
-      .where(and(inArray(notifications.agentSlug, slugs), visibleTo(userId)))
+      .where(and(inArray(notifications.agentSlug, accessibleAgents(userId)), visibleTo(userId)))
       .orderBy(desc(notifications.createdAt))
       .limit(limit)
       .offset(offset)
@@ -131,12 +137,10 @@ export async function listNotifications(limit: number = 50, userId?: string, off
 
 export async function countNotifications(userId?: string): Promise<number> {
   if (userId) {
-    const slugs = await getAccessibleAgentSlugs(userId)
-    if (slugs.length === 0) return 0
     const result = await db
       .select({ count: count() })
       .from(notifications)
-      .where(and(inArray(notifications.agentSlug, slugs), visibleTo(userId)))
+      .where(and(inArray(notifications.agentSlug, accessibleAgents(userId)), visibleTo(userId)))
     return result[0]?.count ?? 0
   }
   const result = await db
@@ -166,10 +170,7 @@ export async function getSessionIdsWithUnreadNotifications(agentSlug: string, us
     visibleTo(viewerId),
   ]
 
-  if (userId) {
-    const slugs = await getAccessibleAgentSlugs(userId)
-    if (!slugs.includes(agentSlug)) return new Set()
-  }
+  if (userId) conditions.push(inArray(notifications.agentSlug, accessibleAgents(userId)))
 
   const rows = await db
     .select({ sessionId: notifications.sessionId })
@@ -201,6 +202,47 @@ export async function getUnreadNotificationsByAgents(agentSlugs: string[], viewe
     let set = result.get(row.agentSlug)
     if (!set) { set = new Set(); result.set(row.agentSlug, set) }
     set.add(row.sessionId)
+  }
+  return result
+}
+
+export interface UnreadNotificationPreview {
+  id: string
+  sessionId: string
+  type: NotificationType
+  /** The start of the body, enough for one truncated line. */
+  text: string
+}
+
+/**
+ * The unread rows behind getUnreadNotificationsByAgents with the start of each
+ * body, newest first per agent, so a list can show what the latest one says.
+ */
+export async function getUnreadNotificationPreviewsByAgents(agentSlugs: string[], viewerId?: string): Promise<Map<string, UnreadNotificationPreview[]>> {
+  if (agentSlugs.length === 0) return new Map()
+
+  const rows = await db
+    .select({
+      agentSlug: notifications.agentSlug,
+      sessionId: notifications.sessionId,
+      type: notifications.type,
+      text: sql<string>`substr(${notifications.body}, 1, 200)`,
+      id: notifications.id,
+    })
+    .from(notifications)
+    .where(and(
+      inArray(notifications.agentSlug, agentSlugs),
+      eq(notifications.isRead, false),
+      inArray(notifications.type, [...USER_ACTIONABLE_NOTIFICATION_TYPES]),
+      visibleTo(viewerId),
+    ))
+    .orderBy(desc(notifications.createdAt))
+
+  const result = new Map<string, UnreadNotificationPreview[]>()
+  for (const { agentSlug, ...preview } of rows) {
+    let list = result.get(agentSlug)
+    if (!list) { list = []; result.set(agentSlug, list) }
+    list.push(preview)
   }
   return result
 }
@@ -244,12 +286,10 @@ export async function getUnreadMentionsByAgents(agentSlugs: string[], viewerId: 
  * hides them like any other row).
  */
 export async function getUnreadMentionCount(userId: string): Promise<number> {
-  const slugs = await getAccessibleAgentSlugs(userId)
-  if (slugs.length === 0) return 0
   const result = await db
     .select({ count: count() })
     .from(notifications)
-    .where(and(inArray(notifications.agentSlug, slugs), unreadMentionsOf(userId)))
+    .where(and(inArray(notifications.agentSlug, accessibleAgents(userId)), unreadMentionsOf(userId)))
   return result[0]?.count ?? 0
 }
 
@@ -259,12 +299,10 @@ export async function getUnreadMentionCount(userId: string): Promise<number> {
  */
 export async function listUnreadNotifications(limit: number = 50, userId?: string): Promise<Notification[]> {
   if (userId) {
-    const slugs = await getAccessibleAgentSlugs(userId)
-    if (slugs.length === 0) return []
     return db
       .select()
       .from(notifications)
-      .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, slugs), visibleTo(userId)))
+      .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, accessibleAgents(userId)), visibleTo(userId)))
       .orderBy(desc(notifications.createdAt))
       .limit(limit)
   }
@@ -283,12 +321,10 @@ export async function listUnreadNotifications(limit: number = 50, userId?: strin
 export async function getUnreadCount(userId?: string): Promise<number> {
   const actionable = inArray(notifications.type, [...USER_ACTIONABLE_NOTIFICATION_TYPES])
   if (userId) {
-    const slugs = await getAccessibleAgentSlugs(userId)
-    if (slugs.length === 0) return 0
     const result = await db
       .select({ count: count() })
       .from(notifications)
-      .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, slugs), actionable, visibleTo(userId)))
+      .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, accessibleAgents(userId)), actionable, visibleTo(userId)))
     return result[0]?.count ?? 0
   }
   const result = await db
@@ -340,11 +376,7 @@ export async function markSessionNotificationsRead(sessionId: string, userId?: s
     eq(notifications.isRead, false),
   ]
 
-  if (userId) {
-    const slugs = await getAccessibleAgentSlugs(userId)
-    if (slugs.length === 0) return 0
-    conditions.push(inArray(notifications.agentSlug, slugs), visibleTo(userId)!)
-  }
+  if (userId) conditions.push(inArray(notifications.agentSlug, accessibleAgents(userId)), visibleTo(userId)!)
 
   const result = await db
     .update(notifications)
@@ -363,15 +395,13 @@ export async function markSessionNotificationsRead(sessionId: string, userId?: s
  */
 export async function markAllAsRead(userId?: string): Promise<number> {
   if (userId) {
-    const slugs = await getAccessibleAgentSlugs(userId)
-    if (slugs.length === 0) return 0
     const result = await db
       .update(notifications)
       .set({
         isRead: true,
         readAt: new Date(),
       })
-      .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, slugs), visibleTo(userId)))
+      .where(and(eq(notifications.isRead, false), inArray(notifications.agentSlug, accessibleAgents(userId)), visibleTo(userId)))
     return changesOf(result)
   }
 

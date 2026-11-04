@@ -22,7 +22,7 @@ function findNearest(from: Element, selector: string): Element | null {
 }
 
 /** Owns the animation lifecycle; the component only supplies the static layers. */
-export function useOrbAnimation({ orb, shape, diameter, restingPhi, state, followPointer, rollWithScroll }: {
+export function useOrbAnimation({ orb, shape, diameter, restingPhi, state, followPointer, rollWithScroll, still = false }: {
   orb: OrbAppearance
   shape: OrbShape
   diameter: number
@@ -30,9 +30,12 @@ export function useOrbAnimation({ orb, shape, diameter, restingPhi, state, follo
   state: OrbState
   followPointer: boolean | string
   rollWithScroll?: string
+  /** Hold the state's still frame, as reduced motion does. */
+  still?: boolean
 }): OrbLayers {
   // Intentionally sampled once; live OS preference changes remain a separate follow-up.
-  const [reduced] = useState(() => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false)
+  const [prefersReduced] = useState(() => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false)
+  const reduced = still || prefersReduced
   const [layers] = useState<OrbLayers>(() => ({
     root: layer(), body: layer(), glow: layer(), formWrap: layer(), form: layer(),
     face: layer(), lid: layer(), gradient: layer(), highlight: layer(), dots: [layer(), layer(), layer()],

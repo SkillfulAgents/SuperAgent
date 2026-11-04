@@ -7,6 +7,7 @@ import { RequestError } from '@shared/lib/tools/requests/request-error'
 import { ACTIVITY_TREE_CONNECTORS, ACTIVITY_TREE_TRACER } from '@renderer/components/ui/tree-connectors'
 import { HoverScrollText } from '@renderer/components/ui/hover-scroll-text'
 import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import type { Todo } from '@shared/lib/utils/derive-task-list'
 import { AgentAvatar, type AvatarMotionState } from '@renderer/components/agents/agent-avatar/agent-avatar'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -737,46 +738,76 @@ function TodoPlan({
           </button>
         )}
       </div>
-      <ul className="mt-1 space-y-1">
-        {visibleTodos.map((todo, index) => (
-          <li key={index}>
-            <div
-              className={cn(
-                'flex items-center gap-1.5',
-                // The task being worked on steps up in color only — weight too
-                // made it the loudest thing on the card, louder than the
-                // header it sits under. One step of contrast is enough to find
-                // it. (Pending used to sit at plain foreground, which made the
-                // row NOT being worked on the darkest thing in the list.)
-                todo.status === 'in_progress'
-                  ? 'text-foreground'
-                  : 'text-muted-foreground'
-              )}
-            >
-              <RowMark>
-                {todo.status === 'completed' ? (
-                  // No strikethrough — the ringed check plus the muted label is
-                  // enough, and it keeps the row readable. Uncolored on purpose:
-                  // it inherits the completed row's muted-foreground, so the
-                  // mark recedes with its label instead of being the loudest
-                  // thing in a finished row.
-                  <CircleCheckBig className="h-3 w-3" aria-hidden data-testid="todo-status-completed" />
-                ) : todo.status === 'in_progress' ? (
-                  // The app's one spinner (Loader2 + animate-spin), at the same
-                  // 12px box as the pending circle and the completed check — a
-                  // task's mark must not resize as it moves through the list.
-                  <Loader2 className="h-3 w-3 animate-spin" aria-hidden data-testid="todo-status-in-progress" />
-                ) : (
-                  // Same 12px box and stroke as the check, so a task's mark
-                  // doesn't change size when it completes.
-                  <Circle className="h-3 w-3" aria-hidden data-testid="todo-status-pending" />
-                )}
-              </RowMark>
-              <span className="truncate">{todo.content}</span>
-            </div>
-          </li>
-        ))}
-      </ul>
+      <TooltipProvider delayDuration={300}>
+        <ul className="mt-1 space-y-1">
+          {visibleTodos.map((todo, index) => (
+            <li key={index}>
+              <TodoDescriptionTooltip description={todo.description}>
+                <div
+                  data-testid="activity-plan-task"
+                  className={cn(
+                    'flex items-center gap-1.5',
+                    // The task being worked on steps up in color only — weight too
+                    // made it the loudest thing on the card, louder than the
+                    // header it sits under. One step of contrast is enough to find
+                    // it. (Pending used to sit at plain foreground, which made the
+                    // row NOT being worked on the darkest thing in the list.)
+                    todo.status === 'in_progress'
+                      ? 'text-foreground'
+                      : 'text-muted-foreground'
+                  )}
+                >
+                  <RowMark>
+                    {todo.status === 'completed' ? (
+                      // No strikethrough — the ringed check plus the muted label is
+                      // enough, and it keeps the row readable. Uncolored on purpose:
+                      // it inherits the completed row's muted-foreground, so the
+                      // mark recedes with its label instead of being the loudest
+                      // thing in a finished row.
+                      <CircleCheckBig className="h-3 w-3" aria-hidden data-testid="todo-status-completed" />
+                    ) : todo.status === 'in_progress' ? (
+                      // The app's one spinner (Loader2 + animate-spin), at the same
+                      // 12px box as the pending circle and the completed check — a
+                      // task's mark must not resize as it moves through the list.
+                      <Loader2 className="h-3 w-3 animate-spin" aria-hidden data-testid="todo-status-in-progress" />
+                    ) : (
+                      // Same 12px box and stroke as the check, so a task's mark
+                      // doesn't change size when it completes.
+                      <Circle className="h-3 w-3" aria-hidden data-testid="todo-status-pending" />
+                    )}
+                  </RowMark>
+                  <span className="truncate">{todo.content}</span>
+                </div>
+              </TodoDescriptionTooltip>
+            </li>
+          ))}
+        </ul>
+      </TooltipProvider>
     </div>
+  )
+}
+
+/**
+ * A task's description on hover, when the agent gave one (TaskCreate's
+ * `description`, as the CLI saved it). The row stays a plain row: the subject
+ * is what scans, the description is detail for whoever wants it. Rows without
+ * one get no tooltip at all rather than an empty or repeated one.
+ */
+function TodoDescriptionTooltip({ description, children }: { description?: string; children: ReactNode }) {
+  if (!description) return <>{children}</>
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent
+        side="top"
+        align="start"
+        // Descriptions run from one line to a paragraph or more; pre-line keeps
+        // the agent's own line breaks, and the cap keeps a long one readable.
+        className="max-w-sm whitespace-pre-line break-words"
+        data-testid="activity-plan-task-description"
+      >
+        {description}
+      </TooltipContent>
+    </Tooltip>
   )
 }

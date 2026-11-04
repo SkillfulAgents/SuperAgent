@@ -68,7 +68,7 @@ Always call `start_dashboard` after making changes. Treat its screenshot as the 
 ### Design Principles
 - **Mobile-first responsive layout.** Use CSS grid or flexbox. Set `max-width` on content containers. Test at narrow widths mentally.
 - **Clear visual hierarchy.** Use size, weight, and spacing to guide the eye. Important metrics should be prominent.
-- **Consistent spacing.** Pick a base unit (e.g., 8px) and use multiples. Use CSS custom properties for theming.
+- **Follow the design system.** Read `/opt/gamut/plugin/skills/dashboards/DESIGN.md` before building UI, so the dashboard matches the app in light and dark mode.
 - **Accessible colors.** Ensure sufficient contrast (WCAG AA). Don't rely on color alone to convey information.
 - **Loading and error states.** Always show a loading indicator while fetching data. Show meaningful error messages, not blank screens.
 
@@ -124,25 +124,10 @@ For React dashboards, install via bun:
 cd /workspace/artifacts/<slug> && bun add chart.js react-chartjs-2
 ```
 
+Pass the design system's chart colors (`--color-chart-1` … `--color-chart-5`) rather than the library's default palette; DESIGN.md covers reading them from canvas libraries.
+
 ### Styling Approach
-Prefer modern CSS with custom properties for theming:
-```css
-:root {
-  --bg: #ffffff;
-  --fg: #1a1a1a;
-  --accent: #3b82f6;
-  --border: #e5e7eb;
-  --radius: 8px;
-  --gap: 16px;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f172a;
-    --fg: #f1f5f9;
-    --border: #334155;
-  }
-}
-```
+Both scaffolds ship the design system as `tokens.css` (`src/tokens.css` in React, beside `index.js` in plain): the app's palette with dark mode, type scale, spacing, radii, and the `.sa-page`, `.sa-card`, `.sa-button`, `.sa-badge` and `.sa-input` classes. Build with those. If a dashboard needs its own look, change the token values there; don't define a parallel set (`--bg`, `--fg`, `--accent`).
 
 ### Common Patterns
 
@@ -150,15 +135,14 @@ Prefer modern CSS with custom properties for theming:
 ```css
 .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: var(--gap);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-4);
 }
-.card {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: var(--gap);
-}
+```
+```html
+<div class="cards">
+  <section class="sa-card">...</section>
+</div>
 ```
 
 **KPI metric display:**
@@ -274,6 +258,10 @@ button.onclick = async () => {
 ```
 
 Only call it from explicit user actions (button clicks) — never on load, on a timer, or in a loop; only one request can be open at a time and repeats are rate limited. Inline everything the agent needs into the prompt (the session cannot see dashboard state). Full documentation is in `/opt/gamut/plugin/skills/dashboards/SESSION_DISPATCH.md`.
+
+### Comments
+
+In the app, a right-click on the dashboard opens the app's own "Comment here" menu, which starts a session asking for a change to the dashboard. A dashboard with its own right-click menu keeps it by calling `event.preventDefault()` in its `contextmenu` handler; the app only takes right-clicks the page leaves unhandled (and never in text fields or with text selected).
 
 ## Critical Rules
 

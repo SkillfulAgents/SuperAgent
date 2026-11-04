@@ -359,6 +359,7 @@ function ToolCallItemComponent({ toolCall, messageCreatedAt, agentSlug, sessionI
               result={resultStr}
               isError={toolCall.isError ?? false}
               agentSlug={agentSlug}
+              unansweredQuestions={toolCall.unansweredQuestions}
             />
           ) : (
             // Fallback: generic JSON display

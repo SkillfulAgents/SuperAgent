@@ -1,9 +1,9 @@
 import { Fragment } from 'react'
 import { cn } from '@shared/lib/utils/cn'
 import { ServiceIcon } from '@renderer/components/ui/service-icon'
-import { syncSummaryParts, type TeamBrainSync } from '@renderer/lib/team-brain/team-brain-syncs'
+import { AgentMarkdown } from '@renderer/components/messages/agent-markdown'
+import { summaryLink, type TeamBrainSync } from '@renderer/lib/team-brain/team-brain-syncs'
 import { formatSyncDay, formatSyncTime, syncCountLabel } from '@renderer/lib/team-brain/team-brain-format'
-import { openExternalUrl } from '@renderer/lib/open-external'
 import type { OpenFile } from './team-brain-radial-parts'
 
 
@@ -11,9 +11,10 @@ import type { OpenFile } from './team-brain-radial-parts'
  * What each sync filed, newest first, laid out like the Gamut changelog: the
  * day on the left, a rule down the middle with a dot per sync (the latest in
  * blue), and on the right what changed: a few sentences on what mattered, then
- * the rest a line each. A page named in one opens from the drive in the
- * drawer. The latest also lists what needs a person, since only the latest
- * run says what is still open. Its title opens the run's session.
+ * the rest a line each, drawn as agent text is everywhere else. A page named
+ * in one opens from the drive in the drawer. The latest also lists what needs
+ * a person, since only the latest run says what is still open. Its title opens
+ * the run's session.
  */
 export function TeamBrainSyncSummaries({
   syncs,
@@ -28,33 +29,43 @@ export function TeamBrainSyncSummaries({
   onOpenSession: (sessionId: string) => void
 }) {
 
-  // A page opens from the drive in the drawer, a web link in the browser.
-  const prose = (text: string, summary: string) =>
-    syncSummaryParts(text, summary.slice(0, summary.lastIndexOf('/'))).map((part, i) => {
-      if ('text' in part) return <Fragment key={i}>{part.text}</Fragment>
-      const page = 'page' in part ? part.page : null
-      return (
-        <button
-          key={i}
-          type="button"
-          onClick={() =>
-            page
-              ? onOpenFile({ id: page, name: page.slice(page.lastIndexOf('/') + 1), kind: 'file', sources: [] }, { path: `/${page}` })
-              : 'url' in part && void openExternalUrl(part.url)
-          }
-          className="rounded-[2px] text-foreground underline decoration-foreground/20 underline-offset-[3px] transition-colors hover:decoration-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          data-testid={page ? `team-brain-sync-page-${page}` : undefined}
-          data-drawer-opener={page ? true : undefined}
-        >
-          {part.label}
-        </button>
-      )
-    })
+  // A page opens from the drive in the drawer. Any other link keeps the shared link policy.
+  const prose = (markdown: string, summary: string) => (
+    <div className="prose prose-sm max-w-none text-sm/6 text-muted-foreground marker:text-muted-foreground/50 dark:prose-invert prose-p:my-0 prose-ul:my-0 prose-ol:my-0 prose-li:my-1 [&_p+p]:mt-2">
+      <AgentMarkdown
+        text={markdown}
+        mode="settled"
+        link={(href, children) => {
+          const to = summaryLink(href, summary.slice(0, summary.lastIndexOf('/')))
+          if (to === 'web') return null
+          if (to === 'text') return <>{children}</>
+          const { page } = to
+          return (
+            // A link, not a button: a button never wraps, so text after it at the end of a line drops to its own line.
+            <a
+              href={href}
+              onClick={(event) => {
+                event.preventDefault()
+                onOpenFile({ id: page, name: page.slice(page.lastIndexOf('/') + 1), kind: 'file', sources: [] }, { path: `/${page}` })
+              }}
+              // A middle click would open the relative href in the browser.
+              onAuxClick={(event) => event.preventDefault()}
+              className="rounded-[2px] font-normal text-foreground underline decoration-foreground/20 underline-offset-[3px] transition-colors hover:decoration-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              data-testid={`team-brain-sync-page-${page}`}
+              data-drawer-opener
+            >
+              {children}
+            </a>
+          )
+        }}
+      />
+    </div>
+  )
 
   return (
     // Narrower than the page, centred under the tree, so the lines stay a comfortable length to read.
     <section aria-labelledby="team-brain-syncs-title" className="mx-auto w-full max-w-[720px]" data-testid="team-brain-syncs">
-      <h2 id="team-brain-syncs-title" className="mb-6 text-base font-medium">
+      <h2 id="team-brain-syncs-title" className="mb-6 text-sm font-normal text-muted-foreground">
         Sync summaries
       </h2>
       {syncs.length === 0 && (
@@ -120,17 +131,13 @@ export function TeamBrainSyncSummaries({
                   {sync.highlights.map((highlight, i) => (
                     <Fragment key={i}>
                       <h4 className="mb-1 mt-5 text-[15px] font-normal tracking-[-0.0075em] first:mt-0">{highlight.title}</h4>
-                      <p className="text-sm/6 text-muted-foreground">{prose(highlight.body, sync.id)}</p>
+                      {prose(highlight.body, sync.id)}
                     </Fragment>
                   ))}
                   {changes.length > 0 && (
                     <>
                       {sync.highlights.length > 0 && <h4 className="mb-1.5 mt-5 text-[15px] font-normal tracking-[-0.0075em]">Also filed</h4>}
-                      <ul className="list-disc space-y-1 pl-5 text-sm/6 text-muted-foreground marker:text-muted-foreground/50">
-                        {changes.map((line, i) => (
-                          <li key={i}>{prose(line, sync.id)}</li>
-                        ))}
-                      </ul>
+                      {prose(changes, sync.id)}
                     </>
                   )}
                   {index === 0 && sync.needsYou.blocked.length + sync.needsYou.toDecide.length > 0 && (
@@ -146,11 +153,7 @@ export function TeamBrainSyncSummaries({
                           items.length > 0 && (
                             <Fragment key={label}>
                               <p className="mt-3 text-xs font-medium text-muted-foreground first:mt-0">{label}</p>
-                              <ul className="mt-1 list-disc space-y-1 pl-5 text-sm/6 text-muted-foreground marker:text-muted-foreground/50">
-                                {items.map((line, i) => (
-                                  <li key={i}>{prose(line, sync.id)}</li>
-                                ))}
-                              </ul>
+                              <div className="mt-1">{prose(items, sync.id)}</div>
                             </Fragment>
                           ),
                       )}
