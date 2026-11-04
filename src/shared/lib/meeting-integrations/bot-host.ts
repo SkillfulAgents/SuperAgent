@@ -1,5 +1,5 @@
 import type { MeetingPlatform } from './meeting-url'
-import type { MeetingParticipantEvent, MeetingStatus } from './schemas'
+import type { MeetingParticipantEvent, MeetingScreenFrame, MeetingStatus } from './schemas'
 
 /** What the family asks a provider for; the family never sees provider payloads. */
 export interface MeetingBotJoinRequest {
@@ -10,6 +10,8 @@ export interface MeetingBotJoinRequest {
   participantPageUrl: string
   /** Where the host may POST in-call events (who joined, left, is speaking), if it can. */
   eventsUrl?: string
+  /** Where the host may stream frames of shared screens over a websocket, if it can. */
+  framesUrl?: string
 }
 
 export interface MeetingBotStatus {
@@ -37,6 +39,8 @@ export interface MeetingBotHost {
   sendChatMessage(botId: string, message: string): Promise<void>
   /** Reduce an in-call callback body to a participant event, or null when it is something else. */
   parseEvent(body: unknown): MeetingParticipantEvent | null
+  /** Reduce a frames-socket message to a shared-screen frame, or null for anything else (camera frames included). */
+  parseScreenFrame?(message: unknown): MeetingScreenFrame | null
   /** A link to the call's recording while the host still keeps it; null once gone or not yet ready. */
   recordingLink?(botId: string): Promise<MeetingRecordingLink | null>
 }

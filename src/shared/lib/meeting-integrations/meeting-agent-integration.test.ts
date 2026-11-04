@@ -35,7 +35,7 @@ const record: AgentIntegrationRecord = {
 }
 
 class FakeHost implements MeetingBotHost {
-  created: Array<{ meetingUrl: string; botName: string; participantPageUrl: string; eventsUrl?: string }> = []
+  created: Array<{ meetingUrl: string; botName: string; participantPageUrl: string; eventsUrl?: string; framesUrl?: string }> = []
   status: MeetingBotStatus = { status: 'joining' }
   left: string[] = []
   chats: Array<[string, string]> = []
@@ -45,7 +45,7 @@ class FakeHost implements MeetingBotHost {
   holdCreate = false
   private releases: Array<() => void> = []
   releaseCreate() { for (const release of this.releases.splice(0)) release() }
-  async createBot(request: { meetingUrl: string; botName: string; participantPageUrl: string; eventsUrl?: string }) {
+  async createBot(request: { meetingUrl: string; botName: string; participantPageUrl: string; eventsUrl?: string; framesUrl?: string }) {
     if (this.fail) throw new Error('Recall.ai has no bot capacity right now. Try again in a moment.')
     if (this.holdCreate) await new Promise<void>(resolve => this.releases.push(resolve))
     this.created.push(request); return { botId: `bot-${this.created.length}` }
@@ -102,6 +102,8 @@ describe('MeetingAgentIntegration', () => {
     expect(pageUrl.origin + pageUrl.pathname).toBe(`https://app.example/meeting/${meeting.id}`)
     // The host's callback URL carries the same token, with the trailing slash Recall needs before the query.
     expect(host.created[0].eventsUrl).toBe(`https://app.example/api/meeting-participant/${meeting.id}/events/?token=${pageUrl.searchParams.get('token')}`)
+    // Shared-screen frames come back over a websocket next to it, under the same token.
+    expect(host.created[0].framesUrl).toBe(`wss://app.example/api/meeting-participant/${meeting.id}/frames/?token=${pageUrl.searchParams.get('token')}`)
     expect(await verifyParticipantToken(meeting.id, pageUrl.searchParams.get('token')!)).not.toBeNull()
     expect(await verifyParticipantToken(meeting.id, 'wrong')).toBeNull()
     expect((await getMeeting(meeting.id))?.createdByUserId).toBe('alice')

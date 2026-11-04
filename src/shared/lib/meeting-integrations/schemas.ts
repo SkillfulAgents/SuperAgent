@@ -101,6 +101,12 @@ export interface MeetingTranscriptLine {
   text: string
 }
 
+/** One frame of someone's shared screen, as a PNG, with when the host captured it. */
+export interface MeetingScreenFrame {
+  png: Uint8Array
+  at: Date
+}
+
 /** Who is in the call right now and who is talking; the bot itself is never listed. */
 export const meetingRosterSchema = z.object({
   participants: z.array(meetingParticipantSchema),

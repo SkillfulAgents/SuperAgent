@@ -28,6 +28,7 @@ import {
 } from './store'
 import { isMeetingBot, meetingRoster } from './roster'
 import { meetingTranscriptPath, meetingTranscripts } from './transcript'
+import { meetingScreenshotsDir, meetingScreenshots } from './screenshots'
 
 export { MEETING_RECORDING_RETENTION_HOURS }
 
@@ -114,7 +115,9 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
     const agent = await agentCatalog.get(context.integration.agentSlug)
     return {
       text: meetingJoinBrief(meeting, agent?.name ?? meeting.botName),
-      systemPrompt: meetingSessionSystemPrompt(this.configuredSettings().instructions, meeting.mode, meetingTranscriptPath(meeting.id)),
+      systemPrompt: meetingSessionSystemPrompt(this.configuredSettings().instructions, meeting.mode, {
+        transcript: meetingTranscriptPath(meeting.id), screenshots: meetingScreenshotsDir(meeting.id),
+      }),
     }
   }
 
@@ -264,6 +267,7 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
         participantPageUrl: `${baseUrl}/meeting/${encodeURIComponent(meeting.id)}?token=${encodeURIComponent(token)}`,
         // The same one-time token authenticates the host's callbacks: both URLs are handed only to the host.
         eventsUrl: `${participantPath}/events/?token=${encodeURIComponent(token)}`,
+        framesUrl: `${participantPath.replace(/^https:/, 'wss:')}/frames/?token=${encodeURIComponent(token)}`,
       })
       await setMeetingBot(meeting.id, botId)
       if (this.cancelRequested.delete(meeting.id)) {
@@ -318,6 +322,17 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
     const meeting = await getMeeting(meetingId)
     if (!meeting || isTerminalMeetingStatus(meeting.status)) return
     for (const { role, text, at } of pieces) meetingTranscripts.append(meeting, { text, at, speaker: role === 'assistant' ? meeting.botName : undefined })
+  }
+
+  /**
+   * One message from the bot host's frames socket. The socket checked the
+   * meeting's token when it opened; frames arrive several times a second, so
+   * the meeting is not looked up again for each one. Camera frames are dropped
+   * by the provider's parser and never stored.
+   */
+  receiveScreenFrame(meeting: Pick<MeetingRecord, 'id' | 'agentSlug'>, message: unknown): void {
+    const frame = this.bots.parseScreenFrame?.(message)
+    if (frame) meetingScreenshots.offer(meeting, frame)
   }
 
   async leave(meetingId: string, reason: string): Promise<PublicMeeting> {
@@ -397,6 +412,7 @@ export abstract class MeetingAgentIntegration extends AgentIntegration {
     if (!isTerminalMeetingStatus(changed.status)) return
     this.untrack(meetingId)
     meetingRoster.clear(meetingId)
+    meetingScreenshots.close(meetingId)
     this.writtenReplies.delete(meetingId)
     // The last lines are on disk before the agent is told to write its summary.
     await meetingTranscripts.close(meetingId)

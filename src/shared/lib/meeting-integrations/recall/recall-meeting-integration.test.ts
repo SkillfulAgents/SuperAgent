@@ -32,6 +32,11 @@ describe('recallRecordingLink', () => {
   it('returns the mixed-media link while the recording is processed and retained', () => {
     expect(recallRecordingLink({ ...bot(), recordings: [recording()] }, now)).toEqual({ url: 'https://cdn.example/audio.mp4?sig=1', linkExpiresAt: now + 6 * 60 * 60 * 1000 })
   })
+  it('links the MP3 of a call that streamed frames, and the MP4 of an older call', () => {
+    const mp3 = recording({ media_shortcuts: { audio_mixed: { data: { download_url: 'https://cdn.example/audio.mp3?sig=1' }, status: { code: 'done' } }, video_mixed: null } })
+    expect(recallRecordingLink({ ...bot(), recordings: [mp3] }, now)?.url).toBe('https://cdn.example/audio.mp3?sig=1')
+    expect(recallRecordingLink({ ...bot(), recordings: [recording()] }, now)?.url).toBe('https://cdn.example/audio.mp4?sig=1')
+  })
   it('has nothing while processing, after retention, or with no media', () => {
     expect(recallRecordingLink({ ...bot(), recordings: [recording({ media_shortcuts: { video_mixed: { data: null, status: { code: 'processing' } } } })] }, now)).toBeNull()
     expect(recallRecordingLink({ ...bot(), recordings: [recording({ expires_at: '2026-10-13T11:00:00Z' })] }, now)).toBeNull()
@@ -80,6 +85,35 @@ describe('RecallBotHost', () => {
     expect(body.recording_config.realtime_endpoints).toEqual([{ type: 'webhook', url: 'https://app.example/api/meeting-participant/m1/events/?token=t', events: ['participant_events.join', 'participant_events.leave', 'participant_events.update', 'participant_events.speech_on', 'participant_events.speech_off'] }])
     // Recall's transcription is not used: the bot's own voice engine already transcribes the call.
     expect(body.recording_config.transcript).toBeUndefined()
+  })
+  it('streams shared screens to the frames URL with no meeting video kept and the audio as an MP3', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ id: 'bot-9', status_changes: [] }), { status: 201 }))
+    const host = new RecallBotHost(new RecallClient(transport(), alice, fetchImpl as unknown as typeof fetch))
+    await host.createBot({
+      meetingUrl: 'https://meet.google.com/abc-defg-hij', platform: 'google_meet', botName: 'Ada', participantPageUrl: 'https://app.example/meeting/m1?token=t',
+      eventsUrl: 'https://app.example/api/meeting-participant/m1/events/?token=t', framesUrl: 'wss://app.example/api/meeting-participant/m1/frames/?token=t',
+    })
+    const body = JSON.parse(((fetchImpl.mock.calls[0] as unknown[])[1] as RequestInit).body as string)
+    expect(body.recording_config).toMatchObject({
+      video_mixed_layout: 'gallery_view_v2', video_mixed_mp4: null, audio_mixed_mp3: {}, video_separate_png: {},
+      retention: { type: 'timed', hours: MEETING_RECORDING_RETENTION_HOURS },
+    })
+    expect(body.recording_config.realtime_endpoints).toEqual([
+      { type: 'webhook', url: 'https://app.example/api/meeting-participant/m1/events/?token=t', events: ['participant_events.join', 'participant_events.leave', 'participant_events.update', 'participant_events.speech_on', 'participant_events.speech_off'] },
+      { type: 'websocket', url: 'wss://app.example/api/meeting-participant/m1/frames/?token=t', events: ['video_separate_png.data'] },
+    ])
+  })
+  it('keeps shared-screen frames and drops camera frames and other messages', () => {
+    const host = new RecallBotHost(new RecallClient(transport(), unowned))
+    const frame = (type: string) => ({
+      event: 'video_separate_png.data',
+      data: { data: { buffer: Buffer.from('png bytes').toString('base64'), type, timestamp: { absolute: '2026-11-04T19:03:41.392Z', relative: 12.5 }, participant: { id: 100, name: 'Anna' } } },
+    })
+    const screen = host.parseScreenFrame(frame('screenshare'))
+    expect(Buffer.from(screen!.png).toString()).toBe('png bytes')
+    expect(screen!.at.toISOString()).toBe('2026-11-04T19:03:41.392Z')
+    expect(host.parseScreenFrame(frame('webcam'))).toBeNull()
+    expect(host.parseScreenFrame({ event: 'participant_events.screenshare_on', data: { data: {} } })).toBeNull()
   })
   it('reduces Recall participant webhooks to family events and ignores the rest', () => {
     const host = new RecallBotHost(new RecallClient(transport(), unowned))

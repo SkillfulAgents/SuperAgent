@@ -47,13 +47,14 @@ export function meetingJoinBrief(meeting: Pick<MeetingRecord, 'platform' | 'botN
 
 /**
  * Posted into the call's chat the moment the bot is in. Everyone in the room
- * learns what joined them and that the audio is kept; the bot's name alone
- * does not say it is software, and the recording is not visible otherwise.
+ * learns what joined them, that the audio is kept and that shared screens are
+ * captured; the bot's name alone does not say it is software, and neither is
+ * visible otherwise. Cameras are never captured.
  */
 export function meetingRecordingDisclosure(botName: string, mode: MeetingMode = 'voice'): string {
   const days = Math.round(MEETING_RECORDING_RETENTION_HOURS / 24)
   const part = mode === 'voice' ? 'I take part by voice' : mode === 'silent' ? 'I answer in this chat rather than out loud' : 'I only listen'
-  return `Hi, I'm ${botName}, an AI assistant. ${part} and record this call's audio for my notes; the recording is kept for ${days} day${days === 1 ? '' : 's'} and then deleted.`
+  return `Hi, I'm ${botName}, an AI assistant. ${part}, record this call's audio and save screenshots of shared screens for my notes; the audio recording is kept for ${days} day${days === 1 ? '' : 's'} and then deleted.`
 }
 
 export function meetingEndedNotice(reason?: string): string {
@@ -96,14 +97,30 @@ export function meetingTranscriptRule(transcriptPath: string): string {
   ].join(' ')
 }
 
+/** Where screenshots of shared screens are and how to use them. */
+export function meetingScreenshotsRule(screenshotsDir: string): string {
+  return [
+    `When someone shares their screen, screenshots are saved in ${screenshotsDir} as HH-MM-SS.png (UTC, the transcript's clock), one each time the shared screen changes.`,
+    'Open one only when a request is about what is on the shared screen; match its time to the transcript lines around it.',
+  ].join(' ')
+}
+
+/** The files the host keeps for one meeting in the agent's workspace. */
+export interface MeetingFiles {
+  transcript: string
+  screenshots: string
+}
+
 /**
  * The session prompt for one meeting: the family's rules for how the agent
- * takes part, where the meeting's transcript is, then whatever the
- * installation says should hold in every call its agent joins. The per-call
- * brief arrives separately as the first message.
+ * takes part, where the meeting's transcript and screenshots are, then
+ * whatever the installation says should hold in every call its agent joins.
+ * The per-call brief arrives separately as the first message.
  */
-export function meetingSessionSystemPrompt(standingInstructions?: string | null, mode: MeetingMode = DEFAULT_MEETING_MODE, transcriptPath?: string): string {
-  const rules = transcriptPath ? `${meetingSessionRules(mode)}\n\n${meetingTranscriptRule(transcriptPath)}` : meetingSessionRules(mode)
+export function meetingSessionSystemPrompt(standingInstructions?: string | null, mode: MeetingMode = DEFAULT_MEETING_MODE, files?: MeetingFiles): string {
+  const rules = files
+    ? [meetingSessionRules(mode), meetingTranscriptRule(files.transcript), meetingScreenshotsRule(files.screenshots)].join('\n\n')
+    : meetingSessionRules(mode)
   const standing = standingInstructions?.trim()
   if (!standing) return rules
   return `${rules}\n\nStanding instructions for every meeting you join:\n${standing.slice(0, MEETING_INSTRUCTIONS_MAX_CHARS)}`
