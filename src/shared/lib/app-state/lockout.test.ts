@@ -29,8 +29,8 @@ async function fail(times: number): Promise<void> {
   for (let i = 0; i < times; i++) await lockouts.failed(account, policy)
 }
 
-async function unlocked(): Promise<UnlockedStatus> {
-  const status = await lockouts.check(account, policy)
+async function unlocked(checkPolicy: LockoutPolicy = policy): Promise<UnlockedStatus> {
+  const status = await lockouts.check(account, checkPolicy)
   if (status.locked) throw new Error('expected the account to be unlocked')
   return status
 }
@@ -117,6 +117,24 @@ describe('defineLockout', () => {
     expect(await failures()).toBe(1)
     await fail(2)
     expect(await lockouts.check(account, policy)).toMatchObject({ locked: true })
+  })
+
+  it('keeps a failure that lands after two successes saw the same record', async () => {
+    const roomy: LockoutPolicy = { threshold: 10, lockMs: LOCK_MS }
+    for (let i = 0; i < 3; i++) await lockouts.failed(account, roomy)
+    const first = await unlocked(roomy)
+    const second = await unlocked(roomy)
+    expect(first.observed?.failures).toBe(3)
+    expect(second.observed).toEqual(first.observed)
+    // A wrong password from elsewhere lands after both checks.
+    await lockouts.failed(account, roomy)
+
+    // The first takes away the 3 it saw and keeps the 1; the second, holding the same observation, must not clear that 1.
+    await lockouts.succeeded(account, first)
+    expect(await failures()).toBe(1)
+    await lockouts.succeeded(account, second)
+
+    expect(await failures()).toBe(1)
   })
 
   it('keeps every failure when the success was checked with none counted', async () => {

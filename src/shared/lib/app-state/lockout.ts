@@ -29,8 +29,9 @@ const lockoutRecordSchema = z.object({
   lockedUntil: z.number().nullable(),
   /**
    * Names this run of failures, so a success that saw an earlier state of the
-   * same record can take away exactly the failures it saw, and never touches
-   * a record created after it was cleared.
+   * same record can take away exactly the failures it saw. A record created
+   * after a clear, or left after a success took failures away, is a new run,
+   * which a success that saw the old one never touches.
    */
   run: z.string().min(1),
 })
@@ -150,13 +151,15 @@ export function defineLockout(definition: { name: string }): Lockout {
         // of these failures are the ones this success saw.
         if (!current || current.value.run !== seen.run) return
         // The same run with failures counted since the check: take away the
-        // ones the check saw and keep the rest.
+        // ones the check saw and keep the rest, as a new run. Another success
+        // that saw the same run then leaves the rest alone, instead of taking
+        // its failures away a second time from what is left.
         const failures = current.value.failures - seen.failures
         if (failures <= 0) {
           result = await appState().consume(key, { revision: current.revision })
           continue
         }
-        const kept = await appState().compareAndSet(key, current.revision, { ...current.value, failures })
+        const kept = await appState().compareAndSet(key, current.revision, { ...current.value, failures, run: randomUUID() })
         if (kept.ok) return
         result = { consumed: false, current: kept.current }
       }
