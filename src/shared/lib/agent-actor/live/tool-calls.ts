@@ -446,6 +446,12 @@ export class ToolCalls {
       })
       return
     }
+    if (parentToolUseId && toolUse.name.startsWith('mcp__user-input__')) {
+      // The main stream counts its tool calls in mainToolUse; a subagent's
+      // host tool is only seen here. Same closed set of names, stamped subagent.
+      const action = toolUse.name.replace('mcp__user-input__', '')
+      this.ctx.host.send('analytics', { event: `agent_${action}`, properties: { agentSlug: this.ctx.agentSlug, subagent: true } })
+    }
     this.runHostTool(toolUse, toolName)
   }
 

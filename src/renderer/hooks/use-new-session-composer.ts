@@ -28,6 +28,8 @@ interface NewSessionComposerOptions {
    * the screenshot of the screen.
    */
   computerUse?: { screenshotName?: string }
+  /** Analytics-only: names the launcher when it is not an agent's composer. */
+  surface?: 'quick_dispatch'
   agentRuntimeErrorsShownInline?: boolean
   onSessionCreated: (result: { agentSlug: string; session: CreatedSession; content: string }) => void | Promise<void>
   onError?: (error: unknown) => void
@@ -48,6 +50,7 @@ export function useNewSessionComposer({
   waitForAgentDefaults = false,
   submitDisabled = false,
   computerUse,
+  surface,
   agentRuntimeErrorsShownInline,
   onSessionCreated,
   onError,
@@ -89,13 +92,14 @@ export function useNewSessionComposer({
           message: computerUse ? appendComputerUseNote(content, computerUse.screenshotName) : content,
           ...composerOptions.toRuntimeOptions(),
           ...(computerUse ? { computerUse: true } : {}),
+          ...(surface ? { surface } : {}),
         })
         await onSessionCreated({ agentSlug, session, content })
       } catch (error) {
         onError?.(error)
         throw error // useMessageComposer preserves the draft on failure.
       }
-    }, [agentSlug, createSession, composerOptions, computerUse, onSessionCreated, onError]),
+    }, [agentSlug, createSession, composerOptions, computerUse, surface, onSessionCreated, onError]),
     submitDisabled: disabled,
     keepMessageUntilComplete: true,
     draftKey,

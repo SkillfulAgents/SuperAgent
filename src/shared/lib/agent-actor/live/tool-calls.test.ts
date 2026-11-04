@@ -526,6 +526,11 @@ describe('ToolCalls', () => {
         { toolUseId: 't_sched', how: 'resolve', value: 'Scheduled' },
         { toolUseId: 't_list', how: 'resolve', value: 'Scheduled' },
       ])
+      // Counted once each, like a main-stream call, and marked as the subagent's.
+      expect(h.host.sent('analytics')).toEqual([
+        { event: 'agent_schedule_task', properties: { agentSlug: SLUG, subagent: true } },
+        { event: 'agent_list_triggers', properties: { agentSlug: SLUG, subagent: true } },
+      ])
     })
 
     it('runs a host tool once when its second delivery lands on the next attachment', async () => {
@@ -554,6 +559,8 @@ describe('ToolCalls', () => {
         { toolUseId: 't_wake', how: 'reject', value: MAIN_THREAD_ONLY_TOOL_MESSAGE },
         { toolUseId: 't_main_wake', how: 'resolve', value: 'Wake scheduled' },
       ])
+      // The rejected subagent call is not counted; the main call is, unstamped.
+      expect(h.host.sent('analytics')).toEqual([{ event: 'agent_schedule_resume', properties: { agentSlug: SLUG } }])
     })
   })
 
