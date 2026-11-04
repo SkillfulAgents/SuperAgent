@@ -315,6 +315,13 @@ ENV AGENT_BROWSER_EXECUTABLE_PATH=/opt/playwright-browsers/chromium-current
 ENV AGENT_BROWSER_ARGS="--no-sandbox,--disable-dev-shm-usage,--disable-blink-features=AutomationControlled,--disable-features=AutomationControlled,--disable-infobars,--disable-background-timer-throttling,--disable-popup-blocking,--disable-backgrounding-occluded-windows,--disable-renderer-backgrounding,--disable-component-update"
 ENV AGENT_BROWSER_USER_AGENT="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 ENV AGENT_BROWSER_PROFILE=/workspace/.browser-profile
+# Where a download the page starts (a clicked attachment link, a blob the page
+# saves) lands. The headless shell drops such downloads unless told where to
+# save them — it does not read the download dir server.ts writes into the
+# profile's Preferences. agent-browser applies this path only to a Chrome it
+# launches; a host or Browserbase browser (--cdp) gets its own dir from
+# server.ts (setDownloadBehaviorViaCDP).
+ENV AGENT_BROWSER_DOWNLOAD_PATH=/workspace/downloads
 # agent-browser 0.33.1+ shuts its daemon (and Chrome) down after an hour
 # without a command. The browser's lifecycle is ours (browser_open/close, the
 # session lock, the live view), so never time out.

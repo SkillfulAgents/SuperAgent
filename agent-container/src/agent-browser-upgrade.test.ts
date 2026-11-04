@@ -69,6 +69,13 @@ describe('Dockerfile agent-browser config', () => {
     }
   })
 
+  it('tells the launched Chrome where page-started downloads go', () => {
+    // Without it the headless shell drops a clicked attachment or a page's
+    // blob save; it does not read the Preferences download dir. Same dir as
+    // browser_download (browser-download.ts DOWNLOADS_DIR).
+    expect(dockerfile).toMatch(/^ENV AGENT_BROWSER_DOWNLOAD_PATH=\/workspace\/downloads$/m)
+  })
+
   it('points agent-browser at the chromium-current symlink', () => {
     // agent-browser's built-in chromium discovery only finds the Chrome for
     // Testing layout (chrome-linux64/chrome) under PLAYWRIGHT_BROWSERS_PATH.

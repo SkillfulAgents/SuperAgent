@@ -1473,7 +1473,10 @@ app.post('/browser/open', async (c) => {
     const cdpUrl = hostBrowser?.cdpUrl;
     const profile = process.env.AGENT_BROWSER_PROFILE || '/workspace/.browser-profile';
 
-    // Configure Chrome to save downloads to /workspace/downloads so the agent can access them
+    // Create /workspace/downloads and name it in the profile's preferences. The
+    // headless shell does not read those preferences: the Chrome agent-browser
+    // launches saves there because of AGENT_BROWSER_DOWNLOAD_PATH (Dockerfile),
+    // and a host browser because of setDownloadBehaviorViaCDP below.
     await ensureBrowserDownloadPreferences(profile, WORKSPACE_DOWNLOADS_DIR);
 
     // Clear leftover daemon state only before a net-new launch. While a browser
