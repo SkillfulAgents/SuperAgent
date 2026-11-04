@@ -370,6 +370,24 @@ describe('start', () => {
     expect(sessions().slashCommands('new-session')).toEqual([{ name: 'deploy', description: 'Ship it', argumentHint: '' }])
   })
 
+  it('lets a session started with computer use use any app before its stream attaches', async () => {
+    const computerUse = live.agents.get(SLUG).computerUse
+    let atAttach: string | undefined
+    vi.mocked(client.subscribeToStream).mockImplementationOnce(() => {
+      atAttach = computerUse.check('use_application', 'Safari', 'new-session')
+      return { unsubscribe: vi.fn(), ready: Promise.resolve() }
+    })
+
+    await delivery().start({ ...request, grantComputerUse: true })
+    expect(atAttach).toBe('granted')
+    expect(computerUse.check('use_application', 'Safari', 'other-session')).toBe('prompt_needed')
+  })
+
+  it('grants a session started without computer use nothing', async () => {
+    await delivery().start(request)
+    expect(live.agents.get(SLUG).computerUse.check('use_application', 'Safari', 'new-session')).toBe('prompt_needed')
+  })
+
   it('stores a session a user starts without its own copy of the commands', async () => {
     await delivery().start({ create: { initialMessage: 'go' }, name: 'Chat', metadata: { createdByUserId: 'user-a' } })
 

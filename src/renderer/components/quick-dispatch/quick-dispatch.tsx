@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ArrowUp, AtSign, ChevronDown, Cloud, Loader2, Paperclip } from 'lucide-react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { ArrowUp, AtSign, ChevronDown, Cloud, Loader2, MousePointer2, Paperclip } from 'lucide-react'
 import { cn } from '@shared/lib/utils'
 import { targetIsRemote } from '@renderer/lib/api-target'
+import { offersLauncherComputerUse } from '@renderer/lib/capabilities'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@renderer/components/ui/tooltip'
 import { Button } from '@renderer/components/ui/button'
 import { readLocalFileAsFile } from '@renderer/lib/read-local-file'
 import { useAgents, type ApiAgent } from '@renderer/hooks/use-agents'
@@ -35,17 +37,29 @@ function activityTime(a: ApiAgent): number {
   return a.lastActivityAt ? new Date(a.lastActivityAt).getTime() : 0
 }
 
+/** The composer's chip for an attached file, by its name. */
+function attachmentChip(name: string): HTMLElement | null {
+  const chips = document.querySelectorAll<HTMLElement>('[data-testid="attachment-preview"]')
+  return Array.from(chips).find((chip) => chip.dataset.attachmentName === name) ?? null
+}
+
 /** A borderless, floaty footer trigger that toggles an inline menu. */
 function TriggerButton({
   active,
   onClick,
   children,
   testId,
+  label,
+  pressed,
 }: {
   active: boolean
   onClick: () => void
   children: ReactNode
   testId?: string
+  /** For a button that shows only an icon. */
+  label?: string
+  /** For a toggle: whether it is on. */
+  pressed?: boolean
 }) {
   // On Liquid Glass: a capsule with a translucent fill instead of an opaque tile.
   const glass = launcherHasGlass()
@@ -54,6 +68,8 @@ function TriggerButton({
       type="button"
       onClick={onClick}
       data-testid={testId}
+      aria-label={label}
+      aria-pressed={pressed}
       className={cn(
         'inline-flex h-[34px] max-w-[200px] items-center gap-1.5 px-2 text-xs font-medium',
         glass
@@ -94,9 +110,29 @@ export function QuickDispatch() {
   const selectedAgent = agentList.find((a) => a.slug === selectedSlug)
   const agentSlug = selectedSlug ?? ''
   const editorRef = useRef<HTMLDivElement | null>(null)
+
+  // The computer-use toggle: the session may use any app without asking, and
+  // a screenshot of the screen is attached. Off again every time the launcher
+  // opens (see the reset below), so nothing is captured unless asked for.
+  const computerUseOffered = useMemo(() => offersLauncherComputerUse(), [])
+  const [computerUseOn, setComputerUseOn] = useState(false)
+  // Bumped by every toggle and every reset: a capture that comes back to an
+  // older generation was asked for by a toggle since undone.
+  const captureGeneration = useRef(0)
+  // The screenshot's file name while its chip is attached.
+  const [screenshotName, setScreenshotName] = useState<string | null>(null)
+  // A screenshot whose chip has rendered but not yet been landed on by the shutter.
+  const [landing, setLanding] = useState<string | null>(null)
+  const [captureError, setCaptureError] = useState<string | null>(null)
+  const computerUse = useMemo(
+    () => (computerUseOn ? { screenshotName: screenshotName ?? undefined } : undefined),
+    [computerUseOn, screenshotName],
+  )
+
   const { composer, composerOptions, isDisabled } = useNewSessionComposer({
     agentSlug,
     draftKey: 'quick-dispatch',
+    computerUse,
     // Re-adopt defaults when the selected agent changes, then lock them while typing.
     waitForAgentDefaults: true,
     onSessionCreated: ({ agentSlug: dispatchedSlug, session }) => {
@@ -187,9 +223,77 @@ export function QuickDispatch() {
   useEffect(() => {
     const unsub = window.electronAPI?.onQuickDispatchReset?.(() => {
       clearAttachmentsRef.current()
+      captureGeneration.current++
+      setComputerUseOn(false)
+      setScreenshotName(null)
+      setLanding(null)
+      setCaptureError(null)
       const vi = voiceRef.current
       if (vi.isRecording || vi.isConnecting) void vi.stopRecording()
       vi.clearError()
+    })
+    return () => unsub?.()
+  }, [])
+
+  // A screenshot the person removed from the composer no longer stands for the screen.
+  useEffect(() => {
+    if (screenshotName && !composer.attachments.some((a) => a.type === 'file' && a.file.name === screenshotName)) {
+      setScreenshotName(null)
+    }
+  }, [composer.attachments, screenshotName])
+
+  const toggleComputerUse = async () => {
+    setOpenMenu(null)
+    setCaptureError(null)
+    const generation = ++captureGeneration.current
+    if (computerUseOn) {
+      setComputerUseOn(false)
+      const shot = composer.attachments.find((a) => a.type === 'file' && a.file.name === screenshotName)
+      if (shot) composer.removeAttachment(shot.id)
+      setScreenshotName(null)
+      return
+    }
+    setComputerUseOn(true)
+    const result = await window.electronAPI?.quickDispatchCaptureScreen?.().catch(() => null)
+    // Turned off, or the launcher closed, while the capture ran.
+    if (generation !== captureGeneration.current) {
+      window.electronAPI?.quickDispatchCaptureTarget?.(null)
+      return
+    }
+    if (!result?.ok) {
+      // The toggle stays on: the agent may still use the computer, it just has no picture of it.
+      setCaptureError(result?.reason === 'permission'
+        ? 'No screenshot: turn on Gamut in System Settings › Privacy & Security › Screen & System Audio Recording.'
+        : 'Couldn’t take a screenshot of your screen.')
+      return
+    }
+    composer.addFiles([{ file: new File([result.png], result.name, { type: 'image/png' }) }])
+    setScreenshotName(result.name)
+    setLanding(result.name)
+  }
+
+  // Once the screenshot's chip has rendered: hide it and tell main where it is.
+  // The shutter flies the picture onto it, then main says it landed and the
+  // chip shows again. A chip that hasn't rendered yet is looked for again on
+  // the next attachments change; main gives up waiting on its own.
+  const landingRef = useRef<string | null>(null)
+  useLayoutEffect(() => {
+    if (!landing || landingRef.current === landing) return
+    const chip = attachmentChip(landing)
+    if (!chip) return
+    landingRef.current = landing
+    chip.style.transition = 'opacity 150ms ease-out'
+    chip.style.opacity = '0'
+    const rect = chip.getBoundingClientRect()
+    window.electronAPI?.quickDispatchCaptureTarget?.({ x: rect.left, y: rect.top, width: rect.width, height: rect.height })
+  }, [landing, composer.attachments])
+  useEffect(() => {
+    const unsub = window.electronAPI?.onQuickDispatchCaptureLanded?.(() => {
+      const name = landingRef.current
+      landingRef.current = null
+      setLanding(null)
+      const chip = name ? attachmentChip(name) : null
+      if (chip) chip.style.opacity = ''
     })
     return () => unsub?.()
   }, [])
@@ -362,7 +466,9 @@ export function QuickDispatch() {
             chipContext={composer.chipContext}
             // The launcher grows its own inline menus; a picker would open outside the window.
             pickers={false}
-            placeholder={selectedAgent ? `Dispatch ${selectedAgent.name}…` : 'Dispatch an agent…'}
+            placeholder={computerUseOn
+              ? `What should ${selectedAgent?.name ?? 'the agent'} do on your screen?`
+              : selectedAgent ? `Dispatch ${selectedAgent.name}…` : 'Dispatch an agent…'}
             disabled={isDisabled}
             minRows={1}
             autoFocus
@@ -384,6 +490,36 @@ export function QuickDispatch() {
           <TriggerButton active={openMenu === 'attach'} onClick={() => toggleMenu('attach')} testId="quick-dispatch-attach-trigger">
             <Paperclip className="h-3.5 w-3.5 shrink-0" />
           </TriggerButton>
+          {computerUseOffered && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  {/* TriggerButton does not forward a ref, so the tooltip anchors to this wrapper.
+                      Pointing at it (or tabbing to it) gets the shutter ready, so the click answers at once. */}
+                  <span
+                    className="inline-flex"
+                    onPointerEnter={() => { if (!computerUseOn) window.electronAPI?.quickDispatchCapturePrepare?.() }}
+                    onFocus={() => { if (!computerUseOn) window.electronAPI?.quickDispatchCapturePrepare?.() }}
+                  >
+                    <TriggerButton
+                      active={computerUseOn}
+                      pressed={computerUseOn}
+                      onClick={() => void toggleComputerUse()}
+                      testId="quick-dispatch-computer-use"
+                      label="Use this computer"
+                    >
+                      <MousePointer2 className={cn('h-3.5 w-3.5 shrink-0', computerUseOn && 'fill-current text-primary')} />
+                    </TriggerButton>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-60">
+                  {computerUseOn
+                    ? 'Computer use is on: the agent can use any app without asking, and sees your screen.'
+                    : 'Use this computer: attach a screenshot and let the agent use any app without asking.'}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
           <ModelTooltip line={selectedModel ? `${selectedModel.label} · ${modelDetail}` : undefined} connection={composerOptions.connections?.find(c => c.id === composerOptions.llmProviderId)}>
             {/* TriggerButton does not forward a ref, so the tooltip anchors to this wrapper. */}
             <span className="inline-flex min-w-0">
@@ -451,10 +587,11 @@ export function QuickDispatch() {
           </div>
         )}
 
-        {(composer.voiceInput.error || composer.uploadError) && (
+        {(composer.voiceInput.error || composer.uploadError || captureError) && (
           <div className="px-4 pb-2">
             <VoiceInputError error={composer.voiceInput.error} onDismiss={composer.voiceInput.clearError} />
             <UploadError error={composer.uploadError} onDismiss={composer.clearUploadError} />
+            <UploadError error={captureError} onDismiss={() => setCaptureError(null)} />
           </div>
         )}
       </form>

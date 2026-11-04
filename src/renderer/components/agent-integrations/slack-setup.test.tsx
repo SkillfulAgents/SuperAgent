@@ -7,12 +7,14 @@ import type { PublicSlackDelivery } from '@shared/lib/chat-integrations/public'
 import { makeChatIntegration } from './test-factories'
 import { fakeLoginWindow } from '@renderer/test/fake-login-window'
 
-const state = vi.hoisted(() => ({ relayAvailable: true, requests: [] as Array<{ url: string; method: string; body: any }> }))
+const AGENT = { slug: 'a', name: 'Infra Agent', description: 'Keeps the servers up', avatar: { color: 'tonal-amber', shape: 'circle' } }
+const state = vi.hoisted(() => ({ relayAvailable: true, requests: [] as Array<{ url: string; method: string; body: any }>, agent: null as unknown }))
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: async (url: string, options?: { method?: string; body?: string }) => {
     const method = options?.method ?? 'GET'
     if (method !== 'GET') state.requests.push({ url, method, body: JSON.parse(options?.body ?? '{}') })
     if (url === '/api/webhook-relay') return Response.json({ available: state.relayAvailable })
+    if (url === '/api/agents/a') return Response.json(state.agent)
     if (url === '/api/agent-integrations/agents/a' && method === 'POST') {
       return Response.json(makeChatIntegration({ id: 'int-9', provider: 'slack', status: 'disconnected', hasCredentials: false,
         slack: { botTokenSaved: false, appTokenSaved: false, signingSecretSaved: false, webhook: { url: 'https://relay.test/v1/hooks/whep_1', status: 'pending' } } }), { status: 201 })
@@ -22,6 +24,10 @@ vi.mock('@renderer/lib/api', () => ({
 }))
 vi.mock('@renderer/lib/oauth-popup', () => import('@renderer/test/fake-login-window'))
 import { SlackConnectionSettings, SlackSetup } from './slack-setup'
+import { slackBackgroundColor } from './slack-app-identity'
+import { SlackAppAppearanceCard } from './slack-app-appearance'
+import { avatarSource } from '@renderer/components/agents/agent-avatar/avatar-source'
+import type { AgentAvatar } from '@shared/lib/types/agent-avatar'
 
 let client: QueryClient
 const onClose = vi.fn()
@@ -31,7 +37,7 @@ const setup = () => render(<Dialog open><DialogContent><SlackSetup agentSlug="a"
 beforeEach(() => {
   vi.clearAllMocks()
   client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  Object.assign(state, { relayAvailable: true, requests: [] })
+  Object.assign(state, { relayAvailable: true, requests: [], agent: AGENT })
 })
 
 describe('SlackSetup', () => {
@@ -69,6 +75,29 @@ describe('SlackSetup', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
     await waitFor(() => expect(onClose).toHaveBeenCalled())
     expect(state.requests[1]).toEqual({ url: '/api/agent-integrations/int-9', method: 'PATCH', body: { status: 'active', showToolCalls: false, sessionTimeout: 6, config: { botToken: 'xoxb-1', signingSecret: 'secret', onlyMentioned: true, answerInThread: true, newSessionPerThread: true } } })
+  })
+
+  it('names the Slack app and its bot after the agent, in its colour, and offers its icon', async () => {
+    setup()
+    await screen.findByPlaceholderText('Infra Agent')
+    expect(screen.getByTestId('slack-app-icon-download')).toHaveTextContent('Download icon')
+    fireEvent.click(screen.getByTestId('slack-create-app'))
+    await waitFor(() => expect(fakeLoginWindow.navigate).toHaveBeenCalledOnce())
+    expect(state.requests[0].body.name).toBeUndefined()
+    const manifest = JSON.parse(new URL(fakeLoginWindow.navigate.mock.calls[0][0]).searchParams.get('manifest_json')!)
+    expect(manifest.display_information).toEqual({ name: 'Infra Agent', description: 'Keeps the servers up', background_color: slackBackgroundColor(avatarSource(AGENT.avatar as AgentAvatar).orb) })
+    expect(manifest.features.bot_user.display_name).toBe('Infra Agent')
+  })
+
+  it('falls back to Gamut Bot, with no colour or icon, for an agent without an avatar', async () => {
+    state.agent = { slug: 'a', name: '', avatar: null }
+    setup()
+    await waitFor(() => expect(client.getQueryData(['agents', 'a'])).toBeTruthy())
+    fireEvent.click(await screen.findByTestId('slack-create-app'))
+    await waitFor(() => expect(fakeLoginWindow.navigate).toHaveBeenCalledOnce())
+    const manifest = JSON.parse(new URL(fakeLoginWindow.navigate.mock.calls[0][0]).searchParams.get('manifest_json')!)
+    expect(manifest.display_information).toEqual({ name: 'Gamut Bot' })
+    expect(screen.queryByTestId('slack-app-icon-download')).toBeNull()
   })
 
   it('keeps a created installation’s form while the relay goes away and comes back', async () => {
@@ -122,6 +151,23 @@ describe('SlackConnectionSettings', () => {
 
   it('shows nothing once the app is connected', () => {
     const { container } = render(<SlackConnectionSettings integration={integration({ botTokenSaved: true })} />, { wrapper })
+    expect(container).toBeEmptyDOMElement()
+  })
+})
+
+describe('SlackAppAppearanceCard', () => {
+  const integration = (botTokenSaved: boolean) => makeChatIntegration({ provider: 'slack',
+    slack: { botTokenSaved, appTokenSaved: false, signingSecretSaved: false, webhook: { url: 'https://relay.test/v1/hooks/whep_1', status: botTokenSaved ? 'verified' : 'pending' } } })
+
+  it('offers a connected app the agent’s icon and colour', async () => {
+    render(<SlackAppAppearanceCard integration={integration(true)} />, { wrapper })
+    expect(await screen.findByTestId('slack-app-icon-download')).toBeInTheDocument()
+    expect(screen.getByTestId('slack-app-appearance')).toHaveTextContent(slackBackgroundColor(avatarSource(AGENT.avatar as AgentAvatar).orb))
+  })
+
+  it('leaves an app still being set up to its setup steps', async () => {
+    const { container } = render(<SlackAppAppearanceCard integration={integration(false)} />, { wrapper })
+    await waitFor(() => expect(client.getQueryData(['agents', 'a'])).toBeTruthy())
     expect(container).toBeEmptyDOMElement()
   })
 })

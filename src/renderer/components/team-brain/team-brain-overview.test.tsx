@@ -81,9 +81,9 @@ vi.mock('@renderer/hooks/use-team-brain-syncs', () => ({
       data: [
         {
           id: '_brain/syncs/2026-10-23 0300.md', at: new Date(Date.now() - 7_200_000).toISOString(), session: 's-1', sources: ['slack', 'notion'], added: 3, updated: 9,
-          highlights: [{ title: 'Acme’s renewal moves to Q1', body: 'Acme asked to move it; [Acme Corp](../../Customers/Acme%20Corp.md) has the date.' }],
-          changes: ['Cycle 14 closed.'],
-          needsYou: { blocked: ['Reconnect Slack. #sales was not read this run.'], toDecide: [] },
+          highlights: [{ title: 'Acme’s renewal moves to Q1', body: 'Acme asked to **move** it; [Acme Corp](../../Customers/Acme%20Corp.md) has the date, from [the thread](https://slack.com/x). [Call](javascript:alert(1))' }],
+          changes: '- Cycle 14 closed.\n  - Four bugs left open.',
+          needsYou: { blocked: '- Reconnect Slack. #sales was not read this run.', toDecide: '' },
         },
       ],
     }
@@ -624,6 +624,13 @@ describe('TeamBrainOverview', () => {
     expect(latest).toHaveTextContent('3 pages added, 9 updated')
     expect(latest).toHaveTextContent('Latest')
     expect(within(latest).getByRole('heading', { name: 'Acme’s renewal moves to Q1' })).toBeInTheDocument()
+    // Its text reads as agent text does everywhere: Markdown drawn, web links through the shared link, a refused one as words.
+    expect(within(latest).getByText('move').tagName).toBe('STRONG')
+    expect(within(latest).getByRole('link', { name: 'the thread' })).toHaveAttribute('href', 'https://slack.com/x')
+    expect(within(latest).queryByRole('link', { name: 'Call' })).toBeNull()
+    expect(within(latest).getByText(/Call$/)).toBeInTheDocument()
+    // A section is drawn whole, so a nested list stays inside its item.
+    expect(within(latest).getByText('Four bugs left open.').closest('li')?.parentElement?.closest('li')).toHaveTextContent(/^Cycle 14 closed\./)
     // The latest says what needs a person, and its title opens the run's session.
     expect(within(latest).getByTestId('team-brain-sync-needs-you')).toHaveTextContent('Reconnect Slack.')
     await userEvent.click(within(latest).getByTestId('team-brain-sync-session-_brain/syncs/2026-10-23 0300.md'))

@@ -21,10 +21,13 @@ import {
 } from '@renderer/hooks/use-agent-integrations'
 import { Loader2, Copy, Check, Eye, EyeOff } from 'lucide-react'
 import { IMESSAGE_PHONE_E164, type ChatProvider } from '@shared/lib/chat-integrations/config-schema'
-import { slackAppManifest } from '@shared/lib/chat-integrations/slack-manifest'
+import { slackAppManifest, type SlackAppIdentity } from '@shared/lib/chat-integrations/slack-manifest'
+import { useAgent } from '@renderer/hooks/use-agents'
+import { SlackAppIconStep } from './slack-app-appearance'
+import { slackAppIdentity } from './slack-app-identity'
 
-function generateSlackManifest(botName: string): string {
-  return JSON.stringify(slackAppManifest(botName), null, 2)
+function generateSlackManifest(app: SlackAppIdentity): string {
+  return JSON.stringify(slackAppManifest(app), null, 2)
 }
 
 const IMESSAGE_SETUP_NUMBER_DISPLAY = '+1 (205) 396-7934'
@@ -219,6 +222,8 @@ export function ChatIntegrationSetupForm({
   const [slackSetupMode, setSlackSetupMode] = useState<'manifest' | 'manual'>('manifest')
   const [manifestCopied, setManifestCopied] = useState(false)
   const [manifestPreview, setManifestPreview] = useState(false)
+  const { data: agent } = useAgent(provider === 'slack' ? agentSlug : null)
+  const slackApp = slackAppIdentity(agent, integrationName)
 
   const info = PROVIDER_INFO[provider]
 
@@ -298,7 +303,7 @@ export function ChatIntegrationSetupForm({
                     size="sm"
                     className="h-7 px-2 text-xs"
                     onClick={async () => {
-                      await navigator.clipboard.writeText(generateSlackManifest(integrationName.trim() || 'Gamut Bot'))
+                      await navigator.clipboard.writeText(generateSlackManifest(slackApp))
                       setManifestCopied(true)
                       setTimeout(() => setManifestCopied(false), 2000)
                     }}
@@ -316,10 +321,11 @@ export function ChatIntegrationSetupForm({
                 </div>
                 {manifestPreview && (
                   <pre className="mt-2 text-2xs leading-relaxed bg-background border rounded-md p-2 overflow-x-auto max-h-40 select-all">
-                    {generateSlackManifest(integrationName.trim() || 'Gamut Bot')}
+                    {generateSlackManifest(slackApp)}
                   </pre>
                 )}
               </li>
+              {agent?.avatar && <li className="text-sm font-normal text-foreground"><SlackAppIconStep agent={agent} /></li>}
               <li className="text-sm font-normal text-foreground">In Basic Information section → Scroll to App-Level Tokens → Click Generate Tokens and Scopes</li>
               <li className="text-sm font-normal text-foreground">Name your token → Click Add Scope → Select connections:write → Click Generate</li>
               <li className="text-sm font-normal text-foreground">Copy the token → Paste in the App-Level Token field in the setup form</li>
@@ -343,6 +349,7 @@ export function ChatIntegrationSetupForm({
               {info.steps.map((step, i) => (
                 <li key={i} className="text-sm font-normal text-foreground">{step}</li>
               ))}
+              {agent?.avatar && <li className="text-sm font-normal text-foreground"><SlackAppIconStep agent={agent} withColor /></li>}
             </ol>
             <p className="pt-4 text-xs text-muted-foreground">
               <button
@@ -414,7 +421,7 @@ export function ChatIntegrationSetupForm({
       <IntegrationSetupField
         id="setup-integration-name" label="Integration name"
         value={integrationName} onChange={e => setIntegrationName(e.target.value)}
-        placeholder={`My ${info.label} integration`}
+        placeholder={agent?.name || `My ${info.label} integration`}
       />
 
       {info.fields.map(field => (
