@@ -27,6 +27,8 @@ import { ArrowRight, Loader2, Plus, Search, SearchX } from 'lucide-react'
 import { IntegrationList, IntegrationRow } from './integration-row'
 import { mcpDraftSchema, type McpDraft, type McpAuthType } from './mcp-draft-schema'
 import { useConnectAccount, type NewApiConnection } from '@renderer/hooks/use-connect-account'
+import { AgentRuntimeErrorView } from '@shared/lib/agent-runtime-errors/agent-runtime-error-view'
+import { resolveAgentRuntimeErrorPreview } from '@shared/lib/agent-runtime-errors/previews'
 import {
   useAddRemoteMcp,
   useInitiateMcpOAuth,
@@ -300,11 +302,13 @@ function ApisPanel({ filter, onConnected, fallbackClose, embedded = false, onSee
           description="The most reliable and robust connections — check here first."
         />
       )}
-      {error && (
+      {error && (resolveAgentRuntimeErrorPreview(error) ? (
+        <AgentRuntimeErrorView error={error} />
+      ) : (
         <div className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
-          {error}
+          {error.message}
         </div>
-      )}
+      ))}
       {isLoading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />
