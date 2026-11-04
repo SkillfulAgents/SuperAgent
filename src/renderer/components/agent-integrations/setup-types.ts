@@ -1,10 +1,15 @@
 import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
+import type { OwnerSetupPrefill } from '@shared/lib/agent-integrations/owner-setup-schema'
 import type { ComponentType } from 'react'
 import type { IntegrationMessageProps } from './messages/types'
 
 export interface IntegrationSetupProps {
   agentSlug: string
   onClose: () => void
+  /** Starting values the agent suggested when it asked for this integration. */
+  initial?: OwnerSetupPrefill
+  /** Replaces opening the new integration's page, for setup started from a session. */
+  onCreated?: (integrationId: string) => void
 }
 
 /**

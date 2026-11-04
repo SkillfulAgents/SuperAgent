@@ -203,9 +203,17 @@ type UnifiedCapabilityReview = {
   input: Record<string, unknown>
 }
 
+type UnifiedIntegrationSetup = {
+  toolUseId: string
+  provider: string
+  reason?: string
+  prefill?: Record<string, string>
+}
+
 interface UnifiedProjection {
   buckets: PendingRequestBuckets
   capabilityReviews: UnifiedCapabilityReview[]
+  integrationSetups: UnifiedIntegrationSetup[]
   reviews: PendingReview[]
   accountReauthRequests: PendingAccountReauth[]
   mcpReauthRequests: PendingMcpReauth[]
@@ -390,6 +398,7 @@ export function reviewFromEnvelope(
 function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedProjection {
   const buckets = createPendingRequestBuckets()
   const capabilityReviews: UnifiedCapabilityReview[] = []
+  const integrationSetups: UnifiedIntegrationSetup[] = []
   const reviews: PendingReview[] = []
   const accountReauthRequests: PendingAccountReauth[] = []
   const mcpReauthRequests: PendingMcpReauth[] = []
@@ -521,6 +530,17 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
           })
         }
         break
+      case 'integration_setup':
+        if (typeof payload.provider === 'string') {
+          const prefill = recordFromInput(payload.prefill)
+          integrationSetups.push({
+            toolUseId: request.id,
+            provider: payload.provider,
+            reason: typeof payload.reason === 'string' ? payload.reason : undefined,
+            prefill: Object.fromEntries(Object.entries(prefill).filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
+          })
+        }
+        break
       case 'proxy_review':
       case 'x_agent_review': {
         const review = reviewFromEnvelope(request, payload)
@@ -545,6 +565,7 @@ function projectUnifiedRequests(requests: PendingUserInputRequest[]): UnifiedPro
   return {
     buckets,
     capabilityReviews,
+    integrationSetups,
     reviews,
     accountReauthRequests,
     mcpReauthRequests,
@@ -759,6 +780,14 @@ export function usePendingRequests({
     return unified.capabilityReviews.filter((r) => !dismissedRequestIds.has(r.toolUseId))
   }, [unified.capabilityReviews, isActive, dismissedRequestIds])
 
+  // Integration setup asks too: an add_agent_integration call without a
+  // result is usually a direct setup in flight; only the host knows which
+  // calls it parked on the owner.
+  const pendingIntegrationSetupRequests = useMemo(() => {
+    if (!isActive) return []
+    return unified.integrationSetups.filter((r) => !dismissedRequestIds.has(r.toolUseId))
+  }, [unified.integrationSetups, isActive, dismissedRequestIds])
+
   // Track arrival order so the stack is chronological. Each id gets a
   // monotonically increasing sequence number the first time it appears.
   const arrivalOrder = useRef(new Map<string, number>())
@@ -777,6 +806,7 @@ export function usePendingRequests({
       merged.scriptRunRequests,
       merged.computerUseRequests,
       pendingCapabilityReviewRequests,
+      pendingIntegrationSetupRequests,
     ]) {
       for (const req of arr) ids.push(req.toolUseId)
     }
@@ -787,7 +817,8 @@ export function usePendingRequests({
   }, [
     merged.secretRequests, merged.connectedAccountRequests, merged.remoteMcpRequests,
     merged.questionRequests, merged.fileRequests, merged.browserInputRequests, merged.loginRequests,
-    merged.scriptRunRequests, merged.computerUseRequests, pendingCapabilityReviewRequests, pendingProxyReviews,
+    merged.scriptRunRequests, merged.computerUseRequests, pendingCapabilityReviewRequests,
+    pendingIntegrationSetupRequests, pendingProxyReviews,
     pendingAccountReauthRequests,
     pendingMcpReauthRequests,
   ])
@@ -931,6 +962,17 @@ export function usePendingRequests({
         onComplete: () => handleRequestComplete(r.toolUseId),
       })
     }
+    for (const r of pendingIntegrationSetupRequests) {
+      all.push({
+        kind: 'integration_setup',
+        key: r.toolUseId,
+        toolUseId: r.toolUseId,
+        provider: r.provider,
+        reason: r.reason,
+        prefill: r.prefill,
+        onComplete: () => handleRequestComplete(r.toolUseId),
+      })
+    }
     for (const review of pendingProxyReviews) {
       if (review.xAgent) {
         all.push({
@@ -987,7 +1029,8 @@ export function usePendingRequests({
   }, [
     merged.secretRequests, merged.connectedAccountRequests, merged.remoteMcpRequests,
     merged.questionRequests, merged.fileRequests, merged.browserInputRequests, merged.loginRequests,
-    merged.scriptRunRequests, merged.computerUseRequests, pendingCapabilityReviewRequests, pendingProxyReviews,
+    merged.scriptRunRequests, merged.computerUseRequests, pendingCapabilityReviewRequests,
+    pendingIntegrationSetupRequests, pendingProxyReviews,
     pendingAccountReauthRequests,
     pendingMcpReauthRequests,
     getArrivalOrder, handleRequestComplete, handleProxyReviewComplete,

@@ -1,13 +1,16 @@
 import { defineToolRenderer } from '../renderer-types'
-import { MessageCircle, Plus, Send } from 'lucide-react'
+import { KeyRound, MessageCircle, Plus, Send } from 'lucide-react'
 import type { ToolRendererProps } from '../renderer-types'
 import { ResultBlock } from '../ui/shared'
 import {
   listAvailableChatProvidersDef,
   listAgentIntegrationsDef,
   addChatIntegrationDef,
+  authorizeAgentIntegrationDef,
+  completeAgentIntegrationAuthorizationDef,
   sendChatMessageDef,
   type AddChatIntegrationInput,
+  type AuthorizeAgentIntegrationInput,
   type SendChatMessageInput,
 } from './definition'
 
@@ -20,12 +23,12 @@ function ProviderBadge({ provider }: { provider?: string }) {
   )
 }
 
-// ── list_available_chat_providers ────────────────────────────
+// ── list_available_integration_providers ─────────────────────
 
 function ListChatProvidersExpandedView({ result, isError }: ToolRendererProps) {
   return (
     <div className="space-y-2">
-      <p className="text-xs text-muted-foreground">Querying available chat providers.</p>
+      <p className="text-xs text-muted-foreground">Querying available integration providers.</p>
       <ResultBlock result={result} isError={isError} />
     </div>
   )
@@ -52,7 +55,7 @@ export const listAgentIntegrationsRenderer = defineToolRenderer(listAgentIntegra
   ExpandedView: ListAgentIntegrationsExpandedView,
 })
 
-// ── add_chat_integration ────────────────────────────────────
+// ── add_chat_integration (historical; see add-agent-integration) ──
 
 function AddChatIntegrationExpandedView({ input, result, isError }: ToolRendererProps) {
   const { provider, name } = input as AddChatIntegrationInput
@@ -70,6 +73,29 @@ function AddChatIntegrationExpandedView({ input, result, isError }: ToolRenderer
 export const addChatIntegrationRenderer = defineToolRenderer(addChatIntegrationDef, {
   icon: Plus,
   ExpandedView: AddChatIntegrationExpandedView,
+})
+
+// ── authorize_agent_integration / complete_agent_integration_authorization ──
+// Credentials stay out of the view: the input shows only which integration.
+
+function IntegrationAuthorizationExpandedView({ input, result, isError }: ToolRendererProps) {
+  const { integration_id } = input as AuthorizeAgentIntegrationInput
+  return (
+    <div className="space-y-2">
+      {integration_id && <p className="text-xs text-muted-foreground">Integration {integration_id}</p>}
+      <ResultBlock result={result} isError={isError} />
+    </div>
+  )
+}
+
+export const authorizeAgentIntegrationRenderer = defineToolRenderer(authorizeAgentIntegrationDef, {
+  icon: KeyRound,
+  ExpandedView: IntegrationAuthorizationExpandedView,
+})
+
+export const completeAgentIntegrationAuthorizationRenderer = defineToolRenderer(completeAgentIntegrationAuthorizationDef, {
+  icon: KeyRound,
+  ExpandedView: IntegrationAuthorizationExpandedView,
 })
 
 // ── send_chat_message ───────────────────────────────────────

@@ -196,6 +196,7 @@ const ASK_BY_KIND: Record<UserInputRequestKind, TodoAsk> = {
   mcp_reauth_required: 'reconnect',
   connected_account: 'connect',
   remote_mcp: 'connect',
+  integration_setup: 'connect',
   secret: 'info',
   file: 'info',
   browser_input: 'info',

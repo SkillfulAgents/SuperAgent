@@ -14,6 +14,7 @@ import { isPublicLinearIntegration, type PublicLinearIntegration } from '@shared
 import { useWebhookRelay } from '@renderer/hooks/use-webhook-relay'
 import { ToggleRow } from './integration-settings-controls'
 import { IntegrationSetupLayout, IntegrationSetupField, IntegrationSetupFeedback } from './integration-setup-layout'
+import type { IntegrationSetupProps } from './setup-types'
 
 function ExternalButton({ href, children }: { href: string; children: React.ReactNode }) {
   return <a className={buttonVariants({ variant: 'outline', size: 'sm' })} href={href} target="_blank" rel="noreferrer" onClick={event => {
@@ -23,9 +24,9 @@ function ExternalButton({ href, children }: { href: string; children: React.Reac
 
 
 /** OAuth changes the connection step, while the setup frame remains shared. */
-export function LinearSetupForm({ agentSlug, onClose }: { agentSlug: string; onClose: () => void }) {
+export function LinearSetupForm({ agentSlug, onClose, initial }: IntegrationSetupProps) {
   const { data: agent } = useAgent(agentSlug)
-  const [name, setName] = useState<string | null>(null)
+  const [name, setName] = useState<string | null>(initial?.name?.slice(0, 80) ?? null)
   const displayName = (name ?? agent?.name ?? agentSlug).trim()
   const setup = useAgentIntegrationSetup(agentSlug, 'linear', displayName || undefined)
   const create = useCreateAgentIntegration()

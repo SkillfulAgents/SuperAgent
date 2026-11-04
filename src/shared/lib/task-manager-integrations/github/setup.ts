@@ -22,6 +22,15 @@ function installationUrl(app: NonNullable<GitHubConfig['app']>, state: string) {
 }
 
 export const githubSetup: IntegrationProviderSetup = {
+  // The agent creates and installs the app in its browser, as a person would.
+  allowAgentCreation: true,
+  agentNextStep(record) {
+    const { organization } = githubConfigSchema.parse(JSON.parse(record.config))
+    return [
+      `Call authorize_agent_integration with integration_id "${record.id}" and open the link it returns in your browser. If GitHub asks to log in, ask the user to with request_browser_input.`,
+      `GitHub shows this agent's app, preconfigured${organization ? ` for the ${organization} organization` : ''}: create it, then install it on the repositories the user wants the agent to work in.`,
+    ].join('\n')
+  },
   async prepare(input, context) {
     const { organization } = githubSetupInputSchema.parse(input)
     return { config: githubConfigSchema.parse({ redirectUri: context.callbackUrl, organization }), status: 'disconnected' }

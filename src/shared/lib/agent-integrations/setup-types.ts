@@ -12,8 +12,17 @@ export interface IntegrationSetupContext {
 export interface IntegrationProviderSetup {
   /** Read-only setup links; must not create an installation or persist credentials. */
   describe?(context: IntegrationSetupContext, name?: string): IntegrationSetupMetadata | Promise<IntegrationSetupMetadata>
-  /** Agent-side setup is opt-in; owner-managed accounts require the user UI. */
+  /**
+   * Agent-side setup is opt-in. Without it the agent can only ask the owner,
+   * who sets the account up in the app (see owner-setup-request.ts).
+   */
   allowAgentCreation?: boolean
+  /**
+   * What the agent does next with an installation it created that is not
+   * connected yet (an app to create in its browser, credentials to bring
+   * back to `authorize`). Links and instructions only, never credentials.
+   */
+  agentNextStep?(record: AgentIntegrationRecord): string
   /**
    * `relay: true` sets up webhooks: the host mints the endpoint before the
    * installation exists, with `verification` if the provider can give it.

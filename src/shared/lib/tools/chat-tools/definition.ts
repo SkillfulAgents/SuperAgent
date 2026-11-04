@@ -7,6 +7,16 @@ export interface AddChatIntegrationInput {
   name?: string
 }
 
+export interface AuthorizeAgentIntegrationInput {
+  integration_id?: string
+  config?: Record<string, unknown>
+}
+
+export interface CompleteAgentIntegrationAuthorizationInput {
+  integration_id?: string
+  url?: string
+}
+
 export interface SendChatMessageInput {
   integration_id?: string
   message?: string
@@ -24,9 +34,9 @@ function truncate(s: string | undefined, max = 80): string | null {
 }
 
 export const listAvailableChatProvidersDef = {
-  displayName: 'List Chat Providers',
+  displayName: 'List Integration Providers',
   parseInput: (i: unknown) => asObj<ListAvailableChatProvidersInput>(i),
-  getSummary: () => 'List supported chat providers',
+  getSummary: () => 'List supported integration providers',
 } as const
 
 export const listAgentIntegrationsDef = {
@@ -43,6 +53,18 @@ export const addChatIntegrationDef = {
     if (name) return `Add ${provider || 'chat'}: ${name}`
     return provider ? `Add ${provider} integration` : 'Add chat integration'
   },
+} as const
+
+export const authorizeAgentIntegrationDef = {
+  displayName: 'Authorize Agent Integration',
+  parseInput: (i: unknown) => asObj<AuthorizeAgentIntegrationInput>(i),
+  getSummary: () => 'Get the authorization link',
+} as const
+
+export const completeAgentIntegrationAuthorizationDef = {
+  displayName: 'Complete Integration Authorization',
+  parseInput: (i: unknown) => asObj<CompleteAgentIntegrationAuthorizationInput>(i),
+  getSummary: () => 'Hand the authorization back to Gamut',
 } as const
 
 export const sendChatMessageDef = {

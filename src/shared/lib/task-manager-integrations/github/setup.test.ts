@@ -37,6 +37,14 @@ async function start() {
 async function manifest(state: string) { return githubSetup.callback!({ state, code: 'valid-code' }) }
 async function install(state: string, id = '456') { return githubSetup.callback!({ state, parameters: { installation_id: id, setup_action: 'install' } }) }
 
+it('sends an agent that set it up to authorize_agent_integration, naming the organization', async () => {
+  const prepared = await githubSetup.prepare({ organization: 'team' }, context)
+  const id = await createAgentIntegration({ agentSlug: 'agent', provider: 'github', name: 'Helper', status: prepared.status, config: prepared.config })
+  const step = githubSetup.agentNextStep!((await getAgentIntegration(id))!)
+  expect(step).toContain(`authorize_agent_integration with integration_id "${id}"`)
+  expect(step).toContain('for the team organization')
+})
+
 it('creates a private manifest with this integration’s relay, then validates and installs its bot', async () => {
   const { id, state } = await start()
   const form = await githubSetup.launch!(state)

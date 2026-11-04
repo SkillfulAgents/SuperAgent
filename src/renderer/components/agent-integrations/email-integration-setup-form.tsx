@@ -10,14 +10,14 @@ import { EmailAccessFields, parseEmailDomains } from './email-access-fields'
 import { IntegrationSetupLayout, IntegrationSetupField, IntegrationSetupFeedback } from './integration-setup-layout'
 import type { IntegrationSetupProps } from './setup-types'
 
-export function EmailIntegrationSetupForm({ agentSlug, onClose }: IntegrationSetupProps) {
+export function EmailIntegrationSetupForm({ agentSlug, onClose, initial, onCreated }: IntegrationSetupProps) {
   const formId = useId()
   const previewId = useId()
   const setup = useAgentIntegrationSetup(agentSlug, 'platform-email')
   const { data: agent } = useAgent(agentSlug)
   const { data: platform } = usePlatformAuthStatus()
-  const [localPart, setLocalPart] = useState(() => (agent?.name ?? agentSlug).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64))
-  const [displayName, setDisplayName] = useState(agent?.name ?? agentSlug)
+  const [localPart, setLocalPart] = useState(() => initial?.localPart ?? (agent?.name ?? agentSlug).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 64))
+  const [displayName, setDisplayName] = useState(initial?.name ?? agent?.name ?? agentSlug)
   const [accessLevel, setAccessLevel] = useState<EmailAccessLevel>('agent-users-and-replies')
   const [domains, setDomains] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -54,7 +54,8 @@ export function EmailIntegrationSetupForm({ agentSlug, onClose }: IntegrationSet
       try {
         const result = await create.mutateAsync({ agentSlug, provider: 'platform-email', name: parsed.data.displayName, config: parsed.data })
         onClose()
-        void navigate({ to: '/agents/$slug/chat/$integrationId', params: { slug: agentSlug, integrationId: result.id } })
+        if (onCreated) onCreated(result.id)
+        else void navigate({ to: '/agents/$slug/chat/$integrationId', params: { slug: agentSlug, integrationId: result.id } })
       } catch (err) { setError(err instanceof Error ? err.message : 'Could not create inbox') }
     }}>
       <IntegrationSetupField id="email-name" label="Sender name" value={displayName} onChange={event => setDisplayName(event.target.value)} required maxLength={200} disabled={create.isPending} />

@@ -1112,7 +1112,11 @@ export interface UserInputTool {
 export class UserInputRequestScenario implements MockScenario {
   constructor(
     private tools: UserInputTool[],
-    private opts?: { holdResultsUntilAll?: boolean },
+    private opts?: {
+      holdResultsUntilAll?: boolean
+      /** After the calls are streamed: what the real container's tool would ask the host for. */
+      onEmitted?: (emitted: { agentSlug: string; sessionId: string; toolUseIds: string[]; inputs: Record<string, unknown>[] }) => void
+    },
   ) {}
 
   execute(sessionId: string, client: MockContainerClient, userMessage: string): void {
@@ -1242,6 +1246,7 @@ export class UserInputRequestScenario implements MockScenario {
         type: 'assistant',
         content: { type: 'assistant', message: { content: assistantContent } },
       })
+      this.opts?.onEmitted?.({ agentSlug: client.getAgentId(), sessionId, toolUseIds: capturedToolIds, inputs: capturedTools.map((tool) => tool.input) })
     })
   }
 }
@@ -2608,6 +2613,19 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       ].join('\n'),
       'Here are the search results.'
     )],
+    // Owner setup request: the real container's add_agent_integration posts the
+    // call to /x-agent/chat/add, which parks it on the owner for Email.
+    ['ask integration setup', new UserInputRequestScenario([
+      {
+        name: 'mcp__chat__add_agent_integration',
+        input: { provider: 'platform-email', name: 'Support Desk', config: { localPart: 'support' }, reason: 'So customers can email support requests to me' },
+      },
+    ], {
+      onEmitted: ({ agentSlug, sessionId, toolUseIds: [toolUseId], inputs: [input] }) => {
+        background(import('@shared/lib/agent-integrations/owner-setup-request').then(({ requestOwnerSetup, ownerSetupRequestInputSchema }) =>
+          requestOwnerSetup(agentSlug, ownerSetupRequestInputSchema.parse({ ...input, toolUseId, sessionId }))), { name: 'mock-integration-setup-scenario.request-owner-setup' })
+      },
+    })],
     // Connected account request scenario
     ['ask account', new UserInputRequestScenario([
       {

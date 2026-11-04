@@ -10,11 +10,11 @@ import { isPublicGitHubIntegration } from '@shared/lib/task-manager-integrations
 import type { IntegrationSetupProps } from './setup-types'
 import { IntegrationSetupLayout, IntegrationSetupField, IntegrationSetupFeedback } from './integration-setup-layout'
 
-export function GitHubSetupForm({ agentSlug, onClose }: IntegrationSetupProps) {
+export function GitHubSetupForm({ agentSlug, onClose, initial }: IntegrationSetupProps) {
   const { data: agent } = useAgent(agentSlug)
   const setup = useAgentIntegrationSetup(agentSlug, 'github')
-  const [name, setName] = useState<string | null>(null)
-  const [organization, setOrganization] = useState('')
+  const [name, setName] = useState<string | null>(initial?.name?.slice(0, 34) ?? null)
+  const [organization, setOrganization] = useState(initial?.organization ?? '')
   const [id, setId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const create = useCreateAgentIntegration()
