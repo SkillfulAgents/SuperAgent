@@ -113,3 +113,13 @@ describe('runtime handoff rejection evidence', () => {
     expect(failure).not.toBeInstanceOf(MessageNotAcceptedError)
   })
 })
+describe('deleteSession', () => {
+  it.each([
+    ['the container has no such session', Response.json({ error: 'Session not found' }, { status: 404 }), true],
+    ['something else answered 404', new Response('Not Found', { status: 404 }), false],
+    ['the container failed', Response.json({ error: 'boom' }, { status: 500 }), false],
+  ])('when %s, reports dropped = %s', async (_case, response, dropped) => {
+    vi.stubGlobal('fetch', vi.fn(async () => response))
+    await expect(new Client().deleteSession('s1')).resolves.toBe(dropped)
+  })
+})

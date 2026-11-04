@@ -298,6 +298,7 @@ export interface ContainerClient {
   // Session management (proxied to container API)
   createSession(options: CreateSessionOptions): Promise<ContainerSession>
   getSession(sessionId: string): Promise<ContainerSession | null>
+  // true once the container holds no process for the session, including one it never had.
   deleteSession(sessionId: string): Promise<boolean>
   // Copy a session's transcript into a new session (Fork Session).
   // null = the container predates the fork endpoint (plain 404). Throws

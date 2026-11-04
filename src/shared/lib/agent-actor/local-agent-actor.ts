@@ -225,6 +225,20 @@ function createSessionOps(
 ): SessionOps {
   const client = () => deps.containerHost.runtime(slug).getClient()
   const live = state.sessions
+  // The container's CLI process rewrites the transcript on exit, so the container drops the session before the files go.
+  const release = async (sessionId: string) => {
+    // The stream lets go first, so an append in flight cannot write the transcript again after it is gone.
+    live.unsubscribe(sessionId)
+    state.deferredNaming.delete(sessionId)
+    let cause: unknown
+    const dropped =
+      (await client().deleteSession(sessionId).catch((error: unknown) => {
+        cause = error
+        return false
+      })) || (await client().getInfoFromRuntime().catch(() => null))?.status === 'stopped'
+    if (!dropped) console.warn(`[sessions.delete] container kept ${sessionId}:`, cause)
+    return dropped
+  }
   return {
     list: (...args) => deps.sessionService.listSessions(store, ...args),
     listFromSummary: (...args) => deps.sessionService.listSessionsFromSummary(store, ...args),
@@ -240,20 +254,17 @@ function createSessionOps(
       live.emit(sessionId, { type: 'session_updated' })
       deps.host.send('global', { type: 'session_updated', sessionId, agentSlug: slug })
     },
-    // The stream lets go first, so an append in flight cannot write the transcript again after it is gone.
-    delete: (sessionId) => {
-      live.unsubscribe(sessionId)
-      state.deferredNaming.delete(sessionId)
+    delete: async (sessionId) => {
+      if (!(await release(sessionId))) throw new Error(`Container did not drop session ${sessionId}`)
       return deps.sessionService.deleteSession(store, sessionId)
     },
-    // Decided and let go of in one step, before the delete, as `delete` does.
+    // Activity is checked right before each release, since the ones before it wait on the container.
     deleteMany: async (sessionIds) => {
-      const idle = sessionIds.filter((sessionId) => !live.isActive(sessionId))
-      for (const sessionId of idle) {
-        live.unsubscribe(sessionId)
-        state.deferredNaming.delete(sessionId)
+      const released: string[] = []
+      for (const sessionId of sessionIds) {
+        if (!live.isActive(sessionId) && (await release(sessionId))) released.push(sessionId)
       }
-      return deps.sessionService.deleteSessionsBatch(store, idle)
+      return deps.sessionService.deleteSessionsBatch(store, released)
     },
     metadata: (sessionId) => deps.sessionService.getSessionMetadata(store, sessionId),
     readMetadata: () => deps.sessionService.readSessionMetadata(store),

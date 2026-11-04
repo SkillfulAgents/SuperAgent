@@ -227,7 +227,7 @@ const mockEnsureRunning = vi.fn()
 const mockInterruptSession = vi.fn()
 const mockStopTask = vi.fn()
 const mockForkSession = vi.fn()
-const mockClientDeleteSession = vi.fn()
+const mockClientDeleteSession = vi.fn(async (..._args: unknown[]) => true)
 const mockClientWarmSession = vi.fn()
 // The container's view of a session, which an uncertain send asks for. Unknown unless a test says.
 const mockClientGetSession = vi.fn(async (..._args: unknown[]): Promise<unknown> => null)

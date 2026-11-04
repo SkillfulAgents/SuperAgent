@@ -72,6 +72,11 @@ vi.mock('@shared/lib/auth/mode', () => ({
   isAuthMode: () => mockIsAuthMode(),
 }))
 
+vi.mock('@shared/lib/container/container-host', async () => {
+  const { hostFromManagerMock } = await import('@shared/lib/agent-actor/testing/host-from-manager-mock')
+  return { containerHost: hostFromManagerMock({ getClient: () => ({ deleteSession: async () => true }) }) }
+})
+
 vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
   LiveSessions: (await import('@shared/lib/agent-actor/testing/live-sessions-double')).liveSessionsDouble({
     isActive: (_agentSlug, id) => mockIsSessionActive(id),

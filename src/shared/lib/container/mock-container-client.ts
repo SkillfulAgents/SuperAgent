@@ -3527,7 +3527,6 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
   }
 
   async deleteSession(sessionId: string): Promise<boolean> {
-    const existed = this.sessions.has(sessionId)
     this.sessions.delete(sessionId)
     this.streamCallbacks.delete(sessionId)
     this.pendingUserMessageUuids.delete(sessionId)
@@ -3537,9 +3536,10 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
       for (const timer of timers.values()) clearTimeout(timer)
       this.queuedSteeringTimers.delete(sessionId)
     }
-    this.interruptEpochs.delete(sessionId)
+    // As an interrupt does: the deleted session's pending scenario writes become no-ops.
+    this.interruptEpochs.set(sessionId, (this.interruptEpochs.get(sessionId) ?? 0) + 1)
     console.log(`[MockContainerClient] Deleted session ${sessionId}`)
-    return existed
+    return true
   }
 
   /**

@@ -92,6 +92,7 @@ function fakeDeps() {
     fetch: vi.fn(async (_path: string, _init?: RequestInit) => new Response(null, { status: 200 })),
     getHostAuthHeaders: vi.fn().mockReturnValue({ 'x-host': '1' }),
     getWebSocketBaseUrl: vi.fn().mockReturnValue('ws://127.0.0.1:4321'),
+    deleteSession: vi.fn(async (_sessionId: string) => true),
   }
   // One fake runtime per slug, created the way the real host creates them: on first use.
   const fakeRuntime = (slug: string) => ({
@@ -804,11 +805,12 @@ describe('createAgentRegistry', () => {
       expect((registry.get('b') as LocalAgentActor).state.accountReauth.openEntryIds()).toHaveLength(1)
     })
 
-    it('deleting sessions lets go of their streams first; a batch keeps a session running now', async () => {
+    it('deleting sessions lets go of the container and the stream before the files; a batch keeps a session running now', async () => {
       const sessionService = fake.deps.sessionService as unknown as Record<string, unknown>
       const order: string[] = []
       sessionService.deleteSession = vi.fn(async () => { order.push('delete'); return true })
       sessionService.deleteSessionsBatch = vi.fn(async (_store: unknown, ids: string[]) => { order.push(`delete-batch ${ids.join(',')}`); return ids })
+      fake.client.deleteSession.mockImplementation(async (sessionId) => { order.push(`release ${sessionId}`); return true })
       const actor = createAgentRegistry(fake.deps).get('a') as LocalAgentActor
       vi.spyOn(actor.state.sessions, 'unsubscribe').mockImplementation((sessionId) => { order.push(`unsubscribe ${sessionId}`) })
       // Went active after the caller listed it as idle.
@@ -817,7 +819,10 @@ describe('createAgentRegistry', () => {
       await actor.sessions.delete('s1')
       expect(await actor.sessions.deleteMany(['s2', 's3', 's4'])).toEqual(['s2', 's3'])
 
-      expect(order).toEqual(['unsubscribe s1', 'delete', 'unsubscribe s2', 'unsubscribe s3', 'delete-batch s2,s3'])
+      expect(order).toEqual([
+        'unsubscribe s1', 'release s1', 'delete',
+        'unsubscribe s2', 'release s2', 'unsubscribe s3', 'release s3', 'delete-batch s2,s3',
+      ])
     })
   })
 })

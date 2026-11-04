@@ -347,11 +347,11 @@ export interface SessionOps {
   register(sessionId: string, name?: string, initialMetadata?: Partial<SessionMetadata>): Promise<void>
   /** `updateSessionName`, then `session_updated` on the session's stream and the global feed. */
   rename(sessionId: string, name: string): Promise<void>
-  /** `deleteSession` — the files are the authority. */
+  /** `deleteSession` once the container dropped the session or is not running; throws when it kept it. */
   delete(sessionId: string): Promise<boolean>
   /**
-   * `deleteSessionsBatch` over the sessions not running now: one that is
-   * (the caller's view of what is idle may be stale) is kept. Returns the ids deleted.
+   * `deleteSessionsBatch` over the sessions not running now that the container dropped: one that is
+   * running (the caller's view of what is idle may be stale) or kept is not deleted. Returns the ids deleted.
    */
   deleteMany(sessionIds: string[]): Promise<string[]>
   /** `getSessionMetadata` */

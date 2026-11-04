@@ -301,6 +301,8 @@ const HEALTH_PROBE_TIMEOUT_MS = 2000
 // Max wait for the container to accept a pre-resume (warmSession). It answers
 // before resuming anything, so only a struggling container takes this long.
 const WARM_SESSION_TIMEOUT_MS = 5000
+// Max wait for the container to drop a session. Its dispose gives the CLI 5 s to exit.
+const DELETE_SESSION_TIMEOUT_MS = 10000
 
 // Reads stderr only: an exec error's message repeats the command line, flags included.
 export function refusedVolumeFlags(error: { stderr?: unknown } | null | undefined, flags: string): boolean {
@@ -1508,8 +1510,13 @@ export abstract class BaseContainerClient extends EventEmitter implements Contai
   async deleteSession(sessionId: string): Promise<boolean> {
     this.closeTrackedWebSocket(sessionId)
 
-    const response = await this.fetch(`/sessions/${sessionId}`, { method: 'DELETE' })
-
+    const response = await this.fetch(`/sessions/${sessionId}`, {
+      method: 'DELETE',
+      signal: AbortSignal.timeout(DELETE_SESSION_TIMEOUT_MS),
+    })
+    if (response.status === 404) {
+      return z.object({ error: z.literal('Session not found') }).safeParse(await response.json().catch(() => null)).success
+    }
     return response.ok
   }
 
