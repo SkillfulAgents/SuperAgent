@@ -7,7 +7,7 @@ import { SPEECH_PIECES_PER_REQUEST, SPEECH_RELAY_INTERVAL_MS, useMeetingSpeechRe
 
 const T0 = Date.parse('2026-11-04T10:05:10Z')
 type Sent = { path: string; sentAt: number; pieces: Array<{ at: number; role: string; text: string }>; keepalive: boolean }
-const sent = (): Sent[] => mocks.apiFetch.mock.calls.map(([path, init]: [string, RequestInit]) => ({ path, ...JSON.parse(init.body as string), keepalive: init.keepalive }))
+const sent = (): Sent[] => mocks.apiFetch.mock.calls.map(([path, init]) => ({ path, ...JSON.parse(init.body as string), keepalive: init.keepalive }))
 const heard = (text: string) => ({ role: 'user' as const, text })
 
 beforeEach(() => {
