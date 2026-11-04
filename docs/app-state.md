@@ -94,3 +94,10 @@ What a backend must preserve beyond the suite:
 - Use the shared encoders in `definitions.ts` (`scopePrefix`, `encodeValue`, `decodeValue`, `resolveExpiry`, `assertStrong`) so keys, validation and expiry behave identically everywhere.
 - Subscriptions must be rebuilt from serialized routing when a Durable Object is woken from hibernation. They must not rely on a JavaScript callback surviving eviction.
 - Secrets in a shared backend are sealed through KeyManager (SUP-1509). AppState never holds a raw root key.
+
+## Helpers: fixed windows and lockouts
+
+Typed helpers over the strong operations, for limits that several consumers share. Each one defines and owns its namespace.
+
+- **`defineFixedWindow({ name, limit, windowMs })`** (`fixed-window.ts`): at most `limit` hits per key in a window that opens at the key's first hit and closes `windowMs` later. `hit(key)` is one bounded `increment` on a `keep` namespace, so a refused hit is not counted, and no hit moves the window's end: a burst late in a window does not extend it. It resolves to `{ admitted, count, remaining, resetAt }`. The auth and LLM rate limits use it.
+- **`defineLockout({ name })`** (`lockout.ts`): failures per key, with no expiry, until a success clears them. `failed(key, policy)` counts one failure, and the failure that reaches `policy.threshold` locks the key for `policy.lockMs`, as does each one after it. `check(key, policy)` says whether the key is locked, and clears a lock that has run out. `succeeded(key, status)` clears the failures that the unlocked `check` saw, and keeps any failure counted since. Every write is conditional on the revision it was decided from, and a conflict is decided again from the current record. The account lockout uses it.
