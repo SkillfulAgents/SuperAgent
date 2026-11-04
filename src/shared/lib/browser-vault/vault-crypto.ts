@@ -1,7 +1,7 @@
 import crypto from 'crypto'
 import type { z } from 'zod'
 import { hostFiles } from '@shared/lib/host-state/host-files'
-import { defineSingletonHostFile } from '@shared/lib/host-state/singletons'
+import { defineHostFileCreator } from '@shared/lib/host-state/host-file-creators'
 
 /**
  * Sealing for the Browser Vault: AES-256-GCM under the vault's own key, 32
@@ -30,13 +30,13 @@ export interface SealBinding {
 
 export class VaultSealError extends Error {}
 
-defineSingletonHostFile(KEY_FILE, () => crypto.randomBytes(KEY_BYTES).toString('base64'))
+defineHostFileCreator(KEY_FILE, () => crypto.randomBytes(KEY_BYTES).toString('base64'))
 
 /** Made on first use and never regenerated over a key that may have sealed something. */
 function vaultKey(): Buffer {
   let text: string
   try {
-    text = hostFiles().singleton(KEY_FILE)
+    text = hostFiles().getOrCreate(KEY_FILE)
   } catch {
     throw new VaultSealError('The vault key could not be read or saved')
   }
