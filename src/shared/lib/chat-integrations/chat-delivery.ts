@@ -8,6 +8,7 @@ import { formatToolName } from '@shared/lib/tools/types'
 import { requestCardFromRegistry } from './request-card'
 import { captureException } from '../error-reporting'
 import { background } from '@shared/lib/background'
+import { NO_REPLY_TOKEN } from './chat-session-context'
 const reportError = (err: unknown, operation: string, extra?: Record<string, unknown>, level?: 'error' | 'warning') =>
   captureException(err, { tags: { component: 'chat-integration', operation }, extra, level })
 
@@ -480,6 +481,7 @@ export async function finalizeStreaming(managed: ManagedConnector): Promise<void
     accumulatedText: '',
     lastUpdateTime: 0,
   }
+  if (finalText.trim() === NO_REPLY_TOKEN) return
 
   try {
     if (messageId) {
