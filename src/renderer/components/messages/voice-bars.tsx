@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { observeOrbVisibility } from '@renderer/components/agents/agent-avatar/orb-visibility'
 import { syntheticEnvelope } from '@renderer/lib/voice/orb/dot-orb'
 import { BAND_COUNT, VoiceSpectrumMeter } from '@renderer/lib/voice/orb/voice-spectrum'
 import { useIsDark } from '@renderer/hooks/use-theme'
@@ -45,6 +46,8 @@ const TO_PERSON_RATE = 14
 const TO_AGENT_RATE = 4
 /** The mic level the agent's own reply can leave behind echo cancellation, which the person's voice must clear to take the row while the agent speaks. */
 const SPEAKING_ECHO_FLOOR = 0.02
+/** A still indication of speech when reduced motion is requested and there is no measured output. */
+const STATIC_AGENT_LEVEL = 0.8
 
 /**
  * Both voices in one row of bars, the iOS call screen's, one voice at a time
@@ -53,8 +56,8 @@ const SPEAKING_ECHO_FLOOR = 0.02
  * colour, whenever they talk, over the reply too. The row morphs from one to the other. Each bar
  * is a frequency band, lowest on the left, where there is an analyser to hear
  * the audio; where there is only a level, the bars share it with a flutter.
- * At rest the agent's bars are a row of dots. Reduced motion keeps the
- * levels, which are what the bars say, and drops the flutter.
+ * At rest the agent's bars are a row of dots. Reduced motion keeps measured
+ * levels, drops the flutter and holds unmetered speech at a fixed level.
  */
 export function VoiceBars({ agentColor, getAgentAnalyser, getPersonAnalyser, agentSpeaking, personMuted, scale = 1, className }: VoiceBarsProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -80,6 +83,10 @@ export function VoiceBars({ agentColor, getAgentAnalyser, getPersonAnalyser, age
     const person = new VoiceSpectrumMeter()
     const heights = new Array<number>(BAND_COUNT)
     const personHeights = new Array<number>(BAND_COUNT)
+    const paintedHeights = new Array<number>(BAND_COUNT).fill(-1)
+    let paintedShare = -1
+    let paintedAgentColor = ''
+    let paintedPersonColor = ''
     // How much of the row is the person's: 0 is the agent's, 1 theirs.
     let share = 0
 
@@ -103,11 +110,13 @@ export function VoiceBars({ agentColor, getAgentAnalyser, getPersonAnalyser, age
       const time = now / 1000
       const current = latest.current
       const agentAnalyser = current.agentSpeaking ? current.getAgentAnalyser() : null
-      agent.advance(agentAnalyser, current.agentSpeaking && !agentAnalyser ? syntheticEnvelope(time, 1.7) : 0, dt)
+      const fallbackLevel = current.agentSpeaking && !agentAnalyser
+        ? (still ? STATIC_AGENT_LEVEL : syntheticEnvelope(time, 1.7)) : 0
+      // Unmetered speech is a still state under reduced motion, including its onset and end.
+      if (still && !agentAnalyser) agent.level = fallbackLevel
+      agent.advance(agentAnalyser, fallbackLevel, dt)
       person.advance(current.personMuted ? null : current.getPersonAnalyser(), 0, dt)
 
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-      ctx.clearRect(0, 0, WIDTH, MAX_HEIGHT)
       // The row is the person's as soon as they are heard, the agent's otherwise, so
       // talking over the reply shows at once. While the agent speaks the mic has to
       // clear what echo cancellation leaves of the reply first.
@@ -119,9 +128,22 @@ export function VoiceBars({ agentColor, getAgentAnalyser, getPersonAnalyser, age
         heightsOf(person.bands, person.level, time, 2.1, still, personHeights)
         for (let i = 0; i < BAND_COUNT; i++) heights[i] += (personHeights[i] - heights[i]) * share
       }
-      // One set of bars, its colour blended between the two voices' while it hands over.
-      if (share < 0.999) row(current.agentColor, 1)
-      if (share > 0.001) row(current.personColor, share)
+      // Keep sampling: an analyser can connect without a React render. Repaint only
+      // visible changes, ignoring less than a tenth of a device pixel or one alpha step.
+      const changed = current.agentColor !== paintedAgentColor || current.personColor !== paintedPersonColor
+        || Math.abs(share - paintedShare) >= 1 / 255
+        || heights.some((height, i) => Math.abs(height - paintedHeights[i]) * dpr >= 0.1)
+      if (changed) {
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+        ctx.clearRect(0, 0, WIDTH, MAX_HEIGHT)
+        // One set of bars, its colour blended between the two voices' while it hands over.
+        if (share < 0.999) row(current.agentColor, 1)
+        if (share > 0.001) row(current.personColor, share)
+        for (let i = 0; i < BAND_COUNT; i++) paintedHeights[i] = heights[i]
+        paintedShare = share
+        paintedAgentColor = current.agentColor
+        paintedPersonColor = current.personColor
+      }
       frame = requestAnimationFrame(tick)
     }
     const start = () => {
@@ -134,10 +156,15 @@ export function VoiceBars({ agentColor, getAgentAnalyser, getPersonAnalyser, age
       running = false
       cancelAnimationFrame(frame)
     }
-    const onVisibility = () => (document.visibilityState === 'hidden' ? stop() : start())
+    let visible = false
+    const onVisibility = () => (visible && !document.hidden ? start() : stop())
     document.addEventListener('visibilitychange', onVisibility)
-    start()
+    const unobserve = observeOrbVisibility(canvas, next => {
+      visible = next
+      onVisibility()
+    })
     return () => {
+      unobserve()
       stop()
       document.removeEventListener('visibilitychange', onVisibility)
     }
