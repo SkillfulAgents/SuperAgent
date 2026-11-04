@@ -184,12 +184,19 @@ app (or tenant) scope for its lifetime.
 
 | Entry point | Manager | Where the key is |
 |---|---|---|
-| Electron main | `DesktopKeyManager` (`src/main/keys/`) | Wrapped by Electron `safeStorage` (macOS Keychain, Windows DPAPI, libsecret/KWallet) in `<data dir>/.vault-key.wrapped`. Without a keyring (Linux `basic_text`): `<data dir>/.vault-key`, as before |
+| Electron main | `DesktopKeyManager` (`src/main/keys/`) | Wrapped by Electron `safeStorage` (macOS Keychain, Windows DPAPI, libsecret/KWallet) in `<data dir>/.vault-key.wrapped`. Without a keyring (Linux `basic_text`, or a keyring that does not answer): `<data dir>/.vault-key`, as before |
 | Web server, Vite dev server | `ServerKeyManager` | `SUPERAGENT_VAULT_KEY` (base64) or `SUPERAGENT_VAULT_KEY_FILE` (a mounted secret); with neither, `<data dir>/.vault-key`, as before |
 | Cloudflare (later) | `CloudflareKeyManager` | A Worker secret or Secrets Store binding, provisioned by deployment tooling. The consumers don't change |
 
 Neither the OS's key nor the unwrapped vault key is ever in the database. The
 wrapped file alone opens nothing.
+
+On Linux, Electron's async `safeStorage` reports itself available even when
+the Secret Service doesn't answer. It then encrypts with Chromium's fixed
+password, tagged `v10` (a real keyring key is `v11`). The manager wraps a
+sample first and treats `v10` as "no keyring", so a key is never presented as
+protected when anyone could unwrap it. On macOS and Windows, `v10` is the real
+Keychain or DPAPI key.
 
 **Never a new key over sealed data.** Before a manager makes, moves or uses a
 key, it checks the key against the vault's latest sealed values
@@ -202,15 +209,20 @@ app runs, and the vault works again once the cause is fixed (failures are
 retried, not remembered).
 
 **Moving into the keychain.** On the first start after an upgrade, a desktop
-that has `.vault-key` and a usable keyring moves the key in unchanged. It
-wraps the key, writes it out, reads it back from disk, unwraps it through the
-OS, compares the bytes, and tries the result on the sealed data. Only then is
-`.vault-key` deleted. A move cut short finishes on the next start: if the wrap
-was written, the leftover copy holding the same key is deleted; if the wrap was
-cut off mid-write, the move runs again from `.vault-key`. Two different keys
-(the wrap and a `.vault-key` holding another) are a `conflict`, and the user
-picks one. If the OS asks for a re-wrap (`shouldReEncrypt`), the new wrap is
-checked before it replaces the old one.
+that has `.vault-key` and a usable keyring moves the key in unchanged. Before
+anything is written, the OS must give the wrapped key back as the same bytes,
+and those bytes must open the sealed data. Then the wrap is written. Once
+written, it is never deleted: another process may already be using it.
+`.vault-key` is deleted only after the wrap on disk reads back as the same key.
+A move cut short finishes on the next start: if the wrap was written, the
+leftover copy holding the same key is deleted; if the wrap was cut off
+mid-write, the move runs again from `.vault-key`. If the wrap can't be opened
+on this computer (it came from another computer, or the keyring can't open it)
+and `.vault-key` opens the saved logins, the file is the key: it is wrapped
+here in place of the old wrap, or used in plaintext if there is no keyring.
+Two different keys that both open here are a `conflict`, and the user picks
+one. If the OS asks for a re-wrap (`shouldReEncrypt`), the new wrap is checked
+before it replaces the old one.
 
 **Backup, restore, another computer.** A backup of the database alone does not
 recover a desktop vault: the key is bound to that computer's OS store. File →
@@ -219,7 +231,8 @@ the user picks, entirely in the main process: the key never crosses IPC, and
 never reaches a log or an agent. To move the vault, copy Gamut's data folder to
 the other computer and put the exported file in it as `.vault-key` before Gamut
 first starts there. That start checks the file against the copied logins and
-moves it into that computer's OS store. Data folders: macOS
+moves it into that computer's OS store, replacing the copied
+`.vault-key.wrapped`, which only the old computer can open. Data folders: macOS
 `~/Library/Application Support/Superagent` (Mac App Store:
 `~/Library/Containers/<bundle id>/Data/.superagent`), Windows
 `%APPDATA%\Superagent`, Linux `~/.config/Superagent`. On a server, back up the

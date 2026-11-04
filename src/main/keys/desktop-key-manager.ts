@@ -24,9 +24,13 @@ import { wrappedKeyFileSchema, type WrappedKeyFile } from './wrapped-key-schema'
  * database or a file.
  *
  * Installs from before KeyManager hold the key in plaintext (`.vault-key`).
- * It is moved in unchanged: wrapped, written, read back and unwrapped by the
- * OS store, compared, tried on the data sealed under it, and only then is the
- * plaintext file deleted. An interrupted move finishes on the next start.
+ * It is moved in unchanged: wrapped, given back by the OS store as the same
+ * bytes, tried on the data sealed under it, and only then written; the
+ * plaintext file is deleted once the written wrap reads back as the key. A
+ * written wrap is never taken back (another process may use it). An
+ * interrupted move finishes on the next start. A `.vault-key` beside a wrap
+ * this computer cannot open (the data folder copied from another computer,
+ * with its exported key) is the key if it opens the saved logins.
  *
  * Without a usable OS store (a Linux desktop with no keyring, where Electron
  * would fall back to a hard-coded password) the plaintext file stays in use, as
@@ -131,7 +135,22 @@ export class DesktopKeyManager extends BaseKeyManager {
     } catch {
       available = false
     }
-    return available ? { available: true, backend } : { available: false, backend, why: `${storeName(backend)} is not available` }
+    if (!available) return { available: false, backend, why: `${storeName(backend)} is not available` }
+    // On Linux the async API says it is available even when the keyring
+    // cannot be reached, and then encrypts with Chromium's fixed password
+    // ("v10"); a key from the keyring is "v11". Seen with Electron 45 on a
+    // session whose Secret Service did not answer. (On macOS and Windows "v10"
+    // is the Keychain's or DPAPI's key.)
+    if (this.platform === 'linux') {
+      let tag: string
+      try {
+        tag = (await this.safeStorage.encryptStringAsync('gamut-store-check')).subarray(0, 3).toString('latin1')
+      } catch {
+        return { available: false, backend, why: `${storeName(backend)} could not encrypt` }
+      }
+      if (tag === 'v10') return { available: false, backend, why: `${storeName(backend)} could not be reached (Electron would protect the key with a fixed password)` }
+    }
+    return { available: true, backend }
   }
 
   protected async resolve(purpose: KeyPurpose, { create }: { create: boolean }): Promise<ResolvedKey | null> {
@@ -154,22 +173,26 @@ export class DesktopKeyManager extends BaseKeyManager {
 
     if (wrapped.state === 'record') {
       const store = await this.secureStore()
-      if (!store.available) {
-        throw new KeyUnavailableError(purpose, 'secure-storage-unavailable', `The ${purpose} key is wrapped by ${wrapped.record.backend}, and ${store.why}`, locked(wrapped.record.backend))
-      }
-      const unwrapped = await this.unwrap(purpose, wrapped.record)
-      if ('failed' in unwrapped) {
-        // A damaged wrap with the plaintext key still beside it: a move that was cut short. Move it again.
-        if (unwrapped.failed === 'check' && legacy.state === 'key') return this.migrate(purpose, legacy.bytes, store, 'replace')
-        if (unwrapped.failed === 'check') {
-          throw new KeyUnavailableError(purpose, 'corrupt', `${wrappedPath} did not unwrap to its key`, CORRUPT)
-        }
-        throw new KeyUnavailableError(
-          purpose,
-          'secure-storage-unavailable',
-          `${storeName(store.backend)} could not unwrap the ${purpose} key (wrapped by ${wrapped.record.backend})`,
-          locked(wrapped.record.backend),
-        )
+      const unwrapped: Unwrapped = store.available ? await this.unwrap(purpose, wrapped.record) : { failed: 'decrypt' }
+      if (!store.available || 'failed' in unwrapped) {
+        const unusable = !store.available
+          ? new KeyUnavailableError(purpose, 'secure-storage-unavailable', `The ${purpose} key is wrapped by ${wrapped.record.backend}, and ${store.why}`, locked(wrapped.record.backend))
+          : 'failed' in unwrapped && unwrapped.failed === 'check'
+            ? new KeyUnavailableError(purpose, 'corrupt', `${wrappedPath} did not unwrap to its key`, CORRUPT)
+            : new KeyUnavailableError(
+              purpose,
+              'secure-storage-unavailable',
+              `${storeName(store.backend)} could not unwrap the ${purpose} key (wrapped by ${wrapped.record.backend})`,
+              locked(wrapped.record.backend),
+            )
+        // The wrap does not open here — copied with the data from another
+        // computer, or cut short while it was written — and a plaintext key
+        // is beside it (an exported key, or the move's own source). That
+        // key, if it opens the saved logins, is the key: it is wrapped here
+        // in place of the one that does not open.
+        if (legacy.state !== 'key' || !(await this.opensSealedData(purpose, legacy.bytes))) throw unusable
+        if (!store.available) return this.plaintextFallback(purpose, legacy.bytes, store)
+        return this.migrate(purpose, legacy.bytes, store, 'replace')
       }
       if (legacy.state === 'key') {
         if (!sameKey(legacy.bytes, unwrapped.bytes)) {
@@ -197,15 +220,14 @@ export class DesktopKeyManager extends BaseKeyManager {
       }
       // Cut short while it was written: the plaintext key is still the key.
       const store = await this.secureStore()
-      if (!store.available) return this.plaintextFallback(purpose, legacy.bytes, store)
+      if (!store.available) return this.plaintextFallback(purpose, legacy.bytes, store, true)
       return this.migrate(purpose, legacy.bytes, store, 'replace')
     }
 
     // No wrapped key yet.
     if (legacy.state === 'key') {
-      await this.verifyAgainstData(purpose, legacy.bytes, legacyPath, MISMATCH)
       const store = await this.secureStore()
-      if (!store.available) return this.plaintextFallback(purpose, legacy.bytes, store)
+      if (!store.available) return this.plaintextFallback(purpose, legacy.bytes, store, true)
       return this.migrate(purpose, legacy.bytes, store, 'create')
     }
     if (legacy.state === 'invalid') {
@@ -227,22 +249,28 @@ export class DesktopKeyManager extends BaseKeyManager {
         ? { bytes: candidate, custody: 'plaintext-file' }
         : RETRY
     }
-    const record = await this.wrapOrThrow(purpose, candidate, store.backend)
-    if ((await this.writeExclusive(purpose, wrappedPath, JSON.stringify(record))) === 'exists') return RETRY
+    // Checked before it is written: once on disk another process may use it,
+    // so a wrapped key is never taken back.
+    const wrap = await this.checkedWrap(purpose, candidate, store.backend)
+    if (!wrap) {
+      throw new KeyUnavailableError(purpose, 'secure-storage-unavailable', `${storeName(store.backend)} did not give back the new ${purpose} key it wrapped`, locked(store.backend))
+    }
+    if ((await this.writeExclusive(purpose, wrappedPath, JSON.stringify(wrap.record))) === 'exists') return RETRY
     const readBack = await this.readBack(purpose)
     if (!readBack || !sameKey(readBack, candidate)) {
-      // Nothing is sealed under it yet: take it back rather than leave a key that does not unwrap.
-      await removeFile(wrappedPath).catch(() => {})
-      throw new KeyUnavailableError(purpose, 'secure-storage-unavailable', `${storeName(store.backend)} did not give back the ${purpose} key it wrapped`, locked(store.backend))
+      // Nothing seals under a key whose file does not give it back; the file stays for the next call to judge.
+      throw new KeyUnavailableError(purpose, 'io', `${wrappedPath} did not read back as the key just written`, IO)
     }
     return { bytes: candidate, custody: 'os-secure-storage' }
   }
 
   /**
-   * Move a plaintext key into the OS store, unchanged. The plaintext file goes
-   * only after the wrapped one, read back from disk, unwraps to the same bytes
-   * and opens what is sealed. Anything short of that leaves the plaintext key
-   * in use, as before, for the next start to try again.
+   * Move a plaintext key into the OS store, unchanged. Before anything is
+   * written, the OS store has given the wrapped key back as the same bytes and
+   * those bytes open what is sealed. Once written, the wrapped key stays —
+   * another process may already use it — and the plaintext file goes only
+   * after the wrapped one on disk reads back as the same key. Anything short
+   * of that leaves the plaintext key in use, as before, for the next start.
    */
   private async migrate(
     purpose: KeyPurpose,
@@ -251,12 +279,18 @@ export class DesktopKeyManager extends BaseKeyManager {
     mode: 'create' | 'replace',
   ): Promise<ResolvedKey | typeof RETRY> {
     const wrappedPath = this.wrappedPath(purpose)
+    const legacyPath = this.legacyPath(purpose)
+    const wrap = await this.checkedWrap(purpose, legacyBytes, store.backend)
+    await this.verifyAgainstData(purpose, wrap?.bytes ?? legacyBytes, wrap ? storeName(store.backend) : legacyPath, MISMATCH)
+    if (!wrap) {
+      this.log.warn(`[keys] ${storeName(store.backend)} did not give back the ${purpose} key it wrapped; the plaintext key stays in use`)
+      return { bytes: legacyBytes, custody: 'plaintext-file' }
+    }
     try {
-      const record = await this.wrap(purpose, legacyBytes, store.backend)
       if (mode === 'create') {
-        if ((await writeFileExclusive(wrappedPath, JSON.stringify(record))) === 'exists') return RETRY
+        if ((await writeFileExclusive(wrappedPath, JSON.stringify(wrap.record))) === 'exists') return RETRY
       } else {
-        await replaceFileAtomic(wrappedPath, JSON.stringify(record))
+        await replaceFileAtomic(wrappedPath, JSON.stringify(wrap.record))
       }
     } catch (error) {
       this.log.warn(`[keys] Moving the ${purpose} key into ${storeName(store.backend)} failed (${errorCode(error)}); the plaintext key stays in use`)
@@ -264,23 +298,35 @@ export class DesktopKeyManager extends BaseKeyManager {
     }
     const readBack = await this.readBack(purpose)
     if (!readBack || !sameKey(readBack, legacyBytes)) {
-      await removeFile(wrappedPath).catch(() => {})
-      this.log.warn(`[keys] ${storeName(store.backend)} did not give back the ${purpose} key it wrapped; the plaintext key stays in use`)
+      this.log.warn(`[keys] ${wrappedPath} did not read back as the ${purpose} key; ${legacyPath} is kept and the next start checks again`)
       return { bytes: legacyBytes, custody: 'plaintext-file' }
-    }
-    try {
-      await this.verifyAgainstData(purpose, readBack, wrappedPath, MISMATCH)
-    } catch (error) {
-      await removeFile(wrappedPath).catch(() => {})
-      throw error
     }
     await this.retireLegacy(purpose, store)
     return { bytes: readBack, custody: 'os-secure-storage' }
   }
 
-  private plaintextFallback(purpose: KeyPurpose, bytes: Buffer, store: Extract<SecureStore, { available: false }>): ResolvedKey {
+  /** The plaintext key, as before, while the OS store cannot hold it; checked against the sealed data unless the caller just did. */
+  private async plaintextFallback(
+    purpose: KeyPurpose,
+    bytes: Buffer,
+    store: Extract<SecureStore, { available: false }>,
+    verify = false,
+  ): Promise<ResolvedKey> {
+    if (verify) await this.verifyAgainstData(purpose, bytes, this.legacyPath(purpose), MISMATCH)
     this.log.warn(`[keys] The ${purpose} key stays in plaintext in ${this.legacyPath(purpose)}: ${store.why}. It moves into the OS store on a later start once there is one.`)
     return { bytes, custody: 'plaintext-file' }
+  }
+
+  /** A wrap of the key that the OS store has already given back unchanged; null when it did not. */
+  private async checkedWrap(purpose: KeyPurpose, bytes: Buffer, backend: string): Promise<{ record: WrappedKeyFile; bytes: Buffer } | null> {
+    let record: WrappedKeyFile
+    try {
+      record = await this.wrap(purpose, bytes, backend)
+    } catch {
+      return null
+    }
+    const check = await this.unwrap(purpose, record)
+    return 'failed' in check || !sameKey(check.bytes, bytes) ? null : { record, bytes: check.bytes }
   }
 
   private async retireLegacy(purpose: KeyPurpose, store: Extract<SecureStore, { available: true }>): Promise<void> {
@@ -297,10 +343,8 @@ export class DesktopKeyManager extends BaseKeyManager {
   /** A fresh wrap, checked before it replaces the old one (safeStorage asked for it: its own key rotated). */
   private async rewrap(purpose: KeyPurpose, bytes: Buffer, store: Extract<SecureStore, { available: true }>): Promise<void> {
     try {
-      const record = await this.wrap(purpose, bytes, store.backend)
-      const check = await this.unwrap(purpose, record)
-      if ('failed' in check || !sameKey(check.bytes, bytes)) return
-      await replaceFileAtomic(this.wrappedPath(purpose), JSON.stringify(record))
+      const wrap = await this.checkedWrap(purpose, bytes, store.backend)
+      if (wrap) await replaceFileAtomic(this.wrappedPath(purpose), JSON.stringify(wrap.record))
     } catch (error) {
       this.log.warn(`[keys] Re-wrapping the ${purpose} key failed (${errorCode(error)}); the current wrap stays`)
     }
@@ -317,14 +361,6 @@ export class DesktopKeyManager extends BaseKeyManager {
       check: keyCheckValue(bytes, purpose),
       createdAt: new Date().toISOString(),
     })
-  }
-
-  private async wrapOrThrow(purpose: KeyPurpose, bytes: Buffer, backend: string): Promise<WrappedKeyFile> {
-    try {
-      return await this.wrap(purpose, bytes, backend)
-    } catch {
-      throw new KeyUnavailableError(purpose, 'secure-storage-unavailable', `${storeName(backend)} could not wrap the ${purpose} key`, locked(backend))
-    }
   }
 
   private async unwrap(purpose: KeyPurpose, record: WrappedKeyFile): Promise<Unwrapped> {

@@ -117,6 +117,11 @@ export abstract class BaseKeyManager implements KeyManager {
     }
   }
 
+  /** Whether a key opens what is sealed under its purpose (true when nothing is). */
+  protected async opensSealedData(purpose: KeyPurpose, bytes: Buffer): Promise<boolean> {
+    return (await this.probes[purpose](toKeyObject(bytes))) !== 'does-not-open'
+  }
+
   /** Whether anything is sealed under the purpose (a fresh key opens nothing that exists). */
   protected async somethingSealed(purpose: KeyPurpose, candidate: Buffer): Promise<boolean> {
     return (await this.probes[purpose](toKeyObject(candidate))) !== 'nothing-sealed'
