@@ -8,16 +8,11 @@ Use it for state that has to outlive one request or reach another process: pendi
 
 Each entry point awaits `initializeLocalAppState()` right after `openDatabase()`. The entry points are Electron main, `src/web/server.ts`, the Vite dev server's `server-lifecycle` plugin and `perf/harness.ts`. Importing the module selects no backend and does no I/O. Calling `appState()` before initialization throws. A second initialization is refused, so nothing swaps the tenant of a shared global between requests: each instance serves one `AppStateScope` (`{ deploymentId, tenantId }`) for the life of the process. A Cloudflare entry point passes its own implementation to `initializeAppState(...)`; consumers do not change.
 
-Call `appState()` each time you use it. Do not keep the result in a module constant.
+Call `appState()` each time you use it. Do not keep the result in a module constant. The installed instance is held on `globalThis`, so another copy of the module sees it too: after a test's `vi.resetModules()`, or after Vite re-instantiates the module following an edit.
 
-Tests that reach a consumer install a fresh instance:
+`closeAppState()` closes the instance and forgets it. If an initialization is still connecting, it is cancelled and awaited: the backend it connected is closed instead of installed, and that initialization rejects.
 
-```ts
-beforeEach(async () => { await initializeLocalAppState() })
-afterEach(async () => { await closeAppState() })
-```
-
-`createLocalAppState({ scope, backend: new LocalAppStateBackend({ now }) })` gives a test its own clock, or several tenants over one backend.
+The shared test setup (`src/renderer/test/setup.ts`) installs a fresh `LocalAppState` before every node-environment test, so tests need no AppState setup of their own. A test of the uninitialized path calls `closeAppState()` first. `createLocalAppState({ scope, backend: new LocalAppStateBackend({ now }) })` gives a test its own clock, or several tenants over one backend.
 
 ## Namespaces and keys
 
@@ -31,7 +26,9 @@ const pendingFlows = defineNamespace({
 const key = pendingFlows.key(digestKeyPart(state))
 ```
 
-- **Prefix.** Every key and channel is stored under `gamut:v1:{deploymentId}:tenant:{tenantId}:{path}`. A path is the namespace name followed by the encoded key parts, so `key('a:b')` and `key('a', 'b')` are different keys.
+- **Prefix.** Every key and channel is stored under `gamut:v1:{deploymentId}:tenant:{tenantId}:{path}`. A path is `{name}/{part}:{part}`, with each part URI-encoded. No name or encoded part can contain `/`, so:
+  - `key('a:b')` and `key('a', 'b')` are different keys;
+  - namespaces `pending` and `pending:oauth` never share a key, and the same holds for topics.
 - **No secrets in keys.** Pass a token, email, IP or URL through `digestKeyPart()` (SHA-256, base64url). Agent, user and account IDs scope data; they never stand in for an authorization check.
 - **Validation.** Every value is validated with the namespace schema when it is written and when it is read, then stored as JSON. A read returns a fresh copy, so changing it changes nothing stored. Schemas must not transform: a parsed value must parse to itself.
 - **Consistency is declared per namespace.**

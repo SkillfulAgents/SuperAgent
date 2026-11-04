@@ -19,6 +19,18 @@ const SEGMENT = '[a-z][a-z0-9-]*'
 const NAMESPACE_NAME = new RegExp(`^${SEGMENT}(?::${SEGMENT})*$`)
 const TOPIC_NAME = new RegExp(`^events(?::${SEGMENT})+$`)
 
+/**
+ * Between a namespace or topic name and its key parts. Neither a name nor an
+ * encoded part can hold it, so `pending` + (`oauth`, `flow`) and
+ * `pending:oauth` + (`flow`) are different paths.
+ */
+const NAME_END = '/'
+
+/** `{name}/{part}:{part}`: each part URI-encoded, so it holds neither `/` nor `:`. */
+function pathOf(name: string, parts: readonly string[]): string {
+  return `${name}${NAME_END}${encodeParts(parts, name)}`
+}
+
 function encodeParts(parts: readonly string[], what: string): string {
   if (parts.length === 0) throw new TypeError(`${what} needs at least one key part`)
   return parts
@@ -62,7 +74,7 @@ export function defineNamespace<T, C extends Consistency>(definition: NamespaceD
     consistency,
     schema,
     expiry: { ttlMs: expiry.ttlMs, onUpdate: expiry.onUpdate },
-    key: (...parts) => ({ namespace, path: `${name}:${encodeParts(parts, name)}` }),
+    key: (...parts) => ({ namespace, path: pathOf(name, parts) }),
   }
   return Object.freeze(namespace)
 }
@@ -77,7 +89,7 @@ export function defineTopic<E>(definition: { name: string; schema: z.ZodType<E> 
     kind: 'topic',
     name,
     schema,
-    channel: (...parts) => ({ topic, path: `${name}:${encodeParts(parts, name)}` }),
+    channel: (...parts) => ({ topic, path: pathOf(name, parts) }),
   }
   return Object.freeze(topic)
 }

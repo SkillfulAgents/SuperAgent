@@ -23,6 +23,12 @@ const claims = defineNamespace({
   schema: z.string(),
   expiry: { ttlMs: 1_000, onUpdate: 'keep' },
 })
+const lasting = defineNamespace({
+  name: 'test:lasting',
+  consistency: 'strong',
+  schema: z.string(),
+  expiry: { ttlMs: null, onUpdate: 'keep' },
+})
 const pings = defineTopic({ name: 'events:test:ping', schema: z.object({ seq: z.number() }) })
 
 describe('LocalAppState', () => {
@@ -79,6 +85,22 @@ describe('LocalAppState', () => {
     now += 1_000
     for (let i = 0; i < 1_000; i++) await state.set(claims.key(`new-${i % 10}`), 'v')
     expect(backend.entryCount).toBe(10)
+  })
+
+  it('keeps sweeping while new keys keep arriving, so expired entries stay bounded', async () => {
+    let now = 0
+    const backend = new LocalAppStateBackend({ now: () => now })
+    const state = createLocalAppState({ backend })
+    // Entries that never expire, so every sweep keeps a sizable set.
+    for (let i = 0; i < 1_500; i++) await state.set(lasting.key(`kept-${i}`), 'v')
+    // Then only unique keys, each expiring 1 s (1,000 writes) after it was written.
+    for (let i = 0; i < 20_000; i++) {
+      now += 1
+      await state.set(claims.key(`unique-${i}`), 'v')
+    }
+    // A sweep keeps at most the 1,500 lasting entries and 1,000 live claims,
+    // and the next one runs 2,500 writes later: at most 2,500 more in between.
+    expect(backend.entryCount).toBeLessThanOrEqual(1_500 + 1_000 + 2_500)
   })
 
   it('refuses use once closed', async () => {

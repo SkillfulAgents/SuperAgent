@@ -35,6 +35,10 @@ const lasting = defineNamespace({ name: 'conformance:lasting', consistency: 'str
 const counter = defineNamespace({ name: 'conformance:counter', consistency: 'strong', schema: z.number().int(), expiry: { ttlMs: TTL, onUpdate: 'keep' } })
 const cache = defineNamespace({ name: 'conformance:cache', consistency: 'eventual', schema: record, expiry: { ttlMs: TTL, onUpdate: 'reset' } })
 const pings = defineTopic({ name: 'events:conformance:ping', schema: z.object({ seq: z.number(), tags: z.array(z.string()) }) })
+// One name extends the other, and their key parts spell the same text: still different keys.
+const pending = defineNamespace({ name: 'conformance:pending', consistency: 'strong', schema: z.string(), expiry: { ttlMs: null, onUpdate: 'keep' } })
+const pendingOauth = defineNamespace({ name: 'conformance:pending:oauth', consistency: 'eventual', schema: z.string(), expiry: { ttlMs: TTL, onUpdate: 'reset' } })
+const agentPings = defineTopic({ name: 'events:conformance:ping:agent', schema: pings.schema })
 
 const value = (n: number): Record => ({ n, tags: ['a'] })
 
@@ -297,6 +301,19 @@ export function describeAppStateConformance(name: string, createBackend: () => C
         expect((await a.get(lasting.key('a', 'b:c')))?.value).toBe('second split')
         expect((await a.get(lasting.key('a:b:c')))?.value).toBe('one part')
       })
+
+      it('keeps namespaces apart when one name extends the other', async () => {
+        const strongKey = pending.key('oauth', 'flow')
+        const cacheKey = pendingOauth.key('flow')
+        expect(strongKey.path).not.toBe(cacheKey.path)
+
+        await a.set(strongKey, 'pending flow')
+        expect(await a2.get(cacheKey)).toBeNull()
+        await a.set(cacheKey, 'cached copy')
+        await a2.delete(cacheKey)
+        expect((await a.get(strongKey))?.value).toBe('pending flow')
+        expect(await a.get(cacheKey)).toBeNull()
+      })
     })
 
     describe('pubsub', () => {
@@ -409,6 +426,20 @@ export function describeAppStateConformance(name: string, createBackend: () => C
         await a.publish(channel, { seq: 1, tags: [] })
         await backend.settled()
         expect(seen).toEqual([])
+      })
+
+      it('keeps topics apart when one name extends the other', async () => {
+        const outer = pings.channel('agent', 'x')
+        const nested = agentPings.channel('x')
+        expect(outer.path).not.toBe(nested.path)
+        const onOuter = await listen(a2, [outer])
+        const onNested = await listen(a2, [nested])
+
+        await a.publish(outer, { seq: 1, tags: [] })
+        await a.publish(nested, { seq: 2, tags: [] })
+        await backend.settled()
+        expect(onOuter.seen.map((event) => event.seq)).toEqual([1])
+        expect(onNested.seen.map((event) => event.seq)).toEqual([2])
       })
 
       it('keeps tenants apart', async () => {

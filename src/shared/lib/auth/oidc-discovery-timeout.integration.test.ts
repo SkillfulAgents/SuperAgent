@@ -7,7 +7,6 @@ import { Hono } from 'hono'
 import { exportJWK, generateKeyPair, SignJWT } from 'jose'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import { closeAppState, initializeLocalAppState } from '../app-state'
 import { background, backgroundSettled } from '../background'
 import type { AppDatabase } from '../db/drivers/types'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
@@ -217,7 +216,6 @@ beforeEach(async () => {
   ]))
   database = await createTestDatabase()
   testDb = database.db
-  await initializeLocalAppState()
   app = new Hono()
   app.route('/api/auth/mobile', mobilePairing)
   app.route('/api/auth/token', tokenExchange)
@@ -230,7 +228,6 @@ afterEach(async () => {
   await authority?.close()
   await healthy?.close()
   await backgroundSettled()
-  await closeAppState()
   await database?.close()
   vi.unstubAllEnvs()
   expect(authority.state.failures).toEqual([])

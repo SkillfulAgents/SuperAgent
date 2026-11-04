@@ -30,7 +30,7 @@ import { assertStrong, decodeValue, encodeValue, resolveExpiry, scopePrefix } fr
 /** The scope of a host that serves one tenant from one process. */
 export const LOCAL_APP_STATE_SCOPE: AppStateScope = Object.freeze({ deploymentId: 'local', tenantId: 'local' })
 
-/** Expired entries are swept once this many writes, or as many as there are entries, happened since the last sweep. */
+/** The fewest writes between two sweeps of expired entries. */
 const SWEEP_AFTER_WRITES = 1_000
 
 interface StoredEntry {
@@ -59,7 +59,11 @@ export class LocalAppStateBackend {
   // process (a new backend) never issues one an old process did.
   private readonly epoch = randomBytes(8).toString('hex')
   private sequence = 0
-  private writesSinceSweep = 0
+  // Fixed when a sweep ends, so new keys cannot keep pushing the next sweep
+  // away: a sweep runs after as many writes as entries it kept (at least
+  // SWEEP_AFTER_WRITES), which keeps it amortized O(1) per write and bounds
+  // what expired entries can pile up to about one sweep's worth of writes.
+  private writesUntilSweep = SWEEP_AFTER_WRITES
 
   constructor(options: LocalAppStateBackendOptions = {}) {
     // Looked up at each call, so a test's fake Date applies.
@@ -81,7 +85,7 @@ export class LocalAppStateBackend {
   write(fullKey: string, json: string, expiresAt: number | null): StoredEntry {
     const entry: StoredEntry = { json, revision: `${this.epoch}.${++this.sequence}` as Revision, expiresAt }
     this.entries.set(fullKey, entry)
-    if (++this.writesSinceSweep >= Math.max(SWEEP_AFTER_WRITES, this.entries.size)) this.sweep()
+    if (--this.writesUntilSweep <= 0) this.sweep()
     return entry
   }
 
@@ -95,11 +99,11 @@ export class LocalAppStateBackend {
   }
 
   private sweep(): void {
-    this.writesSinceSweep = 0
     const now = this.now()
     for (const [key, entry] of this.entries) {
       if (entry.expiresAt !== null && entry.expiresAt <= now) this.entries.delete(key)
     }
+    this.writesUntilSweep = Math.max(SWEEP_AFTER_WRITES, this.entries.size)
   }
 
   addListener(fullChannel: string, subscription: LocalSubscription<unknown>): void {

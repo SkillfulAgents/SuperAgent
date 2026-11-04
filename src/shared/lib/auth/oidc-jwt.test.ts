@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { exportJWK, generateKeyPair, SignJWT } from 'jose'
-import { appState, closeAppState, initializeLocalAppState } from '@shared/lib/app-state'
+import { appState, closeAppState } from '@shared/lib/app-state'
 import { _setOidcJwksResolverForTest, oidcJwksKey, verifyOidcJwt } from './oidc-jwt'
 
 const ISSUER = 'https://auth.example.com'
@@ -26,13 +26,12 @@ const newProcess = () => _setOidcJwksResolverForTest(null)
 
 const stored = () => appState().get(oidcJwksKey(ISSUER))
 
-beforeEach(async () => {
-  await initializeLocalAppState()
+// The test setup installs a fresh AppState per test: what a new process reads is what this one stored.
+beforeEach(() => {
   newProcess()
 })
 
-afterEach(async () => {
-  await closeAppState()
+afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -55,7 +54,7 @@ describe('verifyOidcJwt with the AppState key-set cache', () => {
   })
 
   it('keys the cache by a digest of the issuer, not the issuer URL', () => {
-    expect(oidcJwksKey(ISSUER).path).toMatch(/^cache:oidc-jwks:[A-Za-z0-9_-]{43}$/)
+    expect(oidcJwksKey(ISSUER).path).toMatch(/^cache:oidc-jwks\/[A-Za-z0-9_-]{43}$/)
   })
 
   it('keeps a stored key set only as long as its download is fresh: ten minutes from the download', async () => {

@@ -70,13 +70,16 @@ export interface Namespace<T, C extends Consistency = Consistency> {
   /** Validates every value written and read. It must not transform: a parsed value parses to itself. */
   readonly schema: z.ZodType<T>
   readonly expiry: ExpiryPolicy
-  /** The key for these parts; each part is encoded, so `key('a:b')` and `key('a', 'b')` differ. */
+  /**
+   * The key for these parts. Each part is encoded and the name ends unambiguously,
+   * so `key('a:b')` and `key('a', 'b')` differ, and no other namespace's key is the same path.
+   */
   key(...parts: string[]): StateKey<T, C>
 }
 
 export interface StateKey<T, C extends Consistency = Consistency> {
   readonly namespace: Namespace<T, C>
-  /** The key below the scope prefix: `{namespace}:{encoded parts}`. */
+  /** The key below the scope prefix: `{namespace}/{encoded parts joined by ':'}`. */
   readonly path: string
 }
 
@@ -170,7 +173,7 @@ export interface Topic<E> {
 
 export interface Channel<E> {
   readonly topic: Topic<E>
-  /** The channel below the scope prefix: `{topic}:{encoded parts}`. */
+  /** The channel below the scope prefix: `{topic}/{encoded parts joined by ':'}`. */
   readonly path: string
 }
 

@@ -77,8 +77,8 @@ export default defineConfig({
       // an entry point like the web server and Electron main, and opening the
       // database, then initializing AppState, are its first boot steps. /api
       // requests wait for them. Re-checked per request because an edit under
-      // src/shared/lib/db or src/shared/lib/app-state makes Vite re-instantiate
-      // that module with nothing open.
+      // src/shared/lib/db makes Vite re-instantiate that module with nothing
+      // open (AppState keeps its instance on globalThis, so it survives one).
       name: 'server-lifecycle',
       configureServer(server) {
         const dbModule = path.resolve(__dirname, 'src/shared/lib/db/index.ts')

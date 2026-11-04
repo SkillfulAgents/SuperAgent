@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { appState, closeAppState, initializeAppState, initializeLocalAppState, isAppStateInitialized } from './app-state'
 import { defineNamespace } from './definitions'
@@ -11,9 +11,23 @@ const flows = defineNamespace({
   expiry: { ttlMs: null, onUpdate: 'keep' },
 })
 
+// The shared test setup installs one per test; these tests start without it.
+beforeEach(async () => {
+  await closeAppState()
+})
+
 afterEach(async () => {
   await closeAppState()
 })
+
+/** A backend whose connection the test completes. */
+function connecting() {
+  let connect!: () => void
+  const connected = new Promise<void>((resolve) => (connect = resolve))
+  const state = createLocalAppState()
+  const close = vi.spyOn(state, 'close')
+  return { state, close, connect, ready: connected.then(() => state) }
+}
 
 describe('the process AppState', () => {
   it('throws on use before the entry point initialized it', () => {
@@ -56,6 +70,36 @@ describe('the process AppState', () => {
     connect()
     await first
     await expect(initializeLocalAppState()).rejects.toThrow('already initialized')
+  })
+
+  it('cancels an initialization still connecting when closed, and closes what it connected', async () => {
+    const backend = connecting()
+    const initializing = initializeAppState(backend.ready)
+    const rejected = expect(initializing).rejects.toThrow('closed while it was initializing')
+
+    let closed = false
+    const closing = closeAppState().then(() => {
+      closed = true
+    })
+    await Promise.resolve()
+    expect(closed).toBe(false)
+
+    backend.connect()
+    await closing
+    await rejected
+    expect(backend.close).toHaveBeenCalledOnce()
+    expect(isAppStateInitialized()).toBe(false)
+    expect(() => appState()).toThrow('not initialized')
+
+    const next = await initializeLocalAppState()
+    expect(appState()).toBe(next)
+  })
+
+  it('serves the same instance to another copy of this module, as after vi.resetModules()', async () => {
+    const installed = await initializeLocalAppState()
+    vi.resetModules()
+    const reloaded = await import('./app-state')
+    expect(reloaded.appState()).toBe(installed)
   })
 
   it('throws again once closed, and a test can install a fresh one with no state left over', async () => {
