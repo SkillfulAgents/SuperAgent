@@ -92,6 +92,14 @@ export interface SlashCommandInfo {
   argumentHint: string
 }
 
+/**
+ * A toolset a session can have in the prompt from its first turn
+ * (`CreateSessionOptions.preloadToolsets`): the name of the in-process MCP
+ * server that carries it in the agent container (PRELOAD_TOOLSETS in
+ * `agent-container/src/preload-toolsets.ts`).
+ */
+export type PreloadToolset = 'computer-use'
+
 export type InterruptScope = 'turn' | 'all'
 
 export interface InterruptSessionOptions {
@@ -141,6 +149,14 @@ export interface CreateSessionOptions {
   maxBrowserTabs?: number // Max browser tabs allowed (default 10)
   effort?: EffortLevel // Initial thinking effort level
   speed?: SpeedLevel // Initial processing speed tier
+  /**
+   * Toolsets loaded into the prompt from the first turn rather than behind
+   * ToolSearch, for a session started to do one thing (the launcher's
+   * computer-use toggle). A session asking for any starts cold: the
+   * pre-warmed process doesn't have them. An image that doesn't know a name
+   * ignores it.
+   */
+  preloadToolsets?: PreloadToolset[]
   /**
    * What the NEXT session on this agent will most likely ask for: the agent's
    * default model/effort/speed with the global fallback applied, ignoring any
@@ -254,6 +270,8 @@ export interface ContainerClient {
   // Query the container runtime for current state (spawns CLI process)
   // Use containerManager.getCachedInfo() for cached status instead
   getInfoFromRuntime(): Promise<ContainerInfo>
+  /** Positive evidence that no container process remains. Unknown/unreachable is false. */
+  isDefinitelyStopped(): Promise<boolean>
 
   // Alias for getInfoFromRuntime() - prefer getCachedInfo() from containerManager
   getInfo(): Promise<ContainerInfo>
@@ -282,6 +300,9 @@ export interface ContainerClient {
   // Session management (proxied to container API)
   createSession(options: CreateSessionOptions): Promise<ContainerSession>
   getSession(sessionId: string): Promise<ContainerSession | null>
+  /** Stop the session's process, retaining the record needed to resume after a failed file delete. */
+  releaseSession(sessionId: string): Promise<boolean>
+  // true once the container holds no process for the session, including one it never had.
   deleteSession(sessionId: string): Promise<boolean>
   // Copy a session's transcript into a new session (Fork Session).
   // null = the container predates the fork endpoint (plain 404). Throws

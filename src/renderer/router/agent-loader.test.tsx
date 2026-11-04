@@ -57,12 +57,14 @@ import type { UserContextValue } from '@renderer/context/user-context'
  */
 
 const userStub = {
+  authGeneration: {},
   user: null,
   isAuthenticated: false,
   isAdmin: false,
   isAuthMode: false,
   isPending: false,
   mustChangePassword: false,
+  cloudWait: null,
   agentRole: () => null,
   agentMemberCount: () => 0,
   canAccessAgent: () => true,

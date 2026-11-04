@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { Brain, Folder, Loader2, X } from 'lucide-react'
 import { useAgents } from '@renderer/hooks/use-agents'
+import { useSkillsets } from '@renderer/hooks/use-skillsets'
 import { usePreparedDriveHealth } from '@renderer/hooks/use-team-brain-setup'
 import { Button } from '@renderer/components/ui/button'
 import { volumeSetupRegistry } from '@renderer/components/volumes/volume-setup-registry'
@@ -8,6 +9,7 @@ import { parseVolumeSource, type VolumeSetupDefinition } from '@renderer/compone
 import { VolumeEveryoneOnlyContext, VolumeSetupFooterContext, type VolumeSetupFooterProps } from '@renderer/components/volumes/volume-setup-layout'
 import { volumeDetailsSchema, type VolumeDetails } from '@renderer/components/volumes/volume-details-schema'
 import type { VolumeSource } from '@shared/lib/volumes/volume-config-schema'
+import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import { cn } from '@shared/lib/utils/cn'
 import {
   AlertDialog,
@@ -63,11 +65,13 @@ const SECONDARY = cn(BUTTON_BASE, 'border bg-background hover:bg-muted')
 export function TeamBrainOnboarding({
   open,
   onPrepare,
+  onAddPublicSkillset,
   onStartChat,
   onCancel,
 }: {
   open: boolean
   onPrepare: (source: VolumeSource, details: VolumeDetails) => Promise<boolean>
+  onAddPublicSkillset: () => Promise<unknown>
   onStartChat: () => Promise<void>
   onCancel: () => void
 }) {
@@ -132,7 +136,7 @@ export function TeamBrainOnboarding({
             >
               <X className="size-4" aria-hidden="true" />
             </button>
-            {step === 'location' && <LocationStep tb={tb} nav={nav} onPrepare={onPrepare} />}
+            {step === 'location' && <LocationStep tb={tb} nav={nav} onPrepare={onPrepare} onAddPublicSkillset={onAddPublicSkillset} />}
             {step === 'agents' && <AgentsStep tb={tb} nav={nav} />}
             {step === 'schedule' && <SyncStep tb={tb} nav={nav} />}
             {step === 'intake' && <IntakeStep nav={nav} waiting={waiting} onStart={onStartChat} />}
@@ -219,15 +223,31 @@ function LocationStep({
   tb,
   nav,
   onPrepare,
+  onAddPublicSkillset,
 }: {
   tb: TeamBrainStore
   nav: StepNav
   onPrepare: (source: VolumeSource, details: VolumeDetails) => Promise<boolean>
+  onAddPublicSkillset: () => Promise<unknown>
 }) {
   const [picked, setPicked] = useState<TeamBrainLocationId | null>(tb.state.location)
   const [setup, setSetup] = useState<{ definition: VolumeSetupDefinition; config: unknown } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
+  const { data: skillsets, isError: skillsetsUnread, refetch: rereadSkillsets } = useSkillsets()
+  const [isAdding, setIsAdding] = useState(false)
+  // Shown inside the notice, so it goes with the notice once the list has the skillset (another admin's add included).
+  const [addError, setAddError] = useState<string | null>(null)
+
+  const addPublic = async () => {
+    setAddError(null)
+    setIsAdding(true)
+    try {
+      await onAddPublicSkillset()
+    } catch (err) {
+      setAddError(err instanceof Error ? err.message : 'Could not add the Gamut Public Skillset')
+    } finally { setIsAdding(false) }
+  }
 
   const choose = async (id: TeamBrainLocationId) => {
     const definition = Object.values(volumeSetupRegistry).find((d) => d.type === id)
@@ -286,17 +306,35 @@ function LocationStep({
   }
 
   const ready = !!tb.state.prepared && picked === tb.state.location
+  // A prepared drive already has its agent, so the skillset check is for a set-up still to install it.
+  const unread = !ready && skillsetsUnread
+  const missingPublic = !ready && !unread && !!skillsets && !skillsets.some((s) => s.id === DEFAULT_PUBLIC_SKILLSET.id)
   return (
     <StepPanel
       title="Choose where Team Brain knowledge is stored"
       subtitle="Every agent you connect to Team Brain will read and add to the knowledge in this storage. It is possible to migrate later if needed."
       next={{
         label: ready || !picked ? nav.nextLabel : `Next: Set up ${teamBrainLocation(picked).name}`,
-        disabled: !picked,
+        disabled: !picked || (!ready && !skillsets) || unread || missingPublic,
         onClick: () => { if (ready) nav.next(); else if (picked) void choose(picked) },
       }}
     >
       <LocationChoices value={picked} onChoose={(id) => { setPicked(id); setError(null) }} />
+      {unread && (
+        <div className="mt-4"><p role="alert" className="text-[13px] text-destructive">Couldn’t read this workspace’s skillsets.</p><Button type="button" variant="ghost" size="sm" onClick={() => void rereadSkillsets()}>Try again</Button></div>
+      )}
+      {missingPublic && (
+        <div className="mt-4 text-[13px]" data-testid="team-brain-public-skillset-missing">
+          <div className="flex items-center justify-between gap-3">
+            <span role="alert">Team Brain needs the Gamut Public Skillset.</span>
+            <button type="button" className={SECONDARY} onClick={() => void addPublic()} disabled={isAdding}>
+              {isAdding && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
+              Add Gamut Public Skillset
+            </button>
+          </div>
+          {addError && <p role="alert" className="mt-2 text-destructive">{addError}</p>}
+        </div>
+      )}
       {error && <p role="alert" className="mt-4 text-[13px] text-destructive">{error}</p>}
     </StepPanel>
   )

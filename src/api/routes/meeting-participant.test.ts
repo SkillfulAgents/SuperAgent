@@ -8,7 +8,7 @@ let handle: TestDatabase
 let testDb: AppDatabase
 vi.mock('@shared/lib/db', () => ({ get db() { return testDb } }))
 vi.mock('@shared/lib/error-reporting', () => ({ captureException: vi.fn() }))
-vi.mock('@shared/lib/agent-actor', () => ({ agentCatalog: { get: vi.fn(async () => ({ slug: 'agent', name: 'Ada' })) } }))
+vi.mock('@shared/lib/agent-actor', () => ({ agentCatalog: { get: vi.fn(async () => ({ slug: 'agent', name: 'Ada', avatar: { color: 'tonal-blue', shape: 'hexagon' } })) } }))
 const connector = vi.hoisted(() => ({ value: null as null | { receiveBotEvent: ReturnType<typeof vi.fn>; receiveSpeech: ReturnType<typeof vi.fn> } }))
 vi.mock('@shared/lib/agent-integrations/agent-integration-manager', () => ({ agentIntegrationManager: { getConnector: () => connector.value } }))
 // The route recognizes the family's connector by class; the fake must be one.
@@ -58,7 +58,7 @@ describe('participant bootstrap', () => {
     await setMeetingSession(meetingId, 'session-1')
     const res = await app.request(url())
     expect(res.status).toBe(200)
-    expect(await res.json()).toMatchObject({ agentSlug: 'agent', agentName: 'Ada', sessionId: 'session-1', meeting: { id: meetingId, botName: 'Ada', recordingRetainedUntil: null } })
+    expect(await res.json()).toMatchObject({ agentSlug: 'agent', agentName: 'Ada', agentAvatar: { color: 'tonal-blue', shape: 'hexagon' }, sessionId: 'session-1', meeting: { id: meetingId, botName: 'Ada', recordingRetainedUntil: null } })
     const cookie = res.headers.get('Set-Cookie')!
     expect(cookie).toContain(`gamut_meeting_participant=${encodeURIComponent(`${meetingId}.${token}`)}`)
     expect(cookie).toContain('HttpOnly')

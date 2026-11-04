@@ -1056,6 +1056,44 @@ describe('AgentActivityIndicator', () => {
     scrollWidth.mockRestore()
   })
 
+  it("shows a planned task's description on hover, and no tooltip for a task without one", async () => {
+    const user = userEvent.setup()
+    mockStreamState.isActive = true
+    mockStreamState.activeStartTime = Date.now()
+    mockMessages.push({
+      id: 'msg-1',
+      type: 'assistant',
+      content: { text: '' },
+      toolCalls: [
+        {
+          id: 'tc-create-1',
+          name: 'TaskCreate',
+          input: { subject: 'Draft the plan', description: 'as sent' },
+          result: 'Task #1 created successfully: Draft the plan',
+          taskDescription: 'Outline each section.\nKeep it short.',
+        },
+        {
+          id: 'tc-create-2',
+          name: 'TaskCreate',
+          input: { subject: 'Ship it' },
+          result: 'Task #2 created successfully: Ship it',
+        },
+      ],
+      createdAt: new Date(),
+    })
+
+    render(<AgentActivityIndicator sessionId="s-1" agentSlug="agent-1" />)
+
+    const [described, plain] = screen.getAllByTestId('activity-plan-task')
+    await user.hover(plain)
+    expect(screen.queryByTestId('activity-plan-task-description')).not.toBeInTheDocument()
+
+    await user.unhover(plain)
+    await user.hover(described)
+    const tooltip = await screen.findByRole('tooltip')
+    expect(tooltip).toHaveTextContent('Outline each section. Keep it short.')
+  })
+
   describe('subagent status', () => {
     it('shows lifecycle-only subagents launched inside a Skill', () => {
       mockStreamState.isActive = true

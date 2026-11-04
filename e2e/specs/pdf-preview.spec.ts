@@ -24,8 +24,12 @@ async function uploadPdfs(page: Page, files = [
   for (const file of files) {
     await expect(page.getByTestId('attachment-preview').filter({ hasText: file.name })).toBeVisible()
   }
+  const repliesBefore = await session.getAssistantMessages().count()
   await session.sendMessage('Review these documents')
-  await session.waitForResponse(15000)
+  // The initial "hello" already has a reply. Wait for this turn to finish
+  // before clicking a pill whose position changes as the transcript settles.
+  await session.waitForAssistantMessageCount(repliesBefore + 1, 15000)
+  await expect(session.getStopButton()).not.toBeVisible()
   for (const file of files) await expect(filePill(page, file.name)).toBeVisible()
 }
 

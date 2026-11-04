@@ -65,6 +65,13 @@ export async function getConnection(id: string): Promise<ConnectionRow | null> {
   return (await db.select().from(llmConnections).where(eq(llmConnections.id, id)).get()) ?? null
 }
 
+/** Connection rows a request already read, by id: the resolvers below look there before reading a row. */
+export type ReadConnections = ReadonlyMap<string, ConnectionRow>
+
+async function connectionRow(id: string, read?: ReadConnections): Promise<ConnectionRow | null> {
+  return read?.get(id) ?? getConnection(id)
+}
+
 export function connectionModelOverrides(row: Pick<ConnectionRow, 'provider' | 'modelOverrides'>) {
   return normalizeConnectionModelOverrides(
     getLlmProvider(providerSchema.parse(row.provider)).getBuiltinCatalog(),
@@ -86,11 +93,10 @@ export function mutateConnections<T>(work: () => Promise<T>): Promise<T> {
   return result
 }
 
-export async function listConnections(
-  viewer: ConnectionViewer,
-  currentId?: string
-): Promise<ConnectionInfo[]> {
-  const rows = await db
+type VisibleConnectionRow = { connection: ConnectionRow; ownerName: string | null }
+
+async function readVisibleConnections(viewer: ConnectionViewer, currentId?: string): Promise<VisibleConnectionRow[]> {
+  return db
     .select({ connection: llmConnections, ownerName: user.name })
     .from(llmConnections)
     .leftJoin(user, eq(llmConnections.userId, user.id))
@@ -102,7 +108,31 @@ export async function listConnections(
       )
     )
     .all()
-  const defaultSelection = await resolveGlobalSelection()
+}
+
+const readById = (rows: VisibleConnectionRow[]): ReadConnections => new Map(rows.map(({ connection }) => [connection.id, connection]))
+
+export async function listConnections(
+  viewer: ConnectionViewer,
+  currentId?: string
+): Promise<ConnectionInfo[]> {
+  const rows = await readVisibleConnections(viewer, currentId)
+  return connectionInfos(rows, viewer, await resolveGlobalSelection(readById(rows)))
+}
+
+/** The connections a viewer sees, with the app default and summarizer, from one read of the connections. */
+export async function listConnectionsWithSelection(viewer: ConnectionViewer): Promise<{ connections: ConnectionInfo[] } & GlobalSelectionState> {
+  const rows = await readVisibleConnections(viewer)
+  const read = readById(rows)
+  const [root, summarizer] = await Promise.all([resolveGlobalSelection(read), resolveSummarizerSelection(read)])
+  return { connections: connectionInfos(rows, viewer, root), ...selectionState(root, summarizer) }
+}
+
+function connectionInfos(
+  rows: VisibleConnectionRow[],
+  viewer: ConnectionViewer,
+  defaultSelection: ResolvedConnection | null,
+): ConnectionInfo[] {
   return rows.map(({ connection: row, ownerName }) => {
     const provider = providerForConnection(row)
     const config = parseConnectionJson(connectionConfigSchema, row.config)
@@ -323,8 +353,11 @@ async function applyGlobalSelection(
 }
 
 export async function globalSelectionState(): Promise<GlobalSelectionState> {
-  const root = await resolveGlobalSelection()
-  const summarizer = await resolveSummarizerSelection()
+  const [root, summarizer] = await Promise.all([resolveGlobalSelection(), resolveSummarizerSelection()])
+  return selectionState(root, summarizer)
+}
+
+function selectionState(root: ResolvedConnection | null, summarizer: ResolvedConnection | null): GlobalSelectionState {
   return {
     defaultSelection: root ? { llmProviderId: root.llmProviderId, model: root.model } : null,
     summarizerSelection: isHelperSelection(summarizer) ? { llmProviderId: summarizer.llmProviderId, model: summarizer.model } : null,
@@ -380,9 +413,10 @@ function defaultSelectionForConnection(row: ConnectionRow, purpose: 'agent' | 's
 export async function resolveConnectionSelection(
   selection: StoredModelSelection | null | undefined,
   allowLegacyPin = false,
+  read?: ReadConnections,
 ) {
   if (!selection) return null
-  const row = await getConnection(selection.llmProviderId)
+  const row = await connectionRow(selection.llmProviderId, read)
   if (!row) return null
   if (!selection.model) return defaultSelectionForConnection(row)
   const provider = providerForConnection(row)
@@ -420,15 +454,15 @@ export function storedSelection(
  * model falls back within its provider; a lost row falls back to the migrated
  * active global provider, never to a personal account or an ambient API key.
  */
-export async function resolveGlobalSelection(): Promise<ResolvedConnection | null> {
+export async function resolveGlobalSelection(read?: ReadConnections): Promise<ResolvedConnection | null> {
   const settings = getSettings()
   const root = settings.llmDefault
-  const selected = await resolveConnectionSelection(root)
+  const selected = await resolveConnectionSelection(root, false, read)
   if (selected?.connection.userId === null) return selected
   const ids = new Set([root?.llmProviderId, settings.llmLegacyProviderId, legacyLlmProviderId(settings.llmProvider ?? 'anthropic')])
   for (const id of ids) {
     if (!id) continue
-    const row = await getConnection(id)
+    const row = await connectionRow(id, read)
     if (row?.userId !== null) continue
     const fallback = defaultSelectionForConnection(row)
     if (fallback) return fallback
@@ -501,11 +535,11 @@ function connectionDeletionReason(row: ConnectionRow, viewer: ConnectionViewer, 
 }
 
 /** A retired/disabled helper model follows the same account's summarizer default. */
-export async function resolveSummarizerSelection(): Promise<ResolvedConnection | null> {
+export async function resolveSummarizerSelection(read?: ReadConnections): Promise<ResolvedConnection | null> {
   const saved = getSettings().llmSummarizer
-  const selected = await resolveConnectionSelection(saved)
+  const selected = await resolveConnectionSelection(saved, false, read)
   if (isHelperSelection(selected)) return selected
-  const row = saved ? await getConnection(saved.llmProviderId) : null
+  const row = saved ? await connectionRow(saved.llmProviderId, read) : null
   if (!row || row.userId !== null || !providerForConnection(row).supportsDirectApi) return null
   return defaultSelectionForConnection(row, 'summarizer')
 }

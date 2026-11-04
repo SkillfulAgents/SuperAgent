@@ -153,10 +153,8 @@ export function stashRedirectTarget(path: string): void {
 export { HttpError } from './http-error'
 
 /**
- * Loader-only fetch: returns parsed JSON, throwing `HttpError` on a non-2xx
- * response. The existing data hooks stay on `apiFetch` (which returns non-2xx
- * responses for the hook to render inline); loaders need a throw to gate
- * access before the route renders.
+ * JSON fetch for loaders and hooks sharing their queries, throwing `HttpError`
+ * on a non-2xx response so callers retain the status when requests deduplicate.
  */
 export async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await apiFetch(path, init)

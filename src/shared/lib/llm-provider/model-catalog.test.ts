@@ -108,10 +108,13 @@ describe('getProviderCatalog', () => {
 
   it('offers fast mode on Platform for every Claude id Anthropic serves it on', () => {
     const catalog = getProviderCatalog('platform')
-    for (const id of ['claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5']) {
+    for (const id of ['claude-opus-5', 'claude-opus-5-5']) {
       expect(catalog.find((m) => m.id === id)!.supportedSpeeds).toEqual(['normal', 'fast'])
     }
-    expect(catalog.find((m) => m.id === 'claude-opus-4-7')!.supportedSpeeds).toBeUndefined()
+    // Retired fast modes: 4.7's on 2026-07-24, 4.8's on 2026-11-30.
+    for (const id of ['claude-opus-4-7', 'claude-opus-4-8']) {
+      expect(catalog.find((m) => m.id === id)!.supportedSpeeds).toBeUndefined()
+    }
   })
 
   // Effort lists mirror what each serving path accepted live on 2026-09-18.

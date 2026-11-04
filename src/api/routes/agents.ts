@@ -11,6 +11,8 @@ import { notifySessionMentions, readSessionMentions } from './session-mentions'
 import { deleteMessageAuthorBestEffort, insertMessageAuthorBestEffort } from './message-author'
 import { parseMentions } from '@shared/lib/utils/mentions'
 import { parseDictationNote } from '@shared/lib/utils/dictation-note'
+import { parseDashboardCommentContext } from '@shared/lib/utils/dashboard-comment'
+import { parseComputerUseNote } from '@shared/lib/utils/computer-use-note'
 import { notifyAgentMembersChanged, changeMemberRole, removeMember, countMembersWithMinRole, countOtherMembers } from '@shared/lib/services/agent-members-service'
 import { formatSenderPrefix } from '@shared/lib/utils/sender-prefix'
 import { getUserSummaries, searchUserSummaries, toUserSender, userExists, type UserSenderSource } from '@shared/lib/services/user-profile-service'
@@ -29,6 +31,7 @@ import mcpReauth from './mcp-reauth'
 import { agentMemoryRoutes } from './agent-memories'
 import { agentBrowserAccountRoutes, sharedAgentRefusal } from './browser-accounts'
 import { getLlmPolyfillJs } from '../llm-polyfill'
+import { getDashboardInspectorJs } from '../dashboard-inspector'
 import {
   dashboardMountPath,
   dashboardResponseHeaders,
@@ -273,7 +276,7 @@ import { transformMessages, type TransformedMessage, type TransformedItem } from
 import { subagentOwnEntries } from '@shared/lib/utils/fork-subagent-transcript'
 import { workflowRoutes } from './workflows'
 import { getEffectiveModels, getEffectiveAgentLimits, getCustomEnvVars, getSettings, getTeamBrain, mutateSettings, VALID_SCRIPT_TYPES } from '@shared/lib/config/settings'
-import { readsHostFolders } from '@shared/lib/facts/capabilities'
+import { readsHostFolders, supportsComputerUse } from '@shared/lib/facts/capabilities'
 import { getServerFacts } from '@shared/lib/facts/server-facts'
 import { ungrabAC } from '@shared/lib/computer-use/executor'
 import type { PermissionGrantType } from '@shared/lib/computer-use/types'
@@ -1351,8 +1354,9 @@ async function generateAndUpdateSessionNameAsync(
   firstMessage: string,
   agentName: string
 ): Promise<void> {
-  // Named from what the person wrote, without the notes that tell the agent who it tags and that it was dictated.
-  const message = parseMentions(parseDictationNote(firstMessage).cleanText).cleanText
+  // Named from what the person wrote, without the notes that tell the agent who it tags, that it was
+  // dictated, that it may use the computer, or what a dashboard comment was looking at.
+  const message = parseDashboardCommentContext(parseMentions(parseDictationNote(parseComputerUseNote(firstMessage).cleanText).cleanText).cleanText).cleanText
   let sessionName: string | null = null
   // The E2E mock avoids all real provider calls — but this host-direct SDK
   // call bypassed it, so every test session made a doomed HTTPS round trip
@@ -2097,6 +2101,16 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
 
     const runtimeOptions = parseRuntimeOptions(body)
 
+    // The dispatch launcher's computer-use toggle: the session may list and
+    // use any app without asking, and has its computer-use tools from the
+    // first turn. The same grant the approval card gives, so no more than the
+    // caller could already do; refused where computer use can't run at all
+    // (the mock E2E runtime drives no machine).
+    const computerUse = body.computerUse === true
+    if (computerUse && process.env.E2E_MOCK !== 'true' && !supportsComputerUse(getServerFacts())) {
+      return c.json({ error: 'Computer use is not available on this machine' }, 400)
+    }
+
     // Optional provenance: the renderer's dashboard-dispatch dialog marks the
     // sessions it creates so they can show where they came from. This is a
     // LABEL, not proof of user consent: dashboard iframes share the API's
@@ -2196,6 +2210,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
         maxBrowserTabs: getSettings().app?.maxBrowserTabs,
         effort: resolved.effort,
         speed: resolved.speed,
+        ...(computerUse ? { preloadToolsets: ['computer-use'] } : {}),
         // Same preference chain MINUS the per-session pick: this is what the
         // composer will send next time (it only puts model/effort/speed on the
         // wire when the user explicitly chooses one), so it is what the
@@ -2209,6 +2224,7 @@ agents.post('/:id/sessions', AgentUser(), async (c) => {
       },
       name: name || 'New Session',
       metadata: initialMetadata,
+      ...(computerUse ? { grantComputerUse: true } : {}),
     })
     const sessionId = containerSession.id
 
@@ -3642,12 +3658,15 @@ agents.post('/:id/sessions/:sessionId/answer-question', AgentUser(), async (c) =
     if (decline) {
       const reason = declineReason || 'User declined to answer'
 
+      // `skipped`: the person chose not to answer. The container ends the
+      // question as an annotated answer (the reason is what the agent reads)
+      // where the CLI supports it, and as a declined tool call otherwise.
       const rejectResponse = await actor.container.fetch(
         `/inputs/${encodeURIComponent(toolUseId)}/reject`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reason }),
+          body: JSON.stringify({ reason, unanswered: 'skipped' }),
         }
       )
 
@@ -7744,7 +7763,8 @@ async function proxyArtifactRequest(c: any) {
     const html = injectDashboardRuntime(await response.text(), {
       basePath: publicBasePath,
       slug: artifactSlug,
-      polyfillJs: getPolyfillJs() + getLlmPolyfillJs(),
+      // The inspector first, so it hears the polyfills' own console lines too.
+      polyfillJs: getDashboardInspectorJs() + getPolyfillJs() + getLlmPolyfillJs(),
     })
     return new Response(html, {
       status: response.status,

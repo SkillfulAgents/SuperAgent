@@ -1702,6 +1702,33 @@ describe('Computer use request detection', () => {
     }
   })
 
+  it('auto-executes any app for a session started with computer use, and still asks before a host script', async () => {
+    const originalE2eMock = process.env.E2E_MOCK
+    process.env.E2E_MOCK = 'true'
+    sessions().grantComputerUse(SESSION_ID)
+    live.host.answer('computerUse', 'launched')
+
+    try {
+      simulateToolUse('mcp__computer-use__computer_launch', 'tool-cu-session', { name: 'Safari' })
+      await vi.waitFor(() => {
+        expect(live.runtime.containerFetch).toHaveBeenCalledWith('/inputs/tool-cu-session/resolve', expect.objectContaining({
+          body: JSON.stringify({ value: 'launched' }),
+        }))
+      })
+      expect(requestCards('computer_use')[0].request).toMatchObject({ id: 'tool-cu-session', autoApproved: true })
+      expect(sessions().isAwaitingInput(SESSION_ID)).toBe(false)
+
+      simulateToolUse('mcp__user-input__request_script_run', 'tool-script-session', {
+        script: 'sw_vers', explanation: 'Check macOS version', scriptType: 'shell',
+      })
+      await vi.waitFor(() => expect(requestCards('script_run')).toHaveLength(1))
+      expect(requestCards('script_run')[0].request).toMatchObject({ id: 'tool-script-session', autoApproved: false })
+    } finally {
+      if (originalE2eMock === undefined) delete process.env.E2E_MOCK
+      else process.env.E2E_MOCK = originalE2eMock
+    }
+  })
+
   it('runs an auto-approved command once when its tool call is delivered twice', async () => {
     const originalE2eMock = process.env.E2E_MOCK
     process.env.E2E_MOCK = 'true'

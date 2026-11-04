@@ -64,7 +64,7 @@ function mcpToolNames(
     .filter(t => !excludeSet || !excludeSet.has(t.name))
     .map(t => `mcp__${serverName}__${t.name}`)
 }
-import { inputManager } from './input-manager';
+import { inputManager, InputRejectedError } from './input-manager';
 import { sanitizeMcpName } from './sanitize-mcp-name';
 import { withAgentAttributionHeaders, withSpeedHeader } from './attribution-headers';
 import { renderPrompt } from './render-prompt';
@@ -76,6 +76,7 @@ import {
   policyFor,
   type Capability,
 } from './capability-policies';
+import { knownPreloadToolsets, type PreloadToolset } from './preload-toolsets';
 import { createCapabilityGateHook, CAPABILITY_REVIEW_HOOK_TIMEOUT_S } from './capability-gate-hook';
 import { MAIN_THREAD_ONLY_TOOLS, MAIN_THREAD_ONLY_TOOL_MESSAGE } from './main-thread-tools';
 import {
@@ -552,6 +553,8 @@ export interface ClaudeCodeProcessOptions {
   customEnvVars?: Record<string, string>;
   effort?: EffortLevel;
   speed?: SpeedLevel;
+  /** Toolsets in the prompt from the first turn, not behind ToolSearch (see preload-toolsets.ts). */
+  preloadToolsets?: readonly string[];
   capabilityPolicies?: AgentCapabilityPolicies;
   sessionCapabilityGrants?: Capability[];
   globalInstructions?: string;
@@ -585,6 +588,8 @@ export class ClaudeCodeProcess extends EventEmitter {
   private webSearchProvider: string | undefined;
   private webFetchProvider: string | undefined;
   private availableIntegrationFamilies: string[] | undefined;
+  /** Toolsets in the prompt from the first turn, not behind ToolSearch. */
+  private readonly preloadToolsets: ReadonlySet<PreloadToolset>;
   private maxOutputTokens: number | undefined;
   private maxThinkingTokens: number | undefined;
   private maxTurns: number | undefined;
@@ -726,6 +731,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     this.webSearchProvider = options.webSearchProvider;
     this.webFetchProvider = options.webFetchProvider;
     this.availableIntegrationFamilies = options.availableIntegrationFamilies;
+    this.preloadToolsets = new Set(knownPreloadToolsets(options.preloadToolsets));
     this.maxOutputTokens = options.maxOutputTokens;
     this.maxThinkingTokens = options.maxThinkingTokens;
     this.maxTurns = options.maxTurns;
@@ -1020,7 +1026,7 @@ export class ClaudeCodeProcess extends EventEmitter {
       ...((this.webSearchProvider || this.webFetchProvider)
         ? { 'web': createWebMcpServer({ search: !!this.webSearchProvider, fetch: !!this.webFetchProvider }) }
         : {}),
-      ...(isComputerUseHost() ? { 'computer-use': createComputerUseMcpServer() } : {}),
+      ...(isComputerUseHost() ? { 'computer-use': createComputerUseMcpServer({ alwaysLoad: this.preloadToolsets.has('computer-use') }) } : {}),
     };
     this.sdkMcpServerConfigs = servers;
     return servers;
@@ -1174,6 +1180,14 @@ export class ClaudeCodeProcess extends EventEmitter {
         // them on under us.
         autoDreamEnabled: false,
         enableArtifact: false,
+        // Idle compaction (default on) is off for the same reason: once a long
+        // conversation sits idle, the CLI summarizes it with a model call of
+        // its own and uses the summary on the next message. CLI 2.1.314
+        // extended it to custom base URLs (LLM gateways) once the 1-hour
+        // prompt cache is on. It would bill a request nobody asked for inside
+        // a session the host already counts as settled. Auto-compaction still
+        // runs when the context actually fills.
+        idleCompaction: false,
       },
       settingSources: ['user', 'project'],
       // The image-baked Gamut plugin: the dashboards + widgets skills and the
@@ -1374,10 +1388,28 @@ export class ClaudeCodeProcess extends EventEmitter {
             };
           } catch (error) {
             console.log('[canUseTool] User declined:', error);
-            return {
-              behavior: 'deny' as const,
-              message: error instanceof Error ? error.message : 'User declined to answer',
-            };
+            const message = error instanceof Error ? error.message : 'User declined to answer';
+            // The person chose not to answer (the card's Decline): end the
+            // question as answered-with-annotation, not as a failed tool call.
+            // The model reads only `answers`; `unanswered` rides into the tool
+            // result for the transcript. A CLI that doesn't advertise the
+            // capability may refuse the whole answer, so it keeps the deny.
+            if (
+              error instanceof InputRejectedError &&
+              error.unanswered &&
+              this.cliCapabilities.has('ask_user_question_unanswered_v1')
+            ) {
+              const unanswered = error.unanswered;
+              return {
+                behavior: 'allow' as const,
+                updatedInput: {
+                  questions,
+                  answers: Object.fromEntries(questions.map((q) => [q.question, message])),
+                  annotations: Object.fromEntries(questions.map((q) => [q.question, { unanswered }])),
+                },
+              };
+            }
+            return { behavior: 'deny' as const, message };
           }
         }
 
@@ -2277,6 +2309,9 @@ export class ClaudeCodeProcess extends EventEmitter {
    */
   async dispose(options?: { graceful?: boolean; graceMs?: number }): Promise<void> {
     this.disposed = true;
+    // A pre-resume may still be starting its query (e.g. waiting for the
+    // provider proxy). It must finish before we promise there is no writer.
+    await this.warmRestart?.catch(() => undefined);
     await this.stop(options);
   }
 

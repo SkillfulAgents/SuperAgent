@@ -5,6 +5,7 @@ import { Button, buttonVariants } from '@renderer/components/ui/button'
 import { DetailCard } from '@renderer/components/triggers/detail-card'
 import { DialogTitle } from '@renderer/components/ui/dialog'
 import { agentIntegrationKeys, useCreateAgentIntegration, useTestAgentIntegrationCredentials, useUpdateAgentIntegration } from '@renderer/hooks/use-agent-integrations'
+import { useAgent } from '@renderer/hooks/use-agents'
 import { useWebhookRelay } from '@renderer/hooks/use-webhook-relay'
 import { prepareOAuthPopup } from '@renderer/lib/oauth-popup'
 import type { PublicAgentIntegration } from '@shared/lib/agent-integrations/public'
@@ -13,8 +14,8 @@ import { slackAppCreationUrl } from '@shared/lib/chat-integrations/slack-manifes
 import { ChatIntegrationSetupForm, ChatSetupBehavior, DEFAULT_CHAT_SETUP_BEHAVIOR, slackBehaviorConfig } from './chat-integration-setup-form'
 import { IntegrationSetupFeedback, IntegrationSetupField, IntegrationSetupLayout } from './integration-setup-layout'
 import type { IntegrationSetupProps } from './setup-types'
-
-const DEFAULT_APP_NAME = 'Gamut Bot'
+import { SlackAppIconStep } from './slack-app-appearance'
+import { slackAppIdentity, type SlackAppAgent } from './slack-app-identity'
 
 function ExternalButton({ href, children }: { href: string; children: ReactNode }) {
   return <a className={buttonVariants({ variant: 'outline', size: 'sm' })} href={href} target="_blank" rel="noreferrer" onClick={event => {
@@ -47,12 +48,13 @@ export function SlackSetup(props: IntegrationSetupProps) {
     : <ChatIntegrationSetupForm {...props} provider="slack" leading={choice()} />
 }
 
-function appSteps({ created }: { created: boolean }) {
+function appSteps({ created, agent }: { created: boolean; agent?: SlackAppAgent }) {
   return [
     created
-      ? 'Create the app in Slack. Its manifest is filled in, with this agent’s webhook URL.'
-      : 'Name this integration, then create its Slack app. The manifest is filled in, with this agent’s webhook URL.',
+      ? 'Create the app in Slack. Its manifest is filled in, with this agent’s name and webhook URL.'
+      : 'Create this agent’s Slack app. The manifest is filled in, with this agent’s name and webhook URL.',
     'Pick your workspace and create the app. If Slack lists the request URL as unverified, open App Manifest and click Verify.',
+    ...(agent?.avatar ? [<SlackAppIconStep key="icon" agent={agent} />] : []),
     <>In <strong className="font-medium">Basic Information → App Credentials</strong>, copy the <strong className="font-medium">Signing Secret</strong> into this form.</>,
     <>In <strong className="font-medium">Install App</strong>, install it to your workspace, then copy the <strong className="font-medium">Bot User OAuth Token</strong> (xoxb-…) into this form.</>,
   ]
@@ -74,7 +76,8 @@ function SlackWebhookSetupForm({ agentSlug, onClose, choice, onCreated }: Integr
   const [botToken, setBotToken] = useState('')
   const [feedback, setFeedback] = useState<{ valid: boolean; info: string } | null>(null)
   const [busy, setBusy] = useState(false)
-  const appName = name.trim() || DEFAULT_APP_NAME
+  const { data: agent } = useAgent(agentSlug)
+  const app = slackAppIdentity(agent, name)
 
   // The URL must exist before the app, so the first click creates the
   // installation, then opens Slack with it filled in. The tab opens inside
@@ -89,7 +92,7 @@ function SlackWebhookSetupForm({ agentSlug, onClose, choice, onCreated }: Integr
       if (!webhookUrl) throw new Error('Could not create the webhook URL')
       setCreated({ id: row.id, webhookUrl })
       onCreated()
-      await tab.navigate(slackAppCreationUrl(appName, webhookUrl))
+      await tab.navigate(slackAppCreationUrl(app, webhookUrl))
     } catch (error) {
       tab.close()
       setFeedback({ valid: false, info: error instanceof Error ? error.message : 'Could not create the webhook URL' })
@@ -125,10 +128,10 @@ function SlackWebhookSetupForm({ agentSlug, onClose, choice, onCreated }: Integr
     provider="slack" label="Slack"
     instructions={<div className="space-y-3">
       <ol className="list-decimal list-outside ml-5 space-y-2.5 text-sm font-normal text-foreground">
-        {appSteps({ created: !!created }).map((step, i) => <li key={i}>{step}
+        {appSteps({ created: !!created, agent }).map((step, i) => <li key={i}>{step}
           {i === 0 && <div className="mt-3">
             {created
-              ? <ExternalButton href={slackAppCreationUrl(appName, created.webhookUrl)}>Create app in Slack</ExternalButton>
+              ? <ExternalButton href={slackAppCreationUrl(app, created.webhookUrl)}>Create app in Slack</ExternalButton>
               : <Button size="sm" variant="outline" disabled={busy} onClick={() => void createApp()} data-testid="slack-create-app">Create app in Slack<ExternalLink className="h-3.5 w-3.5" /></Button>}
           </div>}
         </li>)}
@@ -148,7 +151,7 @@ function SlackWebhookSetupForm({ agentSlug, onClose, choice, onCreated }: Integr
   >
     {choice(!!created)}
     <IntegrationSetupField id="setup-integration-name" label="Integration name" value={name} onChange={event => setName(event.target.value)}
-      placeholder="My Slack integration" disabled={busy || !!created} />
+      placeholder={agent?.name || 'My Slack integration'} disabled={busy || !!created} />
     <IntegrationSetupField id="setup-signingSecret" label="Signing Secret" type="password" autoComplete="new-password" value={signingSecret}
       onChange={event => setSigningSecret(event.target.value)} placeholder="From Basic Information" disabled={!created} />
     <IntegrationSetupField id="setup-botToken" label="Bot Token" type="password" autoComplete="new-password" value={botToken}
@@ -167,8 +170,9 @@ export function SlackConnectionSettings({ integration }: { integration: PublicAg
   const [signingSecret, setSigningSecret] = useState('')
   const [botToken, setBotToken] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const { data: agent } = useAgent(integration.agentSlug)
   if (!slack || slack.botTokenSaved || !slack.webhook) return null
-  const creationUrl = slackAppCreationUrl(integration.name || DEFAULT_APP_NAME, slack.webhook.url)
+  const creationUrl = slackAppCreationUrl(slackAppIdentity(agent, integration.name), slack.webhook.url)
   const connect = () => {
     setError(null)
     update.mutate({ id: integration.id, status: 'active', config: { botToken: botToken.trim(), signingSecret: signingSecret.trim() } }, {
@@ -180,7 +184,7 @@ export function SlackConnectionSettings({ integration }: { integration: PublicAg
     <div className="space-y-3" data-testid="slack-finish-setup">
       <p className="text-sm">Finish setting up this agent’s Slack app.</p>
       <ol className="list-decimal list-outside ml-5 space-y-1.5 text-xs text-muted-foreground">
-        {appSteps({ created: true }).map((step, i) => <li key={i}>{step}
+        {appSteps({ created: true, agent }).map((step, i) => <li key={i}>{step}
           {i === 0 && <div className="mt-2"><ExternalButton href={creationUrl}>Create app in Slack</ExternalButton></div>}
         </li>)}
       </ol>

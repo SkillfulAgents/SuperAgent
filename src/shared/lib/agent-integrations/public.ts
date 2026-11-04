@@ -2,6 +2,9 @@ import type { AgentIntegrationRecord } from './types'
 
 export type IntegrationCapability = 'reset_conversation' | 'session_timeout' | 'tool_activity'
 
+/** Inactivity before a new conversation starts, for a new integration that supports `session_timeout`. */
+export const DEFAULT_SESSION_TIMEOUT_HOURS = 6
+
 /** Credential-free fields shared by every integration family. */
 export type PublicAgentIntegration<Settings extends object = object> = Pick<AgentIntegrationRecord,
   | 'id' | 'agentSlug' | 'provider' | 'name' | 'status' | 'errorMessage'

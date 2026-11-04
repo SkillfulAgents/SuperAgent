@@ -347,11 +347,11 @@ export interface SessionOps {
   register(sessionId: string, name?: string, initialMetadata?: Partial<SessionMetadata>): Promise<void>
   /** `updateSessionName`, then `session_updated` on the session's stream and the global feed. */
   rename(sessionId: string, name: string): Promise<void>
-  /** `deleteSession` — the files are the authority. */
+  /** Stop the writer, delete its files, then forget its resume record. Unknown runtime state keeps the files. */
   delete(sessionId: string): Promise<boolean>
   /**
-   * `deleteSessionsBatch` over the sessions not running now: one that is
-   * (the caller's view of what is idle may be stale) is kept. Returns the ids deleted.
+   * Delete each idle session after its writer has stopped, holding its delivery queue through file removal.
+   * Active sessions and sessions whose release cannot be confirmed are kept. Returns the ids deleted.
    */
   deleteMany(sessionIds: string[]): Promise<string[]>
   /** `getSessionMetadata` */
@@ -673,6 +673,12 @@ export interface StartSessionRequest {
   notAfter?: number
   /** Bound on the stream attach; a stall past it fails the start (`attach-failed`). */
   attachTimeoutMs?: number
+  /**
+   * The user started it with computer use on: the session may list and use
+   * any app without asking. Granted before the stream attaches, so the first
+   * turn's calls already find it.
+   */
+  grantComputerUse?: boolean
 }
 
 export interface StopSessionOptions {
@@ -807,7 +813,8 @@ export interface ReviewOps {
 export interface ComputerUseOps {
   /**
    * The user let go of the app the agent had grabbed: forget the grab, revoke
-   * the agent's grant for that app and tell the session's viewers, in one turn.
+   * the agent's grant for that app and the session's any-app grant, and tell
+   * the session's viewers, in one turn.
    */
   releaseGrab(sessionId: string): Promise<{ appName: string | undefined }>
   /** `AgentComputerUse.setGrabbed` */

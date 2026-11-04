@@ -8,6 +8,7 @@
  * state for route/durability cases where creation itself is not under test.
  */
 import { test, expect, type APIRequestContext, type Page, type TestInfo } from '@playwright/test'
+import type { Query } from '@tanstack/react-query'
 import { AppPage } from '../pages/app.page'
 import { AgentPage } from '../pages/agent.page'
 import { SessionPage } from '../pages/session.page'
@@ -165,6 +166,34 @@ test.describe('Navigation - discriminated AgentView', () => {
 
       await page.locator('[data-testid="home-button"]').click()
       await expectGlobalHome(page)
+    } catch (error) {
+      // Inspect only after a failure: importing this dev-server module during
+      // setup could warm route chunks and change the rename/navigation race.
+      const snapshot = await page.evaluate(async () => {
+        const routerModule = '/router/index.tsx'
+        const { router } = await import(routerModule)
+        const describeAgent = (data: unknown) => {
+          if (!data || typeof data !== 'object') return null
+          const row = data as Record<string, unknown>
+          return { slug: row.slug, displaySlug: row.displaySlug, name: row.name }
+        }
+        return {
+          url: location.href,
+          breadcrumb: document.querySelector('[data-testid="agent-breadcrumb"]')?.textContent,
+          queries: router.options.context.queryClient.getQueryCache().findAll({ queryKey: ['agents'] }).map((query: Query) => ({
+            key: query.queryKey,
+            data: Array.isArray(query.state.data) ? query.state.data.map(describeAgent) : describeAgent(query.state.data),
+            fetchStatus: query.state.fetchStatus,
+            isInvalidated: query.state.isInvalidated,
+            dataUpdatedAt: query.state.dataUpdatedAt,
+            observers: query.getObserversCount(),
+          })),
+        }
+      }).catch((diagnosticError: unknown) => ({ diagnosticError: String(diagnosticError) }))
+      await testInfo.attach('agent-name-cache-after-failure', {
+        body: JSON.stringify(snapshot, null, 2), contentType: 'application/json',
+      }).catch(() => undefined)
+      throw error
     } finally {
       await cleanupAgents(request, [createdAgent])
     }
@@ -438,6 +467,9 @@ test.describe('Navigation - discriminated AgentView', () => {
 
     try {
       await page.goto(`/agents/${agent.slug}`)
+      // A document load can finish before React and the route loader mount.
+      // Reload the loaded agent view, rather than racing initial hydration.
+      await expectAgentHome(page, agent)
       await appPage.reload()
       await expectAgentHome(page, agent)
       await expect(page.locator('[data-testid^="agent-item-"]', { hasText: agent.name })).toHaveAttribute('data-active', 'true')

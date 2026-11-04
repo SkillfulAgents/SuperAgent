@@ -51,6 +51,7 @@ const NOTHING_LIVE: { [K in keyof Methods]: (...args: Parameters<Methods[K]>) =>
   listen: () => () => {},
   onDispose: () => () => {},
   follow: async () => () => {},
+  grantComputerUse: () => {},
   emit: () => {},
   subscribe: async () => {},
   attachReplaying: async () => {},
