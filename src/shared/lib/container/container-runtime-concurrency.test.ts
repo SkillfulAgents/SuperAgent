@@ -60,6 +60,7 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
 
 vi.mock('@shared/lib/container/host-token-store', () => ({
   getOrCreateHostToken: vi.fn(() => 'test-host-token'),
+  hostTokenForStart: vi.fn(async () => 'test-host-token'),
 }))
 
 vi.mock('@shared/lib/proxy/host-url', () => ({
