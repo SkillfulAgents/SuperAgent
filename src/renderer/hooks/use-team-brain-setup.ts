@@ -3,11 +3,12 @@ import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { useOnboarding } from '@renderer/context/onboarding-context'
 import { useUser } from '@renderer/context/user-context'
+import { removeAgentFromCache } from '@renderer/lib/agent-cache'
 import { apiFetch } from '@renderer/lib/api'
 import { captureRendererException } from '@renderer/lib/error-reporting'
 import { fillTeamBrainSetupBlock, setUpByOf, TEAM_BRAIN_CRON } from '@renderer/lib/team-brain/team-brain-setup-block'
 import type { TeamBrainPrepared } from '@renderer/lib/team-brain/team-brain-schema'
-import { getTeamBrainState, usesTeamBrain, useTeamBrain } from '@renderer/lib/team-brain/team-brain-store'
+import { getTeamBrainState, restoredSetupOutcome, usesTeamBrain, useTeamBrain } from '@renderer/lib/team-brain/team-brain-store'
 import type { VolumeDetails } from '@renderer/components/volumes/volume-details-schema'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 import type { ApiAgent } from '@shared/lib/types/api'
@@ -57,7 +58,8 @@ export function useTeamBrainSetup() {
   const template = templates?.find((t) => t.skillsetId === DEFAULT_PUBLIC_SKILLSET.id && t.path === TEAM_BRAIN_TEMPLATE_PATH)
   const setUpSlug = agents?.find((agent) => agent.teamBrain)?.slug
   const { isAuthMode, isAdmin } = useUser()
-  const settings = useSettings({ enabled: !isAuthMode || isAdmin })
+  const canSetUp = !isAuthMode || isAdmin
+  const settings = useSettings({ enabled: canSetUp })
   const mounted = useRef(true)
   // Bumped by each prepare and each cancel: work that finds it moved on belongs to an attempt that ended.
   const attempt = useRef(0)
@@ -67,18 +69,46 @@ export function useTeamBrainSetup() {
   const warmed = useRef<TeamBrainPrepared | null>(null)
   const warm = startAgent.mutate
   useEffect(() => {
-    if (!draft || driveHealth !== 'ok' || warmed.current === draft) return
+    if (!draft || driveHealth !== 'ok' || warmed.current === draft || !canSetUp) return
     warmed.current = draft
     warm({ slug: draft.agentSlug, source: 'warm-start' }, {
       onError: (error) => captureRendererException(error, { tags: { area: 'team-brain', op: 'warm-start' } }),
     })
-  }, [draft, driveHealth, warm])
+  }, [draft, driveHealth, warm, canSetUp])
 
   const discard = async ({ agentSlug, volumeId }: TeamBrainPrepared) => {
     // The drive delete refuses while the agent still has it attached.
     await deleteAgent.mutateAsync(agentSlug)
     await deleteVolume.mutateAsync(volumeId)
   }
+
+  // At mount a set-up in progress is one restored from storage, since leaving the page ends any other.
+  // The server says whether it launched, lost its agent, or lost the record to another set-up.
+  const restored = useRef(tb.state.status === 'off' ? null : tb.state)
+  useEffect(() => {
+    const saved = restored.current
+    if (!saved || !settings.data || !agents) return
+    restored.current = null
+    const report = (error: unknown) => captureRendererException(error, { tags: { area: 'team-brain', op: 'discard-restored-setup' } })
+    const current = getTeamBrainState()
+    // Left while its drive was being made: nothing can resume it.
+    if (saved.installing) {
+      void deleteAgent.mutateAsync(saved.installing).catch(report)
+      if (current.installing === saved.installing) tb.setInstalling(null)
+    }
+    const { prepared } = saved
+    // A launch started since the page loaded decides for itself.
+    if (!prepared || current.prepared?.agentSlug !== prepared.agentSlug || current.status !== saved.status) return
+    const agentFound = agents.some((agent) => agent.slug === prepared.agentSlug)
+    const outcome = restoredSetupOutcome(prepared.agentSlug, settings.data.teamBrain?.agentSlug, agentFound)
+    if (outcome === 'resume') {
+      tb.setLaunching(false)
+      return
+    }
+    if (outcome === 'gone') void (agentFound ? discard(prepared) : deleteVolume.mutateAsync(prepared.volumeId)).catch(report)
+    tb.cancelSetup()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, when the record and agents are first known
+  }, [settings.data, agents])
 
   const prepare = async (source: VolumeSource, details: VolumeDetails) => {
     // The agent list holds only the agents shared with this admin; the workspace record says whether one exists.
@@ -90,11 +120,11 @@ export function useTeamBrainSetup() {
       await discard(previous)
       if (run === attempt.current) tb.setPrepared(null)
     }
-    if (run !== attempt.current) return false
+    if (run !== attempt.current || !mounted.current) return false
     const agent = await install.mutateAsync({
       skillsetId: template.skillsetId, agentPath: template.path, agentName: template.name, agentVersion: template.version,
     })
-    if (run !== attempt.current) {
+    if (run !== attempt.current || !mounted.current) {
       void deleteAgent.mutateAsync(agent.slug).catch(() => {})
       return false
     }
@@ -131,6 +161,8 @@ export function useTeamBrainSetup() {
   const cancel = () => {
     attempt.current++
     const { prepared } = getTeamBrainState()
+    // Set-up hides the agent from the lists; once it ends nothing would until the delete lands.
+    if (prepared) removeAgentFromCache(queryClient, prepared.agentSlug)
     tb.cancelSetup()
     if (prepared) {
       discard(prepared).catch((error: unknown) => {
@@ -223,6 +255,8 @@ export function useTeamBrainSetup() {
   // Leaving mid-set-up cancels it; leaving for the launched session just resets the modal.
   const leave = useRef(() => {})
   leave.current = () => {
+    // A member's visit never ends an admin's set-up kept in this browser.
+    if (!canSetUp) return
     const { status } = getTeamBrainState()
     if (status === 'onboarding') cancel()
     if (status === 'launching') tb.cancelSetup()
@@ -231,7 +265,10 @@ export function useTeamBrainSetup() {
     mounted.current = true
     return () => {
       mounted.current = false
-      leave.current()
+      // StrictMode replays effects without a real leave: wait for its setup to restore the mounted flag.
+      queueMicrotask(() => {
+        if (!mounted.current) leave.current()
+      })
     }
   }, [])
 

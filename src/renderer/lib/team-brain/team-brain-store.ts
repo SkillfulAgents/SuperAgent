@@ -1,6 +1,8 @@
 import { useMemo, useSyncExternalStore } from 'react'
+import { getActiveTarget } from '@renderer/lib/api-target'
 import {
   TEAM_BRAIN_INITIAL_STATE,
+  teamBrainStateSchema,
   type TeamBrainLocationId,
   type TeamBrainPrepared,
   type TeamBrainSchedule,
@@ -9,21 +11,58 @@ import {
 } from './team-brain-schema'
 
 /**
- * The set-up modal's choices, in memory. A tiny external store (same shape as
+ * The set-up modal's choices. A tiny external store (same shape as
  * use-minute-clock) lets the page and the modal read one value without a
  * provider: any write notifies every subscriber. Start chat applies them.
+ *
+ * A set-up in progress is also kept in localStorage, so a reload, a closed tab
+ * or a quit resumes it instead of losing track of the agent and drive it made.
+ * Per target: those exist on one Superagent only.
  */
 
 const listeners = new Set<() => void>()
-let current: TeamBrainState = TEAM_BRAIN_INITIAL_STATE
+let current: TeamBrainState | null = null
+
+const storageKey = () => `team-brain-setup.${getActiveTarget()}`
+
+// Storage that throws (blocked by the browser) leaves set-up working, only not across a reload.
+function saved(): TeamBrainState {
+  try {
+    const raw = localStorage.getItem(storageKey())
+    return raw ? teamBrainStateSchema.parse(JSON.parse(raw)) : TEAM_BRAIN_INITIAL_STATE
+  } catch {
+    return TEAM_BRAIN_INITIAL_STATE
+  }
+}
+
+function save(state: TeamBrainState) {
+  try {
+    if (state.status === 'off') localStorage.removeItem(storageKey())
+    else localStorage.setItem(storageKey(), JSON.stringify(state))
+  } catch {
+    // Kept in memory only.
+  }
+}
 
 function read(): TeamBrainState {
+  current ??= saved()
   return current
 }
 
 function write(next: TeamBrainState) {
   current = next
+  save(next)
   listeners.forEach((listener) => listener())
+}
+
+/**
+ * What a restored set-up's agent is now. `launched`: its Start chat saved the
+ * record before the page went. `gone`: another set-up took the record, or the
+ * agent was deleted.
+ */
+export function restoredSetupOutcome(agentSlug: string, recordSlug: string | undefined, agentFound: boolean): 'resume' | 'launched' | 'gone' {
+  if (recordSlug === agentSlug) return 'launched'
+  return recordSlug || !agentFound ? 'gone' : 'resume'
 }
 
 function subscribe(listener: () => void) {

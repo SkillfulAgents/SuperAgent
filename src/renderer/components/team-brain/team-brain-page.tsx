@@ -16,9 +16,10 @@ export function TeamBrainPage() {
   const { isAuthMode, isAdmin } = useUser()
   const { data: agents, isPending } = useAgents()
   const brainAgent = setup.agentSlug && agents?.find((agent) => agent.slug === setup.agentSlug)
+  const canSetUp = !isAuthMode || isAdmin
 
   // After Start chat the page stays blank under the "Setting up your agent..." card.
-  if (tb.state.status === 'launching') return null
+  if (tb.state.status === 'launching' && canSetUp) return null
   // Which page it is waits on the agents, or a reload would show the pitch for a moment before the home page.
   if (isPending) return null
 
@@ -26,8 +27,8 @@ export function TeamBrainPage() {
 
   return (
     <>
-      <TeamBrainIntro onStart={isAuthMode && !isAdmin ? undefined : tb.start} />
-      <TeamBrainOnboarding open={tb.isOnboarding} onPrepare={setup.prepare} onAddPublicSkillset={setup.addPublicSkillset} onStartChat={setup.startChat} onCancel={setup.cancel} />
+      <TeamBrainIntro onStart={canSetUp ? tb.start : undefined} />
+      <TeamBrainOnboarding open={tb.isOnboarding && canSetUp} onPrepare={setup.prepare} onAddPublicSkillset={setup.addPublicSkillset} onStartChat={setup.startChat} onCancel={setup.cancel} />
     </>
   )
 }

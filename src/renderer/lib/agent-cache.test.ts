@@ -7,6 +7,7 @@ import {
   markDashboardScreenshotReady,
   updateAgentRuntimeCache,
   updateAgentAvatarCache,
+  removeAgentFromCache,
 } from './agent-cache'
 
 const agent: ApiAgent = {
@@ -33,6 +34,12 @@ function seededClient() {
 }
 
 describe('targeted agent cache updates', () => {
+  it('drops an agent from the list, keeping the others', () => {
+    const client = seededClient()
+    removeAgentFromCache(client, 'agent-a')
+    expect(client.getQueryData<ApiAgent[]>(['agents'])?.map((a) => a.slug)).toEqual(['agent-b'])
+  })
+
   it('updates a saved avatar in the list and every detail alias, preserving other agents and summaries', () => {
     const client = seededClient()
     const avatar = { color: 'duo-red-amber', shape: 'bloom' } as const

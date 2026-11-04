@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -39,6 +40,9 @@ const { app, user } = vi.hoisted(() => {
       updateAgent: vi.fn(async ({ instructions }: { instructions: string }) => { calls.push('instructions'); app.instructions = instructions }),
       updateSettings: record('record'),
       invalidate: record('refresh agents'),
+      setQueryData: vi.fn((key: unknown[], update: (agents: Array<{ slug: string }>) => Array<{ slug: string }>) => {
+        if (key[0] === 'agents' && update([{ slug: 'team-brain' }]).length === 0) calls.push('hide team-brain')
+      }),
       session: vi.fn(async () => { calls.push('session') }),
       skillsets: [] as Array<{ id: string }>,
       skillsetsFailed: false,
@@ -78,13 +82,13 @@ vi.mock('@renderer/hooks/use-volume-definitions', () => ({
   useSaveVolumeDefinition: () => ({ mutateAsync: app.saveVolume }),
 }))
 vi.mock('@renderer/hooks/use-settings', () => ({
-  useSettings: () => ({ refetch: async () => ({ data: { teamBrain: app.record } }) }),
+  useSettings: ({ enabled = true }: { enabled?: boolean } = {}) => ({ data: enabled ? { teamBrain: app.record } : undefined, refetch: async () => ({ data: { teamBrain: app.record } }) }),
   useUpdateSettings: () => ({ mutateAsync: app.updateSettings }),
 }))
 vi.mock('@renderer/hooks/use-start-onboarding-session', () => ({ useStartOnboardingSession: () => app.session }))
 vi.mock('@renderer/hooks/use-connected-accounts', () => ({ useConnectedAccounts: () => ({ data: undefined }) }))
 vi.mock('@renderer/hooks/use-platform-auth', () => ({ usePlatformAuthStatus: () => ({ data: undefined }) }))
-vi.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({ invalidateQueries: app.invalidate }) }))
+vi.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({ invalidateQueries: app.invalidate, setQueryData: app.setQueryData }) }))
 vi.mock('@renderer/lib/api', () => ({
   apiFetch: vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
     // Grants are logged once they land, so the order against the session shows set-up waited for them.
@@ -120,7 +124,7 @@ vi.mock('@renderer/components/volumes/volume-setup-registry', async (importOrigi
 import { toast } from 'sonner'
 import { TeamBrainPage } from './team-brain-page'
 import { volumeSetupRegistry } from '@renderer/components/volumes/volume-setup-registry'
-import { getTeamBrainState, resetTeamBrainState } from '@renderer/lib/team-brain/team-brain-store'
+import { getTeamBrainState, resetTeamBrainState, setTeamBrainState } from '@renderer/lib/team-brain/team-brain-store'
 import { TEAM_BRAIN_INITIAL_STATE } from '@renderer/lib/team-brain/team-brain-schema'
 import { DEFAULT_PUBLIC_SKILLSET } from '@shared/lib/skillset-provider/default-public-skillset'
 
@@ -357,6 +361,8 @@ describe('TeamBrainPage', () => {
     // The record may have been saved, so nothing is deleted, now or when the page is left.
     expect(getTeamBrainState()).toEqual(TEAM_BRAIN_INITIAL_STATE)
     page.unmount()
+    // Leaving runs a moment after the unmount.
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(app.calls.some((call) => call.startsWith('delete'))).toBe(false)
   })
 
@@ -379,6 +385,8 @@ describe('TeamBrainPage', () => {
     await clicker.click(screen.getByTestId('team-brain-cancel'))
     await clicker.click(await screen.findByTestId('team-brain-cancel-confirm'))
     await waitFor(() => expect(app.calls).toContain('delete drive vol1'))
+    // The agent leaves the lists the moment set-up ends, not when its delete lands.
+    expect(app.calls.slice(app.calls.indexOf('hide team-brain'))).toEqual(['hide team-brain', 'delete agent team-brain', 'delete drive vol1'])
     expect(getTeamBrainState()).toEqual(TEAM_BRAIN_INITIAL_STATE)
     cleanup()
 
@@ -414,6 +422,8 @@ describe('TeamBrainPage', () => {
     await waitFor(() => expect(app.calls).toContain('session'))
     expect(vi.mocked(toast.error)).toHaveBeenCalledWith('Could not schedule Brain upkeep', expect.anything())
     page.unmount()
+    // Leaving runs a moment after the unmount.
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(app.calls.some((call) => call.startsWith('delete'))).toBe(false)
   })
 
@@ -437,6 +447,35 @@ describe('TeamBrainPage', () => {
     expect(getTeamBrainState()).toMatchObject({ status: 'off', prepared: null, installing: null })
   })
 
+  // A set-up a reload, a closed tab or a quit left at its third step, restored from storage.
+  const restoredSetup = {
+    ...TEAM_BRAIN_INITIAL_STATE, status: 'onboarding' as const, step: 'schedule' as const, location: 'googledrive' as const,
+    prepared: { agentSlug: 'team-brain', volumeId: 'vol1', brainPath: '/mounts/Brain' },
+  }
+
+  it('resumes a restored set-up at its step and deletes nothing, also under StrictMode', async () => {
+    app.agents = [...app.agents, agent('team-brain')]
+    setTeamBrainState(restoredSetup)
+    render(<StrictMode><TeamBrainPage /></StrictMode>)
+    expect(await screen.findByTestId('team-brain-onboarding-step')).toHaveAttribute('data-step', 'schedule')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(app.calls.filter((call) => call.startsWith('delete'))).toEqual([])
+    expect(getTeamBrainState()).toMatchObject({ status: 'onboarding', prepared: restoredSetup.prepared })
+  })
+
+  it.each([
+    ['its Start chat already saved the record', { agentSlug: 'team-brain', volumeId: 'vol1' }, true, []],
+    ['another set-up took the record', { agentSlug: 'brain-of-another-admin', volumeId: 'vol-9' }, true, ['delete agent team-brain', 'delete drive vol1']],
+    ['its agent was deleted', undefined, false, ['delete drive vol1']],
+  ])('ends a restored set-up when %s', async (_, record, agentFound, deletes) => {
+    app.record = record
+    if (agentFound) app.agents = [...app.agents, agent('team-brain')]
+    setTeamBrainState(restoredSetup)
+    render(<TeamBrainPage />)
+    await waitFor(() => expect(getTeamBrainState().status).toBe('off'))
+    await waitFor(() => expect(app.calls.filter((call) => call.startsWith('delete'))).toEqual(deletes))
+  })
+
   it('shows Team Brain’s home page once set up, for its agent', () => {
     app.agents = [{ ...agent('team-brain'), teamBrain: { volumeId: 'vol-1' } }]
     render(<TeamBrainPage />)
@@ -458,10 +497,23 @@ describe('TeamBrainPage', () => {
     expect(screen.getByTestId('team-brain-location-s3')).toHaveAttribute('aria-checked', 'true')
   })
 
-  it('leaves set-up to admins in a team workspace', () => {
-    Object.assign(user, { isAuthMode: true, isAdmin: false })
+  it('deletes an agent a reload left before its drive was made, and stays on where it lives', async () => {
+    setTeamBrainState({ ...restoredSetup, step: 'location', prepared: null, installing: 'team-brain' })
     render(<TeamBrainPage />)
+    await waitFor(() => expect(app.calls).toEqual(['delete agent team-brain']))
+    expect(getTeamBrainState()).toMatchObject({ status: 'onboarding', step: 'location', installing: null })
+  })
+
+  it('leaves set-up to admins in a team workspace, including one an admin left in this browser', async () => {
+    Object.assign(user, { isAuthMode: true, isAdmin: false })
+    setTeamBrainState(restoredSetup)
+    const page = render(<TeamBrainPage />)
+    expect(screen.queryByTestId('team-brain-onboarding-step')).toBeNull()
     expect(screen.queryByTestId('team-brain-start')).toBeNull()
     expect(screen.getByTestId('team-brain-ask-admin')).toHaveTextContent('Ask an admin to set up Team Brain.')
+    expect(app.calls).toEqual([])
+    page.unmount()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(getTeamBrainState().prepared).toEqual(restoredSetup.prepared)
   })
 })

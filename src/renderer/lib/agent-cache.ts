@@ -27,6 +27,11 @@ function updateMatchingAgents(
   )
 }
 
+/** Drop an agent from the agent list now, ahead of its delete, so nothing shows it in between. */
+export function removeAgentFromCache(queryClient: QueryClient, slug: string): void {
+  queryClient.setQueryData<ApiAgent[]>(['agents'], (agents) => agents?.filter((agent) => !matchesAgent(agent, slug)))
+}
+
 /** Apply a pushed/command runtime transition without refetching agent summaries. */
 export function updateAgentRuntimeCache(
   queryClient: QueryClient,
