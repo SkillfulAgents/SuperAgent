@@ -31,8 +31,8 @@ export class WebhookEndpointsApiError extends Error {
 }
 
 // Org JWTs encode the acting member as `<token>::<memberId>`; opaque keys ignore it.
-function buildBearer(memberId: string): string {
-  const token = getPlatformAccessToken()
+async function buildBearer(memberId: string): Promise<string> {
+  const token = await getPlatformAccessToken()
   if (!token) {
     throw new Error('Platform access token not available')
   }
@@ -47,7 +47,7 @@ async function endpointsFetch(
   const baseUrl = getPlatformProxyBaseUrl()
   const headers = new Headers(options.headers)
   headers.set('Content-Type', 'application/json')
-  headers.set('Authorization', `Bearer ${buildBearer(memberId)}`)
+  headers.set('Authorization', `Bearer ${await buildBearer(memberId)}`)
 
   const response = await fetch(`${baseUrl}/v1/webhook-endpoints${endpoint}`, {
     ...options,

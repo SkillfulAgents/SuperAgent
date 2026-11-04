@@ -7,6 +7,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import { eq } from 'drizzle-orm'
 import * as schema from '../db/schema'
+import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 
 let testDir: string
 let testDb: ReturnType<typeof drizzle>
@@ -55,6 +56,7 @@ describe('agent-cleanup-service', () => {
 
     vi.clearAllMocks()
     mockIsPlatformComposioActive.mockReturnValue(true)
+    installTestAppRecordStore()
   })
 
   afterEach(async () => {

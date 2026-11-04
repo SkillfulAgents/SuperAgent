@@ -201,10 +201,10 @@ vi.mock('@shared/lib/agent-actor/live/live-sessions', async () => ({
 
 // Settings + secrets (only used by invoke for new sessions)
 vi.mock('@shared/lib/config/settings', () => ({
-  getEffectiveModels: () => ({ agentModel: 'sonnet', browserModel: 'sonnet', agentEffort: 'medium' }),
-  getEffectiveAgentLimits: () => ({}),
-  getCustomEnvVars: () => ({}),
-  getSettings: () => ({ app: {} }),
+  getEffectiveModels: async () => ({ agentModel: 'sonnet', browserModel: 'sonnet', agentEffort: 'medium' }),
+  getEffectiveAgentLimits: async () => ({}),
+  getCustomEnvVars: async () => ({}),
+  getSettings: async () => ({ app: {} }),
 }))
 vi.mock('@shared/lib/services/secrets-service', () => ({
   getSecretEnvVars: vi.fn(async () => []),

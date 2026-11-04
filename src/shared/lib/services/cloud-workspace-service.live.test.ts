@@ -48,11 +48,11 @@ const LOCAL_POLICY = { allowLocalhost: true }
 
 async function readRecord(): Promise<Record_ | null> {
   const { readCloudWorkspaceRecord } = await import('@shared/lib/platform-auth/cloud-workspace-record')
-  return readCloudWorkspaceRecord() as Record_ | null
+  return (await readCloudWorkspaceRecord()) as Record_ | null
 }
 async function tamperRecord(patch: Partial<Record_>): Promise<void> {
   const { mutateSettings } = await import('@shared/lib/config/settings')
-  mutateSettings((s) => {
+  await mutateSettings((s) => {
     s.cloudWorkspace = { ...(s.cloudWorkspace as Record_), ...patch }
   })
 }
@@ -73,11 +73,14 @@ d('SUP-362 live cloud-workspace chain', () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'sup362-live-'))
     mkdirSync(dataDir, { recursive: true })
     process.env.SUPERAGENT_DATA_DIR = dataDir
+    // Settings (the platform account, the deployment token) are app records.
+    const { installTestAppRecordStore } = await import('@shared/lib/app-records/testing/memory-record-store')
+    installTestAppRecordStore()
 
-    // Seed the connected platform account through the cache-consistent path.
+    // Seed the connected platform account.
     const { mutateSettings } = await import('@shared/lib/config/settings')
     const now = new Date().toISOString()
-    mutateSettings((s) => {
+    await mutateSettings((s) => {
       s.platformAuth = {
         token: TOKEN,
         tokenPreview: `${TOKEN.slice(0, 6)}...${TOKEN.slice(-4)}`,

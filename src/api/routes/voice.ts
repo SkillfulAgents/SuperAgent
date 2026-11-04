@@ -23,12 +23,12 @@ voice.use('*', Authenticated())
 // Also carries the provider's read-aloud voices and the deployment's default
 // among them: the settings endpoint is admin-only, and members need both to
 // fill their voice picker and label "Workspace Default".
-voice.get('/configured', (c) => {
-  const voiceSettings = getVoiceSettings()
+voice.get('/configured', async (c) => {
+  const voiceSettings = await getVoiceSettings()
   const provider = voiceSettings.sttProvider
   if (!provider) return c.json({ configured: false, supportsTts: false, voices: [] })
   const sttProvider = getVoiceProvider(provider)
-  const status = sttProvider.getApiKeyStatus()
+  const status = await sttProvider.getApiKeyStatus()
   const configured = status.isConfigured
   const supportsTts = configured && sttProvider.supportsTts()
   // Live sessions (meetings) speak with the provider's Live voices, a different list from read-aloud.
@@ -47,13 +47,14 @@ voice.get('/configured', (c) => {
 // Resolve capability through the configured provider; transport and mapping
 // behavior stay in its implementation.
 voice.use('/live/*', limitJsonBody(VOICE_LIVE_BODY_MAX_BYTES))
-function requireConfiguredProvider(c: Context<LimitedJsonBodyEnv>, selected = getVoiceSettings().sttProvider) {
+async function requireConfiguredProvider(c: Context<LimitedJsonBodyEnv>, provider?: VoiceProvider) {
+  const selected = provider ?? (await getVoiceSettings()).sttProvider
   if (!selected) return c.json({ error: 'No voice provider configured. Set one in Settings > Voice.' }, 400)
   return getVoiceProvider(selected)
 }
 
-function requireLiveConversation(c: Context<LimitedJsonBodyEnv>, operation: string) {
-  const provider = requireConfiguredProvider(c)
+async function requireLiveConversation(c: Context<LimitedJsonBodyEnv>, operation: string) {
+  const provider = await requireConfiguredProvider(c)
   if (provider instanceof Response) return provider
   const conversation = provider.getLiveConversation()
   if (!conversation) return c.json({
@@ -75,7 +76,7 @@ const pendingLiveStarts = new Map<string, number>()
 // meeting); it never carries instructions of its own.
 const liveSessionSchema = z.object({ sdp: z.string().min(1).max(64000), history: voiceHistorySchema, sessionId: z.string().min(1).max(200).optional() })
 async function createLiveSession(c: Context<LimitedJsonBodyEnv>) {
-  const ready = requireLiveConversation(c, 'Live session creation')
+  const ready = await requireLiveConversation(c, 'Live session creation')
   if (ready instanceof Response) return ready
   const { provider, conversation } = ready
   const parsed = liveSessionSchema.safeParse(c.get('limitedJsonBody'))
@@ -98,12 +99,12 @@ async function createLiveSession(c: Context<LimitedJsonBodyEnv>) {
         name: agent.frontmatter.name,
         description: agent.frontmatter.description,
         instructions: agent.instructions,
-        capabilityPolicies: getAgentCapabilitySettings(),
+        capabilityPolicies: await getAgentCapabilitySettings(),
         // A session an integration owns (a meeting) changes when the model may speak.
         setting: parsed.data.sessionId ? await resolveLiveConversationSetting(getAgentId(c), parsed.data.sessionId) : undefined,
       }
     }
-    const apiKey = provider.getEffectiveApiKey()
+    const apiKey = await provider.getEffectiveApiKey()
     const answer = agentContext
       ? await conversation.createLiveSession(parsed.data.sdp, parsed.data.history, agentContext)
       : await conversation.createLiveSession(parsed.data.sdp, parsed.data.history)
@@ -130,7 +131,7 @@ voice.delete('/live/session/:handle', async (c) => {
   return c.json({ closed: result === 'closed', closing: result === 'closing' }, result === 'closed' ? 200 : 202)
 })
 voice.post('/live/map', async (c) => {
-  const ready = requireLiveConversation(c, 'Live conversation mapping')
+  const ready = await requireLiveConversation(c, 'Live conversation mapping')
   if (ready instanceof Response) return ready
   const parsed = liveMappingSchema.safeParse(c.get('limitedJsonBody'))
   if (!parsed.success) return c.json({ error: 'Invalid Live mapping request.' }, 400)
@@ -151,10 +152,10 @@ voice.get('/token', async (c) => {
       return c.json({ error: `Invalid voice provider: ${providerParam}` }, 400)
     }
 
-    const voiceSettings = getVoiceSettings()
+    const voiceSettings = await getVoiceSettings()
     provider = (providerParam as VoiceProvider) || voiceSettings.sttProvider
 
-    const configured = requireConfiguredProvider(c, provider)
+    const configured = await requireConfiguredProvider(c, provider)
     if (configured instanceof Response) return configured
     const result = await configured.getEphemeralToken()
     return c.json(result)
@@ -172,13 +173,13 @@ voice.get('/token', async (c) => {
 
 // Keep the old response shape for cached/remote renderers, using the same setup path.
 async function initializeTts(c: Context<LimitedJsonBodyEnv>, legacy = false) {
-  const provider = requireConfiguredProvider(c)
+  const provider = await requireConfiguredProvider(c)
   if (provider instanceof Response) return provider
   try {
     const connection = await provider.getTtsConnection()
     const own = (await getUserSettings(getCurrentUserId(c))).voice
     const preferences = { provider: provider.id,
-      voice: provider.resolveTtsVoice(own?.ttsVoice, getVoiceSettings().ttsVoice),
+      voice: provider.resolveTtsVoice(own?.ttsVoice, (await getVoiceSettings()).ttsVoice),
       speed: resolveTtsSpeed(own?.ttsSpeed),
     }
     if (!legacy) return c.json({ ...preferences, connection })
@@ -196,7 +197,7 @@ voice.get('/tts-token', (c) => initializeTts(c, true))
 voice.post('/tts', limitJsonBody(32 * 1024), async (c) => {
   const parsed = ttsSynthesisSchema.safeParse(c.get('limitedJsonBody'))
   if (!parsed.success) return c.json({ error: 'Invalid speech synthesis request.' }, 400)
-  const provider = requireConfiguredProvider(c)
+  const provider = await requireConfiguredProvider(c)
   if (provider instanceof Response) return provider
   // An already-open reader must not silently synthesize against a different account/provider.
   if (parsed.data.provider !== provider.id) return c.json({ error: 'Voice provider changed. Restart read-aloud.' }, 409)

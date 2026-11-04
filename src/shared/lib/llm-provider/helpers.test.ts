@@ -5,7 +5,7 @@ const mockGetApiKeyStatus = vi.fn()
 const mockCreateClient = vi.fn()
 
 vi.mock('./index', () => ({
-  getActiveLlmProvider: () => ({
+  activeLlmProviderFrom: () => ({
     supportsDirectApi: capabilities.directApi,
     getApiKeyStatus: mockGetApiKeyStatus,
     createClient: mockCreateClient,
@@ -20,15 +20,17 @@ vi.mock('../utils/retry', () => ({
 }))
 
 import { getConfiguredLlmClient, extractTextFromLlmResponse, createSummarizerText, SUMMARIZER_MAX_TOKENS } from './helpers'
+import { installTestAppRecordStore } from '../app-records/testing/memory-record-store'
 import type Anthropic from '@anthropic-ai/sdk'
 
 describe('getConfiguredLlmClient', () => {
-  beforeEach(() => { vi.clearAllMocks(); capabilities.directApi = true })
+  // Empty settings: no global default selected, so the active provider answers.
+  beforeEach(() => { vi.clearAllMocks(); capabilities.directApi = true; installTestAppRecordStore() })
 
   it('returns client when API key is configured', async () => {
     const fakeClient = { messages: {} }
-    mockGetApiKeyStatus.mockReturnValue({ isConfigured: true })
-    mockCreateClient.mockReturnValue(fakeClient)
+    mockGetApiKeyStatus.mockResolvedValue({ isConfigured: true })
+    mockCreateClient.mockResolvedValue(fakeClient)
 
     const client = await getConfiguredLlmClient()
     expect(client).toBe(fakeClient)
@@ -37,13 +39,13 @@ describe('getConfiguredLlmClient', () => {
 
   it('rejects an agent-only legacy provider before creating a client', async () => {
     capabilities.directApi = false
-    mockGetApiKeyStatus.mockReturnValue({ isConfigured: true })
+    mockGetApiKeyStatus.mockResolvedValue({ isConfigured: true })
     await expect(getConfiguredLlmClient()).rejects.toThrow('Choose an API-capable global summarizer')
     expect(mockCreateClient).not.toHaveBeenCalled()
   })
 
   it('throws when API key is not configured', async () => {
-    mockGetApiKeyStatus.mockReturnValue({ isConfigured: false })
+    mockGetApiKeyStatus.mockResolvedValue({ isConfigured: false })
 
     await expect(getConfiguredLlmClient()).rejects.toThrow('LLM API key not configured')
     expect(mockCreateClient).not.toHaveBeenCalled()

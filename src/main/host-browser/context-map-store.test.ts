@@ -1,157 +1,101 @@
 /**
- * Host-browser context maps (browserbase-provider / platform-provider).
- * The instanceId → contextId map is read-modify-written from concurrent
- * getOrCreateContext calls that await a network create between read and write.
- * The old read swallowed errors to `{}` and the write was non-atomic, so a bad
- * read or a race wiped every other agent's persistent context — leaking paid
- * Browserbase contexts. These tests cover the shared hardened store.
+ * Host-browser context mappings (browserbase-provider / platform-provider),
+ * one app record per key. Creating a context is a paid network call, so a
+ * mapping must be created at most once per key, never lost to another key's
+ * write, and never treated as absent when it cannot be read.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import * as fs from 'fs'
-import * as path from 'path'
-import * as os from 'os'
-import { loadContextMap, saveContextMap, setContextMapping, getOrCreateMapping } from './context-map-store'
-import { CorruptFileError } from '@shared/lib/utils/file-storage'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { getOrCreateMapping, readContextMapping } from './context-map-store'
+import { MemoryAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
+import { InvalidAppRecordError } from '@shared/lib/app-records/records'
+import { browserContextKey } from '@shared/lib/app-records/record-schemas'
+
+const { captureException } = vi.hoisted(() => ({ captureException: vi.fn() }))
+vi.mock('@shared/lib/error-reporting', () => ({ captureException }))
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-let tmpDir: string
-let mapPath: string
+let store: MemoryAppRecordStore
 
 beforeEach(() => {
-  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ctx-map-')))
-  mapPath = path.join(tmpDir, 'contexts.json')
+  store = new MemoryAppRecordStore()
+  captureException.mockClear()
 })
 
-afterEach(() => {
-  fs.rmSync(tmpDir, { recursive: true, force: true })
-})
-
-describe('loadContextMap — fail-closed', () => {
-  it('absent file → {}', () => {
-    expect(loadContextMap(mapPath)).toEqual({})
+describe('readContextMapping', () => {
+  it('absent → null; stored → the id; the two providers do not share keys', async () => {
+    expect(await readContextMapping('browserbase', 'inst1', store)).toBeNull()
+    await getOrCreateMapping('browserbase', 'inst1', async () => 'ctx-1', store)
+    expect(await readContextMapping('browserbase', 'inst1', store)).toBe('ctx-1')
+    expect(await readContextMapping('platform', 'inst1', store)).toBeNull()
   })
 
-  it('valid file → parsed map', () => {
-    fs.writeFileSync(mapPath, JSON.stringify({ inst1: 'ctx-1', inst2: 'ctx-2' }))
-    expect(loadContextMap(mapPath)).toEqual({ inst1: 'ctx-1', inst2: 'ctx-2' })
-  })
-
-  it('corrupt/torn file → THROWS (does not silently return {})', () => {
-    fs.writeFileSync(mapPath, '{ "inst1": "ctx')
-    expect(() => loadContextMap(mapPath)).toThrow(CorruptFileError)
+  it('an unreadable stored id THROWS instead of reading as absent', async () => {
+    store.rows.set(browserContextKey('browserbase', 'inst1'), { value: '{"torn', revision: 1 })
+    await expect(readContextMapping('browserbase', 'inst1', store)).rejects.toThrow(InvalidAppRecordError)
   })
 })
 
-describe('saveContextMap — atomic', () => {
-  it('round-trips and leaves no temp file behind', () => {
-    saveContextMap(mapPath, { a: '1' })
-    expect(loadContextMap(mapPath)).toEqual({ a: '1' })
-    expect(fs.readdirSync(tmpDir).filter((f) => f.endsWith('.tmp'))).toEqual([])
+describe('getOrCreateMapping', () => {
+  it('returns an existing mapping without creating', async () => {
+    await getOrCreateMapping('browserbase', 'a', async () => 'ctx-a', store)
+    const create = vi.fn(async () => 'never')
+    expect(await getOrCreateMapping('browserbase', 'a', create, store)).toBe('ctx-a')
+    expect(create).not.toHaveBeenCalled()
   })
 
-  it('creates the parent directory if missing', () => {
-    const nested = path.join(tmpDir, 'sub', 'dir', 'contexts.json')
-    saveContextMap(nested, { x: 'y' })
-    expect(loadContextMap(nested)).toEqual({ x: 'y' })
-  })
-})
-
-describe('setContextMapping — serialized + atomic upsert (the headline fix)', () => {
-  it('concurrent upserts for DIFFERENT keys ALL survive (no clobbering)', async () => {
-    const keys = Array.from({ length: 25 }, (_, i) => `instance-${i}`)
-    // Fire all upserts at once — without the lock + fresh re-read these would
-    // clobber each other down to a single entry.
-    await Promise.all(keys.map((k) => setContextMapping(mapPath, k, `ctx-${k}`)))
-
-    const map = loadContextMap(mapPath)
-    expect(Object.keys(map).sort()).toEqual([...keys].sort())
-    for (const k of keys) expect(map[k]).toBe(`ctx-${k}`)
-  })
-
-  it('preserves an existing mapping when adding a new one', async () => {
-    saveContextMap(mapPath, { existing: 'ctx-existing' })
-    await setContextMapping(mapPath, 'fresh', 'ctx-fresh')
-    expect(loadContextMap(mapPath)).toEqual({ existing: 'ctx-existing', fresh: 'ctx-fresh' })
-  })
-
-  it('throws on a corrupt map rather than overwriting it (fail-closed)', async () => {
-    const corrupt = '{ "existing": "ctx'
-    fs.writeFileSync(mapPath, corrupt)
-    await expect(setContextMapping(mapPath, 'fresh', 'ctx-fresh')).rejects.toThrow(CorruptFileError)
-    expect(fs.readFileSync(mapPath, 'utf-8')).toBe(corrupt)
-  })
-})
-
-describe('getOrCreateMapping — dedups same-key creates (no duplicate context leak)', () => {
-  it('concurrent first-opens for the SAME key create the context exactly once', async () => {
-    let creates = 0
-    const create = async () => {
-      await delay(5) // hold the "remote create" open so all three race in the gap
-      creates++
-      return `ctx-${creates}`
-    }
-    const results = await Promise.all([
-      getOrCreateMapping(mapPath, 'agentA', create),
-      getOrCreateMapping(mapPath, 'agentA', create),
-      getOrCreateMapping(mapPath, 'agentA', create),
-    ])
-    expect(creates).toBe(1) // the P2 leak: would be 3 without dedup
-    expect(new Set(results).size).toBe(1) // every caller got the same id
-    expect(loadContextMap(mapPath)).toEqual({ agentA: results[0] })
-  })
-
-  it('returns an already-persisted mapping without creating', async () => {
-    saveContextMap(mapPath, { agentA: 'ctx-existing' })
-    let creates = 0
-    const id = await getOrCreateMapping(mapPath, 'agentA', async () => {
-      creates++
-      return 'ctx-new'
+  it('concurrent first opens of one key create exactly one context', async () => {
+    const create = vi.fn(async () => {
+      await delay(10)
+      return 'ctx-once'
     })
-    expect(id).toBe('ctx-existing')
-    expect(creates).toBe(0)
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => getOrCreateMapping('browserbase', 'a', create, store)),
+    )
+    expect(results).toEqual(Array(5).fill('ctx-once'))
+    expect(create).toHaveBeenCalledTimes(1)
   })
 
-  it('different keys still create concurrently (not serialized by the dedup)', async () => {
-    let creates = 0
-    const create = (id: string) => async () => {
-      await delay(5)
-      creates++
-      return id
-    }
-    const [a, b] = await Promise.all([
-      getOrCreateMapping(mapPath, 'A', create('ctx-A')),
-      getOrCreateMapping(mapPath, 'B', create('ctx-B')),
+  it('different keys create in parallel and keep each other', async () => {
+    await Promise.all([
+      getOrCreateMapping('browserbase', 'a', async () => { await delay(5); return 'ctx-a' }, store),
+      getOrCreateMapping('browserbase', 'b', async () => 'ctx-b', store),
     ])
-    expect([a, b]).toEqual(['ctx-A', 'ctx-B'])
-    expect(creates).toBe(2)
-    expect(loadContextMap(mapPath)).toEqual({ A: 'ctx-A', B: 'ctx-B' })
+    expect(await readContextMapping('browserbase', 'a', store)).toBe('ctx-a')
+    expect(await readContextMapping('browserbase', 'b', store)).toBe('ctx-b')
   })
 
-  it('a failed create does not cache; the next call retries', async () => {
-    let attempts = 0
-    const flaky = async () => {
-      attempts++
-      if (attempts === 1) throw new Error('remote create failed')
-      return 'ctx-ok'
-    }
-    await expect(getOrCreateMapping(mapPath, 'agentA', flaky)).rejects.toThrow('remote create failed')
-    expect(await getOrCreateMapping(mapPath, 'agentA', flaky)).toBe('ctx-ok')
-    expect(attempts).toBe(2)
+  it('an unreadable stored mapping aborts without creating (and billing) a new context', async () => {
+    store.rows.set(browserContextKey('browserbase', 'a'), { value: '""', revision: 1 })
+    const create = vi.fn(async () => 'ctx-new')
+    await expect(getOrCreateMapping('browserbase', 'a', create, store)).rejects.toThrow(InvalidAppRecordError)
+    expect(create).not.toHaveBeenCalled()
   })
 
-  it('rethrows (does not swallow) when persisting a freshly-created paid context fails', async () => {
-    // create() succeeds (a paid remote context now exists), but the map file is
-    // corrupt by persist time, so setContextMapping's strict re-read throws. The
-    // error must propagate (so the orphaned id is captured/surfaced, not silently
-    // dropped) rather than be swallowed.
-    let creates = 0
-    const create = async () => {
-      creates++
-      fs.writeFileSync(mapPath, '{ corrupt') // map becomes unreadable between create and persist
-      return 'ctx-paid'
-    }
-    await expect(getOrCreateMapping(mapPath, 'agentA', create)).rejects.toThrow(CorruptFileError)
-    expect(creates).toBe(1) // the paid context was created — confirms the leak surface this guards
+  it('another process committing first wins; the context made here is reported as orphaned', async () => {
+    const create = vi.fn(async () => {
+      // The other process's mapping lands while this one is creating.
+      await store.insertIfAbsent(browserContextKey('platform', 'k'), JSON.stringify('ctx-theirs'))
+      return 'ctx-ours'
+    })
+    expect(await getOrCreateMapping('platform', 'k', create, store)).toBe('ctx-theirs')
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ extra: expect.objectContaining({ orphanedContextId: 'ctx-ours' }) }),
+    )
+  })
+
+  it('a failed persist reports the orphaned (billed) context id and rethrows', async () => {
+    vi.spyOn(store, 'insertIfAbsent').mockRejectedValueOnce(new Error('SQLITE_FULL'))
+    await expect(getOrCreateMapping('browserbase', 'a', async () => 'ctx-billed', store)).rejects.toThrow('SQLITE_FULL')
+    expect(captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ extra: expect.objectContaining({ orphanedContextId: 'ctx-billed' }) }),
+    )
+  })
+
+  it('a failed create leaves nothing behind, so the next open can create again', async () => {
+    await expect(getOrCreateMapping('browserbase', 'a', async () => { throw new Error('402') }, store)).rejects.toThrow('402')
+    expect(await getOrCreateMapping('browserbase', 'a', async () => 'ctx-2', store)).toBe('ctx-2')
   })
 })

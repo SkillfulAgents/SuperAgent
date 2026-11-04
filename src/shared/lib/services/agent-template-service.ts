@@ -1439,7 +1439,7 @@ async function generateAgentPRSuggestions(
   }
 
   try {
-    const model = resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
+    const model = await resolveActiveProviderModel((await getEffectiveModels()).summarizerModel, 'summarizer')
 
     const text = await createSummarizerText(client, {
       model,
@@ -1508,7 +1508,7 @@ async function generateAgentPublishSuggestions(
   }
 
   try {
-    const model = resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer')
+    const model = await resolveActiveProviderModel((await getEffectiveModels()).summarizerModel, 'summarizer')
 
     const text = await createSummarizerText(client, {
       model,

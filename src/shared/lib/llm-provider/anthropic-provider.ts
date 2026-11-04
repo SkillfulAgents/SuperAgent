@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { ApiKeyStatus } from '../config/settings'
-import { BaseLlmProvider } from './base-llm-provider'
+import { BaseLlmProvider, type ProviderSettings } from './base-llm-provider'
 import type { ModelDefinition } from './model-catalog-schema'
 import { CLAUDE_BARE_CATALOG, CLAUDE_DEFAULT_MODEL_OPTIONS } from './builtin-catalogs'
 import { ANTHROPIC_CATALOG_DEFAULT_MODELS } from './model-catalog-defaults'
@@ -26,21 +26,21 @@ export class AnthropicLlmProvider extends BaseLlmProvider {
   readonly defaultModelOptions = CLAUDE_DEFAULT_MODEL_OPTIONS
   readonly catalogDefaultModels = ANTHROPIC_CATALOG_DEFAULT_MODELS
   // Anthropic's own API is where deferred tool loading is expanded server-side.
-  override toolSearchEnv() { return 'true' as const }
+  override async toolSearchEnv() { return 'true' as const }
   protected readonly settingsKeyField = 'anthropicApiKey' as const
   protected readonly envVarName = 'ANTHROPIC_API_KEY'
 
-  override getEffectiveApiKey(): string | undefined {
-    return this.configuration?.runtimeEnv?.ANTHROPIC_API_KEY ?? super.getEffectiveApiKey()
+  protected override effectiveApiKeyFrom(settings: ProviderSettings | undefined): string | undefined {
+    return this.configuration?.runtimeEnv?.ANTHROPIC_API_KEY ?? super.effectiveApiKeyFrom(settings)
   }
 
-  override getApiKeyStatus(): ApiKeyStatus {
+  override apiKeyStatusFrom(settings: ProviderSettings | undefined): ApiKeyStatus {
     return this.envValue('ANTHROPIC_AUTH_TOKEN')
-      ? { isConfigured: true, source: 'env' } : super.getApiKeyStatus()
+      ? { isConfigured: true, source: 'env' } : super.apiKeyStatusFrom(settings)
   }
 
-  createClient(): Anthropic {
-    const apiKey = this.getEffectiveApiKey()
+  async createClient(): Promise<Anthropic> {
+    const apiKey = await this.getEffectiveApiKey()
     const authToken = this.envValue('ANTHROPIC_AUTH_TOKEN') || null
     if (!apiKey && !authToken) throw new Error('Anthropic API key not configured')
     return anthropicApiClient({
@@ -56,7 +56,7 @@ export class AnthropicLlmProvider extends BaseLlmProvider {
 
   async getContainerEnvVars(): Promise<Record<string, string | undefined>> {
     return {
-      ANTHROPIC_API_KEY: this.getEffectiveApiKey(),
+      ANTHROPIC_API_KEY: await this.getEffectiveApiKey(),
       ANTHROPIC_BASE_URL: this.envValue('ANTHROPIC_BASE_URL'),
       ANTHROPIC_AUTH_TOKEN: this.envValue('ANTHROPIC_AUTH_TOKEN'),
     }
@@ -64,7 +64,7 @@ export class AnthropicLlmProvider extends BaseLlmProvider {
 
   async validateKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
     try {
-      const client = this.configuration ? this.createClient() : anthropicApiClient({ apiKey })
+      const client = this.configuration ? await this.createClient() : anthropicApiClient({ apiKey })
       await client.messages.create({
         model: 'claude-haiku-4-5',
         max_tokens: 1,

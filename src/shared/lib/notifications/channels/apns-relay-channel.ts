@@ -96,7 +96,7 @@ export class ApnsRelayChannel implements NotificationChannel {
       return
     }
 
-    const { url } = getApnsRelayConfig()
+    const { url } = await getApnsRelayConfig()
     if (!url) {
       return
     }

@@ -1,3 +1,4 @@
+import { getNangoSecretKey } from '@shared/lib/config/settings'
 import { BaseAccountProvider } from './base-account-provider'
 import type { InitiateConnectionResult, ProviderConnection, ProviderConnectionListItem } from './base-account-provider'
 import { resolveDisplayName } from './display-name-helpers'
@@ -41,12 +42,33 @@ class NangoApiError extends Error {
 export class NangoAccountProvider extends BaseAccountProvider {
   readonly name = 'nango' as const
 
-  private secretKey: string
+  /** Resolves the secret key on every use, so a key changed or removed in settings applies at once. */
+  private readonly readSecretKey: () => Promise<string | undefined>
   private tokenCache = new Map<string, CachedToken>()
+  /** The secret key the cached tokens were fetched with. */
+  private tokenCacheSecretKey: string | null = null
 
-  constructor(opts: { secretKey: string }) {
+  constructor(opts: { secretKey?: () => Promise<string | undefined> } = {}) {
     super()
-    this.secretKey = opts.secretKey
+    this.readSecretKey = opts.secretKey ?? getNangoSecretKey
+  }
+
+  override async isConfigured(): Promise<boolean> {
+    return Boolean(await this.readSecretKey())
+  }
+
+  /**
+   * The current secret key; throws when none is saved. Tokens cached under a
+   * different key (another Nango account) are dropped.
+   */
+  private async secretKey(): Promise<string> {
+    const key = await this.readSecretKey()
+    if (!key) throw new NangoApiError('Nango is not configured. Add a Nango secret key in Settings.', 400)
+    if (key !== this.tokenCacheSecretKey) {
+      this.tokenCache.clear()
+      this.tokenCacheSecretKey = key
+    }
+    return key
   }
 
   async listConnections(userId?: string): Promise<ProviderConnectionListItem[]> {
@@ -212,6 +234,8 @@ export class NangoAccountProvider extends BaseAccountProvider {
   }
 
   private async resolveToken(connectionId: string, toolkitSlug: string): Promise<{ accessToken: string; providerConfigKey: string }> {
+    // Before the cache: a removed or changed key must not keep serving tokens.
+    await this.secretKey()
     const cached = this.tokenCache.get(connectionId)
     if (cached && cached.expiresAt > Date.now()) {
       return { accessToken: cached.accessToken, providerConfigKey: cached.providerConfigKey }
@@ -256,7 +280,7 @@ export class NangoAccountProvider extends BaseAccountProvider {
 
   private async nangoFetch(endpoint: string, options: RequestInit = {}): Promise<unknown> {
     const headers = new Headers(options.headers)
-    headers.set('Authorization', `Bearer ${this.secretKey}`)
+    headers.set('Authorization', `Bearer ${await this.secretKey()}`)
     if (!headers.has('Content-Type') && options.body) {
       headers.set('Content-Type', 'application/json')
     }

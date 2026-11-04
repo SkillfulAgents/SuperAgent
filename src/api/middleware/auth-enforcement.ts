@@ -28,7 +28,7 @@ export function validatePasswordComplexity(password: string): string | null {
 export async function authEnforcementMiddleware(c: Context, next: Next) {
   if (c.req.method !== 'POST') return next()
 
-  const authSettings = getAuthSettings()
+  const authSettings = await getAuthSettings()
   // eslint-disable-next-line local-rules/no-unhandled-throwing-builtins -- c.req.url is always a valid URL
   const path = new URL(c.req.url).pathname
 

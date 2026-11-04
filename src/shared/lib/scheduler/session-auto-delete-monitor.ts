@@ -64,7 +64,7 @@ class SessionAutoDeleteMonitor {
     this.isProcessing = true
 
     try {
-      const globalDefault = getSettings().app?.autoDeleteInactiveDays
+      const globalDefault = (await getSettings()).app?.autoDeleteInactiveDays
       const agents = await listAgents()
 
       for (const agent of agents) {

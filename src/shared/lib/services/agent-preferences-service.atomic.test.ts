@@ -6,6 +6,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
+import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 import { updateAgentPreferences, readAgentPreferences } from './agent-preferences-service'
 
 let tmpDir: string
@@ -20,6 +21,7 @@ function makeAgent(slug: string): void {
 beforeEach(() => {
   tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-prefs-')))
   process.env.SUPERAGENT_DATA_DIR = tmpDir
+  installTestAppRecordStore()
 })
 
 afterEach(() => {

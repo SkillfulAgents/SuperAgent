@@ -1145,7 +1145,7 @@ describe('activity', () => {
 // ============================================================================
 
 describe('API error code tracking', () => {
-  it('captures error code from assistant message and includes it in session_error', () => {
+  it('captures error code from assistant message and includes it in session_error', async () => {
     sessions().markActive(SESSION_ID)
     sseEvents.length = 0
 
@@ -1168,13 +1168,15 @@ describe('API error code tracking', () => {
       usage: { input_tokens: 0, output_tokens: 0 },
     })
 
+    // The error goes out once its provider presentation is known (asynchronous).
+    await flushNotifications()
     const errorEvents = sseEvents.filter(e => e.type === 'session_error')
     expect(errorEvents).toHaveLength(1)
     expect(errorEvents[0].apiErrorCode).toBe('authentication_failed')
     expect(errorEvents[0].error).toBe('Invalid API key')
   })
 
-  it('classifies a success-subtype result with is_error as an error turn (modern shape)', () => {
+  it('classifies a success-subtype result with is_error as an error turn (modern shape)', async () => {
     sessions().markActive(SESSION_ID)
     sseEvents.length = 0
 
@@ -1193,6 +1195,8 @@ describe('API error code tracking', () => {
       usage: { input_tokens: 0, output_tokens: 0 },
     })
 
+    // The error goes out once its provider presentation is known (asynchronous).
+    await flushNotifications()
     const errorEvents = sseEvents.filter(e => e.type === 'session_error')
     expect(errorEvents).toHaveLength(1)
     expect(errorEvents[0].error).toBe('The selected model does not exist.')
@@ -1202,7 +1206,7 @@ describe('API error code tracking', () => {
     expect(sessions().isActive(SESSION_ID)).toBe(false)
   })
 
-  it('broadcasts session_error with null apiErrorCode when no assistant error preceded', () => {
+  it('broadcasts session_error with null apiErrorCode when no assistant error preceded', async () => {
     sessions().markActive(SESSION_ID)
     sseEvents.length = 0
 
@@ -1217,12 +1221,42 @@ describe('API error code tracking', () => {
       usage: { input_tokens: 0, output_tokens: 0 },
     })
 
+    // The error goes out once its provider presentation is known (asynchronous).
+    await flushNotifications()
     const errorEvents = sseEvents.filter(e => e.type === 'session_error')
     expect(errorEvents).toHaveLength(1)
     expect(errorEvents[0].apiErrorCode).toBeNull()
   })
 
-  it('clears lastApiErrorCode on new user message', () => {
+  it('frames arriving while the error is presented still follow its session_error, in order', async () => {
+    sessions().markActive(SESSION_ID)
+    sseEvents.length = 0
+
+    mockClient.emit({
+      type: 'result',
+      subtype: 'error',
+      error: 'boom',
+      is_error: true,
+      duration_ms: 0,
+      num_turns: 0,
+      usage: { input_tokens: 0, output_tokens: 0 },
+    })
+    // The next turn's output lands before the presentation read has resolved.
+    mockClient.emit({ type: 'stream_event', event: { type: 'message_start' } })
+    mockClient.emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'one' } } })
+    mockClient.emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'two' } } })
+    expect(sseEvents.filter(e => e.type === 'stream_delta')).toHaveLength(0)
+
+    await flushNotifications()
+    const types = sseEvents.map(e => e.type)
+    const errorAt = types.indexOf('session_error')
+    expect(errorAt).toBeGreaterThanOrEqual(0)
+    const deltas = sseEvents.flatMap((e, i) => (e.type === 'stream_delta' ? [i] : []))
+    expect(deltas).toHaveLength(2)
+    expect(deltas.every(i => i > errorAt)).toBe(true)
+  })
+
+  it('clears lastApiErrorCode on new user message', async () => {
     sessions().markActive(SESSION_ID)
 
     // First turn: assistant with error
@@ -1242,6 +1276,8 @@ describe('API error code tracking', () => {
       usage: { input_tokens: 0, output_tokens: 0 },
     })
 
+    await flushNotifications()
+
     // New user message clears the error code
     sessions().markActive(SESSION_ID)
     sseEvents.length = 0
@@ -1257,6 +1293,8 @@ describe('API error code tracking', () => {
       usage: { input_tokens: 0, output_tokens: 0 },
     })
 
+    // The error goes out once its provider presentation is known (asynchronous).
+    await flushNotifications()
     const errorEvents = sseEvents.filter(e => e.type === 'session_error')
     expect(errorEvents).toHaveLength(1)
     expect(errorEvents[0].apiErrorCode).toBeNull()

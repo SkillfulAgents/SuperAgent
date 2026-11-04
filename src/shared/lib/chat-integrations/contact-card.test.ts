@@ -1,5 +1,6 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach } from 'vitest'
 import { buildAgentContactCard, resolveAgentWebUrl } from './contact-card'
+import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 
 const base = { slug: 'ada', name: 'Ada', appUrl: null }
 const originalHostPublicUrl = process.env.HOST_PUBLIC_URL
@@ -10,6 +11,11 @@ afterEach(() => {
   else process.env.HOST_PUBLIC_URL = originalHostPublicUrl
   if (originalType === undefined) delete (process as { type?: string }).type
   else (process as { type?: string }).type = originalType
+})
+
+// Settings and host records are app records: a fresh in-memory store per test.
+beforeEach(() => {
+  installTestAppRecordStore()
 })
 
 describe('buildAgentContactCard', () => {
@@ -79,21 +85,21 @@ describe('buildAgentContactCard', () => {
 })
 
 describe('resolveAgentWebUrl', () => {
-  it('returns null on desktop, where the app link is a superagent:// scheme no phone can open', () => {
+  it('returns null on desktop, where the app link is a superagent:// scheme no phone can open', async () => {
     ;(process as { type?: string }).type = 'browser'
     process.env.HOST_PUBLIC_URL = 'https://app.example.com'
-    expect(resolveAgentWebUrl('ada')).toBeNull()
+    expect(await resolveAgentWebUrl('ada')).toBeNull()
   })
 
-  it('returns the https agent URL on a public web host', () => {
+  it('returns the https agent URL on a public web host', async () => {
     delete (process as { type?: string }).type
     process.env.HOST_PUBLIC_URL = 'https://app.example.com'
-    expect(resolveAgentWebUrl('ada')).toBe('https://app.example.com/agents/ada')
+    expect(await resolveAgentWebUrl('ada')).toBe('https://app.example.com/agents/ada')
   })
 
-  it('returns null when the web host has no public URL', () => {
+  it('returns null when the web host has no public URL', async () => {
     delete (process as { type?: string }).type
     delete process.env.HOST_PUBLIC_URL
-    expect(resolveAgentWebUrl('ada')).toBeNull()
+    expect(await resolveAgentWebUrl('ada')).toBeNull()
   })
 })

@@ -31,7 +31,7 @@ export interface HostBrowserProvider {
   readonly name: string
 
   /** Check if this provider is available (Chrome installed? API key configured?) */
-  detect(): HostBrowserProviderStatus
+  detect(): Promise<HostBrowserProviderStatus>
 
   /** Launch/connect a browser instance. Returns CDP connection info. */
   launch(instanceId: string, options?: Record<string, string>, agentId?: string): Promise<BrowserConnectionInfo>

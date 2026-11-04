@@ -1,8 +1,7 @@
 import crypto from 'crypto'
-import * as fs from 'fs'
-import * as path from 'path'
-import { z } from 'zod'
-import { getDataDir } from '@shared/lib/config/data-dir'
+import type { AppRecordStore } from '@shared/lib/app-records/record-store'
+import { appRecordStore, getOrCreateRecord } from '@shared/lib/app-records/records'
+import { hostContainerTokenKey, hostContainerTokenRecordSchema } from '@shared/lib/app-records/record-schemas'
 
 /**
  * Per-agent secrets that authenticate the HOST to the agent's container API
@@ -12,39 +11,17 @@ import { getDataDir } from '@shared/lib/config/data-dir'
  * resolve/reject — without this token, so an agent can't loosen its own launch
  * policy or self-approve a parked review through the in-container API.
  *
- * Lives in the host data dir (never mounted into containers). Must survive
- * host restarts: containers outlive the host process and keep requiring the
- * token they were started with.
+ * Kept as one app record per agent (never mounted into containers). Must
+ * survive host restarts: containers outlive the host process and keep
+ * requiring the token they were started with. Each agent's token is created
+ * with insert-if-absent, so concurrent first uses agree on one token and
+ * creating one agent's token never touches another's.
  */
-const hostTokensSchema = z.record(z.string(), z.string())
-type HostTokens = z.infer<typeof hostTokensSchema>
-
-const FILE_NAME = 'host-container-tokens.json'
-
-function tokensFilePath(): string {
-  return path.join(getDataDir(), FILE_NAME)
-}
-
-function readTokens(): HostTokens {
-  try {
-    const raw = fs.readFileSync(tokensFilePath(), 'utf-8')
-    return hostTokensSchema.parse(JSON.parse(raw))
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      console.warn('[host-token-store] Unreadable token file; regenerating tokens:', error)
-    }
-    return {}
-  }
-}
-
-export function getOrCreateHostToken(agentSlug: string): string {
-  const tokens = readTokens()
-  const existing = tokens[agentSlug]
-  if (existing) return existing
-
-  const token = `hostc_${crypto.randomBytes(32).toString('hex')}`
-  tokens[agentSlug] = token
-  fs.mkdirSync(getDataDir(), { recursive: true })
-  fs.writeFileSync(tokensFilePath(), JSON.stringify(tokens, null, 2), { mode: 0o600 })
-  return token
+export async function getOrCreateHostToken(
+  agentSlug: string,
+  store: AppRecordStore = appRecordStore(),
+): Promise<string> {
+  return getOrCreateRecord(store, hostContainerTokenKey(agentSlug), hostContainerTokenRecordSchema, () =>
+    `hostc_${crypto.randomBytes(32).toString('hex')}`,
+  )
 }

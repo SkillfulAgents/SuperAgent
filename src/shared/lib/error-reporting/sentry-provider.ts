@@ -12,7 +12,6 @@ import type { ErrorReportingProvider, ErrorReportingInitOptions, ErrorContext, E
 import { ERROR_REPORTING_INGEST_URL } from './config'
 import { getSettings } from '../config/settings'
 import { collectEnvironmentData } from './environment'
-import { getTenantId } from '../analytics/tenant-id'
 import { APP_VERSION } from '../config/version'
 
 function mapSeverity(level: SeverityLevel): Sentry.SeverityLevel {
@@ -52,25 +51,20 @@ export function createServerProvider(options: ErrorReportingInitOptions): ErrorR
         ignoreIncomingRequestBody: (url) => CREDENTIAL_BODY_ROUTE.test(url),
       }),
     ],
-    beforeSend(event) {
+    // Consent is read fresh for every event, never from an earlier read.
+    async beforeSend(event) {
       try {
-        const settings = getSettings()
+        const settings = await getSettings()
         if (settings.shareErrorReports === false) {
           return null
         }
       } catch {
-        // If we can't load settings, allow the event (fail-open for crash reports)
+        // Settings unreadable, or not available yet (a boot failure before the
+        // database opened): allow the event (fail-open for crash reports).
       }
       return scrubCredentialRequestBody(event)
     },
   })
-
-  // Set tenant ID as the default user so all events are attributable
-  try {
-    Sentry.setUser({ id: getTenantId() })
-  } catch {
-    // Non-critical — events will still be sent, just without tenant ID
-  }
 
   // Collect and attach environment fingerprint data
   try {
@@ -84,6 +78,14 @@ export function createServerProvider(options: ErrorReportingInitOptions): ErrorR
 }
 
 class SentryServerProvider implements ErrorReportingProvider {
+  /** The deployment's tenant id once the entry point attached it; events before that have no user. */
+  private tenantId: string | null = null
+
+  setTenantId(tenantId: string): void {
+    this.tenantId = tenantId
+    // The default user, so every event is attributable to the deployment.
+    Sentry.setUser({ id: tenantId })
+  }
   captureException(error: unknown, context?: ErrorContext): string | undefined {
     return Sentry.captureException(error, {
       tags: context?.tags,
@@ -106,7 +108,7 @@ class SentryServerProvider implements ErrorReportingProvider {
     if (user) {
       Sentry.setUser({ id: user.id, email: user.email })
     } else {
-      Sentry.setUser({ id: getTenantId() })
+      Sentry.setUser(this.tenantId ? { id: this.tenantId } : null)
     }
   }
 

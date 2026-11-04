@@ -41,7 +41,9 @@ describe('skillset install', () => {
     // startup pays long before any install; pay it here, unmeasured, as the
     // home profiles do.
     const { openDatabase } = await import('@shared/lib/db')
-    await openDatabase()
+    const { dbAppRecordStore } = await import('@shared/lib/app-records/record-store')
+    const { installAppRecordStore } = await import('@shared/lib/app-records/records')
+    installAppRecordStore(dbAppRecordStore(await openDatabase()))
   })
 
   afterAll(async () => {

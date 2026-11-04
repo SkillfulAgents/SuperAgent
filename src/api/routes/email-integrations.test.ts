@@ -1,4 +1,5 @@
 import { beforeEach, afterEach, it, expect, vi } from 'vitest'
+import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 import { Hono } from 'hono'
 import { createTestDatabase, type TestDatabase } from '@shared/lib/db/testing/create-test-database'
 import type { AppDatabase } from '@shared/lib/db/drivers/types'
@@ -35,6 +36,7 @@ const config = { localPart: 'assistant', displayName: 'First Last' }
 const mailbox = { id: '00000000-0000-4000-8000-000000000001', address: 'assistant@company.ongamut.so', name: 'First Last', status: 'active' }
 const request = (path: string, method: string, body?: unknown) => app.request(`/api/chat-integrations/${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined })
 beforeEach(async () => {
+  installTestAppRecordStore()
   handle = await createTestDatabase(); testDb = handle.db; state.connected = true; state.role = 'owner'; state.calls = []
   vi.stubGlobal('fetch', vi.fn(async (url, init) => {
     const path = new URL(url).pathname

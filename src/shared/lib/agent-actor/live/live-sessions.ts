@@ -53,8 +53,8 @@ import { OrderedSends } from '../ordered-sends'
 
 /** The agent's container runtime, as its sessions need it. */
 export interface SessionsRuntime extends SessionRuntime {
-  /** The agent's current container client. */
-  client(): ContainerClient
+  /** The agent's current container client (for the runner configured now, read from the settings). */
+  client(): Promise<ContainerClient>
 }
 
 export interface LiveSessionsDeps {
@@ -811,8 +811,9 @@ export class LiveSessions {
    * untracked cannot be settled by a turn stop, so that one stops everything.
    */
   private async interruptContainer(sessionId: string): Promise<{ processKept: boolean }> {
+    const client = await this.deps.runtime.client()
     const scope = this.hasOnlyUntrackedBackgroundWork(sessionId) ? 'all' : 'turn'
-    const response = await this.deps.runtime.client().fetch(`/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
+    const response = await client.fetch(`/sessions/${encodeURIComponent(sessionId)}/interrupt`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scope }),

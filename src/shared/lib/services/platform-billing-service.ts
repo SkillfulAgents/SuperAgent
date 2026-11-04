@@ -17,7 +17,7 @@ export async function fetchPlatformBillingInfo(options: { signal?: AbortSignal; 
   return fetchPlatformJson({
     path: '/v1/billing',
     ...options,
-    token: getPlatformAccessToken(),
+    token: await getPlatformAccessToken(),
     schema: PlatformBillingInfoSchema,
     area: 'platform-billing',
     notConnectedMessage: 'Platform is not connected.',

@@ -1,30 +1,36 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // Mock dependencies before importing the module under test
-vi.mock('fs')
-vi.mock('./data-dir', () => ({
-  getDataDir: vi.fn(() => '/mock/data/dir'),
-}))
 vi.mock('./version', () => ({
   AGENT_IMAGE_REGISTRY: 'ghcr.io/skillfulagents/superagent-agent-container-base',
   getDefaultAgentImage: vi.fn(
     () => 'ghcr.io/skillfulagents/superagent-agent-container-base:latest'
   ),
 }))
+// Not importOriginal: the real module's Sentry provider imports ./settings,
+// which would then bind to the real captureException.
+vi.mock('@shared/lib/error-reporting', () => ({
+  captureException: vi.fn(),
+}))
 
-import fs from 'fs'
-import { CorruptFileError } from '@shared/lib/utils/file-storage'
+import { captureException } from '@shared/lib/error-reporting'
+import { InvalidAppRecordError } from '@shared/lib/app-records/records'
+import { SETTINGS_RECORD_KEY } from '@shared/lib/app-records/record-schemas'
 import {
-  loadSettings,
-  saveSettings,
+  installTestAppRecordStore,
+  MemoryAppRecordStore,
+} from '@shared/lib/app-records/testing/memory-record-store'
+import {
   getSettings,
-  updateSettings,
-  clearSettingsCache,
+  loadSettingsStrict,
+  readSettingsSnapshot,
+  mutateSettings,
   getAnthropicApiKeyStatus,
   getEffectiveAnthropicApiKey,
   getComposioApiKeyStatus,
   getEffectiveComposioApiKey,
   getComposioUserId,
+  getAccountProviderUserId,
   getEffectiveModels,
   getEffectiveAgentLimits,
   getModelCatalogSettings,
@@ -33,47 +39,27 @@ import {
   DEFAULT_AUTH_SETTINGS,
   isAutoResumeOnUnexpectedDeathEnabled,
 } from './settings'
-import type { AppSettings } from './settings'
 
 // ============================================================================
 // Helpers
 // ============================================================================
 
-const mockedFs = vi.mocked(fs)
+let store: MemoryAppRecordStore
 
 /**
- * Configure the fs mock to simulate a settings file with the given content.
+ * Store raw text as the settings record, as if a previous write (or a bad
+ * migration) had left it there. Raw so invalid values can be stored too.
+ * Nothing stored at all is simply no row.
  */
-function mockSettingsFile(content: string) {
-  mockedFs.existsSync.mockReturnValue(true)
-  mockedFs.readFileSync.mockReturnValue(content)
+function storeSettings(value: string, revision = 1) {
+  store.rows.set(SETTINGS_RECORD_KEY, { value, revision })
 }
 
-/**
- * Configure the fs mock to simulate no settings file. loadSettings reads via
- * fs.readFileSync (fail-closed), so an absent file is simulated by throwing
- * ENOENT — NOT just existsSync=false (which would leave readFileSync returning
- * stale content from a previous test, since clearAllMocks keeps return values).
- */
-function mockNoSettingsFile() {
-  mockedFs.existsSync.mockReturnValue(false)
-  mockedFs.readFileSync.mockImplementation(() => {
-    throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' })
-  })
-}
-
-/**
- * Return a minimal complete settings object for testing saves.
- */
-function makeFullSettings(overrides?: Partial<AppSettings>): AppSettings {
-  return {
-    container: {
-      containerRunner: 'docker',
-      agentImage: 'ghcr.io/skillfulagents/superagent-agent-container-base:latest',
-      resourceLimits: { cpu: 2, memory: '4g' },
-    },
-    ...overrides,
-  }
+/** The settings record as stored, parsed. */
+function storedSettings(): Record<string, any> {
+  const row = store.rows.get(SETTINGS_RECORD_KEY)
+  if (!row) throw new Error('no settings stored')
+  return JSON.parse(row.value)
 }
 
 // ============================================================================
@@ -84,13 +70,8 @@ const originalEnv = { ...process.env }
 
 beforeEach(() => {
   vi.clearAllMocks()
-  clearSettingsCache()
-  // The auto-mocked fs.lstatSync returns undefined, which writeFileAtomicSync's
-  // ENOENT-scoped existingMode probe would rethrow as a TypeError. Simulate the
-  // "target absent → create with mode" path the save tests assume.
-  mockedFs.lstatSync.mockImplementation(() => {
-    throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' })
-  })
+  store = new MemoryAppRecordStore()
+  installTestAppRecordStore(store)
   // Reset env vars that could interfere
   delete process.env.ANTHROPIC_API_KEY
   delete process.env.COMPOSIO_API_KEY
@@ -102,66 +83,87 @@ afterEach(() => {
 })
 
 // ============================================================================
-// loadSettings()
+// getSettings() (tolerant read)
 // ============================================================================
 
-describe('loadSettings', () => {
+describe('getSettings', () => {
   // --------------------------------------------------------------------------
-  // Missing / empty / invalid file
+  // Missing / empty / invalid stored value
   // --------------------------------------------------------------------------
 
-  describe('when settings file does not exist', () => {
-    it('returns default settings', () => {
-      mockNoSettingsFile()
-
-      const result = loadSettings()
+  describe('when no settings are stored', () => {
+    it('returns default settings', async () => {
+      const result = await getSettings()
 
       expect(result).toEqual(DEFAULT_SETTINGS)
     })
 
-    it('returns a shallow copy, not the same reference', () => {
-      mockNoSettingsFile()
-
-      const a = loadSettings()
-      const b = loadSettings()
+    it('returns a fresh copy each time, not the same reference', async () => {
+      const a = await getSettings()
+      const b = await getSettings()
 
       expect(a).not.toBe(b)
       expect(a).toEqual(b)
     })
-  })
 
-  describe('when settings file is empty', () => {
-    it('returns default settings on empty string (invalid JSON)', () => {
-      mockSettingsFile('')
+    it('returns defaults a caller can mutate without changing the next read', async () => {
+      const a = await getSettings()
+      a.container.resourceLimits.cpu = 99
+      a.skillsets!.push({ ...a.skillsets![0], id: 'pushed' })
 
-      const result = loadSettings()
-
-      expect(result).toEqual(DEFAULT_SETTINGS)
+      expect(await getSettings()).toEqual(DEFAULT_SETTINGS)
+      expect(DEFAULT_SETTINGS.container.resourceLimits.cpu).toBe(2)
     })
   })
 
-  describe('when settings file contains invalid JSON', () => {
-    it('returns default settings', () => {
-      mockSettingsFile('{not valid json!!!')
+  describe('when the stored value is invalid', () => {
+    let consoleSpy: ReturnType<typeof vi.spyOn>
 
-      const result = loadSettings()
-
-      expect(result).toEqual(DEFAULT_SETTINGS)
+    beforeEach(() => {
+      consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     })
 
-    it('logs an error', () => {
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-      mockSettingsFile('totally broken')
-
-      loadSettings()
-
-      // Fail-closed read: a corrupt file surfaces a CorruptFileError
-      // and loadSettings degrades to in-memory defaults WITHOUT overwriting.
-      expect(consoleSpy).toHaveBeenCalledWith(
-        'Failed to load settings; using in-memory defaults (NOT overwriting the file):',
-        expect.any(CorruptFileError)
-      )
+    afterEach(() => {
       consoleSpy.mockRestore()
+    })
+
+    it.each([
+      ['an empty string', ''],
+      ['invalid JSON', '{not valid json!!!'],
+      ['a JSON array', '[1, 2]'],
+      ['JSON null', 'null'],
+    ])('returns default settings for %s', async (_label, value) => {
+      storeSettings(value)
+
+      const result = await getSettings()
+
+      expect(result).toEqual(DEFAULT_SETTINGS)
+    })
+
+    it('logs and reports the error, and throws nothing', async () => {
+      storeSettings('totally broken')
+
+      await expect(getSettings()).resolves.toEqual(DEFAULT_SETTINGS)
+
+      // Degrades to in-memory defaults WITHOUT overwriting the stored value.
+      expect(consoleSpy).toHaveBeenCalledWith(
+        'Stored settings are invalid; using defaults (NOT overwriting them):',
+        expect.any(InvalidAppRecordError)
+      )
+      expect(captureException).toHaveBeenCalledWith(
+        expect.any(InvalidAppRecordError),
+        { tags: { area: 'settings', op: 'load' } }
+      )
+      expect(store.rows.get(SETTINGS_RECORD_KEY)).toEqual({ value: 'totally broken', revision: 1 })
+    })
+  })
+
+  describe('when the store fails', () => {
+    it('propagates the error instead of degrading to defaults', async () => {
+      vi.spyOn(store, 'read').mockRejectedValueOnce(new Error('SQLITE_BUSY: database is locked'))
+
+      await expect(getSettings()).rejects.toThrow('SQLITE_BUSY')
+      expect(captureException).not.toHaveBeenCalled()
     })
   })
 
@@ -170,14 +172,14 @@ describe('loadSettings', () => {
   // --------------------------------------------------------------------------
 
   describe('deep merge with defaults', () => {
-    it('merges partial container settings with defaults', () => {
-      mockSettingsFile(
+    it('merges partial container settings with defaults', async () => {
+      storeSettings(
         JSON.stringify({
           container: { containerRunner: 'podman' },
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.container.containerRunner).toBe('podman')
       // Default agentImage should be applied (via getDefaultAgentImage mock)
@@ -187,8 +189,8 @@ describe('loadSettings', () => {
       expect(result.container.resourceLimits).toEqual({ cpu: 2, memory: '4g' })
     })
 
-    it('merges partial resourceLimits with defaults', () => {
-      mockSettingsFile(
+    it('merges partial resourceLimits with defaults', async () => {
+      storeSettings(
         JSON.stringify({
           container: {
             containerRunner: 'docker',
@@ -197,14 +199,14 @@ describe('loadSettings', () => {
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.container.resourceLimits.cpu).toBe(8)
       expect(result.container.resourceLimits.memory).toBe('4g') // default
     })
 
-    it('merges partial notification settings with defaults', () => {
-      mockSettingsFile(
+    it('merges partial notification settings with defaults', async () => {
+      storeSettings(
         JSON.stringify({
           app: {
             notifications: { sessionComplete: false },
@@ -212,7 +214,7 @@ describe('loadSettings', () => {
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.app?.notifications?.sessionComplete).toBe(false)
       expect(result.app?.notifications?.enabled).toBe(true) // default
@@ -220,14 +222,14 @@ describe('loadSettings', () => {
       expect(result.app?.notifications?.sessionScheduled).toBe(true) // default
     })
 
-    it('merges partial app preferences with defaults', () => {
-      mockSettingsFile(
+    it('merges partial app preferences with defaults', async () => {
+      storeSettings(
         JSON.stringify({
           app: { showMenuBarIcon: false },
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.app?.showMenuBarIcon).toBe(false)
       expect(result.app?.autoSleepTimeoutMinutes).toBe(30) // default
@@ -235,26 +237,26 @@ describe('loadSettings', () => {
       expect(result.app?.notifications?.enabled).toBe(true)
     })
 
-    it('merges partial model settings with defaults', () => {
-      mockSettingsFile(
+    it('merges partial model settings with defaults', async () => {
+      storeSettings(
         JSON.stringify({
           // A genuine pin (older non-default version) — must survive untouched.
           models: { agentModel: 'claude-opus-4-7' },
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.models?.agentModel).toBe('claude-opus-4-7')
       expect(result.models?.summarizerModel).toBe('haiku') // default
       expect(result.models?.browserModel).toBe('haiku') // default
     })
 
-    it('migrates legacy concrete model defaults to bare family aliases', () => {
+    it('migrates legacy concrete model defaults to bare family aliases', async () => {
       // Pre-SUP-275 persisted the three defaults as concrete ids. These have no
       // Bedrock catalog entry and would pass straight through (and fail) there,
-      // so loadSettings rewrites them to bare aliases that resolve per provider.
-      mockSettingsFile(
+      // so the settings read rewrites them to bare aliases that resolve per provider.
+      storeSettings(
         JSON.stringify({
           models: {
             summarizerModel: 'claude-haiku-4-5',
@@ -265,7 +267,7 @@ describe('loadSettings', () => {
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.models?.summarizerModel).toBe('haiku')
       expect(result.models?.agentModel).toBe('opus')
@@ -274,39 +276,39 @@ describe('loadSettings', () => {
       expect(result.models?.agentEffort).toBe('high')
     })
 
-    it('preserves the web provider selection', () => {
-      mockSettingsFile(JSON.stringify({ webProvider: 'exa' }))
+    it('preserves the web provider selection', async () => {
+      storeSettings(JSON.stringify({ webProvider: 'exa' }))
 
-      const result = loadSettings()
-
-      expect(result.webProvider).toBe('exa')
-    })
-
-    it('recovers a legacy webSearchProvider selection on upgrade (pre-collapse installs)', () => {
-      mockSettingsFile(JSON.stringify({ webSearchProvider: 'exa' }))
-
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.webProvider).toBe('exa')
     })
 
-    it('preserves the web allow/deny site lists', () => {
-      mockSettingsFile(JSON.stringify({ webAllowedSites: ['nytimes.com'], webBlockedSites: ['evil.com'] }))
+    it('recovers a legacy webSearchProvider selection on upgrade (pre-collapse installs)', async () => {
+      storeSettings(JSON.stringify({ webSearchProvider: 'exa' }))
 
-      const result = loadSettings()
+      const result = await getSettings()
+
+      expect(result.webProvider).toBe('exa')
+    })
+
+    it('preserves the web allow/deny site lists', async () => {
+      storeSettings(JSON.stringify({ webAllowedSites: ['nytimes.com'], webBlockedSites: ['evil.com'] }))
+
+      const result = await getSettings()
 
       expect(result.webAllowedSites).toEqual(['nytimes.com'])
       expect(result.webBlockedSites).toEqual(['evil.com'])
     })
 
-    it('merges auth settings with defaults', () => {
-      mockSettingsFile(
+    it('merges auth settings with defaults', async () => {
+      storeSettings(
         JSON.stringify({
           auth: { signupMode: 'open', passwordMinLength: 8 },
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.auth?.signupMode).toBe('open')
       expect(result.auth?.passwordMinLength).toBe(8)
@@ -325,144 +327,144 @@ describe('loadSettings', () => {
       expect(result.auth?.defaultUserRole).toBe('member')
     })
 
-    it('uses DEFAULT_AUTH_SETTINGS when auth is absent', () => {
-      mockSettingsFile(JSON.stringify({ container: { containerRunner: 'docker' } }))
+    it('uses DEFAULT_AUTH_SETTINGS when auth is absent', async () => {
+      storeSettings(JSON.stringify({ container: { containerRunner: 'docker' } }))
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.auth).toEqual({
         ...DEFAULT_AUTH_SETTINGS,
       })
     })
 
-    it('preserves apiKeys as-is (no default merging)', () => {
-      mockSettingsFile(
+    it('preserves apiKeys as-is (no default merging)', async () => {
+      storeSettings(
         JSON.stringify({
           apiKeys: { anthropicApiKey: 'sk-test-123' },
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.apiKeys).toEqual({ anthropicApiKey: 'sk-test-123' })
     })
 
-    it('preserves agentLimits as-is', () => {
+    it('preserves agentLimits as-is', async () => {
       const limits = { maxTurns: 10, maxBudgetUsd: 5 }
-      mockSettingsFile(JSON.stringify({ agentLimits: limits }))
+      storeSettings(JSON.stringify({ agentLimits: limits }))
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.agentLimits).toEqual(limits)
     })
 
-    it('preserves app.autoDeleteInactiveDays', () => {
-      mockSettingsFile(JSON.stringify({ app: { autoDeleteInactiveDays: 30 } }))
+    it('preserves app.autoDeleteInactiveDays', async () => {
+      storeSettings(JSON.stringify({ app: { autoDeleteInactiveDays: 30 } }))
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.app?.autoDeleteInactiveDays).toBe(30)
     })
 
-    it('preserves app.autoDeleteInactiveDays = 0 (disabled)', () => {
-      mockSettingsFile(JSON.stringify({ app: { autoDeleteInactiveDays: 0 } }))
+    it('preserves app.autoDeleteInactiveDays = 0 (disabled)', async () => {
+      storeSettings(JSON.stringify({ app: { autoDeleteInactiveDays: 0 } }))
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.app?.autoDeleteInactiveDays).toBe(0)
     })
 
-    it('leaves autoDeleteInactiveDays undefined when not set', () => {
-      mockSettingsFile(JSON.stringify({}))
+    it('leaves autoDeleteInactiveDays undefined when not set', async () => {
+      storeSettings(JSON.stringify({}))
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.app?.autoDeleteInactiveDays).toBeUndefined()
     })
 
-    it('defaults app.apiLogAutoDeleteDays to 30 when not set', () => {
-      mockSettingsFile(JSON.stringify({}))
+    it('defaults app.apiLogAutoDeleteDays to 30 when not set', async () => {
+      storeSettings(JSON.stringify({}))
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.app?.apiLogAutoDeleteDays).toBe(30)
     })
 
-    it('preserves app.apiLogAutoDeleteDays = 0 (Never)', () => {
-      mockSettingsFile(JSON.stringify({ app: { apiLogAutoDeleteDays: 0 } }))
+    it('preserves app.apiLogAutoDeleteDays = 0 (Never)', async () => {
+      storeSettings(JSON.stringify({ app: { apiLogAutoDeleteDays: 0 } }))
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.app?.apiLogAutoDeleteDays).toBe(0)
     })
 
-    it('preserves app.apiLogAutoDeleteDays = 90', () => {
-      mockSettingsFile(JSON.stringify({ app: { apiLogAutoDeleteDays: 90 } }))
+    it('preserves app.apiLogAutoDeleteDays = 90', async () => {
+      storeSettings(JSON.stringify({ app: { apiLogAutoDeleteDays: 90 } }))
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.app?.apiLogAutoDeleteDays).toBe(90)
     })
 
-    it('defaults app.globalDispatchShortcut to Control+Shift+Space when not set', () => {
-      mockSettingsFile(JSON.stringify({}))
+    it('defaults app.globalDispatchShortcut to Control+Shift+Space when not set', async () => {
+      storeSettings(JSON.stringify({}))
 
-      expect(loadSettings().app?.globalDispatchShortcut).toBe('Control+Shift+Space')
+      expect((await getSettings()).app?.globalDispatchShortcut).toBe('Control+Shift+Space')
     })
 
-    it('moves the earlier persisted default launcher shortcut to the current default', () => {
+    it('moves the earlier persisted default launcher shortcut to the current default', async () => {
       // Every settings write persisted the merged defaults, so existing installs
       // carry the old default without having chosen it.
-      mockSettingsFile(JSON.stringify({ app: { globalDispatchShortcut: 'CommandOrControl+Shift+Space' } }))
+      storeSettings(JSON.stringify({ app: { globalDispatchShortcut: 'CommandOrControl+Shift+Space' } }))
 
-      expect(loadSettings().app?.globalDispatchShortcut).toBe('Control+Shift+Space')
+      expect((await getSettings()).app?.globalDispatchShortcut).toBe('Control+Shift+Space')
     })
 
-    it('keeps a launcher shortcut the user recorded, including ⌘⇧Space', () => {
-      mockSettingsFile(JSON.stringify({ app: { globalDispatchShortcut: 'Command+Shift+Space' } }))
+    it('keeps a launcher shortcut the user recorded, including ⌘⇧Space', async () => {
+      storeSettings(JSON.stringify({ app: { globalDispatchShortcut: 'Command+Shift+Space' } }))
 
-      expect(loadSettings().app?.globalDispatchShortcut).toBe('Command+Shift+Space')
+      expect((await getSettings()).app?.globalDispatchShortcut).toBe('Command+Shift+Space')
     })
 
-    it('keeps the launcher disabled when the shortcut is empty', () => {
-      mockSettingsFile(JSON.stringify({ app: { globalDispatchShortcut: '' } }))
+    it('keeps the launcher disabled when the shortcut is empty', async () => {
+      storeSettings(JSON.stringify({ app: { globalDispatchShortcut: '' } }))
 
-      expect(loadSettings().app?.globalDispatchShortcut).toBe('')
+      expect((await getSettings()).app?.globalDispatchShortcut).toBe('')
     })
 
-    it('preserves customEnvVars as-is', () => {
+    it('preserves customEnvVars as-is', async () => {
       const envVars = { MY_VAR: 'hello', ANOTHER: 'world' }
-      mockSettingsFile(JSON.stringify({ customEnvVars: envVars }))
+      storeSettings(JSON.stringify({ customEnvVars: envVars }))
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.customEnvVars).toEqual(envVars)
     })
 
-    it('preserves a valid modelCatalog override map', () => {
+    it('preserves a valid modelCatalog override map', async () => {
       const modelCatalog = {
         anthropic: {
           overrides: [{ id: 'claude-opus-4-8', disabled: true }],
         },
       }
-      mockSettingsFile(JSON.stringify({ modelCatalog }))
+      storeSettings(JSON.stringify({ modelCatalog }))
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.modelCatalog).toEqual(modelCatalog)
     })
 
-    it('drops one unreadable global price without failing the load or losing the others', () => {
+    it('drops one unreadable global price without failing the load or losing the others', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
       const good = { inputPerMtok: 1, outputPerMtok: 2 }
-      mockSettingsFile(
+      storeSettings(
         JSON.stringify({
           apiKeys: { anthropicApiKey: 'sk-kept' },
           modelPricing: { good, bad: { inputPerMtok: -1, outputPerMtok: 2 }, worse: 'free' },
         }),
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.modelPricing).toEqual({ good })
       expect(result.apiKeys?.anthropicApiKey).toBe('sk-kept')
@@ -470,27 +472,27 @@ describe('loadSettings', () => {
       warn.mockRestore()
     })
 
-    it('ignores a modelPricing value that is not a map', () => {
+    it('ignores a modelPricing value that is not a map', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-      mockSettingsFile(JSON.stringify({ modelPricing: [1, 2] }))
+      storeSettings(JSON.stringify({ modelPricing: [1, 2] }))
 
-      expect(loadSettings().modelPricing).toEqual({})
+      expect((await getSettings()).modelPricing).toEqual({})
       expect(warn).toHaveBeenCalledOnce()
       warn.mockRestore()
     })
 
-    it('ignores a malformed modelCatalog instead of failing settings load', () => {
+    it('ignores a malformed modelCatalog instead of failing settings load', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-      mockSettingsFile(JSON.stringify({ modelCatalog: { anthropic: { overrides: [{ id: '' }] } } }))
+      storeSettings(JSON.stringify({ modelCatalog: { anthropic: { overrides: [{ id: '' }] } } }))
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.modelCatalog).toBeUndefined()
       expect(warn).toHaveBeenCalledOnce()
       warn.mockRestore()
     })
 
-    it('preserves skillsets as-is', () => {
+    it('preserves skillsets as-is', async () => {
       const skillsets = [
         {
           id: 'test-skillset',
@@ -500,14 +502,14 @@ describe('loadSettings', () => {
           addedAt: '2025-01-01T00:00:00Z',
         },
       ]
-      mockSettingsFile(JSON.stringify({ skillsets }))
+      storeSettings(JSON.stringify({ skillsets }))
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.skillsets).toEqual(skillsets)
     })
 
-    it('preserves skillset credentials without copying them into skillset metadata', () => {
+    it('preserves skillset credentials without copying them into skillset metadata', async () => {
       const skillsetCredentials = {
         skillcred_test: {
           id: 'skillcred_test',
@@ -518,18 +520,18 @@ describe('loadSettings', () => {
           updatedAt: '2026-08-06T00:00:00.000Z',
         },
       }
-      mockSettingsFile(JSON.stringify({ skillsetCredentials }))
+      storeSettings(JSON.stringify({ skillsetCredentials }))
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.skillsetCredentials).toEqual(skillsetCredentials)
       expect(JSON.stringify(result.skillsets)).not.toContain('github_pat_secret')
     })
 
-    it('handles completely empty JSON object', () => {
-      mockSettingsFile('{}')
+    it('handles completely empty JSON object', async () => {
+      storeSettings('{}')
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       // Container should be fully defaulted
       expect(result.container).toEqual(DEFAULT_SETTINGS.container)
@@ -555,113 +557,113 @@ describe('loadSettings', () => {
   describe('image tag migration', () => {
     const REGISTRY = 'ghcr.io/skillfulagents/superagent-agent-container-base'
 
-    it('migrates :main tag to default image', () => {
-      mockSettingsFile(
+    it('migrates :main tag to default image', async () => {
+      storeSettings(
         JSON.stringify({
           container: { agentImage: `${REGISTRY}:main` },
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.container.agentImage).toBe(`${REGISTRY}:latest`)
     })
 
-    it('migrates semver tag (e.g. :0.2.0) to default image', () => {
-      mockSettingsFile(
+    it('migrates semver tag (e.g. :0.2.0) to default image', async () => {
+      storeSettings(
         JSON.stringify({
           container: { agentImage: `${REGISTRY}:0.2.0` },
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.container.agentImage).toBe(`${REGISTRY}:latest`)
     })
 
-    it('migrates complex semver tag (e.g. :1.23.456) to default image', () => {
-      mockSettingsFile(
+    it('migrates complex semver tag (e.g. :1.23.456) to default image', async () => {
+      storeSettings(
         JSON.stringify({
           container: { agentImage: `${REGISTRY}:1.23.456` },
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.container.agentImage).toBe(`${REGISTRY}:latest`)
     })
 
-    it('migrates semver-with-prerelease tag (e.g. :0.2.0-beta.1) to default image', () => {
-      mockSettingsFile(
+    it('migrates semver-with-prerelease tag (e.g. :0.2.0-beta.1) to default image', async () => {
+      storeSettings(
         JSON.stringify({
           container: { agentImage: `${REGISTRY}:0.2.0-beta.1` },
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       // The regex /^\d+\.\d+\.\d+/ matches "0.2.0-beta.1" because it starts with digits.digits.digits
       expect(result.container.agentImage).toBe(`${REGISTRY}:latest`)
     })
 
-    it('does NOT migrate :latest tag', () => {
-      mockSettingsFile(
+    it('does NOT migrate :latest tag', async () => {
+      storeSettings(
         JSON.stringify({
           container: { agentImage: `${REGISTRY}:latest` },
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.container.agentImage).toBe(`${REGISTRY}:latest`)
     })
 
-    it('does NOT migrate custom tag like :custom', () => {
-      mockSettingsFile(
+    it('does NOT migrate custom tag like :custom', async () => {
+      storeSettings(
         JSON.stringify({
           container: { agentImage: `${REGISTRY}:custom` },
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.container.agentImage).toBe(`${REGISTRY}:custom`)
     })
 
-    it('does NOT migrate a completely custom image', () => {
-      mockSettingsFile(
+    it('does NOT migrate a completely custom image', async () => {
+      storeSettings(
         JSON.stringify({
           container: { agentImage: 'my-custom-registry.io/my-image:v1' },
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.container.agentImage).toBe('my-custom-registry.io/my-image:v1')
     })
 
-    it('does NOT migrate when agentImage is absent', () => {
-      mockSettingsFile(
+    it('does NOT migrate when agentImage is absent', async () => {
+      storeSettings(
         JSON.stringify({
           container: { containerRunner: 'docker' },
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       // Should get the default image
       expect(result.container.agentImage).toBe(`${REGISTRY}:latest`)
     })
 
-    it('does NOT migrate a tag that starts with digits but is not semver', () => {
+    it('does NOT migrate a tag that starts with digits but is not semver', async () => {
       // e.g. "42abc" - the regex /^\d+\.\d+\.\d+/ requires dots
-      mockSettingsFile(
+      storeSettings(
         JSON.stringify({
           container: { agentImage: `${REGISTRY}:42abc` },
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.container.agentImage).toBe(`${REGISTRY}:42abc`)
     })
@@ -672,15 +674,15 @@ describe('loadSettings', () => {
   // --------------------------------------------------------------------------
 
   describe('edge cases', () => {
-    it('preserves unknown extra fields at top level', () => {
-      mockSettingsFile(
+    it('preserves unknown extra fields at top level', async () => {
+      storeSettings(
         JSON.stringify({
           container: { containerRunner: 'docker' },
           unknownField: 'should-be-preserved-by-loaded-object',
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       // The merge spread does not explicitly include unknown top-level fields,
       // so they are NOT preserved in the returned object.
@@ -688,37 +690,37 @@ describe('loadSettings', () => {
       expect((result as unknown as Record<string, unknown>).unknownField).toBeUndefined()
     })
 
-    it('handles null values in settings', () => {
-      mockSettingsFile(
+    it('handles null values in settings', async () => {
+      storeSettings(
         JSON.stringify({
           container: { containerRunner: null },
           apiKeys: null,
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       // null container runner should overwrite the default via spread
       expect(result.container.containerRunner).toBeNull()
       expect(result.apiKeys).toBeNull()
     })
 
-    it('handles empty string values', () => {
-      mockSettingsFile(
+    it('handles empty string values', async () => {
+      storeSettings(
         JSON.stringify({
           container: { containerRunner: '' },
           apiKeys: { anthropicApiKey: '' },
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.container.containerRunner).toBe('')
       expect(result.apiKeys?.anthropicApiKey).toBe('')
     })
 
-    it('handles settings file with only apiKeys', () => {
-      mockSettingsFile(
+    it('handles stored settings with only apiKeys', async () => {
+      storeSettings(
         JSON.stringify({
           apiKeys: {
             anthropicApiKey: 'sk-test',
@@ -727,7 +729,7 @@ describe('loadSettings', () => {
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.apiKeys?.anthropicApiKey).toBe('sk-test')
       expect(result.apiKeys?.composioApiKey).toBe('ck-test')
@@ -736,8 +738,8 @@ describe('loadSettings', () => {
       expect(result.app).toEqual(DEFAULT_SETTINGS.app)
     })
 
-    it('handles deeply nested partial overrides simultaneously', () => {
-      mockSettingsFile(
+    it('handles deeply nested partial overrides simultaneously', async () => {
+      storeSettings(
         JSON.stringify({
           container: {
             containerRunner: 'podman',
@@ -752,7 +754,7 @@ describe('loadSettings', () => {
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       // Container
       expect(result.container.containerRunner).toBe('podman')
@@ -774,19 +776,8 @@ describe('loadSettings', () => {
       expect(result.auth?.requireAdminApproval).toBe(true) // default
     })
 
-    it('handles fs.existsSync returning true but readFileSync throwing', () => {
-      mockedFs.existsSync.mockReturnValue(true)
-      mockedFs.readFileSync.mockImplementation(() => {
-        throw new Error('EACCES: permission denied')
-      })
-
-      const result = loadSettings()
-
-      expect(result).toEqual(DEFAULT_SETTINGS)
-    })
-
-    it('preserves extra fields inside container', () => {
-      mockSettingsFile(
+    it('preserves extra fields inside container', async () => {
+      storeSettings(
         JSON.stringify({
           container: {
             containerRunner: 'docker',
@@ -796,7 +787,7 @@ describe('loadSettings', () => {
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       // Extra fields within container are preserved by spread
       expect((result.container as unknown as Record<string, unknown>).customField).toBe('hello')
@@ -806,8 +797,8 @@ describe('loadSettings', () => {
       ).toBe(true)
     })
 
-    it('preserves app-level extra preferences', () => {
-      mockSettingsFile(
+    it('preserves app-level extra preferences', async () => {
+      storeSettings(
         JSON.stringify({
           app: {
             theme: 'dark',
@@ -818,7 +809,7 @@ describe('loadSettings', () => {
         })
       )
 
-      const result = loadSettings()
+      const result = await getSettings()
 
       expect(result.app?.theme).toBe('dark')
       expect(result.app?.chromeProfileId).toBe('profile-123')
@@ -829,151 +820,132 @@ describe('loadSettings', () => {
 })
 
 // ============================================================================
-// saveSettings()
+// Strict reads: readSettingsSnapshot(), loadSettingsStrict()
 // ============================================================================
 
-describe('saveSettings', () => {
-  it('writes settings to the correct path', () => {
-    mockedFs.existsSync.mockReturnValue(true)
-    mockedFs.writeFileSync.mockImplementation(() => {})
+describe('strict reads', () => {
+  it('reads defaults at revision 0 when nothing is stored', async () => {
+    const snapshot = await readSettingsSnapshot()
 
-    const settings = makeFullSettings()
-    saveSettings(settings)
-
-    // Atomic write: the serialized content is written to a temp file
-    // (by fd) which is then renamed onto the real settings path.
-    expect(mockedFs.writeFileSync.mock.calls[0][1]).toBe(JSON.stringify(settings, null, 2))
-    expect(mockedFs.renameSync).toHaveBeenCalledWith(
-      expect.any(String),
-      '/mock/data/dir/settings.json'
-    )
+    expect(snapshot).toEqual({ settings: DEFAULT_SETTINGS, revision: 0 })
   })
 
-  it('creates data directory if it does not exist', () => {
-    mockedFs.existsSync.mockReturnValue(false)
-    mockedFs.mkdirSync.mockImplementation(() => '' as unknown as string)
-    mockedFs.writeFileSync.mockImplementation(() => {})
+  it('reads the stored settings with their revision', async () => {
+    storeSettings(JSON.stringify({ container: { containerRunner: 'podman' } }), 7)
 
-    saveSettings(makeFullSettings())
+    const snapshot = await readSettingsSnapshot()
 
-    expect(mockedFs.mkdirSync).toHaveBeenCalledWith('/mock/data/dir', { recursive: true })
+    expect(snapshot.revision).toBe(7)
+    expect(snapshot.settings.container.containerRunner).toBe('podman')
   })
 
-  it('does not create data directory if it already exists', () => {
-    mockedFs.existsSync.mockReturnValue(true)
-    mockedFs.writeFileSync.mockImplementation(() => {})
+  it.each([
+    ['invalid JSON', '{not valid json!!!'],
+    ['a JSON array', '[]'],
+  ])('throws InvalidAppRecordError for %s, without logging or reporting', async (_label, value) => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    storeSettings(value)
 
-    saveSettings(makeFullSettings())
-
-    expect(mockedFs.mkdirSync).not.toHaveBeenCalled()
-  })
-
-  it('uses mode 0o600 for security', () => {
-    mockedFs.existsSync.mockReturnValue(true)
-    mockedFs.writeFileSync.mockImplementation(() => {})
-
-    saveSettings(makeFullSettings())
-
-    // 0o600 is applied when the atomic writer CREATES the temp file via openSync.
-    const openCall = mockedFs.openSync.mock.calls[0]
-    expect(openCall[2]).toBe(0o600)
-  })
-
-  it('serializes with pretty-printed JSON (2-space indent)', () => {
-    mockedFs.existsSync.mockReturnValue(true)
-    mockedFs.writeFileSync.mockImplementation(() => {})
-
-    const settings = makeFullSettings()
-    saveSettings(settings)
-
-    const written = mockedFs.writeFileSync.mock.calls[0][1] as string
-    expect(written).toBe(JSON.stringify(settings, null, 2))
-    // Verify it contains newlines (pretty-printed)
-    expect(written).toContain('\n')
+    await expect(loadSettingsStrict()).rejects.toBeInstanceOf(InvalidAppRecordError)
+    expect(consoleSpy).not.toHaveBeenCalled()
+    expect(captureException).not.toHaveBeenCalled()
+    consoleSpy.mockRestore()
   })
 })
 
 // ============================================================================
-// Settings cache: getSettings(), clearSettingsCache(), updateSettings()
+// mutateSettings()
 // ============================================================================
 
-describe('settings cache', () => {
-  describe('getSettings', () => {
-    it('returns cached settings on second call without re-reading file', () => {
-      mockNoSettingsFile()
-
-      const first = getSettings()
-      const second = getSettings()
-
-      // Same reference means it was cached
-      expect(first).toBe(second)
-      // The file is read at most once (on first load); the cache serves the rest.
-      expect(mockedFs.readFileSync).toHaveBeenCalledTimes(1)
+describe('mutateSettings', () => {
+  it('stores the merged settings as JSON under the settings key at revision 1', async () => {
+    const written = await mutateSettings((s) => {
+      s.container.containerRunner = 'podman'
     })
 
-    it('loads from file on first call', () => {
-      mockSettingsFile(
-        JSON.stringify({
-          container: { containerRunner: 'podman' },
-        })
-      )
-
-      const result = getSettings()
-
-      expect(result.container.containerRunner).toBe('podman')
-    })
+    expect(written.container.containerRunner).toBe('podman')
+    expect(store.rows.get(SETTINGS_RECORD_KEY)?.revision).toBe(1)
+    expect(storedSettings()).toEqual(written)
+    // The merged defaults are stored too, not only the changed field.
+    expect(storedSettings().app.notifications).toEqual(DEFAULT_SETTINGS.app?.notifications)
   })
 
-  describe('clearSettingsCache', () => {
-    it('forces re-read on next getSettings call', () => {
-      // First call: no file
-      mockNoSettingsFile()
-      const first = getSettings()
-      expect(first.container.containerRunner).toBe(process.platform === 'darwin' ? 'lima' : 'docker')
-
-      // Now simulate file existing with different content
-      clearSettingsCache()
-      mockSettingsFile(
-        JSON.stringify({
-          container: { containerRunner: 'podman' },
-        })
-      )
-
-      const second = getSettings()
-
-      expect(second.container.containerRunner).toBe('podman')
-      expect(first).not.toBe(second)
+  it('bumps the revision on the next write and keeps the earlier change', async () => {
+    await mutateSettings((s) => {
+      s.container.containerRunner = 'podman'
+    })
+    await mutateSettings((s) => {
+      s.apiKeys = { anthropicApiKey: 'sk-test-123' }
     })
 
-    it('can be called multiple times safely', () => {
-      clearSettingsCache()
-      clearSettingsCache()
-      clearSettingsCache()
-
-      mockNoSettingsFile()
-      const result = getSettings()
-      expect(result).toEqual(DEFAULT_SETTINGS)
-    })
+    expect(store.rows.get(SETTINGS_RECORD_KEY)?.revision).toBe(2)
+    expect(storedSettings().container.containerRunner).toBe('podman')
+    expect(storedSettings().apiKeys).toEqual({ anthropicApiKey: 'sk-test-123' })
   })
 
-  describe('updateSettings', () => {
-    it('saves settings and updates the cache', () => {
-      mockedFs.existsSync.mockReturnValue(true)
-      mockedFs.writeFileSync.mockImplementation(() => {})
+  it('writes nothing when the mutator returns false', async () => {
+    const result = await mutateSettings(() => false)
 
-      const newSettings = makeFullSettings({ container: { containerRunner: 'podman', agentImage: 'test', resourceLimits: { cpu: 4, memory: '8g' } } })
-      updateSettings(newSettings)
+    expect(result).toEqual(DEFAULT_SETTINGS)
+    expect(store.rows.has(SETTINGS_RECORD_KEY)).toBe(false)
+  })
 
-      // Should have called saveSettings
-      expect(mockedFs.writeFileSync).toHaveBeenCalled()
+  it('refuses to replace an invalid stored value with defaults', async () => {
+    storeSettings('{not valid json!!!')
 
-      // Cached value should be the new settings (without re-reading file)
-      vi.clearAllMocks()
-      const cached = getSettings()
-      expect(cached).toBe(newSettings)
-      // File should NOT be read again
-      expect(mockedFs.existsSync).not.toHaveBeenCalled()
+    await expect(
+      mutateSettings((s) => {
+        s.container.containerRunner = 'podman'
+      }),
+    ).rejects.toBeInstanceOf(InvalidAppRecordError)
+    expect(store.rows.get(SETTINGS_RECORD_KEY)).toEqual({ value: '{not valid json!!!', revision: 1 })
+  })
+})
+
+// ============================================================================
+// No settings cache: every getSettings() reads the store
+// ============================================================================
+
+describe('no settings cache', () => {
+  it('reads the store on every call and returns distinct objects', async () => {
+    storeSettings(JSON.stringify({ container: { containerRunner: 'podman' } }))
+
+    const first = await getSettings()
+    const second = await getSettings()
+
+    expect(store.calls.read).toBe(2)
+    expect(first).not.toBe(second)
+    expect(first).toEqual(second)
+    expect(first.container.containerRunner).toBe('podman')
+  })
+
+  it('sees a value changed in the store between two calls', async () => {
+    const first = await getSettings()
+    expect(first.container.containerRunner).toBe(DEFAULT_SETTINGS.container.containerRunner)
+
+    // Another process writes the row.
+    storeSettings(JSON.stringify({ container: { containerRunner: 'podman' } }))
+
+    const second = await getSettings()
+    expect(second.container.containerRunner).toBe('podman')
+  })
+
+  it('sees a write made through mutateSettings on the next read', async () => {
+    await mutateSettings((s) => {
+      s.container = {
+        containerRunner: 'podman',
+        agentImage: 'test',
+        resourceLimits: { cpu: 4, memory: '8g' },
+      }
     })
+    const readsBefore = store.calls.read
+
+    const after = await getSettings()
+
+    expect(store.calls.read).toBe(readsBefore + 1)
+    expect(after.container.containerRunner).toBe('podman')
+    expect(after.container.agentImage).toBe('test')
+    expect(after.container.resourceLimits).toEqual({ cpu: 4, memory: '8g' })
   })
 })
 
@@ -983,240 +955,268 @@ describe('settings cache', () => {
 
 describe('Anthropic API key', () => {
   describe('getAnthropicApiKeyStatus', () => {
-    it('returns settings source when key is in settings', () => {
-      mockSettingsFile(
+    it('returns settings source when key is in settings', async () => {
+      storeSettings(
         JSON.stringify({
           apiKeys: { anthropicApiKey: 'sk-from-settings' },
         })
       )
 
-      const status = getAnthropicApiKeyStatus()
+      const status = await getAnthropicApiKeyStatus()
 
       expect(status).toEqual({ isConfigured: true, source: 'settings' })
     })
 
-    it('returns env source when key is only in env', () => {
-      mockNoSettingsFile()
+    it('returns env source when key is only in env', async () => {
       process.env.ANTHROPIC_API_KEY = 'sk-from-env'
 
-      const status = getAnthropicApiKeyStatus()
+      const status = await getAnthropicApiKeyStatus()
 
       expect(status).toEqual({ isConfigured: true, source: 'env' })
     })
 
-    it('returns none when key is not configured anywhere', () => {
-      mockNoSettingsFile()
+    it('returns none when key is not configured anywhere', async () => {
       delete process.env.ANTHROPIC_API_KEY
 
-      const status = getAnthropicApiKeyStatus()
+      const status = await getAnthropicApiKeyStatus()
 
       expect(status).toEqual({ isConfigured: false, source: 'none' })
     })
 
-    it('prefers settings over env var', () => {
-      mockSettingsFile(
+    it('prefers settings over env var', async () => {
+      storeSettings(
         JSON.stringify({
           apiKeys: { anthropicApiKey: 'sk-from-settings' },
         })
       )
       process.env.ANTHROPIC_API_KEY = 'sk-from-env'
 
-      const status = getAnthropicApiKeyStatus()
+      const status = await getAnthropicApiKeyStatus()
 
       expect(status).toEqual({ isConfigured: true, source: 'settings' })
     })
 
-    it('treats empty string as falsy (falls through to env)', () => {
-      mockSettingsFile(
+    it('treats empty string as falsy (falls through to env)', async () => {
+      storeSettings(
         JSON.stringify({
           apiKeys: { anthropicApiKey: '' },
         })
       )
       process.env.ANTHROPIC_API_KEY = 'sk-from-env'
 
-      const status = getAnthropicApiKeyStatus()
+      const status = await getAnthropicApiKeyStatus()
 
       expect(status).toEqual({ isConfigured: true, source: 'env' })
     })
 
-    it('treats empty string in both settings and env as none', () => {
-      mockSettingsFile(
+    it('treats empty string in both settings and env as none', async () => {
+      storeSettings(
         JSON.stringify({
           apiKeys: { anthropicApiKey: '' },
         })
       )
       process.env.ANTHROPIC_API_KEY = ''
 
-      const status = getAnthropicApiKeyStatus()
+      const status = await getAnthropicApiKeyStatus()
 
       expect(status).toEqual({ isConfigured: false, source: 'none' })
     })
   })
 
   describe('getEffectiveAnthropicApiKey', () => {
-    it('returns key from settings when configured', () => {
-      mockSettingsFile(
+    it('returns key from settings when configured', async () => {
+      storeSettings(
         JSON.stringify({
           apiKeys: { anthropicApiKey: 'sk-from-settings' },
         })
       )
 
-      expect(getEffectiveAnthropicApiKey()).toBe('sk-from-settings')
+      expect(await getEffectiveAnthropicApiKey()).toBe('sk-from-settings')
     })
 
-    it('falls back to env var when not in settings', () => {
-      mockNoSettingsFile()
+    it('falls back to env var when not in settings', async () => {
       process.env.ANTHROPIC_API_KEY = 'sk-from-env'
 
-      expect(getEffectiveAnthropicApiKey()).toBe('sk-from-env')
+      expect(await getEffectiveAnthropicApiKey()).toBe('sk-from-env')
     })
 
-    it('returns undefined when not configured anywhere', () => {
-      mockNoSettingsFile()
+    it('returns undefined when not configured anywhere', async () => {
       delete process.env.ANTHROPIC_API_KEY
 
-      expect(getEffectiveAnthropicApiKey()).toBeUndefined()
+      expect(await getEffectiveAnthropicApiKey()).toBeUndefined()
     })
 
-    it('prefers settings over env var', () => {
-      mockSettingsFile(
+    it('prefers settings over env var', async () => {
+      storeSettings(
         JSON.stringify({
           apiKeys: { anthropicApiKey: 'sk-from-settings' },
         })
       )
       process.env.ANTHROPIC_API_KEY = 'sk-from-env'
 
-      expect(getEffectiveAnthropicApiKey()).toBe('sk-from-settings')
+      expect(await getEffectiveAnthropicApiKey()).toBe('sk-from-settings')
     })
 
-    it('returns env var when settings apiKeys is absent', () => {
-      mockSettingsFile(JSON.stringify({}))
+    it('returns env var when settings apiKeys is absent', async () => {
+      storeSettings(JSON.stringify({}))
       process.env.ANTHROPIC_API_KEY = 'sk-from-env'
 
-      expect(getEffectiveAnthropicApiKey()).toBe('sk-from-env')
+      expect(await getEffectiveAnthropicApiKey()).toBe('sk-from-env')
     })
 
-    it('returns env var when apiKeys exists but anthropicApiKey is empty string', () => {
-      mockSettingsFile(
+    it('returns env var when apiKeys exists but anthropicApiKey is empty string', async () => {
+      storeSettings(
         JSON.stringify({
           apiKeys: { anthropicApiKey: '' },
         })
       )
       process.env.ANTHROPIC_API_KEY = 'sk-from-env'
 
-      expect(getEffectiveAnthropicApiKey()).toBe('sk-from-env')
+      expect(await getEffectiveAnthropicApiKey()).toBe('sk-from-env')
     })
   })
 })
 
 describe('Composio API key', () => {
   describe('getComposioApiKeyStatus', () => {
-    it('returns settings source when key is in settings', () => {
-      mockSettingsFile(
+    it('returns settings source when key is in settings', async () => {
+      storeSettings(
         JSON.stringify({
           apiKeys: { composioApiKey: 'ck-from-settings' },
         })
       )
 
-      const status = getComposioApiKeyStatus()
+      const status = await getComposioApiKeyStatus()
 
       expect(status).toEqual({ isConfigured: true, source: 'settings' })
     })
 
-    it('returns env source when key is only in env', () => {
-      mockNoSettingsFile()
+    it('returns env source when key is only in env', async () => {
       process.env.COMPOSIO_API_KEY = 'ck-from-env'
 
-      const status = getComposioApiKeyStatus()
+      const status = await getComposioApiKeyStatus()
 
       expect(status).toEqual({ isConfigured: true, source: 'env' })
     })
 
-    it('returns none when not configured', () => {
-      mockNoSettingsFile()
+    it('returns none when not configured', async () => {
       delete process.env.COMPOSIO_API_KEY
 
-      const status = getComposioApiKeyStatus()
+      const status = await getComposioApiKeyStatus()
 
       expect(status).toEqual({ isConfigured: false, source: 'none' })
     })
 
-    it('prefers settings over env var', () => {
-      mockSettingsFile(
+    it('prefers settings over env var', async () => {
+      storeSettings(
         JSON.stringify({
           apiKeys: { composioApiKey: 'ck-from-settings' },
         })
       )
       process.env.COMPOSIO_API_KEY = 'ck-from-env'
 
-      const status = getComposioApiKeyStatus()
+      const status = await getComposioApiKeyStatus()
 
       expect(status).toEqual({ isConfigured: true, source: 'settings' })
     })
   })
 
   describe('getEffectiveComposioApiKey', () => {
-    it('returns key from settings when configured', () => {
-      mockSettingsFile(
+    it('returns key from settings when configured', async () => {
+      storeSettings(
         JSON.stringify({
           apiKeys: { composioApiKey: 'ck-from-settings' },
         })
       )
 
-      expect(getEffectiveComposioApiKey()).toBe('ck-from-settings')
+      expect(await getEffectiveComposioApiKey()).toBe('ck-from-settings')
     })
 
-    it('falls back to env var', () => {
-      mockNoSettingsFile()
+    it('falls back to env var', async () => {
       process.env.COMPOSIO_API_KEY = 'ck-from-env'
 
-      expect(getEffectiveComposioApiKey()).toBe('ck-from-env')
+      expect(await getEffectiveComposioApiKey()).toBe('ck-from-env')
     })
 
-    it('returns undefined when not configured', () => {
-      mockNoSettingsFile()
+    it('returns undefined when not configured', async () => {
       delete process.env.COMPOSIO_API_KEY
 
-      expect(getEffectiveComposioApiKey()).toBeUndefined()
+      expect(await getEffectiveComposioApiKey()).toBeUndefined()
     })
   })
 })
 
 describe('Composio user ID', () => {
   describe('getComposioUserId', () => {
-    it('returns user ID from settings when configured', () => {
-      mockSettingsFile(
+    it('returns user ID from settings when configured', async () => {
+      storeSettings(
         JSON.stringify({
           apiKeys: { composioUserId: 'user-from-settings' },
         })
       )
 
-      expect(getComposioUserId()).toBe('user-from-settings')
+      expect(await getComposioUserId()).toBe('user-from-settings')
     })
 
-    it('falls back to env var', () => {
-      mockNoSettingsFile()
+    it('falls back to env var', async () => {
       process.env.COMPOSIO_USER_ID = 'user-from-env'
 
-      expect(getComposioUserId()).toBe('user-from-env')
+      expect(await getComposioUserId()).toBe('user-from-env')
     })
 
-    it('returns undefined when not configured', () => {
-      mockNoSettingsFile()
+    it('returns undefined when not configured', async () => {
       delete process.env.COMPOSIO_USER_ID
 
-      expect(getComposioUserId()).toBeUndefined()
+      expect(await getComposioUserId()).toBeUndefined()
     })
 
-    it('prefers settings over env var', () => {
-      mockSettingsFile(
+    it('prefers settings over env var', async () => {
+      storeSettings(
         JSON.stringify({
           apiKeys: { composioUserId: 'user-from-settings' },
         })
       )
       process.env.COMPOSIO_USER_ID = 'user-from-env'
 
-      expect(getComposioUserId()).toBe('user-from-settings')
+      expect(await getComposioUserId()).toBe('user-from-settings')
+    })
+  })
+})
+
+describe('Account provider user ID', () => {
+  describe('getAccountProviderUserId', () => {
+    it('returns the account provider user ID from settings when configured', async () => {
+      storeSettings(
+        JSON.stringify({
+          apiKeys: { accountProviderUserId: 'acct-from-settings', composioUserId: 'user-from-settings' },
+        })
+      )
+      process.env.COMPOSIO_USER_ID = 'user-from-env'
+
+      expect(await getAccountProviderUserId()).toBe('acct-from-settings')
+    })
+
+    it('falls back to the Composio user ID from settings', async () => {
+      storeSettings(
+        JSON.stringify({
+          apiKeys: { composioUserId: 'user-from-settings' },
+        })
+      )
+      process.env.COMPOSIO_USER_ID = 'user-from-env'
+
+      expect(await getAccountProviderUserId()).toBe('user-from-settings')
+      // One read serves both lookups.
+      expect(store.calls.read).toBe(1)
+    })
+
+    it('falls back to the COMPOSIO_USER_ID env var', async () => {
+      process.env.COMPOSIO_USER_ID = 'user-from-env'
+
+      expect(await getAccountProviderUserId()).toBe('user-from-env')
+    })
+
+    it('returns undefined when not configured', async () => {
+      expect(await getAccountProviderUserId()).toBeUndefined()
     })
   })
 })
@@ -1226,10 +1226,8 @@ describe('Composio user ID', () => {
 // ============================================================================
 
 describe('getEffectiveModels', () => {
-  it('returns default models when no overrides', () => {
-    mockNoSettingsFile()
-
-    const models = getEffectiveModels()
+  it('returns default models when no overrides', async () => {
+    const models = await getEffectiveModels()
 
     expect(models).toEqual({
       summarizerModel: 'haiku',
@@ -1240,8 +1238,8 @@ describe('getEffectiveModels', () => {
     })
   })
 
-  it('returns overridden models when configured', () => {
-    mockSettingsFile(
+  it('returns overridden models when configured', async () => {
+    storeSettings(
       JSON.stringify({
         models: {
           summarizerModel: 'custom-summarizer',
@@ -1251,7 +1249,7 @@ describe('getEffectiveModels', () => {
       })
     )
 
-    const models = getEffectiveModels()
+    const models = await getEffectiveModels()
 
     expect(models).toEqual({
       summarizerModel: 'custom-summarizer',
@@ -1262,22 +1260,22 @@ describe('getEffectiveModels', () => {
     })
   })
 
-  it('uses defaults for unset model fields', () => {
-    mockSettingsFile(
+  it('uses defaults for unset model fields', async () => {
+    storeSettings(
       JSON.stringify({
         models: { agentModel: 'custom-agent' },
       })
     )
 
-    const models = getEffectiveModels()
+    const models = await getEffectiveModels()
 
     expect(models.agentModel).toBe('custom-agent')
     expect(models.summarizerModel).toBe('haiku')
     expect(models.browserModel).toBe('haiku')
   })
 
-  it('falls back to defaults when model values are empty strings', () => {
-    mockSettingsFile(
+  it('falls back to defaults when model values are empty strings', async () => {
+    storeSettings(
       JSON.stringify({
         models: {
           summarizerModel: '',
@@ -1287,7 +1285,7 @@ describe('getEffectiveModels', () => {
       })
     )
 
-    const models = getEffectiveModels()
+    const models = await getEffectiveModels()
 
     // Empty strings are falsy, so || fallback triggers
     expect(models.summarizerModel).toBe('haiku')
@@ -1295,10 +1293,10 @@ describe('getEffectiveModels', () => {
     expect(models.browserModel).toBe('haiku')
   })
 
-  it('handles models being undefined in settings', () => {
-    mockSettingsFile(JSON.stringify({}))
+  it('handles models being undefined in settings', async () => {
+    storeSettings(JSON.stringify({}))
 
-    const models = getEffectiveModels()
+    const models = await getEffectiveModels()
 
     expect(models).toEqual({
       summarizerModel: 'haiku',
@@ -1309,10 +1307,10 @@ describe('getEffectiveModels', () => {
     })
   })
 
-  it('uses the selected provider catalog defaults when model fields are missing', () => {
-    mockSettingsFile(JSON.stringify({ llmProvider: 'platform' }))
+  it('uses the selected provider catalog defaults when model fields are missing', async () => {
+    storeSettings(JSON.stringify({ llmProvider: 'platform' }))
 
-    expect(getEffectiveModels()).toEqual({
+    expect(await getEffectiveModels()).toEqual({
       summarizerModel: 'haiku',
       agentModel: 'sonnet',
       browserModel: 'haiku',
@@ -1321,12 +1319,12 @@ describe('getEffectiveModels', () => {
     })
   })
 
-  it('falls back to Anthropic defaults for an unknown persisted provider', () => {
+  it('falls back to Anthropic defaults for an unknown persisted provider', async () => {
     // A downgrade can load a provider id written by a newer app version. The
-    // settings file is not schema-validated, so this must remain a soft fallback.
-    mockSettingsFile(JSON.stringify({ llmProvider: 'some-future-provider' }))
+    // stored settings are not schema-validated, so this must remain a soft fallback.
+    storeSettings(JSON.stringify({ llmProvider: 'some-future-provider' }))
 
-    expect(getEffectiveModels()).toEqual({
+    expect(await getEffectiveModels()).toEqual({
       summarizerModel: 'haiku',
       agentModel: 'opus',
       browserModel: 'haiku',
@@ -1341,32 +1339,30 @@ describe('getEffectiveModels', () => {
 // ============================================================================
 
 describe('getEffectiveAgentLimits', () => {
-  it('returns empty object when no limits configured', () => {
-    mockNoSettingsFile()
-
-    expect(getEffectiveAgentLimits()).toEqual({})
+  it('returns empty object when no limits configured', async () => {
+    expect(await getEffectiveAgentLimits()).toEqual({})
   })
 
-  it('returns configured limits', () => {
-    mockSettingsFile(
+  it('returns configured limits', async () => {
+    storeSettings(
       JSON.stringify({
         agentLimits: { maxTurns: 25, maxBudgetUsd: 10 },
       })
     )
 
-    expect(getEffectiveAgentLimits()).toEqual({ maxTurns: 25, maxBudgetUsd: 10 })
+    expect(await getEffectiveAgentLimits()).toEqual({ maxTurns: 25, maxBudgetUsd: 10 })
   })
 
-  it('returns full limits when all fields are set', () => {
+  it('returns full limits when all fields are set', async () => {
     const limits = {
       maxOutputTokens: 4096,
       maxThinkingTokens: 2048,
       maxTurns: 50,
       maxBudgetUsd: 20,
     }
-    mockSettingsFile(JSON.stringify({ agentLimits: limits }))
+    storeSettings(JSON.stringify({ agentLimits: limits }))
 
-    expect(getEffectiveAgentLimits()).toEqual(limits)
+    expect(await getEffectiveAgentLimits()).toEqual(limits)
   })
 })
 
@@ -1375,23 +1371,21 @@ describe('getEffectiveAgentLimits', () => {
 // ============================================================================
 
 describe('getCustomEnvVars', () => {
-  it('returns empty object when no custom env vars configured', () => {
-    mockNoSettingsFile()
-
-    expect(getCustomEnvVars()).toEqual({})
+  it('returns empty object when no custom env vars configured', async () => {
+    expect(await getCustomEnvVars()).toEqual({})
   })
 
-  it('returns configured env vars', () => {
+  it('returns configured env vars', async () => {
     const envVars = { FOO: 'bar', BAZ: 'qux' }
-    mockSettingsFile(JSON.stringify({ customEnvVars: envVars }))
+    storeSettings(JSON.stringify({ customEnvVars: envVars }))
 
-    expect(getCustomEnvVars()).toEqual(envVars)
+    expect(await getCustomEnvVars()).toEqual(envVars)
   })
 
-  it('returns empty object when customEnvVars is null', () => {
-    mockSettingsFile(JSON.stringify({ customEnvVars: null }))
+  it('returns empty object when customEnvVars is null', async () => {
+    storeSettings(JSON.stringify({ customEnvVars: null }))
 
-    expect(getCustomEnvVars()).toEqual({})
+    expect(await getCustomEnvVars()).toEqual({})
   })
 })
 
@@ -1400,28 +1394,26 @@ describe('getCustomEnvVars', () => {
 // ============================================================================
 
 describe('getModelCatalogSettings', () => {
-  it('returns empty overrides when no model catalog is configured', () => {
-    mockNoSettingsFile()
-
-    expect(getModelCatalogSettings()).toEqual({})
+  it('returns empty overrides when no model catalog is configured', async () => {
+    expect(await getModelCatalogSettings()).toEqual({})
   })
 
-  it('returns configured model catalog overrides', () => {
+  it('returns configured model catalog overrides', async () => {
     const modelCatalog = {
       platform: {
         overrides: [{ id: 'gpt-5.5', pricing: { inputPerMtok: 6, outputPerMtok: 36 } }],
       },
     }
-    mockSettingsFile(JSON.stringify({ modelCatalog }))
+    storeSettings(JSON.stringify({ modelCatalog }))
 
-    expect(getModelCatalogSettings()).toEqual(modelCatalog)
+    expect(await getModelCatalogSettings()).toEqual(modelCatalog)
   })
 
-  it('returns empty overrides when modelCatalog is null', () => {
+  it('returns empty overrides when modelCatalog is null', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-    mockSettingsFile(JSON.stringify({ modelCatalog: null }))
+    storeSettings(JSON.stringify({ modelCatalog: null }))
 
-    expect(getModelCatalogSettings()).toEqual({})
+    expect(await getModelCatalogSettings()).toEqual({})
     expect(warn).toHaveBeenCalledOnce()
     warn.mockRestore()
   })
@@ -1502,40 +1494,27 @@ describe('DEFAULT_AUTH_SETTINGS', () => {
 // ============================================================================
 
 describe('integration scenarios', () => {
-  it('full settings round-trip: load defaults, customize, save, reload', () => {
-    // 1. Start with no file
-    mockNoSettingsFile()
-    const defaults = loadSettings()
+  it('full settings round-trip: load defaults, customize, save, reload', async () => {
+    // 1. Start with nothing stored
+    const defaults = await getSettings()
+    expect(defaults).toEqual(DEFAULT_SETTINGS)
 
-    // 2. Customize some values
-    const customized: AppSettings = {
-      ...defaults,
-      container: {
-        ...defaults.container,
-        containerRunner: 'podman',
-        resourceLimits: { cpu: 8, memory: '16g' },
-      },
-      apiKeys: { anthropicApiKey: 'sk-test-123' },
-    }
+    // 2-3. Customize some values and save
+    await mutateSettings((s) => {
+      s.container.containerRunner = 'podman'
+      s.container.resourceLimits = { cpu: 8, memory: '16g' }
+      s.apiKeys = { anthropicApiKey: 'sk-test-123' }
+    })
 
-    // 3. Save
-    mockedFs.existsSync.mockReturnValue(true)
-    mockedFs.writeFileSync.mockImplementation(() => {})
-    saveSettings(customized)
-
-    // 4. Simulate reload by mocking the file with what was saved
-    const savedContent = (mockedFs.writeFileSync.mock.calls[0][1] as string)
-    clearSettingsCache()
-    mockSettingsFile(savedContent)
-
-    const reloaded = loadSettings()
+    // 4. Reload from the store
+    const reloaded = await getSettings()
     expect(reloaded.container.containerRunner).toBe('podman')
     expect(reloaded.container.resourceLimits).toEqual({ cpu: 8, memory: '16g' })
     expect(reloaded.apiKeys?.anthropicApiKey).toBe('sk-test-123')
   })
 
-  it('cache works across multiple getSettings-dependent functions', () => {
-    mockSettingsFile(
+  it('every getSettings-dependent function reads the store itself', async () => {
+    storeSettings(
       JSON.stringify({
         apiKeys: {
           anthropicApiKey: 'sk-test',
@@ -1548,46 +1527,31 @@ describe('integration scenarios', () => {
       })
     )
 
-    // All of these should use the same cached settings
-    getAnthropicApiKeyStatus()
-    getEffectiveAnthropicApiKey()
-    getComposioApiKeyStatus()
-    getEffectiveComposioApiKey()
-    getComposioUserId()
-    getEffectiveModels()
-    getEffectiveAgentLimits()
-    getCustomEnvVars()
+    expect(await getAnthropicApiKeyStatus()).toEqual({ isConfigured: true, source: 'settings' })
+    expect(await getEffectiveAnthropicApiKey()).toBe('sk-test')
+    expect(await getComposioApiKeyStatus()).toEqual({ isConfigured: true, source: 'settings' })
+    expect(await getEffectiveComposioApiKey()).toBe('ck-test')
+    expect(await getComposioUserId()).toBe('uid-test')
+    expect((await getEffectiveModels()).agentModel).toBe('custom-model')
+    expect(await getEffectiveAgentLimits()).toEqual({ maxTurns: 10 })
+    expect(await getCustomEnvVars()).toEqual({ MY_VAR: 'hello' })
 
-    // File should only be read once
-    expect(mockedFs.readFileSync).toHaveBeenCalledTimes(1)
+    // No process cache: one store read per call.
+    expect(store.calls.read).toBe(8)
   })
 
-  it('updateSettings overwrites cache so subsequent reads reflect changes', () => {
-    mockNoSettingsFile()
-
+  it('a mutateSettings write is what the getters return next', async () => {
     // Initial read: defaults
-    const initial = getSettings()
-    expect(initial.container.containerRunner).toBe(process.platform === 'darwin' ? 'lima' : 'docker')
+    expect(await getEffectiveAnthropicApiKey()).toBeUndefined()
+    expect((await getEffectiveModels()).agentModel).toBe('opus')
 
-    // Update
-    mockedFs.existsSync.mockReturnValue(true)
-    mockedFs.writeFileSync.mockImplementation(() => {})
-    const updated = makeFullSettings({
-      container: {
-        containerRunner: 'podman',
-        agentImage: 'test:latest',
-        resourceLimits: { cpu: 4, memory: '8g' },
-      },
+    await mutateSettings((s) => {
+      s.apiKeys = { anthropicApiKey: 'sk-updated' }
+      s.models = { ...s.models!, agentModel: 'custom-agent' }
     })
-    updateSettings(updated)
 
-    // Now getSettings should return the updated value without reading file.
-    // Reset call counters first so we assert specifically that the post-update
-    // read is served from cache (the initial load did read the file once).
-    vi.clearAllMocks()
-    const afterUpdate = getSettings()
-    expect(afterUpdate.container.containerRunner).toBe('podman')
-    expect(mockedFs.readFileSync).not.toHaveBeenCalled()
+    expect(await getEffectiveAnthropicApiKey()).toBe('sk-updated')
+    expect((await getEffectiveModels()).agentModel).toBe('custom-agent')
   })
 })
 
@@ -1596,12 +1560,9 @@ describe('integration scenarios', () => {
 // ============================================================================
 
 describe('runtimeSettings migration', () => {
-  beforeEach(() => {
-    clearSettingsCache()
-  })
 
-  it('initializes runtimeSettings as empty object for old settings files', () => {
-    mockSettingsFile(
+  it('initializes runtimeSettings as empty object for old stored settings', async () => {
+    storeSettings(
       JSON.stringify({
         container: {
           containerRunner: 'docker',
@@ -1609,13 +1570,13 @@ describe('runtimeSettings migration', () => {
       })
     )
 
-    const result = loadSettings()
+    const result = await getSettings()
 
     expect(result.container.runtimeSettings).toEqual({})
   })
 
-  it('preserves existing runtimeSettings when present', () => {
-    mockSettingsFile(
+  it('preserves existing runtimeSettings when present', async () => {
+    storeSettings(
       JSON.stringify({
         container: {
           containerRunner: 'lima',
@@ -1626,44 +1587,30 @@ describe('runtimeSettings migration', () => {
       })
     )
 
-    const result = loadSettings()
+    const result = await getSettings()
 
     expect(result.container.runtimeSettings).toEqual({
       lima: { vmMemory: '8GiB' },
     })
   })
 
-  it('initializes runtimeSettings when container field is missing entirely', () => {
-    mockSettingsFile(JSON.stringify({}))
+  it('initializes runtimeSettings when container field is missing entirely', async () => {
+    storeSettings(JSON.stringify({}))
 
-    const result = loadSettings()
+    const result = await getSettings()
 
     expect(result.container.runtimeSettings).toEqual({})
   })
 
-  it('round-trips runtimeSettings through save and reload', () => {
-    mockNoSettingsFile()
-    const defaults = loadSettings()
+  it('round-trips runtimeSettings through save and reload', async () => {
+    await mutateSettings((s) => {
+      s.container.runtimeSettings = {
+        lima: { vmMemory: '16GiB' },
+      }
+    })
 
-    const customized = {
-      ...defaults,
-      container: {
-        ...defaults.container,
-        runtimeSettings: {
-          lima: { vmMemory: '16GiB' },
-        },
-      },
-    }
-
-    mockedFs.existsSync.mockReturnValue(true)
-    mockedFs.writeFileSync.mockImplementation(() => {})
-    saveSettings(customized as any)
-
-    const savedContent = mockedFs.writeFileSync.mock.calls[0][1] as string
-    clearSettingsCache()
-    mockSettingsFile(savedContent)
-
-    const reloaded = loadSettings()
+    expect(storedSettings().container.runtimeSettings).toEqual({ lima: { vmMemory: '16GiB' } })
+    const reloaded = await getSettings()
     expect(reloaded.container.runtimeSettings?.lima?.vmMemory).toBe('16GiB')
   })
 })
@@ -1673,51 +1620,49 @@ describe('runtimeSettings migration', () => {
 // ============================================================================
 
 describe('agentCapabilities', () => {
-  it('defaults to allow subagents / review workflows when the file is absent', () => {
-    mockNoSettingsFile()
-    expect(loadSettings().agentCapabilities).toEqual({ subagents: 'allow', workflows: 'review' })
+  it('defaults to allow subagents / review workflows when nothing is stored', async () => {
+    expect((await getSettings()).agentCapabilities).toEqual({ subagents: 'allow', workflows: 'review' })
   })
 
-  it('fills a partial stored section from the defaults', () => {
-    mockSettingsFile(JSON.stringify({ agentCapabilities: { subagents: 'block' } }))
-    expect(loadSettings().agentCapabilities).toEqual({ subagents: 'block', workflows: 'review' })
+  it('fills a partial stored section from the defaults', async () => {
+    storeSettings(JSON.stringify({ agentCapabilities: { subagents: 'block' } }))
+    expect((await getSettings()).agentCapabilities).toEqual({ subagents: 'block', workflows: 'review' })
   })
 
-  it('preserves a fully customized section', () => {
-    mockSettingsFile(JSON.stringify({ agentCapabilities: { subagents: 'review', workflows: 'allow' } }))
-    expect(loadSettings().agentCapabilities).toEqual({ subagents: 'review', workflows: 'allow' })
+  it('preserves a fully customized section', async () => {
+    storeSettings(JSON.stringify({ agentCapabilities: { subagents: 'review', workflows: 'allow' } }))
+    expect((await getSettings()).agentCapabilities).toEqual({ subagents: 'review', workflows: 'allow' })
   })
 
-  it('defaults only the invalid field, keeping valid siblings', () => {
-    mockSettingsFile(JSON.stringify({ agentCapabilities: { subagents: 'maybe', workflows: 'allow' } }))
-    expect(loadSettings().agentCapabilities).toEqual({ subagents: 'allow', workflows: 'allow' })
+  it('defaults only the invalid field, keeping valid siblings', async () => {
+    storeSettings(JSON.stringify({ agentCapabilities: { subagents: 'maybe', workflows: 'allow' } }))
+    expect((await getSettings()).agentCapabilities).toEqual({ subagents: 'allow', workflows: 'allow' })
   })
 
-  it('an invalid field never lifts a valid block on the other capability', () => {
-    mockSettingsFile(JSON.stringify({ agentCapabilities: { subagents: 'block', workflows: 'future-tier' } }))
-    expect(loadSettings().agentCapabilities).toEqual({ subagents: 'block', workflows: 'review' })
+  it('an invalid field never lifts a valid block on the other capability', async () => {
+    storeSettings(JSON.stringify({ agentCapabilities: { subagents: 'block', workflows: 'future-tier' } }))
+    expect((await getSettings()).agentCapabilities).toEqual({ subagents: 'block', workflows: 'review' })
   })
 
-  it('DEFAULT_SETTINGS carries the section so new files persist it', () => {
+  it('DEFAULT_SETTINGS carries the section so new installs persist it', () => {
     expect(DEFAULT_SETTINGS.agentCapabilities).toEqual({ subagents: 'allow', workflows: 'review' })
   })
 })
 
 describe('globalInstructions', () => {
-  it('is absent when never set', () => {
-    mockNoSettingsFile()
-    expect(loadSettings().globalInstructions).toBeUndefined()
+  it('is absent when never set', async () => {
+    expect((await getSettings()).globalInstructions).toBeUndefined()
   })
 
-  it('loads a stored string as-is', () => {
-    mockSettingsFile(JSON.stringify({ globalInstructions: 'Be concise.\n' }))
-    expect(loadSettings().globalInstructions).toBe('Be concise.\n')
+  it('loads a stored string as-is', async () => {
+    storeSettings(JSON.stringify({ globalInstructions: 'Be concise.\n' }))
+    expect((await getSettings()).globalInstructions).toBe('Be concise.\n')
   })
 
-  it.each([42, { text: 'x' }, 'x'.repeat(20_001)])('drops an invalid stored value (%#) instead of prompting every agent with it', (value) => {
+  it.each([42, { text: 'x' }, 'x'.repeat(20_001)])('drops an invalid stored value (%#) instead of prompting every agent with it', async (value) => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    mockSettingsFile(JSON.stringify({ globalInstructions: value }))
-    expect(loadSettings().globalInstructions).toBeUndefined()
+    storeSettings(JSON.stringify({ globalInstructions: value }))
+    expect((await getSettings()).globalInstructions).toBeUndefined()
     warn.mockRestore()
   })
 })

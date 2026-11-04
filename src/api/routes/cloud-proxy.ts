@@ -278,7 +278,7 @@ cloudProxy.all('/*', async (c) => {
     return c.json({ error: 'Not found' }, 404)
   }
 
-  const target = resolveCloudProxyTarget()
+  const target = await resolveCloudProxyTarget()
   if (!target) {
     return c.json(
       {

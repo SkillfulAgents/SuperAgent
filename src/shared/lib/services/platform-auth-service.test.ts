@@ -3,6 +3,7 @@ import os from 'os'
 import path from 'path'
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { backgroundSettled } from '@shared/lib/background'
 import {
   SignJWT,
   createLocalJWKSet,
@@ -56,7 +57,8 @@ vi.mock('@shared/lib/db', () => ({
   },
 }))
 
-import { clearSettingsCache, getSettings, updateSettings } from '@shared/lib/config/settings'
+import { getSettings, mutateSettings } from '@shared/lib/config/settings'
+import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 import { getAgentsDir } from '@shared/lib/utils/file-storage'
 import type { SkillsetConfig, InstalledSkillMetadata, InstalledAgentMetadata } from '@shared/lib/types/skillset'
 
@@ -135,15 +137,17 @@ describe('platform-auth-service', () => {
         clientId: 'superagent-test',
       },
     ])
-    clearSettingsCache()
+    installTestAppRecordStore()
     _setOidcJwksResolverForTest(testJwksResolver as unknown as Parameters<typeof _setOidcJwksResolverForTest>[0])
     _resetEnvManagedPlatformStatusForTest()
     mockDbGet.mockReturnValue(null)
     mockEnsureManagedPlatformConnection.mockClear()
   })
 
-  afterEach(() => {
-    clearSettingsCache()
+  afterEach(async () => {
+    // The auth-change fan-out runs in the background and reads settings; let it
+    // finish before the next test changes the environment under it.
+    await backgroundSettled()
     fs.rmSync(tempDir, { recursive: true, force: true })
     delete process.env.SUPERAGENT_DATA_DIR
     delete process.env.AUTH_MODE
@@ -159,7 +163,7 @@ describe('platform-auth-service', () => {
     process.env.AUTH_MODE = 'true'
     process.env.PLATFORM_TOKEN = 'env-managed-platform-token'
 
-    expect(getPlatformAccessToken('local')).toBe('env-managed-platform-token')
+    expect(await getPlatformAccessToken('local')).toBe('env-managed-platform-token')
   })
 
   it('creates the managed connection on login before returning', async () => {
@@ -172,7 +176,7 @@ describe('platform-auth-service', () => {
     process.env.PLATFORM_TOKEN = 'should-be-ignored-when-auth-mode-off'
     delete process.env.AUTH_MODE
 
-    expect(getPlatformAccessToken('local')).toBeNull()
+    expect(await getPlatformAccessToken('local')).toBeNull()
   })
 
   it('leaves the disconnected status contract unchanged', async () => {
@@ -294,7 +298,7 @@ describe('platform-auth-service', () => {
 
     await initEnvManagedPlatformStatus()
 
-    expect(getPlatformAccessToken('local')).toBe(process.env.PLATFORM_TOKEN)
+    expect(await getPlatformAccessToken('local')).toBe(process.env.PLATFORM_TOKEN)
     expect((await getPlatformAuthStatusForUser('local'))).toMatchObject({
       orgId: 'org_env',
       source: 'env',
@@ -316,13 +320,11 @@ describe('platform-auth-service', () => {
       orgId: 'org_test_123',
     })
     expect(status.tokenPreview).toBe('plat_s...cdef')
-    expect(getPlatformAccessToken('local')).toBe('plat_superagent_token_1234567890abcdef')
+    expect(await getPlatformAccessToken('local')).toBe('plat_superagent_token_1234567890abcdef')
 
-    const settingsPath = path.join(tempDir, 'settings.json')
-    expect(fs.existsSync(settingsPath)).toBe(true)
-    const onDisk = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
-    expect(onDisk.platformAuth).toBeDefined()
-    expect(onDisk.platformAuth.token).toBe('plat_superagent_token_1234567890abcdef')
+    const stored = await getSettings()
+    expect(stored.platformAuth).toBeDefined()
+    expect(stored.platformAuth?.token).toBe('plat_superagent_token_1234567890abcdef')
   })
 
   it('persists and exposes platform userId and memberId', async () => {
@@ -551,7 +553,7 @@ describe('platform-auth-service', () => {
     await initEnvManagedPlatformStatus()
 
     mockDbGet.mockClear()
-    const status = getPlatformAuthStatus()
+    const status = await getPlatformAuthStatus()
     expect(status.userId).toBeNull()
     expect(mockDbGet).not.toHaveBeenCalled()
   })
@@ -818,12 +820,12 @@ describe('platform-auth-service', () => {
     })
 
     // Seed: one platform skillset + one github skillset + installed skills for both.
-    const settings = getSettings()
-    settings.skillsets = [
-      makePlatformSkillset('platform--old', 'org_old'),
-      makeGithubSkillset('github--keep'),
-    ]
-    updateSettings(settings)
+    await mutateSettings((settings) => {
+      settings.skillsets = [
+        makePlatformSkillset('platform--old', 'org_old'),
+        makeGithubSkillset('github--keep'),
+      ]
+    })
 
     writeInstalledSkill('agent-a', 'old-org-skill', {
       skillsetId: 'platform--old',
@@ -865,7 +867,7 @@ describe('platform-auth-service', () => {
     })
 
     // Platform skillset for previous org is gone; github one is kept.
-    const after = getSettings()
+    const after = await getSettings()
     expect(after.skillsets?.map((s) => s.id)).toEqual(['github--keep'])
 
     // Installed platform skill is gone; github skill is kept.
@@ -884,12 +886,12 @@ describe('platform-auth-service', () => {
       orgId: 'org_x',
     })
 
-    const settings = getSettings()
-    settings.skillsets = [
-      makePlatformSkillset('platform--x', 'org_x'),
-      makeGithubSkillset('github--keep'),
-    ]
-    updateSettings(settings)
+    await mutateSettings((settings) => {
+      settings.skillsets = [
+        makePlatformSkillset('platform--x', 'org_x'),
+        makeGithubSkillset('github--keep'),
+      ]
+    })
 
     writeInstalledSkill('agent-b', 'platform-skill', {
       skillsetId: 'platform--x',
@@ -905,7 +907,7 @@ describe('platform-auth-service', () => {
 
     await revokePlatformToken({ clearLocal: true })
 
-    const after = getSettings()
+    const after = await getSettings()
     expect(after.skillsets?.map((s) => s.id)).toEqual(['github--keep'])
     expect(fs.existsSync(
       path.join(getAgentsDir(), 'agent-b', 'workspace', '.claude', 'skills', 'platform-skill'),
@@ -968,8 +970,8 @@ describe('platform-auth-service', () => {
   })
 
   describe('cloud-workspace token invalidation on identity change', () => {
-    function seedCloudToken() {
-      writeCloudWorkspaceRecord({
+    async function seedCloudToken() {
+      await writeCloudWorkspaceRecord({
         deploymentUrl: 'https://ws.example.com',
         orgId: 'org_x',
         token: 'deploy_session_token',
@@ -989,8 +991,8 @@ describe('platform-auth-service', () => {
         userId: 'user_a',
         memberId: 'sub_a',
       })
-      seedCloudToken()
-      expect(readCloudWorkspaceRecord()).not.toBeNull()
+      await seedCloudToken()
+      expect(await readCloudWorkspaceRecord()).not.toBeNull()
 
       // Reconnect as a DIFFERENT member of the SAME org.
       await savePlatformAuth('local', {
@@ -999,7 +1001,7 @@ describe('platform-auth-service', () => {
         userId: 'user_b',
         memberId: 'sub_b',
       })
-      expect(readCloudWorkspaceRecord()).toBeNull()
+      expect(await readCloudWorkspaceRecord()).toBeNull()
     })
 
     it('keeps the deployment token on a same-identity metadata refresh', async () => {
@@ -1010,7 +1012,7 @@ describe('platform-auth-service', () => {
         memberId: 'sub_a',
         role: 'owner',
       })
-      seedCloudToken()
+      await seedCloudToken()
 
       // Same principal, only role/email changed (the refreshStoredPlatformAccount path).
       await savePlatformAuth('local', {
@@ -1021,7 +1023,7 @@ describe('platform-auth-service', () => {
         role: 'admin',
         email: 'user_a@example.com',
       })
-      expect(readCloudWorkspaceRecord()).not.toBeNull()
+      expect(await readCloudWorkspaceRecord()).not.toBeNull()
     })
   })
 })

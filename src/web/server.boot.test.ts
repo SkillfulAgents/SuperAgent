@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// The web entry's boot order: error reporting first, then the database, then
-// the bind. A failed open is the first thing that can end the process, and
-// its fatal report must have a provider to reach and time to send.
+// The web entry's boot order: error reporting first, then the database (and
+// the record store settings are read through, then the tenant identity that
+// lives in it), then the bind. A failed open is the first thing that can end
+// the process, and its fatal report must have a provider to reach and time to
+// send.
 const calls: string[] = []
 const openDatabase = vi.fn(async () => {
   calls.push('openDatabase')
@@ -13,6 +15,12 @@ const initErrorReporting = vi.fn(() => {
 const flushErrorReporting = vi.fn(async () => {
   calls.push('flushErrorReporting')
   return true
+})
+const attachErrorReportingIdentity = vi.fn(async () => {
+  calls.push('attachErrorReportingIdentity')
+})
+const installAppRecordStore = vi.fn(() => {
+  calls.push('installAppRecordStore')
 })
 const bindServerWithRetry = vi.fn(async () => {
   calls.push('bind')
@@ -27,7 +35,9 @@ vi.mock('../api', async () => {
   return { default: new Hono() }
 })
 vi.mock('@shared/lib/db', () => ({ openDatabase }))
-vi.mock('@shared/lib/error-reporting', () => ({ initErrorReporting, flushErrorReporting }))
+vi.mock('@shared/lib/error-reporting', () => ({ initErrorReporting, flushErrorReporting, attachErrorReportingIdentity }))
+vi.mock('@shared/lib/app-records/record-store', () => ({ dbAppRecordStore: vi.fn(() => ({})) }))
+vi.mock('@shared/lib/app-records/records', () => ({ installAppRecordStore }))
 vi.mock('@shared/lib/server-bind', () => ({ bindServerWithRetry }))
 vi.mock('@shared/lib/startup', () => ({
   afterBindInitialize,
@@ -68,13 +78,20 @@ describe('web server boot order', () => {
   it('initialises error reporting before opening the database, then binds', async () => {
     process.env.NODE_ENV = 'production'
     await boot()
-    expect(calls).toEqual(['initErrorReporting', 'openDatabase', 'bind', 'afterBindInitialize'])
+    expect(calls).toEqual([
+      'initErrorReporting',
+      'openDatabase',
+      'installAppRecordStore',
+      'attachErrorReportingIdentity',
+      'bind',
+      'afterBindInitialize',
+    ])
   })
 
   it('skips error reporting outside production, as afterBindInitialize does', async () => {
     process.env.NODE_ENV = 'test'
     await boot()
-    expect(calls).toEqual(['openDatabase', 'bind', 'afterBindInitialize'])
+    expect(calls).toEqual(['openDatabase', 'installAppRecordStore', 'attachErrorReportingIdentity', 'bind', 'afterBindInitialize'])
   })
 
   it('flushes error reporting before exiting when the database fails to open', async () => {

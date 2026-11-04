@@ -66,7 +66,7 @@ const waitingInputNotifications = () =>
   live.host.sent('notification').filter((n) => n.kind === 'session_waiting_input')
 
 /** The agent holds a grant for every computer-use level and the host shell. */
-const grantComputerUse = () => vi.spyOn(live.agents.get(AGENT_SLUG).computerUse, 'check').mockReturnValue('granted')
+const grantComputerUse = () => vi.spyOn(live.agents.get(AGENT_SLUG).computerUse, 'check').mockResolvedValue('granted')
 
 beforeEach(async () => {
   mockClient = createStreamClient()
@@ -1091,6 +1091,8 @@ describe('awaiting input status tracking', () => {
       try {
         sessions().markActive(SESSION_ID)
         simulateToolUse('mcp__computer-use__computer_click', 'cu-1', { ref: 'win:1' })
+        // The request parks once the grant check (a settings read) lands.
+        await new Promise((resolve) => setTimeout(resolve, 0))
         expect(sessions().isAwaitingInput(SESSION_ID)).toBe(true)
         expect(sessions().pendingComputerUse(SESSION_ID)).toHaveLength(1)
         live.runtime.containerFetch.mockClear()
@@ -1490,7 +1492,8 @@ describe('Script run request detection', () => {
 
   // Use existing simulateToolUse helper (already defined above in awaiting input tests)
   // Re-define locally since the other is scoped to that describe block
-  function simulateToolUse(toolName: string, toolId: string, input: Record<string, unknown>) {
+  // Async: a script request registers once the grant check (a settings read) lands.
+  async function simulateToolUse(toolName: string, toolId: string, input: Record<string, unknown>) {
     mockClient.emit({
       type: 'stream_event',
       event: {
@@ -1509,12 +1512,13 @@ describe('Script run request detection', () => {
       type: 'stream_event',
       event: { type: 'content_block_stop' },
     })
+    await new Promise((resolve) => setTimeout(resolve, 0))
   }
 
-  it('registers a script_run with autoApproved:false when permission needed', () => {
+  it('registers a script_run with autoApproved:false when permission needed', async () => {
     sseEvents.length = 0
 
-    simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-1', {
+    await simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-1', {
       script: 'sw_vers',
       explanation: 'Check macOS version',
       scriptType: 'shell',
@@ -1539,7 +1543,7 @@ describe('Script run request detection', () => {
     sseEvents.length = 0
     live.host.answer('hostScript', { exitCode: 0, stdout: 'ProductName: macOS', stderr: '' })
 
-    simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-granted', {
+    await simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-granted', {
       script: 'sw_vers',
       explanation: 'Check macOS version',
       scriptType: 'shell',
@@ -1566,10 +1570,10 @@ describe('Script run request detection', () => {
     expect(sseEvents.filter((e) => e.type === 'tool_result')).toHaveLength(0)
   })
 
-  it('registers a script_run even without prior permission (prompts user)', () => {
+  it('registers a script_run even without prior permission (prompts user)', async () => {
     sseEvents.length = 0
 
-    simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-2', {
+    await simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-2', {
       script: 'sw_vers',
       explanation: 'Check version',
       scriptType: 'shell',
@@ -1580,10 +1584,10 @@ describe('Script run request detection', () => {
     expect(scriptEvents).toHaveLength(1)
   })
 
-  it('registers nothing when script is missing from input', () => {
+  it('registers nothing when script is missing from input', async () => {
     sseEvents.length = 0
 
-    simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-4', {
+    await simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-4', {
       explanation: 'Check version',
       scriptType: 'shell',
     })
@@ -1592,10 +1596,10 @@ describe('Script run request detection', () => {
     expect(scriptEvents).toHaveLength(0)
   })
 
-  it('registers nothing when scriptType is missing', () => {
+  it('registers nothing when scriptType is missing', async () => {
     sseEvents.length = 0
 
-    simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-5', {
+    await simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-5', {
       script: 'sw_vers',
       explanation: 'Check version',
     })
@@ -1604,8 +1608,8 @@ describe('Script run request detection', () => {
     expect(scriptEvents).toHaveLength(0)
   })
 
-  it('sets isAwaitingInput after request_script_run tool fires (prompt path)', () => {
-    simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-6', {
+  it('sets isAwaitingInput after request_script_run tool fires (prompt path)', async () => {
+    await simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-6', {
       script: 'sw_vers',
       explanation: 'Check version',
       scriptType: 'shell',
@@ -1614,11 +1618,11 @@ describe('Script run request detection', () => {
     expect(sessions().isAwaitingInput(SESSION_ID)).toBe(true)
   })
 
-  it('does NOT set isAwaitingInput when use_host_shell is auto-approved', () => {
+  it('does NOT set isAwaitingInput when use_host_shell is auto-approved', async () => {
     grantComputerUse()
     live.host.answer('hostScript', { exitCode: 0, stdout: '', stderr: '' })
 
-    simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-auto-status', {
+    await simulateToolUse('mcp__user-input__request_script_run', 'tool-sr-auto-status', {
       script: 'sw_vers',
       explanation: 'Check version',
       scriptType: 'shell',
@@ -1765,7 +1769,9 @@ describe('Computer use request detection', () => {
     const originalE2eMock = process.env.E2E_MOCK
     process.env.E2E_MOCK = 'true'
     grantComputerUse()
-    live.host.answer('computerUse', '[mock] apps executed successfully')
+    // Held, so the request is still open while the test looks: it registers
+    // after the grant check (asynchronous), and the run would settle it.
+    live.host.answer('computerUse', () => new Promise(() => {}))
 
     try {
       simulateToolUse('mcp__computer-use__computer_apps', 'tool-cu-granted-reg', {

@@ -93,7 +93,7 @@ xAgentChat.post('/add', async (c) => {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
     }
 
-    const prepared = await prepareIntegrationSetup(provider, config, integrationSetupContext(provider, c.req.raw, callerSlug), true)
+    const prepared = await prepareIntegrationSetup(provider, config, await integrationSetupContext(provider, c.req.raw, callerSlug), true)
 
     let id: string
     try {

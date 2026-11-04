@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { eq } from 'drizzle-orm'
@@ -7,44 +7,59 @@ import { createTestDatabase, type TestDatabase } from '../testing/create-test-da
 import { getDb } from '../open-database'
 import { dataMigrations, llmConnections, scheduledTasks, webhookTriggers, chatIntegrations } from '../schema'
 import * as settings from '../../config/settings'
+import { dbAppRecordStore, type AppRecordStore } from '../../app-records/record-store'
+import { isAppRecordStoreInstalled } from '../../app-records/records'
 import { DATA_MIGRATIONS, runDataMigrations } from './index'
 import { importLlmConnections } from './0003-import-llm-connections'
 
 let handle: TestDatabase
 let dataDir: string
+/** The settings on the migration's handle: what the app reads once it boots. */
+let store: AppRecordStore
 const migrations = [importLlmConnections]
 beforeEach(async () => {
+  // As at boot, no global record store: a migration that read one would throw.
+  expect(isAppRecordStoreInstalled()).toBe(false)
   dataDir = mkdtempSync(join(tmpdir(), 'llm-migration-'))
   vi.stubEnv('SUPERAGENT_DATA_DIR', dataDir)
   vi.stubEnv('AUTH_MODE', 'false')
   for (const key of ['ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY', 'GENERIC_API_KEY', 'GENERIC_BASE_URL', 'PLATFORM_TOKEN', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_BEARER_TOKEN_BEDROCK', 'AWS_REGION']) vi.stubEnv(key, '')
-  settings.clearSettingsCache()
   handle = await createTestDatabase()
+  store = dbAppRecordStore(handle.db)
 })
 afterEach(async () => {
   await handle.close()
-  settings.clearSettingsCache()
   vi.restoreAllMocks()
   vi.unstubAllEnvs()
   rmSync(dataDir, { recursive: true, force: true })
 })
 
-function configure() {
-  settings.mutateSettings((s) => {
-    s.llmProvider = 'anthropic'
-    s.apiKeys = { anthropicApiKey: 'saved-test-key' }
-    s.models = {
-      agentModel: 'claude-archived-1', summarizerModel: 'haiku',
-      browserModel: 'sonnet', dashboardBuilderModel: 'sonnet',
-    }
-  })
+const legacyProviderSettings = {
+  llmProvider: 'anthropic',
+  apiKeys: { anthropicApiKey: 'saved-test-key' },
+  models: {
+    agentModel: 'claude-archived-1', summarizerModel: 'haiku',
+    browserModel: 'sonnet', dashboardBuilderModel: 'sonnet',
+  },
+} as const
+
+/** Provider settings already in the database (an install past the host-records import). */
+async function configure() {
+  await settings.mutateSettings((s) => {
+    s.llmProvider = legacyProviderSettings.llmProvider
+    s.apiKeys = { ...legacyProviderSettings.apiKeys }
+    s.models = { ...legacyProviderSettings.models }
+  }, store)
 }
 
+const read = () => settings.getSettings(store)
+
 describe('import-llm-connections data migration', () => {
-  it('is registered and imports settings and all SQL references before the global database is published', async () => {
+  it('is registered and imports a legacy settings file and all SQL references before the global database is published', async () => {
     expect(DATA_MIGRATIONS).toContain(importLlmConnections)
     expect(() => getDb()).toThrow()
-    configure()
+    // An install that skips versions still has its settings in the data dir.
+    writeFileSync(join(dataDir, 'settings.json'), JSON.stringify(legacyProviderSettings))
     vi.stubEnv('OPENROUTER_API_KEY', 'environment-test-key')
     const now = new Date()
     await handle.db.insert(scheduledTasks).values({
@@ -65,7 +80,7 @@ describe('import-llm-connections data migration', () => {
     // Ambient keys for unselected providers must not become member-selectable.
     expect(rows.find(row => row.id === 'legacy-openrouter')).toBeUndefined()
     expect(JSON.stringify(rows)).not.toContain('environment-test-key')
-    expect(settings.getSettings()).toMatchObject({
+    expect(await read()).toMatchObject({
       llmLegacyProviderId: 'legacy-anthropic',
       llmDefault: { llmProviderId: 'legacy-anthropic', model: 'claude-archived-1' },
       llmSummarizer: { llmProviderId: 'legacy-anthropic', model: 'haiku' },
@@ -78,15 +93,27 @@ describe('import-llm-connections data migration', () => {
     expect(await handle.db.select().from(dataMigrations).all()).toMatchObject([{ id: 3, name: 'import-llm-connections' }])
   })
 
+  it('imports provider settings already in the database', async () => {
+    await configure()
+    expect(await runDataMigrations(handle.db, migrations)).toEqual([3])
+    expect(await handle.db.select({ id: llmConnections.id }).from(llmConnections).all()).toEqual([{ id: 'legacy-anthropic' }])
+    expect(await read()).toMatchObject({
+      apiKeys: { anthropicApiKey: 'saved-test-key' },
+      llmLegacyProviderId: 'legacy-anthropic',
+      llmDefault: { llmProviderId: 'legacy-anthropic', model: 'claude-archived-1' },
+      llmSummarizer: { llmProviderId: 'legacy-anthropic', model: 'haiku' },
+    })
+  })
+
   it('imports custom definitions and disabled IDs without copying built-ins', async () => {
     const { getLlmProvider } = await import('../../llm-provider')
-    configure()
+    await configure()
     const builtins = getLlmProvider('anthropic').getBuiltinCatalog()
     const disabled = builtins.find(model => !model.isLatest)!
     const custom = { id: 'private-model', label: 'Private', supportedEfforts: ['low' as const], disabled: true }
-    settings.mutateSettings(s => { s.modelCatalog = { anthropic: { overrides: [
+    await settings.mutateSettings(s => { s.modelCatalog = { anthropic: { overrides: [
       { id: disabled.id, disabled: true }, custom,
-    ] } } })
+    ] } } }, store)
     await runDataMigrations(handle.db, migrations)
     const row = (await handle.db.select().from(llmConnections).get())!
     expect(JSON.parse(row.modelOverrides)).toEqual(expect.arrayContaining([
@@ -99,7 +126,7 @@ describe('import-llm-connections data migration', () => {
   })
 
   it('uses the ledger to skip subsequent imports, including after a connection is deleted', async () => {
-    configure()
+    await configure()
     await runDataMigrations(handle.db, migrations)
     await handle.db.delete(llmConnections).run()
     expect(await runDataMigrations(handle.db, migrations)).toEqual([])
@@ -107,8 +134,8 @@ describe('import-llm-connections data migration', () => {
   })
 
   it('retries an interrupted import without overwriting existing rows', async () => {
-    configure()
-    vi.spyOn(settings, 'mutateSettings').mockImplementationOnce(() => { throw new Error('interrupted settings write') })
+    await configure()
+    vi.spyOn(settings, 'mutateSettings').mockRejectedValueOnce(new Error('interrupted settings write'))
     await expect(runDataMigrations(handle.db, migrations)).rejects.toThrow('interrupted settings write')
     expect(await handle.db.select().from(dataMigrations).all()).toEqual([])
     const row = await handle.db.select().from(llmConnections).get()
@@ -116,44 +143,44 @@ describe('import-llm-connections data migration', () => {
     await handle.db.update(llmConnections).set({ name: 'Retained name' }).where(eq(llmConnections.id, row!.id)).run()
     expect(await runDataMigrations(handle.db, migrations)).toEqual([3])
     expect(await handle.db.select().from(llmConnections).all()).toMatchObject([{ name: 'Retained name' }])
-    expect(settings.getSettings().llmDefault?.model).toBe('claude-archived-1')
+    expect((await read()).llmDefault?.model).toBe('claude-archived-1')
   })
 
   it('records completion on a fresh install with no configured provider', async () => {
     expect(await runDataMigrations(handle.db, migrations)).toEqual([3])
     expect(await handle.db.select().from(llmConnections).all()).toEqual([])
-    expect(settings.getSettings().llmDefault).toBeUndefined()
-    configure()
+    expect((await read()).llmDefault).toBeUndefined()
+    await configure()
     // Configuring an account later belongs to the explicit onboarding write.
     expect(await runDataMigrations(handle.db, migrations)).toEqual([])
     expect(await handle.db.select().from(llmConnections).all()).toEqual([])
   })
 
   it('tolerates a retry after settings were written, preserving explicit defaults', async () => {
-    configure()
+    await configure()
     await importLlmConnections.run(handle.db)
-    settings.mutateSettings(s => {
+    await settings.mutateSettings(s => {
       s.llmDefault = { llmProviderId: 'legacy-anthropic', model: 'haiku' }
       s.llmSummarizer = null
-    })
+    }, store)
     await importLlmConnections.run(handle.db)
     expect(await handle.db.select().from(llmConnections).all()).toHaveLength(1)
-    expect(settings.getSettings().llmDefault?.model).toBe('haiku')
-    expect(settings.getSettings().llmSummarizer).toBeNull()
+    expect((await read()).llmDefault?.model).toBe('haiku')
+    expect((await read()).llmSummarizer).toBeNull()
   })
 })
 
 
 it('moves provider overrides to the imported connection and retains shared tool variables', async () => {
-  configure()
-  settings.mutateSettings(s => { s.customEnvVars = {
+  await configure()
+  await settings.mutateSettings(s => { s.customEnvVars = {
     ANTHROPIC_BASE_URL: 'https://old-proxy.example', ANTHROPIC_AUTH_TOKEN: 'old-bearer',
     AWS_ACCESS_KEY_ID: 'tool-key', AWS_REGION: 'eu-west-1', TOOL_SETTING: 'keep',
-  } })
+  } }, store)
   await runDataMigrations(handle.db, migrations)
   const row = (await handle.db.select().from(llmConnections).get())!
   expect(JSON.parse(row.config).runtimeEnv).toEqual({ ANTHROPIC_BASE_URL: 'https://old-proxy.example', ANTHROPIC_AUTH_TOKEN: 'old-bearer' })
-  expect(settings.getSettings().customEnvVars).toEqual({ AWS_ACCESS_KEY_ID: 'tool-key', AWS_REGION: 'eu-west-1', TOOL_SETTING: 'keep' })
+  expect((await read()).customEnvVars).toEqual({ AWS_ACCESS_KEY_ID: 'tool-key', AWS_REGION: 'eu-west-1', TOOL_SETTING: 'keep' })
   await runDataMigrations(handle.db, migrations)
   expect((await handle.db.select().from(llmConnections).get())!.config).toBe(row.config)
 })

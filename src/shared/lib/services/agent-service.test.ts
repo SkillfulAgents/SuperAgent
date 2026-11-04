@@ -6,6 +6,7 @@ import Database from 'better-sqlite3'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import * as schema from '@shared/lib/db/schema'
+import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 import { agentAvatarSchema } from '@shared/lib/types/agent-avatar'
 import {
   SAMPLE_INSTRUCTIONS,
@@ -87,6 +88,7 @@ describe('agent-service', () => {
     // Store original env and set test data dir
     originalEnv = process.env.SUPERAGENT_DATA_DIR
     process.env.SUPERAGENT_DATA_DIR = testDir
+    installTestAppRecordStore()
 
     sqlite = new Database(':memory:')
     testDb = drizzle(sqlite, { schema })

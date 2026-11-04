@@ -16,8 +16,8 @@ export abstract class BaseVoiceProvider {
   protected abstract readonly envVarName: string
 
   /** Check whether an API key is configured and its source. */
-  getApiKeyStatus(): ApiKeyStatus {
-    const settings = getSettings()
+  async getApiKeyStatus(): Promise<ApiKeyStatus> {
+    const settings = await getSettings()
     if (settings.apiKeys?.[this.settingsKeyField]) {
       return { isConfigured: true, source: 'settings' }
     }
@@ -28,8 +28,8 @@ export abstract class BaseVoiceProvider {
   }
 
   /** Get the effective API key (settings take precedence over env var). */
-  getEffectiveApiKey(): string | undefined {
-    const settings = getSettings()
+  async getEffectiveApiKey(): Promise<string | undefined> {
+    const settings = await getSettings()
     const fromSettings = settings.apiKeys?.[this.settingsKeyField]
     if (fromSettings) return fromSettings
     return process.env[this.envVarName]
@@ -52,7 +52,7 @@ export abstract class BaseVoiceProvider {
 
   /** Convenience: resolve the effective key and mint an ephemeral token. */
   async getEphemeralToken(): Promise<VoiceTokenResponse> {
-    const apiKey = this.getEffectiveApiKey()
+    const apiKey = await this.getEffectiveApiKey()
     if (!apiKey) {
       throw new VoiceProviderError(this.missingCredentialMessage(), 400)
     }
@@ -87,7 +87,7 @@ export abstract class BaseVoiceProvider {
 
   async getTtsConnection(): Promise<TtsConnection> {
     if (!this.supportsTts()) throw new VoiceProviderError(`Text-to-speech not supported by ${this.name}`, 400)
-    if (!this.getApiKeyStatus().isConfigured) throw new VoiceProviderError(this.missingCredentialMessage(), 400)
+    if (!(await this.getApiKeyStatus()).isConfigured) throw new VoiceProviderError(this.missingCredentialMessage(), 400)
     if (this.getTtsSynthesis()) return { transport: 'http' }
     const { token } = await this.getTtsToken()
     return { transport: 'websocket', token }
@@ -127,7 +127,7 @@ export abstract class BaseVoiceProvider {
     if (!this.supportsTts()) {
       throw new VoiceProviderError(`Text-to-speech not supported by ${this.name}`, 400)
     }
-    const apiKey = this.getEffectiveApiKey()
+    const apiKey = await this.getEffectiveApiKey()
     if (!apiKey) {
       throw new VoiceProviderError(this.missingCredentialMessage(), 400)
     }
@@ -150,7 +150,7 @@ export abstract class BaseVoiceProvider {
     if (!this.supportsTranscription()) {
       throw new Error(`Batch transcription not supported by ${this.name}`)
     }
-    const apiKey = this.getEffectiveApiKey()
+    const apiKey = await this.getEffectiveApiKey()
     if (!apiKey) {
       throw new VoiceProviderError(this.missingCredentialMessage(), 400)
     }

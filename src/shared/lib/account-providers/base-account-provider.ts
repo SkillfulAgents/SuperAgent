@@ -21,6 +21,15 @@ export interface ProviderConnectionListItem {
 export abstract class BaseAccountProvider {
   abstract readonly name: ProviderName
 
+  /**
+   * Whether the provider can be used right now (its credentials are set).
+   * Read fresh on every call; an unconfigured provider stays registered but
+   * is neither the default nor in the configured list.
+   */
+  async isConfigured(): Promise<boolean> {
+    return true
+  }
+
   abstract listConnections(userId?: string): Promise<ProviderConnectionListItem[]>
 
   abstract initiateConnection(

@@ -1,6 +1,7 @@
 /** Issuer policy against real discovery, signed tokens and both callback transports. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
+import { installTestAppRecordStore } from '../app-records/testing/memory-record-store'
 import type { AppDatabase } from '../db/drivers/types'
 import { authAccount, authSession, user } from '../db/schema'
 import {
@@ -71,6 +72,8 @@ beforeEach(async () => {
   oidc.state.acceptedRedirectUri = `${BASE}/api/auth/oauth2/callback/platform`
   vi.stubEnv('AUTH_MODE', 'true')
   vi.stubEnv('BETTER_AUTH_SECRET', 'issuer-test-secret-0123456789abcdef0123456789abcdef')
+  // Host records (the auth secret falls back to one) live in the app record store.
+  installTestAppRecordStore()
   vi.stubEnv('TRUSTED_ORIGINS', BASE)
   vi.stubEnv('PLATFORM_TOKEN', '')
   configureProvider(oidc.state.issuer)
@@ -109,7 +112,7 @@ describe('configured issuer pin', () => {
   it.each(['redirect', 'id-token'] as const)('checks discovery recovered on the same %s request', async (mode) => {
     configureProvider(WRONG_ISSUER)
     oidc.state.discoveryUnavailable = true
-    const context = await getAuth().$context
+    const context = await (await getAuth()).$context
     expect(context.socialProviders).toHaveLength(0)
     expect(oidc.state.discoveryRequests).toBe(0)
     const unavailable = await signIn(mode)
@@ -125,7 +128,7 @@ describe('configured issuer pin', () => {
 
   it('also enforces the pin on server-side SSO initiation', async () => {
     configureProvider(WRONG_ISSUER)
-    await expect(getAuth().api.signInSocial({
+    await expect((await getAuth()).api.signInSocial({
       body: { provider: 'platform', callbackURL: `${BASE}/` },
     })).rejects.toMatchObject({ body: { code: 'OIDC_ISSUER_MISMATCH' } })
   })

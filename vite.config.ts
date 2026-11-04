@@ -75,16 +75,30 @@ export default defineConfig({
     {
       // Before the API plugin, so its middleware runs first: the dev server is
       // an entry point like the web server and Electron main, and opening the
-      // database is its first boot step. /api requests wait for the open.
-      // Re-checked per request because an edit under src/shared/lib/db makes
-      // Vite re-instantiate that module with nothing open.
+      // database, then installing the app record store on it (settings and
+      // host records live there), is its first boot step. /api requests wait
+      // for both. Re-checked per request because an edit under
+      // src/shared/lib/db or src/shared/lib/app-records makes Vite
+      // re-instantiate that module with nothing open or installed.
       name: 'server-lifecycle',
       configureServer(server) {
         const dbModule = path.resolve(__dirname, 'src/shared/lib/db/index.ts')
+        const recordsModule = path.resolve(__dirname, 'src/shared/lib/app-records/records.ts')
+        const recordStoreModule = path.resolve(__dirname, 'src/shared/lib/app-records/record-store.ts')
+        // The database handle the installed store reads; a reopened database gets a new store.
+        let storeDatabase: unknown = null
         const ensureDatabaseOpen = async () => {
-          const { isDatabaseOpen, openDatabase } = await server.ssrLoadModule(dbModule)
+          const { isDatabaseOpen, openDatabase, getDb } = await server.ssrLoadModule(dbModule)
           if (!isDatabaseOpen()) {
             await openDatabase()
+          }
+          const database = getDb()
+          const records = await server.ssrLoadModule(recordsModule)
+          if (!records.isAppRecordStoreInstalled() || storeDatabase !== database) {
+            const { dbAppRecordStore } = await server.ssrLoadModule(recordStoreModule)
+            records.uninstallAppRecordStore()
+            records.installAppRecordStore(dbAppRecordStore(database))
+            storeDatabase = database
           }
         }
         server.middlewares.use((req, res, next) => {

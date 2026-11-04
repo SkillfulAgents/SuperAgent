@@ -1,21 +1,13 @@
 import { execSync } from 'child_process'
 import crypto from 'crypto'
-import fs from 'fs'
 import os from 'os'
-import path from 'path'
 
-import { getDataDir } from '@shared/lib/config/data-dir'
-
-const PLATFORM_DEVICE_DIR = '.platform-auth'
-const CLIENT_INSTANCE_FILENAME = 'client-instance-id'
-
-function getPlatformDeviceDir() {
-  return path.join(getDataDir(), PLATFORM_DEVICE_DIR)
-}
-
-function getClientInstanceIdPath() {
-  return path.join(getPlatformDeviceDir(), CLIENT_INSTANCE_FILENAME)
-}
+import type { AppRecordStore } from '@shared/lib/app-records/record-store'
+import { appRecordStore, getOrCreateRecord } from '@shared/lib/app-records/records'
+import {
+  PLATFORM_CLIENT_INSTANCE_ID_RECORD_KEY,
+  platformClientInstanceIdRecordSchema,
+} from '@shared/lib/app-records/record-schemas'
 
 export function getPlatformDeviceName(): string {
   if (process.platform === 'darwin') {
@@ -28,18 +20,15 @@ export function getPlatformDeviceName(): string {
   return os.hostname().trim() || 'Gamut Device'
 }
 
-export function getOrCreatePlatformClientInstanceId() {
-  const filePath = getClientInstanceIdPath()
-
-  if (fs.existsSync(filePath)) {
-    const existing = fs.readFileSync(filePath, 'utf8').trim()
-    if (existing) {
-      return existing
-    }
-  }
-
-  fs.mkdirSync(getPlatformDeviceDir(), { recursive: true })
-  const clientInstanceId = crypto.randomUUID()
-  fs.writeFileSync(filePath, clientInstanceId, { mode: 0o600 })
-  return clientInstanceId
+/**
+ * This deployment's client instance id for platform device auth, created once
+ * (insert-if-absent, so concurrent first uses agree). Imported from
+ * `.platform-auth/client-instance-id` by data migration 9.
+ */
+export async function getOrCreatePlatformClientInstanceId(
+  store: AppRecordStore = appRecordStore(),
+): Promise<string> {
+  return getOrCreateRecord(store, PLATFORM_CLIENT_INSTANCE_ID_RECORD_KEY, platformClientInstanceIdRecordSchema, () =>
+    crypto.randomUUID(),
+  )
 }

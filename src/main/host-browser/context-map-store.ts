@@ -1,105 +1,94 @@
 /**
- * Persistent instanceId → Browserbase contextId map shared by the Browserbase
- * and platform host-browser providers.
+ * Persistent key → Browserbase contextId mappings shared by the Browserbase
+ * and platform host-browser providers, one app record per key
+ * (`browser-context:<provider>:<key>`; imported from the old
+ * `browserbase-contexts.json` / `platform-browserbase-contexts.json` files by
+ * data migration 9).
  *
- * Hardened: the map is a single JSON file read-modify-written from
- * concurrent `getOrCreateContext` calls (which `await` a network create between
- * read and write). The old code read with a swallow-to-`{}` catch and wrote
- * non-atomically, so a transient bad read or two instances racing wiped every
- * other agent's persistent context — and leaked the now-orphaned (billable)
- * Browserbase contexts. This store reads fail-closed, writes atomically, and
- * serializes the upsert under a per-file lock.
+ * A mapping is written with insert-if-absent, so creating one key's mapping
+ * never touches another's, and a stored id that cannot be read throws instead
+ * of being treated as absent (which would create, and bill, a new context).
  */
-import * as fs from 'fs'
-import * as path from 'path'
-import { z } from 'zod'
+import type { AppRecordStore } from '@shared/lib/app-records/record-store'
+import { appRecordStore, readRecord, serializeRecordValue } from '@shared/lib/app-records/records'
 import {
-  readJsonFileStrictSync,
-  writeJsonFileAtomicSync,
-  withFileLock,
-} from '@shared/lib/utils/file-storage'
+  browserContextIdRecordSchema,
+  browserContextKey,
+  type BrowserContextProvider,
+} from '@shared/lib/app-records/record-schemas'
 import { captureException } from '@shared/lib/error-reporting'
 
-const contextMapSchema = z.record(z.string(), z.string())
+export type { BrowserContextProvider }
 
-export type ContextMap = Record<string, string>
-
-/**
- * Read the map. Fail-closed: absent file → `{}`, but a corrupt/torn file or IO
- * error THROWS (so a transiently-unreadable file can't be silently treated as
- * empty and then overwritten, wiping/leaking every other agent's context).
- */
-export function loadContextMap(filePath: string): ContextMap {
-  return readJsonFileStrictSync(filePath, contextMapSchema, {})
+/** The stored context id for `key`, or null. Throws on a database error or an invalid stored value. */
+export async function readContextMapping(
+  provider: BrowserContextProvider,
+  key: string,
+  store: AppRecordStore = appRecordStore(),
+): Promise<string | null> {
+  return (await readRecord(store, browserContextKey(provider, key), browserContextIdRecordSchema))?.value ?? null
 }
 
-/** Atomic (temp-file + rename) overwrite of the whole map. */
-export function saveContextMap(filePath: string, map: ContextMap): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true })
-  writeJsonFileAtomicSync(filePath, map)
-}
-
-/**
- * Serialized + atomic upsert of a single `key → contextId` mapping. Re-reads
- * the map fresh under the lock (so a mapping created concurrently for a
- * different key survives) and writes atomically.
- */
-export async function setContextMapping(filePath: string, key: string, contextId: string): Promise<void> {
-  await withFileLock(filePath, async () => {
-    const map = loadContextMap(filePath)
-    map[key] = contextId
-    saveContextMap(filePath, map)
-  })
-}
-
-// In-flight context creations, keyed by `${resolved file}::${key}`. Dedups
-// concurrent first-opens for the SAME key within this process (P2): the
-// file lock only protects the WRITE, so without this, two concurrent calls that
-// both miss the map would each create a paid remote context and the second
-// would orphan/leak the first. Different keys are NOT serialized — they create
-// in parallel. (Residual: a multi-process/replica race could still double-create
-// across processes; acceptable for the host-browser providers.)
+// In-flight context creations, keyed by `${provider}::${key}`. Dedups
+// concurrent first-opens for the SAME key within this process: without it,
+// two concurrent calls that both miss would each create a paid remote context
+// and one would be orphaned. Different keys are NOT serialized. Across
+// processes, insert-if-absent picks one winner and the loser reports its
+// orphaned context (below).
 const inflightContextCreations = new Map<string, Promise<string>>()
 
 /**
- * Return the existing `key → contextId` mapping, or create one exactly once.
- * `create` performs the (paid, network) remote-context creation and returns its
- * id; it is invoked at most once per key even under concurrent callers, and the
- * result is persisted via {@link setContextMapping} before returning.
+ * Return the existing `key → contextId` mapping, or create one. `create`
+ * performs the (paid, network) remote-context creation and returns its id; it
+ * runs at most once per key per process even under concurrent callers, and
+ * its result is committed before this returns. When another process committed
+ * a mapping first, that mapping is returned and the context created here is
+ * reported as orphaned.
  */
 export async function getOrCreateMapping(
-  filePath: string,
+  provider: BrowserContextProvider,
   key: string,
   create: () => Promise<string>,
+  store: AppRecordStore = appRecordStore(),
 ): Promise<string> {
-  const existing = loadContextMap(filePath)[key]
+  const existing = await readContextMapping(provider, key, store)
   if (existing) return existing
 
-  const inflightKey = `${path.resolve(filePath)}::${key}`
+  const inflightKey = `${provider}::${key}`
   const pending = inflightContextCreations.get(inflightKey)
   if (pending) return pending
 
   const p = (async () => {
     // Re-check inside the in-flight guard: a create for this key may have landed
-    // (and been persisted) between the read above and us claiming the slot.
-    const fresh = loadContextMap(filePath)[key]
+    // between the read above and us claiming the slot.
+    const fresh = await readContextMapping(provider, key, store)
     if (fresh) return fresh
     const contextId = await create()
+    const recordKey = browserContextKey(provider, key)
+    let committed: string | null
     try {
-      await setContextMapping(filePath, key, contextId)
+      await store.insertIfAbsent(recordKey, serializeRecordValue(recordKey, contextId, browserContextIdRecordSchema))
+      committed = await readContextMapping(provider, key, store)
     } catch (err) {
-      // The remote context was created and BILLED, but persisting it failed
-      // (corrupt map file, disk full, …). Surface the orphaned id so it can be
-      // reclaimed/deleted out-of-band instead of silently leaking — and so a
-      // recurring persist failure (which would re-create a paid context on every
-      // launch) is visible — then rethrow.
+      // The remote context was created and BILLED, but persisting it failed.
+      // Surface the orphaned id so it can be reclaimed out-of-band instead of
+      // silently leaking, then rethrow.
       captureException(err, {
         tags: { area: 'host-browser-context-map', op: 'persist' },
-        extra: { filePath, key, orphanedContextId: contextId },
+        extra: { provider, key, orphanedContextId: contextId },
       })
       throw err
     }
-    return contextId
+    if (!committed) throw new Error(`Browser context mapping ${recordKey} disappeared after it was written`)
+    if (committed !== contextId) {
+      // Another process committed a mapping for this key first; use it.
+      captureException(new Error('Browserbase context orphaned by a concurrent first open'), {
+        level: 'warning',
+        tags: { area: 'host-browser-context-map', op: 'race' },
+        extra: { provider, key, orphanedContextId: contextId },
+      })
+    }
+    return committed
   })()
   inflightContextCreations.set(inflightKey, p)
   try {

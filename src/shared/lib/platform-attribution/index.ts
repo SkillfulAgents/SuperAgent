@@ -33,7 +33,7 @@ async function getPlatformAccountIdForUserId(userId: string): Promise<string | n
 // case). Opaque `plat_sa_` access keys are not org-scoped, so memberId is
 // unused for them — this only matters if an org-scoped token lives in settings.
 async function resolveMemberIdForUserId(userId: string): Promise<string | null> {
-  return (await getPlatformAccountIdForUserId(userId)) ?? getStoredPlatformMemberId()
+  return (await getPlatformAccountIdForUserId(userId)) ?? (await getStoredPlatformMemberId())
 }
 
 // Org JWTs carry the acting member as `<token>::<memberId>` (proxy splits
@@ -73,8 +73,8 @@ class PlatformAttribution implements Attribution {
   }
 }
 
-function buildAttribution(memberId: string | null): Attribution | null {
-  const token = getPlatformAccessToken()
+async function buildAttribution(memberId: string | null): Promise<Attribution | null> {
+  const token = await getPlatformAccessToken()
   if (!token) return null
   const orgScoped = decodeOrgIdFromToken(token) !== null
   if (orgScoped && !memberId) return null
@@ -106,14 +106,14 @@ export function runOutsideAttribution<T>(fn: () => T): T {
 
 async function fromCurrentRequest(): Promise<Attribution | null> {
   const userId = getRequestUserId()
-  return userId ? buildAttribution(await resolveMemberIdForUserId(userId)) : null
+  return userId ? await buildAttribution(await resolveMemberIdForUserId(userId)) : null
 }
 
 // True when the active platform token is an org JWT, so every proxy call must
 // carry a per-request acting member. Opaque access keys and an unconfigured
 // token return false.
-function requiresActingMember(): boolean {
-  const token = getPlatformAccessToken()
+async function requiresActingMember(): Promise<boolean> {
+  const token = await getPlatformAccessToken()
   return token !== null && decodeOrgIdFromToken(token) !== null
 }
 
@@ -123,10 +123,10 @@ export const attribution = {
     return buildAttribution(await resolveMemberIdForUserId(userId))
   },
   async fromResourceCreator(ownerUserId: string | null): Promise<Attribution | null> {
-    return ownerUserId ? buildAttribution(await getPlatformAccountIdForUserId(ownerUserId)) : null
+    return ownerUserId ? await buildAttribution(await getPlatformAccountIdForUserId(ownerUserId)) : null
   },
   // For callers that already hold a member id (e.g. the recorded minting member).
-  fromMemberId(memberId: string): Attribution | null {
+  async fromMemberId(memberId: string): Promise<Attribution | null> {
     return buildAttribution(memberId)
   },
   async current(): Promise<Attribution | null> {
@@ -140,7 +140,7 @@ export const attribution = {
     if (ambient) return ambient
     const ownerUserId = await getAgentOwnerUserId(agentSlug)
     return buildAttribution(
-      ownerUserId ? await resolveMemberIdForUserId(ownerUserId) : getStoredPlatformMemberId(),
+      ownerUserId ? await resolveMemberIdForUserId(ownerUserId) : await getStoredPlatformMemberId(),
     )
   },
   requiresActingMember,

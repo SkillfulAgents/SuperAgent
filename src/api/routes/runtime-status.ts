@@ -16,7 +16,7 @@ runtimeStatus.get('/', async (c) => {
   return c.json({
     runtimeReadiness: containerHost.getReadiness(),
     hasRunningAgents: containerHost.hasRunningAgents(),
-    apiKeyConfigured: (root?.provider ?? getActiveLlmProvider()).getApiKeyStatus().isConfigured,
+    apiKeyConfigured: (await (root?.provider ?? await getActiveLlmProvider()).getApiKeyStatus()).isConfigured,
     servicesInitError: getServicesInitError(),
     appVersion: APP_VERSION,
   })

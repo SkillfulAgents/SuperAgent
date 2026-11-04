@@ -21,15 +21,15 @@ const platformNotificationsRouter = new Hono()
 
 platformNotificationsRouter.use('*', Authenticated())
 
-function isPlatformConnected(): boolean {
-  return Boolean(getPlatformProxyBaseUrl() && getPlatformAccessToken())
+async function isPlatformConnected(): Promise<boolean> {
+  return Boolean(getPlatformProxyBaseUrl() && await getPlatformAccessToken())
 }
 
 // Org JWTs need an acting member appended to the bearer (in auth mode the
 // request-scoped fetch interceptor re-attributes it to the acting user);
 // opaque personal keys ignore the suffix.
-function getMemberId(): string {
-  return getSettings().platformAuth?.memberId ?? 'local'
+async function getMemberId(): Promise<string> {
+  return (await getSettings()).platformAuth?.memberId ?? 'local'
 }
 
 const EMPTY_LIST = { notifications: [], total: 0, unread_count: 0, connected: false }
@@ -45,7 +45,7 @@ function parseBoundedInt(value: string | undefined, min: number, max: number): n
 
 // GET /api/platform-notifications?status=&limit=&offset= - live list from the platform
 platformNotificationsRouter.get('/', async (c) => {
-  if (!isPlatformConnected()) {
+  if (!(await isPlatformConnected())) {
     return c.json(EMPTY_LIST)
   }
   try {
@@ -56,7 +56,7 @@ platformNotificationsRouter.get('/', async (c) => {
         limit: parseBoundedInt(c.req.query('limit'), 1, 100),
         offset: parseBoundedInt(c.req.query('offset'), 0, Number.MAX_SAFE_INTEGER),
       },
-      getMemberId(),
+      await getMemberId(),
     )
     return c.json({ ...list, connected: true })
   } catch (error) {
@@ -70,11 +70,11 @@ platformNotificationsRouter.get('/', async (c) => {
 
 // GET /api/platform-notifications/unread-count - unread count for the badge
 platformNotificationsRouter.get('/unread-count', async (c) => {
-  if (!isPlatformConnected()) {
+  if (!(await isPlatformConnected())) {
     return c.json({ count: 0 })
   }
   try {
-    const list = await listPlatformNotifications({ status: 'unread', limit: 1 }, getMemberId())
+    const list = await listPlatformNotifications({ status: 'unread', limit: 1 }, await getMemberId())
     return c.json({ count: list.unread_count })
   } catch (error) {
     // Same offline degradation as the list route: a zero badge, not a 502.
@@ -85,7 +85,7 @@ platformNotificationsRouter.get('/unread-count', async (c) => {
 
 // POST /api/platform-notifications/read { ids } - write-through mark-read
 platformNotificationsRouter.post('/read', async (c) => {
-  if (!isPlatformConnected()) {
+  if (!(await isPlatformConnected())) {
     return c.json({ error: 'Platform not connected' }, 409)
   }
   try {
@@ -96,7 +96,7 @@ platformNotificationsRouter.post('/read', async (c) => {
     if (ids.length === 0) {
       return c.json({ error: 'Missing ids array' }, 400)
     }
-    const updated = await markPlatformNotificationsRead(ids, getMemberId())
+    const updated = await markPlatformNotificationsRead(ids, await getMemberId())
     return c.json({ success: true, updated })
   } catch (error) {
     console.error('Failed to mark platform notifications read:', error)
@@ -106,11 +106,11 @@ platformNotificationsRouter.post('/read', async (c) => {
 
 // POST /api/platform-notifications/read-all - mark every unread row read
 platformNotificationsRouter.post('/read-all', async (c) => {
-  if (!isPlatformConnected()) {
+  if (!(await isPlatformConnected())) {
     return c.json({ success: true, updated: 0 })
   }
   try {
-    const memberId = getMemberId()
+    const memberId = await getMemberId()
     // The platform has no bulk endpoint; resolve the unread page (100 covers
     // realistic announcement volume) and ack those ids.
     const unread = await listPlatformNotifications({ status: 'unread', limit: 100 }, memberId)

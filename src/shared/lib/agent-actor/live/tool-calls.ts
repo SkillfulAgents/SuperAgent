@@ -216,7 +216,7 @@ export class ToolCalls {
     }
     this.parkUserInput(toolUse)
     this.hostTool(toolUse)
-    if (this.isScriptRun(name)) this.scriptRun(toolUse)
+    if (this.isScriptRun(name)) background(this.scriptRun(toolUse), { name: 'tool-calls.script-run' })
     if (name.startsWith(COMPUTER_USE_PREFIX)) background(this.computerUse(toolUse), { name: 'tool-calls.computer-use' })
     // Under a 'review' policy the container parks the launch on an approval;
     // the review itself checks the policy and the session's grants.
@@ -229,7 +229,7 @@ export class ToolCalls {
   subagentStreamedToolUse(toolUse: ToolUse, parentToolId: string): void {
     this.parkUserInput(toolUse, parentToolId)
     this.hostTool(toolUse, parentToolId)
-    if (this.isScriptRun(toolUse.name)) this.scriptRun(toolUse, parentToolId)
+    if (this.isScriptRun(toolUse.name)) background(this.scriptRun(toolUse, parentToolId), { name: 'tool-calls.script-run' })
     if (toolUse.name.startsWith(COMPUTER_USE_PREFIX)) background(this.computerUse(toolUse, parentToolId), { name: 'tool-calls.computer-use' })
     if (LAUNCH_TOOLS.has(toolUse.name)) this.ctx.trackSubagentLaunch(toolUse.id, toolUse.input)
     // A nested launch parks on the same approval as a top-level one.
@@ -241,7 +241,7 @@ export class ToolCalls {
     if (LAUNCH_TOOLS.has(toolUse.name)) this.ctx.trackSubagentLaunch(toolUse.id, toolUse.input)
     this.parkUserInput(toolUse, parentToolId)
     this.hostTool(toolUse, parentToolId)
-    if (this.isScriptRun(toolUse.name)) this.scriptRun(toolUse, parentToolId)
+    if (this.isScriptRun(toolUse.name)) background(this.scriptRun(toolUse, parentToolId), { name: 'tool-calls.script-run' })
     if (toolUse.name.startsWith(COMPUTER_USE_PREFIX)) background(this.computerUse(toolUse, parentToolId), { name: 'tool-calls.computer-use' })
   }
 
@@ -482,7 +482,7 @@ export class ToolCalls {
   }
 
   /** A host script: run at once under a use_host_shell grant, otherwise park on an approval. */
-  private scriptRun(toolUse: ToolUse, parentToolUseId?: string): void {
+  private async scriptRun(toolUse: ToolUse, parentToolUseId?: string): Promise<void> {
     let input: RequestScriptRunInput
     try {
       input = JSON.parse(toolUse.input)
@@ -511,7 +511,8 @@ export class ToolCalls {
 
     // Registered either way, flagged when a grant covers it: the client then
     // suppresses any fallback prompt for the brief window before the result.
-    const autoApproved = this.ctx.computerUse.check('use_host_shell') === 'granted'
+    // The persisted grants are a settings read.
+    const autoApproved = (await this.ctx.computerUse.check('use_host_shell')) === 'granted'
     this.register('script_run', toolUse.id, { script: input.script, explanation: input.explanation, scriptType: input.scriptType }, {
       parentToolUseId,
       autoApproved,
@@ -568,7 +569,7 @@ export class ToolCalls {
       }
 
       const payload = { method, params, permissionLevel, appName }
-      if (this.ctx.computerUse.check(permissionLevel, appName, this.ctx.sessionId) === 'granted') {
+      if ((await this.ctx.computerUse.check(permissionLevel, appName, this.ctx.sessionId)) === 'granted') {
         // Registered anyway, flagged so no projection reads it as a wait: the
         // run claims the request it settles, as a decision in the app does.
         this.register('computer_use', toolUse.id, payload, { parentToolUseId, autoApproved: true })
@@ -599,7 +600,7 @@ export class ToolCalls {
   private async capabilityReview(toolUse: ToolUse): Promise<void> {
     try {
       const capability: Capability = toolUse.name === 'Workflow' ? 'workflows' : 'subagents'
-      if (getAgentCapabilitySettings()[capability] !== 'review') return
+      if ((await getAgentCapabilitySettings())[capability] !== 'review') return
       if (this.ctx.capabilityGranted(capability)) return
 
       // The grant mirror here is only a fast path: the container's persisted

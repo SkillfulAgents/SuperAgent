@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { z } from 'zod'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
+import { installTestAppRecordStore } from '../app-records/testing/memory-record-store'
 import type { AppDatabase } from '../db/drivers/types'
 import { authAccount, authSession, user } from '../db/schema'
 
@@ -43,8 +44,8 @@ const sessionSchema = z.object({
   user: z.object({ id: z.string(), mustChangePassword: z.boolean() }),
 }).nullable()
 
-function request(endpoint: string, body?: Record<string, unknown>, headers: Record<string, string> = {}) {
-  return getAuth().handler(new Request(`${BASE}/api/auth/${endpoint}`, {
+async function request(endpoint: string, body?: Record<string, unknown>, headers: Record<string, string> = {}) {
+  return (await getAuth()).handler(new Request(`${BASE}/api/auth/${endpoint}`, {
     method: body ? 'POST' : 'GET',
     headers: { origin: BASE, 'content-type': 'application/json', ...headers },
     ...(body ? { body: JSON.stringify(body) } : {}),
@@ -91,6 +92,8 @@ async function sessionRow(token: string) {
 beforeEach(async () => {
   vi.stubEnv('AUTH_MODE', 'true')
   vi.stubEnv('BETTER_AUTH_SECRET', 'password-session-test-secret-0123456789abcdef0123456789abcdef')
+  // Host records (the auth secret falls back to one) live in the app record store.
+  installTestAppRecordStore()
   vi.stubEnv('TRUSTED_ORIGINS', BASE)
   vi.stubEnv('AUTH_PROVIDERS_JSON', '[]')
   vi.stubEnv('PLATFORM_TOKEN', '')
@@ -201,7 +204,7 @@ describe('password changes and session continuity', () => {
     await requirePasswordChange(first.user.id)
     const accountsBefore = await testDb.select().from(authAccount)
     const sessionsBefore = await testDb.select().from(authSession)
-    const adapter = (await getAuth().$context).internalAdapter
+    const adapter = (await (await getAuth()).$context).internalAdapter
     const failedRevoke = vi.spyOn(adapter, 'deleteUserSessions').mockRejectedValueOnce(new Error('Injected session revocation failure'))
 
     const changed = await request('change-password', {
@@ -221,7 +224,7 @@ describe('password changes and session continuity', () => {
     const first = await signUp()
     const second = await signIn(first.user.email)
     await requirePasswordChange(first.user.id)
-    const adapter = (await getAuth().$context).internalAdapter
+    const adapter = (await (await getAuth()).$context).internalAdapter
     const failedCreate = vi.spyOn(adapter, 'createSession').mockRejectedValueOnce(new Error('Injected session creation failure'))
 
     const changed = await request('change-password', {

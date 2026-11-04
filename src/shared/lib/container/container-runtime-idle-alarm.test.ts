@@ -44,7 +44,7 @@ vi.mock('@shared/lib/proxy/token-store', () => ({
 }))
 
 vi.mock('@shared/lib/container/host-token-store', () => ({
-  getOrCreateHostToken: vi.fn(() => 'test-host-token'),
+  getOrCreateHostToken: vi.fn(async () => 'test-host-token'),
 }))
 
 vi.mock('@shared/lib/proxy/host-url', () => ({
@@ -71,12 +71,11 @@ vi.mock('drizzle-orm', () => ({
   eq: (col: string, val: string) => ({ col, val }),
 }))
 
-// The timeout is read at every arm, so the tests change it in place.
+// The timeout is read at every arm and every fire, so the tests change it in place.
 const settings = { container: { agentImage: 'test-image', containerRunner: 'docker' }, app: { autoSleepTimeoutMinutes: 30 } }
 
 vi.mock('@shared/lib/config/settings', () => ({
-  getSettings: () => settings,
-  updateSettings: vi.fn(),
+  getSettings: async () => settings,
 }))
 
 vi.mock('@shared/lib/config/data-dir', () => ({
@@ -143,10 +142,14 @@ describe('ContainerRuntime idle alarm', () => {
     vi.restoreAllMocks()
   })
 
+  /** Let the alarm's timeout read land (it is a settings read), without moving the clock. */
+  const settle = () => vi.advanceTimersByTimeAsync(0)
+
   async function startRuntime() {
     const runtime = containerHost.runtime(SLUG)
     await runtime.ensureRunning()
     expect(runtime.getCachedInfo().status).toBe('running')
+    await settle()
     return runtime
   }
 
@@ -214,6 +217,17 @@ describe('ContainerRuntime idle alarm', () => {
     expect(mockStop).toHaveBeenCalledTimes(1)
   })
 
+  it('a timeout changed elsewhere, with nothing here re-arming, applies when the alarm fires', async () => {
+    await startRuntime()
+    // Another process lengthened it: the alarm fires on the old deadline,
+    // reads the new timeout, and waits out the rest.
+    settings.app.autoSleepTimeoutMinutes = 60
+    await vi.advanceTimersByTimeAsync(TIMEOUT + 1)
+    expect(mockStop).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(TIMEOUT)
+    expect(mockStop).toHaveBeenCalledTimes(1)
+  })
+
   it('retries when the stop did not complete, and gives up once the container is gone', async () => {
     mockStop.mockResolvedValueOnce({ forceStopUsed: false, stopped: false })
     const runtime = await startRuntime()
@@ -240,6 +254,7 @@ describe('ContainerRuntime idle alarm', () => {
     expect(mockStop).not.toHaveBeenCalled()
 
     await runtime.ensureRunning()
+    await settle()
     expect(runtime.idleAlarm.isArmed()).toBe(true)
     await vi.advanceTimersByTimeAsync(TIMEOUT + 1)
     expect(mockStop).toHaveBeenCalledTimes(1)
@@ -260,6 +275,7 @@ describe('ContainerRuntime idle alarm', () => {
 
     finishStart({ status: 'running', port: 4001 })
     await starting
+    await settle()
     expect(runtime.getCachedInfo().status).toBe('running')
     // The start is the newest mark: a full window from now, not the stale one.
     expect(runtime.idleAlarm.isArmed()).toBe(true)
@@ -282,10 +298,10 @@ describe('ContainerRuntime idle alarm', () => {
     expect(mockStop).not.toHaveBeenCalled()
 
     // The next sync sees it running: the clock was never reset, so the alarm
-    // arms from the original start mark, which is already past the timeout.
+    // arms from the original start mark, which is already past the timeout,
+    // and fires as soon as its timeout read lands.
     await runtime.syncAgentStatus()
     expect(runtime.getCachedInfo().status).toBe('running')
-    expect(runtime.idleAlarm.isArmed()).toBe(true)
     await vi.advanceTimersByTimeAsync(0)
     expect(mockStop).toHaveBeenCalledTimes(1)
     expect(runtime.getCachedInfo().status).toBe('stopped')

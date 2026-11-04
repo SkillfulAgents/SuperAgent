@@ -1,6 +1,7 @@
 import { IMessageConnector } from './imessage-connector'
 import { MockChatAgentIntegration } from './mock-connector'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 
 // ---------------------------------------------------------------------------
 // `integrationCreated` is fire-and-forget from two create routes, so its guarantees
@@ -53,6 +54,11 @@ function mockIntegration(provider: string, name?: string | null): void {
 function mockAgent(): void {
   vi.mocked(getAgentRecord).mockResolvedValue({ name: 'Ada', description: 'Triages inbox' } as never)
 }
+
+// Settings and host records are app records: a fresh in-memory store per test.
+beforeEach(() => {
+  installTestAppRecordStore()
+})
 
 describe('integrationCreated', () => {
   beforeEach(async () => {

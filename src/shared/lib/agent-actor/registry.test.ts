@@ -96,7 +96,7 @@ function fakeDeps() {
   // One fake runtime per slug, created the way the real host creates them: on first use.
   const fakeRuntime = (slug: string) => ({
     slug,
-    getClient: vi.fn().mockReturnValue(client),
+    getClient: vi.fn().mockResolvedValue(client),
     ensureRunning: vi.fn().mockResolvedValue(client),
     getCachedInfo: vi.fn().mockReturnValue({ status: 'running', port: 4321 }),
     keepAlive: vi.fn(),
@@ -623,7 +623,7 @@ describe('createAgentRegistry', () => {
       expect(freshLive.pendingReviews).toEqual([])
       expect(await fresh.inputs.recentResolution('q1')).toBeUndefined()
       expect(fresh.state.computerUse.grabbed()).toBeUndefined()
-      expect(fresh.state.computerUse.activeGrants()).toEqual([])
+      expect(await fresh.state.computerUse.activeGrants()).toEqual([])
       expect(fresh.state.accountReauth.openEntryIds()).toEqual([])
       expect(fresh.state.mcpReauth.openEntryIds()).toEqual([])
       expect(getSessionSummaryCacheSlot(fresh.store).revision).toBe(0)

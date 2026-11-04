@@ -175,7 +175,11 @@ export class ContainerHost {
     return false
   }
 
-  /** The auto-sleep timeout changed: every runtime re-arms its idle alarm against the new value. */
+  /**
+   * The auto-sleep timeout changed: every runtime re-arms its idle alarm
+   * against the new value. Returns before the alarms are armed; each reads
+   * the timeout fresh (see `IdleAlarm.schedule`).
+   */
   rearmIdleAlarms(): void {
     for (const runtime of this.runtimes.values()) runtime.idleAlarm.schedule()
   }
@@ -222,7 +226,7 @@ export class ContainerHost {
 
     // Create clients for all agents (this registers them for sync)
     for (const slug of agentSlugs) {
-      this.runtime(slug).getClient()
+      await this.runtime(slug).getClient()
     }
 
     // Sync all statuses
@@ -491,12 +495,12 @@ export class ContainerHost {
       return
     }
 
-    let settings = getSettings()
+    const settings = await getSettings()
     const image = settings.container.agentImage
 
     // Step 1: Check configured runner availability
     // We check the *configured* runner specifically (not a fallback) because
-    // createContainerClient() always uses the configured runner.
+    // a runtime's getClient() always builds for the configured runner.
     let configuredRunner = settings.container.containerRunner as ContainerRunner
 
     this.setReadiness({
@@ -592,9 +596,9 @@ export class ContainerHost {
         if (alternativeRunner) {
           console.log(`Configured runner ${configuredRunner} not available, auto-switching to ${alternativeRunner.runner}`)
           configuredRunner = alternativeRunner.runner as ContainerRunner
-          // Serialized fresh-read + atomic write; re-bind the local
-          // snapshot to the persisted result so later reads see fresh state.
-          settings = mutateSettings((s) => {
+          // Compare-and-set write. Each runtime's getClient() reads the runner
+          // fresh and replaces a client built for another one on its next use.
+          await mutateSettings((s) => {
             s.container.containerRunner = configuredRunner
           })
         } else {

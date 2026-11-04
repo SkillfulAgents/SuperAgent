@@ -51,8 +51,8 @@ export abstract class BaseWebProvider {
   fetch?(url: string, opts: WebFetchOptions): Promise<WebFetchResult>
 
   /** Check whether an API key is configured and its source. */
-  getApiKeyStatus(): ApiKeyStatus {
-    const settings = getSettings()
+  async getApiKeyStatus(): Promise<ApiKeyStatus> {
+    const settings = await getSettings()
     if (this.settingsKeyField && settings.apiKeys?.[this.settingsKeyField]) {
       return { isConfigured: true, source: 'settings' }
     }
@@ -63,8 +63,8 @@ export abstract class BaseWebProvider {
   }
 
   /** Get the effective API key (settings take precedence over env var). */
-  getEffectiveApiKey(): string | undefined {
-    const settings = getSettings()
+  async getEffectiveApiKey(): Promise<string | undefined> {
+    const settings = await getSettings()
     const fromSettings = this.settingsKeyField ? settings.apiKeys?.[this.settingsKeyField] : undefined
     if (fromSettings) return fromSettings
     return this.envVarName ? process.env[this.envVarName] : undefined

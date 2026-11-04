@@ -179,7 +179,7 @@ agentIntegrationsRouter.get('/agents/:id/providers/:provider/setup', ResolveAgen
     const provider = c.req.param('provider')
     await assertIntegrationAvailable(provider)
     const { name } = integrationSetupQuerySchema.parse(c.req.query())
-    const context = integrationSetupContext(provider, c.req.raw, getAgentId(c), getCurrentUserId(c))
+    const context = await integrationSetupContext(provider, c.req.raw, getAgentId(c), getCurrentUserId(c))
     const metadata = await getIntegrationSetup(provider).describe?.(context, name) ?? {}
     const transports = supportedTransports(agentIntegrationRegistry.getDefinition(provider)!)
     return c.json(integrationSetupMetadataSchema.parse({ ...metadata, transports }))
@@ -211,7 +211,7 @@ async function createIntegration(c: Parameters<MiddlewareHandler>[0]) {
       return c.json({ error: 'Missing required fields: provider, config' }, 400)
     }
     await assertConnectionSelectionAccess(llmProviderId)
-    const prepared = await prepareIntegrationSetup(provider, config, integrationSetupContext(provider, c.req.raw, agentSlug, getCurrentUserId(c)))
+    const prepared = await prepareIntegrationSetup(provider, config, await integrationSetupContext(provider, c.req.raw, agentSlug, getCurrentUserId(c)))
 
     // Get the authenticated user ID if available
     const user = c.get('user' as never) as { id: string } | undefined
@@ -292,7 +292,7 @@ agentIntegrationsRouter.post('/:integrationId/authorize', IntegrationAgentRole('
     const authorization = getIntegrationSetup(row.provider).authorize
     if (!authorization) return c.json({ error: 'This provider does not use external authorization' }, 400)
     const input = authorization.inputSchema.parse(await c.req.json())
-    const result = await authorization.run(row, input, integrationSetupContext(row.provider, c.req.raw, row.agentSlug, getCurrentUserId(c)))
+    const result = await authorization.run(row, input, await integrationSetupContext(row.provider, c.req.raw, row.agentSlug, getCurrentUserId(c)))
     // Validation, credential lookup and attempt persistence may fail. Keep the
     // current account running until the provider has a usable authorization URL.
     await agentIntegrationManager.pauseIntegration(row.id)

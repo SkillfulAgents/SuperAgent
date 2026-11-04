@@ -7,6 +7,7 @@ import { PNG } from 'pngjs'
 import { createOidcTestServer, completeOidcLogin, type OidcTestServer } from '@shared/lib/auth/testing/oidc-server'
 import { handleAuthRequest } from '@shared/lib/auth/handler'
 import Database from 'better-sqlite3'
+import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 
 let directory: string
 let db: typeof import('@shared/lib/db')
@@ -31,6 +32,7 @@ beforeAll(async () => {
   }]))
   db = await import('@shared/lib/db')
   await db.openDatabase()
+  installTestAppRecordStore()
   // A second connection to the same file for raw seeding and assertions.
   sqlite = new Database(path.join(directory, 'superagent.db'))
   authModule = await import('@shared/lib/auth')
@@ -57,7 +59,7 @@ afterAll(async () => {
 })
 
 async function login() {
-  return authModule.getAuth().api.signUpEmail({ body: { name: 'Ada Lovelace', email: 'ada@example.com', password: 'TestingPassword123!' } })
+  return (await authModule.getAuth()).api.signUpEmail({ body: { name: 'Ada Lovelace', email: 'ada@example.com', password: 'TestingPassword123!' } })
 }
 function png(): Buffer {
   const image = new PNG({ width: 4, height: 4 })
@@ -72,7 +74,7 @@ describe('profile avatar API', () => {
   it('stores an override, returns an authenticated image, refreshes the session, and restores the provider photo', async () => {
     const signedIn = await login()
     const headers = { authorization: `Bearer ${signedIn.token}` }
-    await (await authModule.getAuth().$context).internalAdapter.updateUser(signedIn.user.id, { image: 'https://example.com/provider.png' })
+    await (await (await authModule.getAuth()).$context).internalAdapter.updateUser(signedIn.user.id, { image: 'https://example.com/provider.png' })
     const response = await upload(signedIn.token!)
     expect(response.status).toBe(200)
     const { avatarOverride } = await response.json()
@@ -82,7 +84,7 @@ describe('profile avatar API', () => {
     expect(image.headers.get('cache-control')).toContain('private')
     expect(PNG.sync.read(Buffer.from(await image.arrayBuffer())).width).toBe(4)
     expect((await app.request(avatarOverride)).status).toBe(401)
-    const session = await authModule.getAuth().api.getSession({ headers: new Headers(headers) })
+    const session = await (await authModule.getAuth()).api.getSession({ headers: new Headers(headers) })
     expect(session?.user.avatarOverride).toBe(avatarOverride)
     expect(session?.user.image).toBe('https://example.com/provider.png')
     expect((await app.request('/api/profile/avatar', { method: 'DELETE', headers })).status).toBe(200)
@@ -113,7 +115,7 @@ describe('profile avatar API', () => {
     const { avatarOverride } = await (await upload(signedIn.token!)).json()
     const file = path.join(directory, 'profile-photos', path.basename(avatarOverride))
     expect(fs.existsSync(file)).toBe(true)
-    await (await authModule.getAuth().$context).internalAdapter.deleteUser(signedIn.user.id)
+    await (await (await authModule.getAuth()).$context).internalAdapter.deleteUser(signedIn.user.id)
     expect(fs.existsSync(file)).toBe(false)
   })
 
@@ -138,7 +140,7 @@ describe('profile avatar API', () => {
 
   it('only writes the signed-in user and does not accept an override through update-user', async () => {
     const signedIn = await login()
-    const response = await authModule.getAuth().handler(new Request(`${base}/api/auth/update-user`, {
+    const response = await (await authModule.getAuth()).handler(new Request(`${base}/api/auth/update-user`, {
       method: 'POST', headers: { authorization: `Bearer ${signedIn.token}`, 'content-type': 'application/json', origin: base },
       body: JSON.stringify({ avatarOverride: '/api/profile/images/00000000-0000-4000-8000-000000000001.png' }),
     }))

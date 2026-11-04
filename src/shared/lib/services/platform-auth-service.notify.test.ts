@@ -10,6 +10,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
+import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 
 let tempDataDir: string
 let prevDataDir: string | undefined
@@ -18,6 +19,8 @@ beforeAll(async () => {
   prevDataDir = process.env.SUPERAGENT_DATA_DIR
   tempDataDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'platform-notify-'))
   process.env.SUPERAGENT_DATA_DIR = tempDataDir
+  // Settings (where the platform connection lives) are app records.
+  installTestAppRecordStore()
 })
 
 afterAll(async () => {

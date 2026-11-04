@@ -97,7 +97,7 @@ describe('PlatformK8sRuntimeClient manifests', () => {
     delete process.env.K8S_AGENT_IMAGE
   })
 
-  it('builds agent pod manifest with runtime-owned labels, injected metadata, and workspace subPath', () => {
+  it('builds agent pod manifest with runtime-owned labels, injected metadata, and workspace subPath', async () => {
     const config: ContainerConfig = {
       agentId: 'agent-with-spaces',
       envVars: { EXTRA_ENV: 'extra' },
@@ -106,7 +106,7 @@ describe('PlatformK8sRuntimeClient manifests', () => {
     // buildAgentPodManifest is a pure serializer now: it maps the FINAL env
     // (built by the client via buildAgentEnv) into pod env entries. Pass the
     // already-merged env and assert it round-trips.
-    const pod = buildAgentPodManifest(kube, 'superagent-agent-with-spaces-12345678', config, {
+    const pod = await buildAgentPodManifest(kube, 'superagent-agent-with-spaces-12345678', config, {
       ANTHROPIC_API_KEY: 'test-key',
       EXTRA_ENV: 'extra',
       RUNTIME_ENV: 'runtime',
@@ -156,12 +156,12 @@ describe('PlatformK8sRuntimeClient manifests', () => {
     })
   })
 
-  it('uses settings resourceLimits in the pod manifest', () => {
+  it('uses settings resourceLimits in the pod manifest', async () => {
     mockGetSettings.mockReturnValue({
       container: { agentImage: 'settings-agent-image', resourceLimits: { cpu: 4, memory: '8g' } },
       enableToolSearch: true,
     })
-    const pod = buildAgentPodManifest(kube, 'superagent-a', { agentId: 'a', envVars: {} }, {})
+    const pod = await buildAgentPodManifest(kube, 'superagent-a', { agentId: 'a', envVars: {} }, {})
     const container = (pod.spec?.containers as Array<{ resources: unknown }>)[0]
     expect(container.resources).toEqual({
       requests: { cpu: '4', memory: '8Gi' },
@@ -189,7 +189,7 @@ describe('PlatformK8sRuntimeClient manifests', () => {
     expect(service.spec?.ports).toEqual([{ name: 'http', port: 3000, targetPort: 3000 }])
   })
 
-  it('never lets extraLabels or extraAnnotations override runtime-owned metadata', () => {
+  it('never lets extraLabels or extraAnnotations override runtime-owned metadata', async () => {
     const hostile: KubeConfig = {
       ...kube,
       extraLabels: {
@@ -204,7 +204,7 @@ describe('PlatformK8sRuntimeClient manifests', () => {
       },
     }
 
-    const pod = buildAgentPodManifest(hostile, 'superagent-a', { agentId: 'a', envVars: {} }, {})
+    const pod = await buildAgentPodManifest(hostile, 'superagent-a', { agentId: 'a', envVars: {} }, {})
     expect(pod.metadata.labels).toMatchObject({
       'app.kubernetes.io/managed-by': 'superagent',
       'app.kubernetes.io/component': 'agent',
@@ -224,27 +224,27 @@ describe('PlatformK8sRuntimeClient manifests', () => {
     expect(service.spec?.selector).toEqual({ 'app.kubernetes.io/instance': 'superagent-a' })
   })
 
-  it('mounts <agentId>/workspace directly when no subPath prefix is configured', () => {
+  it('mounts <agentId>/workspace directly when no subPath prefix is configured', async () => {
     const noPrefix: KubeConfig = { ...kube, workspaceSubPathPrefix: '' }
-    const pod = buildAgentPodManifest(noPrefix, 'superagent-a', { agentId: 'a', envVars: {} }, {})
+    const pod = await buildAgentPodManifest(noPrefix, 'superagent-a', { agentId: 'a', envVars: {} }, {})
     const container = (pod.spec?.containers as Array<{ volumeMounts: Array<{ subPath: string }> }>)[0]
     expect(container.volumeMounts[0].subPath).toBe('a/workspace')
   })
 
-  it('stamps ownerReferences on pod and service for cluster GC when provided', () => {
+  it('stamps ownerReferences on pod and service for cluster GC when provided', async () => {
     const owner: OwnerReference = {
       apiVersion: 'v1', kind: 'Pod', name: 'host-app-xyz', uid: 'uid-123',
       controller: false, blockOwnerDeletion: false,
     }
-    const pod = buildAgentPodManifest(kube, 'superagent-a', { agentId: 'a', envVars: {} }, {}, owner)
+    const pod = await buildAgentPodManifest(kube, 'superagent-a', { agentId: 'a', envVars: {} }, {}, owner)
     const service = buildAgentServiceManifest(kube, 'superagent-a', 'superagent-a', owner)
 
     expect(pod.metadata.ownerReferences).toEqual([owner])
     expect(service.metadata.ownerReferences).toEqual([owner])
   })
 
-  it('omits ownerReferences when none is resolved', () => {
-    const pod = buildAgentPodManifest(kube, 'superagent-a', { agentId: 'a', envVars: {} }, {}, null)
+  it('omits ownerReferences when none is resolved', async () => {
+    const pod = await buildAgentPodManifest(kube, 'superagent-a', { agentId: 'a', envVars: {} }, {}, null)
     expect(pod.metadata.ownerReferences).toBeUndefined()
   })
 })

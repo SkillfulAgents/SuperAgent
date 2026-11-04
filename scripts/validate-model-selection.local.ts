@@ -9,9 +9,10 @@
  * Run from the repo root:
  *   npx tsx scripts/validate-model-selection.local.ts
  *
- * Reads the Anthropic API key from the dev settings file
- * (~/Library/Application Support/Superagent-dev/settings.json) so this works
- * out of the box on the developer machine.
+ * Reads the Anthropic API key from the dev install's settings
+ * (~/Library/Application Support/Superagent-dev: its database, or settings.json
+ * before that install imported it) so this works out of the box on the
+ * developer machine.
  */
 import * as fs from 'fs'
 import * as path from 'path'
@@ -20,19 +21,16 @@ import * as os from 'os'
 import { containerHost } from '../src/shared/lib/container/container-host'
 import { createAgent, agentExists } from '../src/shared/lib/services/agent-service'
 import { getSessionJsonlPath } from '../src/shared/lib/utils/file-storage'
+import { openDatabase } from '../src/shared/lib/db'
+import { dbAppRecordStore } from '../src/shared/lib/app-records/record-store'
+import { installAppRecordStore } from '../src/shared/lib/app-records/records'
+import { readInstallSettings } from '../e2e/live/lib/install-settings.mjs'
 
-const DEV_SETTINGS = path.join(
-  os.homedir(),
-  'Library/Application Support/Superagent-dev/settings.json'
-)
+const DEV_DATA_DIR = path.join(os.homedir(), 'Library/Application Support/Superagent-dev')
 
 function loadDevAnthropicKey(): string {
-  if (!fs.existsSync(DEV_SETTINGS)) {
-    throw new Error(`Dev settings not found at ${DEV_SETTINGS}`)
-  }
-  const raw = JSON.parse(fs.readFileSync(DEV_SETTINGS, 'utf-8')) as { apiKeys?: { anthropicApiKey?: string } }
-  const key = raw.apiKeys?.anthropicApiKey
-  if (!key) throw new Error('No anthropicApiKey in dev settings.json')
+  const key = readInstallSettings(DEV_DATA_DIR)?.apiKeys?.anthropicApiKey
+  if (typeof key !== 'string' || !key) throw new Error(`No anthropicApiKey in the settings of ${DEV_DATA_DIR}`)
   return key
 }
 
@@ -74,6 +72,8 @@ async function waitForAssistantTurn(jsonlPath: string, sinceCount: number, timeo
 async function main(): Promise<void> {
   // Inject the real key into env so the container env-var injection picks it up.
   process.env.ANTHROPIC_API_KEY = loadDevAnthropicKey()
+  // Settings and the agent catalog live in this process's own database.
+  installAppRecordStore(dbAppRecordStore(await openDatabase()))
 
   const agentSlug = `validate-model-${Date.now()}`
   if (!(await agentExists(agentSlug))) {

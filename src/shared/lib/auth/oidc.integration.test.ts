@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq, sql } from 'drizzle-orm'
 import { createTestDatabase, type TestDatabase } from '../db/testing/create-test-database'
+import { installTestAppRecordStore } from '../app-records/testing/memory-record-store'
 import type { AppDatabase } from '../db/drivers/types'
 import { auditLog, authAccount, authSession, user } from '../db/schema'
 import {
@@ -48,6 +49,8 @@ beforeEach(async () => {
   oidc.state.acceptedRedirectUri = `${BASE}/api/auth/oauth2/callback/platform`
   vi.stubEnv('AUTH_MODE', 'true')
   vi.stubEnv('BETTER_AUTH_SECRET', 'oidc-test-secret-0123456789abcdef0123456789abcdef')
+  // Host records (the auth secret falls back to one) live in the app record store.
+  installTestAppRecordStore()
   vi.stubEnv('TRUSTED_ORIGINS', BASE)
   vi.stubEnv('AUTH_PROVIDERS_JSON', JSON.stringify([{
     id: 'platform', type: 'oidc', issuer: oidc.state.issuer, clientId: 'test-client',
@@ -121,7 +124,7 @@ describe('OIDC callback compatibility', () => {
   })
 
   it('links the existing unverified password account and keeps subject identity stable across email changes', async () => {
-    const local = await getAuth().api.signUpEmail({
+    const local = await (await getAuth()).api.signUpEmail({
       body: { name: 'Local Name', email: 'ada@example.com', password: 'ExistingPassword123!' },
     })
     expect(local.user.emailVerified).toBe(false)
@@ -209,7 +212,7 @@ describe('OIDC rejection boundaries', () => {
 
   it('recovers after failed first-use discovery without restarting the app', async () => {
     oidc.state.discoveryUnavailable = true
-    await getAuth().$context
+    await (await getAuth()).$context
     expect(oidc.state.discoveryRequests).toBe(0)
     const failed = await request('sign-in/social', { provider: 'platform', callbackURL: `${BASE}/` })
     expect(failed.status).toBe(404)
@@ -273,7 +276,7 @@ describe('direct provider ID-token sign-in', () => {
     // Approval is disabled on platform-controlled deployments. Use a plain
     // auth deployment to exercise the admin approval hook itself.
     vi.stubEnv('PLATFORM_TOKEN', '')
-    await getAuth().api.signUpEmail({
+    await (await getAuth()).api.signUpEmail({
       body: { name: 'First Admin', email: 'admin@example.com', password: 'FirstAdminPassword123!' },
     })
     authSettings.requireAdminApproval = true
@@ -315,13 +318,13 @@ describe('platform role on join', () => {
     return responseCookies(finish)
   }
   async function seedOtherMember() {
-    await getAuth().api.signUpEmail({
+    await (await getAuth()).api.signUpEmail({
       body: { name: 'Earlier Member', email: 'earlier@example.com', password: 'EarlierPassword123!' },
     })
   }
 
   it('promotes nobody for arriving first outside a Platform sign-in', async () => {
-    await getAuth().api.signUpEmail({
+    await (await getAuth()).api.signUpEmail({
       body: { name: 'Earliest', email: 'earliest@example.com', password: 'EarliestPassword123!' },
     })
     expect(await roleOf('earliest@example.com')).toBe('user')
@@ -353,7 +356,7 @@ describe('platform role on join', () => {
 
   it('keeps the role of an existing password user who links Platform', async () => {
     await seedOtherMember()
-    await getAuth().api.signUpEmail({
+    await (await getAuth()).api.signUpEmail({
       body: { name: 'Ada Lovelace', email: 'ada@example.com', password: 'ExistingPassword123!' },
     })
     await signIn('owner')
@@ -383,7 +386,7 @@ describe('platform role on join', () => {
   })
 
   it('does not report a missing role when linking an existing user', async () => {
-    await getAuth().api.signUpEmail({
+    await (await getAuth()).api.signUpEmail({
       body: { name: 'Ada Lovelace', email: 'ada@example.com', password: 'ExistingPassword123!' },
     })
     await signIn(undefined)

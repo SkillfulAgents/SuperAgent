@@ -3066,7 +3066,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     return this.getInfoFromRuntime()
   }
 
-  getHostAuthHeaders(): Record<string, string> {
+  async getHostAuthHeaders(): Promise<Record<string, string>> {
     return {}
   }
 
@@ -3534,7 +3534,7 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
     if (!options.initialMessage) throw new Error('initialMessage is required')
     // Resolve the selection exactly as the real container client does, so E2E
     // assertions see the concrete wire id the SDK would receive.
-    const model = resolveContainerModel(options.model, 'agent')
+    const model = await resolveContainerModel(options.model, 'agent')
     // Record for E2E test assertions
     MockContainerClient.lastCreateSessionCall = {
       effort: options.effort,
@@ -3708,15 +3708,15 @@ export class MockContainerClient extends EventEmitter implements ContainerClient
 
   async sendMessage(sessionId: string, content: string, uuid?: string, options?: SendMessageOptions): Promise<SendMessageResult> {
     // Resolve like the real container client so E2E sees the concrete wire id.
-    let model = resolveContainerModel(options?.model, 'agent')
+    let model = await resolveContainerModel(options?.model, 'agent')
     const result: SendMessageResult = {}
-    if (getSettings().llmDefault && !options?.preserveRuntime) {
+    if ((await getSettings()).llmDefault && !options?.preserveRuntime) {
       const { agentRegistry } = await import('../agent-actor')
       const actor = agentRegistry.get(this.config.agentId)
       const metadata = options?.sessionMetadata !== undefined ? options.sessionMetadata : await actor.sessions.metadata(sessionId)
       const selected = await resolveSelectionHierarchy(
-        storedSelection(options?.model, options?.llmProviderId !== undefined ? options.llmProviderId : metadata?.llmProviderId),
-        storedSelection(metadata?.model, metadata?.llmProviderId),
+        await storedSelection(options?.model, options?.llmProviderId !== undefined ? options.llmProviderId : metadata?.llmProviderId),
+        await storedSelection(metadata?.model, metadata?.llmProviderId),
         async () => {
           const preferences = await actor.config.get('preferences')
           return storedSelection(preferences?.defaultModel, preferences?.defaultLlmProviderId)

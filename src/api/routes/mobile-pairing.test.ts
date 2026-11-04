@@ -14,6 +14,7 @@ import os from 'os'
 import path from 'path'
 import crypto from 'crypto'
 import { Hono } from 'hono'
+import type { AuthSettings } from '@shared/lib/config/settings'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -36,14 +37,11 @@ function wipeAuthTables(): void {
   }
 }
 
-async function writeAuthSettings(auth: Record<string, unknown>): Promise<void> {
-  const settingsPath = path.join(tmpDir, 'settings.json')
-  const current = fs.existsSync(settingsPath)
-    ? JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))
-    : {}
-  fs.writeFileSync(settingsPath, JSON.stringify({ ...current, auth }))
-  const { clearSettingsCache } = await import('@shared/lib/config/settings')
-  clearSettingsCache()
+async function writeAuthSettings(auth: AuthSettings): Promise<void> {
+  const { mutateSettings } = await import('@shared/lib/config/settings')
+  await mutateSettings((s) => {
+    s.auth = auth
+  })
 }
 
 let userCounter = 0
@@ -52,7 +50,7 @@ async function signUpUser(): Promise<{ token: string; userId: string; email: str
   const { getAuth } = await import('@shared/lib/auth/index')
   userCounter += 1
   const email = `user${userCounter}-${crypto.randomUUID().slice(0, 8)}@example.com`
-  const res = await getAuth().api.signUpEmail({
+  const res = await (await getAuth()).api.signUpEmail({
     body: { email, password: 'CorrectHorseBattery1!', name: `User ${userCounter}` },
   })
   if (!res.token || !res.user) throw new Error('signup did not return a session')
@@ -139,6 +137,9 @@ beforeAll(async () => {
 
   dbModule = await import('@shared/lib/db')
   await dbModule.openDatabase()
+  // Settings live in the app record store.
+  const { installTestAppRecordStore } = await import('@shared/lib/app-records/testing/memory-record-store')
+  installTestAppRecordStore()
   // A second connection to the same file for raw seeding and assertions.
   sqlite = new Database(path.join(tmpDir, 'superagent.db'))
 
@@ -205,7 +206,7 @@ describe('minting pairing tokens', () => {
     const { userId } = await signUpUser()
     const { getAuth } = await import('@shared/lib/auth/index')
     const { withSessionAuditContext } = await import('@shared/lib/auth/session-audit')
-    const ctx = await getAuth().$context
+    const ctx = await (await getAuth()).$context
     const session = await withSessionAuditContext({ method: 'token-exchange' }, () =>
       ctx.internalAdapter.createSession(userId, false, {
         userAgent: 'token-exchange',
@@ -222,7 +223,7 @@ describe('minting pairing tokens', () => {
       const { userId } = await signUpUser()
       const { getAuth } = await import('@shared/lib/auth/index')
       const { withSessionAuditContext } = await import('@shared/lib/auth/session-audit')
-      const ctx = await getAuth().$context
+      const ctx = await (await getAuth()).$context
       const session = await withSessionAuditContext({ method }, () =>
         ctx.internalAdapter.createSession(userId, false, {
           userAgent: method,

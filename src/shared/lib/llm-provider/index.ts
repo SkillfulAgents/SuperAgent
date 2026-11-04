@@ -39,6 +39,7 @@ export type {
 } from './model-catalog-schema'
 export {
   getEffectiveCatalog,
+  effectiveCatalogFrom,
   getProviderCatalog,
   getModelDefinition,
   getModelContextWindow,
@@ -46,20 +47,23 @@ export {
   getModelPromptHints,
   hasVersionSegment,
   resolveModelForProvider,
+  resolveModelForProviderFrom,
 } from './model-catalog'
+export type { CatalogSettings } from './model-catalog'
 
 import type { LlmProviderId } from './provider-types'
 import type { ModelPurpose, ProviderDefaultModelOption } from './base-llm-provider'
 import { BaseLlmProvider, type ProviderConfiguration } from './base-llm-provider'
 import type { ModelDefinition } from './model-catalog-schema'
-import { getEffectiveCatalog, getProviderCatalog, resolveModelForProvider } from './model-catalog'
+import type { ModelCatalogSettings } from './model-catalog-schema'
+import { effectiveCatalogFrom, getProviderCatalog, resolveModelForProviderFrom } from './model-catalog'
 import { AnthropicLlmProvider } from './anthropic-provider'
 import { ClaudeSubscriptionLlmProvider } from './claude-subscription-provider'
 import { OpenRouterLlmProvider } from './openrouter-provider'
 import { BedrockLlmProvider } from './bedrock-provider'
 import { PlatformLlmProvider } from './platform-provider'
 import { GenericLlmProvider } from './generic-provider'
-import { getSettings } from '../config/settings'
+import { getSettings, type AppSettings } from '../config/settings'
 
 const providers: Record<LlmProviderId, BaseLlmProvider> = {
   anthropic: new AnthropicLlmProvider(),
@@ -98,8 +102,12 @@ export function getLlmProvider(id: LlmProviderId): BaseLlmProvider {
 }
 
 /** Get the active (user-selected) LLM provider. */
-export function getActiveLlmProvider(): BaseLlmProvider {
-  const settings = getSettings()
+export async function getActiveLlmProvider(): Promise<BaseLlmProvider> {
+  return activeLlmProviderFrom(await getSettings())
+}
+
+/** {@link getActiveLlmProvider} from settings already read. */
+export function activeLlmProviderFrom(settings: Pick<AppSettings, 'llmProvider'>): BaseLlmProvider {
   const id = (settings.llmProvider ?? 'anthropic') as LlmProviderId
   return getLlmProvider(id)
 }
@@ -109,8 +117,9 @@ export function getActiveLlmProvider(): BaseLlmProvider {
  * id for the ACTIVE provider. Use at host-direct SDK call sites (e.g. the
  * summarizer) that don't pass through the container client's chokepoint.
  */
-export function resolveActiveProviderModel(selection: string, purpose: ModelPurpose): string {
-  return resolveModelForProvider(selection, getActiveLlmProvider().id, purpose)
+export async function resolveActiveProviderModel(selection: string, purpose: ModelPurpose): Promise<string> {
+  const settings = await getSettings()
+  return resolveModelForProviderFrom(selection, activeLlmProviderFrom(settings).id, purpose, settings)
 }
 
 /** Default model selection per purpose, as bare family aliases (ride upgrades). */
@@ -137,23 +146,28 @@ export interface LlmProviderInfo {
   }
 }
 
-function defaultModelsFor(provider: BaseLlmProvider): ProviderDefaultModels {
+function defaultModelsFor(provider: BaseLlmProvider, modelCatalog?: ModelCatalogSettings): ProviderDefaultModels {
   return {
-    agent: provider.getDefaultModel('agent'),
-    summarizer: provider.getDefaultModel('summarizer'),
-    browser: provider.getDefaultModel('browser'),
+    agent: provider.getDefaultModel('agent', modelCatalog),
+    summarizer: provider.getDefaultModel('summarizer', modelCatalog),
+    browser: provider.getDefaultModel('browser', modelCatalog),
   }
 }
 
 /** Get info about all providers (for settings UI). */
-export function getAllProviderInfo(): LlmProviderInfo[] {
+export async function getAllProviderInfo(): Promise<LlmProviderInfo[]> {
+  return allProviderInfoFrom(await getSettings())
+}
+
+/** {@link getAllProviderInfo} from global settings already read. */
+export function allProviderInfoFrom(settings: AppSettings): LlmProviderInfo[] {
   return Object.values(providers).map(p => ({
     id: p.id,
     name: p.name,
-    isConfigured: p.getApiKeyStatus().isConfigured,
-    catalog: getEffectiveCatalog(p.id),
+    isConfigured: p.apiKeyStatusFrom(settings).isConfigured,
+    catalog: effectiveCatalogFrom(p.id, settings),
     builtinCatalog: getProviderCatalog(p.id),
-    defaultModels: defaultModelsFor(p),
+    defaultModels: defaultModelsFor(p, settings.modelCatalog),
     defaultModelOptions: p.defaultModelOptions,
     capabilities: {
       modelSearch: p.supportsModelSearch,

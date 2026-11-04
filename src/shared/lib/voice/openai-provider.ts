@@ -60,7 +60,7 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
   override getTtsSynthesis(): TtsSynthesisProvider { return this }
 
   async synthesizeSpeech(input: TtsSynthesisInput, signal?: AbortSignal): Promise<ReadableStream<Uint8Array>> {
-    const apiKey = this.getEffectiveApiKey()
+    const apiKey = await this.getEffectiveApiKey()
     if (!apiKey) throw new VoiceProviderError(this.messages().missingKey, 400)
     const response = await fetchWithIdleTimeout(fetch, `${this.apiBaseUrl()}/audio/speech`, {
       method: 'POST',
@@ -90,7 +90,7 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
 
   /** The project key stays on the host; the renderer receives only an SDP answer. */
   async createLiveSession(sdp: string, history: VoiceHistory, agent?: LiveAgentContext): Promise<LiveSessionAnswer> {
-    const apiKey = this.getEffectiveApiKey()
+    const apiKey = await this.getEffectiveApiKey()
     if (!apiKey) throw new VoiceProviderError(this.messages().missingKey, 400)
     // Check the mapping dependency before creating a billable voice session.
     await getConfiguredLlmClient()
@@ -129,7 +129,8 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
     return { session: { id: answer.session.id }, transport: { type: 'webrtc', sdp: answer.transport.sdp } }
   }
 
-  async closeLiveSession(id: string, apiKey = this.getEffectiveApiKey()): Promise<void> {
+  async closeLiveSession(id: string, key?: string): Promise<void> {
+    const apiKey = key ?? await this.getEffectiveApiKey()
     if (!apiKey) throw new Error(`Could not close ${this.name} Live session.`)
     const response = await fetch(`${this.apiBaseUrl()}/live/sessions/${encodeURIComponent(id)}/hangup`, {
       // OpenAI answers a hangup for an already-ended session with a 404 after ~6 s.
@@ -143,7 +144,7 @@ export class OpenaiVoiceProvider extends BaseVoiceProvider implements LiveConver
     const deadline = AbortSignal.timeout(12_000)
     const bounded = input.kind === 'request' ? { ...input, history: windowVoiceHistory(input.history) } : input
     const text = await createSummarizerText(await getConfiguredLlmClient(), {
-      model: resolveActiveProviderModel(getEffectiveModels().summarizerModel, 'summarizer'),
+      model: await resolveActiveProviderModel((await getEffectiveModels()).summarizerModel, 'summarizer'),
       system: input.kind === 'request' ? LIVE_REQUEST_PROMPT : LIVE_REPLY_PROMPT,
       messages: [{ role: 'user', content: JSON.stringify(bounded) }],
       ...(input.kind === 'request' ? { output_config: { format: {

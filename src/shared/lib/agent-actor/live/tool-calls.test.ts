@@ -65,7 +65,7 @@ function harness(options: { route?: Route; client?: false; answers?: HostCallAns
   const granted = new Set<string>()
   let grabbedApp: string | undefined
   const computerUse = {
-    check: (level: string, appName?: string) =>
+    check: async (level: string, appName?: string) =>
       granted.has(level) || granted.has(`${level}:${appName}`) ? 'granted' : 'prompt_needed',
     grabbed: () => grabbedApp,
   } as unknown as AgentComputerUse
@@ -560,10 +560,11 @@ describe('ToolCalls', () => {
   describe('host scripts', () => {
     const script = { script: 'echo hi', scriptType: 'shell', explanation: 'Say hi' }
 
-    it('parks a script on an approval card without a grant', () => {
+    it('parks a script on an approval card without a grant', async () => {
       const h = harness()
 
       h.calls.mainToolUse(use('t_script', 'mcp__user-input__request_script_run', script))
+      await settle()
 
       expect(h.open('t_script')).toMatchObject({
         kind: 'script_run',
@@ -574,11 +575,12 @@ describe('ToolCalls', () => {
       expect(mocks.runAutoApproved).not.toHaveBeenCalled()
     })
 
-    it('runs a script at once under a use_host_shell grant, registered but not waited on', () => {
+    it('runs a script at once under a use_host_shell grant, registered but not waited on', async () => {
       const h = harness()
       h.grant('use_host_shell')
 
       h.calls.mainToolUse(use('t_script', 'mcp__user-input__request_script_run', script))
+      await settle()
 
       expect(h.open('t_script')).toMatchObject({ kind: 'script_run', autoApproved: true })
       expect(h.awaitingSyncs()).toBe(0)
@@ -643,10 +645,11 @@ describe('ToolCalls', () => {
       expect(h.answered).toEqual([])
     })
 
-    it('parks a subagent\'s script under the subagent that asked', () => {
+    it('parks a subagent\'s script under the subagent that asked', async () => {
       const h = harness()
 
       h.calls.subagentStreamedToolUse(use('t_script', 'mcp__user-input__request_script_run', script), 'toolu_parent')
+      await settle()
 
       expect(h.open('t_script')).toMatchObject({ kind: 'script_run', parentToolUseId: 'toolu_parent' })
     })

@@ -1,6 +1,7 @@
 vi.mock('../../services/connection-sync-service', () => ({ syncRemoteMcpAgents: vi.fn(async () => true) }))
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { createTestDatabase, type TestDatabase } from '../../db/testing/create-test-database'
+import { installTestAppRecordStore } from '../../app-records/testing/memory-record-store'
 import type { AppDatabase } from '../../db/drivers/types'
 import { sql } from 'drizzle-orm'
 let handle: TestDatabase
@@ -24,7 +25,7 @@ import { z } from 'zod'
 import { createAgentIntegration, getAgentIntegration } from '../../services/agent-integration-service'
 import { integrationSetupContext, prepareIntegrationSetup } from '../../agent-integrations/setup'
 async function createLinearSetup(agentSlug: string, name: string, userId: string, origin: string, input: Record<string, unknown> = {}) {
-  const prepared = await prepareIntegrationSetup('linear', input, integrationSetupContext('linear', origin, agentSlug, userId))
+  const prepared = await prepareIntegrationSetup('linear', input, await integrationSetupContext('linear', origin, agentSlug, userId))
   const id = await createAgentIntegration({ agentSlug, provider: 'linear', name, createdByUserId: userId, config: prepared.config, status: prepared.status })
   return publicLinearIntegration((await getAgentIntegration(id))!)
 }
@@ -33,6 +34,8 @@ const identity = { id: 'app-user', app: true, name: 'Helper', displayName: 'Help
 let fetchMock: ReturnType<typeof vi.fn>
 beforeEach(async () => {
   handle = await createTestDatabase(); testDb = handle.db
+  // Callback URLs fall back to the trusted origins in settings: app records.
+  installTestAppRecordStore()
   vi.clearAllMocks()
   fetchMock = vi.fn(async (url: string) => Response.json(url.endsWith('/oauth/token')
     ? { access_token: 'access-secret', refresh_token: 'refresh-secret', expires_in: 86400, scope: scopes }

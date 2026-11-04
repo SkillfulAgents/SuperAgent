@@ -1,6 +1,12 @@
 import { isProviderEnvVar } from './provider-env'
-import { getSettings, getEffectiveModels, type ApiKeySettings } from '../config/settings'
-import { getLlmProvider, resolveModelForProvider } from './index'
+import {
+  getEffectiveModels,
+  getSettings,
+  type ApiKeySettings,
+  type AppSettings,
+  type ModelSettings,
+} from '../config/settings'
+import { getLlmProvider, resolveModelForProviderFrom } from './index'
 import type { LlmProviderId } from './provider-types'
 import { connectionModelOverridesSchema, normalizeConnectionModelOverrides } from './connection-schema'
 import { mergeCatalog } from './catalog-merge'
@@ -32,13 +38,25 @@ const envNames: Record<LlmProviderId, string[]> = {
   platform: [],
 }
 
-/** Build the account used by the existing provider settings/onboarding API.
- * No database access: also usable while openDatabase is running migrations.
+export { effectiveModelsFrom } from '../config/settings'
+
+/** Build the account used by the existing provider settings/onboarding API. */
+export async function connectionFromProviderSettings(id: LlmProviderId, extraModels: Iterable<string> = []) {
+  return connectionFromSettings(id, await getSettings(), await getEffectiveModels(), extraModels)
+}
+
+/**
+ * {@link connectionFromProviderSettings} from the settings and effective
+ * models already read. No database access and no settings read: also usable
+ * while openDatabase is running migrations, on the migration's own handle.
  */
-export function connectionFromProviderSettings(id: LlmProviderId, extraModels: Iterable<string> = []) {
-  const settings = getSettings()
+export function connectionFromSettings(
+  id: LlmProviderId,
+  settings: AppSettings,
+  models: ModelSettings,
+  extraModels: Iterable<string> = [],
+) {
   const active = settings.llmProvider ?? 'anthropic'
-  const models = getEffectiveModels()
   const provider = getLlmProvider(id)
   const config = connectionConfigSchema.parse({
     apiKeys: Object.fromEntries(
@@ -77,7 +95,7 @@ export function connectionFromProviderSettings(id: LlmProviderId, extraModels: I
       [models.dashboardBuilderModel, 'dashboard'],
       ...[...extraModels].map((model) => [model, 'agent']),
     ] as [string, 'agent' | 'summarizer' | 'browser' | 'dashboard'][]) {
-      const wire = resolveModelForProvider(selection, id, purpose)
+      const wire = resolveModelForProviderFrom(selection, id, purpose, settings)
       if (!catalog.some((m) => m.id === wire)) {
         const definition = builtins.find(model => model.id === wire)
           ?? { id: wire, label: wire, supportedEfforts: ['low' as const, 'medium' as const, 'high' as const] }
@@ -91,7 +109,7 @@ export function connectionFromProviderSettings(id: LlmProviderId, extraModels: I
   }
   const preserve = (model: string, purpose: 'agent' | 'summarizer' | 'browser' | 'dashboard') =>
     resolveSelection({ llmProviderId: legacyLlmProviderId(id), model }, [{ id: legacyLlmProviderId(id), catalog }])
-      ?.model ?? resolveModelForProvider(model, id, purpose)
+      ?.model ?? resolveModelForProviderFrom(model, id, purpose, settings)
   const values = {
     id: legacyLlmProviderId(id),
     provider: id,
@@ -103,11 +121,11 @@ export function connectionFromProviderSettings(id: LlmProviderId, extraModels: I
     browserModel:
       id === active
         ? preserve(models.browserModel, 'browser')
-        : provider.getDefaultModel('browser'),
+        : provider.getDefaultModel('browser', settings.modelCatalog),
     dashboardModel:
       id === active
         ? preserve(models.dashboardBuilderModel, 'dashboard')
-        : provider.getDefaultModel('dashboard'),
+        : provider.getDefaultModel('dashboard', settings.modelCatalog),
     createdAt: new Date(),
     updatedAt: new Date(),
   }

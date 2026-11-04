@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 import app from './index'
 
 /**
@@ -10,6 +11,11 @@ import app from './index'
  * against the real app so a re-ordering or a dropped mount is caught.
  */
 describe('voice routes answer under both prefixes', () => {
+  // The voice settings are read from the app record store.
+  beforeEach(() => {
+    installTestAppRecordStore()
+  })
+
   it.each(['/api/voice/configured', '/api/stt/configured'])('%s', async (path) => {
     const res = await app.request(path)
     expect(res.status).toBe(200)

@@ -2,6 +2,8 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { parseArgs } from 'node:util'
 import { openDatabase, closeDatabase } from '../../../src/shared/lib/db'
+import { dbAppRecordStore } from '../../../src/shared/lib/app-records/record-store'
+import { installAppRecordStore } from '../../../src/shared/lib/app-records/records'
 import { getConnection, providerForConnection } from '../../../src/shared/lib/llm-provider/connections'
 import { connectionRuntimeSchema } from '../../../agent-container/src/connection-runtime'
 
@@ -11,7 +13,7 @@ async function main() {
     connection: { type: 'string' }, out: { type: 'string' }, model: { type: 'string', default: 'grok-4.7' },
   } })
   if (!values.connection || !values.out) throw new Error('Supply --connection <id> --out <private runtime.json>')
-  await openDatabase()
+  installAppRecordStore(dbAppRecordStore(await openDatabase()))
   try {
     const row = await getConnection(values.connection)
     if (!row || row.provider !== 'grok-subscription') throw new Error('Choose a Grok Subscription connection')
@@ -27,7 +29,7 @@ async function main() {
     await fs.mkdir(path.dirname(values.out), { recursive: true, mode: 0o700 })
     await fs.writeFile(values.out, JSON.stringify(runtime), { mode: 0o600, flag: 'wx' })
     let textDeltas = 0
-    const result = await provider.createClient().withOptions({ maxRetries: 0 }).messages.stream({
+    const result = await (await provider.createClient()).withOptions({ maxRetries: 0 }).messages.stream({
       model, max_tokens: 2048, thinking: { type: 'disabled' },
       messages: [{ role: 'user', content: 'What is 17 times 23? Answer with the number.' }],
     }).on('text', () => { textDeltas++ }).finalMessage()

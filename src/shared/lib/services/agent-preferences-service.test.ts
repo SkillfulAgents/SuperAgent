@@ -3,6 +3,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import { agentPreferencesSchema } from '@shared/lib/types/agent-preferences'
+import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 import {
   readAgentPreferences,
   writeAgentPreferences,
@@ -19,6 +20,7 @@ describe('agent-preferences-service', () => {
     )
     originalEnv = process.env.SUPERAGENT_DATA_DIR
     process.env.SUPERAGENT_DATA_DIR = testDir
+    installTestAppRecordStore()
   })
 
   afterEach(async () => {

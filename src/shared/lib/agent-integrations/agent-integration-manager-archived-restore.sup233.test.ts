@@ -87,6 +87,12 @@ import {
   listActiveAgentIntegrationSessions,
 } from '@shared/lib/services/agent-integration-session-service'
 import { LiveSessions } from '@shared/lib/agent-actor/live/live-sessions'
+import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
+
+// Settings and host records are app records: a fresh in-memory store per test.
+beforeEach(() => {
+  installTestAppRecordStore()
+})
 
 describe('SUP-233 reconnect restore ignores archived sessions', () => {
   beforeEach(async () => {

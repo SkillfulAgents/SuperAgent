@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 import { Hono } from 'hono'
 import { z } from 'zod'
 import Database from 'better-sqlite3'
@@ -175,6 +176,7 @@ function seedAccess(integrationId: string, externalChatId: string, status: 'pend
 
 describe('chat-integrations access routes', () => {
   beforeEach(async () => {
+    installTestAppRecordStore()
     testSqlite = new Database(':memory:')
     testDb = drizzle(testSqlite, { schema })
     migrate(testDb, { migrationsFolder: path.join(process.cwd(), 'src/shared/lib/db/migrations') })

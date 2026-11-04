@@ -39,18 +39,18 @@ function checkRateLimit(key: string): boolean {
  * existing cross-provider Sonnet-tier setting, so using it preserves that cost
  * profile without hard-coding a Claude model id.
  */
-function getDefaultModel(): string {
-  return resolveActiveProviderModel(getEffectiveModels().browserModel, 'browser')
+async function getDefaultModel(): Promise<string> {
+  return resolveActiveProviderModel((await getEffectiveModels()).browserModel, 'browser')
 }
 
 // GET /api/llm/config
 llm.get('/config', async (c) => {
   try {
-    const selected = getSettings().llmDefault ? await resolveHelperSelection() : null
-    const provider = selected?.provider ?? getActiveLlmProvider()
+    const selected = (await getSettings()).llmDefault ? await resolveHelperSelection() : null
+    const provider = selected?.provider ?? await getActiveLlmProvider()
     return c.json({
-      configured: provider.getApiKeyStatus().isConfigured,
-      defaultModel: selected?.wireModel ?? getDefaultModel(),
+      configured: (await provider.getApiKeyStatus()).isConfigured,
+      defaultModel: selected?.wireModel ?? await getDefaultModel(),
       provider: provider.id,
     })
   } catch (error) {
@@ -90,7 +90,7 @@ llm.post('/v1/messages', async (c) => {
     return c.json({ error: 'Missing required field: messages' }, 400)
   }
 
-  let model = (body.model as string) || getDefaultModel()
+  let model = (body.model as string) || await getDefaultModel()
   const stream = !!body.stream
 
   let client

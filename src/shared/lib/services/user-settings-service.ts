@@ -253,11 +253,11 @@ export function getDefaultUserSettings(): UserSettingsData {
 }
 
 /**
- * Seed initial user settings for the 'local' user from existing settings.json.
+ * Seed initial user settings for the 'local' user from the app settings.
  * This ensures backward compatibility when migrating from app-level to user-level settings.
  */
-function seedFromAppSettings(): UserSettingsData {
-  const appSettings = getSettings()
+async function seedFromAppSettings(): Promise<UserSettingsData> {
+  const appSettings = await getSettings()
   const appPrefs = appSettings.app ?? {}
 
   return userSettingsSchema.parse({
@@ -283,7 +283,7 @@ function seedFromAppSettings(): UserSettingsData {
 
 /**
  * Get user settings for a given user ID.
- * Returns defaults if no row exists. For the 'local' sentinel, seeds from settings.json on first access.
+ * Returns defaults if no row exists. For the 'local' sentinel, seeds from the app settings on first access.
  */
 export async function getUserSettings(userId: string): Promise<UserSettingsData> {
   const rows = await db
@@ -299,7 +299,7 @@ export async function getUserSettings(userId: string): Promise<UserSettingsData>
   }
 
   // No row found — seed from app settings for 'local' user, otherwise use defaults
-  const initial = initialUserSettings(userId)
+  const initial = await initialUserSettings(userId)
 
   // Persist the initial settings so future reads come from DB
   await db.insert(userSettings)
@@ -323,8 +323,8 @@ function parseStoredSettings(stored: string): UserSettingsData | null {
   }
 }
 
-/** What a user starts from: the 'local' sentinel seeds from settings.json, everyone else from the defaults. */
-function initialUserSettings(userId: string): UserSettingsData {
+/** What a user starts from: the 'local' sentinel seeds from the app settings, everyone else from the defaults. */
+async function initialUserSettings(userId: string): Promise<UserSettingsData> {
   return userId === 'local' ? seedFromAppSettings() : getDefaultUserSettings()
 }
 
@@ -387,7 +387,7 @@ async function compareAndSetUserSettings(
       .from(userSettings)
       .where(eq(userSettings.userId, userId))
       .get()
-    const current = (row && parseStoredSettings(row.settings)) ?? initialUserSettings(userId)
+    const current = (row && parseStoredSettings(row.settings)) ?? (await initialUserSettings(userId))
     const validated = mergeSettings(current, partial)
     const json = JSON.stringify(validated)
     const now = new Date()

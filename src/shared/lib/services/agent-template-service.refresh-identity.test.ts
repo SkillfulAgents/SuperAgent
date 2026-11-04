@@ -20,6 +20,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import * as schema from '@shared/lib/db/schema'
 import type { InstalledAgentMetadata, SkillsetConfig } from '@shared/lib/types/skillset'
+import { installTestAppRecordStore } from '@shared/lib/app-records/testing/memory-record-store'
 
 let testDb: ReturnType<typeof drizzle>
 let sqlite: InstanceType<typeof Database>
@@ -129,6 +130,7 @@ beforeEach(async () => {
   previousDataDir = process.env.SUPERAGENT_DATA_DIR
   process.env.SUPERAGENT_DATA_DIR = dataDir
   queueStatuses.clear()
+  installTestAppRecordStore()
 })
 
 afterEach(async () => {

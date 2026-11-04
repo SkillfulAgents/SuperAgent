@@ -11,7 +11,7 @@ import type { CoalescedUserMessage, RuntimeFatalKind, UnexpectedDeathPlan } from
 export type RuntimeRecoveryDeps = {
   agentId: string
   isStopping: () => boolean
-  getClient: () => ContainerClient
+  getClient: () => Promise<ContainerClient>
   restartAgent: () => Promise<void>
   ensureRunning: () => Promise<ContainerClient>
   snapshotMidTurnSessions: (agentId: string, restrictToSessionIds?: string[]) => string[]
@@ -105,7 +105,7 @@ async function recoverFromUnexpectedDeathInner(deps: RuntimeRecoveryDeps): Promi
     return
   }
 
-  const client = deps.getClient()
+  const client = await deps.getClient()
   const oldGenerationId = client.getRuntimeGenerationId()
 
   let plan: UnexpectedDeathPlan

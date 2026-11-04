@@ -32,6 +32,13 @@ async function main(): Promise<void> {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gamut-private-skillset-e2e-'))
   process.env.SUPERAGENT_DATA_DIR = dataDir
 
+  // Settings live in the app database: open it (in the temp data dir) and
+  // install the record store before anything reads them.
+  const { openDatabase, closeDatabase } = await import('../src/shared/lib/db')
+  const { dbAppRecordStore } = await import('../src/shared/lib/app-records/record-store')
+  const { installAppRecordStore } = await import('../src/shared/lib/app-records/records')
+  installAppRecordStore(dbAppRecordStore(await openDatabase()))
+
   try {
     const settings = await import('../src/shared/lib/config/settings')
     const service = await import('../src/shared/lib/services/skillset-service')
@@ -63,7 +70,7 @@ async function main(): Promise<void> {
       providerData: { credentialId },
     }
 
-    settings.mutateSettings((current) => {
+    await settings.mutateSettings((current) => {
       current.skillsets = [config]
       current.skillsetCredentials = { [credentialId]: credential }
     })
@@ -83,7 +90,7 @@ async function main(): Promise<void> {
     // Simulate an installed skill retaining its install-time credential ID
     // while the token is removed and re-added under a new ID in Settings.
     const replacementCredentialId = `skillcred_${crypto.randomUUID()}`
-    settings.mutateSettings((current) => {
+    await settings.mutateSettings((current) => {
       const currentConfig = current.skillsets?.find((item) => item.id === skillsetId)
       if (!currentConfig) throw new Error('Skillset disappeared during credential replacement.')
       currentConfig.providerData = { credentialId: replacementCredentialId }
@@ -116,7 +123,7 @@ async function main(): Promise<void> {
       providerData: installedMetadataProviderData,
     })
 
-    const persisted = fs.readFileSync(path.join(dataDir, 'settings.json'), 'utf8')
+    const persisted = JSON.stringify(await settings.getSettings())
     const publicConfig = JSON.stringify(config)
     if (publicConfig.includes(token) || repoUrl.includes(token)) {
       throw new Error('Token leaked into public skillset metadata.')
@@ -135,9 +142,9 @@ async function main(): Promise<void> {
     if (localExtraHeader) throw new Error('Git authentication header was persisted in .git/config.')
     if (!persisted.includes(token)) throw new Error('Credential was not persisted in the private settings store.')
 
-    const settingsMode = process.platform === 'win32'
+    const databaseMode = process.platform === 'win32'
       ? null
-      : (fs.statSync(path.join(dataDir, 'settings.json')).mode & 0o777).toString(8)
+      : (fs.statSync(path.join(dataDir, 'superagent.db')).mode & 0o777).toString(8)
 
     console.log(JSON.stringify({
       validated: true,
@@ -148,9 +155,10 @@ async function main(): Promise<void> {
       agentCount: refreshedIndex.agents?.length ?? 0,
       tokenAbsentFromPublicMetadata: true,
       tokenAbsentFromGitConfig: true,
-      settingsMode,
+      databaseMode,
     }))
   } finally {
+    await closeDatabase()
     fs.rmSync(dataDir, { recursive: true, force: true })
     delete process.env.SUPERAGENT_DATA_DIR
   }

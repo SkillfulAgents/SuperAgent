@@ -31,6 +31,7 @@ import { mergeCanonicalSlashCommands } from '@shared/lib/container/slash-command
 import { slashCommandListSchema } from '@shared/lib/services/session-metadata-schema'
 import { credentialSource } from '@shared/lib/llm-provider/connection-runtime'
 import { getActiveLlmProvider, getLlmProvider } from '@shared/lib/llm-provider'
+import type { ProviderErrorPresentation } from '@shared/lib/llm-provider/error-presentation'
 import { captureException } from '@shared/lib/error-reporting'
 import { background } from '@shared/lib/background'
 import { isSyntheticPlaceholderMessage } from '@shared/lib/utils/synthetic-message'
@@ -224,6 +225,12 @@ export class LiveSession {
   /** The process the container evicted while we were attached: a one-shot release. */
   private evictedProcessInstance: string | undefined = undefined
   private settleAfterStopTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * Frames that arrived while a failed turn's error was still being presented
+   * (an asynchronous read): they are handled, in order, once its
+   * `session_error` is out, so nothing after the error can overtake it.
+   */
+  private framesAfterError: StreamMessage[] | null = null
 
   // ---- Automation stream policy ------------------------------------------------
   /** An unpromoted automation: its stream is released once the session settles. */
@@ -902,6 +909,14 @@ export class LiveSession {
   /** One frame from the container's stream. */
   frame(message: StreamMessage): void {
     if (this.ctx.capture) background(this.ctx.capture.recordInput(this.ctx.sessionId, message), { name: 'live-session.capture-input' })
+    if (this.framesAfterError) {
+      this.framesAfterError.push(message)
+      return
+    }
+    this.handleFrame(message)
+  }
+
+  private handleFrame(message: StreamMessage): void {
     const content = message.content
 
     // After a stop, the stopped turn's own content still in the pipe is
@@ -1309,12 +1324,17 @@ export class LiveSession {
       return
     }
     if (isError) {
-      this.turnFailed(classification)
-      // A fatal error (OOM, say) stops the container.
-      if (content.fatal) {
-        console.log(`[LiveSession] Fatal error for agent ${this.ctx.agentSlug}, requesting container stop`)
-        this.ctx.runtime.stopAfterFatalError()
-      }
+      // The error goes out once its provider presentation is known (an
+      // asynchronous read); a fatal error (OOM, say) then stops the container.
+      // Frames arriving meanwhile wait, so they still follow the error.
+      this.framesAfterError = []
+      background(this.turnFailed(classification).finally(() => {
+        if (content.fatal) {
+          console.log(`[LiveSession] Fatal error for agent ${this.ctx.agentSlug}, requesting container stop`)
+          this.ctx.runtime.stopAfterFatalError()
+        }
+        this.replayFramesAfterError()
+      }), { name: 'live-session.turn-failed' })
       return
     }
 
@@ -1351,25 +1371,48 @@ export class LiveSession {
     })
   }
 
-  private turnFailed(classification: ReturnType<typeof classifyResult>): void {
+  /** Handle the frames held back while an error was presented; one of them may hold the rest back again. */
+  private replayFramesAfterError(): void {
+    const held = this.framesAfterError ?? []
+    this.framesAfterError = null
+    for (let i = 0; i < held.length; i++) {
+      if (this.framesAfterError) {
+        // Another failed turn among them: the rest wait for its error.
+        ;(this.framesAfterError as StreamMessage[]).push(...held.slice(i))
+        return
+      }
+      this.handleFrame(held[i])
+    }
+  }
+
+  private async turnFailed(classification: ReturnType<typeof classifyResult>): Promise<void> {
     const errorMessage = classification.errorText || 'An error occurred during execution'
     const apiErrorCode = this.lastApiErrorCode || null
     const { terminalReason, apiErrorStatus } = classification
-    // The provider owns the copy for its own upstream errors (severity, icon,
-    // message, link), so the UI never re-derives provider-specific copy.
-    const runtimeProvider = this.ctx.modelRuntime()?.provider
-    const turnProvider = runtimeProvider ? getLlmProvider(runtimeProvider) : getActiveLlmProvider()
-    turnProvider.noteTurnError(apiErrorStatus ?? undefined, errorMessage)
-    const errorPresentation = turnProvider.presentationForTurnError(apiErrorStatus ?? undefined, errorMessage, apiErrorCode)
     console.error(
       `[LiveSession] Session ${this.ctx.sessionId} error:`,
       errorMessage,
       apiErrorCode ? `(${apiErrorCode})` : '',
       terminalReason ? `[${terminalReason}]` : '',
     )
-    const error = { error: errorMessage, apiErrorCode, errorPresentation, terminalReason, apiErrorStatus, isActive: false }
+    // Recorded with the frame, before anything is awaited: what the session's
+    // next frames decide (its settling, its notification) reads the outcome.
     this.trackResponse('agent_response_failed', { terminal_reason: terminalReason, api_error_status: apiErrorStatus })
     const turnOutcome = this.response.recordOutcome('failed', errorMessage)
+    // The provider owns the copy for its own upstream errors (severity, icon,
+    // message, link), so the UI never re-derives provider-specific copy. The
+    // active provider and the presentation are reads; a failed one leaves the
+    // error without a presentation rather than unreported.
+    const runtimeProvider = this.ctx.modelRuntime()?.provider
+    let errorPresentation: ProviderErrorPresentation | null = null
+    try {
+      const turnProvider = runtimeProvider ? getLlmProvider(runtimeProvider) : await getActiveLlmProvider()
+      turnProvider.noteTurnError(apiErrorStatus ?? undefined, errorMessage)
+      errorPresentation = await turnProvider.presentationForTurnError(apiErrorStatus ?? undefined, errorMessage, apiErrorCode)
+    } catch (error) {
+      console.error(`[LiveSession] Could not present the error of session ${this.ctx.sessionId}:`, error)
+    }
+    const error = { error: errorMessage, apiErrorCode, errorPresentation, terminalReason, apiErrorStatus, isActive: false }
     this.ctx.emit({ type: 'session_error', ...error, turnOutcome })
     this.publish({ type: 'session_error', ...error })
   }
