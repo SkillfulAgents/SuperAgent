@@ -1,8 +1,7 @@
 import crypto from 'crypto'
-import fs from 'fs'
-import path from 'path'
 import type { z } from 'zod'
-import { getDataDir } from '@shared/lib/config/data-dir'
+import { hostFiles } from '@shared/lib/host-state/host-files'
+import { defineSingletonHostFile } from '@shared/lib/host-state/singletons'
 
 /**
  * Sealing for the Browser Vault: AES-256-GCM under the vault's own key, 32
@@ -31,39 +30,18 @@ export interface SealBinding {
 
 export class VaultSealError extends Error {}
 
-/** The key file's contents, if it holds a key; null if there is none yet. Never regenerated over a key that may have sealed something. */
-function readKeyFile(keyPath: string): Buffer | null {
+defineSingletonHostFile(KEY_FILE, () => crypto.randomBytes(KEY_BYTES).toString('base64'))
+
+/** Made on first use and never regenerated over a key that may have sealed something. */
+function vaultKey(): Buffer {
   let text: string
   try {
-    text = fs.readFileSync(keyPath, 'utf-8').trim()
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
-    throw new VaultSealError('The vault key could not be read')
+    text = hostFiles().singleton(KEY_FILE)
+  } catch {
+    throw new VaultSealError('The vault key could not be read or saved')
   }
-  const key = Buffer.from(text, 'base64')
-  if (key.length !== KEY_BYTES) throw new VaultSealError(`The vault key file ${keyPath} does not hold a vault key`)
-  return key
-}
-
-const keys = new Map<string, Buffer>()
-
-function vaultKey(): Buffer {
-  const keyPath = path.join(getDataDir(), KEY_FILE)
-  const cached = keys.get(keyPath)
-  if (cached) return cached
-  let key = readKeyFile(keyPath)
-  if (!key) {
-    fs.mkdirSync(path.dirname(keyPath), { recursive: true })
-    try {
-      // Exclusive: two processes starting at once keep one key, not two.
-      fs.writeFileSync(keyPath, crypto.randomBytes(KEY_BYTES).toString('base64'), { mode: 0o600, flag: 'wx' })
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw new VaultSealError('The vault key could not be saved')
-    }
-    key = readKeyFile(keyPath)
-    if (!key) throw new VaultSealError('The vault key could not be read')
-  }
-  keys.set(keyPath, key)
+  const key = Buffer.from(text.trim(), 'base64')
+  if (key.length !== KEY_BYTES) throw new VaultSealError('The vault key file does not hold a vault key')
   return key
 }
 
@@ -115,5 +93,5 @@ export function openJson<T>(stored: string, binding: SealBinding, schema: z.ZodT
 
 /** Test seam: forget derived keys (tests switch data directories and secrets). */
 export function resetVaultKeyCache(): void {
-  keys.clear()
+  hostFiles().forget(KEY_FILE)
 }

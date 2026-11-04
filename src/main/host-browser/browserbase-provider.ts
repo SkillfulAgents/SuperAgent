@@ -1,6 +1,4 @@
-import path from 'path'
 import { getSettings, getEffectiveBrowserbaseApiKey, getEffectiveBrowserbaseProjectId } from '@shared/lib/config/settings'
-import { getDataDir } from '@shared/lib/config/data-dir'
 import { getOrCreateMapping } from './context-map-store'
 import { GooglePasskeyRecovery } from './google-passkey-recovery'
 import type { HostBrowserProvider, HostBrowserProviderStatus, BrowserConnectionInfo, BrowserDebugInfo } from './types'
@@ -214,16 +212,12 @@ export class BrowserbaseProvider implements HostBrowserProvider {
     return this.sessions.size > 0
   }
 
-  private contextMapPath(): string {
-    return path.join(getDataDir(), CONTEXTS_FILE)
-  }
-
   /** Get or create a Browserbase context for the given instance */
   private async getOrCreateContext(instanceId: string, projectId: string, apiKey: string): Promise<string> {
     // getOrCreateMapping dedups concurrent first-opens for the same instance so
     // we never create (and then orphan/leak) two paid contexts; it re-reads the
     // map and persists atomically.
-    return getOrCreateMapping(this.contextMapPath(), instanceId, async () => {
+    return getOrCreateMapping(CONTEXTS_FILE, instanceId, async () => {
       const response = await fetch(`${BROWSERBASE_API_BASE}/contexts`, {
         method: 'POST',
         headers: {
